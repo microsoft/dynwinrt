@@ -433,6 +433,8 @@ target
 **/generated
 **/node_modules
 tools/winrt-meta/npm/bin/**/*.exe
+!tools/winrt-meta/npm/bin/x64/
+!tools/winrt-meta/npm/bin/arm64/
 bench-electron/out/
 **/build
 

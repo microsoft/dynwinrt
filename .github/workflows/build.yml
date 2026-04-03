@@ -22,10 +22,12 @@ jobs:
       - name: Build x64
         run: |
           cargo build -p winrt-meta --release
+          New-Item -ItemType Directory -Force -Path tools/winrt-meta/npm/bin/x64 | Out-Null
           cp target/release/winrt-meta.exe tools/winrt-meta/npm/bin/x64/
       - name: Build arm64
         run: |
           cargo build -p winrt-meta --release --target aarch64-pc-windows-msvc
+          New-Item -ItemType Directory -Force -Path tools/winrt-meta/npm/bin/arm64 | Out-Null
           cp target/aarch64-pc-windows-msvc/release/winrt-meta.exe tools/winrt-meta/npm/bin/arm64/
       - uses: actions/upload-artifact@v4
         with:
