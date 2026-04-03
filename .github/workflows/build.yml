@@ -22,12 +22,12 @@ jobs:
       - name: Build x64
         run: |
           cargo build -p winrt-meta --release
-          New-Item -ItemType Directory -Force -Path tools/winrt-meta/npm/bin/x64 | Out-Null
+          mkdir -p tools/winrt-meta/npm/bin/x64
           cp target/release/winrt-meta.exe tools/winrt-meta/npm/bin/x64/
       - name: Build arm64
         run: |
           cargo build -p winrt-meta --release --target aarch64-pc-windows-msvc
-          New-Item -ItemType Directory -Force -Path tools/winrt-meta/npm/bin/arm64 | Out-Null
+          mkdir -p tools/winrt-meta/npm/bin/arm64
           cp target/aarch64-pc-windows-msvc/release/winrt-meta.exe tools/winrt-meta/npm/bin/arm64/
       - uses: actions/upload-artifact@v4
         with:
@@ -62,90 +62,3 @@ jobs:
             bindings/js/dist/dynwinrt-js.win32-arm64-msvc.node
             bindings/js/dist/index.js
             bindings/js/dist/index.d.ts
-
-  # Publish to npmjs.org via Trusted Publishing (OIDC)
-  publish:
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: windows-latest
-    needs: [winrt-meta, dynwinrt-js]
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          registry-url: https://registry.npmjs.org
-
-      # Download all build artifacts
-      - uses: actions/download-artifact@v4
-        with:
-          name: dynwinrt-js
-          path: bindings/js/dist
-      - uses: actions/download-artifact@v4
-        with:
-          name: winrt-meta
-          path: tools/winrt-meta/npm
-
-      # Extract version from tag and update package.json files
-      - name: Set version from tag
-        shell: bash
-        run: |
-          VERSION="${GITHUB_REF#refs/tags/v}"
-          echo "Publishing version: $VERSION"
-          npm --no-git-tag-version -w bindings/js version "$VERSION" 2>/dev/null || \
-            node -e "const f='bindings/js/package.json';const p=require('./'+f);p.version='$VERSION';require('fs').writeFileSync(f,JSON.stringify(p,null,2)+'\n')"
-          node -e "const f='tools/winrt-meta/npm/package.json';const p=require('./'+f);p.version='$VERSION';require('fs').writeFileSync(f,JSON.stringify(p,null,2)+'\n')"
-
-      # Determine npm tag: prerelease versions get "alpha"/"beta"/etc, releases get "latest"
-      - name: Determine npm tag
-        id: npm-tag
-        shell: bash
-        run: |
-          VERSION="${GITHUB_REF#refs/tags/v}"
-          if [[ "$VERSION" == *-* ]]; then
-            echo "tag=${VERSION#*-}" | sed 's/\..*//' >> $GITHUB_OUTPUT
-          else
-            echo "tag=latest" >> $GITHUB_OUTPUT
-          fi
-
-      # Publish dynwinrt-js
-      - name: Publish dynwinrt-js
-        working-directory: bindings/js
-        run: npm publish --provenance --access public --tag ${{ steps.npm-tag.outputs.tag }}
-
-      # Publish winrt-meta
-      - name: Publish winrt-meta
-        working-directory: tools/winrt-meta/npm
-        run: npm publish --provenance --access public --tag ${{ steps.npm-tag.outputs.tag }}
-
-  # Sample: ready-to-use test kit
-  sample:
-    runs-on: ubuntu-latest
-    needs: [winrt-meta, dynwinrt-js]
-    steps:
-      - uses: actions/checkout@v4
-
-      # Download build artifacts
-      - uses: actions/download-artifact@v4
-        with:
-          name: winrt-meta
-          path: sample/winrt-meta
-      - uses: actions/download-artifact@v4
-        with:
-          name: dynwinrt-js
-          path: sample/dynwinrt-js
-
-      # Copy test files from repo
-      - name: Copy test files
-        run: |
-          cp tests/sample/package.json sample/
-          cp tests/sample/test_uri.ts sample/
-          cp tests/sample/test_picker.ts sample/
-          cp tests/sample/README.md sample/
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: sample
-          path: sample/
