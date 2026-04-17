@@ -62,7 +62,8 @@ if (-not $SkipBuild) {
         }
         maturin build --quiet 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0) { Write-Error "maturin build failed"; exit 1 }
-        $whl = (Get-ChildItem (Join-Path $root "target\wheels\*.whl") | Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName
+        $wheelDir = if ($env:CARGO_TARGET_DIR) { Join-Path $env:CARGO_TARGET_DIR "wheels" } else { Join-Path $root "target\wheels" }
+        $whl = (Get-ChildItem (Join-Path $wheelDir "*.whl") | Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName
         if (-not $whl) { Write-Error "No wheel found after maturin build"; exit 1 }
         pip install $whl --force-reinstall --quiet 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0) { Write-Error "pip install failed"; exit 1 }
