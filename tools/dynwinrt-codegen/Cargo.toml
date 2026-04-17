@@ -1,0 +1,13 @@
+[package]
+name = "dynwinrt-codegen"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "WinRT metadata reader and typed wrapper code generator for dynwinrt"
+repository = "https://github.com/microsoft/dynwinrt"
+authors = ["Microsoft"]
+
+[dependencies]
+windows-metadata = "0.59.0"
+clap = { version = "4", features = ["derive"] }
+roxmltree = "0.20"

@@ -10,7 +10,7 @@
     "preview": "electron-vite preview"
   },
   "dependencies": {
-    "dynwinrt-js": "file:../bindings/js"
+    "@microsoft/dynwinrt": "file:../bindings/js"
   },
   "devDependencies": {
     "@electron-toolkit/preload": "^3.0.1",

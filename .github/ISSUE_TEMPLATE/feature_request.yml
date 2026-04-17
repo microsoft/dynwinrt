@@ -29,8 +29,8 @@ body:
       description: Which component is this related to?
       options:
         - "dynwinrt (core library)"
-        - "winrt-meta (code generator)"
-        - "JS bindings (dynwinrt-js)"
+        - "dynwinrt-codegen (code generator)"
+        - "JS bindings (@microsoft/dynwinrt)"
         - "Python bindings (dynwinrt-py)"
         - "New component"
   - type: textarea
@@ -43,3 +43,4 @@ body:
       label: Open Questions
       description: |
         Please list any open questions or issues that you think still need to be addressed before this suggestion can be implemented.
+

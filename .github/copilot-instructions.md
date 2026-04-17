@@ -8,7 +8,7 @@ This file provides instructions for the GitHub Copilot coding agent when working
 - **Core library** (`crates/dynwinrt/`) — Rust runtime using libffi for dynamic WinRT method invocation
 - **JS binding** (`bindings/js/`) — napi-rs binding for Node.js/Electron
 - **Python binding** (`bindings/py/`) — PyO3 binding for Python
-- **Code generator** (`tools/winrt-meta/`) — Generates typed TypeScript and Python wrappers from .winmd metadata
+- **Code generator** (`tools/dynwinrt-codegen/`) — Source for dynwinrt-codegen, which generates typed TypeScript and Python wrappers from .winmd metadata
 
 ## Build & Test Commands
 
@@ -19,8 +19,8 @@ cargo build
 # Core library tests (52 tests, 1 ignored — requires WinAppSDK)
 cargo test -p dynwinrt
 
-# winrt-meta tests (49 unit tests + 1 snapshot test)
-cargo test -p winrt-meta
+# dynwinrt-codegen tests (49 unit tests + 1 snapshot test)
+cargo test -p dynwinrt-codegen
 
 # Python binding (requires Python 3.8+ and maturin)
 cd bindings/py
@@ -36,8 +36,8 @@ npm install
 npx napi build --no-const-enum --platform --release -o dist
 
 # Code generation
-cargo run -p winrt-meta -- generate --namespace Windows.Foundation --class-name Uri --lang ts --output ./generated
-cargo run -p winrt-meta -- generate --namespace Windows.Foundation --class-name Uri --lang py --output ./generated
+cargo run -p dynwinrt-codegen -- generate --namespace Windows.Foundation --class-name Uri --lang ts --output ./generated
+cargo run -p dynwinrt-codegen -- generate --namespace Windows.Foundation --class-name Uri --lang py --output ./generated
 
 # E2E test (full pipeline: winmd → generate → call real WinRT APIs)
 .\tests\e2e_test.ps1 -SkipBuild -Lang py
@@ -95,7 +95,7 @@ These APIs are available on any Windows 10/11 machine without WinAppSDK:
 - **Method invocation** returns a single `WinRTValue` (not a list) in Python binding
 - **Generated code** uses relative imports (`from .module import Class`) — must be in a Python package
 
-### Code Generator (winrt-meta)
+### Code Generator (dynwinrt-codegen)
 - `src/codegen/typescript.rs` + `src/codegen/method.rs` — TypeScript generation
 - `src/codegen/python.rs` + `src/codegen/py_method.rs` — Python generation
 - `src/codegen/common.rs` — Shared helpers (type mapping, argument wrapping, return conversion)
@@ -112,3 +112,5 @@ These APIs are available on any Windows 10/11 machine without WinAppSDK:
 - `test_initialize` is `#[ignore]` — requires `WINAPPSDK_BOOTSTRAP_DLL_PATH` env var
 - Python `@property` must come before `@prop.setter` — codegen reorders methods for this
 - Windows SDK winmd is at `C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd`
+
+

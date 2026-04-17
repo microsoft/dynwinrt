@@ -97,27 +97,27 @@ extends:
               targetType: inline
               script: cargo test -p dynwinrt
 
-          # winrt-meta tests
+          # dynwinrt-codegen tests
           - task: PowerShell@2
-            displayName: Test winrt-meta
+            displayName: Test dynwinrt-codegen
             inputs:
               targetType: inline
-              script: cargo test -p winrt-meta
+              script: cargo test -p dynwinrt-codegen
 
-          # Build winrt-meta (x64 + arm64)
+          # Build dynwinrt-codegen (x64 + arm64)
           - task: PowerShell@2
-            displayName: Build winrt-meta (x64)
+            displayName: Build dynwinrt-codegen (x64)
             inputs:
               targetType: inline
-              script: cargo build -p winrt-meta --release
+              script: cargo build -p dynwinrt-codegen --release
 
           - task: PowerShell@2
-            displayName: Build winrt-meta (arm64)
+            displayName: Build dynwinrt-codegen (arm64)
             inputs:
               targetType: inline
-              script: cargo build -p winrt-meta --release --target aarch64-pc-windows-msvc
+              script: cargo build -p dynwinrt-codegen --release --target aarch64-pc-windows-msvc
 
-          # Build dynwinrt-js (x64 + arm64)
+          # Build dynwinrt (x64 + arm64)
           - task: PowerShell@2
             displayName: Configure npm for Azure Artifacts feed
             inputs:
@@ -143,14 +143,14 @@ extends:
               script: npm install
 
           - task: PowerShell@2
-            displayName: Build dynwinrt-js (x64)
+            displayName: Build dynwinrt (x64)
             inputs:
               targetType: inline
               workingDirectory: bindings/js
               script: npx napi build --no-const-enum --platform --release -o dist
 
           - task: PowerShell@2
-            displayName: Build dynwinrt-js (arm64)
+            displayName: Build dynwinrt (arm64)
             inputs:
               targetType: inline
               workingDirectory: bindings/js
@@ -210,3 +210,5 @@ extends:
                 if (Test-Path .venv) { .venv/Scripts/Activate.ps1 }
                 cd ../..
                 .\tests\e2e_test.ps1 -SkipBuild
+
+

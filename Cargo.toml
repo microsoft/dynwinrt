@@ -4,7 +4,7 @@ members = [
     "bindings/js",
     "bindings/js/static-bench-rust",
     "bindings/py",
-    "tools/winrt-meta",
+    "tools/dynwinrt-codegen",
 ]
 resolver = "2"
 

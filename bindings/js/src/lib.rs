@@ -37,7 +37,7 @@ pub fn ro_initialize(apartment_type: Option<i32>) {
     _ => RO_INIT_MULTITHREADED,
   };
   // Ignore "already initialized" (S_FALSE) and "changed mode" (RPC_E_CHANGED_MODE)
-  // This allows dynwinrt-js to work in hosts like Electron that pre-initialize COM.
+  // This allows dynwinrt to work in hosts like Electron that pre-initialize COM.
   let _ = unsafe { RoInitialize(init_type) };
 }
 
@@ -1313,4 +1313,3 @@ pub fn raw_get_i32(method: &DynWinRTMethodHandle, obj: &DynWinRTValue) -> napi::
     method.0.call_getter_i32(raw)
         .map_err(|e| napi::Error::from_reason(e.message()))
 }
-

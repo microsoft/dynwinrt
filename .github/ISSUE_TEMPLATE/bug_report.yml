@@ -39,8 +39,8 @@ body:
       description: Which component is affected?
       options:
         - "dynwinrt (core library)"
-        - "winrt-meta (code generator)"
-        - "JS bindings (dynwinrt-js)"
+        - "dynwinrt-codegen (code generator)"
+        - "JS bindings (@microsoft/dynwinrt)"
         - "Python bindings (dynwinrt-py)"
         - "Other"
     id: component
@@ -64,3 +64,4 @@ body:
         - Node.js: 22.x (if using JS bindings)
         - Python: 3.12 (if using Python bindings)
     id: environment
+

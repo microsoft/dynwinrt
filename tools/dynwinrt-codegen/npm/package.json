@@ -1,0 +1,37 @@
+{
+  "name": "@microsoft/dynwinrt-codegen",
+  "version": "0.1.0",
+  "description": "Generate typed bindings from WinRT metadata (.winmd) files for use with @microsoft/dynwinrt",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/microsoft/dynwinrt"
+  },
+  "keywords": [
+    "winrt",
+    "winmd",
+    "codegen",
+    "typescript",
+    "windows",
+    "winappsdk"
+  ],
+  "os": [
+    "win32"
+  ],
+  "bin": {
+    "dynwinrt-codegen": "./cli.js"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "cli.js",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "@swc/core": "^1.15.21"
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org",
+    "access": "public"
+  }
+}

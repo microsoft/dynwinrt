@@ -27,7 +27,7 @@ contact [opencode@microsoft.com](mailto:opencode@microsoft.com) with any additio
 cargo build -p dynwinrt
 
 # Build the code generator
-cargo build -p winrt-meta
+cargo build -p dynwinrt-codegen
 ```
 
 ### Running Tests
@@ -37,7 +37,7 @@ cargo build -p winrt-meta
 cargo test -p dynwinrt
 
 # Code generator tests
-cargo test -p winrt-meta
+cargo test -p dynwinrt-codegen
 ```
 
 ### Code Style
@@ -60,3 +60,4 @@ Please use the provided issue templates when available.
 5. Submit your pull request
 
 Thank you for contributing!
+

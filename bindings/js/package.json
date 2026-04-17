@@ -1,5 +1,5 @@
 {
-  "name": "dynwinrt-js",
+  "name": "@microsoft/dynwinrt",
   "version": "0.1.0",
   "description": "Dynamic WinRT bindings for Node.js — call any Windows Runtime API without native code generation",
   "main": "dist/index.js",
@@ -23,7 +23,7 @@
     "LICENSE"
   ],
   "napi": {
-    "binaryName": "dynwinrt-js",
+    "binaryName": "dynwinrt",
     "targets": [
       "x86_64-pc-windows-msvc",
       "aarch64-pc-windows-msvc"

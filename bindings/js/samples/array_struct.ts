@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 /**
- * Test: Array and Struct bindings for dynwinrt-js
+ * Test: Array and Struct bindings for dynwinrt
  *
  * Tests:
  * 1. PropertyValue.CreateInt32Array  — PassArray (JS → WinRT)

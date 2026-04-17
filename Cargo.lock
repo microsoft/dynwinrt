@@ -305,6 +305,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "dynwinrt-codegen"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "roxmltree",
+ "windows-metadata",
+]
+
+[[package]]
 name = "dynwinrt-py"
 version = "0.1.0"
 dependencies = [
@@ -1229,15 +1238,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3949bd5b99cafdf1c7ca86b43ca564028dfe27d66958f2470940f73d86d75b37"
 dependencies = [
  "windows-link",
-]
-
-[[package]]
-name = "winrt-meta"
-version = "0.1.0"
-dependencies = [
- "clap",
- "roxmltree",
- "windows-metadata",
 ]
 
 [[package]]

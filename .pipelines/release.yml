@@ -11,7 +11,7 @@ resources:
     type: git
     name: 1ESPipelineTemplates/1ESPipelineTemplates
     ref: refs/tags/release
-
+ 
 parameters:
   - name: DoEsrp
     displayName: Sign and release the packages (DoEsrp)
@@ -103,26 +103,26 @@ extends:
             env:
               SYSTEM_ACCESSTOKEN: $(System.AccessToken)
 
-          # Build winrt-meta (x64 + arm64)
+          # Build dynwinrt-codegen (x64 + arm64)
           - task: PowerShell@2
-            displayName: Build winrt-meta (x64)
+            displayName: Build dynwinrt-codegen (x64)
             inputs:
               targetType: inline
               script: |
-                cargo build -p winrt-meta --release
-                New-Item -ItemType Directory -Path tools/winrt-meta/npm/bin/x64 -Force | Out-Null
-                Copy-Item target/release/winrt-meta.exe tools/winrt-meta/npm/bin/x64/
+                cargo build -p dynwinrt-codegen --release
+                New-Item -ItemType Directory -Path tools/dynwinrt-codegen/npm/bin/x64 -Force | Out-Null
+                Copy-Item target/release/dynwinrt-codegen.exe tools/dynwinrt-codegen/npm/bin/x64/
 
           - task: PowerShell@2
-            displayName: Build winrt-meta (arm64)
+            displayName: Build dynwinrt-codegen (arm64)
             inputs:
               targetType: inline
               script: |
-                cargo build -p winrt-meta --release --target aarch64-pc-windows-msvc
-                New-Item -ItemType Directory -Path tools/winrt-meta/npm/bin/arm64 -Force | Out-Null
-                Copy-Item target/aarch64-pc-windows-msvc/release/winrt-meta.exe tools/winrt-meta/npm/bin/arm64/
+                cargo build -p dynwinrt-codegen --release --target aarch64-pc-windows-msvc
+                New-Item -ItemType Directory -Path tools/dynwinrt-codegen/npm/bin/arm64 -Force | Out-Null
+                Copy-Item target/aarch64-pc-windows-msvc/release/dynwinrt-codegen.exe tools/dynwinrt-codegen/npm/bin/arm64/
 
-          # Build dynwinrt-js (x64 + arm64)
+          # Build dynwinrt (x64 + arm64)
           - task: PowerShell@2
             displayName: Configure npm for Azure Artifacts feed
             inputs:
@@ -148,14 +148,14 @@ extends:
               script: npm install
 
           - task: PowerShell@2
-            displayName: Build dynwinrt-js (x64)
+            displayName: Build dynwinrt (x64)
             inputs:
               targetType: inline
               workingDirectory: bindings/js
               script: npx napi build --no-const-enum --platform --release -o dist
 
           - task: PowerShell@2
-            displayName: Build dynwinrt-js (arm64)
+            displayName: Build dynwinrt (arm64)
             inputs:
               targetType: inline
               workingDirectory: bindings/js
@@ -170,17 +170,21 @@ extends:
               script: |
                 $tag = "$(Build.SourceBranchName)"
                 $version = $tag -replace '^v', ''
+                $isPrerelease = if ($version -match '-') { 'true' } else { 'false' }
+                $releaseLabel = if ($isPrerelease -eq 'true') { 'Prerelease' } else { 'Release' }
                 Write-Host "Publishing version: $version"
                 echo "##vso[task.setvariable variable=version;isOutput=true]$version"
+                echo "##vso[task.setvariable variable=isPrerelease;isOutput=true]$isPrerelease"
+                echo "##vso[task.setvariable variable=releaseLabel;isOutput=true]$releaseLabel"
 
                 # Update package.json versions
                 $jsPackage = Get-Content "bindings/js/package.json" | ConvertFrom-Json
                 $jsPackage.version = $version
                 $jsPackage | ConvertTo-Json -Depth 10 | Set-Content "bindings/js/package.json"
 
-                $metaPackage = Get-Content "tools/winrt-meta/npm/package.json" | ConvertFrom-Json
+                $metaPackage = Get-Content "tools/dynwinrt-codegen/npm/package.json" | ConvertFrom-Json
                 $metaPackage.version = $version
-                $metaPackage | ConvertTo-Json -Depth 10 | Set-Content "tools/winrt-meta/npm/package.json"
+                $metaPackage | ConvertTo-Json -Depth 10 | Set-Content "tools/dynwinrt-codegen/npm/package.json"
 
                 Write-Host "Updated package.json versions to $version"
 
@@ -192,14 +196,14 @@ extends:
               script: |
                 New-Item -ItemType Directory -Path artifacts -Force | Out-Null
 
-                # Pack dynwinrt-js
+                # Pack dynwinrt
                 Push-Location bindings/js
                 npm pack
                 Move-Item *.tgz ../../artifacts/
                 Pop-Location
 
-                # Pack winrt-meta
-                Push-Location tools/winrt-meta/npm
+                # Pack dynwinrt-codegen
+                Push-Location tools/dynwinrt-codegen/npm
                 npm pack
                 Move-Item *.tgz ../../../artifacts/
                 Pop-Location
@@ -218,6 +222,8 @@ extends:
       dependsOn: Build
       variables:
         version: $[ stageDependencies.Build.Build.outputs['SetMeta.version'] ]
+        isPrerelease: $[ stageDependencies.Build.Build.outputs['SetMeta.isPrerelease'] ]
+        releaseLabel: $[ stageDependencies.Build.Build.outputs['SetMeta.releaseLabel'] ]
       jobs:
       - job: create_github_release
         pool:
@@ -246,29 +252,29 @@ extends:
               title: 'v$(version)'
               releaseNotesSource: 'inline'
               releaseNotesInline: |
-                ## Release v$(version)
+                ## $(releaseLabel) v$(version)
 
                 **Packages:**
-                - `dynwinrt-js` - JavaScript/TypeScript bindings for WinRT dynamic invocation
-                - `winrt-meta` - Code generation tool for typed WinRT bindings
+                - `@microsoft/dynwinrt` - JavaScript/TypeScript bindings for WinRT dynamic invocation
+                - `@microsoft/dynwinrt-codegen` - Code generation tool for typed WinRT bindings
 
                 ## Installation
 
                 ```bash
-                npm install dynwinrt-js
-                npm install -D winrt-meta
+                npm install @microsoft/dynwinrt
+                npm install -D @microsoft/dynwinrt-codegen
                 ```
 
                 ## What's Included
 
                 - ✅ Native addons for x64 and ARM64
                 - ✅ TypeScript type definitions
-                - ✅ winrt-meta CLI for code generation
+                - ✅ dynwinrt-codegen CLI for code generation
 
                 For usage instructions, see the [README](https://github.com/microsoft/dynwinrt#readme).
               assets: '$(Pipeline.Workspace)/npm-packages/*.tgz'
               isDraft: false
-              isPreRelease: false
+              isPreRelease: $(isPrerelease)
               addChangeLog: true
 
     - ${{ if eq(parameters.DoEsrp, 'true') }}:
@@ -323,3 +329,5 @@ extends:
             #     serviceendpointurl: 'https://api.esrp.microsoft.com'
             #     mainpublisher: 'ESRPRELPACMAN'
             #     domaintenantid: ${{ parameters.signingIdentity.tenantId }}
+
+

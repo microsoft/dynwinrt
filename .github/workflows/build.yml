@@ -19,8 +19,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Test core library
         run: cargo test -p dynwinrt
-      - name: Test winrt-meta
-        run: cargo test -p winrt-meta
+      - name: Test dynwinrt-codegen
+        run: cargo test -p dynwinrt-codegen
 
   # E2E tests: winmd → generate → call real WinRT APIs
   e2e:
@@ -35,8 +35,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Build winrt-meta
-        run: cargo build -p winrt-meta --release
+      - name: Build dynwinrt-codegen
+        run: cargo build -p dynwinrt-codegen --release
       - name: Build JS binding
         working-directory: bindings/js
         run: |
@@ -54,8 +54,8 @@ jobs:
       - name: Run E2E tests
         run: .\tests\e2e_test.ps1 -SkipBuild
 
-  # winrt-meta (x64 + arm64)
-  winrt-meta:
+  # dynwinrt-codegen (x64 + arm64)
+  dynwinrt-codegen:
     needs: test
     runs-on: windows-latest
     steps:
@@ -65,21 +65,21 @@ jobs:
           targets: aarch64-pc-windows-msvc
       - name: Build x64
         run: |
-          cargo build -p winrt-meta --release
-          mkdir -p tools/winrt-meta/npm/bin/x64
-          cp target/release/winrt-meta.exe tools/winrt-meta/npm/bin/x64/
+          cargo build -p dynwinrt-codegen --release
+          mkdir -p tools/dynwinrt-codegen/npm/bin/x64
+          cp target/release/dynwinrt-codegen.exe tools/dynwinrt-codegen/npm/bin/x64/
       - name: Build arm64
         run: |
-          cargo build -p winrt-meta --release --target aarch64-pc-windows-msvc
-          mkdir -p tools/winrt-meta/npm/bin/arm64
-          cp target/aarch64-pc-windows-msvc/release/winrt-meta.exe tools/winrt-meta/npm/bin/arm64/
+          cargo build -p dynwinrt-codegen --release --target aarch64-pc-windows-msvc
+          mkdir -p tools/dynwinrt-codegen/npm/bin/arm64
+          cp target/aarch64-pc-windows-msvc/release/dynwinrt-codegen.exe tools/dynwinrt-codegen/npm/bin/arm64/
       - uses: actions/upload-artifact@v4
         with:
-          name: winrt-meta
-          path: tools/winrt-meta/npm/
+          name: dynwinrt-codegen
+          path: tools/dynwinrt-codegen/npm/
 
-  # dynwinrt-js (x64 + arm64 in one job)
-  dynwinrt-js:
+  # dynwinrt (x64 + arm64 in one job)
+  dynwinrt:
     needs: test
     runs-on: windows-latest
     steps:
@@ -101,9 +101,12 @@ jobs:
         run: npx napi build --no-const-enum --platform --release --target aarch64-pc-windows-msvc -o dist
       - uses: actions/upload-artifact@v4
         with:
-          name: dynwinrt-js
+          name: dynwinrt
           path: |
-            bindings/js/dist/dynwinrt-js.win32-x64-msvc.node
-            bindings/js/dist/dynwinrt-js.win32-arm64-msvc.node
+            bindings/js/dist/dynwinrt.win32-x64-msvc.node
+            bindings/js/dist/dynwinrt.win32-arm64-msvc.node
             bindings/js/dist/index.js
             bindings/js/dist/index.d.ts
+
+
+

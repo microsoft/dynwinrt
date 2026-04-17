@@ -48,8 +48,8 @@ if ($Lang.Count -eq 0) { Write-Error "No languages available"; exit 1 }
 if (-not $SkipBuild) {
     Write-Host "`n--- Build ---" -ForegroundColor Yellow
 
-    cargo build -p winrt-meta --release
-    if ($LASTEXITCODE -ne 0) { Write-Error "winrt-meta build failed"; exit 1 }
+    cargo build -p dynwinrt-codegen --release
+    if ($LASTEXITCODE -ne 0) { Write-Error "dynwinrt-codegen build failed"; exit 1 }
 
     if ("py" -in $Lang) {
         Push-Location (Join-Path $root "bindings\py")
@@ -100,7 +100,7 @@ if ($skipped) {
 # --------------------------------------------------------------------------
 if (Test-Path $e2eDir) { Remove-Item -Recurse -Force $e2eDir }
 
-$winrtMeta = "cargo run -p winrt-meta --release --quiet --"
+$winrtMeta = "cargo run -p dynwinrt-codegen --release --quiet --"
 
 function Generate($lang, $outDir) {
     $langSpecs = $active | Where-Object { ($(if ($_.langs) { $_.langs } else { @("py","ts") })) -contains $lang }
@@ -174,3 +174,5 @@ if ($totalFail -eq 0) {
     Write-Host "SOME FAILED" -ForegroundColor Red
     exit 1
 }
+
+

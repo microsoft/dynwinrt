@@ -6,6 +6,10 @@ Dynamic WinRT API invocation — call any Windows Runtime method at runtime with
 
 `dynwinrt` is a Rust library that uses runtime metadata (.winmd files) and FFI (libffi) to call arbitrary WinRT methods dynamically. It provides a foundation for JavaScript and Python bindings that don't require MSVC compilation or version-specific generated code.
 
+### Scope
+
+`dynwinrt` is designed for **non-UI WinRT APIs** — data, storage, networking, globalization, cryptography, sensors, connectivity, AI, and similar headless services from the Windows SDK and WinAppSDK. It is **not intended for XAML / WinUI scenarios**. Supporting XAML / WinUI would require host-framework integration and composable-class aggregation patterns that `dynwinrt` does not currently implement. In practice, generating bindings for `Microsoft.UI.Xaml.*` / `Windows.UI.Xaml.*` namespaces produces invalid wrappers for composable constructors, so those namespaces should be treated as out of scope for this project. See `TODO.md` for details.
+
 ## Repository Structure
 
 ```
@@ -15,7 +19,7 @@ dynwinrt/
 │   ├── js/                # JavaScript/TypeScript bindings (napi-rs)
 │   └── py/                # Python bindings (PyO3)
 └── tools/
-    └── winrt-meta/        # Code generation tool (TypeScript & Python)
+    └── winrt-meta/        # Source for dynwinrt-codegen (TypeScript & Python)
 ```
 
 ## Build
@@ -34,32 +38,32 @@ cd bindings/js && npm install && npx napi build --no-const-enum --platform --rel
 cd bindings/py && maturin develop
 ```
 
-## Code Generation with winrt-meta
+## Code Generation with dynwinrt-codegen
 
-`winrt-meta` reads Windows metadata (.winmd) files and generates typed bindings for `dynwinrt-js` (TypeScript) or `dynwinrt-py` (Python).
+`dynwinrt-codegen` reads Windows metadata (.winmd) files and generates typed bindings for `@microsoft/dynwinrt` (TypeScript) or `dynwinrt-py` (Python).
 
 ### Quick Start
 
 ```bash
 # Install from npm (once published)
-npm install -D winrt-meta
+npm install -D @microsoft/dynwinrt-codegen
 
 # Generate TypeScript bindings for a class
-npx winrt-meta generate --namespace Windows.Foundation --class-name Uri --lang ts --output ./generated
+npx dynwinrt-codegen generate --namespace Windows.Foundation --class-name Uri --lang ts --output ./generated
 
 # Generate Python bindings for a class
-npx winrt-meta generate --namespace Windows.Foundation --class-name Uri --lang py --output ./generated
+npx dynwinrt-codegen generate --namespace Windows.Foundation --class-name Uri --lang py --output ./generated
 
 # Generate an entire namespace
-npx winrt-meta generate --namespace Windows.Web.Http --lang ts --output ./generated
+npx dynwinrt-codegen generate --namespace Windows.Web.Http --lang ts --output ./generated
 ```
 
 ### Building from Source
 
 ```bash
-cd tools/winrt-meta
-cargo build --release
-cargo run --release -- generate --namespace Windows.Foundation --class-name Uri --lang ts --output ./generated
+cd tools/dynwinrt-codegen
+cargo build -p dynwinrt-codegen --release
+cargo run -p dynwinrt-codegen --release -- generate --namespace Windows.Foundation --class-name Uri --lang ts --output ./generated
 ```
 
 **Arguments:**
@@ -77,10 +81,10 @@ cargo run --release -- generate --namespace Windows.Foundation --class-name Uri 
 
 ### Fix Import Paths (local development)
 
-Generated TypeScript files import from `'dynwinrt-js'`. For local development, fix to relative path:
+Generated TypeScript files import from `'@microsoft/dynwinrt'`. For local development, fix to relative path:
 
 ```bash
-find generated -name "*.ts" -exec sed -i "s|from 'dynwinrt-js'|from '../../dist/index.js'|g" {} +
+find generated -name "*.ts" -exec sed -i "s|from '@microsoft/dynwinrt'|from '../../dist/index.js'|g" {} +
 ```
 
 ### Use Generated Bindings
@@ -88,7 +92,7 @@ find generated -name "*.ts" -exec sed -i "s|from 'dynwinrt-js'|from '../../dist/
 **TypeScript:**
 
 ```typescript
-import { roInitialize } from 'dynwinrt-js'
+import { roInitialize } from '@microsoft/dynwinrt'
 import { Uri } from './generated/Uri'
 
 roInitialize(1) // Initialize WinRT (MTA)
@@ -115,7 +119,7 @@ print(uri.scheme_name)  # "https"
 
 ### What Gets Generated
 
-For each WinRT class, winrt-meta generates:
+For each WinRT class, dynwinrt-codegen generates:
 
 - **Interface registration** — `DynWinRtType.registerInterface()` with all methods and type signatures
 - **Wrapper class** — Typed class with properties and methods (TypeScript or Python)
@@ -144,7 +148,7 @@ cd bindings/py && pytest
 The path to the WinAppSDK Bootstrap DLL is retrieved from the `WINAPPSDK_BOOTSTRAP_DLL_PATH` environment variable. Only needed for unpackaged apps using WinAppSDK APIs.
 
 ```typescript
-import { initWinappsdk } from 'dynwinrt-js'
+import { initWinappsdk } from '@microsoft/dynwinrt'
 initWinappsdk(1, 8) // Initialize WinAppSDK 1.8
 ```
 
@@ -157,7 +161,7 @@ initWinappsdk(1, 8) // Initialize WinAppSDK 1.8
 | `cargo test -p dynwinrt` fails | Ensure Windows SDK is installed at default path with `Windows.winmd` |
 | JS bindings won't build | Run `npm install` first; requires Node.js 18+ |
 | Python bindings won't build | Requires Python 3.8+ and `maturin` (`pip install maturin`) |
-| winrt-meta snapshot tests fail | Line-ending differences — run `cargo test -p winrt-meta -- --include-ignored` to regenerate |
+| dynwinrt-codegen snapshot tests fail | Line-ending differences — run `cargo test -p dynwinrt-codegen -- --include-ignored` to regenerate |
 
 ## Contributing
 
@@ -184,3 +188,4 @@ Any use of third-party trademarks or logos are subject to those third-party's po
 ## License
 
 This project is licensed under the [MIT License](LICENSE).
+

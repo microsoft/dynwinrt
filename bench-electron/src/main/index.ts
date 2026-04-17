@@ -14,7 +14,7 @@ import {
   DynWinRtMethodSig,
   DynWinRtStruct,
   WinGuid
-} from 'dynwinrt-js'
+} from '@microsoft/dynwinrt'
 
 // Static C++/WinRT benchmark addon
 const require = createRequire(import.meta.url)

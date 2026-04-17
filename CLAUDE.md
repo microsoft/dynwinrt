@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-`dynwinrt` is a Rust-based runtime library that enables dynamic invocation of Windows Runtime (WinRT) APIs. Unlike static projections (PyWinRT, C++/WinRT), this library uses runtime metadata (.winmd files) and FFI (libffi) to call arbitrary WinRT methods without native code generation. It provides JavaScript (napi-rs) and Python (PyO3) bindings, plus a code generation tool (`winrt-meta`) that produces typed wrappers from .winmd files.
+`dynwinrt` is a Rust-based runtime library that enables dynamic invocation of Windows Runtime (WinRT) APIs. Unlike static projections (PyWinRT, C++/WinRT), this library uses runtime metadata (.winmd files) and FFI (libffi) to call arbitrary WinRT methods without native code generation. It provides JavaScript (napi-rs) and Python (PyO3) bindings, plus a code generation tool (`dynwinrt-codegen`) that produces typed wrappers from .winmd files.
 
 ## Repository Structure
 
@@ -15,7 +15,7 @@ dynwinrt/
 │   ├── js/                   # JavaScript/TypeScript bindings (napi-rs)
 │   └── py/                   # Python bindings (PyO3)
 ├── tools/
-│   └── winrt-meta/           # Code generation tool (TypeScript & Python from .winmd)
+│   └── winrt-meta/           # Source for dynwinrt-codegen (TypeScript & Python from .winmd)
 ├── tests/                    # Integration tests & sample projects
 └── bench-electron/           # Electron benchmark app
 ```
@@ -29,8 +29,8 @@ cargo build
 # Run core library tests
 cargo test -p dynwinrt
 
-# Run winrt-meta tests (includes snapshot tests)
-cargo test -p winrt-meta
+# Run dynwinrt-codegen tests (includes snapshot tests)
+cargo test -p dynwinrt-codegen
 
 # Build JS bindings
 cd bindings/js && npm install && npx napi build --no-const-enum --platform --release -o dist
@@ -41,14 +41,14 @@ cd bindings/py && maturin develop
 # Run Python tests
 cd bindings/py && python -m pytest tests/ -v
 
-# Build winrt-meta in release mode
-cargo build -p winrt-meta --release
+# Build dynwinrt-codegen in release mode
+cargo build -p dynwinrt-codegen --release
 
 # Generate TypeScript bindings
-cargo run -p winrt-meta -- generate --namespace Windows.Foundation --class-name Uri --lang ts --output ./generated
+cargo run -p dynwinrt-codegen -- generate --namespace Windows.Foundation --class-name Uri --lang ts --output ./generated
 
 # Generate Python bindings
-cargo run -p winrt-meta -- generate --namespace Windows.Foundation --class-name Uri --lang py --output ./generated
+cargo run -p dynwinrt-codegen -- generate --namespace Windows.Foundation --class-name Uri --lang py --output ./generated
 ```
 
 ## Environment Setup
@@ -102,7 +102,7 @@ napi-rs binding exposing: `DynWinRtType`, `DynWinRtMethodSig`, `DynWinRtMethodHa
 
 PyO3 binding exposing: `DynWinRTType`, `DynWinRTMethodSig`, `DynWinRTMethodHandle`, `DynWinRTValue`, `DynWinRTArray`, `DynWinRTStruct`, `DynWinRtDelegate`, `WinGUID`. Async operations block via `wait()` (releases GIL). Events use `DynWinRtDelegate.create()` with `Python::attach()` for GIL-safe callback invocation.
 
-### Code Generation Tool (`tools/winrt-meta/`)
+### Code Generation Tool (`dynwinrt-codegen`, source in `tools/dynwinrt-codegen/`)
 
 Reads .winmd metadata and generates typed wrapper code:
 - `--lang ts`: TypeScript classes with `DynWinRtType`/`DynWinRtValue` API
@@ -122,7 +122,7 @@ Key codegen modules:
 Tests use real Windows APIs without mocking:
 
 - **Core Rust tests** (`cargo test -p dynwinrt`): Uri, HttpClient (async), XmlDocument, metadata reading, vector/map collections
-- **winrt-meta tests** (`cargo test -p winrt-meta`): Snapshot tests for Uri TypeScript output, unit tests for type mapping/codegen
+- **dynwinrt-codegen tests** (`cargo test -p dynwinrt-codegen`): Snapshot tests for Uri TypeScript output, unit tests for type mapping/codegen
 - **Python binding tests** (`bindings/py/tests/`):
   - `test_basic.py` (27 tests): All binding features — primitives, GUID, arrays, structs, enum, URI E2E
   - `test_e2e_winrt.py` (19 tests): Real WinRT APIs — XmlDocument, Geopoint, PropertyValue, Buffer, Uri
@@ -188,3 +188,5 @@ The library uses `windows-core::IUnknown` smart pointers which automatically han
 ### Parameterized IID Computation
 
 Generic interfaces (IVector\<T\>, IMap\<K,V\>, IAsyncOperation\<T\>) have IIDs computed at runtime using the WinRT parameterized interface algorithm (SHA-1 hash of the PIID + type argument signatures). This is implemented in `metadata_table/iid.rs`.
+
+

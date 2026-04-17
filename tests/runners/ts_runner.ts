@@ -467,7 +467,7 @@ async function main() {
   for (const f of tsFiles) {
     const filePath = path.join(generatedDir, f);
     let content = fs.readFileSync(filePath, 'utf8');
-    content = content.replace(/from 'dynwinrt-js'/g, `from 'file://${absRuntime}'`);
+    content = content.replace(/from '@microsoft\/dynwinrt'/g, `from 'file://${absRuntime}'`);
     fs.writeFileSync(filePath, content);
   }
 
