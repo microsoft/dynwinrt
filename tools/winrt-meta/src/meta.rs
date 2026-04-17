@@ -23,8 +23,6 @@ pub struct ParamMeta {
     pub name: String,
     pub typ: TypeMeta,
     pub direction: ParamDirection,
-    /// XML doc summary text for this parameter (populated from sibling .xml).
-    pub doc: Option<String>,
 }
 
 /// A method on a WinRT interface.
@@ -748,7 +746,6 @@ fn parse_interface_methods(
                     name: param_def.name().to_string(),
                     typ,
                     direction,
-                    doc: None,
                 });
             }
         }

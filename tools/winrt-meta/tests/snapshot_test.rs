@@ -11,6 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
+use winrt_meta::codegen::common::to_snake_case_filename;
 use winrt_meta::codegen::typescript;
 use winrt_meta::codegen::python_stub;
 use winrt_meta::meta;
@@ -100,27 +101,6 @@ fn snapshot_uri_class() {
     }
 }
 
-
-fn to_snake_case_filename(name: &str) -> String {
-    // Duplicates common::to_snake_case_filename; used for snapshot pathing.
-    let mut out = String::new();
-    let bytes = name.as_bytes();
-    for (i, &b) in bytes.iter().enumerate() {
-        if b.is_ascii_uppercase() {
-            if i > 0 {
-                let prev = bytes[i - 1];
-                let next = if i + 1 < bytes.len() { bytes[i + 1] } else { 0 };
-                if prev.is_ascii_lowercase() || (prev.is_ascii_uppercase() && next.is_ascii_lowercase()) {
-                    out.push('_');
-                }
-            }
-            out.push((b + 32) as char);
-        } else {
-            out.push(b as char);
-        }
-    }
-    out
-}
 
 /// Generate .pyi stubs for Uri and compare against committed snapshots.
 #[test]

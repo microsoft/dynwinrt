@@ -245,19 +245,19 @@ pub fn generate_enum(en: &TypeMeta) -> Option<String> {
             } else {
                 member.name.clone()
             };
-            out.push_str(&format!("    {} = {}\n", member_name, member.value));
+            // Emit docs as leading `#` comments. A standalone docstring after the
+            // assignment does not actually attach to the enum member in Python.
             if let Some(d) = member.doc.as_deref() {
-                let mdoc = super::xml_text::DocText {
-                    summary: Some(d),
-                    deprecated: None,
-                    returns: None,
-                    params: Vec::new(),
-                };
-                let mds = super::xml_text::format_pydoc(&mdoc, "    ");
-                if !mds.is_empty() {
-                    out.push_str(&mds);
+                for line in d.lines() {
+                    let line = line.trim_end();
+                    if line.is_empty() {
+                        out.push_str("    #\n");
+                    } else {
+                        out.push_str(&format!("    # {}\n", line));
+                    }
                 }
             }
+            out.push_str(&format!("    {} = {}\n", member_name, member.value));
         }
     }
     Some(out)

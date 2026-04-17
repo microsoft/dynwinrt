@@ -132,7 +132,7 @@ mod tests {
             name: "GetValue".into(),
             vtable_index: 7,
             params: vec![
-                ParamMeta { name: "key".into(), typ: TypeMeta::String, direction: ParamDirection::In, doc: None },
+                ParamMeta { name: "key".into(), typ: TypeMeta::String, direction: ParamDirection::In },
             ],
             return_type: Some(TypeMeta::I32),
             is_property_getter: false,
@@ -182,9 +182,9 @@ mod tests {
             name: "Test".into(),
             vtable_index: 6,
             params: vec![
-                ParamMeta { name: "a".into(), typ: TypeMeta::I32, direction: ParamDirection::In, doc: None },
-                ParamMeta { name: "b".into(), typ: TypeMeta::I32, direction: ParamDirection::Out, doc: None },
-                ParamMeta { name: "c".into(), typ: TypeMeta::Array(Box::new(TypeMeta::U8)), direction: ParamDirection::OutFill, doc: None },
+                ParamMeta { name: "a".into(), typ: TypeMeta::I32, direction: ParamDirection::In },
+                ParamMeta { name: "b".into(), typ: TypeMeta::I32, direction: ParamDirection::Out },
+                ParamMeta { name: "c".into(), typ: TypeMeta::Array(Box::new(TypeMeta::U8)), direction: ParamDirection::OutFill },
             ],
             return_type: None,
             is_property_getter: false,
@@ -334,7 +334,7 @@ mod tests {
             name: "GetValue".into(),
             vtable_index: 7,
             params: vec![
-                ParamMeta { name: "key".into(), typ: TypeMeta::String, direction: ParamDirection::In, doc: None },
+                ParamMeta { name: "key".into(), typ: TypeMeta::String, direction: ParamDirection::In },
             ],
             return_type: Some(TypeMeta::I32),
             is_property_getter: false,
