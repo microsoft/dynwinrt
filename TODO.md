@@ -25,8 +25,7 @@
 
 - [x] **Delegate / Event support**: Full implementation in `delegate.rs` — Rust-side COM vtable + napi ThreadsafeFunction callback. `DynWinRtDelegate.create(iid, paramTypes, callback)` creates delegate COM objects from JS callbacks. Supports Object, HString, Bool, I32/U32/I64/U64, Enum parameter types
 - [ ] **Struct auto-marshaling**: Users must manually `DynWinRtStruct.create()` + `setF64(index, value)` per field; support auto-conversion from JS objects
-- [ ] **IAsyncOperationWithProgress IID computation**: Struct fields containing enums produce `i4` instead of `enum(Name;i4)` in type signature → wrong IID → QI fails
-  - Root cause: enum fields in struct signature not using named format
+- [x] **IAsyncOperationWithProgress IID computation**: Enum-in-struct now emits `enum(Namespace.Name;i4)` in both runtime IID signature (`metadata_table/iid.rs:77-80`) and codegen (`ts_dynwinrt_type` / `py_dynwinrt_type` recurse into struct fields and emit `enumType('FullName', [names], [values])`). Parameterized IID now matches QI for async-of-struct-with-enum.
   - ~~Also: `StructEntry.name` uses `Option<String>` but WinRT structs are always named — should be `String`, deprecate `define_struct` in favor of `define_named_struct`~~ (done — `StructEntry.name` is now `String`)
 - [ ] **Nullable / IReference\<T\> return handling**: Null COM pointer returns `Null` variant; JS side needs better null-check patterns
 - [x] **Struct codegen deduplication**: `generate_struct_helpers()` now generates shared TS interface + pack/unpack functions once per struct, reused across methods

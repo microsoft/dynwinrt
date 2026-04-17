@@ -10,6 +10,32 @@ use super::common::{
     get_in_params, to_snake_case,
     py_build_args_expr, py_convert_return, py_convert_array_return, py_wrap_arg,
 };
+use super::xml_text::{DocText, find_param_doc, format_pydoc};
+
+/// Build the Python docstring for a method body. Uses snake_case param display
+/// names (matching the generated signature). Returns an empty string when no
+/// doc fields are populated, preserving byte-identity for metadata without
+/// sibling .xml files.
+fn method_pydoc(method: &MethodMeta, in_params: &[&crate::meta::ParamMeta]) -> String {
+    if method.doc.is_none()
+        && method.deprecated.is_none()
+        && method.returns_doc.is_none()
+        && method.param_docs.is_empty()
+    {
+        return String::new();
+    }
+    let params_snake: Vec<(String, &str)> = in_params.iter()
+        .filter_map(|p| find_param_doc(&method.param_docs, &p.name).map(|d| (to_snake_case(&p.name), d)))
+        .collect();
+    let params_refs: Vec<(&str, &str)> = params_snake.iter().map(|(n, d)| (n.as_str(), *d)).collect();
+    let doc = DocText {
+        summary: method.doc.as_deref(),
+        deprecated: method.deprecated.as_deref(),
+        returns: method.returns_doc.as_deref(),
+        params: params_refs,
+    };
+    format_pydoc(&doc, "        ")
+}
 
 // ======================================================================
 // Python type annotation helpers
@@ -86,7 +112,7 @@ fn py_return_type(typ: Option<&TypeMeta>) -> String {
     }
 }
 
-fn py_array_element_type(inner: &TypeMeta, known_types: &HashSet<String>) -> String {
+pub(crate) fn py_array_element_type(inner: &TypeMeta, known_types: &HashSet<String>) -> String {
     match inner {
         TypeMeta::Bool => "list[bool]".to_string(),
         TypeMeta::String | TypeMeta::Guid => "list[str]".to_string(),
@@ -142,6 +168,7 @@ pub(crate) fn generate_factory_method_invoke(
             method_name, py_params, return_py_type
         ));
     }
+    out.push_str(&method_pydoc(method, &in_params));
 
     let args_expr = py_build_args_expr(&in_params);
     let call_expr = format!(
@@ -188,6 +215,7 @@ pub(crate) fn generate_static_method_invoke(
         // Python doesn't have static properties directly; use classmethod
         out.push_str("    @classmethod\n");
         out.push_str(&format!("    def get_{}(cls) -> {}:\n", prop_name, py_return));
+        out.push_str(&method_pydoc(method, &in_params));
         let call_expr = format!(
             "_{}.method({}).invoke({}, [])",
             iface.name, method.vtable_index, statics_call
@@ -208,6 +236,7 @@ pub(crate) fn generate_static_method_invoke(
                 method_name, py_params, py_return
             ));
         }
+        out.push_str(&method_pydoc(method, &in_params));
         let args_expr = py_build_args_expr(&in_params);
         let call_expr = format!(
             "_{}.method({}).invoke({}, [{}])",
@@ -285,6 +314,7 @@ pub(crate) fn generate_method_body(
             "    def on_{}(self, callback) -> 'DynWinRTValue':\n",
             event_name
         ));
+        out.push_str(&method_pydoc(method, &in_params));
         if let Some(ref dname) = delegate_name {
             out.push_str(&format!(
                 "        handler = DynWinRtDelegate.create(IID_{}, {}_PARAM_TYPES, callback)\n",
@@ -308,6 +338,7 @@ pub(crate) fn generate_method_body(
             "    def off_{}(self, token: 'DynWinRTValue'):\n",
             event_name
         ));
+        out.push_str(&method_pydoc(method, &in_params));
         out.push_str(&format!(
             "        {}.method({}).invoke({}, [token])\n",
             iface_var, method.vtable_index, obj_expr
@@ -332,6 +363,7 @@ pub(crate) fn generate_method_body(
         };
         out.push_str("    @property\n");
         out.push_str(&format!("    def {}(self) -> {}:\n", prop_name, py_return));
+        out.push_str(&method_pydoc(method, &in_params));
         let call_expr = format!(
             "{}.method({}).invoke({}, [])",
             iface_var, method.vtable_index, obj_expr
@@ -353,6 +385,7 @@ pub(crate) fn generate_method_body(
         };
         out.push_str(&format!("    @{}.setter\n", prop_name));
         out.push_str(&format!("    def {}(self, value: {}):\n", prop_name, param_type));
+        out.push_str(&method_pydoc(method, &in_params));
         let arg = in_params.first()
             .map(|p| py_wrap_arg("value", &p.typ))
             .unwrap_or_else(|| "value".to_string());
@@ -385,6 +418,7 @@ pub(crate) fn generate_method_body(
             "    def {}({}) -> {}:\n",
             method_name, self_and_params, py_return
         ));
+        out.push_str(&method_pydoc(method, &in_params));
 
         let args_expr = py_build_args_expr(&in_params);
         let call_expr = format!(

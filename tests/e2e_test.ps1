@@ -117,10 +117,6 @@ function Generate($lang, $outDir) {
         Invoke-Expression "$winrtMeta generate --namespace `"$ns`" --class-name `"$classes`" --lang $lang --output `"$outDir`""
         if ($LASTEXITCODE -ne 0) { Write-Error "Generation failed: $ns ($lang)"; exit 1 }
     }
-    # Ensure Python package init
-    if ($lang -eq "py" -and -not (Test-Path (Join-Path $outDir "__init__.py"))) {
-        "" | Set-Content (Join-Path $outDir "__init__.py")
-    }
 }
 
 foreach ($l in $Lang) {

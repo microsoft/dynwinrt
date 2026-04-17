@@ -11,6 +11,7 @@ use winrt_meta::codegen::typescript;
 use winrt_meta::codegen::python;
 use winrt_meta::meta;
 use winrt_meta::types::TypeMeta;
+use winrt_meta::xml_doc::DocTable;
 
 #[derive(Parser)]
 #[command(name = "winrt-meta")]
@@ -81,6 +82,10 @@ enum Commands {
         /// Validate metadata and resolve dependencies without writing files
         #[arg(long)]
         dry_run: bool,
+
+        /// Also emit .pyi type stub files and py.typed marker (requires --lang py)
+        #[arg(long)]
+        pyi: bool,
     },
 }
 
@@ -104,7 +109,11 @@ fn run() -> Result<(), String> {
             lang,
             output,
             dry_run,
+            pyi,
         } => {
+            if pyi && lang != "py" {
+                return Err("--pyi requires --lang py".into());
+            }
             // Collect winmd paths from --folder and/or --winmd
             let mut winmd_parts: Vec<String> = Vec::new();
 
@@ -159,6 +168,10 @@ fn run() -> Result<(), String> {
             // Auto-discover sibling .winmd files in the same directories
             let winmd = meta::expand_winmd_paths(&winmd_joined);
 
+            // Build XML doc table from sibling .xml files of each winmd.
+            let expanded_parts: Vec<String> = winmd.split(';').filter(|s| !s.is_empty()).map(String::from).collect();
+            let doc_table = DocTable::load_from_winmd_paths(&expanded_parts);
+
             let output_dir = Path::new(&output);
             if !dry_run {
                 fs::create_dir_all(output_dir)
@@ -174,29 +187,55 @@ fn run() -> Result<(), String> {
                 let mut classes = Vec::new();
                 for cls in &class_names {
                     match meta::parse_class(&winmd, ns, cls) {
-                        Some(c) => classes.push(c),
+                        Some(mut c) => {
+                            doc_table.apply_to_class(&mut c);
+                            classes.push(c);
+                        }
                         None => return Err(format!("Class {}.{} not found in {}", ns, cls, winmd)),
                     }
                 }
-                generate_for_types(&winmd, output_dir, classes.clone(), Vec::new(), Vec::new(), dry_run, &lang)?;
+                generate_for_types(&winmd, output_dir, classes.clone(), Vec::new(), Vec::new(), dry_run, &lang, pyi, &doc_table)?;
 
-                // Append to existing index file if present
+                // Write (or append to) the index file for the output directory
                 if !dry_run {
-                    let (index_name, append_fn): (&str, fn(&str, &[meta::ClassMeta], &[meta::InterfaceMeta], &[TypeMeta]) -> String) = if lang == "py" {
-                        ("__init__.py", python::append_to_index)
+                    type AppendFn = fn(&str, &[meta::ClassMeta], &[meta::InterfaceMeta], &[TypeMeta]) -> String;
+                    type GenerateFn = fn(&[meta::ClassMeta], &[meta::InterfaceMeta], &[TypeMeta]) -> String;
+                    let (index_name, append_fn, generate_fn): (&str, AppendFn, GenerateFn) = if lang == "py" {
+                        ("__init__.py", python::append_to_index, python::generate_index)
                     } else {
-                        ("index.ts", typescript::append_to_index)
+                        ("index.ts", typescript::append_to_index, typescript::generate_index)
                     };
                     let index_path = output_dir.join(index_name);
+                    let deps = meta::resolve_dependencies(&winmd, &classes, &[], &[]);
+                    let mut all_classes = [classes.as_slice(), deps.classes.as_slice()].concat();
+                    let mut all_interfaces: Vec<_> = deps.interfaces.clone();
+                    let mut all_enums: Vec<_> = deps.enums.clone();
+                    for c in all_classes.iter_mut() { doc_table.apply_to_class(c); }
+                    for i in all_interfaces.iter_mut() { doc_table.apply_to_interface(i); }
+                    for e in all_enums.iter_mut() { doc_table.apply_to_enum(e); }
                     if index_path.exists() {
-                        let deps = meta::resolve_dependencies(&winmd, &classes, &[], &[]);
-                        let all_classes = [classes.as_slice(), deps.classes.as_slice()].concat();
                         let existing = fs::read_to_string(&index_path)
                             .map_err(|e| format!("Failed to read {}: {}", index_path.display(), e))?;
-                        let updated = append_fn(&existing, &all_classes, &deps.interfaces, &deps.enums);
+                        let updated = append_fn(&existing, &all_classes, &all_interfaces, &all_enums);
                         fs::write(&index_path, &updated)
                             .map_err(|e| format!("Failed to write {}: {}", index_path.display(), e))?;
                         println!("Updated {}", index_path.display());
+                    } else {
+                        let new_index = generate_fn(&all_classes, &all_interfaces, &all_enums);
+                        fs::write(&index_path, &new_index)
+                            .map_err(|e| format!("Failed to write {}: {}", index_path.display(), e))?;
+                        println!("Generated {}", index_path.display());
+                    }
+                    if pyi {
+                        let stub_code = winrt_meta::codegen::python_stub::generate_index_stub(
+                            &all_classes, &all_interfaces, &all_enums);
+                        let stub_path = output_dir.join("__init__.pyi");
+                        fs::write(&stub_path, &stub_code)
+                            .map_err(|e| format!("Failed to write {}: {}", stub_path.display(), e))?;
+                        println!("Generated {}", stub_path.display());
+                        let marker = output_dir.join("py.typed");
+                        fs::write(&marker, "")
+                            .map_err(|e| format!("Failed to write {}: {}", marker.display(), e))?;
                     }
                 }
             } else {
@@ -225,12 +264,15 @@ fn run() -> Result<(), String> {
                 let mut total_enums = 0usize;
 
                 for ns in &namespaces {
-                    let classes = meta::parse_namespace(&winmd, ns);
-                    let interfaces = meta::parse_interfaces(&winmd, ns);
-                    let enums = meta::parse_enums(&winmd, ns);
+                    let mut classes = meta::parse_namespace(&winmd, ns);
+                    let mut interfaces = meta::parse_interfaces(&winmd, ns);
+                    let mut enums = meta::parse_enums(&winmd, ns);
+                    for c in classes.iter_mut() { doc_table.apply_to_class(c); }
+                    for i in interfaces.iter_mut() { doc_table.apply_to_interface(i); }
+                    for e in enums.iter_mut() { doc_table.apply_to_enum(e); }
 
                     let (nc, ni, ne) = generate_for_types(
-                        &winmd, output_dir, classes, interfaces, enums, dry_run, &lang,
+                        &winmd, output_dir, classes, interfaces, enums, dry_run, &lang, pyi, &doc_table,
                     )?;
                     total_classes += nc;
                     total_interfaces += ni;
@@ -251,6 +293,9 @@ fn run() -> Result<(), String> {
                     all_classes.extend(deps.classes);
                     all_interfaces.extend(deps.interfaces);
                     all_enums.extend(deps.enums);
+                    for c in all_classes.iter_mut() { doc_table.apply_to_class(c); }
+                    for i in all_interfaces.iter_mut() { doc_table.apply_to_interface(i); }
+                    for e in all_enums.iter_mut() { doc_table.apply_to_enum(e); }
 
                     if lang == "py" {
                         let index_code = python::generate_index(&all_classes, &all_interfaces, &all_enums);
@@ -258,6 +303,17 @@ fn run() -> Result<(), String> {
                         fs::write(&index_path, &index_code)
                             .map_err(|e| format!("Failed to write {}: {}", index_path.display(), e))?;
                         println!("Generated {}", index_path.display());
+                        if pyi {
+                            let stub_code = winrt_meta::codegen::python_stub::generate_index_stub(
+                                &all_classes, &all_interfaces, &all_enums);
+                            let stub_path = output_dir.join("__init__.pyi");
+                            fs::write(&stub_path, &stub_code)
+                                .map_err(|e| format!("Failed to write {}: {}", stub_path.display(), e))?;
+                            println!("Generated {}", stub_path.display());
+                            let marker = output_dir.join("py.typed");
+                            fs::write(&marker, "")
+                                .map_err(|e| format!("Failed to write {}: {}", marker.display(), e))?;
+                        }
                     } else {
                         let index_code = typescript::generate_index(&all_classes, &all_interfaces, &all_enums);
                         let index_path = output_dir.join("index.ts");
@@ -294,6 +350,8 @@ fn generate_for_types(
     enums: Vec<TypeMeta>,
     dry_run: bool,
     lang: &str,
+    pyi: bool,
+    doc_table: &DocTable,
 ) -> Result<(usize, usize, usize), String> {
     let deps = meta::resolve_dependencies(winmd, &classes, &interfaces, &enums);
     let mut all_classes = classes;
@@ -302,6 +360,13 @@ fn generate_for_types(
     all_classes.extend(deps.classes);
     all_interfaces.extend(deps.interfaces);
     all_enums.extend(deps.enums);
+
+    // Newly-merged dependency types haven't been doc-annotated yet. Apply doc table
+    // uniformly so dependency classes/interfaces/enums carry the same XML docs as
+    // the primary types.
+    for c in all_classes.iter_mut() { doc_table.apply_to_class(c); }
+    for i in all_interfaces.iter_mut() { doc_table.apply_to_interface(i); }
+    for e in all_enums.iter_mut() { doc_table.apply_to_enum(e); }
 
     let mut known_types: HashSet<String> = HashSet::new();
     for c in &all_classes { known_types.insert(c.name.clone()); }
@@ -339,7 +404,7 @@ fn generate_for_types(
 
     if !dry_run {
         if lang == "py" {
-            generate_py_files(output_dir, &all_classes, &all_interfaces, &all_enums, &shared_interfaces, &known_types, &delegate_type_names, &shared_iids)?;
+            generate_py_files(output_dir, &all_classes, &all_interfaces, &all_enums, &shared_interfaces, &known_types, &delegate_type_names, &shared_iids, pyi)?;
         } else {
             generate_ts_files(output_dir, &all_classes, &all_interfaces, &all_enums, &shared_interfaces, &known_types, &delegate_type_names, &shared_iids)?;
         }
@@ -397,20 +462,32 @@ fn generate_py_files(
     known_types: &HashSet<String>,
     delegate_type_names: &HashSet<String>,
     shared_iids: &HashSet<String>,
+    pyi: bool,
 ) -> Result<(), String> {
     use winrt_meta::codegen::common::to_snake_case_filename;
+    use winrt_meta::codegen::python_stub;
 
     for iface in shared_interfaces {
         let code = python::generate_interface(iface, known_types, delegate_type_names);
         let filepath = output_dir.join(format!("{}.py", to_snake_case_filename(&iface.name)));
         write_file(&filepath, &code)?;
         println!("Generated shared {}", filepath.display());
+        if pyi {
+            let stub = python_stub::generate_interface_stub(iface, known_types, delegate_type_names);
+            let p = output_dir.join(format!("{}.pyi", to_snake_case_filename(&iface.name)));
+            write_file(&p, &stub)?;
+        }
     }
     for iface in all_interfaces {
         let code = python::generate_interface(iface, known_types, delegate_type_names);
         let filepath = output_dir.join(format!("{}.py", to_snake_case_filename(&iface.name)));
         write_file(&filepath, &code)?;
         println!("Generated {}", filepath.display());
+        if pyi {
+            let stub = python_stub::generate_interface_stub(iface, known_types, delegate_type_names);
+            let p = output_dir.join(format!("{}.pyi", to_snake_case_filename(&iface.name)));
+            write_file(&p, &stub)?;
+        }
     }
     for en in all_enums {
         if let TypeMeta::Enum { name, .. } = en {
@@ -419,6 +496,12 @@ fn generate_py_files(
                 write_file(&filepath, &code)?;
                 println!("Generated {}", filepath.display());
             }
+            if pyi {
+                if let Some(stub) = python_stub::generate_enum_stub(en) {
+                    let p = output_dir.join(format!("{}.pyi", to_snake_case_filename(name)));
+                    write_file(&p, &stub)?;
+                }
+            }
         }
     }
     for class in all_classes {
@@ -426,6 +509,15 @@ fn generate_py_files(
         let filepath = output_dir.join(format!("{}.py", to_snake_case_filename(&class.name)));
         write_file(&filepath, &code)?;
         println!("Generated {}", filepath.display());
+        if pyi {
+            let stub = python_stub::generate_class_stub(class, known_types, delegate_type_names, shared_iids);
+            let p = output_dir.join(format!("{}.pyi", to_snake_case_filename(&class.name)));
+            write_file(&p, &stub)?;
+        }
+    }
+    if pyi {
+        let marker = output_dir.join("py.typed");
+        write_file(&marker, "")?;
     }
     Ok(())
 }

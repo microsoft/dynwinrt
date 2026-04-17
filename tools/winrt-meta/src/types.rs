@@ -81,6 +81,10 @@ pub enum TypeMeta {
         name: String,
         underlying: Box<TypeMeta>,
         members: Vec<EnumMember>,
+        /// XML doc summary for the enum itself (populated from sibling .xml).
+        doc: Option<String>,
+        /// Deprecation text if marked `[Deprecated(...)]`.
+        deprecated: Option<String>,
     },
 }
 
@@ -94,6 +98,8 @@ pub struct FieldMeta {
 pub struct EnumMember {
     pub name: String,
     pub value: i32,
+    /// XML doc summary (populated from sibling .xml).
+    pub doc: Option<String>,
 }
 
 impl TypeMeta {

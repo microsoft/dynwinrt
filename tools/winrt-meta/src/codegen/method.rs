@@ -11,6 +11,25 @@ use super::common::{
     get_in_params, to_camel_case, capitalize, wrap_arg,
 };
 
+fn method_jsdoc(method: &MethodMeta, in_params: &[&crate::meta::ParamMeta]) -> String {
+    let params_display: Vec<(String, &str)> = in_params.iter()
+        .filter_map(|p| {
+            super::xml_text::find_param_doc(&method.param_docs, &p.name)
+                .map(|d| (to_camel_case(&p.name), d))
+        })
+        .collect();
+    let params_refs: Vec<(&str, &str)> = params_display.iter()
+        .map(|(n, d)| (n.as_str(), *d))
+        .collect();
+    let doc = super::xml_text::DocText {
+        summary: method.doc.as_deref(),
+        deprecated: method.deprecated.as_deref(),
+        returns: method.returns_doc.as_deref(),
+        params: params_refs,
+    };
+    super::xml_text::format_jsdoc(&doc, "    ")
+}
+
 // ======================================================================
 // TypeScript type annotation helpers
 // ======================================================================
@@ -161,6 +180,7 @@ pub(crate) fn generate_factory_method_invoke(
     };
 
     let mut out = String::new();
+    out.push_str(&method_jsdoc(method, &in_params));
     let async_kw = if is_async { "async " } else { "" };
     out.push_str(&format!(
         "    static {}{}({}): {} {{\n",
@@ -210,6 +230,7 @@ pub(crate) fn generate_static_method_invoke(
     // Static property getter
     if method.is_property_getter && in_params.is_empty() {
         let prop_name = to_camel_case(method.name.strip_prefix("get_").unwrap_or(&method.name));
+        out.push_str(&method_jsdoc(method, &in_params));
         out.push_str(&format!("    static get {}(): {} {{\n", prop_name, ts_return));
         let invoke_expr = format!(
             "_{}.method({}).invoke({}, [])",
@@ -220,6 +241,7 @@ pub(crate) fn generate_static_method_invoke(
         out.push_str("    }\n");
     } else {
         let async_kw = if is_async { "async " } else { "" };
+        out.push_str(&method_jsdoc(method, &in_params));
         out.push_str(&format!(
             "    static {}{}({}): {} {{\n",
             async_kw, to_camel_case(&method.name), ts_params, ts_return
@@ -281,6 +303,8 @@ pub(crate) fn generate_method_body(
     let has_return = return_type.is_some() || has_array_out;
 
     let mut out = String::new();
+
+    out.push_str(&method_jsdoc(method, &in_params));
 
     // Event add: create delegate from JS callback, call add_, return token
     if method.is_event_add {

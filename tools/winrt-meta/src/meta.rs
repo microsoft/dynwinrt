@@ -23,10 +23,12 @@ pub struct ParamMeta {
     pub name: String,
     pub typ: TypeMeta,
     pub direction: ParamDirection,
+    /// XML doc summary text for this parameter (populated from sibling .xml).
+    pub doc: Option<String>,
 }
 
 /// A method on a WinRT interface.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct MethodMeta {
     pub name: String,
     pub vtable_index: usize,
@@ -36,10 +38,25 @@ pub struct MethodMeta {
     pub is_property_setter: bool,
     pub is_event_add: bool,
     pub is_event_remove: bool,
+    /// Original CLR method name before any OverloadAttribute rename.
+    /// Used for XML doc lookup (`.xml` keys the CLR name, not the renamed name).
+    pub raw_name: String,
+    /// CLR-style signature key for overload disambiguation in XML doc:
+    /// `(Type1,Type2)` or `()` for no-arg methods. Uses raw winmd parameter
+    /// order (including out-params), with CLR type names like `System.String`.
+    pub raw_signature_key: String,
+    /// XML doc summary (populated from sibling .xml).
+    pub doc: Option<String>,
+    /// XML `<deprecated>` text.
+    pub deprecated: Option<String>,
+    /// Per-parameter doc, keyed by raw param name.
+    pub param_docs: std::collections::HashMap<String, String>,
+    /// XML `<returns>` text.
+    pub returns_doc: Option<String>,
 }
 
 /// A WinRT interface with its methods.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct InterfaceMeta {
     pub name: String,
     pub namespace: String,
@@ -49,6 +66,10 @@ pub struct InterfaceMeta {
     pub generic_piid: Option<String>,
     /// For parameterized interfaces: the type arguments used to instantiate.
     pub generic_args: Vec<TypeMeta>,
+    /// XML doc summary (populated from sibling .xml).
+    pub doc: Option<String>,
+    /// XML `<deprecated>` text.
+    pub deprecated: Option<String>,
 }
 
 /// How an interface relates to a RuntimeClass.
@@ -61,7 +82,7 @@ pub enum InterfaceRole {
 }
 
 /// A WinRT RuntimeClass with all its interfaces.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ClassMeta {
     pub name: String,
     pub namespace: String,
@@ -72,6 +93,10 @@ pub struct ClassMeta {
     pub factory_interfaces: Vec<InterfaceMeta>,
     pub static_interfaces: Vec<InterfaceMeta>,
     pub has_default_constructor: bool,
+    /// XML doc summary (populated from sibling .xml).
+    pub doc: Option<String>,
+    /// XML `<deprecated>` text.
+    pub deprecated: Option<String>,
 }
 
 impl ClassMeta {
@@ -639,6 +664,8 @@ fn parse_class_from_index(index: &reader::Index, namespace: &str, name: &str) ->
         factory_interfaces,
         static_interfaces,
         has_default_constructor,
+        doc: None,
+        deprecated: None,
     })
 }
 
@@ -690,18 +717,21 @@ fn parse_interface_methods(
         let vtable_index = 6 + i;
         let sig = method.signature(&winmd_generics);
 
+        let raw_name = method.name().to_string();
         let overload_name = method.find_attribute("OverloadAttribute").and_then(|a| {
             a.value().into_iter().next().and_then(|(_, v)| match v {
                 windows_metadata::Value::Utf8(s) => Some(s),
                 _ => None,
             })
         });
-        let method_name = overload_name.unwrap_or_else(|| method.name().to_string());
+        let method_name = overload_name.unwrap_or_else(|| raw_name.clone());
 
         let mut params = Vec::new();
         let param_defs: Vec<_> = method.params().filter(|p| p.sequence() > 0).collect();
+        let mut clr_sig_types: Vec<String> = Vec::new();
         for (j, param_def) in param_defs.iter().enumerate() {
             if j < sig.types.len() {
+                clr_sig_types.push(clr_type_name(&sig.types[j]));
                 let typ = map_winmd_type_with_generics(&sig.types[j], index, generic_args);
                 let is_out = param_def.flags().contains(windows_metadata::ParamAttributes::Out);
                 let direction = if is_out {
@@ -718,6 +748,7 @@ fn parse_interface_methods(
                     name: param_def.name().to_string(),
                     typ,
                     direction,
+                    doc: None,
                 });
             }
         }
@@ -726,6 +757,12 @@ fn parse_interface_methods(
             None
         } else {
             Some(map_winmd_type_with_generics(&sig.return_type, index, generic_args))
+        };
+
+        let raw_signature_key = if clr_sig_types.is_empty() {
+            "()".to_string()
+        } else {
+            format!("({})", clr_sig_types.join(","))
         };
 
         methods.push(MethodMeta {
@@ -737,6 +774,12 @@ fn parse_interface_methods(
             is_property_setter: method_name.starts_with("put_"),
             is_event_add: method_name.starts_with("add_"),
             is_event_remove: method_name.starts_with("remove_"),
+            raw_name,
+            raw_signature_key,
+            doc: None,
+            deprecated: None,
+            param_docs: std::collections::HashMap::new(),
+            returns_doc: None,
         });
     }
 
@@ -752,7 +795,42 @@ fn parse_interface_methods(
         methods,
         generic_piid,
         generic_args: generic_args_vec,
+        doc: None,
+        deprecated: None,
     })
+}
+
+/// Produce a .NET-style CLR type name for XML doc signature keys.
+/// Examples: `System.Int32`, `System.String`, `Windows.Foundation.Uri`,
+/// `System.String[]`, `Windows.Foundation.Collections.IVector`1<System.String>`.
+fn clr_type_name(ty: &windows_metadata::Type) -> String {
+    match ty {
+        windows_metadata::Type::Bool => "System.Boolean".into(),
+        windows_metadata::Type::Char => "System.Char".into(),
+        windows_metadata::Type::I8 => "System.SByte".into(),
+        windows_metadata::Type::U8 => "System.Byte".into(),
+        windows_metadata::Type::I16 => "System.Int16".into(),
+        windows_metadata::Type::U16 => "System.UInt16".into(),
+        windows_metadata::Type::I32 => "System.Int32".into(),
+        windows_metadata::Type::U32 => "System.UInt32".into(),
+        windows_metadata::Type::I64 => "System.Int64".into(),
+        windows_metadata::Type::U64 => "System.UInt64".into(),
+        windows_metadata::Type::F32 => "System.Single".into(),
+        windows_metadata::Type::F64 => "System.Double".into(),
+        windows_metadata::Type::String => "System.String".into(),
+        windows_metadata::Type::Object => "System.Object".into(),
+        windows_metadata::Type::Array(inner) => format!("{}[]", clr_type_name(inner)),
+        windows_metadata::Type::Name(tn) => {
+            if tn.namespace == "System" && tn.name == "Guid" {
+                "System.Guid".into()
+            } else if tn.namespace.is_empty() {
+                tn.name.to_string()
+            } else {
+                format!("{}.{}", tn.namespace, tn.name)
+            }
+        }
+        _ => "System.Object".into(),
+    }
 }
 
 /// Convert TypeMeta back to windows_metadata::Type (for passing to method.signature()).
@@ -871,7 +949,7 @@ fn parse_enum_def(def: &reader::TypeDef) -> TypeMeta {
                 windows_metadata::Value::U32(v) => v as i32,
                 _ => 0,
             };
-            members.push(EnumMember { name, value });
+            members.push(EnumMember { name, value, doc: None });
         }
     }
     TypeMeta::Enum {
@@ -879,6 +957,8 @@ fn parse_enum_def(def: &reader::TypeDef) -> TypeMeta {
         name: def.name().to_string(),
         underlying: Box::new(TypeMeta::I32),
         members,
+        doc: None,
+        deprecated: None,
     }
 }
 
@@ -1065,6 +1145,7 @@ mod tests {
         let mk_iface = |n: &str| InterfaceMeta {
             name: n.into(), namespace: "N".into(), iid: "".into(),
             methods: vec![], generic_piid: None, generic_args: vec![],
+            ..Default::default()
         };
         let class = ClassMeta {
             name: "C".into(), namespace: "N".into(), full_name: "N.C".into(),
@@ -1073,6 +1154,7 @@ mod tests {
             static_interfaces: vec![mk_iface("IStat")],
             required_interfaces: vec![mk_iface("IReq")],
             has_default_constructor: false,
+            ..Default::default()
         };
         let names: Vec<&str> = class.all_interfaces().map(|i| i.name.as_str()).collect();
         assert_eq!(names, ["IDef", "IFact", "IStat", "IReq"]);
@@ -1087,6 +1169,7 @@ mod tests {
             static_interfaces: vec![],
             required_interfaces: vec![],
             has_default_constructor: false,
+            ..Default::default()
         };
         assert_eq!(class.all_interfaces().count(), 0);
     }
@@ -1129,6 +1212,27 @@ mod tests {
         let class = parse_class(WINDOWS_WINMD, "Windows.Foundation", "Uri").unwrap();
         let default_iface = class.default_interface.as_ref().unwrap();
         assert!(!default_iface.iid.is_empty());
+    }
+
+    #[test]
+    fn test_raw_name_and_signature_key_populated() {
+        let class = parse_class(WINDOWS_WINMD, "Windows.Foundation", "Uri").unwrap();
+        let factory = class.factory_interfaces.iter()
+            .find(|i| i.name == "IUriRuntimeClassFactory")
+            .expect("Uri factory interface");
+        // CreateUri is overloaded; the two-arg form is renamed by OverloadAttribute.
+        let create = factory.methods.iter().find(|m| m.raw_name == "CreateUri" && m.params.len() == 1).unwrap();
+        assert_eq!(create.raw_name, "CreateUri");
+        assert_eq!(create.raw_signature_key, "(System.String)");
+        // Return type is out param in winmd, so in-params alone determines the key.
+        let create2 = factory.methods.iter().find(|m| m.raw_name == "CreateWithRelativeUri").unwrap();
+        assert_eq!(create2.raw_name, "CreateWithRelativeUri");
+        assert_eq!(create2.raw_signature_key, "(System.String,System.String)");
+
+        // Zero-arg methods -> "()"
+        let default = class.default_interface.as_ref().unwrap();
+        let get_host = default.methods.iter().find(|m| m.raw_name == "get_Host").unwrap();
+        assert_eq!(get_host.raw_signature_key, "()");
     }
 
     #[test]
