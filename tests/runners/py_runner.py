@@ -210,6 +210,29 @@ def run_check(check: dict, cls, obj, generated_dir: str, pkg_name: str) -> dict:
             else:
                 cr['pass'] = True
 
+        elif kind == 'property_set_equals':
+            set_value = check['set_value']
+            setattr(obj, member, set_value)
+            actual = getattr(obj, member)
+            expected = check['expected']
+            if actual != expected:
+                cr['error'] = f'expected {expected!r}, got {actual!r}'
+            else:
+                cr['pass'] = True
+
+        elif kind == 'vector_view_access':
+            vec = getattr(obj, member)
+            min_size = check.get('min_size', 1)
+            size = vec.size
+            if size < min_size:
+                cr['error'] = f'vector size {size} < {min_size}'
+            else:
+                first = vec.get_at(0)
+                if first is None:
+                    cr['error'] = 'get_at(0) returned None'
+                else:
+                    cr['pass'] = True
+
         elif kind == 'struct_roundtrip':
             struct_mod = importlib.import_module(f"{pkg_name}.{check['struct_module']}")
             struct_cls = getattr(struct_mod, check['struct_class'])
@@ -266,6 +289,29 @@ def run_check(check: dict, cls, obj, generated_dir: str, pkg_name: str) -> dict:
             result = static_method(arr)
             if result is None:
                 cr['error'] = 'static method returned None for array'
+            else:
+                cr['pass'] = True
+
+        elif kind == 'event_callback':
+            source_method = getattr(obj, member)
+            source = source_method()
+            event_name = to_snake_case(check['event_name'])
+            trigger = to_snake_case(check['trigger'])
+
+            fired = [False]
+            on_method = f'on_{event_name}'
+            getattr(source, on_method)(lambda *args: fired.__setitem__(0, True))
+
+            # Try direct method, fall back to IClosable cast
+            if hasattr(source, trigger):
+                getattr(source, trigger)()
+            else:
+                iface_mod = importlib.import_module(f"{pkg_name}.i_closable")
+                IClosable = getattr(iface_mod, 'IClosable')
+                IClosable.from_value(source._obj).close()
+
+            if not fired[0]:
+                cr['error'] = f'event {check["event_name"]} was not fired after {trigger}()'
             else:
                 cr['pass'] = True
 

@@ -292,6 +292,59 @@
       "checks": [
         { "kind": "async_memory_roundtrip", "member": "roundtrip", "write_value": 42 }
       ]
+    },
+    {
+      "id": "calendar_property_setter",
+      "namespace": "Windows.Globalization",
+      "class": "Calendar",
+      "langs": ["py", "ts"],
+      "instantiate": { "kind": "activate" },
+      "checks": [
+        { "kind": "property_set_equals", "member": "year", "set_value": 2024, "expected": 2024 },
+        { "kind": "property_set_equals", "member": "month", "set_value": 6, "expected": 6 },
+        { "kind": "property_set_equals", "member": "day", "set_value": 15, "expected": 15 },
+        { "kind": "property_set_equals", "member": "hour", "set_value": 10, "expected": 10 },
+        { "kind": "property_set_equals", "member": "minute", "set_value": 30, "expected": 30 },
+        { "kind": "property_set_equals", "member": "second", "set_value": 45, "expected": 45 }
+      ]
+    },
+    {
+      "id": "buffer_length_setter",
+      "namespace": "Windows.Storage.Streams",
+      "class": "Buffer",
+      "langs": ["py", "ts"],
+      "instantiate": {
+        "kind": "static_factory",
+        "method": "create",
+        "args": [1024]
+      },
+      "checks": [
+        { "kind": "property_set_equals", "member": "length", "set_value": 512, "expected": 512 }
+      ]
+    },
+    {
+      "id": "calendar_languages_vector",
+      "namespace": "Windows.Globalization",
+      "class": "Calendar",
+      "langs": ["py", "ts"],
+      "instantiate": { "kind": "activate" },
+      "checks": [
+        { "kind": "vector_view_access", "member": "languages", "min_size": 1 }
+      ]
+    },
+    {
+      "id": "memory_buffer_closed_event",
+      "namespace": "Windows.Foundation",
+      "class": "MemoryBuffer",
+      "langs": ["py", "ts"],
+      "instantiate": {
+        "kind": "static_factory",
+        "method": "create",
+        "args": [64]
+      },
+      "checks": [
+        { "kind": "event_callback", "member": "create_reference", "event_name": "Closed", "trigger": "close" }
+      ]
     }
   ]
 }

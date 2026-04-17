@@ -137,6 +137,20 @@ async function runSpec(
   return result;
 }
 
+async function importClass(generatedDir: string, className: string): Promise<any> {
+  const candidates = [
+    path.resolve(generatedDir, `${className}.ts`),
+    path.resolve(generatedDir, `${toPascalCase(className)}.ts`),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) {
+      const mod = await import(`file://${p.replace(/\\/g, '/')}`);
+      if (mod[className]) return mod[className];
+    }
+  }
+  throw new Error(`Class ${className} not found in: ${candidates.join(', ')}`);
+}
+
 async function runCheck(
   check: Check,
   cls: any,
@@ -167,16 +181,7 @@ async function runCheck(
         args = check.args;
       } else if (check.args_factory) {
         const af = check.args_factory!;
-        const afClassName = af.class;
-        let afCls: any;
-        if (afClassName === clsName) {
-          afCls = cls;
-        } else {
-          const afModPath = path.resolve(generatedDir, `${afClassName}.ts`);
-          const afMod = await import(`file://${afModPath.replace(/\\/g, '/')}`);
-          afCls = afMod[afClassName];
-          if (!afCls) throw new Error(`Class ${afClassName} not found for args_factory`);
-        }
+        const afCls = af.class === clsName ? cls : await importClass(generatedDir, af.class);
         const afMethod = toCamelCase(af.method);
         const afArgs = af.args || [];
         args = [afCls[afMethod](...afArgs)];
@@ -233,8 +238,44 @@ async function runCheck(
         cr.pass = true;
       }
     } else if (kind === 'interface_cast') {
-      // Not yet supported in TS runner
-      cr.pass = true;
+      const ifaceClsName = (check as any).interface_class as string;
+      const methodName = toCamelCase((check as any).method as string);
+
+      const ifaceCls = await importClass(generatedDir, ifaceClsName);
+      const casted = ifaceCls.from(obj._obj);
+      const resultVal = casted[methodName];
+      const actual = String(typeof resultVal === 'function' ? resultVal.call(casted) : resultVal);
+
+      if ((check as any).contains && !actual.includes((check as any).contains)) {
+        cr.error = `"${(check as any).contains}" not in "${actual}"`;
+      } else if (check.expected !== undefined && actual !== String(check.expected)) {
+        cr.error = `expected ${JSON.stringify(check.expected)}, got ${JSON.stringify(actual)}`;
+      } else {
+        cr.pass = true;
+      }
+    } else if (kind === 'property_set_equals') {
+      const setValue = (check as any).set_value;
+      obj[member] = setValue;
+      const actual = obj[member];
+      if (actual !== check.expected) {
+        cr.error = `expected ${JSON.stringify(check.expected)}, got ${JSON.stringify(actual)}`;
+      } else {
+        cr.pass = true;
+      }
+    } else if (kind === 'vector_view_access') {
+      const vec = obj[member];
+      const minSize = (check as any).min_size ?? 1;
+      const size = vec.size;
+      if (size < minSize) {
+        cr.error = `vector size ${size} < ${minSize}`;
+      } else {
+        const first = vec.getAt(0);
+        if (first == null) {
+          cr.error = 'getAt(0) returned null';
+        } else {
+          cr.pass = true;
+        }
+      }
     } else if (kind === 'struct_roundtrip') {
       const structClass = check.struct_class as string;
       const structModule = check.struct_module as string;
@@ -311,6 +352,33 @@ async function runCheck(
 
       if (stored < 4 || loaded < 4 || readVal !== writeVal) {
         cr.error = `async roundtrip failed: stored=${stored}, loaded=${loaded}, wrote ${writeVal}, read ${readVal}`;
+      } else {
+        cr.pass = true;
+      }
+    } else if (kind === 'event_callback') {
+      const sourceMethod = obj[member].bind(obj);
+      const source = sourceMethod();
+      const eventName = (check as any).event_name as string;
+      const triggerMethod = toCamelCase((check as any).trigger as string);
+
+      let fired = false;
+      const onMethod = `on${eventName}`;
+      source[onMethod]((..._args: any[]) => { fired = true; });
+
+      // Try direct method, fall back to IClosable cast for close()
+      if (typeof source[triggerMethod] === 'function') {
+        source[triggerMethod]();
+      } else {
+        const IClosable = await importClass(generatedDir, 'IClosable');
+        const closable = IClosable.from(source._obj);
+        closable[triggerMethod]();
+      }
+
+      // NonBlocking TSFN: callback is queued on event loop, await a tick
+      await new Promise(r => setTimeout(r, 100));
+
+      if (!fired) {
+        cr.error = `event ${eventName} was not fired after ${triggerMethod}()`;
       } else {
         cr.pass = true;
       }
