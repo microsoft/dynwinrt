@@ -344,15 +344,18 @@ fn render_enum_dts(out: &mut String, en: &ProjectedEnum) {
     if let Some(ref doc) = en.doc {
         out.push_str(&render_tsdoc(doc, ""));
     }
-    out.push_str(&format!("export enum {} {{\n", en.name));
+    // Emit as a const object + companion type — matches the JS `Object.freeze({...})` runtime shape.
+    // Avoids TS `enum` reverse-mapping mismatch and `const enum` isolatedModules issues.
+    out.push_str(&format!("export type {} = (typeof {})[keyof typeof {}];\n", en.name, en.name, en.name));
+    out.push_str(&format!("export declare const {}: {{\n", en.name));
     for member in &en.members {
         if let Some(ref doc) = member.doc {
             let di = DocInfo { summary: Some(doc.clone()), deprecated: None, returns: None, params: vec![] };
             out.push_str(&render_tsdoc(&di, "    "));
         }
-        out.push_str(&format!("    {} = {},\n", member.name, member.value));
+        out.push_str(&format!("    readonly {}: {};\n", member.name, member.value));
     }
-    out.push_str("}\n");
+    out.push_str("};\n");
 }
 
 // ======================================================================

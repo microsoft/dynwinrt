@@ -334,6 +334,24 @@ impl DynWinRTMethodHandle {
     }
   }
 
+  /// Like `invoke`, but returns all out-parameters as an array.
+  /// Used for methods with multiple out params (e.g. IVector.IndexOf → [u32 index, bool found]).
+  #[napi]
+  pub fn invoke_all(
+    &self,
+    obj: &DynWinRTValue,
+    args: Vec<&DynWinRTValue>,
+  ) -> napi::Result<Vec<DynWinRTValue>> {
+    let raw = match &obj.0 {
+      dynwinrt::WinRTValue::Object(o) => o.as_raw(),
+      _ => return Err(napi::Error::from_reason("invoke_all() requires an Object value")),
+    };
+    let wrt_args: Vec<dynwinrt::WinRTValue> = args.iter().map(|a| a.0.clone()).collect();
+    let results = self.0.invoke(raw, &wrt_args)
+      .map_err(|e| napi::Error::from_reason(e.message()))?;
+    Ok(results.into_iter().map(DynWinRTValue).collect())
+  }
+
   // --- Fast paths: skip Vec alloc + skip DynWinRTValue wrapping for result ---
 
   /// Getter → string (0 args, returns JS string directly, zero Vec allocation)

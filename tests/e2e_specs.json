@@ -345,6 +345,26 @@
       "checks": [
         { "kind": "event_callback", "member": "create_reference", "event_name": "Closed", "trigger": "close" }
       ]
+    },
+    {
+      "id": "vector_index_of_found",
+      "namespace": "Windows.Globalization",
+      "class": "Calendar",
+      "langs": ["ts"],
+      "instantiate": { "kind": "activate" },
+      "checks": [
+        { "kind": "vector_index_of", "member": "languages", "search_value": null, "expected_index": 0 }
+      ]
+    },
+    {
+      "id": "vector_index_of_not_found",
+      "namespace": "Windows.Globalization",
+      "class": "Calendar",
+      "langs": ["ts"],
+      "instantiate": { "kind": "activate" },
+      "checks": [
+        { "kind": "vector_index_of", "member": "languages", "search_value": "xx-NONEXISTENT", "expected_index": -1 }
+      ]
     }
   ]
 }

@@ -276,6 +276,20 @@ async function runCheck(
           cr.pass = true;
         }
       }
+    } else if (kind === 'vector_index_of') {
+      const vec = obj[member];
+      let searchValue = (check as any).search_value;
+      const expectedIndex = (check as any).expected_index;
+      // If search_value is null, use getAt(0) as the search value (tests "found" path)
+      if (searchValue === null) {
+        searchValue = vec.getAt(0);
+      }
+      const result = vec.indexOf(searchValue);
+      if (result !== expectedIndex) {
+        cr.error = `indexOf returned ${result}, expected ${expectedIndex}`;
+      } else {
+        cr.pass = true;
+      }
     } else if (kind === 'struct_roundtrip') {
       const structClass = check.struct_class as string;
       const structModule = check.struct_module as string;

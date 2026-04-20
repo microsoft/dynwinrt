@@ -67,6 +67,7 @@
              "async_memory_roundtrip",
              "property_set_equals",
              "vector_view_access",
+             "vector_index_of",
              "event_callback"
            ]
          },
@@ -104,6 +105,8 @@
          "write_value": { "type": "integer", "description": "Integer value used by async memory roundtrip" },
          "set_value": { "description": "Value to set for property_set_equals check" },
          "min_size": { "type": "integer", "description": "Minimum vector size for vector_view_access" },
+         "search_value": { "description": "Value to search for in vector_index_of" },
+         "expected_index": { "type": "integer", "description": "Expected indexOf result (-1 if not found)" },
          "event_name": { "type": "string", "description": "Event name for event_callback (PascalCase, e.g. Closed)" },
          "trigger": { "type": "string", "description": "Method to call to trigger the event (snake_case)" }
        }

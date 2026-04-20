@@ -1364,33 +1364,40 @@ fn project_collection_helpers(
                 doc: None,
             }));
 
-            // JS-native indexOf: returns index or -1 (instead of WinRT boolean)
-            members.push(ProjectedMember::Method(ProjectedMethod {
-                name: "indexOf".into(),
-                doc: Some(DocInfo {
-                    summary: Some("Return the index of `value`, or -1 if not found.".into()),
-                    deprecated: None, returns: None, params: vec![],
-                }),
-                params: vec![ProjectedParam {
-                    name: "value".into(),
-                    ts_type: elem_ts.clone(),
-                    optional: false,
-                    delegate_wrap: None,
-                }],
-                return_type: "number".into(),
-                async_kind: AsyncKind::None,
-                is_static: false,
-                invoke_expr: String::new(),
-                sync_return_expr: Some(
-                    "(() => { const n = this.size; for (let i = 0; i < n; i++) { if (this.getAt(i) === value) return i; } return -1; })()".into()
-                ),
-                async_convert_v: None,
-                is_void: false,
-                array_return_expr: None,
-                delegate_wraps: vec![],
-                progress_convert: None,
-                js_only: false,
-            }));
+            // indexOf: delegate to WinRT's native IndexOf (returns [u32 index, bool found] via invokeAll)
+            let index_of_vtable = iface.methods.iter()
+                .find(|m| m.name == "IndexOf")
+                .map(|m| m.vtable_index);
+            let iface_var_ref = format!("_{}", iface.name);
+            if let Some(idx) = index_of_vtable {
+                let wrap_value = wrap_arg("value", &iface.generic_args[0]);
+                members.push(ProjectedMember::Method(ProjectedMethod {
+                    name: "indexOf".into(),
+                    doc: Some(DocInfo {
+                        summary: Some("Return the index of `value`, or -1 if not found.".into()),
+                        deprecated: None, returns: None, params: vec![],
+                    }),
+                    params: vec![ProjectedParam {
+                        name: "value".into(),
+                        ts_type: elem_ts.clone(),
+                        optional: false,
+                        delegate_wrap: None,
+                    }],
+                    return_type: "number".into(),
+                    async_kind: AsyncKind::None,
+                    is_static: false,
+                    invoke_expr: String::new(),
+                    sync_return_expr: Some(format!(
+                        "(() => {{ const _r = {iface_var_ref}.method({idx}).invokeAll(this._obj, [{wrap_value}]); return _r[1].toBool() ? _r[0].toNumber() : -1; }})()"
+                    )),
+                    async_convert_v: None,
+                    is_void: false,
+                    array_return_expr: None,
+                    delegate_wraps: vec![],
+                    progress_convert: None,
+                    js_only: false,
+                }));
+            }
 
             // High-level getMany: T[] wrapper over the raw FillArray-based method
             let iface_var = format!("_{}", iface.name);
@@ -1402,7 +1409,7 @@ fn project_collection_helpers(
                 if let Some(fill_expr) = ts_fill_array_create("count", elem) {
                     let invoke = format!(
                         "{iface_var}.method({get_many_idx}).invoke(this._obj, \
-                         [DynWinRtValue.i32(startIndex), _a.toValue()])"
+                         [DynWinRtValue.u32(startIndex), _a.toValue()])"
                     );
                     let arr_convert = convert_array_return(
                         &format!("{invoke}.asArray()"), elem, known_types, &NO_DEFERRED,
