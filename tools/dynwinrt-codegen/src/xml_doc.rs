@@ -48,6 +48,63 @@ impl DocTable {
         table
     }
 
+    /// Load built-in API docs shipped with the codegen binary.
+    /// Uses "insert if absent" semantics so sibling .xml docs take priority.
+    pub fn load_builtin_docs(&mut self) {
+        static BUILTIN_DOCS: &[(&str, &str)] = &[
+            ("Microsoft.Graphics.Imaging", include_str!("../api-docs/Microsoft.Graphics.Imaging.xml")),
+            ("Microsoft.Windows.AI", include_str!("../api-docs/Microsoft.Windows.AI.xml")),
+            ("Microsoft.Windows.AI.Contentmoderation", include_str!("../api-docs/Microsoft.Windows.AI.Contentmoderation.xml")),
+            ("Microsoft.Windows.AI.ContentSafety", include_str!("../api-docs/Microsoft.Windows.AI.ContentSafety.xml")),
+            ("Microsoft.Windows.AI.Foundation", include_str!("../api-docs/Microsoft.Windows.AI.Foundation.xml")),
+            ("Microsoft.Windows.AI.Generative", include_str!("../api-docs/Microsoft.Windows.AI.Generative.xml")),
+            ("Microsoft.Windows.AI.Imaging", include_str!("../api-docs/Microsoft.Windows.AI.Imaging.xml")),
+            ("Microsoft.Windows.AI.Machinelearning", include_str!("../api-docs/Microsoft.Windows.AI.Machinelearning.xml")),
+            ("Microsoft.Windows.AI.Text", include_str!("../api-docs/Microsoft.Windows.AI.Text.xml")),
+            ("Microsoft.Windows.Vision", include_str!("../api-docs/Microsoft.Windows.Vision.xml")),
+            ("Microsoft.Windows.Workloads", include_str!("../api-docs/Microsoft.Windows.Workloads.xml")),
+        ];
+        for (_ns, xml_text) in BUILTIN_DOCS {
+            self.ingest_xml_if_absent(xml_text);
+        }
+    }
+
+    /// Parse XML doc content and merge into the table, but only insert entries
+    /// that do not already exist. This allows sibling .xml to take priority.
+    pub fn ingest_xml_if_absent(&mut self, xml_text: &str) {
+        let doc = match roxmltree::Document::parse(xml_text) {
+            Ok(d) => d,
+            Err(_) => return,
+        };
+        for members_node in doc.descendants().filter(|n| n.has_tag_name("members")) {
+            for m in members_node.children().filter(|n| n.is_element() && n.has_tag_name("member")) {
+                let name = match m.attribute("name") {
+                    Some(n) => n.to_string(),
+                    None => continue,
+                };
+                if self.members.contains_key(&name) {
+                    continue; // sibling .xml already has this entry
+                }
+                let mut md = MemberDoc::default();
+                for child in m.children().filter(|n| n.is_element()) {
+                    match child.tag_name().name() {
+                        "summary" => md.summary = Some(normalize(child)),
+                        "remarks" => md.remarks = Some(normalize(child)),
+                        "returns" => md.returns = Some(normalize(child)),
+                        "deprecated" => md.deprecated = Some(normalize(child)),
+                        "param" => {
+                            if let Some(pname) = child.attribute("name") {
+                                md.param_docs.insert(pname.to_string(), normalize(child));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                self.members.insert(name, md);
+            }
+        }
+    }
+
     /// Parse XML doc content and merge into the table. Public for tests.
     pub fn ingest_xml(&mut self, xml_text: &str) {
         let doc = match roxmltree::Document::parse(xml_text) {
@@ -93,6 +150,21 @@ impl DocTable {
         } else {
             self.members.get(&format!("M:{}{}", full_name, sig_key))
         }
+        // Fallback: prefix match for methods whose signatures differ due to
+        // generic/parameterized type encoding (e.g. IVectorView`1 vs IVectorView{T}).
+        // Only used when exact match fails and there is exactly one candidate.
+        .or_else(|| {
+            let prefix = format!("M:{}(", full_name);
+            let candidates: Vec<_> = self.members.iter()
+                .filter(|(k, _)| k.starts_with(&prefix))
+                .collect();
+            if candidates.len() == 1 {
+                Some(candidates[0].1)
+            } else {
+                // Also try without signature at all
+                self.members.get(&format!("M:{}", full_name))
+            }
+        })
     }
 
     pub fn lookup_property(&self, full_name: &str) -> Option<&MemberDoc> {
@@ -162,8 +234,26 @@ impl DocTable {
             iface.doc = doc.summary.clone();
             iface.deprecated = doc.deprecated.clone();
         }
+        // Try methods with interface name first
         for m in iface.methods.iter_mut() {
             self.apply_to_method(&iface.namespace, &iface.name, m);
+        }
+        // Fallback: try class name derived from interface name (IFoo2 -> Foo)
+        // WinRT XML docs key methods by the runtime class name, not the interface.
+        let class_name = interface_to_class_name(&iface.name);
+        if let Some(ref cn) = class_name {
+            if iface.doc.is_none() {
+                let class_full = format!("{}.{}", iface.namespace, cn);
+                if let Some(doc) = self.lookup_type(&class_full) {
+                    iface.doc = doc.summary.clone();
+                    iface.deprecated = doc.deprecated.clone();
+                }
+            }
+            for m in iface.methods.iter_mut() {
+                if m.doc.is_none() {
+                    self.apply_to_method(&iface.namespace, cn, m);
+                }
+            }
         }
     }
 
@@ -364,6 +454,23 @@ fn collapse(text: &str) -> String {
         }
     }
     out.trim().to_string()
+}
+
+/// Derive a likely runtime class name from a WinRT interface name.
+/// E.g. `ILanguageModel2` → `LanguageModel`, `ITextSummarizer4` → `TextSummarizer`,
+/// `IClosable` → `Closable`. Returns `None` if the name doesn't start with `I`.
+fn interface_to_class_name(iface_name: &str) -> Option<String> {
+    let stripped = iface_name.strip_prefix('I')?;
+    // The next char must be uppercase (to avoid false positives like "Image")
+    if stripped.is_empty() || !stripped.chars().next().unwrap().is_uppercase() {
+        return None;
+    }
+    // Strip trailing digits (version suffix: IFoo2 -> Foo)
+    let name = stripped.trim_end_matches(|c: char| c.is_ascii_digit());
+    if name.is_empty() {
+        return None;
+    }
+    Some(name.to_string())
 }
 
 #[cfg(test)]

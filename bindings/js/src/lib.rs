@@ -613,6 +613,10 @@ impl DynWinRTValue {
       dynwinrt::WinRTValue::HString(s) => s.to_string(),
       dynwinrt::WinRTValue::I32(i) => i.to_string(),
       dynwinrt::WinRTValue::I64(i) => i.to_string(),
+      dynwinrt::WinRTValue::Guid(g) => format!("{:08x}-{:04x}-{:04x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        g.data1, g.data2, g.data3,
+        g.data4[0], g.data4[1], g.data4[2], g.data4[3],
+        g.data4[4], g.data4[5], g.data4[6], g.data4[7]),
       dynwinrt::WinRTValue::Object(o) => format!("Object: {:?}", o),
       _ => "Unsupported type".to_string(),
     }
@@ -755,6 +759,14 @@ impl DynWinRTArray {
   #[napi]
   pub fn to_u8_vec(&self) -> Vec<u8> {
     unsafe { self.0.as_typed_slice::<u8>().to_vec() }
+  }
+
+  /// Return the u8 array data as a Node.js Buffer (zero-copy friendly, much
+  /// more memory-efficient than to_u8_vec for large byte arrays).
+  #[napi]
+  pub fn to_buffer(&self) -> napi::bindgen_prelude::Buffer {
+    let data = unsafe { self.0.as_typed_slice::<u8>().to_vec() };
+    data.into()
   }
 
   #[napi]

@@ -153,10 +153,77 @@ fn render_class_dts(out: &mut String, class: &ProjectedClass) {
         out.push_str(&render_tsdoc(doc, ""));
     }
     out.push_str(&format!("export declare class {} {{\n", class.name));
-    // _obj is internal — not exposed in public declarations
+
+    // Collect method names from main class for overload merging
+    let main_method_names: std::collections::HashSet<String> = class.members.iter()
+        .filter_map(|m| if let ProjectedMember::Method(method) = m { Some(method.name.clone()) } else { None })
+        .collect();
+
+    // Collect overloads from required interfaces that share a name with a main class method.
+    // Skip if class.members already contains the same overload (same name + same param list).
+    let main_method_sigs: std::collections::HashSet<String> = class.members.iter()
+        .filter_map(|m| if let ProjectedMember::Method(method) = m {
+            let sig: String = method.params.iter().map(|p| format!("{}:{}", p.name, p.ts_type)).collect::<Vec<_>>().join(",");
+            Some(format!("{}|{}", method.name, sig))
+        } else { None })
+        .collect();
+    let mut extra_overloads: std::collections::HashMap<String, Vec<&ProjectedMethod>> = std::collections::HashMap::new();
+    for ri in &class.required_ifaces {
+        for member in &ri.members {
+            if let ProjectedMember::Method(method) = member {
+                if main_method_names.contains(&method.name) && !method.js_only {
+                    let sig: String = method.params.iter().map(|p| format!("{}:{}", p.name, p.ts_type)).collect::<Vec<_>>().join(",");
+                    let key = format!("{}|{}", method.name, sig);
+                    if !main_method_sigs.contains(&key) {
+                        extra_overloads.entry(method.name.clone()).or_default().push(method);
+                    }
+                }
+            }
+        }
+    }
+
+    // Track emitted method signatures to avoid duplicates
+    let mut emitted_method_sigs: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for member in &class.members {
+        // Deduplicate method overloads by full signature
+        if let ProjectedMember::Method(method) = member {
+            let sig_key = format!("{}|{}", method.name,
+                method.params.iter().map(|p| format!("{}:{}", p.name, p.ts_type)).collect::<Vec<_>>().join(","));
+            if !emitted_method_sigs.insert(sig_key) {
+                continue; // skip duplicate
+            }
+        }
         render_member_dts(out, member);
+        // After each main class method, emit any additional overloads from required interfaces
+        if let ProjectedMember::Method(method) = member {
+            if let Some(overloads) = extra_overloads.get(&method.name) {
+                for overload in overloads {
+                    if let Some(ref doc) = overload.doc {
+                        out.push_str(&render_tsdoc(doc, "    "));
+                    }
+                    let params_str = overload.params.iter()
+                        .map(|p| {
+                            if p.optional {
+                                format!("{}?: {}", p.name, p.ts_type)
+                            } else {
+                                format!("{}: {}", p.name, p.ts_type)
+                            }
+                        })
+                        .collect::<Vec<_>>().join(", ");
+                    let static_kw = if overload.is_static { "static " } else { "" };
+                    let ret_type = match &overload.async_kind {
+                        AsyncKind::OperationWithProgress(inner, progress) => format!("WinRTAsyncWithProgress<{}, {}>", inner, progress),
+                        AsyncKind::ActionWithProgress(progress) => format!("WinRTAsyncWithProgress<void, {}>", progress),
+                        _ => overload.return_type.clone(),
+                    };
+                    out.push_str(&format!(
+                        "    {}{}({}): {};\n",
+                        static_kw, overload.name, params_str, ret_type
+                    ));
+                }
+            }
+        }
     }
 
     out.push_str("}\n");

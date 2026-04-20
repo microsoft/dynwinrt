@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<doc>
+  <members>
+    <member name="N:Microsoft.Windows.AI">
+      <summary>Provides APIs for local, on-device AI features.</summary>
+    </member>
+    <member name="T:Microsoft.Windows.AI.AIFeatureReadyResultState">
+    </member>
+    <member name="F:Microsoft.Windows.AI.AIFeatureReadyResultState.InProgress">
+    </member>
+    <member name="F:Microsoft.Windows.AI.AIFeatureReadyResultState.Success">
+    </member>
+    <member name="F:Microsoft.Windows.AI.AIFeatureReadyResultState.Failure">
+    </member>
+    <member name="T:Microsoft.Windows.AI.AIFeatureReadyState">
+      <summary>Specifies the language model readiness states.</summary>
+    </member>
+    <member name="F:Microsoft.Windows.AI.AIFeatureReadyState.Ready">
+      <summary>Model is installed and ready to use.</summary>
+    </member>
+    <member name="F:Microsoft.Windows.AI.AIFeatureReadyState.EnsureNeeded">
+      <summary>Model needs to be downloaded and installed.</summary>
+    </member>
+    <member name="F:Microsoft.Windows.AI.AIFeatureReadyState.NotSupportedOnCurrentSystem">
+      <summary>Model is not supported for the current OS version or hardware configuration.</summary>
+    </member>
+    <member name="F:Microsoft.Windows.AI.AIFeatureReadyState.DisabledByUser">
+      <summary>Model has been removed or disabled.</summary>
+    </member>
+  </members>
+</doc>

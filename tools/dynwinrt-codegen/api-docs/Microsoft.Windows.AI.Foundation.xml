@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<doc>
+  <members>
+    <member name="M:Microsoft.Windows.AI.Foundation.EmbeddingVector.#ctor(System.Single[],System.Guid)">
+      <summary>Initializes a new instance of an EmbeddingVector object.</summary>
+      <param name="data">The EmbeddingVector data.</param>
+      <param name="vectorSpaceID">A unique identifier for the EmbeddingVector object.</param>
+    </member>
+    <member name="M:Microsoft.Windows.AI.Foundation.EmbeddingVector.GetValues(System.Single[])">
+      <summary>Gets the values specified in the EmbeddingVector.</summary>
+      <param name="values">The values specified in the EmbeddingVector.</param>
+    </member>
+    <member name="N:Microsoft.Windows.AI.Foundation">
+      <summary>Enables fundamental Windows Runtime AI functionality, specifically, support for generating text embedding vectors from prompts.</summary>
+    </member>
+    <member name="P:Microsoft.Windows.AI.Foundation.EmbeddingVector.Size">
+      <summary>Gets the size of the EmbeddingVector.</summary>
+    </member>
+    <member name="P:Microsoft.Windows.AI.Foundation.EmbeddingVector.VectorSpaceId">
+      <summary>Gets the unique identifier of the vector space associated with the EmbeddingVector.</summary>
+    </member>
+    <member name="T:Microsoft.Windows.AI.Foundation.EmbeddingVector">
+      <summary>Represents a single embedding vector.</summary>
+    </member>
+  </members>
+</doc>

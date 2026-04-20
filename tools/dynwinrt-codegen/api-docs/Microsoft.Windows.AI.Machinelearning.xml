@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8"?>
+<doc>
+  <members>
+    <member name="M:Microsoft.Windows.AI.MachineLearning.ExecutionProvider.EnsureReadyAsync">
+      <summary>Ensures that the execution provider is ready for use by downloading and installing any required components.</summary>
+    </member>
+    <member name="M:Microsoft.Windows.AI.MachineLearning.ExecutionProvider.TryRegister">
+      <summary>Attempts to register the execution provider with ONNX Runtime, and returns a Boolean value indicating success.</summary>
+      <returns>A Boolean value indicating success</returns>
+    </member>
+    <member name="M:Microsoft.Windows.AI.MachineLearning.ExecutionProviderCatalog.EnsureAndRegisterAllAsync">
+      <summary>Ensures that all compatible execution providers are ready, and registers them with the ONNX Runtime.</summary>
+    </member>
+    <member name="M:Microsoft.Windows.AI.MachineLearning.ExecutionProviderCatalog.FindAllProviders">
+      <summary>Retrieves a collection of all execution providers compatible with the current hardware.</summary>
+      <returns>A collection of all execution providers compatible with the current hardware.</returns>
+    </member>
+    <member name="M:Microsoft.Windows.AI.MachineLearning.ExecutionProviderCatalog.GetDefault">
+      <summary>Retrieves the default ExecutionProviderCatalog instance that provides access to all execution providers on the system.</summary>
+    </member>
+    <member name="M:Microsoft.Windows.AI.MachineLearning.ExecutionProviderCatalog.RegisterCertifiedAsync">
+      <summary>Registers all compatible execution providers with the ONNX Runtime without ensuring they are ready. This registers only providers that are already present on the machine, avoiding the potentially long download times that might be required by EnsureAndRegisterCertifiedAsync.</summary>
+    </member>
+    <member name="P:Microsoft.Windows.AI.MachineLearning.ExecutionProvider.LibraryPath">
+      <summary>Gets the type of device (CPU, GPU, NPU, etc.).</summary>
+    </member>
+    <member name="P:Microsoft.Windows.AI.MachineLearning.ExecutionProvider.Name">
+      <summary>Gets the name of the execution provider.</summary>
+    </member>
+    <member name="T:Microsoft.Windows.AI.MachineLearning.ExecutionProvider">
+      <summary>Represents a specific hardware accelerator that can be used for machine learning inference.</summary>
+    </member>
+    <member name="T:Microsoft.Windows.AI.MachineLearning.ExecutionProviderCatalog">
+      <summary>Provides methods to discover, acquire, and register AI execution providers (EPs) for use with the ONNX Runtime.
+ExecutionProviderCatalog handles the complexity of package management and hardware selection, and it's the entry point for your app to access hardware-optimized machine learning acceleration through the Windows ML runtime.</summary>
+    </member>
+    <member name="T:Microsoft.Windows.AI.MachineLearning.ExecutionProviderCertification">
+    </member>
+    <member name="F:Microsoft.Windows.AI.MachineLearning.ExecutionProviderCertification.Unknown">
+    </member>
+    <member name="F:Microsoft.Windows.AI.MachineLearning.ExecutionProviderCertification.Certified">
+    </member>
+    <member name="F:Microsoft.Windows.AI.MachineLearning.ExecutionProviderCertification.Uncertified">
+    </member>
+    <member name="T:Microsoft.Windows.AI.MachineLearning.ExecutionProviderReadyResultState">
+    </member>
+    <member name="F:Microsoft.Windows.AI.MachineLearning.ExecutionProviderReadyResultState.InProgress">
+    </member>
+    <member name="F:Microsoft.Windows.AI.MachineLearning.ExecutionProviderReadyResultState.Success">
+    </member>
+    <member name="F:Microsoft.Windows.AI.MachineLearning.ExecutionProviderReadyResultState.Failure">
+    </member>
+    <member name="T:Microsoft.Windows.AI.MachineLearning.ExecutionProviderReadyState">
+    </member>
+    <member name="F:Microsoft.Windows.AI.MachineLearning.ExecutionProviderReadyState.Ready">
+    </member>
+    <member name="F:Microsoft.Windows.AI.MachineLearning.ExecutionProviderReadyState.NotReady">
+    </member>
+    <member name="F:Microsoft.Windows.AI.MachineLearning.ExecutionProviderReadyState.NotPresent">
+    </member>
+  </members>
+</doc>

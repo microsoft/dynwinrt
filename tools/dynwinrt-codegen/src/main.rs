@@ -175,7 +175,9 @@ fn run() -> Result<(), String> {
 
             // Build XML doc table from sibling .xml files of each winmd.
             let expanded_parts: Vec<String> = winmd.split(';').filter(|s| !s.is_empty()).map(String::from).collect();
-            let doc_table = DocTable::load_from_winmd_paths(&expanded_parts);
+            let mut doc_table = DocTable::load_from_winmd_paths(&expanded_parts);
+            // Load built-in docs as fallback (sibling .xml takes priority).
+            doc_table.load_builtin_docs();
 
             let output_dir = Path::new(&output);
             if !dry_run {

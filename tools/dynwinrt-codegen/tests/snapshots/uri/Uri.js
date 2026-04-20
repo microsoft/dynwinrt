@@ -132,10 +132,10 @@ export class Uri {
         return InterfaceClass.from(this._obj);
     }
     get absoluteCanonicalUri() {
-        return _IUriRuntimeClassWithAbsoluteCanonicalUri.method(6).invoke(this._obj, []).toString();
+        return _IUriRuntimeClassWithAbsoluteCanonicalUri.method(6).invoke(this._obj.cast(IID_IUriRuntimeClassWithAbsoluteCanonicalUri), []).toString();
     }
     get displayIri() {
-        return _IUriRuntimeClassWithAbsoluteCanonicalUri.method(7).invoke(this._obj, []).toString();
+        return _IUriRuntimeClassWithAbsoluteCanonicalUri.method(7).invoke(this._obj.cast(IID_IUriRuntimeClassWithAbsoluteCanonicalUri), []).toString();
     }
 }
 

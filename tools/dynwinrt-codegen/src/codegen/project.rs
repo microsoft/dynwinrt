@@ -290,7 +290,7 @@ pub fn project_class(
             array_return_expr: None,
             delegate_wraps: vec![],
             progress_convert: None,
-            js_only: false,
+            js_only: false, overload_of: None,
         }));
     }
 
@@ -320,6 +320,9 @@ pub fn project_class(
             }
         }
     }
+
+    // Merge overload names in default interface members
+    merge_overload_names(&mut members);
 
     // IClosable → close()
     if class.required_interfaces.iter().any(|ri| ri.iid == ICLOSABLE_IID) {
@@ -396,16 +399,34 @@ pub fn project_class(
 
         let reg_var = format!("_{}", req_iface.name);
         let mut ri_members = Vec::new();
+        // Use cast expression for the flattened methods so the COM pointer
+        // targets the correct interface vtable.
+        let cast_obj = format!("this._obj.cast(IID_{})", req_iface.name);
         for method in &req_iface.methods {
             if let Some(m) = project_instance_method(
-                &reg_var, "this._obj", method, known_types, &delegate_names,
+                &reg_var, &cast_obj, method, known_types, &delegate_names,
                 Some(&req_iface.methods), delegate_sigs, delegate_param_wraps,
             ) {
                 ri_members.push(m);
             }
         }
 
-        // Flatten: copy non-conflicting members onto the main class
+        // Also build members with this._obj for the standalone interface class
+        let mut ri_own_members = Vec::new();
+        for method in &req_iface.methods {
+            if let Some(m) = project_instance_method(
+                &reg_var, "this._obj", method, known_types, &delegate_names,
+                Some(&req_iface.methods), delegate_sigs, delegate_param_wraps,
+            ) {
+                ri_own_members.push(m);
+            }
+        }
+
+        // Merge overload names within the required interface members before flatten
+        merge_overload_names(&mut ri_members);
+
+        // Flatten: copy members onto the main class.
+        // Allow multiple methods with the same name (overloads).
         for member in &ri_members {
             let name = match member {
                 ProjectedMember::Method(pm) => pm.name.clone(),
@@ -416,7 +437,17 @@ pub fn project_class(
                 ProjectedMember::AsCast => "as".into(),
                 _ => continue,
             };
-            if main_member_names.insert(name) {
+            // For methods: allow same name (overloads), dedup by name+param count.
+            // Also check plain name to prevent duplicating Symbol-based members (e.g. toString).
+            if let ProjectedMember::Method(pm) = member {
+                if main_member_names.contains(&name) {
+                    continue; // already exists as a Symbol or other member
+                }
+                let sig_key = format!("{}#{}", name, pm.params.len());
+                if main_member_names.insert(sig_key) {
+                    members.push(member.clone());
+                }
+            } else if main_member_names.insert(name) {
                 members.push(member.clone());
             }
         }
@@ -425,12 +456,16 @@ pub fn project_class(
             name: req_iface.name.clone(),
             iid: req_iface.iid.clone(),
             disposition: RequiredIfaceDisposition::InlineWrapper,
-            members: ri_members,
+            members: ri_own_members,
             registration: None,
             has_static_from: true,
             has_parameterized_cast: false,
         });
     }
+
+    // Merge overloaded method names: rename `foo2`, `foo3` to `foo` when `foo` exists.
+    // Must happen after flatten so required-interface methods are included.
+    merge_overload_names(&mut members);
 
     // Check if _unwrap is used
     let needs_unwrap = check_needs_unwrap(&members, &required_ifaces);
@@ -770,8 +805,12 @@ fn project_factory_method(
     }
     let delegate_wraps = collect_delegate_wraps(&ts_params);
 
+    let js_name = to_camel_case(&method.name);
+    let raw_js_name = to_camel_case(&method.raw_name);
+    let overload_of = if js_name != raw_js_name { Some(raw_js_name) } else { None };
+
     ProjectedMember::Method(ProjectedMethod {
-        name: to_camel_case(&method.name),
+        name: js_name,
         doc,
         params: ts_params,
         return_type,
@@ -784,7 +823,7 @@ fn project_factory_method(
         is_void: false,
         array_return_expr: None,
         delegate_wraps,
-        js_only: false,
+        js_only: false, overload_of,
     })
 }
 
@@ -900,8 +939,12 @@ fn project_static_method(
     }
     let delegate_wraps = collect_delegate_wraps(&ts_params);
 
+    let js_name = to_camel_case(&method.name);
+    let raw_js_name = to_camel_case(&method.raw_name);
+    let overload_of = if js_name != raw_js_name { Some(raw_js_name) } else { None };
+
     ProjectedMember::Method(ProjectedMethod {
-        name: to_camel_case(&method.name),
+        name: js_name,
         doc,
         params: ts_params,
         return_type: ts_return,
@@ -914,7 +957,7 @@ fn project_static_method(
         is_void: return_type_meta.is_none() && !is_async,
         array_return_expr: None,
         delegate_wraps,
-        js_only: false,
+        js_only: false, overload_of,
     })
 }
 
@@ -1148,8 +1191,12 @@ fn project_instance_method(
 
     let delegate_wraps = collect_delegate_wraps(&ts_params);
 
+    let js_name = to_camel_case(&method.name);
+    let raw_js_name = to_camel_case(&method.raw_name);
+    let overload_of = if js_name != raw_js_name { Some(raw_js_name) } else { None };
+
     Some(ProjectedMember::Method(ProjectedMethod {
-        name: to_camel_case(&method.name),
+        name: js_name,
         doc,
         params: ts_params,
         return_type: ts_return,
@@ -1163,6 +1210,7 @@ fn project_instance_method(
         array_return_expr,
         delegate_wraps,
         js_only: false,
+        overload_of,
     }))
 }
 
@@ -1395,7 +1443,7 @@ fn project_collection_helpers(
                     array_return_expr: None,
                     delegate_wraps: vec![],
                     progress_convert: None,
-                    js_only: false,
+                    js_only: false, overload_of: None,
                 }));
             }
 
@@ -1453,7 +1501,7 @@ fn project_collection_helpers(
                         array_return_expr: None,
                         delegate_wraps: vec![],
                         progress_convert: None,
-                        js_only: false,
+                        js_only: false, overload_of: None,
                     }));
                 }
             }
@@ -1496,7 +1544,7 @@ fn project_collection_helpers(
                             array_return_expr: None,
                             delegate_wraps: vec![],
                             progress_convert: None,
-                            js_only: false,
+                            js_only: false, overload_of: None,
                         }));
                     }
                 }
@@ -1553,7 +1601,7 @@ fn project_collection_helpers(
                     invoke_expr: String::new(),
                     sync_return_expr: Some(format!("(() => {{ try {{ return {}; }} catch {{ return undefined; }} }})()", return_convert)),
                     async_convert_v: None, is_void: false, array_return_expr: None,
-                    delegate_wraps: vec![], progress_convert: None, js_only: false,
+                    delegate_wraps: vec![], progress_convert: None, js_only: false, overload_of: None,
                 }));
             }
             // has(key) — alias for hasKey
@@ -1571,7 +1619,7 @@ fn project_collection_helpers(
                     invoke_expr: format!("{iface_var}.method({has_idx}).invoke(this._obj, [{key_wrap}])"),
                     sync_return_expr: Some(format!("{iface_var}.method({has_idx}).invoke(this._obj, [{key_wrap}]).toBool()")),
                     async_convert_v: None, is_void: false, array_return_expr: None,
-                    delegate_wraps: vec![], progress_convert: None, js_only: false,
+                    delegate_wraps: vec![], progress_convert: None, js_only: false, overload_of: None,
                 }));
             }
             // set(key, value) — alias for insert (IMap only)
@@ -1594,7 +1642,7 @@ fn project_collection_helpers(
                         invoke_expr: format!("{iface_var}.method({insert_idx}).invoke(this._obj, [{key_wrap}, {val_wrap}])"),
                         sync_return_expr: None,
                         async_convert_v: None, is_void: true, array_return_expr: None,
-                        delegate_wraps: vec![], progress_convert: None, js_only: false,
+                        delegate_wraps: vec![], progress_convert: None, js_only: false, overload_of: None,
                     }));
                 }
                 // delete(key) — alias for remove
@@ -1612,7 +1660,7 @@ fn project_collection_helpers(
                         invoke_expr: format!("{iface_var}.method({remove_idx}).invoke(this._obj, [{key_wrap}])"),
                         sync_return_expr: None,
                         async_convert_v: None, is_void: true, array_return_expr: None,
-                        delegate_wraps: vec![], progress_convert: None, js_only: false,
+                        delegate_wraps: vec![], progress_convert: None, js_only: false, overload_of: None,
                     }));
                 }
             }
@@ -1655,7 +1703,7 @@ fn project_collection_create(
             array_return_expr: None,
             delegate_wraps: vec![],
             progress_convert: None,
-            js_only: false,
+            js_only: false, overload_of: None,
         }));
     } else if piid == PIID_IMAP && iface.generic_args.len() == 2 {
         let key_type = ts_dynwinrt_type(&iface.generic_args[0]);
@@ -1687,7 +1735,7 @@ fn project_collection_create(
             array_return_expr: None,
             delegate_wraps: vec![],
             progress_convert: None,
-            js_only: false,
+            js_only: false, overload_of: None,
         }));
     }
 }
@@ -1745,7 +1793,7 @@ fn project_struct_helpers(used_structs: &[TypeMeta]) -> Vec<ProjectedStruct> {
 // ======================================================================
 
 /// Returns a dedup key for a SymbolKind so flatten can detect duplicate symbols.
-fn symbol_dedup_key(kind: &SymbolKind) -> String {
+pub fn symbol_dedup_key(kind: &SymbolKind) -> String {
     match kind {
         // toString renders as a plain `toString()` method — use the actual name for dedup
         SymbolKind::ToString { .. } => "toString".into(),
@@ -1999,4 +2047,35 @@ fn rewrite_delegate_args_in_expr(expr: &str, params: &[ProjectedParam]) -> Strin
         }
     }
     result
+}
+
+/// Rename methods that have `overload_of` set, or whose name ends with digits
+/// and a base-name sibling exists, to use the base name.
+/// E.g. `generateResponseAsync2` becomes `generateResponseAsync` when
+/// `generateResponseAsync` already exists in the same member list.
+fn merge_overload_names(members: &mut [ProjectedMember]) {
+    // First pass: apply explicit overload_of
+    for member in members.iter_mut() {
+        if let ProjectedMember::Method(method) = member {
+            if let Some(ref base_name) = method.overload_of {
+                method.name = base_name.clone();
+            }
+        }
+    }
+
+    // Second pass: detect numeric suffix patterns (e.g. foo2, foo3 when foo exists)
+    let all_names: std::collections::HashSet<String> = members.iter()
+        .filter_map(|m| if let ProjectedMember::Method(method) = m { Some(method.name.clone()) } else { None })
+        .collect();
+
+    for member in members.iter_mut() {
+        if let ProjectedMember::Method(method) = member {
+            let name = &method.name;
+            // Strip trailing digits to find base name
+            let base = name.trim_end_matches(|c: char| c.is_ascii_digit());
+            if base.len() < name.len() && !base.is_empty() && all_names.contains(base) && base != name {
+                method.name = base.to_string();
+            }
+        }
+    }
 }

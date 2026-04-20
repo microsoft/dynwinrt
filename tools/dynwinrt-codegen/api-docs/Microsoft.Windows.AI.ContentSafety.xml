@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<doc>
+  <members>
+    <!-- Namespace alias: SDK 1.8 uses Microsoft.Windows.AI.ContentSafety,
+         SDK 2.0 renamed it to Microsoft.Windows.AI.ContentModeration.
+         Entries here mirror Contentmoderation.xml for 1.8 compat. -->
+    <member name="N:Microsoft.Windows.AI.ContentSafety">
+      <summary>Provides APIs for machine learning models that perform content moderation.</summary>
+    </member>
+    <member name="T:Microsoft.Windows.AI.ContentSafety.ContentFilterOptions">
+      <summary>Options that affect how the language model filters responses.</summary>
+    </member>
+    <member name="T:Microsoft.Windows.AI.ContentSafety.SeverityLevel">
+      <summary>Specifies the severity level for content moderation filtering.</summary>
+    </member>
+    <member name="F:Microsoft.Windows.AI.ContentSafety.SeverityLevel.Minimum">
+      <summary>Minimum severity — least restrictive filtering.</summary>
+    </member>
+    <member name="F:Microsoft.Windows.AI.ContentSafety.SeverityLevel.Low">
+      <summary>Low severity filtering.</summary>
+    </member>
+    <member name="F:Microsoft.Windows.AI.ContentSafety.SeverityLevel.Medium">
+      <summary>Medium severity filtering.</summary>
+    </member>
+    <member name="F:Microsoft.Windows.AI.ContentSafety.SeverityLevel.High">
+      <summary>High severity — most restrictive filtering.</summary>
+    </member>
+    <member name="T:Microsoft.Windows.AI.ContentSafety.TextContentFilterSeverity">
+      <summary>Specifies the severity level for text content filtering.</summary>
+    </member>
+    <member name="T:Microsoft.Windows.AI.ContentSafety.ImageContentFilterSeverity">
+      <summary>Specifies the severity level for image content filtering.</summary>
+    </member>
+  </members>
+</doc>

@@ -122,6 +122,10 @@ pub struct ProjectedMethod {
     pub delegate_wraps: Vec<(String, String)>,
     /// If true, the method is emitted in JS but hidden from DTS declarations
     pub js_only: bool,
+    /// Original method name before OverloadAttribute rename (camelCase).
+    /// When set, this method is part of an overload group and should be
+    /// merged with other methods sharing the same `overload_of` name.
+    pub overload_of: Option<String>,
 }
 
 #[derive(Clone)]

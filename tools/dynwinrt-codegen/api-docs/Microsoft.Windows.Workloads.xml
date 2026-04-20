@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<doc>
+  <members>
+    <member name="N:Microsoft.Windows.Workloads">
+      <summary>This namespace contains types for managing workloads and their priorities.</summary>
+    </member>
+    <member name="T:Microsoft.Windows.Workloads.WorkloadPriority">
+      <summary>This enum defines the priority levels for workloads.</summary>
+    </member>
+    <member name="F:Microsoft.Windows.Workloads.WorkloadPriority.Undefined">
+      <summary>The workload priority is undefined.</summary>
+    </member>
+    <member name="F:Microsoft.Windows.Workloads.WorkloadPriority.Background">
+      <summary>The workload is running in the background.</summary>
+    </member>
+    <member name="F:Microsoft.Windows.Workloads.WorkloadPriority.Foreground">
+      <summary>The workload is running in the foreground.</summary>
+    </member>
+  </members>
+</doc>
