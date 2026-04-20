@@ -19,7 +19,7 @@ dynwinrt/
 │   ├── js/                # JavaScript/TypeScript bindings (napi-rs)
 │   └── py/                # Python bindings (PyO3)
 └── tools/
-    └── winrt-meta/        # Source for dynwinrt-codegen (TypeScript & Python)
+    └── dynwinrt-codegen/  # Code generator (JS/DTS from .winmd)
 ```
 
 ## Build
@@ -40,7 +40,7 @@ cd bindings/py && maturin develop
 
 ## Code Generation with dynwinrt-codegen
 
-`dynwinrt-codegen` reads Windows metadata (.winmd) files and generates typed bindings for `@microsoft/dynwinrt` (TypeScript) or `dynwinrt-py` (Python).
+`dynwinrt-codegen` reads Windows metadata (.winmd) files and generates typed JavaScript bindings (`.js` + `.d.ts`) for `@microsoft/dynwinrt`.
 
 ### Quick Start
 
@@ -48,22 +48,21 @@ cd bindings/py && maturin develop
 # Install from npm (once published)
 npm install -D @microsoft/dynwinrt-codegen
 
-# Generate TypeScript bindings for a class
-npx dynwinrt-codegen generate --namespace Windows.Foundation --class-name Uri --lang ts --output ./generated
-
-# Generate Python bindings for a class
-npx dynwinrt-codegen generate --namespace Windows.Foundation --class-name Uri --lang py --output ./generated
+# Generate JS bindings for a class (emits .js + .d.ts)
+npx dynwinrt-codegen generate --namespace Windows.Foundation --class-name Uri --output ./generated
 
 # Generate an entire namespace
-npx dynwinrt-codegen generate --namespace Windows.Web.Http --lang ts --output ./generated
+npx dynwinrt-codegen generate --namespace Windows.Web.Http --output ./generated
 ```
+
+> **Python codegen** (`--lang py`) is at an early prototype stage and not yet ready for production use.
 
 ### Building from Source
 
 ```bash
 cd tools/dynwinrt-codegen
 cargo build -p dynwinrt-codegen --release
-cargo run -p dynwinrt-codegen --release -- generate --namespace Windows.Foundation --class-name Uri --lang ts --output ./generated
+cargo run -p dynwinrt-codegen --release -- generate --namespace Windows.Foundation --class-name Uri --output ./generated
 ```
 
 **Arguments:**
@@ -75,25 +74,23 @@ cargo run -p dynwinrt-codegen --release -- generate --namespace Windows.Foundati
 | `--namespace` | No | WinRT namespace to generate (omit to generate all non-Windows namespaces) |
 | `--class-name` | No | Specific class (generates dependencies too) |
 | `--ref` | No | Additional .winmd files for type resolution only (no code generated) |
-| `--lang` | No | Target language: `ts` (default) or `py` |
+| `--lang` | No | Target language: `js` (default, emits `.js` + `.d.ts`) |
 | `--output` | No | Output directory (default: `./generated`) |
 | `--dry-run` | No | Validate without writing files |
 
 ### Fix Import Paths (local development)
 
-Generated TypeScript files import from `'@microsoft/dynwinrt'`. For local development, fix to relative path:
+Generated files import from `'@microsoft/dynwinrt'`. For local development, fix to relative path:
 
 ```bash
-find generated -name "*.ts" -exec sed -i "s|from '@microsoft/dynwinrt'|from '../../dist/index.js'|g" {} +
+find generated -name "*.js" -exec sed -i "s|from '@microsoft/dynwinrt'|from '../../dist/index.js'|g" {} +
 ```
 
 ### Use Generated Bindings
 
-**TypeScript:**
-
-```typescript
+```javascript
 import { roInitialize } from '@microsoft/dynwinrt'
-import { Uri } from './generated/Uri'
+import { Uri } from './generated/Uri.js'
 
 roInitialize(1) // Initialize WinRT (MTA)
 
@@ -103,32 +100,18 @@ console.log(uri.port)       // 443
 console.log(uri.schemeName) // "https"
 ```
 
-**Python:**
-
-```python
-import dynwinrt_py as dw
-from generated.uri import Uri
-
-dw.ro_initialize(1)  # Initialize WinRT (MTA)
-
-uri = Uri.create_uri('https://example.com/path?q=1')
-print(uri.host)         # "example.com"
-print(uri.port)         # 443
-print(uri.scheme_name)  # "https"
-```
-
 ### What Gets Generated
 
 For each WinRT class, dynwinrt-codegen generates:
 
 - **Interface registration** — `DynWinRtType.registerInterface()` with all methods and type signatures
-- **Wrapper class** — Typed class with properties and methods (TypeScript or Python)
+- **Wrapper class** — Typed class with properties and methods
 - **Factory methods** — Static methods for object creation (via activation factory)
 - **Collection types** — `IVector<T>`, `IMap<K,V>` wrappers
 - **Structs** — Value types with pack/unpack helpers
-- **Enums** — TypeScript `enum` or Python `IntEnum` declarations
+- **Enums** — `Object.freeze` in JS, `enum` in `.d.ts`
 - **Delegates** — IID and parameter type exports for event handling
-- **Index file** — `index.ts` or `__init__.py` re-exporting all types
+- **Index file** — `index.js` + `index.d.ts` re-exporting all types
 
 ### Running Tests
 
@@ -147,7 +130,7 @@ cd bindings/py && pytest
 
 The path to the WinAppSDK Bootstrap DLL is retrieved from the `WINAPPSDK_BOOTSTRAP_DLL_PATH` environment variable. Only needed for unpackaged apps using WinAppSDK APIs.
 
-```typescript
+```javascript
 import { initWinappsdk } from '@microsoft/dynwinrt'
 initWinappsdk(1, 8) // Initialize WinAppSDK 1.8
 ```

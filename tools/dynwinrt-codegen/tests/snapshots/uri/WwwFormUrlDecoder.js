@@ -13,19 +13,17 @@ const _IWwwFormUrlDecoderRuntimeClassFactory = DynWinRtType.registerInterface(
     .addMethod("CreateWwwFormUrlDecoder", new DynWinRtMethodSig().addIn(DynWinRtType.hstring()).addOut(DynWinRtType.runtimeClass('Windows.Foundation.WwwFormUrlDecoder', WinGuid.parse('d45a0451-f225-4542-9296-0e1df5d254df'))));
 
 export class WwwFormUrlDecoder {
-    readonly _obj: DynWinRtValue;
-    private static _f_IWwwFormUrlDecoderRuntimeClassFactory: DynWinRtValue;
-    private static f_IWwwFormUrlDecoderRuntimeClassFactory() { return WwwFormUrlDecoder._f_IWwwFormUrlDecoderRuntimeClassFactory ??= DynWinRtValue.activationFactory('Windows.Foundation.WwwFormUrlDecoder').cast(IID_IWwwFormUrlDecoderRuntimeClassFactory); }
+    _obj;
+    static _f_IWwwFormUrlDecoderRuntimeClassFactory;
+    static f_IWwwFormUrlDecoderRuntimeClassFactory() { return WwwFormUrlDecoder._f_IWwwFormUrlDecoderRuntimeClassFactory ??= DynWinRtValue.activationFactory('Windows.Foundation.WwwFormUrlDecoder').cast(IID_IWwwFormUrlDecoderRuntimeClassFactory); }
 
-    constructor(obj: DynWinRtValue) {
+    constructor(obj) {
         this._obj = obj.cast(IID_IWwwFormUrlDecoderRuntimeClass);
     }
-
-    static createWwwFormUrlDecoder(query: string): WwwFormUrlDecoder {
+    static createWwwFormUrlDecoder(query) {
         return new WwwFormUrlDecoder(_IWwwFormUrlDecoderRuntimeClassFactory.method(6).invoke(WwwFormUrlDecoder.f_IWwwFormUrlDecoderRuntimeClassFactory(), [DynWinRtValue.hstring(query)]));
     }
-
-    getFirstValueByName(name: string): string {
+    getFirstValueByName(name) {
         return _IWwwFormUrlDecoderRuntimeClass.method(6).invoke(this._obj, [DynWinRtValue.hstring(name)]).toString();
     }
 }

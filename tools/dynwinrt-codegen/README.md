@@ -23,12 +23,13 @@ npx dynwinrt-codegen generate [OPTIONS]
 | `--namespace` | No | Generate only this namespace. If omitted, generates all non-Windows namespaces |
 | `--class-name` | No | Class name(s) to generate, comma-separated (requires `--namespace`). E.g. `StorageFile` or `StorageFile,StorageFolder` |
 | `--ref` | No | Additional `.winmd` files for type resolution only (no code generated). Paths separated by `;` |
-| `--lang` | No | Target language: `ts` (default), `js` (ESM), `cjs` (CommonJS) |
+| `--lang` | No | Target language: `js` (default, emits `.js` + `.d.ts`) or `py` (emits `.py`, optionally `.pyi`) |
 | `--output` | No | Output directory (default: `./generated`) |
 | `--dry-run` | No | Validate metadata and resolve dependencies without writing files |
-| `--source-map` | No | Generate `.map` source map files alongside JS output (only with `--lang js` or `cjs`) |
 
-When `--lang js` or `--lang cjs` is specified, TypeScript is generated internally and compiled to JavaScript via SWC. The intermediate `.ts` files are not written to the output directory.
+With `--lang js` (default), the tool emits plain ESM JavaScript (`.js`) plus matching ambient TypeScript declarations (`.d.ts`). No TypeScript compiler is needed — the output works for both JS and TS consumers. JSDoc comments are preserved so VS Code IntelliSense shows API descriptions.
+
+> **Note:** Legacy flags `--lang ts`, `--lang cjs`, `--source-map`, `--declaration`, and `--no-declaration` are accepted by the npm CLI wrapper for backwards compatibility but are silently mapped to `--lang js` behavior.
 
 ### Examples
 
@@ -41,13 +42,13 @@ npx dynwinrt-codegen generate \
   --lang js
 ```
 
-Generate TypeScript bindings for a specific class:
+Generate bindings for a specific class (emits `.js` + `.d.ts`):
 
 ```bash
 npx dynwinrt-codegen generate \
   --namespace Windows.Storage \
   --class-name StorageFile \
-  --output ./generated-ts
+  --output ./generated
 ```
 
 Generate multiple classes in one pass (shares the winmd index):
@@ -56,7 +57,7 @@ Generate multiple classes in one pass (shares the winmd index):
 npx dynwinrt-codegen generate \
   --namespace Windows.Storage \
   --class-name StorageFile,StorageFolder \
-  --output ./generated-ts
+  --output ./generated
 ```
 
 Generate all namespaces from multiple `.winmd` files:
@@ -64,7 +65,7 @@ Generate all namespaces from multiple `.winmd` files:
 ```bash
 npx dynwinrt-codegen generate \
   --winmd "path/to/Windows.winmd;path/to/Microsoft.WindowsAppSDK.winmd" \
-  --output ./generated-ts
+  --output ./generated
 ```
 
 Validate metadata without writing files:
@@ -73,16 +74,6 @@ Validate metadata without writing files:
 npx dynwinrt-codegen generate \
   --folder path/to/metadata \
   --dry-run
-```
-
-Generate JS with source maps for debugging:
-
-```bash
-npx dynwinrt-codegen generate \
-  --folder path/to/metadata \
-  --output ./generated-js \
-  --lang js \
-  --source-map
 ```
 
 ## Output
@@ -133,5 +124,5 @@ cargo test -p dynwinrt-codegen
 
 Tests include:
 - Unit tests for type mapping, dependency resolution, and code generation helpers
-- Snapshot test for `Windows.Foundation.Uri` (regenerate with `cargo run -p dynwinrt-codegen -- generate --namespace Windows.Foundation --class-name Uri --output tests/snapshots/uri`)
+- Snapshot test for `Windows.Foundation.Uri` (regenerate with `cargo run -p dynwinrt-codegen -- generate --namespace Windows.Foundation --class-name Uri --lang js --output tests/snapshots/uri`)
 

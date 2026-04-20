@@ -9,6 +9,7 @@ use clap::{Parser, Subcommand};
 
 use dynwinrt_codegen::codegen::python;
 use dynwinrt_codegen::codegen::typescript;
+use dynwinrt_codegen::codegen::{project, render_js, render_dts};
 use dynwinrt_codegen::meta;
 use dynwinrt_codegen::types::TypeMeta;
 use dynwinrt_codegen::xml_doc::DocTable;
@@ -36,8 +37,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Generate TypeScript bindings from .winmd files
-    #[command(long_about = "Parse .winmd metadata and generate typed TypeScript files.\n\n\
+    /// Generate bindings from .winmd files
+    #[command(long_about = "Parse .winmd metadata and generate typed binding files.\n\n\
+        By default (`--lang js`) the tool emits plain ESM JavaScript (`.js`) plus\n\
+        matching ambient TypeScript declarations (`.d.ts`) — no TypeScript compiler\n\
+        or SWC step is involved.\n\n\
         The tool automatically:\n\
         - Detects Windows.winmd from the Windows SDK install path\n\
         - Discovers sibling .winmd files in the same directory as --winmd\n\
@@ -71,8 +75,9 @@ enum Commands {
         #[arg(long = "ref", value_name = "PATH")]
         ref_winmd: Option<String>,
 
-        /// Target language
-        #[arg(long, default_value = "ts", value_parser = ["ts", "py"])]
+        /// Target language. `js` emits .js + .d.ts (recommended for Node consumers).
+        /// `py` emits .py (and optionally .pyi via --pyi).
+        #[arg(long, default_value = "js", value_parser = ["js", "py"])]
         lang: String,
 
         /// Output directory for generated files
@@ -203,7 +208,9 @@ fn run() -> Result<(), String> {
                     let (index_name, append_fn, generate_fn): (&str, AppendFn, GenerateFn) = if lang == "py" {
                         ("__init__.py", python::append_to_index, python::generate_index)
                     } else {
-                        ("index.ts", typescript::append_to_index, typescript::generate_index)
+                        // For JS lang, we use an in-memory `.ts` index then split into .js + .d.ts.
+                        // We pick a sentinel filename `index.js` to detect presence; `.d.ts` is written alongside.
+                        ("index.js", typescript::append_to_index, typescript::generate_index)
                     };
                     let index_path = output_dir.join(index_name);
                     let deps = meta::resolve_dependencies(&winmd, &classes, &[], &[]);
@@ -213,18 +220,41 @@ fn run() -> Result<(), String> {
                     for c in all_classes.iter_mut() { doc_table.apply_to_class(c); }
                     for i in all_interfaces.iter_mut() { doc_table.apply_to_interface(i); }
                     for e in all_enums.iter_mut() { doc_table.apply_to_enum(e); }
-                    if index_path.exists() {
-                        let existing = fs::read_to_string(&index_path)
-                            .map_err(|e| format!("Failed to read {}: {}", index_path.display(), e))?;
-                        let updated = append_fn(&existing, &all_classes, &all_interfaces, &all_enums);
-                        fs::write(&index_path, &updated)
-                            .map_err(|e| format!("Failed to write {}: {}", index_path.display(), e))?;
-                        println!("Updated {}", index_path.display());
+                    if lang == "py" {
+                        if index_path.exists() {
+                            let existing = fs::read_to_string(&index_path)
+                                .map_err(|e| format!("Failed to read {}: {}", index_path.display(), e))?;
+                            let updated = append_fn(&existing, &all_classes, &all_interfaces, &all_enums);
+                            fs::write(&index_path, &updated)
+                                .map_err(|e| format!("Failed to write {}: {}", index_path.display(), e))?;
+                            println!("Updated {}", index_path.display());
+                        } else {
+                            let new_index = generate_fn(&all_classes, &all_interfaces, &all_enums);
+                            fs::write(&index_path, &new_index)
+                                .map_err(|e| format!("Failed to write {}: {}", index_path.display(), e))?;
+                            println!("Generated {}", index_path.display());
+                        }
                     } else {
-                        let new_index = generate_fn(&all_classes, &all_interfaces, &all_enums);
-                        fs::write(&index_path, &new_index)
-                            .map_err(|e| format!("Failed to write {}: {}", index_path.display(), e))?;
-                        println!("Generated {}", index_path.display());
+                        // JS: index.js + index.d.ts are pure re-exports and identical, so we
+                        // round-trip incremental appends by reading back index.js itself
+                        // (no hidden cache file in the output directory).
+                        let js_path = output_dir.join("index.js");
+                        let dts_path = output_dir.join("index.d.ts");
+                        let index_content = if js_path.exists() {
+                            let existing = fs::read_to_string(&js_path)
+                                .map_err(|e| format!("Failed to read {}: {}", js_path.display(), e))?;
+                            append_fn(&existing, &all_classes, &all_interfaces, &all_enums)
+                        } else {
+                            generate_fn(&all_classes, &all_interfaces, &all_enums)
+                        };
+                        fs::write(&js_path, &index_content)
+                            .map_err(|e| format!("Failed to write {}: {}", js_path.display(), e))?;
+                        fs::write(&dts_path, &index_content)
+                            .map_err(|e| format!("Failed to write {}: {}", dts_path.display(), e))?;
+                        // Clean up any stale `.index.ts` cache from older codegen versions
+                        let stale = output_dir.join(".index.ts");
+                        if stale.exists() { let _ = fs::remove_file(&stale); }
+                        println!("Generated {}", js_path.display());
                     }
                     if pyi {
                         let stub_code = dynwinrt_codegen::codegen::python_stub::generate_index_stub(
@@ -316,10 +346,17 @@ fn run() -> Result<(), String> {
                         }
                     } else {
                         let index_code = typescript::generate_index(&all_classes, &all_interfaces, &all_enums);
-                        let index_path = output_dir.join("index.ts");
-                        fs::write(&index_path, &index_code)
-                            .map_err(|e| format!("Failed to write {}: {}", index_path.display(), e))?;
-                        println!("Generated {}", index_path.display());
+                        // Index files are pure re-exports — identical in JS and DTS
+                        let js_path = output_dir.join("index.js");
+                        let dts_path = output_dir.join("index.d.ts");
+                        fs::write(&js_path, &index_code)
+                            .map_err(|e| format!("Failed to write {}: {}", js_path.display(), e))?;
+                        fs::write(&dts_path, &index_code)
+                            .map_err(|e| format!("Failed to write {}: {}", dts_path.display(), e))?;
+                        // Clean up any stale `.index.ts` cache from older codegen versions
+                        let stale = output_dir.join(".index.ts");
+                        if stale.exists() { let _ = fs::remove_file(&stale); }
+                        println!("Generated {}", js_path.display());
                     }
                 }
 
@@ -402,18 +439,20 @@ fn generate_for_types(
         known_types.insert(iface.name.clone());
     }
 
+    let (delegate_signatures, delegate_sig_refs, delegate_param_wraps) = project::build_delegate_signatures(&all_interfaces, &delegate_type_names, &known_types);
+
     if !dry_run {
         if lang == "py" {
             generate_py_files(output_dir, &all_classes, &all_interfaces, &all_enums, &shared_interfaces, &known_types, &delegate_type_names, &shared_iids, pyi)?;
         } else {
-            generate_ts_files(output_dir, &all_classes, &all_interfaces, &all_enums, &shared_interfaces, &known_types, &delegate_type_names, &shared_iids)?;
+            generate_js_files(output_dir, &all_classes, &all_interfaces, &all_enums, &shared_interfaces, &known_types, &delegate_type_names, &shared_iids, &delegate_signatures, &delegate_sig_refs, &delegate_param_wraps)?;
         }
     }
 
     Ok((all_classes.len(), all_interfaces.len(), all_enums.len()))
 }
 
-fn generate_ts_files(
+fn generate_js_files(
     output_dir: &Path,
     all_classes: &[meta::ClassMeta],
     all_interfaces: &[meta::InterfaceMeta],
@@ -422,33 +461,45 @@ fn generate_ts_files(
     known_types: &HashSet<String>,
     delegate_type_names: &HashSet<String>,
     shared_iids: &HashSet<String>,
+    delegate_sigs: &HashMap<String, String>,
+    delegate_sig_refs: &HashMap<String, Vec<String>>,
+    delegate_param_wraps: &HashMap<String, Vec<String>>,
 ) -> Result<(), String> {
+    let emit = |name: &str, js_code: &str, dts_code: &str| -> Result<(), String> {
+        let js_path = output_dir.join(format!("{}.js", name));
+        let dts_path = output_dir.join(format!("{}.d.ts", name));
+        write_file(&js_path, js_code)?;
+        write_file(&dts_path, dts_code)?;
+        println!("Generated {}", js_path.display());
+        Ok(())
+    };
+
     for iface in shared_interfaces {
-        let code = typescript::generate_interface(iface, known_types, delegate_type_names);
-        let filepath = output_dir.join(format!("{}.ts", iface.name));
-        write_file(&filepath, &code)?;
-        println!("Generated shared {}", filepath.display());
+        let projected = project::project_interface(iface, known_types, delegate_type_names, delegate_sigs, delegate_sig_refs, delegate_param_wraps);
+        let js = render_js::render(&projected);
+        let dts = render_dts::render(&projected);
+        emit(&iface.name, &js, &dts)?;
     }
     for iface in all_interfaces {
-        let code = typescript::generate_interface(iface, known_types, delegate_type_names);
-        let filepath = output_dir.join(format!("{}.ts", iface.name));
-        write_file(&filepath, &code)?;
-        println!("Generated {}", filepath.display());
+        let projected = project::project_interface(iface, known_types, delegate_type_names, delegate_sigs, delegate_sig_refs, delegate_param_wraps);
+        let js = render_js::render(&projected);
+        let dts = render_dts::render(&projected);
+        emit(&iface.name, &js, &dts)?;
     }
     for en in all_enums {
         if let TypeMeta::Enum { name, .. } = en {
-            if let Some(code) = typescript::generate_enum(en) {
-                let filepath = output_dir.join(format!("{}.ts", name));
-                write_file(&filepath, &code)?;
-                println!("Generated {}", filepath.display());
+            if let Some(projected) = project::project_enum(en) {
+                let js = render_js::render(&projected);
+                let dts = render_dts::render(&projected);
+                emit(name, &js, &dts)?;
             }
         }
     }
     for class in all_classes {
-        let code = typescript::generate_class(class, known_types, delegate_type_names, shared_iids);
-        let filepath = output_dir.join(format!("{}.ts", class.name));
-        write_file(&filepath, &code)?;
-        println!("Generated {}", filepath.display());
+        let projected = project::project_class(class, known_types, delegate_type_names, shared_iids, delegate_sigs, delegate_sig_refs, delegate_param_wraps);
+        let js = render_js::render(&projected);
+        let dts = render_dts::render(&projected);
+        emit(&class.name, &js, &dts)?;
     }
     Ok(())
 }

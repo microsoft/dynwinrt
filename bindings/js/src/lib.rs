@@ -539,8 +539,25 @@ impl DynWinRTValue {
   #[napi]
   pub async fn to_promise(&self) -> napi::Result<DynWinRTValue> {
     let v = (&self.0).await
-      .map_err(|e| napi::Error::from_reason(format!("Async operation failed: {}", e.message())))?;
+      .map_err(|e| match e {
+        dynwinrt::Error::Canceled => napi::Error::from_reason("Async operation was canceled"),
+        other => napi::Error::from_reason(format!("Async operation failed: {}", other.message())),
+      })?;
     Ok(DynWinRTValue(v))
+  }
+
+  /// Cancel the underlying WinRT async operation (calls `IAsyncInfo::Cancel`).
+  /// Safe to call multiple times or on already-completed operations.
+  ///
+  /// Throws if this value is not an async operation.
+  #[napi]
+  pub fn cancel(&self) -> napi::Result<()> {
+    let async_info = match &self.0 {
+      dynwinrt::WinRTValue::Async(a) => a,
+      _ => return Err(napi::Error::from_reason("cancel: not an async value")),
+    };
+    async_info.cancel()
+      .map_err(|e| napi::Error::from_reason(format!("Cancel failed: {}", e.message())))
   }
 
   #[napi]

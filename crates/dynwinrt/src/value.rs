@@ -103,6 +103,16 @@ impl AsyncInfo {
             )),
         }
     }
+
+    /// Cancel the async operation. Causes the operation to transition to
+    /// `AsyncStatus::Canceled` (asynchronously); subsequent awaits will reject
+    /// with `Error::Canceled`.
+    ///
+    /// Calling cancel on an already-completed or already-canceled operation is
+    /// a no-op (success).
+    pub fn cancel(&self) -> result::Result<()> {
+        self.info.Cancel().map_err(result::Error::WindowsError)
+    }
 }
 
 #[derive(Debug, Clone)]

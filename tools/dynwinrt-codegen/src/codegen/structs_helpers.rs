@@ -78,8 +78,9 @@ pub(crate) fn ts_struct_field_type(typ: &TypeMeta) -> String {
         TypeMeta::String => "string".to_string(),
         TypeMeta::Guid => "string".to_string(),
         TypeMeta::I8 | TypeMeta::U8 | TypeMeta::I16 | TypeMeta::U16 | TypeMeta::Char16
-        | TypeMeta::I32 | TypeMeta::U32 | TypeMeta::I64 | TypeMeta::U64
+        | TypeMeta::I32 | TypeMeta::U32
         | TypeMeta::F32 | TypeMeta::F64 | TypeMeta::Enum { .. } => "number".to_string(),
+        TypeMeta::I64 | TypeMeta::U64 => "bigint".to_string(),
         TypeMeta::Struct { name, .. } if name == "HResult" => "number".to_string(),
         TypeMeta::Struct { name, .. } => name.clone(),
         _ => "DynWinRtValue".to_string(),

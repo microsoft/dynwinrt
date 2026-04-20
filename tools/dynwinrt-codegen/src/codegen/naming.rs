@@ -88,3 +88,33 @@ pub(crate) fn is_py_reserved(s: &str) -> bool {
 pub fn to_snake_case_filename(name: &str) -> String {
     to_snake_case(name)
 }
+
+/// Heuristic mapping from RHS expression to TS type for `export const X = ...;`.
+/// Covers all patterns our generator emits.
+pub(crate) fn infer_const_type(name: &str, rhs: &str) -> String {
+    if rhs.starts_with("WinGuid.parse(") {
+        return "WinGuid".into();
+    }
+    if rhs.starts_with("DynWinRtType.") {
+        if rhs.contains(".iid()") {
+            return "WinGuid".into();
+        }
+        return "DynWinRtType".into();
+    }
+    if rhs.starts_with('[') {
+        return "DynWinRtType[]".into();
+    }
+    if rhs.starts_with("DynWinRtMethodSig") {
+        return "DynWinRtMethodSig".into();
+    }
+    if name.ends_with("_PARAM_TYPES") {
+        return "DynWinRtType[]".into();
+    }
+    if name.starts_with("IID_") {
+        return "WinGuid".into();
+    }
+    if name.ends_with("_Type") {
+        return "DynWinRtType".into();
+    }
+    "any".into()
+}

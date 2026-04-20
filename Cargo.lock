@@ -309,6 +309,7 @@ name = "dynwinrt-codegen"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "regex",
  "roxmltree",
  "windows-metadata",
 ]

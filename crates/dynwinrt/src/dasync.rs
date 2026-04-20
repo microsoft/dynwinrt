@@ -230,6 +230,7 @@ impl Future for WinRTAsyncFuture {
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         // Fast path: already completed before first poll
         match self.async_info.info.Status() {
+            Ok(AsyncStatus::Canceled) => return Poll::Ready(Err(Error::Canceled)),
             Ok(status) if status != AsyncStatus::Started => {
                 return Poll::Ready(self.get_results());
             }
@@ -244,6 +245,7 @@ impl Future for WinRTAsyncFuture {
             }
             // Re-check status (race: completion may have fired between status check and here)
             match self.async_info.info.Status() {
+                Ok(AsyncStatus::Canceled) => return Poll::Ready(Err(Error::Canceled)),
                 Ok(status) if status != AsyncStatus::Started => {
                     return Poll::Ready(self.get_results());
                 }
@@ -672,6 +674,79 @@ mod tests {
         }
 
         println!("get_results u64 verification passed!");
+        Ok(())
+    }
+
+    /// Verify that `AsyncInfo::cancel()` causes the future to resolve with
+    /// `Error::Canceled`. Uses ThreadPool.RunAsync with a sleep — the work item
+    /// cooperatively checks status, but more importantly we cancel BEFORE first
+    /// poll so the fast path in `WinRTAsyncFuture::poll` sees Canceled status.
+    #[tokio::test]
+    async fn test_async_cancel_returns_canceled() -> Result<()> {
+        // Spawn a long-running work item (5s sleep). We cancel before awaiting,
+        // so the operation never gets to "Started" → "Completed" — it transitions
+        // straight to "Canceled" once the runtime observes the request.
+        let handler = WorkItemHandler::new(|_action| {
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            Ok(())
+        });
+        let op = ThreadPool::RunAsync(&handler).map_err(Error::WindowsError)?;
+        let info: IAsyncInfo = op.cast().map_err(Error::WindowsError)?;
+
+        let reg = MetadataTable::new();
+        let async_info = AsyncInfo {
+            info,
+            async_type: reg.async_action(),
+        };
+
+        // Cancel immediately, before any poll.
+        async_info.cancel()?;
+
+        // Allow the WinRT runtime a brief moment to flip the status to Canceled.
+        // Without this, a race may leave the operation in Started state and the
+        // SetCompleted callback path will eventually fire as Canceled instead.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let value = WinRTValue::Async(async_info);
+        let result = value.await;
+
+        match result {
+            Err(Error::Canceled) => {
+                println!("Got Error::Canceled as expected");
+                Ok(())
+            }
+            other => panic!(
+                "Expected Err(Error::Canceled), got {:?}",
+                other.map(|v| format!("Ok({:?})", v))
+                    .unwrap_or_else(|e| format!("Err({:?})", e))
+            ),
+        }
+    }
+
+    /// Verify `cancel()` on an already-completed async operation is a no-op
+    /// (does not error). WinRT spec: Cancel after completion is silently ignored.
+    #[tokio::test]
+    async fn test_async_cancel_after_completion_is_noop() -> Result<()> {
+        let handler = WorkItemHandler::new(|_| Ok(()));
+        let op = ThreadPool::RunAsync(&handler).map_err(Error::WindowsError)?;
+        let info: IAsyncInfo = op.cast().map_err(Error::WindowsError)?;
+
+        let reg = MetadataTable::new();
+        let async_info = AsyncInfo {
+            info: info.clone(),
+            async_type: reg.async_action(),
+        };
+
+        // Wait for completion first.
+        let value = WinRTValue::Async(AsyncInfo {
+            info,
+            async_type: reg.async_action(),
+        });
+        let _ = value.await?;
+
+        // Cancel after completion — must not error.
+        async_info.cancel()?;
+        println!("cancel() after completion succeeded (no-op)");
         Ok(())
     }
 }

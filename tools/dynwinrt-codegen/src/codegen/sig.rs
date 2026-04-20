@@ -170,20 +170,73 @@ pub(crate) fn wrap_arg(name: &str, typ: &TypeMeta) -> String {
     match typ {
         TypeMeta::String => format!("DynWinRtValue.hstring({})", name),
         TypeMeta::Bool => format!("DynWinRtValue.boolValue({})", name),
-        TypeMeta::I32 | TypeMeta::U32 | TypeMeta::Enum { .. }
-        | TypeMeta::I8 | TypeMeta::U8 | TypeMeta::I16 | TypeMeta::U16
-        | TypeMeta::Char16 => {
+        TypeMeta::I32 | TypeMeta::Enum { .. }
+        | TypeMeta::I8 | TypeMeta::U8 | TypeMeta::Char16 => {
             format!("DynWinRtValue.i32({})", name)
         }
-        TypeMeta::I64 | TypeMeta::U64 => format!("DynWinRtValue.i64({})", name),
+        TypeMeta::U32 => format!("DynWinRtValue.u32({})", name),
+        TypeMeta::I16 => format!("DynWinRtValue.i16({})", name),
+        TypeMeta::U16 => format!("DynWinRtValue.u16({})", name),
+        TypeMeta::I64 => format!("DynWinRtValue.i64({})", name),
+        TypeMeta::U64 => format!("DynWinRtValue.u64({})", name),
         TypeMeta::F32 => format!("DynWinRtValue.f32({})", name),
         TypeMeta::F64 => format!("DynWinRtValue.f64({})", name),
         TypeMeta::Guid => format!("DynWinRtValue.guid(WinGuid.parse({}))", name),
         TypeMeta::RuntimeClass { .. } | TypeMeta::Object | TypeMeta::Interface { .. }
-        | TypeMeta::Parameterized { .. } | TypeMeta::Delegate { .. } => {
-            format!("({} as any)._obj ?? {}", name, name)
+        | TypeMeta::Delegate { .. } => {
+            format!("_unwrap({})", name)
         }
-        TypeMeta::Array(_) => format!("{}.toValue()", name),
+        TypeMeta::Parameterized { piid, args, name: pname, .. } => {
+            // For vector-like collections, auto-wrap JS arrays at runtime
+            if is_vector_like(piid, pname) {
+                if let Some(elem) = args.first() {
+                    let elem_type = ts_dynwinrt_type(elem);
+                    let item_wrap = vector_item_wrap_expr("_i", elem);
+                    return format!(
+                        "(Array.isArray({name}) ? DynWinRtValue.createVector({name}.map(_i => {item_wrap}), {elem_type}) : _unwrap({name}))"
+                    );
+                }
+            }
+            // For map-like collections, auto-wrap JS Map at runtime
+            if is_map_like(piid, pname) {
+                if args.len() == 2 {
+                    let key_type = ts_dynwinrt_type(&args[0]);
+                    let val_type = ts_dynwinrt_type(&args[1]);
+                    let k_wrap = vector_item_wrap_expr("_k", &args[0]);
+                    let v_wrap = vector_item_wrap_expr("_v", &args[1]);
+                    return format!(
+                        "({name} instanceof Map ? DynWinRtValue.createMap([...{name}.keys()].map(_k => {k_wrap}), [...{name}.values()].map(_v => {v_wrap}), {key_type}, {val_type}) : _unwrap({name}))"
+                    );
+                }
+            }
+            format!("_unwrap({})", name)
+        }
+        TypeMeta::Array(inner) => {
+            // Accept both DynWinRtArray (.toValue()) and plain JS array.
+            // For primitive arrays, use typed DynWinRtArray constructors.
+            // For object arrays, use createVector which WinRT can consume as PassArray.
+            let from_array_expr = match inner.as_ref() {
+                TypeMeta::I8 => format!("DynWinRtArray.fromI8Values({name})"),
+                TypeMeta::U8 => format!("DynWinRtArray.fromU8Values({name})"),
+                TypeMeta::I16 => format!("DynWinRtArray.fromI16Values({name})"),
+                TypeMeta::U16 | TypeMeta::Char16 => format!("DynWinRtArray.fromU16Values({name})"),
+                TypeMeta::I32 | TypeMeta::Enum { .. } => format!("DynWinRtArray.fromI32Values({name})"),
+                TypeMeta::U32 => format!("DynWinRtArray.fromU32Values({name})"),
+                TypeMeta::I64 => format!("DynWinRtArray.fromI64Values({name})"),
+                TypeMeta::U64 => format!("DynWinRtArray.fromU64Values({name})"),
+                TypeMeta::F32 => format!("DynWinRtArray.fromF32Values({name})"),
+                TypeMeta::F64 => format!("DynWinRtArray.fromF64Values({name})"),
+                TypeMeta::String => format!("DynWinRtArray.fromStringValues({name})"),
+                _ => {
+                    // Object types: wrap via createVector
+                    let elem_type = ts_dynwinrt_type(inner);
+                    return format!(
+                        "(Array.isArray({name}) ? DynWinRtValue.createVector({name}.map(_i => _unwrap(_i)), {elem_type}) : _unwrap({name}))"
+                    );
+                }
+            };
+            format!("(Array.isArray({name}) ? {from_array_expr}.toValue() : {name}.toValue())")
+        }
         TypeMeta::Struct { name: struct_name, .. } if struct_name == "HResult" => {
             format!("DynWinRtValue.i32({})", name)
         }
@@ -191,6 +244,45 @@ pub(crate) fn wrap_arg(name: &str, typ: &TypeMeta) -> String {
             format!("_pack{}({}).toValue()", struct_name, name)
         }
         _ => name.to_string(),
+    }
+}
+
+fn is_vector_like(piid: &str, name: &str) -> bool {
+    const PIID_IVECTOR: &str = "913337e9-11a1-4345-a3a2-4e7f956e222d";
+    const PIID_IVECTOR_VIEW: &str = "bbe1fa4c-b0e3-4583-baef-1f1b2e483e56";
+    const PIID_IITERABLE: &str = "faa585ea-6214-4217-afda-7f46de5869b3";
+    piid == PIID_IVECTOR || piid == PIID_IVECTOR_VIEW || piid == PIID_IITERABLE
+        || name == "IVector" || name == "IVectorView" || name == "IIterable"
+}
+
+fn is_map_like(piid: &str, name: &str) -> bool {
+    const PIID_IMAP: &str = "3c2925fe-8519-45c1-aa79-197b6718c1c1";
+    const PIID_IMAP_VIEW: &str = "e480ce40-a338-4ada-adcf-272272e48cb9";
+    piid == PIID_IMAP || piid == PIID_IMAP_VIEW
+        || name == "IMap" || name == "IMapView"
+}
+
+/// Generate the JS expression to wrap a single element for createVector/createMap.
+/// For structs, uses pack function; for primitives, wraps as DynWinRtValue; for objects, _unwrap.
+fn vector_item_wrap_expr(var: &str, elem: &TypeMeta) -> String {
+    match elem {
+        TypeMeta::Struct { name, .. } if name != "HResult" => {
+            format!("_pack{}({}).toValue()", name, var)
+        }
+        TypeMeta::String => format!("DynWinRtValue.hstring({})", var),
+        TypeMeta::Bool => format!("DynWinRtValue.boolValue({})", var),
+        TypeMeta::I32 | TypeMeta::Enum { .. }
+        | TypeMeta::I8 | TypeMeta::U8 | TypeMeta::Char16 => {
+            format!("DynWinRtValue.i32({})", var)
+        }
+        TypeMeta::U32 => format!("DynWinRtValue.u32({})", var),
+        TypeMeta::I16 => format!("DynWinRtValue.i16({})", var),
+        TypeMeta::U16 => format!("DynWinRtValue.u16({})", var),
+        TypeMeta::I64 => format!("DynWinRtValue.i64({})", var),
+        TypeMeta::U64 => format!("DynWinRtValue.u64({})", var),
+        TypeMeta::F32 => format!("DynWinRtValue.f32({})", var),
+        TypeMeta::F64 => format!("DynWinRtValue.f64({})", var),
+        _ => format!("_unwrap({})", var),
     }
 }
 

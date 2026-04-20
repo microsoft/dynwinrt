@@ -9,21 +9,21 @@ const _IUriRuntimeClassWithAbsoluteCanonicalUri = DynWinRtType.registerInterface
     .addMethod("get_DisplayIri", new DynWinRtMethodSig().addOut(DynWinRtType.hstring()));
 
 export class IUriRuntimeClassWithAbsoluteCanonicalUri {
-    readonly _obj: DynWinRtValue;
+    _obj;
 
-    constructor(obj: DynWinRtValue) {
+    constructor(obj) {
         this._obj = obj;
     }
 
-    static from(obj: DynWinRtValue): IUriRuntimeClassWithAbsoluteCanonicalUri {
+    static from(obj) {
         return new IUriRuntimeClassWithAbsoluteCanonicalUri(obj.cast(IID_IUriRuntimeClassWithAbsoluteCanonicalUri));
     }
 
-    get absoluteCanonicalUri(): string {
+    get absoluteCanonicalUri() {
         return _IUriRuntimeClassWithAbsoluteCanonicalUri.method(6).invoke(this._obj, []).toString();
     }
 
-    get displayIri(): string {
+    get displayIri() {
         return _IUriRuntimeClassWithAbsoluteCanonicalUri.method(7).invoke(this._obj, []).toString();
     }
 }

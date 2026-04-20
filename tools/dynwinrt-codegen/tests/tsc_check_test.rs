@@ -1,0 +1,179 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+//! Verify that generated `.d.ts` files are valid TypeScript declarations by
+//! running `tsc --noEmit` against them. This catches declaration-level bugs
+//! like missing imports, invalid syntax, or type reference errors that would
+//! break IntelliSense and type-checking for consumers.
+
+use std::fs;
+use std::path::Path;
+use std::process::Command;
+
+const WINDOWS_WINMD: &str =
+    r"C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd";
+
+#[test]
+fn generated_dts_passes_tsc_no_emit() {
+    if !Path::new(WINDOWS_WINMD).exists() {
+        eprintln!("Skipping: Windows.winmd not found");
+        return;
+    }
+
+    // Check npx is available
+    let npx_check = Command::new("cmd")
+        .args(["/c", "npx", "tsc", "--version"])
+        .output();
+    match npx_check {
+        Ok(o) if o.status.success() => {}
+        _ => {
+            eprintln!("Skipping: npx tsc not available");
+            return;
+        }
+    }
+
+    let exe = env!("CARGO_BIN_EXE_dynwinrt-codegen");
+    let tmp = std::env::temp_dir().join(format!(
+        "dynwinrt-codegen-tsc-check-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&tmp);
+    fs::create_dir_all(&tmp).expect("create tmp dir");
+
+    // Generate Uri (covers class, interface, struct, enum)
+    let status = Command::new(exe)
+        .args([
+            "generate",
+            "--namespace", "Windows.Foundation",
+            "--class-name", "Uri",
+            "--lang", "js",
+            "--output",
+        ])
+        .arg(&tmp)
+        .status()
+        .expect("spawn dynwinrt-codegen");
+    assert!(status.success(), "codegen failed (Uri): {:?}", status);
+
+    // Generate StorageFile (covers async methods, delegate params, required interfaces)
+    let status2 = Command::new(exe)
+        .args([
+            "generate",
+            "--namespace", "Windows.Storage",
+            "--class-name", "StorageFile",
+            "--lang", "js",
+            "--output",
+        ])
+        .arg(&tmp)
+        .status()
+        .expect("spawn dynwinrt-codegen");
+    assert!(status2.success(), "codegen failed (StorageFile): {:?}", status2);
+
+    // Write a minimal tsconfig.json for tsc --noEmit
+    let tsconfig = tmp.join("tsconfig.json");
+    fs::write(&tsconfig, r#"{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "Node16",
+    "moduleResolution": "Node16",
+    "strict": false,
+    "noEmit": true,
+    "skipLibCheck": false,
+    "types": []
+  },
+  "include": ["*.d.ts"]
+}"#).expect("write tsconfig");
+
+    // Write a stub for @microsoft/dynwinrt types (the real package isn't installed here)
+    let node_modules = tmp.join("node_modules").join("@microsoft").join("dynwinrt");
+    fs::create_dir_all(&node_modules).expect("create node_modules stub");
+    fs::write(node_modules.join("package.json"), r#"{"name":"@microsoft/dynwinrt","version":"0.0.0","types":"index.d.ts"}"#)
+        .expect("write stub package.json");
+    fs::write(node_modules.join("index.d.ts"), r#"
+export declare class DynWinRtType {
+    static registerInterface(name: string, iid: WinGuid): DynWinRtType;
+    addMethod(name: string, sig: DynWinRtMethodSig): DynWinRtType;
+    static parameterized(iid: WinGuid, args: DynWinRtType[]): DynWinRtType;
+    iid(): WinGuid;
+    static runtimeClass(name: string, iid: WinGuid): DynWinRtType;
+    static hstring(): DynWinRtType;
+    static i32(): DynWinRtType;
+    static u32(): DynWinRtType;
+    static i64(): DynWinRtType;
+    static u64(): DynWinRtType;
+    static f32(): DynWinRtType;
+    static f64(): DynWinRtType;
+    static bool(): DynWinRtType;
+    static object(): DynWinRtType;
+    static enumType(name: string, names: string[], values: number[]): DynWinRtType;
+    static structType(name: string, fields: DynWinRtType[]): DynWinRtType;
+    static iAsyncOperation(inner: DynWinRtType): DynWinRtType;
+    static iAsyncAction(): DynWinRtType;
+    [key: string]: any;
+}
+export declare class DynWinRtMethodSig {
+    addIn(t: DynWinRtType): DynWinRtMethodSig;
+    addOut(t: DynWinRtType): DynWinRtMethodSig;
+    addOutFill(t: DynWinRtType): DynWinRtMethodSig;
+    [key: string]: any;
+}
+export declare class DynWinRtValue {
+    toNumber(): number;
+    toI64(): number;
+    toF64(): number;
+    toBool(): boolean;
+    toString(): string;
+    asArray(): DynWinRtArray;
+    asStruct(): DynWinRtStruct;
+    cast(iid: WinGuid): DynWinRtValue;
+    toPromise(): Promise<DynWinRtValue>;
+    cancel(): void;
+    onProgress(cb: (v: DynWinRtValue) => void): void;
+    static activationFactory(name: string): DynWinRtValue;
+    static hstring(s: string): DynWinRtValue;
+    static fromI32(n: number): DynWinRtValue;
+    static fromBool(b: boolean): DynWinRtValue;
+    static createVector(items: DynWinRtValue[], elemType: DynWinRtType): DynWinRtValue;
+    static createMap(keys: DynWinRtValue[], values: DynWinRtValue[], keyType: DynWinRtType, valueType: DynWinRtType): DynWinRtValue;
+    [key: string]: any;
+}
+export declare class DynWinRtArray {
+    getAt(index: number): DynWinRtValue;
+    length: number;
+    [key: string]: any;
+}
+export declare class DynWinRtStruct {
+    getField(index: number): DynWinRtValue;
+    static create(type_: DynWinRtType): DynWinRtStruct;
+    setField(index: number, value: DynWinRtValue): void;
+    toValue(): DynWinRtValue;
+    [key: string]: any;
+}
+export declare class DynWinRtDelegate {
+    static create(iid: WinGuid, paramTypes: DynWinRtType[], callback: (...args: any[]) => void): DynWinRtDelegate;
+    toValue(): DynWinRtValue;
+    [key: string]: any;
+}
+export declare class WinGuid {
+    static parse(s: string): WinGuid;
+    [key: string]: any;
+}
+"#).expect("write stub index.d.ts");
+
+    // Run tsc --noEmit (use cmd /c npx since npx is a .cmd on Windows)
+    let tsc_output = Command::new("cmd")
+        .args(["/c", "npx", "tsc", "--noEmit", "-p", tsconfig.to_str().unwrap()])
+        .current_dir(&tmp)
+        .output()
+        .expect("spawn tsc");
+
+    let stdout = String::from_utf8_lossy(&tsc_output.stdout);
+    let stderr = String::from_utf8_lossy(&tsc_output.stderr);
+
+    let _ = fs::remove_dir_all(&tmp);
+
+    assert!(
+        tsc_output.status.success(),
+        "tsc --noEmit failed on generated .d.ts files!\nstdout:\n{}\nstderr:\n{}",
+        stdout, stderr
+    );
+}

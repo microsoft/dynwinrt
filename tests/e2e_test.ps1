@@ -105,6 +105,8 @@ $winrtMeta = "cargo run -p dynwinrt-codegen --release --quiet --"
 
 function Generate($lang, $outDir) {
     $langSpecs = $active | Where-Object { ($(if ($_.langs) { $_.langs } else { @("py","ts") })) -contains $lang }
+    # codegen now uses "js" instead of "ts" — map accordingly
+    $codegenLang = if ($lang -eq "ts") { "js" } else { $lang }
     $byNs = @{}
     foreach ($s in $langSpecs) {
         if (-not $byNs[$s.namespace]) { $byNs[$s.namespace] = @() }
@@ -115,7 +117,7 @@ function Generate($lang, $outDir) {
     foreach ($ns in $byNs.Keys) {
         $classes = ($byNs[$ns] | Select-Object -Unique) -join ","
         Write-Host "  $lang`: $ns [$classes]"
-        Invoke-Expression "$winrtMeta generate --namespace `"$ns`" --class-name `"$classes`" --lang $lang --output `"$outDir`""
+        Invoke-Expression "$winrtMeta generate --namespace `"$ns`" --class-name `"$classes`" --lang $codegenLang --output `"$outDir`""
         if ($LASTEXITCODE -ne 0) { Write-Error "Generation failed: $ns ($lang)"; exit 1 }
     }
 }

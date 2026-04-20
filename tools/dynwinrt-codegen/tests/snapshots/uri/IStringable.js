@@ -8,17 +8,17 @@ const _IStringable = DynWinRtType.registerInterface(
     .addMethod("ToString", new DynWinRtMethodSig().addOut(DynWinRtType.hstring()));
 
 export class IStringable {
-    readonly _obj: DynWinRtValue;
+    _obj;
 
-    constructor(obj: DynWinRtValue) {
+    constructor(obj) {
         this._obj = obj;
     }
 
-    static from(obj: DynWinRtValue): IStringable {
+    static from(obj) {
         return new IStringable(obj.cast(IID_IStringable));
     }
 
-    toString(): string {
+    toString() {
         return _IStringable.method(6).invoke(this._obj, []).toString();
     }
 }

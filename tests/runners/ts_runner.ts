@@ -98,7 +98,7 @@ async function runSpec(
 
   try {
     // Import the generated module
-    const modulePath = path.resolve(generatedDir, `${spec.class}.ts`);
+    const modulePath = path.resolve(generatedDir, `${spec.class}.js`);
     const mod = await import(`file://${modulePath.replace(/\\/g, '/')}`);
     const cls = mod[spec.class];
     if (!cls) throw new Error(`Class ${spec.class} not found in ${modulePath}`);
@@ -139,8 +139,8 @@ async function runSpec(
 
 async function importClass(generatedDir: string, className: string): Promise<any> {
   const candidates = [
-    path.resolve(generatedDir, `${className}.ts`),
-    path.resolve(generatedDir, `${toPascalCase(className)}.ts`),
+    path.resolve(generatedDir, `${className}.js`),
+    path.resolve(generatedDir, `${toPascalCase(className)}.js`),
   ];
   for (const p of candidates) {
     if (fs.existsSync(p)) {
@@ -281,8 +281,8 @@ async function runCheck(
       const structModule = check.struct_module as string;
       // In TS, structs are interfaces + packFn. Find the module file.
       const candidates = [
-        path.resolve(generatedDir, `${toPascalCase(structModule)}.ts`),
-        path.resolve(generatedDir, `${structModule}.ts`),
+        path.resolve(generatedDir, `${toPascalCase(structModule)}.js`),
+        path.resolve(generatedDir, `${structModule}.js`),
       ];
       let modPath = candidates.find(p => fs.existsSync(p));
       if (!modPath) throw new Error(`Struct module not found: tried ${candidates.join(', ')}`);
@@ -336,8 +336,8 @@ async function runCheck(
       const writeVal = (check as any).write_value ?? 42;
       const stream = typeof cls.create === 'function' ? cls.create() : cls.createDefault();
 
-      const writerMod = await import(`file://${path.resolve(generatedDir, 'DataWriter.ts').replace(/\\/g, '/')}`);
-      const readerMod = await import(`file://${path.resolve(generatedDir, 'DataReader.ts').replace(/\\/g, '/')}`);
+      const writerMod = await import(`file://${path.resolve(generatedDir, 'DataWriter.js').replace(/\\/g, '/')}`);
+      const readerMod = await import(`file://${path.resolve(generatedDir, 'DataReader.js').replace(/\\/g, '/')}`);
       const DataWriter = writerMod.DataWriter;
       const DataReader = readerMod.DataReader;
 
@@ -408,7 +408,7 @@ async function runCheck(
       let chainOk = true;
       for (const step of (check as any).steps) {
         const stepClsName = step.class;
-        const stepModPath = path.resolve(generatedDir, `${stepClsName}.ts`);
+        const stepModPath = path.resolve(generatedDir, `${stepClsName}.js`);
         const stepMod = await import(`file://${stepModPath.replace(/\\/g, '/')}`);
         const stepCls = stepMod[stepClsName];
         const stepMethodName = toCamelCase(step.method);
@@ -463,7 +463,7 @@ async function main() {
 
   // Fix imports in generated files
   const absRuntime = path.resolve(runtimePath).replace(/\\/g, '/');
-  const tsFiles = fs.readdirSync(generatedDir).filter(f => f.endsWith('.ts'));
+  const tsFiles = fs.readdirSync(generatedDir).filter(f => f.endsWith('.js'));
   for (const f of tsFiles) {
     const filePath = path.join(generatedDir, f);
     let content = fs.readFileSync(filePath, 'utf8');

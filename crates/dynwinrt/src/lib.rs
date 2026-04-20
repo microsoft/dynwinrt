@@ -22,7 +22,7 @@ mod meta;
 pub mod metadata_table;
 pub mod vector;
 
-pub use crate::result::Result;
+pub use crate::result::{Error, Result};
 pub use crate::roapi::ro_get_activation_factory_2;
 pub use crate::signature::{InterfaceSignature, MethodSignature};
 pub use crate::metadata_table::{TypeHandle, TypeKind, MetadataTable, MethodHandle, ValueTypeData};
