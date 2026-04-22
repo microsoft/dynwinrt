@@ -106,38 +106,33 @@ pub fn query_interface(obj: WinRTValue, iid: &windows_core::GUID) -> windows_cor
 #[cfg(test)]
 mod tests {
     use windows::{
-        Foundation::{IUriEscapeStatics, IUriRuntimeClassFactory, Uri},
+        Foundation::{IUriRuntimeClassFactory, Uri},
         Win32::System::WinRT::{
             IActivationFactory, RO_INIT_MULTITHREADED, RoGetActivationFactory, RoInitialize,
         },
     };
-    use windows_core::{GUID, IInspectable, Interface, h};
+    use windows_core::{IInspectable, Interface, h};
 
-    use crate::{interfaces, value::WinRTValue};
-
-    use super::*;
+    use crate::value::WinRTValue;
 
     #[test]
     fn call_get_activation_factory() -> windows::core::Result<()> {
         // Ignore error if already initialized
         let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
-        let esu = Uri::EscapeComponent(h!("1 + 1"))?;
-        println!("Escaped string: {}", esu);
-        let uri = Uri::CreateUri(h!("https://www.example.com/path?query=1#fragment"))?;
+        let _esu = Uri::EscapeComponent(h!("1 + 1"))?;
         let factory =
             unsafe { RoGetActivationFactory::<IActivationFactory>(h!("Windows.Foundation.Uri")) }?;
-        let uriFactory = factory.cast::<IUriRuntimeClassFactory>()?;
-        let uriStatic: IUriEscapeStatics = factory.cast()?;
+        let uri_factory = factory.cast::<IUriRuntimeClassFactory>()?;
 
         let reg = crate::metadata_table::MetadataTable::new();
-        let mut uriFactoryInterface = crate::signature::InterfaceSignature::define_from_iinspectable("", Default::default(), &reg);
-        uriFactoryInterface.add_method(
+        let mut uri_factory_iface = crate::signature::InterfaceSignature::define_from_iinspectable("", Default::default(), &reg);
+        uri_factory_iface.add_method(
             crate::signature::MethodSignature::new(&reg)
                 .add_in(reg.hstring())
                 .add_out(reg.object()),
         );
-        let result = uriFactoryInterface.methods[6].call_dynamic(
-            uriFactory.as_raw(),
+        let result = uri_factory_iface.methods[6].call_dynamic(
+            uri_factory.as_raw(),
             &[WinRTValue::HString(
                 h!("https://www.example.com/anotherpath?query=2#fragment2").clone(),
             )],
@@ -148,8 +143,7 @@ mod tests {
         println!("Uri: {}", uri.Path()?);
 
         let inspect: IInspectable = factory.cast()?;
-        let activateFactory: IActivationFactory = unsafe { inspect.cast() }?;
-        println!("Got activation factory {:?} {:?}", inspect, activateFactory);
+        let _activate_factory: IActivationFactory = inspect.cast()?;
         Ok(())
     }
 }

@@ -7,6 +7,100 @@ use windows_core::{IUnknown, Interface};
 use crate::metadata_table::{TypeHandle, TypeKind};
 use crate::value::WinRTValue;
 
+// ======================================================================
+// Struct field helpers for array element Drop/Clone
+// ======================================================================
+
+/// Check if a struct TypeHandle has any non-blittable fields (recursively).
+fn has_struct_non_blittable_fields(handle: &TypeHandle) -> bool {
+    let count = handle.field_count();
+    for i in 0..count {
+        let kind = handle.table().field_kind(handle.kind(), i);
+        if kind.needs_drop() {
+            return true;
+        }
+        if let TypeKind::Struct(_) = kind {
+            let field_handle = handle.field_type(i);
+            if has_struct_non_blittable_fields(&field_handle) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Release non-blittable fields inside a struct stored in a raw buffer.
+/// Recursively handles nested structs. Does NOT free the buffer itself.
+unsafe fn release_struct_fields(handle: &TypeHandle, ptr: *const u8) {
+    let count = handle.field_count();
+    for i in 0..count {
+        let kind = handle.table().field_kind(handle.kind(), i);
+        if !kind.needs_drop_recursive() {
+            continue;
+        }
+        let offset = handle.field_offset(i);
+        unsafe {
+            match kind {
+                TypeKind::HString => {
+                    let raw = *(ptr.add(offset) as *const *mut c_void);
+                    if !raw.is_null() {
+                        let _hstr: windows_core::HSTRING = std::mem::transmute(raw);
+                    }
+                }
+                kind if kind.is_com_pointer() => {
+                    let raw = *(ptr.add(offset) as *const *mut c_void);
+                    if !raw.is_null() {
+                        let _obj = IUnknown::from_raw(raw);
+                    }
+                }
+                TypeKind::Struct(_) => {
+                    let field_handle = handle.field_type(i);
+                    release_struct_fields(&field_handle, ptr.add(offset));
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// Duplicate non-blittable fields inside a struct in a raw buffer (after memcpy).
+/// Recursively handles nested structs.
+unsafe fn duplicate_struct_fields(handle: &TypeHandle, ptr: *mut u8) {
+    let count = handle.field_count();
+    for i in 0..count {
+        let kind = handle.table().field_kind(handle.kind(), i);
+        if !kind.needs_drop_recursive() {
+            continue;
+        }
+        let offset = handle.field_offset(i);
+        unsafe {
+            match kind {
+                TypeKind::HString => {
+                    let raw = *(ptr.add(offset) as *const *mut c_void);
+                    if !raw.is_null() {
+                        let hstr: &windows_core::HSTRING =
+                            &*((&raw) as *const *mut c_void as *const windows_core::HSTRING);
+                        let cloned: *mut c_void = std::mem::transmute(hstr.clone());
+                        (ptr.add(offset) as *mut *mut c_void).write(cloned);
+                    }
+                }
+                kind if kind.is_com_pointer() => {
+                    let raw = *(ptr.add(offset) as *const *mut c_void);
+                    if !raw.is_null() {
+                        let obj = IUnknown::from_raw_borrowed(&raw).unwrap().clone();
+                        (ptr.add(offset) as *mut *mut c_void).write(obj.into_raw());
+                    }
+                }
+                TypeKind::Struct(_) => {
+                    let field_handle = handle.field_type(i);
+                    duplicate_struct_fields(&field_handle, ptr.add(offset));
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
 
 /// How the array data is stored.
 enum ArrayBuffer {
@@ -188,7 +282,7 @@ impl ArrayData {
                 kind if kind.is_com_pointer() => {
                     let raw = *(base.add(index * elem_size) as *const *mut c_void);
                     if raw.is_null() {
-                        WinRTValue::Object(IUnknown::from_raw(std::ptr::null_mut()))
+                        WinRTValue::Null
                     } else {
                         // from_raw takes ownership, but we want a clone — so AddRef first
                         let obj = IUnknown::from_raw_borrowed(&raw).unwrap();
@@ -203,6 +297,10 @@ impl ArrayData {
                         vd.as_mut_ptr(),
                         sz,
                     );
+                    // Duplicate non-blittable fields so the returned copy owns its own references
+                    if has_struct_non_blittable_fields(&self.element_type) {
+                        duplicate_struct_fields(&self.element_type, vd.as_mut_ptr());
+                    }
                     WinRTValue::Struct(vd)
                 }
                 other => panic!("ArrayData::get unsupported element type: {:?}", other),
@@ -289,6 +387,16 @@ impl Drop for ArrayData {
                             }
                         }
                     }
+                    TypeKind::Struct(_) => {
+                        // Recurse: release non-blittable fields inside each struct element.
+                        // Reuse ValueTypeData machinery for correct recursive release.
+                        for i in 0..len {
+                            unsafe {
+                                let elem_ptr = base.add(i * elem_size);
+                                release_struct_fields(&self.element_type, elem_ptr);
+                            }
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -356,6 +464,15 @@ impl Clone for ArrayData {
                             }
                         }
                     }
+                    TypeKind::Struct(_) if has_struct_non_blittable_fields(&self.element_type) => {
+                        // memcpy all elements first, then duplicate non-blittable fields per element
+                        unsafe { std::ptr::copy_nonoverlapping(base, new_buf, total_bytes) };
+                        for i in 0..*len {
+                            unsafe {
+                                duplicate_struct_fields(&self.element_type, new_buf.add(i * elem_size));
+                            }
+                        }
+                    }
                     _ => {
                         unsafe { std::ptr::copy_nonoverlapping(base, new_buf, total_bytes) };
                     }
@@ -411,5 +528,83 @@ fn serialize_to_buffer(element_type: &TypeHandle, values: &[WinRTValue]) -> Vec<
         }
     }
     buffer
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::metadata_table::MetadataTable;
+
+    #[test]
+    fn test_null_com_element_returns_null_variant() {
+        // Verify that reading a null COM pointer from a CoTaskMem array
+        // returns WinRTValue::Null, not WinRTValue::Object(null).
+        let table = MetadataTable::new();
+        let elem = table.object();
+        let elem_size = std::mem::size_of::<*mut c_void>();
+        let len = 2usize;
+        let total = len * elem_size;
+        let ptr = unsafe {
+            windows::Win32::System::Com::CoTaskMemAlloc(total) as *mut c_void
+        };
+        assert!(!ptr.is_null());
+        // Zero the buffer — all elements are null pointers
+        unsafe { std::ptr::write_bytes(ptr as *mut u8, 0, total) };
+
+        let array = ArrayData::from_cotaskmem(elem, ptr, len);
+        let val = array.get(0);
+        assert!(val.is_null_object(), "Expected WinRTValue::Null for null COM element, got {:?}", val);
+        let val1 = array.get(1);
+        assert!(val1.is_null_object(), "Expected WinRTValue::Null for null COM element, got {:?}", val1);
+    }
+
+    /// P1: CoTaskMem array of structs with HString fields — Clone/Drop must recurse.
+    #[test]
+    fn test_struct_array_with_hstring_clone_drop() {
+        let table = MetadataTable::new();
+        // Struct with one HString field (pointer-sized)
+        let stype = table.struct_type("Test.NamedItem", &[table.hstring()]);
+        let elem_size = stype.element_size();
+
+        // Allocate a CoTaskMem buffer for 2 elements
+        let len = 2usize;
+        let total = len * elem_size;
+        let ptr = unsafe {
+            windows::Win32::System::Com::CoTaskMemAlloc(total) as *mut c_void
+        };
+        assert!(!ptr.is_null());
+        unsafe { std::ptr::write_bytes(ptr as *mut u8, 0, total) };
+
+        // Write HStrings into the buffer
+        let hstr1 = windows_core::HSTRING::from("item_one");
+        let hstr2 = windows_core::HSTRING::from("item_two");
+        unsafe {
+            let base = ptr as *mut u8;
+            let raw1: *mut c_void = std::mem::transmute(hstr1);
+            let raw2: *mut c_void = std::mem::transmute(hstr2);
+            (base as *mut *mut c_void).write(raw1);
+            (base.add(elem_size) as *mut *mut c_void).write(raw2);
+        }
+
+        let array = ArrayData::from_cotaskmem(stype, ptr, len);
+
+        // Read elements
+        let v0 = array.get(0);
+        let _v1 = array.get(1);
+        if let WinRTValue::Struct(s0) = &v0 {
+            let raw: *mut c_void = s0.get_field(0);
+            assert!(!raw.is_null(), "field 0 should be non-null HString");
+        } else {
+            panic!("Expected Struct, got {:?}", v0);
+        }
+
+        // Clone the array — this exercises recursive struct field duplication
+        let cloned = array.clone();
+        assert_eq!(cloned.len(), 2);
+
+        // Drop both — if recursive release is broken, this would crash or leak
+        drop(cloned);
+        drop(array);
+    }
 }
 

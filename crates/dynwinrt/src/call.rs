@@ -116,6 +116,27 @@ struct ArrayOutSlot {
     element_type: TypeHandle,
 }
 
+impl Drop for ArrayOutSlot {
+    fn drop(&mut self) {
+        // Release elements + free callee-allocated buffer if ownership was not
+        // transferred to ArrayData. Wrapping in ArrayData handles element-level
+        // Release (HString, COM pointers, struct fields) before CoTaskMemFree.
+        if !self.data_ptr.is_null() {
+            let len = self.length as usize;
+            if len > 0 {
+                let _ = crate::array::ArrayData::from_cotaskmem(
+                    self.element_type.clone(), self.data_ptr, len,
+                );
+            } else {
+                unsafe {
+                    windows::Win32::System::Com::CoTaskMemFree(Some(self.data_ptr));
+                }
+            }
+            self.data_ptr = std::ptr::null_mut();
+        }
+    }
+}
+
 /// Stable heap storage for FillArray out-param data (caller-allocated via CoTaskMemAlloc).
 struct FillArraySlot {
     capacity: u32,
@@ -126,11 +147,21 @@ struct FillArraySlot {
 
 impl Drop for FillArraySlot {
     fn drop(&mut self) {
-        // Free the buffer if ownership was not transferred to ArrayData
+        // Release elements + free buffer if ownership was not transferred to ArrayData.
+        // Buffer was zero-initialized before the call, so null slots are safe to release.
+        // Use capacity as cleanup length — ArrayData::Drop skips null elements.
         if !self.buffer_ptr.is_null() {
-            unsafe {
-                windows::Win32::System::Com::CoTaskMemFree(Some(self.buffer_ptr as *mut c_void));
-            }
+            let cleanup_len = if self.actual_count == 0 && self.capacity > 0 {
+                self.capacity as usize
+            } else {
+                std::cmp::min(self.actual_count, self.capacity) as usize
+            };
+            let _ = crate::array::ArrayData::from_cotaskmem(
+                self.element_type.clone(),
+                self.buffer_ptr as *mut c_void,
+                cleanup_len,
+            );
+            self.buffer_ptr = std::ptr::null_mut();
         }
     }
 }
@@ -293,9 +324,15 @@ pub fn call_winrt_method_dynamic(
         if p.is_out() {
             if let Some(slot_idx) = fill_array_map[p.value_index] {
                 // FillArray: transfer CoTaskMem buffer ownership to ArrayData
-                // Use actual_count (written by callee) as length, not capacity.
                 let slot = &mut fill_array_slots[slot_idx];
-                let actual = slot.actual_count as usize;
+                // If callee didn't set actual_count (left as 0), assume full buffer.
+                let raw_count = if slot.actual_count == 0 && slot.capacity > 0 {
+                    slot.capacity
+                } else {
+                    slot.actual_count
+                };
+                // Clamp to capacity to prevent OOB reads if callee misbehaves.
+                let actual = std::cmp::min(raw_count as usize, slot.capacity as usize);
                 let ptr = slot.buffer_ptr as *mut c_void;
                 slot.buffer_ptr = std::ptr::null_mut(); // prevent FillArraySlot::drop from freeing
                 result_values.push(WinRTValue::Array(
@@ -306,10 +343,16 @@ pub fn call_winrt_method_dynamic(
             } else if let Some(slot_idx) = array_out_map[p.value_index] {
                 // ReceiveArray: wrap callee-allocated CoTaskMem buffer directly.
                 // ArrayData takes ownership and will CoTaskMemFree + release elements on drop.
-                let slot = &array_out_slots[slot_idx];
+                let slot = &mut array_out_slots[slot_idx];
                 let length = slot.length as usize;
                 let data_ptr = slot.data_ptr;
+                // Null out data_ptr so ArrayOutSlot::drop won't double-free.
+                slot.data_ptr = std::ptr::null_mut();
                 let array_value = if data_ptr.is_null() || length == 0 {
+                    if !data_ptr.is_null() {
+                        // Free empty but non-null buffer
+                        unsafe { windows::Win32::System::Com::CoTaskMemFree(Some(data_ptr)); }
+                    }
                     crate::array::ArrayData::empty(slot.element_type.clone())
                 } else {
                     crate::array::ArrayData::from_cotaskmem(

@@ -36,6 +36,27 @@ struct DelegatePtrF64Vtbl {
     invoke: unsafe extern "system" fn(*mut c_void, *mut c_void, f64) -> HRESULT,
 }
 
+/// Vtable variant for delegates where param1 is pointer and param2 is f32.
+#[repr(C)]
+struct DelegatePtrF32Vtbl {
+    base: windows_core::IUnknown_Vtbl,
+    invoke: unsafe extern "system" fn(*mut c_void, *mut c_void, f32) -> HRESULT,
+}
+
+/// Vtable variant for 1-param delegate where the param is f64.
+#[repr(C)]
+struct Delegate1F64Vtbl {
+    base: windows_core::IUnknown_Vtbl,
+    invoke: unsafe extern "system" fn(*mut c_void, f64) -> HRESULT,
+}
+
+/// Vtable variant for 1-param delegate where the param is f32.
+#[repr(C)]
+struct Delegate1F32Vtbl {
+    base: windows_core::IUnknown_Vtbl,
+    invoke: unsafe extern "system" fn(*mut c_void, f32) -> HRESULT,
+}
+
 /// A dynamically-constructed WinRT delegate COM object.
 ///
 /// Supports delegates with up to 2 ABI parameters (pointer-sized).
@@ -73,6 +94,33 @@ impl DynamicDelegate {
         invoke: Self::invoke_ptr_f64,
     };
 
+    const VTBL_PTR_F32: DelegatePtrF32Vtbl = DelegatePtrF32Vtbl {
+        base: windows_core::IUnknown_Vtbl {
+            QueryInterface: Self::qi,
+            AddRef: Self::add_ref,
+            Release: Self::release,
+        },
+        invoke: Self::invoke_ptr_f32,
+    };
+
+    const VTBL_1_F64: Delegate1F64Vtbl = Delegate1F64Vtbl {
+        base: windows_core::IUnknown_Vtbl {
+            QueryInterface: Self::qi,
+            AddRef: Self::add_ref,
+            Release: Self::release,
+        },
+        invoke: Self::invoke_1_f64,
+    };
+
+    const VTBL_1_F32: Delegate1F32Vtbl = Delegate1F32Vtbl {
+        base: windows_core::IUnknown_Vtbl {
+            QueryInterface: Self::qi,
+            AddRef: Self::add_ref,
+            Release: Self::release,
+        },
+        invoke: Self::invoke_1_f32,
+    };
+
     /// Create a new dynamic delegate as an IUnknown COM pointer.
     ///
     /// - `delegate_iid`: the IID of the delegate interface (for QueryInterface)
@@ -89,18 +137,23 @@ impl DynamicDelegate {
             param_types.len()
         );
 
-        // Pick the right vtable based on parameter types.
-        // If the last parameter is f64/f32, it goes in a float register on ARM64/x64,
-        // so we need a different invoke trampoline with the correct ABI.
-        let use_f64_vtable = param_types.len() == 2 && {
-            use crate::metadata_table::TypeKind;
-            matches!(param_types[1].kind(), TypeKind::F64 | TypeKind::F32)
-        };
+        use crate::metadata_table::TypeKind;
 
-        let vtable = if use_f64_vtable {
-            &Self::VTBL_PTR_F64 as *const DelegatePtrF64Vtbl as *const Delegate2Vtbl
-        } else {
-            &Self::VTBL
+        // Pick the right vtable based on parameter types.
+        // Float types go in float registers on ARM64/x64, so each distinct
+        // float signature needs its own trampoline with the correct ABI.
+        let vtable: *const Delegate2Vtbl = match param_types.len() {
+            1 => match param_types[0].kind() {
+                TypeKind::F64 => &Self::VTBL_1_F64 as *const _ as *const Delegate2Vtbl,
+                TypeKind::F32 => &Self::VTBL_1_F32 as *const _ as *const Delegate2Vtbl,
+                _ => &Self::VTBL,
+            },
+            2 => match param_types[1].kind() {
+                TypeKind::F64 => &Self::VTBL_PTR_F64 as *const _ as *const Delegate2Vtbl,
+                TypeKind::F32 => &Self::VTBL_PTR_F32 as *const _ as *const Delegate2Vtbl,
+                _ => &Self::VTBL,
+            },
+            _ => &Self::VTBL,
         };
 
         let delegate = Box::new(Self {
@@ -204,6 +257,43 @@ impl DynamicDelegate {
 
         (delegate.callback)(&values)
     }
+
+    /// Invoke trampoline for delegates where arg1 is f32.
+    unsafe extern "system" fn invoke_ptr_f32(
+        this: *mut c_void,
+        arg0: *mut c_void,
+        arg1: f32,
+    ) -> HRESULT {
+        let delegate = unsafe { &*(this as *const Self) };
+        let mut values = Vec::with_capacity(delegate.param_types.len());
+
+        if delegate.param_types.len() >= 1 {
+            values.push(marshal_abi_ptr(arg0, &delegate.param_types[0]));
+        }
+        if delegate.param_types.len() >= 2 {
+            values.push(WinRTValue::F32(arg1));
+        }
+
+        (delegate.callback)(&values)
+    }
+
+    /// Invoke trampoline for 1-param delegate where the param is f64.
+    unsafe extern "system" fn invoke_1_f64(
+        this: *mut c_void,
+        arg0: f64,
+    ) -> HRESULT {
+        let delegate = unsafe { &*(this as *const Self) };
+        (delegate.callback)(&[WinRTValue::F64(arg0)])
+    }
+
+    /// Invoke trampoline for 1-param delegate where the param is f32.
+    unsafe extern "system" fn invoke_1_f32(
+        this: *mut c_void,
+        arg0: f32,
+    ) -> HRESULT {
+        let delegate = unsafe { &*(this as *const Self) };
+        (delegate.callback)(&[WinRTValue::F32(arg0)])
+    }
 }
 
 /// Convert a raw ABI pointer-sized argument to WinRTValue, based on type.
@@ -282,4 +372,110 @@ pub fn create_delegate_value(
     callback: DelegateCallback,
 ) -> WinRTValue {
     WinRTValue::Object(create_delegate(delegate_iid, param_types, callback))
+}
+
+// ======================================================================
+// Tests
+// ======================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::metadata_table::MetadataTable;
+    use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+
+    /// P2: Verify that a 2-param delegate with f32 second param
+    /// correctly receives F32 (not F64) via the f32 trampoline.
+    #[test]
+    fn test_delegate_ptr_f32_trampoline() {
+        let table = MetadataTable::new();
+        let iid = GUID::from_u128(0x11111111_1111_1111_1111_111111111111);
+
+        let received_f32 = Arc::new(std::sync::Mutex::new(0.0f32));
+        let received_clone = received_f32.clone();
+
+        let delegate = create_delegate(
+            iid,
+            vec![table.object(), table.f32_type()],
+            Box::new(move |args| {
+                // arg[1] should be WinRTValue::F32, not F64
+                if let WinRTValue::F32(v) = &args[1] {
+                    *received_clone.lock().unwrap() = *v;
+                } else {
+                    panic!("Expected F32, got {:?}", args[1]);
+                }
+                HRESULT(0)
+            }),
+        );
+
+        // Simulate calling the delegate with the f32 trampoline
+        // by calling through the vtable directly
+        let raw = delegate.as_raw();
+        let vtbl = unsafe { *(raw as *const *const DelegatePtrF32Vtbl) };
+        let hr = unsafe { ((*vtbl).invoke)(raw, std::ptr::null_mut(), 3.14f32) };
+        assert_eq!(hr, HRESULT(0));
+        assert!((*received_f32.lock().unwrap() - 3.14f32).abs() < 1e-6);
+    }
+
+    /// P2: Verify that a 1-param delegate with f64 param
+    /// correctly receives F64 via the 1-param f64 trampoline.
+    #[test]
+    fn test_delegate_1_f64_trampoline() {
+        let table = MetadataTable::new();
+        let iid = GUID::from_u128(0x22222222_2222_2222_2222_222222222222);
+
+        let received = Arc::new(std::sync::Mutex::new(0.0f64));
+        let received_clone = received.clone();
+
+        let delegate = create_delegate(
+            iid,
+            vec![table.f64_type()],
+            Box::new(move |args| {
+                assert_eq!(args.len(), 1);
+                if let WinRTValue::F64(v) = &args[0] {
+                    *received_clone.lock().unwrap() = *v;
+                } else {
+                    panic!("Expected F64, got {:?}", args[0]);
+                }
+                HRESULT(0)
+            }),
+        );
+
+        let raw = delegate.as_raw();
+        let vtbl = unsafe { *(raw as *const *const Delegate1F64Vtbl) };
+        let hr = unsafe { ((*vtbl).invoke)(raw, 2.71828f64) };
+        assert_eq!(hr, HRESULT(0));
+        assert!((*received.lock().unwrap() - 2.71828f64).abs() < 1e-10);
+    }
+
+    /// P2: Verify that a 1-param delegate with f32 param
+    /// correctly receives F32.
+    #[test]
+    fn test_delegate_1_f32_trampoline() {
+        let table = MetadataTable::new();
+        let iid = GUID::from_u128(0x33333333_3333_3333_3333_333333333333);
+
+        let called = Arc::new(AtomicBool::new(false));
+        let called_clone = called.clone();
+
+        let delegate = create_delegate(
+            iid,
+            vec![table.f32_type()],
+            Box::new(move |args| {
+                assert_eq!(args.len(), 1);
+                match &args[0] {
+                    WinRTValue::F32(v) => assert!((*v - 1.5f32).abs() < 1e-6),
+                    other => panic!("Expected F32, got {:?}", other),
+                }
+                called_clone.store(true, Ordering::SeqCst);
+                HRESULT(0)
+            }),
+        );
+
+        let raw = delegate.as_raw();
+        let vtbl = unsafe { *(raw as *const *const Delegate1F32Vtbl) };
+        let hr = unsafe { ((*vtbl).invoke)(raw, 1.5f32) };
+        assert_eq!(hr, HRESULT(0));
+        assert!(called.load(Ordering::SeqCst));
+    }
 }

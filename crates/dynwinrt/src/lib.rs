@@ -74,10 +74,10 @@ mod tests {
 
             let uri = Uri::CreateUri(h!("https://www.microsoft.com"))?;
             uri.SchemeName()?;
-            uri.Host();
-            uri.Port();
+            let _ = uri.Host();
+            let _ = uri.Port();
             let op = windows::Web::Http::HttpClient::new()?.GetStringAsync(&uri)?;
-            let s = op.into_future().await?;
+            let _s = op.into_future().await?;
 
             Ok(())
         })

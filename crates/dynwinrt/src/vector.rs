@@ -8,14 +8,15 @@
 //! allowing JS callers to construct vectors and pass them to WinRT APIs.
 
 use core::ffi::c_void;
-use std::cell::RefCell;
+use std::sync::Mutex;
 use windows_core::{GUID, HRESULT, IUnknown, Interface};
 
 use crate::com_helpers::{
-    IInspectableVtbl, E_BOUNDS, S_OK,
+    IInspectableVtbl, E_BOUNDS, E_FAIL, S_OK,
     com_to_usize, com_usize_addref_out, com_usize_release,
 };
-use crate::com_helpers::{inspectable_stubs, dual_vtable_com, single_vtable_com, impl_drop_release_items};
+#[allow(unused_imports)]
+use crate::com_helpers::{inspectable_stubs, dual_vtable_com, single_vtable_com, impl_drop_release_items, lock_or};
 
 // ======================================================================
 // IIDs for collection PIIDs
@@ -81,10 +82,19 @@ struct IteratorVtbl {
 
 
 /// Write a raw usize item to an output pointer, AddRef'ing if it's a COM reference type.
+/// For value types, only writes `elem_size` bytes to avoid overwriting adjacent memory.
 #[inline(always)]
-unsafe fn write_item_out(is_value_type: bool, raw: usize, result: *mut *mut c_void) {
+unsafe fn write_item_out(is_value_type: bool, elem_size: usize, raw: usize, result: *mut *mut c_void) {
     if is_value_type {
-        *(result as *mut usize) = raw;
+        // Write only elem_size bytes, clamped to usize width for safety.
+        let write_size = elem_size.min(std::mem::size_of::<usize>());
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                &raw as *const usize as *const u8,
+                result as *mut u8,
+                write_size,
+            );
+        }
     } else {
         *result = com_usize_addref_out(raw);
     }
@@ -112,8 +122,9 @@ struct SingleThreadedVector {
     vtable_vector: *const VectorVtbl,
     vtable_view: *const VectorViewVtbl,
     ref_count: windows_core::imp::RefCount,
-    items: RefCell<Vec<usize>>,
+    items: Mutex<Vec<usize>>,
     is_value_type: bool,
+    elem_size: usize,
     iids: VectorIids,
 }
 
@@ -189,13 +200,13 @@ impl SingleThreadedVector {
         result: *mut *mut c_void,
     ) -> HRESULT {
         let me = Self::from_iterable_ptr(this);
-        let items = me.items.borrow();
+        let items = lock_or!(me.items, E_FAIL);
         let snapshot = if me.is_value_type {
             items.clone()
         } else {
             items.iter().map(|&raw| com_to_usize(raw as *mut c_void)).collect()
         };
-        let iter = SingleThreadedIterator::create(snapshot, me.is_value_type, me.iids.iterator);
+        let iter = SingleThreadedIterator::create(snapshot, me.is_value_type, me.elem_size, me.iids.iterator);
         *result = iter.into_raw();
         S_OK
     }
@@ -210,12 +221,12 @@ impl SingleThreadedVector {
         result: *mut *mut c_void,
     ) -> HRESULT {
         let me = Self::from_vector_ptr(this);
-        let items = me.items.borrow();
+        let items = lock_or!(me.items, E_FAIL);
         if (index as usize) >= items.len() {
             return E_BOUNDS;
         }
         let raw = items[index as usize];
-        write_item_out(me.is_value_type, raw, result);
+        write_item_out(me.is_value_type, me.elem_size, raw, result);
         S_OK
     }
 
@@ -224,7 +235,7 @@ impl SingleThreadedVector {
         result: *mut u32,
     ) -> HRESULT {
         let me = Self::from_vector_ptr(this);
-        *result = me.items.borrow().len() as u32;
+        *result = lock_or!(me.items, E_FAIL).len() as u32;
         S_OK
     }
 
@@ -233,13 +244,13 @@ impl SingleThreadedVector {
         result: *mut *mut c_void,
     ) -> HRESULT {
         let me = Self::from_vector_ptr(this);
-        let items = me.items.borrow();
+        let items = lock_or!(me.items, E_FAIL);
         let snapshot = if me.is_value_type {
             items.clone()
         } else {
             items.iter().map(|&raw| com_to_usize(raw as *mut c_void)).collect()
         };
-        let view = SingleThreadedVectorView::create(snapshot, me.is_value_type, me.iids.clone());
+        let view = SingleThreadedVectorView::create(snapshot, me.is_value_type, me.elem_size, me.iids.clone());
         // WinRT ABI: get_view must return an IVectorView pointer (second vtable),
         // not the identity/IIterable pointer (first vtable).
         let identity = view.into_raw();
@@ -254,7 +265,7 @@ impl SingleThreadedVector {
         found: *mut bool,
     ) -> HRESULT {
         let me = Self::from_vector_ptr(this);
-        let items = me.items.borrow();
+        let items = lock_or!(me.items, E_FAIL);
         let needle = value as usize;
         for (i, &item) in items.iter().enumerate() {
             if item == needle {
@@ -274,7 +285,7 @@ impl SingleThreadedVector {
         value: *mut c_void,
     ) -> HRESULT {
         let me = Self::from_vector_ptr(this);
-        let mut items = me.items.borrow_mut();
+        let mut items = lock_or!(me.items, E_FAIL);
         if (index as usize) >= items.len() {
             return E_BOUNDS;
         }
@@ -295,7 +306,7 @@ impl SingleThreadedVector {
         value: *mut c_void,
     ) -> HRESULT {
         let me = Self::from_vector_ptr(this);
-        let mut items = me.items.borrow_mut();
+        let mut items = lock_or!(me.items, E_FAIL);
         if (index as usize) > items.len() {
             return E_BOUNDS;
         }
@@ -309,7 +320,7 @@ impl SingleThreadedVector {
         index: u32,
     ) -> HRESULT {
         let me = Self::from_vector_ptr(this);
-        let mut items = me.items.borrow_mut();
+        let mut items = lock_or!(me.items, E_FAIL);
         if (index as usize) >= items.len() {
             return E_BOUNDS;
         }
@@ -324,24 +335,27 @@ impl SingleThreadedVector {
     ) -> HRESULT {
         let me = Self::from_vector_ptr(this);
         let val = if me.is_value_type { value as usize } else { com_to_usize(value) };
-        me.items.borrow_mut().push(val);
+        lock_or!(me.items, E_FAIL).push(val);
         S_OK
     }
 
     unsafe extern "system" fn remove_at_end(this: *mut c_void) -> HRESULT {
         let me = Self::from_vector_ptr(this);
-        let mut items = me.items.borrow_mut();
+        let mut items = lock_or!(me.items, E_FAIL);
         if items.is_empty() {
             return E_BOUNDS;
         }
-        let removed = items.pop().unwrap();
+        let removed = match items.pop() {
+            Some(v) => v,
+            None => return E_BOUNDS,
+        };
         if !me.is_value_type { com_usize_release(removed); }
         S_OK
     }
 
     unsafe extern "system" fn clear(this: *mut c_void) -> HRESULT {
         let me = Self::from_vector_ptr(this);
-        let old_items: Vec<usize> = me.items.borrow_mut().drain(..).collect();
+        let old_items: Vec<usize> = lock_or!(me.items, E_FAIL).drain(..).collect();
         if !me.is_value_type {
             for raw in old_items { com_usize_release(raw); }
         }
@@ -356,7 +370,7 @@ impl SingleThreadedVector {
         actual: *mut u32,
     ) -> HRESULT {
         let me = Self::from_vector_ptr(this);
-        let items = me.items.borrow();
+        let items = lock_or!(me.items, E_FAIL);
         let start = start_index as usize;
         if start > items.len() {
             *actual = 0;
@@ -365,7 +379,7 @@ impl SingleThreadedVector {
         let count = std::cmp::min(capacity as usize, items.len() - start);
         for i in 0..count {
             let raw = items[start + i];
-            write_item_out(me.is_value_type, raw, items_out.add(i));
+            write_item_out(me.is_value_type, me.elem_size, raw, items_out.add(i));
         }
         *actual = count as u32;
         S_OK
@@ -377,11 +391,11 @@ impl SingleThreadedVector {
         values: *const *mut c_void,
     ) -> HRESULT {
         let me = Self::from_vector_ptr(this);
-        let old_items: Vec<usize> = me.items.borrow_mut().drain(..).collect();
+        let old_items: Vec<usize> = lock_or!(me.items, E_FAIL).drain(..).collect();
         if !me.is_value_type {
             for raw in old_items { com_usize_release(raw); }
         }
-        let mut items = me.items.borrow_mut();
+        let mut items = lock_or!(me.items, E_FAIL);
         for i in 0..count as usize {
             let raw = *values.add(i);
             let val = if me.is_value_type { raw as usize } else { com_to_usize(raw) };
@@ -398,9 +412,9 @@ impl SingleThreadedVector {
         this: *mut c_void, index: u32, result: *mut *mut c_void,
     ) -> HRESULT {
         let me = Self::from_view_ptr(this);
-        let items = me.items.borrow();
+        let items = lock_or!(me.items, E_FAIL);
         if (index as usize) >= items.len() { return E_BOUNDS; }
-        write_item_out(me.is_value_type, items[index as usize], result);
+        write_item_out(me.is_value_type, me.elem_size, items[index as usize], result);
         S_OK
     }
 
@@ -408,7 +422,7 @@ impl SingleThreadedVector {
         this: *mut c_void, result: *mut u32,
     ) -> HRESULT {
         let me = Self::from_view_ptr(this);
-        *result = me.items.borrow().len() as u32;
+        *result = lock_or!(me.items, E_FAIL).len() as u32;
         S_OK
     }
 
@@ -416,7 +430,7 @@ impl SingleThreadedVector {
         this: *mut c_void, value: *mut c_void, index: *mut u32, found: *mut bool,
     ) -> HRESULT {
         let me = Self::from_view_ptr(this);
-        let items = me.items.borrow();
+        let items = lock_or!(me.items, E_FAIL);
         let needle = value as usize;
         for (i, &item) in items.iter().enumerate() {
             if item == needle {
@@ -434,7 +448,7 @@ impl SingleThreadedVector {
         this: *mut c_void, start_index: u32, capacity: u32, items_out: *mut *mut c_void, actual: *mut u32,
     ) -> HRESULT {
         let me = Self::from_view_ptr(this);
-        let items = me.items.borrow();
+        let items = lock_or!(me.items, E_FAIL);
         let start = start_index as usize;
         if start > items.len() {
             *actual = 0;
@@ -442,14 +456,14 @@ impl SingleThreadedVector {
         }
         let count = std::cmp::min(capacity as usize, items.len() - start);
         for i in 0..count {
-            write_item_out(me.is_value_type, items[start + i], items_out.add(i));
+            write_item_out(me.is_value_type, me.elem_size, items[start + i], items_out.add(i));
         }
         *actual = count as u32;
         S_OK
     }
 }
 
-impl_drop_release_items!(SingleThreadedVector, borrow);
+impl_drop_release_items!(SingleThreadedVector, lock);
 
 // ======================================================================
 // SingleThreadedVectorView
@@ -462,6 +476,7 @@ struct SingleThreadedVectorView {
     ref_count: windows_core::imp::RefCount,
     items: Vec<usize>,
     is_value_type: bool,
+    elem_size: usize,
     iids: VectorIids,
 }
 
@@ -500,13 +515,14 @@ impl SingleThreadedVectorView {
         get_many: Self::get_many,
     };
 
-    fn create(items: Vec<usize>, is_value_type: bool, iids: VectorIids) -> IUnknown {
+    fn create(items: Vec<usize>, is_value_type: bool, elem_size: usize, iids: VectorIids) -> IUnknown {
         let view = Box::new(Self {
             vtable_iterable: &Self::ITERABLE_VTBL,
             vtable_view: &Self::VIEW_VTBL,
             ref_count: windows_core::imp::RefCount::new(1),
             items,
             is_value_type,
+            elem_size,
             iids,
         });
         unsafe { IUnknown::from_raw(Box::into_raw(view) as *mut c_void) }
@@ -524,7 +540,7 @@ impl SingleThreadedVectorView {
         } else {
             me.items.iter().map(|&raw| com_to_usize(raw as *mut c_void)).collect()
         };
-        let iter = SingleThreadedIterator::create(snapshot, me.is_value_type, me.iids.iterator);
+        let iter = SingleThreadedIterator::create(snapshot, me.is_value_type, me.elem_size, me.iids.iterator);
         *result = iter.into_raw();
         S_OK
     }
@@ -535,7 +551,7 @@ impl SingleThreadedVectorView {
         let me = Self::from_view_ptr(this);
         if (index as usize) >= me.items.len() { return E_BOUNDS; }
         let raw = me.items[index as usize];
-        write_item_out(me.is_value_type, raw, result);
+        write_item_out(me.is_value_type, me.elem_size, raw, result);
         S_OK
     }
 
@@ -570,7 +586,7 @@ impl SingleThreadedVectorView {
         let count = std::cmp::min(capacity as usize, me.items.len() - start);
         for i in 0..count {
             let raw = me.items[start + i];
-            write_item_out(me.is_value_type, raw, items_out.add(i));
+            write_item_out(me.is_value_type, me.elem_size, raw, items_out.add(i));
         }
         *actual = count as u32;
         S_OK
@@ -589,7 +605,8 @@ pub(crate) struct SingleThreadedIterator {
     ref_count: windows_core::imp::RefCount,
     items: Vec<usize>,
     is_value_type: bool,
-    cursor: RefCell<usize>,
+    elem_size: usize,
+    cursor: Mutex<usize>,
     iid_iterator: GUID,
 }
 
@@ -614,13 +631,14 @@ impl SingleThreadedIterator {
         get_many: Self::get_many,
     };
 
-    pub(crate) fn create(items: Vec<usize>, is_value_type: bool, iid_iterator: GUID) -> IUnknown {
+    pub(crate) fn create(items: Vec<usize>, is_value_type: bool, elem_size: usize, iid_iterator: GUID) -> IUnknown {
         let iter = Box::new(Self {
             vtable: &Self::VTBL,
             ref_count: windows_core::imp::RefCount::new(1),
             items,
             is_value_type,
-            cursor: RefCell::new(0),
+            elem_size,
+            cursor: Mutex::new(0),
             iid_iterator,
         });
         unsafe { IUnknown::from_raw(Box::into_raw(iter) as *mut c_void) }
@@ -631,22 +649,22 @@ impl SingleThreadedIterator {
 
     unsafe extern "system" fn get_current(this: *mut c_void, result: *mut *mut c_void) -> HRESULT {
         let me = &*(this as *const Self);
-        let cursor = *me.cursor.borrow();
+        let cursor = *lock_or!(me.cursor, E_FAIL);
         if cursor >= me.items.len() { return E_BOUNDS; }
         let raw = me.items[cursor];
-        write_item_out(me.is_value_type, raw, result);
+        write_item_out(me.is_value_type, me.elem_size, raw, result);
         S_OK
     }
 
     unsafe extern "system" fn get_has_current(this: *mut c_void, result: *mut bool) -> HRESULT {
         let me = &*(this as *const Self);
-        *result = *me.cursor.borrow() < me.items.len();
+        *result = *lock_or!(me.cursor, E_FAIL) < me.items.len();
         S_OK
     }
 
     unsafe extern "system" fn move_next(this: *mut c_void, result: *mut bool) -> HRESULT {
         let me = &*(this as *const Self);
-        let mut cursor = me.cursor.borrow_mut();
+        let mut cursor = lock_or!(me.cursor, E_FAIL);
         if *cursor < me.items.len() {
             *cursor += 1;
         }
@@ -656,12 +674,12 @@ impl SingleThreadedIterator {
 
     unsafe extern "system" fn get_many(this: *mut c_void, capacity: u32, items_out: *mut *mut c_void, actual: *mut u32) -> HRESULT {
         let me = &*(this as *const Self);
-        let mut cursor = me.cursor.borrow_mut();
+        let mut cursor = lock_or!(me.cursor, E_FAIL);
         let remaining = me.items.len().saturating_sub(*cursor);
         let count = std::cmp::min(capacity as usize, remaining);
         for i in 0..count {
             let raw = me.items[*cursor + i];
-            write_item_out(me.is_value_type, raw, items_out.add(i));
+            write_item_out(me.is_value_type, me.elem_size, raw, items_out.add(i));
         }
         *cursor += count;
         *actual = count as u32;
@@ -686,11 +704,13 @@ pub fn create_vector_from_values(
     iids: VectorIids,
 ) -> IUnknown {
     let packed = if is_value_type {
-        assert!(
-            items.is_empty() || elem_size <= std::mem::size_of::<usize>(),
-            "create_vector: struct elem_size {} exceeds pointer size; not yet supported",
-            elem_size
-        );
+        if !items.is_empty() {
+            assert!(
+                elem_size <= std::mem::size_of::<usize>(),
+                "create_vector: struct elem_size {} exceeds pointer size; not yet supported",
+                elem_size
+            );
+        }
         items.iter().map(|item| {
             let data = item.as_struct().expect("struct-typed vector requires Struct values");
             let mut val: usize = 0;
@@ -710,22 +730,24 @@ pub fn create_vector_from_values(
             unsafe { com_to_usize(raw as *mut c_void) }
         }).collect()
     };
-    new_vector(packed, is_value_type, iids)
+    new_vector(packed, is_value_type, elem_size, iids)
 }
 
 /// Create an IVector<T> COM object from a Vec of IUnknown items (reference types).
 pub fn create_vector(items: Vec<IUnknown>, iids: VectorIids) -> IUnknown {
     let raw_items: Vec<usize> = items.into_iter().map(|obj| obj.into_raw() as usize).collect();
-    new_vector(raw_items, false, iids)
+    new_vector(raw_items, false, std::mem::size_of::<*mut c_void>(), iids)
 }
 
 /// Create an IVector<T> COM object for value types (structs ≤ pointer size).
 pub fn create_value_vector(items: Vec<Vec<u8>>, elem_size: usize, iids: VectorIids) -> IUnknown {
-    assert!(
-        items.is_empty() || elem_size <= std::mem::size_of::<usize>(),
-        "create_value_vector: elem_size {} exceeds pointer size; not yet supported",
-        elem_size
-    );
+    if !items.is_empty() {
+        assert!(
+            elem_size <= std::mem::size_of::<usize>(),
+            "create_value_vector: elem_size {} exceeds pointer size; not yet supported",
+            elem_size
+        );
+    }
     let packed: Vec<usize> = items.iter().map(|bytes| {
         let mut val: usize = 0;
         unsafe {
@@ -737,17 +759,18 @@ pub fn create_value_vector(items: Vec<Vec<u8>>, elem_size: usize, iids: VectorIi
         }
         val
     }).collect();
-    new_vector(packed, true, iids)
+    new_vector(packed, true, elem_size, iids)
 }
 
-fn new_vector(items: Vec<usize>, is_value_type: bool, iids: VectorIids) -> IUnknown {
+fn new_vector(items: Vec<usize>, is_value_type: bool, elem_size: usize, iids: VectorIids) -> IUnknown {
     let vector = Box::new(SingleThreadedVector {
         vtable_iterable: &SingleThreadedVector::ITERABLE_VTBL,
         vtable_vector: &SingleThreadedVector::VECTOR_VTBL,
         vtable_view: &SingleThreadedVector::VIEW_VTBL,
         ref_count: windows_core::imp::RefCount::new(1),
-        items: RefCell::new(items),
+        items: Mutex::new(items),
         is_value_type,
+        elem_size,
         iids,
     });
     unsafe { IUnknown::from_raw(Box::into_raw(vector) as *mut c_void) }
@@ -758,6 +781,7 @@ fn new_vector(items: Vec<usize>, is_value_type: bool, iids: VectorIids) -> IUnkn
 // ======================================================================
 
 #[cfg(test)]
+#[allow(unused_must_use)]
 mod tests {
     use super::*;
     use crate::metadata_table::MetadataTable;
@@ -1045,6 +1069,88 @@ mod tests {
         // dual_vtable_com's release_view, which correctly finds the base and frees.
         drop(unsafe { IUnknown::from_raw(view1) });
         drop(unsafe { IUnknown::from_raw(view2) });
+        let _ = unsafe { IUnknown::from_raw(vec_ptr) };
+    }
+
+    /// P2: Value-type vector with elem_size < pointer size (e.g. i32 = 4 bytes).
+    /// Verifies that get_at writes only elem_size bytes, not a full pointer-width.
+    #[test]
+    fn test_value_vector_small_elem_size() {
+        let table = MetadataTable::new();
+        let iids = table.vector_iids(&table.i32_type());
+
+        // Pack i32 values into usize slots
+        let items: Vec<Vec<u8>> = vec![
+            42i32.to_ne_bytes().to_vec(),
+            99i32.to_ne_bytes().to_vec(),
+        ];
+
+        let vector = create_value_vector(items, 4, iids.clone());
+
+        // QI to IVector
+        let mut vec_ptr = std::ptr::null_mut();
+        unsafe { vector.query(&iids.vector, &mut vec_ptr) }.ok().unwrap();
+        let vtbl = unsafe { *(vec_ptr as *const *const VectorVtbl) };
+
+        // get_at should write exactly 4 bytes (i32), not 8 bytes (usize).
+        // We test by placing a sentinel in the upper 4 bytes.
+        let mut out_buf: [u8; 8] = [0xCC; 8]; // sentinel pattern
+        let hr = unsafe { ((*vtbl).get_at)(vec_ptr, 0, out_buf.as_mut_ptr() as *mut *mut c_void) };
+        assert_eq!(hr, S_OK);
+
+        // First 4 bytes should be the value 42
+        let val = i32::from_ne_bytes([out_buf[0], out_buf[1], out_buf[2], out_buf[3]]);
+        assert_eq!(val, 42);
+
+        // Upper 4 bytes should be untouched (sentinel 0xCC)
+        assert_eq!(out_buf[4], 0xCC, "write_item_out wrote beyond elem_size");
+        assert_eq!(out_buf[5], 0xCC);
+        assert_eq!(out_buf[6], 0xCC);
+        assert_eq!(out_buf[7], 0xCC);
+
+        // Second element
+        let mut out_buf2: [u8; 8] = [0xDD; 8];
+        let hr = unsafe { ((*vtbl).get_at)(vec_ptr, 1, out_buf2.as_mut_ptr() as *mut *mut c_void) };
+        assert_eq!(hr, S_OK);
+        let val2 = i32::from_ne_bytes([out_buf2[0], out_buf2[1], out_buf2[2], out_buf2[3]]);
+        assert_eq!(val2, 99);
+        assert_eq!(out_buf2[4], 0xDD, "write_item_out wrote beyond elem_size");
+
+        let _ = unsafe { IUnknown::from_raw(vec_ptr) };
+    }
+
+    /// P1: Verify that vector COM objects are actually thread-safe (Mutex, not RefCell).
+    /// Accessing from multiple threads should not panic.
+    #[test]
+    fn test_vector_thread_safety() {
+        use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize};
+        let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
+
+        let table = MetadataTable::new();
+        let iids = table.vector_iids(&table.object());
+
+        let uri = windows::Foundation::Uri::CreateUri(windows_core::h!("https://example.com")).unwrap();
+        let items: Vec<IUnknown> = vec![uri.cast().unwrap()];
+        let vector = create_vector(items, iids.clone());
+
+        // QI to IVector from main thread
+        let mut vec_ptr = std::ptr::null_mut();
+        unsafe { vector.query(&iids.vector, &mut vec_ptr) }.ok().unwrap();
+
+        // Access from another thread — with RefCell this would panic
+        let vtbl = unsafe { *(vec_ptr as *const *const VectorVtbl) };
+        let vec_ptr_usize = vec_ptr as usize;
+        let vtbl_usize = vtbl as usize;
+        let handle = std::thread::spawn(move || {
+            let vp = vec_ptr_usize as *mut c_void;
+            let vt = vtbl_usize as *const VectorVtbl;
+            let mut size: u32 = 0;
+            let hr = unsafe { ((*vt).get_size)(vp, &mut size) };
+            assert_eq!(hr, S_OK);
+            assert_eq!(size, 1);
+        });
+        handle.join().expect("Thread should not panic");
+
         let _ = unsafe { IUnknown::from_raw(vec_ptr) };
     }
 }

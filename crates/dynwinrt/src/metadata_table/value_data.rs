@@ -7,27 +7,33 @@ use windows_core::{IUnknown, Interface};
 use super::type_handle::TypeHandle;
 use super::type_kind::TypeKind;
 
-/// Release non-blittable fields (HString, COM pointers) in a struct buffer.
-/// Called by Drop and before overwriting.
+/// Release non-blittable fields (HString, COM pointers, nested structs) in a struct buffer.
+/// Called by Drop and before overwriting. Recurses into nested structs.
 unsafe fn release_non_blittable_fields(handle: &TypeHandle, ptr: *const u8) {
     let count = handle.field_count();
     for i in 0..count {
         let kind = handle.table.field_kind(handle.kind, i);
-        if !kind.needs_drop() {
+        if !kind.needs_drop_recursive() {
             continue;
         }
         let offset = handle.field_offset(i);
         unsafe {
-            let raw = *(ptr.add(offset) as *const *mut c_void);
-            if raw.is_null() {
-                continue;
-            }
             match kind {
                 TypeKind::HString => {
-                    let _hstr: windows_core::HSTRING = std::mem::transmute(raw);
+                    let raw = *(ptr.add(offset) as *const *mut c_void);
+                    if !raw.is_null() {
+                        let _hstr: windows_core::HSTRING = std::mem::transmute(raw);
+                    }
                 }
                 kind if kind.is_com_pointer() => {
-                    let _obj = IUnknown::from_raw(raw);
+                    let raw = *(ptr.add(offset) as *const *mut c_void);
+                    if !raw.is_null() {
+                        let _obj = IUnknown::from_raw(raw);
+                    }
+                }
+                TypeKind::Struct(_) => {
+                    let field_handle = handle.field_type(i);
+                    release_non_blittable_fields(&field_handle, ptr.add(offset));
                 }
                 _ => {}
             }
@@ -35,31 +41,38 @@ unsafe fn release_non_blittable_fields(handle: &TypeHandle, ptr: *const u8) {
     }
 }
 
-/// Duplicate non-blittable fields (HString, COM pointers) after a memcpy.
+/// Duplicate non-blittable fields (HString, COM pointers, nested structs) after a memcpy.
 /// The source retains its references; the destination gets new ones.
+/// Recurses into nested structs.
 unsafe fn duplicate_non_blittable_fields(handle: &TypeHandle, ptr: *mut u8) {
     let count = handle.field_count();
     for i in 0..count {
         let kind = handle.table.field_kind(handle.kind, i);
-        if !kind.needs_drop() {
+        if !kind.needs_drop_recursive() {
             continue;
         }
         let offset = handle.field_offset(i);
         unsafe {
-            let raw = *(ptr.add(offset) as *const *mut c_void);
-            if raw.is_null() {
-                continue;
-            }
             match kind {
                 TypeKind::HString => {
-                    let hstr: &windows_core::HSTRING =
-                        &*((&raw) as *const *mut c_void as *const windows_core::HSTRING);
-                    let cloned: *mut c_void = std::mem::transmute(hstr.clone());
-                    (ptr.add(offset) as *mut *mut c_void).write(cloned);
+                    let raw = *(ptr.add(offset) as *const *mut c_void);
+                    if !raw.is_null() {
+                        let hstr: &windows_core::HSTRING =
+                            &*((&raw) as *const *mut c_void as *const windows_core::HSTRING);
+                        let cloned: *mut c_void = std::mem::transmute(hstr.clone());
+                        (ptr.add(offset) as *mut *mut c_void).write(cloned);
+                    }
                 }
                 kind if kind.is_com_pointer() => {
-                    let obj = IUnknown::from_raw_borrowed(&raw).unwrap().clone();
-                    (ptr.add(offset) as *mut *mut c_void).write(obj.into_raw());
+                    let raw = *(ptr.add(offset) as *const *mut c_void);
+                    if !raw.is_null() {
+                        let obj = IUnknown::from_raw_borrowed(&raw).unwrap().clone();
+                        (ptr.add(offset) as *mut *mut c_void).write(obj.into_raw());
+                    }
+                }
+                TypeKind::Struct(_) => {
+                    let field_handle = handle.field_type(i);
+                    duplicate_non_blittable_fields(&field_handle, ptr.add(offset));
                 }
                 _ => {}
             }
@@ -67,12 +80,19 @@ unsafe fn duplicate_non_blittable_fields(handle: &TypeHandle, ptr: *mut u8) {
     }
 }
 
-/// Check if a struct type has any non-blittable fields.
+/// Check if a struct type has any non-blittable fields (recursing into nested structs).
 fn has_non_blittable_fields(handle: &TypeHandle) -> bool {
     let count = handle.field_count();
     for i in 0..count {
-        if handle.table.field_kind(handle.kind, i).needs_drop() {
+        let kind = handle.table.field_kind(handle.kind, i);
+        if kind.needs_drop() {
             return true;
+        }
+        if let TypeKind::Struct(_) = kind {
+            let field_handle = handle.field_type(i);
+            if has_non_blittable_fields(&field_handle) {
+                return true;
+            }
         }
     }
     false

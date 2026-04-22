@@ -8,11 +8,12 @@
 //! allowing JS callers to construct maps and pass them to WinRT APIs.
 
 use core::ffi::c_void;
-use std::cell::RefCell;
+use std::sync::Mutex;
 use windows_core::{GUID, HRESULT, IUnknown, Interface};
 
-use crate::com_helpers::{IInspectableVtbl, E_BOUNDS, S_OK};
-use crate::com_helpers::{inspectable_stubs, dual_vtable_com, single_vtable_com};
+use crate::com_helpers::{IInspectableVtbl, E_BOUNDS, E_FAIL, E_POINTER, S_OK};
+#[allow(unused_imports)]
+use crate::com_helpers::{inspectable_stubs, dual_vtable_com, single_vtable_com, lock_or};
 use crate::vector::SingleThreadedIterator;
 
 // ======================================================================
@@ -153,7 +154,7 @@ struct SingleThreadedMap {
     vtable_iterable: *const IterableVtbl,
     vtable_map: *const MapVtbl,
     ref_count: windows_core::imp::RefCount,
-    entries: RefCell<Vec<(IUnknown, IUnknown)>>,
+    entries: Mutex<Vec<(IUnknown, IUnknown)>>,
     iids: MapIids,
 }
 
@@ -202,11 +203,11 @@ impl SingleThreadedMap {
 
     unsafe extern "system" fn first(this: *mut c_void, result: *mut *mut c_void) -> HRESULT {
         let me = Self::from_iterable_ptr(this);
-        let entries = me.entries.borrow();
+        let entries = lock_or!(me.entries, E_FAIL);
         let kvp_items: Vec<usize> = entries.iter()
             .map(|(k, v)| SingleThreadedKeyValuePair::create(k.clone(), v.clone(), me.iids.kvp).into_raw() as usize)
             .collect();
-        let iter = SingleThreadedIterator::create(kvp_items, false, me.iids.iterator);
+        let iter = SingleThreadedIterator::create(kvp_items, false, std::mem::size_of::<*mut c_void>(), me.iids.iterator);
         *result = iter.into_raw();
         S_OK
     }
@@ -215,7 +216,7 @@ impl SingleThreadedMap {
 
     unsafe extern "system" fn lookup(this: *mut c_void, key: *mut c_void, result: *mut *mut c_void) -> HRESULT {
         let me = Self::from_map_ptr(this);
-        let entries = me.entries.borrow();
+        let entries = lock_or!(me.entries, E_FAIL);
         match find_key_index(&entries, key) {
             Some(i) => {
                 *result = entries[i].1.clone().into_raw();
@@ -227,20 +228,20 @@ impl SingleThreadedMap {
 
     unsafe extern "system" fn get_size(this: *mut c_void, result: *mut u32) -> HRESULT {
         let me = Self::from_map_ptr(this);
-        *result = me.entries.borrow().len() as u32;
+        *result = lock_or!(me.entries, E_FAIL).len() as u32;
         S_OK
     }
 
     unsafe extern "system" fn has_key(this: *mut c_void, key: *mut c_void, result: *mut bool) -> HRESULT {
         let me = Self::from_map_ptr(this);
-        let entries = me.entries.borrow();
+        let entries = lock_or!(me.entries, E_FAIL);
         *result = find_key_index(&entries, key).is_some();
         S_OK
     }
 
     unsafe extern "system" fn get_view(this: *mut c_void, result: *mut *mut c_void) -> HRESULT {
         let me = Self::from_map_ptr(this);
-        let snapshot = me.entries.borrow().clone();
+        let snapshot = lock_or!(me.entries, E_FAIL).clone();
         let view = SingleThreadedMapView::create(snapshot, me.iids.clone());
         // WinRT ABI: get_view must return an IMapView pointer (second vtable),
         // not the identity/IIterable pointer (first vtable).
@@ -251,9 +252,15 @@ impl SingleThreadedMap {
 
     unsafe extern "system" fn insert(this: *mut c_void, key: *mut c_void, value: *mut c_void, replaced: *mut bool) -> HRESULT {
         let me = Self::from_map_ptr(this);
-        let mut entries = me.entries.borrow_mut();
-        let new_key = IUnknown::from_raw_borrowed(&key).unwrap().clone();
-        let new_val = IUnknown::from_raw_borrowed(&value).unwrap().clone();
+        let mut entries = lock_or!(me.entries, E_FAIL);
+        let new_key = match IUnknown::from_raw_borrowed(&key) {
+            Some(k) => k.clone(),
+            None => return E_POINTER,
+        };
+        let new_val = match IUnknown::from_raw_borrowed(&value) {
+            Some(v) => v.clone(),
+            None => return E_POINTER,
+        };
         match find_key_index(&entries, key) {
             Some(i) => {
                 entries[i].1 = new_val;
@@ -269,7 +276,7 @@ impl SingleThreadedMap {
 
     unsafe extern "system" fn remove(this: *mut c_void, key: *mut c_void) -> HRESULT {
         let me = Self::from_map_ptr(this);
-        let mut entries = me.entries.borrow_mut();
+        let mut entries = lock_or!(me.entries, E_FAIL);
         match find_key_index(&entries, key) {
             Some(i) => { entries.remove(i); S_OK }
             None => E_BOUNDS,
@@ -278,7 +285,7 @@ impl SingleThreadedMap {
 
     unsafe extern "system" fn clear(this: *mut c_void) -> HRESULT {
         let me = Self::from_map_ptr(this);
-        me.entries.borrow_mut().clear();
+        lock_or!(me.entries, E_FAIL).clear();
         S_OK
     }
 }
@@ -352,7 +359,7 @@ impl SingleThreadedMapView {
         let kvp_items: Vec<usize> = me.entries.iter()
             .map(|(k, v)| SingleThreadedKeyValuePair::create(k.clone(), v.clone(), me.iids.kvp).into_raw() as usize)
             .collect();
-        let iter = SingleThreadedIterator::create(kvp_items, false, me.iids.iterator);
+        let iter = SingleThreadedIterator::create(kvp_items, false, std::mem::size_of::<*mut c_void>(), me.iids.iterator);
         *result = iter.into_raw();
         S_OK
     }
@@ -465,7 +472,7 @@ pub fn create_map(entries: Vec<(IUnknown, IUnknown)>, iids: MapIids) -> IUnknown
         vtable_iterable: &SingleThreadedMap::ITERABLE_VTBL,
         vtable_map: &SingleThreadedMap::MAP_VTBL,
         ref_count: windows_core::imp::RefCount::new(1),
-        entries: RefCell::new(entries),
+        entries: Mutex::new(entries),
         iids,
     });
     unsafe { IUnknown::from_raw(Box::into_raw(map) as *mut c_void) }
@@ -476,6 +483,7 @@ pub fn create_map(entries: Vec<(IUnknown, IUnknown)>, iids: MapIids) -> IUnknown
 // ======================================================================
 
 #[cfg(test)]
+#[allow(unused_must_use)]
 mod tests {
     use super::*;
     use crate::metadata_table::MetadataTable;

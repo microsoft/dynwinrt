@@ -567,7 +567,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_results_u32_write_async() -> Result<()> {
         use crate::metadata_table::TypeKind;
-        use windows::Storage::Streams::{InMemoryRandomAccessStream, IOutputStream, Buffer, IBuffer};
+        use windows::Storage::Streams::{InMemoryRandomAccessStream, IOutputStream, Buffer};
 
         let stream = InMemoryRandomAccessStream::new().map_err(Error::WindowsError)?;
         let output: IOutputStream = stream.cast().map_err(Error::WindowsError)?;
@@ -612,7 +612,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_results_u64_buffer_all() -> Result<()> {
         use crate::metadata_table::TypeKind;
-        use windows::Storage::Streams::{InMemoryRandomAccessStream, IOutputStream, IInputStream, Buffer, IBuffer};
+        use windows::Storage::Streams::{InMemoryRandomAccessStream, IOutputStream, Buffer};
 
         let stream = InMemoryRandomAccessStream::new().map_err(Error::WindowsError)?;
         let output: IOutputStream = stream.cast().map_err(Error::WindowsError)?;
@@ -623,10 +623,8 @@ mod tests {
         buffer.SetLength(data_size).map_err(Error::WindowsError)?;
         output.WriteAsync(&buffer).map_err(Error::WindowsError)?.await.map_err(Error::WindowsError)?;
 
-        // Seek to beginning and read via InputStreamOptions
+        // Seek to beginning
         stream.Seek(0).map_err(Error::WindowsError)?;
-        let input: IInputStream = stream.cast().map_err(Error::WindowsError)?;
-        let read_buf = Buffer::Create(data_size).map_err(Error::WindowsError)?;
 
         // ReadAsync returns IAsyncOperationWithProgress<IBuffer, u32>
         // Instead, use the content pattern: windows-rs typed first, then dynwinrt

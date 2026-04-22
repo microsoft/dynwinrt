@@ -9,6 +9,14 @@
 - [x] **CI/CD**: `.github/workflows/build.yml` — winrt-meta builds (x64 + arm64), dynwinrt-js (x64 + arm64), publishing, and sample generation
 - [x] **Remove debug eprintln**: `[resolve]` debug prints removed from `meta.rs`
 - [ ] **Auto-detect WinAppSDK Bootstrap DLL**: `initWinappsdk(major, minor)` should auto-find Bootstrap DLL from `~/.winapp/packages/` or known install paths, with `WINAPPSDK_BOOTSTRAP_DLL_PATH` as override. Currently requires manual env var setup which is a friction point for unpackaged app developers.
+- [x] **Collection threading / agility mismatch**: `SingleThreadedVector` / `SingleThreadedMap` migrated from `RefCell` to `Mutex`, making `Send + Sync` and `IAgileObject` semantics sound. COM vtable callbacks now use `lock_or!` macro returning `E_FAIL` on mutex poisoning instead of panicking across FFI.
+- [x] **Null COM objects in arrays**: `ArrayData::get()` now returns `WinRTValue::Null` for null COM elements in CoTaskMem-backed arrays instead of constructing invalid `IUnknown::from_raw(null)`.
+- [x] **Nested struct recursive Clone/Drop**: `ValueTypeData` and `ArrayData` now recursively handle non-blittable fields (HString, COM pointers) in nested structs during Clone, Drop, and element access.
+- [x] **FillArray/ReceiveArray error-path cleanup**: Error paths now wrap buffers in `ArrayData` (which handles element-level release via Drop) instead of raw `CoTaskMemFree`. `ArrayOutSlot` and `FillArraySlot` both have Drop impls that release elements.
+- [x] **FillArray actual_count bounds check**: `actual_count` clamped to `capacity` in all FillArray code paths to prevent OOB reads.
+- [x] **Delegate float ABI**: Added separate f32/f64 trampolines for 1-param and 2-param delegates. F32 delegates now correctly produce `WinRTValue::F32` instead of being routed through the f64 trampoline.
+- [x] **Vector value-type ABI**: `write_item_out` now writes only `elem_size` bytes for value types instead of full pointer-width, preventing stack corruption for small types like i32.
+- [x] **COM vtable panic safety**: All `lock().unwrap()` in COM vtable callbacks replaced with `lock_or!` macro returning HRESULT. `from_raw_borrowed().unwrap()` replaced with null-check returning `E_POINTER`. Drop impls use `if let Ok(...)` to avoid panic on poisoned mutex.
 
 ## P1 - Quality
 
@@ -18,6 +26,9 @@
 - [ ] **Update CLAUDE.md**: Known Limitations section outdated -- generics fully supported, codegen tool exists, parameterized interfaces from winmd
 - [ ] **Python .pyi type stubs**: No Python type hint files generated
 - [ ] **JSDoc comments**: napi binding `.d.ts` has no parameter descriptions
+- [ ] **Null COM objects in arrays**: ~~`ArrayData::get()` still constructs `IUnknown::from_raw(null)` for null COM elements coming from CoTaskMem-backed arrays. That should return `WinRTValue::Null` directly, otherwise clone/drop on the resulting object can crash.~~ (done — see P0)
+- [ ] **FillArray failure-path cleanup**: ~~If a FillArray call partially writes HSTRING / COM elements and then returns failure, the temporary buffer cleanup path frees raw memory but does not walk and release per-element resources. Mirror `ArrayData::drop` behavior for error paths to avoid leaks.~~ (done — see P0)
+- [ ] **Remove panic-shaped FFI edges**: ~~Remaining `expect` / `panic!` / `from_raw_borrowed(...).unwrap()` sites in runtime-facing core code (`winapp.rs`, array/delegate/map raw COM conversions) should surface typed errors instead of aborting the host process.~~ (done — see P0)
 - [x] **Remove unused `_collections.ts`**: Removed — parameterized interfaces now generated from winmd (IVector_String.ts etc.)
 - [x] **Remove unused JS binding methods**: `call_0`, `callSingleOut0`, `callSingleOut1` removed — `method().invoke()` is the sole invoke path
 
@@ -25,6 +36,7 @@
 
 - [x] **Delegate / Event support**: Full implementation in `delegate.rs` — Rust-side COM vtable + napi ThreadsafeFunction callback. `DynWinRtDelegate.create(iid, paramTypes, callback)` creates delegate COM objects from JS callbacks. Supports Object, HString, Bool, I32/U32/I64/U64, Enum parameter types
 - [ ] **Struct auto-marshaling**: Users must manually `DynWinRtStruct.create()` + `setF64(index, value)` per field; support auto-conversion from JS objects
+- [ ] **Generalize map key semantics**: `IMap<K,V>` currently falls back to raw pointer identity for most key types, with special handling for string-like boxed values. That is enough for some practical scenarios, but not yet a complete WinRT-equivalent key-equality story for arbitrary K.
 - [x] **IAsyncOperationWithProgress IID computation**: Enum-in-struct now emits `enum(Namespace.Name;i4)` in both runtime IID signature (`metadata_table/iid.rs:77-80`) and codegen (`ts_dynwinrt_type` / `py_dynwinrt_type` recurse into struct fields and emit `enumType('FullName', [names], [values])`). Parameterized IID now matches QI for async-of-struct-with-enum.
   - ~~Also: `StructEntry.name` uses `Option<String>` but WinRT structs are always named — should be `String`, deprecate `define_struct` in favor of `define_named_struct`~~ (done — `StructEntry.name` is now `String`)
 - [ ] **Nullable / IReference\<T\> return handling**: Null COM pointer returns `Null` variant; JS side needs better null-check patterns

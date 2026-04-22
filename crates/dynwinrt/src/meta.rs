@@ -37,7 +37,7 @@ mod tests {
             let params: Vec<String> = method
                 .params()
                 .enumerate()
-                .map(|(i, p)| format!("{}: {:?}", p.name(), method.signature(&[]).types))
+                .map(|(_i, p)| format!("{}: {:?}", p.name(), method.signature(&[]).types))
                 .collect();
             println!(
                 "fn {:?} {}({}) -> {:?}",

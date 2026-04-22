@@ -163,8 +163,16 @@ impl TypeKind {
 
     /// True for types that are heap-allocated when stored in a struct field.
     /// These need special handling in Drop (release) and Clone (duplicate).
+    /// Note: Struct fields are handled separately via recursive traversal,
+    /// so Struct(_) itself is not listed here.
     pub fn needs_drop(self) -> bool {
         self.is_com_pointer() || matches!(self, TypeKind::HString)
+    }
+
+    /// True if this type, or any nested struct field, requires Drop/Clone handling.
+    /// Unlike `needs_drop()`, this recurses into Struct fields.
+    pub fn needs_drop_recursive(self) -> bool {
+        self.needs_drop() || matches!(self, TypeKind::Struct(_))
     }
 
     /// True for types that can appear as struct fields (memcpy-safe).

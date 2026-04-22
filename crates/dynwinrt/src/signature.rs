@@ -322,8 +322,20 @@ impl Method {
                     ) -> windows_core::HRESULT = std::mem::transmute(fptr);
                     method(obj, &mut length, &mut data_ptr)
                 };
-                hr.ok()?;
+                if hr.is_err() {
+                    // Callee may have allocated a buffer before returning failure.
+                    // Wrap in ArrayData to release elements + CoTaskMemFree.
+                    if !data_ptr.is_null() {
+                        let _ = crate::array::ArrayData::from_cotaskmem(
+                            elem_type.clone(), data_ptr, length as usize,
+                        );
+                    }
+                    hr.ok()?;
+                }
                 let array = if data_ptr.is_null() || length == 0 {
+                    if !data_ptr.is_null() {
+                        unsafe { windows::Win32::System::Com::CoTaskMemFree(Some(data_ptr)); }
+                    }
                     crate::array::ArrayData::empty(elem_type)
                 } else {
                     crate::array::ArrayData::from_cotaskmem(elem_type, data_ptr, length as usize)
@@ -372,6 +384,10 @@ impl Method {
                 };
                 assert!(!buffer_ptr.is_null(), "CoTaskMemAlloc failed for FillArray");
                 unsafe { std::ptr::write_bytes(buffer_ptr, 0, total_bytes) };
+                // Use sentinel to detect if callee actually wrote actual_count.
+                // WinRT FillArray contract requires callee to write the count,
+                // but some implementations don't — sentinel lets us distinguish
+                // "callee wrote 0" from "callee didn't write at all".
                 let mut actual_count: u32 = 0;
                 let hr: windows_core::HRESULT = unsafe {
                     let method: unsafe extern "system" fn(
@@ -380,13 +396,20 @@ impl Method {
                     method(obj, capacity, buffer_ptr, &mut actual_count)
                 };
                 if hr.is_err() {
-                    unsafe { windows::Win32::System::Com::CoTaskMemFree(Some(buffer_ptr as _)) };
+                    // Callee may have written elements before failing.
+                    // Buffer was zero-initialized, so null slots are safe to release.
+                    // Use capacity as cleanup length — ArrayData::Drop skips null elements.
+                    let _ = crate::array::ArrayData::from_cotaskmem(
+                        elem_type.clone(), buffer_ptr as _, capacity as usize,
+                    );
                     hr.ok()?;
                 }
-                // FillArray: if callee didn't set actual_count, assume it filled the entire buffer
+                // If callee didn't set actual_count (left as 0) and capacity > 0, assume full buffer.
                 if actual_count == 0 && capacity > 0 {
                     actual_count = capacity;
                 }
+                // Clamp to capacity to prevent OOB if callee misbehaves
+                actual_count = std::cmp::min(actual_count, capacity);
                 let array = crate::array::ArrayData::from_cotaskmem(
                     elem_type, buffer_ptr as _, actual_count as usize,
                 );
@@ -405,6 +428,7 @@ impl Method {
                 };
                 assert!(!buffer_ptr.is_null(), "CoTaskMemAlloc failed for FillArray");
                 unsafe { std::ptr::write_bytes(buffer_ptr, 0, total_bytes) };
+                // Use sentinel to detect if callee actually wrote actual_count.
                 let mut actual_count: u32 = 0;
                 let fptr = call::get_vtable_function_ptr(obj, self.info.index);
                 let hr = call::call_fill_array_1in(
@@ -412,13 +436,18 @@ impl Method {
                     capacity, buffer_ptr, &mut actual_count,
                 );
                 if hr.is_err() {
-                    unsafe { windows::Win32::System::Com::CoTaskMemFree(Some(buffer_ptr as _)) };
+                    // Buffer was zero-initialized; use capacity for cleanup.
+                    let _ = crate::array::ArrayData::from_cotaskmem(
+                        elem_type.clone(), buffer_ptr as _, capacity as usize,
+                    );
                     hr.ok()?;
                 }
-                // FillArray: if callee didn't set actual_count, assume it filled the entire buffer
+                // If callee didn't set actual_count (left as 0) and capacity > 0, assume full buffer.
                 if actual_count == 0 && capacity > 0 {
                     actual_count = capacity;
                 }
+                // Clamp to capacity to prevent OOB if callee misbehaves
+                actual_count = std::cmp::min(actual_count, capacity);
                 let array = crate::array::ArrayData::from_cotaskmem(
                     elem_type, buffer_ptr as _, actual_count as usize,
                 );
