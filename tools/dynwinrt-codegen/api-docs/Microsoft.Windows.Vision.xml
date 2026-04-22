@@ -1,6 +1,48 @@
 <?xml version="1.0" encoding="utf-8"?>
 <doc>
   <members>
+    <member name="F:Microsoft.Windows.Vision.DetectedLineStyle.Handwritten">
+      <summary>The line of text is hand written.</summary>
+    </member>
+    <member name="F:Microsoft.Windows.Vision.DetectedLineStyle.Other">
+      <summary>The line of text is not hand written.</summary>
+    </member>
+    <member name="F:Microsoft.Windows.Vision.OrientationDetectionOptions.DetectOrientation">
+      <summary>Orientation is recognized.</summary>
+    </member>
+    <member name="F:Microsoft.Windows.Vision.OrientationDetectionOptions.None">
+      <summary>Orientation is not recognized.</summary>
+    </member>
+    <member name="F:Microsoft.Windows.Vision.ScreenRegionLabel.AddressBar">
+      <summary>Text field for web site addresses or search terms.</summary>
+    </member>
+    <member name="F:Microsoft.Windows.Vision.ScreenRegionLabel.Container">
+      <summary>Container of text and images.</summary>
+    </member>
+    <member name="F:Microsoft.Windows.Vision.ScreenRegionLabel.Image">
+      <summary>Raster or vector image.</summary>
+    </member>
+    <member name="F:Microsoft.Windows.Vision.ScreenRegionLabel.Menu">
+      <summary>Menu bar or similar navigation controls.</summary>
+    </member>
+    <member name="F:Microsoft.Windows.Vision.ScreenRegionLabel.TabBar">
+      <summary>A bar of tabs (Edge browser, Windows File Explorer).</summary>
+    </member>
+    <member name="F:Microsoft.Windows.Vision.ScreenRegionLabel.Table">
+      <summary>Tabular data.</summary>
+    </member>
+    <member name="F:Microsoft.Windows.Vision.ScreenRegionLabel.Text">
+      <summary>Text block.</summary>
+    </member>
+    <member name="F:Microsoft.Windows.Vision.ScreenRegionLabel.TitleBar">
+      <summary>Window title bar.</summary>
+    </member>
+    <member name="F:Microsoft.Windows.Vision.ScreenRegionLabel.ToolBar">
+      <summary>A bar of tools or similar tool container (e.g., Windows Ribbon).</summary>
+    </member>
+    <member name="F:Microsoft.Windows.Vision.ScreenRegionLabel.Toolpane">
+      <summary>Panel containing a collection of tools (e.g., Photoshop floating panes).</summary>
+    </member>
     <member name="M:Microsoft.Windows.Vision.TextRecognizer.Close">
       <summary>Disposes of the object and associated resources.</summary>
     </member>
@@ -92,20 +134,8 @@ Returns Microsoft.Windows.AI.AIFeatureReadyState.Ready if the underlying languag
     <member name="T:Microsoft.Windows.Vision.DetectedLineStyle">
       <summary>Specifies the line styles that can be recognized.</summary>
     </member>
-    <member name="F:Microsoft.Windows.Vision.DetectedLineStyle.Handwritten">
-      <summary>The line of text is hand written.</summary>
-    </member>
-    <member name="F:Microsoft.Windows.Vision.DetectedLineStyle.Other">
-      <summary>The line of text is not hand written.</summary>
-    </member>
     <member name="T:Microsoft.Windows.Vision.OrientationDetectionOptions">
       <summary>Specifies the text orientations that can be recognized.</summary>
-    </member>
-    <member name="F:Microsoft.Windows.Vision.OrientationDetectionOptions.None">
-      <summary>Orientation is not recognized.</summary>
-    </member>
-    <member name="F:Microsoft.Windows.Vision.OrientationDetectionOptions.DetectOrientation">
-      <summary>Orientation is recognized.</summary>
     </member>
     <member name="T:Microsoft.Windows.Vision.RecognizedLine">
       <summary>Represents a single line of recognized text.</summary>
@@ -124,36 +154,6 @@ Returns Microsoft.Windows.AI.AIFeatureReadyState.Ready if the underlying languag
     </member>
     <member name="T:Microsoft.Windows.Vision.ScreenRegionLabel">
       <summary>Specifies the labels used to describe the type of object within a ScreenRegionBoundingBox.</summary>
-    </member>
-    <member name="F:Microsoft.Windows.Vision.ScreenRegionLabel.Text">
-      <summary>Text block.</summary>
-    </member>
-    <member name="F:Microsoft.Windows.Vision.ScreenRegionLabel.Image">
-      <summary>Raster or vector image.</summary>
-    </member>
-    <member name="F:Microsoft.Windows.Vision.ScreenRegionLabel.Table">
-      <summary>Tabular data.</summary>
-    </member>
-    <member name="F:Microsoft.Windows.Vision.ScreenRegionLabel.Container">
-      <summary>Container of text and images.</summary>
-    </member>
-    <member name="F:Microsoft.Windows.Vision.ScreenRegionLabel.Menu">
-      <summary>Menu bar or similar navigation controls.</summary>
-    </member>
-    <member name="F:Microsoft.Windows.Vision.ScreenRegionLabel.ToolBar">
-      <summary>A bar of tools or similar tool container (e.g., Windows Ribbon).</summary>
-    </member>
-    <member name="F:Microsoft.Windows.Vision.ScreenRegionLabel.AddressBar">
-      <summary>Text field for web site addresses or search terms.</summary>
-    </member>
-    <member name="F:Microsoft.Windows.Vision.ScreenRegionLabel.Toolpane">
-      <summary>Panel containing a collection of tools (e.g., Photoshop floating panes).</summary>
-    </member>
-    <member name="F:Microsoft.Windows.Vision.ScreenRegionLabel.TabBar">
-      <summary>A bar of tabs (Edge browser, Windows File Explorer).</summary>
-    </member>
-    <member name="F:Microsoft.Windows.Vision.ScreenRegionLabel.TitleBar">
-      <summary>Window title bar.</summary>
     </member>
     <member name="T:Microsoft.Windows.Vision.TextRecognizer">
       <summary>Recognizes words and lines, and their quadrilateral boundaries, in a source image.</summary>

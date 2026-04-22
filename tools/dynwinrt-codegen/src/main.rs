@@ -84,6 +84,11 @@ enum Commands {
         #[arg(long, default_value = "./generated", value_name = "DIR")]
         output: String,
 
+        /// Custom import name for the dynwinrt runtime package in generated JS/TS files.
+        /// Defaults to "@microsoft/dynwinrt".
+        #[arg(long, default_value = "@microsoft/dynwinrt", value_name = "NAME")]
+        import_name: String,
+
         /// Validate metadata and resolve dependencies without writing files
         #[arg(long)]
         dry_run: bool,
@@ -113,6 +118,7 @@ fn run() -> Result<(), String> {
             ref_winmd,
             lang,
             output,
+            import_name,
             dry_run,
             pyi,
         } => {
@@ -180,6 +186,9 @@ fn run() -> Result<(), String> {
             doc_table.load_builtin_docs();
 
             let output_dir = Path::new(&output);
+            if lang == "js" {
+                project::set_import_name(&import_name);
+            }
             if !dry_run {
                 fs::create_dir_all(output_dir)
                     .map_err(|e| format!("Failed to create output directory '{}': {}", output, e))?;
@@ -490,6 +499,7 @@ fn generate_js_files(
     }
     for en in all_enums {
         if let TypeMeta::Enum { name, .. } = en {
+            if name.contains('<') { continue; } // skip CLR projection types
             if let Some(projected) = project::project_enum(en) {
                 let js = render_js::render(&projected);
                 let dts = render_dts::render(&projected);

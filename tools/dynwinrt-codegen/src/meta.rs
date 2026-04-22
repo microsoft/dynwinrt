@@ -144,6 +144,10 @@ pub fn parse_namespace(winmd_paths: &str, namespace: &str) -> Vec<ClassMeta> {
         if def.namespace() != namespace {
             continue;
         }
+        // Skip CLR projection types (e.g. "<CLR>AdaptiveTextStyle") — .NET interop internals
+        if def.name().starts_with('<') {
+            continue;
+        }
         let extends = match def.extends() {
             Some(e) => e,
             None => continue,
@@ -171,6 +175,10 @@ pub fn parse_interfaces(winmd_paths: &str, namespace: &str) -> Vec<InterfaceMeta
     let mut interfaces = Vec::new();
     for def in index.all() {
         if def.namespace() != namespace {
+            continue;
+        }
+        // Skip CLR projection types
+        if def.name().starts_with('<') {
             continue;
         }
         // Interfaces have no extends (or extend nothing)
@@ -207,6 +215,10 @@ pub fn parse_enums(winmd_paths: &str, namespace: &str) -> Vec<TypeMeta> {
     let mut enums = Vec::new();
     for def in index.all() {
         if def.namespace() != namespace {
+            continue;
+        }
+        // Skip CLR projection types
+        if def.name().starts_with('<') {
             continue;
         }
         if let Some(extends) = def.extends() {
@@ -317,6 +329,7 @@ pub fn resolve_dependencies(
                     }
                 }
                 TypeKind::Enum => {
+                    if r.name.starts_with('<') { continue; } // skip CLR projection types
                     if let Some(def) = index.get(&r.namespace, &r.name).next() {
                         dep_enums.push(parse_enum_def(&def));
                     } else {

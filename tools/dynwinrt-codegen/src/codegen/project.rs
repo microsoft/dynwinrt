@@ -8,9 +8,24 @@
 //! here. The renderers consume the IR and only format.
 
 use std::collections::{HashMap, HashSet};
+use std::cell::RefCell;
 
 use crate::meta::{ClassMeta, InterfaceMeta, MethodMeta, ParamDirection};
 use crate::types::{TypeKind, TypeMeta};
+
+thread_local! {
+    static RUNTIME_IMPORT_NAME: RefCell<String> = RefCell::new("@microsoft/dynwinrt".into());
+}
+
+/// Set the runtime package import name used in generated JS/TS files.
+/// Must be called before any `project_*` functions.
+pub fn set_import_name(name: &str) {
+    RUNTIME_IMPORT_NAME.with(|n| *n.borrow_mut() = name.to_string());
+}
+
+fn get_import_name() -> String {
+    RUNTIME_IMPORT_NAME.with(|n| n.borrow().clone())
+}
 
 use super::common::{
     collect_used_structs_from_class, collect_used_structs_from_iface,
@@ -715,7 +730,7 @@ pub fn project_delegate(iface: &InterfaceMeta, delegate_sigs: &HashMap<String, S
 
     let mut imports = vec![ProjectedImport {
         symbols: vec!["DynWinRtType".into(), "WinGuid".into()],
-        from: "@microsoft/dynwinrt".into(),
+        from: get_import_name(),
         runtime_only: false, dts_only: false,
     }];
     if let Some(ref_types) = delegate_sig_refs.get(&iface.name) {
@@ -1819,7 +1834,7 @@ fn build_runtime_import(has_structs: bool) -> ProjectedImport {
     symbols.push("WinGuid".into());
     ProjectedImport {
         symbols,
-        from: "@microsoft/dynwinrt".into(),
+        from: get_import_name(),
         runtime_only: false, dts_only: false,
     }
 }

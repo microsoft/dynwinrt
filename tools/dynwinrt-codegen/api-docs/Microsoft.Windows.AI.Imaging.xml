@@ -1,101 +1,103 @@
 <?xml version="1.0" encoding="utf-8"?>
 <doc>
   <members>
-    <!-- Namespace alias: SDK 1.8 uses Microsoft.Windows.AI.Imaging for classes that
-         docs (and SDK 2.0) place under Microsoft.Windows.AI.Generative.
-         Entries here mirror Microsoft.Windows.AI.Generative.xml for 1.8 compat. -->
-    <member name="T:Microsoft.Windows.AI.Imaging.ImageDescriptionGenerator">
-      <summary>Generates natural language descriptions of images using AI, supporting brief, detailed, diagram, and accessibility descriptions.</summary>
+    <member name="F:Microsoft.Windows.AI.Imaging.ImageDescriptionKind.AccessibleDescription">
+<summary>An accessibility-optimized description suitable for screen readers.</summary>
     </member>
-    <member name="M:Microsoft.Windows.AI.Imaging.ImageDescriptionGenerator.GetReadyState">
-      <summary>Retrieves the readiness state of the image description model.</summary>
-      <returns>The readiness state of the underlying model.</returns>
+    <member name="F:Microsoft.Windows.AI.Imaging.ImageDescriptionKind.BriefDescription">
+<summary>A short, concise description of the image.</summary>
     </member>
-    <member name="M:Microsoft.Windows.AI.Imaging.ImageDescriptionGenerator.EnsureReadyAsync">
-      <summary>Ensures the underlying model is ready by downloading and installing any required components.</summary>
-      <returns>An asynchronous action with progress that returns an AIFeatureReadyResult on completion.</returns>
+    <member name="F:Microsoft.Windows.AI.Imaging.ImageDescriptionKind.DetailedDescription">
+<summary>A detailed, comprehensive description of the image.</summary>
+    </member>
+    <member name="F:Microsoft.Windows.AI.Imaging.ImageDescriptionKind.DetailedDescrition">
+    </member>
+    <member name="F:Microsoft.Windows.AI.Imaging.ImageDescriptionKind.DiagramDescription">
+<summary>A description focused on diagrams, charts, and structured visual content.</summary>
+    </member>
+    <member name="F:Microsoft.Windows.AI.Imaging.ImageDescriptionResultStatus.BlockedByPolicy">
+<summary>The operation was blocked by a policy restriction.</summary>
+    </member>
+    <member name="F:Microsoft.Windows.AI.Imaging.ImageDescriptionResultStatus.Complete">
+<summary>The description was generated successfully.</summary>
+    </member>
+    <member name="F:Microsoft.Windows.AI.Imaging.ImageDescriptionResultStatus.DescriptionTextBlockedByContentModeration">
+<summary>The generated description text was blocked by content moderation.</summary>
+    </member>
+    <member name="F:Microsoft.Windows.AI.Imaging.ImageDescriptionResultStatus.ImageBlockedByContentModeration">
+<summary>The source image was blocked by content moderation.</summary>
+    </member>
+    <member name="F:Microsoft.Windows.AI.Imaging.ImageDescriptionResultStatus.ImageHasTooMuchText">
+<summary>The image contains too much text for the model to process.</summary>
+    </member>
+    <member name="F:Microsoft.Windows.AI.Imaging.ImageDescriptionResultStatus.InProgress">
+<summary>The description generation is still in progress.</summary>
+    </member>
+    <member name="F:Microsoft.Windows.AI.Imaging.ImageDescriptionResultStatus.InternalError">
+<summary>An internal error occurred during description generation.</summary>
+    </member>
+    <member name="F:Microsoft.Windows.AI.Imaging.ImageDescriptionResultStatus.TextInImageBlockedByContentModeration">
+<summary>Text found in the image was blocked by content moderation.</summary>
+    </member>
+    <member name="M:Microsoft.Windows.AI.Imaging.ImageDescriptionGenerator.Close">
+      <summary>Disposes of the object and associated resources.</summary>
     </member>
     <member name="M:Microsoft.Windows.AI.Imaging.ImageDescriptionGenerator.CreateAsync">
-      <summary>Asynchronously creates a new instance of the ImageDescriptionGenerator.</summary>
+<summary>Asynchronously creates a new instance of the ImageDescriptionGenerator.</summary>
       <returns>A new ImageDescriptionGenerator instance.</returns>
     </member>
     <member name="M:Microsoft.Windows.AI.Imaging.ImageDescriptionGenerator.DescribeAsync(Microsoft.Graphics.Imaging.ImageBuffer)">
-      <summary>Asynchronously generates a description of the provided image.</summary>
+<summary>Asynchronously generates a description of the provided image.</summary>
       <param name="image">The image to describe.</param>
       <returns>The image description result.</returns>
     </member>
     <member name="M:Microsoft.Windows.AI.Imaging.ImageDescriptionGenerator.DescribeAsync(Microsoft.Graphics.Imaging.ImageBuffer,Microsoft.Windows.AI.Imaging.ImageDescriptionKind)">
-      <summary>Asynchronously generates a description of the provided image with the specified description kind.</summary>
+<summary>Asynchronously generates a description of the provided image with the specified description kind.</summary>
       <param name="image">The image to describe.</param>
       <param name="kind">The kind of description to generate (brief, detailed, diagram, or accessible).</param>
       <returns>The image description result.</returns>
     </member>
     <member name="M:Microsoft.Windows.AI.Imaging.ImageDescriptionGenerator.DescribeAsync(Microsoft.Graphics.Imaging.ImageBuffer,Microsoft.Windows.AI.Imaging.ImageDescriptionKind,Microsoft.Windows.AI.ContentSafety.ContentFilterOptions)">
-      <summary>Asynchronously generates a description of the provided image with the specified description kind and content filter options.</summary>
+<summary>Asynchronously generates a description of the provided image with the specified description kind and content filter options.</summary>
       <param name="image">The image to describe.</param>
       <param name="kind">The kind of description to generate.</param>
       <param name="contentFilterOptions">Options that affect how the model filters responses.</param>
       <returns>The image description result.</returns>
     </member>
-    <member name="T:Microsoft.Windows.AI.Imaging.ImageDescriptionResult">
-      <summary>Represents the result of an image description operation, including the generated text and completion status.</summary>
+    <member name="M:Microsoft.Windows.AI.Imaging.ImageDescriptionGenerator.EnsureReadyAsync">
+<summary>Ensures the underlying model is ready by downloading and installing any required components.</summary>
+      <returns>An asynchronous action with progress that returns an AIFeatureReadyResult on completion.</returns>
+    </member>
+    <member name="M:Microsoft.Windows.AI.Imaging.ImageDescriptionGenerator.GetReadyState">
+<summary>Retrieves the readiness state of the image description model.</summary>
+      <returns>The readiness state of the underlying model.</returns>
     </member>
     <member name="P:Microsoft.Windows.AI.Imaging.ImageDescriptionResult.Description">
-      <summary>Gets the generated description text.</summary>
+<summary>Gets the generated description text.</summary>
     </member>
     <member name="P:Microsoft.Windows.AI.Imaging.ImageDescriptionResult.Status">
-      <summary>Gets the status of the image description operation.</summary>
+<summary>Gets the status of the image description operation.</summary>
+    </member>
+    <member name="T:Microsoft.Windows.AI.Imaging.ImageDescriptionGenerator">
+<summary>Generates natural language descriptions of images using AI, supporting brief, detailed, diagram, and accessibility descriptions.</summary>
     </member>
     <member name="T:Microsoft.Windows.AI.Imaging.ImageDescriptionKind">
-      <summary>Specifies the kind of image description to generate.</summary>
+<summary>Specifies the kind of image description to generate.</summary>
     </member>
-    <member name="F:Microsoft.Windows.AI.Imaging.ImageDescriptionKind.BriefDescription">
-      <summary>A short, concise description of the image.</summary>
-    </member>
-    <member name="F:Microsoft.Windows.AI.Imaging.ImageDescriptionKind.DetailedDescription">
-      <summary>A detailed, comprehensive description of the image.</summary>
-    </member>
-    <member name="F:Microsoft.Windows.AI.Imaging.ImageDescriptionKind.DiagramDescription">
-      <summary>A description focused on diagrams, charts, and structured visual content.</summary>
-    </member>
-    <member name="F:Microsoft.Windows.AI.Imaging.ImageDescriptionKind.AccessibleDescription">
-      <summary>An accessibility-optimized description suitable for screen readers.</summary>
+    <member name="T:Microsoft.Windows.AI.Imaging.ImageDescriptionResult">
+<summary>Represents the result of an image description operation, including the generated text and completion status.</summary>
     </member>
     <member name="T:Microsoft.Windows.AI.Imaging.ImageDescriptionResultStatus">
-      <summary>Specifies the status of an image description operation.</summary>
-    </member>
-    <member name="F:Microsoft.Windows.AI.Imaging.ImageDescriptionResultStatus.Complete">
-      <summary>The description was generated successfully.</summary>
-    </member>
-    <member name="F:Microsoft.Windows.AI.Imaging.ImageDescriptionResultStatus.InProgress">
-      <summary>The description generation is still in progress.</summary>
-    </member>
-    <member name="F:Microsoft.Windows.AI.Imaging.ImageDescriptionResultStatus.BlockedByPolicy">
-      <summary>The operation was blocked by a policy restriction.</summary>
-    </member>
-    <member name="F:Microsoft.Windows.AI.Imaging.ImageDescriptionResultStatus.ImageBlockedByContentModeration">
-      <summary>The source image was blocked by content moderation.</summary>
-    </member>
-    <member name="F:Microsoft.Windows.AI.Imaging.ImageDescriptionResultStatus.TextInImageBlockedByContentModeration">
-      <summary>Text found in the image was blocked by content moderation.</summary>
-    </member>
-    <member name="F:Microsoft.Windows.AI.Imaging.ImageDescriptionResultStatus.DescriptionTextBlockedByContentModeration">
-      <summary>The generated description text was blocked by content moderation.</summary>
-    </member>
-    <member name="F:Microsoft.Windows.AI.Imaging.ImageDescriptionResultStatus.ImageHasTooMuchText">
-      <summary>The image contains too much text for the model to process.</summary>
-    </member>
-    <member name="F:Microsoft.Windows.AI.Imaging.ImageDescriptionResultStatus.InternalError">
-      <summary>An internal error occurred during description generation.</summary>
+<summary>Specifies the status of an image description operation.</summary>
     </member>
     <member name="T:Microsoft.Windows.AI.Imaging.ImageObjectExtractor">
-      <summary>Extracts objects from an image using AI-powered segmentation based on hints such as points or bounding boxes.</summary>
+<summary>Extracts objects from an image using AI-powered segmentation based on hints such as points or bounding boxes.</summary>
     </member>
     <member name="T:Microsoft.Windows.AI.Imaging.ImageObjectRemover">
-      <summary>Removes objects from an image using AI-powered inpainting, filling the removed area with contextually appropriate content.</summary>
+<summary>Removes objects from an image using AI-powered inpainting, filling the removed area with contextually appropriate content.</summary>
     </member>
     <member name="T:Microsoft.Windows.AI.Imaging.ImageScaler">
-      <summary>Upscales images using AI-powered super-resolution, increasing resolution while preserving quality and sharpness.</summary>
+<summary>Upscales images using AI-powered super-resolution, increasing resolution while preserving quality and sharpness.</summary>
     </member>
   </members>
 </doc>

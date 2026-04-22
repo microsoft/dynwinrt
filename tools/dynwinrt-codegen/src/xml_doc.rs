@@ -59,7 +59,7 @@ impl DocTable {
             ("Microsoft.Windows.AI.Foundation", include_str!("../api-docs/Microsoft.Windows.AI.Foundation.xml")),
             ("Microsoft.Windows.AI.Generative", include_str!("../api-docs/Microsoft.Windows.AI.Generative.xml")),
             ("Microsoft.Windows.AI.Imaging", include_str!("../api-docs/Microsoft.Windows.AI.Imaging.xml")),
-            ("Microsoft.Windows.AI.Machinelearning", include_str!("../api-docs/Microsoft.Windows.AI.Machinelearning.xml")),
+            ("Microsoft.Windows.AI.MachineLearning", include_str!("../api-docs/Microsoft.Windows.AI.MachineLearning.xml")),
             ("Microsoft.Windows.AI.Text", include_str!("../api-docs/Microsoft.Windows.AI.Text.xml")),
             ("Microsoft.Windows.Vision", include_str!("../api-docs/Microsoft.Windows.Vision.xml")),
             ("Microsoft.Windows.Workloads", include_str!("../api-docs/Microsoft.Windows.Workloads.xml")),

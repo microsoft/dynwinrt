@@ -3,6 +3,14 @@
 Convert MicrosoftDocs/winapps-winrt-api markdown files to C# XML doc format.
 Output: one .xml file per namespace, compatible with dynwinrt-codegen's xml_doc.rs.
 
+The upstream docs repo uses different namespace names than the actual WinRT winmd
+files. This script remaps api-ids so the generated XML matches the winmd namespaces:
+
+  Docs repo (api-id)                → Winmd (xml_doc.rs lookup)
+  Microsoft.Windows.AI.ContentModeration → Microsoft.Windows.AI.ContentSafety
+  Microsoft.Windows.AI.Generative        → Microsoft.Windows.AI.Text (LanguageModel*)
+                                         → Microsoft.Windows.AI.Imaging (ImageDescription*)
+
 Usage:
     python fetch-api-docs.py <repo-dir> <output-dir> [--namespaces ns1,ns2,...]
 """
@@ -12,7 +20,7 @@ import re
 import sys
 from collections import defaultdict
 
-# Default namespaces to process
+# Default namespaces to process (these are the upstream docs repo directory names)
 DEFAULT_NAMESPACES = [
     "microsoft.windows.ai",
     "microsoft.windows.ai.text",
@@ -24,6 +32,29 @@ DEFAULT_NAMESPACES = [
     "microsoft.windows.vision",
     "microsoft.windows.workloads",
 ]
+
+# Remap upstream doc api-id namespaces to match actual winmd namespaces.
+# The docs repo uses different namespace names than the winmd files ship with.
+API_ID_REMAPS = [
+    # ContentModeration → ContentSafety (winmd uses ContentSafety)
+    ("Microsoft.Windows.AI.ContentModeration", "Microsoft.Windows.AI.ContentSafety"),
+    # Generative.ImageDescription* → AI.Imaging (winmd uses AI.Imaging)
+    ("Microsoft.Windows.AI.Generative.ImageDescription", "Microsoft.Windows.AI.Imaging.ImageDescription"),
+    # Generative.LanguageModel* → AI.Text (winmd uses AI.Text)
+    ("Microsoft.Windows.AI.Generative.LanguageModel", "Microsoft.Windows.AI.Text.LanguageModel"),
+    # Generative.LanguageModelResponseStatus → AI.Text (winmd uses AI.Text)
+    ("Microsoft.Windows.AI.Generative.LanguageModelResponseStatus", "Microsoft.Windows.AI.Text.LanguageModelResponseStatus"),
+]
+
+
+def remap_api_id(api_id: str) -> str:
+    """Remap an api-id from upstream docs namespace to winmd namespace.
+
+    Also remaps namespace references inside method signatures (parameter types).
+    """
+    for src, dst in API_ID_REMAPS:
+        api_id = api_id.replace(src, dst)
+    return api_id
 
 
 def parse_frontmatter(text: str):
@@ -123,6 +154,7 @@ def parse_md_file(filepath: str) -> dict | None:
     if not api_id:
         return None
 
+    api_id = remap_api_id(api_id)
     entry = {"api_id": api_id, "api_type": api_type}
 
     description = extract_section(text, "description")
@@ -186,6 +218,37 @@ def build_xml(entries: list) -> str:
     return "\n".join(lines) + "\n"
 
 
+def target_namespace(api_id: str) -> str | None:
+    """Extract the target namespace from a (remapped) api-id for XML file grouping.
+
+    Uses a known set of winmd namespace prefixes to determine where to split.
+    """
+    # Strip prefix (T:, M:, P:, F:, E:, N:)
+    bare = api_id.split(":", 1)[-1] if ":" in api_id else api_id
+    # For N: entries the bare string IS the namespace
+    if api_id.startswith("N:"):
+        return bare
+    # Strip method signature
+    bare = bare.split("(")[0]
+    # Match against known namespace prefixes (longest match wins)
+    known_namespaces = [
+        "Microsoft.Windows.AI.ContentSafety",
+        "Microsoft.Windows.AI.Foundation",
+        "Microsoft.Windows.AI.Generative",
+        "Microsoft.Windows.AI.Imaging",
+        "Microsoft.Windows.AI.MachineLearning",
+        "Microsoft.Windows.AI.Text",
+        "Microsoft.Windows.AI",
+        "Microsoft.Graphics.Imaging",
+        "Microsoft.Windows.Vision",
+        "Microsoft.Windows.Workloads",
+    ]
+    for ns in sorted(known_namespaces, key=len, reverse=True):
+        if bare.startswith(ns + ".") or bare == ns:
+            return ns
+    return None
+
+
 def process_namespace(repo_dir: str, namespace: str) -> list:
     """Process all markdown files in a namespace directory."""
     ns_dir = os.path.join(repo_dir, namespace)
@@ -218,38 +281,156 @@ def namespace_to_xmlname(ns_dir_name: str) -> str:
     return ".".join(result) + ".xml"
 
 
+def load_existing_xml(xml_path: str) -> dict[str, str]:
+    """Load existing XML file and return a dict of member name → full XML block."""
+    if not os.path.exists(xml_path):
+        return {}
+    with open(xml_path, "r", encoding="utf-8") as f:
+        text = f.read()
+    members = {}
+    for m in re.finditer(
+        r'<member name="([^"]+)">(.*?)</member>', text, re.DOTALL
+    ):
+        members[m.group(1)] = m.group(2).strip()
+    return members
+
+
+def merge_xml(existing_members: dict[str, str], new_entries: list) -> str:
+    """Merge new entries into existing members. New entries override existing ones
+    only if the new entry has content. Existing entries not in new are kept."""
+    # Build new member dict from entries
+    new_members: dict[str, str] = {}
+    for entry in sorted(new_entries, key=lambda e: e["api_id"]):
+        api_id = entry["api_id"]
+        summary = entry.get("summary", "")
+        returns = entry.get("returns", "")
+        params = entry.get("params", {})
+        fields = entry.get("fields", {})
+
+        if not summary and not returns and not params and not fields:
+            continue
+
+        parts = []
+        if summary:
+            parts.append(f"      <summary>{xml_escape(summary)}</summary>")
+        for pname, pdoc in params.items():
+            parts.append(
+                f'      <param name="{xml_escape(pname)}">{xml_escape(pdoc)}</param>'
+            )
+        if returns:
+            parts.append(f"      <returns>{xml_escape(returns)}</returns>")
+        new_members[api_id] = "\n".join(parts)
+
+        # For enums, emit F: entries for each field
+        if fields:
+            type_name = api_id[2:] if api_id.startswith("T:") else api_id
+            for fname, fdoc in fields.items():
+                field_id = f"F:{type_name}.{fname}"
+                if fdoc:
+                    new_members[field_id] = f"      <summary>{xml_escape(fdoc)}</summary>"
+                else:
+                    new_members[field_id] = ""
+
+    # Merge: new overrides existing, but keep existing entries not in new
+    merged = dict(existing_members)
+    added = 0
+    updated = 0
+    for name, content in new_members.items():
+        if name not in merged:
+            merged[name] = content
+            added += 1
+        elif content and content != merged[name]:
+            merged[name] = content
+            updated += 1
+
+    # Build output XML
+    lines = ['<?xml version="1.0" encoding="utf-8"?>', "<doc>", "  <members>"]
+    for name in sorted(merged.keys()):
+        content = merged[name]
+        if content:
+            lines.append(f'    <member name="{xml_escape(name)}">')
+            lines.append(content)
+            lines.append("    </member>")
+        else:
+            lines.append(f'    <member name="{xml_escape(name)}">')
+            lines.append("    </member>")
+    lines.append("  </members>")
+    lines.append("</doc>")
+    return "\n".join(lines) + "\n", added, updated
+
+
 def main():
     if len(sys.argv) < 3:
-        print(f"Usage: {sys.argv[0]} <repo-dir> <output-dir> [--namespaces ns1,ns2,...]")
+        print(f"Usage: {sys.argv[0]} <repo-dir> <output-dir> [--namespaces ns1,ns2,...] [--merge]")
         sys.exit(1)
 
     repo_dir = sys.argv[1]
     output_dir = sys.argv[2]
 
     namespaces = DEFAULT_NAMESPACES
+    merge_mode = "--merge" in sys.argv
     for i, arg in enumerate(sys.argv[3:], 3):
         if arg == "--namespaces" and i + 1 < len(sys.argv):
             namespaces = sys.argv[i + 1].split(",")
 
+    if merge_mode:
+        print("Merge mode: keeping existing entries, adding/updating from upstream\n")
+
     os.makedirs(output_dir, exist_ok=True)
 
+    # Collect all entries, grouped by their remapped target namespace
+    ns_entries: dict[str, list] = defaultdict(list)
     total_members = 0
+    total_added = 0
+    total_updated = 0
+
     for ns in namespaces:
         entries = process_namespace(repo_dir, ns)
-        if not entries:
-            continue
+        for entry in entries:
+            tns = target_namespace(entry["api_id"])
+            if tns:
+                ns_entries[tns].append(entry)
+            else:
+                # Fallback: use source namespace
+                ns_entries[namespace_to_xmlname(ns).replace(".xml", "")].append(entry)
 
-        xml_content = build_xml(entries)
-        xml_filename = namespace_to_xmlname(ns)
+    # In merge mode, also include existing XML files that have no new entries
+    if merge_mode:
+        for fname in os.listdir(output_dir):
+            if fname.endswith(".xml"):
+                tns = fname[:-4]
+                if tns not in ns_entries:
+                    ns_entries[tns] = []
+
+    for tns in sorted(ns_entries.keys()):
+        entries = ns_entries[tns]
+        xml_filename = tns + ".xml"
         xml_path = os.path.join(output_dir, xml_filename)
+
+        if merge_mode:
+            existing = load_existing_xml(xml_path)
+            xml_content, added, updated = merge_xml(existing, entries)
+            total_added += added
+            total_updated += updated
+        else:
+            xml_content = build_xml(entries)
+            added = 0
+            updated = 0
 
         with open(xml_path, "w", encoding="utf-8") as f:
             f.write(xml_content)
 
-        print(f"  {xml_filename}: {len(entries)} members")
-        total_members += len(entries)
+        member_count = xml_content.count("<member ")
+        extra = ""
+        if merge_mode and (added or updated):
+            extra = f" (+{added} new, ~{updated} updated)"
+        print(f"  {xml_filename}: {member_count} members{extra}")
+        total_members += member_count
 
-    print(f"\nDone. {total_members} members across {len(namespaces)} namespaces.")
+    ns_count = len([k for k, v in ns_entries.items() if v or merge_mode])
+    print(f"\nDone. {total_members} members across {ns_count} namespaces.")
+    if merge_mode:
+        print(f"  Added: {total_added}, Updated: {total_updated}")
 
 
 if __name__ == "__main__":

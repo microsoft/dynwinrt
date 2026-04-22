@@ -1,116 +1,119 @@
 <?xml version="1.0" encoding="utf-8"?>
 <doc>
   <members>
-    <member name="T:Microsoft.Windows.AI.Generative.ImageDescriptionGenerator">
-      <summary>Generates natural language descriptions of images using AI, supporting brief, detailed, diagram, and accessibility descriptions.</summary>
+    <member name="F:Microsoft.Windows.AI.Generative.ImageDescriptionKind.AccessibleDescription">
+<summary>An accessibility-optimized description suitable for screen readers.</summary>
+    </member>
+    <member name="F:Microsoft.Windows.AI.Generative.ImageDescriptionKind.BriefDescription">
+<summary>A short, concise description of the image.</summary>
+    </member>
+    <member name="F:Microsoft.Windows.AI.Generative.ImageDescriptionKind.DetailedDescrition">
+<summary>A detailed, comprehensive description of the image.</summary>
+    </member>
+    <member name="F:Microsoft.Windows.AI.Generative.ImageDescriptionKind.DiagramDescription">
+<summary>A description focused on diagrams, charts, and structured visual content.</summary>
+    </member>
+    <member name="F:Microsoft.Windows.AI.Generative.ImageDescriptionResultStatus.BlockedByPolicy">
+<summary>The operation was blocked by a policy restriction.</summary>
+    </member>
+    <member name="F:Microsoft.Windows.AI.Generative.ImageDescriptionResultStatus.Complete">
+<summary>The description was generated successfully.</summary>
+    </member>
+    <member name="F:Microsoft.Windows.AI.Generative.ImageDescriptionResultStatus.DescriptionTextBlockedByContentModeration">
+<summary>The generated description text was blocked by content moderation.</summary>
+    </member>
+    <member name="F:Microsoft.Windows.AI.Generative.ImageDescriptionResultStatus.ImageBlockedByContentModeration">
+<summary>The source image was blocked by content moderation.</summary>
+    </member>
+    <member name="F:Microsoft.Windows.AI.Generative.ImageDescriptionResultStatus.ImageHasTooMuchText">
+<summary>The image contains too much text for the model to process.</summary>
+    </member>
+    <member name="F:Microsoft.Windows.AI.Generative.ImageDescriptionResultStatus.InProgress">
+<summary>The description generation is still in progress.</summary>
+    </member>
+    <member name="F:Microsoft.Windows.AI.Generative.ImageDescriptionResultStatus.InternalError">
+<summary>An internal error occurred during description generation.</summary>
+    </member>
+    <member name="F:Microsoft.Windows.AI.Generative.ImageDescriptionResultStatus.TextInImageBlockedByContentModeration">
+<summary>Text found in the image was blocked by content moderation.</summary>
+    </member>
+    <member name="F:Microsoft.Windows.AI.Generative.LanguageModelResponseStatus.BlockedByPolicy">
+<summary>The operation was blocked by a policy restriction.</summary>
+    </member>
+    <member name="F:Microsoft.Windows.AI.Generative.LanguageModelResponseStatus.Complete">
+<summary>The response was generated successfully.</summary>
+    </member>
+    <member name="F:Microsoft.Windows.AI.Generative.LanguageModelResponseStatus.Error">
+<summary>An error occurred during response generation.</summary>
+    </member>
+    <member name="F:Microsoft.Windows.AI.Generative.LanguageModelResponseStatus.InProgress">
+<summary>The response generation is still in progress.</summary>
+    </member>
+    <member name="F:Microsoft.Windows.AI.Generative.LanguageModelResponseStatus.PromptBlockedByContentModeration">
+<summary>The prompt was blocked by content moderation.</summary>
+    </member>
+    <member name="F:Microsoft.Windows.AI.Generative.LanguageModelResponseStatus.PromptLargerThanContext">
+<summary>The prompt exceeds the model's context window size.</summary>
+    </member>
+    <member name="F:Microsoft.Windows.AI.Generative.LanguageModelResponseStatus.ResponseBlockedByContentModeration">
+<summary>The generated response was blocked by content moderation.</summary>
     </member>
     <member name="M:Microsoft.Windows.AI.Generative.ImageDescriptionGenerator.Close">
-      <summary>Disposes of the object and associated resources.</summary>
-    </member>
-    <member name="M:Microsoft.Windows.AI.Generative.ImageDescriptionGenerator.GetReadyState">
-      <summary>Retrieves the readiness state of the image description model.</summary>
-      <returns>The readiness state of the underlying model.</returns>
-    </member>
-    <member name="M:Microsoft.Windows.AI.Generative.ImageDescriptionGenerator.EnsureReadyAsync">
-      <summary>Ensures the underlying model is ready by downloading and installing any required components.</summary>
-      <returns>An asynchronous action with progress that returns an AIFeatureReadyResult on completion.</returns>
+<summary>Disposes of the object and associated resources.</summary>
     </member>
     <member name="M:Microsoft.Windows.AI.Generative.ImageDescriptionGenerator.CreateAsync">
-      <summary>Asynchronously creates a new instance of the ImageDescriptionGenerator.</summary>
+<summary>Asynchronously creates a new instance of the ImageDescriptionGenerator.</summary>
       <returns>A new ImageDescriptionGenerator instance.</returns>
     </member>
     <member name="M:Microsoft.Windows.AI.Generative.ImageDescriptionGenerator.DescribeAsync(Microsoft.Graphics.Imaging.ImageBuffer)">
-      <summary>Asynchronously generates a description of the provided image.</summary>
+<summary>Asynchronously generates a description of the provided image.</summary>
       <param name="image">The image to describe.</param>
       <returns>The image description result.</returns>
     </member>
     <member name="M:Microsoft.Windows.AI.Generative.ImageDescriptionGenerator.DescribeAsync(Microsoft.Graphics.Imaging.ImageBuffer,Microsoft.Windows.AI.Generative.ImageDescriptionKind)">
-      <summary>Asynchronously generates a description of the provided image with the specified description kind.</summary>
+<summary>Asynchronously generates a description of the provided image with the specified description kind.</summary>
       <param name="image">The image to describe.</param>
       <param name="kind">The kind of description to generate (brief, detailed, diagram, or accessible).</param>
       <returns>The image description result.</returns>
     </member>
     <member name="M:Microsoft.Windows.AI.Generative.ImageDescriptionGenerator.DescribeAsync(Microsoft.Graphics.Imaging.ImageBuffer,Microsoft.Windows.AI.Generative.ImageDescriptionKind,Microsoft.Windows.AI.ContentSafety.ContentFilterOptions)">
-      <summary>Asynchronously generates a description of the provided image with the specified description kind and content filter options.</summary>
+<summary>Asynchronously generates a description of the provided image with the specified description kind and content filter options.</summary>
       <param name="image">The image to describe.</param>
       <param name="kind">The kind of description to generate.</param>
       <param name="contentFilterOptions">Options that affect how the model filters responses.</param>
       <returns>The image description result.</returns>
     </member>
-    <member name="T:Microsoft.Windows.AI.Generative.ImageDescriptionResult">
-      <summary>Represents the result of an image description operation, including the generated text and completion status.</summary>
+    <member name="M:Microsoft.Windows.AI.Generative.ImageDescriptionGenerator.EnsureReadyAsync">
+<summary>Ensures the underlying model is ready by downloading and installing any required components.</summary>
+      <returns>An asynchronous action with progress that returns an AIFeatureReadyResult on completion.</returns>
+    </member>
+    <member name="M:Microsoft.Windows.AI.Generative.ImageDescriptionGenerator.GetReadyState">
+<summary>Retrieves the readiness state of the image description model.</summary>
+      <returns>The readiness state of the underlying model.</returns>
+    </member>
+    <member name="N:Microsoft.Windows.AI.Generative">
+      <summary>Provides APIs for local, on-device generative AI prompt processing and responses.</summary>
     </member>
     <member name="P:Microsoft.Windows.AI.Generative.ImageDescriptionResult.Description">
-      <summary>Gets the generated description text.</summary>
+<summary>Gets the generated description text.</summary>
     </member>
     <member name="P:Microsoft.Windows.AI.Generative.ImageDescriptionResult.Status">
-      <summary>Gets the status of the image description operation.</summary>
+<summary>Gets the status of the image description operation.</summary>
+    </member>
+    <member name="T:Microsoft.Windows.AI.Generative.ImageDescriptionGenerator">
+<summary>Generates natural language descriptions of images using AI, supporting brief, detailed, diagram, and accessibility descriptions.</summary>
     </member>
     <member name="T:Microsoft.Windows.AI.Generative.ImageDescriptionKind">
-      <summary>Specifies the kind of image description to generate.</summary>
+<summary>Specifies the kind of image description to generate.</summary>
     </member>
-    <member name="F:Microsoft.Windows.AI.Generative.ImageDescriptionKind.BriefDescription">
-      <summary>A short, concise description of the image.</summary>
-    </member>
-    <member name="F:Microsoft.Windows.AI.Generative.ImageDescriptionKind.DetailedDescrition">
-      <summary>A detailed, comprehensive description of the image.</summary>
-    </member>
-    <member name="F:Microsoft.Windows.AI.Generative.ImageDescriptionKind.DiagramDescription">
-      <summary>A description focused on diagrams, charts, and structured visual content.</summary>
-    </member>
-    <member name="F:Microsoft.Windows.AI.Generative.ImageDescriptionKind.AccessibleDescription">
-      <summary>An accessibility-optimized description suitable for screen readers.</summary>
+    <member name="T:Microsoft.Windows.AI.Generative.ImageDescriptionResult">
+<summary>Represents the result of an image description operation, including the generated text and completion status.</summary>
     </member>
     <member name="T:Microsoft.Windows.AI.Generative.ImageDescriptionResultStatus">
-      <summary>Specifies the status of an image description operation.</summary>
-    </member>
-    <member name="F:Microsoft.Windows.AI.Generative.ImageDescriptionResultStatus.Complete">
-      <summary>The description was generated successfully.</summary>
-    </member>
-    <member name="F:Microsoft.Windows.AI.Generative.ImageDescriptionResultStatus.InProgress">
-      <summary>The description generation is still in progress.</summary>
-    </member>
-    <member name="F:Microsoft.Windows.AI.Generative.ImageDescriptionResultStatus.BlockedByPolicy">
-      <summary>The operation was blocked by a policy restriction.</summary>
-    </member>
-    <member name="F:Microsoft.Windows.AI.Generative.ImageDescriptionResultStatus.ImageBlockedByContentModeration">
-      <summary>The source image was blocked by content moderation.</summary>
-    </member>
-    <member name="F:Microsoft.Windows.AI.Generative.ImageDescriptionResultStatus.TextInImageBlockedByContentModeration">
-      <summary>Text found in the image was blocked by content moderation.</summary>
-    </member>
-    <member name="F:Microsoft.Windows.AI.Generative.ImageDescriptionResultStatus.DescriptionTextBlockedByContentModeration">
-      <summary>The generated description text was blocked by content moderation.</summary>
-    </member>
-    <member name="F:Microsoft.Windows.AI.Generative.ImageDescriptionResultStatus.ImageHasTooMuchText">
-      <summary>The image contains too much text for the model to process.</summary>
-    </member>
-    <member name="F:Microsoft.Windows.AI.Generative.ImageDescriptionResultStatus.InternalError">
-      <summary>An internal error occurred during description generation.</summary>
+<summary>Specifies the status of an image description operation.</summary>
     </member>
     <member name="T:Microsoft.Windows.AI.Generative.LanguageModelResponseStatus">
-      <summary>Specifies the status of a language model response.</summary>
-    </member>
-    <member name="F:Microsoft.Windows.AI.Generative.LanguageModelResponseStatus.Complete">
-      <summary>The response was generated successfully.</summary>
-    </member>
-    <member name="F:Microsoft.Windows.AI.Generative.LanguageModelResponseStatus.InProgress">
-      <summary>The response generation is still in progress.</summary>
-    </member>
-    <member name="F:Microsoft.Windows.AI.Generative.LanguageModelResponseStatus.BlockedByPolicy">
-      <summary>The operation was blocked by a policy restriction.</summary>
-    </member>
-    <member name="F:Microsoft.Windows.AI.Generative.LanguageModelResponseStatus.PromptLargerThanContext">
-      <summary>The prompt exceeds the model's context window size.</summary>
-    </member>
-    <member name="F:Microsoft.Windows.AI.Generative.LanguageModelResponseStatus.PromptBlockedByContentModeration">
-      <summary>The prompt was blocked by content moderation.</summary>
-    </member>
-    <member name="F:Microsoft.Windows.AI.Generative.LanguageModelResponseStatus.ResponseBlockedByContentModeration">
-      <summary>The generated response was blocked by content moderation.</summary>
-    </member>
-    <member name="F:Microsoft.Windows.AI.Generative.LanguageModelResponseStatus.Error">
-      <summary>An error occurred during response generation.</summary>
+<summary>Specifies the status of a language model response.</summary>
     </member>
   </members>
 </doc>

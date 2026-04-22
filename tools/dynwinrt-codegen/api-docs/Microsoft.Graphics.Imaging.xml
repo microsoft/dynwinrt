@@ -1,6 +1,24 @@
 <?xml version="1.0" encoding="utf-8"?>
 <doc>
   <members>
+    <member name="F:Microsoft.Graphics.Imaging.PixelFormat.Argb32">
+      <summary>The binary format 32 bits per pixel; 8 bits each are used for the alpha, red, green, and blue components.</summary>
+    </member>
+    <member name="F:Microsoft.Graphics.Imaging.PixelFormat.Bgra32">
+      <summary>The binary format is 32 bits per pixel; 8 bits each are used for the blue, green, red, and alpha components. The color components are stored in blue, green, red, and alpha order.</summary>
+    </member>
+    <member name="F:Microsoft.Graphics.Imaging.PixelFormat.Gray8">
+      <summary>The binary format is 16 bits per pixel. The color information specifies 65536 shades of gray.</summary>
+    </member>
+    <member name="F:Microsoft.Graphics.Imaging.PixelFormat.Rgb24">
+      <summary>The binary format is 24 bits per pixel; 8 bits each are used for the red, green, and blue components.</summary>
+    </member>
+    <member name="F:Microsoft.Graphics.Imaging.PixelFormat.Rgba32">
+      <summary>The binary format is 32 bits per pixel; 8 bits each are used for the red, green, blue, and alpha components. The color components are stored in red, green, blue, and alpha order.</summary>
+    </member>
+    <member name="F:Microsoft.Graphics.Imaging.PixelFormat.Undefined">
+      <summary>Binary format is undefined.</summary>
+    </member>
     <member name="M:Microsoft.Graphics.Imaging.ImageBuffer.#ctor(Windows.Storage.Streams.IBuffer,Microsoft.Graphics.Imaging.PixelFormat,System.UInt32,System.UInt32)">
       <summary>Initializes a new instance of the ImageBuffer class.</summary>
       <param name="buffer">The image buffer.</param>
@@ -29,92 +47,77 @@
       <summary>Create a new SoftwareBitmap of pixel type BGRA32 from the pixel data stored in an ImageBuffer.</summary>
       <returns>The new SoftwareBitmap of pixel type BGRA32.</returns>
     </member>
-    <member name="T:Microsoft.Graphics.Imaging.ImageObjectExtractor">
-      <summary>Extracts objects from an image using AI-powered segmentation based on hints such as points or bounding boxes.</summary>
-    </member>
     <member name="M:Microsoft.Graphics.Imaging.ImageObjectExtractor.Close">
       <summary>Disposes of the object and associated resources.</summary>
     </member>
     <member name="M:Microsoft.Graphics.Imaging.ImageObjectExtractor.CreateWithImageBufferAsync(Microsoft.Graphics.Imaging.ImageBuffer)">
-      <summary>Asynchronously creates an ImageObjectExtractor from the specified image buffer.</summary>
+<summary>Asynchronously creates an ImageObjectExtractor from the specified image buffer.</summary>
       <param name="imageBuffer">The image buffer to use for object extraction.</param>
       <returns>A new ImageObjectExtractor instance.</returns>
     </member>
     <member name="M:Microsoft.Graphics.Imaging.ImageObjectExtractor.CreateWithSoftwareBitmapAsync(Windows.Graphics.Imaging.SoftwareBitmap)">
-      <summary>Asynchronously creates an ImageObjectExtractor from the specified SoftwareBitmap.</summary>
+<summary>Asynchronously creates an ImageObjectExtractor from the specified SoftwareBitmap.</summary>
       <param name="softwareBitmap">The SoftwareBitmap to use for object extraction.</param>
       <returns>A new ImageObjectExtractor instance.</returns>
     </member>
-    <member name="M:Microsoft.Graphics.Imaging.ImageObjectExtractor.GetReadyState">
-      <summary>Retrieves the readiness state of the image object extraction model.</summary>
-      <returns>The readiness state of the underlying model.</returns>
-    </member>
     <member name="M:Microsoft.Graphics.Imaging.ImageObjectExtractor.EnsureReadyAsync">
-      <summary>Ensures the underlying model is ready by downloading and installing any required components.</summary>
+<summary>Ensures the underlying model is ready by downloading and installing any required components.</summary>
       <returns>An asynchronous action with progress that returns an AIFeatureReadyResult on completion.</returns>
     </member>
+    <member name="M:Microsoft.Graphics.Imaging.ImageObjectExtractor.GetReadyState">
+<summary>Retrieves the readiness state of the image object extraction model.</summary>
+      <returns>The readiness state of the underlying model.</returns>
+    </member>
     <member name="M:Microsoft.Graphics.Imaging.ImageObjectExtractor.GetSoftwareBitmapObjectMask(Microsoft.Graphics.Imaging.ImageObjectExtractorHint)">
-      <summary>Returns a segmentation mask as a SoftwareBitmap for the objects identified by the provided hint.</summary>
+<summary>Returns a segmentation mask as a SoftwareBitmap for the objects identified by the provided hint.</summary>
       <param name="hint">Hints (points, bounding box) indicating which objects to extract.</param>
       <returns>A SoftwareBitmap containing the segmentation mask.</returns>
     </member>
-    <member name="T:Microsoft.Graphics.Imaging.ImageObjectExtractorHint">
-      <summary>Specifies hints for the ImageObjectExtractor, such as include/exclude points and bounding boxes, to identify objects of interest.</summary>
-    </member>
     <member name="M:Microsoft.Graphics.Imaging.ImageObjectExtractorHint.#ctor(Windows.Foundation.Collections.IIterable{Windows.Foundation.Point},Windows.Foundation.Collections.IIterable{Windows.Foundation.Point},Windows.Foundation.Collections.IIterable{Windows.Foundation.Rect})">
-      <summary>Initializes a new ImageObjectExtractorHint with the specified include points, exclude points, and bounding boxes.</summary>
-    </member>
-    <member name="T:Microsoft.Graphics.Imaging.ImageObjectRemover">
-      <summary>Removes objects from an image using AI-powered inpainting, filling the removed area with contextually appropriate content.</summary>
+<summary>Initializes a new ImageObjectExtractorHint with the specified include points, exclude points, and bounding boxes.</summary>
     </member>
     <member name="M:Microsoft.Graphics.Imaging.ImageObjectRemover.Close">
       <summary>Disposes of the object and associated resources.</summary>
     </member>
-    <member name="M:Microsoft.Graphics.Imaging.ImageObjectRemover.GetReadyState">
-      <summary>Retrieves the readiness state of the image object removal model.</summary>
-      <returns>The readiness state of the underlying model.</returns>
-    </member>
-    <member name="M:Microsoft.Graphics.Imaging.ImageObjectRemover.EnsureReadyAsync">
-      <summary>Ensures the underlying model is ready by downloading and installing any required components.</summary>
-      <returns>An asynchronous action with progress that returns an AIFeatureReadyResult on completion.</returns>
-    </member>
     <member name="M:Microsoft.Graphics.Imaging.ImageObjectRemover.CreateAsync">
-      <summary>Asynchronously creates a new instance of the ImageObjectRemover.</summary>
+<summary>Asynchronously creates a new instance of the ImageObjectRemover.</summary>
       <returns>A new ImageObjectRemover instance.</returns>
     </member>
+    <member name="M:Microsoft.Graphics.Imaging.ImageObjectRemover.EnsureReadyAsync">
+<summary>Ensures the underlying model is ready by downloading and installing any required components.</summary>
+      <returns>An asynchronous action with progress that returns an AIFeatureReadyResult on completion.</returns>
+    </member>
+    <member name="M:Microsoft.Graphics.Imaging.ImageObjectRemover.GetReadyState">
+<summary>Retrieves the readiness state of the image object removal model.</summary>
+      <returns>The readiness state of the underlying model.</returns>
+    </member>
     <member name="M:Microsoft.Graphics.Imaging.ImageObjectRemover.RemoveFromSoftwareBitmapAsync(Windows.Graphics.Imaging.SoftwareBitmap,Windows.Graphics.Imaging.SoftwareBitmap)">
-      <summary>Asynchronously removes objects from a SoftwareBitmap using the specified mask.</summary>
+<summary>Asynchronously removes objects from a SoftwareBitmap using the specified mask.</summary>
       <param name="image">The source image.</param>
       <param name="mask">A mask indicating which areas to remove and inpaint.</param>
       <returns>A new SoftwareBitmap with the masked objects removed.</returns>
     </member>
-    <member name="T:Microsoft.Graphics.Imaging.ImageScaler">
-      <summary>Upscales images using AI-powered super-resolution, increasing resolution while preserving quality and sharpness.</summary>
-    </member>
     <member name="M:Microsoft.Graphics.Imaging.ImageScaler.Close">
       <summary>Disposes of the object and associated resources.</summary>
     </member>
-    <member name="M:Microsoft.Graphics.Imaging.ImageScaler.GetReadyState">
-      <summary>Retrieves the readiness state of the image scaling model.</summary>
-      <returns>The readiness state of the underlying model.</returns>
-    </member>
-    <member name="M:Microsoft.Graphics.Imaging.ImageScaler.EnsureReadyAsync">
-      <summary>Ensures the underlying model is ready by downloading and installing any required components.</summary>
-      <returns>An asynchronous action with progress that returns an AIFeatureReadyResult on completion.</returns>
-    </member>
     <member name="M:Microsoft.Graphics.Imaging.ImageScaler.CreateAsync">
-      <summary>Asynchronously creates a new instance of the ImageScaler.</summary>
+<summary>Asynchronously creates a new instance of the ImageScaler.</summary>
       <returns>A new ImageScaler instance.</returns>
     </member>
+    <member name="M:Microsoft.Graphics.Imaging.ImageScaler.EnsureReadyAsync">
+<summary>Ensures the underlying model is ready by downloading and installing any required components.</summary>
+      <returns>An asynchronous action with progress that returns an AIFeatureReadyResult on completion.</returns>
+    </member>
+    <member name="M:Microsoft.Graphics.Imaging.ImageScaler.GetReadyState">
+<summary>Retrieves the readiness state of the image scaling model.</summary>
+      <returns>The readiness state of the underlying model.</returns>
+    </member>
     <member name="M:Microsoft.Graphics.Imaging.ImageScaler.ScaleSoftwareBitmapAsync(Windows.Graphics.Imaging.SoftwareBitmap,System.Int32,System.Int32)">
-      <summary>Asynchronously upscales a SoftwareBitmap to the specified dimensions.</summary>
+<summary>Asynchronously upscales a SoftwareBitmap to the specified dimensions.</summary>
       <param name="softwareBitmap">The source image to upscale.</param>
       <param name="width">The target width in pixels.</param>
       <param name="height">The target height in pixels.</param>
       <returns>A new SoftwareBitmap at the target resolution.</returns>
-    </member>
-    <member name="P:Microsoft.Graphics.Imaging.ImageScaler.MaxSupportedScaleFactor">
-      <summary>Gets the maximum supported scale factor for the image scaler.</summary>
     </member>
     <member name="N:Microsoft.Graphics.Imaging">
       <summary>Provides APIs for machine learning models that scale and sharpen images, and identify, describe, and remove objects in images.</summary>
@@ -134,29 +137,26 @@
     <member name="P:Microsoft.Graphics.Imaging.ImageBuffer.Width">
       <summary>Gets the width of the image, in pixels.</summary>
     </member>
+    <member name="P:Microsoft.Graphics.Imaging.ImageScaler.MaxSupportedScaleFactor">
+<summary>Gets the maximum supported scale factor for the image scaler.</summary>
+    </member>
     <member name="T:Microsoft.Graphics.Imaging.ImageBuffer">
       <summary>Represents an uncompressed bitmap for efficient cross-process marshaling.</summary>
     </member>
+    <member name="T:Microsoft.Graphics.Imaging.ImageObjectExtractor">
+<summary>Extracts objects from an image using AI-powered segmentation based on hints such as points or bounding boxes.</summary>
+    </member>
+    <member name="T:Microsoft.Graphics.Imaging.ImageObjectExtractorHint">
+<summary>Specifies hints for the ImageObjectExtractor, such as include/exclude points and bounding boxes, to identify objects of interest.</summary>
+    </member>
+    <member name="T:Microsoft.Graphics.Imaging.ImageObjectRemover">
+<summary>Removes objects from an image using AI-powered inpainting, filling the removed area with contextually appropriate content.</summary>
+    </member>
+    <member name="T:Microsoft.Graphics.Imaging.ImageScaler">
+<summary>Upscales images using AI-powered super-resolution, increasing resolution while preserving quality and sharpness.</summary>
+    </member>
     <member name="T:Microsoft.Graphics.Imaging.PixelFormat">
       <summary>Specifies the types of binary layouts for the underlying bitmap data.</summary>
-    </member>
-    <member name="F:Microsoft.Graphics.Imaging.PixelFormat.Undefined">
-      <summary>Binary format is undefined.</summary>
-    </member>
-    <member name="F:Microsoft.Graphics.Imaging.PixelFormat.Rgb24">
-      <summary>The binary format is 24 bits per pixel; 8 bits each are used for the red, green, and blue components.</summary>
-    </member>
-    <member name="F:Microsoft.Graphics.Imaging.PixelFormat.Argb32">
-      <summary>The binary format 32 bits per pixel; 8 bits each are used for the alpha, red, green, and blue components.</summary>
-    </member>
-    <member name="F:Microsoft.Graphics.Imaging.PixelFormat.Rgba32">
-      <summary>The binary format is 32 bits per pixel; 8 bits each are used for the red, green, blue, and alpha components. The color components are stored in red, green, blue, and alpha order.</summary>
-    </member>
-    <member name="F:Microsoft.Graphics.Imaging.PixelFormat.Bgra32">
-      <summary>The binary format is 32 bits per pixel; 8 bits each are used for the blue, green, red, and alpha components. The color components are stored in blue, green, red, and alpha order.</summary>
-    </member>
-    <member name="F:Microsoft.Graphics.Imaging.PixelFormat.Gray8">
-      <summary>The binary format is 16 bits per pixel. The color information specifies 65536 shades of gray.</summary>
     </member>
   </members>
 </doc>

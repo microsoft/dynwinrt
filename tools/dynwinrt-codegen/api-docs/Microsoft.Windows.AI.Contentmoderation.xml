@@ -1,18 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <doc>
   <members>
-    <member name="N:Microsoft.Windows.AI.ContentModeration">
-      <summary>Provides APIs for machine learning models that perform content moderation.</summary>
-    </member>
-    <member name="T:Microsoft.Windows.AI.ContentModeration.SeverityLevel">
-    </member>
-    <member name="F:Microsoft.Windows.AI.ContentModeration.SeverityLevel.Minimum">
+    <member name="F:Microsoft.Windows.AI.ContentModeration.SeverityLevel.High">
     </member>
     <member name="F:Microsoft.Windows.AI.ContentModeration.SeverityLevel.Low">
     </member>
     <member name="F:Microsoft.Windows.AI.ContentModeration.SeverityLevel.Medium">
     </member>
-    <member name="F:Microsoft.Windows.AI.ContentModeration.SeverityLevel.High">
+    <member name="F:Microsoft.Windows.AI.ContentModeration.SeverityLevel.Minimum">
+    </member>
+    <member name="N:Microsoft.Windows.AI.ContentModeration">
+<summary>Provides APIs for machine learning models that perform content moderation.</summary>
+    </member>
+    <member name="T:Microsoft.Windows.AI.ContentModeration.SeverityLevel">
     </member>
   </members>
 </doc>
