@@ -104,6 +104,10 @@ fn emit_method_stub(
     delegate_type_names: &HashSet<String>,
     indent_spaces: usize,
 ) -> String {
+    // Skip composable `.ctor` on instance interfaces (see project.rs for full rationale).
+    if method.name == ".ctor" {
+        return String::new();
+    }
     let indent = " ".repeat(indent_spaces);
     let in_params = get_in_params(method);
     let return_type = method.return_type.as_ref();

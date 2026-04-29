@@ -277,6 +277,11 @@ pub(crate) fn generate_iface_instance_method(
     known_types: &HashSet<String>,
     delegate_type_names: &HashSet<String>,
 ) -> String {
+    // Skip composable `.ctor` on instance interfaces (see project.rs for full rationale).
+    // Emitting it would produce `def .ctor(self) -> None:` which is a syntax error.
+    if method.name == ".ctor" {
+        return String::new();
+    }
     generate_method_body(iface_var, "self._obj", method, known_types, delegate_type_names, None)
 }
 

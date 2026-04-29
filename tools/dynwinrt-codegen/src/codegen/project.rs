@@ -986,6 +986,17 @@ fn project_instance_method(
     delegate_sigs: &HashMap<String, String>,
     delegate_param_wraps: &HashMap<String, Vec<String>>,
 ) -> Option<ProjectedMember> {
+    // Skip composable `.ctor` on instance interfaces: WinRT marks the derived-from
+    // constructor of unsealed runtime classes with the literal CLR method name `.ctor`
+    // on the default/required interface. It follows the COM aggregation pattern, is
+    // only meant to be invoked by a host framework (in practice XAML), and emitting it
+    // here would produce invalid syntax (`.ctor(): void { ... }`). The `.ctor` entry is
+    // still kept in the interface registration / vtable so IIDs and indices stay correct.
+    // Factory `.ctor(args)` (legitimate class construction) goes through
+    // `project_factory_method`, and delegate `.ctor` is short-circuited by `project_delegate`.
+    if method.name == ".ctor" {
+        return None;
+    }
     let in_params = get_in_params(method);
     let return_type_meta = method.return_type.as_ref();
     let is_with_progress = return_type_meta.is_some_and(|rt| matches!(rt,
