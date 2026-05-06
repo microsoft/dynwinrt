@@ -3,9 +3,7 @@
 ## P0 - Release Blockers
 
 - [x] **JS binding error handling**: All 13 `.unwrap()` calls in `bindings/js/src/lib.rs` replaced with `napi::Result` + `.map_err()` / `.ok_or_else()` — errors now surface as JS exceptions instead of crashing the Node.js process
-- [ ] **Package metadata**: All Cargo.toml files missing `authors`, `license`, `description`, `repository`, `keywords`
-  - ~~`bindings/js/package.json` repository URL points to napi-rs template, needs update~~ (done)
-  - `bindings/py/pyproject.toml` missing `authors`, `license`, `homepage`
+- [x] **Package metadata**: All Cargo.toml files have `authors`, `license`, `description`, `repository`. `bindings/py/pyproject.toml` has `authors`, `license`, `urls.Homepage`/`Repository`/`Issues`
 - [x] **CI/CD**: `.github/workflows/build.yml` — winrt-meta builds (x64 + arm64), dynwinrt-js (x64 + arm64), publishing, and sample generation
 - [x] **Remove debug eprintln**: `[resolve]` debug prints removed from `meta.rs`
 - [ ] **Auto-detect WinAppSDK Bootstrap DLL**: `initWinappsdk(major, minor)` should auto-find Bootstrap DLL from `~/.winapp/packages/` or known install paths, with `WINAPPSDK_BOOTSTRAP_DLL_PATH` as override. Currently requires manual env var setup which is a friction point for unpackaged app developers.
@@ -20,11 +18,10 @@
 
 ## P1 - Quality
 
-- [x] **Clippy cleanup (partial)**: `strip_generic_arity()` removed from winrt-meta
-  - [ ] `find_winappsdk_package()` still unused (`#[allow(dead_code)]` in roapi.rs)
-  - [ ] Remaining redundant closures and style warnings
-- [ ] **Update CLAUDE.md**: Known Limitations section outdated -- generics fully supported, codegen tool exists, parameterized interfaces from winmd
-- [ ] **Python .pyi type stubs**: No Python type hint files generated
+- [x] **Clippy cleanup (partial)**: `strip_generic_arity()` removed from winrt-meta; `find_winappsdk_package()` no longer present in `roapi.rs`
+  - [ ] Remaining redundant closures and style warnings (run `cargo clippy --workspace` for current list)
+- [x] **Update CLAUDE.md**: Fixed stale `tools/winrt-meta/` path, removed invalid `--lang ts` examples (now `js`/`py` only), refreshed codegen module list, documented IR pipeline (`project`/`render_js`/`render_dts`) and `--pyi` flag
+- [x] **Python .pyi type stubs**: `--pyi` flag (with `--lang py`) emits `.pyi` stubs and a `py.typed` marker via `codegen::python_stub::generate_index_stub` (`tools/dynwinrt-codegen/src/main.rs:96-98,270-273`)
 - [ ] **JSDoc comments**: napi binding `.d.ts` has no parameter descriptions
 - [ ] **Null COM objects in arrays**: ~~`ArrayData::get()` still constructs `IUnknown::from_raw(null)` for null COM elements coming from CoTaskMem-backed arrays. That should return `WinRTValue::Null` directly, otherwise clone/drop on the resulting object can crash.~~ (done — see P0)
 - [ ] **FillArray failure-path cleanup**: ~~If a FillArray call partially writes HSTRING / COM elements and then returns failure, the temporary buffer cleanup path frees raw memory but does not walk and release per-element resources. Mirror `ArrayData::drop` behavior for error paths to avoid leaks.~~ (done — see P0)
