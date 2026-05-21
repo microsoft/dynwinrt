@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use dynwinrt;
 use napi_derive::napi;
+use napi::bindgen_prelude::BigInt;
 use napi::threadsafe_function::ThreadsafeFunctionCallMode;
 use windows::core::{IUnknown, Interface, HSTRING};
 
@@ -988,21 +989,23 @@ impl DynWinRTStruct {
   }
 
   #[napi]
-  pub fn get_i64(&self, index: u32) -> i64 {
-    self.0.get_field::<i64>(index as usize)
+  pub fn get_i64(&self, index: u32) -> BigInt {
+    BigInt::from(self.0.get_field::<i64>(index as usize))
   }
   #[napi]
-  pub fn set_i64(&mut self, index: u32, value: i64) {
-    self.0.set_field(index as usize, value);
+  pub fn set_i64(&mut self, index: u32, value: BigInt) {
+    let (n, _lossless) = value.get_i64();
+    self.0.set_field(index as usize, n);
   }
 
   #[napi]
-  pub fn get_u64(&self, index: u32) -> i64 {
-    self.0.get_field::<u64>(index as usize) as i64
+  pub fn get_u64(&self, index: u32) -> BigInt {
+    BigInt::from(self.0.get_field::<u64>(index as usize))
   }
   #[napi]
-  pub fn set_u64(&mut self, index: u32, value: i64) {
-    self.0.set_field(index as usize, value as u64);
+  pub fn set_u64(&mut self, index: u32, value: BigInt) {
+    let (_sign, n, _lossless) = value.get_u64();
+    self.0.set_field(index as usize, n);
   }
 
   // -- Non-blittable field access --

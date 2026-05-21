@@ -134,7 +134,7 @@ impl TypeKind {
             TypeKind::U8 => Some(Type::u8()),
             TypeKind::I16 => Some(Type::i16()),
             TypeKind::U16 | TypeKind::Char16 => Some(Type::u16()),
-            TypeKind::I32 | TypeKind::HResult => Some(Type::i32()),
+            TypeKind::I32 | TypeKind::HResult | TypeKind::Enum(_) => Some(Type::i32()),
             TypeKind::U32 => Some(Type::u32()),
             TypeKind::I64 => Some(Type::i64()),
             TypeKind::U64 => Some(Type::u64()),
