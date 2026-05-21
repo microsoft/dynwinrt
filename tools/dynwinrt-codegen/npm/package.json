@@ -24,7 +24,8 @@
   "files": [
     "bin/",
     "cli.js",
-    "LICENSE"
+    "LICENSE",
+    "README.md"
   ],
   "dependencies": {},
   "publishConfig": {
