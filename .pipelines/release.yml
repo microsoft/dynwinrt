@@ -90,13 +90,22 @@ extends:
                 registry = "$feedUrl"
                 "@ | Set-Content .cargo/config.toml
 
-                # Write token directly to credentials.toml — bypasses both
-                # `cargo login` (deprecated stdin warning) and credential
-                # providers (cargo:wincred RPC stub crashes on some hosted
-                # Windows images with `os error 1783`).
+                # User-level config: credential providers.
+                # Omits cargo:wincred (its RPC stub crashes with `os error 1783`
+                # on some hosted ADO Windows images during the `cargo login`
+                # write path). cargo:token reads the credentials.toml written
+                # below, which is all CI needs.
+                $userConfig = "$env:USERPROFILE\.cargo\config.toml"
+                New-Item -ItemType Directory -Path "$env:USERPROFILE\.cargo" -Force | Out-Null
+                @"
+                [registry]
+                global-credential-providers = ["cargo:token"]
+                "@ | Set-Content $userConfig
+
+                # Write token directly to credentials.toml — bypasses the
+                # deprecated `cargo login <token>` stdin path entirely.
                 $token = "Basic " + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("PAT:$env:SYSTEM_ACCESSTOKEN"))
                 $credsPath = "$env:USERPROFILE\.cargo\credentials.toml"
-                New-Item -ItemType Directory -Path "$env:USERPROFILE\.cargo" -Force | Out-Null
                 @"
                 [registries.dynwinrt-cargo]
                 token = "$token"
