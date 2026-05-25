@@ -187,25 +187,37 @@ pub(crate) fn wrap_arg(name: &str, typ: &TypeMeta) -> String {
             format!("_unwrap({})", name)
         }
         TypeMeta::Parameterized { piid, args, name: pname, .. } => {
-            // For vector-like collections, auto-wrap JS arrays at runtime
+            // For vector-like collections, auto-wrap JS arrays at runtime.
+            //
+            // createVector returns a SingleThreadedVector whose identity vtable
+            // is IIterable<T> (sibling of IVector/IVectorView, not parent). If
+            // the method parameter is IVector<T> or IVectorView<T>, we must QI
+            // to that specific interface so the correct vtable pointer (with
+            // the right method slots) is forwarded to WinRT — otherwise WinRT
+            // reads the wrong vtable slots and the renderer crashes natively.
             if is_vector_like(piid, pname) {
                 if let Some(elem) = args.first() {
                     let elem_type = ts_dynwinrt_type(elem);
                     let item_wrap = vector_item_wrap_expr("_i", elem);
+                    let target_iid_expr = format!("{}.iid()", ts_dynwinrt_type(typ));
                     return format!(
-                        "(Array.isArray({name}) ? DynWinRtValue.createVector({name}.map(_i => {item_wrap}), {elem_type}) : _unwrap({name}))"
+                        "(Array.isArray({name}) ? DynWinRtValue.createVector({name}.map(_i => {item_wrap}), {elem_type}).cast({target_iid_expr}) : _unwrap({name}).cast({target_iid_expr}))"
                     );
                 }
             }
-            // For map-like collections, auto-wrap JS Map at runtime
+            // For map-like collections, auto-wrap JS Map at runtime.
+            // Same vtable-mismatch concern as vectors: createMap returns a
+            // SingleThreadedMap whose identity vtable is IIterable
+            // <IKeyValuePair<K,V>>; we must QI to IMap<K,V> or IMapView<K,V>.
             if is_map_like(piid, pname) {
                 if args.len() == 2 {
                     let key_type = ts_dynwinrt_type(&args[0]);
                     let val_type = ts_dynwinrt_type(&args[1]);
                     let k_wrap = vector_item_wrap_expr("_k", &args[0]);
                     let v_wrap = vector_item_wrap_expr("_v", &args[1]);
+                    let target_iid_expr = format!("{}.iid()", ts_dynwinrt_type(typ));
                     return format!(
-                        "({name} instanceof Map ? DynWinRtValue.createMap([...{name}.keys()].map(_k => {k_wrap}), [...{name}.values()].map(_v => {v_wrap}), {key_type}, {val_type}) : _unwrap({name}))"
+                        "({name} instanceof Map ? DynWinRtValue.createMap([...{name}.keys()].map(_k => {k_wrap}), [...{name}.values()].map(_v => {v_wrap}), {key_type}, {val_type}).cast({target_iid_expr}) : _unwrap({name}).cast({target_iid_expr}))"
                     );
                 }
             }
