@@ -44,8 +44,13 @@ pub(crate) fn ts_param_type_safe(typ: &TypeMeta, known: &HashSet<String>) -> Str
 /// DTS-specific parameter type: for collection types, also accept the JS-native equivalent.
 /// e.g. `IVectorView_Foo | Foo[]`, `IMap_String_Bar | Map<string, Bar>`
 pub(crate) fn ts_param_type_dts(typ: &TypeMeta, known: &HashSet<String>) -> String {
-    // Array params: show as T[] in DTS (runtime uses DynWinRtArray but users pass arrays)
+    // Array params: show as T[] in DTS (runtime uses DynWinRtArray but users pass arrays).
+    // For byte[] (U8) also advertise Uint8Array — far more memory-efficient than
+    // a boxed `Array<number>` of length N for large pixel buffers.
     if let TypeMeta::Array(inner) = typ {
+        if matches!(inner.as_ref(), TypeMeta::U8) {
+            return "Uint8Array | number[]".to_string();
+        }
         let elem_ts = ts_param_type_safe(inner, known);
         return format!("{}[]", elem_ts);
     }
@@ -167,7 +172,9 @@ pub(crate) fn ts_array_element_type(inner: &TypeMeta, known_types: &HashSet<Stri
     match inner {
         TypeMeta::Bool => "boolean[]".to_string(),
         TypeMeta::String | TypeMeta::Guid => "string[]".to_string(),
-        TypeMeta::I8 | TypeMeta::U8 | TypeMeta::I16 | TypeMeta::U16 | TypeMeta::Char16
+        // byte[] returns: Node Buffer (Uint8Array subclass) — see convert_array_return.
+        TypeMeta::U8 => "Buffer".to_string(),
+        TypeMeta::I8 | TypeMeta::I16 | TypeMeta::U16 | TypeMeta::Char16
         | TypeMeta::I32 | TypeMeta::U32
         | TypeMeta::F32 | TypeMeta::F64 | TypeMeta::Enum { .. } => "number[]".to_string(),
         TypeMeta::I64 | TypeMeta::U64 => "bigint[]".to_string(),

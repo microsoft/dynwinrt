@@ -836,6 +836,16 @@ impl DynWinRTArray {
     DynWinRTArray(dynwinrt::ArrayData::from_values(TABLE.u8_type(), &wvals))
   }
 
+  /// Build a u8 DynWinRtArray from a JS `Uint8Array` (zero-copy view into V8
+  /// memory on the way in; much more efficient than fromU8Values for large
+  /// byte buffers because the caller doesn't need to allocate a boxed
+  /// `Array<number>` of length N).
+  #[napi]
+  pub fn from_uint8_array(values: napi::bindgen_prelude::Uint8Array) -> DynWinRTArray {
+    let wvals: Vec<dynwinrt::WinRTValue> = values.iter().map(|&v| dynwinrt::WinRTValue::U8(v)).collect();
+    DynWinRTArray(dynwinrt::ArrayData::from_values(TABLE.u8_type(), &wvals))
+  }
+
   #[napi]
   pub fn from_i16_values(values: Vec<i32>) -> DynWinRTArray {
     let wvals: Vec<dynwinrt::WinRTValue> = values.into_iter().map(|v| dynwinrt::WinRTValue::I16(v as i16)).collect();

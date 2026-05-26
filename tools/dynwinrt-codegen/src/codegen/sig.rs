@@ -227,6 +227,13 @@ pub(crate) fn wrap_arg(name: &str, typ: &TypeMeta) -> String {
             // Accept both DynWinRtArray (.toValue()) and plain JS array.
             // For primitive arrays, use typed DynWinRtArray constructors.
             // For object arrays, use createVector which WinRT can consume as PassArray.
+            // Special: byte[] (U8) also accepts Uint8Array — far more memory-efficient
+            // than `new Array(N).fill(0)` (8 bytes/elem) for large pixel buffers.
+            if matches!(inner.as_ref(), TypeMeta::U8) {
+                return format!(
+                    "({name} instanceof Uint8Array ? DynWinRtArray.fromUint8Array({name}).toValue() : Array.isArray({name}) ? DynWinRtArray.fromU8Values({name}).toValue() : {name}.toValue())"
+                );
+            }
             let from_array_expr = match inner.as_ref() {
                 TypeMeta::I8 => format!("DynWinRtArray.fromI8Values({name})"),
                 TypeMeta::U8 => format!("DynWinRtArray.fromU8Values({name})"),
@@ -315,7 +322,11 @@ pub(crate) fn resolve_type_name(name: &str, deferred: &HashSet<String>) -> Strin
 pub(crate) fn convert_array_return(arr_expr: &str, inner: &TypeMeta, known_types: &HashSet<String>, deferred: &HashSet<String>) -> String {
     match inner {
         TypeMeta::I8 => format!("{}.toI8Vec()", arr_expr),
-        TypeMeta::U8 => format!("{}.toU8Vec()", arr_expr),
+        // U8 returns: hand back a Node Buffer (Uint8Array view), avoiding the
+        // ~8x V8 heap blow-up of an Array<number>. Buffer is assignment-
+        // compatible with Uint8Array and works with `Array.from(...)`,
+        // `Buffer.from(...)`, indexing, and `.length`.
+        TypeMeta::U8 => format!("{}.toBuffer()", arr_expr),
         TypeMeta::I16 => format!("{}.toI16Vec()", arr_expr),
         TypeMeta::U16 | TypeMeta::Char16 => format!("{}.toU16Vec()", arr_expr),
         TypeMeta::I32 | TypeMeta::Enum { .. } => format!("{}.toI32Vec()", arr_expr),
