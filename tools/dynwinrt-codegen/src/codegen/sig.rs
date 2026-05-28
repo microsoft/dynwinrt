@@ -116,7 +116,15 @@ pub(crate) fn ts_dynwinrt_type(typ: &TypeMeta) -> String {
             format!("DynWinRtType.iAsyncActionWithProgress({})", ts_dynwinrt_type(progress))
         }
 
-        // Struct — named for correct IID signature, recursively expand fields
+        // Struct — named for correct IID signature, recursively expand fields.
+        // HResult is special-cased: WinRT exposes it as a single-field struct,
+        // but the runtime has a dedicated HResult kind whose deserialized value
+        // (WinRTValue::HResult) is the only one .toNumber() / packStruct
+        // helpers know how to unwrap. Emitting structType(...) here would cause
+        // the napi binding to deliver a WinRTValue::Struct and panic on read.
+        TypeMeta::Struct { name, .. } if name == "HResult" => {
+            "DynWinRtType.hresult()".to_string()
+        }
         TypeMeta::Struct { namespace, name, fields } => {
             let full_name = format!("{}.{}", namespace, name);
             let field_types: Vec<String> = fields.iter()
@@ -247,10 +255,13 @@ pub(crate) fn wrap_arg(name: &str, typ: &TypeMeta) -> String {
                 TypeMeta::F64 => format!("DynWinRtArray.fromF64Values({name})"),
                 TypeMeta::String => format!("DynWinRtArray.fromStringValues({name})"),
                 _ => {
-                    // Object types: wrap via createVector
+                    // Object types: wrap via DynWinRtArray.fromObjectValues so the
+                    // ABI receives a native WinRTValue::Array (PassArray) rather
+                    // than an IVector COM object. Required for `T[]` in-params
+                    // where T is a runtime class or interface.
                     let elem_type = ts_dynwinrt_type(inner);
                     return format!(
-                        "(Array.isArray({name}) ? DynWinRtValue.createVector({name}.map(_i => _unwrap(_i)), {elem_type}) : _unwrap({name}))"
+                        "(Array.isArray({name}) ? DynWinRtArray.fromObjectValues({name}.map(_i => _unwrap(_i)), {elem_type}).toValue() : _unwrap({name}))"
                     );
                 }
             };
@@ -474,6 +485,9 @@ pub(crate) fn py_dynwinrt_type(typ: &TypeMeta) -> String {
         TypeMeta::AsyncAction => "DynWinRTType.i_async_action()".to_string(),
         TypeMeta::AsyncActionWithProgress(progress) => {
             format!("DynWinRTType.i_async_action_with_progress({})", py_dynwinrt_type(progress))
+        }
+        TypeMeta::Struct { name, .. } if name == "HResult" => {
+            "DynWinRTType.hresult()".to_string()
         }
         TypeMeta::Struct { namespace, name, fields } => {
             let full_name = format!("{}.{}", namespace, name);

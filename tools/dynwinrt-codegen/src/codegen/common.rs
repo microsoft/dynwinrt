@@ -111,6 +111,35 @@ mod tests {
     }
 
     #[test]
+    fn ts_dynwinrt_type_hresult_struct() {
+        // HResult is exposed in WinRT metadata as a struct wrapping an i32, but
+        // the runtime treats it as its own kind (WinRTValue::HResult). The
+        // codegen must register methods with DynWinRtType.hresult() so the
+        // value comes back as HResult — calling .toNumber() on a plain
+        // WinRTValue::Struct would panic the napi binding.
+        let s = TypeMeta::Struct {
+            namespace: "Windows.Foundation".into(),
+            name: "HResult".into(),
+            fields: vec![
+                crate::types::FieldMeta { name: "Value".into(), typ: TypeMeta::I32 },
+            ],
+        };
+        assert_eq!(ts_dynwinrt_type(&s), "DynWinRtType.hresult()");
+    }
+
+    #[test]
+    fn py_dynwinrt_type_hresult_struct() {
+        let s = TypeMeta::Struct {
+            namespace: "Windows.Foundation".into(),
+            name: "HResult".into(),
+            fields: vec![
+                crate::types::FieldMeta { name: "Value".into(), typ: TypeMeta::I32 },
+            ],
+        };
+        assert_eq!(py_dynwinrt_type(&s), "DynWinRTType.hresult()");
+    }
+
+    #[test]
     fn build_method_sig_empty() {
         let m = MethodMeta {
             name: "DoSomething".into(),

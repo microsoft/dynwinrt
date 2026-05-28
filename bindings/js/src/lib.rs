@@ -902,6 +902,18 @@ impl DynWinRTArray {
     DynWinRTArray(dynwinrt::ArrayData::from_values(TABLE.make(dynwinrt::TypeKind::HString), &wvals))
   }
 
+  /// Build a DynWinRtArray of WinRT object/interface elements.
+  ///
+  /// Use for `T[]` ABI in-parameters where `T` is a runtime class or
+  /// interface — for example, `ModelCatalog(ModelCatalogSource[] sources)`.
+  /// Items are passed as DynWinRTValue handles (typically Object-wrapped),
+  /// and the element type drives ABI size and IID computation.
+  #[napi]
+  pub fn from_object_values(values: Vec<&DynWinRTValue>, element_type: &DynWinRTType) -> DynWinRTArray {
+    let wvals: Vec<dynwinrt::WinRTValue> = values.iter().map(|v| v.0.clone()).collect();
+    DynWinRTArray(dynwinrt::ArrayData::from_values(element_type.0.clone(), &wvals))
+  }
+
   /// Wrap as DynWinRTValue::Array for passing to call().
   #[napi]
   pub fn to_value(&self) -> DynWinRTValue {
