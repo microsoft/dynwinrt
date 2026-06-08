@@ -37,6 +37,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Print supported machine-readable capabilities, one per line.
+    Capabilities,
+
     /// Generate bindings from .winmd files
     #[command(long_about = "Parse .winmd metadata and generate typed binding files.\n\n\
         By default (`--lang js`) the tool emits plain ESM JavaScript (`.js`) plus\n\
@@ -53,6 +56,12 @@ enum Commands {
         /// If omitted, auto-detects Windows.winmd from Windows SDK.
         #[arg(long, value_name = "PATH")]
         winmd: Option<String>,
+
+        /// File containing newline-separated .winmd paths to emit (one path per line).
+        /// Equivalent to --winmd but read from a file, avoiding command-line length
+        /// limits when many winmds are involved. Blank lines and '#' comments are ignored.
+        #[arg(long = "winmd-list", value_name = "FILE")]
+        winmd_list: Option<String>,
 
         /// Directory containing .winmd files.
         /// All .winmd files in this directory will be loaded.
@@ -74,6 +83,12 @@ enum Commands {
         /// Paths separated by ';'. Sibling .winmd files are NOT auto-discovered.
         #[arg(long = "ref", value_name = "PATH")]
         ref_winmd: Option<String>,
+
+        /// File containing newline-separated .winmd paths for type resolution only
+        /// (no code generated). Equivalent to --ref but read from a file. Merged with
+        /// --ref when both are given. Blank lines and '#' comments are ignored.
+        #[arg(long = "ref-list", value_name = "FILE")]
+        ref_list: Option<String>,
 
         /// Target language. `js` emits .js + .d.ts (recommended for Node consumers).
         /// `py` emits .py (and optionally .pyi via --pyi).
@@ -110,12 +125,17 @@ fn run() -> Result<(), String> {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::Capabilities => {
+            print_capabilities();
+        }
         Commands::Generate {
             winmd,
+            winmd_list,
             folder,
             namespace,
             class_name,
             ref_winmd,
+            ref_list,
             lang,
             output,
             import_name,
@@ -151,25 +171,47 @@ fn run() -> Result<(), String> {
                 winmd_parts.extend(w.split(';').filter(|s| !s.is_empty()).map(String::from));
             }
 
-            // Auto-detect Windows SDK if not already included
-            let has_windows_winmd = winmd_parts.iter().any(|p| p.contains("Windows.winmd"));
-            if !has_windows_winmd {
+            if let Some(ref lf) = winmd_list {
+                winmd_parts.extend(read_path_list_file(lf)?);
+            }
+
+            // Collect ref winmd paths from --ref and --ref-list.
+            let mut ref_paths: Vec<String> = Vec::new();
+            if let Some(ref r) = ref_winmd {
+                ref_paths.extend(r.split(';').filter(|s| !s.is_empty()).map(String::from));
+            }
+            if let Some(ref lf) = ref_list {
+                ref_paths.extend(read_path_list_file(lf)?);
+            }
+
+            validate_winmd_paths(&winmd_parts, "winmd")?;
+            validate_winmd_paths(&ref_paths, "ref")?;
+
+            let winmd_namespaces = list_namespaces_for_paths(&winmd_parts);
+            let ref_namespaces_vec = list_namespaces_for_paths(&ref_paths);
+
+            // Auto-detect Windows SDK metadata only as a fallback. Integrators can
+            // pass explicit Windows.* metadata (for example SDK.CPP split winmds)
+            // via --ref/--ref-list to keep generation tied to a restored SDK version.
+            let has_explicit_windows_metadata =
+                has_windows_namespace(&winmd_namespaces) || has_windows_namespace(&ref_namespaces_vec);
+            if !has_explicit_windows_metadata {
                 if let Some(sdk_winmd) = find_windows_sdk_winmd() {
-                    eprintln!("Auto-detected Windows SDK: {}", sdk_winmd);
+                    eprintln!("Auto-detected Windows SDK metadata: {}", sdk_winmd);
+                    eprintln!(
+                        "For reproducible generation, pass Windows SDK metadata via --ref or --ref-list."
+                    );
                     winmd_parts.push(sdk_winmd);
-                } else if folder.is_none() && winmd.is_none() {
+                } else if folder.is_none() && winmd.is_none() && winmd_list.is_none() {
                     return Err("Could not auto-detect Windows.winmd. Please provide --winmd or --folder.".into());
                 }
             }
 
-            // Collect ref winmd namespaces (for exclusion) and append to winmd_parts
-            let ref_namespaces: HashSet<String> = if let Some(ref r) = ref_winmd {
-                let ref_paths: Vec<&str> = r.split(';').filter(|s| !s.is_empty()).collect();
-                let ref_joined = ref_paths.join(";");
-                let ref_ns = meta::list_namespaces(&ref_joined);
-                // Add ref paths to winmd_parts (loaded for type resolution)
-                winmd_parts.extend(ref_paths.iter().map(|s| s.to_string()));
-                ref_ns.into_iter().collect()
+            // Ref namespaces are excluded from generation and ref paths are appended
+            // to the loaded metadata set for type resolution.
+            let ref_namespaces: HashSet<String> = if !ref_paths.is_empty() {
+                winmd_parts.extend(ref_paths.iter().cloned());
+                ref_namespaces_vec.into_iter().collect()
             } else {
                 HashSet::new()
             };
@@ -589,6 +631,60 @@ fn generate_py_files(
 fn write_file(path: &Path, content: &str) -> Result<(), String> {
     fs::write(path, content)
         .map_err(|e| format!("Failed to write {}: {}", path.display(), e))
+}
+
+fn print_capabilities() {
+    for capability in [
+        "generate",
+        "lang.js",
+        "lang.py",
+        "input.winmd",
+        "input.ref",
+        "input.winmd-list",
+        "input.ref-list",
+        "selector.namespace-class",
+    ] {
+        println!("{}", capability);
+    }
+}
+
+/// Read a list file of newline-separated .winmd paths. Trims each line and skips
+/// blank lines and '#' comments. Used by --winmd-list and --ref-list to avoid
+/// command-line length limits when many winmds are passed.
+fn read_path_list_file(path: &str) -> Result<Vec<String>, String> {
+    let content = fs::read_to_string(path)
+        .map_err(|e| format!("Failed to read list file '{}': {}", path, e))?;
+    Ok(content
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(String::from)
+        .collect())
+}
+
+fn validate_winmd_paths(paths: &[String], label: &str) -> Result<(), String> {
+    for path in paths {
+        let metadata = fs::metadata(path)
+            .map_err(|e| format!("{} path is not accessible: {} ({})", label, path, e))?;
+        if !metadata.is_file() {
+            return Err(format!("{} path is not a file: {}", label, path));
+        }
+    }
+    Ok(())
+}
+
+fn list_namespaces_for_paths(paths: &[String]) -> Vec<String> {
+    if paths.is_empty() {
+        Vec::new()
+    } else {
+        meta::list_namespaces(&paths.join(";"))
+    }
+}
+
+fn has_windows_namespace(namespaces: &[String]) -> bool {
+    namespaces
+        .iter()
+        .any(|ns| ns == "Windows" || ns.starts_with("Windows."))
 }
 
 /// Find Windows SDK Windows.winmd by scanning the standard install location.
