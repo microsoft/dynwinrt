@@ -150,14 +150,27 @@ pub struct ProjectedEvent {
 
 #[derive(Clone)]
 pub enum SymbolKind {
-    ToString { iface_name: String },
+    ToString {
+        iface_name: String,
+    },
     ToPrimitive,
-    ToStringTag { tag: String },
-    Iterator { element_type: String, body_lines: Vec<String> },
+    ToStringTag {
+        tag: String,
+    },
+    Iterator {
+        element_type: String,
+        body_lines: Vec<String>,
+    },
     CollectionLength,
-    CollectionAt { element_type: String },
-    CollectionToArray { element_type: String },
-    IteratorNext { element_type: String },
+    CollectionAt {
+        element_type: String,
+    },
+    CollectionToArray {
+        element_type: String,
+    },
+    IteratorNext {
+        element_type: String,
+    },
 }
 
 #[derive(Clone)]

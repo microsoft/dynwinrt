@@ -21,15 +21,20 @@ pub fn render(file: &ProjectedFile) -> String {
     // Imports (all, including runtime_only, but skip dts_only) — deduplicate symbols
     let mut seen_symbols: std::collections::HashSet<String> = std::collections::HashSet::new();
     for imp in &file.imports {
-        if imp.dts_only { continue; }
-        let deduped: Vec<&str> = imp.symbols.iter()
+        if imp.dts_only {
+            continue;
+        }
+        let deduped: Vec<&str> = imp
+            .symbols
+            .iter()
             .filter(|s| seen_symbols.insert(s.to_string()))
             .map(|s| s.as_str())
             .collect();
         if !deduped.is_empty() {
             out.push_str(&format!(
                 "import {{ {} }} from '{}';\n",
-                deduped.join(", "), imp.from
+                deduped.join(", "),
+                imp.from
             ));
         }
     }
@@ -37,7 +42,11 @@ pub fn render(file: &ProjectedFile) -> String {
 
     // IID consts
     for iid in &file.iid_consts {
-        let prefix = if iid.exported { "export const" } else { "const" };
+        let prefix = if iid.exported {
+            "export const"
+        } else {
+            "const"
+        };
         out.push_str(&format!("{} {} = {};\n", prefix, iid.name, iid.rhs_expr));
     }
     if !file.iid_consts.is_empty() {
@@ -98,15 +107,20 @@ fn render_delegate_js(out: &mut String, file: &ProjectedFile) {
     // Import — deduplicate, skip dts_only
     let mut seen_symbols: std::collections::HashSet<String> = std::collections::HashSet::new();
     for imp in &file.imports {
-        if imp.dts_only { continue; }
-        let deduped: Vec<&str> = imp.symbols.iter()
+        if imp.dts_only {
+            continue;
+        }
+        let deduped: Vec<&str> = imp
+            .symbols
+            .iter()
             .filter(|s| seen_symbols.insert(s.to_string()))
             .map(|s| s.as_str())
             .collect();
         if !deduped.is_empty() {
             out.push_str(&format!(
                 "import {{ {} }} from '{}';\n",
-                deduped.join(", "), imp.from
+                deduped.join(", "),
+                imp.from
             ));
         }
     }
@@ -114,7 +128,10 @@ fn render_delegate_js(out: &mut String, file: &ProjectedFile) {
     for d in &file.delegates {
         out.push_str(&format!("export const IID_{} = {};\n", d.name, d.iid_rhs));
         if d.has_param_types {
-            out.push_str(&format!("export const {}_PARAM_TYPES = {};\n", d.name, d.param_types_expr));
+            out.push_str(&format!(
+                "export const {}_PARAM_TYPES = {};\n",
+                d.name, d.param_types_expr
+            ));
         }
     }
 }
@@ -129,7 +146,10 @@ fn render_struct_js(out: &mut String, s: &ProjectedStruct) {
     out.push_str(&format!("const _unpack{0} = unpack{0};\n", s.name));
 
     // Type constant
-    out.push_str(&format!("export const {}_Type = {};\n", s.name, s.type_expr));
+    out.push_str(&format!(
+        "export const {}_Type = {};\n",
+        s.name, s.type_expr
+    ));
     out.push_str(&format!("const _{0}_Type = {0}_Type;\n", s.name));
 
     // pack function
@@ -159,7 +179,9 @@ fn render_class_js(out: &mut String, class: &ProjectedClass) {
 
     // Collect member names from main class for overload detection.
     // Include Symbol names (toString, etc.) to prevent duplicates from required interfaces.
-    let main_methods: std::collections::HashMap<String, usize> = class.members.iter()
+    let main_methods: std::collections::HashMap<String, usize> = class
+        .members
+        .iter()
         .filter_map(|m| match m {
             ProjectedMember::Method(method) => Some((method.name.clone(), method.params.len())),
             ProjectedMember::Symbol(s) => Some((super::project::symbol_dedup_key(&s.kind), 0)),
@@ -171,12 +193,16 @@ fn render_class_js(out: &mut String, class: &ProjectedClass) {
         .collect();
 
     // Collect overloads from required interfaces that share a name with a main class method
-    let mut overloaded_methods: std::collections::HashMap<String, Vec<(&ProjectedMethod, &str)>> = std::collections::HashMap::new();
+    let mut overloaded_methods: std::collections::HashMap<String, Vec<(&ProjectedMethod, &str)>> =
+        std::collections::HashMap::new();
     for ri in &class.required_ifaces {
         for member in &ri.members {
             if let ProjectedMember::Method(method) = member {
                 if main_methods.contains_key(&method.name) && !method.js_only {
-                    overloaded_methods.entry(method.name.clone()).or_default().push((method, &ri.name));
+                    overloaded_methods
+                        .entry(method.name.clone())
+                        .or_default()
+                        .push((method, &ri.name));
                 }
             }
         }
@@ -186,11 +212,15 @@ fn render_class_js(out: &mut String, class: &ProjectedClass) {
     out.push('\n');
     let mut emitted_names: std::collections::HashSet<String> = std::collections::HashSet::new();
     // Group same-name methods within class.members
-    let mut same_class_groups: std::collections::HashMap<String, Vec<usize>> = std::collections::HashMap::new();
+    let mut same_class_groups: std::collections::HashMap<String, Vec<usize>> =
+        std::collections::HashMap::new();
     for (i, member) in class.members.iter().enumerate() {
         if let ProjectedMember::Method(method) = member {
             if !method.js_only {
-                same_class_groups.entry(method.name.clone()).or_default().push(i);
+                same_class_groups
+                    .entry(method.name.clone())
+                    .or_default()
+                    .push(i);
             }
         }
     }
@@ -206,9 +236,16 @@ fn render_class_js(out: &mut String, class: &ProjectedClass) {
             let group = same_class_groups.get(&method.name);
             if let Some(indices) = group {
                 if indices.len() > 1 {
-                    let others: Vec<&ProjectedMethod> = indices.iter()
+                    let others: Vec<&ProjectedMethod> = indices
+                        .iter()
                         .filter(|&&j| j != i)
-                        .filter_map(|&j| if let ProjectedMember::Method(m) = &class.members[j] { Some(m) } else { None })
+                        .filter_map(|&j| {
+                            if let ProjectedMember::Method(m) = &class.members[j] {
+                                Some(m)
+                            } else {
+                                None
+                            }
+                        })
                         .collect();
                     render_same_class_overload_js(out, method, &others);
                     continue;
@@ -236,7 +273,10 @@ fn render_iface_js(out: &mut String, iface: &ProjectedIface, _file: &ProjectedFi
     // Constructor
     if iface.has_parameterized_cast {
         out.push_str("    constructor(obj) {\n");
-        out.push_str(&format!("        this._obj = obj.cast(IID_{});\n", iface.name));
+        out.push_str(&format!(
+            "        this._obj = obj.cast(IID_{});\n",
+            iface.name
+        ));
         out.push_str("    }\n");
     } else {
         out.push_str("    constructor(obj) {\n");
@@ -285,9 +325,12 @@ fn render_required_iface_js(out: &mut String, ri: &ProjectedRequiredIface) {
 fn render_member_js(out: &mut String, member: &ProjectedMember, _class_name: &str) {
     match member {
         ProjectedMember::Constructor(ctor) => {
-            let params_str = ctor.params.iter()
+            let params_str = ctor
+                .params
+                .iter()
                 .map(|p| p.name.as_str())
-                .collect::<Vec<_>>().join(", ");
+                .collect::<Vec<_>>()
+                .join(", ");
             out.push_str(&format!("    constructor({}) {{\n", params_str));
             for line in &ctor.body_lines {
                 out.push_str(&format!("        {}\n", line));
@@ -314,9 +357,12 @@ fn render_member_js(out: &mut String, member: &ProjectedMember, _class_name: &st
             if let Some(ref doc) = method.doc {
                 out.push_str(&render_jsdoc(doc, "    "));
             }
-            let params_str = method.params.iter()
+            let params_str = method
+                .params
+                .iter()
                 .map(|p| p.name.as_str())
-                .collect::<Vec<_>>().join(", ");
+                .collect::<Vec<_>>()
+                .join(", ");
             let static_kw = if method.is_static { "static " } else { "" };
             let async_kw = match method.async_kind {
                 AsyncKind::Action | AsyncKind::Operation(_) => "async ",
@@ -330,17 +376,28 @@ fn render_member_js(out: &mut String, member: &ProjectedMember, _class_name: &st
             // Wrap delegate params before invoke
             for (param_name, delegate_name) in &method.delegate_wraps {
                 // Find param_wraps from the corresponding ProjectedParam
-                let needs_wrap = method.params.iter()
+                let needs_wrap = method
+                    .params
+                    .iter()
                     .find(|p| &p.name == param_name)
                     .and_then(|p| p.delegate_wrap.as_ref())
-                    .map(|dw| dw.param_wraps.iter().enumerate().any(|(i, w)| *w != format!("__a{}__", i)))
+                    .map(|dw| {
+                        dw.param_wraps
+                            .iter()
+                            .enumerate()
+                            .any(|(i, w)| *w != format!("__a{}__", i))
+                    })
                     .unwrap_or(false);
                 if needs_wrap {
-                    let dw = method.params.iter()
+                    let dw = method
+                        .params
+                        .iter()
                         .find(|p| &p.name == param_name)
                         .and_then(|p| p.delegate_wrap.as_ref())
                         .unwrap();
-                    let arg_vars: Vec<String> = (0..dw.param_wraps.len()).map(|i| format!("__a{}__", i)).collect();
+                    let arg_vars: Vec<String> = (0..dw.param_wraps.len())
+                        .map(|i| format!("__a{}__", i))
+                        .collect();
                     let args_str = arg_vars.join(", ");
                     let wraps_str = dw.param_wraps.join(", ");
                     out.push_str(&format!(
@@ -378,11 +435,23 @@ fn render_member_js(out: &mut String, member: &ProjectedMember, _class_name: &st
                 }
                 AsyncKind::ActionWithProgress(_) => {
                     let convert = method.async_convert_v.as_deref().unwrap_or("undefined");
-                    emit_with_progress_body(out, &method.invoke_expr, convert, true, method.progress_convert.as_deref());
+                    emit_with_progress_body(
+                        out,
+                        &method.invoke_expr,
+                        convert,
+                        true,
+                        method.progress_convert.as_deref(),
+                    );
                 }
                 AsyncKind::OperationWithProgress(_, _) => {
                     let convert = method.async_convert_v.as_deref().unwrap_or("_v");
-                    emit_with_progress_body(out, &method.invoke_expr, convert, false, method.progress_convert.as_deref());
+                    emit_with_progress_body(
+                        out,
+                        &method.invoke_expr,
+                        convert,
+                        false,
+                        method.progress_convert.as_deref(),
+                    );
                 }
             }
             out.push_str("    }\n");
@@ -424,7 +493,10 @@ fn render_member_js(out: &mut String, member: &ProjectedMember, _class_name: &st
                         event.remove_iface_var, idx, event.remove_obj_expr
                     ));
                 } else {
-                    let cap = event.subscribe_name.strip_prefix("on").unwrap_or(&event.subscribe_name);
+                    let cap = event
+                        .subscribe_name
+                        .strip_prefix("on")
+                        .unwrap_or(&event.subscribe_name);
                     out.push_str(&format!(
                         "        return () => {{ this.off{}(__token); }};\n",
                         cap
@@ -433,7 +505,13 @@ fn render_member_js(out: &mut String, member: &ProjectedMember, _class_name: &st
                 out.push_str("    }\n");
 
                 // onceXxx — subscribe and auto-unsubscribe after first call
-                let once_name = format!("once{}", event.subscribe_name.strip_prefix("on").unwrap_or(&event.subscribe_name));
+                let once_name = format!(
+                    "once{}",
+                    event
+                        .subscribe_name
+                        .strip_prefix("on")
+                        .unwrap_or(&event.subscribe_name)
+                );
                 out.push_str(&format!("    {}(callback) {{\n", once_name));
                 out.push_str(&format!("        const unsub = this.{}((...args) => {{ unsub(); callback(...args); }});\n", event.subscribe_name));
                 out.push_str("        return unsub;\n");
@@ -441,13 +519,12 @@ fn render_member_js(out: &mut String, member: &ProjectedMember, _class_name: &st
             }
             // Unsubscribe (offX) — standalone event remove
             if event.subscribe_name.is_empty() && !event.unsubscribe_name.is_empty() {
-                out.push_str(&format!(
-                    "    {}(token) {{\n",
-                    event.unsubscribe_name
-                ));
+                out.push_str(&format!("    {}(token) {{\n", event.unsubscribe_name));
                 out.push_str(&format!(
                     "        {}.method({}).invoke({}, [token]);\n",
-                    event.remove_iface_var, event.remove_vtable_index.unwrap_or(0), event.remove_obj_expr
+                    event.remove_iface_var,
+                    event.remove_vtable_index.unwrap_or(0),
+                    event.remove_obj_expr
                 ));
                 out.push_str("    }\n");
             }
@@ -461,7 +538,10 @@ fn render_member_js(out: &mut String, member: &ProjectedMember, _class_name: &st
                     out.push_str("    [Symbol.toPrimitive](_hint) {\n        return this.toString();\n    }\n");
                 }
                 SymbolKind::ToStringTag { tag } => {
-                    out.push_str(&format!("    get [Symbol.toStringTag]() {{ return '{}'; }}\n", tag));
+                    out.push_str(&format!(
+                        "    get [Symbol.toStringTag]() {{ return '{}'; }}\n",
+                        tag
+                    ));
                 }
                 SymbolKind::Iterator { body_lines, .. } => {
                     if body_lines.is_empty() {
@@ -469,7 +549,10 @@ fn render_member_js(out: &mut String, member: &ProjectedMember, _class_name: &st
                         out.push_str("    [Symbol.iterator]() { return this.first(); }\n");
                     } else if body_lines.len() == 1 && body_lines[0].starts_with("return ") {
                         // Simple return (e.g. IIterator: return this)
-                        out.push_str(&format!("    [Symbol.iterator]() {{ {} }}\n", body_lines[0]));
+                        out.push_str(&format!(
+                            "    [Symbol.iterator]() {{ {} }}\n",
+                            body_lines[0]
+                        ));
                     } else {
                         // Generator function (e.g. IVector: yield elements)
                         out.push_str("    *[Symbol.iterator]() {\n");
@@ -512,7 +595,9 @@ fn render_member_js(out: &mut String, member: &ProjectedMember, _class_name: &st
                         out.push_str(&format!("    /** {} */\n", doc));
                     }
                     out.push_str("    next() {\n");
-                    out.push_str("        if (!this.hasCurrent) return { value: undefined, done: true };\n");
+                    out.push_str(
+                        "        if (!this.hasCurrent) return { value: undefined, done: true };\n",
+                    );
                     out.push_str("        const value = this.current;\n");
                     out.push_str("        this.moveNext();\n");
                     out.push_str("        return { value, done: false };\n");
@@ -540,7 +625,12 @@ fn render_enum_js(out: &mut String, en: &ProjectedEnum) {
     out.push_str(&format!("export const {} = Object.freeze({{\n", en.name));
     for member in &en.members {
         if let Some(ref doc) = member.doc {
-            let di = DocInfo { summary: Some(doc.clone()), deprecated: None, returns: None, params: vec![] };
+            let di = DocInfo {
+                summary: Some(doc.clone()),
+                deprecated: None,
+                returns: None,
+                params: vec![],
+            };
             out.push_str(&render_jsdoc(&di, "    "));
         }
         out.push_str(&format!("    {}: {},\n", member.name, member.value));
@@ -552,7 +642,12 @@ fn render_enum_js(out: &mut String, en: &ProjectedEnum) {
 // Async scaffolding
 // ======================================================================
 
-fn emit_abortable_async_body(out: &mut String, invoke_expr: &str, convert_v_expr: &str, is_action: bool) {
+fn emit_abortable_async_body(
+    out: &mut String,
+    invoke_expr: &str,
+    convert_v_expr: &str,
+    is_action: bool,
+) {
     out.push_str("        if (signal?.aborted) throw signal.reason;\n");
     out.push_str(&format!("        const _op = {};\n", invoke_expr));
     out.push_str("        const _onAbort = signal ? () => { try { _op.cancel(); } catch (_ce) { /* cancel after completion is a no-op per WinRT spec */ } } : undefined;\n");
@@ -573,7 +668,13 @@ fn emit_abortable_async_body(out: &mut String, invoke_expr: &str, convert_v_expr
     out.push_str("        }\n");
 }
 
-fn emit_with_progress_body(out: &mut String, invoke_expr: &str, inner_convert: &str, is_action: bool, progress_convert: Option<&str>) {
+fn emit_with_progress_body(
+    out: &mut String,
+    invoke_expr: &str,
+    inner_convert: &str,
+    is_action: bool,
+    progress_convert: Option<&str>,
+) {
     out.push_str("        if (signal?.aborted) {\n");
     out.push_str("            const _rej = Promise.reject(signal.reason);\n");
     out.push_str("            _rej.catch(() => {});\n");
@@ -599,7 +700,10 @@ fn emit_with_progress_body(out: &mut String, invoke_expr: &str, inner_convert: &
     out.push_str("        return Object.assign(_promise, {\n");
     // Wrap progress callback to convert raw DynWinRtValue to the projected type
     if let Some(p_conv) = progress_convert {
-        out.push_str(&format!("            progress(cb) {{ _op.onProgress((_p) => cb({})); return this; }},\n", p_conv));
+        out.push_str(&format!(
+            "            progress(cb) {{ _op.onProgress((_p) => cb({})); return this; }},\n",
+            p_conv
+        ));
     } else {
         out.push_str("            progress(cb) { _op.onProgress(cb); return this; },\n");
     }
@@ -617,7 +721,11 @@ fn render_jsdoc(doc: &DocInfo, indent: &str) -> String {
         summary: doc.summary.as_deref(),
         deprecated: doc.deprecated.as_deref(),
         returns: doc.returns.as_deref(),
-        params: doc.params.iter().map(|(n, d)| (n.as_str(), d.as_str())).collect(),
+        params: doc
+            .params
+            .iter()
+            .map(|(n, d)| (n.as_str(), d.as_str()))
+            .collect(),
     };
     super::xml_text::format_jsdoc(&doc_text, indent)
 }
@@ -667,7 +775,12 @@ fn render_same_class_overload_js(
             AsyncKind::Action | AsyncKind::Operation(_) => "async ",
             _ => "",
         };
-        let params_str = method.params.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", ");
+        let params_str = method
+            .params
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
         out.push_str(&format!(
             "    {}{}{}({}) {{\n",
             static_kw, async_kw, internal_name, params_str
@@ -691,11 +804,23 @@ fn render_same_class_overload_js(
             }
             AsyncKind::ActionWithProgress(_) => {
                 let convert = method.async_convert_v.as_deref().unwrap_or("undefined");
-                emit_with_progress_body(out, &method.invoke_expr, convert, true, method.progress_convert.as_deref());
+                emit_with_progress_body(
+                    out,
+                    &method.invoke_expr,
+                    convert,
+                    true,
+                    method.progress_convert.as_deref(),
+                );
             }
             AsyncKind::OperationWithProgress(_, _) => {
                 let convert = method.async_convert_v.as_deref().unwrap_or("_v");
-                emit_with_progress_body(out, &method.invoke_expr, convert, false, method.progress_convert.as_deref());
+                emit_with_progress_body(
+                    out,
+                    &method.invoke_expr,
+                    convert,
+                    false,
+                    method.progress_convert.as_deref(),
+                );
             }
         }
         out.push_str("    }\n");
@@ -715,8 +840,14 @@ fn render_same_class_overload_js(
 
         if idx == 0 {
             // Fewest params — default fallthrough
-            let args = (0..method.params.len()).map(|i| format!("args[{}]", i)).collect::<Vec<_>>().join(", ");
-            out.push_str(&format!("        return this.{}({});\n", internal_name, args));
+            let args = (0..method.params.len())
+                .map(|i| format!("args[{}]", i))
+                .collect::<Vec<_>>()
+                .join(", ");
+            out.push_str(&format!(
+                "        return this.{}({});\n",
+                internal_name, args
+            ));
         } else {
             // Build condition to distinguish this overload from shorter ones.
             // Compare against the next-shorter overload to find the discriminator.
@@ -744,9 +875,15 @@ fn render_same_class_overload_js(
             }
 
             let cond = conditions.join(" && ");
-            let args = (0..method.params.len()).map(|i| format!("args[{}]", i)).collect::<Vec<_>>().join(", ");
+            let args = (0..method.params.len())
+                .map(|i| format!("args[{}]", i))
+                .collect::<Vec<_>>()
+                .join(", ");
             out.push_str(&format!("        if ({}) {{\n", cond));
-            out.push_str(&format!("            return this.{}({});\n", internal_name, args));
+            out.push_str(&format!(
+                "            return this.{}({});\n",
+                internal_name, args
+            ));
             out.push_str("        }\n");
         }
     }
@@ -771,12 +908,11 @@ fn render_overload_dispatcher_js(
     _class_name: &str,
 ) {
     // Count required params (non-optional, non-signal) in main method
-    let main_required: usize = main_method.params.iter()
-        .filter(|p| !p.optional)
-        .count();
+    let main_required: usize = main_method.params.iter().filter(|p| !p.optional).count();
 
     // Collect all overloads sorted by required param count (descending) for dispatch
-    let mut all_overloads: Vec<(&ProjectedMethod, &str, usize)> = overloads.iter()
+    let mut all_overloads: Vec<(&ProjectedMethod, &str, usize)> = overloads
+        .iter()
         .map(|(m, iface)| {
             let required = m.params.iter().filter(|p| !p.optional).count();
             (*m, *iface, required)
@@ -817,8 +953,17 @@ fn render_overload_dispatcher_js(
                 diff_param, diff_param
             ));
             // Forward to required interface
-            let fwd_args = overload.params.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", ");
-            let obj_expr = if main_method.is_static { format!("{}.s_{}()", _class_name, iface_name) } else { "this._obj".to_string() };
+            let fwd_args = overload
+                .params
+                .iter()
+                .map(|p| p.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let obj_expr = if main_method.is_static {
+                format!("{}.s_{}()", _class_name, iface_name)
+            } else {
+                "this._obj".to_string()
+            };
             out.push_str(&format!(
                 "            return {}.from({}).{}({});\n",
                 iface_name, obj_expr, main_method.name, fwd_args
@@ -830,17 +975,28 @@ fn render_overload_dispatcher_js(
     // Fall through to original method body
     // Re-render the original method body inline (skip the signature, we already emitted it)
     for (param_name, delegate_name) in &main_method.delegate_wraps {
-        let needs_wrap = main_method.params.iter()
+        let needs_wrap = main_method
+            .params
+            .iter()
             .find(|p| &p.name == param_name)
             .and_then(|p| p.delegate_wrap.as_ref())
-            .map(|dw| dw.param_wraps.iter().enumerate().any(|(i, w)| *w != format!("__a{}__", i)))
+            .map(|dw| {
+                dw.param_wraps
+                    .iter()
+                    .enumerate()
+                    .any(|(i, w)| *w != format!("__a{}__", i))
+            })
             .unwrap_or(false);
         if needs_wrap {
-            let dw = main_method.params.iter()
+            let dw = main_method
+                .params
+                .iter()
                 .find(|p| &p.name == param_name)
                 .and_then(|p| p.delegate_wrap.as_ref())
                 .unwrap();
-            let arg_vars: Vec<String> = (0..dw.param_wraps.len()).map(|i| format!("__a{}__", i)).collect();
+            let arg_vars: Vec<String> = (0..dw.param_wraps.len())
+                .map(|i| format!("__a{}__", i))
+                .collect();
             let args_str = arg_vars.join(", ");
             let wraps_str = dw.param_wraps.join(", ");
             out.push_str(&format!(
@@ -876,12 +1032,27 @@ fn render_overload_dispatcher_js(
             emit_abortable_async_body(out, &main_method.invoke_expr, convert, false);
         }
         AsyncKind::ActionWithProgress(_) => {
-            let convert = main_method.async_convert_v.as_deref().unwrap_or("undefined");
-            emit_with_progress_body(out, &main_method.invoke_expr, convert, true, main_method.progress_convert.as_deref());
+            let convert = main_method
+                .async_convert_v
+                .as_deref()
+                .unwrap_or("undefined");
+            emit_with_progress_body(
+                out,
+                &main_method.invoke_expr,
+                convert,
+                true,
+                main_method.progress_convert.as_deref(),
+            );
         }
         AsyncKind::OperationWithProgress(_, _) => {
             let convert = main_method.async_convert_v.as_deref().unwrap_or("_v");
-            emit_with_progress_body(out, &main_method.invoke_expr, convert, false, main_method.progress_convert.as_deref());
+            emit_with_progress_body(
+                out,
+                &main_method.invoke_expr,
+                convert,
+                false,
+                main_method.progress_convert.as_deref(),
+            );
         }
     }
     out.push_str("    }\n");

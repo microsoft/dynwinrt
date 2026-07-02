@@ -9,7 +9,7 @@ use clap::{Parser, Subcommand};
 
 use dynwinrt_codegen::codegen::python;
 use dynwinrt_codegen::codegen::typescript;
-use dynwinrt_codegen::codegen::{project, render_js, render_dts};
+use dynwinrt_codegen::codegen::{project, render_dts, render_js};
 use dynwinrt_codegen::meta;
 use dynwinrt_codegen::types::TypeMeta;
 use dynwinrt_codegen::xml_doc::DocTable;
@@ -17,10 +17,12 @@ use dynwinrt_codegen::xml_doc::DocTable;
 #[derive(Parser)]
 #[command(name = "dynwinrt-codegen")]
 #[command(about = "Generate typed language bindings from WinRT metadata (.winmd) files")]
-#[command(long_about = "dynwinrt-codegen reads .winmd metadata and generates typed bindings\n\
+#[command(
+    long_about = "dynwinrt-codegen reads .winmd metadata and generates typed bindings\n\
     that use @microsoft/dynwinrt at runtime to call Windows Runtime APIs dynamically.\n\n\
     It auto-detects Windows SDK metadata and discovers sibling .winmd files\n\
-    in the same directory, so you typically only need to point at one file.")]
+    in the same directory, so you typically only need to point at one file."
+)]
 #[command(after_help = "\x1b[1mExamples:\x1b[0m\n\
     # Generate all namespaces from a WinAppSDK metadata folder\n\
     dynwinrt-codegen generate --folder C:\\Users\\you\\.winapp\\packages\\Microsoft.WindowsAppSDK.AI.1.8.39\\metadata\n\n\
@@ -41,7 +43,8 @@ enum Commands {
     Capabilities,
 
     /// Generate bindings from .winmd files
-    #[command(long_about = "Parse .winmd metadata and generate typed binding files.\n\n\
+    #[command(
+        long_about = "Parse .winmd metadata and generate typed binding files.\n\n\
         By default (`--lang js`) the tool emits plain ESM JavaScript (`.js`) plus\n\
         matching ambient TypeScript declarations (`.d.ts`) — no TypeScript compiler\n\
         or SWC step is involved.\n\n\
@@ -49,7 +52,8 @@ enum Commands {
         - Detects Windows.winmd from the Windows SDK install path\n\
         - Discovers sibling .winmd files in the same directory as --winmd\n\
         - Resolves transitive type dependencies across namespaces\n\
-        - Filters out Windows.* system namespaces when --namespace is omitted")]
+        - Filters out Windows.* system namespaces when --namespace is omitted"
+    )]
     Generate {
         /// Path(s) to .winmd metadata files, separated by ';'.
         /// Sibling .winmd files in the same directory are auto-discovered.
@@ -156,7 +160,10 @@ fn run() -> Result<(), String> {
                 if let Ok(entries) = fs::read_dir(dir_path) {
                     for entry in entries.flatten() {
                         let path = entry.path();
-                        if path.extension().map_or(false, |ext| ext.eq_ignore_ascii_case("winmd")) {
+                        if path
+                            .extension()
+                            .map_or(false, |ext| ext.eq_ignore_ascii_case("winmd"))
+                        {
                             eprintln!("Loading winmd from folder: {}", path.display());
                             winmd_parts.push(path.to_string_lossy().to_string());
                         }
@@ -193,8 +200,8 @@ fn run() -> Result<(), String> {
             // Auto-detect Windows SDK metadata only as a fallback. Integrators can
             // pass explicit Windows.* metadata (for example SDK.CPP split winmds)
             // via --ref/--ref-list to keep generation tied to a restored SDK version.
-            let has_explicit_windows_metadata =
-                has_windows_namespace(&winmd_namespaces) || has_windows_namespace(&ref_namespaces_vec);
+            let has_explicit_windows_metadata = has_windows_namespace(&winmd_namespaces)
+                || has_windows_namespace(&ref_namespaces_vec);
             if !has_explicit_windows_metadata {
                 if let Some(sdk_winmd) = find_windows_sdk_winmd() {
                     eprintln!("Auto-detected Windows SDK metadata: {}", sdk_winmd);
@@ -203,7 +210,10 @@ fn run() -> Result<(), String> {
                     );
                     winmd_parts.push(sdk_winmd);
                 } else if folder.is_none() && winmd.is_none() && winmd_list.is_none() {
-                    return Err("Could not auto-detect Windows.winmd. Please provide --winmd or --folder.".into());
+                    return Err(
+                        "Could not auto-detect Windows.winmd. Please provide --winmd or --folder."
+                            .into(),
+                    );
                 }
             }
 
@@ -222,7 +232,11 @@ fn run() -> Result<(), String> {
             let winmd = meta::expand_winmd_paths(&winmd_joined);
 
             // Build XML doc table from sibling .xml files of each winmd.
-            let expanded_parts: Vec<String> = winmd.split(';').filter(|s| !s.is_empty()).map(String::from).collect();
+            let expanded_parts: Vec<String> = winmd
+                .split(';')
+                .filter(|s| !s.is_empty())
+                .map(String::from)
+                .collect();
             let mut doc_table = DocTable::load_from_winmd_paths(&expanded_parts);
             // Load built-in docs as fallback (sibling .xml takes priority).
             doc_table.load_builtin_docs();
@@ -232,8 +246,9 @@ fn run() -> Result<(), String> {
                 project::set_import_name(&import_name);
             }
             if !dry_run {
-                fs::create_dir_all(output_dir)
-                    .map_err(|e| format!("Failed to create output directory '{}': {}", output, e))?;
+                fs::create_dir_all(output_dir).map_err(|e| {
+                    format!("Failed to create output directory '{}': {}", output, e)
+                })?;
             }
 
             if let Some(ref cls_arg) = class_name {
@@ -241,7 +256,11 @@ fn run() -> Result<(), String> {
                 let ns = namespace
                     .as_deref()
                     .ok_or("--namespace is required when --class is specified")?;
-                let class_names: Vec<&str> = cls_arg.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+                let class_names: Vec<&str> = cls_arg
+                    .split(',')
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .collect();
                 let mut classes = Vec::new();
                 for cls in &class_names {
                     match meta::parse_class(&winmd, ns, cls) {
@@ -252,39 +271,70 @@ fn run() -> Result<(), String> {
                         None => return Err(format!("Class {}.{} not found in {}", ns, cls, winmd)),
                     }
                 }
-                generate_for_types(&winmd, output_dir, classes.clone(), Vec::new(), Vec::new(), dry_run, &lang, pyi, &doc_table)?;
+                generate_for_types(
+                    &winmd,
+                    output_dir,
+                    classes.clone(),
+                    Vec::new(),
+                    Vec::new(),
+                    dry_run,
+                    &lang,
+                    pyi,
+                    &doc_table,
+                )?;
 
                 // Write (or append to) the index file for the output directory
                 if !dry_run {
-                    type AppendFn = fn(&str, &[meta::ClassMeta], &[meta::InterfaceMeta], &[TypeMeta]) -> String;
-                    type GenerateFn = fn(&[meta::ClassMeta], &[meta::InterfaceMeta], &[TypeMeta]) -> String;
-                    let (index_name, append_fn, generate_fn): (&str, AppendFn, GenerateFn) = if lang == "py" {
-                        ("__init__.py", python::append_to_index, python::generate_index)
-                    } else {
-                        // For JS lang, we use an in-memory `.ts` index then split into .js + .d.ts.
-                        // We pick a sentinel filename `index.js` to detect presence; `.d.ts` is written alongside.
-                        ("index.js", typescript::append_to_index, typescript::generate_index)
-                    };
+                    type AppendFn =
+                        fn(&str, &[meta::ClassMeta], &[meta::InterfaceMeta], &[TypeMeta]) -> String;
+                    type GenerateFn =
+                        fn(&[meta::ClassMeta], &[meta::InterfaceMeta], &[TypeMeta]) -> String;
+                    let (index_name, append_fn, generate_fn): (&str, AppendFn, GenerateFn) =
+                        if lang == "py" {
+                            (
+                                "__init__.py",
+                                python::append_to_index,
+                                python::generate_index,
+                            )
+                        } else {
+                            // For JS lang, we use an in-memory `.ts` index then split into .js + .d.ts.
+                            // We pick a sentinel filename `index.js` to detect presence; `.d.ts` is written alongside.
+                            (
+                                "index.js",
+                                typescript::append_to_index,
+                                typescript::generate_index,
+                            )
+                        };
                     let index_path = output_dir.join(index_name);
                     let deps = meta::resolve_dependencies(&winmd, &classes, &[], &[]);
                     let mut all_classes = [classes.as_slice(), deps.classes.as_slice()].concat();
                     let mut all_interfaces: Vec<_> = deps.interfaces.clone();
                     let mut all_enums: Vec<_> = deps.enums.clone();
-                    for c in all_classes.iter_mut() { doc_table.apply_to_class(c); }
-                    for i in all_interfaces.iter_mut() { doc_table.apply_to_interface(i); }
-                    for e in all_enums.iter_mut() { doc_table.apply_to_enum(e); }
+                    for c in all_classes.iter_mut() {
+                        doc_table.apply_to_class(c);
+                    }
+                    for i in all_interfaces.iter_mut() {
+                        doc_table.apply_to_interface(i);
+                    }
+                    for e in all_enums.iter_mut() {
+                        doc_table.apply_to_enum(e);
+                    }
                     if lang == "py" {
                         if index_path.exists() {
-                            let existing = fs::read_to_string(&index_path)
-                                .map_err(|e| format!("Failed to read {}: {}", index_path.display(), e))?;
-                            let updated = append_fn(&existing, &all_classes, &all_interfaces, &all_enums);
-                            fs::write(&index_path, &updated)
-                                .map_err(|e| format!("Failed to write {}: {}", index_path.display(), e))?;
+                            let existing = fs::read_to_string(&index_path).map_err(|e| {
+                                format!("Failed to read {}: {}", index_path.display(), e)
+                            })?;
+                            let updated =
+                                append_fn(&existing, &all_classes, &all_interfaces, &all_enums);
+                            fs::write(&index_path, &updated).map_err(|e| {
+                                format!("Failed to write {}: {}", index_path.display(), e)
+                            })?;
                             println!("Updated {}", index_path.display());
                         } else {
                             let new_index = generate_fn(&all_classes, &all_interfaces, &all_enums);
-                            fs::write(&index_path, &new_index)
-                                .map_err(|e| format!("Failed to write {}: {}", index_path.display(), e))?;
+                            fs::write(&index_path, &new_index).map_err(|e| {
+                                format!("Failed to write {}: {}", index_path.display(), e)
+                            })?;
                             println!("Generated {}", index_path.display());
                         }
                     } else {
@@ -294,27 +344,35 @@ fn run() -> Result<(), String> {
                         let js_path = output_dir.join("index.js");
                         let dts_path = output_dir.join("index.d.ts");
                         let index_content = if js_path.exists() {
-                            let existing = fs::read_to_string(&js_path)
-                                .map_err(|e| format!("Failed to read {}: {}", js_path.display(), e))?;
+                            let existing = fs::read_to_string(&js_path).map_err(|e| {
+                                format!("Failed to read {}: {}", js_path.display(), e)
+                            })?;
                             append_fn(&existing, &all_classes, &all_interfaces, &all_enums)
                         } else {
                             generate_fn(&all_classes, &all_interfaces, &all_enums)
                         };
                         fs::write(&js_path, &index_content)
                             .map_err(|e| format!("Failed to write {}: {}", js_path.display(), e))?;
-                        fs::write(&dts_path, &index_content)
-                            .map_err(|e| format!("Failed to write {}: {}", dts_path.display(), e))?;
+                        fs::write(&dts_path, &index_content).map_err(|e| {
+                            format!("Failed to write {}: {}", dts_path.display(), e)
+                        })?;
                         // Clean up any stale `.index.ts` cache from older codegen versions
                         let stale = output_dir.join(".index.ts");
-                        if stale.exists() { let _ = fs::remove_file(&stale); }
+                        if stale.exists() {
+                            let _ = fs::remove_file(&stale);
+                        }
                         println!("Generated {}", js_path.display());
                     }
                     if pyi {
                         let stub_code = dynwinrt_codegen::codegen::python_stub::generate_index_stub(
-                            &all_classes, &all_interfaces, &all_enums);
+                            &all_classes,
+                            &all_interfaces,
+                            &all_enums,
+                        );
                         let stub_path = output_dir.join("__init__.pyi");
-                        fs::write(&stub_path, &stub_code)
-                            .map_err(|e| format!("Failed to write {}: {}", stub_path.display(), e))?;
+                        fs::write(&stub_path, &stub_code).map_err(|e| {
+                            format!("Failed to write {}: {}", stub_path.display(), e)
+                        })?;
                         println!("Generated {}", stub_path.display());
                         let marker = output_dir.join("py.typed");
                         fs::write(&marker, "")
@@ -329,10 +387,15 @@ fn run() -> Result<(), String> {
                         let all_ns = meta::list_namespaces(&winmd);
                         let filtered: Vec<String> = all_ns
                             .into_iter()
-                            .filter(|ns| !ns.starts_with("Windows.") && !ref_namespaces.contains(ns))
+                            .filter(|ns| {
+                                !ns.starts_with("Windows.") && !ref_namespaces.contains(ns)
+                            })
                             .collect();
                         if filtered.is_empty() {
-                            return Err("No non-Windows namespaces found. Use --namespace to specify one.".into());
+                            return Err(
+                                "No non-Windows namespaces found. Use --namespace to specify one."
+                                    .into(),
+                            );
                         }
                         eprintln!("Discovered {} namespace(s) to generate:", filtered.len());
                         for ns in &filtered {
@@ -350,12 +413,19 @@ fn run() -> Result<(), String> {
                     let mut classes = meta::parse_namespace(&winmd, ns);
                     let mut interfaces = meta::parse_interfaces(&winmd, ns);
                     let mut enums = meta::parse_enums(&winmd, ns);
-                    for c in classes.iter_mut() { doc_table.apply_to_class(c); }
-                    for i in interfaces.iter_mut() { doc_table.apply_to_interface(i); }
-                    for e in enums.iter_mut() { doc_table.apply_to_enum(e); }
+                    for c in classes.iter_mut() {
+                        doc_table.apply_to_class(c);
+                    }
+                    for i in interfaces.iter_mut() {
+                        doc_table.apply_to_interface(i);
+                    }
+                    for e in enums.iter_mut() {
+                        doc_table.apply_to_enum(e);
+                    }
 
                     let (nc, ni, ne) = generate_for_types(
-                        &winmd, output_dir, classes, interfaces, enums, dry_run, &lang, pyi, &doc_table,
+                        &winmd, output_dir, classes, interfaces, enums, dry_run, &lang, pyi,
+                        &doc_table,
                     )?;
                     total_classes += nc;
                     total_interfaces += ni;
@@ -363,7 +433,10 @@ fn run() -> Result<(), String> {
                 }
 
                 // Generate index file combining everything
-                if !dry_run && namespaces.len() >= 1 && (total_classes + total_interfaces + total_enums) > 1 {
+                if !dry_run
+                    && namespaces.len() >= 1
+                    && (total_classes + total_interfaces + total_enums) > 1
+                {
                     let mut all_classes = Vec::new();
                     let mut all_interfaces = Vec::new();
                     let mut all_enums = Vec::new();
@@ -372,43 +445,66 @@ fn run() -> Result<(), String> {
                         all_interfaces.extend(meta::parse_interfaces(&winmd, ns));
                         all_enums.extend(meta::parse_enums(&winmd, ns));
                     }
-                    let deps = meta::resolve_dependencies(&winmd, &all_classes, &all_interfaces, &all_enums);
+                    let deps = meta::resolve_dependencies(
+                        &winmd,
+                        &all_classes,
+                        &all_interfaces,
+                        &all_enums,
+                    );
                     all_classes.extend(deps.classes);
                     all_interfaces.extend(deps.interfaces);
                     all_enums.extend(deps.enums);
-                    for c in all_classes.iter_mut() { doc_table.apply_to_class(c); }
-                    for i in all_interfaces.iter_mut() { doc_table.apply_to_interface(i); }
-                    for e in all_enums.iter_mut() { doc_table.apply_to_enum(e); }
+                    for c in all_classes.iter_mut() {
+                        doc_table.apply_to_class(c);
+                    }
+                    for i in all_interfaces.iter_mut() {
+                        doc_table.apply_to_interface(i);
+                    }
+                    for e in all_enums.iter_mut() {
+                        doc_table.apply_to_enum(e);
+                    }
 
                     if lang == "py" {
-                        let index_code = python::generate_index(&all_classes, &all_interfaces, &all_enums);
+                        let index_code =
+                            python::generate_index(&all_classes, &all_interfaces, &all_enums);
                         let index_path = output_dir.join("__init__.py");
-                        fs::write(&index_path, &index_code)
-                            .map_err(|e| format!("Failed to write {}: {}", index_path.display(), e))?;
+                        fs::write(&index_path, &index_code).map_err(|e| {
+                            format!("Failed to write {}: {}", index_path.display(), e)
+                        })?;
                         println!("Generated {}", index_path.display());
                         if pyi {
-                            let stub_code = dynwinrt_codegen::codegen::python_stub::generate_index_stub(
-                                &all_classes, &all_interfaces, &all_enums);
+                            let stub_code =
+                                dynwinrt_codegen::codegen::python_stub::generate_index_stub(
+                                    &all_classes,
+                                    &all_interfaces,
+                                    &all_enums,
+                                );
                             let stub_path = output_dir.join("__init__.pyi");
-                            fs::write(&stub_path, &stub_code)
-                                .map_err(|e| format!("Failed to write {}: {}", stub_path.display(), e))?;
+                            fs::write(&stub_path, &stub_code).map_err(|e| {
+                                format!("Failed to write {}: {}", stub_path.display(), e)
+                            })?;
                             println!("Generated {}", stub_path.display());
                             let marker = output_dir.join("py.typed");
-                            fs::write(&marker, "")
-                                .map_err(|e| format!("Failed to write {}: {}", marker.display(), e))?;
+                            fs::write(&marker, "").map_err(|e| {
+                                format!("Failed to write {}: {}", marker.display(), e)
+                            })?;
                         }
                     } else {
-                        let index_code = typescript::generate_index(&all_classes, &all_interfaces, &all_enums);
+                        let index_code =
+                            typescript::generate_index(&all_classes, &all_interfaces, &all_enums);
                         // Index files are pure re-exports — identical in JS and DTS
                         let js_path = output_dir.join("index.js");
                         let dts_path = output_dir.join("index.d.ts");
                         fs::write(&js_path, &index_code)
                             .map_err(|e| format!("Failed to write {}: {}", js_path.display(), e))?;
-                        fs::write(&dts_path, &index_code)
-                            .map_err(|e| format!("Failed to write {}: {}", dts_path.display(), e))?;
+                        fs::write(&dts_path, &index_code).map_err(|e| {
+                            format!("Failed to write {}: {}", dts_path.display(), e)
+                        })?;
                         // Clean up any stale `.index.ts` cache from older codegen versions
                         let stale = output_dir.join(".index.ts");
-                        if stale.exists() { let _ = fs::remove_file(&stale); }
+                        if stale.exists() {
+                            let _ = fs::remove_file(&stale);
+                        }
                         println!("Generated {}", js_path.display());
                     }
                 }
@@ -421,7 +517,10 @@ fn run() -> Result<(), String> {
                 } else {
                     println!(
                         "Done. {} class(es) + {} interface(s) + {} enum(s) generated in {}",
-                        total_classes, total_interfaces, total_enums, output_dir.display()
+                        total_classes,
+                        total_interfaces,
+                        total_enums,
+                        output_dir.display()
                     );
                 }
             }
@@ -454,37 +553,58 @@ fn generate_for_types(
     // Newly-merged dependency types haven't been doc-annotated yet. Apply doc table
     // uniformly so dependency classes/interfaces/enums carry the same XML docs as
     // the primary types.
-    for c in all_classes.iter_mut() { doc_table.apply_to_class(c); }
-    for i in all_interfaces.iter_mut() { doc_table.apply_to_interface(i); }
-    for e in all_enums.iter_mut() { doc_table.apply_to_enum(e); }
-
-    let mut known_types: HashSet<String> = HashSet::new();
-    for c in &all_classes { known_types.insert(c.name.clone()); }
-    for i in &all_interfaces { known_types.insert(i.name.clone()); }
-    for e in &all_enums {
-        if let TypeMeta::Enum { name, .. } = e { known_types.insert(name.clone()); }
+    for c in all_classes.iter_mut() {
+        doc_table.apply_to_class(c);
+    }
+    for i in all_interfaces.iter_mut() {
+        doc_table.apply_to_interface(i);
+    }
+    for e in all_enums.iter_mut() {
+        doc_table.apply_to_enum(e);
     }
 
-    let delegate_type_names: HashSet<String> = all_interfaces.iter()
-        .filter(|i| i.methods.iter().any(|m| m.name == ".ctor") && i.methods.iter().any(|m| m.name == "Invoke"))
+    let mut known_types: HashSet<String> = HashSet::new();
+    for c in &all_classes {
+        known_types.insert(c.name.clone());
+    }
+    for i in &all_interfaces {
+        known_types.insert(i.name.clone());
+    }
+    for e in &all_enums {
+        if let TypeMeta::Enum { name, .. } = e {
+            known_types.insert(name.clone());
+        }
+    }
+
+    let delegate_type_names: HashSet<String> = all_interfaces
+        .iter()
+        .filter(|i| {
+            i.methods.iter().any(|m| m.name == ".ctor")
+                && i.methods.iter().any(|m| m.name == "Invoke")
+        })
         .map(|i| i.name.clone())
         .collect();
 
     let mut req_iface_count: HashMap<String, (&meta::InterfaceMeta, usize)> = HashMap::new();
     for class in &all_classes {
         for ri in &class.required_interfaces {
-            if ri.iid.is_empty() { continue; }
-            req_iface_count.entry(ri.iid.clone())
+            if ri.iid.is_empty() {
+                continue;
+            }
+            req_iface_count
+                .entry(ri.iid.clone())
                 .and_modify(|(_, c)| *c += 1)
                 .or_insert((ri, 1));
         }
     }
-    let shared_iids: HashSet<String> = req_iface_count.iter()
+    let shared_iids: HashSet<String> = req_iface_count
+        .iter()
         .filter(|(_, (_, count))| *count >= 2)
         .map(|(iid, _)| iid.clone())
         .collect();
 
-    let shared_interfaces: Vec<meta::InterfaceMeta> = req_iface_count.iter()
+    let shared_interfaces: Vec<meta::InterfaceMeta> = req_iface_count
+        .iter()
         .filter(|(_, (_, count))| *count >= 2)
         .map(|(_, (iface, _))| (*iface).clone())
         .collect();
@@ -492,13 +612,36 @@ fn generate_for_types(
         known_types.insert(iface.name.clone());
     }
 
-    let (delegate_signatures, delegate_sig_refs, delegate_param_wraps) = project::build_delegate_signatures(&all_interfaces, &delegate_type_names, &known_types);
+    let (delegate_signatures, delegate_sig_refs, delegate_param_wraps) =
+        project::build_delegate_signatures(&all_interfaces, &delegate_type_names, &known_types);
 
     if !dry_run {
         if lang == "py" {
-            generate_py_files(output_dir, &all_classes, &all_interfaces, &all_enums, &shared_interfaces, &known_types, &delegate_type_names, &shared_iids, pyi)?;
+            generate_py_files(
+                output_dir,
+                &all_classes,
+                &all_interfaces,
+                &all_enums,
+                &shared_interfaces,
+                &known_types,
+                &delegate_type_names,
+                &shared_iids,
+                pyi,
+            )?;
         } else {
-            generate_js_files(output_dir, &all_classes, &all_interfaces, &all_enums, &shared_interfaces, &known_types, &delegate_type_names, &shared_iids, &delegate_signatures, &delegate_sig_refs, &delegate_param_wraps)?;
+            generate_js_files(
+                output_dir,
+                &all_classes,
+                &all_interfaces,
+                &all_enums,
+                &shared_interfaces,
+                &known_types,
+                &delegate_type_names,
+                &shared_iids,
+                &delegate_signatures,
+                &delegate_sig_refs,
+                &delegate_param_wraps,
+            )?;
         }
     }
 
@@ -528,20 +671,36 @@ fn generate_js_files(
     };
 
     for iface in shared_interfaces {
-        let projected = project::project_interface(iface, known_types, delegate_type_names, delegate_sigs, delegate_sig_refs, delegate_param_wraps);
+        let projected = project::project_interface(
+            iface,
+            known_types,
+            delegate_type_names,
+            delegate_sigs,
+            delegate_sig_refs,
+            delegate_param_wraps,
+        );
         let js = render_js::render(&projected);
         let dts = render_dts::render(&projected);
         emit(&iface.name, &js, &dts)?;
     }
     for iface in all_interfaces {
-        let projected = project::project_interface(iface, known_types, delegate_type_names, delegate_sigs, delegate_sig_refs, delegate_param_wraps);
+        let projected = project::project_interface(
+            iface,
+            known_types,
+            delegate_type_names,
+            delegate_sigs,
+            delegate_sig_refs,
+            delegate_param_wraps,
+        );
         let js = render_js::render(&projected);
         let dts = render_dts::render(&projected);
         emit(&iface.name, &js, &dts)?;
     }
     for en in all_enums {
         if let TypeMeta::Enum { name, .. } = en {
-            if name.contains('<') { continue; } // skip CLR projection types
+            if name.contains('<') {
+                continue;
+            } // skip CLR projection types
             if let Some(projected) = project::project_enum(en) {
                 let js = render_js::render(&projected);
                 let dts = render_dts::render(&projected);
@@ -550,7 +709,15 @@ fn generate_js_files(
         }
     }
     for class in all_classes {
-        let projected = project::project_class(class, known_types, delegate_type_names, shared_iids, delegate_sigs, delegate_sig_refs, delegate_param_wraps);
+        let projected = project::project_class(
+            class,
+            known_types,
+            delegate_type_names,
+            shared_iids,
+            delegate_sigs,
+            delegate_sig_refs,
+            delegate_param_wraps,
+        );
         let js = render_js::render(&projected);
         let dts = render_dts::render(&projected);
         emit(&class.name, &js, &dts)?;
@@ -578,7 +745,8 @@ fn generate_py_files(
         write_file(&filepath, &code)?;
         println!("Generated shared {}", filepath.display());
         if pyi {
-            let stub = python_stub::generate_interface_stub(iface, known_types, delegate_type_names);
+            let stub =
+                python_stub::generate_interface_stub(iface, known_types, delegate_type_names);
             let p = output_dir.join(format!("{}.pyi", to_snake_case_filename(&iface.name)));
             write_file(&p, &stub)?;
         }
@@ -589,7 +757,8 @@ fn generate_py_files(
         write_file(&filepath, &code)?;
         println!("Generated {}", filepath.display());
         if pyi {
-            let stub = python_stub::generate_interface_stub(iface, known_types, delegate_type_names);
+            let stub =
+                python_stub::generate_interface_stub(iface, known_types, delegate_type_names);
             let p = output_dir.join(format!("{}.pyi", to_snake_case_filename(&iface.name)));
             write_file(&p, &stub)?;
         }
@@ -615,7 +784,12 @@ fn generate_py_files(
         write_file(&filepath, &code)?;
         println!("Generated {}", filepath.display());
         if pyi {
-            let stub = python_stub::generate_class_stub(class, known_types, delegate_type_names, shared_iids);
+            let stub = python_stub::generate_class_stub(
+                class,
+                known_types,
+                delegate_type_names,
+                shared_iids,
+            );
             let p = output_dir.join(format!("{}.pyi", to_snake_case_filename(&class.name)));
             write_file(&p, &stub)?;
         }
@@ -629,8 +803,7 @@ fn generate_py_files(
 
 /// Write content to a file with a descriptive error message on failure.
 fn write_file(path: &Path, content: &str) -> Result<(), String> {
-    fs::write(path, content)
-        .map_err(|e| format!("Failed to write {}: {}", path.display(), e))
+    fs::write(path, content).map_err(|e| format!("Failed to write {}: {}", path.display(), e))
 }
 
 fn print_capabilities() {

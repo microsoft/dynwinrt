@@ -156,7 +156,9 @@ pub fn format_pydoc(doc: &DocText, indent: &str) -> String {
             out.push('\n');
         }
         // remove trailing newline to keep sections tight; we'll add one back if needed
-        if out.ends_with('\n') { out.pop(); }
+        if out.ends_with('\n') {
+            out.pop();
+        }
     }
 
     if let Some(r) = doc.returns {
@@ -196,14 +198,20 @@ mod tests {
 
     #[test]
     fn jsdoc_summary_only() {
-        let d = DocText { summary: Some("Hi."), ..Default::default() };
+        let d = DocText {
+            summary: Some("Hi."),
+            ..Default::default()
+        };
         let s = format_jsdoc(&d, "  ");
         assert_eq!(s, "  /**\n   * Hi.\n   */\n");
     }
 
     #[test]
     fn jsdoc_escapes_terminator() {
-        let d = DocText { summary: Some("use a*/b"), ..Default::default() };
+        let d = DocText {
+            summary: Some("use a*/b"),
+            ..Default::default()
+        };
         let s = format_jsdoc(&d, "");
         assert!(s.contains("a*\\/b"), "got: {}", s);
         assert!(!s.contains("a*/b"));
@@ -211,7 +219,10 @@ mod tests {
 
     #[test]
     fn pydoc_escapes_triple_quote() {
-        let d = DocText { summary: Some("see \"\"\" end"), ..Default::default() };
+        let d = DocText {
+            summary: Some("see \"\"\" end"),
+            ..Default::default()
+        };
         let s = format_pydoc(&d, "    ");
         assert!(s.contains("\\\"\\\"\\\""), "got: {}", s);
     }

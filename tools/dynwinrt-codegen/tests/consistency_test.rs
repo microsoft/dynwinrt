@@ -11,8 +11,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use dynwinrt_codegen::codegen::{project, render_js, render_dts};
 use dynwinrt_codegen::codegen::projected::{ProjectedFile, ProjectedMember};
+use dynwinrt_codegen::codegen::{project, render_dts, render_js};
 use dynwinrt_codegen::meta;
 use dynwinrt_codegen::types::TypeMeta;
 
@@ -24,9 +24,7 @@ const WINDOWS_WINMD: &str =
 /// Extract exported class names from generated code.
 fn extract_class_names(code: &str) -> Vec<String> {
     let re = Regex::new(r"(?m)^export\s+(?:declare\s+)?class\s+(\w+)").unwrap();
-    re.captures_iter(code)
-        .map(|c| c[1].to_string())
-        .collect()
+    re.captures_iter(code).map(|c| c[1].to_string()).collect()
 }
 
 /// Extract member names from a class body (methods, getters, setters, static).
@@ -84,12 +82,8 @@ fn extract_members(code: &str, class_name: &str) -> Vec<String> {
 
 /// Extract exported enum/const names.
 fn extract_exports(code: &str) -> Vec<String> {
-    let re = Regex::new(
-        r"(?m)^export\s+(?:declare\s+)?(?:const|function|enum)\s+(\w+)"
-    ).unwrap();
-    re.captures_iter(code)
-        .map(|c| c[1].to_string())
-        .collect()
+    let re = Regex::new(r"(?m)^export\s+(?:declare\s+)?(?:const|function|enum)\s+(\w+)").unwrap();
+    re.captures_iter(code).map(|c| c[1].to_string()).collect()
 }
 
 /// Helper: build known_types, delegate_type_names, shared_iids from parsed metadata.
@@ -139,7 +133,8 @@ fn setup_metadata(
         .map(|i| i.name.clone())
         .collect();
     let shared_iids: HashSet<String> = HashSet::new();
-    let (delegate_sigs, delegate_sig_refs, delegate_param_wraps) = project::build_delegate_signatures(&all_interfaces, &delegate_type_names, &known_types);
+    let (delegate_sigs, delegate_sig_refs, delegate_param_wraps) =
+        project::build_delegate_signatures(&all_interfaces, &delegate_type_names, &known_types);
 
     Some((
         all_classes,
@@ -196,15 +191,15 @@ fn assert_js_dts_consistent(js: &str, dts: &str, type_name: &str, js_only_names:
     // JS may have members intentionally hidden from DTS (constructor, as, from, _obj).
     // Methods with DynWinRtArray params/return are js_only (hidden from DTS).
     // But DTS must not have members absent from JS.
-    let intentionally_hidden = |name: &str| -> bool {
-        name == "constructor" || name == "as" || name == "from"
-    };
+    let intentionally_hidden =
+        |name: &str| -> bool { name == "constructor" || name == "as" || name == "from" };
     for cls in &js_classes {
         let js_members = extract_members(js, cls);
         let dts_members = extract_members(dts, cls);
         let js_set: HashSet<_> = js_members.iter().collect();
         let dts_set: HashSet<_> = dts_members.iter().collect();
-        let in_js_only: Vec<_> = js_set.difference(&dts_set)
+        let in_js_only: Vec<_> = js_set
+            .difference(&dts_set)
             .filter(|n| !intentionally_hidden(n) && !js_only_names.contains(n.as_str()))
             .collect();
         let in_dts_only: Vec<_> = dts_set.difference(&js_set).collect();
@@ -252,24 +247,48 @@ fn assert_js_dts_consistent(js: &str, dts: &str, type_name: &str, js_only_names:
 /// Test structural consistency for Uri (class with many methods, properties, IStringable).
 #[test]
 fn js_dts_structural_consistency_uri() {
-    let (all_classes, all_interfaces, _, known_types, delegate_type_names, shared_iids, delegate_sigs, delegate_sig_refs, delegate_param_wraps) =
-        match setup_metadata(WINDOWS_WINMD, "Windows.Foundation", "Uri") {
-            Some(v) => v,
-            None => {
-                eprintln!("Skipping: Windows.winmd not found");
-                return;
-            }
-        };
+    let (
+        all_classes,
+        all_interfaces,
+        _,
+        known_types,
+        delegate_type_names,
+        shared_iids,
+        delegate_sigs,
+        delegate_sig_refs,
+        delegate_param_wraps,
+    ) = match setup_metadata(WINDOWS_WINMD, "Windows.Foundation", "Uri") {
+        Some(v) => v,
+        None => {
+            eprintln!("Skipping: Windows.winmd not found");
+            return;
+        }
+    };
 
     for class in &all_classes {
-        let projected = project::project_class(class, &known_types, &delegate_type_names, &shared_iids, &delegate_sigs, &delegate_sig_refs, &delegate_param_wraps);
+        let projected = project::project_class(
+            class,
+            &known_types,
+            &delegate_type_names,
+            &shared_iids,
+            &delegate_sigs,
+            &delegate_sig_refs,
+            &delegate_param_wraps,
+        );
         let js = render_js::render(&projected);
         let dts = render_dts::render(&projected);
         let js_only = extract_js_only_names(&projected);
         assert_js_dts_consistent(&js, &dts, &class.name, &js_only);
     }
     for iface in &all_interfaces {
-        let projected = project::project_interface(iface, &known_types, &delegate_type_names, &delegate_sigs, &delegate_sig_refs, &delegate_param_wraps);
+        let projected = project::project_interface(
+            iface,
+            &known_types,
+            &delegate_type_names,
+            &delegate_sigs,
+            &delegate_sig_refs,
+            &delegate_param_wraps,
+        );
         let js = render_js::render(&projected);
         let dts = render_dts::render(&projected);
         let js_only = extract_js_only_names(&projected);
@@ -280,24 +299,48 @@ fn js_dts_structural_consistency_uri() {
 /// Test structural consistency for StorageFile (has events, async, required interfaces).
 #[test]
 fn js_dts_structural_consistency_storage_file() {
-    let (all_classes, all_interfaces, _, known_types, delegate_type_names, shared_iids, delegate_sigs, delegate_sig_refs, delegate_param_wraps) =
-        match setup_metadata(WINDOWS_WINMD, "Windows.Storage", "StorageFile") {
-            Some(v) => v,
-            None => {
-                eprintln!("Skipping: Windows.winmd not found");
-                return;
-            }
-        };
+    let (
+        all_classes,
+        all_interfaces,
+        _,
+        known_types,
+        delegate_type_names,
+        shared_iids,
+        delegate_sigs,
+        delegate_sig_refs,
+        delegate_param_wraps,
+    ) = match setup_metadata(WINDOWS_WINMD, "Windows.Storage", "StorageFile") {
+        Some(v) => v,
+        None => {
+            eprintln!("Skipping: Windows.winmd not found");
+            return;
+        }
+    };
 
     for class in &all_classes {
-        let projected = project::project_class(class, &known_types, &delegate_type_names, &shared_iids, &delegate_sigs, &delegate_sig_refs, &delegate_param_wraps);
+        let projected = project::project_class(
+            class,
+            &known_types,
+            &delegate_type_names,
+            &shared_iids,
+            &delegate_sigs,
+            &delegate_sig_refs,
+            &delegate_param_wraps,
+        );
         let js = render_js::render(&projected);
         let dts = render_dts::render(&projected);
         let js_only = extract_js_only_names(&projected);
         assert_js_dts_consistent(&js, &dts, &class.name, &js_only);
     }
     for iface in &all_interfaces {
-        let projected = project::project_interface(iface, &known_types, &delegate_type_names, &delegate_sigs, &delegate_sig_refs, &delegate_param_wraps);
+        let projected = project::project_interface(
+            iface,
+            &known_types,
+            &delegate_type_names,
+            &delegate_sigs,
+            &delegate_sig_refs,
+            &delegate_param_wraps,
+        );
         let js = render_js::render(&projected);
         let dts = render_dts::render(&projected);
         let js_only = extract_js_only_names(&projected);
@@ -322,18 +365,34 @@ fn js_dts_structural_consistency_user_watcher() {
     let all_interfaces = deps.interfaces;
 
     let mut known_types: HashSet<String> = HashSet::new();
-    for c in &all_classes { known_types.insert(c.name.clone()); }
-    for i in &all_interfaces { known_types.insert(i.name.clone()); }
+    for c in &all_classes {
+        known_types.insert(c.name.clone());
+    }
+    for i in &all_interfaces {
+        known_types.insert(i.name.clone());
+    }
     let delegate_type_names: HashSet<String> = all_interfaces
         .iter()
-        .filter(|i| i.methods.iter().any(|m| m.name == ".ctor") && i.methods.iter().any(|m| m.name == "Invoke"))
+        .filter(|i| {
+            i.methods.iter().any(|m| m.name == ".ctor")
+                && i.methods.iter().any(|m| m.name == "Invoke")
+        })
         .map(|i| i.name.clone())
         .collect();
     let shared_iids: HashSet<String> = HashSet::new();
-    let (delegate_sigs, delegate_sig_refs, delegate_param_wraps) = project::build_delegate_signatures(&all_interfaces, &delegate_type_names, &known_types);
+    let (delegate_sigs, delegate_sig_refs, delegate_param_wraps) =
+        project::build_delegate_signatures(&all_interfaces, &delegate_type_names, &known_types);
 
     for class in &all_classes {
-        let projected = project::project_class(class, &known_types, &delegate_type_names, &shared_iids, &delegate_sigs, &delegate_sig_refs, &delegate_param_wraps);
+        let projected = project::project_class(
+            class,
+            &known_types,
+            &delegate_type_names,
+            &shared_iids,
+            &delegate_sigs,
+            &delegate_sig_refs,
+            &delegate_param_wraps,
+        );
         let js = render_js::render(&projected);
         let dts = render_dts::render(&projected);
         let js_only = extract_js_only_names(&projected);

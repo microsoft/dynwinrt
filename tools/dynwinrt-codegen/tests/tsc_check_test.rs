@@ -33,10 +33,8 @@ fn generated_dts_passes_tsc_no_emit() {
     }
 
     let exe = env!("CARGO_BIN_EXE_dynwinrt-codegen");
-    let tmp = std::env::temp_dir().join(format!(
-        "dynwinrt-codegen-tsc-check-{}",
-        std::process::id()
-    ));
+    let tmp =
+        std::env::temp_dir().join(format!("dynwinrt-codegen-tsc-check-{}", std::process::id()));
     let _ = fs::remove_dir_all(&tmp);
     fs::create_dir_all(&tmp).expect("create tmp dir");
 
@@ -44,9 +42,12 @@ fn generated_dts_passes_tsc_no_emit() {
     let status = Command::new(exe)
         .args([
             "generate",
-            "--namespace", "Windows.Foundation",
-            "--class-name", "Uri",
-            "--lang", "js",
+            "--namespace",
+            "Windows.Foundation",
+            "--class-name",
+            "Uri",
+            "--lang",
+            "js",
             "--output",
         ])
         .arg(&tmp)
@@ -58,19 +59,28 @@ fn generated_dts_passes_tsc_no_emit() {
     let status2 = Command::new(exe)
         .args([
             "generate",
-            "--namespace", "Windows.Storage",
-            "--class-name", "StorageFile",
-            "--lang", "js",
+            "--namespace",
+            "Windows.Storage",
+            "--class-name",
+            "StorageFile",
+            "--lang",
+            "js",
             "--output",
         ])
         .arg(&tmp)
         .status()
         .expect("spawn dynwinrt-codegen");
-    assert!(status2.success(), "codegen failed (StorageFile): {:?}", status2);
+    assert!(
+        status2.success(),
+        "codegen failed (StorageFile): {:?}",
+        status2
+    );
 
     // Write a minimal tsconfig.json for tsc --noEmit
     let tsconfig = tmp.join("tsconfig.json");
-    fs::write(&tsconfig, r#"{
+    fs::write(
+        &tsconfig,
+        r#"{
   "compilerOptions": {
     "target": "ES2022",
     "module": "Node16",
@@ -81,13 +91,18 @@ fn generated_dts_passes_tsc_no_emit() {
     "types": []
   },
   "include": ["*.d.ts"]
-}"#).expect("write tsconfig");
+}"#,
+    )
+    .expect("write tsconfig");
 
     // Write a stub for @microsoft/dynwinrt types (the real package isn't installed here)
     let node_modules = tmp.join("node_modules").join("@microsoft").join("dynwinrt");
     fs::create_dir_all(&node_modules).expect("create node_modules stub");
-    fs::write(node_modules.join("package.json"), r#"{"name":"@microsoft/dynwinrt","version":"0.0.0","types":"index.d.ts"}"#)
-        .expect("write stub package.json");
+    fs::write(
+        node_modules.join("package.json"),
+        r#"{"name":"@microsoft/dynwinrt","version":"0.0.0","types":"index.d.ts"}"#,
+    )
+    .expect("write stub package.json");
     fs::write(node_modules.join("index.d.ts"), r#"
 export declare class DynWinRtType {
     static registerInterface(name: string, iid: WinGuid): DynWinRtType;
@@ -161,7 +176,14 @@ export declare class WinGuid {
 
     // Run tsc --noEmit (use cmd /c npx since npx is a .cmd on Windows)
     let tsc_output = Command::new("cmd")
-        .args(["/c", "npx", "tsc", "--noEmit", "-p", tsconfig.to_str().unwrap()])
+        .args([
+            "/c",
+            "npx",
+            "tsc",
+            "--noEmit",
+            "-p",
+            tsconfig.to_str().unwrap(),
+        ])
         .current_dir(&tmp)
         .output()
         .expect("spawn tsc");
@@ -174,6 +196,7 @@ export declare class WinGuid {
     assert!(
         tsc_output.status.success(),
         "tsc --noEmit failed on generated .d.ts files!\nstdout:\n{}\nstderr:\n{}",
-        stdout, stderr
+        stdout,
+        stderr
     );
 }

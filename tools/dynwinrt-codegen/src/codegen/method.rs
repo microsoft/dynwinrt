@@ -12,17 +12,23 @@ use crate::types::TypeMeta;
 fn ts_param_type(typ: &TypeMeta) -> String {
     match typ {
         TypeMeta::Bool => "boolean".to_string(),
-        TypeMeta::I8 | TypeMeta::U8 | TypeMeta::I16 | TypeMeta::U16 | TypeMeta::Char16
-        | TypeMeta::I32 | TypeMeta::U32
-        | TypeMeta::F32 | TypeMeta::F64 => {
-            "number".to_string()
-        }
+        TypeMeta::I8
+        | TypeMeta::U8
+        | TypeMeta::I16
+        | TypeMeta::U16
+        | TypeMeta::Char16
+        | TypeMeta::I32
+        | TypeMeta::U32
+        | TypeMeta::F32
+        | TypeMeta::F64 => "number".to_string(),
         TypeMeta::I64 | TypeMeta::U64 => "bigint".to_string(),
         TypeMeta::String | TypeMeta::Guid => "string".to_string(),
         TypeMeta::RuntimeClass { name, .. }
         | TypeMeta::Enum { name, .. }
         | TypeMeta::Interface { name, .. } => name.clone(),
-        TypeMeta::Parameterized { name, args, .. } => crate::meta::make_parameterized_name(name, args),
+        TypeMeta::Parameterized { name, args, .. } => {
+            crate::meta::make_parameterized_name(name, args)
+        }
         TypeMeta::Array(_) => "DynWinRtArray".to_string(),
         TypeMeta::Object => "unknown".to_string(),
         TypeMeta::Delegate { .. } => "DynWinRtValue".to_string(),
@@ -36,7 +42,11 @@ pub(crate) fn ts_param_type_safe(typ: &TypeMeta, known: &HashSet<String>) -> Str
     match typ {
         TypeMeta::RuntimeClass { name, .. }
         | TypeMeta::Enum { name, .. }
-        | TypeMeta::Interface { name, .. } if !known.contains(name) => "DynWinRtValue".to_string(),
+        | TypeMeta::Interface { name, .. }
+            if !known.contains(name) =>
+        {
+            "DynWinRtValue".to_string()
+        }
         _ => ts_param_type(typ),
     }
 }
@@ -54,7 +64,10 @@ pub(crate) fn ts_param_type_dts(typ: &TypeMeta, known: &HashSet<String>) -> Stri
         let elem_ts = ts_param_type_safe(inner, known);
         return format!("{}[]", elem_ts);
     }
-    if let TypeMeta::Parameterized { name, piid, args, .. } = typ {
+    if let TypeMeta::Parameterized {
+        name, piid, args, ..
+    } = typ
+    {
         let base = ts_param_type_safe(typ, known);
         // IVector<T>, IVectorView<T>, IIterable<T> → also accept T[]
         if is_vector_like_piid(piid) || is_vector_like_name(name) {
@@ -98,23 +111,43 @@ fn is_map_like_name(name: &str) -> bool {
     name == "IMap" || name == "IMapView"
 }
 
-pub(crate) fn ts_return_type_safe(typ: Option<&TypeMeta>, is_async: bool, known: &HashSet<String>) -> String {
+pub(crate) fn ts_return_type_safe(
+    typ: Option<&TypeMeta>,
+    is_async: bool,
+    known: &HashSet<String>,
+) -> String {
     match typ {
         Some(TypeMeta::RuntimeClass { name, .. })
         | Some(TypeMeta::Enum { name, .. })
-        | Some(TypeMeta::Interface { name, .. }) if !known.contains(name) => {
-            if is_async { "Promise<DynWinRtValue>".to_string() } else { "DynWinRtValue".to_string() }
+        | Some(TypeMeta::Interface { name, .. })
+            if !known.contains(name) =>
+        {
+            if is_async {
+                "Promise<DynWinRtValue>".to_string()
+            } else {
+                "DynWinRtValue".to_string()
+            }
         }
         Some(TypeMeta::AsyncOperation(inner)) => {
-            format!("Promise<{}>", ts_return_type_safe(Some(inner), false, known))
+            format!(
+                "Promise<{}>",
+                ts_return_type_safe(Some(inner), false, known)
+            )
         }
         Some(TypeMeta::AsyncOperationWithProgress(result, _)) => {
             let inner = ts_return_type_safe(Some(result), false, known);
-            format!("Promise<{i}> & {{ progress(cb: (value: unknown) => void): Promise<{i}> & {{ progress: any; toPromise(): Promise<{i}>; cancel(): void; }}; toPromise(): Promise<{i}>; cancel(): void; }}", i = inner)
+            format!(
+                "Promise<{i}> & {{ progress(cb: (value: unknown) => void): Promise<{i}> & {{ progress: any; toPromise(): Promise<{i}>; cancel(): void; }}; toPromise(): Promise<{i}>; cancel(): void; }}",
+                i = inner
+            )
         }
         Some(TypeMeta::Array(inner)) => {
             let s = ts_array_element_type(inner, known);
-            if is_async { format!("Promise<{}>", s) } else { s }
+            if is_async {
+                format!("Promise<{}>", s)
+            } else {
+                s
+            }
         }
         _ => ts_return_type(typ, is_async),
     }
@@ -124,29 +157,56 @@ fn ts_return_type(typ: Option<&TypeMeta>, is_async: bool) -> String {
     let inner = match typ {
         Some(TypeMeta::String) | Some(TypeMeta::Guid) => "string",
         Some(TypeMeta::Bool) => "boolean",
-        Some(TypeMeta::I8 | TypeMeta::U8 | TypeMeta::I16 | TypeMeta::U16 | TypeMeta::Char16
-            | TypeMeta::I32 | TypeMeta::U32
-            | TypeMeta::F32 | TypeMeta::F64) => "number",
+        Some(
+            TypeMeta::I8
+            | TypeMeta::U8
+            | TypeMeta::I16
+            | TypeMeta::U16
+            | TypeMeta::Char16
+            | TypeMeta::I32
+            | TypeMeta::U32
+            | TypeMeta::F32
+            | TypeMeta::F64,
+        ) => "number",
         Some(TypeMeta::I64 | TypeMeta::U64) => "bigint",
         Some(TypeMeta::RuntimeClass { name, .. }) => {
-            return if is_async { format!("Promise<{}>", name) } else { name.clone() }
+            return if is_async {
+                format!("Promise<{}>", name)
+            } else {
+                name.clone()
+            };
         }
         Some(TypeMeta::Enum { name, .. }) => {
-            return if is_async { format!("Promise<{}>", name) } else { name.clone() }
+            return if is_async {
+                format!("Promise<{}>", name)
+            } else {
+                name.clone()
+            };
         }
         Some(TypeMeta::Interface { name, .. }) => {
-            return if is_async { format!("Promise<{}>", name) } else { name.clone() }
+            return if is_async {
+                format!("Promise<{}>", name)
+            } else {
+                name.clone()
+            };
         }
         Some(TypeMeta::Parameterized { name, args, .. }) => {
             let s = crate::meta::make_parameterized_name(name, args);
-            return if is_async { format!("Promise<{}>", s) } else { s };
+            return if is_async {
+                format!("Promise<{}>", s)
+            } else {
+                s
+            };
         }
         Some(TypeMeta::AsyncOperation(inner)) => {
             return format!("Promise<{}>", ts_return_type(Some(inner), false));
         }
         Some(TypeMeta::AsyncOperationWithProgress(result, _)) => {
             let inner = ts_return_type(Some(result), false);
-            return format!("Promise<{i}> & {{ progress(cb: (value: unknown) => void): Promise<{i}> & {{ progress: any; toPromise(): Promise<{i}>; cancel(): void; }}; toPromise(): Promise<{i}>; cancel(): void; }}", i = inner);
+            return format!(
+                "Promise<{i}> & {{ progress(cb: (value: unknown) => void): Promise<{i}> & {{ progress: any; toPromise(): Promise<{i}>; cancel(): void; }}; toPromise(): Promise<{i}>; cancel(): void; }}",
+                i = inner
+            );
         }
         Some(TypeMeta::AsyncAction) => return "Promise<void>".to_string(),
         Some(TypeMeta::AsyncActionWithProgress(_)) => {
@@ -154,17 +214,29 @@ fn ts_return_type(typ: Option<&TypeMeta>, is_async: bool) -> String {
         }
         Some(TypeMeta::Array(inner)) => {
             let s = ts_array_element_type(inner, &HashSet::new());
-            return if is_async { format!("Promise<{}>", s) } else { s };
+            return if is_async {
+                format!("Promise<{}>", s)
+            } else {
+                s
+            };
         }
         Some(TypeMeta::Object) => "unknown",
         Some(TypeMeta::Delegate { .. }) => "DynWinRtValue",
         Some(TypeMeta::Struct { name, .. }) if name == "HResult" => "number",
         Some(TypeMeta::Struct { name, .. }) => {
-            return if is_async { format!("Promise<{}>", name) } else { name.clone() }
+            return if is_async {
+                format!("Promise<{}>", name)
+            } else {
+                name.clone()
+            };
         }
         None => "void",
     };
-    if is_async { format!("Promise<{}>", inner) } else { inner.to_string() }
+    if is_async {
+        format!("Promise<{}>", inner)
+    } else {
+        inner.to_string()
+    }
 }
 
 /// TypeScript return type annotation for an array element type.
@@ -174,9 +246,15 @@ pub(crate) fn ts_array_element_type(inner: &TypeMeta, known_types: &HashSet<Stri
         TypeMeta::String | TypeMeta::Guid => "string[]".to_string(),
         // byte[] returns: Node Buffer (Uint8Array subclass) — see convert_array_return.
         TypeMeta::U8 => "Buffer".to_string(),
-        TypeMeta::I8 | TypeMeta::I16 | TypeMeta::U16 | TypeMeta::Char16
-        | TypeMeta::I32 | TypeMeta::U32
-        | TypeMeta::F32 | TypeMeta::F64 | TypeMeta::Enum { .. } => "number[]".to_string(),
+        TypeMeta::I8
+        | TypeMeta::I16
+        | TypeMeta::U16
+        | TypeMeta::Char16
+        | TypeMeta::I32
+        | TypeMeta::U32
+        | TypeMeta::F32
+        | TypeMeta::F64
+        | TypeMeta::Enum { .. } => "number[]".to_string(),
         TypeMeta::I64 | TypeMeta::U64 => "bigint[]".to_string(),
         TypeMeta::Struct { name, .. } if name == "HResult" => "number[]".to_string(),
         TypeMeta::Struct { name, .. } => format!("{}[]", name),

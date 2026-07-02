@@ -32,14 +32,20 @@ pub fn render(file: &ProjectedFile) -> String {
     // Emit helper type for AsyncWithProgress if any method uses it
     if file_uses_with_progress(file) {
         body.push_str("/**\n");
-        body.push_str(" * A WinRT async operation that supports progress reporting and cancellation.\n");
+        body.push_str(
+            " * A WinRT async operation that supports progress reporting and cancellation.\n",
+        );
         body.push_str(" *\n");
         body.push_str(" * - `await op` — wait for the final result\n");
-        body.push_str(" * - `op.progress(cb)` — receive incremental progress updates (chainable)\n");
+        body.push_str(
+            " * - `op.progress(cb)` — receive incremental progress updates (chainable)\n",
+        );
         body.push_str(" * - `op.cancel()` — cancel the underlying WinRT operation\n");
         body.push_str(" */\n");
         body.push_str("type WinRTAsyncWithProgress<T, P = unknown> = Promise<T> & {\n");
-        body.push_str("    /** Register a callback for progress updates. Returns `this` for chaining. */\n");
+        body.push_str(
+            "    /** Register a callback for progress updates. Returns `this` for chaining. */\n",
+        );
         body.push_str("    progress(cb: (value: P) => void): WinRTAsyncWithProgress<T, P>;\n");
         body.push_str("    /** Get the underlying Promise (equivalent to awaiting directly). */\n");
         body.push_str("    toPromise(): Promise<T>;\n");
@@ -79,15 +85,20 @@ pub fn render(file: &ProjectedFile) -> String {
     // Now emit only the imports whose symbols are actually used in the body
     let mut seen_symbols: std::collections::HashSet<String> = std::collections::HashSet::new();
     for imp in &file.imports {
-        if imp.runtime_only { continue; }
-        let used: Vec<&str> = imp.symbols.iter()
+        if imp.runtime_only {
+            continue;
+        }
+        let used: Vec<&str> = imp
+            .symbols
+            .iter()
             .filter(|s| symbol_used_in_dts(s, &body) && seen_symbols.insert(s.to_string()))
             .map(|s| s.as_str())
             .collect();
         if !used.is_empty() {
             out.push_str(&format!(
                 "import {{ {} }} from '{}';\n",
-                used.join(", "), imp.from
+                used.join(", "),
+                imp.from
             ));
         }
     }
@@ -103,15 +114,20 @@ fn render_delegate_dts(out: &mut String, file: &ProjectedFile) {
     // Import only non-runtime imports — deduplicate
     let mut seen_symbols: std::collections::HashSet<String> = std::collections::HashSet::new();
     for imp in &file.imports {
-        if imp.runtime_only { continue; }
-        let deduped: Vec<&str> = imp.symbols.iter()
+        if imp.runtime_only {
+            continue;
+        }
+        let deduped: Vec<&str> = imp
+            .symbols
+            .iter()
             .filter(|s| seen_symbols.insert(s.to_string()))
             .map(|s| s.as_str())
             .collect();
         if !deduped.is_empty() {
             out.push_str(&format!(
                 "import {{ {} }} from '{}';\n",
-                deduped.join(", "), imp.from
+                deduped.join(", "),
+                imp.from
             ));
         }
     }
@@ -121,9 +137,15 @@ fn render_delegate_dts(out: &mut String, file: &ProjectedFile) {
         if let Some(ref cb_type) = d.callback_type {
             out.push_str(&format!("export type {} = {};\n", d.name, cb_type));
         }
-        out.push_str(&format!("export declare const IID_{}: {};\n", d.name, d.iid_ts_type));
+        out.push_str(&format!(
+            "export declare const IID_{}: {};\n",
+            d.name, d.iid_ts_type
+        ));
         if d.has_param_types {
-            out.push_str(&format!("export declare const {}_PARAM_TYPES: DynWinRtType[];\n", d.name));
+            out.push_str(&format!(
+                "export declare const {}_PARAM_TYPES: DynWinRtType[];\n",
+                d.name
+            ));
         }
     }
 }
@@ -137,15 +159,30 @@ fn render_struct_dts(out: &mut String, s: &ProjectedStruct) {
     out.push_str("}\n");
 
     // unpack function signature
-    out.push_str(&format!("/** Convert a WinRT struct value into a `{}` object. */\n", s.name));
-    out.push_str(&format!("export declare function unpack{}(v: DynWinRtValue): {};\n", s.name, s.name));
+    out.push_str(&format!(
+        "/** Convert a WinRT struct value into a `{}` object. */\n",
+        s.name
+    ));
+    out.push_str(&format!(
+        "export declare function unpack{}(v: DynWinRtValue): {};\n",
+        s.name, s.name
+    ));
 
     // Type constant
-    out.push_str(&format!("export declare const {}_Type: DynWinRtType;\n", s.name));
+    out.push_str(&format!(
+        "export declare const {}_Type: DynWinRtType;\n",
+        s.name
+    ));
 
     // pack function signature
-    out.push_str(&format!("/** Convert a `{}` object into a WinRT struct value. */\n", s.name));
-    out.push_str(&format!("export declare function pack{}(v: {}): DynWinRtStruct;\n", s.name, s.name));
+    out.push_str(&format!(
+        "/** Convert a `{}` object into a WinRT struct value. */\n",
+        s.name
+    ));
+    out.push_str(&format!(
+        "export declare function pack{}(v: {}): DynWinRtStruct;\n",
+        s.name, s.name
+    ));
 }
 
 fn render_class_dts(out: &mut String, class: &ProjectedClass) {
@@ -155,27 +192,55 @@ fn render_class_dts(out: &mut String, class: &ProjectedClass) {
     out.push_str(&format!("export declare class {} {{\n", class.name));
 
     // Collect method names from main class for overload merging
-    let main_method_names: std::collections::HashSet<String> = class.members.iter()
-        .filter_map(|m| if let ProjectedMember::Method(method) = m { Some(method.name.clone()) } else { None })
+    let main_method_names: std::collections::HashSet<String> = class
+        .members
+        .iter()
+        .filter_map(|m| {
+            if let ProjectedMember::Method(method) = m {
+                Some(method.name.clone())
+            } else {
+                None
+            }
+        })
         .collect();
 
     // Collect overloads from required interfaces that share a name with a main class method.
     // Skip if class.members already contains the same overload (same name + same param list).
-    let main_method_sigs: std::collections::HashSet<String> = class.members.iter()
-        .filter_map(|m| if let ProjectedMember::Method(method) = m {
-            let sig: String = method.params.iter().map(|p| format!("{}:{}", p.name, p.ts_type)).collect::<Vec<_>>().join(",");
-            Some(format!("{}|{}", method.name, sig))
-        } else { None })
+    let main_method_sigs: std::collections::HashSet<String> = class
+        .members
+        .iter()
+        .filter_map(|m| {
+            if let ProjectedMember::Method(method) = m {
+                let sig: String = method
+                    .params
+                    .iter()
+                    .map(|p| format!("{}:{}", p.name, p.ts_type))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                Some(format!("{}|{}", method.name, sig))
+            } else {
+                None
+            }
+        })
         .collect();
-    let mut extra_overloads: std::collections::HashMap<String, Vec<&ProjectedMethod>> = std::collections::HashMap::new();
+    let mut extra_overloads: std::collections::HashMap<String, Vec<&ProjectedMethod>> =
+        std::collections::HashMap::new();
     for ri in &class.required_ifaces {
         for member in &ri.members {
             if let ProjectedMember::Method(method) = member {
                 if main_method_names.contains(&method.name) && !method.js_only {
-                    let sig: String = method.params.iter().map(|p| format!("{}:{}", p.name, p.ts_type)).collect::<Vec<_>>().join(",");
+                    let sig: String = method
+                        .params
+                        .iter()
+                        .map(|p| format!("{}:{}", p.name, p.ts_type))
+                        .collect::<Vec<_>>()
+                        .join(",");
                     let key = format!("{}|{}", method.name, sig);
                     if !main_method_sigs.contains(&key) {
-                        extra_overloads.entry(method.name.clone()).or_default().push(method);
+                        extra_overloads
+                            .entry(method.name.clone())
+                            .or_default()
+                            .push(method);
                     }
                 }
             }
@@ -183,13 +248,22 @@ fn render_class_dts(out: &mut String, class: &ProjectedClass) {
     }
 
     // Track emitted method signatures to avoid duplicates
-    let mut emitted_method_sigs: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut emitted_method_sigs: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
 
     for member in &class.members {
         // Deduplicate method overloads by full signature
         if let ProjectedMember::Method(method) = member {
-            let sig_key = format!("{}|{}", method.name,
-                method.params.iter().map(|p| format!("{}:{}", p.name, p.ts_type)).collect::<Vec<_>>().join(","));
+            let sig_key = format!(
+                "{}|{}",
+                method.name,
+                method
+                    .params
+                    .iter()
+                    .map(|p| format!("{}:{}", p.name, p.ts_type))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            );
             if !emitted_method_sigs.insert(sig_key) {
                 continue; // skip duplicate
             }
@@ -202,7 +276,9 @@ fn render_class_dts(out: &mut String, class: &ProjectedClass) {
                     if let Some(ref doc) = overload.doc {
                         out.push_str(&render_tsdoc(doc, "    "));
                     }
-                    let params_str = overload.params.iter()
+                    let params_str = overload
+                        .params
+                        .iter()
                         .map(|p| {
                             if p.optional {
                                 format!("{}?: {}", p.name, p.ts_type)
@@ -210,11 +286,16 @@ fn render_class_dts(out: &mut String, class: &ProjectedClass) {
                                 format!("{}: {}", p.name, p.ts_type)
                             }
                         })
-                        .collect::<Vec<_>>().join(", ");
+                        .collect::<Vec<_>>()
+                        .join(", ");
                     let static_kw = if overload.is_static { "static " } else { "" };
                     let ret_type = match &overload.async_kind {
-                        AsyncKind::OperationWithProgress(inner, progress) => format!("WinRTAsyncWithProgress<{}, {}>", inner, progress),
-                        AsyncKind::ActionWithProgress(progress) => format!("WinRTAsyncWithProgress<void, {}>", progress),
+                        AsyncKind::OperationWithProgress(inner, progress) => {
+                            format!("WinRTAsyncWithProgress<{}, {}>", inner, progress)
+                        }
+                        AsyncKind::ActionWithProgress(progress) => {
+                            format!("WinRTAsyncWithProgress<void, {}>", progress)
+                        }
                         _ => overload.return_type.clone(),
                     };
                     out.push_str(&format!(
@@ -233,7 +314,10 @@ fn render_iface_dts(out: &mut String, iface: &ProjectedIface, file: &ProjectedFi
     // IID const (only exported ones)
     for iid in &file.iid_consts {
         if iid.exported {
-            out.push_str(&format!("export declare const {}: {};\n\n", iid.name, iid.ts_type));
+            out.push_str(&format!(
+                "export declare const {}: {};\n\n",
+                iid.name, iid.ts_type
+            ));
         }
     }
 
@@ -250,10 +334,7 @@ fn render_iface_dts(out: &mut String, iface: &ProjectedIface, file: &ProjectedFi
     if iface.has_static_from {
         out.push('\n');
         out.push_str("    /** @internal Cast a raw WinRT object to this interface. */\n");
-        out.push_str(&format!(
-            "    static from(obj: any): {};\n",
-            iface.name
-        ));
+        out.push_str(&format!("    static from(obj: any): {};\n", iface.name));
     }
 
     // Members
@@ -270,10 +351,7 @@ fn render_required_iface_dts(out: &mut String, ri: &ProjectedRequiredIface) {
     // _obj and constructor are internal
     out.push_str("    private constructor();\n\n");
     out.push_str("    /** @internal Cast a raw WinRT object to this interface. */\n");
-    out.push_str(&format!(
-        "    static from(obj: any): {};\n",
-        ri.name
-    ));
+    out.push_str(&format!("    static from(obj: any): {};\n", ri.name));
     for member in &ri.members {
         out.push('\n');
         render_member_dts(out, member);
@@ -294,18 +372,28 @@ fn render_member_dts(out: &mut String, member: &ProjectedMember) {
             let static_kw = if prop.is_static { "static " } else { "" };
             if !prop.getter_expr.is_empty() || prop.setter_line.is_none() {
                 // We have at least a getter — emit "get name(): Type;"
-                out.push_str(&format!("    {}get {}(): {};\n", static_kw, prop.name, prop.ts_type));
+                out.push_str(&format!(
+                    "    {}get {}(): {};\n",
+                    static_kw, prop.name, prop.ts_type
+                ));
             }
             if prop.setter_line.is_some() {
-                out.push_str(&format!("    {}set {}(value: {});\n", static_kw, prop.name, prop.ts_type));
+                out.push_str(&format!(
+                    "    {}set {}(value: {});\n",
+                    static_kw, prop.name, prop.ts_type
+                ));
             }
         }
         ProjectedMember::Method(method) => {
-            if method.js_only { return; }
+            if method.js_only {
+                return;
+            }
             if let Some(ref doc) = method.doc {
                 out.push_str(&render_tsdoc(doc, "    "));
             }
-            let params_str = method.params.iter()
+            let params_str = method
+                .params
+                .iter()
                 .map(|p| {
                     if p.optional {
                         format!("{}?: {}", p.name, p.ts_type)
@@ -313,12 +401,17 @@ fn render_member_dts(out: &mut String, member: &ProjectedMember) {
                         format!("{}: {}", p.name, p.ts_type)
                     }
                 })
-                .collect::<Vec<_>>().join(", ");
+                .collect::<Vec<_>>()
+                .join(", ");
             let static_kw = if method.is_static { "static " } else { "" };
             // No `async` keyword in ambient declarations — return type already has Promise<T>
             let ret_type = match &method.async_kind {
-                AsyncKind::OperationWithProgress(inner, progress) => format!("WinRTAsyncWithProgress<{}, {}>", inner, progress),
-                AsyncKind::ActionWithProgress(progress) => format!("WinRTAsyncWithProgress<void, {}>", progress),
+                AsyncKind::OperationWithProgress(inner, progress) => {
+                    format!("WinRTAsyncWithProgress<{}, {}>", inner, progress)
+                }
+                AsyncKind::ActionWithProgress(progress) => {
+                    format!("WinRTAsyncWithProgress<void, {}>", progress)
+                }
                 _ => method.return_type.clone(),
             };
             out.push_str(&format!(
@@ -333,7 +426,10 @@ fn render_member_dts(out: &mut String, member: &ProjectedMember) {
                     out.push_str(&render_tsdoc(doc, "    "));
                 } else {
                     // Synthesize event doc
-                    let event_name = event.subscribe_name.strip_prefix("on").unwrap_or(&event.subscribe_name);
+                    let event_name = event
+                        .subscribe_name
+                        .strip_prefix("on")
+                        .unwrap_or(&event.subscribe_name);
                     out.push_str(&format!(
                         "    /** Register a handler for the `{}` event. Call the returned function to unsubscribe. */\n",
                         event_name
@@ -344,7 +440,13 @@ fn render_member_dts(out: &mut String, member: &ProjectedMember) {
                     event.subscribe_name, event.callback_type
                 ));
                 // onceXxx — fire-and-forget version
-                let once_name = format!("once{}", event.subscribe_name.strip_prefix("on").unwrap_or(&event.subscribe_name));
+                let once_name = format!(
+                    "once{}",
+                    event
+                        .subscribe_name
+                        .strip_prefix("on")
+                        .unwrap_or(&event.subscribe_name)
+                );
                 out.push_str(&format!(
                     "    /** Like `{}` but automatically unsubscribes after the first invocation. */\n",
                     event.subscribe_name
@@ -355,47 +457,54 @@ fn render_member_dts(out: &mut String, member: &ProjectedMember) {
                 ));
                 // offXxx — manual unsubscribe with raw token
                 if event.remove_vtable_index.is_some() {
-                    let event_name = event.subscribe_name.strip_prefix("on").unwrap_or(&event.subscribe_name);
+                    let event_name = event
+                        .subscribe_name
+                        .strip_prefix("on")
+                        .unwrap_or(&event.subscribe_name);
                     let off_name = format!("off{}", event_name);
                     out.push_str(&format!(
                         "    /** Unsubscribe from the `{}` event using a raw registration token. */\n",
                         event_name
                     ));
-                    out.push_str(&format!(
-                        "    {}(token: unknown): void;\n",
-                        off_name
-                    ));
+                    out.push_str(&format!("    {}(token: unknown): void;\n", off_name));
                 }
             }
         }
-        ProjectedMember::Symbol(symbol) => {
-            match &symbol.kind {
-                SymbolKind::ToString { .. } => {
-                    out.push_str("    toString(): string;\n");
-                }
-                SymbolKind::ToPrimitive => {
-                    out.push_str("\n    [Symbol.toPrimitive](_hint: string): string;\n");
-                }
-                SymbolKind::ToStringTag { .. } => {
-                    out.push_str("\n    get [Symbol.toStringTag](): string;\n");
-                }
-                SymbolKind::Iterator { element_type, .. } => {
-                    out.push_str(&format!("\n    [Symbol.iterator](): IterableIterator<{}>;\n", element_type));
-                }
-                SymbolKind::CollectionLength => {
-                    out.push_str("\n    get length(): number;\n");
-                }
-                SymbolKind::CollectionAt { element_type } => {
-                    out.push_str(&format!("\n    at(index: number): {} | undefined;\n", element_type));
-                }
-                SymbolKind::CollectionToArray { element_type } => {
-                    out.push_str(&format!("\n    toArray(): {}[];\n", element_type));
-                }
-                SymbolKind::IteratorNext { element_type } => {
-                    out.push_str(&format!("\n    next(): IteratorResult<{}>;\n", element_type));
-                }
+        ProjectedMember::Symbol(symbol) => match &symbol.kind {
+            SymbolKind::ToString { .. } => {
+                out.push_str("    toString(): string;\n");
             }
-        }
+            SymbolKind::ToPrimitive => {
+                out.push_str("\n    [Symbol.toPrimitive](_hint: string): string;\n");
+            }
+            SymbolKind::ToStringTag { .. } => {
+                out.push_str("\n    get [Symbol.toStringTag](): string;\n");
+            }
+            SymbolKind::Iterator { element_type, .. } => {
+                out.push_str(&format!(
+                    "\n    [Symbol.iterator](): IterableIterator<{}>;\n",
+                    element_type
+                ));
+            }
+            SymbolKind::CollectionLength => {
+                out.push_str("\n    get length(): number;\n");
+            }
+            SymbolKind::CollectionAt { element_type } => {
+                out.push_str(&format!(
+                    "\n    at(index: number): {} | undefined;\n",
+                    element_type
+                ));
+            }
+            SymbolKind::CollectionToArray { element_type } => {
+                out.push_str(&format!("\n    toArray(): {}[];\n", element_type));
+            }
+            SymbolKind::IteratorNext { element_type } => {
+                out.push_str(&format!(
+                    "\n    next(): IteratorResult<{}>;\n",
+                    element_type
+                ));
+            }
+        },
         ProjectedMember::AsCast => {
             out.push_str("    /** Cast this object to another WinRT interface. */\n");
             out.push_str("    as<T>(InterfaceClass: { from(obj: any): T }): T;\n");
@@ -413,14 +522,25 @@ fn render_enum_dts(out: &mut String, en: &ProjectedEnum) {
     }
     // Emit as a const object + companion type — matches the JS `Object.freeze({...})` runtime shape.
     // Avoids TS `enum` reverse-mapping mismatch and `const enum` isolatedModules issues.
-    out.push_str(&format!("export type {} = (typeof {})[keyof typeof {}];\n", en.name, en.name, en.name));
+    out.push_str(&format!(
+        "export type {} = (typeof {})[keyof typeof {}];\n",
+        en.name, en.name, en.name
+    ));
     out.push_str(&format!("export declare const {}: {{\n", en.name));
     for member in &en.members {
         if let Some(ref doc) = member.doc {
-            let di = DocInfo { summary: Some(doc.clone()), deprecated: None, returns: None, params: vec![] };
+            let di = DocInfo {
+                summary: Some(doc.clone()),
+                deprecated: None,
+                returns: None,
+                params: vec![],
+            };
             out.push_str(&render_tsdoc(&di, "    "));
         }
-        out.push_str(&format!("    readonly {}: {};\n", member.name, member.value));
+        out.push_str(&format!(
+            "    readonly {}: {};\n",
+            member.name, member.value
+        ));
     }
     out.push_str("};\n");
 }
@@ -434,7 +554,11 @@ fn render_tsdoc(doc: &DocInfo, indent: &str) -> String {
         summary: doc.summary.as_deref(),
         deprecated: doc.deprecated.as_deref(),
         returns: doc.returns.as_deref(),
-        params: doc.params.iter().map(|(n, d)| (n.as_str(), d.as_str())).collect(),
+        params: doc
+            .params
+            .iter()
+            .map(|(n, d)| (n.as_str(), d.as_str()))
+            .collect(),
     };
     super::xml_text::format_jsdoc(&doc_text, indent)
 }
@@ -442,18 +566,26 @@ fn render_tsdoc(doc: &DocInfo, indent: &str) -> String {
 /// Check if any method in the file uses AsyncWithProgress.
 fn file_uses_with_progress(file: &ProjectedFile) -> bool {
     let check_members = |members: &[ProjectedMember]| -> bool {
-        members.iter().any(|m| matches!(m,
+        members.iter().any(|m| {
+            matches!(m,
             ProjectedMember::Method(pm) if matches!(pm.async_kind,
-                AsyncKind::ActionWithProgress(_) | AsyncKind::OperationWithProgress(_, _))))
+                AsyncKind::ActionWithProgress(_) | AsyncKind::OperationWithProgress(_, _)))
+        })
     };
     for class in &file.classes {
-        if check_members(&class.members) { return true; }
+        if check_members(&class.members) {
+            return true;
+        }
         for ri in &class.required_ifaces {
-            if check_members(&ri.members) { return true; }
+            if check_members(&ri.members) {
+                return true;
+            }
         }
     }
     for iface in &file.ifaces {
-        if check_members(&iface.members) { return true; }
+        if check_members(&iface.members) {
+            return true;
+        }
     }
     false
 }
@@ -469,7 +601,11 @@ fn symbol_used_in_dts(symbol: &str, body: &str) -> bool {
         for (i, _) in body.match_indices(symbol) {
             let before = if i > 0 { body.as_bytes()[i - 1] } else { b' ' };
             let after_idx = i + symbol.len();
-            let after = if after_idx < body.len() { body.as_bytes()[after_idx] } else { b' ' };
+            let after = if after_idx < body.len() {
+                body.as_bytes()[after_idx]
+            } else {
+                b' '
+            };
             let before_ok = !before.is_ascii_alphanumeric() && before != b'_';
             let after_ok = !after.is_ascii_alphanumeric() && after != b'_';
             if before_ok && after_ok {

@@ -13,7 +13,7 @@ use std::path::Path;
 
 use dynwinrt_codegen::codegen::common::to_snake_case_filename;
 use dynwinrt_codegen::codegen::python_stub;
-use dynwinrt_codegen::codegen::{project, render_js, render_dts};
+use dynwinrt_codegen::codegen::{project, render_dts, render_js};
 use dynwinrt_codegen::meta;
 use dynwinrt_codegen::types::TypeMeta;
 
@@ -39,31 +39,57 @@ fn snapshot_uri_class() {
     let all_enums = deps.enums;
 
     let mut known_types: HashSet<String> = HashSet::new();
-    for c in &all_classes { known_types.insert(c.name.clone()); }
-    for i in &all_interfaces { known_types.insert(i.name.clone()); }
+    for c in &all_classes {
+        known_types.insert(c.name.clone());
+    }
+    for i in &all_interfaces {
+        known_types.insert(i.name.clone());
+    }
     for e in &all_enums {
-        if let TypeMeta::Enum { name, .. } = e { known_types.insert(name.clone()); }
+        if let TypeMeta::Enum { name, .. } = e {
+            known_types.insert(name.clone());
+        }
     }
 
-    let delegate_type_names: HashSet<String> = all_interfaces.iter()
-        .filter(|i| i.methods.iter().any(|m| m.name == ".ctor") && i.methods.iter().any(|m| m.name == "Invoke"))
+    let delegate_type_names: HashSet<String> = all_interfaces
+        .iter()
+        .filter(|i| {
+            i.methods.iter().any(|m| m.name == ".ctor")
+                && i.methods.iter().any(|m| m.name == "Invoke")
+        })
         .map(|i| i.name.clone())
         .collect();
 
     let shared_iids: HashSet<String> = HashSet::new();
-    let (delegate_sigs, delegate_sig_refs, delegate_param_wraps) = project::build_delegate_signatures(&all_interfaces, &delegate_type_names, &known_types);
+    let (delegate_sigs, delegate_sig_refs, delegate_param_wraps) =
+        project::build_delegate_signatures(&all_interfaces, &delegate_type_names, &known_types);
 
     // Generate all files into a map (.js + .d.ts pair per type)
     let mut generated: HashMap<String, String> = HashMap::new();
     for iface in &all_interfaces {
-        let projected = project::project_interface(iface, &known_types, &delegate_type_names, &delegate_sigs, &delegate_sig_refs, &delegate_param_wraps);
+        let projected = project::project_interface(
+            iface,
+            &known_types,
+            &delegate_type_names,
+            &delegate_sigs,
+            &delegate_sig_refs,
+            &delegate_param_wraps,
+        );
         let js = render_js::render(&projected);
         let dts = render_dts::render(&projected);
         generated.insert(format!("{}.js", iface.name), js);
         generated.insert(format!("{}.d.ts", iface.name), dts);
     }
     for class in &all_classes {
-        let projected = project::project_class(class, &known_types, &delegate_type_names, &shared_iids, &delegate_sigs, &delegate_sig_refs, &delegate_param_wraps);
+        let projected = project::project_class(
+            class,
+            &known_types,
+            &delegate_type_names,
+            &shared_iids,
+            &delegate_sigs,
+            &delegate_sig_refs,
+            &delegate_param_wraps,
+        );
         let js = render_js::render(&projected);
         let dts = render_dts::render(&projected);
         generated.insert(format!("{}.js", class.name), js);
@@ -72,7 +98,11 @@ fn snapshot_uri_class() {
 
     // Compare against snapshots
     let snapshot_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots/uri");
-    assert!(snapshot_dir.exists(), "Snapshot directory not found: {}", snapshot_dir.display());
+    assert!(
+        snapshot_dir.exists(),
+        "Snapshot directory not found: {}",
+        snapshot_dir.display()
+    );
 
     let mut mismatches = Vec::new();
     for (filename, actual) in &generated {
@@ -81,8 +111,9 @@ fn snapshot_uri_class() {
             mismatches.push(format!("  missing snapshot: {}", filename));
             continue;
         }
-        let expected = fs::read_to_string(&snapshot_path)
-            .unwrap_or_else(|e| panic!("Failed to read snapshot {}: {}", snapshot_path.display(), e));
+        let expected = fs::read_to_string(&snapshot_path).unwrap_or_else(|e| {
+            panic!("Failed to read snapshot {}: {}", snapshot_path.display(), e)
+        });
         if *actual != expected {
             mismatches.push(format!("  differs: {}", filename));
         }
@@ -92,7 +123,8 @@ fn snapshot_uri_class() {
     if let Ok(entries) = fs::read_dir(&snapshot_dir) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
-            if (name.ends_with(".js") || name.ends_with(".d.ts")) && !generated.contains_key(&name) {
+            if (name.ends_with(".js") || name.ends_with(".d.ts")) && !generated.contains_key(&name)
+            {
                 mismatches.push(format!("  extra snapshot not generated: {}", name));
             }
         }
@@ -107,7 +139,6 @@ fn snapshot_uri_class() {
         );
     }
 }
-
 
 /// Generate .pyi stubs for Uri and compare against committed snapshots.
 #[test]
@@ -128,13 +159,23 @@ fn snapshot_uri_pyi_class() {
     let all_enums = deps.enums;
 
     let mut known_types: HashSet<String> = HashSet::new();
-    for c in &all_classes { known_types.insert(c.name.clone()); }
-    for i in &all_interfaces { known_types.insert(i.name.clone()); }
-    for e in &all_enums {
-        if let TypeMeta::Enum { name, .. } = e { known_types.insert(name.clone()); }
+    for c in &all_classes {
+        known_types.insert(c.name.clone());
     }
-    let delegate_type_names: HashSet<String> = all_interfaces.iter()
-        .filter(|i| i.methods.iter().any(|m| m.name == ".ctor") && i.methods.iter().any(|m| m.name == "Invoke"))
+    for i in &all_interfaces {
+        known_types.insert(i.name.clone());
+    }
+    for e in &all_enums {
+        if let TypeMeta::Enum { name, .. } = e {
+            known_types.insert(name.clone());
+        }
+    }
+    let delegate_type_names: HashSet<String> = all_interfaces
+        .iter()
+        .filter(|i| {
+            i.methods.iter().any(|m| m.name == ".ctor")
+                && i.methods.iter().any(|m| m.name == "Invoke")
+        })
         .map(|i| i.name.clone())
         .collect();
     let shared_iids: HashSet<String> = HashSet::new();
@@ -145,14 +186,23 @@ fn snapshot_uri_pyi_class() {
         generated.insert(format!("{}.pyi", to_snake_case_filename(&iface.name)), code);
     }
     for class in &all_classes {
-        let code = python_stub::generate_class_stub(class, &known_types, &delegate_type_names, &shared_iids);
+        let code = python_stub::generate_class_stub(
+            class,
+            &known_types,
+            &delegate_type_names,
+            &shared_iids,
+        );
         generated.insert(format!("{}.pyi", to_snake_case_filename(&class.name)), code);
     }
     let index = python_stub::generate_index_stub(&all_classes, &all_interfaces, &all_enums);
     generated.insert("__init__.pyi".to_string(), index);
 
     let snapshot_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots/uri_pyi");
-    assert!(snapshot_dir.exists(), "Snapshot directory not found: {}", snapshot_dir.display());
+    assert!(
+        snapshot_dir.exists(),
+        "Snapshot directory not found: {}",
+        snapshot_dir.display()
+    );
 
     let mut mismatches = Vec::new();
     for (filename, actual) in &generated {
@@ -199,13 +249,23 @@ fn snapshot_uri_py_class() {
     let all_enums = deps.enums;
 
     let mut known_types: HashSet<String> = HashSet::new();
-    for c in &all_classes { known_types.insert(c.name.clone()); }
-    for i in &all_interfaces { known_types.insert(i.name.clone()); }
-    for e in &all_enums {
-        if let TypeMeta::Enum { name, .. } = e { known_types.insert(name.clone()); }
+    for c in &all_classes {
+        known_types.insert(c.name.clone());
     }
-    let delegate_type_names: HashSet<String> = all_interfaces.iter()
-        .filter(|i| i.methods.iter().any(|m| m.name == ".ctor") && i.methods.iter().any(|m| m.name == "Invoke"))
+    for i in &all_interfaces {
+        known_types.insert(i.name.clone());
+    }
+    for e in &all_enums {
+        if let TypeMeta::Enum { name, .. } = e {
+            known_types.insert(name.clone());
+        }
+    }
+    let delegate_type_names: HashSet<String> = all_interfaces
+        .iter()
+        .filter(|i| {
+            i.methods.iter().any(|m| m.name == ".ctor")
+                && i.methods.iter().any(|m| m.name == "Invoke")
+        })
         .map(|i| i.name.clone())
         .collect();
     let shared_iids: HashSet<String> = HashSet::new();
@@ -223,7 +283,11 @@ fn snapshot_uri_py_class() {
     generated.insert("__init__.py".to_string(), index);
 
     let snapshot_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots/uri_py");
-    assert!(snapshot_dir.exists(), "Snapshot directory not found: {}", snapshot_dir.display());
+    assert!(
+        snapshot_dir.exists(),
+        "Snapshot directory not found: {}",
+        snapshot_dir.display()
+    );
 
     let mut mismatches = Vec::new();
     for (filename, actual) in &generated {
@@ -267,7 +331,10 @@ fn ts_async_methods_emit_abort_signal_scaffolding() {
     // ---- DataWriter: plain IAsyncOperation<T> ------------------------------
     let dw_classes = match meta::parse_class(winmd, "Windows.Storage.Streams", "DataWriter") {
         Some(c) => vec![c],
-        None => { eprintln!("Skipping: Windows.winmd not found"); return; }
+        None => {
+            eprintln!("Skipping: Windows.winmd not found");
+            return;
+        }
     };
     let dw_deps = meta::resolve_dependencies(winmd, &dw_classes, &[], &[]);
     let mut dw_all_classes = dw_classes;
@@ -276,38 +343,74 @@ fn ts_async_methods_emit_abort_signal_scaffolding() {
     let dw_enums = dw_deps.enums;
 
     let mut known: HashSet<String> = HashSet::new();
-    for c in &dw_all_classes { known.insert(c.name.clone()); }
-    for i in &dw_ifaces { known.insert(i.name.clone()); }
-    for e in &dw_enums {
-        if let TypeMeta::Enum { name, .. } = e { known.insert(name.clone()); }
+    for c in &dw_all_classes {
+        known.insert(c.name.clone());
     }
-    let delegates: HashSet<String> = dw_ifaces.iter()
-        .filter(|i| i.methods.iter().any(|m| m.name == ".ctor") && i.methods.iter().any(|m| m.name == "Invoke"))
-        .map(|i| i.name.clone()).collect();
+    for i in &dw_ifaces {
+        known.insert(i.name.clone());
+    }
+    for e in &dw_enums {
+        if let TypeMeta::Enum { name, .. } = e {
+            known.insert(name.clone());
+        }
+    }
+    let delegates: HashSet<String> = dw_ifaces
+        .iter()
+        .filter(|i| {
+            i.methods.iter().any(|m| m.name == ".ctor")
+                && i.methods.iter().any(|m| m.name == "Invoke")
+        })
+        .map(|i| i.name.clone())
+        .collect();
     let shared: HashSet<String> = HashSet::new();
-    let (dw_delegate_sigs, dw_delegate_sig_refs, dw_delegate_param_wraps) = project::build_delegate_signatures(&dw_ifaces, &delegates, &known);
+    let (dw_delegate_sigs, dw_delegate_sig_refs, dw_delegate_param_wraps) =
+        project::build_delegate_signatures(&dw_ifaces, &delegates, &known);
 
-    let dw_class = dw_all_classes.iter().find(|c| c.name == "DataWriter").expect("DataWriter class");
-    let dw_projected = project::project_class(dw_class, &known, &delegates, &shared, &dw_delegate_sigs, &dw_delegate_sig_refs, &dw_delegate_param_wraps);
+    let dw_class = dw_all_classes
+        .iter()
+        .find(|c| c.name == "DataWriter")
+        .expect("DataWriter class");
+    let dw_projected = project::project_class(
+        dw_class,
+        &known,
+        &delegates,
+        &shared,
+        &dw_delegate_sigs,
+        &dw_delegate_sig_refs,
+        &dw_delegate_param_wraps,
+    );
     let dw_code = render_js::render(&dw_projected);
 
     // The generated method must accept signal and wire it to cancel().
-    assert!(dw_code.contains("storeAsync(signal)"),
+    assert!(
+        dw_code.contains("storeAsync(signal)"),
         "Expected `storeAsync(signal)` in DataWriter.js, got:\n{}",
-        dw_code);
-    assert!(dw_code.contains("if (signal?.aborted) throw signal.reason;"),
-        "Expected fast-path `if (signal?.aborted) throw signal.reason;` in DataWriter.js");
-    assert!(dw_code.contains("_op.cancel()"),
-        "Expected `_op.cancel()` invocation in DataWriter.js");
-    assert!(dw_code.contains("addEventListener('abort'"),
-        "Expected `addEventListener('abort'` listener registration in DataWriter.js");
-    assert!(dw_code.contains("removeEventListener('abort'"),
-        "Expected `removeEventListener('abort'` cleanup in DataWriter.js");
+        dw_code
+    );
+    assert!(
+        dw_code.contains("if (signal?.aborted) throw signal.reason;"),
+        "Expected fast-path `if (signal?.aborted) throw signal.reason;` in DataWriter.js"
+    );
+    assert!(
+        dw_code.contains("_op.cancel()"),
+        "Expected `_op.cancel()` invocation in DataWriter.js"
+    );
+    assert!(
+        dw_code.contains("addEventListener('abort'"),
+        "Expected `addEventListener('abort'` listener registration in DataWriter.js"
+    );
+    assert!(
+        dw_code.contains("removeEventListener('abort'"),
+        "Expected `removeEventListener('abort'` cleanup in DataWriter.js"
+    );
 
     // ---- HttpClient: IAsyncOperationWithProgress<T,P> ----------------------
     let hc_classes = match meta::parse_class(winmd, "Windows.Web.Http", "HttpClient") {
         Some(c) => vec![c],
-        None => { eprintln!("Skipping HttpClient portion: not found"); return; }
+        None => {
+            eprintln!("Skipping HttpClient portion: not found");
+            return;
+        }
     };
     let hc_deps = meta::resolve_dependencies(winmd, &hc_classes, &[], &[]);
     let mut hc_all_classes = hc_classes;
@@ -316,102 +419,209 @@ fn ts_async_methods_emit_abort_signal_scaffolding() {
     let hc_enums = hc_deps.enums;
 
     let mut hc_known: HashSet<String> = HashSet::new();
-    for c in &hc_all_classes { hc_known.insert(c.name.clone()); }
-    for i in &hc_ifaces { hc_known.insert(i.name.clone()); }
-    for e in &hc_enums {
-        if let TypeMeta::Enum { name, .. } = e { hc_known.insert(name.clone()); }
+    for c in &hc_all_classes {
+        hc_known.insert(c.name.clone());
     }
-    let hc_delegates: HashSet<String> = hc_ifaces.iter()
-        .filter(|i| i.methods.iter().any(|m| m.name == ".ctor") && i.methods.iter().any(|m| m.name == "Invoke"))
-        .map(|i| i.name.clone()).collect();
-    let (hc_delegate_sigs, hc_delegate_sig_refs, hc_delegate_param_wraps) = project::build_delegate_signatures(&hc_ifaces, &hc_delegates, &hc_known);
+    for i in &hc_ifaces {
+        hc_known.insert(i.name.clone());
+    }
+    for e in &hc_enums {
+        if let TypeMeta::Enum { name, .. } = e {
+            hc_known.insert(name.clone());
+        }
+    }
+    let hc_delegates: HashSet<String> = hc_ifaces
+        .iter()
+        .filter(|i| {
+            i.methods.iter().any(|m| m.name == ".ctor")
+                && i.methods.iter().any(|m| m.name == "Invoke")
+        })
+        .map(|i| i.name.clone())
+        .collect();
+    let (hc_delegate_sigs, hc_delegate_sig_refs, hc_delegate_param_wraps) =
+        project::build_delegate_signatures(&hc_ifaces, &hc_delegates, &hc_known);
 
-    let hc_class = hc_all_classes.iter().find(|c| c.name == "HttpClient").expect("HttpClient class");
-    let hc_projected = project::project_class(hc_class, &hc_known, &hc_delegates, &shared, &hc_delegate_sigs, &hc_delegate_sig_refs, &hc_delegate_param_wraps);
+    let hc_class = hc_all_classes
+        .iter()
+        .find(|c| c.name == "HttpClient")
+        .expect("HttpClient class");
+    let hc_projected = project::project_class(
+        hc_class,
+        &hc_known,
+        &hc_delegates,
+        &shared,
+        &hc_delegate_sigs,
+        &hc_delegate_sig_refs,
+        &hc_delegate_param_wraps,
+    );
     let hc_code = render_js::render(&hc_projected);
 
     // WithProgress methods must accept signal AND expose cancel() on the wrapper.
-    assert!(hc_code.contains("getStringAsync(uri, signal)"),
-        "Expected `getStringAsync(uri, signal)` in HttpClient.js");
-    assert!(hc_code.contains("cancel()"),
-        "Expected `cancel()` in WithProgress return type in HttpClient.js");
+    assert!(
+        hc_code.contains("getStringAsync(uri, signal)"),
+        "Expected `getStringAsync(uri, signal)` in HttpClient.js"
+    );
+    assert!(
+        hc_code.contains("cancel()"),
+        "Expected `cancel()` in WithProgress return type in HttpClient.js"
+    );
     assert!(hc_code.contains("cancel() { try { _op.cancel(); } catch (_ce) { /* cancel after completion is a no-op per WinRT spec */ } }"),
         "Expected `cancel()` impl on returned WithProgress wrapper in HttpClient.js");
-    assert!(hc_code.contains("if (signal?.aborted) throw signal.reason;"),
-        "Expected `signal.reason` rethrow in HttpClient.js WithProgress wrapper");
+    assert!(
+        hc_code.contains("if (signal?.aborted) throw signal.reason;"),
+        "Expected `signal.reason` rethrow in HttpClient.js WithProgress wrapper"
+    );
 
     // WithProgress must also fast-fail BEFORE invoking the op when signal is
     // already aborted, returning a shaped rejected wrapper. Without this guard
     // the underlying op runs and may resolve successfully (cooperative cancel),
     // breaking the AbortSignal contract.
-    assert!(hc_code.contains("if (signal?.aborted) {"),
-        "Expected pre-invoke fast-fail `if (signal?.aborted) {{` block in HttpClient.js WithProgress methods");
-    assert!(hc_code.contains("Promise.reject(signal.reason)"),
-        "Expected `Promise.reject(signal.reason)` in HttpClient.js WithProgress fast-fail");
-    assert!(hc_code.contains("progress(_cb) { return this; }"),
-        "Expected shaped fast-fail wrapper to expose `progress(_cb)` in HttpClient.js");
+    assert!(
+        hc_code.contains("if (signal?.aborted) {"),
+        "Expected pre-invoke fast-fail `if (signal?.aborted) {{` block in HttpClient.js WithProgress methods"
+    );
+    assert!(
+        hc_code.contains("Promise.reject(signal.reason)"),
+        "Expected `Promise.reject(signal.reason)` in HttpClient.js WithProgress fast-fail"
+    );
+    assert!(
+        hc_code.contains("progress(_cb) { return this; }"),
+        "Expected shaped fast-fail wrapper to expose `progress(_cb)` in HttpClient.js"
+    );
 
     // ---- ESM extension rule: every relative import/export ends with .js ----
     for line in hc_code.lines().chain(dw_code.lines()) {
         let trimmed = line.trim_start();
-        if !(trimmed.starts_with("import ") || trimmed.starts_with("export ")) { continue; }
-        if !line.contains(" from './") { continue; }
-        assert!(line.contains(".js';"),
-            "Relative import/export missing `.js` extension:\n  {}", line);
+        if !(trimmed.starts_with("import ") || trimmed.starts_with("export ")) {
+            continue;
+        }
+        if !line.contains(" from './") {
+            continue;
+        }
+        assert!(
+            line.contains(".js';"),
+            "Relative import/export missing `.js` extension:\n  {}",
+            line
+        );
     }
 
     // ---- Unwrap helper rule
     for code in [&hc_code, &dw_code] {
-        assert!(!code.contains(" as any)._obj ?? "),
-            "Found legacy `(x as any)._obj ?? x` pattern (should be `_unwrap(x)`)");
+        assert!(
+            !code.contains(" as any)._obj ?? "),
+            "Found legacy `(x as any)._obj ?? x` pattern (should be `_unwrap(x)`)"
+        );
     }
-    assert!(hc_code.contains("_unwrap("),
-        "Expected `_unwrap(` calls in HttpClient.js");
-    assert!(hc_code.contains("const _unwrap = (x) => x?._obj ?? x;"),
-        "Expected `_unwrap` helper declaration in HttpClient.js");
+    assert!(
+        hc_code.contains("_unwrap("),
+        "Expected `_unwrap(` calls in HttpClient.js"
+    );
+    assert!(
+        hc_code.contains("const _unwrap = (x) => x?._obj ?? x;"),
+        "Expected `_unwrap` helper declaration in HttpClient.js"
+    );
 
     // ---- Collection helpers: IVector/IVectorView/IIterator/IIterable get
     // JS-idiomatic methods so `for..of`, spread, Array.from, and `.at()` work.
     // HttpClient transitively pulls in IVector_String, IIterable_Certificate,
     // and IIterator_Certificate via TLS/cookie deps.
     if let Some(iv) = hc_ifaces.iter().find(|i| i.name == "IVector_String") {
-        let projected = project::project_interface(iv, &hc_known, &hc_delegates, &hc_delegate_sigs, &hc_delegate_sig_refs, &hc_delegate_param_wraps);
+        let projected = project::project_interface(
+            iv,
+            &hc_known,
+            &hc_delegates,
+            &hc_delegate_sigs,
+            &hc_delegate_sig_refs,
+            &hc_delegate_param_wraps,
+        );
         let code = render_js::render(&projected);
-        assert!(code.contains("*[Symbol.iterator]()"),
-            "Expected `*[Symbol.iterator]()` in IVector_String.js");
-        assert!(code.contains("get length() { return this.size; }"),
-            "Expected `length` alias in IVector_String.js");
-        assert!(code.contains("at(index)"),
-            "Expected `at(index)` in IVector_String.js");
-        assert!(code.contains("toArray()"),
-            "Expected `toArray()` in IVector_String.js");
-    } else { panic!("IVector_String not in HttpClient deps — sample changed?"); }
+        assert!(
+            code.contains("*[Symbol.iterator]()"),
+            "Expected `*[Symbol.iterator]()` in IVector_String.js"
+        );
+        assert!(
+            code.contains("get length() { return this.size; }"),
+            "Expected `length` alias in IVector_String.js"
+        );
+        assert!(
+            code.contains("at(index)"),
+            "Expected `at(index)` in IVector_String.js"
+        );
+        assert!(
+            code.contains("toArray()"),
+            "Expected `toArray()` in IVector_String.js"
+        );
+    } else {
+        panic!("IVector_String not in HttpClient deps — sample changed?");
+    }
 
-    if let Some(iv) = hc_ifaces.iter().find(|i| i.name.starts_with("IVectorView_")) {
-        let projected = project::project_interface(iv, &hc_known, &hc_delegates, &hc_delegate_sigs, &hc_delegate_sig_refs, &hc_delegate_param_wraps);
+    if let Some(iv) = hc_ifaces
+        .iter()
+        .find(|i| i.name.starts_with("IVectorView_"))
+    {
+        let projected = project::project_interface(
+            iv,
+            &hc_known,
+            &hc_delegates,
+            &hc_delegate_sigs,
+            &hc_delegate_sig_refs,
+            &hc_delegate_param_wraps,
+        );
         let code = render_js::render(&projected);
-        assert!(code.contains("*[Symbol.iterator]()"),
-            "Expected `*[Symbol.iterator]()` in {}.js", iv.name);
-        assert!(code.contains("at(index)"),
-            "Expected `at(index)` in {}.js", iv.name);
+        assert!(
+            code.contains("*[Symbol.iterator]()"),
+            "Expected `*[Symbol.iterator]()` in {}.js",
+            iv.name
+        );
+        assert!(
+            code.contains("at(index)"),
+            "Expected `at(index)` in {}.js",
+            iv.name
+        );
     }
 
     if let Some(it) = hc_ifaces.iter().find(|i| i.name.starts_with("IIterator_")) {
-        let projected = project::project_interface(it, &hc_known, &hc_delegates, &hc_delegate_sigs, &hc_delegate_sig_refs, &hc_delegate_param_wraps);
+        let projected = project::project_interface(
+            it,
+            &hc_known,
+            &hc_delegates,
+            &hc_delegate_sigs,
+            &hc_delegate_sig_refs,
+            &hc_delegate_param_wraps,
+        );
         let code = render_js::render(&projected);
-        assert!(code.contains("next()"),
-            "Expected JS iterator `next()` in {}.js", it.name);
-        assert!(code.contains("[Symbol.iterator]()"),
-            "Expected `[Symbol.iterator]()` in {}.js (returns this)", it.name);
+        assert!(
+            code.contains("next()"),
+            "Expected JS iterator `next()` in {}.js",
+            it.name
+        );
+        assert!(
+            code.contains("[Symbol.iterator]()"),
+            "Expected `[Symbol.iterator]()` in {}.js (returns this)",
+            it.name
+        );
     }
 
     if let Some(it) = hc_ifaces.iter().find(|i| i.name.starts_with("IIterable_")) {
-        let projected = project::project_interface(it, &hc_known, &hc_delegates, &hc_delegate_sigs, &hc_delegate_sig_refs, &hc_delegate_param_wraps);
+        let projected = project::project_interface(
+            it,
+            &hc_known,
+            &hc_delegates,
+            &hc_delegate_sigs,
+            &hc_delegate_sig_refs,
+            &hc_delegate_param_wraps,
+        );
         let code = render_js::render(&projected);
-        assert!(code.contains("[Symbol.iterator]()"),
-            "Expected `[Symbol.iterator]()` delegating to first() in {}.js", it.name);
-        assert!(code.contains("this.first()"),
-            "Expected `this.first()` delegate in {}.js", it.name);
+        assert!(
+            code.contains("[Symbol.iterator]()"),
+            "Expected `[Symbol.iterator]()` delegating to first() in {}.js",
+            it.name
+        );
+        assert!(
+            code.contains("this.first()"),
+            "Expected `this.first()` delegate in {}.js",
+            it.name
+        );
     }
 
     // ---- IStringable auto-generation: classes implementing IStringable get
@@ -420,21 +630,45 @@ fn ts_async_methods_emit_abort_signal_scaffolding() {
     // a well-known IStringable implementor.
     let uri_classes = match meta::parse_class(winmd, "Windows.Foundation", "Uri") {
         Some(c) => vec![c],
-        None => { eprintln!("Skipping Uri portion: not found"); return; }
+        None => {
+            eprintln!("Skipping Uri portion: not found");
+            return;
+        }
     };
     let uri_deps = meta::resolve_dependencies(winmd, &uri_classes, &[], &[]);
     let mut uri_all_classes = uri_classes;
     uri_all_classes.extend(uri_deps.classes);
     let mut uri_known: HashSet<String> = HashSet::new();
-    for c in &uri_all_classes { uri_known.insert(c.name.clone()); }
-    for i in &uri_deps.interfaces { uri_known.insert(i.name.clone()); }
-    let uri_class = uri_all_classes.iter().find(|c| c.name == "Uri").expect("Uri class");
-    let uri_projected = project::project_class(uri_class, &uri_known, &HashSet::new(), &shared, &HashMap::new(), &HashMap::new(), &HashMap::new());
+    for c in &uri_all_classes {
+        uri_known.insert(c.name.clone());
+    }
+    for i in &uri_deps.interfaces {
+        uri_known.insert(i.name.clone());
+    }
+    let uri_class = uri_all_classes
+        .iter()
+        .find(|c| c.name == "Uri")
+        .expect("Uri class");
+    let uri_projected = project::project_class(
+        uri_class,
+        &uri_known,
+        &HashSet::new(),
+        &shared,
+        &HashMap::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+    );
     let uri_code = render_js::render(&uri_projected);
-    assert!(uri_code.contains("toString() {\n        return IStringable.from(this._obj).toString();"),
-        "Expected auto-generated toString() in Uri.js (IStringable path)");
-    assert!(uri_code.contains("[Symbol.toPrimitive](_hint)"),
-        "Expected [Symbol.toPrimitive] in Uri.js");
-    assert!(uri_code.contains("get [Symbol.toStringTag]() { return 'Uri'; }"),
-        "Expected [Symbol.toStringTag] = 'Uri' in Uri.js");
+    assert!(
+        uri_code.contains("toString() {\n        return IStringable.from(this._obj).toString();"),
+        "Expected auto-generated toString() in Uri.js (IStringable path)"
+    );
+    assert!(
+        uri_code.contains("[Symbol.toPrimitive](_hint)"),
+        "Expected [Symbol.toPrimitive] in Uri.js"
+    );
+    assert!(
+        uri_code.contains("get [Symbol.toStringTag]() { return 'Uri'; }"),
+        "Expected [Symbol.toStringTag] = 'Uri' in Uri.js"
+    );
 }
