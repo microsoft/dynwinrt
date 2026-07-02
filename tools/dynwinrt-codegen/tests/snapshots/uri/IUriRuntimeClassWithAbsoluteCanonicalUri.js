@@ -3,10 +3,17 @@ import { DynWinRtType, DynWinRtMethodSig, DynWinRtValue, DynWinRtArray, DynWinRt
 
 export const IID_IUriRuntimeClassWithAbsoluteCanonicalUri = WinGuid.parse('758d9661-221c-480f-a339-50656673f46f');
 
-const _IUriRuntimeClassWithAbsoluteCanonicalUri = DynWinRtType.registerInterface(
-    "IUriRuntimeClassWithAbsoluteCanonicalUri", IID_IUriRuntimeClassWithAbsoluteCanonicalUri)
-    .addMethod("get_AbsoluteCanonicalUri", new DynWinRtMethodSig().addOut(DynWinRtType.hstring()))
-    .addMethod("get_DisplayIri", new DynWinRtMethodSig().addOut(DynWinRtType.hstring()));
+let _IUriRuntimeClassWithAbsoluteCanonicalUriCache;
+const _IUriRuntimeClassWithAbsoluteCanonicalUri = new Proxy({}, {
+    get(_target, prop) {
+        _IUriRuntimeClassWithAbsoluteCanonicalUriCache ??= DynWinRtType.registerInterface(
+        "IUriRuntimeClassWithAbsoluteCanonicalUri", IID_IUriRuntimeClassWithAbsoluteCanonicalUri)
+        .addMethod("get_AbsoluteCanonicalUri", new DynWinRtMethodSig().addOut(DynWinRtType.hstring()))
+        .addMethod("get_DisplayIri", new DynWinRtMethodSig().addOut(DynWinRtType.hstring()));
+        const value = _IUriRuntimeClassWithAbsoluteCanonicalUriCache[prop];
+        return typeof value === 'function' ? value.bind(_IUriRuntimeClassWithAbsoluteCanonicalUriCache) : value;
+    }
+});
 
 export class IUriRuntimeClassWithAbsoluteCanonicalUri {
     _obj;

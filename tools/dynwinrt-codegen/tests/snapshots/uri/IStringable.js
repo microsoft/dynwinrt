@@ -3,9 +3,16 @@ import { DynWinRtType, DynWinRtMethodSig, DynWinRtValue, DynWinRtArray, DynWinRt
 
 export const IID_IStringable = WinGuid.parse('96369f54-8eb6-48f0-abce-c1b211e627c3');
 
-const _IStringable = DynWinRtType.registerInterface(
-    "IStringable", IID_IStringable)
-    .addMethod("ToString", new DynWinRtMethodSig().addOut(DynWinRtType.hstring()));
+let _IStringableCache;
+const _IStringable = new Proxy({}, {
+    get(_target, prop) {
+        _IStringableCache ??= DynWinRtType.registerInterface(
+        "IStringable", IID_IStringable)
+        .addMethod("ToString", new DynWinRtMethodSig().addOut(DynWinRtType.hstring()));
+        const value = _IStringableCache[prop];
+        return typeof value === 'function' ? value.bind(_IStringableCache) : value;
+    }
+});
 
 export class IStringable {
     _obj;

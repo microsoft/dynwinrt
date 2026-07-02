@@ -4,13 +4,27 @@ import { DynWinRtType, DynWinRtMethodSig, DynWinRtValue, DynWinRtArray, DynWinRt
 const IID_IWwwFormUrlDecoderRuntimeClass = WinGuid.parse('d45a0451-f225-4542-9296-0e1df5d254df');
 const IID_IWwwFormUrlDecoderRuntimeClassFactory = WinGuid.parse('5b8c6b3d-24ae-41b5-a1bf-f0c3d544845b');
 
-const _IWwwFormUrlDecoderRuntimeClass = DynWinRtType.registerInterface(
-    "IWwwFormUrlDecoderRuntimeClass", IID_IWwwFormUrlDecoderRuntimeClass)
-    .addMethod("GetFirstValueByName", new DynWinRtMethodSig().addIn(DynWinRtType.hstring()).addOut(DynWinRtType.hstring()));
+let _IWwwFormUrlDecoderRuntimeClassCache;
+const _IWwwFormUrlDecoderRuntimeClass = new Proxy({}, {
+    get(_target, prop) {
+        _IWwwFormUrlDecoderRuntimeClassCache ??= DynWinRtType.registerInterface(
+        "IWwwFormUrlDecoderRuntimeClass", IID_IWwwFormUrlDecoderRuntimeClass)
+        .addMethod("GetFirstValueByName", new DynWinRtMethodSig().addIn(DynWinRtType.hstring()).addOut(DynWinRtType.hstring()));
+        const value = _IWwwFormUrlDecoderRuntimeClassCache[prop];
+        return typeof value === 'function' ? value.bind(_IWwwFormUrlDecoderRuntimeClassCache) : value;
+    }
+});
 
-const _IWwwFormUrlDecoderRuntimeClassFactory = DynWinRtType.registerInterface(
-    "IWwwFormUrlDecoderRuntimeClassFactory", IID_IWwwFormUrlDecoderRuntimeClassFactory)
-    .addMethod("CreateWwwFormUrlDecoder", new DynWinRtMethodSig().addIn(DynWinRtType.hstring()).addOut(DynWinRtType.runtimeClass('Windows.Foundation.WwwFormUrlDecoder', WinGuid.parse('d45a0451-f225-4542-9296-0e1df5d254df'))));
+let _IWwwFormUrlDecoderRuntimeClassFactoryCache;
+const _IWwwFormUrlDecoderRuntimeClassFactory = new Proxy({}, {
+    get(_target, prop) {
+        _IWwwFormUrlDecoderRuntimeClassFactoryCache ??= DynWinRtType.registerInterface(
+        "IWwwFormUrlDecoderRuntimeClassFactory", IID_IWwwFormUrlDecoderRuntimeClassFactory)
+        .addMethod("CreateWwwFormUrlDecoder", new DynWinRtMethodSig().addIn(DynWinRtType.hstring()).addOut(DynWinRtType.runtimeClass('Windows.Foundation.WwwFormUrlDecoder', WinGuid.parse('d45a0451-f225-4542-9296-0e1df5d254df'))));
+        const value = _IWwwFormUrlDecoderRuntimeClassFactoryCache[prop];
+        return typeof value === 'function' ? value.bind(_IWwwFormUrlDecoderRuntimeClassFactoryCache) : value;
+    }
+});
 
 export class WwwFormUrlDecoder {
     _obj;
