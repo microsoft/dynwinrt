@@ -319,6 +319,15 @@ fn run() -> Result<(), String> {
                     for e in all_enums.iter_mut() {
                         doc_table.apply_to_enum(e);
                     }
+                    // Barrel must match `generate_js_files` filter.
+                    let __cls_names: HashSet<String> =
+                        all_classes.iter().map(|c| c.name.clone()).collect();
+                    all_interfaces
+                        .retain(|i| !i.iid.is_empty() && !__cls_names.contains(&i.name));
+                    all_enums.retain(|e| match e {
+                        TypeMeta::Enum { name, .. } => !__cls_names.contains(name),
+                        _ => true,
+                    });
                     if lang == "py" {
                         if index_path.exists() {
                             let existing = fs::read_to_string(&index_path).map_err(|e| {
@@ -463,6 +472,14 @@ fn run() -> Result<(), String> {
                     for e in all_enums.iter_mut() {
                         doc_table.apply_to_enum(e);
                     }
+                    let __cls_names: HashSet<String> =
+                        all_classes.iter().map(|c| c.name.clone()).collect();
+                    all_interfaces
+                        .retain(|i| !i.iid.is_empty() && !__cls_names.contains(&i.name));
+                    all_enums.retain(|e| match e {
+                        TypeMeta::Enum { name, .. } => !__cls_names.contains(name),
+                        _ => true,
+                    });
 
                     if lang == "py" {
                         let index_code =
@@ -562,6 +579,18 @@ fn generate_for_types(
     for e in all_enums.iter_mut() {
         doc_table.apply_to_enum(e);
     }
+
+    // Keep `known_types` and the barrel in sync with what
+    // `generate_js_files` actually emits — otherwise class files will
+    // `import` from sibling files that never landed on disk.
+    let __cls_names_l: HashSet<String> =
+        all_classes.iter().map(|c| c.name.clone()).collect();
+    all_interfaces
+        .retain(|i| !i.iid.is_empty() && !__cls_names_l.contains(&i.name));
+    all_enums.retain(|e| match e {
+        TypeMeta::Enum { name, .. } => !__cls_names_l.contains(name),
+        _ => true,
+    });
 
     let mut known_types: HashSet<String> = HashSet::new();
     for c in &all_classes {
@@ -670,7 +699,19 @@ fn generate_js_files(
         Ok(())
     };
 
+    // An interface entry with no IID (typically a parameterized instantiation
+    // synthesized from a class type parameter) has no runtime binding — skip.
+    fn is_emittable_interface(iface: &meta::InterfaceMeta) -> bool {
+        !iface.iid.is_empty()
+    }
+    // If a class and an interface share a short name, the second one written
+    // overwrites the first. Prefer the class file.
+    let class_names: HashSet<&str> = all_classes.iter().map(|c| c.name.as_str()).collect();
+
     for iface in shared_interfaces {
+        if class_names.contains(iface.name.as_str()) || !is_emittable_interface(iface) {
+            continue;
+        }
         let projected = project::project_interface(
             iface,
             known_types,
@@ -684,6 +725,9 @@ fn generate_js_files(
         emit(&iface.name, &js, &dts)?;
     }
     for iface in all_interfaces {
+        if class_names.contains(iface.name.as_str()) || !is_emittable_interface(iface) {
+            continue;
+        }
         let projected = project::project_interface(
             iface,
             known_types,
@@ -701,6 +745,9 @@ fn generate_js_files(
             if name.contains('<') {
                 continue;
             } // skip CLR projection types
+            if class_names.contains(name.as_str()) {
+                continue;
+            }
             if let Some(projected) = project::project_enum(en) {
                 let js = render_js::render(&projected);
                 let dts = render_dts::render(&projected);
@@ -708,7 +755,24 @@ fn generate_js_files(
             }
         }
     }
+    // "Usable" classes are activatable, statics-only, or extend a required
+    // interface. Everything else is a synthetic parameterized shell and gets
+    // a throwing stub so barrels still link.
+    let class_is_usable = |class: &meta::ClassMeta| -> bool {
+        let has_default_iid = class
+            .default_interface
+            .as_ref()
+            .map_or(false, |di| !di.iid.is_empty());
+        let has_statics_or_factory =
+            !class.static_interfaces.is_empty() || !class.factory_interfaces.is_empty();
+        let has_required = !class.required_interfaces.is_empty();
+        has_default_iid || has_statics_or_factory || has_required
+    };
+    let mut emitted_class_names: HashSet<String> = HashSet::new();
     for class in all_classes {
+        if !class_is_usable(class) {
+            continue;
+        }
         let projected = project::project_class(
             class,
             known_types,
@@ -721,6 +785,28 @@ fn generate_js_files(
         let js = render_js::render(&projected);
         let dts = render_dts::render(&projected);
         emit(&class.name, &js, &dts)?;
+        emitted_class_names.insert(class.name.clone());
+    }
+    for class in all_classes {
+        if class_is_usable(class) || emitted_class_names.contains(&class.name) {
+            continue;
+        }
+        let stub_js = format!(
+            "// Generated by dynwinrt-codegen \u{2014} do not edit\n\
+             const __unavailable = () => {{ throw new Error(\"'{name}' has no default interface in the loaded winmd graph and cannot be constructed. Add its owning package to `additionalWinmds` / `additionalRefs`.\"); }};\n\
+             export class {name} {{ constructor() {{ __unavailable(); }} }}\n",
+            name = class.name,
+        );
+        let stub_dts = format!(
+            "// Generated by dynwinrt-codegen \u{2014} do not edit\n\
+             // Placeholder: throwing at construction. Typed as a class so
+             // other .d.ts files can still use `{name}` as a parameter /
+             // return type.\n\
+             export declare class {name} {{ private constructor(); }}\n",
+            name = class.name,
+        );
+        emit(&class.name, &stub_js, &stub_dts)?;
+        emitted_class_names.insert(class.name.clone());
     }
     Ok(())
 }

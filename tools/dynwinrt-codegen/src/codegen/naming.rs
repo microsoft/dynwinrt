@@ -7,6 +7,14 @@ pub(crate) fn to_camel_case(s: &str) -> String {
     if s.is_empty() {
         return String::new();
     }
+    // Sanitize WinRT-only method names that begin with '.' (e.g. `.ctor`).
+    // These are constructor slots on delegate / activation-factory interfaces
+    // and are re-exposed via other JS APIs. If they leak through here as-is,
+    // they emit invalid identifiers like `.ctor()` in the generated class.
+    let s = s.strip_prefix('.').unwrap_or(s);
+    if s.is_empty() {
+        return String::new();
+    }
     let mut chars = s.chars();
     let first = chars.next().unwrap().to_lowercase().to_string();
     let result = format!("{}{}", first, chars.collect::<String>());

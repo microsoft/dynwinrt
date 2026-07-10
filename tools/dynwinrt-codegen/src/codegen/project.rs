@@ -200,6 +200,12 @@ pub fn project_class(
     sorted_imports
         .sort_by(|a, b| (&a.namespace, &a.name, &a.kind).cmp(&(&b.namespace, &b.name, &b.kind)));
     for r in &sorted_imports {
+        // Skip self-imports: `collect_type_imports` may surface the class's
+        // own primary interface, producing `import { X } from './X.js'` in
+        // `X.js` — a duplicate identifier at parse time.
+        if r.name == class.name {
+            continue;
+        }
         if known_types.contains(&r.name) && !all_delegate_names.contains(&r.name) {
             imports.push(format_type_import_projected(&r.name, r.kind));
             imported_names.insert(r.name.clone());
@@ -249,6 +255,24 @@ pub fn project_class(
         }
     }
 
+    // Preemptive IClosable import: `close()` (added later) references
+    // IClosable by name. Register before the IID-const loop so that loop
+    // sees `IID_IClosable` in `imported_names` and skips declaring it,
+    // avoiding a duplicate identifier in single-class emission.
+    let needs_iclosable = class.name != "IClosable"
+        && class
+            .required_interfaces
+            .iter()
+            .any(|ri| ri.iid == ICLOSABLE_IID);
+    if needs_iclosable && !imported_names.contains("IClosable") {
+        imports.push(format_type_import_projected(
+            "IClosable",
+            TypeKind::Interface,
+        ));
+        imported_names.insert("IClosable".into());
+        imported_names.insert("IID_IClosable".into());
+    }
+
     // IID consts(private, for class-internal use)
     let mut iid_consts = Vec::new();
     let all_class_ifaces: Vec<&InterfaceMeta> = class
@@ -258,37 +282,61 @@ pub fn project_class(
         .chain(class.static_interfaces.iter())
         .chain(class.required_interfaces.iter())
         .collect();
+    let mut declared_iids: HashSet<String> = HashSet::new();
     for iface in &all_class_ifaces {
         let iid_name = format!("IID_{}", iface.name);
-        if !iface.iid.is_empty() && !imported_names.contains(&iid_name) {
-            iid_consts.push(ProjectedIidConst {
-                name: iid_name,
-                rhs_expr: format!("WinGuid.parse('{}')", iface.iid),
-                ts_type: "WinGuid".into(),
-                exported: false,
-            });
+        if iface.iid.is_empty()
+            || declared_iids.contains(&iid_name)
+            || imported_names.contains(&iid_name)
+        {
+            continue;
+        }
+        iid_consts.push(ProjectedIidConst {
+            name: iid_name.clone(),
+            rhs_expr: format!("WinGuid.parse('{}')", iface.iid),
+            ts_type: "WinGuid".into(),
+            exported: false,
+        });
+        declared_iids.insert(iid_name);
+    }
+    // Export `IID_<ClassName>` = default interface IID, so a synthesized
+    // `import { IID_UIElement } from './UIElement.js'` resolves.
+    if let Some(ref di) = class.default_interface {
+        if !di.iid.is_empty() && di.name != class.name {
+            let alias_name = format!("IID_{}", class.name);
+            if !declared_iids.contains(&alias_name) && !imported_names.contains(&alias_name) {
+                iid_consts.push(ProjectedIidConst {
+                    name: alias_name.clone(),
+                    rhs_expr: format!("WinGuid.parse('{}')", di.iid),
+                    ts_type: "WinGuid".into(),
+                    exported: true,
+                });
+                declared_iids.insert(alias_name);
+            }
         }
     }
 
     // Interface registrations
     let mut registrations = Vec::new();
+    // Dedupe: an interface can appear as both default and required
+    // (e.g. `IFrameworkView` in `Windows.ApplicationModel.Core`).
+    let mut emitted_reg_vars: HashSet<String> = HashSet::new();
+    let push_registration =
+        |registrations: &mut Vec<String>, emitted: &mut HashSet<String>, iface: &InterfaceMeta| {
+            let var_name = format!("_{}", iface.name);
+            if !emitted.insert(var_name.clone()) {
+                return;
+            }
+            registrations.push(generate_interface_registration(iface, &var_name));
+        };
     if let Some(ref iface) = class.default_interface {
-        registrations.push(generate_interface_registration(
-            iface,
-            &format!("_{}", iface.name),
-        ));
+        push_registration(&mut registrations, &mut emitted_reg_vars, iface);
     }
     for iface in &class.factory_interfaces {
-        registrations.push(generate_interface_registration(
-            iface,
-            &format!("_{}", iface.name),
-        ));
+        push_registration(&mut registrations, &mut emitted_reg_vars, iface);
     }
     for iface in &class.static_interfaces {
-        registrations.push(generate_interface_registration(
-            iface,
-            &format!("_{}", iface.name),
-        ));
+        push_registration(&mut registrations, &mut emitted_reg_vars, iface);
     }
     for iface in &class.required_interfaces {
         if !iface.iid.is_empty()
@@ -297,10 +345,7 @@ pub fn project_class(
         {
             continue;
         }
-        registrations.push(generate_interface_registration(
-            iface,
-            &format!("_{}", iface.name),
-        ));
+        push_registration(&mut registrations, &mut emitted_reg_vars, iface);
     }
 
     // Struct helpers
@@ -425,6 +470,7 @@ pub fn project_class(
     merge_overload_names(&mut members);
 
     // IClosable → close()
+    // IClosable → close()  (import already registered pre-emptively above)
     if class
         .required_interfaces
         .iter()

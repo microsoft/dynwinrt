@@ -65,7 +65,7 @@ pub fn render(file: &ProjectedFile) -> String {
 
     // Classes
     for class in &file.classes {
-        render_class_dts(&mut body, class);
+        render_class_dts(&mut body, class, file);
         for ri in &class.required_ifaces {
             body.push('\n');
             render_required_iface_dts(&mut body, ri);
@@ -185,7 +185,17 @@ fn render_struct_dts(out: &mut String, s: &ProjectedStruct) {
     ));
 }
 
-fn render_class_dts(out: &mut String, class: &ProjectedClass) {
+fn render_class_dts(out: &mut String, class: &ProjectedClass, file: &ProjectedFile) {
+    // Exported IID constants (e.g. `IID_<ClassName>`) must appear in the .d.ts
+    // so consumers importing them get a real type instead of "no exported member".
+    for iid in &file.iid_consts {
+        if iid.exported {
+            out.push_str(&format!(
+                "export declare const {}: {};\n",
+                iid.name, iid.ts_type
+            ));
+        }
+    }
     if let Some(ref doc) = class.doc {
         out.push_str(&render_tsdoc(doc, ""));
     }

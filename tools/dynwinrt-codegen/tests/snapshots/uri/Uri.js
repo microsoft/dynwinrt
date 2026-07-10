@@ -8,6 +8,7 @@ const IID_IUriRuntimeClassFactory = WinGuid.parse('44a9796f-723e-4fdf-a218-033e7
 const IID_IUriEscapeStatics = WinGuid.parse('c1d432ba-c824-4452-a7fd-512bc3bbe9a1');
 const IID_IUriRuntimeClassWithAbsoluteCanonicalUri = WinGuid.parse('758d9661-221c-480f-a339-50656673f46f');
 const IID_IStringable = WinGuid.parse('96369f54-8eb6-48f0-abce-c1b211e627c3');
+export const IID_Uri = WinGuid.parse('9e365e57-48b2-4160-956f-c7385120bbfc');
 
 let _IUriRuntimeClassCache;
 const _IUriRuntimeClass = new Proxy({}, {

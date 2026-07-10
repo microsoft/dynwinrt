@@ -3,6 +3,7 @@ import { DynWinRtType, DynWinRtMethodSig, DynWinRtValue, DynWinRtArray, DynWinRt
 
 const IID_IWwwFormUrlDecoderRuntimeClass = WinGuid.parse('d45a0451-f225-4542-9296-0e1df5d254df');
 const IID_IWwwFormUrlDecoderRuntimeClassFactory = WinGuid.parse('5b8c6b3d-24ae-41b5-a1bf-f0c3d544845b');
+export const IID_WwwFormUrlDecoder = WinGuid.parse('d45a0451-f225-4542-9296-0e1df5d254df');
 
 let _IWwwFormUrlDecoderRuntimeClassCache;
 const _IWwwFormUrlDecoderRuntimeClass = new Proxy({}, {
