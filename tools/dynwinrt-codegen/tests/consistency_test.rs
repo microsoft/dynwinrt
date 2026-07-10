@@ -22,18 +22,46 @@ const WINDOWS_WINMD: &str =
     r"C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd";
 
 /// Extract exported class names from generated code.
+/// Supports both ESM `export class X` and our CJS output shape (top-level
+/// `class X { ... }` followed by `exports.X = X;`).
 fn extract_class_names(code: &str) -> Vec<String> {
-    let re = Regex::new(r"(?m)^export\s+(?:declare\s+)?class\s+(\w+)").unwrap();
-    re.captures_iter(code).map(|c| c[1].to_string()).collect()
+    let esm_re = Regex::new(r"(?m)^export\s+(?:declare\s+)?class\s+(\w+)").unwrap();
+    let cjs_class_re = Regex::new(r"(?m)^class\s+(\w+)").unwrap();
+    let cjs_export_re = Regex::new(r"(?m)^exports\.(\w+)\s*=").unwrap();
+
+    let mut names: Vec<String> = esm_re
+        .captures_iter(code)
+        .map(|c| c[1].to_string())
+        .collect();
+    if !names.is_empty() {
+        return names;
+    }
+    // CJS: a class is emitted at top-level *and* re-exported via `exports.X = X`.
+    // Intersect the two sets to identify true classes (vs plain consts/functions).
+    let cjs_classes: HashSet<String> = cjs_class_re
+        .captures_iter(code)
+        .map(|c| c[1].to_string())
+        .collect();
+    let cjs_exports: Vec<String> = cjs_export_re
+        .captures_iter(code)
+        .map(|c| c[1].to_string())
+        .collect();
+    for name in cjs_exports {
+        if cjs_classes.contains(&name) && !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names
 }
 
 /// Extract member names from a class body (methods, getters, setters, static).
 /// Looks for patterns like:
 ///   `    methodName(` or `    get propName()` or `    static methodName(`
 fn extract_members(code: &str, class_name: &str) -> Vec<String> {
-    // Find the class body start
+    // Find the class body start. Supports both ESM `export class X {` and CJS
+    // `class X {` (no `export` prefix, since our CJS conversion strips it).
     let class_pattern = format!(
-        r"(?m)^export\s+(?:declare\s+)?class\s+{}\s*\{{",
+        r"(?m)^(?:export\s+(?:declare\s+)?)?class\s+{}(?:\s+extends\s+\S+)?\s*\{{",
         regex::escape(class_name)
     );
     let class_re = Regex::new(&class_pattern).unwrap();
@@ -80,10 +108,39 @@ fn extract_members(code: &str, class_name: &str) -> Vec<String> {
     members
 }
 
-/// Extract exported enum/const names.
+/// Extract exported enum/const/function names (NOT classes — those come from
+/// `extract_class_names`).
+/// Supports both ESM `export const|function|enum X` and our CJS output shape
+/// where top-level `const|function X` is re-exported via `exports.X = X;`.
 fn extract_exports(code: &str) -> Vec<String> {
-    let re = Regex::new(r"(?m)^export\s+(?:declare\s+)?(?:const|function|enum)\s+(\w+)").unwrap();
-    re.captures_iter(code).map(|c| c[1].to_string()).collect()
+    let esm_re =
+        Regex::new(r"(?m)^export\s+(?:declare\s+)?(?:const|function|enum)\s+(\w+)").unwrap();
+    let esm_names: Vec<String> = esm_re
+        .captures_iter(code)
+        .map(|c| c[1].to_string())
+        .collect();
+    if !esm_names.is_empty() {
+        return esm_names;
+    }
+    // CJS: every top-level declaration that we re-export is `exports.X = X;`.
+    // Filter out class names — they are tested separately via `extract_class_names`.
+    let cjs_class_re = Regex::new(r"(?m)^class\s+(\w+)").unwrap();
+    let cjs_classes: HashSet<String> = cjs_class_re
+        .captures_iter(code)
+        .map(|c| c[1].to_string())
+        .collect();
+    let cjs_re = Regex::new(r"(?m)^exports\.(\w+)\s*=").unwrap();
+    cjs_re
+        .captures_iter(code)
+        .filter_map(|c| {
+            let name = c[1].to_string();
+            if cjs_classes.contains(&name) {
+                None
+            } else {
+                Some(name)
+            }
+        })
+        .collect()
 }
 
 /// Helper: build known_types, delegate_type_names, shared_iids from parsed metadata.

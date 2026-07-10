@@ -217,6 +217,10 @@ mod tests {
         assert_eq!(wrap_arg("n", &TypeMeta::I32), "DynWinRtValue.i32(n)");
         assert_eq!(wrap_arg("n", &TypeMeta::I64), "DynWinRtValue.i64(n)");
         assert_eq!(wrap_arg("f", &TypeMeta::F64), "DynWinRtValue.f64(f)");
+        assert_eq!(
+            wrap_arg("o", &TypeMeta::Object),
+            "(o == null ? DynWinRtValue.nullValue() : _unwrap(o))"
+        );
     }
 
     #[test]
@@ -248,9 +252,10 @@ mod tests {
             name: "Uri".into(),
             default_iid: "abc".into(),
         };
+        // Refs come out as `__DWRT_REF__<name>__`; render layer rewrites.
         assert_eq!(
             convert_return("r", Some(&rt), false, &known, &deferred),
-            "new Uri(r)"
+            "new __DWRT_REF__Uri__(r)"
         );
     }
 

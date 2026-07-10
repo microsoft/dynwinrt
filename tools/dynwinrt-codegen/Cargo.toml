@@ -11,6 +11,7 @@ authors = ["Microsoft"]
 windows-metadata = "0.59.0"
 clap = { version = "4", features = ["derive"] }
 roxmltree = "0.20"
+regex = "1"
 
 [dev-dependencies]
 regex = "1"

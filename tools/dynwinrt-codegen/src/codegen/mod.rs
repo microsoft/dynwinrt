@@ -13,6 +13,7 @@ pub mod python;
 pub mod python_stub;
 pub mod render_dts;
 pub mod render_js;
+pub mod render_package_json;
 pub(crate) mod sig;
 pub(crate) mod structs_helpers;
 pub mod typescript;

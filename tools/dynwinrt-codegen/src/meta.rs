@@ -757,6 +757,15 @@ fn parse_class_from_index(index: &reader::Index, namespace: &str, name: &str) ->
                     }
                 }
             }
+        } else if attr_name == "ComposableAttribute" {
+            // Composable: project the exclusive factory as a regular factory.
+            if let Some((_, windows_metadata::Value::Utf8(iface_full_name))) = values.first() {
+                if let Some((ns, n)) = split_full_name(iface_full_name) {
+                    if let Some(iface_meta) = parse_interface(index, ns, n) {
+                        factory_interfaces.push(iface_meta);
+                    }
+                }
+            }
         }
     }
 

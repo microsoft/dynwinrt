@@ -220,7 +220,7 @@ pub(crate) fn wrap_arg(name: &str, typ: &TypeMeta) -> String {
         | TypeMeta::Object
         | TypeMeta::Interface { .. }
         | TypeMeta::Delegate { .. } => {
-            format!("_unwrap({})", name)
+            format!("({0} == null ? DynWinRtValue.nullValue() : _unwrap({0}))", name)
         }
         TypeMeta::Parameterized {
             piid,
@@ -361,13 +361,32 @@ fn vector_item_wrap_expr(var: &str, elem: &TypeMeta) -> String {
 // Return conversion (TypeScript)
 // ======================================================================
 
-/// Resolve a type name, using `_m_X.X` for deferred (lazy module ref) imports.
-pub(crate) fn resolve_type_name(name: &str, deferred: &HashSet<String>) -> String {
-    if deferred.contains(name) {
-        format!("_m_{0}.{0}", name)
-    } else {
-        name.to_string()
-    }
+/// Marker prefix for cross-file lazy sibling references in emitted JS body strings.
+/// See `render_js::resolve_ref_markers` for how these get resolved to target-specific
+/// output shapes (e.g. `__DWRT_REF__X__` → `X` in ESM, `(__get_X())` in CJS-lazy).
+pub const REF_MARKER_PREFIX: &str = "__DWRT_REF__";
+pub const REF_MARKER_SUFFIX: &str = "__";
+
+/// Wrap a bare class/struct/interface identifier in the marker syntax that
+/// render_js later resolves per target. Callers use this whenever they emit a
+/// cross-file type name into a pre-computed body string, so the renderer can
+/// dispatch by target without doing JS tokenization.
+pub fn ref_marker(name: &str) -> String {
+    format!("{}{}{}", REF_MARKER_PREFIX, name, REF_MARKER_SUFFIX)
+}
+
+/// Resolve a type name for embedding in generated JS. Always wraps the name in
+/// a `__DWRT_REF__<name>__` marker that the render layer translates per target
+/// (real identifier for ESM or same-file self references, `(__get_X())` for
+/// CJS cross-file lazy references). The renderer does the sibling-vs-self
+/// disambiguation via the file's import set — this function is deliberately
+/// context-free so it doesn't need `imported_names` plumbed through every
+/// projection call site.
+///
+/// The `deferred` parameter is preserved for API compatibility (Python codegen
+/// uses the same trait signature) but is unused for JS emission.
+pub(crate) fn resolve_type_name(name: &str, _deferred: &HashSet<String>) -> String {
+    ref_marker(name)
 }
 
 /// Convert an array return expression to the appropriate JS array type.

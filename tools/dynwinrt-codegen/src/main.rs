@@ -1,13 +1,14 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
 use clap::{Parser, Subcommand};
 
 use dynwinrt_codegen::codegen::python;
+use dynwinrt_codegen::codegen::render_package_json;
 use dynwinrt_codegen::codegen::typescript;
 use dynwinrt_codegen::codegen::{project, render_dts, render_js};
 use dynwinrt_codegen::meta;
@@ -319,7 +320,9 @@ fn run() -> Result<(), String> {
                     for e in all_enums.iter_mut() {
                         doc_table.apply_to_enum(e);
                     }
-                    // Barrel must match `generate_js_files` filter.
+                    // Keep the barrel/index in sync with `generate_js_files` —
+                    // interfaces with no IID or that collide with a class name
+                    // are not emitted, so must not appear in the barrel either.
                     let __cls_names: HashSet<String> =
                         all_classes.iter().map(|c| c.name.clone()).collect();
                     all_interfaces
@@ -348,29 +351,18 @@ fn run() -> Result<(), String> {
                         }
                     } else {
                         // JS: index.js + index.d.ts are pure re-exports and identical, so we
-                        // round-trip incremental appends by reading back index.js itself
-                        // (no hidden cache file in the output directory).
-                        let js_path = output_dir.join("index.js");
+                        // round-trip incremental appends by reading back index.d.ts (which
+                        // still uses ESM syntax and drives the append-diff logic).
                         let dts_path = output_dir.join("index.d.ts");
-                        let index_content = if js_path.exists() {
-                            let existing = fs::read_to_string(&js_path).map_err(|e| {
-                                format!("Failed to read {}: {}", js_path.display(), e)
+                        let index_content = if dts_path.exists() {
+                            let existing = fs::read_to_string(&dts_path).map_err(|e| {
+                                format!("Failed to read {}: {}", dts_path.display(), e)
                             })?;
                             append_fn(&existing, &all_classes, &all_interfaces, &all_enums)
                         } else {
                             generate_fn(&all_classes, &all_interfaces, &all_enums)
                         };
-                        fs::write(&js_path, &index_content)
-                            .map_err(|e| format!("Failed to write {}: {}", js_path.display(), e))?;
-                        fs::write(&dts_path, &index_content).map_err(|e| {
-                            format!("Failed to write {}: {}", dts_path.display(), e)
-                        })?;
-                        // Clean up any stale `.index.ts` cache from older codegen versions
-                        let stale = output_dir.join(".index.ts");
-                        if stale.exists() {
-                            let _ = fs::remove_file(&stale);
-                        }
-                        println!("Generated {}", js_path.display());
+                        write_js_barrel_and_manifest(output_dir, &index_content)?;
                     }
                     if pyi {
                         let stub_code = dynwinrt_codegen::codegen::python_stub::generate_index_stub(
@@ -509,20 +501,7 @@ fn run() -> Result<(), String> {
                     } else {
                         let index_code =
                             typescript::generate_index(&all_classes, &all_interfaces, &all_enums);
-                        // Index files are pure re-exports — identical in JS and DTS
-                        let js_path = output_dir.join("index.js");
-                        let dts_path = output_dir.join("index.d.ts");
-                        fs::write(&js_path, &index_code)
-                            .map_err(|e| format!("Failed to write {}: {}", js_path.display(), e))?;
-                        fs::write(&dts_path, &index_code).map_err(|e| {
-                            format!("Failed to write {}: {}", dts_path.display(), e)
-                        })?;
-                        // Clean up any stale `.index.ts` cache from older codegen versions
-                        let stale = output_dir.join(".index.ts");
-                        if stale.exists() {
-                            let _ = fs::remove_file(&stale);
-                        }
-                        println!("Generated {}", js_path.display());
+                        write_js_barrel_and_manifest(output_dir, &index_code)?;
                     }
                 }
 
@@ -580,28 +559,33 @@ fn generate_for_types(
         doc_table.apply_to_enum(e);
     }
 
-    // Keep `known_types` and the barrel in sync with what
-    // `generate_js_files` actually emits — otherwise class files will
-    // `import` from sibling files that never landed on disk.
-    let __cls_names_l: HashSet<String> =
+    // Compute the set of interfaces `generate_js_files` will actually emit
+    // (matches the class-name-collision + no-IID filter there). Everything
+    // downstream — `known_types`, the barrel index, generated imports — must
+    // agree, or classes will try to `import` sibling files that never landed.
+    let class_names_all: HashSet<String> =
         all_classes.iter().map(|c| c.name.clone()).collect();
-    all_interfaces
-        .retain(|i| !i.iid.is_empty() && !__cls_names_l.contains(&i.name));
-    all_enums.retain(|e| match e {
-        TypeMeta::Enum { name, .. } => !__cls_names_l.contains(name),
-        _ => true,
-    });
+    let is_emittable_iface = |i: &meta::InterfaceMeta| -> bool {
+        !i.iid.is_empty() && !class_names_all.contains(&i.name)
+    };
+    let emittable_interfaces: Vec<meta::InterfaceMeta> = all_interfaces
+        .iter()
+        .filter(|i| is_emittable_iface(i))
+        .cloned()
+        .collect();
 
     let mut known_types: HashSet<String> = HashSet::new();
     for c in &all_classes {
         known_types.insert(c.name.clone());
     }
-    for i in &all_interfaces {
+    for i in &emittable_interfaces {
         known_types.insert(i.name.clone());
     }
     for e in &all_enums {
         if let TypeMeta::Enum { name, .. } = e {
-            known_types.insert(name.clone());
+            if !class_names_all.contains(name) {
+                known_types.insert(name.clone());
+            }
         }
     }
 
@@ -699,17 +683,27 @@ fn generate_js_files(
         Ok(())
     };
 
-    // An interface entry with no IID (typically a parameterized instantiation
-    // synthesized from a class type parameter) has no runtime binding — skip.
+    // Interfaces whose short name collides with a class in this batch would
+    // overwrite the class's UIElement.js / Button.js etc. Skip them; the
+    // parameterized instantiations that produce these entries are not
+    // themselves useful runtime bindings.
+    let class_names: HashSet<&str> = all_classes.iter().map(|c| c.name.as_str()).collect();
+
+    // Interface entries with no IID and no generic PIID are synthesized stubs
+    // (typically parameterized instantiations named after a class type
+    // parameter, e.g. `UIElement` from `IIterable<UIElement>`). They must not
+    // be emitted — the file would have a broken `registerInterface` call with
+    // no matching IID declaration and would overwrite any real class file of
+    // the same name.
     fn is_emittable_interface(iface: &meta::InterfaceMeta) -> bool {
         !iface.iid.is_empty()
     }
-    // If a class and an interface share a short name, the second one written
-    // overwrites the first. Prefer the class file.
-    let class_names: HashSet<&str> = all_classes.iter().map(|c| c.name.as_str()).collect();
 
     for iface in shared_interfaces {
-        if class_names.contains(iface.name.as_str()) || !is_emittable_interface(iface) {
+        if class_names.contains(iface.name.as_str()) {
+            continue;
+        }
+        if !is_emittable_interface(iface) {
             continue;
         }
         let projected = project::project_interface(
@@ -725,7 +719,10 @@ fn generate_js_files(
         emit(&iface.name, &js, &dts)?;
     }
     for iface in all_interfaces {
-        if class_names.contains(iface.name.as_str()) || !is_emittable_interface(iface) {
+        if class_names.contains(iface.name.as_str()) {
+            continue;
+        }
+        if !is_emittable_interface(iface) {
             continue;
         }
         let projected = project::project_interface(
@@ -755,9 +752,18 @@ fn generate_js_files(
             }
         }
     }
-    // "Usable" classes are activatable, statics-only, or extend a required
-    // interface. Everything else is a synthetic parameterized shell and gets
-    // a throwing stub so barrels still link.
+    // First pass: emit "real" classes. A class is emit-worthy if any of these
+    // hold:
+    //   * it has a default interface with a resolvable IID (normal
+    //     activatable / composable class), OR
+    //   * it has factory/statics interfaces (statics-only utility classes such
+    //     as `LimitedAccessFeatures`, `AICapabilities`, `PowerManager`), OR
+    //   * it has required or overridable methods callable on an inbound obj.
+    //
+    // Only synthetic parameterized "instantiations" (e.g. `IIterable<UIElement>`
+    // reprojected as a class stub) with nothing at all fall through to the
+    // stub-emission pass below.
+    let mut emitted_class_names: HashSet<String> = HashSet::new();
     let class_is_usable = |class: &meta::ClassMeta| -> bool {
         let has_default_iid = class
             .default_interface
@@ -768,7 +774,6 @@ fn generate_js_files(
         let has_required = !class.required_interfaces.is_empty();
         has_default_iid || has_statics_or_factory || has_required
     };
-    let mut emitted_class_names: HashSet<String> = HashSet::new();
     for class in all_classes {
         if !class_is_usable(class) {
             continue;
@@ -787,14 +792,24 @@ fn generate_js_files(
         emit(&class.name, &js, &dts)?;
         emitted_class_names.insert(class.name.clone());
     }
+    // Second pass: emit stubs for genuinely empty class shells (parameterized
+    // synthetics from the projection layer that carry no methods). Stubs keep
+    // ESM barrel imports linkable even when the underlying type isn't
+    // constructible at runtime.
     for class in all_classes {
-        if class_is_usable(class) || emitted_class_names.contains(&class.name) {
+        if class_is_usable(class) {
+            continue;
+        }
+        if emitted_class_names.contains(&class.name) {
             continue;
         }
         let stub_js = format!(
             "// Generated by dynwinrt-codegen \u{2014} do not edit\n\
+             // Placeholder for a class whose default interface has no IID in\n\
+             // the loaded winmd graph. Any attempt to use it will throw.\n\
              const __unavailable = () => {{ throw new Error(\"'{name}' has no default interface in the loaded winmd graph and cannot be constructed. Add its owning package to `additionalWinmds` / `additionalRefs`.\"); }};\n\
-             export class {name} {{ constructor() {{ __unavailable(); }} }}\n",
+             class {name} {{ constructor() {{ __unavailable(); }} }}\n\
+             exports.{name} = {name};\n",
             name = class.name,
         );
         let stub_dts = format!(
@@ -807,6 +822,356 @@ fn generate_js_files(
         );
         emit(&class.name, &stub_js, &stub_dts)?;
         emitted_class_names.insert(class.name.clone());
+    }
+
+    // Post-process: strip imports that reference non-existent sibling files.
+    // This handles cases where a class pulls in a type reference (e.g. WinUI XAML
+    // classes referencing Microsoft.UI.Composition types whose winmd was removed
+    // in later Windows App SDK versions) but the target file was never emitted.
+    // Rather than leave the entire binding set broken at load time, we drop the
+    // import — any methods that depended on that type will surface as runtime
+    // ReferenceErrors when actually called, but the module loads.
+    strip_broken_imports(output_dir)?;
+
+    Ok(())
+}
+
+/// Write the four barrel entries plus `package.json` alongside the per-type
+/// files already emitted into `output_dir`.
+///
+/// The four barrels are:
+///   * `index.js`         — CJS `Object.defineProperty` getter barrel — real
+///                          values, lazy, default for `require('@winapp/bindings')`.
+///   * `index.mjs`        — standard ESM re-export barrel — real values,
+///                          tree-shakable for bundlers.
+///   * `index.proxy.js`   — legacy CJS Proxy barrel — lexer-visible
+///                          `exports.X = ...` assignments for opt-in
+///                          compatibility via `@winapp/bindings/proxy`.
+///   * `index.d.ts`       — TypeScript declarations shared across every path.
+///
+/// After the barrels are on disk we run `strip_broken_imports` so any lazy
+/// getters referencing sibling modules that were filtered out during emission
+/// are removed cleanly. Then we scan the directory for real `.js` files (each
+/// one corresponds to a subpath consumer can deep-import) and emit a
+/// `package.json` with the conditional-exports map.
+fn write_js_barrel_and_manifest(output_dir: &Path, index_content: &str) -> Result<(), String> {
+    let js_path = output_dir.join("index.js");
+    let mjs_path = output_dir.join("index.mjs");
+    let proxy_path = output_dir.join("index.proxy.js");
+    let dts_path = output_dir.join("index.d.ts");
+    let pkg_json_path = output_dir.join("package.json");
+    let _ = index_content;
+
+    // Clean up any stale `.index.ts` cache from older codegen versions.
+    let stale = output_dir.join(".index.ts");
+    if stale.exists() {
+        let _ = fs::remove_file(&stale);
+    }
+    // Remove the previous opt-in getter barrel name if it exists from older
+    // generated output. `index.js` is now the getter barrel and
+    // `index.proxy.js` is the explicit compatibility path.
+    let stale_getter = output_dir.join("index.getter.js");
+    if stale_getter.exists() {
+        let _ = fs::remove_file(&stale_getter);
+    }
+
+    // Sweep index.js and any other files that still reference sibling modules
+    // that were skipped by class/interface filters during emission.
+    strip_broken_imports(output_dir)?;
+
+    // Build the barrel from what actually landed on disk rather than from raw
+    // metadata. This avoids root ESM/CJS barrels referencing files or helper
+    // exports that were filtered out (for example ref-only WinUI controls such
+    // as CompositionTarget).
+    let index_content = render_index_from_existing_js_files(output_dir)?;
+
+    let js_content = typescript::esm_index_to_cjs_getter(&index_content);
+    fs::write(&js_path, &js_content)
+        .map_err(|e| format!("Failed to write {}: {}", js_path.display(), e))?;
+
+    let mjs_content = typescript::esm_index_to_esm(&index_content);
+    fs::write(&mjs_path, &mjs_content)
+        .map_err(|e| format!("Failed to write {}: {}", mjs_path.display(), e))?;
+
+    let proxy_content = typescript::esm_index_to_cjs_lazy(&index_content);
+    fs::write(&proxy_path, &proxy_content)
+        .map_err(|e| format!("Failed to write {}: {}", proxy_path.display(), e))?;
+
+    fs::write(&dts_path, &index_content)
+        .map_err(|e| format!("Failed to write {}: {}", dts_path.display(), e))?;
+
+    // Now scan the directory for the concrete `.js` files that landed on
+    // disk — that's the authoritative subpath list for the manifest. We
+    // exclude the barrel entries themselves; everything else is a
+    // consumer-facing subpath.
+    let subpath_names = collect_subpath_names_from_dir(output_dir);
+    let pkg_json_content = render_package_json::render_package_json(
+        &render_package_json::PackageManifestInput { subpath_names: &subpath_names },
+    );
+    fs::write(&pkg_json_path, &pkg_json_content)
+        .map_err(|e| format!("Failed to write {}: {}", pkg_json_path.display(), e))?;
+
+    println!("Generated {}", js_path.display());
+    Ok(())
+}
+
+fn render_index_from_existing_js_files(output_dir: &Path) -> Result<String, String> {
+    let mut out = String::from("// Generated by dynwinrt-codegen \u{2014} do not edit\n");
+    // Two-pass so dedup is deterministic regardless of fs::read_dir order:
+    // pass 1 collects (stem, exports) and sorts by stem; pass 2 dedupes so
+    // the alphabetically-first module wins each shared symbol (interface
+    // files like `IStringable.js` win over classes that re-export the IID).
+    let mut candidates: Vec<(String, Vec<String>)> = Vec::new();
+    let entries = fs::read_dir(output_dir)
+        .map_err(|e| format!("Failed to read output directory {}: {}", output_dir.display(), e))?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(fname) = path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let Some(stem) = fname.strip_suffix(".js") else {
+            continue;
+        };
+        if matches!(stem, "index" | "index.proxy" | "index.getter") {
+            continue;
+        }
+        let content = match fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let mut names = collect_public_exports_from_js(&content);
+        names.sort();
+        names.dedup();
+        if names.is_empty() {
+            continue;
+        }
+        candidates.push((stem.to_string(), names));
+    }
+    // Prefer the canonical owner (module stem == export name) so shared
+    // symbols like `IMemoryBuffer` come from `IMemoryBuffer.js`, not from an
+    // alphabetically earlier consumer like `BitmapBuffer.js`.
+    let canonical: BTreeSet<String> = candidates
+        .iter()
+        .filter(|(stem, names)| names.iter().any(|n| n == stem))
+        .map(|(stem, _)| stem.clone())
+        .collect();
+    candidates.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut seen_exports: BTreeSet<String> = BTreeSet::new();
+    let mut modules: Vec<(String, Vec<String>)> = Vec::new();
+    for (stem, names) in candidates {
+        let filtered: Vec<String> = names
+            .into_iter()
+            .filter(|name| {
+                if canonical.contains(name) && name != &stem {
+                    return false;
+                }
+                seen_exports.insert(name.clone())
+            })
+            .collect();
+        if filtered.is_empty() {
+            continue;
+        }
+        modules.push((stem, filtered));
+    }
+    for (module, names) in modules {
+        out.push_str(&format!(
+            "export {{ {} }} from './{}.js';\n",
+            names.join(", "),
+            module
+        ));
+    }
+    Ok(out)
+}
+
+fn collect_public_exports_from_js(content: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    for line in content.lines() {
+        let line = line.trim_start();
+        let Some(rest) = line.strip_prefix("exports.") else {
+            continue;
+        };
+        let name: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '$')
+            .collect();
+        if name.is_empty() {
+            continue;
+        }
+        // Keep IIDs, parameter type arrays, and struct type descriptors scoped
+        // to their per-type modules. Root barrels should expose user-facing
+        // classes, enums, pack/unpack helpers, and interfaces only.
+        if name.starts_with("IID_") || name.ends_with("_PARAM_TYPES") || name.ends_with("_Type") {
+            continue;
+        }
+        names.push(name);
+    }
+    names
+}
+
+/// Enumerate the per-type `.js` files in `output_dir` and return their
+/// basenames (without extension) sorted alphabetically. Excludes barrel files
+/// (`index.js`, `index.mjs`, `index.proxy.js`, and legacy `index.getter.js`).
+/// Non-existent or unreadable
+/// directories return an empty set — the caller decides what to do.
+fn collect_subpath_names_from_dir(output_dir: &Path) -> BTreeSet<String> {
+    const BARREL_STEMS: &[&str] = &["index", "index.getter", "index.proxy"];
+    let mut names: BTreeSet<String> = BTreeSet::new();
+    let Ok(entries) = fs::read_dir(output_dir) else {
+        return names;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(fname) = path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        // Match `Foo.js` but NOT `Foo.d.ts` or `Foo.mjs`.
+        let Some(stem) = fname.strip_suffix(".js") else {
+            continue;
+        };
+        if BARREL_STEMS.iter().any(|b| stem == *b) {
+            continue;
+        }
+        names.insert(stem.to_string());
+    }
+    names
+}
+
+fn strip_broken_imports(output_dir: &Path) -> Result<(), String> {
+    use dynwinrt_codegen::codegen::project::get_import_name;
+    use std::collections::HashSet as StdHashSet;
+
+    let mut existing: StdHashSet<String> = StdHashSet::new();
+    if let Ok(read_dir) = fs::read_dir(output_dir) {
+        for entry in read_dir.flatten() {
+            if let Some(name) = entry.file_name().to_str() {
+                if let Some(stem) = name.strip_suffix(".js") {
+                    existing.insert(stem.to_string());
+                }
+            }
+        }
+    }
+
+    // If `--import-name ./runtime.js` was used, that stem is not one of the
+    // emitted modules but must not be stripped.
+    let runtime_name = get_import_name();
+    if let Some(runtime_stem) = runtime_name
+        .strip_prefix("./")
+        .and_then(|s| s.strip_suffix(".js").or(Some(s)))
+    {
+        existing.insert(runtime_stem.to_string());
+    }
+
+    // Three patterns to strip when the target sibling doesn't exist:
+    //
+    // 1. Legacy ESM import (in case render_esm output leaks through):
+    //      import { X } from './Foo.js';
+    //
+    // 2. CJS lazy loader triplet emitted by convert_to_cjs_with_lazy (class files):
+    //      let __m_Foo;
+    //      const __load_Foo = () => (__m_Foo ??= require('./Foo.js'));
+    //      const X = __lazy(__load_Foo, 'X');   // one per imported symbol
+    //
+    // 3. Index-level lazy exports emitted by esm_index_to_cjs_lazy:
+    //      exports.X = undefined;
+    //      Object.defineProperty(exports, 'X', { ... get() { return require('./Foo.js').X; } });
+    //      Both lines reference the same missing target and must go together.
+    let esm_import_re =
+        regex::Regex::new(r#"(?m)^import \{[^}]*\} from '\./([^']+)\.js';\r?\n"#)
+            .map_err(|e| format!("regex error: {}", e))?;
+
+    // Class-file lazy loader block. New shape:
+    //   let __m_Foo;
+    //   const __load_Foo = () => (__m_Foo ??= require('./Foo.js'));
+    //   const __get_X = () => __load_Foo().X;   // one per imported symbol
+    let cjs_lazy_re = regex::Regex::new(
+        r"(?ms)^let __m_[A-Za-z0-9_]+;\r?\nconst __load_[A-Za-z0-9_]+ = \(\) => \(__m_[A-Za-z0-9_]+ \?\?= require\('\./([^']+)\.js'\)\);\r?\n(?:const __get_[A-Za-z0-9_]+ = \(\) => __load_[A-Za-z0-9_]+\(\)\.[A-Za-z0-9_]+;\r?\n)*",
+    )
+    .map_err(|e| format!("regex error: {}", e))?;
+
+    // Class-file eager destructured require:
+    //   const { IID_X, X_PARAM_TYPES } = require('./Foo.js');
+    // Emitted alongside the lazy block for symbols the native runtime needs
+    // as concrete values (IIDs, DynWinRtType arrays, struct type descriptors).
+    let cjs_eager_re = regex::Regex::new(
+        r"(?m)^const \{[^}]+\} = require\('\./([^']+)\.js'\);\r?\n",
+    )
+    .map_err(|e| format!("regex error: {}", e))?;
+
+    // Index-file lazy export line emitted by `esm_index_to_cjs_lazy`:
+    //   { let _m; exports.NAME = __lazy(() => (_m ??= require('./Foo.js')).NAME); }
+    // captures the module basename in group 1.
+    let index_dp_re = regex::Regex::new(
+        r"(?m)^\{ let _m; exports\.[A-Za-z0-9_]+ = __lazy\(\(\) => \(_m \?\?= require\('\./([^']+)\.js'\)\)\.[A-Za-z0-9_]+\); \}\r?\n",
+    )
+    .map_err(|e| format!("regex error: {}", e))?;
+
+    let read_dir = match fs::read_dir(output_dir) {
+        Ok(r) => r,
+        Err(_) => return Ok(()),
+    };
+    for entry in read_dir.flatten() {
+        let path = entry.path();
+        let name = match path.file_name().and_then(|s| s.to_str()) {
+            Some(n) => n,
+            None => continue,
+        };
+        if !name.ends_with(".js") {
+            continue;
+        }
+        let content = match fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let mut changed = false;
+
+        // 1. CJS lazy loaders for missing targets (class files).
+        let filtered = cjs_lazy_re.replace_all(&content, |caps: &regex::Captures| {
+            let target = &caps[1];
+            if existing.contains(target) {
+                caps[0].to_string()
+            } else {
+                changed = true;
+                String::new()
+            }
+        });
+
+        // 1b. CJS eager destructured requires for missing sibling modules.
+        let filtered = cjs_eager_re.replace_all(&filtered, |caps: &regex::Captures| {
+            let target = &caps[1];
+            if existing.contains(target) {
+                caps[0].to_string()
+            } else {
+                changed = true;
+                String::new()
+            }
+        });
+
+        // 2. Index lazy-export lines. The new form has a single `{ let _m; ... }`
+        // block per export; captures the module basename.
+        let filtered = index_dp_re.replace_all(&filtered, |caps: &regex::Captures| {
+            let target = &caps[1];
+            if existing.contains(target) {
+                caps[0].to_string()
+            } else {
+                changed = true;
+                String::new()
+            }
+        });
+
+        // 3. Legacy ESM imports (defence-in-depth if pipeline ever emits ESM).
+        let filtered = esm_import_re.replace_all(&filtered, |caps: &regex::Captures| {
+            let target = &caps[1];
+            if existing.contains(target) {
+                caps[0].to_string()
+            } else {
+                changed = true;
+                String::new()
+            }
+        });
+        if changed {
+            fs::write(&path, filtered.as_bytes())
+                .map_err(|e| format!("Failed to write {}: {}", path.display(), e))?;
+        }
     }
     Ok(())
 }

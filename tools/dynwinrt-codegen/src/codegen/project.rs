@@ -23,7 +23,7 @@ pub fn set_import_name(name: &str) {
     RUNTIME_IMPORT_NAME.with(|n| *n.borrow_mut() = name.to_string());
 }
 
-fn get_import_name() -> String {
+pub fn get_import_name() -> String {
     RUNTIME_IMPORT_NAME.with(|n| n.borrow().clone())
 }
 
@@ -168,6 +168,7 @@ pub fn project_class(
                 from: format!("./{}.js", cname),
                 runtime_only: false,
                 dts_only: false,
+            is_runtime_package: false,
             });
         }
     }
@@ -181,6 +182,7 @@ pub fn project_class(
             from: format!("./{}.js", dname),
             runtime_only: true,
             dts_only: false,
+        is_runtime_package: false,
         });
         // DTS-only: import the delegate type alias (for typed param signatures)
         if delegate_sigs.contains_key(*dname) {
@@ -189,6 +191,7 @@ pub fn project_class(
                 from: format!("./{}.js", dname),
                 runtime_only: false,
                 dts_only: true,
+            is_runtime_package: false,
             });
         }
     }
@@ -200,9 +203,11 @@ pub fn project_class(
     sorted_imports
         .sort_by(|a, b| (&a.namespace, &a.name, &a.kind).cmp(&(&b.namespace, &b.name, &b.kind)));
     for r in &sorted_imports {
-        // Skip self-imports: `collect_type_imports` may surface the class's
-        // own primary interface, producing `import { X } from './X.js'` in
-        // `X.js` — a duplicate identifier at parse time.
+        // Never emit an import from the file that's currently being generated.
+        // `collect_type_imports` runs with `include_self_interfaces: true` so
+        // the class's own primary interface (which shares the class name) can
+        // appear here; letting it through emits `import { X } from './X.js'`
+        // in `X.js`, which ESM treats as a duplicate identifier at parse time.
         if r.name == class.name {
             continue;
         }
@@ -222,6 +227,7 @@ pub fn project_class(
                 from: format!("./{}.js", r.name),
                 runtime_only: false,
                 dts_only: true,
+            is_runtime_package: false,
             });
             imported_names.insert(r.name.clone());
         }
@@ -256,7 +262,7 @@ pub fn project_class(
     }
 
     // Preemptive IClosable import: `close()` (added later) references
-    // IClosable by name. Register before the IID-const loop so that loop
+    // IClosable by name. Register the import here so the IID-const loop below
     // sees `IID_IClosable` in `imported_names` and skips declaring it,
     // avoiding a duplicate identifier in single-class emission.
     let needs_iclosable = class.name != "IClosable"
@@ -274,7 +280,7 @@ pub fn project_class(
     }
 
     // IID consts(private, for class-internal use)
-    let mut iid_consts = Vec::new();
+    let mut iid_consts: Vec<ProjectedIidConst> = Vec::new();
     let all_class_ifaces: Vec<&InterfaceMeta> = class
         .default_interface
         .iter()
@@ -285,10 +291,13 @@ pub fn project_class(
     let mut declared_iids: HashSet<String> = HashSet::new();
     for iface in &all_class_ifaces {
         let iid_name = format!("IID_{}", iface.name);
-        if iface.iid.is_empty()
-            || declared_iids.contains(&iid_name)
-            || imported_names.contains(&iid_name)
-        {
+        if iface.iid.is_empty() {
+            continue;
+        }
+        if declared_iids.contains(&iid_name) {
+            continue;
+        }
+        if imported_names.contains(&iid_name) {
             continue;
         }
         iid_consts.push(ProjectedIidConst {
@@ -299,8 +308,11 @@ pub fn project_class(
         });
         declared_iids.insert(iid_name);
     }
-    // Export `IID_<ClassName>` = default interface IID, so a synthesized
-    // `import { IID_UIElement } from './UIElement.js'` resolves.
+    // Export `IID_<ClassName>` = default interface's IID, so downstream files that
+    // reference the class via a synthesized Interface typeref (e.g.
+    // `import { IID_UIElement, UIElement } from './UIElement.js'`) resolve to a
+    // valid COM QueryInterface IID. Without this, ESM import fails with
+    // "does not provide an export named IID_<ClassName>".
     if let Some(ref di) = class.default_interface {
         if !di.iid.is_empty() && di.name != class.name {
             let alias_name = format!("IID_{}", class.name);
@@ -318,8 +330,11 @@ pub fn project_class(
 
     // Interface registrations
     let mut registrations = Vec::new();
-    // Dedupe: an interface can appear as both default and required
-    // (e.g. `IFrameworkView` in `Windows.ApplicationModel.Core`).
+    // Track already-emitted registration variable names so we never emit the
+    // same `_IFoo` block twice — this defends against class metadata that
+    // lists the same interface (e.g. `IFrameworkView`) as both the class's
+    // default interface *and* one of its required interfaces (a well-known
+    // pattern in `Windows.ApplicationModel.Core`).
     let mut emitted_reg_vars: HashSet<String> = HashSet::new();
     let push_registration =
         |registrations: &mut Vec<String>, emitted: &mut HashSet<String>, iface: &InterfaceMeta| {
@@ -418,9 +433,15 @@ pub fn project_class(
     }
 
     // Factory methods
+    let has_explicit_create_factory = class.factory_interfaces.iter().any(|iface| {
+        iface.methods.iter().any(|m| {
+            let camel = to_camel_case(&m.name);
+            camel == "create"
+        })
+    });
     for iface in &class.factory_interfaces {
         for method in &iface.methods {
-            members.push(project_factory_method(
+            let projected = project_factory_method(
                 class,
                 iface,
                 method,
@@ -428,7 +449,33 @@ pub fn project_class(
                 &delegate_names,
                 delegate_sigs,
                 delegate_param_wraps,
-            ));
+            );
+            members.push(projected.clone());
+
+            // Composable factories commonly expose a no-argument
+            // `CreateInstance` method. Preserve the real API shape
+            // (`createInstance`) and add an ergonomic `create()` alias when
+            // there is no other explicit `create` factory/default constructor.
+            if !class.has_default_constructor
+                && !has_explicit_create_factory
+                && method.name == "CreateInstance"
+                && get_in_params(method).is_empty()
+            {
+                if let ProjectedMember::Method(mut alias) = projected {
+                    alias.name = "create".into();
+                    alias.doc = Some(DocInfo {
+                        summary: Some(format!(
+                            "Create a new `{}` instance. Alias for `createInstance()`.",
+                            class.name
+                        )),
+                        deprecated: None,
+                        returns: None,
+                        params: vec![],
+                    });
+                    alias.overload_of = None;
+                    members.push(ProjectedMember::Method(alias));
+                }
+            }
         }
     }
 
@@ -469,7 +516,6 @@ pub fn project_class(
     // Merge overload names in default interface members
     merge_overload_names(&mut members);
 
-    // IClosable → close()
     // IClosable → close()  (import already registered pre-emptively above)
     if class
         .required_interfaces
@@ -706,6 +752,7 @@ pub fn project_interface(
                 from: format!("./{}.js", cname),
                 runtime_only: false,
                 dts_only: false,
+            is_runtime_package: false,
             });
         }
     }
@@ -718,6 +765,7 @@ pub fn project_interface(
             from: format!("./{}.js", dname),
             runtime_only: true,
             dts_only: false,
+        is_runtime_package: false,
         });
     }
 
@@ -914,7 +962,9 @@ pub fn project_delegate(
         })
         .unwrap_or_default();
 
-    let iid_rhs = if !iface.iid.is_empty() {
+    let iid_rhs = if !iface.iid.is_empty() && iface.generic_args.is_empty() && iface.generic_piid.is_none() {
+        format!("WinGuid.parse('{}')", iface.iid)
+    } else if !iface.iid.is_empty() {
         format!(
             "DynWinRtType.parameterized(WinGuid.parse('{}'), [{}]).iid()",
             iface.iid,
@@ -939,6 +989,7 @@ pub fn project_delegate(
         from: get_import_name(),
         runtime_only: false,
         dts_only: false,
+    is_runtime_package: false,
     }];
     if let Some(ref_types) = delegate_sig_refs.get(&iface.name) {
         for rt in ref_types {
@@ -947,6 +998,7 @@ pub fn project_delegate(
                 from: format!("./{}.js", rt),
                 runtime_only: false,
                 dts_only: true,
+            is_runtime_package: false,
             });
         }
     }
@@ -1576,6 +1628,7 @@ fn project_event_add(
             Some(crate::meta::make_parameterized_name(name, args))
         }
         TypeMeta::Delegate { name, .. } => Some(name.clone()),
+        TypeMeta::Interface { name, .. } => Some(name.clone()),
         _ => None,
     });
     let suffix = method.name.strip_prefix("add_").unwrap_or(&method.name);
@@ -1758,6 +1811,7 @@ fn project_collection_helpers(
                         from: format!("./{}.js", ts_param_type_safe(arg, known_types)),
                         runtime_only: false,
                         dts_only: false,
+                    is_runtime_package: false,
                     });
                 }
             }
@@ -2341,6 +2395,7 @@ fn build_runtime_import(has_structs: bool) -> ProjectedImport {
         from: get_import_name(),
         runtime_only: false,
         dts_only: false,
+    is_runtime_package: true,
     }
 }
 
@@ -2351,6 +2406,7 @@ fn format_type_import_projected(name: &str, kind: TypeKind) -> ProjectedImport {
             from: format!("./{}.js", name),
             runtime_only: false,
             dts_only: false,
+        is_runtime_package: false,
         }
     } else {
         ProjectedImport {
@@ -2358,6 +2414,7 @@ fn format_type_import_projected(name: &str, kind: TypeKind) -> ProjectedImport {
             from: format!("./{}.js", name),
             runtime_only: false,
             dts_only: false,
+        is_runtime_package: false,
         }
     }
 }
@@ -2370,6 +2427,9 @@ fn collect_delegate_names_from_methods(
         for p in &method.params {
             match &p.typ {
                 TypeMeta::Delegate { name, .. } => {
+                    delegate_names.insert(name.clone());
+                }
+                TypeMeta::Interface { name, .. } if method.is_event_add || method.is_event_remove => {
                     delegate_names.insert(name.clone());
                 }
                 _ => {}

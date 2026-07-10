@@ -194,6 +194,10 @@ pub struct ProjectedImport {
     pub runtime_only: bool,
     /// true = DTS only (type aliases), not in JS
     pub dts_only: bool,
+    /// true = the dynwinrt runtime package (`@microsoft/dynwinrt` or the
+    /// `--import-name` override); prevents ESM->CJS conversion from
+    /// misclassifying it as a sibling module.
+    pub is_runtime_package: bool,
 }
 
 /// Disposition of a required interface.

@@ -57,10 +57,3 @@ try {
 } catch (e) {
   process.exit(e.status ?? 1);
 }
-
-// Write a sub-package.json "type marker" so consumer projects that don't have
-// `"type": "module"` at their root still parse the emitted `.js` files as ESM,
-// avoiding Node's MODULE_TYPELESS_PACKAGE_JSON reparse warning.
-if (isGenerate && !isHelp && !isDryRun && fs.existsSync(outputDir)) {
-  fs.writeFileSync(path.join(outputDir, "package.json"), '{ "type": "module" }\n');
-}
