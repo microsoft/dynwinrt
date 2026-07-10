@@ -153,7 +153,22 @@ pub fn parse_namespace(winmd_paths: &str, namespace: &str) -> Vec<ClassMeta> {
             Some(e) => e,
             None => continue,
         };
-        if extends.namespace() != "System" || extends.name() != "Object" {
+        // A WinRT runtime class either extends System.Object directly or extends
+        // another WinRT class (WinUI XAML classes: Button -> ButtonBase ->
+        // ContentControl -> ... -> UIElement -> DependencyObject). Filter out
+        // structs/enums/interfaces (which extend System.ValueType, System.Enum,
+        // or nothing) but keep any class that extends a real WinRT type.
+        let extends_system_object = extends.namespace() == "System" && extends.name() == "Object";
+        let extends_winrt_class = !matches!(
+            (extends.namespace(), extends.name()),
+            ("System", "Object")
+                | ("System", "ValueType")
+                | ("System", "Enum")
+                | ("System", "Delegate")
+                | ("System", "MulticastDelegate")
+                | ("System", _)
+        );
+        if !extends_system_object && !extends_winrt_class {
             continue;
         }
 
