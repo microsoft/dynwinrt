@@ -54,7 +54,7 @@ npx dynwinrt-codegen generate \
 | `--namespace NAMESPACE` | WinRT namespace to generate (omit for all non-`Windows.*` namespaces) |
 | `--class-name CLASS` | Specific class (transitively pulls in dependencies) |
 | `--ref PATH` | Additional `.winmd` files for type resolution only (no code emitted) |
-| `--lang js` | Target language (currently `js` only) |
+| `--lang LANG` | `js` (default, emits `.js` + `.d.ts`) or `py` (Python) |
 | `--output DIR` | Output directory (default `./generated`) |
 | `--dry-run` | Validate input, don't write files |
 

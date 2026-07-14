@@ -73,12 +73,12 @@ A CLI tool parses `.winmd` files to generate **non-native** code (pure `.js` or 
 The usage workflow involves two stages:
 
 ### Step 1: Runtime Distribution
-The runtime is distributed as a generic library for the target language (e.g., `pip install lazy-winrt`).
+The runtime is distributed as a generic library for the target language (e.g., `npm install @microsoft/dynwinrt` or `pip install dynwinrt`).
 
 ### Step 2: Projection Usage
 Developers have two options for using the projection:
 1.  **Direct Usage**: The runtime directly supports runtime interface specifications. Developers can use libraries directly by lazily loading namespaces with distributed WinMDs. The runtime parses the WinMDs and generates necessary interface shapes on the fly.
-2.  **Generated Bindings**: Alternatively, developers can execute a tool (e.g., `npx lazy-winrt-gen`) to generate bindings and types specifically for the WinMDs they intend to use.
+2.  **Generated Bindings**: Alternatively, developers can execute a tool (e.g., `npx dynwinrt-codegen generate ...`) to generate bindings and types specifically for the WinMDs they intend to use.
 
 ## Performance Considerations
 
@@ -97,12 +97,13 @@ The runtime provides a minimal representation of WinRT types and values, along w
 ### Runtime Interface Specification Example
 
 TypeScript interface as demonstrated below,
-thus with the minimum runtime provided by the `lazy-winrt`,
+thus with the minimum runtime provided by `@microsoft/dynwinrt`,
 all WinRT APIs can be specified and invoked dynamically using the target language.
 
+> Illustrative sketch only — the runtime API surface actually shipped is `DynWinRtType` / `DynWinRtValue` / `DynWinRtMethodHandle`, described in `bindings/js/README.md`. The `WinRT.Interface({...})` shape below is design-language pseudocode kept for historical continuity with the original Lazy-WinRT prototype.
 
 ```ts
-import { WinRT } from "lazy-winrt";
+import { WinRT } from "@microsoft/dynwinrt";
 
 const UriInterface = WinRT.Interface({
   namespace: "Windows.Foundation",
@@ -167,7 +168,6 @@ HRESULT Method_Out_Pointer(void* funPtr, ComPtr self, void* outValue) {
 
 *   **Legacy JS Projection**: Historical JavaScript applications utilized a dynamic projection where the runtime read WinMDs, achieving acceptable performance.
 *   [PyWinRT](https://github.com/pywinrt/pywinrt) Static C++/WinRT-based projections demonstrated significant versioning and distribution challenges.
-*  [lazy-winrt](https://github.com/JesseCol/lazy-winrt) **"Lazy-WinRT" Prototype**: This prototype validated the feasibility and potential performance of parsing WinMDs and invoking methods dynamically 
-*  dynwinrt: A Rust-based implementation inspired by Lazy-WinRT, leveraging `napi-rs` and `PyO3` to facilitate integration with JavaScript and Python.
-* [dynwinrt](https://github.com/microsoft/dynwinrt) — Core runtime, JS/Python bindings, and code generation tool
+*  [lazy-winrt](https://github.com/JesseCol/lazy-winrt) **"Lazy-WinRT" Prototype**: This prototype validated the feasibility and potential performance of parsing WinMDs and invoking methods dynamically.
+*  [dynwinrt](https://github.com/microsoft/dynwinrt) — Rust-based implementation inspired by Lazy-WinRT. Ships the core runtime, JS bindings via `napi-rs`, Python bindings via `PyO3`, and the `dynwinrt-codegen` code-generation tool.
 

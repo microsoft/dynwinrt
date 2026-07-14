@@ -175,8 +175,12 @@ let result = value.wait()?;
 ## Known Limitations
 
 - Delegate callbacks support up to 2 ABI parameters (covers ~95% of WinRT delegates)
-- No DispatcherQueue / XAML hosting support (data APIs only, no UI framework)
-- Python binding does not yet support async/await integration with asyncio
+- No DispatcherQueue / XAML hosting support (data APIs only, no UI framework) — WinUI-style controls need composition/aggregation of runtime classes, which the codegen skips (see composable `.ctor` note in `TODO.md`)
+- Python binding does not yet support async/await integration with `asyncio`
+
+## Environment Setup — updated invariant
+
+`initialize_winappsdk()` currently `.expect(...)`s the `WINAPPSDK_BOOTSTRAP_DLL_PATH` environment variable at `crates/dynwinrt/src/winapp.rs:43`. Auto-detection from `~/.winapp/packages/`, `~/.nuget/packages/microsoft.windowsappsdk.*/`, and Program Files install paths is tracked in `TODO.md` P0.
 
 ## Implementation Notes
 

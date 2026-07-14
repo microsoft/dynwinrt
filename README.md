@@ -93,7 +93,7 @@ cargo run   -p dynwinrt-codegen -- generate --namespace Windows.Foundation --cla
 | `--namespace NAMESPACE` | No | WinRT namespace to generate (omit for all non-`Windows.*` namespaces) |
 | `--class-name CLASS` | No | Specific class (transitively pulls in dependencies) |
 | `--ref PATH` | No | Additional `.winmd` files for type resolution only (no code emitted) |
-| `--lang js` | No | Target language (currently `js` only — emits `.js` + `.d.ts`) |
+| `--lang LANG` | No | `js` (default, emits `.js` + `.d.ts`) or `py` (emits `.py`, optionally `.pyi` via `--pyi`) |
 | `--output DIR` | No | Output directory (default `./generated`) |
 | `--dry-run` | No | Validate input, don't write files |
 

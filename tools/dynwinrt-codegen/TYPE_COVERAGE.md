@@ -5,7 +5,7 @@ This document describes how each WinRT type is handled across the three layers:
 
 ## Overview
 
-The codegen reads WinRT metadata (.winmd) and generates TypeScript bindings. Each WinRT type needs to be handled in four directions:
+The codegen reads WinRT metadata (.winmd) and generates JavaScript bindings with ambient TypeScript declarations (`.d.ts`). Each WinRT type needs to be handled in four directions:
 
 1. **Method parameter** (JS -> WinRT): `wrap_arg()` wraps JS value into `DynWinRtValue`
 2. **Method return** (WinRT -> JS): `convert_return()` extracts JS value from `DynWinRtValue`

@@ -1,6 +1,6 @@
 # End-to-End Test: FileOpenPicker
 
-This guide walks through a full end-to-end test of the dynwinrt-codegen pipeline, from cloning the repo to opening a file picker dialog in TypeScript.
+This guide walks through a full end-to-end test of the dynwinrt-codegen pipeline, from cloning the repo to opening a file picker dialog. The codegen emits plain ESM JavaScript (`.js`) plus ambient TypeScript declarations (`.d.ts`), so the same generated output works from both `node` and `tsx`.
 
 ## Prerequisites
 
@@ -12,13 +12,11 @@ This guide walks through a full end-to-end test of the dynwinrt-codegen pipeline
 
 **Finding the WinAppSDK winmd:**
 
-The WinAppSDK `.winmd` files are typically found at:
+The WinAppSDK `.winmd` files are typically found under a NuGet restore or a `winapp` cache:
+
 ```
-~/.nuget/packages/microsoft.windowsappsdk.foundation/1.8.*/metadata/
-```
-or if you have lazy-winrt checked out:
-```
-lazy-winrt/packages/Microsoft.WindowsAppSDK.Foundation.1.8.*/metadata/
+~/.nuget/packages/microsoft.windowsappsdk.foundation/<version>/metadata/
+~/.winapp/packages/Microsoft.WindowsAppSDK.<Component>.<version>/metadata/
 ```
 
 ## Step 1: Build everything
@@ -56,9 +54,9 @@ Create `package.json`:
 npm install
 ```
 
-## Step 3: Generate TypeScript bindings
+## Step 3: Generate bindings
 
-Windows SDK `Windows.winmd` is auto-detected from `C:\Program Files (x86)\Windows Kits\10\UnionMetadata\`. Only the target WinAppSDK winmd needs to be specified:
+Windows SDK `Windows.winmd` is auto-detected from `C:\Program Files (x86)\Windows Kits\10\UnionMetadata\`. Only the target WinAppSDK winmd needs to be specified. `--lang js` is the default and emits `.js` plus `.d.ts`:
 
 ```bash
 cd ../../dynwinrt
@@ -67,35 +65,21 @@ cargo run -p dynwinrt-codegen --release -- generate \
   --winmd "<path-to>/Microsoft.Windows.Storage.Pickers.winmd" \
   --namespace "Microsoft.Windows.Storage.Pickers" \
   --class-name "FileOpenPicker" \
-  --lang ts \
   --output ../test-winmd/test-picker/generated
 ```
 
-Expected output:
-```
-Auto-detected Windows SDK: C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd
-Generated .../IVector_String.ts
-Generated .../IVectorView_PickFileResult.ts
-Generated .../IVectorView_String.ts
-Generated .../PickerLocationId.ts
-Generated .../PickerViewMode.ts
-Generated .../FileOpenPicker.ts
-Generated .../PickFileResult.ts
-Generated .../_collections.ts
-Generated .../index.ts
-Done. 2 class(es) + 3 interface(s) + 2 enum(s) generated
-```
+Each generated symbol produces both a `.js` module and a matching `.d.ts` (e.g. `FileOpenPicker.js` + `FileOpenPicker.d.ts`), plus an `index.js` / `index.d.ts` re-exporting everything.
 
-Parameterized collection interfaces (e.g. `IVector<String>`) are automatically instantiated from `Windows.winmd` as concrete types like `IVector_String.ts`.
+Parameterized collection interfaces (e.g. `IVector<String>`) are automatically instantiated from `Windows.winmd` as concrete types like `IVector_String.js` / `.d.ts`.
 
 ## Step 4: Write test script
 
-Create `test_picker.ts` in the test project:
+Create `test_picker.ts` in the test project (TypeScript here — the same imports work from plain `.js` too, since the generated modules are ESM JavaScript with adjacent `.d.ts` declarations):
 
 ```typescript
 import { initWinappsdk, DynWinRtValue } from '@microsoft/dynwinrt'
-import { FileOpenPicker } from './generated/FileOpenPicker'
-import { PickerViewMode } from './generated/PickerViewMode'
+import { FileOpenPicker } from './generated/FileOpenPicker.js'
+import { PickerViewMode } from './generated/PickerViewMode.js'
 
 async function main() {
     initWinappsdk(1, 8)
