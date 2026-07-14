@@ -389,6 +389,14 @@ pub(crate) fn resolve_type_name(name: &str, _deferred: &HashSet<String>) -> Stri
     ref_marker(name)
 }
 
+fn wrap_nullable_return(expr: &str, wrapper: &str) -> String {
+    format!("((v) => v.isNull() ? null : new {}(v))({})", wrapper, expr)
+}
+
+fn unwrap_nullable_return(expr: &str) -> String {
+    format!("((v) => v.isNull() ? null : v)({})", expr)
+}
+
 /// Convert an array return expression to the appropriate JS array type.
 pub(crate) fn convert_array_return(
     arr_expr: &str,
@@ -420,11 +428,35 @@ pub(crate) fn convert_array_return(
         }
         TypeMeta::RuntimeClass { name, .. } if known_types.contains(name) => {
             let r = resolve_type_name(name, deferred);
-            format!("{}.toValues().map(v => new {}(v))", arr_expr, r)
+            format!(
+                "{}.toValues().map(v => v.isNull() ? null : new {}(v))",
+                arr_expr, r
+            )
         }
         TypeMeta::Interface { name, .. } if known_types.contains(name) => {
             let r = resolve_type_name(name, deferred);
-            format!("{}.toValues().map(v => new {}(v))", arr_expr, r)
+            format!(
+                "{}.toValues().map(v => v.isNull() ? null : new {}(v))",
+                arr_expr, r
+            )
+        }
+        TypeMeta::Parameterized { name, args, .. } => {
+            let concrete = crate::meta::make_parameterized_name(name, args);
+            if known_types.contains(&concrete) {
+                let r = resolve_type_name(&concrete, deferred);
+                format!(
+                    "{}.toValues().map(v => v.isNull() ? null : new {}(v))",
+                    arr_expr, r
+                )
+            } else {
+                format!("{}.toValues().map(v => v.isNull() ? null : v)", arr_expr)
+            }
+        }
+        TypeMeta::Object
+        | TypeMeta::Delegate { .. }
+        | TypeMeta::RuntimeClass { .. }
+        | TypeMeta::Interface { .. } => {
+            format!("{}.toValues().map(v => v.isNull() ? null : v)", arr_expr)
         }
         _ => format!("{}.toValues()", arr_expr),
     }
@@ -463,23 +495,26 @@ pub(crate) fn convert_return(
         Some(TypeMeta::Enum { .. }) => format!("{}.toNumber()", expr),
         Some(TypeMeta::RuntimeClass { name, .. }) if known_types.contains(name) => {
             let r = resolve_type_name(name, deferred);
-            format!("new {}({})", r, expr)
+            wrap_nullable_return(expr, &r)
         }
         Some(TypeMeta::Struct { name, .. }) if name == "HResult" => format!("{}.toNumber()", expr),
         Some(TypeMeta::Struct { name, .. }) => format!("_unpack{}({})", name, expr),
-        Some(TypeMeta::Delegate { .. }) => expr.to_string(),
+        Some(TypeMeta::Object | TypeMeta::Delegate { .. }) => unwrap_nullable_return(expr),
         Some(TypeMeta::Interface { name, .. }) if known_types.contains(name) => {
             let r = resolve_type_name(name, deferred);
-            format!("new {}({})", r, expr)
+            wrap_nullable_return(expr, &r)
         }
         Some(TypeMeta::Parameterized { name, args, .. }) => {
             let concrete = crate::meta::make_parameterized_name(name, args);
             if known_types.contains(&concrete) {
                 let r = resolve_type_name(&concrete, deferred);
-                format!("new {}({})", r, expr)
+                wrap_nullable_return(expr, &r)
             } else {
-                expr.to_string()
+                unwrap_nullable_return(expr)
             }
+        }
+        Some(TypeMeta::RuntimeClass { .. } | TypeMeta::Interface { .. }) => {
+            unwrap_nullable_return(expr)
         }
         Some(TypeMeta::Array(inner)) => {
             let arr_expr = format!("{}.asArray()", expr);

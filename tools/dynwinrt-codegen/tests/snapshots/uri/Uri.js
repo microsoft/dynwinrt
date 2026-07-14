@@ -137,7 +137,7 @@ class Uri {
         return _IUriRuntimeClass.method(14).invoke(this._obj, []).toString();
     }
     get queryParsed() {
-        return new (__get_WwwFormUrlDecoder())(_IUriRuntimeClass.method(15).invoke(this._obj, []));
+        return ((v) => v.isNull() ? null : new (__get_WwwFormUrlDecoder())(v))(_IUriRuntimeClass.method(15).invoke(this._obj, []));
     }
     get rawUri() {
         return _IUriRuntimeClass.method(16).invoke(this._obj, []).toString();
@@ -158,7 +158,7 @@ class Uri {
         return _IUriRuntimeClass.method(21).invoke(this._obj, [(pUri == null ? DynWinRtValue.nullValue() : _unwrap(pUri))]).toBool();
     }
     combineUri(relativeUri) {
-        return new Uri(_IUriRuntimeClass.method(22).invoke(this._obj, [DynWinRtValue.hstring(relativeUri)]));
+        return ((v) => v.isNull() ? null : new Uri(v))(_IUriRuntimeClass.method(22).invoke(this._obj, [DynWinRtValue.hstring(relativeUri)]));
     }
     toString() {
         return IStringable.from(this._obj).toString();

@@ -255,7 +255,21 @@ mod tests {
         // Refs come out as `__DWRT_REF__<name>__`; render layer rewrites.
         assert_eq!(
             convert_return("r", Some(&rt), false, &known, &deferred),
-            "new __DWRT_REF__Uri__(r)"
+            "((v) => v.isNull() ? null : new __DWRT_REF__Uri__(v))(r)"
+        );
+    }
+
+    #[test]
+    fn convert_return_with_unknown_class_preserves_non_null_raw_values() {
+        let rt = TypeMeta::RuntimeClass {
+            namespace: "Windows.Foundation".into(),
+            name: "Uri".into(),
+            default_iid: "abc".into(),
+        };
+
+        assert_eq!(
+            convert_return("r", Some(&rt), false, &HashSet::new(), &HashSet::new()),
+            "((v) => v.isNull() ? null : v)(r)"
         );
     }
 
