@@ -539,6 +539,23 @@ fn render_member_js(out: &mut String, member: &ProjectedMember, _class_name: &st
                 out.push_str(&format!("        const unsub = this.{}((...args) => {{ unsub(); callback(...args); }});\n", event.subscribe_name));
                 out.push_str("        return unsub;\n");
                 out.push_str("    }\n");
+
+                // offXxx — token-based unsubscribe. DTS advertises this even
+                // when the event has both add and remove; keep JS in sync so
+                // consumers who saved the raw token can call off explicitly.
+                if let Some(idx) = event.remove_vtable_index {
+                    let event_name = event
+                        .subscribe_name
+                        .strip_prefix("on")
+                        .unwrap_or(&event.subscribe_name);
+                    let off_name = format!("off{}", event_name);
+                    out.push_str(&format!("    {}(token) {{\n", off_name));
+                    out.push_str(&format!(
+                        "        {}.method({}).invoke({}, [token]);\n",
+                        event.remove_iface_var, idx, event.remove_obj_expr
+                    ));
+                    out.push_str("    }\n");
+                }
             }
             // Unsubscribe (offX) — standalone event remove
             if event.subscribe_name.is_empty() && !event.unsubscribe_name.is_empty() {

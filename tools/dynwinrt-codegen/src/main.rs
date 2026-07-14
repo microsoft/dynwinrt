@@ -30,7 +30,7 @@ use dynwinrt_codegen::xml_doc::DocTable;
     # Generate a single namespace (siblings auto-discovered)\n\
     dynwinrt-codegen generate --winmd path\\to\\Microsoft.Windows.AI.Imaging.winmd --namespace Microsoft.Windows.AI.Imaging\n\n\
     # Generate a single class\n\
-    dynwinrt-codegen generate --namespace Windows.Foundation --class Uri\n\n\
+    dynwinrt-codegen generate --namespace Windows.Foundation --class-name Uri\n\n\
     # Custom output directory\n\
     dynwinrt-codegen generate --folder path\\to\\metadata --output ./src/generated")]
 struct Cli {
@@ -80,7 +80,7 @@ enum Commands {
         namespace: Option<String>,
 
         /// Generate bindings for specific class(es), comma-separated (requires --namespace).
-        /// E.g. --class Uri or --class StorageFile,StorageFolder
+        /// E.g. --class-name Uri or --class-name StorageFile,StorageFolder
         #[arg(long, name = "class", value_name = "NAME")]
         class_name: Option<String>,
 
@@ -256,7 +256,7 @@ fn run() -> Result<(), String> {
                 // Class mode: supports comma-separated list (e.g. "StorageFile,StorageFolder")
                 let ns = namespace
                     .as_deref()
-                    .ok_or("--namespace is required when --class is specified")?;
+                    .ok_or("--namespace is required when --class-name is specified")?;
                 let class_names: Vec<&str> = cls_arg
                     .split(',')
                     .map(|s| s.trim())

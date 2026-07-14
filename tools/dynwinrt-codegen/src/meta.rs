@@ -714,6 +714,51 @@ fn parse_class_from_index(index: &reader::Index, namespace: &str, name: &str) ->
         }
     }
 
+    // 1a. Walk ancestor classes and inherit their interfaces. In WinRT the runtime
+    // reaches parent-class members via QI on the child instance — but each parent's
+    // interface_impls are only listed on the parent's TypeDef, not repeated on the
+    // child. So we walk def.extends() ourselves and flatten every non-generic
+    // ancestor interface onto this class's required_interfaces. Without this,
+    // Button.background (from Control), ScrollViewer.content (from ContentControl),
+    // and every other inherited member is silently absent from the wrapper class.
+    let default_iface_key = default_interface
+        .as_ref()
+        .map(|d| (d.namespace.clone(), d.name.clone()));
+    let mut ancestor_key: Option<(String, String)> = def
+        .extends()
+        .map(|e| (e.namespace().to_string(), e.name().to_string()));
+    while let Some((ext_ns, ext_name)) = ancestor_key.take() {
+        if ext_ns == "System" && ext_name == "Object" {
+            break;
+        }
+        let parent_def = match index.get(&ext_ns, &ext_name).next() {
+            Some(d) => d,
+            None => break,
+        };
+        for iface_impl in parent_def.interface_impls() {
+            let iface_ty = iface_impl.interface(&[]);
+            if let windows_metadata::Type::Name(tn) = &iface_ty {
+                // Skip generic instantiations — parse_interface can't substitute
+                // args here, and their flavor-specific files (IVector_T.js etc.)
+                // are already emitted separately for explicit casts.
+                if !tn.generics.is_empty() {
+                    continue;
+                }
+                let key = (tn.namespace.clone(), tn.name.clone());
+                if default_iface_key.as_ref() == Some(&key) {
+                    continue;
+                }
+                if required_iface_names.iter().any(|k| k == &key) {
+                    continue;
+                }
+                required_iface_names.push(key);
+            }
+        }
+        ancestor_key = parent_def
+            .extends()
+            .map(|e| (e.namespace().to_string(), e.name().to_string()));
+    }
+
     // 1b. Parse required interfaces (e.g. ILanguageModel2, versioned interfaces)
     // These contain instance methods accessible on the class, but on separate COM interfaces.
     let mut required_interfaces: Vec<InterfaceMeta> = Vec::new();
@@ -1229,7 +1274,15 @@ fn resolve_named_type(
         if extends.namespace() == "System" && extends.name() == "Enum" {
             return parse_enum_def(&def);
         }
-        if extends.namespace() == "System" && extends.name() == "Object" {
+        // Any WinRT class extends System.Object directly, or extends another
+        // WinRT class (WinUI XAML: Button -> ButtonBase -> ... -> DependencyObject).
+        // Only structs/enums/delegates hit the branches above; everything else
+        // with an Extends is a runtime class.
+        let is_delegate = matches!(
+            (extends.namespace(), extends.name()),
+            ("System", "Delegate") | ("System", "MulticastDelegate")
+        );
+        if !is_delegate {
             if let Some(default_type) = find_default_interface_type(&def, index) {
                 if default_type.is_async() {
                     return default_type;

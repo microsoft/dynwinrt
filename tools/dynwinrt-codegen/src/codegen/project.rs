@@ -354,12 +354,11 @@ pub fn project_class(
         push_registration(&mut registrations, &mut emitted_reg_vars, iface);
     }
     for iface in &class.required_interfaces {
-        if !iface.iid.is_empty()
-            && shared_iids.contains(&iface.iid)
-            && imported_names.contains(&iface.name)
-        {
-            continue;
-        }
+        // Register locally regardless of shared/imported status — the flatten
+        // step below references `_<InterfaceName>.method(...)` in every method
+        // body, so the registration must exist in this file. `registerInterface`
+        // is idempotent in the runtime (dedup by IID), so re-registering a
+        // shared interface across files is safe.
         push_registration(&mut registrations, &mut emitted_reg_vars, iface);
     }
 
@@ -605,9 +604,7 @@ pub fn project_class(
         if req_iface.iid.is_empty() {
             continue;
         }
-        if imported_names.contains(&req_iface.name) {
-            continue;
-        }
+        let is_imported = imported_names.contains(&req_iface.name);
 
         let reg_var = format!("_{}", req_iface.name);
         let mut ri_members = Vec::new();
@@ -630,19 +627,22 @@ pub fn project_class(
         }
 
         // Also build members with this._obj for the standalone interface class
+        // (only emitted when we produce an inline wrapper below).
         let mut ri_own_members = Vec::new();
-        for method in &req_iface.methods {
-            if let Some(m) = project_instance_method(
-                &reg_var,
-                "this._obj",
-                method,
-                known_types,
-                &delegate_names,
-                Some(&req_iface.methods),
-                delegate_sigs,
-                delegate_param_wraps,
-            ) {
-                ri_own_members.push(m);
+        if !is_imported {
+            for method in &req_iface.methods {
+                if let Some(m) = project_instance_method(
+                    &reg_var,
+                    "this._obj",
+                    method,
+                    known_types,
+                    &delegate_names,
+                    Some(&req_iface.methods),
+                    delegate_sigs,
+                    delegate_param_wraps,
+                ) {
+                    ri_own_members.push(m);
+                }
             }
         }
 
@@ -650,6 +650,11 @@ pub fn project_class(
         merge_overload_names(&mut ri_members);
 
         // Flatten: copy members onto the main class.
+        // Always flatten, even when the interface is shared/imported — the
+        // imported .js file gives users an escape hatch (`new IContentControl(x)...`),
+        // but the main class must still expose inherited members directly so that
+        // e.g. `button.background = ...` (from Control) reaches the underlying COM
+        // vtable instead of silently creating a JS-only field.
         // Allow multiple methods with the same name (overloads).
         for member in &ri_members {
             let name = match member {
@@ -676,15 +681,20 @@ pub fn project_class(
             }
         }
 
-        required_ifaces.push(ProjectedRequiredIface {
-            name: req_iface.name.clone(),
-            iid: req_iface.iid.clone(),
-            disposition: RequiredIfaceDisposition::InlineWrapper,
-            members: ri_own_members,
-            registration: None,
-            has_static_from: true,
-            has_parameterized_cast: false,
-        });
+        // Inline wrapper class inside this file — only when the interface is NOT
+        // imported from a shared IContentControl.js. When imported, downstream
+        // code uses that standalone file's class instead.
+        if !is_imported {
+            required_ifaces.push(ProjectedRequiredIface {
+                name: req_iface.name.clone(),
+                iid: req_iface.iid.clone(),
+                disposition: RequiredIfaceDisposition::InlineWrapper,
+                members: ri_own_members,
+                registration: None,
+                has_static_from: true,
+                has_parameterized_cast: false,
+            });
+        }
     }
 
     // Merge overloaded method names: rename `foo2`, `foo3` to `foo` when `foo` exists.
