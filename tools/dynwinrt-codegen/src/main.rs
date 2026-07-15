@@ -272,6 +272,7 @@ fn run() -> Result<(), String> {
                         None => return Err(format!("Class {}.{} not found in {}", ns, cls, winmd)),
                     }
                 }
+                add_implicit_js_types(&winmd, &lang, &mut classes);
                 generate_for_types(
                     &winmd,
                     output_dir,
@@ -414,6 +415,7 @@ fn run() -> Result<(), String> {
                     let mut classes = meta::parse_namespace(&winmd, ns);
                     let mut interfaces = meta::parse_interfaces(&winmd, ns);
                     let mut enums = meta::parse_enums(&winmd, ns);
+                    add_implicit_js_types(&winmd, &lang, &mut classes);
                     for c in classes.iter_mut() {
                         doc_table.apply_to_class(c);
                     }
@@ -523,6 +525,32 @@ fn run() -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn add_implicit_js_types(winmd: &str, lang: &str, classes: &mut Vec<meta::ClassMeta>) {
+    if lang != "js"
+        || !classes
+            .iter()
+            .any(|class| class.full_name == "Microsoft.UI.Xaml.Application")
+    {
+        return;
+    }
+
+    for (namespace, name) in [
+        (
+            "Microsoft.UI.Xaml.XamlTypeInfo",
+            "XamlControlsXamlMetaDataProvider",
+        ),
+        ("Microsoft.UI.Xaml.Controls", "XamlControlsResources"),
+    ] {
+        let full_name = format!("{}.{}", namespace, name);
+        if classes.iter().any(|class| class.full_name == full_name) {
+            continue;
+        }
+        if let Some(class) = meta::parse_class(winmd, namespace, name) {
+            classes.push(class);
+        }
+    }
 }
 
 /// Generate files for a set of types plus their transitive dependencies.

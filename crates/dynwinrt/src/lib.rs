@@ -11,6 +11,7 @@ mod roapi;
 mod signature;
 mod value;
 mod winapp;
+mod xaml_application;
 
 mod array;
 #[macro_use]
@@ -29,6 +30,7 @@ pub use crate::metadata_table::{TypeHandle, TypeKind, MetadataTable, MethodHandl
 pub use crate::array::ArrayData;
 pub use crate::value::WinRTValue;
 pub use crate::winapp::{WinAppSdkContext, initialize_winappsdk};
+pub use crate::xaml_application::create_xaml_application;
 pub use crate::dasync::{create_progress_handler, ProgressCallback};
 pub use interfaces::uri_vtable;
 

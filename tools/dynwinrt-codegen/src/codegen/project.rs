@@ -51,6 +51,10 @@ const PIID_IMAP: &str = "3c2925fe-8519-45c1-aa79-197b6718c1c1";
 const PIID_IMAP_VIEW: &str = "e480ce40-a338-4ada-adcf-272272e48cb9";
 const ICLOSABLE_IID: &str = "30d5a829-7fa4-4026-83bb-d75bae4ea99e";
 const ISTRINGABLE_IID: &str = "96369f54-8eb6-48f0-abce-c1b211e627c3";
+const XAML_APPLICATION: &str = "Microsoft.UI.Xaml.Application";
+const XAML_METADATA_PROVIDER: &str = "XamlControlsXamlMetaDataProvider";
+const XAML_CONTROLS_RESOURCES: &str = "XamlControlsResources";
+const XAML_LAUNCHED_CALLBACK_IID: &str = "f81c4e72-7a18-4a30-9126-6f62b6bdac83";
 
 // ======================================================================
 // Top-level projection functions
@@ -146,6 +150,18 @@ pub fn project_class(
         .collect();
     for iface in &all_ifaces {
         collect_delegate_names_from_methods(&iface.methods, &mut delegate_names);
+        for method in &iface.methods {
+            for param in method
+                .params
+                .iter()
+                .filter(|param| param.direction == ParamDirection::In)
+            {
+                let type_name = ts_param_type_dts(&param.typ, known_types);
+                if delegate_type_names.contains(&type_name) {
+                    delegate_names.insert(type_name);
+                }
+            }
+        }
     }
     // All known delegate type names (used to filter type imports — delegates typed as Interface
     // in parameter metadata must not be imported as regular type imports)
@@ -230,6 +246,17 @@ pub fn project_class(
             is_runtime_package: false,
             });
             imported_names.insert(r.name.clone());
+        }
+    }
+
+    let has_xaml_fluent_bootstrap = class.full_name == XAML_APPLICATION
+        && known_types.contains(XAML_METADATA_PROVIDER)
+        && known_types.contains(XAML_CONTROLS_RESOURCES);
+    if has_xaml_fluent_bootstrap {
+        for name in [XAML_METADATA_PROVIDER, XAML_CONTROLS_RESOURCES] {
+            if imported_names.insert(name.into()) {
+                imports.push(format_type_import_projected(name, TypeKind::Class));
+            }
         }
     }
 
@@ -476,6 +503,95 @@ pub fn project_class(
                 }
             }
         }
+    }
+
+    if has_xaml_fluent_bootstrap {
+        members.push(ProjectedMember::Method(ProjectedMethod {
+            name: "createWithMetadataProvider".into(),
+            doc: Some(DocInfo {
+                summary: Some(
+                    "Create a composed `Application` that exposes the supplied WinUI XAML metadata provider."
+                        .into(),
+                ),
+                deprecated: None,
+                returns: None,
+                params: vec![(
+                    "onLaunched".into(),
+                    "Runs from `Application.OnLaunched`, when XAML resources and windows can be initialized."
+                        .into(),
+                )],
+            }),
+            params: vec![
+                ProjectedParam {
+                    name: "metadataProvider".into(),
+                    ts_type: XAML_METADATA_PROVIDER.into(),
+                    optional: false,
+                    delegate_wrap: None,
+                },
+                ProjectedParam {
+                    name: "onLaunched".into(),
+                    ts_type: "() => void".into(),
+                    optional: true,
+                    delegate_wrap: None,
+                },
+            ],
+            return_type: class.name.clone(),
+            async_kind: AsyncKind::None,
+            is_static: true,
+            invoke_expr: String::new(),
+            sync_return_expr: Some(format!(
+                "(() => {{ const _launched = onLaunched == null ? null : DynWinRtDelegate.create(WinGuid.parse('{callback_iid}'), [DynWinRtType.object()], onLaunched).toValue(); return new {class_name}(DynWinRtValue.createXamlApplication(_unwrap(metadataProvider), _launched)); }})()",
+                callback_iid = XAML_LAUNCHED_CALLBACK_IID,
+                class_name = class.name,
+            )),
+            async_convert_v: None,
+            progress_convert: None,
+            is_void: false,
+            array_return_expr: None,
+            delegate_wraps: vec![],
+            js_only: false,
+            overload_of: None,
+        }));
+        members.push(ProjectedMember::Method(ProjectedMethod {
+            name: "createWithFluentResources".into(),
+            doc: Some(DocInfo {
+                summary: Some(
+                    "Create a composed `Application` and install WinUI's default Fluent resources before the launch callback."
+                        .into(),
+                ),
+                deprecated: None,
+                returns: None,
+                params: vec![(
+                    "onLaunched".into(),
+                    "Runs after `XamlControlsResources` has been added to the application resources."
+                        .into(),
+                )],
+            }),
+            params: vec![ProjectedParam {
+                name: "onLaunched".into(),
+                ts_type: "() => void".into(),
+                optional: true,
+                delegate_wrap: None,
+            }],
+            return_type: class.name.clone(),
+            async_kind: AsyncKind::None,
+            is_static: true,
+            invoke_expr: String::new(),
+            sync_return_expr: Some(format!(
+                "(() => {{ const _provider = (__get_{provider}()).create(); let _resourcesInitialized = false; const _launched = DynWinRtDelegate.create(WinGuid.parse('{callback_iid}'), [DynWinRtType.object()], () => {{ const _app = {class_name}.current; if (_app === null) throw new Error('WinUI Application.Current is unavailable during OnLaunched'); if (!_resourcesInitialized) {{ _app.resources.mergedDictionaries.append((__get_{resources}()).create()); _resourcesInitialized = true; }} onLaunched?.(); }}); return new {class_name}(DynWinRtValue.createXamlApplication(_unwrap(_provider), _launched.toValue())); }})()",
+                callback_iid = XAML_LAUNCHED_CALLBACK_IID,
+                provider = XAML_METADATA_PROVIDER,
+                resources = XAML_CONTROLS_RESOURCES,
+                class_name = class.name,
+            )),
+            async_convert_v: None,
+            progress_convert: None,
+            is_void: false,
+            array_return_expr: None,
+            delegate_wraps: vec![],
+            js_only: false,
+            overload_of: None,
+        }));
     }
 
     // Static methods
@@ -1057,16 +1173,33 @@ fn project_factory_method(
         delegate_param_wraps,
     );
     let args_expr = build_args_expr(&in_params);
+    let out_count = method
+        .params
+        .iter()
+        .filter(|p| p.direction == ParamDirection::Out)
+        .count()
+        + usize::from(method.return_type.is_some());
 
     let is_async = method.return_type.as_ref().is_some_and(|rt| rt.is_async());
 
-    let mut invoke_expr = format!(
-        "_{iface}.method({idx}).invoke({cls}.f_{iface}(), [{args}])",
-        iface = iface.name,
-        idx = method.vtable_index,
-        cls = class.name,
-        args = args_expr
-    );
+    let mut invoke_expr = if out_count > 1 {
+        format!(
+            "_{iface}.method({idx}).invokeAll({cls}.f_{iface}(), [{args}])[{result_index}]",
+            iface = iface.name,
+            idx = method.vtable_index,
+            cls = class.name,
+            args = args_expr,
+            result_index = out_count - 1,
+        )
+    } else {
+        format!(
+            "_{iface}.method({idx}).invoke({cls}.f_{iface}(), [{args}])",
+            iface = iface.name,
+            idx = method.vtable_index,
+            cls = class.name,
+            args = args_expr
+        )
+    };
     invoke_expr = rewrite_delegate_args_in_expr(&invoke_expr, &params);
 
     let return_type;

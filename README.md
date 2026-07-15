@@ -26,7 +26,7 @@ console.log(result.text);
 
 That's the whole story: install, generate, import, call.
 
-> **Scope** — `dynwinrt` targets **data-style WinRT APIs** (AI, storage, networking, notifications, globalization, cryptography, sensors, …). It is **not** built for XAML / WinUI hosting — those need composable-class aggregation and a UI thread the library doesn't model. For everything else, it is the easiest path from JavaScript / TypeScript to native Windows.
+> **Scope** — `dynwinrt` primarily targets **data-style WinRT APIs**. WinUI `Application + Window` hosting is also supported on a caller-managed STA UI thread; the application remains responsible for package identity and lifecycle.
 
 ## Quick start
 
@@ -51,6 +51,29 @@ console.log(uri.host);                                 // "example.com"
 ```
 
 Generated bindings include async + progress support, generic collections (`IVector<T>`, `IMap<K,V>`), structs, enums, and delegates — see `tools/dynwinrt-codegen/npm/README.md` for the full feature list.
+
+### WinUI `Application + Window`
+
+When `Microsoft.UI.Xaml.Application` is selected, JavaScript codegen also emits `XamlControlsXamlMetaDataProvider` and `XamlControlsResources`. Use the generated helper to compose the application outer, register WinUI metadata, and install the default Fluent resources before creating controls:
+
+```js
+const { roInitialize } = require('@microsoft/dynwinrt');
+const { Application, Button, Window } = require('./generated');
+
+roInitialize(0); // STA
+
+let app;
+Application.start(() => {
+  app = Application.createWithFluentResources(() => {
+    const window = Window.createInstance(null);
+    window.content = Button.createInstance(null);
+    window.activate();
+  });
+  app.requestedTheme = 1; // Dark
+});
+```
+
+`Application.start()` runs the WinUI dispatcher loop. `createWithFluentResources()` also configures its UI thread for Per-Monitor V2 DPI awareness so WinUI content renders at the monitor's native scale. Launch this from a packaged or otherwise correctly initialized WinAppSDK process.
 
 ## Repository layout
 

@@ -434,6 +434,24 @@ impl DynWinRTValue {
     Ok(DynWinRTValue(factory))
   }
 
+  /// Create a composed WinUI Application that forwards IXamlMetadataProvider
+  /// calls to the supplied provider.
+  #[napi]
+  pub fn create_xaml_application(
+    metadata_provider: &DynWinRTValue,
+    launched_callback: Option<&DynWinRTValue>,
+  ) -> napi::Result<DynWinRTValue> {
+    let provider = metadata_provider.0.as_object()
+      .ok_or_else(|| napi::Error::from_reason("createXamlApplication: metadataProvider must be an Object"))?;
+    let callback = launched_callback
+      .map(|value| value.0.as_object()
+        .ok_or_else(|| napi::Error::from_reason("createXamlApplication: launchedCallback must be an Object")))
+      .transpose()?;
+    dynwinrt::create_xaml_application(&provider, callback.as_ref())
+      .map(DynWinRTValue)
+      .map_err(|e| napi::Error::from_reason(format!("createXamlApplication failed: {}", e.message())))
+  }
+
   #[napi]
   pub fn bool_value(value: bool) -> DynWinRTValue {
     DynWinRTValue(dynwinrt::WinRTValue::Bool(value))

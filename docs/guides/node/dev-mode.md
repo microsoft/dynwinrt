@@ -8,8 +8,8 @@ The [WinApp CLI](https://github.com/microsoft/winappCli) handles all the packagi
 - [Prerequisites](#prerequisites)
 - [Path A — execution alias (recommended for iteration)](#path-a--execution-alias-recommended-for-iteration)
 - [Path B — one-shot `winapp run` (recommended for scripts and CI)](#path-b--one-shot-winapp-run-recommended-for-scripts-and-ci)
-- [Path C — bare `winapp run` without a copied Node](#path-c--bare-winapp-run-without-a-copied-node)
-- [Why copy `node.exe` into the project?](#why-copy-nodeexe-into-the-project)
+- [Path C — bare `winapp run` without a local Node link](#path-c--bare-winapp-run-without-a-local-node-link)
+- [Why link `node.exe` into the project?](#why-link-nodeexe-into-the-project)
 - [Cleaning up: `winapp unregister`](#cleaning-up-winapp-unregister)
 - [From dev mode to distribution](#from-dev-mode-to-distribution)
 - [Troubleshooting](#troubleshooting)
@@ -53,14 +53,13 @@ Now pick one of the three paths below depending on your workflow.
 
 Best when you want to iterate quickly on the same experiment: register **once**, then invoke your script many times from **any terminal** through a personal command name like `mynode.exe`.
 
-### 1. Copy Node into the project
+### 1. Link Node into the project
 
 ```powershell
-mkdir .local-node
-copy (Get-Command node).Source .\.local-node\node.exe
+New-Item -ItemType Junction -Path .\.local-node -Target (Split-Path (Get-Command node).Source)
 ```
 
-See [Why copy `node.exe` into the project?](#why-copy-nodeexe-into-the-project) below for the rationale.
+This exposes the active Node installation at `.local-node` without copying its files. See [Why link `node.exe` into the project?](#why-link-nodeexe-into-the-project) below for the rationale.
 
 ### 2. Add an execution alias
 
@@ -97,8 +96,7 @@ Best when you want a **single command** that does everything in one go — no pe
 Skip the alias step and let `winapp run` do register-launch-unregister in one go:
 
 ```powershell
-mkdir .local-node
-copy (Get-Command node).Source .\.local-node\node.exe
+New-Item -ItemType Junction -Path .\.local-node -Target (Split-Path (Get-Command node).Source)
 
 npx winapp run . --exe .local-node\node.exe --args "app.js" --unregister-on-exit
 ```
@@ -112,9 +110,9 @@ What this does:
 
 Every run pays a couple of seconds for register + unregister, so it's slower than Path A for tight loops, but it leaves nothing behind afterwards.
 
-## Path C — bare `winapp run` without a copied Node
+## Path C — bare `winapp run` without a local Node link
 
-If you don't need a stable executable path (e.g. you just want to run `node --version` under identity to check something), you can point `--exe` at the system `node.exe` directly:
+If you don't want a project-local junction (for example, you just want to run `node --version` under identity to check something), you can point `--exe` at the system `node.exe` directly:
 
 ```powershell
 npx winapp run . --exe (Get-Command node).Source --args "app.js" --unregister-on-exit
@@ -125,19 +123,19 @@ This works, but it's not recommended for anything you'll iterate on:
 - **A Node upgrade or `nvm use` changes where `node.exe` lives.** Your package will silently point at whatever version happens to be first on `PATH` at register time, not the one you meant.
 - **Windows caches the executable path in the registered manifest.** If `node.exe` moves, the package can end up pointing at a stale file and fail to launch.
 
-Copy Node into the project (Paths A / B) for anything you'll come back to more than once.
+Link Node into the project (Paths A / B) for anything you'll come back to more than once.
 
-## Why copy `node.exe` into the project?
+## Why link `node.exe` into the project?
 
-Windows loose-layout packages resolve executables **relative to the package root**. Your app's registered manifest needs to point at an `.exe` inside the package layout — the system `node.exe` at `C:\Program Files\nodejs\node.exe` (or wherever nvm dropped it) isn't part of your package.
+Windows loose-layout packages resolve executables **relative to the package root**. A directory junction exposes your installed Node directory through the package-relative path `.local-node`, without duplicating the Node installation.
 
-Copying `node.exe` into `.local-node\node.exe` gives you:
+Linking the Node directory at `.local-node` gives you:
 
-- **A stable, in-project path.** The manifest points at `.local-node\node.exe` and never breaks when your global Node changes.
-- **A pinned Node version.** The copy is frozen at the moment you set up the experiment — global upgrades don't affect it. Handy when comparing behavior across Node versions.
+- **A stable, in-project path.** The manifest always points at `.local-node\node.exe`.
+- **No duplicated runtime files.** The junction uses Node directly from its installed directory.
 - **Ability to add an execution alias.** Execution aliases can only alias `.exe` files inside the package. A system-wide `node.exe` isn't eligible.
 
-The copy is a plain byte-for-byte copy of `node.exe` — no wrapper, no launcher script. Everything about how it runs your `app.js` is identical to `node app.js`, except that it has package identity.
+The junction targets whichever Node installation is active when you create it. If a version manager later switches Node to a different directory, remove and recreate `.local-node` so it points at the new installation.
 
 ## Cleaning up: `winapp unregister`
 
