@@ -7,6 +7,14 @@ pub(crate) fn to_camel_case(s: &str) -> String {
     if s.is_empty() {
         return String::new();
     }
+    // Sanitize WinRT-only method names that begin with '.' (e.g. `.ctor`).
+    // These are constructor slots on delegate / activation-factory interfaces
+    // and are re-exposed via other JS APIs. If they leak through here as-is,
+    // they emit invalid identifiers like `.ctor()` in the generated class.
+    let s = s.strip_prefix('.').unwrap_or(s);
+    if s.is_empty() {
+        return String::new();
+    }
     let mut chars = s.chars();
     let first = chars.next().unwrap().to_lowercase().to_string();
     let result = format!("{}{}", first, chars.collect::<String>());
@@ -19,7 +27,8 @@ pub(crate) fn to_camel_case(s: &str) -> String {
 }
 
 fn is_js_reserved(s: &str) -> bool {
-    matches!(s,
+    matches!(
+        s,
         // Keywords & strict-mode restricted identifiers
         "arguments" | "eval" | "break" | "case" | "catch" | "class" | "const"
         | "continue" | "debugger" | "default" | "delete" | "do" | "else"
@@ -35,7 +44,9 @@ fn is_js_reserved(s: &str) -> bool {
 }
 
 pub(crate) fn capitalize(s: &str) -> String {
-    if s.is_empty() { return String::new(); }
+    if s.is_empty() {
+        return String::new();
+    }
     let mut chars = s.chars();
     let first = chars.next().unwrap().to_uppercase().to_string();
     format!("{}{}", first, chars.collect::<String>())
@@ -55,7 +66,8 @@ pub(crate) fn to_snake_case(s: &str) -> String {
             // - The previous character is lowercase, OR
             // - The next character exists and is lowercase (handles "IID" -> "iid" but "IIDComponent" -> "iid_component")
             if i > 0 {
-                let prev_lower_or_digit = chars[i - 1].is_lowercase() || chars[i - 1].is_ascii_digit();
+                let prev_lower_or_digit =
+                    chars[i - 1].is_lowercase() || chars[i - 1].is_ascii_digit();
                 let next_lower = i + 1 < chars.len() && chars[i + 1].is_lowercase();
                 if prev_lower_or_digit || (next_lower && chars[i - 1].is_uppercase()) {
                     result.push('_');
@@ -75,12 +87,43 @@ pub(crate) fn to_snake_case(s: &str) -> String {
 }
 
 pub(crate) fn is_py_reserved(s: &str) -> bool {
-    matches!(s,
-        "False" | "True" | "None" | "and" | "as" | "assert" | "async" | "await"
-        | "break" | "class" | "continue" | "def" | "del" | "elif" | "else"
-        | "except" | "finally" | "for" | "from" | "global" | "if" | "import"
-        | "in" | "is" | "lambda" | "nonlocal" | "not" | "or" | "pass"
-        | "raise" | "return" | "try" | "while" | "with" | "yield"
+    matches!(
+        s,
+        "False"
+            | "True"
+            | "None"
+            | "and"
+            | "as"
+            | "assert"
+            | "async"
+            | "await"
+            | "break"
+            | "class"
+            | "continue"
+            | "def"
+            | "del"
+            | "elif"
+            | "else"
+            | "except"
+            | "finally"
+            | "for"
+            | "from"
+            | "global"
+            | "if"
+            | "import"
+            | "in"
+            | "is"
+            | "lambda"
+            | "nonlocal"
+            | "not"
+            | "or"
+            | "pass"
+            | "raise"
+            | "return"
+            | "try"
+            | "while"
+            | "with"
+            | "yield"
     )
 }
 

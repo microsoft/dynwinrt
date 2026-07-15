@@ -1,88 +1,140 @@
-# dynwinrt SDK Release TODO
+# dynwinrt — TODO / Roadmap
 
-## P0 - Release Blockers
+Living document. Newest items on top of each section. Items removed once shipped for more than one release cycle.
 
-- [x] **JS binding error handling**: All 13 `.unwrap()` calls in `bindings/js/src/lib.rs` replaced with `napi::Result` + `.map_err()` / `.ok_or_else()` — errors now surface as JS exceptions instead of crashing the Node.js process
-- [ ] **Package metadata**: All Cargo.toml files missing `authors`, `license`, `description`, `repository`, `keywords`
-  - ~~`bindings/js/package.json` repository URL points to napi-rs template, needs update~~ (done)
-  - `bindings/py/pyproject.toml` missing `authors`, `license`, `homepage`
-- [x] **CI/CD**: `.github/workflows/build.yml` — winrt-meta builds (x64 + arm64), dynwinrt-js (x64 + arm64), publishing, and sample generation
-- [x] **Remove debug eprintln**: `[resolve]` debug prints removed from `meta.rs`
-- [ ] **Auto-detect WinAppSDK Bootstrap DLL**: `initWinappsdk(major, minor)` should auto-find Bootstrap DLL from `~/.winapp/packages/` or known install paths, with `WINAPPSDK_BOOTSTRAP_DLL_PATH` as override. Currently requires manual env var setup which is a friction point for unpackaged app developers.
-- [x] **Collection threading / agility mismatch**: `SingleThreadedVector` / `SingleThreadedMap` migrated from `RefCell` to `Mutex`, making `Send + Sync` and `IAgileObject` semantics sound. COM vtable callbacks now use `lock_or!` macro returning `E_FAIL` on mutex poisoning instead of panicking across FFI.
-- [x] **Null COM objects in arrays**: `ArrayData::get()` now returns `WinRTValue::Null` for null COM elements in CoTaskMem-backed arrays instead of constructing invalid `IUnknown::from_raw(null)`.
-- [x] **Nested struct recursive Clone/Drop**: `ValueTypeData` and `ArrayData` now recursively handle non-blittable fields (HString, COM pointers) in nested structs during Clone, Drop, and element access.
-- [x] **FillArray/ReceiveArray error-path cleanup**: Error paths now wrap buffers in `ArrayData` (which handles element-level release via Drop) instead of raw `CoTaskMemFree`. `ArrayOutSlot` and `FillArraySlot` both have Drop impls that release elements.
-- [x] **FillArray actual_count bounds check**: `actual_count` clamped to `capacity` in all FillArray code paths to prevent OOB reads.
-- [x] **Delegate float ABI**: Added separate f32/f64 trampolines for 1-param and 2-param delegates. F32 delegates now correctly produce `WinRTValue::F32` instead of being routed through the f64 trampoline.
-- [x] **Vector value-type ABI**: `write_item_out` now writes only `elem_size` bytes for value types instead of full pointer-width, preventing stack corruption for small types like i32.
-- [x] **COM vtable panic safety**: All `lock().unwrap()` in COM vtable callbacks replaced with `lock_or!` macro returning HRESULT. `from_raw_borrowed().unwrap()` replaced with null-check returning `E_POINTER`. Drop impls use `if let Ok(...)` to avoid panic on poisoned mutex.
+## P0 — Release blockers
 
-## P1 - Quality
+_None currently. Reserved for issues that make v0.1 unshippable (crash on happy path, data loss, security). Existing correctness / robustness work is tracked under P1._
 
-- [x] **Clippy cleanup (partial)**: `strip_generic_arity()` removed from winrt-meta
-  - [ ] `find_winappsdk_package()` still unused (`#[allow(dead_code)]` in roapi.rs)
-  - [ ] Remaining redundant closures and style warnings
-- [ ] **Update CLAUDE.md**: Known Limitations section outdated -- generics fully supported, codegen tool exists, parameterized interfaces from winmd
-- [ ] **Python .pyi type stubs**: No Python type hint files generated
-- [ ] **JSDoc comments**: napi binding `.d.ts` has no parameter descriptions
-- [ ] **Null COM objects in arrays**: ~~`ArrayData::get()` still constructs `IUnknown::from_raw(null)` for null COM elements coming from CoTaskMem-backed arrays. That should return `WinRTValue::Null` directly, otherwise clone/drop on the resulting object can crash.~~ (done — see P0)
-- [ ] **FillArray failure-path cleanup**: ~~If a FillArray call partially writes HSTRING / COM elements and then returns failure, the temporary buffer cleanup path frees raw memory but does not walk and release per-element resources. Mirror `ArrayData::drop` behavior for error paths to avoid leaks.~~ (done — see P0)
-- [ ] **Remove panic-shaped FFI edges**: ~~Remaining `expect` / `panic!` / `from_raw_borrowed(...).unwrap()` sites in runtime-facing core code (`winapp.rs`, array/delegate/map raw COM conversions) should surface typed errors instead of aborting the host process.~~ (done — see P0)
-- [x] **Remove unused `_collections.ts`**: Removed — parameterized interfaces now generated from winmd (IVector_String.ts etc.)
-- [x] **Remove unused JS binding methods**: `call_0`, `callSingleOut0`, `callSingleOut1` removed — `method().invoke()` is the sole invoke path
+## P1 — Correctness / quality (near-term)
 
-## P2 - Feature Completeness
+- [ ] **Panic-free COM entrypoints**. Several `extern "system"` COM callbacks still `unwrap()` on raw pointer inputs, which is UB across the FFI boundary if a caller passes a bad pointer:
+  - `crates/dynwinrt/src/delegate.rs:309` — `IUnknown::from_raw_borrowed(&raw).unwrap()` inside `marshal_abi_ptr` (fires whenever WinRT passes a null pointer arg to a delegate; not just malicious callers)
+  - `crates/dynwinrt/src/com_helpers.rs:42, 53` — same pattern in `com_to_usize` / `com_usize_addref_out`
+  - `crates/dynwinrt/src/array.rs:288, 461` — array element COM read paths
+  - `crates/dynwinrt/src/com_helpers.rs:74-103` — generated `IInspectable` stubs write through `*count`, `*iids`, `*name`, `*level` without null-checking the out-pointer
+  - `crates/dynwinrt/src/vector.rs:229, 382, 384` — `get_at`, `get_many`, `get_size` write to `result`/`items_out`/`actual` unconditionally
+  - `crates/dynwinrt/src/map.rs:222, 231, 267, 396` — `lookup`, `size`, `insert`, `split` do the same
 
-- [x] **Delegate / Event support**: Full implementation in `delegate.rs` — Rust-side COM vtable + napi ThreadsafeFunction callback. `DynWinRtDelegate.create(iid, paramTypes, callback)` creates delegate COM objects from JS callbacks. Supports Object, HString, Bool, I32/U32/I64/U64, Enum parameter types
-- [ ] **Struct auto-marshaling**: Users must manually `DynWinRtStruct.create()` + `setF64(index, value)` per field; support auto-conversion from JS objects
-- [ ] **Generalize map key semantics**: `IMap<K,V>` currently falls back to raw pointer identity for most key types, with special handling for string-like boxed values. That is enough for some practical scenarios, but not yet a complete WinRT-equivalent key-equality story for arbitrary K.
-- [x] **IAsyncOperationWithProgress IID computation**: Enum-in-struct now emits `enum(Namespace.Name;i4)` in both runtime IID signature (`metadata_table/iid.rs:77-80`) and codegen (`ts_dynwinrt_type` / `py_dynwinrt_type` recurse into struct fields and emit `enumType('FullName', [names], [values])`). Parameterized IID now matches QI for async-of-struct-with-enum.
-  - ~~Also: `StructEntry.name` uses `Option<String>` but WinRT structs are always named — should be `String`, deprecate `define_struct` in favor of `define_named_struct`~~ (done — `StructEntry.name` is now `String`)
-- [ ] **Nullable / IReference\<T\> return handling**: Null COM pointer returns `Null` variant; JS side needs better null-check patterns
-- [x] **Composable class derived-constructor `.ctor` skip**: Unsealed WinRT runtime classes expose a derived-from constructor on their default instance interface whose CLR method name is literally `.ctor`. Semantically it follows the COM aggregation pattern (`IInspectable* baseInterface, IInspectable** innerInterface`), meant to be invoked by a host framework performing subclassing — in practice this is almost exclusively XAML. Codegen used to fall through to the generic instance-method path and emit invalid syntax: `def .ctor(self) -> None:` in Python and `.ctor(): void { … }` in TypeScript. **Now suppressed at code emission**: `project_instance_method` (TS), `generate_iface_instance_method` (Py), and `emit_method_stub` (Py stub) all early-return for `method.name == ".ctor"`. The `.add_method(".ctor", …)` vtable entry is **still recorded** in interface registration so IIDs and indices remain correct — pinned by `tests/composable_ctor_test.rs::interface_registration_still_records_ctor_vtable_slot`. Full WinAppSDK XAML namespace (Microsoft.UI.Xaml.Controls.Button + transitive deps, 383 files) now compiles cleanly via `python -m py_compile` / `tsc --noEmit`. Full fix for actually invoking the composable constructor requires implementing the COM aggregation subclassing pattern — still out of scope until we take on XAML hosting.
-- [x] **Struct codegen deduplication**: `generate_struct_helpers()` now generates shared TS interface + pack/unpack functions once per struct, reused across methods
-- [x] **Exclusive interface codegen**: `all_interfaces()` resolves default + required interfaces; codegen generates wrapper classes for all interfaces a class implements
-- [x] **Codegen missing dependency warning**: `resolve_named_type` now emits warnings when types are not found in loaded .winmd files, plus `assert!(!iid.is_empty(), ...)` catches empty GUIDs at generation time
+  Fix pattern: at every COM ABI entry, validate each out-pointer against null and return `E_POINTER`; convert `.unwrap()` on incoming COM pointers to `Result` + `E_UNEXPECTED`.
 
-## P3 - Developer Experience
+- [ ] **JS `u64` round-trips through signed integers**. `to_u64_vec()` returns `Vec<i64>` and `from_u64_values()` takes `Vec<i64>` (`bindings/js/src/lib.rs:809-810, 892-895`). Also `DynWinRTValue::u64(value: i64)` at line 470 casts negatives to giant unsigned values silently. Values > `i64::MAX` are silent data corruption. Switch to `BigInt` or `u64` on the JS boundary.
 
-- [ ] **Error message enrichment**: COM HRESULT errors should include WinRT error message (`IRestrictedErrorInfo`)
-- [ ] **Performance**:
-  - ~~`call()` / `callVoid()` create a temporary InterfaceSignature + build Method per call; should cache or remove in favor of `invoke()`~~ (done — removed in favor of `invoke()`)
-  - `invoke()` should accept raw JS values (number, string, bool) instead of requiring `DynWinRtValue` wrappers — saves ~0.6-1.6µs per argument (one fewer napi boundary crossing). Needs `in_param_types()` on MethodHandle + type-directed conversion in `bindings/js/src/lib.rs`
-  - Rust core: `invoke_method` takes RwLock read on every call (~15-20 ns); store `Arc<Method>` in MethodHandle directly to bypass lock
-  - Rust core: `Ok(vec![out])` heap-allocates per call; switch to `SmallVec<[WinRTValue; 2]>` for stack return
-- [x] **Multi-platform builds**: npm prebuild for `win32-x64-msvc` and `aarch64-pc-windows-msvc` (ARM64). CI builds both architectures via `.github/workflows/build.yml`
-- [ ] **Python binding parity**: Python binding missing `callVoid`, collection wrappers, struct access, and other APIs added to JS
-- [ ] **Troubleshooting docs**: README missing common error resolution (WinAppSDK init failure, WINAPPSDK_BOOTSTRAP_DLL_PATH not set, etc.)
+- [ ] **JS binding: TSFN failure returns success**. `bindings/js/src/lib.rs:1463` discards the return of `tsfn.call(...)` and always returns `HRESULT(0)`. When the JS event queue is closed or the env is tearing down, WinRT sees success but the callback is silently dropped. Map failures to `E_FAIL` / a cancellation code.
 
-## Done (this session)
+- [ ] **JS binding: panic-shaped public APIs**. Two public methods still `panic!` on ordinary type mismatches, which propagates as a Node abort rather than a JS `throw`:
+  - `bindings/js/src/lib.rs:645` — `DynWinRTValue::to_number` for unsupported kinds
+  - `bindings/js/src/lib.rs:692` — `DynWinRTValue::as_raw` for non-object values
 
-- [x] **IUnknown::from_raw(null) UB fix**: COM pointer out-params now use `RawPtr(*mut c_void)` instead of `IUnknown::from_raw(null)` which was UB under release optimization
-- [x] **Parameterized type panic fix**: `default_winrt_value` for Parameterized types no longer panics
-- [x] **JS binding type coverage**: Added all DynWinRtValue constructors (bool, i8-u64, f32, f64, guid, null), extractors (toBool, toI64, toF64, toGuid, isNull), and DynWinRtType factories (guid, char16, hresult, delegate, fillArray, iid)
-- [x] **toNumber() expanded**: Now supports Bool, I8, U8, I16, U16, I32, U32, HResult
-- [x] **Collection methods**: IVector/IVectorView/IMap/IMapView/IKeyValuePair/IIterable/IIterator with full methods
-- [x] **Collection codegen from winmd**: Parameterized interfaces (IVector\<String\>, IReference\<UInt32\>) read from winmd and generated as concrete types (IVector_String.ts)
-- [x] **Auto value wrapping**: `filter.append('.png')` works directly — generated IVector_String accepts `string` not `DynWinRtValue`
-- [x] **Auto-detect Windows SDK**: winrt-meta automatically finds `Windows.winmd` from `C:\Program Files (x86)\Windows Kits\10\UnionMetadata\`
-- [x] **callVoid()**: Added for void WinRT method calls
-- [x] **DynWinRtType.iid()**: Compute parameterized IID from JS
-- [x] **WinGuid.toString()**: For cache keys
-- [x] **JS binding error handling**: All 13 `.unwrap()` in `bindings/js/src/lib.rs` → `napi::Result` with contextual error messages
-- [x] **Electron benchmark app**: `bench-electron/` — full IPC round-trip benchmark (renderer → main → WinRT → main → renderer), static vs dynamic comparison. IPC baseline ~80µs dominates, ratio ~1.0x across all operations
-- [x] **Enum as independent runtime type**: `WinRTValue::Enum { value, type_handle }` fully implemented across value.rs, call.rs, delegate.rs, array.rs, type_handle.rs, and JS bindings
-- [x] **CI/CD**: `.github/workflows/build.yml` — winrt-meta builds (x64 + arm64), dynwinrt-js (x64 + arm64), publishing, and sample generation
-- [x] **Remove debug eprintln**: `[resolve]` debug prints removed from `meta.rs`
-- [x] **Remove unused `_collections.ts`**: Parameterized interfaces now generated from winmd
-- [x] **Remove unused JS binding methods**: `call_0`, `callSingleOut0`, `callSingleOut1` removed
-- [x] **Delegate / Event support**: Full `delegate.rs` — COM vtable + napi ThreadsafeFunction. `DynWinRtDelegate.create()` creates delegate COM objects from JS callbacks
-- [x] **Codegen missing dependency warning**: Warnings emitted for missing types + assert on empty GUIDs
-- [x] **Multi-platform builds**: ARM64 (`aarch64-pc-windows-msvc`) support in npm prebuild and CI
-- [x] **Struct codegen deduplication**: Shared struct helpers via `generate_struct_helpers()` (TS interface + pack/unpack)
-- [x] **Exclusive interface codegen**: `all_interfaces()` + required_interfaces wrapper class generation
-- [x] **package.json repository URL fixed**: Now points to `github.com/microsoft/dynwinrt`
-- [x] **StructEntry.name → String**: No longer `Option<String>`, deprecates `define_struct`
-- [x] **strip_generic_arity() removed**: Cleaned up from winrt-meta
-- [x] **call()/callVoid() removed from JS binding**: Unified to `invoke()` path
+  Convert both to `napi::Result<T>`.
+
+- [ ] **Codegen: `extract_iid` silently zero-fills malformed GuidAttribute**. `tools/dynwinrt-codegen/src/meta.rs:1030-1051` — if any GuidAttribute field is the wrong integer width, helpers return `0`, producing a plausible-but-wrong IID that will corrupt interface registration without any error. Treat non-matching shapes as a hard error / empty IID.
+
+- [ ] **Codegen: generic ancestors are dropped from projected classes**. `tools/dynwinrt-codegen/src/meta.rs:717-760` — the inherited-interface flattening skips any ancestor whose `TypeName` has generics, so classes inheriting a generic interface via a base class lose those members. Resolve generic ancestors to concrete instantiations (or document + guard the gap).
+
+- [x] **Codegen: composable `.ctor` on instance interfaces**. Runtime classes whose instance interface exposes a bare `.ctor(IInspectable* base, IInspectable** inner)` use a COM aggregation pattern that dynwinrt does not implement. Code emission now skips this slot in `project_instance_method`, `generate_iface_instance_method`, and `emit_method_stub`, while interface registration retains it so vtable numbering remains correct. Factory constructors and delegate constructors are unaffected. Full composition/aggregation support remains out of scope until dynwinrt supports XAML hosting.
+
+- [ ] **Codegen: default-interface lookup returns first hit**. `tools/dynwinrt-codegen/src/meta.rs:1075-1090` — `find_default_interface_iid` returns on the first `DefaultAttribute` it resolves, which may not be the actual default in edge cases with malformed metadata. Validate against parsed default interface metadata or fail loudly.
+
+- [ ] **Codegen: `--class-name` docs vs `--class` CLI**. The CLI derives the flag from the field name (`class_name` → `--class-name`), and docs use `--class-name`. Confirm both are wired consistently and that any lingering `--class` example is updated. (One instance in `main.rs` after_help was fixed in this review round.)
+
+- [ ] **Codegen: snapshot coverage too narrow**. Only `Windows.Foundation.Uri` is snapshotted. Add snapshots for (a) an event-heavy type exercising `on*` / `off*` emission, (b) a parameterized interface / generic instantiation, (c) a class exercising inherited-interface flattening. Otherwise the recent IR refactors have no regression net.
+
+- [ ] **Rust: array typed getter can panic on bad index**. `crates/dynwinrt/src/array.rs:317` — `ArrayBuffer::Values(v) => v[index].as_i32().unwrap()` uses unchecked indexing while the CoTaskMem branch bounds-checks. Unify.
+
+- [ ] **Rust: `AppendOnlyBoxArena::stable_ptr` panics on out-of-range**. `crates/dynwinrt/src/metadata_table/append_only_arena.rs:45-49` — trusted internal use, but the invariant is undocumented and callers can drift. Add a documented safety contract and a debug assertion (or return `Option`).
+
+- [ ] **Rust: map key semantics under-specified**. `crates/dynwinrt/src/map.rs:79-120` — pointer identity is the default, with an ad-hoc string extraction path for `IPropertyValue`. Define one contract (identity vs value equality) and enforce it explicitly.
+
+- [ ] **JS: N-API result codes ignored on same-thread delegate path**. `bindings/js/src/lib.rs:1416-1448` — `napi_get_undefined`, `napi_is_exception_pending`, `napi_get_and_clear_last_exception`, `napi_close_handle_scope` return statuses are dropped. Any failure can leave a pending exception across the ABI while still returning `S_OK`. Check every status.
+
+- [ ] **JS: `DynWinRtStruct::set_object` silently no-ops**. `bindings/js/src/lib.rs:1103-1125` — unsupported input kinds hit `_ => {}`. Return `napi::Result<()>` with a clear error.
+
+## P2 — Feature completeness
+
+- [ ] **Struct auto-marshaling**. Users still need `DynWinRtStruct.create()` + `setF64(...)` per field. Codegen generates `_packXxx` helpers for known structs already; the gap is user-defined / ad-hoc structs. Consider generic `pack(schema, obj)`.
+
+- [ ] **Nullable / `IReference<T>` handling**. Null COM pointers surface as `WinRTValue::Null`; codegen wrappers should surface `T | null` in `.d.ts` for these return positions.
+
+- [ ] **`IReference<T>` as struct field**. `napi` has `getObject`/`setObject` and codegen has a fallback path, but this is exercised only by `Windows.Web.Http.HttpProgress` in Windows.winmd and untested. Add coverage.
+
+- [ ] **Guid array / bool array fast paths**. Currently per-element via `.toValues().map(...)`. Add `toGuidVec()` / `toBoolVec()` if any real workload hits these.
+
+## P3 — Developer experience & performance
+
+- [ ] **Auto-detect WinAppSDK Bootstrap DLL for unpackaged apps**. `initialize_winappsdk(major, minor)` currently `.expect(...)`s the `WINAPPSDK_BOOTSTRAP_DLL_PATH` env var (`crates/dynwinrt/src/winapp.rs:43`). Only relevant when a user is running unpackaged (packaged/MSIX apps don't call this — the framework package dep loads WinAppSDK automatically). For the unpackaged path, search `~/.winapp/packages/`, `~/.nuget/packages/microsoft.windowsappsdk.*/`, and standard Program Files install paths, in that order, falling back to the env var. Also swap the `expect(...)` for a typed error.
+
+- [ ] **Error message enrichment**. Wrap HRESULT errors with `IRestrictedErrorInfo` message strings on the way out; today users see raw HRESULT codes.
+
+- [ ] **Value-type inputs to `invoke()`**. `invoke()` currently requires `DynWinRtValue` wrappers per argument (`+~0.6-1.6 µs / arg`). Accept raw JS values (`number`/`string`/`bool`) and dispatch via `in_param_types()` on `MethodHandle`.
+
+- [ ] **Method handle without `RwLock`**. `invoke_method` takes an `RwLock` read on every call (~15-20 ns). Store `Arc<Method>` directly in `MethodHandle` and bypass the arena lock on the hot path.
+
+- [ ] **Stack-allocated return path**. `Ok(vec![out])` heap-allocates per call. `SmallVec<[WinRTValue; 2]>` for the common single-out shape.
+
+- [ ] **JS binding: raw `Env` lifetime discipline**. `bindings/js/src/lib.rs:1400-1412` — the same-thread delegate path stores the raw `napi_env` under the assumption that the registering thread stays alive. Document + assert thread affinity, or minimize raw-env lifetime.
+
+- [ ] **JS: `HSTRING` field extraction via layout cast**. `bindings/js/src/lib.rs:1041-1049` — reads HSTRING out of `ValueTypeData` by reinterpreting bytes as `*const HSTRING`. Expose a typed accessor in `dynwinrt` (`ValueTypeData::field_hstring(index)`) and switch the JS side to it.
+
+- [ ] **`package.json` engines vs README floor**. `bindings/js/package.json:34-36` advertises Node 12+ ranges, README says Node ≥16. Align to whichever floor CI actually tests. (Currently CI runs Node 24.)
+
+- [ ] **Python binding parity**. Python side missing `callVoid`, collection wrappers, struct access, delegate ergonomics — anything added to JS after the Python cutover.
+
+- [ ] **Troubleshooting docs in READMEs**. Common failure modes not covered end-to-end: `WINAPPSDK_BOOTSTRAP_DLL_PATH` not set, mismatched apartment, missing capability. Root `README.md` has a small table; grow it based on the last three GitHub issues that repeated.
+
+- [ ] **JSDoc / TSDoc on generated `.d.ts`**. Parameter descriptions and return descriptions are missing on many generated method signatures. `xml_doc.rs` already loads sibling `.xml` — thread that through render_dts.
+
+## Completed
+
+Kept for reference; git history is the source of truth. Grouped by area.
+
+### JS binding
+- [x] All 13 process-crashing `.unwrap()` on public API paths → `napi::Result` with contextual errors
+- [x] `call()` / `callVoid()` removed — `invoke()` is the sole invoke path
+- [x] Removed unused `call_0`, `callSingleOut0`, `callSingleOut1`
+- [x] `DynWinRtValue` constructors (bool, i8-u64, f32, f64, guid, null) + extractors (toBool, toI64, toF64, toGuid, isNull)
+- [x] `DynWinRtType` factories (guid, char16, hresult, delegate, fillArray, iid) + `DynWinRtType.iid()` for parameterized IIDs
+- [x] `toNumber()` expanded to Bool, I8, U8, I16, U16, I32, U32, HResult
+- [x] `WinGuid.toString()` for cache keys
+- [x] Auto value wrapping — `filter.append('.png')` works directly on generated `IVector_String`
+
+### Runtime (crates/dynwinrt)
+- [x] `SingleThreadedVector` / `SingleThreadedMap` migrated `RefCell` → `Mutex`; now `Send + Sync + IAgileObject`
+- [x] `lock_or!` macro returns HRESULT on poisoning instead of panicking across FFI
+- [x] Nested struct recursive Clone/Drop (HString, COM pointers in nested structs)
+- [x] `ArrayData::get()` returns `WinRTValue::Null` for null COM elements instead of `IUnknown::from_raw(null)` (UB fix)
+- [x] FillArray / ReceiveArray error paths use `ArrayData::drop` for per-element release; `ArrayOutSlot` + `FillArraySlot` have Drop impls
+- [x] FillArray `actual_count` clamped to `capacity` (OOB read prevention)
+- [x] F32 delegate ABI: separate f32/f64 trampolines for 1- and 2-param delegates
+- [x] Vector value-type ABI: `write_item_out` writes only `elem_size` bytes for small value types
+- [x] COM vtable panic safety: `lock_or!` + null-checked `from_raw_borrowed` returning HRESULTs
+- [x] `WinRTValue::Enum { value, type_handle }` as independent runtime type
+- [x] Parameterized type `default_winrt_value` no longer panics
+
+### Metadata / codegen
+- [x] Struct helpers deduplicated (`generate_struct_helpers`: shared TS interface + pack/unpack)
+- [x] Exclusive interfaces flattened via `all_interfaces()` (default + required)
+- [x] Parameterized IID matches QI for `IAsyncOperationWithProgress` and async-of-struct-with-enum (enum-in-struct emits `enum(Ns.Name;i4)` in both runtime IID sig and codegen)
+- [x] Missing-type warnings + `assert!(!iid.is_empty(), ...)` at generation time
+- [x] `StructEntry.name` now `String` (deprecates `define_struct` in favor of `define_named_struct`)
+- [x] `strip_generic_arity()` removed from winrt-meta
+- [x] Parameterized interfaces (e.g. `IVector<String>`, `IReference<UInt32>`) generated as concrete types from winmd (removed unused `_collections.ts`)
+- [x] Auto-detect `Windows.winmd` from `C:\Program Files (x86)\Windows Kits\10\UnionMetadata\`
+- [x] Collection methods: IVector / IVectorView / IMap / IMapView / IKeyValuePair / IIterable / IIterator with full methods
+
+### Features
+- [x] Delegate / event support: COM vtable + napi ThreadsafeFunction in `delegate.rs`; `DynWinRtDelegate.create(iid, paramTypes, callback)`; same-thread synchronous invocation path
+- [x] Python `.pyi` type stubs via `--pyi` (with `--lang py`) + `py.typed` marker
+
+### Distribution / CI
+- [x] npm prebuilds for `win32-x64-msvc` + `win32-arm64-msvc`
+- [x] `.github/workflows/build.yml` builds winrt-meta and dynwinrt-js on x64 + arm64, plus publishing and sample generation
+- [x] `winapp init --add-js-bindings` toolchain integration
+- [x] `package.json` repository URL corrected to `github.com/microsoft/dynwinrt`
+- [x] Cargo.toml files have `authors`, `license`, `description`, `repository`; `bindings/py/pyproject.toml` has authors/license/urls
+- [x] Electron benchmark app under `bench-electron/` — full IPC round-trip static vs dynamic
+
+### Cleanup
+- [x] `[resolve]` debug `eprintln!` removed from `meta.rs`
+- [x] `CLAUDE.md` refreshed (removed `tools/winrt-meta/` path, `--lang ts`; documented IR pipeline + `--pyi`)
+- [x] Clippy pass (partial) — remaining redundant-closure / style warnings tracked separately

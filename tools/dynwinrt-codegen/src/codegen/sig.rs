@@ -86,7 +86,11 @@ pub(crate) fn ts_dynwinrt_type(typ: &TypeMeta) -> String {
         TypeMeta::Interface { .. } => "DynWinRtType.object()".to_string(),
 
         // RuntimeClass — runtimeClass(fullName, defaultIID)
-        TypeMeta::RuntimeClass { namespace, name, default_iid } => {
+        TypeMeta::RuntimeClass {
+            namespace,
+            name,
+            default_iid,
+        } => {
             let full_name = format!("{}.{}", namespace, name);
             if !default_iid.is_empty() {
                 format!(
@@ -106,23 +110,40 @@ pub(crate) fn ts_dynwinrt_type(typ: &TypeMeta) -> String {
             format!("DynWinRtType.iAsyncOperation({})", ts_dynwinrt_type(inner))
         }
         TypeMeta::AsyncOperationWithProgress(result, progress) => {
-            format!("DynWinRtType.iAsyncOperationWithProgress({}, {})",
-                ts_dynwinrt_type(result), ts_dynwinrt_type(progress))
+            format!(
+                "DynWinRtType.iAsyncOperationWithProgress({}, {})",
+                ts_dynwinrt_type(result),
+                ts_dynwinrt_type(progress)
+            )
         }
-        TypeMeta::AsyncAction => {
-            "DynWinRtType.iAsyncAction()".to_string()
-        }
+        TypeMeta::AsyncAction => "DynWinRtType.iAsyncAction()".to_string(),
         TypeMeta::AsyncActionWithProgress(progress) => {
-            format!("DynWinRtType.iAsyncActionWithProgress({})", ts_dynwinrt_type(progress))
+            format!(
+                "DynWinRtType.iAsyncActionWithProgress({})",
+                ts_dynwinrt_type(progress)
+            )
         }
 
-        // Struct — named for correct IID signature, recursively expand fields
-        TypeMeta::Struct { namespace, name, fields } => {
+        // Struct — named for correct IID signature, recursively expand fields.
+        // HResult is special-cased: WinRT exposes it as a single-field struct,
+        // but the runtime has a dedicated HResult kind whose deserialized value
+        // (WinRTValue::HResult) is the only one .toNumber() / packStruct
+        // helpers know how to unwrap. Emitting structType(...) here would cause
+        // the napi binding to deliver a WinRTValue::Struct and panic on read.
+        TypeMeta::Struct { name, .. } if name == "HResult" => "DynWinRtType.hresult()".to_string(),
+        TypeMeta::Struct {
+            namespace,
+            name,
+            fields,
+        } => {
             let full_name = format!("{}.{}", namespace, name);
-            let field_types: Vec<String> = fields.iter()
-                .map(|f| ts_dynwinrt_type(&f.typ))
-                .collect();
-            format!("DynWinRtType.structType('{}', [{}])", full_name, field_types.join(", "))
+            let field_types: Vec<String> =
+                fields.iter().map(|f| ts_dynwinrt_type(&f.typ)).collect();
+            format!(
+                "DynWinRtType.structType('{}', [{}])",
+                full_name,
+                field_types.join(", ")
+            )
         }
 
         // Array — recursively expand element type
@@ -131,15 +152,24 @@ pub(crate) fn ts_dynwinrt_type(typ: &TypeMeta) -> String {
         }
 
         // Enum — named for correct IID signature, with member values
-        TypeMeta::Enum { namespace, name, members, .. } => {
+        TypeMeta::Enum {
+            namespace,
+            name,
+            members,
+            ..
+        } => {
             let full_name = format!("{}.{}", namespace, name);
             if members.is_empty() {
                 format!("DynWinRtType.enumType('{}')", full_name)
             } else {
                 let names: Vec<String> = members.iter().map(|m| format!("'{}'", m.name)).collect();
                 let values: Vec<String> = members.iter().map(|m| m.value.to_string()).collect();
-                format!("DynWinRtType.enumType('{}', [{}], [{}])",
-                    full_name, names.join(", "), values.join(", "))
+                format!(
+                    "DynWinRtType.enumType('{}', [{}], [{}])",
+                    full_name,
+                    names.join(", "),
+                    values.join(", ")
+                )
             }
         }
 
@@ -149,7 +179,11 @@ pub(crate) fn ts_dynwinrt_type(typ: &TypeMeta) -> String {
                 "DynWinRtType.object()".to_string()
             } else {
                 let arg_types: Vec<String> = args.iter().map(|a| ts_dynwinrt_type(a)).collect();
-                format!("DynWinRtType.parameterized(WinGuid.parse('{}'), [{}])", piid, arg_types.join(", "))
+                format!(
+                    "DynWinRtType.parameterized(WinGuid.parse('{}'), [{}])",
+                    piid,
+                    arg_types.join(", ")
+                )
             }
         }
     }
@@ -160,7 +194,8 @@ pub(crate) fn ts_dynwinrt_type(typ: &TypeMeta) -> String {
 // ======================================================================
 
 pub(crate) fn build_args_expr(in_params: &[&crate::meta::ParamMeta]) -> String {
-    in_params.iter()
+    in_params
+        .iter()
         .map(|p| wrap_arg(&to_camel_case(&p.name), &p.typ))
         .collect::<Vec<_>>()
         .join(", ")
@@ -170,8 +205,7 @@ pub(crate) fn wrap_arg(name: &str, typ: &TypeMeta) -> String {
     match typ {
         TypeMeta::String => format!("DynWinRtValue.hstring({})", name),
         TypeMeta::Bool => format!("DynWinRtValue.boolValue({})", name),
-        TypeMeta::I32 | TypeMeta::Enum { .. }
-        | TypeMeta::I8 | TypeMeta::U8 | TypeMeta::Char16 => {
+        TypeMeta::I32 | TypeMeta::Enum { .. } | TypeMeta::I8 | TypeMeta::U8 | TypeMeta::Char16 => {
             format!("DynWinRtValue.i32({})", name)
         }
         TypeMeta::U32 => format!("DynWinRtValue.u32({})", name),
@@ -182,30 +216,49 @@ pub(crate) fn wrap_arg(name: &str, typ: &TypeMeta) -> String {
         TypeMeta::F32 => format!("DynWinRtValue.f32({})", name),
         TypeMeta::F64 => format!("DynWinRtValue.f64({})", name),
         TypeMeta::Guid => format!("DynWinRtValue.guid(WinGuid.parse({}))", name),
-        TypeMeta::RuntimeClass { .. } | TypeMeta::Object | TypeMeta::Interface { .. }
+        TypeMeta::RuntimeClass { .. }
+        | TypeMeta::Object
+        | TypeMeta::Interface { .. }
         | TypeMeta::Delegate { .. } => {
-            format!("_unwrap({})", name)
+            format!("({0} == null ? DynWinRtValue.nullValue() : _unwrap({0}))", name)
         }
-        TypeMeta::Parameterized { piid, args, name: pname, .. } => {
-            // For vector-like collections, auto-wrap JS arrays at runtime
+        TypeMeta::Parameterized {
+            piid,
+            args,
+            name: pname,
+            ..
+        } => {
+            // For vector-like collections, auto-wrap JS arrays at runtime.
+            //
+            // createVector returns a SingleThreadedVector whose identity vtable
+            // is IIterable<T> (sibling of IVector/IVectorView, not parent). If
+            // the method parameter is IVector<T> or IVectorView<T>, we must QI
+            // to that specific interface so the correct vtable pointer (with
+            // the right method slots) is forwarded to WinRT — otherwise WinRT
+            // reads the wrong vtable slots and the renderer crashes natively.
             if is_vector_like(piid, pname) {
                 if let Some(elem) = args.first() {
                     let elem_type = ts_dynwinrt_type(elem);
                     let item_wrap = vector_item_wrap_expr("_i", elem);
+                    let target_iid_expr = format!("{}.iid()", ts_dynwinrt_type(typ));
                     return format!(
-                        "(Array.isArray({name}) ? DynWinRtValue.createVector({name}.map(_i => {item_wrap}), {elem_type}) : _unwrap({name}))"
+                        "(Array.isArray({name}) ? DynWinRtValue.createVector({name}.map(_i => {item_wrap}), {elem_type}).cast({target_iid_expr}) : _unwrap({name}).cast({target_iid_expr}))"
                     );
                 }
             }
-            // For map-like collections, auto-wrap JS Map at runtime
+            // For map-like collections, auto-wrap JS Map at runtime.
+            // Same vtable-mismatch concern as vectors: createMap returns a
+            // SingleThreadedMap whose identity vtable is IIterable
+            // <IKeyValuePair<K,V>>; we must QI to IMap<K,V> or IMapView<K,V>.
             if is_map_like(piid, pname) {
                 if args.len() == 2 {
                     let key_type = ts_dynwinrt_type(&args[0]);
                     let val_type = ts_dynwinrt_type(&args[1]);
                     let k_wrap = vector_item_wrap_expr("_k", &args[0]);
                     let v_wrap = vector_item_wrap_expr("_v", &args[1]);
+                    let target_iid_expr = format!("{}.iid()", ts_dynwinrt_type(typ));
                     return format!(
-                        "({name} instanceof Map ? DynWinRtValue.createMap([...{name}.keys()].map(_k => {k_wrap}), [...{name}.values()].map(_v => {v_wrap}), {key_type}, {val_type}) : _unwrap({name}))"
+                        "({name} instanceof Map ? DynWinRtValue.createMap([...{name}.keys()].map(_k => {k_wrap}), [...{name}.values()].map(_v => {v_wrap}), {key_type}, {val_type}).cast({target_iid_expr}) : _unwrap({name}).cast({target_iid_expr}))"
                     );
                 }
             }
@@ -215,12 +268,21 @@ pub(crate) fn wrap_arg(name: &str, typ: &TypeMeta) -> String {
             // Accept both DynWinRtArray (.toValue()) and plain JS array.
             // For primitive arrays, use typed DynWinRtArray constructors.
             // For object arrays, use createVector which WinRT can consume as PassArray.
+            // Special: byte[] (U8) also accepts Uint8Array — far more memory-efficient
+            // than `new Array(N).fill(0)` (8 bytes/elem) for large pixel buffers.
+            if matches!(inner.as_ref(), TypeMeta::U8) {
+                return format!(
+                    "({name} instanceof Uint8Array ? DynWinRtArray.fromUint8Array({name}).toValue() : Array.isArray({name}) ? DynWinRtArray.fromU8Values({name}).toValue() : {name}.toValue())"
+                );
+            }
             let from_array_expr = match inner.as_ref() {
                 TypeMeta::I8 => format!("DynWinRtArray.fromI8Values({name})"),
                 TypeMeta::U8 => format!("DynWinRtArray.fromU8Values({name})"),
                 TypeMeta::I16 => format!("DynWinRtArray.fromI16Values({name})"),
                 TypeMeta::U16 | TypeMeta::Char16 => format!("DynWinRtArray.fromU16Values({name})"),
-                TypeMeta::I32 | TypeMeta::Enum { .. } => format!("DynWinRtArray.fromI32Values({name})"),
+                TypeMeta::I32 | TypeMeta::Enum { .. } => {
+                    format!("DynWinRtArray.fromI32Values({name})")
+                }
                 TypeMeta::U32 => format!("DynWinRtArray.fromU32Values({name})"),
                 TypeMeta::I64 => format!("DynWinRtArray.fromI64Values({name})"),
                 TypeMeta::U64 => format!("DynWinRtArray.fromU64Values({name})"),
@@ -228,19 +290,26 @@ pub(crate) fn wrap_arg(name: &str, typ: &TypeMeta) -> String {
                 TypeMeta::F64 => format!("DynWinRtArray.fromF64Values({name})"),
                 TypeMeta::String => format!("DynWinRtArray.fromStringValues({name})"),
                 _ => {
-                    // Object types: wrap via createVector
+                    // Object types: wrap via DynWinRtArray.fromObjectValues so the
+                    // ABI receives a native WinRTValue::Array (PassArray) rather
+                    // than an IVector COM object. Required for `T[]` in-params
+                    // where T is a runtime class or interface.
                     let elem_type = ts_dynwinrt_type(inner);
                     return format!(
-                        "(Array.isArray({name}) ? DynWinRtValue.createVector({name}.map(_i => _unwrap(_i)), {elem_type}) : _unwrap({name}))"
+                        "(Array.isArray({name}) ? DynWinRtArray.fromObjectValues({name}.map(_i => _unwrap(_i)), {elem_type}).toValue() : _unwrap({name}))"
                     );
                 }
             };
             format!("(Array.isArray({name}) ? {from_array_expr}.toValue() : {name}.toValue())")
         }
-        TypeMeta::Struct { name: struct_name, .. } if struct_name == "HResult" => {
+        TypeMeta::Struct {
+            name: struct_name, ..
+        } if struct_name == "HResult" => {
             format!("DynWinRtValue.i32({})", name)
         }
-        TypeMeta::Struct { name: struct_name, .. } => {
+        TypeMeta::Struct {
+            name: struct_name, ..
+        } => {
             format!("_pack{}({}).toValue()", struct_name, name)
         }
         _ => name.to_string(),
@@ -251,15 +320,18 @@ fn is_vector_like(piid: &str, name: &str) -> bool {
     const PIID_IVECTOR: &str = "913337e9-11a1-4345-a3a2-4e7f956e222d";
     const PIID_IVECTOR_VIEW: &str = "bbe1fa4c-b0e3-4583-baef-1f1b2e483e56";
     const PIID_IITERABLE: &str = "faa585ea-6214-4217-afda-7f46de5869b3";
-    piid == PIID_IVECTOR || piid == PIID_IVECTOR_VIEW || piid == PIID_IITERABLE
-        || name == "IVector" || name == "IVectorView" || name == "IIterable"
+    piid == PIID_IVECTOR
+        || piid == PIID_IVECTOR_VIEW
+        || piid == PIID_IITERABLE
+        || name == "IVector"
+        || name == "IVectorView"
+        || name == "IIterable"
 }
 
 fn is_map_like(piid: &str, name: &str) -> bool {
     const PIID_IMAP: &str = "3c2925fe-8519-45c1-aa79-197b6718c1c1";
     const PIID_IMAP_VIEW: &str = "e480ce40-a338-4ada-adcf-272272e48cb9";
-    piid == PIID_IMAP || piid == PIID_IMAP_VIEW
-        || name == "IMap" || name == "IMapView"
+    piid == PIID_IMAP || piid == PIID_IMAP_VIEW || name == "IMap" || name == "IMapView"
 }
 
 /// Generate the JS expression to wrap a single element for createVector/createMap.
@@ -271,8 +343,7 @@ fn vector_item_wrap_expr(var: &str, elem: &TypeMeta) -> String {
         }
         TypeMeta::String => format!("DynWinRtValue.hstring({})", var),
         TypeMeta::Bool => format!("DynWinRtValue.boolValue({})", var),
-        TypeMeta::I32 | TypeMeta::Enum { .. }
-        | TypeMeta::I8 | TypeMeta::U8 | TypeMeta::Char16 => {
+        TypeMeta::I32 | TypeMeta::Enum { .. } | TypeMeta::I8 | TypeMeta::U8 | TypeMeta::Char16 => {
             format!("DynWinRtValue.i32({})", var)
         }
         TypeMeta::U32 => format!("DynWinRtValue.u32({})", var),
@@ -290,20 +361,56 @@ fn vector_item_wrap_expr(var: &str, elem: &TypeMeta) -> String {
 // Return conversion (TypeScript)
 // ======================================================================
 
-/// Resolve a type name, using `_m_X.X` for deferred (lazy module ref) imports.
-pub(crate) fn resolve_type_name(name: &str, deferred: &HashSet<String>) -> String {
-    if deferred.contains(name) {
-        format!("_m_{0}.{0}", name)
-    } else {
-        name.to_string()
-    }
+/// Marker prefix for cross-file lazy sibling references in emitted JS body strings.
+/// See `render_js::resolve_ref_markers` for how these get resolved to target-specific
+/// output shapes (e.g. `__DWRT_REF__X__` → `X` in ESM, `(__get_X())` in CJS-lazy).
+pub const REF_MARKER_PREFIX: &str = "__DWRT_REF__";
+pub const REF_MARKER_SUFFIX: &str = "__";
+
+/// Wrap a bare class/struct/interface identifier in the marker syntax that
+/// render_js later resolves per target. Callers use this whenever they emit a
+/// cross-file type name into a pre-computed body string, so the renderer can
+/// dispatch by target without doing JS tokenization.
+pub fn ref_marker(name: &str) -> String {
+    format!("{}{}{}", REF_MARKER_PREFIX, name, REF_MARKER_SUFFIX)
+}
+
+/// Resolve a type name for embedding in generated JS. Always wraps the name in
+/// a `__DWRT_REF__<name>__` marker that the render layer translates per target
+/// (real identifier for ESM or same-file self references, `(__get_X())` for
+/// CJS cross-file lazy references). The renderer does the sibling-vs-self
+/// disambiguation via the file's import set — this function is deliberately
+/// context-free so it doesn't need `imported_names` plumbed through every
+/// projection call site.
+///
+/// The `deferred` parameter is preserved for API compatibility (Python codegen
+/// uses the same trait signature) but is unused for JS emission.
+pub(crate) fn resolve_type_name(name: &str, _deferred: &HashSet<String>) -> String {
+    ref_marker(name)
+}
+
+fn wrap_nullable_return(expr: &str, wrapper: &str) -> String {
+    format!("((v) => v.isNull() ? null : new {}(v))({})", wrapper, expr)
+}
+
+fn unwrap_nullable_return(expr: &str) -> String {
+    format!("((v) => v.isNull() ? null : v)({})", expr)
 }
 
 /// Convert an array return expression to the appropriate JS array type.
-pub(crate) fn convert_array_return(arr_expr: &str, inner: &TypeMeta, known_types: &HashSet<String>, deferred: &HashSet<String>) -> String {
+pub(crate) fn convert_array_return(
+    arr_expr: &str,
+    inner: &TypeMeta,
+    known_types: &HashSet<String>,
+    deferred: &HashSet<String>,
+) -> String {
     match inner {
         TypeMeta::I8 => format!("{}.toI8Vec()", arr_expr),
-        TypeMeta::U8 => format!("{}.toU8Vec()", arr_expr),
+        // U8 returns: hand back a Node Buffer (Uint8Array view), avoiding the
+        // ~8x V8 heap blow-up of an Array<number>. Buffer is assignment-
+        // compatible with Uint8Array and works with `Array.from(...)`,
+        // `Buffer.from(...)`, indexing, and `.length`.
+        TypeMeta::U8 => format!("{}.toBuffer()", arr_expr),
         TypeMeta::I16 => format!("{}.toI16Vec()", arr_expr),
         TypeMeta::U16 | TypeMeta::Char16 => format!("{}.toU16Vec()", arr_expr),
         TypeMeta::I32 | TypeMeta::Enum { .. } => format!("{}.toI32Vec()", arr_expr),
@@ -316,20 +423,52 @@ pub(crate) fn convert_array_return(arr_expr: &str, inner: &TypeMeta, known_types
         TypeMeta::String => format!("{}.toStringVec()", arr_expr),
         TypeMeta::Guid => format!("{}.toValues().map(v => v.toString())", arr_expr),
         TypeMeta::Struct { name, .. } if name == "HResult" => format!("{}.toI32Vec()", arr_expr),
-        TypeMeta::Struct { name, .. } => format!("{}.toValues().map(v => _unpack{}(v))", arr_expr, name),
+        TypeMeta::Struct { name, .. } => {
+            format!("{}.toValues().map(v => _unpack{}(v))", arr_expr, name)
+        }
         TypeMeta::RuntimeClass { name, .. } if known_types.contains(name) => {
             let r = resolve_type_name(name, deferred);
-            format!("{}.toValues().map(v => new {}(v))", arr_expr, r)
+            format!(
+                "{}.toValues().map(v => v.isNull() ? null : new {}(v))",
+                arr_expr, r
+            )
         }
         TypeMeta::Interface { name, .. } if known_types.contains(name) => {
             let r = resolve_type_name(name, deferred);
-            format!("{}.toValues().map(v => new {}(v))", arr_expr, r)
+            format!(
+                "{}.toValues().map(v => v.isNull() ? null : new {}(v))",
+                arr_expr, r
+            )
+        }
+        TypeMeta::Parameterized { name, args, .. } => {
+            let concrete = crate::meta::make_parameterized_name(name, args);
+            if known_types.contains(&concrete) {
+                let r = resolve_type_name(&concrete, deferred);
+                format!(
+                    "{}.toValues().map(v => v.isNull() ? null : new {}(v))",
+                    arr_expr, r
+                )
+            } else {
+                format!("{}.toValues().map(v => v.isNull() ? null : v)", arr_expr)
+            }
+        }
+        TypeMeta::Object
+        | TypeMeta::Delegate { .. }
+        | TypeMeta::RuntimeClass { .. }
+        | TypeMeta::Interface { .. } => {
+            format!("{}.toValues().map(v => v.isNull() ? null : v)", arr_expr)
         }
         _ => format!("{}.toValues()", arr_expr),
     }
 }
 
-pub(crate) fn convert_return(expr: &str, return_type: Option<&TypeMeta>, is_async: bool, known_types: &HashSet<String>, deferred: &HashSet<String>) -> String {
+pub(crate) fn convert_return(
+    expr: &str,
+    return_type: Option<&TypeMeta>,
+    is_async: bool,
+    known_types: &HashSet<String>,
+    deferred: &HashSet<String>,
+) -> String {
     if is_async {
         let inner_type = match return_type {
             Some(TypeMeta::AsyncOperation(inner)) => Some(inner.as_ref()),
@@ -341,31 +480,41 @@ pub(crate) fn convert_return(expr: &str, return_type: Option<&TypeMeta>, is_asyn
     }
     match return_type {
         Some(TypeMeta::String) | Some(TypeMeta::Guid) => format!("{}.toString()", expr),
-        Some(TypeMeta::I8 | TypeMeta::U8 | TypeMeta::I16 | TypeMeta::U16 | TypeMeta::Char16
-            | TypeMeta::I32 | TypeMeta::U32) => format!("{}.toNumber()", expr),
+        Some(
+            TypeMeta::I8
+            | TypeMeta::U8
+            | TypeMeta::I16
+            | TypeMeta::U16
+            | TypeMeta::Char16
+            | TypeMeta::I32
+            | TypeMeta::U32,
+        ) => format!("{}.toNumber()", expr),
         Some(TypeMeta::I64 | TypeMeta::U64) => format!("{}.toI64()", expr),
         Some(TypeMeta::F32 | TypeMeta::F64) => format!("{}.toF64()", expr),
         Some(TypeMeta::Bool) => format!("{}.toBool()", expr),
         Some(TypeMeta::Enum { .. }) => format!("{}.toNumber()", expr),
         Some(TypeMeta::RuntimeClass { name, .. }) if known_types.contains(name) => {
             let r = resolve_type_name(name, deferred);
-            format!("new {}({})", r, expr)
+            wrap_nullable_return(expr, &r)
         }
         Some(TypeMeta::Struct { name, .. }) if name == "HResult" => format!("{}.toNumber()", expr),
         Some(TypeMeta::Struct { name, .. }) => format!("_unpack{}({})", name, expr),
-        Some(TypeMeta::Delegate { .. }) => expr.to_string(),
+        Some(TypeMeta::Object | TypeMeta::Delegate { .. }) => unwrap_nullable_return(expr),
         Some(TypeMeta::Interface { name, .. }) if known_types.contains(name) => {
             let r = resolve_type_name(name, deferred);
-            format!("new {}({})", r, expr)
+            wrap_nullable_return(expr, &r)
         }
         Some(TypeMeta::Parameterized { name, args, .. }) => {
             let concrete = crate::meta::make_parameterized_name(name, args);
             if known_types.contains(&concrete) {
                 let r = resolve_type_name(&concrete, deferred);
-                format!("new {}({})", r, expr)
+                wrap_nullable_return(expr, &r)
             } else {
-                expr.to_string()
+                unwrap_nullable_return(expr)
             }
+        }
+        Some(TypeMeta::RuntimeClass { .. } | TypeMeta::Interface { .. }) => {
+            unwrap_nullable_return(expr)
         }
         Some(TypeMeta::Array(inner)) => {
             let arr_expr = format!("{}.asArray()", expr);
@@ -382,25 +531,37 @@ pub(crate) fn convert_return(expr: &str, return_type: Option<&TypeMeta>, is_asyn
 /// Generate a `const <var_name> = DynWinRtType.registerInterface(...)` block.
 /// `var_name` controls the JS variable name (e.g. `"_IFoo"` for class-internal use).
 pub(crate) fn generate_interface_registration(iface: &InterfaceMeta, var_name: &str) -> String {
-    let mut out = String::new();
-    out.push_str(&format!("const {} = DynWinRtType.registerInterface(\n", var_name));
-    out.push_str(&format!("    \"{}\", IID_{})\n", iface.name, iface.name));
+    let cache_name = format!("{}Cache", var_name);
+    let mut registration = String::new();
+    registration.push_str("DynWinRtType.registerInterface(\n");
+    registration.push_str(&format!(
+        "        \"{}\", IID_{})\n",
+        iface.name, iface.name
+    ));
     for method in &iface.methods {
-        out.push_str(&format!(
-            "    .addMethod(\"{}\", {})\n",
+        registration.push_str(&format!(
+            "        .addMethod(\"{}\", {})\n",
             method.name,
             build_method_sig(method)
         ));
     }
-    trim_trailing_newline_add_semicolon(&mut out);
-    out
-}
-
-pub(crate) fn trim_trailing_newline_add_semicolon(out: &mut String) {
-    if out.ends_with(")\n") {
-        out.truncate(out.len() - 1);
-        out.push_str(";\n");
+    if registration.ends_with('\n') {
+        registration.truncate(registration.len() - 1);
     }
+
+    let mut out = String::new();
+    out.push_str(&format!("let {};\n", cache_name));
+    out.push_str(&format!("const {} = new Proxy({{}}, {{\n", var_name));
+    out.push_str("    get(_target, prop) {\n");
+    out.push_str(&format!("        {} ??= {};\n", cache_name, registration));
+    out.push_str(&format!("        const value = {}[prop];\n", cache_name));
+    out.push_str(&format!(
+        "        return typeof value === 'function' ? value.bind({}) : value;\n",
+        cache_name
+    ));
+    out.push_str("    }\n");
+    out.push_str("});\n");
+    out
 }
 
 // ======================================================================
@@ -429,7 +590,11 @@ pub(crate) fn py_dynwinrt_type(typ: &TypeMeta) -> String {
             format!("DynWinRTType.interface(WinGUID.parse('{}'))", iid)
         }
         TypeMeta::Interface { .. } => "DynWinRTType.object()".to_string(),
-        TypeMeta::RuntimeClass { namespace, name, default_iid } => {
+        TypeMeta::RuntimeClass {
+            namespace,
+            name,
+            default_iid,
+        } => {
             let full_name = format!("{}.{}", namespace, name);
             if !default_iid.is_empty() {
                 format!(
@@ -442,35 +607,61 @@ pub(crate) fn py_dynwinrt_type(typ: &TypeMeta) -> String {
         }
         TypeMeta::Delegate { .. } => "DynWinRTType.object()".to_string(),
         TypeMeta::AsyncOperation(inner) => {
-            format!("DynWinRTType.i_async_operation({})", py_dynwinrt_type(inner))
+            format!(
+                "DynWinRTType.i_async_operation({})",
+                py_dynwinrt_type(inner)
+            )
         }
         TypeMeta::AsyncOperationWithProgress(result, progress) => {
-            format!("DynWinRTType.i_async_operation_with_progress({}, {})",
-                py_dynwinrt_type(result), py_dynwinrt_type(progress))
+            format!(
+                "DynWinRTType.i_async_operation_with_progress({}, {})",
+                py_dynwinrt_type(result),
+                py_dynwinrt_type(progress)
+            )
         }
         TypeMeta::AsyncAction => "DynWinRTType.i_async_action()".to_string(),
         TypeMeta::AsyncActionWithProgress(progress) => {
-            format!("DynWinRTType.i_async_action_with_progress({})", py_dynwinrt_type(progress))
+            format!(
+                "DynWinRTType.i_async_action_with_progress({})",
+                py_dynwinrt_type(progress)
+            )
         }
-        TypeMeta::Struct { namespace, name, fields } => {
+        TypeMeta::Struct { name, .. } if name == "HResult" => "DynWinRTType.hresult()".to_string(),
+        TypeMeta::Struct {
+            namespace,
+            name,
+            fields,
+        } => {
             let full_name = format!("{}.{}", namespace, name);
-            let field_types: Vec<String> = fields.iter()
-                .map(|f| py_dynwinrt_type(&f.typ))
-                .collect();
-            format!("DynWinRTType.struct_type('{}', [{}])", full_name, field_types.join(", "))
+            let field_types: Vec<String> =
+                fields.iter().map(|f| py_dynwinrt_type(&f.typ)).collect();
+            format!(
+                "DynWinRTType.struct_type('{}', [{}])",
+                full_name,
+                field_types.join(", ")
+            )
         }
         TypeMeta::Array(inner) => {
             format!("DynWinRTType.array_type({})", py_dynwinrt_type(inner))
         }
-        TypeMeta::Enum { namespace, name, members, .. } => {
+        TypeMeta::Enum {
+            namespace,
+            name,
+            members,
+            ..
+        } => {
             let full_name = format!("{}.{}", namespace, name);
             if members.is_empty() {
                 format!("DynWinRTType.enum_type('{}')", full_name)
             } else {
                 let names: Vec<String> = members.iter().map(|m| format!("'{}'", m.name)).collect();
                 let values: Vec<String> = members.iter().map(|m| m.value.to_string()).collect();
-                format!("DynWinRTType.enum_type('{}', [{}], [{}])",
-                    full_name, names.join(", "), values.join(", "))
+                format!(
+                    "DynWinRTType.enum_type('{}', [{}], [{}])",
+                    full_name,
+                    names.join(", "),
+                    values.join(", ")
+                )
             }
         }
         TypeMeta::Parameterized { piid, args, .. } => {
@@ -478,7 +669,11 @@ pub(crate) fn py_dynwinrt_type(typ: &TypeMeta) -> String {
                 "DynWinRTType.object()".to_string()
             } else {
                 let arg_types: Vec<String> = args.iter().map(|a| py_dynwinrt_type(a)).collect();
-                format!("DynWinRTType.parameterized(WinGUID.parse('{}'), [{}])", piid, arg_types.join(", "))
+                format!(
+                    "DynWinRTType.parameterized(WinGUID.parse('{}'), [{}])",
+                    piid,
+                    arg_types.join(", ")
+                )
             }
         }
     }
@@ -516,8 +711,13 @@ pub(crate) fn py_wrap_arg(name: &str, typ: &TypeMeta) -> String {
     match typ {
         TypeMeta::String => format!("DynWinRTValue.from_hstring({})", name),
         TypeMeta::Bool => format!("DynWinRTValue.from_bool({})", name),
-        TypeMeta::I32 | TypeMeta::U32 | TypeMeta::Enum { .. }
-        | TypeMeta::I8 | TypeMeta::U8 | TypeMeta::I16 | TypeMeta::U16
+        TypeMeta::I32
+        | TypeMeta::U32
+        | TypeMeta::Enum { .. }
+        | TypeMeta::I8
+        | TypeMeta::U8
+        | TypeMeta::I16
+        | TypeMeta::U16
         | TypeMeta::Char16 => {
             format!("DynWinRTValue.from_i32({})", name)
         }
@@ -525,15 +725,22 @@ pub(crate) fn py_wrap_arg(name: &str, typ: &TypeMeta) -> String {
         TypeMeta::F32 => format!("DynWinRTValue.from_f32({})", name),
         TypeMeta::F64 => format!("DynWinRTValue.from_f64({})", name),
         TypeMeta::Guid => format!("DynWinRTValue.from_guid({})", name),
-        TypeMeta::RuntimeClass { .. } | TypeMeta::Object | TypeMeta::Interface { .. }
-        | TypeMeta::Parameterized { .. } | TypeMeta::Delegate { .. } => {
+        TypeMeta::RuntimeClass { .. }
+        | TypeMeta::Object
+        | TypeMeta::Interface { .. }
+        | TypeMeta::Parameterized { .. }
+        | TypeMeta::Delegate { .. } => {
             format!("getattr({}, '_obj', {})", name, name)
         }
         TypeMeta::Array(_) => format!("{}.to_value()", name),
-        TypeMeta::Struct { name: struct_name, .. } if struct_name == "HResult" => {
+        TypeMeta::Struct {
+            name: struct_name, ..
+        } if struct_name == "HResult" => {
             format!("DynWinRTValue.from_i32({})", name)
         }
-        TypeMeta::Struct { name: struct_name, .. } => {
+        TypeMeta::Struct {
+            name: struct_name, ..
+        } => {
             format!("_pack_{}({}).to_value()", to_snake_case(struct_name), name)
         }
         _ => name.to_string(),
@@ -542,14 +749,20 @@ pub(crate) fn py_wrap_arg(name: &str, typ: &TypeMeta) -> String {
 
 /// Build Python args list expression for method call.
 pub(crate) fn py_build_args_expr(in_params: &[&crate::meta::ParamMeta]) -> String {
-    in_params.iter()
+    in_params
+        .iter()
         .map(|p| py_wrap_arg(&to_snake_case(&p.name), &p.typ))
         .collect::<Vec<_>>()
         .join(", ")
 }
 
 /// Convert a Python return expression, given the raw `.call()` result expression.
-pub(crate) fn py_convert_return(expr: &str, return_type: Option<&TypeMeta>, is_async: bool, known_types: &HashSet<String>) -> String {
+pub(crate) fn py_convert_return(
+    expr: &str,
+    return_type: Option<&TypeMeta>,
+    is_async: bool,
+    known_types: &HashSet<String>,
+) -> String {
     if is_async {
         let inner_type = match return_type {
             Some(TypeMeta::AsyncOperation(inner)) => Some(inner.as_ref()),
@@ -561,8 +774,15 @@ pub(crate) fn py_convert_return(expr: &str, return_type: Option<&TypeMeta>, is_a
     }
     match return_type {
         Some(TypeMeta::String) | Some(TypeMeta::Guid) => format!("{}.to_string()", expr),
-        Some(TypeMeta::I8 | TypeMeta::U8 | TypeMeta::I16 | TypeMeta::U16 | TypeMeta::Char16
-            | TypeMeta::I32 | TypeMeta::U32) => format!("{}.to_number()", expr),
+        Some(
+            TypeMeta::I8
+            | TypeMeta::U8
+            | TypeMeta::I16
+            | TypeMeta::U16
+            | TypeMeta::Char16
+            | TypeMeta::I32
+            | TypeMeta::U32,
+        ) => format!("{}.to_number()", expr),
         Some(TypeMeta::I64 | TypeMeta::U64) => format!("{}.to_i64()", expr),
         Some(TypeMeta::F32 | TypeMeta::F64) => format!("{}.to_f64()", expr),
         Some(TypeMeta::Bool) => format!("{}.to_bool()", expr),
@@ -593,7 +813,11 @@ pub(crate) fn py_convert_return(expr: &str, return_type: Option<&TypeMeta>, is_a
 }
 
 /// Convert an array return expression to the appropriate Python list.
-pub(crate) fn py_convert_array_return(arr_expr: &str, inner: &TypeMeta, known_types: &HashSet<String>) -> String {
+pub(crate) fn py_convert_array_return(
+    arr_expr: &str,
+    inner: &TypeMeta,
+    known_types: &HashSet<String>,
+) -> String {
     match inner {
         TypeMeta::I8 => format!("{}.to_i8_list()", arr_expr),
         TypeMeta::U8 => format!("{}.to_u8_list()", arr_expr),
@@ -609,7 +833,11 @@ pub(crate) fn py_convert_array_return(arr_expr: &str, inner: &TypeMeta, known_ty
         TypeMeta::String => format!("{}.to_string_list()", arr_expr),
         TypeMeta::Guid => format!("[v.to_string() for v in {}.to_values()]", arr_expr),
         TypeMeta::Struct { name, .. } if name == "HResult" => format!("{}.to_i32_list()", arr_expr),
-        TypeMeta::Struct { name, .. } => format!("[_unpack_{}(v) for v in {}.to_values()]", to_snake_case(name), arr_expr),
+        TypeMeta::Struct { name, .. } => format!(
+            "[_unpack_{}(v) for v in {}.to_values()]",
+            to_snake_case(name),
+            arr_expr
+        ),
         TypeMeta::RuntimeClass { name, .. } if known_types.contains(name) => {
             format!("[{}(v) for v in {}.to_values()]", name, arr_expr)
         }
@@ -623,10 +851,17 @@ pub(crate) fn py_convert_array_return(arr_expr: &str, inner: &TypeMeta, known_ty
 /// Generate a Python `_IFoo = DynWinRTType.register_interface(...)` block.
 pub(crate) fn py_generate_interface_registration(iface: &InterfaceMeta, var_name: &str) -> String {
     let mut out = String::new();
-    out.push_str(&format!("{} = DynWinRTType.register_interface(\n", var_name));
+    out.push_str(&format!(
+        "{} = DynWinRTType.register_interface(\n",
+        var_name
+    ));
     out.push_str(&format!("    \"{}\", IID_{}) \\\n", iface.name, iface.name));
     for (i, method) in iface.methods.iter().enumerate() {
-        let trailing = if i + 1 < iface.methods.len() { " \\" } else { "" };
+        let trailing = if i + 1 < iface.methods.len() {
+            " \\"
+        } else {
+            ""
+        };
         out.push_str(&format!(
             "    .add_method(\"{}\", {}){}\n",
             method.name,

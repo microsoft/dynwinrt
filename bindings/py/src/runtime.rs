@@ -292,6 +292,21 @@ impl DynWinRTMethodHandle {
         }
     }
 
+    /// Like `invoke`, but returns all out-parameters as a list.
+    /// Used for methods with multiple out params (e.g. IVector.IndexOf → [index, found]).
+    fn invoke_all(&self, obj: &DynWinRTValue, args: Vec<DynWinRTValue>) -> PyResult<Vec<DynWinRTValue>> {
+        let raw = match &obj.0 {
+            dynwinrt::WinRTValue::Object(o) => o.as_raw(),
+            _ => return Err(PyRuntimeError::new_err("invoke_all() requires an Object value")),
+        };
+        let wrt_args: Vec<dynwinrt::WinRTValue> = args.iter().map(|a| a.0.clone()).collect();
+        let results = self
+            .0
+            .invoke(raw, &wrt_args)
+            .map_err(|e| PyRuntimeError::new_err(e.message()))?;
+        Ok(results.into_iter().map(DynWinRTValue).collect())
+    }
+
     // --- Fast paths: skip Vec alloc for common getter patterns ---
 
     /// Getter → string (0 args, zero Vec allocation)
@@ -493,6 +508,19 @@ impl DynWinRTValue {
                 .map_err(|e| PyRuntimeError::new_err(e.message()))?;
             Ok(DynWinRTValue(v))
         })
+    }
+
+    /// Cancel the underlying WinRT async operation (calls `IAsyncInfo::Cancel`).
+    /// Safe to call multiple times or on already-completed operations.
+    ///
+    /// Raises if this value is not an async operation.
+    fn cancel(&self) -> PyResult<()> {
+        let async_info = match &self.0 {
+            dynwinrt::WinRTValue::Async(a) => a,
+            _ => return Err(PyRuntimeError::new_err("cancel: not an async value")),
+        };
+        async_info.cancel()
+            .map_err(|e| PyRuntimeError::new_err(format!("Cancel failed: {}", e.message())))
     }
 
     /// Register a progress callback on an async-with-progress operation.
@@ -922,6 +950,50 @@ impl DynWinRTArray {
             .map(|s| dynwinrt::WinRTValue::HString(HSTRING::from(&s)))
             .collect();
         DynWinRTArray(dynwinrt::ArrayData::from_values(TABLE.make(dynwinrt::TypeKind::HString), &wvals))
+    }
+
+    /// Build a DynWinRTArray of WinRT object/interface elements.
+    ///
+    /// Use for `T[]` ABI in-parameters where `T` is a runtime class or
+    /// interface — for example, `ModelCatalog(ModelCatalogSource[] sources)`.
+    /// Items are passed as DynWinRTValue handles (typically Object-wrapped),
+    /// and the element type drives ABI size and IID computation.
+    #[staticmethod]
+    fn from_object_values(values: Vec<DynWinRTValue>, element_type: &DynWinRTType) -> DynWinRTArray {
+        let wvals: Vec<dynwinrt::WinRTValue> = values.iter().map(|v| v.0.clone()).collect();
+        DynWinRTArray(dynwinrt::ArrayData::from_values(element_type.0.clone(), &wvals))
+    }
+
+    /// Return the u8 array data as a Python `bytes` object. Safe for both
+    /// `Values`-backed and `CoTaskMem`-backed arrays.
+    fn to_bytes<'py>(&self, py: Python<'py>) -> Bound<'py, pyo3::types::PyBytes> {
+        let len = self.0.len();
+        let mut buf: Vec<u8> = Vec::with_capacity(len);
+        for i in 0..len {
+            buf.push(match self.0.get(i) {
+                dynwinrt::WinRTValue::U8(v) => v,
+                other => other.as_i32().unwrap_or(0) as u8,
+            });
+        }
+        pyo3::types::PyBytes::new(py, &buf)
+    }
+
+    /// Build a u8 DynWinRTArray from a Python `bytes` or `bytearray` (much more
+    /// efficient than `from_u8_values` for large byte buffers because the caller
+    /// avoids boxing each byte into a Python int).
+    #[staticmethod]
+    fn from_bytes(data: &Bound<'_, PyAny>) -> PyResult<DynWinRTArray> {
+        let slice: Vec<u8> = if let Ok(b) = data.cast::<pyo3::types::PyBytes>() {
+            b.as_bytes().to_vec()
+        } else if let Ok(ba) = data.cast::<pyo3::types::PyByteArray>() {
+            ba.to_vec()
+        } else {
+            return Err(pyo3::exceptions::PyTypeError::new_err(
+                "from_bytes: expected bytes or bytearray",
+            ));
+        };
+        let wvals: Vec<dynwinrt::WinRTValue> = slice.into_iter().map(dynwinrt::WinRTValue::U8).collect();
+        Ok(DynWinRTArray(dynwinrt::ArrayData::from_values(TABLE.u8_type(), &wvals)))
     }
 
     /// Wrap as DynWinRTValue::Array for passing to call().

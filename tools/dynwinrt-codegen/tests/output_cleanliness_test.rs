@@ -58,7 +58,11 @@ fn output_dir_contains_no_internal_cache_files() {
         .arg(&tmp)
         .status()
         .expect("spawn dynwinrt-codegen (incremental)");
-    assert!(status2.success(), "incremental codegen exited non-zero: {:?}", status2);
+    assert!(
+        status2.success(),
+        "incremental codegen exited non-zero: {:?}",
+        status2
+    );
 
     let mut violations: Vec<String> = Vec::new();
     for entry in fs::read_dir(&tmp).expect("read tmp dir") {
@@ -115,7 +119,11 @@ fn output_dir_clean_full_namespace_mode() {
         .arg(&tmp)
         .status()
         .expect("spawn dynwinrt-codegen (full namespace)");
-    assert!(status.success(), "full-namespace codegen exited non-zero: {:?}", status);
+    assert!(
+        status.success(),
+        "full-namespace codegen exited non-zero: {:?}",
+        status
+    );
 
     let mut violations: Vec<String> = Vec::new();
     for entry in fs::read_dir(&tmp).expect("read tmp dir") {

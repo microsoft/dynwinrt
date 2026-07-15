@@ -612,48 +612,26 @@ mod tests {
     #[tokio::test]
     async fn test_get_results_u64_buffer_all() -> Result<()> {
         use crate::metadata_table::TypeKind;
-        use windows::Storage::Streams::{InMemoryRandomAccessStream, IOutputStream, Buffer};
+        use windows::Storage::Streams::Buffer;
+        use windows::Web::Http::HttpBufferContent;
 
-        let stream = InMemoryRandomAccessStream::new().map_err(Error::WindowsError)?;
-        let output: IOutputStream = stream.cast().map_err(Error::WindowsError)?;
+        fn buffer_content(size: u32) -> Result<HttpBufferContent> {
+            let buffer = Buffer::Create(size).map_err(Error::WindowsError)?;
+            buffer.SetLength(size).map_err(Error::WindowsError)?;
+            HttpBufferContent::CreateFromBuffer(&buffer).map_err(Error::WindowsError)
+        }
 
-        // Write some data first
-        let data_size: u32 = 2048;
-        let buffer = Buffer::Create(data_size).map_err(Error::WindowsError)?;
-        buffer.SetLength(data_size).map_err(Error::WindowsError)?;
-        output.WriteAsync(&buffer).map_err(Error::WindowsError)?.await.map_err(Error::WindowsError)?;
-
-        // Seek to beginning
-        stream.Seek(0).map_err(Error::WindowsError)?;
-
-        // ReadAsync returns IAsyncOperationWithProgress<IBuffer, u32>
-        // Instead, use the content pattern: windows-rs typed first, then dynwinrt
-        // BufferAllAsync on HttpContent is IAsyncOperationWithProgress<u64, u64>
-        // but we need network. Use WriteAsync u32 instead (already tested above).
-
-        // Just verify the u64 case from the no_handler test produced correct value
-        let client = windows::Web::Http::HttpClient::new().map_err(Error::WindowsError)?;
-        let uri = windows::Foundation::Uri::CreateUri(
-            &windows_core::HSTRING::from("https://httpbin.org/bytes/512"),
-        ).map_err(Error::WindowsError)?;
-
-        let response = client.GetAsync(&uri).map_err(Error::WindowsError)?
-            .await.map_err(Error::WindowsError)?;
-        let content = response.Content().map_err(Error::WindowsError)?;
+        let expected_size = 512u64;
+        let content = buffer_content(expected_size as u32)?;
 
         // windows-rs typed
         let typed_result = content.BufferAllAsync().map_err(Error::WindowsError)?
             .await.map_err(Error::WindowsError)?;
         println!("windows-rs BufferAllAsync: {} bytes", typed_result);
-        assert_eq!(typed_result, 512u64);
+        assert_eq!(typed_result, expected_size);
 
         // dynwinrt
-        let uri2 = windows::Foundation::Uri::CreateUri(
-            &windows_core::HSTRING::from("https://httpbin.org/bytes/512"),
-        ).map_err(Error::WindowsError)?;
-        let response2 = client.GetAsync(&uri2).map_err(Error::WindowsError)?
-            .await.map_err(Error::WindowsError)?;
-        let content2 = response2.Content().map_err(Error::WindowsError)?;
+        let content2 = buffer_content(expected_size as u32)?;
         let dyn_op = content2.BufferAllAsync().map_err(Error::WindowsError)?;
         let info: IAsyncInfo = dyn_op.cast().map_err(Error::WindowsError)?;
 
@@ -667,7 +645,7 @@ mod tests {
         println!("dynwinrt BufferAllAsync: {:?}", result);
 
         match result {
-            WinRTValue::U64(v) => assert_eq!(v, 512u64, "u64 result mismatch"),
+            WinRTValue::U64(v) => assert_eq!(v, expected_size, "u64 result mismatch"),
             other => panic!("Expected U64, got {:?}", other),
         }
 

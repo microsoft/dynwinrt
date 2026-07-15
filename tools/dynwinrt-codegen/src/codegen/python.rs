@@ -7,16 +7,14 @@ use crate::meta::{ClassMeta, InterfaceMeta, ParamDirection};
 use crate::types::{TypeKind, TypeMeta};
 
 use super::common::{
-    collect_used_structs_from_class, collect_used_structs_from_iface,
-    py_struct_field_type, py_struct_field_getter, py_struct_field_setter,
-    py_dynwinrt_type, py_generate_interface_registration,
-    collect_used_generics_from_methods, collect_used_generics_from_class,
-    collect_iface_type_imports, collect_type_imports,
-    to_snake_case, to_snake_case_filename, is_py_reserved,
+    collect_iface_type_imports, collect_type_imports, collect_used_generics_from_class,
+    collect_used_generics_from_methods, collect_used_structs_from_class,
+    collect_used_structs_from_iface, is_py_reserved, py_dynwinrt_type,
+    py_generate_interface_registration, py_struct_field_getter, py_struct_field_setter,
+    py_struct_field_type, to_snake_case, to_snake_case_filename,
 };
 use super::py_method::{
-    generate_factory_method_invoke, generate_static_method_invoke,
-    generate_iface_instance_method,
+    generate_factory_method_invoke, generate_iface_instance_method, generate_static_method_invoke,
 };
 
 use super::py_shared::reorder_getters_before_setters;
@@ -30,7 +28,11 @@ from dynwinrt_py import (
 )\n";
 
 /// Generate a Python `__init__.py` that re-exports all generated types.
-pub fn generate_index(classes: &[ClassMeta], interfaces: &[InterfaceMeta], enums: &[TypeMeta]) -> String {
+pub fn generate_index(
+    classes: &[ClassMeta],
+    interfaces: &[InterfaceMeta],
+    enums: &[TypeMeta],
+) -> String {
     let mut out = String::new();
     let mut seen: HashSet<String> = HashSet::new();
     out.push_str(HEADER);
@@ -38,17 +40,23 @@ pub fn generate_index(classes: &[ClassMeta], interfaces: &[InterfaceMeta], enums
     sorted_classes.sort_by(|a, b| a.name.cmp(&b.name));
     for class in sorted_classes {
         if seen.insert(class.name.clone()) {
-            let struct_names: Vec<_> = collect_used_structs_from_class(class).iter()
+            let struct_names: Vec<_> = collect_used_structs_from_class(class)
+                .iter()
                 .flat_map(|s| py_struct_export_names(s))
                 .filter(|n| seen.insert(n.clone()))
                 .collect();
             let module = to_snake_case_filename(&class.name);
             if struct_names.is_empty() {
-                out.push_str(&format!("from .{} import {}  # noqa: F401\n", module, class.name));
+                out.push_str(&format!(
+                    "from .{} import {}  # noqa: F401\n",
+                    module, class.name
+                ));
             } else {
                 out.push_str(&format!(
                     "from .{} import {}, {}  # noqa: F401\n",
-                    module, class.name, struct_names.join(", ")
+                    module,
+                    class.name,
+                    struct_names.join(", ")
                 ));
             }
         }
@@ -62,33 +70,44 @@ pub fn generate_index(classes: &[ClassMeta], interfaces: &[InterfaceMeta], enums
         let is_delegate = iface.methods.iter().any(|m| m.name == ".ctor")
             && iface.methods.iter().any(|m| m.name == "Invoke");
         let module = to_snake_case_filename(&iface.name);
-        let struct_names: Vec<_> = collect_used_structs_from_iface(iface).iter()
+        let struct_names: Vec<_> = collect_used_structs_from_iface(iface)
+            .iter()
             .flat_map(|s| py_struct_export_names(s))
             .filter(|n| seen.insert(n.clone()))
             .collect();
         if is_delegate {
             out.push_str(&format!(
                 "from .{module} import IID_{iname}, {iname}_PARAM_TYPES  # noqa: F401\n",
-                module = module, iname = iface.name
+                module = module,
+                iname = iface.name
             ));
         } else {
             if struct_names.is_empty() {
                 out.push_str(&format!(
                     "from .{module} import IID_{iname}, {iname}  # noqa: F401\n",
-                    module = module, iname = iface.name
+                    module = module,
+                    iname = iface.name
                 ));
             } else {
                 out.push_str(&format!(
                     "from .{module} import IID_{iname}, {iname}, {structs}  # noqa: F401\n",
-                    module = module, iname = iface.name, structs = struct_names.join(", ")
+                    module = module,
+                    iname = iface.name,
+                    structs = struct_names.join(", ")
                 ));
             }
         }
     }
     let mut sorted_enums: Vec<_> = enums.iter().collect();
     sorted_enums.sort_by(|a, b| {
-        let name_a = match a { TypeMeta::Enum { name, .. } => name.as_str(), _ => "" };
-        let name_b = match b { TypeMeta::Enum { name, .. } => name.as_str(), _ => "" };
+        let name_a = match a {
+            TypeMeta::Enum { name, .. } => name.as_str(),
+            _ => "",
+        };
+        let name_b = match b {
+            TypeMeta::Enum { name, .. } => name.as_str(),
+            _ => "",
+        };
         name_a.cmp(name_b)
     });
     for en in sorted_enums {
@@ -149,16 +168,22 @@ pub fn append_to_index(
     for class in sorted_classes {
         let module = to_snake_case_filename(&class.name);
         if !exported_modules.contains(&module) && seen.insert(class.name.clone()) {
-            let struct_names: Vec<_> = collect_used_structs_from_class(class).iter()
+            let struct_names: Vec<_> = collect_used_structs_from_class(class)
+                .iter()
                 .flat_map(|s| py_struct_export_names(s))
                 .filter(|n| seen.insert(n.clone()))
                 .collect();
             if struct_names.is_empty() {
-                out.push_str(&format!("from .{} import {}  # noqa: F401\n", module, class.name));
+                out.push_str(&format!(
+                    "from .{} import {}  # noqa: F401\n",
+                    module, class.name
+                ));
             } else {
                 out.push_str(&format!(
                     "from .{} import {}, {}  # noqa: F401\n",
-                    module, class.name, struct_names.join(", ")
+                    module,
+                    class.name,
+                    struct_names.join(", ")
                 ));
             }
         }
@@ -168,28 +193,35 @@ pub fn append_to_index(
     sorted_ifaces.sort_by(|a, b| a.name.cmp(&b.name));
     for iface in sorted_ifaces {
         let module = to_snake_case_filename(&iface.name);
-        if exported_modules.contains(&module) || !seen.insert(iface.name.clone()) { continue; }
+        if exported_modules.contains(&module) || !seen.insert(iface.name.clone()) {
+            continue;
+        }
         let is_delegate = iface.methods.iter().any(|m| m.name == ".ctor")
             && iface.methods.iter().any(|m| m.name == "Invoke");
-        let struct_names: Vec<_> = collect_used_structs_from_iface(iface).iter()
+        let struct_names: Vec<_> = collect_used_structs_from_iface(iface)
+            .iter()
             .flat_map(|s| py_struct_export_names(s))
             .filter(|n| seen.insert(n.clone()))
             .collect();
         if is_delegate {
             out.push_str(&format!(
                 "from .{module} import IID_{iname}, {iname}_PARAM_TYPES  # noqa: F401\n",
-                module = module, iname = iface.name
+                module = module,
+                iname = iface.name
             ));
         } else {
             if struct_names.is_empty() {
                 out.push_str(&format!(
                     "from .{module} import IID_{iname}, {iname}  # noqa: F401\n",
-                    module = module, iname = iface.name
+                    module = module,
+                    iname = iface.name
                 ));
             } else {
                 out.push_str(&format!(
                     "from .{module} import IID_{iname}, {iname}, {structs}  # noqa: F401\n",
-                    module = module, iname = iface.name, structs = struct_names.join(", ")
+                    module = module,
+                    iname = iface.name,
+                    structs = struct_names.join(", ")
                 ));
             }
         }
@@ -197,8 +229,14 @@ pub fn append_to_index(
 
     let mut sorted_enums: Vec<_> = enums.iter().collect();
     sorted_enums.sort_by(|a, b| {
-        let name_a = match a { TypeMeta::Enum { name, .. } => name.as_str(), _ => "" };
-        let name_b = match b { TypeMeta::Enum { name, .. } => name.as_str(), _ => "" };
+        let name_a = match a {
+            TypeMeta::Enum { name, .. } => name.as_str(),
+            _ => "",
+        };
+        let name_b = match b {
+            TypeMeta::Enum { name, .. } => name.as_str(),
+            _ => "",
+        };
         name_a.cmp(name_b)
     });
     for en in sorted_enums {
@@ -216,8 +254,13 @@ pub fn append_to_index(
 /// Generate a Python file for a single enum.
 pub fn generate_enum(en: &TypeMeta) -> Option<String> {
     let (name, members, enum_doc, enum_dep) = match en {
-        TypeMeta::Enum { name, members, doc, deprecated, .. } =>
-            (name, members, doc.as_deref(), deprecated.as_deref()),
+        TypeMeta::Enum {
+            name,
+            members,
+            doc,
+            deprecated,
+            ..
+        } => (name, members, doc.as_deref(), deprecated.as_deref()),
         _ => return None,
     };
 
@@ -264,7 +307,11 @@ pub fn generate_enum(en: &TypeMeta) -> Option<String> {
 }
 
 /// Generate a Python file for a WinRT interface (non-exclusive).
-pub fn generate_interface(iface: &InterfaceMeta, known_types: &HashSet<String>, delegate_type_names: &HashSet<String>) -> String {
+pub fn generate_interface(
+    iface: &InterfaceMeta,
+    known_types: &HashSet<String>,
+    delegate_type_names: &HashSet<String>,
+) -> String {
     let is_delegate = iface.methods.iter().any(|m| m.name == ".ctor")
         && iface.methods.iter().any(|m| m.name == "Invoke");
     if is_delegate {
@@ -299,7 +346,10 @@ pub fn generate_interface(iface: &InterfaceMeta, known_types: &HashSet<String>, 
     for cname in &collection_names {
         if cname != &iface.name && !delegate_names.contains(cname) {
             let module = to_snake_case_filename(cname);
-            out.push_str(&format!("from .{} import {}  # noqa: F401\n", module, cname));
+            out.push_str(&format!(
+                "from .{} import {}  # noqa: F401\n",
+                module, cname
+            ));
         }
     }
 
@@ -316,7 +366,8 @@ pub fn generate_interface(iface: &InterfaceMeta, known_types: &HashSet<String>, 
     // Type imports for referenced types
     let type_imports = collect_iface_type_imports(iface);
     let mut sorted_type_imports: Vec<_> = type_imports.iter().collect();
-    sorted_type_imports.sort_by(|a, b| (&a.namespace, &a.name, &a.kind).cmp(&(&b.namespace, &b.name, &b.kind)));
+    sorted_type_imports
+        .sort_by(|a, b| (&a.namespace, &a.name, &a.kind).cmp(&(&b.namespace, &b.name, &b.kind)));
     for r in &sorted_type_imports {
         if known_types.contains(&r.name) && !delegate_names.contains(&r.name) {
             out.push_str(&format_py_type_import(&r.name, r.kind));
@@ -326,10 +377,16 @@ pub fn generate_interface(iface: &InterfaceMeta, known_types: &HashSet<String>, 
 
     // IID constant
     if let Some(ref piid) = iface.generic_piid {
-        let args_py: Vec<String> = iface.generic_args.iter().map(|a| py_dynwinrt_type(a)).collect();
+        let args_py: Vec<String> = iface
+            .generic_args
+            .iter()
+            .map(|a| py_dynwinrt_type(a))
+            .collect();
         out.push_str(&format!(
             "IID_{} = DynWinRTType.parameterized(WinGUID.parse('{}'), [{}]).iid()\n\n",
-            iface.name, piid, args_py.join(", ")
+            iface.name,
+            piid,
+            args_py.join(", ")
         ));
     } else if !iface.iid.is_empty() {
         out.push_str(&format!(
@@ -339,7 +396,10 @@ pub fn generate_interface(iface: &InterfaceMeta, known_types: &HashSet<String>, 
     }
 
     // Interface registration
-    out.push_str(&py_generate_interface_registration(iface, &format!("_{}", iface.name)));
+    out.push_str(&py_generate_interface_registration(
+        iface,
+        &format!("_{}", iface.name),
+    ));
     out.push('\n');
 
     // Struct helpers
@@ -360,7 +420,10 @@ pub fn generate_interface(iface: &InterfaceMeta, known_types: &HashSet<String>, 
     }
     out.push_str("    def __init__(self, obj: DynWinRTValue):\n");
     if iface.generic_piid.is_some() {
-        out.push_str(&format!("        self._obj = obj.cast(IID_{})\n", iface.name));
+        out.push_str(&format!(
+            "        self._obj = obj.cast(IID_{})\n",
+            iface.name
+        ));
     } else {
         out.push_str("        self._obj = obj\n");
     }
@@ -414,7 +477,13 @@ pub fn generate_interface(iface: &InterfaceMeta, known_types: &HashSet<String>, 
     let iface_var = format!("_{}", iface.name);
     for method in reorder_getters_before_setters(&iface.methods) {
         out.push('\n');
-        out.push_str(&generate_iface_instance_method(iface, &iface_var, method, known_types, &delegate_names));
+        out.push_str(&generate_iface_instance_method(
+            iface,
+            &iface_var,
+            method,
+            known_types,
+            &delegate_names,
+        ));
     }
 
     out
@@ -428,27 +497,31 @@ fn generate_delegate(iface: &InterfaceMeta) -> String {
     out.push_str("from dynwinrt_py import DynWinRTType, WinGUID\n\n");
 
     let invoke = iface.methods.iter().find(|m| m.name == "Invoke");
-    let param_exprs: Vec<String> = invoke.map(|inv| {
-        inv.params.iter()
-            .filter(|p| p.direction == ParamDirection::In)
-            .map(|p| py_dynwinrt_type(&p.typ))
-            .collect()
-    }).unwrap_or_default();
+    let param_exprs: Vec<String> = invoke
+        .map(|inv| {
+            inv.params
+                .iter()
+                .filter(|p| p.direction == ParamDirection::In)
+                .map(|p| py_dynwinrt_type(&p.typ))
+                .collect()
+        })
+        .unwrap_or_default();
 
     if !iface.iid.is_empty() {
         out.push_str(&format!(
             "IID_{} = DynWinRTType.parameterized(WinGUID.parse('{}'), [{}]).iid()\n",
-            iface.name, iface.iid, param_exprs.join(", ")
+            iface.name,
+            iface.iid,
+            param_exprs.join(", ")
         ));
     } else {
-        out.push_str(&format!(
-            "IID_{} = None\n",
-            iface.name
-        ));
+        out.push_str(&format!("IID_{} = None\n", iface.name));
     }
 
     if let Some(invoke) = invoke {
-        let param_exprs: Vec<String> = invoke.params.iter()
+        let param_exprs: Vec<String> = invoke
+            .params
+            .iter()
             .filter(|p| p.direction == ParamDirection::In)
             .map(|p| py_dynwinrt_type(&p.typ))
             .collect();
@@ -468,7 +541,11 @@ fn generate_delegate(iface: &InterfaceMeta) -> String {
 
 fn generate_struct_helpers(s: &TypeMeta) -> String {
     let (namespace, name, fields) = match s {
-        TypeMeta::Struct { namespace, name, fields } => (namespace, name, fields),
+        TypeMeta::Struct {
+            namespace,
+            name,
+            fields,
+        } => (namespace, name, fields),
         _ => return String::new(),
     };
     let mut out = String::new();
@@ -480,10 +557,21 @@ fn generate_struct_helpers(s: &TypeMeta) -> String {
         out.push_str("    pass\n");
     } else {
         // __init__ with typed fields
-        let init_params: Vec<String> = fields.iter()
-            .map(|f| format!("{}: {} = {}", to_snake_case(&f.name), py_struct_field_type(&f.typ), py_default_value(&f.typ)))
+        let init_params: Vec<String> = fields
+            .iter()
+            .map(|f| {
+                format!(
+                    "{}: {} = {}",
+                    to_snake_case(&f.name),
+                    py_struct_field_type(&f.typ),
+                    py_default_value(&f.typ)
+                )
+            })
             .collect();
-        out.push_str(&format!("    def __init__(self, {}):\n", init_params.join(", ")));
+        out.push_str(&format!(
+            "    def __init__(self, {}):\n",
+            init_params.join(", ")
+        ));
         for f in fields {
             let snake = to_snake_case(&f.name);
             out.push_str(&format!("        self.{} = {}\n", snake, snake));
@@ -492,11 +580,22 @@ fn generate_struct_helpers(s: &TypeMeta) -> String {
     out.push('\n');
 
     // unpack function
-    out.push_str(&format!("\ndef unpack_{}(v: DynWinRTValue) -> {}:\n", snake_name, name));
+    out.push_str(&format!(
+        "\ndef unpack_{}(v: DynWinRTValue) -> {}:\n",
+        snake_name, name
+    ));
     out.push_str("    s = v.as_struct()\n");
-    let field_args: Vec<String> = fields.iter().enumerate().map(|(i, f)| {
-        format!("{}={}", to_snake_case(&f.name), py_struct_field_getter(&f.typ, i))
-    }).collect();
+    let field_args: Vec<String> = fields
+        .iter()
+        .enumerate()
+        .map(|(i, f)| {
+            format!(
+                "{}={}",
+                to_snake_case(&f.name),
+                py_struct_field_getter(&f.typ, i)
+            )
+        })
+        .collect();
     out.push_str(&format!("    return {}({})\n", name, field_args.join(", ")));
     // Internal alias
     out.push_str(&format!("_unpack_{0} = unpack_{0}\n", snake_name));
@@ -504,15 +603,25 @@ fn generate_struct_helpers(s: &TypeMeta) -> String {
     // Type constant
     let full_name = format!("{}.{}", namespace, name);
     let field_types: Vec<String> = fields.iter().map(|f| py_dynwinrt_type(&f.typ)).collect();
-    out.push_str(&format!("{}_TYPE = DynWinRTType.struct_type('{}', [{}])\n",
-        name, full_name, field_types.join(", ")));
+    out.push_str(&format!(
+        "{}_TYPE = DynWinRTType.struct_type('{}', [{}])\n",
+        name,
+        full_name,
+        field_types.join(", ")
+    ));
     out.push_str(&format!("_{0}_TYPE = {0}_TYPE\n", name));
 
     // pack function
-    out.push_str(&format!("\ndef pack_{}(v: {}) -> DynWinRTStruct:\n", snake_name, name));
+    out.push_str(&format!(
+        "\ndef pack_{}(v: {}) -> DynWinRTStruct:\n",
+        snake_name, name
+    ));
     out.push_str(&format!("    s = DynWinRTStruct.create({}_TYPE)\n", name));
     for (i, f) in fields.iter().enumerate() {
-        out.push_str(&format!("    {}\n", py_struct_field_setter(&f.typ, i, &format!("v.{}", to_snake_case(&f.name)))));
+        out.push_str(&format!(
+            "    {}\n",
+            py_struct_field_setter(&f.typ, i, &format!("v.{}", to_snake_case(&f.name)))
+        ));
     }
     out.push_str("    return s\n");
     out.push_str(&format!("_pack_{0} = pack_{0}\n", snake_name));
@@ -524,8 +633,15 @@ fn generate_struct_helpers(s: &TypeMeta) -> String {
 fn py_default_value(typ: &TypeMeta) -> String {
     match typ {
         TypeMeta::Bool => "False".to_string(),
-        TypeMeta::I8 | TypeMeta::U8 | TypeMeta::I16 | TypeMeta::U16 | TypeMeta::Char16
-        | TypeMeta::I32 | TypeMeta::U32 | TypeMeta::I64 | TypeMeta::U64
+        TypeMeta::I8
+        | TypeMeta::U8
+        | TypeMeta::I16
+        | TypeMeta::U16
+        | TypeMeta::Char16
+        | TypeMeta::I32
+        | TypeMeta::U32
+        | TypeMeta::I64
+        | TypeMeta::U64
         | TypeMeta::Enum { .. } => "0".to_string(),
         TypeMeta::F32 | TypeMeta::F64 => "0.0".to_string(),
         TypeMeta::String => "''".to_string(),
@@ -550,7 +666,12 @@ fn py_struct_export_names(s: &TypeMeta) -> Vec<String> {
 }
 
 /// Generate a Python file for a single RuntimeClass.
-pub fn generate_class(class: &ClassMeta, known_types: &HashSet<String>, delegate_type_names: &HashSet<String>, shared_iids: &HashSet<String>) -> String {
+pub fn generate_class(
+    class: &ClassMeta,
+    known_types: &HashSet<String>,
+    delegate_type_names: &HashSet<String>,
+    shared_iids: &HashSet<String>,
+) -> String {
     let used_structs = collect_used_structs_from_class(class);
 
     let mut out = String::new();
@@ -563,7 +684,9 @@ pub fn generate_class(class: &ClassMeta, known_types: &HashSet<String>, delegate
 
     // Collect delegate names from all interfaces of this class
     let mut delegate_names: HashSet<String> = delegate_type_names.clone();
-    let all_ifaces: Vec<&InterfaceMeta> = class.default_interface.iter()
+    let all_ifaces: Vec<&InterfaceMeta> = class
+        .default_interface
+        .iter()
         .chain(class.factory_interfaces.iter())
         .chain(class.static_interfaces.iter())
         .chain(class.required_interfaces.iter())
@@ -588,7 +711,10 @@ pub fn generate_class(class: &ClassMeta, known_types: &HashSet<String>, delegate
     for cname in &collection_names {
         if !delegate_names.contains(cname) {
             let module = to_snake_case_filename(cname);
-            out.push_str(&format!("from .{} import {}  # noqa: F401\n", module, cname));
+            out.push_str(&format!(
+                "from .{} import {}  # noqa: F401\n",
+                module, cname
+            ));
         }
     }
 
@@ -606,7 +732,8 @@ pub fn generate_class(class: &ClassMeta, known_types: &HashSet<String>, delegate
     let mut imported_names: HashSet<String> = HashSet::new();
     let imports = collect_type_imports(class);
     let mut sorted_imports: Vec<_> = imports.iter().collect();
-    sorted_imports.sort_by(|a, b| (&a.namespace, &a.name, &a.kind).cmp(&(&b.namespace, &b.name, &b.kind)));
+    sorted_imports
+        .sort_by(|a, b| (&a.namespace, &a.name, &a.kind).cmp(&(&b.namespace, &b.name, &b.kind)));
     for r in &sorted_imports {
         if known_types.contains(&r.name) && !delegate_names.contains(&r.name) {
             out.push_str(&format_py_type_import(&r.name, r.kind));
@@ -619,7 +746,10 @@ pub fn generate_class(class: &ClassMeta, known_types: &HashSet<String>, delegate
 
     // Import shared required interfaces
     for req_iface in &class.required_interfaces {
-        if !req_iface.iid.is_empty() && shared_iids.contains(&req_iface.iid) && !imported_names.contains(&req_iface.name) {
+        if !req_iface.iid.is_empty()
+            && shared_iids.contains(&req_iface.iid)
+            && !imported_names.contains(&req_iface.name)
+        {
             out.push_str(&format_py_type_import(&req_iface.name, TypeKind::Interface));
             imported_names.insert(req_iface.name.clone());
             imported_names.insert(format!("IID_{}", req_iface.name));
@@ -628,7 +758,9 @@ pub fn generate_class(class: &ClassMeta, known_types: &HashSet<String>, delegate
     out.push('\n');
 
     // IID constants for all interfaces used by this class (skip if already imported)
-    let all_class_ifaces: Vec<&InterfaceMeta> = class.default_interface.iter()
+    let all_class_ifaces: Vec<&InterfaceMeta> = class
+        .default_interface
+        .iter()
         .chain(class.factory_interfaces.iter())
         .chain(class.static_interfaces.iter())
         .chain(class.required_interfaces.iter())
@@ -636,39 +768,53 @@ pub fn generate_class(class: &ClassMeta, known_types: &HashSet<String>, delegate
     for iface in &all_class_ifaces {
         let iid_name = format!("IID_{}", iface.name);
         if !iface.iid.is_empty() && !imported_names.contains(&iid_name) {
-            out.push_str(&format!(
-                "{} = WinGUID.parse('{}')\n",
-                iid_name, iface.iid
-            ));
+            out.push_str(&format!("{} = WinGUID.parse('{}')\n", iid_name, iface.iid));
         }
     }
     out.push('\n');
 
     // Interface registrations
     if let Some(ref iface) = class.default_interface {
-        out.push_str(&py_generate_interface_registration(iface, &format!("_{}", iface.name)));
+        out.push_str(&py_generate_interface_registration(
+            iface,
+            &format!("_{}", iface.name),
+        ));
         out.push('\n');
     }
     for iface in &class.factory_interfaces {
-        out.push_str(&py_generate_interface_registration(iface, &format!("_{}", iface.name)));
+        out.push_str(&py_generate_interface_registration(
+            iface,
+            &format!("_{}", iface.name),
+        ));
         out.push('\n');
     }
     for iface in &class.static_interfaces {
-        out.push_str(&py_generate_interface_registration(iface, &format!("_{}", iface.name)));
+        out.push_str(&py_generate_interface_registration(
+            iface,
+            &format!("_{}", iface.name),
+        ));
         out.push('\n');
     }
     for iface in &class.required_interfaces {
-        if !iface.iid.is_empty() && shared_iids.contains(&iface.iid) && imported_names.contains(&iface.name) {
+        if !iface.iid.is_empty()
+            && shared_iids.contains(&iface.iid)
+            && imported_names.contains(&iface.name)
+        {
             continue;
         }
-        out.push_str(&py_generate_interface_registration(iface, &format!("_{}", iface.name)));
+        out.push_str(&py_generate_interface_registration(
+            iface,
+            &format!("_{}", iface.name),
+        ));
         out.push('\n');
     }
 
     // IActivationFactory for default constructor
     if class.has_default_constructor {
         out.push_str("_IActivationFactory = DynWinRTType.register_interface(\n");
-        out.push_str("    'IActivationFactory', WinGUID.parse('00000035-0000-0000-c000-000000000046')) \\\n");
+        out.push_str(
+            "    'IActivationFactory', WinGUID.parse('00000035-0000-0000-c000-000000000046')) \\\n",
+        );
         out.push_str("    .add_method('ActivateInstance', DynWinRTMethodSig().add_out(DynWinRTType.object()))\n");
         out.push('\n');
     }
@@ -694,7 +840,10 @@ pub fn generate_class(class: &ClassMeta, known_types: &HashSet<String>, delegate
     out.push_str("    def __init__(self, obj: DynWinRTValue):\n");
     if let Some(ref iface) = class.default_interface {
         if !iface.iid.is_empty() {
-            out.push_str(&format!("        self._obj = obj.cast(IID_{})\n", iface.name));
+            out.push_str(&format!(
+                "        self._obj = obj.cast(IID_{})\n",
+                iface.name
+            ));
         } else {
             out.push_str("        self._obj = obj\n");
         }
@@ -711,10 +860,7 @@ pub fn generate_class(class: &ClassMeta, known_types: &HashSet<String>, delegate
             out.push_str(&format!("    _{} = None\n", key));
             out.push('\n');
             out.push_str("    @classmethod\n");
-            out.push_str(&format!(
-                "    def _get_{}(cls):\n",
-                key
-            ));
+            out.push_str(&format!("    def _get_{}(cls):\n", key));
             out.push_str(&format!(
                 "        if cls._{k} is None:\n\
                  \x20           cls._{k} = DynWinRTValue.activation_factory('{full}').cast(IID_{iface})\n\
@@ -730,10 +876,7 @@ pub fn generate_class(class: &ClassMeta, known_types: &HashSet<String>, delegate
             out.push_str(&format!("    _{} = None\n", key));
             out.push('\n');
             out.push_str("    @classmethod\n");
-            out.push_str(&format!(
-                "    def _get_{}(cls):\n",
-                key
-            ));
+            out.push_str(&format!("    def _get_{}(cls):\n", key));
             out.push_str(&format!(
                 "        if cls._{k} is None:\n\
                  \x20           cls._{k} = DynWinRTValue.activation_factory('{full}').cast(IID_{iface})\n\
@@ -746,17 +889,19 @@ pub fn generate_class(class: &ClassMeta, known_types: &HashSet<String>, delegate
 
     // Default constructor
     if class.has_default_constructor {
-        let has_create_factory = class.factory_interfaces.iter()
-            .any(|iface| iface.methods.iter().any(|m| {
+        let has_create_factory = class.factory_interfaces.iter().any(|iface| {
+            iface.methods.iter().any(|m| {
                 let snake = to_snake_case(&m.name);
                 snake == "create" || snake.starts_with("create")
-            }));
-        let ctor_name = if has_create_factory { "create_default" } else { "create" };
+            })
+        });
+        let ctor_name = if has_create_factory {
+            "create_default"
+        } else {
+            "create"
+        };
         out.push_str("    @staticmethod\n");
-        out.push_str(&format!(
-            "    def {}() -> '{}':\n",
-            ctor_name, class.name
-        ));
+        out.push_str(&format!("    def {}() -> '{}':\n", ctor_name, class.name));
         out.push_str(&format!(
             "        return {}(_IActivationFactory.method(6).invoke(DynWinRTValue.activation_factory('{}'), []))\n",
             class.name, class.full_name
@@ -768,7 +913,12 @@ pub fn generate_class(class: &ClassMeta, known_types: &HashSet<String>, delegate
     for iface in &class.factory_interfaces {
         for method in &iface.methods {
             out.push('\n');
-            out.push_str(&generate_factory_method_invoke(class, iface, method, known_types));
+            out.push_str(&generate_factory_method_invoke(
+                class,
+                iface,
+                method,
+                known_types,
+            ));
         }
     }
 
@@ -776,7 +926,12 @@ pub fn generate_class(class: &ClassMeta, known_types: &HashSet<String>, delegate
     for iface in &class.static_interfaces {
         for method in &iface.methods {
             out.push('\n');
-            out.push_str(&generate_static_method_invoke(class, iface, method, known_types));
+            out.push_str(&generate_static_method_invoke(
+                class,
+                iface,
+                method,
+                known_types,
+            ));
         }
     }
 
@@ -785,13 +940,23 @@ pub fn generate_class(class: &ClassMeta, known_types: &HashSet<String>, delegate
         let iface_var = format!("_{}", default_iface.name);
         for method in reorder_getters_before_setters(&default_iface.methods) {
             out.push('\n');
-            out.push_str(&generate_iface_instance_method(default_iface, &iface_var, method, known_types, &delegate_names));
+            out.push_str(&generate_iface_instance_method(
+                default_iface,
+                &iface_var,
+                method,
+                known_types,
+                &delegate_names,
+            ));
         }
     }
 
     // Auto-generate close() if class implements IClosable
     const ICLOSABLE_IID: &str = "30d5a829-7fa4-4026-83bb-d75bae4ea99e";
-    if class.required_interfaces.iter().any(|ri| ri.iid == ICLOSABLE_IID) {
+    if class
+        .required_interfaces
+        .iter()
+        .any(|ri| ri.iid == ICLOSABLE_IID)
+    {
         out.push('\n');
         out.push_str("    def close(self):\n");
         out.push_str("        IClosable.from_value(self._obj).close()\n");
@@ -806,7 +971,9 @@ pub fn generate_class(class: &ClassMeta, known_types: &HashSet<String>, delegate
 
     // Generate inline wrapper classes for required interfaces (non-default)
     for req_iface in &class.required_interfaces {
-        if req_iface.iid.is_empty() { continue; }
+        if req_iface.iid.is_empty() {
+            continue;
+        }
         if imported_names.contains(&req_iface.name) {
             continue;
         }
@@ -827,7 +994,13 @@ pub fn generate_class(class: &ClassMeta, known_types: &HashSet<String>, delegate
         ));
         for method in reorder_getters_before_setters(&req_iface.methods) {
             out.push('\n');
-            out.push_str(&generate_iface_instance_method(req_iface, &reg_var, method, known_types, &delegate_names));
+            out.push_str(&generate_iface_instance_method(
+                req_iface,
+                &reg_var,
+                method,
+                known_types,
+                &delegate_names,
+            ));
         }
     }
     out

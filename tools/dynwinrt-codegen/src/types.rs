@@ -132,10 +132,13 @@ mod tests {
         assert!(TypeMeta::AsyncAction.is_async());
         assert!(TypeMeta::AsyncOperation(Box::new(TypeMeta::String)).is_async());
         assert!(TypeMeta::AsyncActionWithProgress(Box::new(TypeMeta::I32)).is_async());
-        assert!(TypeMeta::AsyncOperationWithProgress(
-            Box::new(TypeMeta::String),
-            Box::new(TypeMeta::U32),
-        ).is_async());
+        assert!(
+            TypeMeta::AsyncOperationWithProgress(
+                Box::new(TypeMeta::String),
+                Box::new(TypeMeta::U32),
+            )
+            .is_async()
+        );
     }
 
     #[test]
@@ -144,9 +147,14 @@ mod tests {
         assert!(!TypeMeta::String.is_async());
         assert!(!TypeMeta::I32.is_async());
         assert!(!TypeMeta::Object.is_async());
-        assert!(!TypeMeta::Interface {
-            namespace: "N".into(), name: "I".into(), iid: "".into(),
-        }.is_async());
+        assert!(
+            !TypeMeta::Interface {
+                namespace: "N".into(),
+                name: "I".into(),
+                iid: "".into(),
+            }
+            .is_async()
+        );
     }
 
     #[test]
@@ -156,25 +164,38 @@ mod tests {
         assert_eq!(op.async_result_type(), Some(&inner));
 
         let progress = TypeMeta::U32;
-        let op_wp = TypeMeta::AsyncOperationWithProgress(
-            Box::new(inner.clone()),
-            Box::new(progress),
-        );
+        let op_wp =
+            TypeMeta::AsyncOperationWithProgress(Box::new(inner.clone()), Box::new(progress));
         assert_eq!(op_wp.async_result_type(), Some(&inner));
     }
 
     #[test]
     fn async_result_type_returns_none_for_non_operations() {
         assert_eq!(TypeMeta::AsyncAction.async_result_type(), None);
-        assert_eq!(TypeMeta::AsyncActionWithProgress(Box::new(TypeMeta::I32)).async_result_type(), None);
+        assert_eq!(
+            TypeMeta::AsyncActionWithProgress(Box::new(TypeMeta::I32)).async_result_type(),
+            None
+        );
         assert_eq!(TypeMeta::String.async_result_type(), None);
     }
 
     #[test]
     fn type_ref_equality_and_hash() {
-        let r1 = TypeRef { namespace: "A".into(), name: "B".into(), kind: TypeKind::Class };
-        let r2 = TypeRef { namespace: "A".into(), name: "B".into(), kind: TypeKind::Class };
-        let r3 = TypeRef { namespace: "A".into(), name: "B".into(), kind: TypeKind::Interface };
+        let r1 = TypeRef {
+            namespace: "A".into(),
+            name: "B".into(),
+            kind: TypeKind::Class,
+        };
+        let r2 = TypeRef {
+            namespace: "A".into(),
+            name: "B".into(),
+            kind: TypeKind::Class,
+        };
+        let r3 = TypeRef {
+            namespace: "A".into(),
+            name: "B".into(),
+            kind: TypeKind::Interface,
+        };
         assert_eq!(r1, r2);
         assert_ne!(r1, r3);
 

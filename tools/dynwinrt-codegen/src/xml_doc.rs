@@ -52,17 +52,50 @@ impl DocTable {
     /// Uses "insert if absent" semantics so sibling .xml docs take priority.
     pub fn load_builtin_docs(&mut self) {
         static BUILTIN_DOCS: &[(&str, &str)] = &[
-            ("Microsoft.Graphics.Imaging", include_str!("../api-docs/Microsoft.Graphics.Imaging.xml")),
-            ("Microsoft.Windows.AI", include_str!("../api-docs/Microsoft.Windows.AI.xml")),
-            ("Microsoft.Windows.AI.Contentmoderation", include_str!("../api-docs/Microsoft.Windows.AI.Contentmoderation.xml")),
-            ("Microsoft.Windows.AI.ContentSafety", include_str!("../api-docs/Microsoft.Windows.AI.ContentSafety.xml")),
-            ("Microsoft.Windows.AI.Foundation", include_str!("../api-docs/Microsoft.Windows.AI.Foundation.xml")),
-            ("Microsoft.Windows.AI.Generative", include_str!("../api-docs/Microsoft.Windows.AI.Generative.xml")),
-            ("Microsoft.Windows.AI.Imaging", include_str!("../api-docs/Microsoft.Windows.AI.Imaging.xml")),
-            ("Microsoft.Windows.AI.MachineLearning", include_str!("../api-docs/Microsoft.Windows.AI.MachineLearning.xml")),
-            ("Microsoft.Windows.AI.Text", include_str!("../api-docs/Microsoft.Windows.AI.Text.xml")),
-            ("Microsoft.Windows.Vision", include_str!("../api-docs/Microsoft.Windows.Vision.xml")),
-            ("Microsoft.Windows.Workloads", include_str!("../api-docs/Microsoft.Windows.Workloads.xml")),
+            (
+                "Microsoft.Graphics.Imaging",
+                include_str!("../api-docs/Microsoft.Graphics.Imaging.xml"),
+            ),
+            (
+                "Microsoft.Windows.AI",
+                include_str!("../api-docs/Microsoft.Windows.AI.xml"),
+            ),
+            (
+                "Microsoft.Windows.AI.Contentmoderation",
+                include_str!("../api-docs/Microsoft.Windows.AI.Contentmoderation.xml"),
+            ),
+            (
+                "Microsoft.Windows.AI.ContentSafety",
+                include_str!("../api-docs/Microsoft.Windows.AI.ContentSafety.xml"),
+            ),
+            (
+                "Microsoft.Windows.AI.Foundation",
+                include_str!("../api-docs/Microsoft.Windows.AI.Foundation.xml"),
+            ),
+            (
+                "Microsoft.Windows.AI.Generative",
+                include_str!("../api-docs/Microsoft.Windows.AI.Generative.xml"),
+            ),
+            (
+                "Microsoft.Windows.AI.Imaging",
+                include_str!("../api-docs/Microsoft.Windows.AI.Imaging.xml"),
+            ),
+            (
+                "Microsoft.Windows.AI.MachineLearning",
+                include_str!("../api-docs/Microsoft.Windows.AI.MachineLearning.xml"),
+            ),
+            (
+                "Microsoft.Windows.AI.Text",
+                include_str!("../api-docs/Microsoft.Windows.AI.Text.xml"),
+            ),
+            (
+                "Microsoft.Windows.Vision",
+                include_str!("../api-docs/Microsoft.Windows.Vision.xml"),
+            ),
+            (
+                "Microsoft.Windows.Workloads",
+                include_str!("../api-docs/Microsoft.Windows.Workloads.xml"),
+            ),
         ];
         for (_ns, xml_text) in BUILTIN_DOCS {
             self.ingest_xml_if_absent(xml_text);
@@ -77,7 +110,10 @@ impl DocTable {
             Err(_) => return,
         };
         for members_node in doc.descendants().filter(|n| n.has_tag_name("members")) {
-            for m in members_node.children().filter(|n| n.is_element() && n.has_tag_name("member")) {
+            for m in members_node
+                .children()
+                .filter(|n| n.is_element() && n.has_tag_name("member"))
+            {
                 let name = match m.attribute("name") {
                     Some(n) => n.to_string(),
                     None => continue,
@@ -112,7 +148,10 @@ impl DocTable {
             Err(_) => return,
         };
         for members_node in doc.descendants().filter(|n| n.has_tag_name("members")) {
-            for m in members_node.children().filter(|n| n.is_element() && n.has_tag_name("member")) {
+            for m in members_node
+                .children()
+                .filter(|n| n.is_element() && n.has_tag_name("member"))
+            {
                 let name = match m.attribute("name") {
                     Some(n) => n.to_string(),
                     None => continue,
@@ -155,7 +194,9 @@ impl DocTable {
         // Only used when exact match fails and there is exactly one candidate.
         .or_else(|| {
             let prefix = format!("M:{}(", full_name);
-            let candidates: Vec<_> = self.members.iter()
+            let candidates: Vec<_> = self
+                .members
+                .iter()
                 .filter(|(k, _)| k.starts_with(&prefix))
                 .collect();
             if candidates.len() == 1 {
@@ -189,7 +230,12 @@ impl DocTable {
     /// has no sibling .xml file (all doc fields remain None).
     /// Apply docs to an interface using an explicit owner name (typically the runtime class name),
     /// because WinRT XML doc members are keyed by class, not by interface.
-    pub fn apply_to_interface_as(&self, iface: &mut crate::meta::InterfaceMeta, owner_ns: &str, owner_name: &str) {
+    pub fn apply_to_interface_as(
+        &self,
+        iface: &mut crate::meta::InterfaceMeta,
+        owner_ns: &str,
+        owner_name: &str,
+    ) {
         if self.is_empty() {
             return;
         }
@@ -220,9 +266,15 @@ impl DocTable {
         if let Some(ref mut di) = class.default_interface {
             self.apply_to_interface_as(di, &class.namespace, &class.name);
         }
-        for i in class.required_interfaces.iter_mut() { self.apply_to_interface_as(i, &class.namespace, &class.name); }
-        for i in class.factory_interfaces.iter_mut() { self.apply_to_interface_as(i, &class.namespace, &class.name); }
-        for i in class.static_interfaces.iter_mut() { self.apply_to_interface_as(i, &class.namespace, &class.name); }
+        for i in class.required_interfaces.iter_mut() {
+            self.apply_to_interface_as(i, &class.namespace, &class.name);
+        }
+        for i in class.factory_interfaces.iter_mut() {
+            self.apply_to_interface_as(i, &class.namespace, &class.name);
+        }
+        for i in class.static_interfaces.iter_mut() {
+            self.apply_to_interface_as(i, &class.namespace, &class.name);
+        }
     }
 
     pub fn apply_to_interface(&self, iface: &mut crate::meta::InterfaceMeta) {
@@ -261,7 +313,8 @@ impl DocTable {
         let full = format!("{}.{}.{}", ns, iface_name, m.raw_name);
         // Property getters/setters -> P: lookup too (preferred if present)
         if m.is_property_getter || m.is_property_setter {
-            let prop_name = m.raw_name
+            let prop_name = m
+                .raw_name
                 .strip_prefix("get_")
                 .or_else(|| m.raw_name.strip_prefix("put_"))
                 .or_else(|| m.raw_name.strip_prefix("set_"))
@@ -278,7 +331,8 @@ impl DocTable {
             }
         }
         if m.is_event_add || m.is_event_remove {
-            let evt_name = m.raw_name
+            let evt_name = m
+                .raw_name
                 .strip_prefix("add_")
                 .or_else(|| m.raw_name.strip_prefix("remove_"))
                 .unwrap_or(&m.raw_name);
@@ -305,7 +359,15 @@ impl DocTable {
             return;
         }
         use crate::types::TypeMeta;
-        if let TypeMeta::Enum { namespace, name, members, doc, deprecated, .. } = e {
+        if let TypeMeta::Enum {
+            namespace,
+            name,
+            members,
+            doc,
+            deprecated,
+            ..
+        } = e
+        {
             let full = format!("{}.{}", namespace, name);
             if let Some(tdoc) = self.lookup_type(&full) {
                 *doc = tdoc.summary.clone();
@@ -488,7 +550,10 @@ mod tests {
         let t = mk(r#"<doc><members>
             <member name="T:A.B"><summary>Hello world.</summary></member>
         </members></doc>"#);
-        assert_eq!(t.lookup_type("A.B").unwrap().summary.as_deref(), Some("Hello world."));
+        assert_eq!(
+            t.lookup_type("A.B").unwrap().summary.as_deref(),
+            Some("Hello world.")
+        );
     }
 
     #[test]
@@ -518,7 +583,10 @@ mod tests {
             </member>
         </members></doc>"#);
         let m = t.lookup_method("A.B.M", "(System.Int32)").unwrap();
-        assert_eq!(m.param_docs.get("x").map(|s| s.as_str()), Some("The input."));
+        assert_eq!(
+            m.param_docs.get("x").map(|s| s.as_str()),
+            Some("The input.")
+        );
     }
 
     #[test]

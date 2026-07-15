@@ -6,6 +6,7 @@ mod type_handle;
 mod value_data;
 mod method_handle;
 mod arena;
+mod append_only_arena;
 mod iid;
 
 pub use type_kind::*;
@@ -20,6 +21,7 @@ use windows_core::GUID;
 
 use crate::signature::{Method, MethodSignature};
 
+use append_only_arena::AppendOnlyBoxArena;
 use arena::*;
 
 // ===========================================================================
@@ -41,7 +43,22 @@ pub struct MetadataTable {
     enum_entries: RwLock<Vec<EnumData>>,
 
     // --- Methods arena ---
-    methods: RwLock<Vec<Method>>,
+    //
+    // Stored in an `AppendOnlyBoxArena` so entries have heap-stable
+    // addresses that can never be invalidated: callers may take a raw
+    // `*const Method` under the read guard, drop the guard, and then
+    // invoke the method. This is essential because a method call can be
+    // `DispatcherQueue.runEventLoop`, which pumps messages and may
+    // re-enter this arena for `push_method` (requiring `.write()`); if
+    // the outer call still held the read lock during dispatch, we would
+    // deadlock.
+    //
+    // Vec growth may move the `Box<Method>` slots inside the arena's
+    // backing buffer, but the boxed `Method` itself never moves. The
+    // arena type intentionally exposes only `push` / `stable_ptr`
+    // (no `pop`/`remove`/`clear`), so the "never removed" invariant
+    // is enforced by the type system rather than by convention.
+    methods: AppendOnlyBoxArena<Method>,
 
     // --- Indexes (no data duplication, only pointers) ---
     /// IID → method table for O(1) interface method lookup.
@@ -71,7 +88,7 @@ impl MetadataTable {
             inner_types: RwLock::new(Vec::new()),
             inner_type_pairs: RwLock::new(Vec::new()),
             enum_entries: RwLock::new(Vec::new()),
-            methods: RwLock::new(Vec::new()),
+            methods: AppendOnlyBoxArena::new(),
             interface_methods: RwLock::new(HashMap::new()),
             type_names: RwLock::new(HashMap::new()),
         })

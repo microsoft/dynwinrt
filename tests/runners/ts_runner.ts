@@ -475,13 +475,14 @@ async function main() {
     process.exit(2);
   }
 
-  // Fix imports in generated files
+  // Fix imports in generated files (both ESM `import ... from` and CJS `require`)
   const absRuntime = path.resolve(runtimePath).replace(/\\/g, '/');
-  const tsFiles = fs.readdirSync(generatedDir).filter(f => f.endsWith('.js'));
+  const tsFiles = fs.readdirSync(generatedDir).filter(f => f.endsWith('.js') || f.endsWith('.mjs'));
   for (const f of tsFiles) {
     const filePath = path.join(generatedDir, f);
     let content = fs.readFileSync(filePath, 'utf8');
     content = content.replace(/from '@microsoft\/dynwinrt'/g, `from 'file://${absRuntime}'`);
+    content = content.replace(/require\(['"]@microsoft\/dynwinrt['"]\)/g, `require('${absRuntime}')`);
     fs.writeFileSync(filePath, content);
   }
 

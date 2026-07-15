@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use dynwinrt;
 use napi_derive::napi;
+use napi::bindgen_prelude::BigInt;
 use napi::threadsafe_function::ThreadsafeFunctionCallMode;
 use windows::core::{IUnknown, Interface, HSTRING};
 
@@ -835,6 +836,16 @@ impl DynWinRTArray {
     DynWinRTArray(dynwinrt::ArrayData::from_values(TABLE.u8_type(), &wvals))
   }
 
+  /// Build a u8 DynWinRtArray from a JS `Uint8Array` (zero-copy view into V8
+  /// memory on the way in; much more efficient than fromU8Values for large
+  /// byte buffers because the caller doesn't need to allocate a boxed
+  /// `Array<number>` of length N).
+  #[napi]
+  pub fn from_uint8_array(values: napi::bindgen_prelude::Uint8Array) -> DynWinRTArray {
+    let wvals: Vec<dynwinrt::WinRTValue> = values.iter().map(|&v| dynwinrt::WinRTValue::U8(v)).collect();
+    DynWinRTArray(dynwinrt::ArrayData::from_values(TABLE.u8_type(), &wvals))
+  }
+
   #[napi]
   pub fn from_i16_values(values: Vec<i32>) -> DynWinRTArray {
     let wvals: Vec<dynwinrt::WinRTValue> = values.into_iter().map(|v| dynwinrt::WinRTValue::I16(v as i16)).collect();
@@ -889,6 +900,18 @@ impl DynWinRTArray {
       .map(|s| dynwinrt::WinRTValue::HString(HSTRING::from(&s)))
       .collect();
     DynWinRTArray(dynwinrt::ArrayData::from_values(TABLE.make(dynwinrt::TypeKind::HString), &wvals))
+  }
+
+  /// Build a DynWinRtArray of WinRT object/interface elements.
+  ///
+  /// Use for `T[]` ABI in-parameters where `T` is a runtime class or
+  /// interface — for example, `ModelCatalog(ModelCatalogSource[] sources)`.
+  /// Items are passed as DynWinRTValue handles (typically Object-wrapped),
+  /// and the element type drives ABI size and IID computation.
+  #[napi]
+  pub fn from_object_values(values: Vec<&DynWinRTValue>, element_type: &DynWinRTType) -> DynWinRTArray {
+    let wvals: Vec<dynwinrt::WinRTValue> = values.iter().map(|v| v.0.clone()).collect();
+    DynWinRTArray(dynwinrt::ArrayData::from_values(element_type.0.clone(), &wvals))
   }
 
   /// Wrap as DynWinRTValue::Array for passing to call().
@@ -988,21 +1011,23 @@ impl DynWinRTStruct {
   }
 
   #[napi]
-  pub fn get_i64(&self, index: u32) -> i64 {
-    self.0.get_field::<i64>(index as usize)
+  pub fn get_i64(&self, index: u32) -> BigInt {
+    BigInt::from(self.0.get_field::<i64>(index as usize))
   }
   #[napi]
-  pub fn set_i64(&mut self, index: u32, value: i64) {
-    self.0.set_field(index as usize, value);
+  pub fn set_i64(&mut self, index: u32, value: BigInt) {
+    let (n, _lossless) = value.get_i64();
+    self.0.set_field(index as usize, n);
   }
 
   #[napi]
-  pub fn get_u64(&self, index: u32) -> i64 {
-    self.0.get_field::<u64>(index as usize) as i64
+  pub fn get_u64(&self, index: u32) -> BigInt {
+    BigInt::from(self.0.get_field::<u64>(index as usize))
   }
   #[napi]
-  pub fn set_u64(&mut self, index: u32, value: i64) {
-    self.0.set_field(index as usize, value as u64);
+  pub fn set_u64(&mut self, index: u32, value: BigInt) {
+    let (_sign, n, _lossless) = value.get_u64();
+    self.0.set_field(index as usize, n);
   }
 
   // -- Non-blittable field access --
@@ -1303,16 +1328,139 @@ impl DynWinRtDelegate {
     #[napi(ts_arg_type = "(...args: DynWinRTValue[]) => void")]
     callback: napi::bindgen_prelude::Function<'static, Vec<DynWinRTValue>, ()>,
   ) -> napi::Result<DynWinRtDelegate> {
-    let tsfn = callback.build_threadsafe_function()
-      .build()?;
+    use napi::bindgen_prelude::ToNapiValue;
+    use napi::JsValue;
+    use windows::Win32::System::Threading::GetCurrentThreadId;
+
+    // Track the thread we were registered on. WinRT delegate callbacks that
+    // fire on this same thread are dispatched synchronously (see closure below),
+    // which is required when the JS thread is running a WinUI/DispatcherQueue
+    // message pump: in that state libuv is starved and the TSFN uv_async_send
+    // path never wakes up. Any other thread falls back to the TSFN.
+    //
+    // NOTE: `GetCurrentThreadId` returns a Windows DWORD that the OS is free
+    // to recycle once a thread exits. We assume the register thread outlives
+    // every delegate invocation — this holds for the common case (delegate is
+    // dropped when the subscription is released, and both are typically owned
+    // by the JS thread that registered them). If a Node worker exits while
+    // its delegate is still reachable from another thread, a recycled TID
+    // could steer a cross-thread invocation into the same-thread branch and
+    // touch a stale `napi_env`. Fixing that would require a per-thread epoch
+    // or TLS handshake; not needed for current use cases.
+    let register_tid = unsafe { GetCurrentThreadId() };
+
+    // Raw env is needed to make direct N-API calls from the delegate closure.
+    // It's only ever dereferenced on `register_tid`, so we wrap it in a Send+Sync
+    // newtype to satisfy the DelegateCallback trait bounds.
+    struct SendableEnv(napi::sys::napi_env);
+    unsafe impl Send for SendableEnv {}
+    unsafe impl Sync for SendableEnv {}
+    let raw_env_wrap = Arc::new(SendableEnv(callback.value().env));
+
+    let fn_ref = Arc::new(callback.create_ref()?);
+    let tsfn = callback.build_threadsafe_function().build()?;
 
     let type_handles: Vec<dynwinrt::TypeHandle> = param_types.iter()
       .map(|t| t.0.clone())
       .collect();
 
+    let raw_env_cb = raw_env_wrap.clone();
+    let fn_ref_cb = fn_ref.clone();
+
     let delegate_callback: dynwinrt::delegate::DelegateCallback = Box::new(move |args: &[dynwinrt::WinRTValue]| {
+      // Well-known HRESULTs used below to signal failure to the WinRT event
+      // source (rather than silently returning S_OK, which would look like
+      // the delegate ran).
+      const E_FAIL: windows::core::HRESULT      = windows::core::HRESULT(0x80004005u32 as i32);
+      const E_UNEXPECTED: windows::core::HRESULT = windows::core::HRESULT(0x8000FFFFu32 as i32);
+
+      let current_tid = unsafe { GetCurrentThreadId() };
       let js_args: Vec<DynWinRTValue> = args.iter().map(|a| DynWinRTValue(a.clone())).collect();
-      tsfn.call(js_args, napi::threadsafe_function::ThreadsafeFunctionCallMode::NonBlocking);
+
+      if current_tid == register_tid {
+        // Same-thread synchronous direct invocation. Bypass the TSFN because
+        // libuv may be blocked (e.g. DispatcherQueue.runEventLoop), so
+        // uv_async_send would queue the callback but never fire it.
+        //
+        // The entire body is wrapped in `catch_unwind`: this closure is
+        // ultimately called by an `extern "system"` COM stub, and letting a
+        // Rust panic unwind through the FFI boundary is UB. On panic we
+        // convert to E_UNEXPECTED so the WinRT caller sees a clean failure.
+        let raw_env = raw_env_cb.0;
+        let unwind_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> windows::core::HRESULT {
+          unsafe {
+            let mut scope: napi::sys::napi_handle_scope = std::ptr::null_mut();
+            if napi::sys::napi_open_handle_scope(raw_env, &mut scope) != napi::sys::Status::napi_ok {
+              // Env is probably being torn down. Don't lie to WinRT that we
+              // ran successfully — surface E_FAIL so async ops etc. don't
+              // silently hang waiting for a completion that never happens.
+              eprintln!("[dynwinrt] delegate: napi_open_handle_scope failed (env teardown?)");
+              return E_FAIL;
+            }
+            let scoped_env = napi::Env::from_raw(raw_env);
+            let call_result = (|| -> napi::Result<()> {
+              let fn_scope = fn_ref_cb.borrow_back(&scoped_env)?;
+              let fn_val = napi::JsValue::raw(&fn_scope);
+              // Spread each DynWinRTValue as its own napi_value so the JS
+              // callback receives them as positional args. The blanket
+              // `Vec<T>::into_vec` impl wraps the whole vec as a single JS
+              // Array, which is wrong here — we need one arg per element.
+              let mut argv: Vec<napi::sys::napi_value> = Vec::with_capacity(js_args.len());
+              for v in js_args {
+                let raw = DynWinRTValue::to_napi_value(raw_env, v)?;
+                argv.push(raw);
+              }
+              let mut undefined: napi::sys::napi_value = std::ptr::null_mut();
+              napi::sys::napi_get_undefined(raw_env, &mut undefined);
+              let mut result: napi::sys::napi_value = std::ptr::null_mut();
+              let status = napi::sys::napi_call_function(
+                raw_env,
+                undefined,
+                fn_val,
+                argv.len(),
+                argv.as_ptr(),
+                &mut result,
+              );
+              if status != napi::sys::Status::napi_ok {
+                // Surface any pending JS exception so it doesn't silently poison
+                // future calls. Delegates return HRESULT; there's no clean way to
+                // propagate a JS throw back through WinRT, so we route it through
+                // napi_fatal_exception (same policy tsfn uses).
+                let mut is_pending: bool = false;
+                napi::sys::napi_is_exception_pending(raw_env, &mut is_pending);
+                if is_pending {
+                  let mut err: napi::sys::napi_value = std::ptr::null_mut();
+                  napi::sys::napi_get_and_clear_last_exception(raw_env, &mut err);
+                  napi::sys::napi_fatal_exception(raw_env, err);
+                }
+                return Err(napi::Error::from_reason("napi_call_function failed"));
+              }
+              Ok(())
+            })();
+            napi::sys::napi_close_handle_scope(raw_env, scope);
+            // Log and report any non-exception error to WinRT. Without this,
+            // failures like invalid handles or marshaler errors would be
+            // silently dropped and the delegate would appear to have run.
+            if let Err(e) = call_result {
+              eprintln!("[dynwinrt] delegate dispatch error: {e}");
+              return E_FAIL;
+            }
+            windows::core::HRESULT(0)
+          }
+        }));
+        return match unwind_result {
+          Ok(hr) => hr,
+          Err(_) => {
+            eprintln!("[dynwinrt] delegate: panic caught at FFI boundary");
+            E_UNEXPECTED
+          }
+        };
+      }
+
+      // Cross-thread fallback: schedule via the TSFN. This requires libuv to
+      // be pumping on the JS thread, which is fine for classic Node.js work
+      // but not for a JS thread stuck inside a foreign message pump.
+      tsfn.call(js_args, ThreadsafeFunctionCallMode::NonBlocking);
       windows::core::HRESULT(0)
     });
 

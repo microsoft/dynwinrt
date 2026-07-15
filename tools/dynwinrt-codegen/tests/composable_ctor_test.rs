@@ -7,11 +7,12 @@
 //! default/required instance interface, whose CLR method name is literally
 //! `.ctor`. It implements the COM aggregation pattern and is only meant to be
 //! invoked by a host framework (in practice, XAML). Codegen used to fall
-//! through to the regular instance-method path for these methods, emitting
-//! `.ctor(): void { ... }` (TS) and `def .ctor(self) -> None:` (Python) — both
-//! syntax errors. This test pins the fix: `.ctor` on a non-delegate interface
-//! must be skipped at code emission, while still being kept in the interface
-//! registration / vtable so IIDs and indices remain correct.
+//! through to the regular instance-method path for these methods. Python emits
+//! invalid `def .ctor(self) -> None:` syntax; JavaScript either emits invalid
+//! `.ctor()` syntax or sanitizes it into a misleading `ctor()` method. This test
+//! pins the fix: `.ctor` on a non-delegate interface must be skipped at code
+//! emission, while still being kept in interface registration so vtable indices
+//! remain correct.
 
 use std::collections::{HashMap, HashSet};
 
@@ -68,12 +69,14 @@ fn assert_no_ctor(label: &str, output: &str) {
     // We must NOT see it anywhere else — particularly not as a method
     // declaration, which would be a syntax error in both TS and Python.
     let bad_patterns = [
-        ".ctor(",       // TS method/declaration syntax: `.ctor(): void { ... }`
-        ".ctor:",       // DTS field syntax: `.ctor: () => void`
-        "def .ctor",    // Python method definition
-        "get .ctor",    // TS getter
-        "set .ctor",    // TS setter
-        "@.ctor",       // TS decorator (defensive)
+        ".ctor(",      // TS method/declaration syntax: `.ctor(): void { ... }`
+        ".ctor:",      // DTS field syntax: `.ctor: () => void`
+        "\n    ctor(", // Sanitized JS method syntax on current main
+        "\n    ctor:", // Sanitized DTS method syntax on current main
+        "def .ctor",   // Python method definition
+        "get .ctor",   // TS getter
+        "set .ctor",   // TS setter
+        "@.ctor",      // TS decorator (defensive)
     ];
     for pat in bad_patterns {
         assert!(
@@ -122,8 +125,14 @@ fn typescript_codegen_skips_composable_ctor() {
 
     // The legitimate property must still be there — so we know the interface
     // was actually emitted and not skipped wholesale.
-    assert!(js.contains("get name()"), "render_js missing `name` getter:\n{js}");
-    assert!(dts.contains("name"), "render_dts missing `name` declaration:\n{dts}");
+    assert!(
+        js.contains("get name()"),
+        "render_js missing `name` getter:\n{js}"
+    );
+    assert!(
+        dts.contains("name"),
+        "render_dts missing `name` declaration:\n{dts}"
+    );
 }
 
 #[test]
@@ -139,8 +148,14 @@ fn python_codegen_skips_composable_ctor() {
     assert_no_ctor("python_stub::generate_interface_stub", &pyi);
 
     // Snake-case `name` property must still be emitted.
-    assert!(py.contains("def name"), "python output missing `name` property:\n{py}");
-    assert!(pyi.contains("def name"), "pyi output missing `name` property:\n{pyi}");
+    assert!(
+        py.contains("def name"),
+        "python output missing `name` property:\n{py}"
+    );
+    assert!(
+        pyi.contains("def name"),
+        "pyi output missing `name` property:\n{pyi}"
+    );
 }
 
 #[test]

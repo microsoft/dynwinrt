@@ -150,14 +150,27 @@ pub struct ProjectedEvent {
 
 #[derive(Clone)]
 pub enum SymbolKind {
-    ToString { iface_name: String },
+    ToString {
+        iface_name: String,
+    },
     ToPrimitive,
-    ToStringTag { tag: String },
-    Iterator { element_type: String, body_lines: Vec<String> },
+    ToStringTag {
+        tag: String,
+    },
+    Iterator {
+        element_type: String,
+        body_lines: Vec<String>,
+    },
     CollectionLength,
-    CollectionAt { element_type: String },
-    CollectionToArray { element_type: String },
-    IteratorNext { element_type: String },
+    CollectionAt {
+        element_type: String,
+    },
+    CollectionToArray {
+        element_type: String,
+    },
+    IteratorNext {
+        element_type: String,
+    },
 }
 
 #[derive(Clone)]
@@ -181,6 +194,10 @@ pub struct ProjectedImport {
     pub runtime_only: bool,
     /// true = DTS only (type aliases), not in JS
     pub dts_only: bool,
+    /// true = the dynwinrt runtime package (`@microsoft/dynwinrt` or the
+    /// `--import-name` override); prevents ESM->CJS conversion from
+    /// misclassifying it as a sibling module.
+    pub is_runtime_package: bool,
 }
 
 /// Disposition of a required interface.

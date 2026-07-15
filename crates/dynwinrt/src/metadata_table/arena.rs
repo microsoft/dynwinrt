@@ -130,12 +130,7 @@ impl MetadataTable {
 
         let vtable_index = 6 + table.method_indices.len();
         let method = sig.build(vtable_index);
-        let arena_index = {
-            let mut methods = self.methods.write().unwrap();
-            let idx = methods.len() as u32;
-            methods.push(method);
-            idx
-        };
+        let arena_index = self.methods.push(method);
         table.method_names.push(name.to_string());
         table.method_indices.push(arena_index);
         vtable_index as u32
@@ -202,13 +197,21 @@ impl MetadataTable {
         obj: *mut std::ffi::c_void,
         args: &[WinRTValue],
     ) -> windows_core::Result<Vec<WinRTValue>> {
-        let methods = self.methods.read().unwrap();
-        methods[index as usize].call_dynamic(obj, args)
+        // Grab a stable pointer to the method, then invoke. `AppendOnlyBoxArena`
+        // guarantees the pointer remains valid for the arena's lifetime, which
+        // lets us release the read lock before making the COM call. Holding the
+        // read lock across dispatch would deadlock any re-entrant `push_method`
+        // triggered from within (e.g. an event handler that touches a lazy
+        // proxy while `runEventLoop` is pumping). See the doc comment on
+        // `methods` in mod.rs for the safety argument.
+        let method_ptr: *const crate::signature::Method = self.methods.stable_ptr(index);
+        unsafe { (*method_ptr).call_dynamic(obj, args) }
     }
 
-    /// Read-lock the methods arena. Used by fast getter paths on MethodHandle.
-    pub(crate) fn methods_read(&self) -> std::sync::RwLockReadGuard<'_, Vec<crate::signature::Method>> {
-        self.methods.read().unwrap()
+    /// Get a stable pointer to a Method by arena index. See the safety notes
+    /// on `MetadataTable::methods` for why this is sound.
+    pub(crate) fn method_ptr(&self, index: u32) -> *const crate::signature::Method {
+        self.methods.stable_ptr(index)
     }
 
     pub(super) fn get_method_arena_index_by_vtable(

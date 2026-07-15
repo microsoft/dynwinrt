@@ -17,9 +17,9 @@ pub use super::naming::to_snake_case_filename;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
-    use crate::meta::{MethodMeta, ParamMeta, ParamDirection};
+    use crate::meta::{MethodMeta, ParamDirection, ParamMeta};
     use crate::types::TypeMeta;
+    use std::collections::HashSet;
 
     #[test]
     fn to_camel_case_basic() {
@@ -44,12 +44,22 @@ mod tests {
         assert_eq!(ts_struct_field_type(&TypeMeta::Guid), "string");
         assert_eq!(ts_struct_field_type(&TypeMeta::I32), "number");
         assert_eq!(ts_struct_field_type(&TypeMeta::F64), "number");
-        assert_eq!(ts_struct_field_type(&TypeMeta::Struct {
-            namespace: "N".into(), name: "MyStruct".into(), fields: vec![],
-        }), "MyStruct");
-        assert_eq!(ts_struct_field_type(&TypeMeta::Struct {
-            namespace: "N".into(), name: "HResult".into(), fields: vec![],
-        }), "number");
+        assert_eq!(
+            ts_struct_field_type(&TypeMeta::Struct {
+                namespace: "N".into(),
+                name: "MyStruct".into(),
+                fields: vec![],
+            }),
+            "MyStruct"
+        );
+        assert_eq!(
+            ts_struct_field_type(&TypeMeta::Struct {
+                namespace: "N".into(),
+                name: "HResult".into(),
+                fields: vec![],
+            }),
+            "number"
+        );
     }
 
     #[test]
@@ -62,16 +72,28 @@ mod tests {
 
     #[test]
     fn struct_field_setter_expressions() {
-        assert_eq!(struct_field_setter(&TypeMeta::Bool, 0, "v"), "s.setU8(0, v ? 1 : 0)");
-        assert_eq!(struct_field_setter(&TypeMeta::I32, 1, "x"), "s.setI32(1, x)");
-        assert_eq!(struct_field_setter(&TypeMeta::String, 2, "s"), "s.setHstring(2, s)");
+        assert_eq!(
+            struct_field_setter(&TypeMeta::Bool, 0, "v"),
+            "s.setU8(0, v ? 1 : 0)"
+        );
+        assert_eq!(
+            struct_field_setter(&TypeMeta::I32, 1, "x"),
+            "s.setI32(1, x)"
+        );
+        assert_eq!(
+            struct_field_setter(&TypeMeta::String, 2, "s"),
+            "s.setHstring(2, s)"
+        );
     }
 
     #[test]
     fn ts_dynwinrt_type_primitives() {
         assert_eq!(ts_dynwinrt_type(&TypeMeta::Bool), "DynWinRtType.boolType()");
         assert_eq!(ts_dynwinrt_type(&TypeMeta::I32), "DynWinRtType.i32()");
-        assert_eq!(ts_dynwinrt_type(&TypeMeta::String), "DynWinRtType.hstring()");
+        assert_eq!(
+            ts_dynwinrt_type(&TypeMeta::String),
+            "DynWinRtType.hstring()"
+        );
         assert_eq!(ts_dynwinrt_type(&TypeMeta::Guid), "DynWinRtType.guidType()");
         assert_eq!(ts_dynwinrt_type(&TypeMeta::F64), "DynWinRtType.f64()");
         assert_eq!(ts_dynwinrt_type(&TypeMeta::Object), "DynWinRtType.object()");
@@ -79,7 +101,10 @@ mod tests {
 
     #[test]
     fn ts_dynwinrt_type_async() {
-        assert_eq!(ts_dynwinrt_type(&TypeMeta::AsyncAction), "DynWinRtType.iAsyncAction()");
+        assert_eq!(
+            ts_dynwinrt_type(&TypeMeta::AsyncAction),
+            "DynWinRtType.iAsyncAction()"
+        );
         assert_eq!(
             ts_dynwinrt_type(&TypeMeta::AsyncOperation(Box::new(TypeMeta::String))),
             "DynWinRtType.iAsyncOperation(DynWinRtType.hstring())"
@@ -100,14 +125,51 @@ mod tests {
             namespace: "N".into(),
             name: "Rect".into(),
             fields: vec![
-                crate::types::FieldMeta { name: "X".into(), typ: TypeMeta::F32 },
-                crate::types::FieldMeta { name: "Y".into(), typ: TypeMeta::F32 },
+                crate::types::FieldMeta {
+                    name: "X".into(),
+                    typ: TypeMeta::F32,
+                },
+                crate::types::FieldMeta {
+                    name: "Y".into(),
+                    typ: TypeMeta::F32,
+                },
             ],
         };
         assert_eq!(
             ts_dynwinrt_type(&s),
             "DynWinRtType.structType('N.Rect', [DynWinRtType.f32(), DynWinRtType.f32()])"
         );
+    }
+
+    #[test]
+    fn ts_dynwinrt_type_hresult_struct() {
+        // HResult is exposed in WinRT metadata as a struct wrapping an i32, but
+        // the runtime treats it as its own kind (WinRTValue::HResult). The
+        // codegen must register methods with DynWinRtType.hresult() so the
+        // value comes back as HResult — calling .toNumber() on a plain
+        // WinRTValue::Struct would panic the napi binding.
+        let s = TypeMeta::Struct {
+            namespace: "Windows.Foundation".into(),
+            name: "HResult".into(),
+            fields: vec![crate::types::FieldMeta {
+                name: "Value".into(),
+                typ: TypeMeta::I32,
+            }],
+        };
+        assert_eq!(ts_dynwinrt_type(&s), "DynWinRtType.hresult()");
+    }
+
+    #[test]
+    fn py_dynwinrt_type_hresult_struct() {
+        let s = TypeMeta::Struct {
+            namespace: "Windows.Foundation".into(),
+            name: "HResult".into(),
+            fields: vec![crate::types::FieldMeta {
+                name: "Value".into(),
+                typ: TypeMeta::I32,
+            }],
+        };
+        assert_eq!(py_dynwinrt_type(&s), "DynWinRTType.hresult()");
     }
 
     #[test]
@@ -131,9 +193,11 @@ mod tests {
         let m = MethodMeta {
             name: "GetValue".into(),
             vtable_index: 7,
-            params: vec![
-                ParamMeta { name: "key".into(), typ: TypeMeta::String, direction: ParamDirection::In },
-            ],
+            params: vec![ParamMeta {
+                name: "key".into(),
+                typ: TypeMeta::String,
+                direction: ParamDirection::In,
+            }],
             return_type: Some(TypeMeta::I32),
             is_property_getter: false,
             is_property_setter: false,
@@ -153,15 +217,28 @@ mod tests {
         assert_eq!(wrap_arg("n", &TypeMeta::I32), "DynWinRtValue.i32(n)");
         assert_eq!(wrap_arg("n", &TypeMeta::I64), "DynWinRtValue.i64(n)");
         assert_eq!(wrap_arg("f", &TypeMeta::F64), "DynWinRtValue.f64(f)");
+        assert_eq!(
+            wrap_arg("o", &TypeMeta::Object),
+            "(o == null ? DynWinRtValue.nullValue() : _unwrap(o))"
+        );
     }
 
     #[test]
     fn convert_return_basic() {
         let known = HashSet::new();
         let deferred = HashSet::new();
-        assert_eq!(convert_return("r", Some(&TypeMeta::String), false, &known, &deferred), "r.toString()");
-        assert_eq!(convert_return("r", Some(&TypeMeta::I32), false, &known, &deferred), "r.toNumber()");
-        assert_eq!(convert_return("r", Some(&TypeMeta::Bool), false, &known, &deferred), "r.toBool()");
+        assert_eq!(
+            convert_return("r", Some(&TypeMeta::String), false, &known, &deferred),
+            "r.toString()"
+        );
+        assert_eq!(
+            convert_return("r", Some(&TypeMeta::I32), false, &known, &deferred),
+            "r.toNumber()"
+        );
+        assert_eq!(
+            convert_return("r", Some(&TypeMeta::Bool), false, &known, &deferred),
+            "r.toBool()"
+        );
         assert_eq!(convert_return("r", None, false, &known, &deferred), "r");
     }
 
@@ -171,9 +248,29 @@ mod tests {
         known.insert("Uri".to_string());
         let deferred = HashSet::new();
         let rt = TypeMeta::RuntimeClass {
-            namespace: "Windows.Foundation".into(), name: "Uri".into(), default_iid: "abc".into(),
+            namespace: "Windows.Foundation".into(),
+            name: "Uri".into(),
+            default_iid: "abc".into(),
         };
-        assert_eq!(convert_return("r", Some(&rt), false, &known, &deferred), "new Uri(r)");
+        // Refs come out as `__DWRT_REF__<name>__`; render layer rewrites.
+        assert_eq!(
+            convert_return("r", Some(&rt), false, &known, &deferred),
+            "((v) => v.isNull() ? null : new __DWRT_REF__Uri__(v))(r)"
+        );
+    }
+
+    #[test]
+    fn convert_return_with_unknown_class_preserves_non_null_raw_values() {
+        let rt = TypeMeta::RuntimeClass {
+            namespace: "Windows.Foundation".into(),
+            name: "Uri".into(),
+            default_iid: "abc".into(),
+        };
+
+        assert_eq!(
+            convert_return("r", Some(&rt), false, &HashSet::new(), &HashSet::new()),
+            "((v) => v.isNull() ? null : v)(r)"
+        );
     }
 
     #[test]
@@ -182,9 +279,21 @@ mod tests {
             name: "Test".into(),
             vtable_index: 6,
             params: vec![
-                ParamMeta { name: "a".into(), typ: TypeMeta::I32, direction: ParamDirection::In },
-                ParamMeta { name: "b".into(), typ: TypeMeta::I32, direction: ParamDirection::Out },
-                ParamMeta { name: "c".into(), typ: TypeMeta::Array(Box::new(TypeMeta::U8)), direction: ParamDirection::OutFill },
+                ParamMeta {
+                    name: "a".into(),
+                    typ: TypeMeta::I32,
+                    direction: ParamDirection::In,
+                },
+                ParamMeta {
+                    name: "b".into(),
+                    typ: TypeMeta::I32,
+                    direction: ParamDirection::Out,
+                },
+                ParamMeta {
+                    name: "c".into(),
+                    typ: TypeMeta::Array(Box::new(TypeMeta::U8)),
+                    direction: ParamDirection::OutFill,
+                },
             ],
             return_type: None,
             is_property_getter: false,
@@ -214,7 +323,9 @@ mod tests {
                     vtable_index: 6,
                     params: vec![],
                     return_type: Some(TypeMeta::RuntimeClass {
-                        namespace: "N".into(), name: "MyClass".into(), default_iid: "def".into(),
+                        namespace: "N".into(),
+                        name: "MyClass".into(),
+                        default_iid: "def".into(),
                     }),
                     is_property_getter: false,
                     is_property_setter: false,
@@ -267,17 +378,29 @@ mod tests {
 
     #[test]
     fn py_dynwinrt_type_primitives() {
-        assert_eq!(py_dynwinrt_type(&TypeMeta::Bool), "DynWinRTType.bool_type()");
+        assert_eq!(
+            py_dynwinrt_type(&TypeMeta::Bool),
+            "DynWinRTType.bool_type()"
+        );
         assert_eq!(py_dynwinrt_type(&TypeMeta::I32), "DynWinRTType.i32_type()");
-        assert_eq!(py_dynwinrt_type(&TypeMeta::String), "DynWinRTType.hstring()");
-        assert_eq!(py_dynwinrt_type(&TypeMeta::Guid), "DynWinRTType.guid_type()");
+        assert_eq!(
+            py_dynwinrt_type(&TypeMeta::String),
+            "DynWinRTType.hstring()"
+        );
+        assert_eq!(
+            py_dynwinrt_type(&TypeMeta::Guid),
+            "DynWinRTType.guid_type()"
+        );
         assert_eq!(py_dynwinrt_type(&TypeMeta::F64), "DynWinRTType.f64_type()");
         assert_eq!(py_dynwinrt_type(&TypeMeta::Object), "DynWinRTType.object()");
     }
 
     #[test]
     fn py_dynwinrt_type_async() {
-        assert_eq!(py_dynwinrt_type(&TypeMeta::AsyncAction), "DynWinRTType.i_async_action()");
+        assert_eq!(
+            py_dynwinrt_type(&TypeMeta::AsyncAction),
+            "DynWinRTType.i_async_action()"
+        );
         assert_eq!(
             py_dynwinrt_type(&TypeMeta::AsyncOperation(Box::new(TypeMeta::String))),
             "DynWinRTType.i_async_operation(DynWinRTType.hstring())"
@@ -286,19 +409,43 @@ mod tests {
 
     #[test]
     fn py_wrap_arg_types() {
-        assert_eq!(py_wrap_arg("s", &TypeMeta::String), "DynWinRTValue.from_hstring(s)");
-        assert_eq!(py_wrap_arg("b", &TypeMeta::Bool), "DynWinRTValue.from_bool(b)");
-        assert_eq!(py_wrap_arg("n", &TypeMeta::I32), "DynWinRTValue.from_i32(n)");
-        assert_eq!(py_wrap_arg("n", &TypeMeta::I64), "DynWinRTValue.from_i64(n)");
-        assert_eq!(py_wrap_arg("f", &TypeMeta::F64), "DynWinRTValue.from_f64(f)");
+        assert_eq!(
+            py_wrap_arg("s", &TypeMeta::String),
+            "DynWinRTValue.from_hstring(s)"
+        );
+        assert_eq!(
+            py_wrap_arg("b", &TypeMeta::Bool),
+            "DynWinRTValue.from_bool(b)"
+        );
+        assert_eq!(
+            py_wrap_arg("n", &TypeMeta::I32),
+            "DynWinRTValue.from_i32(n)"
+        );
+        assert_eq!(
+            py_wrap_arg("n", &TypeMeta::I64),
+            "DynWinRTValue.from_i64(n)"
+        );
+        assert_eq!(
+            py_wrap_arg("f", &TypeMeta::F64),
+            "DynWinRTValue.from_f64(f)"
+        );
     }
 
     #[test]
     fn py_convert_return_basic() {
         let known = HashSet::new();
-        assert_eq!(py_convert_return("r", Some(&TypeMeta::String), false, &known), "r.to_string()");
-        assert_eq!(py_convert_return("r", Some(&TypeMeta::I32), false, &known), "r.to_number()");
-        assert_eq!(py_convert_return("r", Some(&TypeMeta::Bool), false, &known), "r.to_bool()");
+        assert_eq!(
+            py_convert_return("r", Some(&TypeMeta::String), false, &known),
+            "r.to_string()"
+        );
+        assert_eq!(
+            py_convert_return("r", Some(&TypeMeta::I32), false, &known),
+            "r.to_number()"
+        );
+        assert_eq!(
+            py_convert_return("r", Some(&TypeMeta::Bool), false, &known),
+            "r.to_bool()"
+        );
         assert_eq!(py_convert_return("r", None, false, &known), "r");
     }
 
@@ -307,7 +454,9 @@ mod tests {
         let mut known = HashSet::new();
         known.insert("Uri".to_string());
         let rt = TypeMeta::RuntimeClass {
-            namespace: "Windows.Foundation".into(), name: "Uri".into(), default_iid: "abc".into(),
+            namespace: "Windows.Foundation".into(),
+            name: "Uri".into(),
+            default_iid: "abc".into(),
         };
         assert_eq!(py_convert_return("r", Some(&rt), false, &known), "Uri(r)");
     }
@@ -333,9 +482,11 @@ mod tests {
         let m = MethodMeta {
             name: "GetValue".into(),
             vtable_index: 7,
-            params: vec![
-                ParamMeta { name: "key".into(), typ: TypeMeta::String, direction: ParamDirection::In },
-            ],
+            params: vec![ParamMeta {
+                name: "key".into(),
+                typ: TypeMeta::String,
+                direction: ParamDirection::In,
+            }],
             return_type: Some(TypeMeta::I32),
             is_property_getter: false,
             is_property_setter: false,
@@ -350,17 +501,32 @@ mod tests {
 
     #[test]
     fn py_struct_field_getter_expressions() {
-        assert_eq!(py_struct_field_getter(&TypeMeta::Bool, 0), "s.get_u8(0) != 0");
+        assert_eq!(
+            py_struct_field_getter(&TypeMeta::Bool, 0),
+            "s.get_u8(0) != 0"
+        );
         assert_eq!(py_struct_field_getter(&TypeMeta::I32, 2), "s.get_i32(2)");
-        assert_eq!(py_struct_field_getter(&TypeMeta::String, 1), "s.get_hstring(1)");
+        assert_eq!(
+            py_struct_field_getter(&TypeMeta::String, 1),
+            "s.get_hstring(1)"
+        );
         assert_eq!(py_struct_field_getter(&TypeMeta::F64, 3), "s.get_f64(3)");
     }
 
     #[test]
     fn py_struct_field_setter_expressions() {
-        assert_eq!(py_struct_field_setter(&TypeMeta::Bool, 0, "v"), "s.set_u8(0, 1 if v else 0)");
-        assert_eq!(py_struct_field_setter(&TypeMeta::I32, 1, "x"), "s.set_i32(1, x)");
-        assert_eq!(py_struct_field_setter(&TypeMeta::String, 2, "s_"), "s.set_hstring(2, s_)");
+        assert_eq!(
+            py_struct_field_setter(&TypeMeta::Bool, 0, "v"),
+            "s.set_u8(0, 1 if v else 0)"
+        );
+        assert_eq!(
+            py_struct_field_setter(&TypeMeta::I32, 1, "x"),
+            "s.set_i32(1, x)"
+        );
+        assert_eq!(
+            py_struct_field_setter(&TypeMeta::String, 2, "s_"),
+            "s.set_hstring(2, s_)"
+        );
     }
 
     #[test]

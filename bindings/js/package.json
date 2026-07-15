@@ -20,7 +20,8 @@
   ],
   "files": [
     "dist",
-    "LICENSE"
+    "LICENSE",
+    "README.md"
   ],
   "napi": {
     "binaryName": "dynwinrt",

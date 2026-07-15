@@ -8,7 +8,7 @@ This file provides instructions for the GitHub Copilot coding agent when working
 - **Core library** (`crates/dynwinrt/`) — Rust runtime using libffi for dynamic WinRT method invocation
 - **JS binding** (`bindings/js/`) — napi-rs binding for Node.js/Electron
 - **Python binding** (`bindings/py/`) — PyO3 binding for Python
-- **Code generator** (`tools/dynwinrt-codegen/`) — Source for dynwinrt-codegen, which generates typed TypeScript and Python wrappers from .winmd metadata
+- **Code generator** (`tools/dynwinrt-codegen/`) — Source for dynwinrt-codegen, which generates typed JavaScript (`.js`) + TypeScript declarations (`.d.ts`), or Python (`.py` + optional `.pyi`) wrappers from .winmd metadata
 
 ## Build & Test Commands
 
@@ -35,8 +35,8 @@ cd bindings/js
 npm install
 npx napi build --no-const-enum --platform --release -o dist
 
-# Code generation
-cargo run -p dynwinrt-codegen -- generate --namespace Windows.Foundation --class-name Uri --lang ts --output ./generated
+# Code generation (JS + .d.ts is the default; --lang py for Python)
+cargo run -p dynwinrt-codegen -- generate --namespace Windows.Foundation --class-name Uri --output ./generated
 cargo run -p dynwinrt-codegen -- generate --namespace Windows.Foundation --class-name Uri --lang py --output ./generated
 
 # E2E test (full pipeline: winmd → generate → call real WinRT APIs)
@@ -96,11 +96,13 @@ These APIs are available on any Windows 10/11 machine without WinAppSDK:
 - **Generated code** uses relative imports (`from .module import Class`) — must be in a Python package
 
 ### Code Generator (dynwinrt-codegen)
-- `src/codegen/typescript.rs` + `src/codegen/method.rs` — TypeScript generation
-- `src/codegen/python.rs` + `src/codegen/py_method.rs` — Python generation
+- `src/codegen/project.rs` + `src/codegen/projected.rs` — Build the language-neutral `ProjectedFile` IR from parsed metadata
+- `src/codegen/render_js.rs` + `src/codegen/render_dts.rs` — Render IR to `.js` and `.d.ts`
+- `src/codegen/python.rs` + `src/codegen/py_method.rs` + `src/codegen/python_stub.rs` — Python `.py` and `.pyi` generation
 - `src/codegen/common.rs` — Shared helpers (type mapping, argument wrapping, return conversion)
-- `--lang ts` generates `.ts` files with `DynWinRtType`/`DynWinRtValue` API (camelCase)
-- `--lang py` generates `.py` files with `DynWinRTType`/`DynWinRTValue` API (snake_case)
+- `src/codegen/typescript.rs` + `src/codegen/method.rs` — Index-file generation and ESM/CJS shim helpers (name is historical; no longer emits stand-alone `.ts` output)
+- `--lang js` (default) generates `.js` + ambient `.d.ts` with the `DynWinRtType`/`DynWinRtValue` API (camelCase)
+- `--lang py` generates `.py` (and, with `--pyi`, `.pyi` stubs plus a `py.typed` marker) using the `DynWinRTType`/`DynWinRTValue` API (snake_case)
 
 ### Python Binding API Names
 - Types: `DynWinRTType.i32_type()`, `DynWinRTType.hstring()`, `DynWinRTType.bool_type()`, etc.

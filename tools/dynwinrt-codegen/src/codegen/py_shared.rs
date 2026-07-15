@@ -25,9 +25,10 @@ pub(crate) fn reorder_getters_before_setters(methods: &[MethodMeta]) -> Vec<&Met
     for g in &getters {
         result.push(*g);
         let getter_prop = g.name.strip_prefix("get_").unwrap_or(&g.name);
-        if let Some(pos) = setters.iter().position(|s| {
-            s.name.strip_prefix("put_").unwrap_or(&s.name) == getter_prop
-        }) {
+        if let Some(pos) = setters
+            .iter()
+            .position(|s| s.name.strip_prefix("put_").unwrap_or(&s.name) == getter_prop)
+        {
             result.push(setters.remove(pos));
         }
     }

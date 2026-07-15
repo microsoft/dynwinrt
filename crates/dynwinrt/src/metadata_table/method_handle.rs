@@ -39,28 +39,32 @@ impl MethodHandle {
     }
 
     // --- Fast getter paths: zero Vec/WinRTValue allocation ---
+    //
+    // Each path grabs a stable Method pointer under the read lock via
+    // `method_ptr`, drops the guard, and then makes the COM call. See the
+    // safety comment on `MetadataTable::methods` for why this is sound.
 
     pub fn call_getter_i32(&self, obj: *mut std::ffi::c_void) -> crate::result::Result<i32> {
-        let methods = self.table.methods_read();
-        methods[self.index as usize].call_getter_i32(obj)
+        let method_ptr = self.table.method_ptr(self.index);
+        unsafe { (*method_ptr).call_getter_i32(obj) }
             .map_err(crate::result::Error::WindowsError)
     }
 
     pub fn call_getter_bool(&self, obj: *mut std::ffi::c_void) -> crate::result::Result<bool> {
-        let methods = self.table.methods_read();
-        methods[self.index as usize].call_getter_bool(obj)
+        let method_ptr = self.table.method_ptr(self.index);
+        unsafe { (*method_ptr).call_getter_bool(obj) }
             .map_err(crate::result::Error::WindowsError)
     }
 
     pub fn call_getter_hstring(&self, obj: *mut std::ffi::c_void) -> crate::result::Result<windows_core::HSTRING> {
-        let methods = self.table.methods_read();
-        methods[self.index as usize].call_getter_hstring(obj)
+        let method_ptr = self.table.method_ptr(self.index);
+        unsafe { (*method_ptr).call_getter_hstring(obj) }
             .map_err(crate::result::Error::WindowsError)
     }
 
     pub fn call_getter_object(&self, obj: *mut std::ffi::c_void) -> crate::result::Result<WinRTValue> {
-        let methods = self.table.methods_read();
-        methods[self.index as usize].call_getter_object(obj)
+        let method_ptr = self.table.method_ptr(self.index);
+        unsafe { (*method_ptr).call_getter_object(obj) }
             .map_err(crate::result::Error::WindowsError)
     }
 }

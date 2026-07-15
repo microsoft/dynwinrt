@@ -12,10 +12,10 @@ use crate::meta::{ClassMeta, InterfaceMeta, MethodMeta, ParamDirection};
 use crate::types::{TypeKind, TypeMeta};
 
 use super::common::{
-    collect_iface_type_imports, collect_type_imports,
-    collect_used_generics_from_class, collect_used_generics_from_methods,
-    collect_used_structs_from_class, collect_used_structs_from_iface,
-    get_in_params, is_py_reserved, py_dynwinrt_type, to_snake_case, to_snake_case_filename,
+    collect_iface_type_imports, collect_type_imports, collect_used_generics_from_class,
+    collect_used_generics_from_methods, collect_used_structs_from_class,
+    collect_used_structs_from_iface, get_in_params, is_py_reserved, py_dynwinrt_type,
+    to_snake_case, to_snake_case_filename,
 };
 use super::py_method::{
     py_array_element_type, py_param_list, py_param_type_safe, py_return_type_safe,
@@ -54,7 +54,11 @@ fn py_struct_export_names(s: &TypeMeta) -> Vec<String> {
 
 fn emit_struct_stub(s: &TypeMeta) -> String {
     let (_namespace, name, fields) = match s {
-        TypeMeta::Struct { namespace, name, fields } => (namespace, name, fields),
+        TypeMeta::Struct {
+            namespace,
+            name,
+            fields,
+        } => (namespace, name, fields),
         _ => return String::new(),
     };
     let mut out = String::new();
@@ -64,10 +68,20 @@ fn emit_struct_stub(s: &TypeMeta) -> String {
     if fields.is_empty() {
         out.push_str("    pass\n");
     } else {
-        let init_params: Vec<String> = fields.iter()
-            .map(|f| format!("{}: {} = ...", to_snake_case(&f.name), py_struct_field_stub_type(&f.typ)))
+        let init_params: Vec<String> = fields
+            .iter()
+            .map(|f| {
+                format!(
+                    "{}: {} = ...",
+                    to_snake_case(&f.name),
+                    py_struct_field_stub_type(&f.typ)
+                )
+            })
             .collect();
-        out.push_str(&format!("    def __init__(self, {}) -> None: ...\n", init_params.join(", ")));
+        out.push_str(&format!(
+            "    def __init__(self, {}) -> None: ...\n",
+            init_params.join(", ")
+        ));
         for f in fields {
             out.push_str(&format!(
                 "    {}: {}\n",
@@ -78,17 +92,30 @@ fn emit_struct_stub(s: &TypeMeta) -> String {
     }
     out.push('\n');
 
-    out.push_str(&format!("def unpack_{}(v: DynWinRTValue) -> {}: ...\n", snake_name, name));
+    out.push_str(&format!(
+        "def unpack_{}(v: DynWinRTValue) -> {}: ...\n",
+        snake_name, name
+    ));
     out.push_str(&format!("{}_TYPE: 'DynWinRTType'\n", name));
-    out.push_str(&format!("def pack_{}(v: {}) -> DynWinRTStruct: ...\n", snake_name, name));
+    out.push_str(&format!(
+        "def pack_{}(v: {}) -> DynWinRTStruct: ...\n",
+        snake_name, name
+    ));
     out
 }
 
 fn py_struct_field_stub_type(typ: &TypeMeta) -> String {
     match typ {
         TypeMeta::Bool => "bool".to_string(),
-        TypeMeta::I8 | TypeMeta::U8 | TypeMeta::I16 | TypeMeta::U16 | TypeMeta::Char16
-        | TypeMeta::I32 | TypeMeta::U32 | TypeMeta::I64 | TypeMeta::U64
+        TypeMeta::I8
+        | TypeMeta::U8
+        | TypeMeta::I16
+        | TypeMeta::U16
+        | TypeMeta::Char16
+        | TypeMeta::I32
+        | TypeMeta::U32
+        | TypeMeta::I64
+        | TypeMeta::U64
         | TypeMeta::Enum { .. } => "int".to_string(),
         TypeMeta::F32 | TypeMeta::F64 => "float".to_string(),
         TypeMeta::String | TypeMeta::Guid => "str".to_string(),
@@ -152,13 +179,20 @@ fn emit_method_stub(
             py_return_type_safe(return_type, known_types)
         };
         out.push_str(&format!("{indent}@property\n"));
-        out.push_str(&format!("{indent}def {}(self) -> {}: ...\n", prop_name, py_return));
+        out.push_str(&format!(
+            "{indent}def {}(self) -> {}: ...\n",
+            prop_name, py_return
+        ));
     } else if method.is_property_setter {
         let prop_name = to_snake_case(method.name.strip_prefix("put_").unwrap_or(&method.name));
-        let param_type = if in_params.first().is_some_and(|p| is_delegate_type(Some(&p.typ))) {
+        let param_type = if in_params
+            .first()
+            .is_some_and(|p| is_delegate_type(Some(&p.typ)))
+        {
             "'DynWinRTValue'".to_string()
         } else {
-            in_params.first()
+            in_params
+                .first()
                 .map(|p| py_param_type_safe(&p.typ, known_types))
                 .unwrap_or_else(|| "object".to_string())
         };
@@ -317,7 +351,10 @@ pub fn generate_interface_stub(
     for cname in &collection_names {
         if cname != &iface.name && !delegate_names.contains(cname) {
             let module = to_snake_case_filename(cname);
-            out.push_str(&format!("from .{} import {}  # noqa: F401\n", module, cname));
+            out.push_str(&format!(
+                "from .{} import {}  # noqa: F401\n",
+                module, cname
+            ));
         }
     }
 
@@ -332,7 +369,8 @@ pub fn generate_interface_stub(
 
     let type_imports = collect_iface_type_imports(iface);
     let mut sorted_type_imports: Vec<_> = type_imports.iter().collect();
-    sorted_type_imports.sort_by(|a, b| (&a.namespace, &a.name, &a.kind).cmp(&(&b.namespace, &b.name, &b.kind)));
+    sorted_type_imports
+        .sort_by(|a, b| (&a.namespace, &a.name, &a.kind).cmp(&(&b.namespace, &b.name, &b.kind)));
     for r in &sorted_type_imports {
         if known_types.contains(&r.name) && !delegate_names.contains(&r.name) {
             out.push_str(&format_py_type_import(&r.name, r.kind));
@@ -423,7 +461,10 @@ pub fn generate_class_stub(
     for cname in &collection_names {
         if !delegate_names.contains(cname) {
             let module = to_snake_case_filename(cname);
-            out.push_str(&format!("from .{} import {}  # noqa: F401\n", module, cname));
+            out.push_str(&format!(
+                "from .{} import {}  # noqa: F401\n",
+                module, cname
+            ));
         }
     }
 
@@ -439,7 +480,8 @@ pub fn generate_class_stub(
     let mut imported_names: HashSet<String> = HashSet::new();
     let imports = collect_type_imports(class);
     let mut sorted_imports: Vec<_> = imports.iter().collect();
-    sorted_imports.sort_by(|a, b| (&a.namespace, &a.name, &a.kind).cmp(&(&b.namespace, &b.name, &b.kind)));
+    sorted_imports
+        .sort_by(|a, b| (&a.namespace, &a.name, &a.kind).cmp(&(&b.namespace, &b.name, &b.kind)));
     for r in &sorted_imports {
         if known_types.contains(&r.name) && !delegate_names.contains(&r.name) {
             out.push_str(&format_py_type_import(&r.name, r.kind));
@@ -486,7 +528,11 @@ pub fn generate_class_stub(
                 snake == "create" || snake.starts_with("create")
             })
         });
-        let ctor_name = if has_create_factory { "create_default" } else { "create" };
+        let ctor_name = if has_create_factory {
+            "create_default"
+        } else {
+            "create"
+        };
         out.push('\n');
         out.push_str("    @staticmethod\n");
         out.push_str(&format!(
@@ -499,14 +545,24 @@ pub fn generate_class_stub(
     for iface in &class.factory_interfaces {
         for method in &iface.methods {
             out.push('\n');
-            out.push_str(&emit_static_method_stub(&class.name, method, known_types, true));
+            out.push_str(&emit_static_method_stub(
+                &class.name,
+                method,
+                known_types,
+                true,
+            ));
         }
     }
     // Static methods
     for iface in &class.static_interfaces {
         for method in &iface.methods {
             out.push('\n');
-            out.push_str(&emit_static_method_stub(&class.name, method, known_types, false));
+            out.push_str(&emit_static_method_stub(
+                &class.name,
+                method,
+                known_types,
+                false,
+            ));
         }
     }
     // Instance methods (default interface)
@@ -519,7 +575,11 @@ pub fn generate_class_stub(
 
     // IClosable -> close()
     const ICLOSABLE_IID: &str = "30d5a829-7fa4-4026-83bb-d75bae4ea99e";
-    if class.required_interfaces.iter().any(|ri| ri.iid == ICLOSABLE_IID) {
+    if class
+        .required_interfaces
+        .iter()
+        .any(|ri| ri.iid == ICLOSABLE_IID)
+    {
         out.push('\n');
         out.push_str("    def close(self) -> None: ...\n");
     }
@@ -570,17 +630,24 @@ pub fn generate_index_stub(
     sorted_classes.sort_by(|a, b| a.name.cmp(&b.name));
     for class in sorted_classes {
         if seen.insert(class.name.clone()) {
-            let struct_names: Vec<_> = collect_used_structs_from_class(class).iter()
+            let struct_names: Vec<_> = collect_used_structs_from_class(class)
+                .iter()
                 .flat_map(|s| py_struct_export_names(s))
                 .filter(|n| seen.insert(n.clone()))
                 .collect();
             let module = to_snake_case_filename(&class.name);
             if struct_names.is_empty() {
-                out.push_str(&format!("from .{} import {} as {}\n", module, class.name, class.name));
+                out.push_str(&format!(
+                    "from .{} import {} as {}\n",
+                    module, class.name, class.name
+                ));
             } else {
                 out.push_str(&format!(
                     "from .{} import {} as {}, {}\n",
-                    module, class.name, class.name, struct_names.join(", ")
+                    module,
+                    class.name,
+                    class.name,
+                    struct_names.join(", ")
                 ));
             }
         }
@@ -598,20 +665,28 @@ pub fn generate_index_stub(
         if is_delegate {
             out.push_str(&format!(
                 "from .{module} import IID_{iname}, {iname}_PARAM_TYPES\n",
-                module = module, iname = iface.name
+                module = module,
+                iname = iface.name
             ));
         } else {
             out.push_str(&format!(
                 "from .{module} import IID_{iname}, {iname} as {iname}\n",
-                module = module, iname = iface.name
+                module = module,
+                iname = iface.name
             ));
         }
     }
 
     let mut sorted_enums: Vec<_> = enums.iter().collect();
     sorted_enums.sort_by(|a, b| {
-        let na = match a { TypeMeta::Enum { name, .. } => name.as_str(), _ => "" };
-        let nb = match b { TypeMeta::Enum { name, .. } => name.as_str(), _ => "" };
+        let na = match a {
+            TypeMeta::Enum { name, .. } => name.as_str(),
+            _ => "",
+        };
+        let nb = match b {
+            TypeMeta::Enum { name, .. } => name.as_str(),
+            _ => "",
+        };
         na.cmp(nb)
     });
     for en in sorted_enums {

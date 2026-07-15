@@ -15,7 +15,7 @@ dynwinrt/
 │   ├── js/                   # JavaScript/TypeScript bindings (napi-rs)
 │   └── py/                   # Python bindings (PyO3)
 ├── tools/
-│   └── winrt-meta/           # Source for dynwinrt-codegen (TypeScript & Python from .winmd)
+│   └── dynwinrt-codegen/     # Code generator (JS + .d.ts and Python from .winmd)
 ├── tests/                    # Integration tests & sample projects
 └── bench-electron/           # Electron benchmark app
 ```
@@ -44,10 +44,10 @@ cd bindings/py && python -m pytest tests/ -v
 # Build dynwinrt-codegen in release mode
 cargo build -p dynwinrt-codegen --release
 
-# Generate TypeScript bindings
-cargo run -p dynwinrt-codegen -- generate --namespace Windows.Foundation --class-name Uri --lang ts --output ./generated
+# Generate JS bindings (.js + .d.ts) — default --lang is "js"
+cargo run -p dynwinrt-codegen -- generate --namespace Windows.Foundation --class-name Uri --output ./generated
 
-# Generate Python bindings
+# Generate Python bindings (add --pyi for .pyi stubs)
 cargo run -p dynwinrt-codegen -- generate --namespace Windows.Foundation --class-name Uri --lang py --output ./generated
 ```
 
@@ -105,17 +105,20 @@ PyO3 binding exposing: `DynWinRTType`, `DynWinRTMethodSig`, `DynWinRTMethodHandl
 ### Code Generation Tool (`dynwinrt-codegen`, source in `tools/dynwinrt-codegen/`)
 
 Reads .winmd metadata and generates typed wrapper code:
-- `--lang ts`: TypeScript classes with `DynWinRtType`/`DynWinRtValue` API
-- `--lang py`: Python classes with `DynWinRTType`/`DynWinRTValue` API
-- Handles: classes, interfaces, enums, structs (pack/unpack), delegates (IID + param types), async operations, generic collections, events
-- Auto-detects Windows SDK winmd, resolves transitive dependencies
+- `--lang js` (default): emits ESM `.js` + ambient `.d.ts` (no tsc step required) using the `DynWinRtType`/`DynWinRtValue` API
+- `--lang py`: Python classes using the `DynWinRTType`/`DynWinRTValue` API; `--pyi` additionally emits `.pyi` stubs and a `py.typed` marker
+- Handles: classes, interfaces, enums, structs (pack/unpack), delegates (IID + param types), async operations (with `AbortSignal`/cancellation), generic collections, events
+- Auto-detects Windows SDK winmd, auto-discovers sibling `.winmd` files in the same directory, resolves transitive dependencies
 
 Key codegen modules:
-- **codegen/common.rs**: Shared helpers — type mapping, method sig building, struct field accessors, argument wrapping, return conversion (both TS and Python variants)
-- **codegen/typescript.rs** + **codegen/method.rs**: TypeScript generation
-- **codegen/python.rs** + **codegen/py_method.rs**: Python generation
+- **codegen/common.rs**: Shared helpers — type mapping, method sig building, struct field accessors, argument wrapping, return conversion (both JS and Python variants)
+- **codegen/project.rs** + **codegen/projected.rs**: Build `ProjectedFile` IR from metadata
+- **codegen/render_js.rs** + **codegen/render_dts.rs**: Render IR to `.js` and `.d.ts`
+- **codegen/python.rs** + **codegen/py_method.rs** + **codegen/python_stub.rs**: Python `.py` and `.pyi` generation
+- **codegen/typescript.rs** + **codegen/method.rs**: Legacy TS generators (still used by some code paths)
 - **meta.rs**: WinMD parsing — classes, interfaces, enums, methods, parameters, vtable indices
 - **types.rs**: `TypeMeta` enum describing WinRT types extracted from metadata
+- **xml_doc.rs**: Loads sibling `.xml` files (C# /doc format) to inject JSDoc/docstrings
 
 ## Testing Strategy
 
@@ -172,8 +175,12 @@ let result = value.wait()?;
 ## Known Limitations
 
 - Delegate callbacks support up to 2 ABI parameters (covers ~95% of WinRT delegates)
-- No DispatcherQueue / XAML hosting support (data APIs only, no UI framework)
-- Python binding does not yet support async/await integration with asyncio
+- No DispatcherQueue / XAML hosting support (data APIs only, no UI framework) — WinUI-style controls need composition/aggregation of runtime classes, which the codegen skips (see composable `.ctor` note in `TODO.md`)
+- Python binding does not yet support async/await integration with `asyncio`
+
+## Environment Setup — updated invariant
+
+`initialize_winappsdk()` currently `.expect(...)`s the `WINAPPSDK_BOOTSTRAP_DLL_PATH` environment variable at `crates/dynwinrt/src/winapp.rs:43`. Auto-detection from `~/.winapp/packages/`, `~/.nuget/packages/microsoft.windowsappsdk.*/`, and Program Files install paths is tracked in `TODO.md` P0.
 
 ## Implementation Notes
 
