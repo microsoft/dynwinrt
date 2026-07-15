@@ -7,8 +7,10 @@ use core::ffi::c_void;
 use std::sync::Mutex;
 
 use windows::Win32::System::Com::{CoTaskMemAlloc, CoTaskMemFree};
+use windows::Win32::System::Threading::GetCurrentProcess;
 use windows::Win32::UI::HiDpi::{
-    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetThreadDpiAwarenessContext,
+    AreDpiAwarenessContextsEqual, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+    GetDpiAwarenessContextForProcess, SetProcessDpiAwarenessContext, SetThreadDpiAwarenessContext,
 };
 use windows_core::{GUID, HRESULT, HSTRING, IInspectable, IUnknown, Interface};
 
@@ -415,7 +417,15 @@ fn query_interface(object: &IUnknown, iid: &GUID) -> windows_core::Result<IUnkno
 }
 
 fn enable_per_monitor_v2() -> windows_core::Result<()> {
-    // WinUI windows inherit DPI awareness from the UI thread that creates them.
+    // WinUI popup hosts consult the process context, so it must match the UI thread.
+    let process_context = unsafe { GetDpiAwarenessContextForProcess(GetCurrentProcess()) };
+    if !unsafe {
+        AreDpiAwarenessContextsEqual(process_context, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)
+            .as_bool()
+    } {
+        unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)? };
+    }
+
     let previous =
         unsafe { SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
     if previous.0.is_null() {
@@ -508,13 +518,18 @@ pub fn create_xaml_application(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use windows::Win32::UI::HiDpi::{AreDpiAwarenessContextsEqual, GetThreadDpiAwarenessContext};
+    use windows::Win32::UI::HiDpi::GetThreadDpiAwarenessContext;
 
     #[test]
-    fn enables_per_monitor_v2_on_the_ui_thread() {
+    fn enables_per_monitor_v2_on_the_process_and_ui_thread() {
         enable_per_monitor_v2().unwrap();
 
+        let process = unsafe { GetDpiAwarenessContextForProcess(GetCurrentProcess()) };
         let current = unsafe { GetThreadDpiAwarenessContext() };
+        assert!(unsafe {
+            AreDpiAwarenessContextsEqual(process, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)
+                .as_bool()
+        });
         assert!(unsafe {
             AreDpiAwarenessContextsEqual(current, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)
                 .as_bool()
