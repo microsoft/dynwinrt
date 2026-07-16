@@ -54,13 +54,27 @@ mod tests {
     #[test]
     fn empty_bindings_produces_root_only() {
         let names: BTreeSet<String> = BTreeSet::new();
-        let out = render_package_json(&PackageManifestInput { subpath_names: &names });
-        assert!(out.contains("\"name\": \"@winapp/bindings\""), "should set package name");
-        assert!(out.contains("\"type\": \"commonjs\""), "should set commonjs");
-        assert!(out.contains("\"sideEffects\": false"), "should set sideEffects: false");
+        let out = render_package_json(&PackageManifestInput {
+            subpath_names: &names,
+        });
+        assert!(
+            out.contains("\"name\": \"@winapp/bindings\""),
+            "should set package name"
+        );
+        assert!(
+            out.contains("\"type\": \"commonjs\""),
+            "should set commonjs"
+        );
+        assert!(
+            out.contains("\"sideEffects\": false"),
+            "should set sideEffects: false"
+        );
         assert!(out.contains("\"./index.mjs\""), "should point ESM at .mjs");
         assert!(out.contains("\"./index.js\""), "should point CJS at .js");
-        assert!(out.contains("\"./index.proxy.js\""), "should expose proxy barrel");
+        assert!(
+            out.contains("\"./index.proxy.js\""),
+            "should expose proxy barrel"
+        );
         // No trailing comma after the last `.`/`./proxy` entry when subpaths are empty.
         assert!(!out.contains("    },\n  }"), "must not emit trailing comma");
     }
@@ -71,9 +85,13 @@ mod tests {
         names.insert("Uri".into());
         names.insert("AppWindow".into());
         names.insert("LanguageModel".into());
-        let out = render_package_json(&PackageManifestInput { subpath_names: &names });
+        let out = render_package_json(&PackageManifestInput {
+            subpath_names: &names,
+        });
         let a = out.find("\"./AppWindow\"").expect("AppWindow present");
-        let l = out.find("\"./LanguageModel\"").expect("LanguageModel present");
+        let l = out
+            .find("\"./LanguageModel\"")
+            .expect("LanguageModel present");
         let u = out.find("\"./Uri\"").expect("Uri present");
         assert!(a < l && l < u, "subpaths must be alphabetically ordered");
         // Every subpath must point at both its .js and .d.ts.

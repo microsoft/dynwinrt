@@ -7,6 +7,10 @@
 //! pairing, import classification, IStringable/IClosable detection — happen
 //! here. The renderers consume the IR and only format.
 
+mod collections;
+mod methods;
+mod structs;
+
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
@@ -27,18 +31,28 @@ pub fn get_import_name() -> String {
     RUNTIME_IMPORT_NAME.with(|n| n.borrow().clone())
 }
 
-use super::common::{
-    NO_DEFERRED, build_args_expr, capitalize, collect_iface_type_imports, collect_type_imports,
-    collect_used_generics_from_class, collect_used_generics_from_methods,
-    collect_used_structs_from_class, collect_used_structs_from_iface, convert_array_return,
-    convert_return, generate_interface_registration, get_in_params, infer_const_type,
-    struct_field_getter, struct_field_setter, to_camel_case, ts_dynwinrt_type,
-    ts_struct_field_type, wrap_arg,
+use crate::codegen::shared::imports::{
+    NO_DEFERRED, collect_iface_type_imports, collect_type_imports,
+    collect_used_generics_from_class, collect_used_generics_from_methods, get_in_params,
 };
+use crate::codegen::shared::structs::{
+    collect_used_structs_from_class, collect_used_structs_from_iface,
+};
+
+use super::ir::*;
 use super::method::{
     ts_array_element_type, ts_param_type_dts, ts_param_type_safe, ts_return_type_safe,
 };
-use super::projected::*;
+use super::naming::{capitalize, infer_const_type, to_camel_case};
+use super::signature::{
+    build_args_expr, convert_array_return, convert_return, generate_interface_registration,
+    ts_dynwinrt_type, wrap_arg,
+};
+use super::structs::{struct_field_getter, struct_field_setter, ts_struct_field_type};
+
+use collections::{project_collection_create, project_collection_helpers};
+use methods::{project_factory_method, project_instance_method, project_static_method};
+use structs::project_struct_helpers;
 
 // ======================================================================
 // PIIDs of well-known collection interfaces
@@ -184,7 +198,7 @@ pub fn project_class(
                 from: format!("./{}.js", cname),
                 runtime_only: false,
                 dts_only: false,
-            is_runtime_package: false,
+                is_runtime_package: false,
             });
         }
     }
@@ -198,7 +212,7 @@ pub fn project_class(
             from: format!("./{}.js", dname),
             runtime_only: true,
             dts_only: false,
-        is_runtime_package: false,
+            is_runtime_package: false,
         });
         // DTS-only: import the delegate type alias (for typed param signatures)
         if delegate_sigs.contains_key(*dname) {
@@ -207,7 +221,7 @@ pub fn project_class(
                 from: format!("./{}.js", dname),
                 runtime_only: false,
                 dts_only: true,
-            is_runtime_package: false,
+                is_runtime_package: false,
             });
         }
     }
@@ -243,7 +257,7 @@ pub fn project_class(
                 from: format!("./{}.js", r.name),
                 runtime_only: false,
                 dts_only: true,
-            is_runtime_package: false,
+                is_runtime_package: false,
             });
             imported_names.insert(r.name.clone());
         }
@@ -878,7 +892,7 @@ pub fn project_interface(
                 from: format!("./{}.js", cname),
                 runtime_only: false,
                 dts_only: false,
-            is_runtime_package: false,
+                is_runtime_package: false,
             });
         }
     }
@@ -891,7 +905,7 @@ pub fn project_interface(
             from: format!("./{}.js", dname),
             runtime_only: true,
             dts_only: false,
-        is_runtime_package: false,
+            is_runtime_package: false,
         });
     }
 
@@ -1088,17 +1102,18 @@ pub fn project_delegate(
         })
         .unwrap_or_default();
 
-    let iid_rhs = if !iface.iid.is_empty() && iface.generic_args.is_empty() && iface.generic_piid.is_none() {
-        format!("WinGuid.parse('{}')", iface.iid)
-    } else if !iface.iid.is_empty() {
-        format!(
-            "DynWinRtType.parameterized(WinGuid.parse('{}'), [{}]).iid()",
-            iface.iid,
-            param_exprs.join(", ")
-        )
-    } else {
-        "undefined".into()
-    };
+    let iid_rhs =
+        if !iface.iid.is_empty() && iface.generic_args.is_empty() && iface.generic_piid.is_none() {
+            format!("WinGuid.parse('{}')", iface.iid)
+        } else if !iface.iid.is_empty() {
+            format!(
+                "DynWinRtType.parameterized(WinGuid.parse('{}'), [{}]).iid()",
+                iface.iid,
+                param_exprs.join(", ")
+            )
+        } else {
+            "undefined".into()
+        };
 
     let iid_ts_type = if !iface.iid.is_empty() {
         "WinGuid"
@@ -1115,7 +1130,7 @@ pub fn project_delegate(
         from: get_import_name(),
         runtime_only: false,
         dts_only: false,
-    is_runtime_package: false,
+        is_runtime_package: false,
     }];
     if let Some(ref_types) = delegate_sig_refs.get(&iface.name) {
         for rt in ref_types {
@@ -1124,7 +1139,7 @@ pub fn project_delegate(
                 from: format!("./{}.js", rt),
                 runtime_only: false,
                 dts_only: true,
-            is_runtime_package: false,
+                is_runtime_package: false,
             });
         }
     }
@@ -1149,1357 +1164,6 @@ pub fn project_delegate(
         needs_unwrap_helper: false,
         needs_activation_factory: false,
     }
-}
-
-// ======================================================================
-// Method projection helpers
-// ======================================================================
-
-fn project_factory_method(
-    class: &ClassMeta,
-    iface: &InterfaceMeta,
-    method: &MethodMeta,
-    known_types: &HashSet<String>,
-    delegate_names: &HashSet<String>,
-    delegate_sigs: &HashMap<String, String>,
-    delegate_param_wraps: &HashMap<String, Vec<String>>,
-) -> ProjectedMember {
-    let in_params = get_in_params(method);
-    let params = project_params(
-        &in_params,
-        known_types,
-        delegate_names,
-        delegate_sigs,
-        delegate_param_wraps,
-    );
-    let args_expr = build_args_expr(&in_params);
-    let out_count = method
-        .params
-        .iter()
-        .filter(|p| p.direction == ParamDirection::Out)
-        .count()
-        + usize::from(method.return_type.is_some());
-
-    let is_async = method.return_type.as_ref().is_some_and(|rt| rt.is_async());
-
-    let mut invoke_expr = if out_count > 1 {
-        format!(
-            "_{iface}.method({idx}).invokeAll({cls}.f_{iface}(), [{args}])[{result_index}]",
-            iface = iface.name,
-            idx = method.vtable_index,
-            cls = class.name,
-            args = args_expr,
-            result_index = out_count - 1,
-        )
-    } else {
-        format!(
-            "_{iface}.method({idx}).invoke({cls}.f_{iface}(), [{args}])",
-            iface = iface.name,
-            idx = method.vtable_index,
-            cls = class.name,
-            args = args_expr
-        )
-    };
-    invoke_expr = rewrite_delegate_args_in_expr(&invoke_expr, &params);
-
-    let return_type;
-    let async_kind;
-    let sync_return_expr;
-    let async_convert_v;
-
-    if is_async {
-        return_type = format!("Promise<{}>", class.name);
-        async_kind = AsyncKind::Operation(class.name.clone());
-        sync_return_expr = None;
-        async_convert_v = Some(format!("new {}(_v)", class.name));
-    } else {
-        return_type = class.name.clone();
-        async_kind = AsyncKind::None;
-        sync_return_expr = Some(format!("new {}({})", class.name, invoke_expr));
-        async_convert_v = None;
-    }
-
-    let mut ts_params = params;
-    if is_async {
-        ts_params.push(ProjectedParam {
-            name: "signal".into(),
-            ts_type: "AbortSignal".into(),
-            optional: true,
-            delegate_wrap: None,
-        });
-    }
-
-    let mut doc = build_method_doc(method, &in_params);
-    if is_async {
-        if let Some(ref mut d) = doc {
-            d.params.push((
-                "signal".into(),
-                "Abort signal to cancel the underlying WinRT async operation.".into(),
-            ));
-        }
-    }
-    let delegate_wraps = collect_delegate_wraps(&ts_params);
-
-    let js_name = to_camel_case(&method.name);
-    let raw_js_name = to_camel_case(&method.raw_name);
-    let overload_of = if js_name != raw_js_name {
-        Some(raw_js_name)
-    } else {
-        None
-    };
-
-    ProjectedMember::Method(ProjectedMethod {
-        name: js_name,
-        doc,
-        params: ts_params,
-        return_type,
-        async_kind,
-        is_static: true,
-        invoke_expr,
-        sync_return_expr,
-        async_convert_v,
-        progress_convert: None,
-        is_void: false,
-        array_return_expr: None,
-        delegate_wraps,
-        js_only: false,
-        overload_of,
-    })
-}
-
-fn project_static_method(
-    class: &ClassMeta,
-    iface: &InterfaceMeta,
-    method: &MethodMeta,
-    known_types: &HashSet<String>,
-    delegate_names: &HashSet<String>,
-    delegate_sigs: &HashMap<String, String>,
-    delegate_param_wraps: &HashMap<String, Vec<String>>,
-) -> ProjectedMember {
-    let in_params = get_in_params(method);
-    let return_type_meta = method.return_type.as_ref();
-    let is_with_progress = return_type_meta.is_some_and(|rt| {
-        matches!(
-            rt,
-            TypeMeta::AsyncOperationWithProgress(_, _) | TypeMeta::AsyncActionWithProgress(_)
-        )
-    });
-    let is_async = return_type_meta.is_some_and(|rt| rt.is_async()) && !is_with_progress;
-
-    let statics_call = format!("{cls}.s_{iface}()", cls = class.name, iface = iface.name);
-
-    // Static property getter
-    if method.is_property_getter && in_params.is_empty() {
-        let prop_name = to_camel_case(method.name.strip_prefix("get_").unwrap_or(&method.name));
-        let ts_return = ts_return_type_safe(return_type_meta, false, known_types);
-        let invoke_expr = format!(
-            "_{}.method({}).invoke({}, [])",
-            iface.name, method.vtable_index, statics_call
-        );
-        let converted = convert_return(
-            &invoke_expr,
-            return_type_meta,
-            false,
-            known_types,
-            &NO_DEFERRED,
-        );
-        let doc = build_method_doc(method, &in_params);
-        return ProjectedMember::Property(ProjectedProperty {
-            name: prop_name,
-            ts_type: ts_return,
-            readonly: true,
-            is_static: true,
-            doc,
-            getter_expr: converted,
-            setter_line: None,
-        });
-    }
-
-    let ts_return = ts_return_type_safe(return_type_meta, is_async, known_types);
-    let params = project_params(
-        &in_params,
-        known_types,
-        delegate_names,
-        delegate_sigs,
-        delegate_param_wraps,
-    );
-    let args_expr = build_args_expr(&in_params);
-    let mut invoke_expr = format!(
-        "_{}.method({}).invoke({}, [{}])",
-        iface.name, method.vtable_index, statics_call, args_expr
-    );
-    invoke_expr = rewrite_delegate_args_in_expr(&invoke_expr, &params);
-
-    let async_kind;
-    let sync_return_expr;
-    let async_convert_v;
-    let mut progress_convert = None;
-
-    if is_with_progress {
-        let inner_type = match return_type_meta {
-            Some(TypeMeta::AsyncOperationWithProgress(inner, _)) => Some(inner.as_ref()),
-            _ => None,
-        };
-        let progress_type = match return_type_meta {
-            Some(TypeMeta::AsyncOperationWithProgress(_, p)) => Some(p.as_ref()),
-            Some(TypeMeta::AsyncActionWithProgress(p)) => Some(p.as_ref()),
-            _ => None,
-        };
-        let progress_ts = progress_type
-            .map(|p| ts_return_type_safe(Some(p), false, known_types))
-            .unwrap_or_else(|| "unknown".to_string());
-        // Build conversion expression for progress value
-        let p_convert = convert_return("_p", progress_type, false, known_types, &NO_DEFERRED);
-        if p_convert != "_p" {
-            progress_convert = Some(p_convert);
-        }
-        let is_action = matches!(return_type_meta, Some(TypeMeta::AsyncActionWithProgress(_)));
-        let inner_convert = convert_return("_v", inner_type, false, known_types, &NO_DEFERRED);
-        if is_action {
-            async_kind = AsyncKind::ActionWithProgress(progress_ts);
-        } else {
-            let inner_ts = ts_return_type_safe(inner_type, false, known_types);
-            async_kind = AsyncKind::OperationWithProgress(inner_ts, progress_ts);
-        }
-        sync_return_expr = None;
-        async_convert_v = Some(inner_convert);
-    } else if is_async {
-        let inner_type = async_inner_type(return_type_meta);
-        let is_action = matches!(return_type_meta, Some(TypeMeta::AsyncAction));
-        if is_action {
-            async_kind = AsyncKind::Action;
-            async_convert_v = None;
-        } else {
-            let convert_v = convert_return("_v", inner_type, false, known_types, &NO_DEFERRED);
-            let inner_ts = ts_return_type_safe(inner_type, false, known_types);
-            async_kind = AsyncKind::Operation(inner_ts);
-            async_convert_v = Some(convert_v);
-        }
-        sync_return_expr = None;
-    } else {
-        async_kind = AsyncKind::None;
-        let converted = convert_return(
-            &invoke_expr,
-            return_type_meta,
-            false,
-            known_types,
-            &NO_DEFERRED,
-        );
-        sync_return_expr = if return_type_meta.is_some() {
-            Some(converted)
-        } else {
-            None
-        };
-        async_convert_v = None;
-    }
-
-    let mut ts_params = params;
-    if is_async || is_with_progress {
-        ts_params.push(ProjectedParam {
-            name: "signal".into(),
-            ts_type: "AbortSignal".into(),
-            optional: true,
-            delegate_wrap: None,
-        });
-    }
-
-    let mut doc = build_method_doc(method, &in_params);
-    if is_async || is_with_progress {
-        if let Some(ref mut d) = doc {
-            d.params.push((
-                "signal".into(),
-                "Abort signal to cancel the underlying WinRT async operation.".into(),
-            ));
-        }
-    }
-    let delegate_wraps = collect_delegate_wraps(&ts_params);
-
-    let js_name = to_camel_case(&method.name);
-    let raw_js_name = to_camel_case(&method.raw_name);
-    let overload_of = if js_name != raw_js_name {
-        Some(raw_js_name)
-    } else {
-        None
-    };
-
-    ProjectedMember::Method(ProjectedMethod {
-        name: js_name,
-        doc,
-        params: ts_params,
-        return_type: ts_return,
-        async_kind,
-        is_static: true,
-        invoke_expr,
-        sync_return_expr,
-        async_convert_v,
-        progress_convert,
-        is_void: return_type_meta.is_none() && !is_async,
-        array_return_expr: None,
-        delegate_wraps,
-        js_only: false,
-        overload_of,
-    })
-}
-
-fn project_instance_method(
-    iface_var: &str,
-    obj_expr: &str,
-    method: &MethodMeta,
-    known_types: &HashSet<String>,
-    delegate_type_names: &HashSet<String>,
-    iface_methods: Option<&[MethodMeta]>,
-    delegate_sigs: &HashMap<String, String>,
-    delegate_param_wraps: &HashMap<String, Vec<String>>,
-) -> Option<ProjectedMember> {
-    let in_params = get_in_params(method);
-    let return_type_meta = method.return_type.as_ref();
-    let is_with_progress = return_type_meta.is_some_and(|rt| {
-        matches!(
-            rt,
-            TypeMeta::AsyncOperationWithProgress(_, _) | TypeMeta::AsyncActionWithProgress(_)
-        )
-    });
-    let is_async = return_type_meta.is_some_and(|rt| rt.is_async()) && !is_with_progress;
-    let has_array_out = method.params.iter().any(|p| {
-        (p.direction == ParamDirection::Out || p.direction == ParamDirection::OutFill)
-            && matches!(p.typ, TypeMeta::Array(_))
-    });
-    let has_return = return_type_meta.is_some() || has_array_out;
-
-    let is_delegate_type = |typ: Option<&TypeMeta>| -> bool {
-        match typ {
-            Some(TypeMeta::Delegate { .. }) => true,
-            Some(TypeMeta::Interface { name, .. }) => delegate_type_names.contains(name),
-            _ => false,
-        }
-    };
-
-    let mut doc = build_method_doc(method, &in_params);
-
-    // Event add
-    if method.is_event_add {
-        return Some(project_event_add(
-            iface_var,
-            obj_expr,
-            method,
-            known_types,
-            iface_methods,
-            doc,
-        ));
-    }
-
-    // Event remove
-    if method.is_event_remove {
-        let event_name = to_camel_case(method.name.strip_prefix("remove_").unwrap_or(&method.name));
-        return Some(ProjectedMember::Event(ProjectedEvent {
-            subscribe_name: String::new(),
-            unsubscribe_name: format!("off{}", capitalize(&event_name)),
-            callback_type: String::new(),
-            doc,
-            delegate_name: None,
-            add_iface_var: String::new(),
-            add_vtable_index: 0,
-            add_obj_expr: String::new(),
-            remove_vtable_index: Some(method.vtable_index),
-            remove_iface_var: iface_var.into(),
-            remove_obj_expr: obj_expr.into(),
-            needs_wrap: false,
-            sender_wrap: None,
-            args_wrap: None,
-        }));
-    }
-
-    // Property getter
-    if method.is_property_getter && in_params.is_empty() {
-        let prop_name = to_camel_case(method.name.strip_prefix("get_").unwrap_or(&method.name));
-        let ts_return = if is_delegate_type(return_type_meta) {
-            "DynWinRtValue".to_string()
-        } else {
-            ts_return_type_safe(return_type_meta, false, known_types)
-        };
-        let invoke_expr = format!(
-            "{}.method({}).invoke({}, [])",
-            iface_var, method.vtable_index, obj_expr
-        );
-        let converted = if is_delegate_type(return_type_meta) {
-            invoke_expr.clone()
-        } else {
-            convert_return(
-                &invoke_expr,
-                return_type_meta,
-                false,
-                known_types,
-                &NO_DEFERRED,
-            )
-        };
-
-        // Check if there's a corresponding setter
-        let setter_line = find_setter_for_property(method, iface_var, obj_expr, iface_methods);
-
-        return Some(ProjectedMember::Property(ProjectedProperty {
-            name: prop_name,
-            ts_type: ts_return,
-            readonly: setter_line.is_none(),
-            is_static: false,
-            doc,
-            getter_expr: converted,
-            setter_line,
-        }));
-    }
-
-    // Property setter (standalone — if paired with getter, handled above)
-    if method.is_property_setter {
-        let prop_name = to_camel_case(method.name.strip_prefix("put_").unwrap_or(&method.name));
-        let param_type = if in_params
-            .first()
-            .is_some_and(|p| is_delegate_type(Some(&p.typ)))
-        {
-            "DynWinRtValue".to_string()
-        } else {
-            in_params
-                .first()
-                .map(|p| ts_param_type_safe(&p.typ, known_types))
-                .unwrap_or_else(|| "any".to_string())
-        };
-        let arg = in_params
-            .first()
-            .map(|p| wrap_arg("value", &p.typ))
-            .unwrap_or_else(|| "value".to_string());
-        let setter_line = format!(
-            "{}.method({}).invoke({}, [{}]);",
-            iface_var, method.vtable_index, obj_expr, arg
-        );
-
-        // Check if there's a corresponding getter (if so, it will add the property)
-        let getter_name = format!(
-            "get_{}",
-            method.name.strip_prefix("put_").unwrap_or(&method.name)
-        );
-        let has_getter = iface_methods.map_or(false, |methods| {
-            methods
-                .iter()
-                .any(|m| m.name == getter_name && m.is_property_getter)
-        });
-        if has_getter {
-            // The getter will create the property with this setter included — skip
-            return None;
-        }
-
-        return Some(ProjectedMember::Property(ProjectedProperty {
-            name: prop_name,
-            ts_type: param_type,
-            readonly: false,
-            is_static: false,
-            doc,
-            getter_expr: String::new(),
-            setter_line: Some(setter_line),
-        }));
-    }
-
-    // Normal method
-    let params = project_params(
-        &in_params,
-        known_types,
-        delegate_type_names,
-        delegate_sigs,
-        delegate_param_wraps,
-    );
-    let array_out_elem = if has_array_out && return_type_meta.is_none() {
-        method.params.iter().find_map(|p| {
-            if p.direction == ParamDirection::Out || p.direction == ParamDirection::OutFill {
-                if let TypeMeta::Array(inner) = &p.typ {
-                    Some(inner.as_ref())
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        })
-    } else {
-        None
-    };
-
-    let ts_return = if let Some(elem) = array_out_elem {
-        ts_array_element_type(elem, known_types)
-    } else {
-        ts_return_type_safe(return_type_meta, is_async, known_types)
-    };
-
-    let args_expr = build_args_expr(&in_params);
-    let mut invoke_expr = format!(
-        "{}.method({}).invoke({}, [{}])",
-        iface_var, method.vtable_index, obj_expr, args_expr
-    );
-    invoke_expr = rewrite_delegate_args_in_expr(&invoke_expr, &params);
-
-    let async_kind;
-    let sync_return_expr;
-    let async_convert_v;
-    let array_return_expr;
-    let mut progress_convert = None;
-
-    if is_with_progress {
-        let inner_type = match return_type_meta {
-            Some(TypeMeta::AsyncOperationWithProgress(inner, _)) => Some(inner.as_ref()),
-            _ => None,
-        };
-        let progress_type = match return_type_meta {
-            Some(TypeMeta::AsyncOperationWithProgress(_, p)) => Some(p.as_ref()),
-            Some(TypeMeta::AsyncActionWithProgress(p)) => Some(p.as_ref()),
-            _ => None,
-        };
-        let progress_ts = progress_type
-            .map(|p| ts_return_type_safe(Some(p), false, known_types))
-            .unwrap_or_else(|| "unknown".to_string());
-        let p_convert = convert_return("_p", progress_type, false, known_types, &NO_DEFERRED);
-        if p_convert != "_p" {
-            progress_convert = Some(p_convert);
-        }
-        let is_action = matches!(return_type_meta, Some(TypeMeta::AsyncActionWithProgress(_)));
-        let inner_convert = convert_return("_v", inner_type, false, known_types, &NO_DEFERRED);
-        if is_action {
-            async_kind = AsyncKind::ActionWithProgress(progress_ts);
-        } else {
-            let inner_ts = ts_return_type_safe(inner_type, false, known_types);
-            async_kind = AsyncKind::OperationWithProgress(inner_ts, progress_ts);
-        }
-        sync_return_expr = None;
-        async_convert_v = Some(inner_convert);
-        array_return_expr = None;
-    } else if is_async {
-        let inner_type = async_inner_type(return_type_meta);
-        let is_action = matches!(return_type_meta, Some(TypeMeta::AsyncAction));
-        if is_action {
-            async_kind = AsyncKind::Action;
-            async_convert_v = None;
-        } else {
-            let convert_v = convert_return("_v", inner_type, false, known_types, &NO_DEFERRED);
-            let inner_ts = ts_return_type_safe(inner_type, false, known_types);
-            async_kind = AsyncKind::Operation(inner_ts);
-            async_convert_v = Some(convert_v);
-        }
-        sync_return_expr = None;
-        array_return_expr = None;
-    } else if let Some(elem) = array_out_elem {
-        async_kind = AsyncKind::None;
-        let arr_expr = format!("{}.asArray()", invoke_expr);
-        let converted = convert_array_return(&arr_expr, elem, known_types, &NO_DEFERRED);
-        sync_return_expr = None;
-        async_convert_v = None;
-        array_return_expr = Some(converted);
-    } else {
-        async_kind = AsyncKind::None;
-        if has_return {
-            let converted = convert_return(
-                &invoke_expr,
-                return_type_meta,
-                false,
-                known_types,
-                &NO_DEFERRED,
-            );
-            sync_return_expr = Some(converted);
-        } else {
-            sync_return_expr = None;
-        }
-        async_convert_v = None;
-        array_return_expr = None;
-    }
-
-    let is_void = !has_return && !is_async;
-
-    let mut ts_params = params;
-    if is_async || is_with_progress {
-        ts_params.push(ProjectedParam {
-            name: "signal".into(),
-            ts_type: "AbortSignal".into(),
-            optional: true,
-            delegate_wrap: None,
-        });
-        // Add @param signal doc
-        if let Some(ref mut d) = doc {
-            d.params.push((
-                "signal".into(),
-                "Abort signal to cancel the underlying WinRT async operation.".into(),
-            ));
-        }
-    }
-
-    let delegate_wraps = collect_delegate_wraps(&ts_params);
-
-    let js_name = to_camel_case(&method.name);
-    let raw_js_name = to_camel_case(&method.raw_name);
-    let overload_of = if js_name != raw_js_name {
-        Some(raw_js_name)
-    } else {
-        None
-    };
-
-    Some(ProjectedMember::Method(ProjectedMethod {
-        name: js_name,
-        doc,
-        params: ts_params,
-        return_type: ts_return,
-        async_kind,
-        is_static: false,
-        invoke_expr,
-        sync_return_expr,
-        async_convert_v,
-        progress_convert,
-        is_void,
-        array_return_expr,
-        delegate_wraps,
-        js_only: false,
-        overload_of,
-    }))
-}
-
-fn project_event_add(
-    iface_var: &str,
-    obj_expr: &str,
-    method: &MethodMeta,
-    known_types: &HashSet<String>,
-    iface_methods: Option<&[MethodMeta]>,
-    doc: Option<DocInfo>,
-) -> ProjectedMember {
-    let in_params = get_in_params(method);
-    let event_name = to_camel_case(method.name.strip_prefix("add_").unwrap_or(&method.name));
-    let cap = capitalize(&event_name);
-    let delegate_first_param = in_params.first().map(|p| &p.typ);
-    let delegate_name = delegate_first_param.and_then(|t| match t {
-        TypeMeta::Parameterized { name, args, .. } => {
-            Some(crate::meta::make_parameterized_name(name, args))
-        }
-        TypeMeta::Delegate { name, .. } => Some(name.clone()),
-        TypeMeta::Interface { name, .. } => Some(name.clone()),
-        _ => None,
-    });
-    let suffix = method.name.strip_prefix("add_").unwrap_or(&method.name);
-    let remove_idx = iface_methods.and_then(|methods| {
-        let target = format!("remove_{}", suffix);
-        methods
-            .iter()
-            .find(|m| m.name == target)
-            .map(|m| m.vtable_index)
-    });
-
-    let (callback_ts, sender_wrap, args_wrap) = match delegate_first_param {
-        Some(TypeMeta::Parameterized { name, args, .. })
-            if name.split('`').next() == Some("TypedEventHandler") && args.len() == 2 =>
-        {
-            let s_ts = ts_return_type_safe(Some(&args[0]), false, known_types);
-            let a_ts = ts_return_type_safe(Some(&args[1]), false, known_types);
-            // Map DynWinRtValue → unknown for event callback params (more TS-idiomatic)
-            let s_ts_pub = if s_ts == "DynWinRtValue" {
-                "unknown".to_string()
-            } else {
-                s_ts
-            };
-            let a_ts_pub = if a_ts == "DynWinRtValue" {
-                "unknown".to_string()
-            } else {
-                a_ts
-            };
-            let s_wrap = convert_return("__a0__", Some(&args[0]), false, known_types, &NO_DEFERRED);
-            let a_wrap = convert_return("__a1__", Some(&args[1]), false, known_types, &NO_DEFERRED);
-            (
-                format!("(sender: {}, args: {}) => void", s_ts_pub, a_ts_pub),
-                Some(s_wrap),
-                Some(a_wrap),
-            )
-        }
-        Some(TypeMeta::Parameterized { name, args, .. })
-            if name.split('`').next() == Some("EventHandler") && args.len() == 1 =>
-        {
-            let a_ts = ts_return_type_safe(Some(&args[0]), false, known_types);
-            let a_ts_pub = if a_ts == "DynWinRtValue" {
-                "unknown".to_string()
-            } else {
-                a_ts
-            };
-            let a_wrap = convert_return("__a1__", Some(&args[0]), false, known_types, &NO_DEFERRED);
-            (
-                format!("(sender: unknown, args: {}) => void", a_ts_pub),
-                None,
-                Some(a_wrap),
-            )
-        }
-        _ => ("(...args: unknown[]) => void".to_string(), None, None),
-    };
-
-    let needs_wrap = sender_wrap.as_deref().is_some_and(|s| s != "__a0__")
-        || args_wrap.as_deref().is_some_and(|s| s != "__a1__");
-
-    ProjectedMember::Event(ProjectedEvent {
-        subscribe_name: format!("on{}", cap),
-        unsubscribe_name: format!("off{}", cap),
-        callback_type: callback_ts,
-        doc,
-        delegate_name,
-        add_iface_var: iface_var.into(),
-        add_vtable_index: method.vtable_index,
-        add_obj_expr: obj_expr.into(),
-        remove_vtable_index: remove_idx,
-        remove_iface_var: iface_var.into(),
-        remove_obj_expr: obj_expr.into(),
-        needs_wrap,
-        sender_wrap,
-        args_wrap,
-    })
-}
-
-fn find_setter_for_property(
-    getter: &MethodMeta,
-    iface_var: &str,
-    obj_expr: &str,
-    iface_methods: Option<&[MethodMeta]>,
-) -> Option<String> {
-    let prop_suffix = getter.name.strip_prefix("get_")?;
-    let setter_name = format!("put_{}", prop_suffix);
-    let methods = iface_methods?;
-    let setter = methods
-        .iter()
-        .find(|m| m.name == setter_name && m.is_property_setter)?;
-    let setter_in_params = get_in_params(setter);
-    let arg = setter_in_params
-        .first()
-        .map(|p| wrap_arg("value", &p.typ))
-        .unwrap_or_else(|| "value".to_string());
-    Some(format!(
-        "{}.method({}).invoke({}, [{}]);",
-        iface_var, setter.vtable_index, obj_expr, arg
-    ))
-}
-
-// ======================================================================
-// Collection helpers
-// ======================================================================
-
-/// Create a fill-array expression for getMany: allocates a DynWinRtArray of
-/// `count_var` elements, pre-filled with type-appropriate defaults.
-/// Returns `None` for element types that have no typed batch constructor.
-fn ts_fill_array_create(count_var: &str, elem: &TypeMeta) -> Option<String> {
-    let (method, fill) = match elem {
-        TypeMeta::I8 => ("fromI8Values", "0"),
-        TypeMeta::U8 => ("fromU8Values", "0"),
-        TypeMeta::I16 => ("fromI16Values", "0"),
-        TypeMeta::U16 | TypeMeta::Char16 => ("fromU16Values", "0"),
-        TypeMeta::I32 | TypeMeta::Enum { .. } => ("fromI32Values", "0"),
-        TypeMeta::U32 => ("fromU32Values", "0"),
-        TypeMeta::I64 => ("fromI64Values", "0"),
-        TypeMeta::U64 => ("fromU64Values", "0"),
-        TypeMeta::F32 => ("fromF32Values", "0"),
-        TypeMeta::F64 => ("fromF64Values", "0"),
-        TypeMeta::String => ("fromStringValues", "''"),
-        _ => return None,
-    };
-    Some(format!(
-        "DynWinRtArray.{}(new Array({}).fill({}))",
-        method, count_var, fill
-    ))
-}
-
-/// Create a DynWinRtArray from a JS array variable for replaceAll.
-/// Returns `None` for element types that have no typed batch constructor.
-fn ts_array_from_items(items_var: &str, elem: &TypeMeta) -> Option<String> {
-    let method = match elem {
-        TypeMeta::I8 => "fromI8Values",
-        TypeMeta::U8 => "fromU8Values",
-        TypeMeta::I16 => "fromI16Values",
-        TypeMeta::U16 | TypeMeta::Char16 => "fromU16Values",
-        TypeMeta::I32 | TypeMeta::Enum { .. } => "fromI32Values",
-        TypeMeta::U32 => "fromU32Values",
-        TypeMeta::I64 => "fromI64Values",
-        TypeMeta::U64 => "fromU64Values",
-        TypeMeta::F32 => "fromF32Values",
-        TypeMeta::F64 => "fromF64Values",
-        TypeMeta::String => "fromStringValues",
-        _ => return None,
-    };
-    Some(format!("DynWinRtArray.{}({})", method, items_var))
-}
-
-fn project_collection_helpers(
-    iface: &InterfaceMeta,
-    known_types: &HashSet<String>,
-    members: &mut Vec<ProjectedMember>,
-    imports: &mut Vec<ProjectedImport>,
-) {
-    let Some(piid) = iface.generic_piid.as_deref() else {
-        return;
-    };
-
-    // If the generic arg is a known parameterized type, it needs to be imported
-    // for the IterableIterator<T> / T[] type annotations in DTS
-    if !iface.generic_args.is_empty() {
-        for arg in &iface.generic_args {
-            let type_name = ts_param_type_safe(arg, known_types);
-            // Primitive types (string, number, boolean, DynWinRtValue, any) don't need import
-            if ![
-                "string",
-                "number",
-                "boolean",
-                "DynWinRtValue",
-                "DynWinRtArray",
-                "any",
-                "void",
-            ]
-            .contains(&type_name.as_str())
-                && known_types.contains(&type_name)
-            {
-                let already_imported = imports.iter().any(|i| i.symbols.contains(&type_name));
-                if !already_imported {
-                    imports.push(ProjectedImport {
-                        symbols: vec![type_name],
-                        from: format!("./{}.js", ts_param_type_safe(arg, known_types)),
-                        runtime_only: false,
-                        dts_only: false,
-                    is_runtime_package: false,
-                    });
-                }
-            }
-        }
-    }
-
-    match piid {
-        PIID_IVECTOR | PIID_IVECTOR_VIEW if iface.generic_args.len() == 1 => {
-            let elem_ts = ts_param_type_safe(&iface.generic_args[0], known_types);
-            members.push(ProjectedMember::Symbol(ProjectedSymbol {
-                kind: SymbolKind::CollectionLength,
-                doc: Some(
-                    "Alias for {@link size}; matches Array.length / TypedArray.length.".into(),
-                ),
-            }));
-            members.push(ProjectedMember::Symbol(ProjectedSymbol {
-                kind: SymbolKind::CollectionAt { element_type: elem_ts.clone() },
-                doc: Some("Element at `index`. Negative indices count from the end (Array.prototype.at semantics).".into()),
-            }));
-            members.push(ProjectedMember::Symbol(ProjectedSymbol {
-                kind: SymbolKind::CollectionToArray {
-                    element_type: elem_ts.clone(),
-                },
-                doc: Some("Materialize as a plain JS array.".into()),
-            }));
-            members.push(ProjectedMember::Symbol(ProjectedSymbol {
-                kind: SymbolKind::Iterator {
-                    element_type: elem_ts.clone(),
-                    body_lines: vec![
-                        "const n = this.size;".into(),
-                        "for (let i = 0; i < n; i++) yield this.getAt(i);".into(),
-                    ],
-                },
-                doc: None,
-            }));
-
-            // indexOf: delegate to WinRT's native IndexOf (returns [u32 index, bool found] via invokeAll)
-            let index_of_vtable = iface
-                .methods
-                .iter()
-                .find(|m| m.name == "IndexOf")
-                .map(|m| m.vtable_index);
-            let iface_var_ref = format!("_{}", iface.name);
-            if let Some(idx) = index_of_vtable {
-                let wrap_value = wrap_arg("value", &iface.generic_args[0]);
-                members.push(ProjectedMember::Method(ProjectedMethod {
-                    name: "indexOf".into(),
-                    doc: Some(DocInfo {
-                        summary: Some("Return the index of `value`, or -1 if not found.".into()),
-                        deprecated: None, returns: None, params: vec![],
-                    }),
-                    params: vec![ProjectedParam {
-                        name: "value".into(),
-                        ts_type: elem_ts.clone(),
-                        optional: false,
-                        delegate_wrap: None,
-                    }],
-                    return_type: "number".into(),
-                    async_kind: AsyncKind::None,
-                    is_static: false,
-                    invoke_expr: String::new(),
-                    sync_return_expr: Some(format!(
-                        "(() => {{ const _r = {iface_var_ref}.method({idx}).invokeAll(this._obj, [{wrap_value}]); return _r[1].toBool() ? _r[0].toNumber() : -1; }})()"
-                    )),
-                    async_convert_v: None,
-                    is_void: false,
-                    array_return_expr: None,
-                    delegate_wraps: vec![],
-                    progress_convert: None,
-                    js_only: false, overload_of: None,
-                }));
-            }
-
-            // High-level getMany: T[] wrapper over the raw FillArray-based method
-            let iface_var = format!("_{}", iface.name);
-            let elem = &iface.generic_args[0];
-            if let Some(get_many_idx) = iface
-                .methods
-                .iter()
-                .find(|m| m.name == "GetMany")
-                .map(|m| m.vtable_index)
-            {
-                if let Some(fill_expr) = ts_fill_array_create("count", elem) {
-                    let invoke = format!(
-                        "{iface_var}.method({get_many_idx}).invoke(this._obj, \
-                         [DynWinRtValue.u32(startIndex), _a.toValue()])"
-                    );
-                    let arr_convert = convert_array_return(
-                        &format!("{invoke}.asArray()"),
-                        elem,
-                        known_types,
-                        &NO_DEFERRED,
-                    );
-                    let return_expr =
-                        format!("(() => {{ const _a = {fill_expr}; return {arr_convert}; }})()");
-                    members.push(ProjectedMember::Method(ProjectedMethod {
-                        name: "getMany".into(),
-                        doc: Some(DocInfo {
-                            summary: Some(
-                                "Copy elements starting at `startIndex` into a new array \
-                                 of length `count`."
-                                    .into(),
-                            ),
-                            params: vec![],
-                            returns: None,
-                            deprecated: None,
-                        }),
-                        params: vec![
-                            ProjectedParam {
-                                name: "startIndex".into(),
-                                ts_type: "number".into(),
-                                optional: false,
-                                delegate_wrap: None,
-                            },
-                            ProjectedParam {
-                                name: "count".into(),
-                                ts_type: "number".into(),
-                                optional: false,
-                                delegate_wrap: None,
-                            },
-                        ],
-                        return_type: format!("{}[]", elem_ts),
-                        async_kind: AsyncKind::None,
-                        is_static: false,
-                        invoke_expr: String::new(),
-                        sync_return_expr: Some(return_expr),
-                        async_convert_v: None,
-                        is_void: false,
-                        array_return_expr: None,
-                        delegate_wraps: vec![],
-                        progress_convert: None,
-                        js_only: false,
-                        overload_of: None,
-                    }));
-                }
-            }
-
-            // High-level replaceAll (IVector only): accepts T[] instead of DynWinRtArray
-            if piid == PIID_IVECTOR {
-                if let Some(replace_all_idx) = iface
-                    .methods
-                    .iter()
-                    .find(|m| m.name == "ReplaceAll")
-                    .map(|m| m.vtable_index)
-                {
-                    if let Some(items_expr) = ts_array_from_items("items", elem) {
-                        let invoke = format!(
-                            "{iface_var}.method({replace_all_idx}).invoke(this._obj, \
-                             [{items_expr}.toValue()])"
-                        );
-                        members.push(ProjectedMember::Method(ProjectedMethod {
-                            name: "replaceAll".into(),
-                            doc: Some(DocInfo {
-                                summary: Some(
-                                    "Replace all elements in the vector with the provided items."
-                                        .into(),
-                                ),
-                                params: vec![],
-                                returns: None,
-                                deprecated: None,
-                            }),
-                            params: vec![ProjectedParam {
-                                name: "items".into(),
-                                ts_type: format!("{}[]", elem_ts),
-                                optional: false,
-                                delegate_wrap: None,
-                            }],
-                            return_type: "void".into(),
-                            async_kind: AsyncKind::None,
-                            is_static: false,
-                            invoke_expr: invoke,
-                            sync_return_expr: None,
-                            async_convert_v: None,
-                            is_void: true,
-                            array_return_expr: None,
-                            delegate_wraps: vec![],
-                            progress_convert: None,
-                            js_only: false,
-                            overload_of: None,
-                        }));
-                    }
-                }
-            }
-        }
-        PIID_IITERATOR if iface.generic_args.len() == 1 => {
-            let elem_ts = ts_param_type_safe(&iface.generic_args[0], known_types);
-            members.push(ProjectedMember::Symbol(ProjectedSymbol {
-                kind: SymbolKind::IteratorNext {
-                    element_type: elem_ts.clone(),
-                },
-                doc: Some("JS iterator protocol: returns the current element and advances.".into()),
-            }));
-            // IIterator is already the iterator — [Symbol.iterator]() returns this
-            members.push(ProjectedMember::Symbol(ProjectedSymbol {
-                kind: SymbolKind::Iterator {
-                    element_type: elem_ts,
-                    body_lines: vec!["return this;".into()],
-                },
-                doc: None,
-            }));
-        }
-        PIID_IITERABLE if iface.generic_args.len() == 1 => {
-            let elem_ts = ts_param_type_safe(&iface.generic_args[0], known_types);
-            members.push(ProjectedMember::Symbol(ProjectedSymbol {
-                kind: SymbolKind::Iterator {
-                    element_type: elem_ts,
-                    body_lines: vec![],
-                },
-                doc: None,
-            }));
-        }
-        PIID_IMAP | PIID_IMAP_VIEW if iface.generic_args.len() == 2 => {
-            let key_ts = ts_param_type_safe(&iface.generic_args[0], known_types);
-            let val_ts = ts_param_type_safe(&iface.generic_args[1], known_types);
-            let key_ts = if key_ts == "DynWinRtValue" {
-                "unknown".to_string()
-            } else {
-                key_ts
-            };
-            let val_ts = if val_ts == "DynWinRtValue" {
-                "unknown".to_string()
-            } else {
-                val_ts
-            };
-            // JS Map-like aliases
-            let iface_var = format!("_{}", iface.name);
-            // get(key) — alias for lookup
-            if let Some(lookup_idx) = iface
-                .methods
-                .iter()
-                .find(|m| m.name == "Lookup")
-                .map(|m| m.vtable_index)
-            {
-                let key_wrap = wrap_arg("key", &iface.generic_args[0]);
-                let return_convert = convert_return(
-                    &format!("{iface_var}.method({lookup_idx}).invoke(this._obj, [{key_wrap}])"),
-                    Some(&iface.generic_args[1]),
-                    false,
-                    known_types,
-                    &NO_DEFERRED,
-                );
-                members.push(ProjectedMember::Method(ProjectedMethod {
-                    name: "get".into(),
-                    doc: Some(DocInfo {
-                        summary: Some(format!("Get the value for `key`. Alias for `lookup()`.")),
-                        deprecated: None,
-                        returns: None,
-                        params: vec![],
-                    }),
-                    params: vec![ProjectedParam {
-                        name: "key".into(),
-                        ts_type: key_ts.clone(),
-                        optional: false,
-                        delegate_wrap: None,
-                    }],
-                    return_type: format!("{} | undefined", val_ts),
-                    async_kind: AsyncKind::None,
-                    is_static: false,
-                    invoke_expr: String::new(),
-                    sync_return_expr: Some(format!(
-                        "(() => {{ try {{ return {}; }} catch {{ return undefined; }} }})()",
-                        return_convert
-                    )),
-                    async_convert_v: None,
-                    is_void: false,
-                    array_return_expr: None,
-                    delegate_wraps: vec![],
-                    progress_convert: None,
-                    js_only: false,
-                    overload_of: None,
-                }));
-            }
-            // has(key) — alias for hasKey
-            if let Some(has_idx) = iface
-                .methods
-                .iter()
-                .find(|m| m.name == "HasKey")
-                .map(|m| m.vtable_index)
-            {
-                let key_wrap = wrap_arg("key", &iface.generic_args[0]);
-                members.push(ProjectedMember::Method(ProjectedMethod {
-                    name: "has".into(),
-                    doc: Some(DocInfo {
-                        summary: Some(
-                            "Check if the map contains `key`. Alias for `hasKey()`.".into(),
-                        ),
-                        deprecated: None,
-                        returns: None,
-                        params: vec![],
-                    }),
-                    params: vec![ProjectedParam {
-                        name: "key".into(),
-                        ts_type: key_ts.clone(),
-                        optional: false,
-                        delegate_wrap: None,
-                    }],
-                    return_type: "boolean".into(),
-                    async_kind: AsyncKind::None,
-                    is_static: false,
-                    invoke_expr: format!(
-                        "{iface_var}.method({has_idx}).invoke(this._obj, [{key_wrap}])"
-                    ),
-                    sync_return_expr: Some(format!(
-                        "{iface_var}.method({has_idx}).invoke(this._obj, [{key_wrap}]).toBool()"
-                    )),
-                    async_convert_v: None,
-                    is_void: false,
-                    array_return_expr: None,
-                    delegate_wraps: vec![],
-                    progress_convert: None,
-                    js_only: false,
-                    overload_of: None,
-                }));
-            }
-            // set(key, value) — alias for insert (IMap only)
-            if piid == PIID_IMAP {
-                if let Some(insert_idx) = iface
-                    .methods
-                    .iter()
-                    .find(|m| m.name == "Insert")
-                    .map(|m| m.vtable_index)
-                {
-                    let key_wrap = wrap_arg("key", &iface.generic_args[0]);
-                    let val_wrap = wrap_arg("value", &iface.generic_args[1]);
-                    members.push(ProjectedMember::Method(ProjectedMethod {
-                        name: "set".into(),
-                        doc: Some(DocInfo {
-                            summary: Some("Set a key-value pair. Alias for `insert()`.".into()),
-                            deprecated: None, returns: None, params: vec![],
-                        }),
-                        params: vec![
-                            ProjectedParam { name: "key".into(), ts_type: key_ts.clone(), optional: false, delegate_wrap: None },
-                            ProjectedParam { name: "value".into(), ts_type: val_ts.clone(), optional: false, delegate_wrap: None },
-                        ],
-                        return_type: "void".into(),
-                        async_kind: AsyncKind::None, is_static: false,
-                        invoke_expr: format!("{iface_var}.method({insert_idx}).invoke(this._obj, [{key_wrap}, {val_wrap}])"),
-                        sync_return_expr: None,
-                        async_convert_v: None, is_void: true, array_return_expr: None,
-                        delegate_wraps: vec![], progress_convert: None, js_only: false, overload_of: None,
-                    }));
-                }
-                // delete(key) — alias for remove
-                if let Some(remove_idx) = iface
-                    .methods
-                    .iter()
-                    .find(|m| m.name == "Remove")
-                    .map(|m| m.vtable_index)
-                {
-                    let key_wrap = wrap_arg("key", &iface.generic_args[0]);
-                    members.push(ProjectedMember::Method(ProjectedMethod {
-                        name: "delete".into(),
-                        doc: Some(DocInfo {
-                            summary: Some("Remove entry by key. Alias for `remove()`.".into()),
-                            deprecated: None,
-                            returns: None,
-                            params: vec![],
-                        }),
-                        params: vec![ProjectedParam {
-                            name: "key".into(),
-                            ts_type: key_ts.clone(),
-                            optional: false,
-                            delegate_wrap: None,
-                        }],
-                        return_type: "void".into(),
-                        async_kind: AsyncKind::None,
-                        is_static: false,
-                        invoke_expr: format!(
-                            "{iface_var}.method({remove_idx}).invoke(this._obj, [{key_wrap}])"
-                        ),
-                        sync_return_expr: None,
-                        async_convert_v: None,
-                        is_void: true,
-                        array_return_expr: None,
-                        delegate_wraps: vec![],
-                        progress_convert: None,
-                        js_only: false,
-                        overload_of: None,
-                    }));
-                }
-            }
-            // forEach — iterate over entries
-            members.push(ProjectedMember::Symbol(ProjectedSymbol {
-                kind: SymbolKind::CollectionLength,
-                doc: Some("Number of entries. Alias for `size`.".into()),
-            }));
-        }
-        _ => {}
-    }
-}
-
-fn project_collection_create(
-    iface: &InterfaceMeta,
-    known_types: &HashSet<String>,
-    members: &mut Vec<ProjectedMember>,
-) {
-    let Some(ref piid) = iface.generic_piid else {
-        return;
-    };
-    if piid == PIID_IVECTOR && iface.generic_args.len() == 1 {
-        let elem_type = ts_dynwinrt_type(&iface.generic_args[0]);
-        let elem_ts = ts_param_type_safe(&iface.generic_args[0], known_types);
-        members.push(ProjectedMember::Method(ProjectedMethod {
-            name: "create".into(),
-            doc: Some(DocInfo {
-                summary: Some("Create a new IVector from an array of items.".into()),
-                deprecated: None,
-                returns: None,
-                params: vec![],
-            }),
-            params: vec![ProjectedParam {
-                name: "items".into(),
-                ts_type: format!("{}[]", elem_ts),
-                optional: false,
-                delegate_wrap: None,
-            }],
-            return_type: iface.name.clone(),
-            async_kind: AsyncKind::None,
-            is_static: true,
-            invoke_expr: String::new(),
-            sync_return_expr: Some(format!(
-                "new {}(DynWinRtValue.createVector(items.map(i => _unwrap(i)), {}))",
-                iface.name, elem_type
-            )),
-            async_convert_v: None,
-            is_void: false,
-            array_return_expr: None,
-            delegate_wraps: vec![],
-            progress_convert: None,
-            js_only: false,
-            overload_of: None,
-        }));
-    } else if piid == PIID_IMAP && iface.generic_args.len() == 2 {
-        let key_type = ts_dynwinrt_type(&iface.generic_args[0]);
-        let val_type = ts_dynwinrt_type(&iface.generic_args[1]);
-        let key_ts = ts_param_type_safe(&iface.generic_args[0], known_types);
-        let key_ts = if key_ts == "DynWinRtValue" {
-            "unknown".to_string()
-        } else {
-            key_ts
-        };
-        let val_ts = ts_param_type_safe(&iface.generic_args[1], known_types);
-        let val_ts = if val_ts == "DynWinRtValue" {
-            "unknown".to_string()
-        } else {
-            val_ts
-        };
-        members.push(ProjectedMember::Method(ProjectedMethod {
-            name: "create".into(),
-            doc: Some(DocInfo {
-                summary: Some("Create a new IMap from parallel arrays of keys and values.".into()),
-                deprecated: None, returns: None, params: vec![],
-            }),
-            params: vec![
-                ProjectedParam { name: "keys".into(), ts_type: format!("{}[]", key_ts), optional: false, delegate_wrap: None },
-                ProjectedParam { name: "values".into(), ts_type: format!("{}[]", val_ts), optional: false, delegate_wrap: None },
-            ],
-            return_type: iface.name.clone(),
-            async_kind: AsyncKind::None,
-            is_static: true,
-            invoke_expr: String::new(),
-            sync_return_expr: Some(format!(
-                "new {}(DynWinRtValue.createMap(keys.map(k => _unwrap(k)), values.map(v => _unwrap(v)), {}, {}))",
-                iface.name, key_type, val_type
-            )),
-            async_convert_v: None,
-            is_void: false,
-            array_return_expr: None,
-            delegate_wraps: vec![],
-            progress_convert: None,
-            js_only: false, overload_of: None,
-        }));
-    }
-}
-
-// ======================================================================
-// Struct projection
-// ======================================================================
-
-fn project_struct_helpers(used_structs: &[TypeMeta]) -> Vec<ProjectedStruct> {
-    used_structs
-        .iter()
-        .filter_map(|s| {
-            let (namespace, name, fields) = match s {
-                TypeMeta::Struct {
-                    namespace,
-                    name,
-                    fields,
-                } => (namespace, name, fields),
-                _ => return None,
-            };
-            let full_name = format!("{}.{}", namespace, name);
-            let field_types: Vec<String> =
-                fields.iter().map(|f| ts_dynwinrt_type(&f.typ)).collect();
-            let type_expr = format!(
-                "DynWinRtType.structType('{}', [{}])",
-                full_name,
-                field_types.join(", ")
-            );
-
-            let ts_fields: Vec<(String, String)> = fields
-                .iter()
-                .map(|f| (to_camel_case(&f.name), ts_struct_field_type(&f.typ)))
-                .collect();
-
-            let unpack_body = {
-                let field_exprs: Vec<String> = fields
-                    .iter()
-                    .enumerate()
-                    .map(|(i, f)| {
-                        format!(
-                            "{}: {}",
-                            to_camel_case(&f.name),
-                            struct_field_getter(&f.typ, i)
-                        )
-                    })
-                    .collect();
-                vec![
-                    "const s = v.asStruct();".into(),
-                    format!("return {{ {} }};", field_exprs.join(", ")),
-                ]
-            };
-
-            let pack_body = {
-                let mut lines = vec![format!("const s = DynWinRtStruct.create({}_Type);", name)];
-                for (i, f) in fields.iter().enumerate() {
-                    lines.push(format!(
-                        "{};",
-                        struct_field_setter(&f.typ, i, &format!("v.{}", to_camel_case(&f.name)))
-                    ));
-                }
-                lines.push("return s;".into());
-                lines
-            };
-
-            Some(ProjectedStruct {
-                name: name.clone(),
-                fields: ts_fields,
-                unpack_body,
-                pack_body,
-                type_expr,
-                namespace: namespace.clone(),
-            })
-        })
-        .collect()
 }
 
 // ======================================================================
@@ -2538,7 +1202,7 @@ fn build_runtime_import(has_structs: bool) -> ProjectedImport {
         from: get_import_name(),
         runtime_only: false,
         dts_only: false,
-    is_runtime_package: true,
+        is_runtime_package: true,
     }
 }
 
@@ -2549,7 +1213,7 @@ fn format_type_import_projected(name: &str, kind: TypeKind) -> ProjectedImport {
             from: format!("./{}.js", name),
             runtime_only: false,
             dts_only: false,
-        is_runtime_package: false,
+            is_runtime_package: false,
         }
     } else {
         ProjectedImport {
@@ -2557,7 +1221,7 @@ fn format_type_import_projected(name: &str, kind: TypeKind) -> ProjectedImport {
             from: format!("./{}.js", name),
             runtime_only: false,
             dts_only: false,
-        is_runtime_package: false,
+            is_runtime_package: false,
         }
     }
 }
@@ -2572,7 +1236,9 @@ fn collect_delegate_names_from_methods(
                 TypeMeta::Delegate { name, .. } => {
                     delegate_names.insert(name.clone());
                 }
-                TypeMeta::Interface { name, .. } if method.is_event_add || method.is_event_remove => {
+                TypeMeta::Interface { name, .. }
+                    if method.is_event_add || method.is_event_remove =>
+                {
                     delegate_names.insert(name.clone());
                 }
                 _ => {}
@@ -2649,7 +1315,7 @@ fn build_method_doc(method: &MethodMeta, in_params: &[&crate::meta::ParamMeta]) 
     let params_display: Vec<(String, String)> = in_params
         .iter()
         .filter_map(|p| {
-            super::xml_text::find_param_doc(&method.param_docs, &p.name)
+            crate::codegen::shared::docs::find_param_doc(&method.param_docs, &p.name)
                 .map(|d| (to_camel_case(&p.name), d.to_string()))
         })
         .collect();

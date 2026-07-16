@@ -326,8 +326,7 @@ fn run() -> Result<(), String> {
                     // are not emitted, so must not appear in the barrel either.
                     let __cls_names: HashSet<String> =
                         all_classes.iter().map(|c| c.name.clone()).collect();
-                    all_interfaces
-                        .retain(|i| !i.iid.is_empty() && !__cls_names.contains(&i.name));
+                    all_interfaces.retain(|i| !i.iid.is_empty() && !__cls_names.contains(&i.name));
                     all_enums.retain(|e| match e {
                         TypeMeta::Enum { name, .. } => !__cls_names.contains(name),
                         _ => true,
@@ -468,8 +467,7 @@ fn run() -> Result<(), String> {
                     }
                     let __cls_names: HashSet<String> =
                         all_classes.iter().map(|c| c.name.clone()).collect();
-                    all_interfaces
-                        .retain(|i| !i.iid.is_empty() && !__cls_names.contains(&i.name));
+                    all_interfaces.retain(|i| !i.iid.is_empty() && !__cls_names.contains(&i.name));
                     all_enums.retain(|e| match e {
                         TypeMeta::Enum { name, .. } => !__cls_names.contains(name),
                         _ => true,
@@ -591,8 +589,7 @@ fn generate_for_types(
     // (matches the class-name-collision + no-IID filter there). Everything
     // downstream — `known_types`, the barrel index, generated imports — must
     // agree, or classes will try to `import` sibling files that never landed.
-    let class_names_all: HashSet<String> =
-        all_classes.iter().map(|c| c.name.clone()).collect();
+    let class_names_all: HashSet<String> = all_classes.iter().map(|c| c.name.clone()).collect();
     let is_emittable_iface = |i: &meta::InterfaceMeta| -> bool {
         !i.iid.is_empty() && !class_names_all.contains(&i.name)
     };
@@ -933,9 +930,10 @@ fn write_js_barrel_and_manifest(output_dir: &Path, index_content: &str) -> Resul
     // exclude the barrel entries themselves; everything else is a
     // consumer-facing subpath.
     let subpath_names = collect_subpath_names_from_dir(output_dir);
-    let pkg_json_content = render_package_json::render_package_json(
-        &render_package_json::PackageManifestInput { subpath_names: &subpath_names },
-    );
+    let pkg_json_content =
+        render_package_json::render_package_json(&render_package_json::PackageManifestInput {
+            subpath_names: &subpath_names,
+        });
     fs::write(&pkg_json_path, &pkg_json_content)
         .map_err(|e| format!("Failed to write {}: {}", pkg_json_path.display(), e))?;
 
@@ -950,8 +948,13 @@ fn render_index_from_existing_js_files(output_dir: &Path) -> Result<String, Stri
     // the alphabetically-first module wins each shared symbol (interface
     // files like `IStringable.js` win over classes that re-export the IID).
     let mut candidates: Vec<(String, Vec<String>)> = Vec::new();
-    let entries = fs::read_dir(output_dir)
-        .map_err(|e| format!("Failed to read output directory {}: {}", output_dir.display(), e))?;
+    let entries = fs::read_dir(output_dir).map_err(|e| {
+        format!(
+            "Failed to read output directory {}: {}",
+            output_dir.display(),
+            e
+        )
+    })?;
     for entry in entries.flatten() {
         let path = entry.path();
         let Some(fname) = path.file_name().and_then(|s| s.to_str()) else {
@@ -1103,9 +1106,8 @@ fn strip_broken_imports(output_dir: &Path) -> Result<(), String> {
     //      exports.X = undefined;
     //      Object.defineProperty(exports, 'X', { ... get() { return require('./Foo.js').X; } });
     //      Both lines reference the same missing target and must go together.
-    let esm_import_re =
-        regex::Regex::new(r#"(?m)^import \{[^}]*\} from '\./([^']+)\.js';\r?\n"#)
-            .map_err(|e| format!("regex error: {}", e))?;
+    let esm_import_re = regex::Regex::new(r#"(?m)^import \{[^}]*\} from '\./([^']+)\.js';\r?\n"#)
+        .map_err(|e| format!("regex error: {}", e))?;
 
     // Class-file lazy loader block. New shape:
     //   let __m_Foo;
@@ -1120,10 +1122,9 @@ fn strip_broken_imports(output_dir: &Path) -> Result<(), String> {
     //   const { IID_X, X_PARAM_TYPES } = require('./Foo.js');
     // Emitted alongside the lazy block for symbols the native runtime needs
     // as concrete values (IIDs, DynWinRtType arrays, struct type descriptors).
-    let cjs_eager_re = regex::Regex::new(
-        r"(?m)^const \{[^}]+\} = require\('\./([^']+)\.js'\);\r?\n",
-    )
-    .map_err(|e| format!("regex error: {}", e))?;
+    let cjs_eager_re =
+        regex::Regex::new(r"(?m)^const \{[^}]+\} = require\('\./([^']+)\.js'\);\r?\n")
+            .map_err(|e| format!("regex error: {}", e))?;
 
     // Index-file lazy export line emitted by `esm_index_to_cjs_lazy`:
     //   { let _m; exports.NAME = __lazy(() => (_m ??= require('./Foo.js')).NAME); }
@@ -1215,7 +1216,7 @@ fn generate_py_files(
     shared_iids: &HashSet<String>,
     pyi: bool,
 ) -> Result<(), String> {
-    use dynwinrt_codegen::codegen::common::to_snake_case_filename;
+    use dynwinrt_codegen::codegen::python::to_snake_case_filename;
     use dynwinrt_codegen::codegen::python_stub;
 
     for iface in shared_interfaces {

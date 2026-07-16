@@ -11,7 +11,7 @@
 //! - Emits TSDoc comments
 //! - Enums as `export enum` (not `Object.freeze`)
 
-use super::projected::*;
+use crate::codegen::javascript::ir::*;
 
 /// Render a projected file as a `.d.ts` declaration.
 pub fn render(file: &ProjectedFile) -> String {
@@ -560,7 +560,7 @@ fn render_enum_dts(out: &mut String, en: &ProjectedEnum) {
 // ======================================================================
 
 fn render_tsdoc(doc: &DocInfo, indent: &str) -> String {
-    let doc_text = super::xml_text::DocText {
+    let doc_text = crate::codegen::shared::docs::DocText {
         summary: doc.summary.as_deref(),
         deprecated: doc.deprecated.as_deref(),
         returns: doc.returns.as_deref(),
@@ -570,7 +570,7 @@ fn render_tsdoc(doc: &DocInfo, indent: &str) -> String {
             .map(|(n, d)| (n.as_str(), d.as_str()))
             .collect(),
     };
-    super::xml_text::format_jsdoc(&doc_text, indent)
+    crate::codegen::javascript::docs::format_jsdoc(&doc_text, indent)
 }
 
 /// Check if any method in the file uses AsyncWithProgress.

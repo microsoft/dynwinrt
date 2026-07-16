@@ -1,22 +1,22 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Backward-compatible facade. Implementations live in `naming`,
-//! `structs_helpers`, `imports`, and `sig`.
-
-pub(crate) use super::imports::*;
-pub(crate) use super::naming::*;
-pub(crate) use super::sig::*;
-pub(crate) use super::structs_helpers::*;
+//! Backward-compatible exports retained for external callers.
 
 // `to_snake_case_filename` is consumed by `main.rs` via the crate's public
 // `codegen::common` path, so re-export it publicly in addition to the
 // `pub(crate)` glob above.
-pub use super::naming::to_snake_case_filename;
+pub use super::python::naming::to_snake_case_filename;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::codegen::javascript::naming::*;
+    use crate::codegen::javascript::signature::*;
+    use crate::codegen::javascript::structs::*;
+    use crate::codegen::python::naming::*;
+    use crate::codegen::python::signature::*;
+    use crate::codegen::python::structs::*;
+    use crate::codegen::shared::imports::*;
     use crate::meta::{MethodMeta, ParamDirection, ParamMeta};
     use crate::types::TypeMeta;
     use std::collections::HashSet;

@@ -6,7 +6,9 @@ use std::collections::HashSet;
 use crate::meta::{ClassMeta, InterfaceMeta};
 use crate::types::TypeMeta;
 
-use super::common::{collect_used_structs_from_class, collect_used_structs_from_iface};
+use crate::codegen::shared::structs::{
+    collect_used_structs_from_class, collect_used_structs_from_iface,
+};
 
 /// Generate an index.ts that re-exports all generated types.
 pub fn generate_index(
@@ -114,15 +116,25 @@ pub fn esm_index_to_cjs_lazy(esm_index: &str) -> String {
     out.push_str("        get(t, prop) { return prop in Object(load()) ? Reflect.get(load(), prop) : Reflect.get(t, prop); },\n");
     out.push_str("        set(_, prop, value) { return Reflect.set(load(), prop, value); },\n");
     out.push_str("        construct(_, args) { return Reflect.construct(load(), args); },\n");
-    out.push_str("        apply(_, thisArg, args) { return Reflect.apply(load(), thisArg, args); },\n");
-    out.push_str("        has(t, prop) { return prop in Object(load()) || Reflect.has(t, prop); },\n");
+    out.push_str(
+        "        apply(_, thisArg, args) { return Reflect.apply(load(), thisArg, args); },\n",
+    );
+    out.push_str(
+        "        has(t, prop) { return prop in Object(load()) || Reflect.has(t, prop); },\n",
+    );
     out.push_str("        ownKeys(t) {\n");
     out.push_str("            const loaded = load();\n");
-    out.push_str("            const loadedKeys = loaded != null ? Reflect.ownKeys(Object(loaded)) : [];\n");
-    out.push_str("            return Array.from(new Set([...loadedKeys, ...Reflect.ownKeys(t)]));\n");
+    out.push_str(
+        "            const loadedKeys = loaded != null ? Reflect.ownKeys(Object(loaded)) : [];\n",
+    );
+    out.push_str(
+        "            return Array.from(new Set([...loadedKeys, ...Reflect.ownKeys(t)]));\n",
+    );
     out.push_str("        },\n");
     out.push_str("        getOwnPropertyDescriptor(t, prop) {\n");
-    out.push_str("            if (targetKeys.has(prop)) return Reflect.getOwnPropertyDescriptor(t, prop);\n");
+    out.push_str(
+        "            if (targetKeys.has(prop)) return Reflect.getOwnPropertyDescriptor(t, prop);\n",
+    );
     out.push_str("            const loaded = load();\n");
     out.push_str("            const d = loaded != null ? Reflect.getOwnPropertyDescriptor(Object(loaded), prop) : undefined;\n");
     out.push_str("            if (d) d.configurable = true;\n");
@@ -224,7 +236,10 @@ pub fn esm_index_to_esm(esm_index: &str) -> String {
         };
         let module_var = format!("__m{}", module_index);
         module_index += 1;
-        out.push_str(&format!("import * as {} from './{}.js';\n", module_var, module));
+        out.push_str(&format!(
+            "import * as {} from './{}.js';\n",
+            module_var, module
+        ));
         for name in names {
             out.push_str(&format!("export const {0} = {1}.{0};\n", name, module_var));
         }
