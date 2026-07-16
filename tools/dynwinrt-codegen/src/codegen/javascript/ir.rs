@@ -73,14 +73,15 @@ pub struct DelegateWrapInfo {
     pub delegate_name: String,
     pub callback_type: String,
     /// Per-param conversion expressions for wrapping DynWinRtValue → high-level types
-    /// e.g. ["new StreamedFileDataRequest(__a0__)"]
+    /// e.g. ["StreamedFileDataRequest._fromNative(__a0__)"]
     /// Empty if no wrapping needed (all params are primitives/DynWinRtValue)
     pub param_wraps: Vec<String>,
 }
 
 #[derive(Clone)]
 pub struct ProjectedConstructor {
-    pub params: Vec<ProjectedParam>,
+    /// Public TypeScript constructor overloads. Empty means the constructor is internal-only.
+    pub overloads: Vec<Vec<ProjectedParam>>,
     /// Lines for the constructor body (JS only)
     pub body_lines: Vec<String>,
 }

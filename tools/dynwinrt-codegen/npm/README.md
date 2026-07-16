@@ -63,7 +63,8 @@ npx dynwinrt-codegen generate \
 For each WinRT class, the codegen emits:
 
 - **A typed wrapper class** with properties and methods using camelCase JS conventions
-- **A factory** (`.create(...)`, `.createInstance(...)`) for activation
+- **JavaScript constructors** for unambiguous public default, factory, and composable activations
+- **The original factory methods** (`.create(...)`, `.createInstance(...)`) for compatibility
 - **An interface registration** (`DynWinRtType.registerInterface()`) wired to the COM vtable
 - **`IAsyncOperation<T>` awaitables** with `.progress(cb)` for streaming results
 - **Generic collections** (`IVector<T>`, `IMap<K,V>`, `IIterable<T>`)

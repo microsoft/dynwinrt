@@ -76,7 +76,7 @@ fn nullable_runtime_class_returns_are_guarded_without_type_changes() {
     let js = render_js::render(&projected);
     let dts = render_dts::render(&projected);
 
-    assert!(js.contains("v.isNull() ? null : new Accelerometer(v)"));
+    assert!(js.contains("v.isNull() ? null : Accelerometer._fromNative(v)"));
     assert!(dts.contains("static getDefault(): Accelerometer;"));
     assert!(dts.contains("Promise<Accelerometer>"));
     assert!(dts.contains("getCurrentReading(): AccelerometerReading;"));

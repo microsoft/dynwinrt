@@ -255,7 +255,7 @@ mod tests {
         // Refs come out as `__DWRT_REF__<name>__`; render layer rewrites.
         assert_eq!(
             convert_return("r", Some(&rt), false, &known, &deferred),
-            "((v) => v.isNull() ? null : new __DWRT_REF__Uri__(v))(r)"
+            "((v) => v.isNull() ? null : __DWRT_REF__Uri__._fromNative(v))(r)"
         );
     }
 

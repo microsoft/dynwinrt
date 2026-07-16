@@ -8,6 +8,7 @@
 //! here. The renderers consume the IR and only format.
 
 mod collections;
+mod constructors;
 mod methods;
 mod structs;
 
@@ -51,6 +52,7 @@ use super::signature::{
 use super::structs::{struct_field_getter, struct_field_setter, ts_struct_field_type};
 
 use collections::{project_collection_create, project_collection_helpers};
+use constructors::{default_activation_method_name, project_constructor};
 use methods::{project_factory_method, project_instance_method, project_static_method};
 use structs::project_struct_helpers;
 
@@ -423,40 +425,52 @@ pub fn project_class(
     // Build class members
     let mut members = Vec::new();
 
-    // Constructor
-    let mut ctor_body = Vec::new();
-    if let Some(ref iface) = class.default_interface {
-        if !iface.iid.is_empty() {
-            ctor_body.push(format!("this._obj = obj.cast(IID_{});", iface.name));
+    // Public activation constructor, or an inaccessible constructor for system-returned classes.
+    members.push(ProjectedMember::Constructor(project_constructor(
+        class,
+        known_types,
+        &delegate_names,
+        delegate_sigs,
+        delegate_param_wraps,
+    )));
+    let wrapped_obj = if let Some(ref iface) = class.default_interface {
+        if iface.iid.is_empty() {
+            "obj".to_string()
         } else {
-            ctor_body.push("this._obj = obj;".into());
+            format!("obj.cast(IID_{})", iface.name)
         }
     } else {
-        ctor_body.push("this._obj = obj;".into());
-    }
-    members.push(ProjectedMember::Constructor(ProjectedConstructor {
+        "obj".to_string()
+    };
+    members.push(ProjectedMember::Method(ProjectedMethod {
+        name: "_fromNative".into(),
+        doc: None,
         params: vec![ProjectedParam {
             name: "obj".into(),
             ts_type: "DynWinRtValue".into(),
             optional: false,
             delegate_wrap: None,
         }],
-        body_lines: ctor_body,
+        return_type: class.name.clone(),
+        async_kind: AsyncKind::None,
+        is_static: true,
+        invoke_expr: String::new(),
+        sync_return_expr: Some(format!(
+            "Object.assign(Object.create({}.prototype), {{ _obj: {} }})",
+            class.name, wrapped_obj
+        )),
+        async_convert_v: None,
+        progress_convert: None,
+        is_void: false,
+        array_return_expr: None,
+        delegate_wraps: vec![],
+        js_only: true,
+        overload_of: None,
     }));
 
     // Default constructor (static create/createDefault)
     if class.has_default_constructor {
-        let has_create_factory = class.factory_interfaces.iter().any(|iface| {
-            iface.methods.iter().any(|m| {
-                let camel = to_camel_case(&m.name);
-                camel == "create" || camel.starts_with("create")
-            })
-        });
-        let ctor_name = if has_create_factory {
-            "createDefault"
-        } else {
-            "create"
-        };
+        let ctor_name = default_activation_method_name(class);
         members.push(ProjectedMember::Method(ProjectedMethod {
             name: ctor_name.into(),
             doc: Some(DocInfo {
@@ -474,7 +488,7 @@ pub fn project_class(
                 class.full_name
             ),
             sync_return_expr: Some(format!(
-                "new {}(_IActivationFactory.method(6).invoke(DynWinRtValue.activationFactory('{}'), []))",
+                "{}._fromNative(_IActivationFactory.method(6).invoke(DynWinRtValue.activationFactory('{}'), []))",
                 class.name, class.full_name
             )),
             async_convert_v: None,
@@ -576,7 +590,7 @@ pub fn project_class(
             is_static: true,
             invoke_expr: String::new(),
             sync_return_expr: Some(format!(
-                "(() => {{ const _launched = onLaunched == null ? null : DynWinRtDelegate.create(WinGuid.parse('{callback_iid}'), [DynWinRtType.object()], onLaunched).toValue(); return new {class_name}(DynWinRtValue.createXamlApplication(_unwrap(metadataProvider), _launched)); }})()",
+                "(() => {{ const _launched = onLaunched == null ? null : DynWinRtDelegate.create(WinGuid.parse('{callback_iid}'), [DynWinRtType.object()], onLaunched).toValue(); return {class_name}._fromNative(DynWinRtValue.createXamlApplication(_unwrap(metadataProvider), _launched)); }})()",
                 callback_iid = XAML_LAUNCHED_CALLBACK_IID,
                 class_name = class.name,
             )),
@@ -614,7 +628,7 @@ pub fn project_class(
             is_static: true,
             invoke_expr: String::new(),
             sync_return_expr: Some(format!(
-                "(() => {{ const _provider = (__get_{provider}()).create(); let _resourcesInitialized = false; const _launched = DynWinRtDelegate.create(WinGuid.parse('{callback_iid}'), [DynWinRtType.object()], () => {{ const _app = {class_name}.current; if (_app === null) throw new Error('WinUI Application.Current is unavailable during OnLaunched'); if (!_resourcesInitialized) {{ _app.resources.mergedDictionaries.append((__get_{resources}()).create()); _resourcesInitialized = true; }} onLaunched?.(); }}); const _app = new {class_name}(DynWinRtValue.createXamlApplication(_unwrap(_provider), _launched.toValue())); {unpackaged_resource_setup} return _app; }})()",
+                "(() => {{ const _provider = (__get_{provider}()).create(); let _resourcesInitialized = false; const _launched = DynWinRtDelegate.create(WinGuid.parse('{callback_iid}'), [DynWinRtType.object()], () => {{ const _app = {class_name}.current; if (_app === null) throw new Error('WinUI Application.Current is unavailable during OnLaunched'); if (!_resourcesInitialized) {{ _app.resources.mergedDictionaries.append((__get_{resources}()).create()); _resourcesInitialized = true; }} onLaunched?.(); }}); const _app = {class_name}._fromNative(DynWinRtValue.createXamlApplication(_unwrap(_provider), _launched.toValue())); {unpackaged_resource_setup} return _app; }})()",
                 callback_iid = XAML_LAUNCHED_CALLBACK_IID,
                 provider = XAML_METADATA_PROVIDER,
                 resources = XAML_CONTROLS_RESOURCES,

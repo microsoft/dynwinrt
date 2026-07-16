@@ -65,11 +65,11 @@ pub(super) fn project_factory_method(
         return_type = format!("Promise<{}>", class.name);
         async_kind = AsyncKind::Operation(class.name.clone());
         sync_return_expr = None;
-        async_convert_v = Some(format!("new {}(_v)", class.name));
+        async_convert_v = Some(format!("{}._fromNative(_v)", class.name));
     } else {
         return_type = class.name.clone();
         async_kind = AsyncKind::None;
-        sync_return_expr = Some(format!("new {}({})", class.name, invoke_expr));
+        sync_return_expr = Some(format!("{}._fromNative({})", class.name, invoke_expr));
         async_convert_v = None;
     }
 

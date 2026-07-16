@@ -4,7 +4,8 @@ import { WwwFormUrlDecoder } from './WwwFormUrlDecoder.js';
 
 export declare const IID_Uri: WinGuid;
 export declare class Uri {
-    private constructor();
+    constructor(uri: string);
+    constructor(baseUri: string, relativeUri: string);
     static createUri(uri: string): Uri;
     static createWithRelativeUri(baseUri: string, relativeUri: string): Uri;
     static unescapeComponent(toUnescape: string): string;

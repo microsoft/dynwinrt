@@ -94,14 +94,25 @@ class Uri {
     static f_IUriRuntimeClassFactory() { return Uri._f_IUriRuntimeClassFactory ??= DynWinRtValue.activationFactory('Windows.Foundation.Uri').cast(IID_IUriRuntimeClassFactory); }
     static s_IUriEscapeStatics() { return Uri._s_IUriEscapeStatics ??= DynWinRtValue.activationFactory('Windows.Foundation.Uri').cast(IID_IUriEscapeStatics); }
 
-    constructor(obj) {
-        this._obj = obj.cast(IID_IUriRuntimeClass);
+    constructor(...args) {
+        if (args.length === 1) {
+            this._obj = Uri.createUri(args[0])._obj;
+            return;
+        }
+        if (args.length === 2) {
+            this._obj = Uri.createWithRelativeUri(args[0], args[1])._obj;
+            return;
+        }
+        throw new TypeError('No matching constructor for Uri.');
+    }
+    static _fromNative(obj) {
+        return Object.assign(Object.create(Uri.prototype), { _obj: obj.cast(IID_IUriRuntimeClass) });
     }
     static createUri(uri) {
-        return new Uri(_IUriRuntimeClassFactory.method(6).invoke(Uri.f_IUriRuntimeClassFactory(), [DynWinRtValue.hstring(uri)]));
+        return Uri._fromNative(_IUriRuntimeClassFactory.method(6).invoke(Uri.f_IUriRuntimeClassFactory(), [DynWinRtValue.hstring(uri)]));
     }
     static createWithRelativeUri(baseUri, relativeUri) {
-        return new Uri(_IUriRuntimeClassFactory.method(7).invoke(Uri.f_IUriRuntimeClassFactory(), [DynWinRtValue.hstring(baseUri), DynWinRtValue.hstring(relativeUri)]));
+        return Uri._fromNative(_IUriRuntimeClassFactory.method(7).invoke(Uri.f_IUriRuntimeClassFactory(), [DynWinRtValue.hstring(baseUri), DynWinRtValue.hstring(relativeUri)]));
     }
     static unescapeComponent(toUnescape) {
         return _IUriEscapeStatics.method(6).invoke(Uri.s_IUriEscapeStatics(), [DynWinRtValue.hstring(toUnescape)]).toString();
@@ -137,7 +148,7 @@ class Uri {
         return _IUriRuntimeClass.method(14).invoke(this._obj, []).toString();
     }
     get queryParsed() {
-        return ((v) => v.isNull() ? null : new (__get_WwwFormUrlDecoder())(v))(_IUriRuntimeClass.method(15).invoke(this._obj, []));
+        return ((v) => v.isNull() ? null : (__get_WwwFormUrlDecoder())._fromNative(v))(_IUriRuntimeClass.method(15).invoke(this._obj, []));
     }
     get rawUri() {
         return _IUriRuntimeClass.method(16).invoke(this._obj, []).toString();
@@ -158,7 +169,7 @@ class Uri {
         return _IUriRuntimeClass.method(21).invoke(this._obj, [(pUri == null ? DynWinRtValue.nullValue() : _unwrap(pUri))]).toBool();
     }
     combineUri(relativeUri) {
-        return ((v) => v.isNull() ? null : new Uri(v))(_IUriRuntimeClass.method(22).invoke(this._obj, [DynWinRtValue.hstring(relativeUri)]));
+        return ((v) => v.isNull() ? null : Uri._fromNative(v))(_IUriRuntimeClass.method(22).invoke(this._obj, [DynWinRtValue.hstring(relativeUri)]));
     }
     toString() {
         return IStringable.from(this._obj).toString();

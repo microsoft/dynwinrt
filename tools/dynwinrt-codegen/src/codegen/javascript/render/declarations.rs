@@ -371,9 +371,25 @@ fn render_required_iface_dts(out: &mut String, ri: &ProjectedRequiredIface) {
 
 fn render_member_dts(out: &mut String, member: &ProjectedMember) {
     match member {
-        ProjectedMember::Constructor(_ctor) => {
-            // Private constructor — users should use static factory methods
-            out.push_str("    private constructor();\n");
+        ProjectedMember::Constructor(ctor) => {
+            if ctor.overloads.is_empty() {
+                out.push_str("    private constructor();\n");
+            } else {
+                for overload in &ctor.overloads {
+                    let params = overload
+                        .iter()
+                        .map(|param| {
+                            if param.optional {
+                                format!("{}?: {}", param.name, param.ts_type)
+                            } else {
+                                format!("{}: {}", param.name, param.ts_type)
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    out.push_str(&format!("    constructor({});\n", params));
+                }
+            }
         }
         ProjectedMember::Property(prop) => {
             if let Some(ref doc) = prop.doc {

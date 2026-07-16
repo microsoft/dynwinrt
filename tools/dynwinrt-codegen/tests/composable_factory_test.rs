@@ -4,8 +4,11 @@
 use std::collections::{HashMap, HashSet};
 
 use dynwinrt_codegen::codegen::{project, render_dts, render_js};
-use dynwinrt_codegen::meta::{ClassMeta, InterfaceMeta, MethodMeta, ParamDirection, ParamMeta};
-use dynwinrt_codegen::types::TypeMeta;
+use dynwinrt_codegen::meta::{
+    ClassMeta, ConstructorKind, ConstructorMeta, InterfaceMeta, MethodMeta, ParamDirection,
+    ParamMeta,
+};
+use dynwinrt_codegen::types::{TypeKind, TypeMeta, TypeRef};
 
 #[test]
 fn composable_factory_returns_public_instance() {
@@ -49,6 +52,14 @@ fn composable_factory_returns_public_instance() {
             ..Default::default()
         }),
         factory_interfaces: vec![factory],
+        constructors: vec![ConstructorMeta {
+            kind: ConstructorKind::PublicComposition,
+            factory_interface: Some(TypeRef {
+                namespace: "Contoso".into(),
+                name: "IWidgetFactory".into(),
+                kind: TypeKind::Interface,
+            }),
+        }],
         ..Default::default()
     };
 
@@ -65,13 +76,37 @@ fn composable_factory_returns_public_instance() {
     let dts = render_dts::render(&projected);
 
     assert!(
-        js.contains("new Widget(_IWidgetFactory.method(6).invokeAll(") && js.contains("])[1])"),
+        js.contains("Widget._fromNative(_IWidgetFactory.method(6).invokeAll(")
+            && js.contains("])[1])"),
         "composable factory must select the final public-instance output:\n{js}"
     );
+    assert!(js.contains("static _fromNative(obj)"));
+    assert!(js.contains("Object.assign(Object.create(Widget.prototype)"));
+    assert!(js.contains("constructor(...args)"));
+    assert!(js.contains("this._obj = Widget.createInstance(null)._obj;"));
+    assert!(!dts.contains("_fromNative"));
+    assert!(dts.contains("constructor();"));
     assert!(
         dts.contains("static createInstance(outer: unknown): Widget;"),
         "factory declaration must return the runtime class:\n{dts}"
     );
+
+    let mut protected = class.clone();
+    protected.constructors[0].kind = ConstructorKind::ProtectedComposition;
+    let projected = project::project_class(
+        &protected,
+        &HashSet::from(["Widget".into()]),
+        &HashSet::new(),
+        &HashSet::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+    );
+    let protected_js = render_js::render(&projected);
+    let protected_dts = render_dts::render(&projected);
+    assert!(protected_js.contains("Widget cannot be constructed directly."));
+    assert!(protected_dts.contains("private constructor();"));
+    assert!(protected_dts.contains("static createInstance(outer: unknown): Widget;"));
 }
 
 #[test]
@@ -106,6 +141,10 @@ fn winui_application_projects_fluent_bootstrap_helpers() {
                 ..Default::default()
             }],
             ..Default::default()
+        }],
+        constructors: vec![ConstructorMeta {
+            kind: ConstructorKind::DefaultActivation,
+            factory_interface: None,
         }],
         ..Default::default()
     };
@@ -157,4 +196,5 @@ fn winui_application_projects_fluent_bootstrap_helpers() {
         "static createWithMetadataProvider(metadataProvider: XamlControlsXamlMetaDataProvider, onLaunched?: () => void): Application;"
     ));
     assert!(dts.contains("static create(onLaunched?: () => void): Application;"));
+    assert!(dts.contains("private constructor();"));
 }

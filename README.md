@@ -46,11 +46,17 @@ const { roInitialize } = require('@microsoft/dynwinrt');
 const { Uri } = require('./generated');
 
 roInitialize(1);                                       // MTA
-const uri = Uri.createUri('https://example.com/path?q=1');
+const uri = new Uri('https://example.com/path?q=1');
 console.log(uri.host);                                 // "example.com"
 ```
 
-Generated bindings include async + progress support, generic collections (`IVector<T>`, `IMap<K,V>`), structs, enums, and delegates — see `tools/dynwinrt-codegen/npm/README.md` for the full feature list.
+Generated bindings project unambiguous public WinRT activation metadata as JavaScript
+constructors, including overloads such as `new Uri(base, relative)`. Existing
+static factory methods remain available. Classes that can only be returned by
+the system, or that expose only protected composition, remain non-constructible.
+Bindings also include async + progress support, generic collections
+(`IVector<T>`, `IMap<K,V>`), structs, enums, and delegates — see
+`tools/dynwinrt-codegen/npm/README.md` for the full feature list.
 
 ### WinUI `Application + Window`
 
@@ -66,8 +72,8 @@ roInitialize(0); // STA
 let app;
 Application.start(() => {
   app = Application.create(() => {
-    const window = Window.createInstance(null);
-    window.content = Button.createInstance(null);
+    const window = new Window();
+    window.content = new Button();
     window.activate();
   });
   app.requestedTheme = 1; // Dark

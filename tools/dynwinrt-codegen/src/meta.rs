@@ -79,6 +79,28 @@ pub enum InterfaceRole {
     Other,
 }
 
+/// The WinMD activation metadata that defines a runtime-class constructor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConstructorKind {
+    DefaultActivation,
+    FactoryActivation,
+    PublicComposition,
+    ProtectedComposition,
+}
+
+/// A constructor declared by ActivatableAttribute or ComposableAttribute.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConstructorMeta {
+    pub kind: ConstructorKind,
+    pub factory_interface: Option<TypeRef>,
+}
+
+impl ConstructorMeta {
+    pub fn is_public(&self) -> bool {
+        self.kind != ConstructorKind::ProtectedComposition
+    }
+}
+
 /// A WinRT RuntimeClass with all its interfaces.
 #[derive(Debug, Clone, Default)]
 pub struct ClassMeta {
@@ -91,6 +113,7 @@ pub struct ClassMeta {
     pub factory_interfaces: Vec<InterfaceMeta>,
     pub static_interfaces: Vec<InterfaceMeta>,
     pub has_default_constructor: bool,
+    pub constructors: Vec<ConstructorMeta>,
     /// XML doc summary (populated from sibling .xml).
     pub doc: Option<String>,
     /// XML `<deprecated>` text.
@@ -694,6 +717,7 @@ fn parse_class_from_index(index: &reader::Index, namespace: &str, name: &str) ->
     let mut factory_interfaces = Vec::new();
     let mut static_interfaces = Vec::new();
     let mut has_default_constructor = false;
+    let mut constructors = Vec::new();
 
     // 1. Find default interface and collect all required interfaces
     let mut required_iface_names: Vec<(String, String)> = Vec::new();
@@ -782,6 +806,17 @@ fn parse_class_from_index(index: &reader::Index, namespace: &str, name: &str) ->
                     if let Some((ns, n)) = split_full_name(iface_full_name) {
                         if let Some(iface_meta) = parse_interface(index, ns, n) {
                             factory_interfaces.push(iface_meta);
+                            push_unique_constructor(
+                                &mut constructors,
+                                ConstructorMeta {
+                                    kind: ConstructorKind::FactoryActivation,
+                                    factory_interface: Some(TypeRef {
+                                        namespace: ns.to_string(),
+                                        name: n.to_string(),
+                                        kind: TypeKind::Interface,
+                                    }),
+                                },
+                            );
                         }
                     }
                 }
@@ -789,9 +824,23 @@ fn parse_class_from_index(index: &reader::Index, namespace: &str, name: &str) ->
                 | Some((_, windows_metadata::Value::I32(_))) => {
                     // No factory interface — this is a default (parameterless) constructor
                     has_default_constructor = true;
+                    push_unique_constructor(
+                        &mut constructors,
+                        ConstructorMeta {
+                            kind: ConstructorKind::DefaultActivation,
+                            factory_interface: None,
+                        },
+                    );
                 }
                 _ => {
                     has_default_constructor = true;
+                    push_unique_constructor(
+                        &mut constructors,
+                        ConstructorMeta {
+                            kind: ConstructorKind::DefaultActivation,
+                            factory_interface: None,
+                        },
+                    );
                 }
             }
         } else if attr_name == "StaticAttribute" {
@@ -808,6 +857,19 @@ fn parse_class_from_index(index: &reader::Index, namespace: &str, name: &str) ->
                 if let Some((ns, n)) = split_full_name(iface_full_name) {
                     if let Some(iface_meta) = parse_interface(index, ns, n) {
                         factory_interfaces.push(iface_meta);
+                        push_unique_constructor(
+                            &mut constructors,
+                            ConstructorMeta {
+                                kind: composable_constructor_kind(
+                                    values.get(1).map(|(_, value)| value),
+                                ),
+                                factory_interface: Some(TypeRef {
+                                    namespace: ns.to_string(),
+                                    name: n.to_string(),
+                                    kind: TypeKind::Interface,
+                                }),
+                            },
+                        );
                     }
                 }
             }
@@ -823,9 +885,30 @@ fn parse_class_from_index(index: &reader::Index, namespace: &str, name: &str) ->
         factory_interfaces,
         static_interfaces,
         has_default_constructor,
+        constructors,
         doc: None,
         deprecated: None,
     })
+}
+
+fn push_unique_constructor(constructors: &mut Vec<ConstructorMeta>, constructor: ConstructorMeta) {
+    if !constructors.contains(&constructor) {
+        constructors.push(constructor);
+    }
+}
+
+fn composable_constructor_kind(value: Option<&windows_metadata::Value>) -> ConstructorKind {
+    let value = match value {
+        Some(windows_metadata::Value::I32(value)) => Some(*value),
+        Some(windows_metadata::Value::U32(value)) => i32::try_from(*value).ok(),
+        Some(windows_metadata::Value::AttributeEnum(_, value)) => Some(*value),
+        _ => None,
+    };
+
+    match value {
+        Some(2) => ConstructorKind::PublicComposition,
+        _ => ConstructorKind::ProtectedComposition,
+    }
 }
 
 fn split_full_name(full_name: &str) -> Option<(&str, &str)> {
@@ -1399,6 +1482,13 @@ mod tests {
         assert_eq!(class.namespace, "Windows.Foundation");
         assert!(class.default_interface.is_some());
         assert!(!class.factory_interfaces.is_empty());
+        assert!(class.constructors.iter().any(|constructor| {
+            constructor.kind == ConstructorKind::FactoryActivation
+                && constructor
+                    .factory_interface
+                    .as_ref()
+                    .is_some_and(|interface| interface.name == "IUriRuntimeClassFactory")
+        }));
     }
 
     #[test]
@@ -1468,6 +1558,89 @@ mod tests {
             class.has_default_constructor,
             "HttpClient should have a default constructor"
         );
+        assert!(class.constructors.iter().any(|constructor| {
+            constructor.kind == ConstructorKind::DefaultActivation
+                && constructor.factory_interface.is_none()
+        }));
+    }
+
+    #[test]
+    fn test_system_returned_class_has_no_constructor() {
+        let class = parse_class(WINDOWS_WINMD, "Windows.System", "User").unwrap();
+        assert!(class.constructors.is_empty());
+    }
+
+    #[test]
+    fn test_composition_visibility_values() {
+        assert_eq!(
+            composable_constructor_kind(Some(&windows_metadata::Value::I32(2))),
+            ConstructorKind::PublicComposition
+        );
+        assert_eq!(
+            composable_constructor_kind(Some(&windows_metadata::Value::I32(1))),
+            ConstructorKind::ProtectedComposition
+        );
+        assert_eq!(
+            composable_constructor_kind(None),
+            ConstructorKind::ProtectedComposition
+        );
+    }
+
+    #[test]
+    fn test_winui_composition_visibility_when_metadata_is_available() {
+        let Some(winui_winmd) = find_winui_winmd() else {
+            eprintln!("WinUI metadata not installed; skipping composition metadata test");
+            return;
+        };
+        let winmd_paths = format!("{};{}", WINDOWS_WINMD, winui_winmd.display());
+
+        let stack_panel =
+            parse_class(&winmd_paths, "Microsoft.UI.Xaml.Controls", "StackPanel").unwrap();
+        assert!(stack_panel.constructors.iter().any(|constructor| {
+            constructor.kind == ConstructorKind::PublicComposition && constructor.is_public()
+        }));
+
+        let automation_peer = parse_class(
+            &winmd_paths,
+            "Microsoft.UI.Xaml.Automation.Peers",
+            "AutomationPeer",
+        )
+        .unwrap();
+        assert!(automation_peer.constructors.iter().any(|constructor| {
+            constructor.kind == ConstructorKind::ProtectedComposition && !constructor.is_public()
+        }));
+    }
+
+    fn find_winui_winmd() -> Option<std::path::PathBuf> {
+        if let Some(path) = std::env::var_os("DYNWINRT_WINUI_WINMD") {
+            let path = std::path::PathBuf::from(path);
+            if path.is_file() {
+                return Some(path);
+            }
+        }
+
+        let packages = std::path::PathBuf::from(std::env::var_os("USERPROFILE")?)
+            .join(".winapp")
+            .join("packages");
+        let mut candidates: Vec<_> = std::fs::read_dir(packages)
+            .ok()?
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("Microsoft.WindowsAppSDK.WinUI.")
+            })
+            .map(|entry| {
+                entry
+                    .path()
+                    .join("metadata")
+                    .join("Microsoft.UI.Xaml.winmd")
+            })
+            .filter(|path| path.is_file())
+            .collect();
+        candidates.sort();
+        candidates.pop()
     }
 
     #[test]

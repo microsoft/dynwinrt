@@ -3,7 +3,7 @@ import { WinGuid } from '@microsoft/dynwinrt';
 
 export declare const IID_WwwFormUrlDecoder: WinGuid;
 export declare class WwwFormUrlDecoder {
-    private constructor();
+    constructor(query: string);
     static createWwwFormUrlDecoder(query: string): WwwFormUrlDecoder;
     getFirstValueByName(name: string): string;
 }

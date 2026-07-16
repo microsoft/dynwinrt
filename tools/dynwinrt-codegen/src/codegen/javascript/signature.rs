@@ -390,7 +390,14 @@ pub(crate) fn resolve_type_name(name: &str, _deferred: &HashSet<String>) -> Stri
     ref_marker(name)
 }
 
-fn wrap_nullable_return(expr: &str, wrapper: &str) -> String {
+fn wrap_nullable_class_return(expr: &str, wrapper: &str) -> String {
+    format!(
+        "((v) => v.isNull() ? null : {}._fromNative(v))({})",
+        wrapper, expr
+    )
+}
+
+fn wrap_nullable_interface_return(expr: &str, wrapper: &str) -> String {
     format!("((v) => v.isNull() ? null : new {}(v))({})", wrapper, expr)
 }
 
@@ -430,7 +437,7 @@ pub(crate) fn convert_array_return(
         TypeMeta::RuntimeClass { name, .. } if known_types.contains(name) => {
             let r = resolve_type_name(name, deferred);
             format!(
-                "{}.toValues().map(v => v.isNull() ? null : new {}(v))",
+                "{}.toValues().map(v => v.isNull() ? null : {}._fromNative(v))",
                 arr_expr, r
             )
         }
@@ -496,20 +503,20 @@ pub(crate) fn convert_return(
         Some(TypeMeta::Enum { .. }) => format!("{}.toNumber()", expr),
         Some(TypeMeta::RuntimeClass { name, .. }) if known_types.contains(name) => {
             let r = resolve_type_name(name, deferred);
-            wrap_nullable_return(expr, &r)
+            wrap_nullable_class_return(expr, &r)
         }
         Some(TypeMeta::Struct { name, .. }) if name == "HResult" => format!("{}.toNumber()", expr),
         Some(TypeMeta::Struct { name, .. }) => format!("_unpack{}({})", name, expr),
         Some(TypeMeta::Object | TypeMeta::Delegate { .. }) => unwrap_nullable_return(expr),
         Some(TypeMeta::Interface { name, .. }) if known_types.contains(name) => {
             let r = resolve_type_name(name, deferred);
-            wrap_nullable_return(expr, &r)
+            wrap_nullable_interface_return(expr, &r)
         }
         Some(TypeMeta::Parameterized { name, args, .. }) => {
             let concrete = crate::meta::make_parameterized_name(name, args);
             if known_types.contains(&concrete) {
                 let r = resolve_type_name(&concrete, deferred);
-                wrap_nullable_return(expr, &r)
+                wrap_nullable_interface_return(expr, &r)
             } else {
                 unwrap_nullable_return(expr)
             }

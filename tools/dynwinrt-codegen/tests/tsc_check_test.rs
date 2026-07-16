@@ -76,6 +76,38 @@ fn generated_dts_passes_tsc_no_emit() {
         status2
     );
 
+    // Generate User to cover a system-returned class with no public constructor.
+    let status3 = Command::new(exe)
+        .args([
+            "generate",
+            "--namespace",
+            "Windows.System",
+            "--class-name",
+            "User",
+            "--lang",
+            "js",
+            "--output",
+        ])
+        .arg(&tmp)
+        .status()
+        .expect("spawn dynwinrt-codegen");
+    assert!(status3.success(), "codegen failed (User): {:?}", status3);
+
+    fs::write(
+        tmp.join("constructor-usage.ts"),
+        r#"import { Uri } from "./Uri.js";
+import { User } from "./User.js";
+
+new Uri("https://example.com");
+new Uri("https://example.com/base/", "child");
+// @ts-expect-error Uri has no zero-argument activation.
+new Uri();
+// @ts-expect-error User instances can only be returned by the system.
+new User();
+"#,
+    )
+    .expect("write constructor usage");
+
     // Write a minimal tsconfig.json for tsc --noEmit
     let tsconfig = tmp.join("tsconfig.json");
     fs::write(
@@ -90,7 +122,7 @@ fn generated_dts_passes_tsc_no_emit() {
     "skipLibCheck": false,
     "types": []
   },
-  "include": ["*.d.ts"]
+  "include": ["*.d.ts", "*.ts"]
 }"#,
     )
     .expect("write tsconfig");

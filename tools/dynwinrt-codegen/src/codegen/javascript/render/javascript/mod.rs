@@ -359,12 +359,11 @@ fn render_required_iface_js(out: &mut String, ri: &ProjectedRequiredIface) {
 fn render_member_js(out: &mut String, member: &ProjectedMember, _class_name: &str) {
     match member {
         ProjectedMember::Constructor(ctor) => {
-            let params_str = ctor
-                .params
-                .iter()
-                .map(|p| p.name.as_str())
-                .collect::<Vec<_>>()
-                .join(", ");
+            let params_str = if ctor.overloads.is_empty() {
+                ""
+            } else {
+                "...args"
+            };
             out.push_str(&format!("    constructor({}) {{\n", params_str));
             for line in &ctor.body_lines {
                 out.push_str(&format!("        {}\n", line));

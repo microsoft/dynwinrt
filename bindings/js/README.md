@@ -36,10 +36,15 @@ const { roInitialize } = require('@microsoft/dynwinrt');
 const { Uri } = require('./generated');
 
 roInitialize(1);                                      // MTA
-const uri = Uri.createUri('https://example.com/path?q=1');
+const uri = new Uri('https://example.com/path?q=1');
 console.log(uri.host);                                // "example.com"
 console.log(uri.port);                                // 443
 ```
+
+Unambiguous public WinRT activation metadata is projected as JavaScript constructors.
+Parameterized and composable activations support idiomatic forms such as
+`new Uri(base, relative)` and `new StackPanel()`. The generated static factory
+methods remain available for compatibility.
 
 ## Platform support
 

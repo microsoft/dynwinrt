@@ -82,7 +82,8 @@ For each WinRT class, the tool generates:
 
 - **Interface registration** -- `DynWinRtType.registerInterface()` with all methods and type signatures
 - **Wrapper class** -- typed class with properties and methods
-- **Factory methods** -- static methods for object creation via activation factory
+- **Constructors** -- unambiguous public WinRT activations projected as idiomatic JavaScript constructors
+- **Factory methods** -- original static activation methods retained for compatibility
 - **Enums** -- enum declarations
 - **Collection types** -- `IVector<T>`, `IVectorView<T>`, `IMap<K,V>`, etc.
 - **Index file** -- re-exporting all generated types
@@ -125,4 +126,3 @@ cargo test -p dynwinrt-codegen
 Tests include:
 - Unit tests for type mapping, dependency resolution, and code generation helpers
 - Snapshot test for `Windows.Foundation.Uri` (regenerate with `cargo run -p dynwinrt-codegen -- generate --namespace Windows.Foundation --class-name Uri --lang js --output tests/snapshots/uri`)
-
