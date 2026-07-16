@@ -77,12 +77,13 @@ Parameterized collection interfaces (e.g. `IVector<String>`) are automatically i
 Create `test_picker.ts` in the test project (TypeScript here — the same imports work from plain `.js` too, since the generated modules are ESM JavaScript with adjacent `.d.ts` declarations):
 
 ```typescript
-import { initWinappsdk, DynWinRtValue } from '@microsoft/dynwinrt'
+import { initWinappsdk, roInitialize, DynWinRtValue } from '@microsoft/dynwinrt'
 import { FileOpenPicker } from './generated/FileOpenPicker.js'
 import { PickerViewMode } from './generated/PickerViewMode.js'
 
 async function main() {
     initWinappsdk(1, 8)
+    roInitialize(1)
 
     // Create picker (hwnd=0 for console app)
     const picker = FileOpenPicker.createInstance(DynWinRtValue.i64(0))
@@ -160,5 +161,4 @@ A file picker dialog will open. Select a file (filtered to .png/.jpg/.txt) to co
 |---|---|---|
 | **test-http** | `Windows.Foundation` + `Windows.Web.Http` | Uri properties, HttpClient.getStringAsync (async with progress), response status code, content.readAsStringAsync |
 | **test-geo** | `Windows.Devices.Geolocation` | Struct pass-by-value (BasicGeoposition → Geopoint.create), struct out-param (Geopoint.position) |
-
 

@@ -3,6 +3,7 @@
 
 import {
     initWinappsdk,
+    roInitialize,
     DynWinRtValue,
     DynWinRtType,
     DynWinRtMethodSig,
@@ -48,6 +49,7 @@ const iPickResult = DynWinRtType.registerInterface("IPickFileResult", iPickResul
 
 async function main() {
     initWinappsdk(1, 8)
+    roInitialize(1)
 
     const factory = DynWinRtValue.activationFactory('Microsoft.Windows.Storage.Pickers.FileOpenPicker')
     const pickerFactory = factory.cast(WinGuid.parse("315E86D7-D7A2-5D81-B379-7AF78207B1AF"))

@@ -114,6 +114,7 @@ fn winui_application_projects_fluent_bootstrap_helpers() {
         "ApplicationInitializationCallback".into(),
         "XamlControlsXamlMetaDataProvider".into(),
         "XamlControlsResources".into(),
+        "ResourceManager".into(),
     ]);
     let delegate_names = HashSet::from(["ApplicationInitializationCallback".into()]);
     let delegate_sigs = HashMap::from([(
@@ -137,12 +138,16 @@ fn winui_application_projects_fluent_bootstrap_helpers() {
     let dts = render_dts::render(&projected);
 
     assert!(js.contains("static createWithMetadataProvider(metadataProvider, onLaunched)"));
-    assert!(js.contains("static createWithFluentResources(onLaunched)"));
+    assert!(js.contains("static create(onLaunched)"));
     assert!(js.contains("const _callback_d = DynWinRtDelegate.create("));
     assert!(js.contains("IID_ApplicationInitializationCallback"));
     assert!(js.contains("f81c4e72-7a18-4a30-9126-6f62b6bdac83"));
     assert!(js.contains("DynWinRtValue.createXamlApplication"));
     assert!(js.contains("let _resourcesInitialized = false"));
+    assert!(js.contains("getWinappsdkResourcePriPath"));
+    assert!(js.contains("hasPackageIdentity"));
+    assert!(js.contains("onResourceManagerRequested"));
+    assert!(js.contains("(__get_ResourceManager()).createInstance"));
     assert!(
         js.contains(
             "resources.mergedDictionaries.append((__get_XamlControlsResources()).create())"
@@ -152,6 +157,6 @@ fn winui_application_projects_fluent_bootstrap_helpers() {
         "static createWithMetadataProvider(metadataProvider: XamlControlsXamlMetaDataProvider, onLaunched?: () => void): Application;"
     ));
     assert!(
-        dts.contains("static createWithFluentResources(onLaunched?: () => void): Application;")
+        dts.contains("static create(onLaunched?: () => void): Application;")
     );
 }

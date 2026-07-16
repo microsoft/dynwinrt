@@ -13,6 +13,7 @@ import {
   httpClientGetSync,
   asyncProgressHstringToPromiseString,
   initWinappsdk,
+  roInitialize,
   DynWinRtValue,
   WinIIds,
   DynWinRtType,
@@ -81,6 +82,7 @@ test('HttpClient Sync', async (t) => {
 
 test('file open picker', async (t) => {
   initWinappsdk(1, 8)
+  roInitialize(1)
   const factory = DynWinRtValue.activationFactory('Microsoft.Windows.Storage.Pickers.FileOpenPicker')
   const FileOpenPicker = factory.cast(WinIIds.iFileOpenPickerFactoryIid())
   const picker = FileOpenPicker.callSingleOut1(

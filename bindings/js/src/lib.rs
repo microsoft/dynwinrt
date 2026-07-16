@@ -4,7 +4,7 @@
 #![deny(clippy::all)]
 #![allow(clippy::missing_safety_doc)]
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use dynwinrt;
 use napi_derive::napi;
@@ -20,14 +20,63 @@ static TABLE: std::sync::LazyLock<Arc<dynwinrt::MetadataTable>> =
 // Runtime initialization
 // ======================================================================
 
-#[napi]
-struct WinAppSDKContext(dynwinrt::WinAppSdkContext);
+struct InitializedWinAppSdk {
+  major: u32,
+  minor: u32,
+  context: dynwinrt::WinAppSdkContext,
+}
 
+static WINAPP_SDK: OnceLock<InitializedWinAppSdk> = OnceLock::new();
+
+/// Add Windows App SDK to the process package graph without changing the calling thread's apartment.
 #[napi]
 pub fn init_winappsdk(major: u32, minor: u32) -> napi::Result<()> {
-  dynwinrt::initialize_winappsdk(major, minor)
-    .map(|ctx| { WinAppSDKContext(ctx); })
-    .map_err(|e| napi::Error::from_reason(e.message()))
+  if let Some(initialized) = WINAPP_SDK.get() {
+    return ensure_winappsdk_version(initialized, major, minor);
+  }
+
+  let context = dynwinrt::initialize_winappsdk(major, minor)
+    .map_err(|e| napi::Error::from_reason(e.message()))?;
+  let initialized = InitializedWinAppSdk {
+    major,
+    minor,
+    context,
+  };
+
+  match WINAPP_SDK.set(initialized) {
+    Ok(()) => Ok(()),
+    Err(_) => ensure_winappsdk_version(WINAPP_SDK.get().unwrap(), major, minor),
+  }
+}
+
+fn ensure_winappsdk_version(
+  initialized: &InitializedWinAppSdk,
+  major: u32,
+  minor: u32,
+) -> napi::Result<()> {
+  if initialized.major == major && initialized.minor == minor {
+    Ok(())
+  } else {
+    Err(napi::Error::from_reason(format!(
+      "Windows App SDK is already initialized for {}.{}; cannot reinitialize for {major}.{minor}",
+      initialized.major, initialized.minor
+    )))
+  }
+}
+
+/// Return the framework resources.pri path selected by initWinappsdk.
+#[napi]
+pub fn get_winappsdk_resource_pri_path() -> napi::Result<String> {
+  let initialized = WINAPP_SDK.get().ok_or_else(|| {
+    napi::Error::from_reason(
+      "Windows App SDK is not initialized; call initWinappsdk before requesting its resources",
+    )
+  })?;
+
+  initialized
+    .context
+    .resource_pri_path()
+    .map_err(|e| napi::Error::from_reason(e.to_string()))
 }
 
 #[napi]

@@ -57,14 +57,15 @@ Generated bindings include async + progress support, generic collections (`IVect
 When `Microsoft.UI.Xaml.Application` is selected, JavaScript codegen also emits `XamlControlsXamlMetaDataProvider` and `XamlControlsResources`. Use the generated helper to compose the application outer, register WinUI metadata, and install the default Fluent resources before creating controls:
 
 ```js
-const { roInitialize } = require('@microsoft/dynwinrt');
+const { initWinappsdk, roInitialize } = require('@microsoft/dynwinrt');
 const { Application, Button, Window } = require('./generated');
 
+initWinappsdk(2, 2);
 roInitialize(0); // STA
 
 let app;
 Application.start(() => {
-  app = Application.createWithFluentResources(() => {
+  app = Application.create(() => {
     const window = Window.createInstance(null);
     window.content = Button.createInstance(null);
     window.activate();
@@ -73,7 +74,12 @@ Application.start(() => {
 });
 ```
 
-`Application.start()` runs the WinUI dispatcher loop. `createWithFluentResources()` also configures its UI thread for Per-Monitor V2 DPI awareness so WinUI content renders at the monitor's native scale. Launch this from a packaged or otherwise correctly initialized WinAppSDK process.
+`Application.start()` runs the WinUI dispatcher loop. In an unpackaged process,
+set `WINAPPSDK_BOOTSTRAP_DLL_PATH` to the architecture-matched
+`Microsoft.WindowsAppRuntime.Bootstrap.dll` before calling `initWinappsdk()`.
+`Application.create()` resolves the bootstrapped framework resources and
+configures its UI thread for Per-Monitor V2 DPI awareness. Packaged processes
+can omit the bootstrap call.
 
 ## Repository layout
 

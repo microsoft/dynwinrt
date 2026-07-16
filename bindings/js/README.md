@@ -14,7 +14,7 @@ If you've ever tried to call a Windows API from an Electron or Node app, you've 
 
 `dynwinrt` removes all of that. It reads the `.winmd` metadata that ships with the Windows SDK (and WinAppSDK NuGet packages) at **runtime**, resolves the COM vtables, and invokes WinRT methods dynamically. There is no native build step in your Electron project. There is no version pinning — the same generated bindings work across Windows SDK / WinAppSDK revisions as long as the metadata is forward-compatible. You just install `@microsoft/dynwinrt` from npm and call the API.
 
-The runtime primarily targets **data-style WinRT APIs** (AI, storage, notifications, networking, globalization, …). It also supports WinUI `Application + Window` hosting through the generated `Application.createWithFluentResources()` helper when the caller supplies an STA UI thread, package identity, and application lifecycle. The helper enables Per-Monitor V2 DPI awareness on that UI thread.
+The runtime primarily targets **data-style WinRT APIs** (AI, storage, notifications, networking, globalization, …). It also supports WinUI `Application + Window` hosting through the generated `Application.create()` helper when the caller supplies an STA UI thread, an initialized Windows App SDK runtime, and application lifecycle. Unpackaged callers can initialize the runtime with `initWinappsdk()`; the helper resolves the framework resources from that package graph. It also enables Per-Monitor V2 DPI awareness on the UI thread.
 
 ## Quick start
 
