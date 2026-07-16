@@ -12,7 +12,8 @@ use super::type_kind::*;
 
 impl MetadataTable {
     pub(crate) fn compute_parameterized_iid(&self, piid: &GUID, type_args: &[TypeKind]) -> GUID {
-        let arg_sigs: Vec<String> = type_args.iter()
+        let arg_sigs: Vec<String> = type_args
+            .iter()
             .map(|a| self.signature_string_kind(*a))
             .collect();
         let sig = pinterface_signature_from_strings(&format_guid_braced(piid), &arg_sigs);
@@ -21,7 +22,8 @@ impl MetadataTable {
     }
 
     fn pinterface_signature(&self, piid: &GUID, type_args: &[TypeKind]) -> String {
-        let arg_sigs: Vec<String> = type_args.iter()
+        let arg_sigs: Vec<String> = type_args
+            .iter()
             .map(|a| self.signature_string_kind(*a))
             .collect();
         pinterface_signature_from_strings(&format_guid_braced(piid), &arg_sigs)
@@ -29,8 +31,9 @@ impl MetadataTable {
 
     fn async_type_args(&self, kind: TypeKind) -> Vec<TypeKind> {
         match kind {
-            TypeKind::IAsyncActionWithProgress(idx)
-            | TypeKind::IAsyncOperation(idx) => vec![self.get_inner_type(idx)],
+            TypeKind::IAsyncActionWithProgress(idx) | TypeKind::IAsyncOperation(idx) => {
+                vec![self.get_inner_type(idx)]
+            }
             TypeKind::IAsyncOperationWithProgress(idx) => {
                 let (t, p) = self.get_inner_type_pair(idx);
                 vec![t, p]
@@ -57,7 +60,8 @@ impl MetadataTable {
             TypeKind::Parameterized(idx) => {
                 let (generic_def, args) = self.get_parameterized(idx);
                 let piid_sig = self.signature_string_kind(generic_def);
-                let arg_sigs: Vec<String> = args.iter()
+                let arg_sigs: Vec<String> = args
+                    .iter()
                     .map(|a| self.signature_string_kind(*a))
                     .collect();
                 pinterface_signature_from_strings(&piid_sig, &arg_sigs)
@@ -69,9 +73,8 @@ impl MetadataTable {
             TypeKind::IAsyncOperation(_) => {
                 self.pinterface_signature(&IASYNC_OPERATION, &self.async_type_args(kind))
             }
-            TypeKind::IAsyncOperationWithProgress(_) => {
-                self.pinterface_signature(&IASYNC_OPERATION_WITH_PROGRESS, &self.async_type_args(kind))
-            }
+            TypeKind::IAsyncOperationWithProgress(_) => self
+                .pinterface_signature(&IASYNC_OPERATION_WITH_PROGRESS, &self.async_type_args(kind)),
             TypeKind::Object => "cinterface(IInspectable)".to_string(),
             TypeKind::HResult => "i4".to_string(),
             TypeKind::Enum(idx) => {
@@ -81,7 +84,9 @@ impl MetadataTable {
             TypeKind::Struct(idx) => {
                 let entry = &self.structs.read().unwrap()[idx as usize];
                 let name = &entry.name;
-                let field_sigs: Vec<String> = entry.field_kinds.iter()
+                let field_sigs: Vec<String> = entry
+                    .field_kinds
+                    .iter()
                     .map(|k| self.signature_string_kind(*k))
                     .collect();
                 format!("struct({};{})", name, field_sigs.join(";"))
@@ -101,12 +106,10 @@ impl MetadataTable {
             TypeKind::Parameterized(_)
             | TypeKind::IAsyncActionWithProgress(_)
             | TypeKind::IAsyncOperation(_)
-            | TypeKind::IAsyncOperationWithProgress(_) => {
-                Some(self.compute_parameterized_iid(
-                    &self.parameterized_piid(kind),
-                    &self.parameterized_type_args(kind),
-                ))
-            }
+            | TypeKind::IAsyncOperationWithProgress(_) => Some(self.compute_parameterized_iid(
+                &self.parameterized_piid(kind),
+                &self.parameterized_type_args(kind),
+            )),
             _ => None,
         }
     }
@@ -116,7 +119,9 @@ impl MetadataTable {
             TypeKind::IAsyncAction => return Some(ASYNC_ACTION_COMPLETED_HANDLER),
             TypeKind::IAsyncOperation(_) => ASYNC_OPERATION_COMPLETED_HANDLER,
             TypeKind::IAsyncActionWithProgress(_) => ASYNC_ACTION_WITH_PROGRESS_COMPLETED_HANDLER,
-            TypeKind::IAsyncOperationWithProgress(_) => ASYNC_OPERATION_WITH_PROGRESS_COMPLETED_HANDLER,
+            TypeKind::IAsyncOperationWithProgress(_) => {
+                ASYNC_OPERATION_WITH_PROGRESS_COMPLETED_HANDLER
+            }
             _ => return None,
         };
         Some(self.compute_parameterized_iid(&handler_piid, &self.async_type_args(kind)))

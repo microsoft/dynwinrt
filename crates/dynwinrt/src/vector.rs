@@ -12,11 +12,12 @@ use std::sync::Mutex;
 use windows_core::{GUID, HRESULT, IUnknown, Interface};
 
 use crate::com_helpers::{
-    IInspectableVtbl, E_BOUNDS, E_FAIL, S_OK,
-    com_to_usize, com_usize_addref_out, com_usize_release,
+    E_BOUNDS, E_FAIL, IInspectableVtbl, S_OK, com_to_usize, com_usize_addref_out, com_usize_release,
 };
 #[allow(unused_imports)]
-use crate::com_helpers::{inspectable_stubs, dual_vtable_com, single_vtable_com, impl_drop_release_items, lock_or};
+use crate::com_helpers::{
+    dual_vtable_com, impl_drop_release_items, inspectable_stubs, lock_or, single_vtable_com,
+};
 
 // ======================================================================
 // IIDs for collection PIIDs
@@ -56,7 +57,8 @@ struct VectorVtbl {
     append: unsafe extern "system" fn(*mut c_void, *mut c_void) -> HRESULT,
     remove_at_end: unsafe extern "system" fn(*mut c_void) -> HRESULT,
     clear: unsafe extern "system" fn(*mut c_void) -> HRESULT,
-    get_many: unsafe extern "system" fn(*mut c_void, u32, u32, *mut *mut c_void, *mut u32) -> HRESULT,
+    get_many:
+        unsafe extern "system" fn(*mut c_void, u32, u32, *mut *mut c_void, *mut u32) -> HRESULT,
     replace_all: unsafe extern "system" fn(*mut c_void, u32, *const *mut c_void) -> HRESULT,
 }
 
@@ -67,7 +69,8 @@ struct VectorViewVtbl {
     get_at: unsafe extern "system" fn(*mut c_void, u32, *mut *mut c_void) -> HRESULT,
     get_size: unsafe extern "system" fn(*mut c_void, *mut u32) -> HRESULT,
     index_of: unsafe extern "system" fn(*mut c_void, *mut c_void, *mut u32, *mut bool) -> HRESULT,
-    get_many: unsafe extern "system" fn(*mut c_void, u32, u32, *mut *mut c_void, *mut u32) -> HRESULT,
+    get_many:
+        unsafe extern "system" fn(*mut c_void, u32, u32, *mut *mut c_void, *mut u32) -> HRESULT,
 }
 
 /// IIterator<T> vtable: IInspectable + 4 methods
@@ -80,11 +83,15 @@ struct IteratorVtbl {
     get_many: unsafe extern "system" fn(*mut c_void, u32, *mut *mut c_void, *mut u32) -> HRESULT,
 }
 
-
 /// Write a raw usize item to an output pointer, AddRef'ing if it's a COM reference type.
 /// For value types, only writes `elem_size` bytes to avoid overwriting adjacent memory.
 #[inline(always)]
-unsafe fn write_item_out(is_value_type: bool, elem_size: usize, raw: usize, result: *mut *mut c_void) {
+unsafe fn write_item_out(
+    is_value_type: bool,
+    elem_size: usize,
+    raw: usize,
+    result: *mut *mut c_void,
+) {
     if is_value_type {
         // Write only elem_size bytes, clamped to usize width for safety.
         let write_size = elem_size.min(std::mem::size_of::<usize>());
@@ -99,7 +106,6 @@ unsafe fn write_item_out(is_value_type: bool, elem_size: usize, raw: usize, resu
         *result = com_usize_addref_out(raw);
     }
 }
-
 
 // ======================================================================
 // SingleThreadedVector
@@ -195,18 +201,23 @@ impl SingleThreadedVector {
     // IIterable<T>
     // ------------------------------------------------------------------
 
-    unsafe extern "system" fn first(
-        this: *mut c_void,
-        result: *mut *mut c_void,
-    ) -> HRESULT {
+    unsafe extern "system" fn first(this: *mut c_void, result: *mut *mut c_void) -> HRESULT {
         let me = Self::from_iterable_ptr(this);
         let items = lock_or!(me.items, E_FAIL);
         let snapshot = if me.is_value_type {
             items.clone()
         } else {
-            items.iter().map(|&raw| com_to_usize(raw as *mut c_void)).collect()
+            items
+                .iter()
+                .map(|&raw| com_to_usize(raw as *mut c_void))
+                .collect()
         };
-        let iter = SingleThreadedIterator::create(snapshot, me.is_value_type, me.elem_size, me.iids.iterator);
+        let iter = SingleThreadedIterator::create(
+            snapshot,
+            me.is_value_type,
+            me.elem_size,
+            me.iids.iterator,
+        );
         *result = iter.into_raw();
         S_OK
     }
@@ -230,27 +241,29 @@ impl SingleThreadedVector {
         S_OK
     }
 
-    unsafe extern "system" fn get_size(
-        this: *mut c_void,
-        result: *mut u32,
-    ) -> HRESULT {
+    unsafe extern "system" fn get_size(this: *mut c_void, result: *mut u32) -> HRESULT {
         let me = Self::from_vector_ptr(this);
         *result = lock_or!(me.items, E_FAIL).len() as u32;
         S_OK
     }
 
-    unsafe extern "system" fn get_view(
-        this: *mut c_void,
-        result: *mut *mut c_void,
-    ) -> HRESULT {
+    unsafe extern "system" fn get_view(this: *mut c_void, result: *mut *mut c_void) -> HRESULT {
         let me = Self::from_vector_ptr(this);
         let items = lock_or!(me.items, E_FAIL);
         let snapshot = if me.is_value_type {
             items.clone()
         } else {
-            items.iter().map(|&raw| com_to_usize(raw as *mut c_void)).collect()
+            items
+                .iter()
+                .map(|&raw| com_to_usize(raw as *mut c_void))
+                .collect()
         };
-        let view = SingleThreadedVectorView::create(snapshot, me.is_value_type, me.elem_size, me.iids.clone());
+        let view = SingleThreadedVectorView::create(
+            snapshot,
+            me.is_value_type,
+            me.elem_size,
+            me.iids.clone(),
+        );
         // WinRT ABI: get_view must return an IVectorView pointer (second vtable),
         // not the identity/IIterable pointer (first vtable).
         let identity = view.into_raw();
@@ -279,11 +292,7 @@ impl SingleThreadedVector {
         S_OK
     }
 
-    unsafe extern "system" fn set_at(
-        this: *mut c_void,
-        index: u32,
-        value: *mut c_void,
-    ) -> HRESULT {
+    unsafe extern "system" fn set_at(this: *mut c_void, index: u32, value: *mut c_void) -> HRESULT {
         let me = Self::from_vector_ptr(this);
         let mut items = lock_or!(me.items, E_FAIL);
         if (index as usize) >= items.len() {
@@ -310,31 +319,35 @@ impl SingleThreadedVector {
         if (index as usize) > items.len() {
             return E_BOUNDS;
         }
-        let val = if me.is_value_type { value as usize } else { com_to_usize(value) };
+        let val = if me.is_value_type {
+            value as usize
+        } else {
+            com_to_usize(value)
+        };
         items.insert(index as usize, val);
         S_OK
     }
 
-    unsafe extern "system" fn remove_at(
-        this: *mut c_void,
-        index: u32,
-    ) -> HRESULT {
+    unsafe extern "system" fn remove_at(this: *mut c_void, index: u32) -> HRESULT {
         let me = Self::from_vector_ptr(this);
         let mut items = lock_or!(me.items, E_FAIL);
         if (index as usize) >= items.len() {
             return E_BOUNDS;
         }
         let removed = items.remove(index as usize);
-        if !me.is_value_type { com_usize_release(removed); }
+        if !me.is_value_type {
+            com_usize_release(removed);
+        }
         S_OK
     }
 
-    unsafe extern "system" fn append(
-        this: *mut c_void,
-        value: *mut c_void,
-    ) -> HRESULT {
+    unsafe extern "system" fn append(this: *mut c_void, value: *mut c_void) -> HRESULT {
         let me = Self::from_vector_ptr(this);
-        let val = if me.is_value_type { value as usize } else { com_to_usize(value) };
+        let val = if me.is_value_type {
+            value as usize
+        } else {
+            com_to_usize(value)
+        };
         lock_or!(me.items, E_FAIL).push(val);
         S_OK
     }
@@ -349,7 +362,9 @@ impl SingleThreadedVector {
             Some(v) => v,
             None => return E_BOUNDS,
         };
-        if !me.is_value_type { com_usize_release(removed); }
+        if !me.is_value_type {
+            com_usize_release(removed);
+        }
         S_OK
     }
 
@@ -357,7 +372,9 @@ impl SingleThreadedVector {
         let me = Self::from_vector_ptr(this);
         let old_items: Vec<usize> = lock_or!(me.items, E_FAIL).drain(..).collect();
         if !me.is_value_type {
-            for raw in old_items { com_usize_release(raw); }
+            for raw in old_items {
+                com_usize_release(raw);
+            }
         }
         S_OK
     }
@@ -393,12 +410,18 @@ impl SingleThreadedVector {
         let me = Self::from_vector_ptr(this);
         let old_items: Vec<usize> = lock_or!(me.items, E_FAIL).drain(..).collect();
         if !me.is_value_type {
-            for raw in old_items { com_usize_release(raw); }
+            for raw in old_items {
+                com_usize_release(raw);
+            }
         }
         let mut items = lock_or!(me.items, E_FAIL);
         for i in 0..count as usize {
             let raw = *values.add(i);
-            let val = if me.is_value_type { raw as usize } else { com_to_usize(raw) };
+            let val = if me.is_value_type {
+                raw as usize
+            } else {
+                com_to_usize(raw)
+            };
             items.push(val);
         }
         S_OK
@@ -409,25 +432,35 @@ impl SingleThreadedVector {
     // ------------------------------------------------------------------
 
     unsafe extern "system" fn view_get_at(
-        this: *mut c_void, index: u32, result: *mut *mut c_void,
+        this: *mut c_void,
+        index: u32,
+        result: *mut *mut c_void,
     ) -> HRESULT {
         let me = Self::from_view_ptr(this);
         let items = lock_or!(me.items, E_FAIL);
-        if (index as usize) >= items.len() { return E_BOUNDS; }
-        write_item_out(me.is_value_type, me.elem_size, items[index as usize], result);
+        if (index as usize) >= items.len() {
+            return E_BOUNDS;
+        }
+        write_item_out(
+            me.is_value_type,
+            me.elem_size,
+            items[index as usize],
+            result,
+        );
         S_OK
     }
 
-    unsafe extern "system" fn view_get_size(
-        this: *mut c_void, result: *mut u32,
-    ) -> HRESULT {
+    unsafe extern "system" fn view_get_size(this: *mut c_void, result: *mut u32) -> HRESULT {
         let me = Self::from_view_ptr(this);
         *result = lock_or!(me.items, E_FAIL).len() as u32;
         S_OK
     }
 
     unsafe extern "system" fn view_index_of(
-        this: *mut c_void, value: *mut c_void, index: *mut u32, found: *mut bool,
+        this: *mut c_void,
+        value: *mut c_void,
+        index: *mut u32,
+        found: *mut bool,
     ) -> HRESULT {
         let me = Self::from_view_ptr(this);
         let items = lock_or!(me.items, E_FAIL);
@@ -445,7 +478,11 @@ impl SingleThreadedVector {
     }
 
     unsafe extern "system" fn view_get_many(
-        this: *mut c_void, start_index: u32, capacity: u32, items_out: *mut *mut c_void, actual: *mut u32,
+        this: *mut c_void,
+        start_index: u32,
+        capacity: u32,
+        items_out: *mut *mut c_void,
+        actual: *mut u32,
     ) -> HRESULT {
         let me = Self::from_view_ptr(this);
         let items = lock_or!(me.items, E_FAIL);
@@ -456,7 +493,12 @@ impl SingleThreadedVector {
         }
         let count = std::cmp::min(capacity as usize, items.len() - start);
         for i in 0..count {
-            write_item_out(me.is_value_type, me.elem_size, items[start + i], items_out.add(i));
+            write_item_out(
+                me.is_value_type,
+                me.elem_size,
+                items[start + i],
+                items_out.add(i),
+            );
         }
         *actual = count as u32;
         S_OK
@@ -515,7 +557,12 @@ impl SingleThreadedVectorView {
         get_many: Self::get_many,
     };
 
-    fn create(items: Vec<usize>, is_value_type: bool, elem_size: usize, iids: VectorIids) -> IUnknown {
+    fn create(
+        items: Vec<usize>,
+        is_value_type: bool,
+        elem_size: usize,
+        iids: VectorIids,
+    ) -> IUnknown {
         let view = Box::new(Self {
             vtable_iterable: &Self::ITERABLE_VTBL,
             vtable_view: &Self::VIEW_VTBL,
@@ -538,18 +585,32 @@ impl SingleThreadedVectorView {
         let snapshot = if me.is_value_type {
             me.items.clone()
         } else {
-            me.items.iter().map(|&raw| com_to_usize(raw as *mut c_void)).collect()
+            me.items
+                .iter()
+                .map(|&raw| com_to_usize(raw as *mut c_void))
+                .collect()
         };
-        let iter = SingleThreadedIterator::create(snapshot, me.is_value_type, me.elem_size, me.iids.iterator);
+        let iter = SingleThreadedIterator::create(
+            snapshot,
+            me.is_value_type,
+            me.elem_size,
+            me.iids.iterator,
+        );
         *result = iter.into_raw();
         S_OK
     }
 
     // -- IVectorView<T> --
 
-    unsafe extern "system" fn get_at(this: *mut c_void, index: u32, result: *mut *mut c_void) -> HRESULT {
+    unsafe extern "system" fn get_at(
+        this: *mut c_void,
+        index: u32,
+        result: *mut *mut c_void,
+    ) -> HRESULT {
         let me = Self::from_view_ptr(this);
-        if (index as usize) >= me.items.len() { return E_BOUNDS; }
+        if (index as usize) >= me.items.len() {
+            return E_BOUNDS;
+        }
         let raw = me.items[index as usize];
         write_item_out(me.is_value_type, me.elem_size, raw, result);
         S_OK
@@ -561,7 +622,12 @@ impl SingleThreadedVectorView {
         S_OK
     }
 
-    unsafe extern "system" fn index_of(this: *mut c_void, value: *mut c_void, index: *mut u32, found: *mut bool) -> HRESULT {
+    unsafe extern "system" fn index_of(
+        this: *mut c_void,
+        value: *mut c_void,
+        index: *mut u32,
+        found: *mut bool,
+    ) -> HRESULT {
         let me = Self::from_view_ptr(this);
         let needle = value as usize;
         for (i, &item) in me.items.iter().enumerate() {
@@ -576,7 +642,13 @@ impl SingleThreadedVectorView {
         S_OK
     }
 
-    unsafe extern "system" fn get_many(this: *mut c_void, start_index: u32, capacity: u32, items_out: *mut *mut c_void, actual: *mut u32) -> HRESULT {
+    unsafe extern "system" fn get_many(
+        this: *mut c_void,
+        start_index: u32,
+        capacity: u32,
+        items_out: *mut *mut c_void,
+        actual: *mut u32,
+    ) -> HRESULT {
         let me = Self::from_view_ptr(this);
         let start = start_index as usize;
         if start > me.items.len() {
@@ -631,7 +703,12 @@ impl SingleThreadedIterator {
         get_many: Self::get_many,
     };
 
-    pub(crate) fn create(items: Vec<usize>, is_value_type: bool, elem_size: usize, iid_iterator: GUID) -> IUnknown {
+    pub(crate) fn create(
+        items: Vec<usize>,
+        is_value_type: bool,
+        elem_size: usize,
+        iid_iterator: GUID,
+    ) -> IUnknown {
         let iter = Box::new(Self {
             vtable: &Self::VTBL,
             ref_count: windows_core::imp::RefCount::new(1),
@@ -650,7 +727,9 @@ impl SingleThreadedIterator {
     unsafe extern "system" fn get_current(this: *mut c_void, result: *mut *mut c_void) -> HRESULT {
         let me = &*(this as *const Self);
         let cursor = *lock_or!(me.cursor, E_FAIL);
-        if cursor >= me.items.len() { return E_BOUNDS; }
+        if cursor >= me.items.len() {
+            return E_BOUNDS;
+        }
         let raw = me.items[cursor];
         write_item_out(me.is_value_type, me.elem_size, raw, result);
         S_OK
@@ -672,7 +751,12 @@ impl SingleThreadedIterator {
         S_OK
     }
 
-    unsafe extern "system" fn get_many(this: *mut c_void, capacity: u32, items_out: *mut *mut c_void, actual: *mut u32) -> HRESULT {
+    unsafe extern "system" fn get_many(
+        this: *mut c_void,
+        capacity: u32,
+        items_out: *mut *mut c_void,
+        actual: *mut u32,
+    ) -> HRESULT {
         let me = &*(this as *const Self);
         let mut cursor = lock_or!(me.cursor, E_FAIL);
         let remaining = me.items.len().saturating_sub(*cursor);
@@ -711,31 +795,44 @@ pub fn create_vector_from_values(
                 elem_size
             );
         }
-        items.iter().map(|item| {
-            let data = item.as_struct().expect("struct-typed vector requires Struct values");
-            let mut val: usize = 0;
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    data.as_ptr(),
-                    &mut val as *mut usize as *mut u8,
-                    elem_size.min(std::mem::size_of::<usize>()),
-                );
-            }
-            val
-        }).collect()
+        items
+            .iter()
+            .map(|item| {
+                let data = item
+                    .as_struct()
+                    .expect("struct-typed vector requires Struct values");
+                let mut val: usize = 0;
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        data.as_ptr(),
+                        &mut val as *mut usize as *mut u8,
+                        elem_size.min(std::mem::size_of::<usize>()),
+                    );
+                }
+                val
+            })
+            .collect()
     } else {
-        items.iter().map(|item| {
-            let obj = item.as_object().expect("reference-typed vector requires Object values");
-            let raw = obj.as_raw() as usize;
-            unsafe { com_to_usize(raw as *mut c_void) }
-        }).collect()
+        items
+            .iter()
+            .map(|item| {
+                let obj = item
+                    .as_object()
+                    .expect("reference-typed vector requires Object values");
+                let raw = obj.as_raw() as usize;
+                unsafe { com_to_usize(raw as *mut c_void) }
+            })
+            .collect()
     };
     new_vector(packed, is_value_type, elem_size, iids)
 }
 
 /// Create an IVector<T> COM object from a Vec of IUnknown items (reference types).
 pub fn create_vector(items: Vec<IUnknown>, iids: VectorIids) -> IUnknown {
-    let raw_items: Vec<usize> = items.into_iter().map(|obj| obj.into_raw() as usize).collect();
+    let raw_items: Vec<usize> = items
+        .into_iter()
+        .map(|obj| obj.into_raw() as usize)
+        .collect();
     new_vector(raw_items, false, std::mem::size_of::<*mut c_void>(), iids)
 }
 
@@ -748,21 +845,29 @@ pub fn create_value_vector(items: Vec<Vec<u8>>, elem_size: usize, iids: VectorIi
             elem_size
         );
     }
-    let packed: Vec<usize> = items.iter().map(|bytes| {
-        let mut val: usize = 0;
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                bytes.as_ptr(),
-                &mut val as *mut usize as *mut u8,
-                bytes.len().min(std::mem::size_of::<usize>()),
-            );
-        }
-        val
-    }).collect();
+    let packed: Vec<usize> = items
+        .iter()
+        .map(|bytes| {
+            let mut val: usize = 0;
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    bytes.as_ptr(),
+                    &mut val as *mut usize as *mut u8,
+                    bytes.len().min(std::mem::size_of::<usize>()),
+                );
+            }
+            val
+        })
+        .collect();
     new_vector(packed, true, elem_size, iids)
 }
 
-fn new_vector(items: Vec<usize>, is_value_type: bool, elem_size: usize, iids: VectorIids) -> IUnknown {
+fn new_vector(
+    items: Vec<usize>,
+    is_value_type: bool,
+    elem_size: usize,
+    iids: VectorIids,
+) -> IUnknown {
     let vector = Box::new(SingleThreadedVector {
         vtable_iterable: &SingleThreadedVector::ITERABLE_VTBL,
         vtable_vector: &SingleThreadedVector::VECTOR_VTBL,
@@ -796,9 +901,12 @@ mod tests {
         let iids = table.vector_iids(&table.object());
 
         // Create Uri objects as test items
-        let uri1 = windows::Foundation::Uri::CreateUri(windows_core::h!("https://example.com/1")).unwrap();
-        let uri2 = windows::Foundation::Uri::CreateUri(windows_core::h!("https://example.com/2")).unwrap();
-        let uri3 = windows::Foundation::Uri::CreateUri(windows_core::h!("https://example.com/3")).unwrap();
+        let uri1 =
+            windows::Foundation::Uri::CreateUri(windows_core::h!("https://example.com/1")).unwrap();
+        let uri2 =
+            windows::Foundation::Uri::CreateUri(windows_core::h!("https://example.com/2")).unwrap();
+        let uri3 =
+            windows::Foundation::Uri::CreateUri(windows_core::h!("https://example.com/3")).unwrap();
 
         let items: Vec<IUnknown> = vec![
             uri1.cast().unwrap(),
@@ -810,12 +918,16 @@ mod tests {
 
         // Test QI for IVector
         let mut vec_ptr = std::ptr::null_mut();
-        unsafe { vector.query(&iids.vector, &mut vec_ptr) }.ok().unwrap();
+        unsafe { vector.query(&iids.vector, &mut vec_ptr) }
+            .ok()
+            .unwrap();
         assert!(!vec_ptr.is_null());
 
         // Test QI for IIterable
         let mut iter_ptr = std::ptr::null_mut();
-        unsafe { vector.query(&iids.iterable, &mut iter_ptr) }.ok().unwrap();
+        unsafe { vector.query(&iids.iterable, &mut iter_ptr) }
+            .ok()
+            .unwrap();
         assert!(!iter_ptr.is_null());
 
         // Test get_Size via raw vtable call
@@ -876,7 +988,9 @@ mod tests {
 
         // QI to IVector
         let mut vec_ptr = std::ptr::null_mut();
-        unsafe { vector.query(&iids.vector, &mut vec_ptr) }.ok().unwrap();
+        unsafe { vector.query(&iids.vector, &mut vec_ptr) }
+            .ok()
+            .unwrap();
         let vtbl = unsafe { *(vec_ptr as *const *const VectorVtbl) };
 
         // Size should be 0
@@ -885,7 +999,8 @@ mod tests {
         assert_eq!(size, 0);
 
         // Append an item
-        let uri = windows::Foundation::Uri::CreateUri(windows_core::h!("https://example.com")).unwrap();
+        let uri =
+            windows::Foundation::Uri::CreateUri(windows_core::h!("https://example.com")).unwrap();
         let unk: IUnknown = uri.cast().unwrap();
         let raw = unk.clone().into_raw();
         unsafe { ((*vtbl).append)(vec_ptr, raw) };
@@ -910,19 +1025,20 @@ mod tests {
         let table = MetadataTable::new();
         let iids = table.vector_iids(&table.object());
 
-        let uri1 = windows::Foundation::Uri::CreateUri(windows_core::h!("https://example.com/1")).unwrap();
-        let uri2 = windows::Foundation::Uri::CreateUri(windows_core::h!("https://example.com/2")).unwrap();
+        let uri1 =
+            windows::Foundation::Uri::CreateUri(windows_core::h!("https://example.com/1")).unwrap();
+        let uri2 =
+            windows::Foundation::Uri::CreateUri(windows_core::h!("https://example.com/2")).unwrap();
 
-        let items: Vec<IUnknown> = vec![
-            uri1.cast().unwrap(),
-            uri2.cast().unwrap(),
-        ];
+        let items: Vec<IUnknown> = vec![uri1.cast().unwrap(), uri2.cast().unwrap()];
 
         let vector = create_vector(items, iids.clone());
 
         // QI to IIterable
         let mut iter_iface_ptr = std::ptr::null_mut();
-        unsafe { vector.query(&iids.iterable, &mut iter_iface_ptr) }.ok().unwrap();
+        unsafe { vector.query(&iids.iterable, &mut iter_iface_ptr) }
+            .ok()
+            .unwrap();
         let iterable_vtbl = unsafe { *(iter_iface_ptr as *const *const IterableVtbl) };
 
         // Call First()
@@ -958,13 +1074,16 @@ mod tests {
         let table = MetadataTable::new();
         let iids = table.vector_iids(&table.object());
 
-        let uri = windows::Foundation::Uri::CreateUri(windows_core::h!("https://example.com")).unwrap();
+        let uri =
+            windows::Foundation::Uri::CreateUri(windows_core::h!("https://example.com")).unwrap();
         let items: Vec<IUnknown> = vec![uri.cast().unwrap()];
         let vector = create_vector(items, iids.clone());
 
         // QI for IVectorView should succeed
         let mut view_ptr = std::ptr::null_mut();
-        unsafe { vector.query(&iids.vector_view, &mut view_ptr) }.ok().unwrap();
+        unsafe { vector.query(&iids.vector_view, &mut view_ptr) }
+            .ok()
+            .unwrap();
         assert!(!view_ptr.is_null());
 
         // Read through IVectorView vtable
@@ -994,13 +1113,16 @@ mod tests {
         let table = MetadataTable::new();
         let iids = table.vector_iids(&table.object());
 
-        let uri = windows::Foundation::Uri::CreateUri(windows_core::h!("https://example.com")).unwrap();
+        let uri =
+            windows::Foundation::Uri::CreateUri(windows_core::h!("https://example.com")).unwrap();
         let items: Vec<IUnknown> = vec![uri.cast().unwrap()];
         let vector = create_vector(items, iids.clone());
 
         // QI to IVector to call get_view
         let mut vec_ptr = std::ptr::null_mut();
-        unsafe { vector.query(&iids.vector, &mut vec_ptr) }.ok().unwrap();
+        unsafe { vector.query(&iids.vector, &mut vec_ptr) }
+            .ok()
+            .unwrap();
         let vtbl = unsafe { *(vec_ptr as *const *const VectorVtbl) };
 
         // Call get_view
@@ -1041,7 +1163,9 @@ mod tests {
         let vector = create_vector(Vec::new(), iids.clone());
 
         let mut vec_ptr = std::ptr::null_mut();
-        unsafe { vector.query(&iids.vector, &mut vec_ptr) }.ok().unwrap();
+        unsafe { vector.query(&iids.vector, &mut vec_ptr) }
+            .ok()
+            .unwrap();
         let vtbl = unsafe { *(vec_ptr as *const *const VectorVtbl) };
 
         // Call get_view twice — each should return an independent VectorView
@@ -1080,16 +1204,15 @@ mod tests {
         let iids = table.vector_iids(&table.i32_type());
 
         // Pack i32 values into usize slots
-        let items: Vec<Vec<u8>> = vec![
-            42i32.to_ne_bytes().to_vec(),
-            99i32.to_ne_bytes().to_vec(),
-        ];
+        let items: Vec<Vec<u8>> = vec![42i32.to_ne_bytes().to_vec(), 99i32.to_ne_bytes().to_vec()];
 
         let vector = create_value_vector(items, 4, iids.clone());
 
         // QI to IVector
         let mut vec_ptr = std::ptr::null_mut();
-        unsafe { vector.query(&iids.vector, &mut vec_ptr) }.ok().unwrap();
+        unsafe { vector.query(&iids.vector, &mut vec_ptr) }
+            .ok()
+            .unwrap();
         let vtbl = unsafe { *(vec_ptr as *const *const VectorVtbl) };
 
         // get_at should write exactly 4 bytes (i32), not 8 bytes (usize).
@@ -1129,13 +1252,16 @@ mod tests {
         let table = MetadataTable::new();
         let iids = table.vector_iids(&table.object());
 
-        let uri = windows::Foundation::Uri::CreateUri(windows_core::h!("https://example.com")).unwrap();
+        let uri =
+            windows::Foundation::Uri::CreateUri(windows_core::h!("https://example.com")).unwrap();
         let items: Vec<IUnknown> = vec![uri.cast().unwrap()];
         let vector = create_vector(items, iids.clone());
 
         // QI to IVector from main thread
         let mut vec_ptr = std::ptr::null_mut();
-        unsafe { vector.query(&iids.vector, &mut vec_ptr) }.ok().unwrap();
+        unsafe { vector.query(&iids.vector, &mut vec_ptr) }
+            .ok()
+            .unwrap();
 
         // Access from another thread — with RefCell this would panic
         let vtbl = unsafe { *(vec_ptr as *const *const VectorVtbl) };

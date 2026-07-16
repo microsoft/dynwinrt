@@ -101,7 +101,6 @@ unsafe fn duplicate_struct_fields(handle: &TypeHandle, ptr: *mut u8) {
     }
 }
 
-
 /// How the array data is stored.
 enum ArrayBuffer {
     /// User-built array (for PassArray). Elements are owned WinRTValues.
@@ -117,7 +116,9 @@ impl std::fmt::Debug for ArrayBuffer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ArrayBuffer::Values(v) => write!(f, "Values({} elements)", v.len()),
-            ArrayBuffer::CoTaskMem { ptr, len } => write!(f, "CoTaskMem({:p}, {} elements)", ptr, len),
+            ArrayBuffer::CoTaskMem { ptr, len } => {
+                write!(f, "CoTaskMem({:p}, {} elements)", ptr, len)
+            }
         }
     }
 }
@@ -147,7 +148,10 @@ impl ArrayData {
     pub fn empty(element_type: TypeHandle) -> Self {
         ArrayData {
             element_type,
-            buffer: ArrayBuffer::CoTaskMem { ptr: std::ptr::null_mut(), len: 0 },
+            buffer: ArrayBuffer::CoTaskMem {
+                ptr: std::ptr::null_mut(),
+                len: 0,
+            },
         }
     }
 
@@ -216,12 +220,15 @@ impl ArrayData {
     /// For Values arrays, returns a clone of the stored value.
     /// For CoTaskMem arrays, reads from raw bytes (AddRef / DuplicateString as needed).
     pub fn get(&self, index: usize) -> WinRTValue {
-        assert!(index < self.len(), "ArrayData::get index {} out of bounds (len {})", index, self.len());
+        assert!(
+            index < self.len(),
+            "ArrayData::get index {} out of bounds (len {})",
+            index,
+            self.len()
+        );
         match &self.buffer {
             ArrayBuffer::Values(v) => v[index].clone(),
-            ArrayBuffer::CoTaskMem { ptr, .. } => {
-                self.get_from_raw(index, *ptr as *const u8)
-            }
+            ArrayBuffer::CoTaskMem { ptr, .. } => self.get_from_raw(index, *ptr as *const u8),
         }
     }
 
@@ -230,45 +237,23 @@ impl ArrayData {
         let elem_size = self.element_type.element_size();
         unsafe {
             match self.element_type.kind() {
-                TypeKind::Bool => {
-                    WinRTValue::Bool(*base.add(index * elem_size) != 0)
-                }
-                TypeKind::I8 => {
-                    WinRTValue::I8(*(base.add(index * elem_size) as *const i8))
-                }
-                TypeKind::U8 => {
-                    WinRTValue::U8(*base.add(index * elem_size))
-                }
-                TypeKind::I16 => {
-                    WinRTValue::I16(*(base.add(index * elem_size) as *const i16))
-                }
+                TypeKind::Bool => WinRTValue::Bool(*base.add(index * elem_size) != 0),
+                TypeKind::I8 => WinRTValue::I8(*(base.add(index * elem_size) as *const i8)),
+                TypeKind::U8 => WinRTValue::U8(*base.add(index * elem_size)),
+                TypeKind::I16 => WinRTValue::I16(*(base.add(index * elem_size) as *const i16)),
                 TypeKind::U16 | TypeKind::Char16 => {
                     WinRTValue::U16(*(base.add(index * elem_size) as *const u16))
                 }
-                TypeKind::I32 => {
-                    WinRTValue::I32(*(base.add(index * elem_size) as *const i32))
-                }
-                TypeKind::Enum(_) => {
-                    WinRTValue::Enum {
-                        value: *(base.add(index * elem_size) as *const i32),
-                        type_handle: self.element_type.clone(),
-                    }
-                }
-                TypeKind::U32 => {
-                    WinRTValue::U32(*(base.add(index * elem_size) as *const u32))
-                }
-                TypeKind::I64 => {
-                    WinRTValue::I64(*(base.add(index * elem_size) as *const i64))
-                }
-                TypeKind::U64 => {
-                    WinRTValue::U64(*(base.add(index * elem_size) as *const u64))
-                }
-                TypeKind::F32 => {
-                    WinRTValue::F32(*(base.add(index * elem_size) as *const f32))
-                }
-                TypeKind::F64 => {
-                    WinRTValue::F64(*(base.add(index * elem_size) as *const f64))
-                }
+                TypeKind::I32 => WinRTValue::I32(*(base.add(index * elem_size) as *const i32)),
+                TypeKind::Enum(_) => WinRTValue::Enum {
+                    value: *(base.add(index * elem_size) as *const i32),
+                    type_handle: self.element_type.clone(),
+                },
+                TypeKind::U32 => WinRTValue::U32(*(base.add(index * elem_size) as *const u32)),
+                TypeKind::I64 => WinRTValue::I64(*(base.add(index * elem_size) as *const i64)),
+                TypeKind::U64 => WinRTValue::U64(*(base.add(index * elem_size) as *const u64)),
+                TypeKind::F32 => WinRTValue::F32(*(base.add(index * elem_size) as *const f32)),
+                TypeKind::F64 => WinRTValue::F64(*(base.add(index * elem_size) as *const f64)),
                 TypeKind::Guid => {
                     let guid = *(base.add(index * 16) as *const windows_core::GUID);
                     WinRTValue::Guid(guid)
@@ -276,7 +261,8 @@ impl ArrayData {
                 TypeKind::HString => {
                     let raw = *(base.add(index * elem_size) as *const *mut c_void);
                     // Duplicate: read the handle and clone it (bumps refcount)
-                    let hstr: &windows_core::HSTRING = &*((&raw) as *const *mut c_void as *const windows_core::HSTRING);
+                    let hstr: &windows_core::HSTRING =
+                        &*((&raw) as *const *mut c_void as *const windows_core::HSTRING);
                     WinRTValue::HString(hstr.clone())
                 }
                 kind if kind.is_com_pointer() => {
@@ -292,11 +278,7 @@ impl ArrayData {
                 TypeKind::Struct(_) => {
                     let sz = self.element_type.size_of();
                     let mut vd = self.element_type.default_value();
-                    std::ptr::copy_nonoverlapping(
-                        base.add(index * sz),
-                        vd.as_mut_ptr(),
-                        sz,
-                    );
+                    std::ptr::copy_nonoverlapping(base.add(index * sz), vd.as_mut_ptr(), sz);
                     // Duplicate non-blittable fields so the returned copy owns its own references
                     if has_struct_non_blittable_fields(&self.element_type) {
                         duplicate_struct_fields(&self.element_type, vd.as_mut_ptr());
@@ -356,7 +338,10 @@ impl Drop for ArrayData {
         // We only need manual cleanup for CoTaskMem.
         let buffer = std::mem::replace(
             &mut self.buffer,
-            ArrayBuffer::CoTaskMem { ptr: std::ptr::null_mut(), len: 0 },
+            ArrayBuffer::CoTaskMem {
+                ptr: std::ptr::null_mut(),
+                len: 0,
+            },
         );
 
         if let ArrayBuffer::CoTaskMem { ptr, len } = buffer {
@@ -431,10 +416,11 @@ impl Clone for ArrayData {
                 let total_bytes = *len * elem_size;
                 let base = *ptr as *const u8;
 
-                let new_ptr = unsafe {
-                    windows::Win32::System::Com::CoTaskMemAlloc(total_bytes)
-                };
-                assert!(!new_ptr.is_null(), "CoTaskMemAlloc failed in ArrayData::clone");
+                let new_ptr = unsafe { windows::Win32::System::Com::CoTaskMemAlloc(total_bytes) };
+                assert!(
+                    !new_ptr.is_null(),
+                    "CoTaskMemAlloc failed in ArrayData::clone"
+                );
                 let new_buf = new_ptr as *mut u8;
 
                 let kind = self.element_type.kind();
@@ -445,7 +431,9 @@ impl Clone for ArrayData {
                             unsafe {
                                 let raw = *(base.add(i * elem_size) as *const *mut c_void);
                                 if !raw.is_null() {
-                                    let hstr: &windows_core::HSTRING = &*((&raw) as *const *mut c_void as *const windows_core::HSTRING);
+                                    let hstr: &windows_core::HSTRING = &*((&raw)
+                                        as *const *mut c_void
+                                        as *const windows_core::HSTRING);
                                     let cloned: *mut c_void = std::mem::transmute(hstr.clone());
                                     (new_buf.add(i * elem_size) as *mut *mut c_void).write(cloned);
                                 }
@@ -459,7 +447,8 @@ impl Clone for ArrayData {
                                 let raw = *(base.add(i * elem_size) as *const *mut c_void);
                                 if !raw.is_null() {
                                     let obj = IUnknown::from_raw_borrowed(&raw).unwrap().clone();
-                                    (new_buf.add(i * elem_size) as *mut *mut c_void).write(obj.into_raw());
+                                    (new_buf.add(i * elem_size) as *mut *mut c_void)
+                                        .write(obj.into_raw());
                                 }
                             }
                         }
@@ -469,7 +458,10 @@ impl Clone for ArrayData {
                         unsafe { std::ptr::copy_nonoverlapping(base, new_buf, total_bytes) };
                         for i in 0..*len {
                             unsafe {
-                                duplicate_struct_fields(&self.element_type, new_buf.add(i * elem_size));
+                                duplicate_struct_fields(
+                                    &self.element_type,
+                                    new_buf.add(i * elem_size),
+                                );
                             }
                         }
                     }
@@ -480,7 +472,10 @@ impl Clone for ArrayData {
 
                 ArrayData {
                     element_type: self.element_type.clone(),
-                    buffer: ArrayBuffer::CoTaskMem { ptr: new_ptr, len: *len },
+                    buffer: ArrayBuffer::CoTaskMem {
+                        ptr: new_ptr,
+                        len: *len,
+                    },
                 }
             }
         }
@@ -516,7 +511,8 @@ fn serialize_to_buffer(element_type: &TypeHandle, values: &[WinRTValue]) -> Vec<
                 buffer.extend_from_slice(&raw.to_ne_bytes());
             }
             WinRTValue::Guid(g) => {
-                let bytes: &[u8; 16] = unsafe { &*(g as *const windows_core::GUID as *const [u8; 16]) };
+                let bytes: &[u8; 16] =
+                    unsafe { &*(g as *const windows_core::GUID as *const [u8; 16]) };
                 buffer.extend_from_slice(bytes);
             }
             WinRTValue::Struct(vd) => {
@@ -524,7 +520,10 @@ fn serialize_to_buffer(element_type: &TypeHandle, values: &[WinRTValue]) -> Vec<
                 let src = unsafe { std::slice::from_raw_parts(vd.as_ptr(), size) };
                 buffer.extend_from_slice(src);
             }
-            _ => panic!("Unsupported array element type for serialization: {:?}", elem),
+            _ => panic!(
+                "Unsupported array element type for serialization: {:?}",
+                elem
+            ),
         }
     }
     buffer
@@ -544,18 +543,24 @@ mod tests {
         let elem_size = std::mem::size_of::<*mut c_void>();
         let len = 2usize;
         let total = len * elem_size;
-        let ptr = unsafe {
-            windows::Win32::System::Com::CoTaskMemAlloc(total) as *mut c_void
-        };
+        let ptr = unsafe { windows::Win32::System::Com::CoTaskMemAlloc(total) as *mut c_void };
         assert!(!ptr.is_null());
         // Zero the buffer — all elements are null pointers
         unsafe { std::ptr::write_bytes(ptr as *mut u8, 0, total) };
 
         let array = ArrayData::from_cotaskmem(elem, ptr, len);
         let val = array.get(0);
-        assert!(val.is_null_object(), "Expected WinRTValue::Null for null COM element, got {:?}", val);
+        assert!(
+            val.is_null_object(),
+            "Expected WinRTValue::Null for null COM element, got {:?}",
+            val
+        );
         let val1 = array.get(1);
-        assert!(val1.is_null_object(), "Expected WinRTValue::Null for null COM element, got {:?}", val1);
+        assert!(
+            val1.is_null_object(),
+            "Expected WinRTValue::Null for null COM element, got {:?}",
+            val1
+        );
     }
 
     /// P1: CoTaskMem array of structs with HString fields — Clone/Drop must recurse.
@@ -569,9 +574,7 @@ mod tests {
         // Allocate a CoTaskMem buffer for 2 elements
         let len = 2usize;
         let total = len * elem_size;
-        let ptr = unsafe {
-            windows::Win32::System::Com::CoTaskMemAlloc(total) as *mut c_void
-        };
+        let ptr = unsafe { windows::Win32::System::Com::CoTaskMemAlloc(total) as *mut c_void };
         assert!(!ptr.is_null());
         unsafe { std::ptr::write_bytes(ptr as *mut u8, 0, total) };
 
@@ -607,4 +610,3 @@ mod tests {
         drop(array);
     }
 }
-

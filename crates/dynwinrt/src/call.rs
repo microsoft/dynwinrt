@@ -17,8 +17,7 @@ pub fn get_vtable_function_ptr(obj: *mut c_void, method_index: usize) -> *mut c_
 pub fn call_winrt_method_0(vtable_index: usize, obj: *mut c_void) -> HRESULT {
     let method_ptr = get_vtable_function_ptr(obj, vtable_index);
     unsafe {
-        let method: extern "system" fn(*mut c_void) -> HRESULT =
-            std::mem::transmute(method_ptr);
+        let method: extern "system" fn(*mut c_void) -> HRESULT = std::mem::transmute(method_ptr);
         method(obj)
     }
 }
@@ -77,8 +76,18 @@ pub fn call_1in(vtable_index: usize, obj: *mut c_void, in_val: &WinRTValue) -> H
 }
 
 /// Direct call for 1-in + 1-out.
-pub fn call_1in_1out(vtable_index: usize, obj: *mut c_void, in_val: &WinRTValue, out_ptr: *mut c_void) -> HRESULT {
-    dispatch_scalar!(in_val, |v| call_winrt_method_2(vtable_index, obj, v, out_ptr))
+pub fn call_1in_1out(
+    vtable_index: usize,
+    obj: *mut c_void,
+    in_val: &WinRTValue,
+    out_ptr: *mut c_void,
+) -> HRESULT {
+    dispatch_scalar!(in_val, |v| call_winrt_method_2(
+        vtable_index,
+        obj,
+        v,
+        out_ptr
+    ))
 }
 
 /// Direct call for 1 scalar in + FillArray out.
@@ -92,9 +101,8 @@ pub fn call_fill_array_1in(
     actual: *mut u32,
 ) -> HRESULT {
     dispatch_scalar!(in_val, |v| unsafe {
-        let method: unsafe extern "system" fn(
-            *mut c_void, _, u32, *mut u8, *mut u32,
-        ) -> HRESULT = std::mem::transmute(fptr);
+        let method: unsafe extern "system" fn(*mut c_void, _, u32, *mut u8, *mut u32) -> HRESULT =
+            std::mem::transmute(fptr);
         method(obj, v, capacity, buffer, actual)
     })
 }
@@ -125,7 +133,9 @@ impl Drop for ArrayOutSlot {
             let len = self.length as usize;
             if len > 0 {
                 let _ = crate::array::ArrayData::from_cotaskmem(
-                    self.element_type.clone(), self.data_ptr, len,
+                    self.element_type.clone(),
+                    self.data_ptr,
+                    len,
                 );
             } else {
                 unsafe {
@@ -214,9 +224,8 @@ pub fn call_winrt_method_dynamic(
                 let capacity = array_data.len() as u32;
                 let elem_size = elem_type.element_size();
                 let total_bytes = capacity as usize * elem_size;
-                let buffer_ptr = unsafe {
-                    windows::Win32::System::Com::CoTaskMemAlloc(total_bytes) as *mut u8
-                };
+                let buffer_ptr =
+                    unsafe { windows::Win32::System::Com::CoTaskMemAlloc(total_bytes) as *mut u8 };
                 assert!(!buffer_ptr.is_null(), "CoTaskMemAlloc failed for FillArray");
                 unsafe { std::ptr::write_bytes(buffer_ptr, 0, total_bytes) };
                 let slot = Box::new(FillArraySlot {
@@ -335,11 +344,11 @@ pub fn call_winrt_method_dynamic(
                 let actual = std::cmp::min(raw_count as usize, slot.capacity as usize);
                 let ptr = slot.buffer_ptr as *mut c_void;
                 slot.buffer_ptr = std::ptr::null_mut(); // prevent FillArraySlot::drop from freeing
-                result_values.push(WinRTValue::Array(
-                    crate::array::ArrayData::from_cotaskmem(
-                        slot.element_type.clone(), ptr, actual,
-                    )
-                ));
+                result_values.push(WinRTValue::Array(crate::array::ArrayData::from_cotaskmem(
+                    slot.element_type.clone(),
+                    ptr,
+                    actual,
+                )));
             } else if let Some(slot_idx) = array_out_map[p.value_index] {
                 // ReceiveArray: wrap callee-allocated CoTaskMem buffer directly.
                 // ArrayData takes ownership and will CoTaskMemFree + release elements on drop.
@@ -351,12 +360,16 @@ pub fn call_winrt_method_dynamic(
                 let array_value = if data_ptr.is_null() || length == 0 {
                     if !data_ptr.is_null() {
                         // Free empty but non-null buffer
-                        unsafe { windows::Win32::System::Com::CoTaskMemFree(Some(data_ptr)); }
+                        unsafe {
+                            windows::Win32::System::Com::CoTaskMemFree(Some(data_ptr));
+                        }
                     }
                     crate::array::ArrayData::empty(slot.element_type.clone())
                 } else {
                     crate::array::ArrayData::from_cotaskmem(
-                        slot.element_type.clone(), data_ptr, length,
+                        slot.element_type.clone(),
+                        data_ptr,
+                        length,
                     )
                 };
                 result_values.push(WinRTValue::Array(array_value));

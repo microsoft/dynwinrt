@@ -14,9 +14,9 @@
 //! Run:  cargo bench -p dynwinrt --bench bench
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use windows::core::{HSTRING, Interface};
 use windows::Foundation::Uri;
 use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize};
+use windows::core::{HSTRING, Interface};
 use windows_core::HRESULT;
 
 use dynwinrt::metadata_table::{MetadataTable, TypeHandle};
@@ -38,15 +38,28 @@ struct UriApi {
 }
 
 fn setup_uri(table: &std::sync::Arc<MetadataTable>) -> UriApi {
-    let factory_iid = windows::core::GUID::try_from("44a9796f-723e-4fdf-a218-033e75b0c084").unwrap();
-    let factory_type = table.register_interface("IUriRuntimeClassFactory", factory_iid)
-        .add_method("CreateUri", MethodSignature::new(table).add_in(table.hstring()).add_out(table.object()))
-        .add_method("CreateWithRelativeUri", MethodSignature::new(table)
-            .add_in(table.hstring()).add_in(table.hstring()).add_out(table.object()));
+    let factory_iid =
+        windows::core::GUID::try_from("44a9796f-723e-4fdf-a218-033e75b0c084").unwrap();
+    let factory_type = table
+        .register_interface("IUriRuntimeClassFactory", factory_iid)
+        .add_method(
+            "CreateUri",
+            MethodSignature::new(table)
+                .add_in(table.hstring())
+                .add_out(table.object()),
+        )
+        .add_method(
+            "CreateWithRelativeUri",
+            MethodSignature::new(table)
+                .add_in(table.hstring())
+                .add_in(table.hstring())
+                .add_out(table.object()),
+        );
 
     let uri_iid = windows::core::GUID::try_from("9e365e57-48b2-4160-956f-c7385120bbfc").unwrap();
     let hstring_out = || MethodSignature::new(table).add_out(table.hstring());
-    let uri_type = table.register_interface("IUriRuntimeClass", uri_iid)
+    let uri_type = table
+        .register_interface("IUriRuntimeClass", uri_iid)
         .add_method("get_AbsoluteUri", hstring_out())
         .add_method("get_DisplayUri", hstring_out())
         .add_method("get_RawUri", hstring_out())
@@ -55,19 +68,41 @@ fn setup_uri(table: &std::sync::Arc<MetadataTable>) -> UriApi {
         .add_method("get_Password", hstring_out())
         .add_method("get_Host", hstring_out())
         .add_method("get_Domain", hstring_out())
-        .add_method("get_Port", MethodSignature::new(table).add_out(table.i32_type()))
+        .add_method(
+            "get_Port",
+            MethodSignature::new(table).add_out(table.i32_type()),
+        )
         .add_method("get_Path", hstring_out())
         .add_method("get_Query", hstring_out())
-        .add_method("get_QueryParsed", MethodSignature::new(table).add_out(table.object()))
+        .add_method(
+            "get_QueryParsed",
+            MethodSignature::new(table).add_out(table.object()),
+        )
         .add_method("get_Fragment", hstring_out())
         .add_method("get_Extension", hstring_out())
-        .add_method("get_Suspicious", MethodSignature::new(table).add_out(table.bool_type()))
-        .add_method("Equals", MethodSignature::new(table)
-            .add_in(table.object()).add_out(table.bool_type()))
-        .add_method("CombineUri", MethodSignature::new(table)
-            .add_in(table.hstring()).add_out(table.object()));
+        .add_method(
+            "get_Suspicious",
+            MethodSignature::new(table).add_out(table.bool_type()),
+        )
+        .add_method(
+            "Equals",
+            MethodSignature::new(table)
+                .add_in(table.object())
+                .add_out(table.bool_type()),
+        )
+        .add_method(
+            "CombineUri",
+            MethodSignature::new(table)
+                .add_in(table.hstring())
+                .add_out(table.object()),
+        );
 
-    UriApi { factory_iid, uri_iid, factory_type, uri_type }
+    UriApi {
+        factory_iid,
+        uri_iid,
+        factory_type,
+        uri_type,
+    }
 }
 
 struct PropertyValueApi {
@@ -76,34 +111,119 @@ struct PropertyValueApi {
 }
 
 fn setup_property_value(table: &std::sync::Arc<MetadataTable>) -> PropertyValueApi {
-    let statics_iid = windows::core::GUID::try_from("629bdbc8-d932-4ff4-96b9-8d96c5c1e858").unwrap();
-    let statics_type = table.register_interface("IPropertyValueStatics", statics_iid)
-        .add_method("CreateEmpty", MethodSignature::new(table).add_out(table.object()))                           // 6
-        .add_method("CreateUInt8", MethodSignature::new(table).add_in(table.u8_type()).add_out(table.object()))    // 7
-        .add_method("CreateInt16", MethodSignature::new(table).add_in(table.i16_type()).add_out(table.object()))   // 8
-        .add_method("CreateUInt16", MethodSignature::new(table).add_in(table.u16_type()).add_out(table.object()))  // 9
-        .add_method("CreateInt32", MethodSignature::new(table).add_in(table.i32_type()).add_out(table.object()))   // 10
-        .add_method("CreateUInt32", MethodSignature::new(table).add_in(table.u32_type()).add_out(table.object()))  // 11
-        .add_method("CreateInt64", MethodSignature::new(table).add_in(table.i64_type()).add_out(table.object()))   // 12
-        .add_method("CreateUInt64", MethodSignature::new(table).add_in(table.u64_type()).add_out(table.object()))  // 13
-        .add_method("CreateSingle", MethodSignature::new(table).add_in(table.f32_type()).add_out(table.object()))  // 14
-        .add_method("CreateDouble", MethodSignature::new(table).add_in(table.f64_type()).add_out(table.object()))  // 15
-        .add_method("CreateChar16", MethodSignature::new(table).add_in(table.u16_type()).add_out(table.object()))  // 16
-        .add_method("CreateBoolean", MethodSignature::new(table).add_in(table.bool_type()).add_out(table.object())) // 17
-        .add_method("CreateString", MethodSignature::new(table).add_in(table.hstring()).add_out(table.object()))   // 18
-        .add_method("CreateInspectable", MethodSignature::new(table).add_in(table.object()).add_out(table.object())); // 19
+    let statics_iid =
+        windows::core::GUID::try_from("629bdbc8-d932-4ff4-96b9-8d96c5c1e858").unwrap();
+    let statics_type = table
+        .register_interface("IPropertyValueStatics", statics_iid)
+        .add_method(
+            "CreateEmpty",
+            MethodSignature::new(table).add_out(table.object()),
+        ) // 6
+        .add_method(
+            "CreateUInt8",
+            MethodSignature::new(table)
+                .add_in(table.u8_type())
+                .add_out(table.object()),
+        ) // 7
+        .add_method(
+            "CreateInt16",
+            MethodSignature::new(table)
+                .add_in(table.i16_type())
+                .add_out(table.object()),
+        ) // 8
+        .add_method(
+            "CreateUInt16",
+            MethodSignature::new(table)
+                .add_in(table.u16_type())
+                .add_out(table.object()),
+        ) // 9
+        .add_method(
+            "CreateInt32",
+            MethodSignature::new(table)
+                .add_in(table.i32_type())
+                .add_out(table.object()),
+        ) // 10
+        .add_method(
+            "CreateUInt32",
+            MethodSignature::new(table)
+                .add_in(table.u32_type())
+                .add_out(table.object()),
+        ) // 11
+        .add_method(
+            "CreateInt64",
+            MethodSignature::new(table)
+                .add_in(table.i64_type())
+                .add_out(table.object()),
+        ) // 12
+        .add_method(
+            "CreateUInt64",
+            MethodSignature::new(table)
+                .add_in(table.u64_type())
+                .add_out(table.object()),
+        ) // 13
+        .add_method(
+            "CreateSingle",
+            MethodSignature::new(table)
+                .add_in(table.f32_type())
+                .add_out(table.object()),
+        ) // 14
+        .add_method(
+            "CreateDouble",
+            MethodSignature::new(table)
+                .add_in(table.f64_type())
+                .add_out(table.object()),
+        ) // 15
+        .add_method(
+            "CreateChar16",
+            MethodSignature::new(table)
+                .add_in(table.u16_type())
+                .add_out(table.object()),
+        ) // 16
+        .add_method(
+            "CreateBoolean",
+            MethodSignature::new(table)
+                .add_in(table.bool_type())
+                .add_out(table.object()),
+        ) // 17
+        .add_method(
+            "CreateString",
+            MethodSignature::new(table)
+                .add_in(table.hstring())
+                .add_out(table.object()),
+        ) // 18
+        .add_method(
+            "CreateInspectable",
+            MethodSignature::new(table)
+                .add_in(table.object())
+                .add_out(table.object()),
+        ); // 19
 
-    PropertyValueApi { statics_iid, statics_type }
+    PropertyValueApi {
+        statics_iid,
+        statics_type,
+    }
 }
 
 fn get_factory_raw(api: &UriApi) -> *mut std::ffi::c_void {
-    let factory = dynwinrt::ro_get_activation_factory_2(&HSTRING::from("Windows.Foundation.Uri")).unwrap();
-    factory.cast(&api.factory_iid).unwrap().as_object().unwrap().as_raw()
+    let factory =
+        dynwinrt::ro_get_activation_factory_2(&HSTRING::from("Windows.Foundation.Uri")).unwrap();
+    factory
+        .cast(&api.factory_iid)
+        .unwrap()
+        .as_object()
+        .unwrap()
+        .as_raw()
 }
 
-fn create_uri_raw(api: &UriApi, fac_raw: *mut std::ffi::c_void, s: &str) -> (WinRTValue, *mut std::ffi::c_void) {
+fn create_uri_raw(
+    api: &UriApi,
+    fac_raw: *mut std::ffi::c_void,
+    s: &str,
+) -> (WinRTValue, *mut std::ffi::c_void) {
     let create = api.factory_type.method_by_name("CreateUri").unwrap();
-    let result = create.invoke(fac_raw, &[WinRTValue::HString(HSTRING::from(s))]).unwrap();
+    let result = create
+        .invoke(fac_raw, &[WinRTValue::HString(HSTRING::from(s))])
+        .unwrap();
     let uri = result.into_iter().next().unwrap();
     let casted = uri.cast(&api.uri_iid).unwrap();
     let raw = casted.as_object().unwrap().as_raw();
@@ -111,8 +231,15 @@ fn create_uri_raw(api: &UriApi, fac_raw: *mut std::ffi::c_void, s: &str) -> (Win
 }
 
 fn get_pv_statics_raw(api: &PropertyValueApi) -> *mut std::ffi::c_void {
-    let factory = dynwinrt::ro_get_activation_factory_2(&HSTRING::from("Windows.Foundation.PropertyValue")).unwrap();
-    factory.cast(&api.statics_iid).unwrap().as_object().unwrap().as_raw()
+    let factory =
+        dynwinrt::ro_get_activation_factory_2(&HSTRING::from("Windows.Foundation.PropertyValue"))
+            .unwrap();
+    factory
+        .cast(&api.statics_iid)
+        .unwrap()
+        .as_object()
+        .unwrap()
+        .as_raw()
 }
 
 // ======================================================================
@@ -124,7 +251,8 @@ fn bench_param_count(c: &mut Criterion) {
     let table = MetadataTable::new();
     let uri_api = setup_uri(&table);
     let fac_raw = get_factory_raw(&uri_api);
-    let (_uri_owner, uri_raw) = create_uri_raw(&uri_api, fac_raw, "https://example.com/path?q=1#frag");
+    let (_uri_owner, uri_raw) =
+        create_uri_raw(&uri_api, fac_raw, "https://example.com/path?q=1#frag");
     let static_uri = Uri::CreateUri(&HSTRING::from("https://example.com/path?q=1#frag")).unwrap();
 
     let mut g = c.benchmark_group("param_count");
@@ -150,7 +278,10 @@ fn bench_param_count(c: &mut Criterion) {
     });
 
     // 2 in → 1 out
-    let create_rel = uri_api.factory_type.method_by_name("CreateWithRelativeUri").unwrap();
+    let create_rel = uri_api
+        .factory_type
+        .method_by_name("CreateWithRelativeUri")
+        .unwrap();
     g.bench_function("2_in/static", |b| {
         let base = HSTRING::from("https://example.com");
         let rel = HSTRING::from("/path?q=1");
@@ -159,7 +290,13 @@ fn bench_param_count(c: &mut Criterion) {
     g.bench_function("2_in/dynamic", |b| {
         let base = WinRTValue::HString(HSTRING::from("https://example.com"));
         let rel = WinRTValue::HString(HSTRING::from("/path?q=1"));
-        b.iter(|| black_box(create_rel.invoke(fac_raw, &[base.clone(), rel.clone()]).unwrap()));
+        b.iter(|| {
+            black_box(
+                create_rel
+                    .invoke(fac_raw, &[base.clone(), rel.clone()])
+                    .unwrap(),
+            )
+        });
     });
 
     g.finish();
@@ -203,7 +340,13 @@ fn bench_input_type(c: &mut Criterion) {
         b.iter(|| black_box(PropertyValue::CreateBoolean(true).unwrap()));
     });
     g.bench_function("bool/dynamic", |b| {
-        b.iter(|| black_box(create_bool.invoke(pv_raw, &[WinRTValue::Bool(true)]).unwrap()));
+        b.iter(|| {
+            black_box(
+                create_bool
+                    .invoke(pv_raw, &[WinRTValue::Bool(true)])
+                    .unwrap(),
+            )
+        });
     });
 
     // hstring in
@@ -218,7 +361,10 @@ fn bench_input_type(c: &mut Criterion) {
     });
 
     // object in
-    let create_obj = pv_api.statics_type.method_by_name("CreateInspectable").unwrap();
+    let create_obj = pv_api
+        .statics_type
+        .method_by_name("CreateInspectable")
+        .unwrap();
     let dummy_obj = PropertyValue::CreateInt32(0).unwrap();
     g.bench_function("object/static", |b| {
         b.iter(|| black_box(PropertyValue::CreateInspectable(&dummy_obj).unwrap()));
@@ -229,24 +375,47 @@ fn bench_input_type(c: &mut Criterion) {
     });
 
     // struct in (Point: 2×f32)
-    let point_type = table.struct_type("Windows.Foundation.Point", &[table.f32_type(), table.f32_type()]);
+    let point_type = table.struct_type(
+        "Windows.Foundation.Point",
+        &[table.f32_type(), table.f32_type()],
+    );
     // CreatePoint is at vtable 23 (6 + 17 methods before it)
     // Let's register a separate interface for it to get the right vtable offset
     let pv_statics2 = table.register_interface("IPropertyValueStatics_point", pv_api.statics_iid);
     // Skip to CreatePoint: 6(IInspectable) + 12(CreateEmpty..CreateString) + 1(CreateInspectable) + 1(CreateGuid) + 1(CreateDateTime) + 1(CreateTimeSpan) = index 22
     // Actually let's just use Geopoint which we know works
     let geo_factory_iid = windows::Devices::Geolocation::IGeopointFactory::IID;
-    let geo_type = table.struct_type("Windows.Devices.Geolocation.BasicGeoposition",
-        &[table.f64_type(), table.f64_type(), table.f64_type()]);
-    let geo_factory_type = table.register_interface("IGeopointFactory", geo_factory_iid)
-        .add_method("Create", MethodSignature::new(&table).add_in(geo_type.clone()).add_out(table.object()));
-    let geo_fac = dynwinrt::ro_get_activation_factory_2(&HSTRING::from("Windows.Devices.Geolocation.Geopoint")).unwrap();
-    let geo_fac_raw = geo_fac.cast(&geo_factory_iid).unwrap().as_object().unwrap().as_raw();
+    let geo_type = table.struct_type(
+        "Windows.Devices.Geolocation.BasicGeoposition",
+        &[table.f64_type(), table.f64_type(), table.f64_type()],
+    );
+    let geo_factory_type = table
+        .register_interface("IGeopointFactory", geo_factory_iid)
+        .add_method(
+            "Create",
+            MethodSignature::new(&table)
+                .add_in(geo_type.clone())
+                .add_out(table.object()),
+        );
+    let geo_fac = dynwinrt::ro_get_activation_factory_2(&HSTRING::from(
+        "Windows.Devices.Geolocation.Geopoint",
+    ))
+    .unwrap();
+    let geo_fac_raw = geo_fac
+        .cast(&geo_factory_iid)
+        .unwrap()
+        .as_object()
+        .unwrap()
+        .as_raw();
     let geo_create = geo_factory_type.method_by_name("Create").unwrap();
 
     g.bench_function("struct_3xf64/static", |b| {
         use windows::Devices::Geolocation::{BasicGeoposition, Geopoint};
-        let pos = BasicGeoposition { Latitude: 47.643, Longitude: -122.131, Altitude: 100.0 };
+        let pos = BasicGeoposition {
+            Latitude: 47.643,
+            Longitude: -122.131,
+            Altitude: 100.0,
+        };
         b.iter(|| black_box(Geopoint::Create(pos).unwrap()));
     });
     g.bench_function("struct_3xf64/dynamic", |b| {
@@ -255,7 +424,11 @@ fn bench_input_type(c: &mut Criterion) {
             val.set_field(0, 47.643f64);
             val.set_field(1, -122.131f64);
             val.set_field(2, 100.0f64);
-            black_box(geo_create.invoke(geo_fac_raw, &[WinRTValue::Struct(val)]).unwrap());
+            black_box(
+                geo_create
+                    .invoke(geo_fac_raw, &[WinRTValue::Struct(val)])
+                    .unwrap(),
+            );
         });
     });
 
@@ -271,7 +444,8 @@ fn bench_return_type(c: &mut Criterion) {
     let table = MetadataTable::new();
     let uri_api = setup_uri(&table);
     let fac_raw = get_factory_raw(&uri_api);
-    let (_uri_owner, uri_raw) = create_uri_raw(&uri_api, fac_raw, "https://example.com:8080/path?q=1");
+    let (_uri_owner, uri_raw) =
+        create_uri_raw(&uri_api, fac_raw, "https://example.com:8080/path?q=1");
     let static_uri = Uri::CreateUri(&HSTRING::from("https://example.com:8080/path?q=1")).unwrap();
 
     let mut g = c.benchmark_group("return_type");
@@ -333,18 +507,38 @@ fn bench_struct_size(c: &mut Criterion) {
 
     // 3 fields (BasicGeoposition: 3×f64 = 24 bytes) — already works
     let f64_h = table.f64_type();
-    let geo_type = table.struct_type("Windows.Devices.Geolocation.BasicGeoposition",
-        &[f64_h.clone(), f64_h.clone(), f64_h]);
+    let geo_type = table.struct_type(
+        "Windows.Devices.Geolocation.BasicGeoposition",
+        &[f64_h.clone(), f64_h.clone(), f64_h],
+    );
     let geo_iid = windows::Devices::Geolocation::IGeopointFactory::IID;
-    let geo_factory = table.register_interface("IGeopointFactory", geo_iid)
-        .add_method("Create", MethodSignature::new(&table).add_in(geo_type.clone()).add_out(table.object()));
-    let geo_fac = dynwinrt::ro_get_activation_factory_2(&HSTRING::from("Windows.Devices.Geolocation.Geopoint")).unwrap();
-    let geo_fac_raw = geo_fac.cast(&geo_iid).unwrap().as_object().unwrap().as_raw();
+    let geo_factory = table
+        .register_interface("IGeopointFactory", geo_iid)
+        .add_method(
+            "Create",
+            MethodSignature::new(&table)
+                .add_in(geo_type.clone())
+                .add_out(table.object()),
+        );
+    let geo_fac = dynwinrt::ro_get_activation_factory_2(&HSTRING::from(
+        "Windows.Devices.Geolocation.Geopoint",
+    ))
+    .unwrap();
+    let geo_fac_raw = geo_fac
+        .cast(&geo_iid)
+        .unwrap()
+        .as_object()
+        .unwrap()
+        .as_raw();
     let geo_create = geo_factory.method_by_name("Create").unwrap();
 
     g.bench_function("3_fields_24bytes/static", |b| {
         use windows::Devices::Geolocation::{BasicGeoposition, Geopoint};
-        let pos = BasicGeoposition { Latitude: 47.643, Longitude: -122.131, Altitude: 100.0 };
+        let pos = BasicGeoposition {
+            Latitude: 47.643,
+            Longitude: -122.131,
+            Altitude: 100.0,
+        };
         b.iter(|| black_box(Geopoint::Create(pos).unwrap()));
     });
     g.bench_function("3_fields_24bytes/dynamic", |b| {
@@ -353,7 +547,11 @@ fn bench_struct_size(c: &mut Criterion) {
             val.set_field(0, 47.643f64);
             val.set_field(1, -122.131f64);
             val.set_field(2, 100.0f64);
-            black_box(geo_create.invoke(geo_fac_raw, &[WinRTValue::Struct(val)]).unwrap());
+            black_box(
+                geo_create
+                    .invoke(geo_fac_raw, &[WinRTValue::Struct(val)])
+                    .unwrap(),
+            );
         });
     });
 
@@ -404,7 +602,11 @@ fn bench_batch(c: &mut Criterion) {
                 let uri_val = create.invoke(fac_raw, &[arg]).unwrap();
                 let uri_obj = uri_val.into_iter().next().unwrap();
                 let casted = uri_obj.cast(&uri_api.uri_iid).unwrap();
-                black_box(get_abs.invoke(casted.as_object().unwrap().as_raw(), &[]).unwrap());
+                black_box(
+                    get_abs
+                        .invoke(casted.as_object().unwrap().as_raw(), &[])
+                        .unwrap(),
+                );
             }
         });
     });
@@ -435,7 +637,10 @@ fn bench_overhead(c: &mut Criterion) {
         b.iter(|| unsafe {
             let vtable = *(uri_raw as *const *const *mut std::ffi::c_void);
             let fptr = *vtable.add(6);
-            type Fn = unsafe extern "system" fn(*mut std::ffi::c_void, *mut *mut std::ffi::c_void) -> HRESULT;
+            type Fn = unsafe extern "system" fn(
+                *mut std::ffi::c_void,
+                *mut *mut std::ffi::c_void,
+            ) -> HRESULT;
             let method: Fn = std::mem::transmute(fptr);
             let mut result: *mut std::ffi::c_void = std::ptr::null_mut();
             method(uri_raw, &mut result).ok().unwrap();
@@ -447,7 +652,8 @@ fn bench_overhead(c: &mut Criterion) {
     });
 
     // i32 getter
-    let (_port_owner, port_raw) = create_uri_raw(&uri_api, fac_raw, "https://example.com:8080/path");
+    let (_port_owner, port_raw) =
+        create_uri_raw(&uri_api, fac_raw, "https://example.com:8080/path");
     let static_port_uri = Uri::CreateUri(&HSTRING::from("https://example.com:8080/path")).unwrap();
     let get_port = uri_api.uri_type.method_by_name("get_Port").unwrap();
 

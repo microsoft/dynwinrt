@@ -172,11 +172,7 @@ impl ValueTypeData {
         let result = field_handle.default_value();
         if layout.size() > 0 {
             unsafe {
-                std::ptr::copy_nonoverlapping(
-                    self.ptr.add(offset),
-                    result.ptr,
-                    layout.size(),
-                );
+                std::ptr::copy_nonoverlapping(self.ptr.add(offset), result.ptr, layout.size());
                 // Duplicate non-blittable fields so both copies are valid
                 if has_non_blittable_fields(&field_handle) {
                     duplicate_non_blittable_fields(&field_handle, result.ptr);
@@ -202,11 +198,7 @@ impl ValueTypeData {
                 if has_non_blittable_fields(&field_handle) {
                     release_non_blittable_fields(&field_handle, self.ptr.add(offset));
                 }
-                std::ptr::copy_nonoverlapping(
-                    value.ptr,
-                    self.ptr.add(offset),
-                    size,
-                );
+                std::ptr::copy_nonoverlapping(value.ptr, self.ptr.add(offset), size);
                 // Duplicate non-blittable fields so both copies are valid
                 if has_non_blittable_fields(&field_handle) {
                     duplicate_non_blittable_fields(&field_handle, self.ptr.add(offset));
@@ -221,7 +213,7 @@ impl ValueTypeData {
         method_index: usize,
     ) -> windows_core::Result<windows_core::IUnknown> {
         use crate::call::get_vtable_function_ptr;
-        use libffi::middle::{arg, Cif, CodePtr, Type};
+        use libffi::middle::{Cif, CodePtr, Type, arg};
 
         let fptr = get_vtable_function_ptr(obj_raw, method_index);
         let cif = Cif::new(

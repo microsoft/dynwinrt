@@ -190,10 +190,7 @@ impl DynamicDelegate {
         } else if *iid == windows_core::imp::IMarshal::IID {
             unsafe {
                 delegate.ref_count.add_ref();
-                windows_core::imp::marshaler(
-                    core::mem::transmute(this),
-                    ppv,
-                )
+                windows_core::imp::marshaler(core::mem::transmute(this), ppv)
             }
         } else {
             unsafe { *ppv = std::ptr::null_mut() };
@@ -278,19 +275,13 @@ impl DynamicDelegate {
     }
 
     /// Invoke trampoline for 1-param delegate where the param is f64.
-    unsafe extern "system" fn invoke_1_f64(
-        this: *mut c_void,
-        arg0: f64,
-    ) -> HRESULT {
+    unsafe extern "system" fn invoke_1_f64(this: *mut c_void, arg0: f64) -> HRESULT {
         let delegate = unsafe { &*(this as *const Self) };
         (delegate.callback)(&[WinRTValue::F64(arg0)])
     }
 
     /// Invoke trampoline for 1-param delegate where the param is f32.
-    unsafe extern "system" fn invoke_1_f32(
-        this: *mut c_void,
-        arg0: f32,
-    ) -> HRESULT {
+    unsafe extern "system" fn invoke_1_f32(this: *mut c_void, arg0: f32) -> HRESULT {
         let delegate = unsafe { &*(this as *const Self) };
         (delegate.callback)(&[WinRTValue::F32(arg0)])
     }
@@ -301,8 +292,11 @@ fn marshal_abi_ptr(raw: *mut c_void, typ: &TypeHandle) -> WinRTValue {
     use crate::metadata_table::TypeKind;
     match typ.kind() {
         // Pointer-sized types: wrap as Object (AddRef via from_raw_borrowed + clone)
-        TypeKind::Object | TypeKind::Interface(_) | TypeKind::RuntimeClass(_)
-        | TypeKind::Delegate(_) | TypeKind::Parameterized(_) => {
+        TypeKind::Object
+        | TypeKind::Interface(_)
+        | TypeKind::RuntimeClass(_)
+        | TypeKind::Delegate(_)
+        | TypeKind::Parameterized(_) => {
             if raw.is_null() {
                 WinRTValue::Null
             } else {
@@ -315,16 +309,18 @@ fn marshal_abi_ptr(raw: *mut c_void, typ: &TypeHandle) -> WinRTValue {
             if raw.is_null() {
                 WinRTValue::HString(windows_core::HSTRING::new())
             } else {
-                let hstr: &windows_core::HSTRING = unsafe {
-                    &*(&raw as *const *mut c_void as *const windows_core::HSTRING)
-                };
+                let hstr: &windows_core::HSTRING =
+                    unsafe { &*(&raw as *const *mut c_void as *const windows_core::HSTRING) };
                 WinRTValue::HString(hstr.clone())
             }
         }
         // Small integer types packed into pointer-sized arg
         TypeKind::Bool => WinRTValue::Bool((raw as usize) != 0),
         TypeKind::I32 => WinRTValue::I32(raw as i32),
-        TypeKind::Enum(_) => WinRTValue::Enum { value: raw as i32, type_handle: typ.clone() },
+        TypeKind::Enum(_) => WinRTValue::Enum {
+            value: raw as i32,
+            type_handle: typ.clone(),
+        },
         TypeKind::U32 => WinRTValue::U32(raw as u32),
         TypeKind::I64 => WinRTValue::I64(raw as i64),
         TypeKind::U64 => WinRTValue::U64(raw as u64),
@@ -333,9 +329,7 @@ fn marshal_abi_ptr(raw: *mut c_void, typ: &TypeHandle) -> WinRTValue {
             // the caller puts it in a GPR; see invoke_ptr_f64 for float-register ABI)
             WinRTValue::F64(f64::from_bits(raw as u64))
         }
-        TypeKind::F32 => {
-            WinRTValue::F32(f32::from_bits(raw as u32))
-        }
+        TypeKind::F32 => WinRTValue::F32(f32::from_bits(raw as u32)),
         _ => {
             // Fallback: treat as raw i64 (covers most ABI-compatible cases)
             WinRTValue::I64(raw as i64)
@@ -382,7 +376,10 @@ pub fn create_delegate_value(
 mod tests {
     use super::*;
     use crate::metadata_table::MetadataTable;
-    use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
 
     /// P2: Verify that a 2-param delegate with f32 second param
     /// correctly receives F32 (not F64) via the f32 trampoline.

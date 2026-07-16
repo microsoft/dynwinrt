@@ -23,18 +23,20 @@ mod meta;
 pub mod metadata_table;
 pub mod vector;
 
+pub use crate::array::ArrayData;
+pub use crate::dasync::{ProgressCallback, create_progress_handler};
+pub use crate::metadata_table::{MetadataTable, MethodHandle, TypeHandle, TypeKind, ValueTypeData};
 pub use crate::result::{Error, Result};
 pub use crate::roapi::ro_get_activation_factory_2;
 pub use crate::signature::{InterfaceSignature, MethodSignature};
-pub use crate::metadata_table::{TypeHandle, TypeKind, MetadataTable, MethodHandle, ValueTypeData};
-pub use crate::array::ArrayData;
 pub use crate::value::WinRTValue;
 pub use crate::winapp::{WinAppSdkContext, initialize_winappsdk};
 pub use crate::xaml_application::create_xaml_application;
-pub use crate::dasync::{create_progress_handler, ProgressCallback};
 pub use interfaces::uri_vtable;
 
-pub async fn get_async_string(op_string: windows_future::IAsyncOperation<HSTRING>) -> windows_core::Result<String> {
+pub async fn get_async_string(
+    op_string: windows_future::IAsyncOperation<HSTRING>,
+) -> windows_core::Result<String> {
     let s = op_string.await?;
     Ok(s.to_string())
 }
@@ -164,7 +166,10 @@ mod tests {
         // 1. Define BasicGeoposition { Latitude: f64, Longitude: f64, Altitude: f64 }
         let reg = metadata_table::MetadataTable::new();
         let f64_h = reg.f64_type();
-        let geo_type = reg.struct_type("Windows.Devices.Geolocation.BasicGeoposition", &[f64_h.clone(), f64_h.clone(), f64_h]);
+        let geo_type = reg.struct_type(
+            "Windows.Devices.Geolocation.BasicGeoposition",
+            &[f64_h.clone(), f64_h.clone(), f64_h],
+        );
 
         // 2. Create and populate struct value
         let mut geo_val = geo_type.default_value();
@@ -174,9 +179,7 @@ mod tests {
 
         // 3. Get IGeopointFactory
         let afactory = unsafe {
-            RoGetActivationFactory::<IActivationFactory>(
-                h!("Windows.Devices.Geolocation.Geopoint"),
-            )
+            RoGetActivationFactory::<IActivationFactory>(h!("Windows.Devices.Geolocation.Geopoint"))
         }?;
         let geopoint_factory =
             afactory.cast::<windows::Devices::Geolocation::IGeopointFactory>()?;
@@ -196,10 +199,8 @@ mod tests {
 
         // 5. Call Create via MethodSignature
         let create_method = &factory_sig.methods[6];
-        let results = create_method.call_dynamic(
-            geopoint_factory.as_raw(),
-            &[WinRTValue::Struct(geo_val)],
-        )?;
+        let results = create_method
+            .call_dynamic(geopoint_factory.as_raw(), &[WinRTValue::Struct(geo_val)])?;
 
         // 6. Verify
         let geopoint_obj = results[0].as_object().unwrap();
@@ -230,19 +231,16 @@ mod tests {
         // 2. Define BasicGeoposition struct type
         let reg = metadata_table::MetadataTable::new();
         let f64_h = reg.f64_type();
-        let geo_type = reg.struct_type("Windows.Devices.Geolocation.BasicGeoposition", &[f64_h.clone(), f64_h.clone(), f64_h]);
+        let geo_type = reg.struct_type(
+            "Windows.Devices.Geolocation.BasicGeoposition",
+            &[f64_h.clone(), f64_h.clone(), f64_h],
+        );
 
         // 3. Define IGeopoint with get_Position at vtable index 6
         // ABI: fn(this, *out_BasicGeoposition) -> HRESULT
-        let mut igeopoint_sig = InterfaceSignature::define_from_iinspectable(
-            "IGeopoint",
-            IGeopoint::IID,
-            &reg,
-        );
-        igeopoint_sig.add_method(
-            MethodSignature::new(&reg)
-                .add_out(geo_type),
-        );
+        let mut igeopoint_sig =
+            InterfaceSignature::define_from_iinspectable("IGeopoint", IGeopoint::IID, &reg);
+        igeopoint_sig.add_method(MethodSignature::new(&reg).add_out(geo_type));
 
         // 4. Call get_Position via MethodSignature
         let igeopoint: IGeopoint = geopoint.cast()?;
@@ -271,7 +269,8 @@ mod tests {
         let statics_iid = windows_core::GUID::from_u128(0x629BDBC8_D932_4FF4_96B9_8D96C5C1E858);
 
         // Get factory and QI to IPropertyValueStatics
-        let factory = WinRTValue::from_activation_factory(h!("Windows.Foundation.PropertyValue")).unwrap();
+        let factory =
+            WinRTValue::from_activation_factory(h!("Windows.Foundation.PropertyValue")).unwrap();
         let statics = factory.cast(&statics_iid).unwrap();
 
         // Build IPropertyValueStatics interface signature
@@ -296,14 +295,16 @@ mod tests {
         let array_reg = metadata_table::MetadataTable::new();
         let array_arg = WinRTValue::Array(value::ArrayData::from_values(
             array_reg.i32_type(),
-            &[WinRTValue::I32(10), WinRTValue::I32(20), WinRTValue::I32(30)],
+            &[
+                WinRTValue::I32(10),
+                WinRTValue::I32(20),
+                WinRTValue::I32(30),
+            ],
         ));
 
         // Call CreateInt32Array at vtable index 29
-        let results = iface.methods[29].call_dynamic(
-            statics.as_object().unwrap().as_raw(),
-            &[array_arg],
-        )?;
+        let results =
+            iface.methods[29].call_dynamic(statics.as_object().unwrap().as_raw(), &[array_arg])?;
 
         assert_eq!(results.len(), 1);
         let result_obj = results[0].as_object().unwrap();
@@ -342,18 +343,12 @@ mod tests {
         // vtable[26..28] = GetUInt8Array, GetInt16Array, GetUInt16Array
         // vtable[29] = GetInt32Array(UINT32* length, INT32** data)
         let reg = metadata_table::MetadataTable::new();
-        let mut iface = InterfaceSignature::define_from_iinspectable(
-            "IPropertyValue",
-            ipv_iid,
-            &reg,
-        );
+        let mut iface =
+            InterfaceSignature::define_from_iinspectable("IPropertyValue", ipv_iid, &reg);
         for _ in 0..23 {
             iface.add_method(MethodSignature::new(&reg)); // placeholders for vtable[6..28]
         }
-        iface.add_method(
-            MethodSignature::new(&reg)
-                .add_out(reg.array(&reg.i32_type())),
-        );
+        iface.add_method(MethodSignature::new(&reg).add_out(reg.array(&reg.i32_type())));
 
         // Call GetInt32Array at vtable index 29
         let results = iface.methods[29].call_dynamic(ipv.as_raw(), &[])?;

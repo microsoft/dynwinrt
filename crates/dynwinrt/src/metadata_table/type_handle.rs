@@ -10,9 +10,9 @@ use crate::abi::{AbiType, AbiValue};
 use crate::signature::MethodSignature;
 use crate::value::WinRTValue;
 
-use super::type_kind::*;
 use super::MetadataTable;
 use super::method_handle::MethodHandle;
+use super::type_kind::*;
 use super::value_data::ValueTypeData;
 
 /// A handle to a type in the MetadataTable. Carries an `Arc<MetadataTable>` so it
@@ -64,7 +64,10 @@ impl TypeHandle {
                 self.table.add_method_to_interface(&iid, name, sig);
                 self
             }
-            _ => panic!("add_method: TypeHandle is not an Interface, got {:?}", self.kind),
+            _ => panic!(
+                "add_method: TypeHandle is not an Interface, got {:?}",
+                self.kind
+            ),
         }
     }
 
@@ -75,9 +78,7 @@ impl TypeHandle {
     /// Get a MethodHandle by vtable index (6 = first user method).
     pub fn method(&self, vtable_index: usize) -> Option<MethodHandle> {
         match self.kind {
-            TypeKind::Interface(iid) => {
-                self.table.method_by_vtable_index(&iid, vtable_index)
-            }
+            TypeKind::Interface(iid) => self.table.method_by_vtable_index(&iid, vtable_index),
             _ => None,
         }
     }
@@ -85,9 +86,7 @@ impl TypeHandle {
     /// Get a MethodHandle by method name.
     pub fn method_by_name(&self, name: &str) -> Option<MethodHandle> {
         match self.kind {
-            TypeKind::Interface(iid) => {
-                self.table.method_by_name(&iid, name)
-            }
+            TypeKind::Interface(iid) => self.table.method_by_name(&iid, name),
             _ => None,
         }
     }
@@ -146,12 +145,19 @@ impl TypeHandle {
             TypeKind::F32 => AbiType::F32,
             TypeKind::F64 => AbiType::F64,
 
-            TypeKind::HString | TypeKind::Guid
-            | TypeKind::Object | TypeKind::Interface(_) | TypeKind::Delegate(_)
-            | TypeKind::RuntimeClass(_) | TypeKind::Parameterized(_)
-            | TypeKind::IAsyncAction | TypeKind::IAsyncActionWithProgress(_)
-            | TypeKind::IAsyncOperation(_) | TypeKind::IAsyncOperationWithProgress(_)
-            | TypeKind::OutValue(_) | TypeKind::ArrayOfIUnknown => AbiType::Ptr,
+            TypeKind::HString
+            | TypeKind::Guid
+            | TypeKind::Object
+            | TypeKind::Interface(_)
+            | TypeKind::Delegate(_)
+            | TypeKind::RuntimeClass(_)
+            | TypeKind::Parameterized(_)
+            | TypeKind::IAsyncAction
+            | TypeKind::IAsyncActionWithProgress(_)
+            | TypeKind::IAsyncOperation(_)
+            | TypeKind::IAsyncOperationWithProgress(_)
+            | TypeKind::OutValue(_)
+            | TypeKind::ArrayOfIUnknown => AbiType::Ptr,
 
             TypeKind::Generic { piid, .. } => {
                 panic!("Cannot get ABI type for uninstantiated Generic({:?})", piid)
@@ -162,7 +168,9 @@ impl TypeHandle {
             }
 
             TypeKind::Array(_) => {
-                panic!("Array types expand to multiple ABI parameters; cannot map to single AbiType")
+                panic!(
+                    "Array types expand to multiple ABI parameters; cannot map to single AbiType"
+                )
             }
         }
     }
@@ -224,9 +232,15 @@ impl TypeHandle {
         match self.kind {
             TypeKind::Array(idx) => {
                 let inner = self.table.get_inner_type(idx);
-                TypeHandle { table: self.table.clone(), kind: inner }
+                TypeHandle {
+                    table: self.table.clone(),
+                    kind: inner,
+                }
             }
-            _ => panic!("array_element_type called on non-array type {:?}", self.kind),
+            _ => panic!(
+                "array_element_type called on non-array type {:?}",
+                self.kind
+            ),
         }
     }
 
@@ -242,7 +256,10 @@ impl TypeHandle {
             TypeKind::I16 => WinRTValue::I16(0),
             TypeKind::U16 | TypeKind::Char16 => WinRTValue::U16(0),
             TypeKind::I32 => WinRTValue::I32(0),
-            TypeKind::Enum(_) => WinRTValue::Enum { value: 0, type_handle: self.clone() },
+            TypeKind::Enum(_) => WinRTValue::Enum {
+                value: 0,
+                type_handle: self.clone(),
+            },
             TypeKind::U32 => WinRTValue::U32(0),
             TypeKind::I64 => WinRTValue::I64(0),
             TypeKind::U64 => WinRTValue::U64(0),
@@ -253,13 +270,15 @@ impl TypeHandle {
             // We must NOT use IUnknown::from_raw(null) because it is UB — the null
             // vtable pointer triggers undefined behavior under release optimizations.
             // After the COM call writes a valid pointer, from_out() wraps it properly.
-            TypeKind::Object | TypeKind::Interface(_) | TypeKind::Delegate(_)
+            TypeKind::Object
+            | TypeKind::Interface(_)
+            | TypeKind::Delegate(_)
             | TypeKind::RuntimeClass(_)
             | TypeKind::Parameterized(_)
-            | TypeKind::IAsyncAction | TypeKind::IAsyncActionWithProgress(_)
-            | TypeKind::IAsyncOperation(_) | TypeKind::IAsyncOperationWithProgress(_) => {
-                WinRTValue::RawPtr(std::ptr::null_mut())
-            }
+            | TypeKind::IAsyncAction
+            | TypeKind::IAsyncActionWithProgress(_)
+            | TypeKind::IAsyncOperation(_)
+            | TypeKind::IAsyncOperationWithProgress(_) => WinRTValue::RawPtr(std::ptr::null_mut()),
 
             TypeKind::HString => WinRTValue::HString(windows_core::HSTRING::new()),
             TypeKind::Guid => WinRTValue::Guid(windows_core::GUID::zeroed()),
@@ -271,15 +290,13 @@ impl TypeHandle {
                 panic!("Cannot create default value for Generic({:?})", piid)
             }
 
-            TypeKind::ArrayOfIUnknown => {
-                WinRTValue::ArrayOfIUnknown(crate::value::ArrayOfIUnknownData(windows::core::Array::new()))
-            }
+            TypeKind::ArrayOfIUnknown => WinRTValue::ArrayOfIUnknown(
+                crate::value::ArrayOfIUnknownData(windows::core::Array::new()),
+            ),
 
             TypeKind::Struct(_) => WinRTValue::Struct(self.default_value()),
 
-            TypeKind::Array(_) => {
-                WinRTValue::Array(crate::array::ArrayData::empty(self.clone()))
-            }
+            TypeKind::Array(_) => WinRTValue::Array(crate::array::ArrayData::empty(self.clone())),
         }
     }
 
@@ -292,17 +309,20 @@ impl TypeHandle {
                 TypeKind::I16 => Ok(WinRTValue::I16(*(ptr as *mut i16))),
                 TypeKind::U16 | TypeKind::Char16 => Ok(WinRTValue::U16(*(ptr as *mut u16))),
                 TypeKind::I32 => Ok(WinRTValue::I32(*(ptr as *mut i32))),
-                TypeKind::Enum(_) => Ok(WinRTValue::Enum { value: *(ptr as *mut i32), type_handle: self.clone() }),
+                TypeKind::Enum(_) => Ok(WinRTValue::Enum {
+                    value: *(ptr as *mut i32),
+                    type_handle: self.clone(),
+                }),
                 TypeKind::U32 => Ok(WinRTValue::U32(*(ptr as *mut u32))),
                 TypeKind::I64 => Ok(WinRTValue::I64(*(ptr as *mut i64))),
                 TypeKind::U64 => Ok(WinRTValue::U64(*(ptr as *mut u64))),
                 TypeKind::F32 => Ok(WinRTValue::F32(*(ptr as *mut f32))),
                 TypeKind::F64 => Ok(WinRTValue::F64(*(ptr as *mut f64))),
 
-                TypeKind::Object | TypeKind::Interface(_) | TypeKind::Delegate(_)
-                | TypeKind::RuntimeClass(_) => {
-                    Ok(WinRTValue::Object(IUnknown::from_raw(ptr)))
-                }
+                TypeKind::Object
+                | TypeKind::Interface(_)
+                | TypeKind::Delegate(_)
+                | TypeKind::RuntimeClass(_) => Ok(WinRTValue::Object(IUnknown::from_raw(ptr))),
 
                 TypeKind::HString => Ok(WinRTValue::HString(std::mem::transmute(ptr))),
 
@@ -315,9 +335,7 @@ impl TypeHandle {
                     if is_async_piid(generic_def) {
                         let raw = IUnknown::from_raw(ptr);
                         let iid = self.iid().unwrap();
-                        make_async_value_from_kind(
-                            raw, generic_def, iid, &args, &self.table,
-                        )
+                        make_async_value_from_kind(raw, generic_def, iid, &args, &self.table)
                     } else {
                         Ok(WinRTValue::Object(IUnknown::from_raw(ptr)))
                     }
@@ -328,7 +346,8 @@ impl TypeHandle {
                 | TypeKind::IAsyncOperation(_)
                 | TypeKind::IAsyncOperationWithProgress(_) => {
                     let raw = IUnknown::from_raw(ptr);
-                    let info: windows_future::IAsyncInfo = raw.cast()
+                    let info: windows_future::IAsyncInfo = raw
+                        .cast()
                         .map_err(|e| crate::result::Error::WindowsError(e))?;
                     Ok(WinRTValue::Async(crate::value::AsyncInfo {
                         info,
@@ -353,17 +372,23 @@ impl TypeHandle {
             (TypeKind::I16, AbiValue::I16(v)) => Ok(WinRTValue::I16(*v)),
             (TypeKind::U16 | TypeKind::Char16, AbiValue::U16(v)) => Ok(WinRTValue::U16(*v)),
             (TypeKind::I32, AbiValue::I32(v)) => Ok(WinRTValue::I32(*v)),
-            (TypeKind::Enum(_), AbiValue::I32(v)) => Ok(WinRTValue::Enum { value: *v, type_handle: self.clone() }),
+            (TypeKind::Enum(_), AbiValue::I32(v)) => Ok(WinRTValue::Enum {
+                value: *v,
+                type_handle: self.clone(),
+            }),
             (TypeKind::U32, AbiValue::U32(v)) => Ok(WinRTValue::U32(*v)),
             (TypeKind::I64, AbiValue::I64(v)) => Ok(WinRTValue::I64(*v)),
             (TypeKind::U64, AbiValue::U64(v)) => Ok(WinRTValue::U64(*v)),
             (TypeKind::F32, AbiValue::F32(v)) => Ok(WinRTValue::F32(*v)),
             (TypeKind::F64, AbiValue::F64(v)) => Ok(WinRTValue::F64(*v)),
 
-            (TypeKind::Object | TypeKind::Interface(_) | TypeKind::Delegate(_)
-            | TypeKind::RuntimeClass(_), AbiValue::Pointer(p)) => {
-                Ok(WinRTValue::Object(unsafe { IUnknown::from_raw(*p) }))
-            }
+            (
+                TypeKind::Object
+                | TypeKind::Interface(_)
+                | TypeKind::Delegate(_)
+                | TypeKind::RuntimeClass(_),
+                AbiValue::Pointer(p),
+            ) => Ok(WinRTValue::Object(unsafe { IUnknown::from_raw(*p) })),
 
             (TypeKind::HString, AbiValue::Pointer(p)) => {
                 Ok(WinRTValue::HString(unsafe { core::mem::transmute(*p) }))
@@ -378,23 +403,22 @@ impl TypeHandle {
                 if is_async_piid(generic_def) {
                     let raw = unsafe { IUnknown::from_raw(*p) };
                     let iid = self.iid().unwrap();
-                    make_async_value_from_kind(
-                        raw, generic_def, iid, &args, &self.table,
-                    )
+                    make_async_value_from_kind(raw, generic_def, iid, &args, &self.table)
                 } else {
                     Ok(WinRTValue::Object(unsafe { IUnknown::from_raw(*p) }))
                 }
             }
 
-            (TypeKind::IAsyncAction
-            | TypeKind::IAsyncActionWithProgress(_)
-            | TypeKind::IAsyncOperation(_)
-            | TypeKind::IAsyncOperationWithProgress(_), AbiValue::Pointer(_)) => {
-                match out {
-                    AbiValue::Pointer(p) => self.from_out(*p),
-                    _ => unreachable!(),
-                }
-            }
+            (
+                TypeKind::IAsyncAction
+                | TypeKind::IAsyncActionWithProgress(_)
+                | TypeKind::IAsyncOperation(_)
+                | TypeKind::IAsyncOperationWithProgress(_),
+                AbiValue::Pointer(_),
+            ) => match out {
+                AbiValue::Pointer(p) => self.from_out(*p),
+                _ => unreachable!(),
+            },
 
             (TypeKind::OutValue(_), _) => Err(Error::InvalidNestedOutType(self.kind)),
             _ => Err(Error::InvalidTypeAbiToWinRT(self.kind, out.abi_type())),
@@ -428,12 +452,15 @@ fn make_async_value_from_kind(
     let piid = match generic_def {
         TypeKind::Generic { piid, .. } => piid,
         TypeKind::Interface(iid) => iid,
-        _ => return Err(crate::result::Error::WindowsError(
-            windows_core::Error::from_hresult(windows_core::HRESULT(0x80004002u32 as i32)),
-        )),
+        _ => {
+            return Err(crate::result::Error::WindowsError(
+                windows_core::Error::from_hresult(windows_core::HRESULT(0x80004002u32 as i32)),
+            ));
+        }
     };
 
-    let info: windows_future::IAsyncInfo = raw.cast()
+    let info: windows_future::IAsyncInfo = raw
+        .cast()
         .map_err(|e| crate::result::Error::WindowsError(e))?;
 
     let async_type = if piid == IASYNC_ACTION {
@@ -458,5 +485,8 @@ fn make_async_value_from_kind(
         ));
     };
 
-    Ok(WinRTValue::Async(crate::value::AsyncInfo { info, async_type }))
+    Ok(WinRTValue::Async(crate::value::AsyncInfo {
+        info,
+        async_type,
+    }))
 }

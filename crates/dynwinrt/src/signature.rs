@@ -5,7 +5,11 @@ use libffi::middle::Cif;
 use std::sync::Arc;
 use windows::core::{GUID, HSTRING, Interface};
 
-use crate::{call, metadata_table::{TypeHandle, TypeKind, MetadataTable}, value::WinRTValue};
+use crate::{
+    call,
+    metadata_table::{MetadataTable, TypeHandle, TypeKind},
+    value::WinRTValue,
+};
 
 /// How a parameter is passed at the ABI level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,9 +133,17 @@ impl MethodSignature {
         };
 
         // Classify array parameters
-        let array_in_count = self.parameters.iter().filter(|p| !p.is_out() && p.typ.is_array()).count();
+        let array_in_count = self
+            .parameters
+            .iter()
+            .filter(|p| !p.is_out() && p.typ.is_array())
+            .count();
         let fill_out_count = self.parameters.iter().filter(|p| p.is_fill_array()).count();
-        let array_out_count = self.parameters.iter().filter(|p| p.is_out() && p.typ.is_array() && !p.is_fill_array()).count();
+        let array_out_count = self
+            .parameters
+            .iter()
+            .filter(|p| p.is_out() && p.typ.is_array() && !p.is_fill_array())
+            .count();
         let scalar_in_count = in_count - array_in_count;
         let scalar_out_count = self.out_count - fill_out_count - array_out_count;
 
@@ -144,24 +156,54 @@ impl MethodSignature {
         } else if simple_in && self.out_count == 1 {
             CallStrategy::Direct1In1Out
         // ReceiveArray only: fn(this, *mut u32, *mut *mut c_void) -> HRESULT
-        } else if scalar_in_count == 0 && array_in_count == 0 && array_out_count == 1 && fill_out_count == 0 && scalar_out_count == 0 {
+        } else if scalar_in_count == 0
+            && array_in_count == 0
+            && array_out_count == 1
+            && fill_out_count == 0
+            && scalar_out_count == 0
+        {
             CallStrategy::DirectReceiveArray
         // PassArray + 1 out: fn(this, u32, *const u8, out) -> HRESULT
-        } else if scalar_in_count == 0 && array_in_count == 1 && array_out_count == 0 && fill_out_count == 0 && scalar_out_count == 1 {
+        } else if scalar_in_count == 0
+            && array_in_count == 1
+            && array_out_count == 0
+            && fill_out_count == 0
+            && scalar_out_count == 1
+        {
             CallStrategy::DirectPassArray1Out
         // FillArray only: fn(this, u32, *mut u8, *mut u32) -> HRESULT
-        } else if scalar_in_count == 0 && array_in_count == 0 && fill_out_count == 1 && array_out_count == 0 && scalar_out_count == 0 {
+        } else if scalar_in_count == 0
+            && array_in_count == 0
+            && fill_out_count == 1
+            && array_out_count == 0
+            && scalar_out_count == 0
+        {
             CallStrategy::DirectFillArray
         // 1 scalar in + FillArray: fn(this, val, u32, *mut u8, *mut u32) -> HRESULT
-        } else if scalar_in_count == 1 && array_in_count == 0 && fill_out_count == 1 && array_out_count == 0 && scalar_out_count == 0 {
-            let in_param = self.parameters.iter().find(|p| !p.is_out() && !p.typ.is_array()).unwrap();
+        } else if scalar_in_count == 1
+            && array_in_count == 0
+            && fill_out_count == 1
+            && array_out_count == 0
+            && scalar_out_count == 0
+        {
+            let in_param = self
+                .parameters
+                .iter()
+                .find(|p| !p.is_out() && !p.typ.is_array())
+                .unwrap();
             if !matches!(in_param.typ.kind(), TypeKind::HString | TypeKind::Struct(_)) {
                 CallStrategy::Direct1InFillArray
             } else {
-                CallStrategy::Libffi(Cif::new(types.into_iter(), self.return_type.abi_type().libffi_type()))
+                CallStrategy::Libffi(Cif::new(
+                    types.into_iter(),
+                    self.return_type.abi_type().libffi_type(),
+                ))
             }
         } else {
-            CallStrategy::Libffi(Cif::new(types.into_iter(), self.return_type.abi_type().libffi_type()))
+            CallStrategy::Libffi(Cif::new(
+                types.into_iter(),
+                self.return_type.abi_type().libffi_type(),
+            ))
         };
 
         Method {
@@ -215,23 +257,25 @@ impl Method {
     // --- Fast getter paths: zero Vec/WinRTValue allocation ---
 
     /// Getter → i32 (0 in, 1 out). Writes directly to stack i32.
-    pub fn call_getter_i32(
-        &self,
-        obj: *mut std::ffi::c_void,
-    ) -> windows_core::Result<i32> {
+    pub fn call_getter_i32(&self, obj: *mut std::ffi::c_void) -> windows_core::Result<i32> {
         let mut out: i32 = 0;
-        let hr = call::call_winrt_method_1(self.info.index, obj, &mut out as *mut i32 as *mut std::ffi::c_void);
+        let hr = call::call_winrt_method_1(
+            self.info.index,
+            obj,
+            &mut out as *mut i32 as *mut std::ffi::c_void,
+        );
         hr.ok()?;
         Ok(out)
     }
 
     /// Getter → bool (0 in, 1 out). Writes directly to stack bool.
-    pub fn call_getter_bool(
-        &self,
-        obj: *mut std::ffi::c_void,
-    ) -> windows_core::Result<bool> {
+    pub fn call_getter_bool(&self, obj: *mut std::ffi::c_void) -> windows_core::Result<bool> {
         let mut out: i32 = 0; // WinRT bool is i32 on ABI
-        let hr = call::call_winrt_method_1(self.info.index, obj, &mut out as *mut i32 as *mut std::ffi::c_void);
+        let hr = call::call_winrt_method_1(
+            self.info.index,
+            obj,
+            &mut out as *mut i32 as *mut std::ffi::c_void,
+        );
         hr.ok()?;
         Ok(out != 0)
     }
@@ -243,7 +287,11 @@ impl Method {
     ) -> windows_core::Result<windows_core::HSTRING> {
         // HSTRING is a pointer-sized handle on ABI. Let WinRT write it directly.
         let mut out = windows_core::HSTRING::new();
-        let hr = call::call_winrt_method_1(self.info.index, obj, &mut out as *mut windows_core::HSTRING as *mut std::ffi::c_void);
+        let hr = call::call_winrt_method_1(
+            self.info.index,
+            obj,
+            &mut out as *mut windows_core::HSTRING as *mut std::ffi::c_void,
+        );
         hr.ok()?;
         Ok(out)
     }
@@ -254,12 +302,18 @@ impl Method {
         obj: *mut std::ffi::c_void,
     ) -> windows_core::Result<WinRTValue> {
         let mut out: *mut std::ffi::c_void = std::ptr::null_mut();
-        let hr = call::call_winrt_method_1(self.info.index, obj, &mut out as *mut _ as *mut std::ffi::c_void);
+        let hr = call::call_winrt_method_1(
+            self.info.index,
+            obj,
+            &mut out as *mut _ as *mut std::ffi::c_void,
+        );
         hr.ok()?;
         if out.is_null() {
             Ok(WinRTValue::Null)
         } else {
-            Ok(WinRTValue::Object(unsafe { windows_core::IUnknown::from_raw(out) }))
+            Ok(WinRTValue::Object(unsafe {
+                windows_core::IUnknown::from_raw(out)
+            }))
         }
     }
 
@@ -284,8 +338,9 @@ impl Method {
                 // COM pointer types use RawPtr(null) as buffer to avoid IUnknown::from_raw(null) UB.
                 // After COM writes the pointer, convert via from_out.
                 if let WinRTValue::RawPtr(raw_ptr) = out {
-                    out = param.typ.from_out(raw_ptr)
-                        .map_err(|e| windows_core::Error::new(windows_core::HRESULT(-1), &format!("{:?}", e)))?;
+                    out = param.typ.from_out(raw_ptr).map_err(|e| {
+                        windows_core::Error::new(windows_core::HRESULT(-1), &format!("{:?}", e))
+                    })?;
                 }
                 out.sanitize_null_object();
                 Ok(vec![out])
@@ -303,8 +358,9 @@ impl Method {
                 let hr = call::call_1in_1out(self.info.index, obj, &args[0], out.out_ptr());
                 hr.ok()?;
                 if let WinRTValue::RawPtr(raw_ptr) = out {
-                    out = out_param.typ.from_out(raw_ptr)
-                        .map_err(|e| windows_core::Error::new(windows_core::HRESULT(-1), &format!("{:?}", e)))?;
+                    out = out_param.typ.from_out(raw_ptr).map_err(|e| {
+                        windows_core::Error::new(windows_core::HRESULT(-1), &format!("{:?}", e))
+                    })?;
                 }
                 out.sanitize_null_object();
                 Ok(vec![out])
@@ -318,8 +374,11 @@ impl Method {
                 let fptr = call::get_vtable_function_ptr(obj, self.info.index);
                 let hr: windows_core::HRESULT = unsafe {
                     let method: unsafe extern "system" fn(
-                        *mut std::ffi::c_void, *mut u32, *mut *mut std::ffi::c_void,
-                    ) -> windows_core::HRESULT = std::mem::transmute(fptr);
+                        *mut std::ffi::c_void,
+                        *mut u32,
+                        *mut *mut std::ffi::c_void,
+                    )
+                        -> windows_core::HRESULT = std::mem::transmute(fptr);
                     method(obj, &mut length, &mut data_ptr)
                 };
                 if hr.is_err() {
@@ -327,14 +386,18 @@ impl Method {
                     // Wrap in ArrayData to release elements + CoTaskMemFree.
                     if !data_ptr.is_null() {
                         let _ = crate::array::ArrayData::from_cotaskmem(
-                            elem_type.clone(), data_ptr, length as usize,
+                            elem_type.clone(),
+                            data_ptr,
+                            length as usize,
                         );
                     }
                     hr.ok()?;
                 }
                 let array = if data_ptr.is_null() || length == 0 {
                     if !data_ptr.is_null() {
-                        unsafe { windows::Win32::System::Com::CoTaskMemFree(Some(data_ptr)); }
+                        unsafe {
+                            windows::Win32::System::Com::CoTaskMemFree(Some(data_ptr));
+                        }
                     }
                     crate::array::ArrayData::empty(elem_type)
                 } else {
@@ -352,14 +415,19 @@ impl Method {
                 let fptr = call::get_vtable_function_ptr(obj, self.info.index);
                 let hr: windows_core::HRESULT = unsafe {
                     let method: unsafe extern "system" fn(
-                        *mut std::ffi::c_void, u32, *const u8, *mut std::ffi::c_void,
-                    ) -> windows_core::HRESULT = std::mem::transmute(fptr);
+                        *mut std::ffi::c_void,
+                        u32,
+                        *const u8,
+                        *mut std::ffi::c_void,
+                    )
+                        -> windows_core::HRESULT = std::mem::transmute(fptr);
                     method(obj, array_data.len() as u32, buffer.as_ptr(), out.out_ptr())
                 };
                 hr.ok()?;
                 if let WinRTValue::RawPtr(raw_ptr) = out {
-                    out = out_param.typ.from_out(raw_ptr)
-                        .map_err(|e| windows_core::Error::new(windows_core::HRESULT(-1), &format!("{:?}", e)))?;
+                    out = out_param.typ.from_out(raw_ptr).map_err(|e| {
+                        windows_core::Error::new(windows_core::HRESULT(-1), &format!("{:?}", e))
+                    })?;
                 }
                 out.sanitize_null_object();
                 Ok(vec![out])
@@ -379,9 +447,8 @@ impl Method {
                 let array_data = args[param.value_index].as_array().unwrap();
                 let capacity = array_data.len() as u32;
                 let total_bytes = capacity as usize * elem_type.element_size();
-                let buffer_ptr = unsafe {
-                    windows::Win32::System::Com::CoTaskMemAlloc(total_bytes) as *mut u8
-                };
+                let buffer_ptr =
+                    unsafe { windows::Win32::System::Com::CoTaskMemAlloc(total_bytes) as *mut u8 };
                 assert!(!buffer_ptr.is_null(), "CoTaskMemAlloc failed for FillArray");
                 unsafe { std::ptr::write_bytes(buffer_ptr, 0, total_bytes) };
                 // Use sentinel to detect if callee actually wrote actual_count.
@@ -391,8 +458,12 @@ impl Method {
                 let mut actual_count: u32 = 0;
                 let hr: windows_core::HRESULT = unsafe {
                     let method: unsafe extern "system" fn(
-                        *mut std::ffi::c_void, u32, *mut u8, *mut u32,
-                    ) -> windows_core::HRESULT = std::mem::transmute(fptr);
+                        *mut std::ffi::c_void,
+                        u32,
+                        *mut u8,
+                        *mut u32,
+                    )
+                        -> windows_core::HRESULT = std::mem::transmute(fptr);
                     method(obj, capacity, buffer_ptr, &mut actual_count)
                 };
                 if hr.is_err() {
@@ -400,7 +471,9 @@ impl Method {
                     // Buffer was zero-initialized, so null slots are safe to release.
                     // Use capacity as cleanup length — ArrayData::Drop skips null elements.
                     let _ = crate::array::ArrayData::from_cotaskmem(
-                        elem_type.clone(), buffer_ptr as _, capacity as usize,
+                        elem_type.clone(),
+                        buffer_ptr as _,
+                        capacity as usize,
                     );
                     hr.ok()?;
                 }
@@ -411,34 +484,46 @@ impl Method {
                 // Clamp to capacity to prevent OOB if callee misbehaves
                 actual_count = std::cmp::min(actual_count, capacity);
                 let array = crate::array::ArrayData::from_cotaskmem(
-                    elem_type, buffer_ptr as _, actual_count as usize,
+                    elem_type,
+                    buffer_ptr as _,
+                    actual_count as usize,
                 );
                 Ok(vec![WinRTValue::Array(array)])
             }
             CallStrategy::Direct1InFillArray => {
                 // fn(this, val, u32, *mut u8, *mut u32) -> HRESULT
                 let in_param = self.info.parameters.iter().find(|p| !p.is_out()).unwrap();
-                let fill_param = self.info.parameters.iter().find(|p| p.is_fill_array()).unwrap();
+                let fill_param = self
+                    .info
+                    .parameters
+                    .iter()
+                    .find(|p| p.is_fill_array())
+                    .unwrap();
                 let array_data = args[fill_param.value_index].as_array().unwrap();
                 let elem_type = fill_param.typ.array_element_type();
                 let capacity = array_data.len() as u32;
                 let total_bytes = capacity as usize * elem_type.element_size();
-                let buffer_ptr = unsafe {
-                    windows::Win32::System::Com::CoTaskMemAlloc(total_bytes) as *mut u8
-                };
+                let buffer_ptr =
+                    unsafe { windows::Win32::System::Com::CoTaskMemAlloc(total_bytes) as *mut u8 };
                 assert!(!buffer_ptr.is_null(), "CoTaskMemAlloc failed for FillArray");
                 unsafe { std::ptr::write_bytes(buffer_ptr, 0, total_bytes) };
                 // Use sentinel to detect if callee actually wrote actual_count.
                 let mut actual_count: u32 = 0;
                 let fptr = call::get_vtable_function_ptr(obj, self.info.index);
                 let hr = call::call_fill_array_1in(
-                    fptr, obj, &args[in_param.value_index],
-                    capacity, buffer_ptr, &mut actual_count,
+                    fptr,
+                    obj,
+                    &args[in_param.value_index],
+                    capacity,
+                    buffer_ptr,
+                    &mut actual_count,
                 );
                 if hr.is_err() {
                     // Buffer was zero-initialized; use capacity for cleanup.
                     let _ = crate::array::ArrayData::from_cotaskmem(
-                        elem_type.clone(), buffer_ptr as _, capacity as usize,
+                        elem_type.clone(),
+                        buffer_ptr as _,
+                        capacity as usize,
                     );
                     hr.ok()?;
                 }
@@ -449,20 +534,20 @@ impl Method {
                 // Clamp to capacity to prevent OOB if callee misbehaves
                 actual_count = std::cmp::min(actual_count, capacity);
                 let array = crate::array::ArrayData::from_cotaskmem(
-                    elem_type, buffer_ptr as _, actual_count as usize,
+                    elem_type,
+                    buffer_ptr as _,
+                    actual_count as usize,
                 );
                 Ok(vec![WinRTValue::Array(array)])
             }
-            CallStrategy::Libffi(cif) => {
-                call::call_winrt_method_dynamic(
-                    self.info.index,
-                    obj,
-                    &self.info.parameters,
-                    args,
-                    self.info.out_count,
-                    cif,
-                )
-            }
+            CallStrategy::Libffi(cif) => call::call_winrt_method_dynamic(
+                self.info.index,
+                obj,
+                &self.info.parameters,
+                args,
+                self.info.out_count,
+                cif,
+            ),
         }
     }
 }
@@ -477,7 +562,11 @@ pub struct InterfaceSignature {
 }
 
 impl InterfaceSignature {
-    pub fn define_interface(name: String, iid: windows_core::GUID, table: &Arc<MetadataTable>) -> Self {
+    pub fn define_interface(
+        name: String,
+        iid: windows_core::GUID,
+        table: &Arc<MetadataTable>,
+    ) -> Self {
         InterfaceSignature {
             name,
             iid,

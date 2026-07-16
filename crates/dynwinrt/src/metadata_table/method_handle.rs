@@ -46,25 +46,28 @@ impl MethodHandle {
 
     pub fn call_getter_i32(&self, obj: *mut std::ffi::c_void) -> crate::result::Result<i32> {
         let method_ptr = self.table.method_ptr(self.index);
-        unsafe { (*method_ptr).call_getter_i32(obj) }
-            .map_err(crate::result::Error::WindowsError)
+        unsafe { (*method_ptr).call_getter_i32(obj) }.map_err(crate::result::Error::WindowsError)
     }
 
     pub fn call_getter_bool(&self, obj: *mut std::ffi::c_void) -> crate::result::Result<bool> {
         let method_ptr = self.table.method_ptr(self.index);
-        unsafe { (*method_ptr).call_getter_bool(obj) }
-            .map_err(crate::result::Error::WindowsError)
+        unsafe { (*method_ptr).call_getter_bool(obj) }.map_err(crate::result::Error::WindowsError)
     }
 
-    pub fn call_getter_hstring(&self, obj: *mut std::ffi::c_void) -> crate::result::Result<windows_core::HSTRING> {
+    pub fn call_getter_hstring(
+        &self,
+        obj: *mut std::ffi::c_void,
+    ) -> crate::result::Result<windows_core::HSTRING> {
         let method_ptr = self.table.method_ptr(self.index);
         unsafe { (*method_ptr).call_getter_hstring(obj) }
             .map_err(crate::result::Error::WindowsError)
     }
 
-    pub fn call_getter_object(&self, obj: *mut std::ffi::c_void) -> crate::result::Result<WinRTValue> {
+    pub fn call_getter_object(
+        &self,
+        obj: *mut std::ffi::c_void,
+    ) -> crate::result::Result<WinRTValue> {
         let method_ptr = self.table.method_ptr(self.index);
-        unsafe { (*method_ptr).call_getter_object(obj) }
-            .map_err(crate::result::Error::WindowsError)
+        unsafe { (*method_ptr).call_getter_object(obj) }.map_err(crate::result::Error::WindowsError)
     }
 }

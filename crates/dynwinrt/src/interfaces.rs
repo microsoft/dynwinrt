@@ -1,9 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use std::sync::Arc;
-use crate::signature::{InterfaceSignature, MethodSignature};
 use crate::metadata_table::MetadataTable;
+use crate::signature::{InterfaceSignature, MethodSignature};
+use std::sync::Arc;
 
 pub fn uri_vtable(reg: &Arc<MetadataTable>) -> InterfaceSignature {
     let mut vtable = InterfaceSignature::define_from_iinspectable(

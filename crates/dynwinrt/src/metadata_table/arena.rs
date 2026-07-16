@@ -58,7 +58,11 @@ impl MetadataTable {
         TypeKind::RuntimeClass(idx)
     }
 
-    pub(super) fn push_parameterized(&self, generic_def: TypeKind, args: Vec<TypeKind>) -> TypeKind {
+    pub(super) fn push_parameterized(
+        &self,
+        generic_def: TypeKind,
+        args: Vec<TypeKind>,
+    ) -> TypeKind {
         let mut pts = self.parameterized_types.write().unwrap();
         let idx = pts.len() as u32;
         pts.push(ParameterizedData { generic_def, args });
@@ -110,17 +114,22 @@ impl MetadataTable {
 
     /// Create an interface method table. Called only when dedup already checked by caller.
     pub(super) fn create_interface_method_table(&self, iid: GUID) {
-        self.interface_methods.write().unwrap().entry(iid).or_insert_with(|| InterfaceMethodTable {
-            method_names: Vec::new(),
-            method_indices: Vec::new(),
-        });
+        self.interface_methods
+            .write()
+            .unwrap()
+            .entry(iid)
+            .or_insert_with(|| InterfaceMethodTable {
+                method_names: Vec::new(),
+                method_indices: Vec::new(),
+            });
     }
 
     /// Add a method to an interface's method table. Returns the vtable index.
     /// If a method with the same name already exists, skips and returns the existing vtable index.
     pub(super) fn push_method(&self, iid: &GUID, name: &str, sig: MethodSignature) -> u32 {
         let mut iface_methods = self.interface_methods.write().unwrap();
-        let table = iface_methods.get_mut(iid)
+        let table = iface_methods
+            .get_mut(iid)
             .expect("Interface not found — call register_interface first");
 
         // Dedup: if method name already registered, return existing vtable index
@@ -145,7 +154,10 @@ impl MetadataTable {
     }
 
     pub(super) fn insert_named_type(&self, name: &str, kind: TypeKind) {
-        self.type_names.write().unwrap().insert(name.to_string(), kind);
+        self.type_names
+            .write()
+            .unwrap()
+            .insert(name.to_string(), kind);
     }
 
     // -----------------------------------------------------------------------
@@ -179,14 +191,17 @@ impl MetadataTable {
     pub(crate) fn get_enum_member_name(&self, idx: u32, value: i32) -> Option<String> {
         let enums = self.enum_entries.read().unwrap();
         let entry = &enums[idx as usize];
-        entry.members.iter()
+        entry
+            .members
+            .iter()
             .find(|(_, v)| *v == value)
             .map(|(n, _)| n.clone())
     }
 
     pub(super) fn get_enum_members(&self, enum_name: &str) -> Option<Vec<(String, i32)>> {
         let enums = self.enum_entries.read().unwrap();
-        enums.iter()
+        enums
+            .iter()
             .find(|e| e.name == enum_name)
             .map(|e| e.members.clone())
     }
@@ -215,7 +230,9 @@ impl MetadataTable {
     }
 
     pub(super) fn get_method_arena_index_by_vtable(
-        &self, iid: &GUID, vtable_index: usize,
+        &self,
+        iid: &GUID,
+        vtable_index: usize,
     ) -> Option<u32> {
         if vtable_index < 6 {
             return None;
@@ -226,9 +243,7 @@ impl MetadataTable {
         table.method_indices.get(local_index).copied()
     }
 
-    pub(super) fn get_method_arena_index_by_name(
-        &self, iid: &GUID, name: &str,
-    ) -> Option<u32> {
+    pub(super) fn get_method_arena_index_by_name(&self, iid: &GUID, name: &str) -> Option<u32> {
         let iface_methods = self.interface_methods.read().unwrap();
         let table = iface_methods.get(iid)?;
         let pos = table.method_names.iter().position(|n| n == name)?;
@@ -245,14 +260,18 @@ impl MetadataTable {
         }
         match kind {
             TypeKind::Struct(id) => self.structs.read().unwrap()[id as usize].layout.size(),
-            TypeKind::HString | TypeKind::Object
-            | TypeKind::Interface(_) | TypeKind::Delegate(_)
-            | TypeKind::RuntimeClass(_) | TypeKind::Parameterized(_)
-            | TypeKind::IAsyncAction | TypeKind::IAsyncActionWithProgress(_)
-            | TypeKind::IAsyncOperation(_) | TypeKind::IAsyncOperationWithProgress(_)
-            | TypeKind::OutValue(_) | TypeKind::ArrayOfIUnknown => {
-                std::mem::size_of::<*mut std::ffi::c_void>()
-            }
+            TypeKind::HString
+            | TypeKind::Object
+            | TypeKind::Interface(_)
+            | TypeKind::Delegate(_)
+            | TypeKind::RuntimeClass(_)
+            | TypeKind::Parameterized(_)
+            | TypeKind::IAsyncAction
+            | TypeKind::IAsyncActionWithProgress(_)
+            | TypeKind::IAsyncOperation(_)
+            | TypeKind::IAsyncOperationWithProgress(_)
+            | TypeKind::OutValue(_)
+            | TypeKind::ArrayOfIUnknown => std::mem::size_of::<*mut std::ffi::c_void>(),
             _ => panic!("size_of_kind not supported for {:?}", kind),
         }
     }
@@ -263,14 +282,18 @@ impl MetadataTable {
         }
         match kind {
             TypeKind::Struct(id) => self.structs.read().unwrap()[id as usize].layout.align(),
-            TypeKind::HString | TypeKind::Object
-            | TypeKind::Interface(_) | TypeKind::Delegate(_)
-            | TypeKind::RuntimeClass(_) | TypeKind::Parameterized(_)
-            | TypeKind::IAsyncAction | TypeKind::IAsyncActionWithProgress(_)
-            | TypeKind::IAsyncOperation(_) | TypeKind::IAsyncOperationWithProgress(_)
-            | TypeKind::OutValue(_) | TypeKind::ArrayOfIUnknown => {
-                std::mem::align_of::<*mut std::ffi::c_void>()
-            }
+            TypeKind::HString
+            | TypeKind::Object
+            | TypeKind::Interface(_)
+            | TypeKind::Delegate(_)
+            | TypeKind::RuntimeClass(_)
+            | TypeKind::Parameterized(_)
+            | TypeKind::IAsyncAction
+            | TypeKind::IAsyncActionWithProgress(_)
+            | TypeKind::IAsyncOperation(_)
+            | TypeKind::IAsyncOperationWithProgress(_)
+            | TypeKind::OutValue(_)
+            | TypeKind::ArrayOfIUnknown => std::mem::align_of::<*mut std::ffi::c_void>(),
             _ => panic!("align_of_kind not supported for {:?}", kind),
         }
     }
@@ -317,12 +340,18 @@ impl MetadataTable {
                 libffi::middle::Type::structure(field_types)
             }
             // Pointer-sized types (COM objects, HString handle, etc.)
-            TypeKind::HString | TypeKind::Object | TypeKind::Interface(_)
-            | TypeKind::Delegate(_) | TypeKind::RuntimeClass(_)
+            TypeKind::HString
+            | TypeKind::Object
+            | TypeKind::Interface(_)
+            | TypeKind::Delegate(_)
+            | TypeKind::RuntimeClass(_)
             | TypeKind::Parameterized(_)
-            | TypeKind::IAsyncAction | TypeKind::IAsyncActionWithProgress(_)
-            | TypeKind::IAsyncOperation(_) | TypeKind::IAsyncOperationWithProgress(_)
-            | TypeKind::OutValue(_) | TypeKind::ArrayOfIUnknown => libffi::middle::Type::pointer(),
+            | TypeKind::IAsyncAction
+            | TypeKind::IAsyncActionWithProgress(_)
+            | TypeKind::IAsyncOperation(_)
+            | TypeKind::IAsyncOperationWithProgress(_)
+            | TypeKind::OutValue(_)
+            | TypeKind::ArrayOfIUnknown => libffi::middle::Type::pointer(),
             _ => panic!("libffi_type_kind: unsupported for {:?}", kind),
         }
     }

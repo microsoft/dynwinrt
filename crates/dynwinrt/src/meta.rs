@@ -13,16 +13,25 @@ mod tests {
         // IPropertyValueStatics is the exclusive interface of PropertyValue
         let def = index.expect("Windows.Foundation", "IPropertyValueStatics");
         for (i, method) in def.methods().enumerate() {
-            println!("  vtable[{}+6] = {} ({:?})", i, method.name(), method.signature(&[]).return_type);
+            println!(
+                "  vtable[{}+6] = {} ({:?})",
+                i,
+                method.name(),
+                method.signature(&[]).return_type
+            );
         }
 
         println!("\nIPropertyValue:");
         let def2 = index.expect("Windows.Foundation", "IPropertyValue");
         for (i, method) in def2.methods().enumerate() {
-            println!("  vtable[{}+6] = {} ({:?})", i, method.name(), method.signature(&[]).return_type);
+            println!(
+                "  vtable[{}+6] = {} ({:?})",
+                i,
+                method.name(),
+                method.signature(&[]).return_type
+            );
         }
     }
-
 
     #[test]
     fn test_winmd_read_uri() {
@@ -87,7 +96,8 @@ mod tests {
 
         let winmd_dir = r"C:\Program Files\Microsoft Office\root\vfs\ProgramFilesCommonX64\Microsoft Shared\Office16\AI";
         let mut paths: Vec<String> = vec![
-            r"C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd".into(),
+            r"C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd"
+                .into(),
         ];
         if let Ok(entries) = std::fs::read_dir(winmd_dir) {
             for entry in entries.flatten() {
@@ -109,12 +119,13 @@ mod tests {
                 if let Some(extends) = def.extends() {
                     if extends.namespace() == "System" && extends.name() == "ValueType" {
                         let fields: Vec<_> = def.fields().collect();
-                        let field_types: Vec<String> = fields.iter()
+                        let field_types: Vec<String> = fields
+                            .iter()
                             .map(|f| format!("{}: {:?}", f.name(), f.ty()))
                             .collect();
-                        let has_non_primitive = fields.iter().any(|f| {
-                            matches!(f.ty(), Type::String | Type::Name(..))
-                        });
+                        let has_non_primitive = fields
+                            .iter()
+                            .any(|f| matches!(f.ty(), Type::String | Type::Name(..)));
                         if has_non_primitive {
                             println!(
                                 "{}.{} {{ {} }}",
@@ -139,7 +150,8 @@ mod tests {
 
         let winmd_dir = r"C:\Program Files\Microsoft Office\root\vfs\ProgramFilesCommonX64\Microsoft Shared\Office16\AI";
         let mut paths: Vec<String> = vec![
-            r"C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd".into(),
+            r"C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd"
+                .into(),
         ];
         if let Ok(entries) = std::fs::read_dir(winmd_dir) {
             for entry in entries.flatten() {

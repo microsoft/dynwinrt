@@ -7,9 +7,9 @@
 use std::sync::{Arc, OnceLock};
 
 use dynwinrt;
-use napi_derive::napi;
 use napi::bindgen_prelude::BigInt;
 use napi::threadsafe_function::ThreadsafeFunctionCallMode;
+use napi_derive::napi;
 use windows::core::{IUnknown, Interface, HSTRING};
 
 /// Shared MetadataTable — created once, used everywhere.
@@ -81,7 +81,9 @@ pub fn get_winappsdk_resource_pri_path() -> napi::Result<String> {
 
 #[napi]
 pub fn ro_initialize(apartment_type: Option<i32>) {
-  use windows::Win32::System::WinRT::{RoInitialize, RO_INIT_MULTITHREADED, RO_INIT_SINGLETHREADED};
+  use windows::Win32::System::WinRT::{
+    RoInitialize, RO_INIT_MULTITHREADED, RO_INIT_SINGLETHREADED,
+  };
   let init_type = match apartment_type.unwrap_or(1) {
     0 => RO_INIT_SINGLETHREADED,
     _ => RO_INIT_MULTITHREADED,
@@ -211,7 +213,10 @@ impl DynWinRTType {
   }
 
   #[napi]
-  pub fn i_async_operation_with_progress(result_type: &DynWinRTType, progress_type: &DynWinRTType) -> Self {
+  pub fn i_async_operation_with_progress(
+    result_type: &DynWinRTType,
+    progress_type: &DynWinRTType,
+  ) -> Self {
     DynWinRTType(TABLE.async_operation_with_progress(&result_type.0, &progress_type.0))
   }
 
@@ -226,7 +231,11 @@ impl DynWinRTType {
   /// Create a named enum type (ABI = i32, carries name for signature).
   /// `member_names` and `member_values` are parallel arrays of enum member definitions.
   #[napi]
-  pub fn enum_type(name: String, member_names: Option<Vec<String>>, member_values: Option<Vec<i32>>) -> Self {
+  pub fn enum_type(
+    name: String,
+    member_names: Option<Vec<String>>,
+    member_values: Option<Vec<i32>>,
+  ) -> Self {
     let members = match (member_names, member_values) {
       (Some(names), Some(values)) => names.into_iter().zip(values).collect(),
       _ => Vec::new(),
@@ -271,27 +280,31 @@ impl DynWinRTType {
   /// Get a MethodHandle by vtable index (6 = first user method).
   #[napi]
   pub fn method(&self, vtable_index: i32) -> napi::Result<DynWinRTMethodHandle> {
-    self.0.method(vtable_index as usize)
+    self
+      .0
+      .method(vtable_index as usize)
       .map(DynWinRTMethodHandle)
-      .ok_or_else(|| napi::Error::from_reason(
-        format!("No method at vtable index {}", vtable_index)
-      ))
+      .ok_or_else(|| {
+        napi::Error::from_reason(format!("No method at vtable index {}", vtable_index))
+      })
   }
 
   /// Get a MethodHandle by method name.
   #[napi]
   pub fn method_by_name(&self, name: String) -> napi::Result<DynWinRTMethodHandle> {
-    self.0.method_by_name(&name)
+    self
+      .0
+      .method_by_name(&name)
       .map(DynWinRTMethodHandle)
-      .ok_or_else(|| napi::Error::from_reason(
-        format!("Method '{}' not found", name)
-      ))
+      .ok_or_else(|| napi::Error::from_reason(format!("Method '{}' not found", name)))
   }
 
   /// Compute the IID for this type (works for Interface, Parameterized, RuntimeClass, etc.)
   #[napi]
   pub fn iid(&self) -> napi::Result<WinGUID> {
-    self.0.iid()
+    self
+      .0
+      .iid()
       .map(WinGUID)
       .ok_or_else(|| napi::Error::from_reason("Type has no IID"))
   }
@@ -371,16 +384,23 @@ impl DynWinRTMethodHandle {
   ) -> napi::Result<DynWinRTValue> {
     let raw = match &obj.0 {
       dynwinrt::WinRTValue::Object(o) => o.as_raw(),
-      _ => return Err(napi::Error::from_reason("invoke() requires an Object value")),
+      _ => {
+        return Err(napi::Error::from_reason(
+          "invoke() requires an Object value",
+        ))
+      }
     };
     let wrt_args: Vec<dynwinrt::WinRTValue> = args.iter().map(|a| a.0.clone()).collect();
-    let results = self.0.invoke(raw, &wrt_args)
+    let results = self
+      .0
+      .invoke(raw, &wrt_args)
       .map_err(|e| napi::Error::from_reason(e.message()))?;
     if results.is_empty() {
       Ok(DynWinRTValue(dynwinrt::WinRTValue::I32(0)))
     } else {
-      Ok(DynWinRTValue(results.into_iter().next()
-        .ok_or_else(|| napi::Error::from_reason("invoke: method returned no results"))?))
+      Ok(DynWinRTValue(results.into_iter().next().ok_or_else(
+        || napi::Error::from_reason("invoke: method returned no results"),
+      )?))
     }
   }
 
@@ -394,10 +414,16 @@ impl DynWinRTMethodHandle {
   ) -> napi::Result<Vec<DynWinRTValue>> {
     let raw = match &obj.0 {
       dynwinrt::WinRTValue::Object(o) => o.as_raw(),
-      _ => return Err(napi::Error::from_reason("invoke_all() requires an Object value")),
+      _ => {
+        return Err(napi::Error::from_reason(
+          "invoke_all() requires an Object value",
+        ))
+      }
     };
     let wrt_args: Vec<dynwinrt::WinRTValue> = args.iter().map(|a| a.0.clone()).collect();
-    let results = self.0.invoke(raw, &wrt_args)
+    let results = self
+      .0
+      .invoke(raw, &wrt_args)
       .map_err(|e| napi::Error::from_reason(e.message()))?;
     Ok(results.into_iter().map(DynWinRTValue).collect())
   }
@@ -407,9 +433,14 @@ impl DynWinRTMethodHandle {
   /// Getter → string (0 args, returns JS string directly, zero Vec allocation)
   #[napi]
   pub fn get_string(&self, obj: &DynWinRTValue) -> napi::Result<String> {
-    let raw = obj.0.as_object()
-      .ok_or_else(|| napi::Error::from_reason("get_string: not an Object"))?.as_raw();
-    let hs = self.0.call_getter_hstring(raw)
+    let raw = obj
+      .0
+      .as_object()
+      .ok_or_else(|| napi::Error::from_reason("get_string: not an Object"))?
+      .as_raw();
+    let hs = self
+      .0
+      .call_getter_hstring(raw)
       .map_err(|e| napi::Error::from_reason(e.message()))?;
     Ok(hs.to_string())
   }
@@ -417,27 +448,42 @@ impl DynWinRTMethodHandle {
   /// Getter → i32 (0 args, returns JS number directly, zero Vec allocation)
   #[napi]
   pub fn get_i32(&self, obj: &DynWinRTValue) -> napi::Result<i32> {
-    let raw = obj.0.as_object()
-      .ok_or_else(|| napi::Error::from_reason("get_i32: not an Object"))?.as_raw();
-    self.0.call_getter_i32(raw)
+    let raw = obj
+      .0
+      .as_object()
+      .ok_or_else(|| napi::Error::from_reason("get_i32: not an Object"))?
+      .as_raw();
+    self
+      .0
+      .call_getter_i32(raw)
       .map_err(|e| napi::Error::from_reason(e.message()))
   }
 
   /// Getter → bool (0 args, returns JS boolean directly, zero Vec allocation)
   #[napi]
   pub fn get_bool(&self, obj: &DynWinRTValue) -> napi::Result<bool> {
-    let raw = obj.0.as_object()
-      .ok_or_else(|| napi::Error::from_reason("get_bool: not an Object"))?.as_raw();
-    self.0.call_getter_bool(raw)
+    let raw = obj
+      .0
+      .as_object()
+      .ok_or_else(|| napi::Error::from_reason("get_bool: not an Object"))?
+      .as_raw();
+    self
+      .0
+      .call_getter_bool(raw)
       .map_err(|e| napi::Error::from_reason(e.message()))
   }
 
   /// Getter → DynWinRTValue (0 args, returns wrapped object, zero Vec allocation)
   #[napi]
   pub fn get_obj(&self, obj: &DynWinRTValue) -> napi::Result<DynWinRTValue> {
-    let raw = obj.0.as_object()
-      .ok_or_else(|| napi::Error::from_reason("get_obj: not an Object"))?.as_raw();
-    self.0.call_getter_object(raw)
+    let raw = obj
+      .0
+      .as_object()
+      .ok_or_else(|| napi::Error::from_reason("get_obj: not an Object"))?
+      .as_raw();
+    self
+      .0
+      .call_getter_object(raw)
       .map(DynWinRTValue)
       .map_err(|e| napi::Error::from_reason(e.message()))
   }
@@ -445,23 +491,35 @@ impl DynWinRTMethodHandle {
   /// 1-arg invoke with hstring input → DynWinRTValue result
   #[napi]
   pub fn invoke_hstring(&self, obj: &DynWinRTValue, arg: String) -> napi::Result<DynWinRTValue> {
-    let raw = obj.0.as_object()
-      .ok_or_else(|| napi::Error::from_reason("invoke_hstring: not an Object"))?.as_raw();
-    let results = self.0.invoke(raw, &[dynwinrt::WinRTValue::HString(HSTRING::from(arg))])
+    let raw = obj
+      .0
+      .as_object()
+      .ok_or_else(|| napi::Error::from_reason("invoke_hstring: not an Object"))?
+      .as_raw();
+    let results = self
+      .0
+      .invoke(raw, &[dynwinrt::WinRTValue::HString(HSTRING::from(arg))])
       .map_err(|e| napi::Error::from_reason(e.message()))?;
-    Ok(DynWinRTValue(results.into_iter().next()
-      .ok_or_else(|| napi::Error::from_reason("invoke_hstring: no result"))?))
+    Ok(DynWinRTValue(results.into_iter().next().ok_or_else(
+      || napi::Error::from_reason("invoke_hstring: no result"),
+    )?))
   }
 
   /// 1-arg invoke with i32 input → DynWinRTValue result
   #[napi]
   pub fn invoke_i32(&self, obj: &DynWinRTValue, arg: i32) -> napi::Result<DynWinRTValue> {
-    let raw = obj.0.as_object()
-      .ok_or_else(|| napi::Error::from_reason("invoke_i32: not an Object"))?.as_raw();
-    let results = self.0.invoke(raw, &[dynwinrt::WinRTValue::I32(arg)])
+    let raw = obj
+      .0
+      .as_object()
+      .ok_or_else(|| napi::Error::from_reason("invoke_i32: not an Object"))?
+      .as_raw();
+    let results = self
+      .0
+      .invoke(raw, &[dynwinrt::WinRTValue::I32(arg)])
       .map_err(|e| napi::Error::from_reason(e.message()))?;
-    Ok(DynWinRTValue(results.into_iter().next()
-      .ok_or_else(|| napi::Error::from_reason("invoke_i32: no result"))?))
+    Ok(DynWinRTValue(results.into_iter().next().ok_or_else(
+      || napi::Error::from_reason("invoke_i32: no result"),
+    )?))
   }
 }
 
@@ -478,8 +536,9 @@ unsafe impl Sync for DynWinRTValue {}
 impl DynWinRTValue {
   #[napi]
   pub fn activation_factory(name: String) -> napi::Result<DynWinRTValue> {
-    let factory = dynwinrt::ro_get_activation_factory_2(&HSTRING::from(&name))
-      .map_err(|e| napi::Error::from_reason(format!("ActivationFactory '{}': {}", name, e.message())))?;
+    let factory = dynwinrt::ro_get_activation_factory_2(&HSTRING::from(&name)).map_err(|e| {
+      napi::Error::from_reason(format!("ActivationFactory '{}': {}", name, e.message()))
+    })?;
     Ok(DynWinRTValue(factory))
   }
 
@@ -490,15 +549,21 @@ impl DynWinRTValue {
     metadata_provider: &DynWinRTValue,
     launched_callback: Option<&DynWinRTValue>,
   ) -> napi::Result<DynWinRTValue> {
-    let provider = metadata_provider.0.as_object()
-      .ok_or_else(|| napi::Error::from_reason("createXamlApplication: metadataProvider must be an Object"))?;
+    let provider = metadata_provider.0.as_object().ok_or_else(|| {
+      napi::Error::from_reason("createXamlApplication: metadataProvider must be an Object")
+    })?;
     let callback = launched_callback
-      .map(|value| value.0.as_object()
-        .ok_or_else(|| napi::Error::from_reason("createXamlApplication: launchedCallback must be an Object")))
+      .map(|value| {
+        value.0.as_object().ok_or_else(|| {
+          napi::Error::from_reason("createXamlApplication: launchedCallback must be an Object")
+        })
+      })
       .transpose()?;
     dynwinrt::create_xaml_application(&provider, callback.as_ref())
       .map(DynWinRTValue)
-      .map_err(|e| napi::Error::from_reason(format!("createXamlApplication failed: {}", e.message())))
+      .map_err(|e| {
+        napi::Error::from_reason(format!("createXamlApplication failed: {}", e.message()))
+      })
   }
 
   #[napi]
@@ -548,7 +613,10 @@ impl DynWinRTValue {
   /// Create an enum value from an i32. The type_handle must be an enum type.
   #[napi]
   pub fn enum_value(enum_type: &DynWinRTType, value: i32) -> DynWinRTValue {
-    DynWinRTValue(dynwinrt::WinRTValue::Enum { value, type_handle: enum_type.0.clone() })
+    DynWinRTValue(dynwinrt::WinRTValue::Enum {
+      value,
+      type_handle: enum_type.0.clone(),
+    })
   }
 
   /// Get the i32 value of an enum. Returns None if not an enum.
@@ -564,9 +632,7 @@ impl DynWinRTValue {
   #[napi]
   pub fn get_enum_name(&self) -> Option<String> {
     match &self.0 {
-      dynwinrt::WinRTValue::Enum { value, type_handle } => {
-        type_handle.enum_member_name(*value)
-      }
+      dynwinrt::WinRTValue::Enum { value, type_handle } => type_handle.enum_member_name(*value),
       _ => None,
     }
   }
@@ -587,12 +653,16 @@ impl DynWinRTValue {
   /// Create an IVector<T> from items. The element_type is used for IID computation.
   /// Items are passed as DynWinRTValue objects (Object or Struct-wrapped values).
   #[napi]
-  pub fn create_vector(items: Vec<&DynWinRTValue>, element_type: &DynWinRTType) -> napi::Result<DynWinRTValue> {
+  pub fn create_vector(
+    items: Vec<&DynWinRTValue>,
+    element_type: &DynWinRTType,
+  ) -> napi::Result<DynWinRTValue> {
     let iids = TABLE.vector_iids(&element_type.0);
     let is_value_type = matches!(element_type.0.kind(), dynwinrt::TypeKind::Struct(_));
     let elem_size = element_type.0.size_of();
     let wrt_items: Vec<dynwinrt::WinRTValue> = items.iter().map(|i| i.0.clone()).collect();
-    let vector = dynwinrt::vector::create_vector_from_values(&wrt_items, is_value_type, elem_size, iids);
+    let vector =
+      dynwinrt::vector::create_vector_from_values(&wrt_items, is_value_type, elem_size, iids);
     Ok(DynWinRTValue(dynwinrt::WinRTValue::Object(vector)))
   }
 
@@ -606,14 +676,22 @@ impl DynWinRTValue {
     value_type: &DynWinRTType,
   ) -> napi::Result<DynWinRTValue> {
     if keys.len() != values.len() {
-      return Err(napi::Error::from_reason("createMap: keys and values must have the same length"));
+      return Err(napi::Error::from_reason(
+        "createMap: keys and values must have the same length",
+      ));
     }
     let iids = TABLE.map_iids(&key_type.0, &value_type.0);
-    let entries: Vec<(IUnknown, IUnknown)> = keys.iter().zip(values.iter())
+    let entries: Vec<(IUnknown, IUnknown)> = keys
+      .iter()
+      .zip(values.iter())
       .map(|(k, v)| {
-        let key = k.0.as_object()
+        let key = k
+          .0
+          .as_object()
           .ok_or_else(|| napi::Error::from_reason("createMap: all keys must be Object values"))?;
-        let val = v.0.as_object()
+        let val = v
+          .0
+          .as_object()
           .ok_or_else(|| napi::Error::from_reason("createMap: all values must be Object values"))?;
         Ok((key, val))
       })
@@ -624,11 +702,10 @@ impl DynWinRTValue {
 
   #[napi]
   pub async fn to_promise(&self) -> napi::Result<DynWinRTValue> {
-    let v = (&self.0).await
-      .map_err(|e| match e {
-        dynwinrt::Error::Canceled => napi::Error::from_reason("Async operation was canceled"),
-        other => napi::Error::from_reason(format!("Async operation failed: {}", other.message())),
-      })?;
+    let v = (&self.0).await.map_err(|e| match e {
+      dynwinrt::Error::Canceled => napi::Error::from_reason("Async operation was canceled"),
+      other => napi::Error::from_reason(format!("Async operation failed: {}", other.message())),
+    })?;
     Ok(DynWinRTValue(v))
   }
 
@@ -642,7 +719,8 @@ impl DynWinRTValue {
       dynwinrt::WinRTValue::Async(a) => a,
       _ => return Err(napi::Error::from_reason("cancel: not an async value")),
     };
-    async_info.cancel()
+    async_info
+      .cancel()
       .map_err(|e| napi::Error::from_reason(format!("Cancel failed: {}", e.message())))
   }
 
@@ -657,10 +735,12 @@ impl DynWinRTValue {
       _ => return Err(napi::Error::from_reason("onProgress: not an async value")),
     };
 
-    let progress_type = async_info.progress_type()
+    let progress_type = async_info
+      .progress_type()
       .ok_or_else(|| napi::Error::from_reason("onProgress: not a WithProgress async type"))?;
 
-    let handler_iid = async_info.progress_handler_iid()
+    let handler_iid = async_info
+      .progress_handler_iid()
       .ok_or_else(|| napi::Error::from_reason("onProgress: cannot compute progress handler IID"))?;
 
     let tsfn = callback.build_threadsafe_function().build()?;
@@ -669,7 +749,8 @@ impl DynWinRTValue {
     });
     let handler = dynwinrt::create_progress_handler(handler_iid, progress_type, progress_cb);
 
-    async_info.set_progress_handler(&handler)
+    async_info
+      .set_progress_handler(&handler)
       .map_err(|e| napi::Error::from_reason(format!("SetProgress failed: {}", e.message())))?;
 
     Ok(())
@@ -681,10 +762,20 @@ impl DynWinRTValue {
       dynwinrt::WinRTValue::HString(s) => s.to_string(),
       dynwinrt::WinRTValue::I32(i) => i.to_string(),
       dynwinrt::WinRTValue::I64(i) => i.to_string(),
-      dynwinrt::WinRTValue::Guid(g) => format!("{:08x}-{:04x}-{:04x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        g.data1, g.data2, g.data3,
-        g.data4[0], g.data4[1], g.data4[2], g.data4[3],
-        g.data4[4], g.data4[5], g.data4[6], g.data4[7]),
+      dynwinrt::WinRTValue::Guid(g) => format!(
+        "{:08x}-{:04x}-{:04x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        g.data1,
+        g.data2,
+        g.data3,
+        g.data4[0],
+        g.data4[1],
+        g.data4[2],
+        g.data4[3],
+        g.data4[4],
+        g.data4[5],
+        g.data4[6],
+        g.data4[7]
+      ),
       dynwinrt::WinRTValue::Object(o) => format!("Object: {:?}", o),
       _ => "Unsupported type".to_string(),
     }
@@ -692,7 +783,9 @@ impl DynWinRTValue {
 
   #[napi]
   pub fn cast(&self, iid: &WinGUID) -> napi::Result<DynWinRTValue> {
-    let result = self.0.cast(&iid.0)
+    let result = self
+      .0
+      .cast(&iid.0)
       .map_err(|e| napi::Error::from_reason(format!("QueryInterface failed: {}", e.message())))?;
     Ok(DynWinRTValue(result))
   }
@@ -700,7 +793,13 @@ impl DynWinRTValue {
   #[napi]
   pub fn to_number(&self) -> i32 {
     match &self.0 {
-      dynwinrt::WinRTValue::Bool(b) => if *b { 1 } else { 0 },
+      dynwinrt::WinRTValue::Bool(b) => {
+        if *b {
+          1
+        } else {
+          0
+        }
+      }
       dynwinrt::WinRTValue::I8(i) => *i as i32,
       dynwinrt::WinRTValue::U8(i) => *i as i32,
       dynwinrt::WinRTValue::I16(i) => *i as i32,
@@ -814,14 +913,23 @@ impl DynWinRTArray {
   /// Convert all elements to DynWinRTValue array.
   #[napi]
   pub fn to_values(&self) -> Vec<DynWinRTValue> {
-    (0..self.0.len()).map(|i| DynWinRTValue(self.0.get(i))).collect()
+    (0..self.0.len())
+      .map(|i| DynWinRTValue(self.0.get(i)))
+      .collect()
   }
 
   // -- Blittable fast paths: zero-copy read into typed Vec --
 
   #[napi]
   pub fn to_i8_vec(&self) -> Vec<i32> {
-    unsafe { self.0.as_typed_slice::<i8>().iter().map(|&v| v as i32).collect() }
+    unsafe {
+      self
+        .0
+        .as_typed_slice::<i8>()
+        .iter()
+        .map(|&v| v as i32)
+        .collect()
+    }
   }
 
   #[napi]
@@ -839,12 +947,26 @@ impl DynWinRTArray {
 
   #[napi]
   pub fn to_i16_vec(&self) -> Vec<i32> {
-    unsafe { self.0.as_typed_slice::<i16>().iter().map(|&v| v as i32).collect() }
+    unsafe {
+      self
+        .0
+        .as_typed_slice::<i16>()
+        .iter()
+        .map(|&v| v as i32)
+        .collect()
+    }
   }
 
   #[napi]
   pub fn to_u16_vec(&self) -> Vec<u32> {
-    unsafe { self.0.as_typed_slice::<u16>().iter().map(|&v| v as u32).collect() }
+    unsafe {
+      self
+        .0
+        .as_typed_slice::<u16>()
+        .iter()
+        .map(|&v| v as u32)
+        .collect()
+    }
   }
 
   #[napi]
@@ -874,32 +996,43 @@ impl DynWinRTArray {
 
   #[napi]
   pub fn to_u64_vec(&self) -> Vec<i64> {
-    unsafe { self.0.as_typed_slice::<u64>().iter().map(|&v| v as i64).collect() }
+    unsafe {
+      self
+        .0
+        .as_typed_slice::<u64>()
+        .iter()
+        .map(|&v| v as i64)
+        .collect()
+    }
   }
 
   // -- Batch string conversion --
 
   #[napi]
   pub fn to_string_vec(&self) -> Vec<String> {
-    (0..self.0.len()).map(|i| {
-      match self.0.get(i) {
+    (0..self.0.len())
+      .map(|i| match self.0.get(i) {
         dynwinrt::WinRTValue::HString(s) => s.to_string(),
         other => format!("{:?}", other),
-      }
-    }).collect()
+      })
+      .collect()
   }
 
   // -- Construction from JS typed arrays --
 
   #[napi]
   pub fn from_i8_values(values: Vec<i32>) -> DynWinRTArray {
-    let wvals: Vec<dynwinrt::WinRTValue> = values.into_iter().map(|v| dynwinrt::WinRTValue::I8(v as i8)).collect();
+    let wvals: Vec<dynwinrt::WinRTValue> = values
+      .into_iter()
+      .map(|v| dynwinrt::WinRTValue::I8(v as i8))
+      .collect();
     DynWinRTArray(dynwinrt::ArrayData::from_values(TABLE.i8_type(), &wvals))
   }
 
   #[napi]
   pub fn from_u8_values(values: Vec<u8>) -> DynWinRTArray {
-    let wvals: Vec<dynwinrt::WinRTValue> = values.into_iter().map(dynwinrt::WinRTValue::U8).collect();
+    let wvals: Vec<dynwinrt::WinRTValue> =
+      values.into_iter().map(dynwinrt::WinRTValue::U8).collect();
     DynWinRTArray(dynwinrt::ArrayData::from_values(TABLE.u8_type(), &wvals))
   }
 
@@ -909,64 +1042,87 @@ impl DynWinRTArray {
   /// `Array<number>` of length N).
   #[napi]
   pub fn from_uint8_array(values: napi::bindgen_prelude::Uint8Array) -> DynWinRTArray {
-    let wvals: Vec<dynwinrt::WinRTValue> = values.iter().map(|&v| dynwinrt::WinRTValue::U8(v)).collect();
+    let wvals: Vec<dynwinrt::WinRTValue> = values
+      .iter()
+      .map(|&v| dynwinrt::WinRTValue::U8(v))
+      .collect();
     DynWinRTArray(dynwinrt::ArrayData::from_values(TABLE.u8_type(), &wvals))
   }
 
   #[napi]
   pub fn from_i16_values(values: Vec<i32>) -> DynWinRTArray {
-    let wvals: Vec<dynwinrt::WinRTValue> = values.into_iter().map(|v| dynwinrt::WinRTValue::I16(v as i16)).collect();
+    let wvals: Vec<dynwinrt::WinRTValue> = values
+      .into_iter()
+      .map(|v| dynwinrt::WinRTValue::I16(v as i16))
+      .collect();
     DynWinRTArray(dynwinrt::ArrayData::from_values(TABLE.i16_type(), &wvals))
   }
 
   #[napi]
   pub fn from_u16_values(values: Vec<u32>) -> DynWinRTArray {
-    let wvals: Vec<dynwinrt::WinRTValue> = values.into_iter().map(|v| dynwinrt::WinRTValue::U16(v as u16)).collect();
+    let wvals: Vec<dynwinrt::WinRTValue> = values
+      .into_iter()
+      .map(|v| dynwinrt::WinRTValue::U16(v as u16))
+      .collect();
     DynWinRTArray(dynwinrt::ArrayData::from_values(TABLE.u16_type(), &wvals))
   }
 
   #[napi]
   pub fn from_i32_values(values: Vec<i32>) -> DynWinRTArray {
-    let wvals: Vec<dynwinrt::WinRTValue> = values.into_iter().map(dynwinrt::WinRTValue::I32).collect();
+    let wvals: Vec<dynwinrt::WinRTValue> =
+      values.into_iter().map(dynwinrt::WinRTValue::I32).collect();
     DynWinRTArray(dynwinrt::ArrayData::from_values(TABLE.i32_type(), &wvals))
   }
 
   #[napi]
   pub fn from_u32_values(values: Vec<u32>) -> DynWinRTArray {
-    let wvals: Vec<dynwinrt::WinRTValue> = values.into_iter().map(dynwinrt::WinRTValue::U32).collect();
+    let wvals: Vec<dynwinrt::WinRTValue> =
+      values.into_iter().map(dynwinrt::WinRTValue::U32).collect();
     DynWinRTArray(dynwinrt::ArrayData::from_values(TABLE.u32_type(), &wvals))
   }
 
   #[napi]
   pub fn from_f32_values(values: Vec<f64>) -> DynWinRTArray {
-    let wvals: Vec<dynwinrt::WinRTValue> = values.into_iter().map(|v| dynwinrt::WinRTValue::F32(v as f32)).collect();
+    let wvals: Vec<dynwinrt::WinRTValue> = values
+      .into_iter()
+      .map(|v| dynwinrt::WinRTValue::F32(v as f32))
+      .collect();
     DynWinRTArray(dynwinrt::ArrayData::from_values(TABLE.f32_type(), &wvals))
   }
 
   #[napi]
   pub fn from_f64_values(values: Vec<f64>) -> DynWinRTArray {
-    let wvals: Vec<dynwinrt::WinRTValue> = values.into_iter().map(dynwinrt::WinRTValue::F64).collect();
+    let wvals: Vec<dynwinrt::WinRTValue> =
+      values.into_iter().map(dynwinrt::WinRTValue::F64).collect();
     DynWinRTArray(dynwinrt::ArrayData::from_values(TABLE.f64_type(), &wvals))
   }
 
   #[napi]
   pub fn from_i64_values(values: Vec<i64>) -> DynWinRTArray {
-    let wvals: Vec<dynwinrt::WinRTValue> = values.into_iter().map(dynwinrt::WinRTValue::I64).collect();
+    let wvals: Vec<dynwinrt::WinRTValue> =
+      values.into_iter().map(dynwinrt::WinRTValue::I64).collect();
     DynWinRTArray(dynwinrt::ArrayData::from_values(TABLE.i64_type(), &wvals))
   }
 
   #[napi]
   pub fn from_u64_values(values: Vec<i64>) -> DynWinRTArray {
-    let wvals: Vec<dynwinrt::WinRTValue> = values.into_iter().map(|v| dynwinrt::WinRTValue::U64(v as u64)).collect();
+    let wvals: Vec<dynwinrt::WinRTValue> = values
+      .into_iter()
+      .map(|v| dynwinrt::WinRTValue::U64(v as u64))
+      .collect();
     DynWinRTArray(dynwinrt::ArrayData::from_values(TABLE.u64_type(), &wvals))
   }
 
   #[napi]
   pub fn from_string_values(values: Vec<String>) -> DynWinRTArray {
-    let wvals: Vec<dynwinrt::WinRTValue> = values.into_iter()
+    let wvals: Vec<dynwinrt::WinRTValue> = values
+      .into_iter()
       .map(|s| dynwinrt::WinRTValue::HString(HSTRING::from(&s)))
       .collect();
-    DynWinRTArray(dynwinrt::ArrayData::from_values(TABLE.make(dynwinrt::TypeKind::HString), &wvals))
+    DynWinRTArray(dynwinrt::ArrayData::from_values(
+      TABLE.make(dynwinrt::TypeKind::HString),
+      &wvals,
+    ))
   }
 
   /// Build a DynWinRtArray of WinRT object/interface elements.
@@ -976,9 +1132,15 @@ impl DynWinRTArray {
   /// Items are passed as DynWinRTValue handles (typically Object-wrapped),
   /// and the element type drives ABI size and IID computation.
   #[napi]
-  pub fn from_object_values(values: Vec<&DynWinRTValue>, element_type: &DynWinRTType) -> DynWinRTArray {
+  pub fn from_object_values(
+    values: Vec<&DynWinRTValue>,
+    element_type: &DynWinRTType,
+  ) -> DynWinRTArray {
     let wvals: Vec<dynwinrt::WinRTValue> = values.iter().map(|v| v.0.clone()).collect();
-    DynWinRTArray(dynwinrt::ArrayData::from_values(element_type.0.clone(), &wvals))
+    DynWinRTArray(dynwinrt::ArrayData::from_values(
+      element_type.0.clone(),
+      &wvals,
+    ))
   }
 
   /// Wrap as DynWinRTValue::Array for passing to call().
@@ -1199,7 +1361,6 @@ impl DynWinRTStruct {
   }
 }
 
-
 // ======================================================================
 // System info
 // ======================================================================
@@ -1268,7 +1429,6 @@ pub fn get_windows_directory() -> napi::Result<String> {
   }
 }
 
-
 // ======================================================================
 // Rust static benchmark — windows crate direct projection (no dynwinrt)
 // ======================================================================
@@ -1330,15 +1490,20 @@ impl RustStaticBench {
 
   #[napi]
   pub fn uri_combine(obj: &StaticUri, relative: String) -> napi::Result<StaticUri> {
-    let result = obj.0.CombineUri(&HSTRING::from(relative)).map_err(map_win_err)?;
+    let result = obj
+      .0
+      .CombineUri(&HSTRING::from(relative))
+      .map_err(map_win_err)?;
     Ok(StaticUri(result))
   }
 
   #[napi]
   pub fn uri_create_with_relative(base: String, relative: String) -> napi::Result<StaticUri> {
     let uri = windows::Foundation::Uri::CreateWithRelativeUri(
-      &HSTRING::from(base), &HSTRING::from(relative),
-    ).map_err(map_win_err)?;
+      &HSTRING::from(base),
+      &HSTRING::from(relative),
+    )
+    .map_err(map_win_err)?;
     Ok(StaticUri(uri))
   }
 
@@ -1346,22 +1511,38 @@ impl RustStaticBench {
 
   #[napi]
   pub fn pv_create_i32(value: i32) -> napi::Result<StaticObj> {
-    Ok(StaticObj(windows::Foundation::PropertyValue::CreateInt32(value).map_err(map_win_err)?.into()))
+    Ok(StaticObj(
+      windows::Foundation::PropertyValue::CreateInt32(value)
+        .map_err(map_win_err)?
+        .into(),
+    ))
   }
 
   #[napi]
   pub fn pv_create_f64(value: f64) -> napi::Result<StaticObj> {
-    Ok(StaticObj(windows::Foundation::PropertyValue::CreateDouble(value).map_err(map_win_err)?.into()))
+    Ok(StaticObj(
+      windows::Foundation::PropertyValue::CreateDouble(value)
+        .map_err(map_win_err)?
+        .into(),
+    ))
   }
 
   #[napi]
   pub fn pv_create_bool(value: bool) -> napi::Result<StaticObj> {
-    Ok(StaticObj(windows::Foundation::PropertyValue::CreateBoolean(value).map_err(map_win_err)?.into()))
+    Ok(StaticObj(
+      windows::Foundation::PropertyValue::CreateBoolean(value)
+        .map_err(map_win_err)?
+        .into(),
+    ))
   }
 
   #[napi]
   pub fn pv_create_string(value: String) -> napi::Result<StaticObj> {
-    Ok(StaticObj(windows::Foundation::PropertyValue::CreateString(&HSTRING::from(value)).map_err(map_win_err)?.into()))
+    Ok(StaticObj(
+      windows::Foundation::PropertyValue::CreateString(&HSTRING::from(value))
+        .map_err(map_win_err)?
+        .into(),
+    ))
   }
 
   // --- Geopoint ---
@@ -1369,8 +1550,14 @@ impl RustStaticBench {
   #[napi]
   pub fn geopoint_create(lat: f64, lon: f64, alt: f64) -> napi::Result<StaticObj> {
     use windows::Devices::Geolocation::{BasicGeoposition, Geopoint};
-    let pos = BasicGeoposition { Latitude: lat, Longitude: lon, Altitude: alt };
-    Ok(StaticObj(Geopoint::Create(pos).map_err(map_win_err)?.into()))
+    let pos = BasicGeoposition {
+      Latitude: lat,
+      Longitude: lon,
+      Altitude: alt,
+    };
+    Ok(StaticObj(
+      Geopoint::Create(pos).map_err(map_win_err)?.into(),
+    ))
   }
 }
 
@@ -1427,109 +1614,112 @@ impl DynWinRtDelegate {
     let fn_ref = Arc::new(callback.create_ref()?);
     let tsfn = callback.build_threadsafe_function().build()?;
 
-    let type_handles: Vec<dynwinrt::TypeHandle> = param_types.iter()
-      .map(|t| t.0.clone())
-      .collect();
+    let type_handles: Vec<dynwinrt::TypeHandle> = param_types.iter().map(|t| t.0.clone()).collect();
 
     let raw_env_cb = raw_env_wrap.clone();
     let fn_ref_cb = fn_ref.clone();
 
-    let delegate_callback: dynwinrt::delegate::DelegateCallback = Box::new(move |args: &[dynwinrt::WinRTValue]| {
-      // Well-known HRESULTs used below to signal failure to the WinRT event
-      // source (rather than silently returning S_OK, which would look like
-      // the delegate ran).
-      const E_FAIL: windows::core::HRESULT      = windows::core::HRESULT(0x80004005u32 as i32);
-      const E_UNEXPECTED: windows::core::HRESULT = windows::core::HRESULT(0x8000FFFFu32 as i32);
+    let delegate_callback: dynwinrt::delegate::DelegateCallback =
+      Box::new(move |args: &[dynwinrt::WinRTValue]| {
+        // Well-known HRESULTs used below to signal failure to the WinRT event
+        // source (rather than silently returning S_OK, which would look like
+        // the delegate ran).
+        const E_FAIL: windows::core::HRESULT = windows::core::HRESULT(0x80004005u32 as i32);
+        const E_UNEXPECTED: windows::core::HRESULT = windows::core::HRESULT(0x8000FFFFu32 as i32);
 
-      let current_tid = unsafe { GetCurrentThreadId() };
-      let js_args: Vec<DynWinRTValue> = args.iter().map(|a| DynWinRTValue(a.clone())).collect();
+        let current_tid = unsafe { GetCurrentThreadId() };
+        let js_args: Vec<DynWinRTValue> = args.iter().map(|a| DynWinRTValue(a.clone())).collect();
 
-      if current_tid == register_tid {
-        // Same-thread synchronous direct invocation. Bypass the TSFN because
-        // libuv may be blocked (e.g. DispatcherQueue.runEventLoop), so
-        // uv_async_send would queue the callback but never fire it.
-        //
-        // The entire body is wrapped in `catch_unwind`: this closure is
-        // ultimately called by an `extern "system"` COM stub, and letting a
-        // Rust panic unwind through the FFI boundary is UB. On panic we
-        // convert to E_UNEXPECTED so the WinRT caller sees a clean failure.
-        let raw_env = raw_env_cb.0;
-        let unwind_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> windows::core::HRESULT {
-          unsafe {
-            let mut scope: napi::sys::napi_handle_scope = std::ptr::null_mut();
-            if napi::sys::napi_open_handle_scope(raw_env, &mut scope) != napi::sys::Status::napi_ok {
-              // Env is probably being torn down. Don't lie to WinRT that we
-              // ran successfully — surface E_FAIL so async ops etc. don't
-              // silently hang waiting for a completion that never happens.
-              eprintln!("[dynwinrt] delegate: napi_open_handle_scope failed (env teardown?)");
-              return E_FAIL;
-            }
-            let scoped_env = napi::Env::from_raw(raw_env);
-            let call_result = (|| -> napi::Result<()> {
-              let fn_scope = fn_ref_cb.borrow_back(&scoped_env)?;
-              let fn_val = napi::JsValue::raw(&fn_scope);
-              // Spread each DynWinRTValue as its own napi_value so the JS
-              // callback receives them as positional args. The blanket
-              // `Vec<T>::into_vec` impl wraps the whole vec as a single JS
-              // Array, which is wrong here — we need one arg per element.
-              let mut argv: Vec<napi::sys::napi_value> = Vec::with_capacity(js_args.len());
-              for v in js_args {
-                let raw = DynWinRTValue::to_napi_value(raw_env, v)?;
-                argv.push(raw);
-              }
-              let mut undefined: napi::sys::napi_value = std::ptr::null_mut();
-              napi::sys::napi_get_undefined(raw_env, &mut undefined);
-              let mut result: napi::sys::napi_value = std::ptr::null_mut();
-              let status = napi::sys::napi_call_function(
-                raw_env,
-                undefined,
-                fn_val,
-                argv.len(),
-                argv.as_ptr(),
-                &mut result,
-              );
-              if status != napi::sys::Status::napi_ok {
-                // Surface any pending JS exception so it doesn't silently poison
-                // future calls. Delegates return HRESULT; there's no clean way to
-                // propagate a JS throw back through WinRT, so we route it through
-                // napi_fatal_exception (same policy tsfn uses).
-                let mut is_pending: bool = false;
-                napi::sys::napi_is_exception_pending(raw_env, &mut is_pending);
-                if is_pending {
-                  let mut err: napi::sys::napi_value = std::ptr::null_mut();
-                  napi::sys::napi_get_and_clear_last_exception(raw_env, &mut err);
-                  napi::sys::napi_fatal_exception(raw_env, err);
+        if current_tid == register_tid {
+          // Same-thread synchronous direct invocation. Bypass the TSFN because
+          // libuv may be blocked (e.g. DispatcherQueue.runEventLoop), so
+          // uv_async_send would queue the callback but never fire it.
+          //
+          // The entire body is wrapped in `catch_unwind`: this closure is
+          // ultimately called by an `extern "system"` COM stub, and letting a
+          // Rust panic unwind through the FFI boundary is UB. On panic we
+          // convert to E_UNEXPECTED so the WinRT caller sees a clean failure.
+          let raw_env = raw_env_cb.0;
+          let unwind_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+            || -> windows::core::HRESULT {
+              unsafe {
+                let mut scope: napi::sys::napi_handle_scope = std::ptr::null_mut();
+                if napi::sys::napi_open_handle_scope(raw_env, &mut scope)
+                  != napi::sys::Status::napi_ok
+                {
+                  // Env is probably being torn down. Don't lie to WinRT that we
+                  // ran successfully — surface E_FAIL so async ops etc. don't
+                  // silently hang waiting for a completion that never happens.
+                  eprintln!("[dynwinrt] delegate: napi_open_handle_scope failed (env teardown?)");
+                  return E_FAIL;
                 }
-                return Err(napi::Error::from_reason("napi_call_function failed"));
+                let scoped_env = napi::Env::from_raw(raw_env);
+                let call_result = (|| -> napi::Result<()> {
+                  let fn_scope = fn_ref_cb.borrow_back(&scoped_env)?;
+                  let fn_val = napi::JsValue::raw(&fn_scope);
+                  // Spread each DynWinRTValue as its own napi_value so the JS
+                  // callback receives them as positional args. The blanket
+                  // `Vec<T>::into_vec` impl wraps the whole vec as a single JS
+                  // Array, which is wrong here — we need one arg per element.
+                  let mut argv: Vec<napi::sys::napi_value> = Vec::with_capacity(js_args.len());
+                  for v in js_args {
+                    let raw = DynWinRTValue::to_napi_value(raw_env, v)?;
+                    argv.push(raw);
+                  }
+                  let mut undefined: napi::sys::napi_value = std::ptr::null_mut();
+                  napi::sys::napi_get_undefined(raw_env, &mut undefined);
+                  let mut result: napi::sys::napi_value = std::ptr::null_mut();
+                  let status = napi::sys::napi_call_function(
+                    raw_env,
+                    undefined,
+                    fn_val,
+                    argv.len(),
+                    argv.as_ptr(),
+                    &mut result,
+                  );
+                  if status != napi::sys::Status::napi_ok {
+                    // Surface any pending JS exception so it doesn't silently poison
+                    // future calls. Delegates return HRESULT; there's no clean way to
+                    // propagate a JS throw back through WinRT, so we route it through
+                    // napi_fatal_exception (same policy tsfn uses).
+                    let mut is_pending: bool = false;
+                    napi::sys::napi_is_exception_pending(raw_env, &mut is_pending);
+                    if is_pending {
+                      let mut err: napi::sys::napi_value = std::ptr::null_mut();
+                      napi::sys::napi_get_and_clear_last_exception(raw_env, &mut err);
+                      napi::sys::napi_fatal_exception(raw_env, err);
+                    }
+                    return Err(napi::Error::from_reason("napi_call_function failed"));
+                  }
+                  Ok(())
+                })();
+                napi::sys::napi_close_handle_scope(raw_env, scope);
+                // Log and report any non-exception error to WinRT. Without this,
+                // failures like invalid handles or marshaler errors would be
+                // silently dropped and the delegate would appear to have run.
+                if let Err(e) = call_result {
+                  eprintln!("[dynwinrt] delegate dispatch error: {e}");
+                  return E_FAIL;
+                }
+                windows::core::HRESULT(0)
               }
-              Ok(())
-            })();
-            napi::sys::napi_close_handle_scope(raw_env, scope);
-            // Log and report any non-exception error to WinRT. Without this,
-            // failures like invalid handles or marshaler errors would be
-            // silently dropped and the delegate would appear to have run.
-            if let Err(e) = call_result {
-              eprintln!("[dynwinrt] delegate dispatch error: {e}");
-              return E_FAIL;
+            },
+          ));
+          return match unwind_result {
+            Ok(hr) => hr,
+            Err(_) => {
+              eprintln!("[dynwinrt] delegate: panic caught at FFI boundary");
+              E_UNEXPECTED
             }
-            windows::core::HRESULT(0)
-          }
-        }));
-        return match unwind_result {
-          Ok(hr) => hr,
-          Err(_) => {
-            eprintln!("[dynwinrt] delegate: panic caught at FFI boundary");
-            E_UNEXPECTED
-          }
-        };
-      }
+          };
+        }
 
-      // Cross-thread fallback: schedule via the TSFN. This requires libuv to
-      // be pumping on the JS thread, which is fine for classic Node.js work
-      // but not for a JS thread stuck inside a foreign message pump.
-      tsfn.call(js_args, ThreadsafeFunctionCallMode::NonBlocking);
-      windows::core::HRESULT(0)
-    });
+        // Cross-thread fallback: schedule via the TSFN. This requires libuv to
+        // be pumping on the JS thread, which is fine for classic Node.js work
+        // but not for a JS thread stuck inside a foreign message pump.
+        tsfn.call(js_args, ThreadsafeFunctionCallMode::NonBlocking);
+        windows::core::HRESULT(0)
+      });
 
     let value = dynwinrt::delegate::create_delegate_value(iid.0, type_handles, delegate_callback);
     Ok(DynWinRtDelegate(value))
@@ -1557,21 +1747,28 @@ impl DynWinRtDelegate {
 /// rawGetString(methodHandle, objValue) → string
 #[napi]
 pub fn raw_get_string(method: &DynWinRTMethodHandle, obj: &DynWinRTValue) -> napi::Result<String> {
-    let raw = match &obj.0 {
-        dynwinrt::WinRTValue::Object(o) => o.as_raw(),
-        _ => return Err(napi::Error::from_reason("not an Object")),
-    };
-    Ok(method.0.call_getter_hstring(raw)
-        .map_err(|e| napi::Error::from_reason(e.message()))?.to_string())
+  let raw = match &obj.0 {
+    dynwinrt::WinRTValue::Object(o) => o.as_raw(),
+    _ => return Err(napi::Error::from_reason("not an Object")),
+  };
+  Ok(
+    method
+      .0
+      .call_getter_hstring(raw)
+      .map_err(|e| napi::Error::from_reason(e.message()))?
+      .to_string(),
+  )
 }
 
 /// rawGetI32(methodHandle, objValue) → number
 #[napi]
 pub fn raw_get_i32(method: &DynWinRTMethodHandle, obj: &DynWinRTValue) -> napi::Result<i32> {
-    let raw = match &obj.0 {
-        dynwinrt::WinRTValue::Object(o) => o.as_raw(),
-        _ => return Err(napi::Error::from_reason("not an Object")),
-    };
-    method.0.call_getter_i32(raw)
-        .map_err(|e| napi::Error::from_reason(e.message()))
+  let raw = match &obj.0 {
+    dynwinrt::WinRTValue::Object(o) => o.as_raw(),
+    _ => return Err(napi::Error::from_reason("not an Object")),
+  };
+  method
+    .0
+    .call_getter_i32(raw)
+    .map_err(|e| napi::Error::from_reason(e.message()))
 }

@@ -11,9 +11,9 @@ use core::ffi::c_void;
 use std::sync::Mutex;
 use windows_core::{GUID, HRESULT, IUnknown, Interface};
 
-use crate::com_helpers::{IInspectableVtbl, E_BOUNDS, E_FAIL, E_POINTER, S_OK};
+use crate::com_helpers::{E_BOUNDS, E_FAIL, E_POINTER, IInspectableVtbl, S_OK};
 #[allow(unused_imports)]
-use crate::com_helpers::{inspectable_stubs, dual_vtable_com, single_vtable_com, lock_or};
+use crate::com_helpers::{dual_vtable_com, inspectable_stubs, lock_or, single_vtable_com};
 use crate::vector::SingleThreadedIterator;
 
 // ======================================================================
@@ -23,11 +23,11 @@ use crate::vector::SingleThreadedIterator;
 /// All IIDs needed for an IMap<K,V> collection.
 #[derive(Debug, Clone)]
 pub struct MapIids {
-    pub iterable: GUID,   // IIterable<IKeyValuePair<K,V>>
-    pub map: GUID,         // IMap<K,V>
-    pub map_view: GUID,    // IMapView<K,V>
-    pub kvp: GUID,         // IKeyValuePair<K,V>
-    pub iterator: GUID,    // IIterator<IKeyValuePair<K,V>>
+    pub iterable: GUID, // IIterable<IKeyValuePair<K,V>>
+    pub map: GUID,      // IMap<K,V>
+    pub map_view: GUID, // IMapView<K,V>
+    pub kvp: GUID,      // IKeyValuePair<K,V>
+    pub iterator: GUID, // IIterator<IKeyValuePair<K,V>>
 }
 
 // ======================================================================
@@ -102,7 +102,9 @@ unsafe fn find_key_index(entries: &[(IUnknown, IUnknown)], key: *mut c_void) -> 
     if let Some(ref search) = search_str {
         // Compare as strings
         for (i, (k, _)) in entries.iter().enumerate() {
-            if let Some(ref entry_str) = unsafe { get_hstring_from_inspectable(k.as_raw(), &ipv_iid) } {
+            if let Some(ref entry_str) =
+                unsafe { get_hstring_from_inspectable(k.as_raw(), &ipv_iid) }
+            {
                 if search == entry_str {
                     return Some(i);
                 }
@@ -135,12 +137,10 @@ unsafe fn get_hstring_from_inspectable(ptr: *mut c_void, ipv_iid: &GUID) -> Opti
     // Actually, let's use the Windows crate for this
     let pv: Result<windows::Foundation::IPropertyValue, _> = ipv.cast();
     match pv {
-        Ok(pv) => {
-            match pv.GetString() {
-                Ok(s) => Some(s.to_string()),
-                Err(_) => None,
-            }
-        }
+        Ok(pv) => match pv.GetString() {
+            Ok(s) => Some(s.to_string()),
+            Err(_) => None,
+        },
         Err(_) => None,
     }
 }
@@ -204,17 +204,30 @@ impl SingleThreadedMap {
     unsafe extern "system" fn first(this: *mut c_void, result: *mut *mut c_void) -> HRESULT {
         let me = Self::from_iterable_ptr(this);
         let entries = lock_or!(me.entries, E_FAIL);
-        let kvp_items: Vec<usize> = entries.iter()
-            .map(|(k, v)| SingleThreadedKeyValuePair::create(k.clone(), v.clone(), me.iids.kvp).into_raw() as usize)
+        let kvp_items: Vec<usize> = entries
+            .iter()
+            .map(|(k, v)| {
+                SingleThreadedKeyValuePair::create(k.clone(), v.clone(), me.iids.kvp).into_raw()
+                    as usize
+            })
             .collect();
-        let iter = SingleThreadedIterator::create(kvp_items, false, std::mem::size_of::<*mut c_void>(), me.iids.iterator);
+        let iter = SingleThreadedIterator::create(
+            kvp_items,
+            false,
+            std::mem::size_of::<*mut c_void>(),
+            me.iids.iterator,
+        );
         *result = iter.into_raw();
         S_OK
     }
 
     // -- IMap<K,V> --
 
-    unsafe extern "system" fn lookup(this: *mut c_void, key: *mut c_void, result: *mut *mut c_void) -> HRESULT {
+    unsafe extern "system" fn lookup(
+        this: *mut c_void,
+        key: *mut c_void,
+        result: *mut *mut c_void,
+    ) -> HRESULT {
         let me = Self::from_map_ptr(this);
         let entries = lock_or!(me.entries, E_FAIL);
         match find_key_index(&entries, key) {
@@ -232,7 +245,11 @@ impl SingleThreadedMap {
         S_OK
     }
 
-    unsafe extern "system" fn has_key(this: *mut c_void, key: *mut c_void, result: *mut bool) -> HRESULT {
+    unsafe extern "system" fn has_key(
+        this: *mut c_void,
+        key: *mut c_void,
+        result: *mut bool,
+    ) -> HRESULT {
         let me = Self::from_map_ptr(this);
         let entries = lock_or!(me.entries, E_FAIL);
         *result = find_key_index(&entries, key).is_some();
@@ -250,7 +267,12 @@ impl SingleThreadedMap {
         S_OK
     }
 
-    unsafe extern "system" fn insert(this: *mut c_void, key: *mut c_void, value: *mut c_void, replaced: *mut bool) -> HRESULT {
+    unsafe extern "system" fn insert(
+        this: *mut c_void,
+        key: *mut c_void,
+        value: *mut c_void,
+        replaced: *mut bool,
+    ) -> HRESULT {
         let me = Self::from_map_ptr(this);
         let mut entries = lock_or!(me.entries, E_FAIL);
         let new_key = match IUnknown::from_raw_borrowed(&key) {
@@ -278,7 +300,10 @@ impl SingleThreadedMap {
         let me = Self::from_map_ptr(this);
         let mut entries = lock_or!(me.entries, E_FAIL);
         match find_key_index(&entries, key) {
-            Some(i) => { entries.remove(i); S_OK }
+            Some(i) => {
+                entries.remove(i);
+                S_OK
+            }
             None => E_BOUNDS,
         }
     }
@@ -356,20 +381,37 @@ impl SingleThreadedMapView {
 
     unsafe extern "system" fn first(this: *mut c_void, result: *mut *mut c_void) -> HRESULT {
         let me = Self::from_iterable_ptr(this);
-        let kvp_items: Vec<usize> = me.entries.iter()
-            .map(|(k, v)| SingleThreadedKeyValuePair::create(k.clone(), v.clone(), me.iids.kvp).into_raw() as usize)
+        let kvp_items: Vec<usize> = me
+            .entries
+            .iter()
+            .map(|(k, v)| {
+                SingleThreadedKeyValuePair::create(k.clone(), v.clone(), me.iids.kvp).into_raw()
+                    as usize
+            })
             .collect();
-        let iter = SingleThreadedIterator::create(kvp_items, false, std::mem::size_of::<*mut c_void>(), me.iids.iterator);
+        let iter = SingleThreadedIterator::create(
+            kvp_items,
+            false,
+            std::mem::size_of::<*mut c_void>(),
+            me.iids.iterator,
+        );
         *result = iter.into_raw();
         S_OK
     }
 
     // -- IMapView --
 
-    unsafe extern "system" fn lookup(this: *mut c_void, key: *mut c_void, result: *mut *mut c_void) -> HRESULT {
+    unsafe extern "system" fn lookup(
+        this: *mut c_void,
+        key: *mut c_void,
+        result: *mut *mut c_void,
+    ) -> HRESULT {
         let me = Self::from_view_ptr(this);
         match find_key_index(&me.entries, key) {
-            Some(i) => { *result = me.entries[i].1.clone().into_raw(); S_OK }
+            Some(i) => {
+                *result = me.entries[i].1.clone().into_raw();
+                S_OK
+            }
             None => E_BOUNDS,
         }
     }
@@ -380,7 +422,11 @@ impl SingleThreadedMapView {
         S_OK
     }
 
-    unsafe extern "system" fn has_key(this: *mut c_void, key: *mut c_void, result: *mut bool) -> HRESULT {
+    unsafe extern "system" fn has_key(
+        this: *mut c_void,
+        key: *mut c_void,
+        result: *mut bool,
+    ) -> HRESULT {
         let me = Self::from_view_ptr(this);
         *result = find_key_index(&me.entries, key).is_some();
         S_OK
@@ -539,9 +585,13 @@ mod tests {
         let table = MetadataTable::new();
         let iids = table.map_iids(&table.hstring(), &table.object());
 
-        let uri = windows::Foundation::Uri::CreateUri(windows_core::h!("https://example.com")).unwrap();
-        let key: IUnknown = windows::Foundation::PropertyValue::CreateString(windows_core::h!("mykey"))
-            .unwrap().cast().unwrap();
+        let uri =
+            windows::Foundation::Uri::CreateUri(windows_core::h!("https://example.com")).unwrap();
+        let key: IUnknown =
+            windows::Foundation::PropertyValue::CreateString(windows_core::h!("mykey"))
+                .unwrap()
+                .cast()
+                .unwrap();
         let val: IUnknown = uri.cast().unwrap();
 
         let kvp = SingleThreadedKeyValuePair::create(key, val, iids.kvp);

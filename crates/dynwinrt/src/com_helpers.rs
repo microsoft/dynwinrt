@@ -428,7 +428,9 @@ macro_rules! impl_drop_release_items {
                     // panicking across an FFI boundary.
                     if let Ok(items) = self.items.lock() {
                         for &raw in items.iter() {
-                            unsafe { $crate::com_helpers::com_usize_release(raw); }
+                            unsafe {
+                                $crate::com_helpers::com_usize_release(raw);
+                            }
                         }
                     }
                 }
@@ -440,7 +442,9 @@ macro_rules! impl_drop_release_items {
             fn drop(&mut self) {
                 if !self.is_value_type {
                     for &raw in &self.items {
-                        unsafe { $crate::com_helpers::com_usize_release(raw); }
+                        unsafe {
+                            $crate::com_helpers::com_usize_release(raw);
+                        }
                     }
                 }
             }
@@ -460,8 +464,8 @@ macro_rules! lock_or {
 }
 
 // Export macros for use within the crate
-pub(crate) use inspectable_stubs;
 pub(crate) use dual_vtable_com;
-pub(crate) use single_vtable_com;
 pub(crate) use impl_drop_release_items;
+pub(crate) use inspectable_stubs;
 pub(crate) use lock_or;
+pub(crate) use single_vtable_com;

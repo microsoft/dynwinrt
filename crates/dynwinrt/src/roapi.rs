@@ -1,9 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 use windows::Win32::System::WinRT::{IActivationFactory, RoGetActivationFactory};
-use windows::Win32::System::LibraryLoader::{LoadLibraryW, GetProcAddress};
-use windows_core::{HSTRING, HRESULT, IUnknown, Interface, PCSTR};
+use windows_core::{HRESULT, HSTRING, IUnknown, Interface, PCSTR};
 
 use crate::value::WinRTValue;
 
@@ -51,8 +51,8 @@ fn dll_get_activation_factory_fallback(class_name: &HSTRING) -> Option<WinRTValu
     use windows::Win32::Foundation::FreeLibrary;
 
     type DllGetActivationFactoryFn = unsafe extern "system" fn(
-        class_id: *mut std::ffi::c_void,  // HSTRING
-        factory: *mut *mut std::ffi::c_void,  // IActivationFactory**
+        class_id: *mut std::ffi::c_void,     // HSTRING
+        factory: *mut *mut std::ffi::c_void, // IActivationFactory**
     ) -> HRESULT;
 
     let mut path = class_name.to_string();
@@ -66,9 +66,16 @@ fn dll_get_activation_factory_fallback(class_name: &HSTRING) -> Option<WinRTValu
             Err(_) => continue,
         };
 
-        let proc = unsafe { GetProcAddress(module, PCSTR::from_raw(b"DllGetActivationFactory\0".as_ptr())) };
+        let proc = unsafe {
+            GetProcAddress(
+                module,
+                PCSTR::from_raw(b"DllGetActivationFactory\0".as_ptr()),
+            )
+        };
         let Some(proc) = proc else {
-            unsafe { let _ = FreeLibrary(module); }
+            unsafe {
+                let _ = FreeLibrary(module);
+            }
             continue;
         };
 
@@ -87,20 +94,25 @@ fn dll_get_activation_factory_fallback(class_name: &HSTRING) -> Option<WinRTValu
         }
 
         // Factory not found in this DLL — unload and try next
-        unsafe { let _ = FreeLibrary(module); }
+        unsafe {
+            let _ = FreeLibrary(module);
+        }
     }
 
     None
 }
 
 #[allow(dead_code)]
-pub fn query_interface(obj: WinRTValue, iid: &windows_core::GUID) -> windows_core::Result<WinRTValue> {
+pub fn query_interface(
+    obj: WinRTValue,
+    iid: &windows_core::GUID,
+) -> windows_core::Result<WinRTValue> {
     let mut result = std::ptr::null_mut();
     let unk = obj.as_object().unwrap();
     unsafe {
         (unk.query(iid, &mut result)).ok()?;
     }
-    Ok(WinRTValue::Object(unsafe { IUnknown::from_raw(result)}))
+    Ok(WinRTValue::Object(unsafe { IUnknown::from_raw(result) }))
 }
 
 #[cfg(test)]
@@ -125,7 +137,11 @@ mod tests {
         let uri_factory = factory.cast::<IUriRuntimeClassFactory>()?;
 
         let reg = crate::metadata_table::MetadataTable::new();
-        let mut uri_factory_iface = crate::signature::InterfaceSignature::define_from_iinspectable("", Default::default(), &reg);
+        let mut uri_factory_iface = crate::signature::InterfaceSignature::define_from_iinspectable(
+            "",
+            Default::default(),
+            &reg,
+        );
         uri_factory_iface.add_method(
             crate::signature::MethodSignature::new(&reg)
                 .add_in(reg.hstring())

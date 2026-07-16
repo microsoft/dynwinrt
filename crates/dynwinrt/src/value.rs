@@ -39,16 +39,16 @@ impl AsyncInfo {
     }
 
     pub fn handler_iid(&self) -> GUID {
-        self.async_type.completed_handler_iid().expect("async type must have handler IID")
+        self.async_type
+            .completed_handler_iid()
+            .expect("async type must have handler IID")
     }
 
     pub fn result_type(&self) -> Option<TypeHandle> {
         match self.async_type.kind() {
             TypeKind::IAsyncOperation(_idx) | TypeKind::IAsyncOperationWithProgress(_idx) => {
                 let inner = match self.async_type.kind() {
-                    TypeKind::IAsyncOperation(idx) => {
-                        self.async_type.table().get_inner_type(idx)
-                    }
+                    TypeKind::IAsyncOperation(idx) => self.async_type.table().get_inner_type(idx),
                     TypeKind::IAsyncOperationWithProgress(idx) => {
                         self.async_type.table().get_inner_type_pair(idx).0
                     }
@@ -90,16 +90,12 @@ impl AsyncInfo {
                 let concrete = unsafe { IUnknown::from_raw(concrete_ptr) };
                 // put_Progress is at vtable index 6 for WithProgress types
                 // (IUnknown[0-2], IInspectable[3-5], put_Progress[6])
-                let hr = crate::call::call_winrt_method_1(
-                    6,
-                    concrete.as_raw(),
-                    handler.as_raw(),
-                );
+                let hr = crate::call::call_winrt_method_1(6, concrete.as_raw(), handler.as_raw());
                 hr.ok().map_err(result::Error::WindowsError)?;
                 Ok(())
             }
             _ => Err(result::Error::WindowsError(
-                windows_core::Error::from_hresult(windows_core::HRESULT(0x80070057u32 as i32))
+                windows_core::Error::from_hresult(windows_core::HRESULT(0x80070057u32 as i32)),
             )),
         }
     }
@@ -141,7 +137,10 @@ pub enum WinRTValue {
     OutValue(*mut std::ffi::c_void, TypeHandle),
     Async(AsyncInfo),
     ArrayOfIUnknown(ArrayOfIUnknownData),
-    Enum { value: i32, type_handle: TypeHandle },
+    Enum {
+        value: i32,
+        type_handle: TypeHandle,
+    },
     Struct(crate::metadata_table::ValueTypeData),
     Array(ArrayData),
 }
@@ -273,7 +272,9 @@ impl WinRTValue {
             WinRTValue::Null => panic!("Cannot get out_ptr for Null value"),
             WinRTValue::Async(_) => panic!("Cannot get out_ptr for async value"),
             WinRTValue::Struct(data) => data.as_mut_ptr() as *mut std::ffi::c_void,
-            WinRTValue::Array(_) => panic!("Cannot get out_ptr for Array; arrays expand to two ABI parameters"),
+            WinRTValue::Array(_) => {
+                panic!("Cannot get out_ptr for Array; arrays expand to two ABI parameters")
+            }
         }
     }
 
@@ -302,7 +303,9 @@ impl WinRTValue {
             WinRTValue::Async(_) => panic!("Cannot pass async value as libffi arg"),
             WinRTValue::ArrayOfIUnknown(data) => arg(&data.0),
             WinRTValue::Struct(data) => unsafe { arg(&*data.as_ptr()) },
-            WinRTValue::Array(_) => panic!("Cannot pass Array as single libffi arg; arrays expand to two args"),
+            WinRTValue::Array(_) => {
+                panic!("Cannot pass Array as single libffi arg; arrays expand to two args")
+            }
         }
     }
 

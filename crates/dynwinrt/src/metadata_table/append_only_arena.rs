@@ -27,7 +27,9 @@ pub(super) struct AppendOnlyBoxArena<T> {
 
 impl<T> AppendOnlyBoxArena<T> {
     pub(super) fn new() -> Self {
-        Self { inner: RwLock::new(Vec::new()) }
+        Self {
+            inner: RwLock::new(Vec::new()),
+        }
     }
 
     /// Append a value and return its arena index.

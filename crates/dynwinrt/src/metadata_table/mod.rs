@@ -1,18 +1,18 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-mod type_kind;
-mod type_handle;
-mod value_data;
-mod method_handle;
-mod arena;
 mod append_only_arena;
+mod arena;
 mod iid;
+mod method_handle;
+mod type_handle;
+mod type_kind;
+mod value_data;
 
-pub use type_kind::*;
-pub use type_handle::TypeHandle;
-pub use value_data::ValueTypeData;
 pub use method_handle::MethodHandle;
+pub use type_handle::TypeHandle;
+pub use type_kind::*;
+pub use value_data::ValueTypeData;
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -106,24 +106,60 @@ impl MetadataTable {
     }
 
     // Primitive types
-    pub fn bool_type(self: &Arc<Self>) -> TypeHandle { self.make(TypeKind::Bool) }
-    pub fn i8_type(self: &Arc<Self>) -> TypeHandle { self.make(TypeKind::I8) }
-    pub fn u8_type(self: &Arc<Self>) -> TypeHandle { self.make(TypeKind::U8) }
-    pub fn i16_type(self: &Arc<Self>) -> TypeHandle { self.make(TypeKind::I16) }
-    pub fn u16_type(self: &Arc<Self>) -> TypeHandle { self.make(TypeKind::U16) }
-    pub fn char16_type(self: &Arc<Self>) -> TypeHandle { self.make(TypeKind::Char16) }
-    pub fn i32_type(self: &Arc<Self>) -> TypeHandle { self.make(TypeKind::I32) }
-    pub fn u32_type(self: &Arc<Self>) -> TypeHandle { self.make(TypeKind::U32) }
-    pub fn i64_type(self: &Arc<Self>) -> TypeHandle { self.make(TypeKind::I64) }
-    pub fn u64_type(self: &Arc<Self>) -> TypeHandle { self.make(TypeKind::U64) }
-    pub fn f32_type(self: &Arc<Self>) -> TypeHandle { self.make(TypeKind::F32) }
-    pub fn f64_type(self: &Arc<Self>) -> TypeHandle { self.make(TypeKind::F64) }
-    pub fn guid_type(self: &Arc<Self>) -> TypeHandle { self.make(TypeKind::Guid) }
-    pub fn hstring(self: &Arc<Self>) -> TypeHandle { self.make(TypeKind::HString) }
-    pub fn object(self: &Arc<Self>) -> TypeHandle { self.make(TypeKind::Object) }
-    pub fn hresult(self: &Arc<Self>) -> TypeHandle { self.make(TypeKind::HResult) }
-    pub fn array_of_iunknown(self: &Arc<Self>) -> TypeHandle { self.make(TypeKind::ArrayOfIUnknown) }
-    pub fn async_action(self: &Arc<Self>) -> TypeHandle { self.make(TypeKind::IAsyncAction) }
+    pub fn bool_type(self: &Arc<Self>) -> TypeHandle {
+        self.make(TypeKind::Bool)
+    }
+    pub fn i8_type(self: &Arc<Self>) -> TypeHandle {
+        self.make(TypeKind::I8)
+    }
+    pub fn u8_type(self: &Arc<Self>) -> TypeHandle {
+        self.make(TypeKind::U8)
+    }
+    pub fn i16_type(self: &Arc<Self>) -> TypeHandle {
+        self.make(TypeKind::I16)
+    }
+    pub fn u16_type(self: &Arc<Self>) -> TypeHandle {
+        self.make(TypeKind::U16)
+    }
+    pub fn char16_type(self: &Arc<Self>) -> TypeHandle {
+        self.make(TypeKind::Char16)
+    }
+    pub fn i32_type(self: &Arc<Self>) -> TypeHandle {
+        self.make(TypeKind::I32)
+    }
+    pub fn u32_type(self: &Arc<Self>) -> TypeHandle {
+        self.make(TypeKind::U32)
+    }
+    pub fn i64_type(self: &Arc<Self>) -> TypeHandle {
+        self.make(TypeKind::I64)
+    }
+    pub fn u64_type(self: &Arc<Self>) -> TypeHandle {
+        self.make(TypeKind::U64)
+    }
+    pub fn f32_type(self: &Arc<Self>) -> TypeHandle {
+        self.make(TypeKind::F32)
+    }
+    pub fn f64_type(self: &Arc<Self>) -> TypeHandle {
+        self.make(TypeKind::F64)
+    }
+    pub fn guid_type(self: &Arc<Self>) -> TypeHandle {
+        self.make(TypeKind::Guid)
+    }
+    pub fn hstring(self: &Arc<Self>) -> TypeHandle {
+        self.make(TypeKind::HString)
+    }
+    pub fn object(self: &Arc<Self>) -> TypeHandle {
+        self.make(TypeKind::Object)
+    }
+    pub fn hresult(self: &Arc<Self>) -> TypeHandle {
+        self.make(TypeKind::HResult)
+    }
+    pub fn array_of_iunknown(self: &Arc<Self>) -> TypeHandle {
+        self.make(TypeKind::ArrayOfIUnknown)
+    }
+    pub fn async_action(self: &Arc<Self>) -> TypeHandle {
+        self.make(TypeKind::IAsyncAction)
+    }
 
     /// Create a TypeHandle from a TypeKind. Only works for simple (non-indexed) kinds.
     pub fn handle_from_kind(self: &Arc<Self>, kind: TypeKind) -> TypeHandle {
@@ -151,7 +187,11 @@ impl MetadataTable {
         self.make(kind)
     }
 
-    pub fn parameterized(self: &Arc<Self>, generic_def: &TypeHandle, args: &[TypeHandle]) -> TypeHandle {
+    pub fn parameterized(
+        self: &Arc<Self>,
+        generic_def: &TypeHandle,
+        args: &[TypeHandle],
+    ) -> TypeHandle {
         let args_kinds: Vec<TypeKind> = args.iter().map(|a| a.kind).collect();
         self.make(self.push_parameterized(generic_def.kind, args_kinds))
     }
@@ -230,12 +270,21 @@ impl MetadataTable {
     // -----------------------------------------------------------------------
 
     /// Add a method to the interface identified by IID.
-    pub(crate) fn add_method_to_interface(&self, iid: &GUID, name: &str, sig: MethodSignature) -> u32 {
+    pub(crate) fn add_method_to_interface(
+        &self,
+        iid: &GUID,
+        name: &str,
+        sig: MethodSignature,
+    ) -> u32 {
         self.push_method(iid, name, sig)
     }
 
     /// Get a MethodHandle by vtable index. O(1) lookup by IID.
-    pub(crate) fn method_by_vtable_index(self: &Arc<Self>, iid: &GUID, vtable_index: usize) -> Option<MethodHandle> {
+    pub(crate) fn method_by_vtable_index(
+        self: &Arc<Self>,
+        iid: &GUID,
+        vtable_index: usize,
+    ) -> Option<MethodHandle> {
         let arena_index = self.get_method_arena_index_by_vtable(iid, vtable_index)?;
         Some(MethodHandle::new(Arc::clone(self), arena_index))
     }
@@ -274,14 +323,21 @@ impl MetadataTable {
     }
 
     /// Compute all IIDs needed for an IMap<key_type, value_type>.
-    pub fn map_iids(self: &Arc<Self>, key_type: &TypeHandle, value_type: &TypeHandle) -> crate::map::MapIids {
+    pub fn map_iids(
+        self: &Arc<Self>,
+        key_type: &TypeHandle,
+        value_type: &TypeHandle,
+    ) -> crate::map::MapIids {
         use type_kind::*;
         let k = key_type.kind;
         let v = value_type.kind;
         // Create a Parameterized TypeKind for IKeyValuePair<K,V> so that
         // signature_string_kind can resolve it for the outer IIterable/IIterator.
         let kvp_kind = self.push_parameterized(
-            TypeKind::Generic { piid: IKEY_VALUE_PAIR, arity: 2 },
+            TypeKind::Generic {
+                piid: IKEY_VALUE_PAIR,
+                arity: 2,
+            },
             vec![k, v],
         );
         let kvp_iid = self.compute_parameterized_iid(&IKEY_VALUE_PAIR, &[k, v]);
@@ -353,8 +409,14 @@ mod tests {
         assert_eq!(point.field_offset(1), 4);
 
         // Matches real Windows.Foundation.Point
-        assert_eq!(point.size_of(), std::mem::size_of::<windows::Foundation::Point>());
-        assert_eq!(point.align_of(), std::mem::align_of::<windows::Foundation::Point>());
+        assert_eq!(
+            point.size_of(),
+            std::mem::size_of::<windows::Foundation::Point>()
+        );
+        assert_eq!(
+            point.align_of(),
+            std::mem::align_of::<windows::Foundation::Point>()
+        );
 
         // Field read/write
         let mut val = point.default_value();
@@ -408,20 +470,32 @@ mod tests {
     #[test]
     fn enum_registration_and_query() {
         let table = MetadataTable::new();
-        let handle = table.enum_type("Windows.Foundation.AsyncStatus", vec![
-            ("Started".into(), 0),
-            ("Completed".into(), 1),
-            ("Canceled".into(), 2),
-            ("Error".into(), 3),
-        ]);
+        let handle = table.enum_type(
+            "Windows.Foundation.AsyncStatus",
+            vec![
+                ("Started".into(), 0),
+                ("Completed".into(), 1),
+                ("Canceled".into(), 2),
+                ("Error".into(), 3),
+            ],
+        );
 
         // ABI is i32
         assert_eq!(handle.abi_type(), AbiType::I32);
 
         // Query by name
-        assert_eq!(table.get_enum_value("Windows.Foundation.AsyncStatus", "Completed"), Some(1));
-        assert_eq!(table.get_enum_value("Windows.Foundation.AsyncStatus", "Error"), Some(3));
-        assert_eq!(table.get_enum_value("Windows.Foundation.AsyncStatus", "Nonexistent"), None);
+        assert_eq!(
+            table.get_enum_value("Windows.Foundation.AsyncStatus", "Completed"),
+            Some(1)
+        );
+        assert_eq!(
+            table.get_enum_value("Windows.Foundation.AsyncStatus", "Error"),
+            Some(3)
+        );
+        assert_eq!(
+            table.get_enum_value("Windows.Foundation.AsyncStatus", "Nonexistent"),
+            None
+        );
         assert_eq!(table.get_enum_value("Nonexistent.Enum", "Foo"), None);
     }
 
@@ -433,9 +507,16 @@ mod tests {
     fn interface_method_lookup() {
         let iid = GUID::from_u128(0x9E365E57_48B2_4160_956F_C7385120BBFC);
         let table = MetadataTable::new();
-        let iface = table.register_interface("IUriRuntimeClass", iid)
-            .add_method("get_AbsoluteUri", MethodSignature::new(&table).add_out(table.hstring()))
-            .add_method("get_DisplayUri", MethodSignature::new(&table).add_out(table.hstring()));
+        let iface = table
+            .register_interface("IUriRuntimeClass", iid)
+            .add_method(
+                "get_AbsoluteUri",
+                MethodSignature::new(&table).add_out(table.hstring()),
+            )
+            .add_method(
+                "get_DisplayUri",
+                MethodSignature::new(&table).add_out(table.hstring()),
+            );
 
         // By vtable index (6 = first user method after IInspectable)
         assert!(iface.method(6).is_some());
@@ -504,7 +585,10 @@ mod tests {
     #[test]
     fn guid_braced_format() {
         let guid = GUID::from_u128(0x9fc2b0bb_e446_44e2_aa61_9cab8f636af2);
-        assert_eq!(format_guid_braced(&guid), "{9fc2b0bb-e446-44e2-aa61-9cab8f636af2}");
+        assert_eq!(
+            format_guid_braced(&guid),
+            "{9fc2b0bb-e446-44e2-aa61-9cab8f636af2}"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -521,51 +605,101 @@ mod tests {
 
         // Register interfaces
         let factory_iid = GUID::from_u128(0x44A9796F_723E_4FDF_A218_033E75B0C084);
-        let factory_iface = table.register_interface("IUriRuntimeClassFactory", factory_iid)
-            .add_method("CreateUri", MethodSignature::new(&table)
-                .add_in(table.hstring()).add_out(table.object()));
+        let factory_iface = table
+            .register_interface("IUriRuntimeClassFactory", factory_iid)
+            .add_method(
+                "CreateUri",
+                MethodSignature::new(&table)
+                    .add_in(table.hstring())
+                    .add_out(table.object()),
+            );
 
         let uri_iid = GUID::from_u128(0x9E365E57_48B2_4160_956F_C7385120BBFC);
-        let uri_iface = table.register_interface("IUriRuntimeClass", uri_iid)
-            .add_method("get_AbsoluteUri", MethodSignature::new(&table).add_out(table.hstring()))
-            .add_method("get_DisplayUri", MethodSignature::new(&table).add_out(table.hstring()))
-            .add_method("get_Domain", MethodSignature::new(&table).add_out(table.hstring()))
-            .add_method("get_Extension", MethodSignature::new(&table).add_out(table.hstring()))
-            .add_method("get_Fragment", MethodSignature::new(&table).add_out(table.hstring()))
-            .add_method("get_Host", MethodSignature::new(&table).add_out(table.hstring()));
+        let uri_iface = table
+            .register_interface("IUriRuntimeClass", uri_iid)
+            .add_method(
+                "get_AbsoluteUri",
+                MethodSignature::new(&table).add_out(table.hstring()),
+            )
+            .add_method(
+                "get_DisplayUri",
+                MethodSignature::new(&table).add_out(table.hstring()),
+            )
+            .add_method(
+                "get_Domain",
+                MethodSignature::new(&table).add_out(table.hstring()),
+            )
+            .add_method(
+                "get_Extension",
+                MethodSignature::new(&table).add_out(table.hstring()),
+            )
+            .add_method(
+                "get_Fragment",
+                MethodSignature::new(&table).add_out(table.hstring()),
+            )
+            .add_method(
+                "get_Host",
+                MethodSignature::new(&table).add_out(table.hstring()),
+            );
 
         // Activate factory and QI
         let factory = unsafe {
             windows::Win32::System::WinRT::RoGetActivationFactory::<
                 windows::Win32::System::WinRT::IActivationFactory,
             >(h!("Windows.Foundation.Uri"))
-        }.unwrap();
+        }
+        .unwrap();
         let mut factory_ptr = std::ptr::null_mut();
-        unsafe { factory.cast::<windows_core::IUnknown>().unwrap()
-            .query(&factory_iid, &mut factory_ptr).ok().unwrap(); }
+        unsafe {
+            factory
+                .cast::<windows_core::IUnknown>()
+                .unwrap()
+                .query(&factory_iid, &mut factory_ptr)
+                .ok()
+                .unwrap();
+        }
 
         // CreateUri via method_by_name
-        let uri_val = factory_iface.method_by_name("CreateUri").unwrap()
-            .invoke(factory_ptr, &[
-                WinRTValue::HString(windows_core::HSTRING::from("https://www.example.com/path?q=1#frag"))
-            ]).unwrap();
+        let uri_val = factory_iface
+            .method_by_name("CreateUri")
+            .unwrap()
+            .invoke(
+                factory_ptr,
+                &[WinRTValue::HString(windows_core::HSTRING::from(
+                    "https://www.example.com/path?q=1#frag",
+                ))],
+            )
+            .unwrap();
         let uri_obj = uri_val[0].as_object().unwrap();
         let mut uri_ptr = std::ptr::null_mut();
-        unsafe { uri_obj.query(&uri_iid, &mut uri_ptr).ok().unwrap(); }
+        unsafe {
+            uri_obj.query(&uri_iid, &mut uri_ptr).ok().unwrap();
+        }
 
         // get_Host via method_by_name
-        let host = uri_iface.method_by_name("get_Host").unwrap()
-            .invoke(uri_ptr, &[]).unwrap()[0].as_hstring().unwrap();
+        let host = uri_iface
+            .method_by_name("get_Host")
+            .unwrap()
+            .invoke(uri_ptr, &[])
+            .unwrap()[0]
+            .as_hstring()
+            .unwrap();
         assert_eq!(host.to_string(), "www.example.com");
 
         // get_AbsoluteUri via vtable index
-        let abs_uri = uri_iface.method(6).unwrap()
-            .invoke(uri_ptr, &[]).unwrap()[0].as_hstring().unwrap();
+        let abs_uri = uri_iface.method(6).unwrap().invoke(uri_ptr, &[]).unwrap()[0]
+            .as_hstring()
+            .unwrap();
         assert_eq!(abs_uri.to_string(), "https://www.example.com/path?q=1#frag");
 
         // get_Domain via method_by_name
-        let domain = uri_iface.method_by_name("get_Domain").unwrap()
-            .invoke(uri_ptr, &[]).unwrap()[0].as_hstring().unwrap();
+        let domain = uri_iface
+            .method_by_name("get_Domain")
+            .unwrap()
+            .invoke(uri_ptr, &[])
+            .unwrap()[0]
+            .as_hstring()
+            .unwrap();
         assert_eq!(domain.to_string(), "example.com");
     }
 
@@ -587,15 +721,20 @@ mod tests {
 
         // Register IGeopointFactory
         let factory_iid = IGeopointFactory::IID;
-        let factory_iface = table.register_interface("IGeopointFactory", factory_iid)
-            .add_method("Create", MethodSignature::new(&table)
-                .add_in(geo_type.clone()).add_out(table.object()));
+        let factory_iface = table
+            .register_interface("IGeopointFactory", factory_iid)
+            .add_method(
+                "Create",
+                MethodSignature::new(&table)
+                    .add_in(geo_type.clone())
+                    .add_out(table.object()),
+            );
 
         // Create struct value
         let mut geo_val = geo_type.default_value();
-        geo_val.set_field(0, 47.643f64);   // Latitude
-        geo_val.set_field(1, -122.131f64);  // Longitude
-        geo_val.set_field(2, 100.0f64);     // Altitude
+        geo_val.set_field(0, 47.643f64); // Latitude
+        geo_val.set_field(1, -122.131f64); // Longitude
+        geo_val.set_field(2, 100.0f64); // Altitude
 
         // Activate and call
         let af = unsafe {
@@ -604,12 +743,22 @@ mod tests {
             >(h!("Windows.Devices.Geolocation.Geopoint"))
         }?;
         let mut factory_ptr = std::ptr::null_mut();
-        unsafe { af.cast::<windows_core::IUnknown>().unwrap()
-            .query(&factory_iid, &mut factory_ptr).ok().unwrap(); }
+        unsafe {
+            af.cast::<windows_core::IUnknown>()
+                .unwrap()
+                .query(&factory_iid, &mut factory_ptr)
+                .ok()
+                .unwrap();
+        }
 
-        let result = factory_iface.method_by_name("Create").unwrap()
+        let result = factory_iface
+            .method_by_name("Create")
+            .unwrap()
             .invoke(factory_ptr, &[WinRTValue::Struct(geo_val)])
-            .map_err(|e| match e { crate::result::Error::WindowsError(we) => we, _ => panic!("{:?}", e) })?;
+            .map_err(|e| match e {
+                crate::result::Error::WindowsError(we) => we,
+                _ => panic!("{:?}", e),
+            })?;
 
         // Verify via static projection
         let geopoint: Geopoint = result[0].as_object().unwrap().cast()?;
@@ -630,47 +779,100 @@ mod tests {
 
         // Register IUriRuntimeClass (default interface) — alphabetical vtable order
         let uri_iid = GUID::from_u128(0x9E365E57_48B2_4160_956F_C7385120BBFC);
-        let iuri = table.register_interface("IUriRuntimeClass_test", uri_iid)
-            .add_method("get_AbsoluteUri", MethodSignature::new(&table).add_out(table.hstring()))
-            .add_method("get_DisplayUri", MethodSignature::new(&table).add_out(table.hstring()))
-            .add_method("get_Domain", MethodSignature::new(&table).add_out(table.hstring()))
-            .add_method("get_Extension", MethodSignature::new(&table).add_out(table.hstring()))
-            .add_method("get_Fragment", MethodSignature::new(&table).add_out(table.hstring()))
-            .add_method("get_Host", MethodSignature::new(&table).add_out(table.hstring()));
+        let iuri = table
+            .register_interface("IUriRuntimeClass_test", uri_iid)
+            .add_method(
+                "get_AbsoluteUri",
+                MethodSignature::new(&table).add_out(table.hstring()),
+            )
+            .add_method(
+                "get_DisplayUri",
+                MethodSignature::new(&table).add_out(table.hstring()),
+            )
+            .add_method(
+                "get_Domain",
+                MethodSignature::new(&table).add_out(table.hstring()),
+            )
+            .add_method(
+                "get_Extension",
+                MethodSignature::new(&table).add_out(table.hstring()),
+            )
+            .add_method(
+                "get_Fragment",
+                MethodSignature::new(&table).add_out(table.hstring()),
+            )
+            .add_method(
+                "get_Host",
+                MethodSignature::new(&table).add_out(table.hstring()),
+            );
 
         // Register IUriRuntimeClassWithAbsoluteCanonicalUri (second interface)
         let uri2_iid = GUID::from_u128(0x758D9661_221C_480F_A339_50656673F46F);
-        let iuri2 = table.register_interface("IUriRuntimeClassWithAbsoluteCanonicalUri_test", uri2_iid)
-            .add_method("get_AbsoluteCanonicalUri", MethodSignature::new(&table).add_out(table.hstring()))
-            .add_method("get_DisplayIri", MethodSignature::new(&table).add_out(table.hstring()));
+        let iuri2 = table
+            .register_interface("IUriRuntimeClassWithAbsoluteCanonicalUri_test", uri2_iid)
+            .add_method(
+                "get_AbsoluteCanonicalUri",
+                MethodSignature::new(&table).add_out(table.hstring()),
+            )
+            .add_method(
+                "get_DisplayIri",
+                MethodSignature::new(&table).add_out(table.hstring()),
+            );
 
         // Verify direct interface call works first
-        let uri = windows::Foundation::Uri::CreateUri(h!("https://www.example.com/path?q=1"))
-            .unwrap();
+        let uri =
+            windows::Foundation::Uri::CreateUri(h!("https://www.example.com/path?q=1")).unwrap();
         let mut direct_ptr = std::ptr::null_mut();
-        unsafe { uri.cast::<IUnknown>().unwrap().query(&uri_iid, &mut direct_ptr).ok().unwrap(); }
-        let direct_host = iuri.method_by_name("get_Host").unwrap()
-            .invoke(direct_ptr, &[]).unwrap();
-        assert_eq!(direct_host[0].as_hstring().unwrap().to_string(), "www.example.com");
+        unsafe {
+            uri.cast::<IUnknown>()
+                .unwrap()
+                .query(&uri_iid, &mut direct_ptr)
+                .ok()
+                .unwrap();
+        }
+        let direct_host = iuri
+            .method_by_name("get_Host")
+            .unwrap()
+            .invoke(direct_ptr, &[])
+            .unwrap();
+        assert_eq!(
+            direct_host[0].as_hstring().unwrap().to_string(),
+            "www.example.com"
+        );
 
         // .as() pattern: cast to specific interface, then call methods
         let uri_obj = WinRTValue::Object(uri.cast::<IUnknown>().unwrap());
 
         // .as(IUri) → QI to default interface, then invoke
         let uri_as_iuri = uri_obj.cast(&uri_iid).unwrap();
-        let host = iuri.method_by_name("get_Host").unwrap()
-            .invoke(uri_as_iuri.as_object().unwrap().as_raw(), &[]).unwrap();
+        let host = iuri
+            .method_by_name("get_Host")
+            .unwrap()
+            .invoke(uri_as_iuri.as_object().unwrap().as_raw(), &[])
+            .unwrap();
         assert_eq!(host[0].as_hstring().unwrap().to_string(), "www.example.com");
 
-        let domain = iuri.method_by_name("get_Domain").unwrap()
-            .invoke(uri_as_iuri.as_object().unwrap().as_raw(), &[]).unwrap();
+        let domain = iuri
+            .method_by_name("get_Domain")
+            .unwrap()
+            .invoke(uri_as_iuri.as_object().unwrap().as_raw(), &[])
+            .unwrap();
         assert_eq!(domain[0].as_hstring().unwrap().to_string(), "example.com");
 
         // .as(IUri2) → QI to second interface, then invoke
         let uri_as_iuri2 = uri_obj.cast(&uri2_iid).unwrap();
-        let canonical = iuri2.method_by_name("get_AbsoluteCanonicalUri").unwrap()
-            .invoke(uri_as_iuri2.as_object().unwrap().as_raw(), &[]).unwrap();
-        assert!(canonical[0].as_hstring().unwrap().to_string().contains("example.com"));
+        let canonical = iuri2
+            .method_by_name("get_AbsoluteCanonicalUri")
+            .unwrap()
+            .invoke(uri_as_iuri2.as_object().unwrap().as_raw(), &[])
+            .unwrap();
+        assert!(
+            canonical[0]
+                .as_hstring()
+                .unwrap()
+                .to_string()
+                .contains("example.com")
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -693,7 +895,10 @@ mod tests {
         unsafe {
             let inner_offset = outer.field_offset(0);
             let inner_field_offset = inner.field_offset(0);
-            let target = outer_val.as_mut_ptr().add(inner_offset + inner_field_offset) as *mut *mut std::ffi::c_void;
+            let target = outer_val
+                .as_mut_ptr()
+                .add(inner_offset + inner_field_offset)
+                as *mut *mut std::ffi::c_void;
             target.write(raw);
         }
 
@@ -707,9 +912,8 @@ mod tests {
             if raw.is_null() {
                 return String::new();
             }
-            let hstr: &windows_core::HSTRING = unsafe {
-                &*(&raw as *const *mut std::ffi::c_void as *const windows_core::HSTRING)
-            };
+            let hstr: &windows_core::HSTRING =
+                unsafe { &*(&raw as *const *mut std::ffi::c_void as *const windows_core::HSTRING) };
             hstr.to_string()
         };
 

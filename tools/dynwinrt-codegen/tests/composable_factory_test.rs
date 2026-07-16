@@ -156,7 +156,5 @@ fn winui_application_projects_fluent_bootstrap_helpers() {
     assert!(dts.contains(
         "static createWithMetadataProvider(metadataProvider: XamlControlsXamlMetaDataProvider, onLaunched?: () => void): Application;"
     ));
-    assert!(
-        dts.contains("static create(onLaunched?: () => void): Application;")
-    );
+    assert!(dts.contains("static create(onLaunched?: () => void): Application;"));
 }
