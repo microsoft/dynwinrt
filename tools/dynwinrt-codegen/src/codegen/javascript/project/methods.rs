@@ -5,6 +5,97 @@
 
 use super::*;
 
+fn projected_method_outputs(method: &MethodMeta) -> Vec<(usize, &TypeMeta)> {
+    let mut result_index = 0;
+    let mut outputs = Vec::new();
+    for param in &method.params {
+        match param.direction {
+            ParamDirection::Out | ParamDirection::OutFill => {
+                outputs.push((result_index, &param.typ));
+                result_index += 1;
+            }
+            ParamDirection::In => {}
+        }
+    }
+    if !fill_array_uses_retval_count(method)
+        && let Some(return_type) = method.return_type.as_ref()
+    {
+        outputs.push((result_index, return_type));
+    }
+    outputs
+}
+
+fn output_ts_type(typ: &TypeMeta, known_types: &HashSet<String>) -> String {
+    match typ {
+        TypeMeta::Array(inner) => ts_array_element_type(inner, known_types),
+        _ => ts_return_type_safe(Some(typ), false, known_types),
+    }
+}
+
+fn convert_output(
+    expr: &str,
+    typ: &TypeMeta,
+    known_types: &HashSet<String>,
+    deferred: &HashSet<String>,
+) -> String {
+    match typ {
+        TypeMeta::Array(inner) => {
+            convert_array_return(&format!("{}.asArray()", expr), inner, known_types, deferred)
+        }
+        _ => convert_return(expr, Some(typ), false, known_types, deferred),
+    }
+}
+
+fn project_multi_output(
+    method: &MethodMeta,
+    invoke_expr: &str,
+    known_types: &HashSet<String>,
+) -> (String, String) {
+    let outputs = projected_method_outputs(method);
+    let return_type = match outputs.as_slice() {
+        [(_, typ)] => output_ts_type(typ, known_types),
+        _ => format!(
+            "[{}]",
+            outputs
+                .iter()
+                .map(|(_, typ)| output_ts_type(typ, known_types))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    };
+
+    let converted = outputs
+        .iter()
+        .map(|(index, typ)| {
+            let converted =
+                convert_output(&format!("_r[{}]", index), typ, known_types, &NO_DEFERRED);
+            if fill_array_uses_retval_count(method)
+                && fill_array_output_index(method) == Some(*index)
+            {
+                format!(
+                    "{}.slice(0, _r[{}].toNumber())",
+                    converted,
+                    method_abi_output_count(method) - 1
+                )
+            } else {
+                converted
+            }
+        })
+        .collect::<Vec<_>>();
+    let result = if converted.len() == 1 {
+        converted[0].clone()
+    } else {
+        format!("[{}]", converted.join(", "))
+    };
+    (
+        return_type,
+        format!(
+            "(() => {{ const _r = {}; return {}; }})()",
+            invoke_expr, result
+        ),
+    )
+}
+
 // ======================================================================
 // Method projection helpers
 // ======================================================================
@@ -139,6 +230,7 @@ pub(super) fn project_static_method(
         )
     });
     let is_async = return_type_meta.is_some_and(|rt| rt.is_async()) && !is_with_progress;
+    let is_multi_output = method_abi_output_count(method) > 1;
 
     let statics_call = format!("{cls}.s_{iface}()", cls = class.name, iface = iface.name);
 
@@ -169,7 +261,7 @@ pub(super) fn project_static_method(
         });
     }
 
-    let ts_return = ts_return_type_safe(return_type_meta, is_async, known_types);
+    let mut ts_return = ts_return_type_safe(return_type_meta, is_async, known_types);
     let params = project_params(
         &in_params,
         known_types,
@@ -178,9 +270,14 @@ pub(super) fn project_static_method(
         delegate_param_wraps,
     );
     let args_expr = build_args_expr(&in_params);
+    let invoke = if is_multi_output {
+        "invokeAll"
+    } else {
+        "invoke"
+    };
     let mut invoke_expr = format!(
-        "_{}.method({}).invoke({}, [{}])",
-        iface.name, method.vtable_index, statics_call, args_expr
+        "_{}.method({}).{}({}, [{}])",
+        iface.name, method.vtable_index, invoke, statics_call, args_expr
     );
     invoke_expr = rewrite_delegate_args_in_expr(&invoke_expr, &params);
 
@@ -230,6 +327,12 @@ pub(super) fn project_static_method(
             async_convert_v = Some(convert_v);
         }
         sync_return_expr = None;
+    } else if is_multi_output {
+        async_kind = AsyncKind::None;
+        let (multi_return, multi_expr) = project_multi_output(method, &invoke_expr, known_types);
+        ts_return = multi_return;
+        sync_return_expr = Some(multi_expr);
+        async_convert_v = None;
     } else {
         async_kind = AsyncKind::None;
         let converted = convert_return(
@@ -314,11 +417,12 @@ pub(super) fn project_instance_method(
         )
     });
     let is_async = return_type_meta.is_some_and(|rt| rt.is_async()) && !is_with_progress;
+    let is_multi_output = method_abi_output_count(method) > 1;
     let has_array_out = method.params.iter().any(|p| {
         (p.direction == ParamDirection::Out || p.direction == ParamDirection::OutFill)
             && matches!(p.typ, TypeMeta::Array(_))
     });
-    let has_return = return_type_meta.is_some() || has_array_out;
+    let has_return = method_abi_output_count(method) > 0;
 
     let is_delegate_type = |typ: Option<&TypeMeta>| -> bool {
         match typ {
@@ -458,32 +562,38 @@ pub(super) fn project_instance_method(
         delegate_sigs,
         delegate_param_wraps,
     );
-    let array_out_elem = if has_array_out && return_type_meta.is_none() {
-        method.params.iter().find_map(|p| {
-            if p.direction == ParamDirection::Out || p.direction == ParamDirection::OutFill {
-                if let TypeMeta::Array(inner) = &p.typ {
-                    Some(inner.as_ref())
+    let array_out_elem =
+        if has_array_out && (return_type_meta.is_none() || fill_array_uses_retval_count(method)) {
+            method.params.iter().find_map(|p| {
+                if p.direction == ParamDirection::Out || p.direction == ParamDirection::OutFill {
+                    if let TypeMeta::Array(inner) = &p.typ {
+                        Some(inner.as_ref())
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 }
-            } else {
-                None
-            }
-        })
-    } else {
-        None
-    };
+            })
+        } else {
+            None
+        };
 
-    let ts_return = if let Some(elem) = array_out_elem {
+    let mut ts_return = if let Some(elem) = array_out_elem {
         ts_array_element_type(elem, known_types)
     } else {
         ts_return_type_safe(return_type_meta, is_async, known_types)
     };
 
     let args_expr = build_args_expr(&in_params);
+    let invoke = if is_multi_output {
+        "invokeAll"
+    } else {
+        "invoke"
+    };
     let mut invoke_expr = format!(
-        "{}.method({}).invoke({}, [{}])",
-        iface_var, method.vtable_index, obj_expr, args_expr
+        "{}.method({}).{}({}, [{}])",
+        iface_var, method.vtable_index, invoke, obj_expr, args_expr
     );
     invoke_expr = rewrite_delegate_args_in_expr(&invoke_expr, &params);
 
@@ -535,13 +645,36 @@ pub(super) fn project_instance_method(
         }
         sync_return_expr = None;
         array_return_expr = None;
+    } else if is_multi_output && !fill_array_uses_retval_count(method) {
+        async_kind = AsyncKind::None;
+        let (multi_return, multi_expr) = project_multi_output(method, &invoke_expr, known_types);
+        ts_return = multi_return;
+        sync_return_expr = Some(multi_expr);
+        async_convert_v = None;
+        array_return_expr = None;
     } else if let Some(elem) = array_out_elem {
         async_kind = AsyncKind::None;
-        let arr_expr = format!("{}.asArray()", invoke_expr);
+        let arr_expr = if fill_array_uses_retval_count(method) {
+            format!(
+                "_r[{}].asArray()",
+                fill_array_output_index(method).expect("FillArray output index")
+            )
+        } else {
+            format!("{}.asArray()", invoke_expr)
+        };
         let converted = convert_array_return(&arr_expr, elem, known_types, &NO_DEFERRED);
         sync_return_expr = None;
         async_convert_v = None;
-        array_return_expr = Some(converted);
+        array_return_expr = if fill_array_uses_retval_count(method) {
+            Some(format!(
+                "(() => {{ const _r = {}; return {}.slice(0, _r[{}].toNumber()); }})()",
+                invoke_expr,
+                converted,
+                method_abi_output_count(method) - 1
+            ))
+        } else {
+            Some(converted)
+        };
     } else {
         async_kind = AsyncKind::None;
         if has_return {
@@ -723,4 +856,77 @@ fn find_setter_for_property(
         "{}.method({}).invoke({}, [{}]);",
         iface_var, setter.vtable_index, obj_expr, arg
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::meta::ParamMeta;
+
+    fn fill_array_with_boolean_result() -> MethodMeta {
+        MethodMeta {
+            name: "TryGetValues".into(),
+            raw_name: "TryGetValues".into(),
+            vtable_index: 6,
+            params: vec![ParamMeta {
+                name: "values".into(),
+                typ: TypeMeta::Array(Box::new(TypeMeta::F32)),
+                direction: ParamDirection::OutFill,
+            }],
+            return_type: Some(TypeMeta::Bool),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn projects_non_counted_multi_outputs_for_instance_and_static_methods() {
+        let method = fill_array_with_boolean_result();
+        let delegate_sigs: HashMap<String, String> = HashMap::new();
+        let delegate_wraps: HashMap<String, Vec<String>> = HashMap::new();
+        let instance = project_instance_method(
+            "_IWidget",
+            "this._obj",
+            &method,
+            &HashSet::new(),
+            &HashSet::new(),
+            None,
+            &delegate_sigs,
+            &delegate_wraps,
+        )
+        .expect("instance method");
+        let ProjectedMember::Method(instance) = instance else {
+            panic!("expected method");
+        };
+        assert_eq!(instance.return_type, "[number[], boolean]");
+        let instance_expr = instance.sync_return_expr.expect("instance return");
+        assert!(instance_expr.contains(".invokeAll("));
+        assert!(instance_expr.contains("_r[0].asArray().toF32Vec()"));
+        assert!(instance_expr.contains("_r[1].toBool()"));
+
+        let iface = InterfaceMeta {
+            name: "IWidgetStatics".into(),
+            methods: vec![method.clone()],
+            ..Default::default()
+        };
+        let class = ClassMeta {
+            name: "Widget".into(),
+            ..Default::default()
+        };
+        let ProjectedMember::Method(static_method) = project_static_method(
+            &class,
+            &iface,
+            &method,
+            &HashSet::new(),
+            &HashSet::new(),
+            &delegate_sigs,
+            &delegate_wraps,
+        ) else {
+            panic!("expected static method");
+        };
+        assert_eq!(static_method.return_type, "[number[], boolean]");
+        let static_expr = static_method.sync_return_expr.expect("static return");
+        assert!(static_expr.contains(".invokeAll("));
+        assert!(static_expr.contains("_r[0].asArray().toF32Vec()"));
+        assert!(static_expr.contains("_r[1].toBool()"));
+    }
 }

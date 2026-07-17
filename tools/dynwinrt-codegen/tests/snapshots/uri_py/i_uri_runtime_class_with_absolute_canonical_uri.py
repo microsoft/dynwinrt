@@ -27,6 +27,11 @@ def _dynwinrt_enum(module, name, value):
         return value
 
 
+def _dynwinrt_wait_action(value):
+    value.wait()
+    return None
+
+
 IID_IUriRuntimeClassWithAbsoluteCanonicalUri = WinGUID.parse('758d9661-221c-480f-a339-50656673f46f')
 
 _IUriRuntimeClassWithAbsoluteCanonicalUri = DynWinRTType.register_interface(

@@ -34,7 +34,8 @@ pub fn get_import_name() -> String {
 
 use crate::codegen::shared::imports::{
     NO_DEFERRED, collect_iface_type_imports, collect_type_imports,
-    collect_used_generics_from_class, collect_used_generics_from_methods, get_in_params,
+    collect_used_generics_from_class, collect_used_generics_from_methods, fill_array_output_index,
+    fill_array_uses_retval_count, get_in_params, method_abi_output_count,
 };
 use crate::codegen::shared::structs::{
     collect_used_structs_from_class, collect_used_structs_from_iface,

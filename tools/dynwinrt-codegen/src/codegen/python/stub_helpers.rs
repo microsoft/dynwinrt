@@ -6,12 +6,12 @@
 use std::collections::HashSet;
 
 use crate::codegen::shared::imports::get_in_params;
-use crate::meta::{MethodMeta, ParamDirection};
+use crate::meta::MethodMeta;
 use crate::types::{TypeKind, TypeMeta};
 
 use super::naming::{to_snake_case, to_snake_case_filename};
 use super::type_helpers::{
-    py_array_element_type, py_param_list, py_param_type_safe, py_return_type_safe,
+    py_method_return_type, py_param_list, py_param_type_safe, py_return_type_safe,
 };
 
 pub(super) fn format_py_type_import(name: &str, kind: TypeKind) -> String {
@@ -119,10 +119,6 @@ pub(super) fn emit_method_stub(
     let indent = " ".repeat(indent_spaces);
     let in_params = get_in_params(method);
     let return_type = method.return_type.as_ref();
-    let has_array_out = method.params.iter().any(|p| {
-        (p.direction == ParamDirection::Out || p.direction == ParamDirection::OutFill)
-            && matches!(p.typ, TypeMeta::Array(_))
-    });
 
     let is_delegate_type = |typ: Option<&TypeMeta>| -> bool {
         match typ {
@@ -184,26 +180,7 @@ pub(super) fn emit_method_stub(
         ));
     } else {
         let py_params = py_param_list(&in_params, known_types);
-        let array_out_elem = if has_array_out && return_type.is_none() {
-            method.params.iter().find_map(|p| {
-                if p.direction == ParamDirection::Out || p.direction == ParamDirection::OutFill {
-                    if let TypeMeta::Array(inner) = &p.typ {
-                        Some(inner.as_ref())
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            })
-        } else {
-            None
-        };
-        let py_return = if let Some(elem) = array_out_elem {
-            py_array_element_type(elem, known_types)
-        } else {
-            py_return_type_safe(return_type, known_types)
-        };
+        let py_return = py_method_return_type(method, known_types, delegate_type_names);
         let method_name = to_snake_case(&method.name);
         let self_and_params = if py_params.is_empty() {
             "self".to_string()
@@ -220,31 +197,24 @@ pub(super) fn emit_method_stub(
 }
 
 pub(super) fn emit_static_method_stub(
-    class_name: &str,
+    _class_name: &str,
     method: &MethodMeta,
     known_types: &HashSet<String>,
     is_factory: bool,
+    delegate_type_names: &HashSet<String>,
 ) -> String {
     let in_params = get_in_params(method);
     let py_params = py_param_list(&in_params, known_types);
 
-    let return_type = method.return_type.as_ref();
     let py_return = if is_factory {
-        format!("'{}'", class_name)
+        format!("'{}'", _class_name)
     } else {
-        py_return_type_safe(return_type, known_types)
+        py_method_return_type(method, known_types, delegate_type_names)
     };
 
     let mut out = String::new();
 
-    if !is_factory && method.is_property_getter && in_params.is_empty() {
-        let prop_name = to_snake_case(method.name.strip_prefix("get_").unwrap_or(&method.name));
-        out.push_str("    @classmethod\n");
-        out.push_str(&format!(
-            "    def get_{}(cls) -> {}: ...\n",
-            prop_name, py_return
-        ));
-    } else {
+    if is_factory || !method.is_property_getter || !in_params.is_empty() {
         let method_name = to_snake_case(&method.name);
         out.push_str("    @staticmethod\n");
         if py_params.is_empty() {
@@ -258,6 +228,13 @@ pub(super) fn emit_static_method_stub(
                 method_name, py_params, py_return
             ));
         }
+    } else {
+        let prop_name = to_snake_case(method.name.strip_prefix("get_").unwrap_or(&method.name));
+        out.push_str("    @classmethod\n");
+        out.push_str(&format!(
+            "    def get_{}(cls) -> {}: ...\n",
+            prop_name, py_return
+        ));
     }
     out
 }

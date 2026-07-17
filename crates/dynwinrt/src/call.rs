@@ -101,19 +101,18 @@ pub fn call_1in_1out(
 }
 
 /// Direct call for 1 scalar in + FillArray out.
-/// fn(this, val, u32 capacity, *mut u8 items, *mut u32 actual) -> HRESULT
+/// fn(this, val, u32 capacity, *mut u8 items) -> HRESULT
 pub fn call_fill_array_1in(
     fptr: *mut c_void,
     obj: *mut c_void,
     in_val: &WinRTValue,
     capacity: u32,
     buffer: *mut u8,
-    actual: *mut u32,
 ) -> HRESULT {
     dispatch_scalar!(in_val, |v| unsafe {
-        let method: unsafe extern "system" fn(*mut c_void, _, u32, *mut u8, *mut u32) -> HRESULT =
+        let method: unsafe extern "system" fn(*mut c_void, _, u32, *mut u8) -> HRESULT =
             std::mem::transmute(fptr);
-        method(obj, v, capacity, buffer, actual)
+        method(obj, v, capacity, buffer)
     })
 }
 
@@ -161,7 +160,6 @@ impl Drop for ArrayOutSlot {
 struct FillArraySlot {
     capacity: u32,
     buffer_ptr: *mut u8, // CoTaskMemAlloc'd
-    actual_count: u32,   // callee writes the actual number of elements filled
     element_type: TypeHandle,
 }
 
@@ -171,15 +169,10 @@ impl Drop for FillArraySlot {
         // Buffer was zero-initialized before the call, so null slots are safe to release.
         // Use capacity as cleanup length — ArrayData::Drop skips null elements.
         if !self.buffer_ptr.is_null() {
-            let cleanup_len = if self.actual_count == 0 && self.capacity > 0 {
-                self.capacity as usize
-            } else {
-                std::cmp::min(self.actual_count, self.capacity) as usize
-            };
             let _ = crate::array::ArrayData::from_cotaskmem(
                 self.element_type.clone(),
                 self.buffer_ptr as *mut c_void,
-                cleanup_len,
+                self.capacity as usize,
             );
             self.buffer_ptr = std::ptr::null_mut();
         }
@@ -217,9 +210,6 @@ pub fn call_winrt_method_dynamic<A: ArgumentList + ?Sized>(
     // FillArray storage: caller-allocated buffers
     let mut fill_array_slots: Vec<Box<FillArraySlot>> = Vec::new();
     let mut fill_array_map: Vec<Option<usize>> = Vec::with_capacity(out_count);
-    // Pre-computed pointers to actual_count fields (must outlive ffi call)
-    let mut fill_array_actual_ptrs: Vec<*mut u32> = Vec::new();
-
     ffi_args.push(arg(&obj));
 
     // Phase 1a: Pre-allocate all out parameters
@@ -228,7 +218,7 @@ pub fn call_winrt_method_dynamic<A: ArgumentList + ?Sized>(
             if p.is_fill_array() {
                 // FillArray: caller allocates buffer. Use the capacity from args.
                 let array_data = args
-                    .get_value(p.value_index)
+                    .get_value(p.input_index.expect("FillArray input index"))
                     .as_array()
                     .expect("Expected WinRTValue::Array with capacity for FillArray parameter");
                 let elem_type = p.typ.array_element_type();
@@ -242,14 +232,11 @@ pub fn call_winrt_method_dynamic<A: ArgumentList + ?Sized>(
                 let slot = Box::new(FillArraySlot {
                     capacity,
                     buffer_ptr,
-                    actual_count: 0,
                     element_type: elem_type,
                 });
                 let slot_idx = fill_array_slots.len();
                 fill_array_map.push(Some(slot_idx));
                 fill_array_slots.push(slot);
-                let slot_ref = &mut *fill_array_slots[slot_idx];
-                fill_array_actual_ptrs.push(&mut slot_ref.actual_count);
                 // Placeholders for index alignment
                 out_values.push(AbiValue::Pointer(std::ptr::null_mut()));
                 out_ptrs.push(std::ptr::null());
@@ -311,11 +298,10 @@ pub fn call_winrt_method_dynamic<A: ArgumentList + ?Sized>(
     for p in parameters {
         if p.is_out() {
             if let Some(slot_idx) = fill_array_map[p.value_index] {
-                // FillArray: push THREE args (capacity, buffer pointer, actual count pointer)
+                // FillArray: push capacity and caller-allocated buffer.
                 let slot = &*fill_array_slots[slot_idx];
                 ffi_args.push(arg(&slot.capacity));
                 ffi_args.push(arg(&slot.buffer_ptr));
-                ffi_args.push(arg(&fill_array_actual_ptrs[slot_idx]));
             } else if array_out_map[p.value_index].is_some() {
                 // ReceiveArray out: push TWO args (pointer-to-length, pointer-to-data_ptr)
                 ffi_args.push(arg(&array_out_len_ptrs[array_out_idx]));
@@ -339,6 +325,22 @@ pub fn call_winrt_method_dynamic<A: ArgumentList + ?Sized>(
     let hr: windows_core::HRESULT = unsafe { cif.call(CodePtr(fptr), &ffi_args) };
     hr.ok()?;
 
+    // Counted FillArray methods (for example GetMany) carry the actual count
+    // as their UInt32 retval. Other FillArray methods write the full capacity.
+    let fill_array_actual_count = if fill_array_slots.is_empty() {
+        None
+    } else {
+        parameters
+            .iter()
+            .rev()
+            .find(|param| param.is_out() && !param.is_fill_array())
+            .filter(|param| matches!(param.typ.kind(), TypeKind::U32))
+            .and_then(|param| match out_values[param.value_index] {
+                AbiValue::U32(value) => Some(value),
+                _ => None,
+            })
+    };
+
     // Phase 4: Extract results
     let mut result_values: Vec<WinRTValue> = Vec::with_capacity(out_count);
     for p in parameters {
@@ -346,20 +348,15 @@ pub fn call_winrt_method_dynamic<A: ArgumentList + ?Sized>(
             if let Some(slot_idx) = fill_array_map[p.value_index] {
                 // FillArray: transfer CoTaskMem buffer ownership to ArrayData
                 let slot = &mut fill_array_slots[slot_idx];
-                // If callee didn't set actual_count (left as 0), assume full buffer.
-                let raw_count = if slot.actual_count == 0 && slot.capacity > 0 {
-                    slot.capacity
-                } else {
-                    slot.actual_count
-                };
-                // Clamp to capacity to prevent OOB reads if callee misbehaves.
-                let actual = std::cmp::min(raw_count as usize, slot.capacity as usize);
+                let length = fill_array_actual_count
+                    .map(|count| count.min(slot.capacity))
+                    .unwrap_or(slot.capacity) as usize;
                 let ptr = slot.buffer_ptr as *mut c_void;
                 slot.buffer_ptr = std::ptr::null_mut(); // prevent FillArraySlot::drop from freeing
                 result_values.push(WinRTValue::Array(crate::array::ArrayData::from_cotaskmem(
                     slot.element_type.clone(),
                     ptr,
-                    actual,
+                    length,
                 )));
             } else if let Some(slot_idx) = array_out_map[p.value_index] {
                 // ReceiveArray: wrap callee-allocated CoTaskMem buffer directly.

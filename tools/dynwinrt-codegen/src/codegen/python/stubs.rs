@@ -303,6 +303,7 @@ pub fn generate_class_stub(
                 method,
                 known_types,
                 true,
+                delegate_type_names,
             ));
         }
     }
@@ -315,6 +316,7 @@ pub fn generate_class_stub(
                 method,
                 known_types,
                 false,
+                delegate_type_names,
             ));
         }
     }

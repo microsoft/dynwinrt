@@ -6,6 +6,7 @@
 use std::collections::HashSet;
 
 use crate::codegen::shared::docs::{DocText, find_param_doc};
+use crate::codegen::shared::imports::{fill_array_uses_retval_count, method_abi_output_count};
 use crate::meta::MethodMeta;
 use crate::types::TypeMeta;
 
@@ -107,6 +108,75 @@ pub(super) fn py_return_type_safe(typ: Option<&TypeMeta>, known: &HashSet<String
     }
 }
 
+pub(super) fn py_method_abi_output_count(method: &MethodMeta) -> usize {
+    method_abi_output_count(method)
+}
+
+pub(super) fn py_method_outputs(method: &MethodMeta) -> Vec<(usize, &TypeMeta)> {
+    let mut result_index = 0;
+    let mut outputs = Vec::new();
+
+    for param in &method.params {
+        match param.direction {
+            crate::meta::ParamDirection::Out => {
+                outputs.push((result_index, &param.typ));
+                result_index += 1;
+            }
+            crate::meta::ParamDirection::OutFill => {
+                // The runtime allocates a distinct filled result buffer; the
+                // caller-provided array supplies capacity and is not mutated.
+                outputs.push((result_index, &param.typ));
+                result_index += 1;
+            }
+            crate::meta::ParamDirection::In => {}
+        }
+    }
+
+    if let Some(return_type) = method
+        .return_type
+        .as_ref()
+        .filter(|_| !fill_array_uses_retval_count(method))
+    {
+        outputs.push((result_index, return_type));
+    }
+
+    outputs
+}
+
+fn py_output_type(
+    typ: &TypeMeta,
+    known_types: &HashSet<String>,
+    delegate_type_names: &HashSet<String>,
+) -> String {
+    match typ {
+        TypeMeta::Delegate { .. } => "'DynWinRTValue'".to_string(),
+        TypeMeta::Interface { name, .. } if delegate_type_names.contains(name) => {
+            "'DynWinRTValue'".to_string()
+        }
+        _ => py_return_type_safe(Some(typ), known_types),
+    }
+}
+
+pub(super) fn py_method_return_type(
+    method: &MethodMeta,
+    known_types: &HashSet<String>,
+    delegate_type_names: &HashSet<String>,
+) -> String {
+    let outputs = py_method_outputs(method);
+    match outputs.as_slice() {
+        [] => "None".to_string(),
+        [(_, typ)] => py_output_type(typ, known_types, delegate_type_names),
+        _ => format!(
+            "tuple[{}]",
+            outputs
+                .iter()
+                .map(|(_, typ)| py_output_type(typ, known_types, delegate_type_names))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
 fn py_return_type(typ: Option<&TypeMeta>) -> String {
     match typ {
         Some(TypeMeta::String) | Some(TypeMeta::Guid) => "str".to_string(),
@@ -184,4 +254,82 @@ pub(super) fn py_param_list(
         })
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::meta::{ParamDirection, ParamMeta};
+
+    #[test]
+    fn multi_out_returns_typed_tuple_in_abi_order() {
+        let method = MethodMeta {
+            name: "IndexOf".into(),
+            params: vec![
+                ParamMeta {
+                    name: "value".into(),
+                    typ: TypeMeta::String,
+                    direction: ParamDirection::In,
+                },
+                ParamMeta {
+                    name: "index".into(),
+                    typ: TypeMeta::U32,
+                    direction: ParamDirection::Out,
+                },
+            ],
+            return_type: Some(TypeMeta::Bool),
+            ..Default::default()
+        };
+
+        assert_eq!(py_method_abi_output_count(&method), 2);
+        let outputs = py_method_outputs(&method);
+        assert_eq!(outputs.len(), 2);
+        assert_eq!(outputs[0], (0, &TypeMeta::U32));
+        assert_eq!(outputs[1], (1, &TypeMeta::Bool));
+        assert_eq!(
+            py_method_return_type(&method, &HashSet::new(), &HashSet::new()),
+            "tuple[int, bool]"
+        );
+    }
+
+    #[test]
+    fn fill_array_count_retval_is_not_registered_twice() {
+        let method = MethodMeta {
+            name: "GetMany".into(),
+            params: vec![
+                ParamMeta {
+                    name: "startIndex".into(),
+                    typ: TypeMeta::U32,
+                    direction: ParamDirection::In,
+                },
+                ParamMeta {
+                    name: "items".into(),
+                    typ: TypeMeta::Array(Box::new(TypeMeta::String)),
+                    direction: ParamDirection::OutFill,
+                },
+            ],
+            return_type: Some(TypeMeta::U32),
+            ..Default::default()
+        };
+
+        assert_eq!(py_method_abi_output_count(&method), 2);
+        let outputs = py_method_outputs(&method);
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(
+            outputs[0],
+            (0, &TypeMeta::Array(Box::new(TypeMeta::String)))
+        );
+        assert_eq!(
+            py_method_return_type(&method, &HashSet::new(), &HashSet::new()),
+            "list[str]"
+        );
+        assert_eq!(
+            crate::codegen::python::signature::py_build_method_sig(&method),
+            "DynWinRTMethodSig().add_in(DynWinRTType.u32_type()).add_out_fill(DynWinRTType.array_type(DynWinRTType.hstring())).add_out(DynWinRTType.u32_type())"
+        );
+        assert_eq!(
+            crate::codegen::javascript::signature::build_method_sig(&method),
+            "new DynWinRtMethodSig().addIn(DynWinRtType.u32()).addOutFill(DynWinRtType.arrayType(DynWinRtType.hstring())).addOut(DynWinRtType.u32())"
+        );
+    }
 }

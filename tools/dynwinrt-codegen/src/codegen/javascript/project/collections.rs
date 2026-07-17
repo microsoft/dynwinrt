@@ -165,25 +165,26 @@ pub(super) fn project_collection_helpers(
             // High-level getMany: T[] wrapper over the raw FillArray-based method
             let iface_var = format!("_{}", iface.name);
             let elem = &iface.generic_args[0];
-            if let Some(get_many_idx) = iface
-                .methods
-                .iter()
-                .find(|m| m.name == "GetMany")
-                .map(|m| m.vtable_index)
-            {
+            if let Some(get_many) = iface.methods.iter().find(|m| m.name == "GetMany") {
                 if let Some(fill_expr) = ts_fill_array_create("count", elem) {
+                    let fill_index =
+                        fill_array_output_index(get_many).expect("GetMany FillArray output");
+                    let count_index = method_abi_output_count(get_many) - 1;
                     let invoke = format!(
-                        "{iface_var}.method({get_many_idx}).invoke(this._obj, \
-                         [DynWinRtValue.u32(startIndex), _a.toValue()])"
+                        "{iface_var}.method({get_many_idx}).invokeAll(this._obj, \
+                         [DynWinRtValue.u32(startIndex), _a.toValue()])",
+                        get_many_idx = get_many.vtable_index
                     );
                     let arr_convert = convert_array_return(
-                        &format!("{invoke}.asArray()"),
+                        &format!("_r[{fill_index}].asArray()"),
                         elem,
                         known_types,
                         &NO_DEFERRED,
                     );
-                    let return_expr =
-                        format!("(() => {{ const _a = {fill_expr}; return {arr_convert}; }})()");
+                    let return_expr = format!(
+                        "(() => {{ const _a = {fill_expr}; const _r = {invoke}; \
+                         return {arr_convert}.slice(0, _r[{count_index}].toNumber()); }})()"
+                    );
                     members.push(ProjectedMember::Method(ProjectedMethod {
                         name: "getMany".into(),
                         doc: Some(DocInfo {

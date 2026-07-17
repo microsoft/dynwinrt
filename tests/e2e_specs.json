@@ -339,6 +339,17 @@
       ]
     },
     {
+      "id": "calendar_languages_get_many",
+      "namespace": "Windows.Globalization",
+      "class": "Calendar",
+      "langs": ["py", "ts"],
+      "instantiate": { "kind": "activate" },
+      "checks": [
+        { "kind": "vector_get_many", "member": "languages", "capacity": 4 },
+        { "kind": "vector_get_many", "member": "languages", "capacity": 4, "at_end": true }
+      ]
+    },
+    {
       "id": "memory_buffer_closed_event",
       "namespace": "Windows.Foundation",
       "class": "MemoryBuffer",
@@ -374,7 +385,7 @@
       "id": "vector_index_of_found",
       "namespace": "Windows.Globalization",
       "class": "Calendar",
-      "langs": ["ts"],
+      "langs": ["py", "ts"],
       "instantiate": { "kind": "activate" },
       "checks": [
         { "kind": "vector_index_of", "member": "languages", "search_value": null, "expected_index": 0 }
@@ -384,7 +395,7 @@
       "id": "vector_index_of_not_found",
       "namespace": "Windows.Globalization",
       "class": "Calendar",
-      "langs": ["ts"],
+      "langs": ["py", "ts"],
       "instantiate": { "kind": "activate" },
       "checks": [
         { "kind": "vector_index_of", "member": "languages", "search_value": "xx-NONEXISTENT", "expected_index": -1 }

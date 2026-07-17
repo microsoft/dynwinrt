@@ -290,6 +290,20 @@ async function runCheck(
       } else {
         cr.pass = true;
       }
+    } else if (kind === 'vector_get_many') {
+      const vec = obj[member];
+      const capacity = Math.min((check as any).capacity ?? 4, vec.size);
+      const atEnd = (check as any).at_end ?? false;
+      const items = vec.getMany(atEnd ? vec.size : 0, capacity);
+      if (atEnd && items.length !== 0) {
+        cr.error = `getMany at Size returned ${items.length} items`;
+      } else if (!atEnd && items.length === 0) {
+        cr.error = 'getMany returned no items';
+      } else if (!atEnd && items[0] !== vec.getAt(0)) {
+        cr.error = `first item ${JSON.stringify(items[0])} does not match getAt(0)`;
+      } else {
+        cr.pass = true;
+      }
     } else if (kind === 'struct_roundtrip') {
       const structClass = check.struct_class as string;
       const structModule = check.struct_module as string;

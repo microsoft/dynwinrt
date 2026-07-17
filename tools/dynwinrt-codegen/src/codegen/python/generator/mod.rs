@@ -56,6 +56,11 @@ def _dynwinrt_enum(module, name, value):
         return enum_type(value)
     except ValueError:
         return value
+
+
+def _dynwinrt_wait_action(value):
+    value.wait()
+    return None
 \n";
 
 pub use class::generate_class;

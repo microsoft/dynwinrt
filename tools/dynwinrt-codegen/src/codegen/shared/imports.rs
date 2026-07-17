@@ -182,3 +182,40 @@ pub(crate) fn get_in_params(method: &MethodMeta) -> Vec<&crate::meta::ParamMeta>
         .filter(|p| p.direction == ParamDirection::In || p.direction == ParamDirection::OutFill)
         .collect()
 }
+
+/// WinRT FillArray methods encode the number of filled items as a UInt32
+/// retval. The FillArray ABI already carries that value in its actual-count
+/// pointer, so it must not be registered as a second out parameter.
+pub(crate) fn fill_array_uses_retval_count(method: &MethodMeta) -> bool {
+    method
+        .params
+        .iter()
+        .any(|param| param.direction == ParamDirection::OutFill)
+        && matches!(method.return_type, Some(TypeMeta::U32))
+}
+
+pub(crate) fn method_abi_output_count(method: &MethodMeta) -> usize {
+    method
+        .params
+        .iter()
+        .filter(|param| {
+            matches!(
+                param.direction,
+                ParamDirection::Out | ParamDirection::OutFill
+            )
+        })
+        .count()
+        + usize::from(method.return_type.is_some())
+}
+
+pub(crate) fn fill_array_output_index(method: &MethodMeta) -> Option<usize> {
+    let mut result_index = 0;
+    for param in &method.params {
+        match param.direction {
+            ParamDirection::Out => result_index += 1,
+            ParamDirection::OutFill => return Some(result_index),
+            ParamDirection::In => {}
+        }
+    }
+    None
+}

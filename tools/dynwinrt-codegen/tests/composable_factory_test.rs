@@ -3,7 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use dynwinrt_codegen::codegen::{project, render_dts, render_js};
+use dynwinrt_codegen::codegen::{project, python, python_stub, render_dts, render_js};
 use dynwinrt_codegen::meta::{
     ClassMeta, ConstructorKind, ConstructorMeta, InterfaceMeta, MethodMeta, ParamDirection,
     ParamMeta,
@@ -90,6 +90,25 @@ fn composable_factory_returns_public_instance() {
         dts.contains("static createInstance(outer: unknown): Widget;"),
         "factory declaration must return the runtime class:\n{dts}"
     );
+
+    let py = python::generate_class(
+        &class,
+        &HashSet::from(["Widget".into()]),
+        &HashSet::new(),
+        &HashSet::new(),
+    );
+    let pyi = python_stub::generate_class_stub(
+        &class,
+        &HashSet::from(["Widget".into()]),
+        &HashSet::new(),
+        &HashSet::new(),
+    );
+    assert!(
+        py.contains("_IWidgetFactory.method(6).invoke_all(")
+            && py.contains("return Widget(_results[1])"),
+        "Python composable factory must select the final public-instance output:\n{py}"
+    );
+    assert!(pyi.contains("def create_instance(outer: 'DynWinRTValue') -> 'Widget': ..."));
 
     let mut protected = class.clone();
     protected.constructors[0].kind = ConstructorKind::ProtectedComposition;

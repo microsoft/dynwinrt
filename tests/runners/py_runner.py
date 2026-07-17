@@ -263,6 +263,36 @@ def run_check(check: dict, cls, obj, generated_dir: str, pkg_name: str) -> dict:
                 else:
                     cr['pass'] = True
 
+        elif kind == 'vector_index_of':
+            vec = getattr(obj, member)
+            search_value = check.get('search_value')
+            if search_value is None:
+                search_value = vec.get_at(0)
+            index, found = vec.index_of(search_value)
+            actual = index if found else -1
+            expected = check['expected_index']
+            if actual != expected:
+                cr['error'] = f'index_of returned {actual}, expected {expected}'
+            else:
+                cr['pass'] = True
+
+        elif kind == 'vector_get_many':
+            import dynwinrt_py as dw
+
+            vec = getattr(obj, member)
+            capacity = min(check.get('capacity', 4), vec.size)
+            buffer = dw.DynWinRTArray.from_string_values([''] * capacity)
+            at_end = check.get('at_end', False)
+            items = vec.get_many(vec.size if at_end else 0, buffer)
+            if at_end and len(items) != 0:
+                cr['error'] = f'get_many at Size returned {len(items)} items'
+            elif not at_end and len(items) == 0:
+                cr['error'] = 'get_many returned no items'
+            elif not at_end and items[0] != vec.get_at(0):
+                cr['error'] = f'first item {items[0]!r} does not match get_at(0)'
+            else:
+                cr['pass'] = True
+
         elif kind == 'struct_roundtrip':
             struct_mod = importlib.import_module(f"{pkg_name}.{check['struct_module']}")
             struct_cls = getattr(struct_mod, check['struct_class'])

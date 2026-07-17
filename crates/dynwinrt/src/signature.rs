@@ -18,14 +18,18 @@ pub enum ParamKind {
     In,
     Out,
     /// FillArray: caller allocates buffer, callee fills it.
-    /// ABI expands to 3 params: (u32 capacity, T* items, u32* actual_count).
+    /// ABI expands to 2 params: (u32 capacity, T* items).
     OutFillArray,
 }
 
 #[derive(Debug, Clone)]
 pub struct Parameter {
     pub typ: TypeHandle,
+    /// Index in the method result vector for out and FillArray parameters.
     pub value_index: usize,
+    /// Index in the caller-provided argument slice. FillArray parameters have
+    /// both an input index (capacity buffer) and an output index (filled data).
+    pub input_index: Option<usize>,
     pub kind: ParamKind,
 }
 
@@ -42,6 +46,7 @@ impl Parameter {
 #[derive(Debug, Clone)]
 pub struct MethodSignature {
     out_count: usize,
+    input_count: usize,
     parameters: Vec<Parameter>,
     return_type: TypeHandle,
     #[allow(dead_code)]
@@ -54,6 +59,7 @@ impl MethodSignature {
     pub fn new(table: &Arc<MetadataTable>) -> Self {
         MethodSignature {
             out_count: 0,
+            input_count: 0,
             parameters: Vec::new(),
             return_type: table.hresult(),
             is_opaque: false,
@@ -66,10 +72,13 @@ impl MethodSignature {
     }
 
     pub fn add_in(mut self, typ: TypeHandle) -> Self {
+        let input_index = self.input_count;
+        self.input_count += 1;
         self.parameters.push(Parameter {
             kind: ParamKind::In,
             typ,
-            value_index: self.parameters.len() - self.out_count,
+            value_index: input_index,
+            input_index: Some(input_index),
         });
         self
     }
@@ -79,18 +88,22 @@ impl MethodSignature {
             kind: ParamKind::Out,
             typ,
             value_index: self.out_count,
+            input_index: None,
         });
         self.out_count += 1;
         self
     }
 
     /// Add a FillArray out parameter: caller allocates buffer, callee fills it.
-    /// ABI expands to (u32 capacity, T* items, u32* actual_count).
+    /// ABI expands to (u32 capacity, T* items).
     pub fn add_out_fill(mut self, typ: TypeHandle) -> Self {
+        let input_index = self.input_count;
+        self.input_count += 1;
         self.parameters.push(Parameter {
             kind: ParamKind::OutFillArray,
             typ,
             value_index: self.out_count,
+            input_index: Some(input_index),
         });
         self.out_count += 1;
         self
@@ -102,9 +115,8 @@ impl MethodSignature {
         types.push(Type::pointer()); // com object's this pointer
         for param in &self.parameters {
             if param.is_fill_array() {
-                // FillArray: UINT32 capacity, T* items, UINT32* actual_count
+                // FillArray: UINT32 capacity, T* items
                 types.push(Type::u32());
-                types.push(Type::pointer());
                 types.push(Type::pointer());
             } else if param.typ.is_array() {
                 if param.is_out() {
@@ -240,9 +252,9 @@ enum CallStrategy {
     DirectReceiveArray,
     /// PassArray + 1 out: fn(this, u32, *const u8, out) -> HRESULT.
     DirectPassArray1Out,
-    /// FillArray only: fn(this, u32, *mut u8, *mut u32) -> HRESULT.
+    /// FillArray only: fn(this, u32, *mut u8) -> HRESULT.
     DirectFillArray,
-    /// 1 scalar in + FillArray: fn(this, val, u32, *mut u8, *mut u32) -> HRESULT.
+    /// 1 scalar in + FillArray: fn(this, val, u32, *mut u8) -> HRESULT.
     Direct1InFillArray,
     /// General case → libffi via cached Cif.
     Libffi(Cif),
@@ -361,10 +373,6 @@ impl<'a> InvocationArgs<'a> {
                 .take(self.original.len())
                 .collect()
         })[index] = Some(value);
-    }
-
-    fn is_empty(&self) -> bool {
-        self.original.is_empty()
     }
 }
 
@@ -572,38 +580,37 @@ impl Method {
                 Ok(vec![out])
             }
             CallStrategy::DirectFillArray => {
-                // fn(this, u32, *mut u8, *mut u32) -> HRESULT
+                // fn(this, u32, *mut u8) -> HRESULT
                 // FillArray: caller provides buffer of known capacity, callee fills it.
                 let param = &self.info.parameters[0];
                 let elem_type = param.typ.array_element_type();
                 let fptr = call::get_vtable_function_ptr(obj, self.info.index);
 
                 assert!(
-                    !args.is_empty() && args.get_value(param.value_index).as_array().is_some(),
+                    param
+                        .input_index
+                        .is_some_and(|index| { args.get_value(index).as_array().is_some() }),
                     "DirectFillArray requires a pre-allocated array argument with the desired capacity. \
                      Pass an ArrayData with the expected number of elements."
                 );
-                let array_data = args.get_value(param.value_index).as_array().unwrap();
+                let array_data = args
+                    .get_value(param.input_index.unwrap())
+                    .as_array()
+                    .unwrap();
                 let capacity = array_data.len() as u32;
                 let total_bytes = capacity as usize * elem_type.element_size();
                 let buffer_ptr =
                     unsafe { windows::Win32::System::Com::CoTaskMemAlloc(total_bytes) as *mut u8 };
                 assert!(!buffer_ptr.is_null(), "CoTaskMemAlloc failed for FillArray");
                 unsafe { std::ptr::write_bytes(buffer_ptr, 0, total_bytes) };
-                // Use sentinel to detect if callee actually wrote actual_count.
-                // WinRT FillArray contract requires callee to write the count,
-                // but some implementations don't — sentinel lets us distinguish
-                // "callee wrote 0" from "callee didn't write at all".
-                let mut actual_count: u32 = 0;
                 let hr: windows_core::HRESULT = unsafe {
                     let method: unsafe extern "system" fn(
                         *mut std::ffi::c_void,
                         u32,
                         *mut u8,
-                        *mut u32,
                     )
                         -> windows_core::HRESULT = std::mem::transmute(fptr);
-                    method(obj, capacity, buffer_ptr, &mut actual_count)
+                    method(obj, capacity, buffer_ptr)
                 };
                 if hr.is_err() {
                     // Callee may have written elements before failing.
@@ -616,21 +623,15 @@ impl Method {
                     );
                     hr.ok()?;
                 }
-                // If callee didn't set actual_count (left as 0) and capacity > 0, assume full buffer.
-                if actual_count == 0 && capacity > 0 {
-                    actual_count = capacity;
-                }
-                // Clamp to capacity to prevent OOB if callee misbehaves
-                actual_count = std::cmp::min(actual_count, capacity);
                 let array = crate::array::ArrayData::from_cotaskmem(
                     elem_type,
                     buffer_ptr as _,
-                    actual_count as usize,
+                    capacity as usize,
                 );
                 Ok(vec![WinRTValue::Array(array)])
             }
             CallStrategy::Direct1InFillArray => {
-                // fn(this, val, u32, *mut u8, *mut u32) -> HRESULT
+                // fn(this, val, u32, *mut u8) -> HRESULT
                 let in_param = self.info.parameters.iter().find(|p| !p.is_out()).unwrap();
                 let fill_param = self
                     .info
@@ -638,7 +639,10 @@ impl Method {
                     .iter()
                     .find(|p| p.is_fill_array())
                     .unwrap();
-                let array_data = args.get_value(fill_param.value_index).as_array().unwrap();
+                let array_data = args
+                    .get_value(fill_param.input_index.unwrap())
+                    .as_array()
+                    .unwrap();
                 let elem_type = fill_param.typ.array_element_type();
                 let capacity = array_data.len() as u32;
                 let total_bytes = capacity as usize * elem_type.element_size();
@@ -646,8 +650,6 @@ impl Method {
                     unsafe { windows::Win32::System::Com::CoTaskMemAlloc(total_bytes) as *mut u8 };
                 assert!(!buffer_ptr.is_null(), "CoTaskMemAlloc failed for FillArray");
                 unsafe { std::ptr::write_bytes(buffer_ptr, 0, total_bytes) };
-                // Use sentinel to detect if callee actually wrote actual_count.
-                let mut actual_count: u32 = 0;
                 let fptr = call::get_vtable_function_ptr(obj, self.info.index);
                 let hr = call::call_fill_array_1in(
                     fptr,
@@ -655,7 +657,6 @@ impl Method {
                     args.get_value(in_param.value_index),
                     capacity,
                     buffer_ptr,
-                    &mut actual_count,
                 );
                 if hr.is_err() {
                     // Buffer was zero-initialized; use capacity for cleanup.
@@ -666,16 +667,10 @@ impl Method {
                     );
                     hr.ok()?;
                 }
-                // If callee didn't set actual_count (left as 0) and capacity > 0, assume full buffer.
-                if actual_count == 0 && capacity > 0 {
-                    actual_count = capacity;
-                }
-                // Clamp to capacity to prevent OOB if callee misbehaves
-                actual_count = std::cmp::min(actual_count, capacity);
                 let array = crate::array::ArrayData::from_cotaskmem(
                     elem_type,
                     buffer_ptr as _,
-                    actual_count as usize,
+                    capacity as usize,
                 );
                 Ok(vec![WinRTValue::Array(array)])
             }
@@ -750,6 +745,23 @@ mod tests {
     use windows::Foundation::{IStringable, IUriRuntimeClass, Uri};
     use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize};
     use windows_core::{IInspectable, Interface, h};
+
+    #[test]
+    fn fill_array_tracks_distinct_input_and_output_indices() {
+        let table = MetadataTable::new();
+        let method = MethodSignature::new(&table)
+            .add_in(table.u32_type())
+            .add_out_fill(table.array(&table.hstring()))
+            .add_out(table.u32_type())
+            .build(6);
+
+        assert_eq!(method.info.parameters[0].value_index, 0);
+        assert_eq!(method.info.parameters[0].input_index, Some(0));
+        assert_eq!(method.info.parameters[1].value_index, 0);
+        assert_eq!(method.info.parameters[1].input_index, Some(1));
+        assert_eq!(method.info.parameters[2].value_index, 1);
+        assert_eq!(method.info.parameters[2].input_index, None);
+    }
 
     #[test]
     fn coerces_object_inputs_to_the_expected_interface() -> windows_core::Result<()> {

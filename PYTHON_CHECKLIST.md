@@ -46,8 +46,8 @@ to a distributable, typed, and reliable WinRT projection.
 - [ ] Ship a `.pyi` and `py.typed` marker for the `dynwinrt_py` extension.
 - [x] Return declared enum members as generated `IntEnum` instances while
       preserving unknown values as integers.
-- [ ] Use `invoke_all()` for arbitrary multiple-out methods.
-- [ ] Add Python E2E for `IVector.IndexOf` and other multiple-out methods.
+- [x] Use `invoke_all()` for arbitrary multiple-out methods.
+- [x] Add Python E2E for `IVector.IndexOf` and other multiple-out methods.
 - [ ] Model nullable and `IReference<T>` positions as `T | None`.
 - [ ] Make Python stubs part of E2E and run a static type checker.
 - [ ] Make `.pyi` generation the default for `--lang py`.
@@ -133,4 +133,6 @@ to a distributable, typed, and reliable WinRT projection.
 3. [x] Re-run Python snapshots, codegen tests, and generated Python E2E.
 4. [x] Return known enum values as generated `IntEnum` instances.
 5. [x] Verify `Calendar.day_of_week` is a `DayOfWeek` at runtime.
-6. [ ] Use `invoke_all()` for arbitrary multiple-out methods.
+6. [x] Use `invoke_all()` for arbitrary multiple-out methods.
+7. [x] Model FillArray as caller-owned `(capacity, buffer)` ABI.
+8. [x] Verify Python and JavaScript `IndexOf` and `GetMany`, including zero items.

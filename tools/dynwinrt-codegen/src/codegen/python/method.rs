@@ -3,18 +3,113 @@
 
 use std::collections::HashSet;
 
-use crate::meta::{ClassMeta, InterfaceMeta, MethodMeta, ParamDirection};
+use crate::meta::{ClassMeta, InterfaceMeta, MethodMeta};
 use crate::types::TypeMeta;
 
-use crate::codegen::shared::imports::get_in_params;
+use crate::codegen::shared::imports::{
+    fill_array_output_index, fill_array_uses_retval_count, get_in_params,
+};
 
 use super::naming::to_snake_case;
-use super::signature::{
-    py_build_args_expr, py_convert_array_return, py_convert_return, py_runtime_symbol, py_wrap_arg,
-};
+use super::signature::{py_build_args_expr, py_convert_return, py_runtime_symbol, py_wrap_arg};
 use super::type_helpers::{
-    method_pydoc, py_array_element_type, py_param_list, py_param_type_safe, py_return_type_safe,
+    method_pydoc, py_method_abi_output_count, py_method_outputs, py_method_return_type,
+    py_param_list, py_param_type_safe, py_return_type_safe,
 };
+
+fn is_delegate_type(typ: &TypeMeta, delegate_type_names: &HashSet<String>) -> bool {
+    matches!(typ, TypeMeta::Delegate { .. })
+        || matches!(
+            typ,
+            TypeMeta::Interface { name, .. } if delegate_type_names.contains(name)
+        )
+}
+
+fn convert_method_output(
+    expr: &str,
+    typ: &TypeMeta,
+    known_types: &HashSet<String>,
+    delegate_type_names: &HashSet<String>,
+) -> String {
+    if is_delegate_type(typ, delegate_type_names) {
+        return expr.to_string();
+    }
+    if matches!(
+        typ,
+        TypeMeta::AsyncAction | TypeMeta::AsyncActionWithProgress(_)
+    ) {
+        return format!("_dynwinrt_wait_action({})", expr);
+    }
+
+    py_convert_return(expr, Some(typ), typ.is_async(), known_types)
+}
+
+fn method_call_expr(
+    iface_var: &str,
+    method: &MethodMeta,
+    obj_expr: &str,
+    args_expr: &str,
+) -> String {
+    let invoke = if py_method_abi_output_count(method) > 1 {
+        "invoke_all"
+    } else {
+        "invoke"
+    };
+    format!(
+        "{}.method({}).{}({}, [{}])",
+        iface_var, method.vtable_index, invoke, obj_expr, args_expr
+    )
+}
+
+fn emit_method_result(
+    out: &mut String,
+    call_expr: &str,
+    method: &MethodMeta,
+    known_types: &HashSet<String>,
+    delegate_type_names: &HashSet<String>,
+) {
+    let outputs = py_method_outputs(method);
+    if outputs.is_empty() {
+        out.push_str(&format!("        {}\n", call_expr));
+        return;
+    }
+
+    if py_method_abi_output_count(method) == 1 {
+        let converted =
+            convert_method_output(call_expr, outputs[0].1, known_types, delegate_type_names);
+        out.push_str(&format!("        return {}\n", converted));
+        return;
+    }
+
+    out.push_str(&format!("        _results = {}\n", call_expr));
+    let converted = outputs
+        .iter()
+        .map(|(index, typ)| {
+            let converted = convert_method_output(
+                &format!("_results[{}]", index),
+                typ,
+                known_types,
+                delegate_type_names,
+            );
+            if fill_array_uses_retval_count(method)
+                && fill_array_output_index(method) == Some(*index)
+            {
+                format!(
+                    "{}[:_results[{}].to_number()]",
+                    converted,
+                    py_method_abi_output_count(method) - 1
+                )
+            } else {
+                converted
+            }
+        })
+        .collect::<Vec<_>>();
+    if converted.len() == 1 {
+        out.push_str(&format!("        return {}\n", converted[0]));
+    } else {
+        out.push_str(&format!("        return ({})\n", converted.join(", ")));
+    }
+}
 
 // ======================================================================
 // Method generation — Python call pattern
@@ -27,7 +122,6 @@ pub(crate) fn generate_factory_method_invoke(
     let in_params = get_in_params(method);
     let py_params = py_param_list(&in_params, known_types);
 
-    let is_async = method.return_type.as_ref().is_some_and(|rt| rt.is_async());
     let return_py_type = format!("'{}'", class.name);
 
     let mut out = String::new();
@@ -48,22 +142,24 @@ pub(crate) fn generate_factory_method_invoke(
     out.push_str(&method_pydoc(method, &in_params));
 
     let args_expr = py_build_args_expr(&in_params);
-    let call_expr = format!(
-        "_{iface}.method({idx}).invoke({cls}._get_f_{iface}(), [{args}])",
-        iface = iface.name,
-        idx = method.vtable_index,
-        cls = class.name,
-        args = args_expr
+    let call_expr = method_call_expr(
+        &format!("_{}", iface.name),
+        method,
+        &format!("{}._get_f_{}()", class.name, iface.name),
+        &args_expr,
     );
-
-    if is_async {
-        out.push_str(&format!(
-            "        return {}({}.wait())\n",
-            class.name, call_expr
-        ));
+    let result_expr = if py_method_abi_output_count(method) > 1 {
+        out.push_str(&format!("        _results = {}\n", call_expr));
+        format!("_results[{}]", py_method_abi_output_count(method) - 1)
     } else {
-        out.push_str(&format!("        return {}({})\n", class.name, call_expr));
-    }
+        call_expr
+    };
+    let result_expr = if method.return_type.as_ref().is_some_and(TypeMeta::is_async) {
+        format!("{}.wait()", result_expr)
+    } else {
+        result_expr
+    };
+    out.push_str(&format!("        return {}({})\n", class.name, result_expr));
     out
 }
 
@@ -72,19 +168,12 @@ pub(crate) fn generate_static_method_invoke(
     iface: &InterfaceMeta,
     method: &MethodMeta,
     known_types: &HashSet<String>,
+    delegate_type_names: &HashSet<String>,
 ) -> String {
     let in_params = get_in_params(method);
     let py_params = py_param_list(&in_params, known_types);
 
-    let return_type = method.return_type.as_ref();
-    let is_with_progress = return_type.is_some_and(|rt| {
-        matches!(
-            rt,
-            TypeMeta::AsyncOperationWithProgress(_, _) | TypeMeta::AsyncActionWithProgress(_)
-        )
-    });
-    let is_async = return_type.is_some_and(|rt| rt.is_async()) && !is_with_progress;
-    let py_return = py_return_type_safe(return_type, known_types);
+    let py_return = py_method_return_type(method, known_types, delegate_type_names);
 
     let mut out = String::new();
 
@@ -104,12 +193,14 @@ pub(crate) fn generate_static_method_invoke(
             prop_name, py_return
         ));
         out.push_str(&method_pydoc(method, &in_params));
-        let call_expr = format!(
-            "_{}.method({}).invoke({}, [])",
-            iface.name, method.vtable_index, statics_call
+        let call_expr = method_call_expr(&format!("_{}", iface.name), method, &statics_call, "");
+        emit_method_result(
+            &mut out,
+            &call_expr,
+            method,
+            known_types,
+            delegate_type_names,
         );
-        let converted = py_convert_return(&call_expr, return_type, false, known_types);
-        out.push_str(&format!("        return {}\n", converted));
     } else {
         out.push_str("    @staticmethod\n");
         let method_name = to_snake_case(&method.name);
@@ -123,38 +214,19 @@ pub(crate) fn generate_static_method_invoke(
         }
         out.push_str(&method_pydoc(method, &in_params));
         let args_expr = py_build_args_expr(&in_params);
-        let call_expr = format!(
-            "_{}.method({}).invoke({}, [{}])",
-            iface.name, method.vtable_index, statics_call, args_expr
+        let call_expr = method_call_expr(
+            &format!("_{}", iface.name),
+            method,
+            &statics_call,
+            &args_expr,
         );
-        if is_with_progress {
-            let inner_type = match return_type {
-                Some(TypeMeta::AsyncOperationWithProgress(inner, _)) => Some(inner.as_ref()),
-                _ => None,
-            };
-            // For progress pattern in Python: call, optionally set progress callback, then .wait()
-            let call_expr_no_idx = format!(
-                "_{}.method({}).invoke({}, [{}])",
-                iface.name, method.vtable_index, statics_call, args_expr
-            );
-            let inner_convert = py_convert_return("_op.wait()", inner_type, false, known_types);
-            out.push_str(&format!("        _op = {}\n", call_expr_no_idx));
-            out.push_str(&format!("        return {}\n", inner_convert));
-        } else if is_async
-            && matches!(
-                return_type,
-                Some(TypeMeta::AsyncAction) | Some(TypeMeta::AsyncActionWithProgress(_))
-            )
-        {
-            let call_expr_void = format!(
-                "_{}.method({}).invoke({}, [{}])",
-                iface.name, method.vtable_index, statics_call, args_expr
-            );
-            out.push_str(&format!("        {}.wait()\n", call_expr_void));
-        } else {
-            let converted = py_convert_return(&call_expr, return_type, is_async, known_types);
-            out.push_str(&format!("        return {}\n", converted));
-        }
+        emit_method_result(
+            &mut out,
+            &call_expr,
+            method,
+            known_types,
+            delegate_type_names,
+        );
     }
     out
 }
@@ -187,18 +259,6 @@ pub(crate) fn generate_method_body(
 ) -> String {
     let in_params = get_in_params(method);
     let return_type = method.return_type.as_ref();
-    let is_with_progress = return_type.is_some_and(|rt| {
-        matches!(
-            rt,
-            TypeMeta::AsyncOperationWithProgress(_, _) | TypeMeta::AsyncActionWithProgress(_)
-        )
-    });
-    let is_async = return_type.is_some_and(|rt| rt.is_async()) && !is_with_progress;
-    let has_array_out = method.params.iter().any(|p| {
-        (p.direction == ParamDirection::Out || p.direction == ParamDirection::OutFill)
-            && matches!(p.typ, TypeMeta::Array(_))
-    });
-    let has_return = return_type.is_some() || has_array_out;
 
     let mut out = String::new();
 
@@ -250,17 +310,10 @@ pub(crate) fn generate_method_body(
         return out;
     }
 
-    let is_delegate_type = |typ: Option<&TypeMeta>| -> bool {
-        match typ {
-            Some(TypeMeta::Delegate { .. }) => true,
-            Some(TypeMeta::Interface { name, .. }) => delegate_type_names.contains(name),
-            _ => false,
-        }
-    };
-
     if method.is_property_getter && in_params.is_empty() {
         let prop_name = to_snake_case(method.name.strip_prefix("get_").unwrap_or(&method.name));
-        let py_return = if is_delegate_type(return_type) {
+        let py_return = if return_type.is_some_and(|typ| is_delegate_type(typ, delegate_type_names))
+        {
             "'DynWinRTValue'".to_string()
         } else {
             py_return_type_safe(return_type, known_types)
@@ -268,21 +321,19 @@ pub(crate) fn generate_method_body(
         out.push_str("    @property\n");
         out.push_str(&format!("    def {}(self) -> {}:\n", prop_name, py_return));
         out.push_str(&method_pydoc(method, &in_params));
-        let call_expr = format!(
-            "{}.method({}).invoke({}, [])",
-            iface_var, method.vtable_index, obj_expr
+        let call_expr = method_call_expr(iface_var, method, obj_expr, "");
+        emit_method_result(
+            &mut out,
+            &call_expr,
+            method,
+            known_types,
+            delegate_type_names,
         );
-        let converted = if is_delegate_type(return_type) {
-            call_expr.clone()
-        } else {
-            py_convert_return(&call_expr, return_type, false, known_types)
-        };
-        out.push_str(&format!("        return {}\n", converted));
     } else if method.is_property_setter {
         let prop_name = to_snake_case(method.name.strip_prefix("put_").unwrap_or(&method.name));
         let param_type = if in_params
             .first()
-            .is_some_and(|p| is_delegate_type(Some(&p.typ)))
+            .is_some_and(|p| is_delegate_type(&p.typ, delegate_type_names))
         {
             "'DynWinRTValue'".to_string()
         } else {
@@ -307,26 +358,7 @@ pub(crate) fn generate_method_body(
         ));
     } else {
         let py_params = py_param_list(&in_params, known_types);
-        let array_out_elem = if has_array_out && return_type.is_none() {
-            method.params.iter().find_map(|p| {
-                if p.direction == ParamDirection::Out || p.direction == ParamDirection::OutFill {
-                    if let TypeMeta::Array(inner) = &p.typ {
-                        Some(inner.as_ref())
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            })
-        } else {
-            None
-        };
-        let py_return = if let Some(elem) = array_out_elem {
-            py_array_element_type(elem, known_types)
-        } else {
-            py_return_type_safe(return_type, known_types)
-        };
+        let py_return = py_method_return_type(method, known_types, delegate_type_names);
         let method_name = name_override
             .map(|s| s.to_string())
             .unwrap_or_else(|| to_snake_case(&method.name));
@@ -343,37 +375,55 @@ pub(crate) fn generate_method_body(
         out.push_str(&method_pydoc(method, &in_params));
 
         let args_expr = py_build_args_expr(&in_params);
-        let call_expr = format!(
-            "{}.method({}).invoke({}, [{}])",
-            iface_var, method.vtable_index, obj_expr, args_expr
+        let call_expr = method_call_expr(iface_var, method, obj_expr, &args_expr);
+        emit_method_result(
+            &mut out,
+            &call_expr,
+            method,
+            known_types,
+            delegate_type_names,
         );
-
-        if is_with_progress {
-            let inner_type = match return_type {
-                Some(TypeMeta::AsyncOperationWithProgress(inner, _)) => Some(inner.as_ref()),
-                _ => None,
-            };
-            let inner_convert = py_convert_return("_op.wait()", inner_type, false, known_types);
-            out.push_str(&format!("        _op = {}\n", call_expr));
-            out.push_str(&format!("        return {}\n", inner_convert));
-        } else if !has_return && !is_async {
-            out.push_str(&format!("        {}\n", call_expr));
-        } else if is_async
-            && matches!(
-                return_type,
-                Some(TypeMeta::AsyncAction) | Some(TypeMeta::AsyncActionWithProgress(_))
-            )
-        {
-            out.push_str(&format!("        {}.wait()\n", call_expr));
-        } else if let Some(elem) = array_out_elem {
-            let arr_expr = format!("{}.as_array()", call_expr);
-            let converted = py_convert_array_return(&arr_expr, elem, known_types);
-            out.push_str(&format!("        return {}\n", converted));
-        } else {
-            let converted = py_convert_return(&call_expr, return_type, is_async, known_types);
-            out.push_str(&format!("        return {}\n", converted));
-        }
     }
 
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn static_delegate_return_stays_raw() {
+        let method = MethodMeta {
+            name: "GetHandler".into(),
+            raw_name: "GetHandler".into(),
+            vtable_index: 6,
+            return_type: Some(TypeMeta::Interface {
+                namespace: "Contoso".into(),
+                name: "Handler".into(),
+                iid: "11111111-1111-1111-1111-111111111111".into(),
+            }),
+            ..Default::default()
+        };
+        let iface = InterfaceMeta {
+            name: "IWidgetStatics".into(),
+            methods: vec![method.clone()],
+            ..Default::default()
+        };
+        let class = ClassMeta {
+            name: "Widget".into(),
+            ..Default::default()
+        };
+        let code = generate_static_method_invoke(
+            &class,
+            &iface,
+            &method,
+            &HashSet::from(["Handler".into()]),
+            &HashSet::from(["Handler".into()]),
+        );
+
+        assert!(code.contains("def get_handler() -> 'DynWinRTValue':"));
+        assert!(code.contains("return _IWidgetStatics.method(6).invoke("));
+        assert!(!code.contains("_dynwinrt_symbol('handler', 'Handler')"));
+    }
 }
