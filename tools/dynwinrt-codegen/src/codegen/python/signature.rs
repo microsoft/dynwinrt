@@ -8,7 +8,15 @@ use std::collections::HashSet;
 use crate::meta::{InterfaceMeta, MethodMeta, ParamDirection};
 use crate::types::TypeMeta;
 
-use super::naming::to_snake_case;
+use super::naming::{to_snake_case, to_snake_case_filename};
+
+pub(crate) fn py_runtime_symbol(type_name: &str, symbol_name: &str) -> String {
+    format!(
+        "_dynwinrt_symbol('{}', '{}')",
+        to_snake_case_filename(type_name),
+        symbol_name
+    )
+}
 
 // ======================================================================
 // Python type expression
@@ -234,18 +242,18 @@ pub(crate) fn py_convert_return(
         Some(TypeMeta::Bool) => format!("{}.to_bool()", expr),
         Some(TypeMeta::Enum { .. }) => format!("{}.to_number()", expr),
         Some(TypeMeta::RuntimeClass { name, .. }) if known_types.contains(name) => {
-            format!("{}({})", name, expr)
+            format!("{}({})", py_runtime_symbol(name, name), expr)
         }
         Some(TypeMeta::Struct { name, .. }) if name == "HResult" => format!("{}.to_number()", expr),
         Some(TypeMeta::Struct { name, .. }) => format!("_unpack_{}({})", to_snake_case(name), expr),
         Some(TypeMeta::Delegate { .. }) => expr.to_string(),
         Some(TypeMeta::Interface { name, .. }) if known_types.contains(name) => {
-            format!("{}({})", name, expr)
+            format!("{}({})", py_runtime_symbol(name, name), expr)
         }
         Some(TypeMeta::Parameterized { name, args, .. }) => {
             let concrete = crate::meta::make_parameterized_name(name, args);
             if known_types.contains(&concrete) {
-                format!("{}({})", concrete, expr)
+                format!("{}({})", py_runtime_symbol(&concrete, &concrete), expr)
             } else {
                 expr.to_string()
             }
@@ -285,10 +293,20 @@ pub(crate) fn py_convert_array_return(
             arr_expr
         ),
         TypeMeta::RuntimeClass { name, .. } if known_types.contains(name) => {
-            format!("[{}(v) for v in {}.to_values()]", name, arr_expr)
+            format!(
+                "_dynwinrt_wrap_values('{}', '{}', {}.to_values())",
+                to_snake_case_filename(name),
+                name,
+                arr_expr
+            )
         }
         TypeMeta::Interface { name, .. } if known_types.contains(name) => {
-            format!("[{}(v) for v in {}.to_values()]", name, arr_expr)
+            format!(
+                "_dynwinrt_wrap_values('{}', '{}', {}.to_values())",
+                to_snake_case_filename(name),
+                name,
+                arr_expr
+            )
         }
         _ => format!("{}.to_values()", arr_expr),
     }

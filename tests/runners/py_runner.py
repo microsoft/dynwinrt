@@ -163,6 +163,29 @@ def run_check(check: dict, cls, obj, generated_dir: str, pkg_name: str) -> dict:
             else:
                 cr['pass'] = True
 
+        elif kind == 'method_then_property_equals':
+            target = obj
+            if check.get('interface_class'):
+                iface_mod_name = check.get(
+                    'interface_module',
+                    to_snake_case(check['interface_class']),
+                )
+                iface_mod = importlib.import_module(f"{pkg_name}.{iface_mod_name}")
+                iface_cls = getattr(iface_mod, check['interface_class'])
+                target = obj.as_interface(iface_cls)
+
+            method = getattr(target, member)
+            method(*[literal_arg(a) for a in check.get('args', [])])
+
+            actual = obj
+            for segment in check.get('property_path', []):
+                actual = getattr(actual, to_snake_case(segment))
+            expected = check['expected']
+            if actual != expected:
+                cr['error'] = f'expected {expected!r}, got {actual!r}'
+            else:
+                cr['pass'] = True
+
         elif kind == 'static_equals':
             method = getattr(cls, member)
             args = [literal_arg(a) for a in check.get('args', [])]

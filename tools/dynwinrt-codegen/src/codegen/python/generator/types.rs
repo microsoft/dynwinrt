@@ -3,7 +3,7 @@
 
 //! Python enum, interface, and delegate generation.
 
-use super::imports::format_py_type_import;
+use super::imports::{emit_type_checking_imports, format_py_type_import};
 use super::structs::generate_struct_helpers;
 use super::*;
 
@@ -81,6 +81,7 @@ pub fn generate_interface(
     out.push_str(FUTURE_ANNOTATIONS);
     out.push_str(IMPORT_LINE);
     out.push('\n');
+    let mut type_checking_imports = Vec::new();
 
     // Collect delegate names
     let mut delegate_names: HashSet<String> = delegate_type_names.clone();
@@ -102,10 +103,8 @@ pub fn generate_interface(
     for cname in &collection_names {
         if cname != &iface.name && !delegate_names.contains(cname) {
             let module = to_snake_case_filename(cname);
-            out.push_str(&format!(
-                "from .{} import {}  # noqa: F401\n",
-                module, cname
-            ));
+            type_checking_imports
+                .push(format!("from .{} import {}  # noqa: F401\n", module, cname));
         }
     }
 
@@ -114,7 +113,7 @@ pub fn generate_interface(
     sorted_delegates.sort();
     for dname in &sorted_delegates {
         let module = to_snake_case_filename(dname);
-        out.push_str(&format!(
+        type_checking_imports.push(format!(
             "from .{module} import IID_{dname}, {dname}_PARAM_TYPES  # noqa: F401\n",
         ));
     }
@@ -126,10 +125,10 @@ pub fn generate_interface(
         .sort_by(|a, b| (&a.namespace, &a.name, &a.kind).cmp(&(&b.namespace, &b.name, &b.kind)));
     for r in &sorted_type_imports {
         if known_types.contains(&r.name) && !delegate_names.contains(&r.name) {
-            out.push_str(&format_py_type_import(&r.name, r.kind));
+            type_checking_imports.push(format_py_type_import(&r.name, r.kind));
         }
     }
-    out.push('\n');
+    emit_type_checking_imports(&mut out, type_checking_imports);
 
     // IID constant
     if let Some(ref piid) = iface.generic_piid {

@@ -10,7 +10,7 @@ use crate::codegen::shared::imports::get_in_params;
 
 use super::naming::to_snake_case;
 use super::signature::{
-    py_build_args_expr, py_convert_array_return, py_convert_return, py_wrap_arg,
+    py_build_args_expr, py_convert_array_return, py_convert_return, py_runtime_symbol, py_wrap_arg,
 };
 use super::type_helpers::{
     method_pydoc, py_array_element_type, py_param_list, py_param_type_safe, py_return_type_safe,
@@ -218,9 +218,11 @@ pub(crate) fn generate_method_body(
         ));
         out.push_str(&method_pydoc(method, &in_params));
         if let Some(ref dname) = delegate_name {
+            let iid = py_runtime_symbol(dname, &format!("IID_{}", dname));
+            let param_types = py_runtime_symbol(dname, &format!("{}_PARAM_TYPES", dname));
             out.push_str(&format!(
-                "        handler = DynWinRtDelegate.create(IID_{}, {}_PARAM_TYPES, callback)\n",
-                dname, dname
+                "        handler = DynWinRtDelegate.create({}, {}, callback)\n",
+                iid, param_types
             ));
         } else {
             out.push_str(

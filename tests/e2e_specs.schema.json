@@ -68,7 +68,8 @@
              "property_set_equals",
              "vector_view_access",
              "vector_index_of",
-             "event_callback"
+             "event_callback",
+             "method_then_property_equals"
            ]
          },
          "member": { "type": "string", "description": "Property or method name (snake_case)" },
@@ -108,7 +109,12 @@
          "search_value": { "description": "Value to search for in vector_index_of" },
          "expected_index": { "type": "integer", "description": "Expected indexOf result (-1 if not found)" },
          "event_name": { "type": "string", "description": "Event name for event_callback (PascalCase, e.g. Closed)" },
-         "trigger": { "type": "string", "description": "Method to call to trigger the event (snake_case)" }
+         "trigger": { "type": "string", "description": "Method to call to trigger the event (snake_case)" },
+         "property_path": {
+           "type": "array",
+           "items": { "type": "string" },
+           "description": "Property path read after method_then_property_equals invokes member"
+         }
        }
      }
    }

@@ -347,6 +347,24 @@
       ]
     },
     {
+      "id": "xml_document_cyclic_import",
+      "namespace": "Windows.Data.Xml.Dom",
+      "class": "XmlDocument",
+      "langs": ["py"],
+      "instantiate": { "kind": "activate" },
+      "checks": [
+        {
+          "kind": "method_then_property_equals",
+          "member": "LoadXml",
+          "interface_module": "i_xml_document_io",
+          "interface_class": "IXmlDocumentIO",
+          "args": ["<root><child /></root>"],
+          "property_path": ["DocumentElement", "TagName"],
+          "expected": "root"
+        }
+      ]
+    },
+    {
       "id": "vector_index_of_found",
       "namespace": "Windows.Globalization",
       "class": "Calendar",

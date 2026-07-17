@@ -458,7 +458,14 @@ mod tests {
             name: "Uri".into(),
             default_iid: "abc".into(),
         };
-        assert_eq!(py_convert_return("r", Some(&rt), false, &known), "Uri(r)");
+        assert_eq!(
+            py_convert_return("r", Some(&rt), false, &known),
+            "_dynwinrt_symbol('uri', 'Uri')(r)"
+        );
+        assert_eq!(
+            py_convert_array_return("r", &rt, &known),
+            "_dynwinrt_wrap_values('uri', 'Uri', r.to_values())"
+        );
     }
 
     #[test]

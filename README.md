@@ -119,6 +119,9 @@ cargo build -p dynwinrt-codegen --release
 cargo run   -p dynwinrt-codegen -- generate --namespace Windows.Foundation --class-name Uri --output ./generated
 ```
 
+Python runtime, codegen, packaging, and WinUI readiness are tracked in
+[`PYTHON_CHECKLIST.md`](PYTHON_CHECKLIST.md).
+
 ## Codegen CLI reference
 
 | Argument | Required | Description |

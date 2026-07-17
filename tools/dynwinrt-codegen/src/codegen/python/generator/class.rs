@@ -3,7 +3,7 @@
 
 //! Python runtime class generation.
 
-use super::imports::format_py_type_import;
+use super::imports::{emit_type_checking_imports, format_py_type_import};
 use super::structs::generate_struct_helpers;
 use super::*;
 
@@ -23,6 +23,7 @@ pub fn generate_class(
     out.push_str(FUTURE_ANNOTATIONS);
     out.push_str(IMPORT_LINE);
     out.push('\n');
+    let mut type_checking_imports = Vec::new();
 
     // Collect delegate names from all interfaces of this class
     let mut delegate_names: HashSet<String> = delegate_type_names.clone();
@@ -53,10 +54,8 @@ pub fn generate_class(
     for cname in &collection_names {
         if !delegate_names.contains(cname) {
             let module = to_snake_case_filename(cname);
-            out.push_str(&format!(
-                "from .{} import {}  # noqa: F401\n",
-                module, cname
-            ));
+            type_checking_imports
+                .push(format!("from .{} import {}  # noqa: F401\n", module, cname));
         }
     }
 
@@ -65,7 +64,7 @@ pub fn generate_class(
     sorted_delegates.sort();
     for dname in &sorted_delegates {
         let module = to_snake_case_filename(dname);
-        out.push_str(&format!(
+        type_checking_imports.push(format!(
             "from .{module} import IID_{dname}, {dname}_PARAM_TYPES  # noqa: F401\n",
         ));
     }
@@ -78,7 +77,7 @@ pub fn generate_class(
         .sort_by(|a, b| (&a.namespace, &a.name, &a.kind).cmp(&(&b.namespace, &b.name, &b.kind)));
     for r in &sorted_imports {
         if known_types.contains(&r.name) && !delegate_names.contains(&r.name) {
-            out.push_str(&format_py_type_import(&r.name, r.kind));
+            type_checking_imports.push(format_py_type_import(&r.name, r.kind));
             imported_names.insert(r.name.clone());
             if r.kind == TypeKind::Interface {
                 imported_names.insert(format!("IID_{}", r.name));
@@ -92,14 +91,17 @@ pub fn generate_class(
             && shared_iids.contains(&req_iface.iid)
             && !imported_names.contains(&req_iface.name)
         {
-            out.push_str(&format_py_type_import(&req_iface.name, TypeKind::Interface));
+            type_checking_imports.push(format_py_type_import(&req_iface.name, TypeKind::Interface));
             imported_names.insert(req_iface.name.clone());
             imported_names.insert(format!("IID_{}", req_iface.name));
         }
     }
-    out.push('\n');
+    emit_type_checking_imports(&mut out, type_checking_imports);
 
-    // IID constants for all interfaces used by this class (skip if already imported)
+    // IID constants are emitted locally even when the interface type is shared.
+    // TYPE_CHECKING imports do not define runtime values, and interface
+    // registration happens while this module is loading.
+    let mut declared_iids = HashSet::new();
     let all_class_ifaces: Vec<&InterfaceMeta> = class
         .default_interface
         .iter()
@@ -109,7 +111,7 @@ pub fn generate_class(
         .collect();
     for iface in &all_class_ifaces {
         let iid_name = format!("IID_{}", iface.name);
-        if !iface.iid.is_empty() && !imported_names.contains(&iid_name) {
+        if !iface.iid.is_empty() && declared_iids.insert(iid_name.clone()) {
             out.push_str(&format!("{} = WinGUID.parse('{}')\n", iid_name, iface.iid));
         }
     }
@@ -301,7 +303,10 @@ pub fn generate_class(
     {
         out.push('\n');
         out.push_str("    def close(self):\n");
-        out.push_str("        IClosable.from_value(self._obj).close()\n");
+        out.push_str(&format!(
+            "        {}.from_value(self._obj).close()\n",
+            py_runtime_symbol("IClosable", "IClosable")
+        ));
     }
 
     // .as_interface() method for accessing non-default interfaces
