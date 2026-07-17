@@ -19,6 +19,14 @@ def _dynwinrt_wrap_values(module, name, values):
     return [wrapper(value) for value in values]
 
 
+def _dynwinrt_enum(module, name, value):
+    enum_type = _dynwinrt_symbol(module, name)
+    try:
+        return enum_type(value)
+    except ValueError:
+        return value
+
+
 IID_IUriRuntimeClassWithAbsoluteCanonicalUri = WinGUID.parse('758d9661-221c-480f-a339-50656673f46f')
 
 _IUriRuntimeClassWithAbsoluteCanonicalUri = DynWinRTType.register_interface(

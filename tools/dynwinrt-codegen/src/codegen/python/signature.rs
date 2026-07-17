@@ -240,6 +240,14 @@ pub(crate) fn py_convert_return(
         Some(TypeMeta::I64 | TypeMeta::U64) => format!("{}.to_i64()", expr),
         Some(TypeMeta::F32 | TypeMeta::F64) => format!("{}.to_f64()", expr),
         Some(TypeMeta::Bool) => format!("{}.to_bool()", expr),
+        Some(TypeMeta::Enum { name, .. }) if known_types.contains(name) => {
+            format!(
+                "_dynwinrt_enum('{}', '{}', {}.to_number())",
+                to_snake_case_filename(name),
+                name,
+                expr
+            )
+        }
         Some(TypeMeta::Enum { .. }) => format!("{}.to_number()", expr),
         Some(TypeMeta::RuntimeClass { name, .. }) if known_types.contains(name) => {
             format!("{}({})", py_runtime_symbol(name, name), expr)

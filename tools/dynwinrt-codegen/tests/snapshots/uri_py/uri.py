@@ -19,6 +19,14 @@ def _dynwinrt_wrap_values(module, name, values):
     return [wrapper(value) for value in values]
 
 
+def _dynwinrt_enum(module, name, value):
+    enum_type = _dynwinrt_symbol(module, name)
+    try:
+        return enum_type(value)
+    except ValueError:
+        return value
+
+
 if TYPE_CHECKING:
     from .www_form_url_decoder import WwwFormUrlDecoder  # noqa: F401
 

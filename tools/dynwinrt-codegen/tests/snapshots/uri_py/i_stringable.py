@@ -19,6 +19,14 @@ def _dynwinrt_wrap_values(module, name, values):
     return [wrapper(value) for value in values]
 
 
+def _dynwinrt_enum(module, name, value):
+    enum_type = _dynwinrt_symbol(module, name)
+    try:
+        return enum_type(value)
+    except ValueError:
+        return value
+
+
 IID_IStringable = WinGUID.parse('96369f54-8eb6-48f0-abce-c1b211e627c3')
 
 _IStringable = DynWinRTType.register_interface(

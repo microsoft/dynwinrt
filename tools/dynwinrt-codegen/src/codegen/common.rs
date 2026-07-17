@@ -469,6 +469,28 @@ mod tests {
     }
 
     #[test]
+    fn py_convert_return_with_enum() {
+        let en = TypeMeta::Enum {
+            namespace: "Windows.Globalization".into(),
+            name: "DayOfWeek".into(),
+            underlying: Box::new(TypeMeta::I32),
+            members: Vec::new(),
+            doc: None,
+            deprecated: None,
+        };
+        assert_eq!(
+            py_convert_return("r", Some(&en), false, &HashSet::new()),
+            "r.to_number()"
+        );
+
+        let known = HashSet::from(["DayOfWeek".to_string()]);
+        assert_eq!(
+            py_convert_return("r", Some(&en), false, &known),
+            "_dynwinrt_enum('day_of_week', 'DayOfWeek', r.to_number())"
+        );
+    }
+
+    #[test]
     fn py_build_method_sig_empty() {
         let m = MethodMeta {
             name: "DoSomething".into(),

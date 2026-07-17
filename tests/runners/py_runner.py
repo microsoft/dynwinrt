@@ -207,6 +207,13 @@ def run_check(check: dict, cls, obj, generated_dir: str, pkg_name: str) -> dict:
 
         elif kind == 'property_in_range':
             actual = getattr(obj, member)
+            expected_type = check.get('expected_type')
+            if expected_type and type(actual).__name__ != expected_type:
+                cr['error'] = (
+                    f'expected type {expected_type}, '
+                    f'got {type(actual).__name__}'
+                )
+                return cr
             min_val = check.get('min', float('-inf'))
             max_val = check.get('max', float('inf'))
             # Handle enum: extract .value if it's an IntEnum

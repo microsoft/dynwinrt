@@ -105,6 +105,7 @@
          },
          "write_value": { "type": "integer", "description": "Integer value used by async memory roundtrip" },
          "set_value": { "description": "Value to set for property_set_equals check" },
+         "expected_type": { "type": "string", "description": "Expected Python runtime type name" },
          "min_size": { "type": "integer", "description": "Minimum vector size for vector_view_access" },
          "search_value": { "description": "Value to search for in vector_index_of" },
          "expected_index": { "type": "integer", "description": "Expected indexOf result (-1 if not found)" },

@@ -44,7 +44,8 @@ to a distributable, typed, and reliable WinRT projection.
 ## P0: runtime and generated API agreement
 
 - [ ] Ship a `.pyi` and `py.typed` marker for the `dynwinrt_py` extension.
-- [ ] Return generated enum instances when stubs declare enum return types.
+- [x] Return declared enum members as generated `IntEnum` instances while
+      preserving unknown values as integers.
 - [ ] Use `invoke_all()` for arbitrary multiple-out methods.
 - [ ] Add Python E2E for `IVector.IndexOf` and other multiple-out methods.
 - [ ] Model nullable and `IReference<T>` positions as `T | None`.
@@ -130,3 +131,6 @@ to a distributable, typed, and reliable WinRT projection.
 1. [x] Make generated runtime imports cycle-safe.
 2. [x] Add a real cyclic-package import regression.
 3. [x] Re-run Python snapshots, codegen tests, and generated Python E2E.
+4. [x] Return known enum values as generated `IntEnum` instances.
+5. [x] Verify `Calendar.day_of_week` is a `DayOfWeek` at runtime.
+6. [ ] Use `invoke_all()` for arbitrary multiple-out methods.

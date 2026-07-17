@@ -87,7 +87,13 @@
       "langs": ["py", "ts"],
       "instantiate": { "kind": "activate" },
       "checks": [
-        { "kind": "property_in_range", "member": "day_of_week", "min": 0, "max": 6 }
+        {
+          "kind": "property_in_range",
+          "member": "day_of_week",
+          "expected_type": "DayOfWeek",
+          "min": 0,
+          "max": 6
+        }
       ]
     },
     {
