@@ -3,10 +3,11 @@
 
 use libffi::middle::Cif;
 use std::sync::Arc;
-use windows::core::{GUID, HSTRING, Interface};
+use windows::core::{GUID, HSTRING, IInspectable, Interface};
 
 use crate::{
     call,
+    call::ArgumentList,
     metadata_table::{MetadataTable, TypeHandle, TypeKind},
     value::WinRTValue,
 };
@@ -253,6 +254,129 @@ pub struct Method {
     strategy: CallStrategy,
 }
 
+fn expected_object_iid(typ: &TypeHandle) -> Option<GUID> {
+    match typ.kind() {
+        TypeKind::Object => Some(IInspectable::IID),
+        TypeKind::Interface(_)
+        | TypeKind::Delegate(_)
+        | TypeKind::RuntimeClass(_)
+        | TypeKind::Parameterized(_)
+        | TypeKind::IAsyncAction
+        | TypeKind::IAsyncActionWithProgress(_)
+        | TypeKind::IAsyncOperation(_)
+        | TypeKind::IAsyncOperationWithProgress(_) => typ.iid(),
+        _ => None,
+    }
+}
+
+fn coerce_input_object(
+    expected: &TypeHandle,
+    value: &WinRTValue,
+) -> windows_core::Result<Option<WinRTValue>> {
+    let Some(iid) = expected_object_iid(expected) else {
+        return Ok(None);
+    };
+    if value.is_null_object() {
+        return Ok(None);
+    }
+
+    let object = value.as_object().ok_or_else(|| {
+        windows_core::Error::new(
+            windows_core::HRESULT(0x80070057u32 as i32),
+            &format!(
+                "Expected object argument for {}, found {:?}",
+                expected.signature_string(),
+                value.get_type_kind()
+            ),
+        )
+    })?;
+
+    WinRTValue::Object(object)
+        .cast(&iid)
+        .map(Some)
+        .map_err(|error| match error {
+            crate::result::Error::WindowsError(error) => error,
+            other => windows_core::Error::new(
+                windows_core::HRESULT(0x80070057u32 as i32),
+                &other.message(),
+            ),
+        })
+}
+
+fn coerce_input_array(
+    expected: &TypeHandle,
+    value: &WinRTValue,
+) -> windows_core::Result<Option<WinRTValue>> {
+    if !expected.is_array() {
+        return Ok(None);
+    }
+
+    let element_type = expected.array_element_type();
+    if expected_object_iid(&element_type).is_none() {
+        return Ok(None);
+    }
+
+    let array = value.as_array().ok_or_else(|| {
+        windows_core::Error::new(
+            windows_core::HRESULT(0x80070057u32 as i32),
+            &format!(
+                "Expected array argument for {}, found {:?}",
+                expected.signature_string(),
+                value.get_type_kind()
+            ),
+        )
+    })?;
+    let mut values = Vec::with_capacity(array.len());
+    let mut changed = false;
+    for index in 0..array.len() {
+        let value = array.get(index);
+        if let Some(coerced) = coerce_input_object(&element_type, &value)? {
+            values.push(coerced);
+            changed = true;
+        } else {
+            values.push(value);
+        }
+    }
+
+    Ok(changed
+        .then(|| WinRTValue::Array(crate::array::ArrayData::from_values(element_type, &values))))
+}
+
+struct InvocationArgs<'a> {
+    original: &'a [WinRTValue],
+    replacements: Option<Vec<Option<WinRTValue>>>,
+}
+
+impl<'a> InvocationArgs<'a> {
+    fn new(original: &'a [WinRTValue]) -> Self {
+        Self {
+            original,
+            replacements: None,
+        }
+    }
+
+    fn replace(&mut self, index: usize, value: WinRTValue) {
+        self.replacements.get_or_insert_with(|| {
+            std::iter::repeat_with(|| None)
+                .take(self.original.len())
+                .collect()
+        })[index] = Some(value);
+    }
+
+    fn is_empty(&self) -> bool {
+        self.original.is_empty()
+    }
+}
+
+impl call::ArgumentList for InvocationArgs<'_> {
+    fn get_value(&self, index: usize) -> &WinRTValue {
+        self.replacements
+            .as_ref()
+            .and_then(|values| values[index].as_ref())
+            .unwrap_or(&self.original[index])
+    }
+}
+
 impl Method {
     // --- Fast getter paths: zero Vec/WinRTValue allocation ---
 
@@ -322,6 +446,19 @@ impl Method {
         obj: *mut std::ffi::c_void,
         args: &[WinRTValue],
     ) -> windows_core::Result<Vec<WinRTValue>> {
+        let mut args = InvocationArgs::new(args);
+        for parameter in self.info.parameters.iter().filter(|p| !p.is_out()) {
+            let value = args.get_value(parameter.value_index);
+            let coerced = if parameter.typ.is_array() {
+                coerce_input_array(&parameter.typ, value)?
+            } else {
+                coerce_input_object(&parameter.typ, value)?
+            };
+            if let Some(value) = coerced {
+                args.replace(parameter.value_index, value);
+            }
+        }
+
         match &self.strategy {
             CallStrategy::Direct0In0Out => {
                 // 0 in + 0 out: fn(this) -> HRESULT
@@ -347,7 +484,7 @@ impl Method {
             }
             CallStrategy::Direct1In0Out => {
                 // 1 in + 0 out: fn(this, val) -> HRESULT
-                let hr = call::call_1in(self.info.index, obj, &args[0]);
+                let hr = call::call_1in(self.info.index, obj, args.get_value(0));
                 hr.ok()?;
                 Ok(vec![])
             }
@@ -355,7 +492,8 @@ impl Method {
                 // 1 in + 1 out: fn(this, val, out) -> HRESULT
                 let out_param = self.info.parameters.iter().find(|p| p.is_out()).unwrap();
                 let mut out = out_param.typ.default_winrt_value();
-                let hr = call::call_1in_1out(self.info.index, obj, &args[0], out.out_ptr());
+                let hr =
+                    call::call_1in_1out(self.info.index, obj, args.get_value(0), out.out_ptr());
                 hr.ok()?;
                 if let WinRTValue::RawPtr(raw_ptr) = out {
                     out = out_param.typ.from_out(raw_ptr).map_err(|e| {
@@ -399,6 +537,7 @@ impl Method {
                             windows::Win32::System::Com::CoTaskMemFree(Some(data_ptr));
                         }
                     }
+
                     crate::array::ArrayData::empty(elem_type)
                 } else {
                     crate::array::ArrayData::from_cotaskmem(elem_type, data_ptr, length as usize)
@@ -409,7 +548,7 @@ impl Method {
                 // fn(this, u32, *const u8, out) -> HRESULT
                 let in_param = self.info.parameters.iter().find(|p| !p.is_out()).unwrap();
                 let out_param = self.info.parameters.iter().find(|p| p.is_out()).unwrap();
-                let array_data = args[in_param.value_index].as_array().unwrap();
+                let array_data = args.get_value(in_param.value_index).as_array().unwrap();
                 let buffer = array_data.serialize_for_abi();
                 let mut out = out_param.typ.default_winrt_value();
                 let fptr = call::get_vtable_function_ptr(obj, self.info.index);
@@ -440,11 +579,11 @@ impl Method {
                 let fptr = call::get_vtable_function_ptr(obj, self.info.index);
 
                 assert!(
-                    !args.is_empty() && args[param.value_index].as_array().is_some(),
+                    !args.is_empty() && args.get_value(param.value_index).as_array().is_some(),
                     "DirectFillArray requires a pre-allocated array argument with the desired capacity. \
                      Pass an ArrayData with the expected number of elements."
                 );
-                let array_data = args[param.value_index].as_array().unwrap();
+                let array_data = args.get_value(param.value_index).as_array().unwrap();
                 let capacity = array_data.len() as u32;
                 let total_bytes = capacity as usize * elem_type.element_size();
                 let buffer_ptr =
@@ -499,7 +638,7 @@ impl Method {
                     .iter()
                     .find(|p| p.is_fill_array())
                     .unwrap();
-                let array_data = args[fill_param.value_index].as_array().unwrap();
+                let array_data = args.get_value(fill_param.value_index).as_array().unwrap();
                 let elem_type = fill_param.typ.array_element_type();
                 let capacity = array_data.len() as u32;
                 let total_bytes = capacity as usize * elem_type.element_size();
@@ -513,7 +652,7 @@ impl Method {
                 let hr = call::call_fill_array_1in(
                     fptr,
                     obj,
-                    &args[in_param.value_index],
+                    args.get_value(in_param.value_index),
                     capacity,
                     buffer_ptr,
                     &mut actual_count,
@@ -544,7 +683,7 @@ impl Method {
                 self.info.index,
                 obj,
                 &self.info.parameters,
-                args,
+                &args,
                 self.info.out_count,
                 cif,
             ),
@@ -603,4 +742,73 @@ pub struct RuntimeClassSignature {
     name: HSTRING,
     static_interfaces: Vec<InterfaceSignature>,
     instance_interfaces: Vec<InterfaceSignature>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows::Foundation::{IStringable, IUriRuntimeClass, Uri};
+    use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize};
+    use windows_core::{IInspectable, Interface, h};
+
+    #[test]
+    fn coerces_object_inputs_to_the_expected_interface() -> windows_core::Result<()> {
+        let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
+        let uri = Uri::CreateUri(h!("https://example.com"))?;
+        let default_interface: IUriRuntimeClass = uri.cast()?;
+        let expected_interface: IStringable = uri.cast()?;
+        assert_ne!(
+            default_interface.as_raw(),
+            expected_interface.as_raw(),
+            "test requires distinct default and requested interface pointers"
+        );
+
+        let table = MetadataTable::new();
+        let expected_type = table.interface(IStringable::IID);
+        let value = WinRTValue::Object(default_interface.cast()?);
+        let coerced = coerce_input_object(&expected_type, &value)?
+            .expect("interface parameters must be coerced");
+        assert_eq!(
+            coerced.as_object().unwrap().as_raw(),
+            expected_interface.as_raw()
+        );
+
+        let inspectable: IInspectable = uri.cast()?;
+        let coerced_object = coerce_input_object(&table.object(), &value)?
+            .expect("Object parameters must be coerced to IInspectable");
+        assert_eq!(
+            coerced_object.as_object().unwrap().as_raw(),
+            inspectable.as_raw()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn coerces_object_array_elements_to_the_expected_interface() -> windows_core::Result<()> {
+        let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
+        let uri = Uri::CreateUri(h!("https://example.com"))?;
+        let default_interface: IUriRuntimeClass = uri.cast()?;
+        let expected_interface: IStringable = uri.cast()?;
+
+        let table = MetadataTable::new();
+        let element_type = table.interface(IStringable::IID);
+        let array_type = table.array(&element_type);
+        let value = WinRTValue::Array(crate::array::ArrayData::from_values(
+            element_type,
+            &[WinRTValue::Object(default_interface.cast()?)],
+        ));
+        let coerced = coerce_input_array(&array_type, &value)?
+            .expect("object array elements must be coerced");
+        assert_eq!(
+            coerced
+                .as_array()
+                .unwrap()
+                .get(0)
+                .as_object()
+                .unwrap()
+                .as_raw(),
+            expected_interface.as_raw()
+        );
+        Ok(())
+    }
 }

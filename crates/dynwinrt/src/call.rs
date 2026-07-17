@@ -7,6 +7,16 @@ use windows_core::{HRESULT, Interface};
 
 use crate::{abi::AbiValue, signature::Parameter, value::WinRTValue};
 
+pub(crate) trait ArgumentList {
+    fn get_value(&self, index: usize) -> &WinRTValue;
+}
+
+impl ArgumentList for [WinRTValue] {
+    fn get_value(&self, index: usize) -> &WinRTValue {
+        &self[index]
+    }
+}
+
 pub fn get_vtable_function_ptr(obj: *mut c_void, method_index: usize) -> *mut c_void {
     unsafe {
         let vtable_ptr = *(obj as *const *const *mut c_void);
@@ -176,11 +186,11 @@ impl Drop for FillArraySlot {
     }
 }
 
-pub fn call_winrt_method_dynamic(
+pub fn call_winrt_method_dynamic<A: ArgumentList + ?Sized>(
     vtable_index: usize,
     obj: *mut c_void,
     parameters: &[Parameter],
-    args: &[WinRTValue],
+    args: &A,
     out_count: usize,
     cif: &libffi::middle::Cif,
 ) -> windows_core::Result<Vec<WinRTValue>> {
@@ -217,7 +227,8 @@ pub fn call_winrt_method_dynamic(
         if p.is_out() {
             if p.is_fill_array() {
                 // FillArray: caller allocates buffer. Use the capacity from args.
-                let array_data = args[p.value_index]
+                let array_data = args
+                    .get_value(p.value_index)
                     .as_array()
                     .expect("Expected WinRTValue::Array with capacity for FillArray parameter");
                 let elem_type = p.typ.array_element_type();
@@ -280,7 +291,8 @@ pub fn call_winrt_method_dynamic(
     // Phase 1b: Pre-compute all array in-param data (must happen before Phase 2)
     for p in parameters {
         if !p.is_out() && p.typ.is_array() {
-            let array_data = args[p.value_index]
+            let array_data = args
+                .get_value(p.value_index)
                 .as_array()
                 .expect("Expected WinRTValue::Array for array in-parameter");
             let buffer = array_data.serialize_for_abi();
@@ -319,7 +331,7 @@ pub fn call_winrt_method_dynamic(
             ffi_args.push(arg(&slot.data_ptr));
             array_in_idx += 1;
         } else {
-            ffi_args.push(args[p.value_index].libffi_arg());
+            ffi_args.push(args.get_value(p.value_index).libffi_arg());
         }
     }
 

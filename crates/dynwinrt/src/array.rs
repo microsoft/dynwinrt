@@ -506,6 +506,9 @@ fn serialize_to_buffer(element_type: &TypeHandle, values: &[WinRTValue]) -> Vec<
             WinRTValue::Object(obj) => {
                 buffer.extend_from_slice(&(obj.as_raw() as usize).to_ne_bytes());
             }
+            WinRTValue::Null if element_type.kind().is_com_pointer() => {
+                buffer.extend_from_slice(&0usize.to_ne_bytes());
+            }
             WinRTValue::HString(s) => {
                 let raw: usize = unsafe { std::mem::transmute_copy(s) };
                 buffer.extend_from_slice(&raw.to_ne_bytes());
@@ -561,6 +564,16 @@ mod tests {
             "Expected WinRTValue::Null for null COM element, got {:?}",
             val1
         );
+    }
+
+    #[test]
+    fn test_null_com_element_serializes_as_null_pointer() {
+        let table = MetadataTable::new();
+        let array = ArrayData::from_values(table.object(), &[WinRTValue::Null]);
+        assert_eq!(array.serialize_for_abi(), 0usize.to_ne_bytes());
+
+        let async_array = ArrayData::from_values(table.async_action(), &[WinRTValue::Null]);
+        assert_eq!(async_array.serialize_for_abi(), 0usize.to_ne_bytes());
     }
 
     /// P1: CoTaskMem array of structs with HString fields — Clone/Drop must recurse.

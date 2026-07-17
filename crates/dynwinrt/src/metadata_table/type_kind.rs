@@ -159,6 +159,10 @@ impl TypeKind {
                 | TypeKind::Delegate(_)
                 | TypeKind::RuntimeClass(_)
                 | TypeKind::Parameterized(_)
+                | TypeKind::IAsyncAction
+                | TypeKind::IAsyncActionWithProgress(_)
+                | TypeKind::IAsyncOperation(_)
+                | TypeKind::IAsyncOperationWithProgress(_)
         )
     }
 
