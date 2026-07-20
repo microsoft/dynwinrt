@@ -109,9 +109,9 @@ These APIs are available on any Windows 10/11 machine without WinAppSDK:
 - Values: `DynWinRTValue.from_i32()`, `DynWinRTValue.from_hstring()`, `DynWinRTValue.from_bool()`
 - GUID: `WinGUID.parse('...')`
 - Method call: `method_handle.invoke(obj, [args])` → returns single `DynWinRTValue`
+- `IReference<T>` values project as native values plus `None`; generated `IReference_*` wrappers remain accepted for input compatibility
 
 ### Common Issues
 - `test_initialize` is `#[ignore]` — requires `WINAPPSDK_BOOTSTRAP_DLL_PATH` env var
 - Python `@property` must come before `@prop.setter` — codegen reorders methods for this
 - Windows SDK winmd is at `C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd`
-

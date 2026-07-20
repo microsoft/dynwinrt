@@ -48,7 +48,8 @@ to a distributable, typed, and reliable WinRT projection.
       preserving unknown values as integers.
 - [x] Use `invoke_all()` for arbitrary multiple-out methods.
 - [x] Add Python E2E for `IVector.IndexOf` and other multiple-out methods.
-- [ ] Model nullable and `IReference<T>` positions as `T | None`.
+- [x] Project `IReference<T>` return positions as `T | None`.
+- [x] Accept `T | None` in `IReference<T>` input positions.
 - [x] Make Python stubs part of E2E and run a static type checker.
 - [x] Make `.pyi` generation the default for `--lang py`.
 
@@ -138,3 +139,5 @@ to a distributable, typed, and reliable WinRT projection.
 8. [x] Verify Python and JavaScript `IndexOf` and `GetMany`, including zero items.
 9. [x] Ship typed `dynwinrt_py` wheels and validate the native extension stubs.
 10. [x] Generate Python stubs by default and type-check generated E2E APIs.
+11. [x] Unbox `IReference<T>` returns as `T | None`.
+12. [x] Box native Python values and `None` for `IReference<T>` inputs.

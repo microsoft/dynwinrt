@@ -93,10 +93,32 @@ fn generated_dts_passes_tsc_no_emit() {
         .expect("spawn dynwinrt-codegen");
     assert!(status3.success(), "codegen failed (User): {:?}", status3);
 
+    let status4 = Command::new(exe)
+        .args([
+            "generate",
+            "--namespace",
+            "Windows.ApplicationModel.Contacts",
+            "--class-name",
+            "ContactDate",
+            "--lang",
+            "js",
+            "--output",
+        ])
+        .arg(&tmp)
+        .status()
+        .expect("spawn dynwinrt-codegen");
+    assert!(
+        status4.success(),
+        "codegen failed (ContactDate): {:?}",
+        status4
+    );
+
     fs::write(
         tmp.join("constructor-usage.ts"),
         r#"import { Uri } from "./Uri.js";
 import { User } from "./User.js";
+import { ContactDate } from "./ContactDate.js";
+import { IReference_UInt32 } from "./IReference_UInt32.js";
 
 new Uri("https://example.com");
 new Uri("https://example.com/base/", "child");
@@ -104,6 +126,15 @@ new Uri("https://example.com/base/", "child");
 new Uri();
 // @ts-expect-error User instances can only be returned by the system.
 new User();
+
+const contactDate = ContactDate.create();
+const day: number | null = contactDate.day;
+contactDate.day = 17;
+contactDate.day = null;
+declare const legacyDay: IReference_UInt32;
+contactDate.day = legacyDay;
+// @ts-expect-error Nullable UInt32 properties do not accept strings.
+contactDate.day = "17";
 "#,
     )
     .expect("write constructor usage");

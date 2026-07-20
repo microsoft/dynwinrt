@@ -11,6 +11,8 @@ from dynwinrt_py import (
     WinGUID,
 )
 from python_bindings.calendar import Calendar
+from python_bindings.contact_date import ContactDate
+from python_bindings.i_reference_u_int32 import IReference_UInt32
 from python_bindings.i_vector_view_string import IVectorView_String
 from python_bindings.i_www_form_url_decoder_entry import IWwwFormUrlDecoderEntry
 from python_bindings.uri import Uri
@@ -36,6 +38,18 @@ def check_uri() -> None:
     host: str = uri.host
     combined: Uri = uri.combine_uri("child")
     _: Tuple[str, Uri] = (host, combined)
+
+
+def check_nullable_value(
+    contact_date: ContactDate, legacy_day: IReference_UInt32
+) -> None:
+    day: int | None = contact_date.day
+    month: int | None = contact_date.month
+    year: int | None = contact_date.year
+    _: Tuple[int | None, int | None, int | None] = (day, month, year)
+    contact_date.day = 17
+    contact_date.day = None
+    contact_date.day = legacy_day
 
 
 def check_string_vector(calendar: Calendar) -> None:

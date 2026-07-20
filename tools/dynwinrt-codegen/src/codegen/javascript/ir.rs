@@ -90,6 +90,7 @@ pub struct ProjectedConstructor {
 pub struct ProjectedProperty {
     pub name: String,
     pub ts_type: String,
+    pub setter_ts_type: Option<String>,
     pub readonly: bool,
     pub is_static: bool,
     pub doc: Option<DocInfo>,

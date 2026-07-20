@@ -624,6 +624,16 @@ impl DynWinRTValue {
     })
   }
 
+  #[napi]
+  pub fn box_reference(
+    value: &DynWinRTValue,
+    value_type: &DynWinRTType,
+  ) -> napi::Result<DynWinRTValue> {
+    dynwinrt::box_ireference(value.0.clone(), value_type.0.clone())
+      .map(DynWinRTValue)
+      .map_err(|e| napi::Error::from_reason(e.message()))
+  }
+
   /// Get the i32 value of an enum. Returns None if not an enum.
   #[napi]
   pub fn get_enum_int(&self) -> Option<i32> {

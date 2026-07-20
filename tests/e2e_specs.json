@@ -382,6 +382,27 @@
       ]
     },
     {
+      "id": "contact_date_nullable_values",
+      "namespace": "Windows.ApplicationModel.Contacts",
+      "class": "ContactDate",
+      "langs": ["py", "ts"],
+      "instantiate": { "kind": "activate" },
+      "checks": [
+        { "kind": "property_equals", "member": "day", "expected": null },
+        { "kind": "property_equals", "member": "month", "expected": null },
+        { "kind": "property_equals", "member": "year", "expected": null },
+        {
+          "kind": "ireference_roundtrip",
+          "member": "day",
+          "factory": "create_u_int32",
+          "reference_module": "i_reference_u_int32",
+          "reference_class": "IReference_UInt32",
+          "value": 17,
+          "compatibility_value": 23
+        }
+      ]
+    },
+    {
       "id": "vector_index_of_found",
       "namespace": "Windows.Globalization",
       "class": "Calendar",

@@ -21,11 +21,13 @@ pub mod delegate;
 pub mod map;
 mod meta;
 pub mod metadata_table;
+mod reference;
 pub mod vector;
 
 pub use crate::array::ArrayData;
 pub use crate::dasync::{ProgressCallback, create_progress_handler};
 pub use crate::metadata_table::{MetadataTable, MethodHandle, TypeHandle, TypeKind, ValueTypeData};
+pub use crate::reference::box_ireference;
 pub use crate::result::{Error, Result};
 pub use crate::roapi::ro_get_activation_factory_2;
 pub use crate::signature::{InterfaceSignature, MethodSignature};

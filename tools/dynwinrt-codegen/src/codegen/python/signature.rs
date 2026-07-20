@@ -9,6 +9,7 @@ use crate::meta::{InterfaceMeta, MethodMeta, ParamDirection};
 use crate::types::TypeMeta;
 
 use super::naming::{to_snake_case, to_snake_case_filename};
+use crate::codegen::shared::imports::ireference_inner_type;
 
 pub(crate) fn py_runtime_symbol(type_name: &str, symbol_name: &str) -> String {
     format!(
@@ -192,6 +193,15 @@ pub(crate) fn py_build_method_sig(method: &MethodMeta) -> String {
 
 /// Wrap a Python variable name into a DynWinRTValue expression.
 pub(crate) fn py_wrap_arg(name: &str, typ: &TypeMeta) -> String {
+    if let Some(inner) = ireference_inner_type(typ) {
+        let value_type = py_dynwinrt_type(inner);
+        let wrapped = py_wrap_reference_value("value", inner);
+        return format!(
+            "_dynwinrt_box_reference({}, {}, lambda value: {})",
+            name, value_type, wrapped
+        );
+    }
+
     match typ {
         TypeMeta::String => format!("DynWinRTValue.from_hstring({})", name),
         TypeMeta::Bool => format!("DynWinRTValue.from_bool({})", name),
@@ -228,6 +238,38 @@ pub(crate) fn py_wrap_arg(name: &str, typ: &TypeMeta) -> String {
             format!("_pack_{}({}).to_value()", to_snake_case(struct_name), name)
         }
         _ => name.to_string(),
+    }
+}
+
+fn py_wrap_reference_value(name: &str, typ: &TypeMeta) -> String {
+    match typ {
+        TypeMeta::Bool => format!("DynWinRTValue.from_bool({})", name),
+        TypeMeta::I8 => format!("DynWinRTValue.from_i8({})", name),
+        TypeMeta::U8 => format!("DynWinRTValue.from_u8({})", name),
+        TypeMeta::I16 => format!("DynWinRTValue.from_i16({})", name),
+        TypeMeta::U16 | TypeMeta::Char16 => format!("DynWinRTValue.from_u16({})", name),
+        TypeMeta::I32 => format!("DynWinRTValue.from_i32({})", name),
+        TypeMeta::U32 => format!("DynWinRTValue.from_u32({})", name),
+        TypeMeta::I64 => format!("DynWinRTValue.from_i64({})", name),
+        TypeMeta::U64 => format!("DynWinRTValue.from_u64({})", name),
+        TypeMeta::F32 => format!("DynWinRTValue.from_f32({})", name),
+        TypeMeta::F64 => format!("DynWinRTValue.from_f64({})", name),
+        TypeMeta::String => format!("DynWinRTValue.from_hstring({})", name),
+        TypeMeta::Guid => format!("DynWinRTValue.from_guid(WinGUID.parse({}))", name),
+        TypeMeta::Enum { .. } => format!(
+            "DynWinRTValue.enum_value({}, {})",
+            py_dynwinrt_type(typ),
+            name
+        ),
+        TypeMeta::Struct {
+            name: struct_name, ..
+        } if struct_name == "HResult" => {
+            format!("DynWinRTValue.from_i32({})", name)
+        }
+        TypeMeta::Struct {
+            name: struct_name, ..
+        } => format!("_pack_{}({}).to_value()", to_snake_case(struct_name), name),
+        _ => panic!("unsupported IReference inner type: {:?}", typ),
     }
 }
 
@@ -279,6 +321,16 @@ pub(crate) fn py_convert_return(
             )
         }
         Some(TypeMeta::Enum { .. }) => format!("{}.to_number()", expr),
+        Some(typ @ TypeMeta::Parameterized { name, args, .. })
+            if ireference_inner_type(typ).is_some() =>
+        {
+            let concrete = crate::meta::make_parameterized_name(name, args);
+            let wrapper = py_runtime_symbol(&concrete, &concrete);
+            format!(
+                "(lambda value: None if value.is_null() else {}(value).value)({})",
+                wrapper, expr
+            )
+        }
         Some(TypeMeta::RuntimeClass { name, .. }) if known_types.contains(name) => {
             format!("{}({})", py_runtime_symbol(name, name), expr)
         }

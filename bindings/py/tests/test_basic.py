@@ -38,6 +38,23 @@ def test_primitive_types():
     assert DynWinRTType.hresult() is not None
 
 
+def test_box_ireference_values():
+    value_type = DynWinRTType.u32_type()
+    reference_type = DynWinRTType.parameterized(
+        WinGUID.parse("61c17706-2d65-11e0-9ae8-d48564015472"),
+        [value_type],
+    )
+    reference = DynWinRTType.register_interface(
+        "IReference_UInt32_Test", reference_type.iid()
+    ).add_method("get_Value", DynWinRTMethodSig().add_out(value_type))
+    boxed = DynWinRTValue.box_reference(DynWinRTValue.from_u32(17), value_type)
+
+    assert reference.method(6).invoke(boxed, []).to_number() == 17
+    assert DynWinRTValue.box_reference(
+        DynWinRTValue.null_value(), value_type
+    ).is_null()
+
+
 def test_guid_parse():
     """WinGUID.parse should parse valid GUIDs."""
     guid = WinGUID.parse("9e365e57-48b2-4160-956f-c7385120bbfc")

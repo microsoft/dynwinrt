@@ -46,6 +46,9 @@ Parameterized and composable activations support idiomatic forms such as
 `new Uri(base, relative)` and `new StackPanel()`. The generated static factory
 methods remain available for compatibility.
 
+Generated `IReference<T>` values use `T | null` in JavaScript. Native values,
+`null`, and generated `IReference_*` wrappers are accepted as inputs.
+
 Generated packages export `createProjectedLifetimeScope()`. WinUI/XAML hosts
 can create a scope after Application and Window setup, then dispose it before
 the native window and XAML core are destroyed. Projects that never create a

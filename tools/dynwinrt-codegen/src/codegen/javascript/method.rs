@@ -3,6 +3,7 @@
 
 use std::collections::HashSet;
 
+use crate::codegen::shared::imports::ireference_inner_type;
 use crate::types::TypeMeta;
 
 // ======================================================================
@@ -39,6 +40,17 @@ fn ts_param_type(typ: &TypeMeta) -> String {
 }
 
 pub(crate) fn ts_param_type_safe(typ: &TypeMeta, known: &HashSet<String>) -> String {
+    if let Some(inner) = ireference_inner_type(typ) {
+        let native = ts_return_type_safe(Some(inner), false, known);
+        let wrapper = match typ {
+            TypeMeta::Parameterized { name, args, .. } => {
+                crate::meta::make_parameterized_name(name, args)
+            }
+            _ => unreachable!(),
+        };
+        return format!("{} | null | {}", native, wrapper);
+    }
+
     match typ {
         TypeMeta::RuntimeClass { name, .. }
         | TypeMeta::Enum { name, .. }
@@ -116,6 +128,15 @@ pub(crate) fn ts_return_type_safe(
     is_async: bool,
     known: &HashSet<String>,
 ) -> String {
+    if let Some(inner) = typ.and_then(ireference_inner_type) {
+        let native = format!("{} | null", ts_return_type_safe(Some(inner), false, known));
+        return if is_async {
+            format!("Promise<{}>", native)
+        } else {
+            native
+        };
+    }
+
     match typ {
         Some(TypeMeta::RuntimeClass { name, .. })
         | Some(TypeMeta::Enum { name, .. })

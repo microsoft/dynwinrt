@@ -142,6 +142,22 @@ impl ValueTypeData {
         self.ptr
     }
 
+    pub(crate) unsafe fn copy_to_abi(&self, result: *mut c_void) {
+        let layout = self.type_handle.layout();
+        if layout.size() == 0 {
+            return;
+        }
+
+        unsafe {
+            std::ptr::copy_nonoverlapping(self.ptr, result as *mut u8, layout.size());
+        }
+        if has_non_blittable_fields(&self.type_handle) {
+            unsafe {
+                duplicate_non_blittable_fields(&self.type_handle, result as *mut u8);
+            }
+        }
+    }
+
     pub fn get_field<T: Copy>(&self, index: usize) -> T {
         let h = &self.type_handle;
         let offset = h.field_offset(index);

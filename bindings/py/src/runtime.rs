@@ -524,6 +524,13 @@ impl DynWinRTValue {
         })
     }
 
+    #[staticmethod]
+    fn box_reference(value: &DynWinRTValue, value_type: &DynWinRTType) -> PyResult<DynWinRTValue> {
+        dynwinrt::box_ireference(value.0.clone(), value_type.0.clone())
+            .map(DynWinRTValue)
+            .map_err(|e| PyRuntimeError::new_err(e.message()))
+    }
+
     /// Get the i32 value of an enum. Returns None if not an enum.
     fn get_enum_int(&self) -> Option<i32> {
         match &self.0 {

@@ -163,6 +163,10 @@ class DynWinRTValue:
     @staticmethod
     def enum_value(enum_type: DynWinRTType, value: int) -> DynWinRTValue: ...
     @staticmethod
+    def box_reference(
+        value: DynWinRTValue, value_type: DynWinRTType
+    ) -> DynWinRTValue: ...
+    @staticmethod
     def create_vector(
         items: Sequence[DynWinRTValue], element_type: DynWinRTType
     ) -> DynWinRTValue: ...

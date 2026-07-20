@@ -404,9 +404,10 @@ fn render_member_dts(out: &mut String, member: &ProjectedMember) {
                 ));
             }
             if prop.setter_line.is_some() {
+                let setter_type = prop.setter_ts_type.as_ref().unwrap_or(&prop.ts_type);
                 out.push_str(&format!(
                     "    {}set {}(value: {});\n",
-                    static_kw, prop.name, prop.ts_type
+                    static_kw, prop.name, setter_type
                 ));
             }
         }

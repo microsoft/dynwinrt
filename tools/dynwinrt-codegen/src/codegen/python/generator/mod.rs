@@ -9,12 +9,12 @@ mod types;
 
 use std::collections::HashSet;
 
-use crate::meta::{ClassMeta, InterfaceMeta, ParamDirection};
+use crate::meta::{ClassMeta, InterfaceMeta, MethodMeta, ParamDirection};
 use crate::types::{TypeKind, TypeMeta};
 
 use crate::codegen::shared::imports::{
     collect_iface_type_imports, collect_type_imports, collect_used_generics_from_class,
-    collect_used_generics_from_methods,
+    collect_used_generics_from_methods, ireference_inner_type,
 };
 use crate::codegen::shared::structs::{
     collect_used_structs_from_class, collect_used_structs_from_iface,
@@ -64,6 +64,26 @@ def _dynwinrt_wait_action(value):
     value.wait()
     return None
 \n";
+
+const IREFERENCE_HELPER: &str = "\
+def _dynwinrt_box_reference(value, value_type, wrap):
+    raw = getattr(value, '_obj', value)
+    if isinstance(raw, DynWinRTValue):
+        return raw
+    if raw is None:
+        return DynWinRTValue.null_value()
+    return DynWinRTValue.box_reference(wrap(raw), value_type)
+
+
+";
+
+fn has_ireference_input<'a>(methods: impl IntoIterator<Item = &'a MethodMeta>) -> bool {
+    methods.into_iter().any(|method| {
+        method.params.iter().any(|param| {
+            param.direction == ParamDirection::In && ireference_inner_type(&param.typ).is_some()
+        })
+    })
+}
 
 pub use class::generate_class;
 pub use index::{append_to_index, generate_index};

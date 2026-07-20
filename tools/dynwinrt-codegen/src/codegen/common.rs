@@ -224,6 +224,46 @@ mod tests {
     }
 
     #[test]
+    fn wraps_javascript_ireference_inputs() {
+        let reference = |inner| TypeMeta::Parameterized {
+            namespace: "Windows.Foundation".into(),
+            name: "IReference".into(),
+            piid: "61c17706-2d65-11e0-9ae8-d48564015472".into(),
+            args: vec![inner],
+        };
+
+        assert!(
+            wrap_arg("value", &reference(TypeMeta::String))
+                .contains("boxReference(DynWinRtValue.hstring(value), DynWinRtType.hstring())")
+        );
+        assert!(
+            wrap_arg(
+                "value",
+                &reference(TypeMeta::Struct {
+                    namespace: "Windows.Foundation".into(),
+                    name: "Point".into(),
+                    fields: vec![],
+                })
+            )
+            .contains("_packPoint(value).toValue()")
+        );
+        assert!(
+            wrap_arg(
+                "value",
+                &reference(TypeMeta::Enum {
+                    namespace: "Test".into(),
+                    name: "Kind".into(),
+                    underlying: Box::new(TypeMeta::I32),
+                    members: vec![],
+                    doc: None,
+                    deprecated: None,
+                })
+            )
+            .contains("DynWinRtValue.enumValue(")
+        );
+    }
+
+    #[test]
     fn convert_return_basic() {
         let known = HashSet::new();
         let deferred = HashSet::new();
@@ -440,6 +480,46 @@ mod tests {
         assert_eq!(
             py_wrap_arg("f", &TypeMeta::F64),
             "DynWinRTValue.from_f64(f)"
+        );
+    }
+
+    #[test]
+    fn wraps_python_ireference_inputs() {
+        let reference = |inner| TypeMeta::Parameterized {
+            namespace: "Windows.Foundation".into(),
+            name: "IReference".into(),
+            piid: "61c17706-2d65-11e0-9ae8-d48564015472".into(),
+            args: vec![inner],
+        };
+
+        assert!(
+            py_wrap_arg("value", &reference(TypeMeta::String))
+                .contains("lambda value: DynWinRTValue.from_hstring(value)")
+        );
+        assert!(
+            py_wrap_arg(
+                "value",
+                &reference(TypeMeta::Struct {
+                    namespace: "Windows.Foundation".into(),
+                    name: "Point".into(),
+                    fields: vec![],
+                })
+            )
+            .contains("lambda value: _pack_point(value).to_value()")
+        );
+        assert!(
+            py_wrap_arg(
+                "value",
+                &reference(TypeMeta::Enum {
+                    namespace: "Test".into(),
+                    name: "Kind".into(),
+                    underlying: Box::new(TypeMeta::I32),
+                    members: vec![],
+                    doc: None,
+                    deprecated: None,
+                })
+            )
+            .contains("lambda value: DynWinRTValue.enum_value(")
         );
     }
 

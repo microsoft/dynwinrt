@@ -293,6 +293,42 @@ def run_check(check: dict, cls, obj, generated_dir: str, pkg_name: str) -> dict:
             else:
                 cr['pass'] = True
 
+        elif kind == 'ireference_roundtrip':
+            setattr(obj, member, check['value'])
+            actual = getattr(obj, member)
+            if actual != check['value']:
+                cr['error'] = (
+                    f'native IReference roundtrip returned {actual!r}, '
+                    f'expected {check["value"]!r}'
+                )
+                return cr
+
+            setattr(obj, member, None)
+            if getattr(obj, member) is not None:
+                cr['error'] = 'setting nullable value to None did not clear it'
+                return cr
+
+            property_value_mod = importlib.import_module(f"{pkg_name}.property_value")
+            property_value_cls = getattr(property_value_mod, 'PropertyValue')
+            factory = getattr(property_value_cls, check['factory'])
+            boxed = factory(check['compatibility_value'])
+
+            reference_mod = importlib.import_module(
+                f"{pkg_name}.{check['reference_module']}"
+            )
+            reference_cls = getattr(reference_mod, check['reference_class'])
+            reference = reference_cls.from_value(getattr(boxed, '_obj', boxed))
+
+            setattr(obj, member, reference)
+            actual = getattr(obj, member)
+            if actual != check['compatibility_value']:
+                cr['error'] = (
+                    f'wrapper IReference roundtrip returned {actual!r}, '
+                    f'expected {check["compatibility_value"]!r}'
+                )
+            else:
+                cr['pass'] = True
+
         elif kind == 'struct_roundtrip':
             struct_mod = importlib.import_module(f"{pkg_name}.{check['struct_module']}")
             struct_cls = getattr(struct_mod, check['struct_class'])

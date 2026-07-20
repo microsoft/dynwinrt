@@ -6,7 +6,9 @@
 use std::collections::HashSet;
 
 use crate::codegen::shared::docs::{DocText, find_param_doc};
-use crate::codegen::shared::imports::{fill_array_uses_retval_count, method_abi_output_count};
+use crate::codegen::shared::imports::{
+    fill_array_uses_retval_count, ireference_inner_type, method_abi_output_count,
+};
 use crate::meta::MethodMeta;
 use crate::types::TypeMeta;
 
@@ -46,6 +48,14 @@ pub(super) fn method_pydoc(method: &MethodMeta, in_params: &[&crate::meta::Param
 // Python type annotation helpers
 // ======================================================================
 
+fn py_optional_type(typ: String) -> String {
+    let unquoted = typ
+        .strip_prefix('\'')
+        .and_then(|value| value.strip_suffix('\''))
+        .unwrap_or(&typ);
+    format!("{} | None", unquoted)
+}
+
 fn py_param_type(typ: &TypeMeta) -> String {
     match typ {
         TypeMeta::Bool => "bool".to_string(),
@@ -75,6 +85,17 @@ fn py_param_type(typ: &TypeMeta) -> String {
 }
 
 pub(super) fn py_param_type_safe(typ: &TypeMeta, known: &HashSet<String>) -> String {
+    if let Some(inner) = ireference_inner_type(typ) {
+        let native = py_optional_type(py_return_type_safe(Some(inner), known));
+        let wrapper = match typ {
+            TypeMeta::Parameterized { name, args, .. } => {
+                crate::meta::make_parameterized_name(name, args)
+            }
+            _ => unreachable!(),
+        };
+        return format!("{} | {}", native, wrapper);
+    }
+
     match typ {
         TypeMeta::RuntimeClass { name, .. }
         | TypeMeta::Enum { name, .. }
@@ -88,6 +109,10 @@ pub(super) fn py_param_type_safe(typ: &TypeMeta, known: &HashSet<String>) -> Str
 }
 
 pub(super) fn py_return_type_safe(typ: Option<&TypeMeta>, known: &HashSet<String>) -> String {
+    if let Some(inner) = typ.and_then(ireference_inner_type) {
+        return py_optional_type(py_return_type_safe(Some(inner), known));
+    }
+
     match typ {
         Some(TypeMeta::RuntimeClass { name, .. })
         | Some(TypeMeta::Enum { name, .. })
@@ -370,5 +395,25 @@ mod tests {
             ),
             "handler: 'DynWinRTValue'"
         );
+    }
+
+    #[test]
+    fn ireference_returns_are_projected_as_optional_values() {
+        let reference = TypeMeta::Parameterized {
+            namespace: "Windows.Foundation".into(),
+            name: "IReference".into(),
+            piid: "61c17706-2d65-11e0-9ae8-d48564015472".into(),
+            args: vec![TypeMeta::U32],
+        };
+
+        assert_eq!(
+            py_return_type_safe(Some(&reference), &HashSet::new()),
+            "int | None"
+        );
+        assert_eq!(
+            py_param_type_safe(&reference, &HashSet::new()),
+            "int | None | IReference_UInt32"
+        );
+        assert_eq!(py_optional_type("'DayOfWeek'".into()), "DayOfWeek | None");
     }
 }

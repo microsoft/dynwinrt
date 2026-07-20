@@ -22,6 +22,13 @@ pub fn generate_class(
     out.push_str(HEADER);
     out.push_str(FUTURE_ANNOTATIONS);
     out.push_str(IMPORT_LINE);
+    if has_ireference_input(
+        class
+            .all_interfaces()
+            .flat_map(|interface| interface.methods.iter()),
+    ) {
+        out.push_str(IREFERENCE_HELPER);
+    }
     out.push('\n');
     let mut type_checking_imports = Vec::new();
 

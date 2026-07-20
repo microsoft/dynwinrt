@@ -62,6 +62,22 @@ test('round-trip WinRT values', (t) => {
   t.true(DynWinRtValue.nullValue().isNull())
 })
 
+test('box IReference values', (t) => {
+  const valueType = DynWinRtType.u32()
+  const referenceType = DynWinRtType.parameterized(
+    WinGuid.parse('61c17706-2d65-11e0-9ae8-d48564015472'),
+    [valueType],
+  )
+  const reference = DynWinRtType.registerInterface('IReference_UInt32_Test', referenceType.iid()).addMethod(
+    'get_Value',
+    new DynWinRtMethodSig().addOut(valueType),
+  )
+  const boxed = DynWinRtValue.boxReference(DynWinRtValue.u32(17), valueType)
+
+  t.is(reference.method(6).invoke(boxed, []).toNumber(), 17)
+  t.true(DynWinRtValue.boxReference(DynWinRtValue.nullValue(), valueType).isNull())
+})
+
 test('release WinRT object values deterministically', (t) => {
   const value = DynWinRtValue.activationFactory('Windows.Foundation.Uri')
   value.release()

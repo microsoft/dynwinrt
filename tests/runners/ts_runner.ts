@@ -304,6 +304,39 @@ async function runCheck(
       } else {
         cr.pass = true;
       }
+    } else if (kind === 'ireference_roundtrip') {
+      const value = (check as any).value;
+      obj[member] = value;
+      if (obj[member] !== value) {
+        cr.error = `native IReference roundtrip returned ${obj[member]}, expected ${value}`;
+        return cr;
+      }
+
+      obj[member] = null;
+      if (obj[member] !== null) {
+        cr.error = 'setting nullable value to null did not clear it';
+        return cr;
+      }
+
+      const propertyValueMod = await import(
+        `file://${path.resolve(generatedDir, 'PropertyValue.js').replace(/\\/g, '/')}`
+      );
+      const referenceModule = (check as any).reference_class;
+      const referenceMod = await import(
+        `file://${path.resolve(generatedDir, `${referenceModule}.js`).replace(/\\/g, '/')}`
+      );
+      const factory =
+        propertyValueMod.PropertyValue[
+          (check as any).factory.replace(/_([a-z])/g, (_: string, c: string) => c.toUpperCase())
+        ];
+      const boxed = factory((check as any).compatibility_value);
+      const referenceClass = referenceMod[(check as any).reference_class];
+      obj[member] = referenceClass.from(boxed);
+      if (obj[member] !== (check as any).compatibility_value) {
+        cr.error = `wrapper IReference roundtrip returned ${obj[member]}, expected ${(check as any).compatibility_value}`;
+      } else {
+        cr.pass = true;
+      }
     } else if (kind === 'struct_roundtrip') {
       const structClass = check.struct_class as string;
       const structModule = check.struct_module as string;

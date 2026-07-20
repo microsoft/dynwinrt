@@ -5,6 +5,7 @@
 
 use std::collections::HashSet;
 
+use crate::codegen::shared::imports::ireference_inner_type;
 use crate::meta::{InterfaceMeta, MethodMeta, ParamDirection};
 use crate::types::TypeMeta;
 
@@ -210,6 +211,15 @@ pub(crate) fn build_args_expr(in_params: &[&crate::meta::ParamMeta]) -> String {
 }
 
 pub(crate) fn wrap_arg(name: &str, typ: &TypeMeta) -> String {
+    if let Some(inner) = ireference_inner_type(typ) {
+        let value_type = ts_dynwinrt_type(inner);
+        let wrapped = wrap_reference_value("value", inner);
+        return format!(
+            "((value) => value == null ? DynWinRtValue.nullValue() : value instanceof DynWinRtValue ? value : value?._obj ?? DynWinRtValue.boxReference({}, {}))({})",
+            wrapped, value_type, name
+        );
+    }
+
     match typ {
         TypeMeta::String => format!("DynWinRtValue.hstring({})", name),
         TypeMeta::Bool => format!("DynWinRtValue.boolValue({})", name),
@@ -257,6 +267,7 @@ pub(crate) fn wrap_arg(name: &str, typ: &TypeMeta) -> String {
                     );
                 }
             }
+
             // For map-like collections, auto-wrap JS Map at runtime.
             // Same vtable-mismatch concern as vectors: createMap returns a
             // SingleThreadedMap whose identity vtable is IIterable
@@ -324,6 +335,36 @@ pub(crate) fn wrap_arg(name: &str, typ: &TypeMeta) -> String {
             format!("_pack{}({}).toValue()", struct_name, name)
         }
         _ => name.to_string(),
+    }
+}
+
+fn wrap_reference_value(name: &str, typ: &TypeMeta) -> String {
+    match typ {
+        TypeMeta::Bool => format!("DynWinRtValue.boolValue({})", name),
+        TypeMeta::I8 => format!("DynWinRtValue.i8Value({})", name),
+        TypeMeta::U8 => format!("DynWinRtValue.u8Value({})", name),
+        TypeMeta::I16 => format!("DynWinRtValue.i16({})", name),
+        TypeMeta::U16 | TypeMeta::Char16 => format!("DynWinRtValue.u16({})", name),
+        TypeMeta::I32 => format!("DynWinRtValue.i32({})", name),
+        TypeMeta::U32 => format!("DynWinRtValue.u32({})", name),
+        TypeMeta::I64 => format!("DynWinRtValue.i64({})", name),
+        TypeMeta::U64 => format!("DynWinRtValue.u64({})", name),
+        TypeMeta::F32 => format!("DynWinRtValue.f32({})", name),
+        TypeMeta::F64 => format!("DynWinRtValue.f64({})", name),
+        TypeMeta::String => format!("DynWinRtValue.hstring({})", name),
+        TypeMeta::Guid => format!("DynWinRtValue.guid(WinGuid.parse({}))", name),
+        TypeMeta::Enum { .. } => format!(
+            "DynWinRtValue.enumValue({}, {})",
+            ts_dynwinrt_type(typ),
+            name
+        ),
+        TypeMeta::Struct {
+            name: struct_name, ..
+        } if struct_name == "HResult" => format!("DynWinRtValue.i32({})", name),
+        TypeMeta::Struct {
+            name: struct_name, ..
+        } => format!("_pack{}({}).toValue()", struct_name, name),
+        _ => panic!("unsupported IReference inner type: {:?}", typ),
     }
 }
 
@@ -413,6 +454,13 @@ fn wrap_nullable_interface_return(expr: &str, wrapper: &str) -> String {
 
 fn unwrap_nullable_return(expr: &str) -> String {
     format!("((v) => v.isNull() ? null : v)({})", expr)
+}
+
+fn unwrap_nullable_reference_return(expr: &str, wrapper: &str) -> String {
+    format!(
+        "((v) => v.isNull() ? null : new {}(v).value)({})",
+        wrapper, expr
+    )
 }
 
 /// Convert an array return expression to the appropriate JS array type.
@@ -511,6 +559,13 @@ pub(crate) fn convert_return(
         Some(TypeMeta::F32 | TypeMeta::F64) => format!("{}.toF64()", expr),
         Some(TypeMeta::Bool) => format!("{}.toBool()", expr),
         Some(TypeMeta::Enum { .. }) => format!("{}.toNumber()", expr),
+        Some(typ @ TypeMeta::Parameterized { name, args, .. })
+            if ireference_inner_type(typ).is_some() =>
+        {
+            let concrete = crate::meta::make_parameterized_name(name, args);
+            let wrapper = resolve_type_name(&concrete, deferred);
+            unwrap_nullable_reference_return(expr, &wrapper)
+        }
         Some(TypeMeta::RuntimeClass { name, .. }) if known_types.contains(name) => {
             let r = resolve_type_name(name, deferred);
             wrap_nullable_class_return(expr, &r)

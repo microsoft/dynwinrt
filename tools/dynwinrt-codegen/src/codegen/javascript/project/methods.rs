@@ -253,6 +253,7 @@ pub(super) fn project_static_method(
         return ProjectedMember::Property(ProjectedProperty {
             name: prop_name,
             ts_type: ts_return,
+            setter_ts_type: None,
             readonly: true,
             is_static: true,
             doc,
@@ -492,11 +493,17 @@ pub(super) fn project_instance_method(
         };
 
         // Check if there's a corresponding setter
-        let setter_line = find_setter_for_property(method, iface_var, obj_expr, iface_methods);
+        let setter =
+            find_setter_for_property(method, iface_var, obj_expr, iface_methods, known_types);
+        let (setter_line, setter_ts_type) = match setter {
+            Some((line, ts_type)) => (Some(line), ts_type),
+            None => (None, None),
+        };
 
         return Some(ProjectedMember::Property(ProjectedProperty {
             name: prop_name,
             ts_type: ts_return,
+            setter_ts_type,
             readonly: setter_line.is_none(),
             is_static: false,
             doc,
@@ -545,7 +552,8 @@ pub(super) fn project_instance_method(
 
         return Some(ProjectedMember::Property(ProjectedProperty {
             name: prop_name,
-            ts_type: param_type,
+            ts_type: param_type.clone(),
+            setter_ts_type: Some(param_type),
             readonly: false,
             is_static: false,
             doc,
@@ -840,7 +848,8 @@ fn find_setter_for_property(
     iface_var: &str,
     obj_expr: &str,
     iface_methods: Option<&[MethodMeta]>,
-) -> Option<String> {
+    known_types: &HashSet<String>,
+) -> Option<(String, Option<String>)> {
     let prop_suffix = getter.name.strip_prefix("get_")?;
     let setter_name = format!("put_{}", prop_suffix);
     let methods = iface_methods?;
@@ -848,13 +857,21 @@ fn find_setter_for_property(
         .iter()
         .find(|m| m.name == setter_name && m.is_property_setter)?;
     let setter_in_params = get_in_params(setter);
+    let setter_ts_type = setter_in_params.first().and_then(|param| {
+        ireference_inner_type(&param.typ)
+            .is_some()
+            .then(|| ts_param_type_safe(&param.typ, known_types))
+    });
     let arg = setter_in_params
         .first()
         .map(|p| wrap_arg("value", &p.typ))
         .unwrap_or_else(|| "value".to_string());
-    Some(format!(
-        "{}.method({}).invoke({}, [{}]);",
-        iface_var, setter.vtable_index, obj_expr, arg
+    Some((
+        format!(
+            "{}.method({}).invoke({}, [{}]);",
+            iface_var, setter.vtable_index, obj_expr, arg
+        ),
+        setter_ts_type,
     ))
 }
 

@@ -80,6 +80,9 @@ pub fn generate_interface(
     out.push_str(HEADER);
     out.push_str(FUTURE_ANNOTATIONS);
     out.push_str(IMPORT_LINE);
+    if has_ireference_input(iface.methods.iter()) {
+        out.push_str(IREFERENCE_HELPER);
+    }
     out.push('\n');
     let mut type_checking_imports = Vec::new();
 

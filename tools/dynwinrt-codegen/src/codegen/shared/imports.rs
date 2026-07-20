@@ -17,6 +17,23 @@ pub(crate) static NO_DEFERRED: LazyLock<HashSet<String>> = LazyLock::new(HashSet
 // Generic collection helpers
 // ======================================================================
 
+pub(crate) fn ireference_inner_type(typ: &TypeMeta) -> Option<&TypeMeta> {
+    match typ {
+        TypeMeta::Parameterized {
+            namespace,
+            name,
+            args,
+            ..
+        } if namespace == "Windows.Foundation"
+            && name.split('`').next() == Some("IReference")
+            && args.len() == 1 =>
+        {
+            args.first()
+        }
+        _ => None,
+    }
+}
+
 /// Collect the set of known generic collection names used in method signatures.
 /// Returns e.g. ["IVectorView", "IMap"] for import generation.
 pub(crate) fn collect_used_generics_from_methods(methods: &[MethodMeta]) -> Vec<String> {
