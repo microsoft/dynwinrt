@@ -102,7 +102,7 @@ These APIs are available on any Windows 10/11 machine without WinAppSDK:
 - `src/codegen/common.rs` — Shared helpers (type mapping, argument wrapping, return conversion)
 - `src/codegen/typescript.rs` + `src/codegen/method.rs` — Index-file generation and ESM/CJS shim helpers (name is historical; no longer emits stand-alone `.ts` output)
 - `--lang js` (default) generates `.js` + ambient `.d.ts` with the `DynWinRtType`/`DynWinRtValue` API (camelCase)
-- `--lang py` generates `.py` (and, with `--pyi`, `.pyi` stubs plus a `py.typed` marker) using the `DynWinRTType`/`DynWinRTValue` API (snake_case)
+- `--lang py` generates `.py`, `.pyi`, and a `py.typed` marker by default using the `DynWinRTType`/`DynWinRTValue` API (snake_case); `--no-pyi` opts out
 
 ### Python Binding API Names
 - Types: `DynWinRTType.i32_type()`, `DynWinRTType.hstring()`, `DynWinRTType.bool_type()`, etc.
@@ -114,5 +114,4 @@ These APIs are available on any Windows 10/11 machine without WinAppSDK:
 - `test_initialize` is `#[ignore]` — requires `WINAPPSDK_BOOTSTRAP_DLL_PATH` env var
 - Python `@property` must come before `@prop.setter` — codegen reorders methods for this
 - Windows SDK winmd is at `C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd`
-
 

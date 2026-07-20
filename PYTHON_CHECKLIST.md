@@ -19,7 +19,7 @@ to a distributable, typed, and reliable WinRT projection.
 - [x] Generated `Windows.Foundation.Uri` bindings import and call real WinRT
       APIs on ARM64.
 - [x] Python generation emits `.py` implementations.
-- [x] `--pyi` emits `.pyi`, `__init__.pyi`, and `py.typed`.
+- [x] `--lang py` emits `.pyi`, `__init__.pyi`, and `py.typed` by default.
 - [x] Generated Python E2E covers 25 Windows SDK scenarios.
 - [x] Runtime primitives exist for arrays, structs, delegates, events,
       cancellation, progress callbacks, vectors, and maps.
@@ -43,14 +43,14 @@ to a distributable, typed, and reliable WinRT projection.
 
 ## P0: runtime and generated API agreement
 
-- [ ] Ship a `.pyi` and `py.typed` marker for the `dynwinrt_py` extension.
+- [x] Ship a `.pyi` and `py.typed` marker for the `dynwinrt_py` extension.
 - [x] Return declared enum members as generated `IntEnum` instances while
       preserving unknown values as integers.
 - [x] Use `invoke_all()` for arbitrary multiple-out methods.
 - [x] Add Python E2E for `IVector.IndexOf` and other multiple-out methods.
 - [ ] Model nullable and `IReference<T>` positions as `T | None`.
-- [ ] Make Python stubs part of E2E and run a static type checker.
-- [ ] Make `.pyi` generation the default for `--lang py`.
+- [x] Make Python stubs part of E2E and run a static type checker.
+- [x] Make `.pyi` generation the default for `--lang py`.
 
 ## P0: async semantics
 
@@ -64,8 +64,8 @@ to a distributable, typed, and reliable WinRT projection.
 
 ## P0: CI and distribution
 
-- [ ] Execute all tests under `bindings/py/tests` in CI.
-- [ ] Build and install wheels before running Python E2E.
+- [x] Execute all tests under `bindings/py/tests` in CI.
+- [x] Build and install wheels before running Python E2E.
 - [ ] Test supported CPython versions on x64 and ARM64.
 - [ ] Remove unverified PyPy metadata or add real PyPy coverage.
 - [ ] Derive the Python package version from the release tag.
@@ -136,3 +136,5 @@ to a distributable, typed, and reliable WinRT projection.
 6. [x] Use `invoke_all()` for arbitrary multiple-out methods.
 7. [x] Model FillArray as caller-owned `(capacity, buffer)` ABI.
 8. [x] Verify Python and JavaScript `IndexOf` and `GetMany`, including zero items.
+9. [x] Ship typed `dynwinrt_py` wheels and validate the native extension stubs.
+10. [x] Generate Python stubs by default and type-check generated E2E APIs.

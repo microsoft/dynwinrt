@@ -96,7 +96,7 @@ enum Commands {
         ref_list: Option<String>,
 
         /// Target language. `js` emits .js + .d.ts (recommended for Node consumers).
-        /// `py` emits .py (and optionally .pyi via --pyi).
+        /// `py` emits .py + .pyi and a py.typed marker.
         #[arg(long, default_value = "js", value_parser = ["js", "py"])]
         lang: String,
 
@@ -113,9 +113,13 @@ enum Commands {
         #[arg(long)]
         dry_run: bool,
 
-        /// Also emit .pyi type stub files and py.typed marker (requires --lang py)
-        #[arg(long)]
+        /// Emit Python type stubs (the default for --lang py; retained for compatibility).
+        #[arg(long, conflicts_with = "no_pyi")]
         pyi: bool,
+
+        /// Skip .pyi type stubs and the py.typed marker (requires --lang py).
+        #[arg(long, conflicts_with = "pyi")]
+        no_pyi: bool,
     },
 }
 
@@ -146,10 +150,12 @@ fn run() -> Result<(), String> {
             import_name,
             dry_run,
             pyi,
+            no_pyi,
         } => {
-            if pyi && lang != "py" {
-                return Err("--pyi requires --lang py".into());
+            if lang != "py" && (pyi || no_pyi) {
+                return Err("--pyi and --no-pyi require --lang py".into());
             }
+            let pyi = lang == "py" && !no_pyi;
             // Collect winmd paths from --folder and/or --winmd
             let mut winmd_parts: Vec<String> = Vec::new();
 

@@ -27,6 +27,7 @@ Issues = "https://github.com/microsoft/dynwinrt/issues"
 [dependency-groups]
 dev = [
     "maturin>=1.11.5",
+    "mypy>=1.13,<2",
     "pytest>=8.3.5",
 ]
 

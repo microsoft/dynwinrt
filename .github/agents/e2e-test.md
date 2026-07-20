@@ -40,5 +40,5 @@ Avoid APIs that need WinAppSDK, network, or user interaction.
 ## Diagnosing failures
 
 1. Check `tests/e2e_generated/results_py.json` or `results_ts.json` for structured failure details
-2. Inspect generated code in `tests/e2e_generated/py/` or `ts/`
+2. Inspect generated code in `tests/e2e_generated/python_bindings/` or `ts/`
 3. Common issues: circular imports in codegen, naming mismatch (Python snake_case vs TS camelCase)

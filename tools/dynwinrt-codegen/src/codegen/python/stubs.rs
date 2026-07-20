@@ -72,9 +72,9 @@ pub fn generate_interface_stub(
         let mut out = String::new();
         out.push_str(HEADER);
         out.push_str(FUTURE_ANNOTATIONS);
-        out.push_str("from dynwinrt_py import WinGUID\n\n");
+        out.push_str("from dynwinrt_py import DynWinRTType, WinGUID\n\n");
         out.push_str(&format!("IID_{}: WinGUID\n", iface.name));
-        out.push_str(&format!("{}_PARAM_TYPES: list\n", iface.name));
+        out.push_str(&format!("{}_PARAM_TYPES: list[DynWinRTType]\n", iface.name));
         return out;
     }
 
@@ -84,6 +84,13 @@ pub fn generate_interface_stub(
     out.push_str(HEADER);
     out.push_str(FUTURE_ANNOTATIONS);
     out.push_str(IMPORT_LINE);
+    if iface
+        .methods
+        .iter()
+        .any(|method| method.is_event_add || method.is_event_remove)
+    {
+        out.push_str("from typing import Callable\n");
+    }
     out.push('\n');
 
     let mut delegate_names: HashSet<String> = delegate_type_names.clone();
@@ -187,11 +194,23 @@ pub fn generate_class_stub(
     shared_iids: &HashSet<String>,
 ) -> String {
     let used_structs = collect_used_structs_from_class(class);
+    let has_events = class.all_interfaces().any(|iface| {
+        iface
+            .methods
+            .iter()
+            .any(|method| method.is_event_add || method.is_event_remove)
+    });
 
     let mut out = String::new();
     out.push_str(HEADER);
     out.push_str(FUTURE_ANNOTATIONS);
     out.push_str(IMPORT_LINE);
+    if has_events {
+        out.push_str("from typing import Callable\n");
+    }
+    if !class.required_interfaces.is_empty() {
+        out.push_str("from typing import Type, TypeVar\n");
+    }
     out.push('\n');
 
     let mut delegate_names: HashSet<String> = delegate_type_names.clone();
@@ -256,6 +275,9 @@ pub fn generate_class_stub(
         }
     }
     out.push('\n');
+    if !class.required_interfaces.is_empty() {
+        out.push_str("_InterfaceT = TypeVar('_InterfaceT')\n\n");
+    }
 
     // IID constants (declarations only)
     for iface in class.all_interfaces() {
@@ -342,7 +364,9 @@ pub fn generate_class_stub(
 
     if !class.required_interfaces.is_empty() {
         out.push('\n');
-        out.push_str("    def as_interface(self, interface_class): ...\n");
+        out.push_str(
+            "    def as_interface(self, interface_class: Type[_InterfaceT]) -> _InterfaceT: ...\n",
+        );
     }
 
     // Inline wrapper classes for required interfaces

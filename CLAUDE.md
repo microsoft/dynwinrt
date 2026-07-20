@@ -47,7 +47,7 @@ cargo build -p dynwinrt-codegen --release
 # Generate JS bindings (.js + .d.ts) — default --lang is "js"
 cargo run -p dynwinrt-codegen -- generate --namespace Windows.Foundation --class-name Uri --output ./generated
 
-# Generate Python bindings (add --pyi for .pyi stubs)
+# Generate Python bindings (.pyi stubs are emitted by default)
 cargo run -p dynwinrt-codegen -- generate --namespace Windows.Foundation --class-name Uri --lang py --output ./generated
 ```
 
@@ -106,7 +106,7 @@ PyO3 binding exposing: `DynWinRTType`, `DynWinRTMethodSig`, `DynWinRTMethodHandl
 
 Reads .winmd metadata and generates typed wrapper code:
 - `--lang js` (default): emits ESM `.js` + ambient `.d.ts` (no tsc step required) using the `DynWinRtType`/`DynWinRtValue` API
-- `--lang py`: Python classes using the `DynWinRTType`/`DynWinRTValue` API; `--pyi` additionally emits `.pyi` stubs and a `py.typed` marker
+- `--lang py`: Python classes using the `DynWinRTType`/`DynWinRTValue` API, with `.pyi` stubs and a `py.typed` marker by default; `--no-pyi` opts out
 - Handles: classes, interfaces, enums, structs (pack/unpack), delegates (IID + param types), async operations (with `AbortSignal`/cancellation), generic collections, events
 - Auto-detects Windows SDK winmd, auto-discovers sibling `.winmd` files in the same directory, resolves transitive dependencies
 
@@ -195,5 +195,4 @@ The library uses `windows-core::IUnknown` smart pointers which automatically han
 ### Parameterized IID Computation
 
 Generic interfaces (IVector\<T\>, IMap\<K,V\>, IAsyncOperation\<T\>) have IIDs computed at runtime using the WinRT parameterized interface algorithm (SHA-1 hash of the PIID + type argument signatures). This is implemented in `metadata_table/iid.rs`.
-
 

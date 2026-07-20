@@ -118,9 +118,10 @@ pub(crate) fn generate_factory_method_invoke(
     iface: &InterfaceMeta,
     method: &MethodMeta,
     known_types: &HashSet<String>,
+    delegate_type_names: &HashSet<String>,
 ) -> String {
     let in_params = get_in_params(method);
-    let py_params = py_param_list(&in_params, known_types);
+    let py_params = py_param_list(&in_params, known_types, delegate_type_names);
 
     let return_py_type = format!("'{}'", class.name);
 
@@ -171,7 +172,7 @@ pub(crate) fn generate_static_method_invoke(
     delegate_type_names: &HashSet<String>,
 ) -> String {
     let in_params = get_in_params(method);
-    let py_params = py_param_list(&in_params, known_types);
+    let py_params = py_param_list(&in_params, known_types, delegate_type_names);
 
     let py_return = py_method_return_type(method, known_types, delegate_type_names);
 
@@ -357,7 +358,7 @@ pub(crate) fn generate_method_body(
             iface_var, method.vtable_index, obj_expr, arg
         ));
     } else {
-        let py_params = py_param_list(&in_params, known_types);
+        let py_params = py_param_list(&in_params, known_types, delegate_type_names);
         let py_return = py_method_return_type(method, known_types, delegate_type_names);
         let method_name = name_override
             .map(|s| s.to_string())

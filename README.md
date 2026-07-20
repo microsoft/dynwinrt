@@ -131,7 +131,8 @@ Python runtime, codegen, packaging, and WinUI readiness are tracked in
 | `--namespace NAMESPACE` | No | WinRT namespace to generate (omit for all non-`Windows.*` namespaces) |
 | `--class-name CLASS` | No | Specific class (transitively pulls in dependencies) |
 | `--ref PATH` | No | Additional `.winmd` files for type resolution only (no code emitted) |
-| `--lang LANG` | No | `js` (default, emits `.js` + `.d.ts`) or `py` (emits `.py`, optionally `.pyi` via `--pyi`) |
+| `--lang LANG` | No | `js` (default, emits `.js` + `.d.ts`) or `py` (emits `.py` + `.pyi` and `py.typed`) |
+| `--no-pyi` | No | With `--lang py`, emit implementation files without type stubs |
 | `--output DIR` | No | Output directory (default `./generated`) |
 | `--dry-run` | No | Validate input, don't write files |
 

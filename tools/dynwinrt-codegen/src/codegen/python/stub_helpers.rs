@@ -134,7 +134,7 @@ pub(super) fn emit_method_stub(
     if method.is_event_add {
         let event_name = to_snake_case(method.name.strip_prefix("add_").unwrap_or(&method.name));
         out.push_str(&format!(
-            "{indent}def on_{}(self, callback) -> 'DynWinRTValue': ...\n",
+            "{indent}def on_{}(self, callback: Callable[..., object]) -> 'DynWinRTValue': ...\n",
             event_name
         ));
         return out;
@@ -179,7 +179,7 @@ pub(super) fn emit_method_stub(
             prop_name, param_type
         ));
     } else {
-        let py_params = py_param_list(&in_params, known_types);
+        let py_params = py_param_list(&in_params, known_types, delegate_type_names);
         let py_return = py_method_return_type(method, known_types, delegate_type_names);
         let method_name = to_snake_case(&method.name);
         let self_and_params = if py_params.is_empty() {
@@ -204,7 +204,7 @@ pub(super) fn emit_static_method_stub(
     delegate_type_names: &HashSet<String>,
 ) -> String {
     let in_params = get_in_params(method);
-    let py_params = py_param_list(&in_params, known_types);
+    let py_params = py_param_list(&in_params, known_types, delegate_type_names);
 
     let py_return = if is_factory {
         format!("'{}'", _class_name)

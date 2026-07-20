@@ -21,6 +21,7 @@ $root = Split-Path $PSScriptRoot -Parent
 $specsFile = Join-Path $PSScriptRoot "e2e_specs.json"
 $e2eDir = Join-Path $root "tests\e2e_generated"
 $runnersDir = Join-Path $root "tests\runners"
+$pyBindingsDir = Join-Path $e2eDir "python_bindings"
 
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
 
@@ -114,7 +115,7 @@ function Generate($lang, $outDir) {
         if ($s.extra_classes) { $classes += $s.extra_classes }
         $byNs[$s.namespace] += $classes
     }
-    foreach ($ns in $byNs.Keys) {
+    foreach ($ns in ($byNs.Keys | Sort-Object)) {
         $classes = ($byNs[$ns] | Select-Object -Unique) -join ","
         Write-Host "  $lang`: $ns [$classes]"
         Invoke-Expression "$winrtMeta generate --namespace `"$ns`" --class-name `"$classes`" --lang $codegenLang --output `"$outDir`""
@@ -124,7 +125,8 @@ function Generate($lang, $outDir) {
 
 foreach ($l in $Lang) {
     Write-Host "`n--- Generate ($l) ---" -ForegroundColor Yellow
-    Generate $l (Join-Path $e2eDir $l)
+    $outDir = if ($l -eq "py") { $pyBindingsDir } else { Join-Path $e2eDir $l }
+    Generate $l $outDir
 }
 
 # --------------------------------------------------------------------------
@@ -135,11 +137,21 @@ $totalFail = 0
 $allResults = @()
 
 if ("py" -in $Lang) {
+    Write-Host "`n--- Python static type check ---" -ForegroundColor Yellow
+    $previousMypyPath = $env:MYPYPATH
+    try {
+        $env:MYPYPATH = $e2eDir
+        python -m mypy --strict (Join-Path $root "tests\typecheck\python_generated_api.py")
+        if ($LASTEXITCODE -ne 0) { Write-Error "Python static type check failed"; exit 1 }
+    } finally {
+        $env:MYPYPATH = $previousMypyPath
+    }
+
     Write-Host "`n--- Python E2E ---" -ForegroundColor Yellow
     $pyResult = Join-Path $e2eDir "results_py.json"
     python (Join-Path $runnersDir "py_runner.py") `
         --specs $specsFile `
-        --generated (Join-Path $e2eDir "py") `
+        --generated $pyBindingsDir `
         --output $pyResult
     if ($LASTEXITCODE -ne 0) { $totalFail++ } else { $totalPass++ }
     if (Test-Path $pyResult) { $allResults += (Get-Content $pyResult -Raw | ConvertFrom-Json) }
@@ -177,5 +189,3 @@ if ($totalFail -eq 0) {
     Write-Host "SOME FAILED" -ForegroundColor Red
     exit 1
 }
-
-

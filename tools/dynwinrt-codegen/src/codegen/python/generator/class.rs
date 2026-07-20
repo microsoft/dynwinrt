@@ -252,6 +252,7 @@ pub fn generate_class(
                 iface,
                 method,
                 known_types,
+                &delegate_names,
             ));
         }
     }

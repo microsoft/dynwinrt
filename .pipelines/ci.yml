@@ -200,7 +200,7 @@ extends:
                 index-url=https://pkgs.dev.azure.com/microsoft/pde-oss/_packaging/dynwinrt-python/pypi/simple/
                 "@ | Set-Content $pipIni
 
-                pip install pytest maturin --quiet
+                pip install pytest maturin "mypy>=1.13,<2" --quiet
                 if ($LASTEXITCODE -ne 0) { Write-Error "pip install failed"; exit 1 }
                 maturin build --quiet
                 if ($LASTEXITCODE -ne 0) { Write-Error "maturin build failed"; exit 1 }
@@ -209,7 +209,17 @@ extends:
                 pip install $whl --force-reinstall --quiet
                 if ($LASTEXITCODE -ne 0) { Write-Error "pip install failed"; exit 1 }
 
-          # E2E tests: winmd → generate → call real WinRT APIs
+          - task: PowerShell@2
+            displayName: Test Python binding
+            inputs:
+              targetType: inline
+              script: |
+                .\bindings\py\.venv\Scripts\python.exe -m pytest bindings\py\tests -q
+                if ($LASTEXITCODE -ne 0) { Write-Error "Python binding tests failed"; exit 1 }
+                .\bindings\py\.venv\Scripts\python.exe -m mypy.stubtest dynwinrt_py --allowlist bindings\py\stubtest_allowlist.txt --ignore-disjoint-bases
+                if ($LASTEXITCODE -ne 0) { Write-Error "Python runtime stub validation failed"; exit 1 }
+
+          # E2E tests: winmd → generate → type-check → call real WinRT APIs
           - task: PowerShell@2
             displayName: Run E2E tests (40 tests)
             inputs:
@@ -219,5 +229,3 @@ extends:
                 if (Test-Path .venv) { .venv/Scripts/Activate.ps1 }
                 cd ../..
                 .\tests\e2e_test.ps1 -SkipBuild
-
-

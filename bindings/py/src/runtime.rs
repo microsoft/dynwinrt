@@ -198,6 +198,7 @@ impl DynWinRTType {
     }
 
     #[staticmethod]
+    #[pyo3(signature = (name, member_names=None, member_values=None))]
     fn enum_type(
         name: String,
         member_names: Option<Vec<String>>,

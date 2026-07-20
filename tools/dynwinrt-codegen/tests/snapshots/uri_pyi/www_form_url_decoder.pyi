@@ -3,9 +3,12 @@ from __future__ import annotations
 from dynwinrt_py import (
     DynWinRTType, DynWinRTValue, DynWinRTArray, DynWinRTStruct, DynWinRtDelegate, WinGUID,
 )
+from typing import Type, TypeVar
 
 from .i_iterator_i_www_form_url_decoder_entry import IIterator_IWwwFormUrlDecoderEntry  # noqa: F401
 from .i_www_form_url_decoder_entry import IID_IWwwFormUrlDecoderEntry, IWwwFormUrlDecoderEntry  # noqa: F401
+
+_InterfaceT = TypeVar('_InterfaceT')
 
 IID_IWwwFormUrlDecoderRuntimeClass: WinGUID
 IID_IWwwFormUrlDecoderRuntimeClassFactory: WinGUID
@@ -21,7 +24,7 @@ class WwwFormUrlDecoder:
 
     def get_first_value_by_name(self, name: str) -> str: ...
 
-    def as_interface(self, interface_class): ...
+    def as_interface(self, interface_class: Type[_InterfaceT]) -> _InterfaceT: ...
 
 
 class IVectorView_IWwwFormUrlDecoderEntry:

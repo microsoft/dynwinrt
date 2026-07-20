@@ -3,8 +3,11 @@ from __future__ import annotations
 from dynwinrt_py import (
     DynWinRTType, DynWinRTValue, DynWinRTArray, DynWinRTStruct, DynWinRtDelegate, WinGUID,
 )
+from typing import Type, TypeVar
 
 from .www_form_url_decoder import WwwFormUrlDecoder  # noqa: F401
+
+_InterfaceT = TypeVar('_InterfaceT')
 
 IID_IUriRuntimeClass: WinGUID
 IID_IUriRuntimeClassFactory: WinGUID
@@ -77,7 +80,7 @@ class Uri:
 
     def combine_uri(self, relative_uri: str) -> 'Uri': ...
 
-    def as_interface(self, interface_class): ...
+    def as_interface(self, interface_class: Type[_InterfaceT]) -> _InterfaceT: ...
 
 
 class IUriRuntimeClassWithAbsoluteCanonicalUri:

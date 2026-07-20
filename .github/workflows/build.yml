@@ -48,9 +48,13 @@ jobs:
           cd bindings/py
           python -m venv .venv
           .venv/Scripts/Activate.ps1
-          pip install pytest maturin --quiet
+          pip install pytest maturin "mypy>=1.13,<2" --quiet
           maturin build --quiet
           pip install (Get-ChildItem ../../target/wheels/*.whl | Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName --force-reinstall --quiet
+      - name: Test Python binding
+        run: |
+          .\bindings\py\.venv\Scripts\python.exe -m pytest bindings\py\tests -q
+          .\bindings\py\.venv\Scripts\python.exe -m mypy.stubtest dynwinrt_py --allowlist bindings\py\stubtest_allowlist.txt --ignore-disjoint-bases
       - name: Run E2E tests
         run: .\tests\e2e_test.ps1 -SkipBuild
 
@@ -107,6 +111,3 @@ jobs:
             bindings/js/dist/dynwinrt.win32-arm64-msvc.node
             bindings/js/dist/index.js
             bindings/js/dist/index.d.ts
-
-
-

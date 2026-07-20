@@ -154,3 +154,67 @@ fn output_dir_clean_full_namespace_mode() {
         violations
     );
 }
+
+#[test]
+fn python_emits_stubs_by_default_and_supports_opt_out() {
+    if !Path::new(WINDOWS_WINMD).exists() {
+        eprintln!("Skipping: Windows.winmd not found");
+        return;
+    }
+
+    let exe = env!("CARGO_BIN_EXE_dynwinrt-codegen");
+    let default_dir = std::env::temp_dir().join(format!(
+        "dynwinrt-codegen-python-stubs-default-{}",
+        std::process::id()
+    ));
+    let opt_out_dir = std::env::temp_dir().join(format!(
+        "dynwinrt-codegen-python-stubs-opt-out-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&default_dir);
+    let _ = fs::remove_dir_all(&opt_out_dir);
+
+    let default_status = Command::new(exe)
+        .args([
+            "generate",
+            "--namespace",
+            "Windows.Foundation",
+            "--class-name",
+            "Uri",
+            "--lang",
+            "py",
+            "--output",
+        ])
+        .arg(&default_dir)
+        .status()
+        .expect("spawn dynwinrt-codegen (Python defaults)");
+    assert!(default_status.success());
+    assert!(default_dir.join("uri.py").exists());
+    assert!(default_dir.join("uri.pyi").exists());
+    assert!(default_dir.join("__init__.pyi").exists());
+    assert!(default_dir.join("py.typed").exists());
+
+    let opt_out_status = Command::new(exe)
+        .args([
+            "generate",
+            "--namespace",
+            "Windows.Foundation",
+            "--class-name",
+            "Uri",
+            "--lang",
+            "py",
+            "--no-pyi",
+            "--output",
+        ])
+        .arg(&opt_out_dir)
+        .status()
+        .expect("spawn dynwinrt-codegen (Python stub opt-out)");
+    assert!(opt_out_status.success());
+    assert!(opt_out_dir.join("uri.py").exists());
+    assert!(!opt_out_dir.join("uri.pyi").exists());
+    assert!(!opt_out_dir.join("__init__.pyi").exists());
+    assert!(!opt_out_dir.join("py.typed").exists());
+
+    let _ = fs::remove_dir_all(&default_dir);
+    let _ = fs::remove_dir_all(&opt_out_dir);
+}

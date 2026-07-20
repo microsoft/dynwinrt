@@ -124,7 +124,7 @@ Kept for reference; git history is the source of truth. Grouped by area.
 
 ### Features
 - [x] Delegate / event support: COM vtable + napi ThreadsafeFunction in `delegate.rs`; `DynWinRtDelegate.create(iid, paramTypes, callback)`; same-thread synchronous invocation path
-- [x] Python `.pyi` type stubs via `--pyi` (with `--lang py`) + `py.typed` marker
+- [x] Python `.pyi` type stubs and `py.typed` marker by default with `--lang py`
 
 ### Distribution / CI
 - [x] npm prebuilds for `win32-x64-msvc` + `win32-arm64-msvc`

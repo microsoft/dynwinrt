@@ -235,22 +235,32 @@ pub(super) fn py_array_element_type(inner: &TypeMeta, known_types: &HashSet<Stri
         TypeMeta::Interface { name, .. } if known_types.contains(name) => {
             format!("list['{}']", name)
         }
-        _ => "list".to_string(),
+        _ => "list['DynWinRTValue']".to_string(),
     }
 }
 
 pub(super) fn py_param_list(
     in_params: &[&crate::meta::ParamMeta],
     known_types: &HashSet<String>,
+    delegate_type_names: &HashSet<String>,
 ) -> String {
     in_params
         .iter()
         .map(|p| {
-            format!(
-                "{}: {}",
-                to_snake_case(&p.name),
-                py_param_type_safe(&p.typ, known_types)
-            )
+            let param_type = match &p.typ {
+                TypeMeta::Delegate { .. } => "'DynWinRTValue'".to_string(),
+                TypeMeta::Interface { name, .. } if delegate_type_names.contains(name) => {
+                    "'DynWinRTValue'".to_string()
+                }
+                TypeMeta::Parameterized { name, args, .. }
+                    if delegate_type_names
+                        .contains(&crate::meta::make_parameterized_name(name, args)) =>
+                {
+                    "'DynWinRTValue'".to_string()
+                }
+                _ => py_param_type_safe(&p.typ, known_types),
+            };
+            format!("{}: {}", to_snake_case(&p.name), param_type)
         })
         .collect::<Vec<_>>()
         .join(", ")
@@ -330,6 +340,35 @@ mod tests {
         assert_eq!(
             crate::codegen::javascript::signature::build_method_sig(&method),
             "new DynWinRtMethodSig().addIn(DynWinRtType.u32()).addOutFill(DynWinRtType.arrayType(DynWinRtType.hstring())).addOut(DynWinRtType.u32())"
+        );
+    }
+
+    #[test]
+    fn object_arrays_return_typed_runtime_values() {
+        assert_eq!(
+            py_array_element_type(&TypeMeta::Object, &HashSet::new()),
+            "list['DynWinRTValue']"
+        );
+    }
+
+    #[test]
+    fn delegate_interfaces_are_typed_as_runtime_values() {
+        let param = ParamMeta {
+            name: "handler".into(),
+            typ: TypeMeta::Interface {
+                namespace: "Test".into(),
+                name: "Handler".into(),
+                iid: "00000000-0000-0000-0000-000000000000".into(),
+            },
+            direction: ParamDirection::In,
+        };
+        assert_eq!(
+            py_param_list(
+                &[&param],
+                &HashSet::from(["Handler".into()]),
+                &HashSet::from(["Handler".into()])
+            ),
+            "handler: 'DynWinRTValue'"
         );
     }
 }

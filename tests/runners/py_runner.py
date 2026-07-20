@@ -8,7 +8,7 @@ Reads e2e_specs.json, imports generated Python modules,
 and executes checks against real WinRT APIs.
 
 Usage:
-    python tests/runners/py_runner.py --specs tests/e2e_specs.json --generated tests/e2e_generated/py --output results.json
+    python tests/runners/py_runner.py --specs tests/e2e_specs.json --generated tests/e2e_generated/python_bindings --output results.json
 """
 
 import argparse
