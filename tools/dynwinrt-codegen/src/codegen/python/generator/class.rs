@@ -27,13 +27,7 @@ pub fn generate_class(
 
     // Collect delegate names from all interfaces of this class
     let mut delegate_names: HashSet<String> = delegate_type_names.clone();
-    let all_ifaces: Vec<&InterfaceMeta> = class
-        .default_interface
-        .iter()
-        .chain(class.factory_interfaces.iter())
-        .chain(class.static_interfaces.iter())
-        .chain(class.required_interfaces.iter())
-        .collect();
+    let all_ifaces: Vec<&InterfaceMeta> = class.all_interfaces().collect();
     for iface in &all_ifaces {
         for method in &iface.methods {
             for p in &method.params {
@@ -87,7 +81,8 @@ pub fn generate_class(
 
     // Import shared required interfaces
     for req_iface in &class.required_interfaces {
-        if !req_iface.iid.is_empty()
+        if req_iface.generic_piid.is_none()
+            && !req_iface.iid.is_empty()
             && shared_iids.contains(&req_iface.iid)
             && !imported_names.contains(&req_iface.name)
         {
@@ -102,17 +97,13 @@ pub fn generate_class(
     // TYPE_CHECKING imports do not define runtime values, and interface
     // registration happens while this module is loading.
     let mut declared_iids = HashSet::new();
-    let all_class_ifaces: Vec<&InterfaceMeta> = class
-        .default_interface
-        .iter()
-        .chain(class.factory_interfaces.iter())
-        .chain(class.static_interfaces.iter())
-        .chain(class.required_interfaces.iter())
-        .collect();
+    let all_class_ifaces: Vec<&InterfaceMeta> = class.all_interfaces().collect();
     for iface in &all_class_ifaces {
         let iid_name = format!("IID_{}", iface.name);
-        if !iface.iid.is_empty() && declared_iids.insert(iid_name.clone()) {
-            out.push_str(&format!("{} = WinGUID.parse('{}')\n", iid_name, iface.iid));
+        if declared_iids.insert(iid_name.clone()) {
+            if let Some(iid_expr) = py_interface_iid_expr(iface) {
+                out.push_str(&format!("{} = {}\n", iid_name, iid_expr));
+            }
         }
     }
     out.push('\n');
@@ -152,7 +143,6 @@ pub fn generate_class(
         ));
         out.push('\n');
     }
-
     // IActivationFactory for default constructor
     if class.has_default_constructor {
         out.push_str("_IActivationFactory = DynWinRTType.register_interface(\n");

@@ -535,6 +535,11 @@ unsafe impl Sync for DynWinRTValue {}
 #[napi]
 impl DynWinRTValue {
   #[napi]
+  pub fn release(&mut self) {
+    self.0 = dynwinrt::WinRTValue::Null;
+  }
+
+  #[napi]
   pub fn activation_factory(name: String) -> napi::Result<DynWinRTValue> {
     let factory = dynwinrt::ro_get_activation_factory_2(&HSTRING::from(&name)).map_err(|e| {
       napi::Error::from_reason(format!("ActivationFactory '{}': {}", name, e.message()))

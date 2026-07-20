@@ -886,6 +886,7 @@ fn write_js_barrel_and_manifest(output_dir: &Path, index_content: &str) -> Resul
     let dts_path = output_dir.join("index.d.ts");
     let pkg_json_path = output_dir.join("package.json");
     let _ = index_content;
+    write_lifetime_module(output_dir)?;
 
     // Clean up any stale `.index.ts` cache from older codegen versions.
     let stale = output_dir.join(".index.ts");
@@ -938,6 +939,63 @@ fn write_js_barrel_and_manifest(output_dir: &Path, index_content: &str) -> Resul
         .map_err(|e| format!("Failed to write {}: {}", pkg_json_path.display(), e))?;
 
     println!("Generated {}", js_path.display());
+    Ok(())
+}
+
+fn write_lifetime_module(output_dir: &Path) -> Result<(), String> {
+    let js = "'use strict';\n\
+let activeScope = null;\n\
+function trackProjectedValue(value, typeName) {\n\
+  activeScope?.track(value, typeName);\n\
+  return value;\n\
+}\n\
+function createProjectedLifetimeScope() {\n\
+  const previousScope = activeScope;\n\
+  const registry = { values: [], nextSweep: 1024 };\n\
+  let disposed = false;\n\
+  const scope = {\n\
+    get disposed() { return disposed; },\n\
+    track(value, typeName) {\n\
+      if (disposed) throw new Error('Cannot track values in a disposed projection scope.');\n\
+      registry.values.push({ ref: new WeakRef(value), typeName });\n\
+      if (registry.values.length >= registry.nextSweep) {\n\
+        registry.values = registry.values.filter((entry) => entry.ref.deref() !== undefined);\n\
+        registry.nextSweep = Math.max(registry.values.length * 2, 1024);\n\
+      }\n\
+    },\n\
+    dispose() {\n\
+      if (disposed) return;\n\
+      if (activeScope !== scope) throw new Error('Projection lifetime scopes must be disposed in LIFO order.');\n\
+      const retained = [];\n\
+      let firstError;\n\
+      for (const entry of [...registry.values].reverse()) {\n\
+        const value = entry.ref.deref();\n\
+        if (value === undefined) continue;\n\
+        try { value.release(); }\n\
+        catch (error) { firstError ??= error; retained.push(entry); }\n\
+      }\n\
+      registry.values = retained.reverse();\n\
+      registry.nextSweep = Math.max(registry.values.length * 2, 1024);\n\
+      if (firstError !== undefined) throw firstError;\n\
+      disposed = true;\n\
+      activeScope = previousScope;\n\
+    },\n\
+  };\n\
+  activeScope = scope;\n\
+  return scope;\n\
+}\n\
+exports.trackProjectedValue = trackProjectedValue;\n\
+exports.createProjectedLifetimeScope = createProjectedLifetimeScope;\n";
+    let dts = "export declare function trackProjectedValue<T extends object>(value: T, typeName: string): T;\n\
+export interface ProjectedLifetimeScope {\n\
+  readonly disposed: boolean;\n\
+  dispose(): void;\n\
+}\n\
+export declare function createProjectedLifetimeScope(): ProjectedLifetimeScope;\n";
+    fs::write(output_dir.join("lifetime.js"), js)
+        .map_err(|e| format!("Failed to write lifetime.js: {e}"))?;
+    fs::write(output_dir.join("lifetime.d.ts"), dts)
+        .map_err(|e| format!("Failed to write lifetime.d.ts: {e}"))?;
     Ok(())
 }
 
@@ -1031,7 +1089,12 @@ fn collect_public_exports_from_js(content: &str) -> Vec<String> {
         // Keep IIDs, parameter type arrays, and struct type descriptors scoped
         // to their per-type modules. Root barrels should expose user-facing
         // classes, enums, pack/unpack helpers, and interfaces only.
-        if name.starts_with("IID_") || name.ends_with("_PARAM_TYPES") || name.ends_with("_Type") {
+        if name == "trackProjectedValue"
+            || name.starts_with("__")
+            || name.starts_with("IID_")
+            || name.ends_with("_PARAM_TYPES")
+            || name.ends_with("_Type")
+        {
             continue;
         }
         names.push(name);
@@ -1091,6 +1154,7 @@ fn strip_broken_imports(output_dir: &Path) -> Result<(), String> {
     {
         existing.insert(runtime_stem.to_string());
     }
+    existing.insert("lifetime".to_string());
 
     // Three patterns to strip when the target sibling doesn't exist:
     //

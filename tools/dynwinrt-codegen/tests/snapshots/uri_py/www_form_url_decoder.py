@@ -32,8 +32,14 @@ def _dynwinrt_wait_action(value):
     return None
 
 
+if TYPE_CHECKING:
+    from .i_iterator_i_www_form_url_decoder_entry import IIterator_IWwwFormUrlDecoderEntry  # noqa: F401
+    from .i_www_form_url_decoder_entry import IID_IWwwFormUrlDecoderEntry, IWwwFormUrlDecoderEntry  # noqa: F401
+
 IID_IWwwFormUrlDecoderRuntimeClass = WinGUID.parse('d45a0451-f225-4542-9296-0e1df5d254df')
 IID_IWwwFormUrlDecoderRuntimeClassFactory = WinGUID.parse('5b8c6b3d-24ae-41b5-a1bf-f0c3d544845b')
+IID_IVectorView_IWwwFormUrlDecoderEntry = DynWinRTType.parameterized(WinGUID.parse('bbe1fa4c-b0e3-4583-baef-1f1b2e483e56'), [DynWinRTType.interface(WinGUID.parse('125e7431-f678-4e8e-b670-20a9b06c512d'))]).iid()
+IID_IIterable_IWwwFormUrlDecoderEntry = DynWinRTType.parameterized(WinGUID.parse('faa585ea-6214-4217-afda-7f46de5869b3'), [DynWinRTType.interface(WinGUID.parse('125e7431-f678-4e8e-b670-20a9b06c512d'))]).iid()
 
 _IWwwFormUrlDecoderRuntimeClass = DynWinRTType.register_interface(
     "IWwwFormUrlDecoderRuntimeClass", IID_IWwwFormUrlDecoderRuntimeClass) \
@@ -42,6 +48,17 @@ _IWwwFormUrlDecoderRuntimeClass = DynWinRTType.register_interface(
 _IWwwFormUrlDecoderRuntimeClassFactory = DynWinRTType.register_interface(
     "IWwwFormUrlDecoderRuntimeClassFactory", IID_IWwwFormUrlDecoderRuntimeClassFactory) \
     .add_method("CreateWwwFormUrlDecoder", DynWinRTMethodSig().add_in(DynWinRTType.hstring()).add_out(DynWinRTType.runtime_class('Windows.Foundation.WwwFormUrlDecoder', WinGUID.parse('d45a0451-f225-4542-9296-0e1df5d254df'))))
+
+_IVectorView_IWwwFormUrlDecoderEntry = DynWinRTType.register_interface(
+    "IVectorView_IWwwFormUrlDecoderEntry", IID_IVectorView_IWwwFormUrlDecoderEntry) \
+    .add_method("GetAt", DynWinRTMethodSig().add_in(DynWinRTType.u32_type()).add_out(DynWinRTType.interface(WinGUID.parse('125e7431-f678-4e8e-b670-20a9b06c512d')))) \
+    .add_method("get_Size", DynWinRTMethodSig().add_out(DynWinRTType.u32_type())) \
+    .add_method("IndexOf", DynWinRTMethodSig().add_in(DynWinRTType.interface(WinGUID.parse('125e7431-f678-4e8e-b670-20a9b06c512d'))).add_out(DynWinRTType.u32_type()).add_out(DynWinRTType.bool_type())) \
+    .add_method("GetMany", DynWinRTMethodSig().add_in(DynWinRTType.u32_type()).add_out_fill(DynWinRTType.array_type(DynWinRTType.interface(WinGUID.parse('125e7431-f678-4e8e-b670-20a9b06c512d')))).add_out(DynWinRTType.u32_type()))
+
+_IIterable_IWwwFormUrlDecoderEntry = DynWinRTType.register_interface(
+    "IIterable_IWwwFormUrlDecoderEntry", IID_IIterable_IWwwFormUrlDecoderEntry) \
+    .add_method("First", DynWinRTMethodSig().add_out(DynWinRTType.parameterized(WinGUID.parse('6a79e863-4300-459a-9966-cbb660963ee1'), [DynWinRTType.interface(WinGUID.parse('125e7431-f678-4e8e-b670-20a9b06c512d'))])))
 
 
 class WwwFormUrlDecoder:
@@ -63,3 +80,42 @@ class WwwFormUrlDecoder:
 
     def get_first_value_by_name(self, name: str) -> str:
         return _IWwwFormUrlDecoderRuntimeClass.method(6).invoke(self._obj, [DynWinRTValue.from_hstring(name)]).to_string()
+
+    def as_interface(self, interface_class):
+        return interface_class.from_value(self._obj)
+
+
+class IVectorView_IWwwFormUrlDecoderEntry:
+    def __init__(self, obj: DynWinRTValue):
+        self._obj = obj
+
+    @staticmethod
+    def from_value(obj: DynWinRTValue) -> 'IVectorView_IWwwFormUrlDecoderEntry':
+        return IVectorView_IWwwFormUrlDecoderEntry(obj.cast(IID_IVectorView_IWwwFormUrlDecoderEntry))
+
+    @property
+    def size(self) -> int:
+        return _IVectorView_IWwwFormUrlDecoderEntry.method(7).invoke(self._obj, []).to_number()
+
+    def get_at(self, index: int) -> 'IWwwFormUrlDecoderEntry':
+        return _dynwinrt_symbol('i_www_form_url_decoder_entry', 'IWwwFormUrlDecoderEntry')(_IVectorView_IWwwFormUrlDecoderEntry.method(6).invoke(self._obj, [DynWinRTValue.from_i32(index)]))
+
+    def index_of(self, value: 'IWwwFormUrlDecoderEntry') -> tuple[int, bool]:
+        _results = _IVectorView_IWwwFormUrlDecoderEntry.method(8).invoke_all(self._obj, [getattr(value, '_obj', value)])
+        return (_results[0].to_number(), _results[1].to_bool())
+
+    def get_many(self, start_index: int, items: 'DynWinRTArray') -> list['IWwwFormUrlDecoderEntry']:
+        _results = _IVectorView_IWwwFormUrlDecoderEntry.method(9).invoke_all(self._obj, [DynWinRTValue.from_i32(start_index), items.to_value()])
+        return _dynwinrt_wrap_values('i_www_form_url_decoder_entry', 'IWwwFormUrlDecoderEntry', _results[0].as_array().to_values())[:_results[1].to_number()]
+
+
+class IIterable_IWwwFormUrlDecoderEntry:
+    def __init__(self, obj: DynWinRTValue):
+        self._obj = obj
+
+    @staticmethod
+    def from_value(obj: DynWinRTValue) -> 'IIterable_IWwwFormUrlDecoderEntry':
+        return IIterable_IWwwFormUrlDecoderEntry(obj.cast(IID_IIterable_IWwwFormUrlDecoderEntry))
+
+    def first(self) -> 'IIterator_IWwwFormUrlDecoderEntry':
+        return _dynwinrt_symbol('i_iterator_i_www_form_url_decoder_entry', 'IIterator_IWwwFormUrlDecoderEntry')(_IIterable_IWwwFormUrlDecoderEntry.method(6).invoke(self._obj, []))

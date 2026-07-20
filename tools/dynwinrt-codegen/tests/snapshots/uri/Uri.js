@@ -3,6 +3,9 @@ const { DynWinRtType, DynWinRtMethodSig, DynWinRtValue, DynWinRtArray, DynWinRtD
 let __m_WwwFormUrlDecoder;
 const __load_WwwFormUrlDecoder = () => (__m_WwwFormUrlDecoder ??= require('./WwwFormUrlDecoder.js'));
 const __get_WwwFormUrlDecoder = () => __load_WwwFormUrlDecoder().WwwFormUrlDecoder;
+let __m_lifetime;
+const __load_lifetime = () => (__m_lifetime ??= require('./lifetime.js'));
+const __get_trackProjectedValue = () => __load_lifetime().trackProjectedValue;
 
 const _unwrap = (x) => x?._obj ?? x;
 
@@ -106,7 +109,7 @@ class Uri {
         throw new TypeError('No matching constructor for Uri.');
     }
     static _fromNative(obj) {
-        return Object.assign(Object.create(Uri.prototype), { _obj: obj.cast(IID_IUriRuntimeClass) });
+        return Object.assign(Object.create(Uri.prototype), { _obj: (__get_trackProjectedValue())((__get_trackProjectedValue())(obj, 'Uri').cast(IID_IUriRuntimeClass), 'Uri') });
     }
     static createUri(uri) {
         return Uri._fromNative(_IUriRuntimeClassFactory.method(6).invoke(Uri.f_IUriRuntimeClassFactory(), [DynWinRtValue.hstring(uri)]));

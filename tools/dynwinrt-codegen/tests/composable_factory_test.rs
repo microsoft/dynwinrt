@@ -35,7 +35,11 @@ fn composable_factory_returns_public_instance() {
             return_type: Some(TypeMeta::RuntimeClass {
                 namespace: "Contoso".into(),
                 name: "Widget".into(),
-                default_iid: "22222222-2222-2222-2222-222222222222".into(),
+                default_interface: Some(Box::new(TypeMeta::Interface {
+                    namespace: "Contoso".into(),
+                    name: "IWidget".into(),
+                    iid: "22222222-2222-2222-2222-222222222222".into(),
+                })),
             }),
             ..Default::default()
         }],
@@ -82,6 +86,8 @@ fn composable_factory_returns_public_instance() {
     );
     assert!(js.contains("static _fromNative(obj)"));
     assert!(js.contains("Object.assign(Object.create(Widget.prototype)"));
+    assert!(js.contains("trackProjectedValue"));
+    assert!(js.contains("lifetime.js"));
     assert!(js.contains("constructor(...args)"));
     assert!(js.contains("this._obj = Widget.createInstance(null)._obj;"));
     assert!(!dts.contains("_fromNative"));
@@ -126,6 +132,177 @@ fn composable_factory_returns_public_instance() {
     assert!(protected_js.contains("Widget cannot be constructed directly."));
     assert!(protected_dts.contains("private constructor();"));
     assert!(protected_dts.contains("static createInstance(outer: unknown): Widget;"));
+}
+
+#[test]
+fn class_without_default_interface_tracks_raw_value_once() {
+    let class = ClassMeta {
+        name: "Opaque".into(),
+        namespace: "Contoso".into(),
+        full_name: "Contoso.Opaque".into(),
+        ..Default::default()
+    };
+    let projected = project::project_class(
+        &class,
+        &HashSet::from(["Opaque".into()]),
+        &HashSet::new(),
+        &HashSet::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+    );
+    let js = render_js::render(&projected);
+    assert_eq!(
+        js.matches("(__get_trackProjectedValue())(obj, 'Opaque')")
+            .count(),
+        1,
+        "raw values without a cast must only be tracked once:\n{js}"
+    );
+}
+
+#[test]
+fn parameterized_default_interface_uses_computed_iid() {
+    let piid = "913337e9-11a1-4345-a3a2-4e7f956e222d";
+    let row_type = TypeMeta::RuntimeClass {
+        namespace: "Microsoft.UI.Xaml.Controls".into(),
+        name: "RowDefinition".into(),
+        default_interface: Some(Box::new(TypeMeta::Interface {
+            namespace: "Microsoft.UI.Xaml.Controls".into(),
+            name: "IRowDefinition".into(),
+            iid: "fe870f2f-89ef-5dac-9f33-968d0dc577c3".into(),
+        })),
+    };
+    let class = ClassMeta {
+        name: "RowDefinitionCollection".into(),
+        namespace: "Microsoft.UI.Xaml.Controls".into(),
+        full_name: "Microsoft.UI.Xaml.Controls.RowDefinitionCollection".into(),
+        default_interface: Some(InterfaceMeta {
+            name: "IVector_RowDefinition".into(),
+            namespace: "Windows.Foundation.Collections".into(),
+            iid: piid.into(),
+            generic_piid: Some(piid.into()),
+            generic_args: vec![row_type.clone()],
+            methods: vec![
+                MethodMeta {
+                    name: "GetView".into(),
+                    raw_name: "GetView".into(),
+                    vtable_index: 8,
+                    return_type: Some(TypeMeta::Parameterized {
+                        namespace: "Windows.Foundation.Collections".into(),
+                        name: "IVectorView`1".into(),
+                        piid: "bbe1fa4c-b0e3-4583-baef-1f1b2e483e56".into(),
+                        args: vec![row_type.clone()],
+                    }),
+                    ..Default::default()
+                },
+                MethodMeta {
+                    name: "IndexOf".into(),
+                    raw_name: "IndexOf".into(),
+                    vtable_index: 9,
+                    params: vec![
+                        ParamMeta {
+                            name: "value".into(),
+                            typ: row_type.clone(),
+                            direction: ParamDirection::In,
+                        },
+                        ParamMeta {
+                            name: "index".into(),
+                            typ: TypeMeta::U32,
+                            direction: ParamDirection::Out,
+                        },
+                    ],
+                    return_type: Some(TypeMeta::Bool),
+                    ..Default::default()
+                },
+                MethodMeta {
+                    name: "Append".into(),
+                    raw_name: "Append".into(),
+                    vtable_index: 12,
+                    params: vec![ParamMeta {
+                        name: "value".into(),
+                        typ: row_type.clone(),
+                        direction: ParamDirection::In,
+                    }],
+                    ..Default::default()
+                },
+                MethodMeta {
+                    name: "GetMany".into(),
+                    raw_name: "GetMany".into(),
+                    vtable_index: 16,
+                    params: vec![
+                        ParamMeta {
+                            name: "startIndex".into(),
+                            typ: TypeMeta::U32,
+                            direction: ParamDirection::In,
+                        },
+                        ParamMeta {
+                            name: "items".into(),
+                            typ: TypeMeta::Array(Box::new(row_type.clone())),
+                            direction: ParamDirection::OutFill,
+                        },
+                    ],
+                    return_type: Some(TypeMeta::U32),
+                    ..Default::default()
+                },
+                MethodMeta {
+                    name: "ReplaceAll".into(),
+                    raw_name: "ReplaceAll".into(),
+                    vtable_index: 17,
+                    params: vec![ParamMeta {
+                        name: "items".into(),
+                        typ: TypeMeta::Array(Box::new(row_type)),
+                        direction: ParamDirection::In,
+                    }],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    let projected = project::project_class(
+        &class,
+        &HashSet::from([
+            "RowDefinition".into(),
+            "RowDefinitionCollection".into(),
+            "IVectorView_RowDefinition".into(),
+        ]),
+        &HashSet::new(),
+        &HashSet::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+    );
+    let js = render_js::render(&projected);
+    let dts = render_dts::render(&projected);
+
+    let expected = "DynWinRtType.parameterized(WinGuid.parse('913337e9-11a1-4345-a3a2-4e7f956e222d'), [DynWinRtType.runtimeClass('Microsoft.UI.Xaml.Controls.RowDefinition', WinGuid.parse('fe870f2f-89ef-5dac-9f33-968d0dc577c3'))]).iid()";
+    assert!(js.contains(&format!("const IID_IVector_RowDefinition = {expected};")));
+    assert!(js.contains(&format!("const IID_RowDefinitionCollection = {expected};")));
+    assert!(js.contains("exports.IID_RowDefinitionCollection = IID_RowDefinitionCollection;"));
+    assert!(!js.contains("require('./IVector_RowDefinition.js')"));
+    assert!(js.contains("require('./IVectorView_RowDefinition.js')"));
+    assert!(js.contains("_IVector_RowDefinition.method(9).invokeAll(this._obj"));
+    assert!(dts.contains("indexOf(value: RowDefinition): number;"));
+    assert!(dts.contains("append(value: RowDefinition): void;"));
+    assert!(dts.contains("getMany(startIndex: number, items: RowDefinition[]): RowDefinition[];"));
+    assert!(dts.contains("replaceAll(items: RowDefinition[]): void;"));
+
+    let py = python::generate_class(
+        &class,
+        &HashSet::from([
+            "RowDefinition".into(),
+            "RowDefinitionCollection".into(),
+            "IVectorView_RowDefinition".into(),
+        ]),
+        &HashSet::new(),
+        &HashSet::new(),
+    );
+    assert!(py.contains("IID_IVector_RowDefinition = DynWinRTType.parameterized("));
+    assert!(py.contains("self._obj = obj.cast(IID_IVector_RowDefinition)"));
+    assert!(py.contains("def index_of(self, value: 'RowDefinition') -> tuple[int, bool]:"));
+    assert!(py.contains("_IVector_RowDefinition.method(9).invoke_all("));
 }
 
 #[test]

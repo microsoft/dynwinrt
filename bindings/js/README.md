@@ -46,6 +46,12 @@ Parameterized and composable activations support idiomatic forms such as
 `new Uri(base, relative)` and `new StackPanel()`. The generated static factory
 methods remain available for compatibility.
 
+Generated packages export `createProjectedLifetimeScope()`. WinUI/XAML hosts
+can create a scope after Application and Window setup, then dispose it before
+the native window and XAML core are destroyed. Projects that never create a
+scope do not allocate WeakRefs or retain projected values. Direct runtime users
+can release an individual `DynWinRtValue` with `value.release()`.
+
 ## Platform support
 
 - **Windows 10 / 11** — x64 and arm64 native binaries shipped via `napi-rs` prebuilds

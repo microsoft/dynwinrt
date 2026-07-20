@@ -22,6 +22,35 @@ pub(crate) fn py_runtime_symbol(type_name: &str, symbol_name: &str) -> String {
 // Python type expression
 // ======================================================================
 
+fn py_interface_iid(typ: &TypeMeta) -> Option<String> {
+    match typ {
+        TypeMeta::Interface { iid, .. } if !iid.is_empty() => {
+            Some(format!("WinGUID.parse('{}')", iid))
+        }
+        TypeMeta::Parameterized { .. } => Some(format!("{}.iid()", py_dynwinrt_type(typ))),
+        _ => None,
+    }
+}
+
+pub(crate) fn py_interface_iid_expr(iface: &InterfaceMeta) -> Option<String> {
+    if let Some(ref piid) = iface.generic_piid {
+        let args = iface
+            .generic_args
+            .iter()
+            .map(py_dynwinrt_type)
+            .collect::<Vec<_>>()
+            .join(", ");
+        Some(format!(
+            "DynWinRTType.parameterized(WinGUID.parse('{}'), [{}]).iid()",
+            piid, args
+        ))
+    } else if !iface.iid.is_empty() {
+        Some(format!("WinGUID.parse('{}')", iface.iid))
+    } else {
+        None
+    }
+}
+
 /// Map a TypeMeta to a `DynWinRTType.*()` Python expression.
 pub(crate) fn py_dynwinrt_type(typ: &TypeMeta) -> String {
     match typ {
@@ -47,18 +76,19 @@ pub(crate) fn py_dynwinrt_type(typ: &TypeMeta) -> String {
         TypeMeta::RuntimeClass {
             namespace,
             name,
-            default_iid,
+            default_interface,
         } => {
             let full_name = format!("{}.{}", namespace, name);
-            if !default_iid.is_empty() {
+            if let Some(default_iid) = default_interface.as_deref().and_then(py_interface_iid) {
                 format!(
-                    "DynWinRTType.runtime_class('{}', WinGUID.parse('{}'))",
+                    "DynWinRTType.runtime_class('{}', {})",
                     full_name, default_iid
                 )
             } else {
                 "DynWinRTType.object()".to_string()
             }
         }
+
         TypeMeta::Delegate { .. } => "DynWinRTType.object()".to_string(),
         TypeMeta::AsyncOperation(inner) => {
             format!(

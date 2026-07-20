@@ -48,11 +48,13 @@ use super::method::{
 use super::naming::{capitalize, infer_const_type, to_camel_case};
 use super::signature::{
     build_args_expr, convert_array_return, convert_return, generate_interface_registration,
-    ts_dynwinrt_type, wrap_arg,
+    ref_marker, ts_dynwinrt_type, wrap_arg,
 };
 use super::structs::{struct_field_getter, struct_field_setter, ts_struct_field_type};
 
-use collections::{project_collection_create, project_collection_helpers};
+use collections::{
+    project_collection_create, project_collection_helpers, should_skip_raw_collection_method,
+};
 use constructors::{default_activation_method_name, project_constructor};
 use methods::{project_factory_method, project_instance_method, project_static_method};
 use structs::project_struct_helpers;
@@ -73,6 +75,25 @@ const XAML_METADATA_PROVIDER: &str = "XamlControlsXamlMetaDataProvider";
 const XAML_CONTROLS_RESOURCES: &str = "XamlControlsResources";
 const MRT_RESOURCE_MANAGER: &str = "ResourceManager";
 const XAML_LAUNCHED_CALLBACK_IID: &str = "f81c4e72-7a18-4a30-9126-6f62b6bdac83";
+
+fn interface_iid_rhs(iface: &InterfaceMeta) -> Option<String> {
+    if let Some(ref piid) = iface.generic_piid {
+        let args = iface
+            .generic_args
+            .iter()
+            .map(ts_dynwinrt_type)
+            .collect::<Vec<_>>()
+            .join(", ");
+        Some(format!(
+            "DynWinRtType.parameterized(WinGuid.parse('{}'), [{}]).iid()",
+            piid, args
+        ))
+    } else if !iface.iid.is_empty() {
+        Some(format!("WinGuid.parse('{}')", iface.iid))
+    } else {
+        None
+    }
+}
 
 // ======================================================================
 // Top-level projection functions
@@ -164,13 +185,7 @@ pub fn project_class(
     // Collect delegate names only from interfaces of THIS class (not the entire batch)
     // for delegate imports; but also include global delegate_type_names for type filtering
     let mut delegate_names: HashSet<String> = HashSet::new();
-    let all_ifaces: Vec<&InterfaceMeta> = class
-        .default_interface
-        .iter()
-        .chain(class.factory_interfaces.iter())
-        .chain(class.static_interfaces.iter())
-        .chain(class.required_interfaces.iter())
-        .collect();
+    let all_ifaces: Vec<&InterfaceMeta> = class.all_interfaces().collect();
     for iface in &all_ifaces {
         collect_delegate_names_from_methods(&iface.methods, &mut delegate_names);
         for method in &iface.methods {
@@ -293,7 +308,8 @@ pub fn project_class(
 
     // Import shared required interfaces
     for req_iface in &class.required_interfaces {
-        if !req_iface.iid.is_empty()
+        if req_iface.generic_piid.is_none()
+            && !req_iface.iid.is_empty()
             && shared_iids.contains(&req_iface.iid)
             && !imported_names.contains(&req_iface.name)
         {
@@ -339,19 +355,13 @@ pub fn project_class(
 
     // IID consts(private, for class-internal use)
     let mut iid_consts: Vec<ProjectedIidConst> = Vec::new();
-    let all_class_ifaces: Vec<&InterfaceMeta> = class
-        .default_interface
-        .iter()
-        .chain(class.factory_interfaces.iter())
-        .chain(class.static_interfaces.iter())
-        .chain(class.required_interfaces.iter())
-        .collect();
+    let all_class_ifaces: Vec<&InterfaceMeta> = class.all_interfaces().collect();
     let mut declared_iids: HashSet<String> = HashSet::new();
     for iface in &all_class_ifaces {
         let iid_name = format!("IID_{}", iface.name);
-        if iface.iid.is_empty() {
+        let Some(rhs_expr) = interface_iid_rhs(iface) else {
             continue;
-        }
+        };
         if declared_iids.contains(&iid_name) {
             continue;
         }
@@ -360,7 +370,7 @@ pub fn project_class(
         }
         iid_consts.push(ProjectedIidConst {
             name: iid_name.clone(),
-            rhs_expr: format!("WinGuid.parse('{}')", iface.iid),
+            rhs_expr,
             ts_type: "WinGuid".into(),
             exported: false,
         });
@@ -372,12 +382,15 @@ pub fn project_class(
     // valid COM QueryInterface IID. Without this, ESM import fails with
     // "does not provide an export named IID_<ClassName>".
     if let Some(ref di) = class.default_interface {
-        if !di.iid.is_empty() && di.name != class.name {
+        if di.name != class.name {
             let alias_name = format!("IID_{}", class.name);
-            if !declared_iids.contains(&alias_name) && !imported_names.contains(&alias_name) {
+            if let Some(rhs_expr) = interface_iid_rhs(di)
+                && !declared_iids.contains(&alias_name)
+                && !imported_names.contains(&alias_name)
+            {
                 iid_consts.push(ProjectedIidConst {
                     name: alias_name.clone(),
-                    rhs_expr: format!("WinGuid.parse('{}')", di.iid),
+                    rhs_expr,
                     ts_type: "WinGuid".into(),
                     exported: true,
                 });
@@ -419,7 +432,6 @@ pub fn project_class(
         // shared interface across files is safe.
         push_registration(&mut registrations, &mut emitted_reg_vars, iface);
     }
-
     // Struct helpers
     let structs = project_struct_helpers(&used_structs);
 
@@ -434,14 +446,19 @@ pub fn project_class(
         delegate_sigs,
         delegate_param_wraps,
     )));
+    let tracker = ref_marker("trackProjectedValue");
+    let tracked_obj = format!("{}(obj, '{}')", tracker, class.name);
     let wrapped_obj = if let Some(ref iface) = class.default_interface {
         if iface.iid.is_empty() {
-            "obj".to_string()
+            tracked_obj
         } else {
-            format!("obj.cast(IID_{})", iface.name)
+            format!(
+                "{}({}.cast(IID_{}), '{}')",
+                tracker, tracked_obj, iface.name, class.name
+            )
         }
     } else {
-        "obj".to_string()
+        tracked_obj
     };
     members.push(ProjectedMember::Method(ProjectedMethod {
         name: "_fromNative".into(),
@@ -457,7 +474,7 @@ pub fn project_class(
         is_static: true,
         invoke_expr: String::new(),
         sync_return_expr: Some(format!(
-            "Object.assign(Object.create({}.prototype), {{ _obj: {} }})",
+            "Object.assign(Object.create({0}.prototype), {{ _obj: {1} }})",
             class.name, wrapped_obj
         )),
         async_convert_v: None,
@@ -664,6 +681,9 @@ pub fn project_class(
     if let Some(ref default_iface) = class.default_interface {
         let iface_var = format!("_{}", default_iface.name);
         for method in &default_iface.methods {
+            if should_skip_raw_collection_method(default_iface, &method.name) {
+                continue;
+            }
             if let Some(m) = project_instance_method(
                 &iface_var,
                 "this._obj",
@@ -677,6 +697,13 @@ pub fn project_class(
                 members.push(m);
             }
         }
+        project_collection_helpers(
+            default_iface,
+            known_types,
+            &mut members,
+            &mut imports,
+            "this._obj",
+        );
     }
 
     // Merge overload names in default interface members
@@ -779,6 +806,9 @@ pub fn project_class(
         // targets the correct interface vtable.
         let cast_obj = format!("this._obj.cast(IID_{})", req_iface.name);
         for method in &req_iface.methods {
+            if should_skip_raw_collection_method(req_iface, &method.name) {
+                continue;
+            }
             if let Some(m) = project_instance_method(
                 &reg_var,
                 &cast_obj,
@@ -792,12 +822,22 @@ pub fn project_class(
                 ri_members.push(m);
             }
         }
+        project_collection_helpers(
+            req_iface,
+            known_types,
+            &mut ri_members,
+            &mut imports,
+            &cast_obj,
+        );
 
         // Also build members with this._obj for the standalone interface class
         // (only emitted when we produce an inline wrapper below).
         let mut ri_own_members = Vec::new();
         if !is_imported {
             for method in &req_iface.methods {
+                if should_skip_raw_collection_method(req_iface, &method.name) {
+                    continue;
+                }
                 if let Some(m) = project_instance_method(
                     &reg_var,
                     "this._obj",
@@ -811,6 +851,13 @@ pub fn project_class(
                     ri_own_members.push(m);
                 }
             }
+            project_collection_helpers(
+                req_iface,
+                known_types,
+                &mut ri_own_members,
+                &mut imports,
+                "this._obj",
+            );
         }
 
         // Merge overload names within the required interface members before flatten
@@ -973,29 +1020,12 @@ pub fn project_interface(
 
     // IID const
     let mut iid_consts = Vec::new();
-    if let Some(ref piid) = iface.generic_piid {
-        let args_ts: Vec<String> = iface
-            .generic_args
-            .iter()
-            .map(|a| ts_dynwinrt_type(a))
-            .collect();
-        let rhs = format!(
-            "DynWinRtType.parameterized(WinGuid.parse('{}'), [{}]).iid()",
-            piid,
-            args_ts.join(", ")
-        );
+    if let Some(rhs) = interface_iid_rhs(iface) {
         let ty = infer_const_type(&format!("IID_{}", iface.name), &rhs);
         iid_consts.push(ProjectedIidConst {
             name: format!("IID_{}", iface.name),
             rhs_expr: rhs,
             ts_type: ty,
-            exported: true,
-        });
-    } else if !iface.iid.is_empty() {
-        iid_consts.push(ProjectedIidConst {
-            name: format!("IID_{}", iface.name),
-            rhs_expr: format!("WinGuid.parse('{}')", iface.iid),
-            ts_type: "WinGuid".into(),
             exported: true,
         });
     }
@@ -1011,24 +1041,9 @@ pub fn project_interface(
 
     // Members
     let iface_var = format!("_{}", iface.name);
-    let is_collection = iface
-        .generic_piid
-        .as_deref()
-        .is_some_and(|p| [PIID_IVECTOR, PIID_IVECTOR_VIEW, PIID_IITERABLE].contains(&p));
-    let is_map_collection = iface
-        .generic_piid
-        .as_deref()
-        .is_some_and(|p| [PIID_IMAP, PIID_IMAP_VIEW].contains(&p));
     let mut members = Vec::new();
     for method in &iface.methods {
-        // Skip raw GetMany/ReplaceAll/IndexOf on vector collections — JS-friendly helpers are added below
-        if is_collection
-            && (method.name == "GetMany" || method.name == "ReplaceAll" || method.name == "IndexOf")
-        {
-            continue;
-        }
-        // Skip Split on IMapView — multi-out-param method with no JS-friendly equivalent
-        if is_map_collection && method.name == "Split" {
+        if should_skip_raw_collection_method(iface, &method.name) {
             continue;
         }
         if let Some(m) = project_instance_method(
@@ -1046,7 +1061,7 @@ pub fn project_interface(
     }
 
     // Collection helpers
-    project_collection_helpers(iface, known_types, &mut members, &mut imports);
+    project_collection_helpers(iface, known_types, &mut members, &mut imports, "this._obj");
 
     // Static create() for IVector / IMap
     project_collection_create(iface, known_types, &mut members);

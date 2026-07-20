@@ -438,7 +438,7 @@ mod tests {
                 &TypeMeta::RuntimeClass {
                     namespace: "Contoso".into(),
                     name: "Widget".into(),
-                    default_iid: String::new(),
+                    default_interface: None,
                 }
             ),
             Some("args[0] instanceof __DWRT_REF__Widget__".into())

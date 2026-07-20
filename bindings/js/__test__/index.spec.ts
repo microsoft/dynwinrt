@@ -62,6 +62,13 @@ test('round-trip WinRT values', (t) => {
   t.true(DynWinRtValue.nullValue().isNull())
 })
 
+test('release WinRT object values deterministically', (t) => {
+  const value = DynWinRtValue.activationFactory('Windows.Foundation.Uri')
+  value.release()
+  t.true(value.isNull())
+  t.notThrows(() => value.release())
+})
+
 test('round-trip WinRT value arrays', (t) => {
   const array = DynWinRtArray.fromI32Values([1, 2, 3])
   t.is(array.len(), 3)

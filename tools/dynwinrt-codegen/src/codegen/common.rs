@@ -250,7 +250,11 @@ mod tests {
         let rt = TypeMeta::RuntimeClass {
             namespace: "Windows.Foundation".into(),
             name: "Uri".into(),
-            default_iid: "abc".into(),
+            default_interface: Some(Box::new(TypeMeta::Interface {
+                namespace: "Windows.Foundation".into(),
+                name: "IUriRuntimeClass".into(),
+                iid: "abc".into(),
+            })),
         };
         // Refs come out as `__DWRT_REF__<name>__`; render layer rewrites.
         assert_eq!(
@@ -264,7 +268,11 @@ mod tests {
         let rt = TypeMeta::RuntimeClass {
             namespace: "Windows.Foundation".into(),
             name: "Uri".into(),
-            default_iid: "abc".into(),
+            default_interface: Some(Box::new(TypeMeta::Interface {
+                namespace: "Windows.Foundation".into(),
+                name: "IUriRuntimeClass".into(),
+                iid: "abc".into(),
+            })),
         };
 
         assert_eq!(
@@ -325,7 +333,11 @@ mod tests {
                     return_type: Some(TypeMeta::RuntimeClass {
                         namespace: "N".into(),
                         name: "MyClass".into(),
-                        default_iid: "def".into(),
+                        default_interface: Some(Box::new(TypeMeta::Interface {
+                            namespace: "N".into(),
+                            name: "IMyClass".into(),
+                            iid: "def".into(),
+                        })),
                     }),
                     is_property_getter: false,
                     is_property_setter: false,
@@ -456,7 +468,11 @@ mod tests {
         let rt = TypeMeta::RuntimeClass {
             namespace: "Windows.Foundation".into(),
             name: "Uri".into(),
-            default_iid: "abc".into(),
+            default_interface: Some(Box::new(TypeMeta::Interface {
+                namespace: "Windows.Foundation".into(),
+                name: "IUriRuntimeClass".into(),
+                iid: "abc".into(),
+            })),
         };
         assert_eq!(
             py_convert_return("r", Some(&rt), false, &known),

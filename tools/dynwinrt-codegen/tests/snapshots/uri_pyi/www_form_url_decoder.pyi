@@ -4,9 +4,13 @@ from dynwinrt_py import (
     DynWinRTType, DynWinRTValue, DynWinRTArray, DynWinRTStruct, DynWinRtDelegate, WinGUID,
 )
 
+from .i_iterator_i_www_form_url_decoder_entry import IIterator_IWwwFormUrlDecoderEntry  # noqa: F401
+from .i_www_form_url_decoder_entry import IID_IWwwFormUrlDecoderEntry, IWwwFormUrlDecoderEntry  # noqa: F401
 
 IID_IWwwFormUrlDecoderRuntimeClass: WinGUID
 IID_IWwwFormUrlDecoderRuntimeClassFactory: WinGUID
+IID_IVectorView_IWwwFormUrlDecoderEntry: WinGUID
+IID_IIterable_IWwwFormUrlDecoderEntry: WinGUID
 
 
 class WwwFormUrlDecoder:
@@ -16,3 +20,30 @@ class WwwFormUrlDecoder:
     def create_www_form_url_decoder(query: str) -> 'WwwFormUrlDecoder': ...
 
     def get_first_value_by_name(self, name: str) -> str: ...
+
+    def as_interface(self, interface_class): ...
+
+
+class IVectorView_IWwwFormUrlDecoderEntry:
+    def __init__(self, obj: DynWinRTValue) -> None: ...
+
+    @staticmethod
+    def from_value(obj: DynWinRTValue) -> 'IVectorView_IWwwFormUrlDecoderEntry': ...
+
+    @property
+    def size(self) -> int: ...
+
+    def get_at(self, index: int) -> 'IWwwFormUrlDecoderEntry': ...
+
+    def index_of(self, value: 'IWwwFormUrlDecoderEntry') -> tuple[int, bool]: ...
+
+    def get_many(self, start_index: int, items: 'DynWinRTArray') -> list['IWwwFormUrlDecoderEntry']: ...
+
+
+class IIterable_IWwwFormUrlDecoderEntry:
+    def __init__(self, obj: DynWinRTValue) -> None: ...
+
+    @staticmethod
+    def from_value(obj: DynWinRTValue) -> 'IIterable_IWwwFormUrlDecoderEntry': ...
+
+    def first(self) -> 'IIterator_IWwwFormUrlDecoderEntry': ...

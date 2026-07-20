@@ -63,6 +63,10 @@ fn output_dir_contains_no_internal_cache_files() {
         "incremental codegen exited non-zero: {:?}",
         status2
     );
+    assert!(tmp.join("lifetime.js").exists());
+    assert!(tmp.join("lifetime.d.ts").exists());
+    let index = fs::read_to_string(tmp.join("index.d.ts")).expect("read index.d.ts");
+    assert!(index.contains("createProjectedLifetimeScope"));
 
     let mut violations: Vec<String> = Vec::new();
     for entry in fs::read_dir(&tmp).expect("read tmp dir") {
@@ -124,6 +128,11 @@ fn output_dir_clean_full_namespace_mode() {
         "full-namespace codegen exited non-zero: {:?}",
         status
     );
+    assert!(tmp.join("lifetime.js").exists());
+    assert!(tmp.join("lifetime.d.ts").exists());
+    let index = fs::read_to_string(tmp.join("index.d.ts")).expect("read index.d.ts");
+    assert!(index.contains("createProjectedLifetimeScope"));
+    assert!(!index.contains("trackProjectedValue"));
 
     let mut violations: Vec<String> = Vec::new();
     for entry in fs::read_dir(&tmp).expect("read tmp dir") {

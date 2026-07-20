@@ -47,7 +47,7 @@ pub enum TypeMeta {
     RuntimeClass {
         namespace: String,
         name: String,
-        default_iid: String,
+        default_interface: Option<Box<TypeMeta>>,
     },
     Delegate {
         namespace: String,

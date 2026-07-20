@@ -50,6 +50,16 @@ pub(crate) fn build_method_sig(method: &MethodMeta) -> String {
 // Type expression: recursive expansion (TypeScript)
 // ======================================================================
 
+fn ts_interface_iid(typ: &TypeMeta) -> Option<String> {
+    match typ {
+        TypeMeta::Interface { iid, .. } if !iid.is_empty() => {
+            Some(format!("WinGuid.parse('{}')", iid))
+        }
+        TypeMeta::Parameterized { .. } => Some(format!("{}.iid()", ts_dynwinrt_type(typ))),
+        _ => None,
+    }
+}
+
 /// Map a TypeMeta to a fully-expanded `DynWinRtType.*()` expression.
 /// Recursively expands all compound types to leaf primitives.
 pub(crate) fn ts_dynwinrt_type(typ: &TypeMeta) -> String {
@@ -87,12 +97,12 @@ pub(crate) fn ts_dynwinrt_type(typ: &TypeMeta) -> String {
         TypeMeta::RuntimeClass {
             namespace,
             name,
-            default_iid,
+            default_interface,
         } => {
             let full_name = format!("{}.{}", namespace, name);
-            if !default_iid.is_empty() {
+            if let Some(default_iid) = default_interface.as_deref().and_then(ts_interface_iid) {
                 format!(
-                    "DynWinRtType.runtimeClass('{}', WinGuid.parse('{}'))",
+                    "DynWinRtType.runtimeClass('{}', {})",
                     full_name, default_iid
                 )
             } else {

@@ -245,7 +245,8 @@ pub fn generate_class_stub(
         }
     }
     for req_iface in &class.required_interfaces {
-        if !req_iface.iid.is_empty()
+        if req_iface.generic_piid.is_none()
+            && !req_iface.iid.is_empty()
             && shared_iids.contains(&req_iface.iid)
             && !imported_names.contains(&req_iface.name)
         {

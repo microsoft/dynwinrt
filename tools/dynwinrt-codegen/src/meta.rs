@@ -108,7 +108,7 @@ pub struct ClassMeta {
     pub namespace: String,
     pub full_name: String,
     pub default_interface: Option<InterfaceMeta>,
-    /// Versioned/required interfaces (IFoo2, IFoo3, etc.) with instance methods.
+    /// Supplemental interfaces, including parameterized and versioned interfaces.
     pub required_interfaces: Vec<InterfaceMeta>,
     pub factory_interfaces: Vec<InterfaceMeta>,
     pub static_interfaces: Vec<InterfaceMeta>,
@@ -121,7 +121,7 @@ pub struct ClassMeta {
 }
 
 impl ClassMeta {
-    /// Iterate over all interfaces (default, factory, static, required).
+    /// Iterate over every interface implemented or exposed by the class.
     pub fn all_interfaces(&self) -> impl Iterator<Item = &InterfaceMeta> {
         self.default_interface
             .iter()
@@ -596,7 +596,10 @@ fn collect_all_refs_from_classes(
         }
         // Required interfaces themselves may need to be resolved
         for iface in &c.required_interfaces {
-            if !iface.name.is_empty() && !known.contains(&iface.name) {
+            if iface.generic_piid.is_none()
+                && !iface.name.is_empty()
+                && !known.contains(&iface.name)
+            {
                 named_out.push(TypeRef {
                     namespace: iface.namespace.clone(),
                     name: iface.name.clone(),
@@ -716,6 +719,7 @@ fn parse_class_from_index(index: &reader::Index, namespace: &str, name: &str) ->
     let mut default_interface = None;
     let mut factory_interfaces = Vec::new();
     let mut static_interfaces = Vec::new();
+    let mut generic_required_interfaces = Vec::new();
     let mut has_default_constructor = false;
     let mut constructors = Vec::new();
 
@@ -729,8 +733,15 @@ fn parse_class_from_index(index: &reader::Index, namespace: &str, name: &str) ->
         };
 
         if iface_impl.has_attribute("DefaultAttribute") {
-            if let Some(iface_meta) = parse_interface(index, &iface_ns, &iface_name) {
+            if let Some(iface_meta) = parse_interface_type(index, &iface_ty) {
                 default_interface = Some(iface_meta);
+            }
+        } else if matches!(
+            &iface_ty,
+            windows_metadata::Type::Name(type_name) if !type_name.generics.is_empty()
+        ) {
+            if let Some(iface_meta) = parse_interface_type(index, &iface_ty) {
+                generic_required_interfaces.push(iface_meta);
             }
         } else {
             // Non-default required interface (e.g. ILanguageModel2, versioned interfaces)
@@ -785,7 +796,7 @@ fn parse_class_from_index(index: &reader::Index, namespace: &str, name: &str) ->
 
     // 1b. Parse required interfaces (e.g. ILanguageModel2, versioned interfaces)
     // These contain instance methods accessible on the class, but on separate COM interfaces.
-    let mut required_interfaces: Vec<InterfaceMeta> = Vec::new();
+    let mut required_interfaces = Vec::new();
     for (ns, iname) in &required_iface_names {
         if let Some(req_iface) = parse_interface(index, ns, iname) {
             if !req_iface.methods.is_empty() {
@@ -793,6 +804,7 @@ fn parse_class_from_index(index: &reader::Index, namespace: &str, name: &str) ->
             }
         }
     }
+    required_interfaces.extend(generic_required_interfaces);
 
     // 2. Find factory/static/default-constructor from class-level attributes
     for attr in def.attributes() {
@@ -920,6 +932,35 @@ fn parse_interface(index: &reader::Index, namespace: &str, name: &str) -> Option
     let def = index.get(namespace, name).next()?;
     let iid = extract_iid(&def);
     parse_interface_methods(index, &def, name, namespace, &iid, &[])
+}
+
+fn parse_interface_type(
+    index: &reader::Index,
+    interface_type: &windows_metadata::Type,
+) -> Option<InterfaceMeta> {
+    let windows_metadata::Type::Name(type_name) = interface_type else {
+        return None;
+    };
+    if type_name.generics.is_empty() {
+        return parse_interface(index, &type_name.namespace, &type_name.name);
+    }
+
+    let TypeMeta::Parameterized {
+        namespace,
+        name,
+        piid,
+        args,
+    } = resolve_named_type(
+        &type_name.namespace,
+        &type_name.name,
+        &type_name.generics,
+        index,
+    )
+    else {
+        return None;
+    };
+    let concrete_name = make_parameterized_name(&name, &args);
+    parse_parameterized_interface(index, &namespace, &name, &concrete_name, &piid, &args)
 }
 
 /// Parse a parameterized interface definition (e.g. IVector`1) from winmd,
@@ -1155,24 +1196,6 @@ fn extract_u8(val: &windows_metadata::Value) -> u8 {
     }
 }
 
-fn find_default_interface_iid(def: &reader::TypeDef, index: &reader::Index) -> String {
-    for iface_impl in def.interface_impls() {
-        if !iface_impl.has_attribute("DefaultAttribute") {
-            continue;
-        }
-        let iface_ty = iface_impl.interface(&[]);
-        if let windows_metadata::Type::Name(tn) = &iface_ty {
-            if let Some(iface_def) = index.get(&tn.namespace, &tn.name).next() {
-                let iid = extract_iid(&iface_def);
-                if !iid.is_empty() {
-                    return iid;
-                }
-            }
-        }
-    }
-    String::new()
-}
-
 fn find_default_interface_type(def: &reader::TypeDef, index: &reader::Index) -> Option<TypeMeta> {
     for iface_impl in def.interface_impls() {
         if !iface_impl.has_attribute("DefaultAttribute") {
@@ -1366,16 +1389,16 @@ fn resolve_named_type(
             ("System", "Delegate") | ("System", "MulticastDelegate")
         );
         if !is_delegate {
-            if let Some(default_type) = find_default_interface_type(&def, index) {
+            let default_interface = find_default_interface_type(&def, index);
+            if let Some(default_type) = default_interface.as_ref() {
                 if default_type.is_async() {
-                    return default_type;
+                    return default_type.clone();
                 }
             }
-            let default_iid = find_default_interface_iid(&def, index);
             return TypeMeta::RuntimeClass {
                 namespace: namespace.to_string(),
                 name: name.to_string(),
-                default_iid,
+                default_interface: default_interface.map(Box::new),
             };
         }
     }
@@ -1609,6 +1632,46 @@ mod tests {
         assert!(automation_peer.constructors.iter().any(|constructor| {
             constructor.kind == ConstructorKind::ProtectedComposition && !constructor.is_public()
         }));
+    }
+
+    #[test]
+    fn test_winui_parameterized_default_interface_when_metadata_is_available() {
+        let Some(winui_winmd) = find_winui_winmd() else {
+            eprintln!("WinUI metadata not installed; skipping collection metadata test");
+            return;
+        };
+        let winmd_paths = format!("{};{}", WINDOWS_WINMD, winui_winmd.display());
+        let collection = parse_class(
+            &winmd_paths,
+            "Microsoft.UI.Xaml.Controls",
+            "RowDefinitionCollection",
+        )
+        .unwrap();
+        let interface = collection.default_interface.as_ref().unwrap();
+        assert_eq!(interface.name, "IVector_RowDefinition");
+        assert!(interface.generic_piid.is_some());
+        assert!(
+            interface
+                .methods
+                .iter()
+                .any(|method| method.name == "Append")
+        );
+
+        let ui_elements = parse_class(
+            &winmd_paths,
+            "Microsoft.UI.Xaml.Controls",
+            "UIElementCollection",
+        )
+        .unwrap();
+        let default_interface = ui_elements.default_interface.as_ref().unwrap();
+        assert_eq!(default_interface.name, "IVector_UIElement");
+        assert!(default_interface.generic_piid.is_some());
+        assert!(
+            ui_elements
+                .required_interfaces
+                .iter()
+                .any(|interface| interface.name == "IUIElementCollection")
+        );
     }
 
     fn find_winui_winmd() -> Option<std::path::PathBuf> {

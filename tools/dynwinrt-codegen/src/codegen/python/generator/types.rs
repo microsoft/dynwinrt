@@ -131,23 +131,8 @@ pub fn generate_interface(
     emit_type_checking_imports(&mut out, type_checking_imports);
 
     // IID constant
-    if let Some(ref piid) = iface.generic_piid {
-        let args_py: Vec<String> = iface
-            .generic_args
-            .iter()
-            .map(|a| py_dynwinrt_type(a))
-            .collect();
-        out.push_str(&format!(
-            "IID_{} = DynWinRTType.parameterized(WinGUID.parse('{}'), [{}]).iid()\n\n",
-            iface.name,
-            piid,
-            args_py.join(", ")
-        ));
-    } else if !iface.iid.is_empty() {
-        out.push_str(&format!(
-            "IID_{} = WinGUID.parse('{}')\n\n",
-            iface.name, iface.iid
-        ));
+    if let Some(iid_expr) = py_interface_iid_expr(iface) {
+        out.push_str(&format!("IID_{} = {}\n\n", iface.name, iid_expr));
     }
 
     // Interface registration

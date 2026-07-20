@@ -9,6 +9,28 @@ use super::*;
 // Collection helpers
 // ======================================================================
 
+pub(super) fn should_skip_raw_collection_method(iface: &InterfaceMeta, method_name: &str) -> bool {
+    match iface.generic_piid.as_deref() {
+        Some(PIID_IVECTOR | PIID_IVECTOR_VIEW) => match method_name {
+            "IndexOf" => true,
+            "GetMany" => iface
+                .generic_args
+                .first()
+                .is_some_and(|elem| ts_fill_array_create("count", elem).is_some()),
+            "ReplaceAll" => {
+                iface.generic_piid.as_deref() == Some(PIID_IVECTOR)
+                    && iface
+                        .generic_args
+                        .first()
+                        .is_some_and(|elem| ts_array_from_items("items", elem).is_some())
+            }
+            _ => false,
+        },
+        Some(PIID_IMAP_VIEW) => method_name == "Split",
+        _ => false,
+    }
+}
+
 /// Create a fill-array expression for getMany: allocates a DynWinRtArray of
 /// `count_var` elements, pre-filled with type-appropriate defaults.
 /// Returns `None` for element types that have no typed batch constructor.
@@ -58,6 +80,7 @@ pub(super) fn project_collection_helpers(
     known_types: &HashSet<String>,
     members: &mut Vec<ProjectedMember>,
     imports: &mut Vec<ProjectedImport>,
+    object_expr: &str,
 ) {
     let Some(piid) = iface.generic_piid.as_deref() else {
         return;
@@ -151,7 +174,7 @@ pub(super) fn project_collection_helpers(
                     is_static: false,
                     invoke_expr: String::new(),
                     sync_return_expr: Some(format!(
-                        "(() => {{ const _r = {iface_var_ref}.method({idx}).invokeAll(this._obj, [{wrap_value}]); return _r[1].toBool() ? _r[0].toNumber() : -1; }})()"
+                        "(() => {{ const _r = {iface_var_ref}.method({idx}).invokeAll({object_expr}, [{wrap_value}]); return _r[1].toBool() ? _r[0].toNumber() : -1; }})()"
                     )),
                     async_convert_v: None,
                     is_void: false,
@@ -171,7 +194,7 @@ pub(super) fn project_collection_helpers(
                         fill_array_output_index(get_many).expect("GetMany FillArray output");
                     let count_index = method_abi_output_count(get_many) - 1;
                     let invoke = format!(
-                        "{iface_var}.method({get_many_idx}).invokeAll(this._obj, \
+                        "{iface_var}.method({get_many_idx}).invokeAll({object_expr}, \
                          [DynWinRtValue.u32(startIndex), _a.toValue()])",
                         get_many_idx = get_many.vtable_index
                     );
@@ -237,7 +260,7 @@ pub(super) fn project_collection_helpers(
                 {
                     if let Some(items_expr) = ts_array_from_items("items", elem) {
                         let invoke = format!(
-                            "{iface_var}.method({replace_all_idx}).invoke(this._obj, \
+                            "{iface_var}.method({replace_all_idx}).invoke({object_expr}, \
                              [{items_expr}.toValue()])"
                         );
                         members.push(ProjectedMember::Method(ProjectedMethod {
@@ -325,7 +348,9 @@ pub(super) fn project_collection_helpers(
             {
                 let key_wrap = wrap_arg("key", &iface.generic_args[0]);
                 let return_convert = convert_return(
-                    &format!("{iface_var}.method({lookup_idx}).invoke(this._obj, [{key_wrap}])"),
+                    &format!(
+                        "{iface_var}.method({lookup_idx}).invoke({object_expr}, [{key_wrap}])"
+                    ),
                     Some(&iface.generic_args[1]),
                     false,
                     known_types,
@@ -390,10 +415,10 @@ pub(super) fn project_collection_helpers(
                     async_kind: AsyncKind::None,
                     is_static: false,
                     invoke_expr: format!(
-                        "{iface_var}.method({has_idx}).invoke(this._obj, [{key_wrap}])"
+                        "{iface_var}.method({has_idx}).invoke({object_expr}, [{key_wrap}])"
                     ),
                     sync_return_expr: Some(format!(
-                        "{iface_var}.method({has_idx}).invoke(this._obj, [{key_wrap}]).toBool()"
+                        "{iface_var}.method({has_idx}).invoke({object_expr}, [{key_wrap}]).toBool()"
                     )),
                     async_convert_v: None,
                     is_void: false,
@@ -426,7 +451,7 @@ pub(super) fn project_collection_helpers(
                         ],
                         return_type: "void".into(),
                         async_kind: AsyncKind::None, is_static: false,
-                        invoke_expr: format!("{iface_var}.method({insert_idx}).invoke(this._obj, [{key_wrap}, {val_wrap}])"),
+                        invoke_expr: format!("{iface_var}.method({insert_idx}).invoke({object_expr}, [{key_wrap}, {val_wrap}])"),
                         sync_return_expr: None,
                         async_convert_v: None, is_void: true, array_return_expr: None,
                         delegate_wraps: vec![], progress_convert: None, js_only: false, overload_of: None,
@@ -458,7 +483,7 @@ pub(super) fn project_collection_helpers(
                         async_kind: AsyncKind::None,
                         is_static: false,
                         invoke_expr: format!(
-                            "{iface_var}.method({remove_idx}).invoke(this._obj, [{key_wrap}])"
+                            "{iface_var}.method({remove_idx}).invoke({object_expr}, [{key_wrap}])"
                         ),
                         sync_return_expr: None,
                         async_convert_v: None,
