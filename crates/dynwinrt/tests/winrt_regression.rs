@@ -104,8 +104,8 @@ fn property_value_statics_signature(reg: &std::sync::Arc<MetadataTable>) -> Inte
 }
 
 fn property_value_signature(reg: &std::sync::Arc<MetadataTable>) -> InterfaceSignature {
-    let ipv_iid = GUID::from_u128(0x4BD682DD_7554_40E9_9A9B_82654EDE7E62);
-    let mut iface = InterfaceSignature::define_from_iinspectable("IPropertyValue", ipv_iid, reg);
+    let mut iface =
+        InterfaceSignature::define_from_iinspectable("IPropertyValue", IPropertyValue::IID, reg);
     iface.add_method(MethodSignature::new(reg).add_out(reg.i32_type())); // 6 get_Type
     iface.add_method(MethodSignature::new(reg).add_out(reg.bool_type())); // 7 get_IsNumericScalar
     for _ in 0..3 {
