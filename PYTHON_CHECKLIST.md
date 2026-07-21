@@ -3,6 +3,10 @@
 This checklist tracks the path from the current source-built Python prototype
 to a distributable, typed, and reliable WinRT projection.
 
+See [`docs/python-ui-ecosystem.md`](docs/python-ui-ecosystem.md) for research on
+Python UI frameworks, static pywinrt adoption, real integrations, and the value
+of a dynamic projection.
+
 ## Target states
 
 - **Data API preview:** a clean machine can install wheels and generated
@@ -20,7 +24,7 @@ to a distributable, typed, and reliable WinRT projection.
       APIs on ARM64.
 - [x] Python generation emits `.py` implementations.
 - [x] `--lang py` emits `.pyi`, `__init__.pyi`, and `py.typed` by default.
-- [x] Generated Python E2E covers 25 Windows SDK scenarios.
+- [x] Generated Python E2E covers 30 Windows SDK scenarios.
 - [x] Runtime primitives exist for arrays, structs, delegates, events,
       cancellation, progress callbacks, vectors, and maps.
 - [x] Python codegen snapshots cover the `Uri` implementation and stubs.
@@ -55,13 +59,13 @@ to a distributable, typed, and reliable WinRT projection.
 
 ## P0: async semantics
 
-- [ ] Return a Python awaitable instead of blocking inside generated async
+- [x] Return a Python awaitable instead of blocking inside generated async
       methods.
-- [ ] Integrate WinRT completion with an `asyncio` event loop.
-- [ ] Propagate Python cancellation to `IAsyncInfo.Cancel`.
-- [ ] Expose progress without forcing generated wrappers to call `.wait()`.
-- [ ] Keep an explicit blocking API for scripts and non-async hosts.
-- [ ] Reject blocking waits from an STA when they could deadlock.
+- [x] Integrate WinRT completion with an `asyncio` event loop.
+- [x] Propagate Python cancellation to `IAsyncInfo.Cancel`.
+- [x] Expose progress without forcing generated wrappers to call `.wait()`.
+- [x] Keep an explicit blocking API for scripts and non-async hosts.
+- [x] Reject blocking waits from an STA when they could deadlock.
 
 ## P0: CI and distribution
 

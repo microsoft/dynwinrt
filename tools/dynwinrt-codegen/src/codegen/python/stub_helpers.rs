@@ -11,7 +11,8 @@ use crate::types::{TypeKind, TypeMeta};
 
 use super::naming::{to_snake_case, to_snake_case_filename};
 use super::type_helpers::{
-    py_method_return_type, py_param_list, py_param_type_safe, py_return_type_safe,
+    py_factory_return_type, py_method_return_type, py_param_list, py_param_type_safe,
+    py_return_type_safe,
 };
 
 pub(super) fn format_py_type_import(name: &str, kind: TypeKind) -> String {
@@ -207,7 +208,7 @@ pub(super) fn emit_static_method_stub(
     let py_params = py_param_list(&in_params, known_types, delegate_type_names);
 
     let py_return = if is_factory {
-        format!("'{}'", _class_name)
+        py_factory_return_type(_class_name, method, known_types)
     } else {
         py_method_return_type(method, known_types, delegate_type_names)
     };

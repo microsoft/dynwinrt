@@ -25,7 +25,9 @@ mod reference;
 pub mod vector;
 
 pub use crate::array::ArrayData;
-pub use crate::dasync::{ProgressCallback, create_progress_handler};
+pub use crate::dasync::{
+    ProgressCallback, WinRTAsyncFuture, create_progress_handler, get_async_results,
+};
 pub use crate::metadata_table::{MetadataTable, MethodHandle, TypeHandle, TypeKind, ValueTypeData};
 pub use crate::reference::box_ireference;
 pub use crate::result::{Error, Result};

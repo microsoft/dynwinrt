@@ -11,10 +11,12 @@ use crate::codegen::shared::imports::{
 };
 
 use super::naming::to_snake_case;
-use super::signature::{py_build_args_expr, py_convert_return, py_runtime_symbol, py_wrap_arg};
+use super::signature::{
+    py_build_args_expr, py_convert_return, py_runtime_symbol, py_wrap_arg, py_wrap_async,
+};
 use super::type_helpers::{
-    method_pydoc, py_method_abi_output_count, py_method_outputs, py_method_return_type,
-    py_param_list, py_param_type_safe, py_return_type_safe,
+    method_pydoc, py_factory_return_type, py_method_abi_output_count, py_method_outputs,
+    py_method_return_type, py_param_list, py_param_type_safe, py_return_type_safe,
 };
 
 fn is_delegate_type(typ: &TypeMeta, delegate_type_names: &HashSet<String>) -> bool {
@@ -34,13 +36,6 @@ fn convert_method_output(
     if is_delegate_type(typ, delegate_type_names) {
         return expr.to_string();
     }
-    if matches!(
-        typ,
-        TypeMeta::AsyncAction | TypeMeta::AsyncActionWithProgress(_)
-    ) {
-        return format!("_dynwinrt_wait_action({})", expr);
-    }
-
     py_convert_return(expr, Some(typ), typ.is_async(), known_types)
 }
 
@@ -123,7 +118,7 @@ pub(crate) fn generate_factory_method_invoke(
     let in_params = get_in_params(method);
     let py_params = py_param_list(&in_params, known_types, delegate_type_names);
 
-    let return_py_type = format!("'{}'", class.name);
+    let return_py_type = py_factory_return_type(&class.name, method, known_types);
 
     let mut out = String::new();
     let method_name = to_snake_case(&method.name);
@@ -155,12 +150,19 @@ pub(crate) fn generate_factory_method_invoke(
     } else {
         call_expr
     };
-    let result_expr = if method.return_type.as_ref().is_some_and(TypeMeta::is_async) {
-        format!("{}.wait()", result_expr)
-    } else {
-        result_expr
-    };
-    out.push_str(&format!("        return {}({})\n", class.name, result_expr));
+    let result_expr =
+        if let Some(async_type) = method.return_type.as_ref().filter(|typ| typ.is_async()) {
+            let result_converter = match async_type {
+                TypeMeta::AsyncOperation(_) | TypeMeta::AsyncOperationWithProgress(_, _) => {
+                    Some(format!("lambda value: {}(value)", class.name))
+                }
+                _ => None,
+            };
+            py_wrap_async(&result_expr, async_type, result_converter, known_types)
+        } else {
+            format!("{}({})", class.name, result_expr)
+        };
+    out.push_str(&format!("        return {}\n", result_expr));
     out
 }
 
@@ -392,6 +394,7 @@ pub(crate) fn generate_method_body(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::meta::ParamMeta;
 
     #[test]
     fn static_delegate_return_stays_raw() {
@@ -426,5 +429,66 @@ mod tests {
         assert!(code.contains("def get_handler() -> 'DynWinRTValue':"));
         assert!(code.contains("return _IWidgetStatics.method(6).invoke("));
         assert!(!code.contains("_dynwinrt_symbol('handler', 'Handler')"));
+    }
+
+    #[test]
+    fn async_operation_returns_typed_awaitable_without_waiting() {
+        let method = MethodMeta {
+            name: "LoadAsync".into(),
+            raw_name: "LoadAsync".into(),
+            vtable_index: 6,
+            return_type: Some(TypeMeta::AsyncOperation(Box::new(TypeMeta::U32))),
+            ..Default::default()
+        };
+
+        let code = generate_method_body(
+            "_IReader",
+            "self._obj",
+            &method,
+            &HashSet::new(),
+            &HashSet::new(),
+            None,
+        );
+
+        assert!(code.contains("def load_async(self) -> WinRTAsync[int]:"));
+        assert!(code.contains("return _DynWinRTAsync("));
+        assert!(code.contains("lambda value: value.to_number()"));
+        assert!(!code.contains(".wait()"));
+    }
+
+    #[test]
+    fn async_operation_with_progress_converts_result_and_progress() {
+        let method = MethodMeta {
+            name: "WriteAsync".into(),
+            raw_name: "WriteAsync".into(),
+            vtable_index: 6,
+            params: vec![ParamMeta {
+                name: "buffer".into(),
+                typ: TypeMeta::Object,
+                direction: crate::meta::ParamDirection::In,
+            }],
+            return_type: Some(TypeMeta::AsyncOperationWithProgress(
+                Box::new(TypeMeta::U32),
+                Box::new(TypeMeta::U64),
+            )),
+            ..Default::default()
+        };
+
+        let code = generate_method_body(
+            "_IOutputStream",
+            "self._obj",
+            &method,
+            &HashSet::new(),
+            &HashSet::new(),
+            None,
+        );
+
+        assert!(code.contains(
+            "def write_async(self, buffer: 'DynWinRTValue') -> WinRTAsyncWithProgress[int, int]:"
+        ));
+        assert!(code.contains("return _DynWinRTAsyncWithProgress("));
+        assert!(code.contains("lambda value: value.to_number()"));
+        assert!(code.contains("lambda value: value.to_i64()"));
+        assert!(!code.contains(".wait()"));
     }
 }

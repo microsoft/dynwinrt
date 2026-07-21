@@ -112,6 +112,9 @@ pub(super) fn py_return_type_safe(typ: Option<&TypeMeta>, known: &HashSet<String
     if let Some(inner) = typ.and_then(ireference_inner_type) {
         return py_optional_type(py_return_type_safe(Some(inner), known));
     }
+    if let Some(async_type) = typ.and_then(|typ| py_async_return_type(typ, known)) {
+        return async_type;
+    }
 
     match typ {
         Some(TypeMeta::RuntimeClass { name, .. })
@@ -121,16 +124,62 @@ pub(super) fn py_return_type_safe(typ: Option<&TypeMeta>, known: &HashSet<String
         {
             "'DynWinRTValue'".to_string()
         }
-        Some(TypeMeta::AsyncOperation(inner)) => py_return_type_safe(Some(inner), known),
-        Some(TypeMeta::AsyncOperationWithProgress(result, _)) => {
-            py_return_type_safe(Some(result), known)
-        }
-        Some(TypeMeta::AsyncActionWithProgress(_)) | Some(TypeMeta::AsyncAction) => {
-            "None".to_string()
-        }
         Some(TypeMeta::Array(inner)) => py_array_element_type(inner, known),
         _ => py_return_type(typ),
     }
+}
+
+fn py_async_return_type_with_result(
+    typ: &TypeMeta,
+    result_override: Option<String>,
+    known: &HashSet<String>,
+) -> Option<String> {
+    match typ {
+        TypeMeta::AsyncAction => Some("WinRTAsync[None]".to_string()),
+        TypeMeta::AsyncOperation(result) => Some(format!(
+            "WinRTAsync[{}]",
+            result_override.unwrap_or_else(|| py_return_type_safe(Some(result), known))
+        )),
+        TypeMeta::AsyncActionWithProgress(progress) => Some(format!(
+            "WinRTAsyncWithProgress[None, {}]",
+            py_return_type_safe(Some(progress), known)
+        )),
+        TypeMeta::AsyncOperationWithProgress(result, progress) => Some(format!(
+            "WinRTAsyncWithProgress[{}, {}]",
+            result_override.unwrap_or_else(|| py_return_type_safe(Some(result), known)),
+            py_return_type_safe(Some(progress), known)
+        )),
+        _ => None,
+    }
+}
+
+pub(super) fn py_async_return_type(typ: &TypeMeta, known: &HashSet<String>) -> Option<String> {
+    py_async_return_type_with_result(typ, None, known)
+}
+
+pub(super) fn py_factory_return_type(
+    class_name: &str,
+    method: &MethodMeta,
+    known: &HashSet<String>,
+) -> String {
+    method
+        .return_type
+        .as_ref()
+        .and_then(|typ| {
+            py_async_return_type_with_result(typ, Some(format!("'{}'", class_name)), known)
+        })
+        .unwrap_or_else(|| format!("'{}'", class_name))
+}
+
+pub(super) fn methods_have_async_output<'a>(
+    methods: impl IntoIterator<Item = &'a MethodMeta>,
+) -> bool {
+    methods.into_iter().any(|method| {
+        method.return_type.as_ref().is_some_and(TypeMeta::is_async)
+            || method.params.iter().any(|param| {
+                param.direction != crate::meta::ParamDirection::In && param.typ.is_async()
+            })
+    })
 }
 
 pub(super) fn py_method_abi_output_count(method: &MethodMeta) -> usize {
@@ -224,11 +273,19 @@ fn py_return_type(typ: Option<&TypeMeta>) -> String {
         Some(TypeMeta::Parameterized { name, args, .. }) => {
             format!("'{}'", crate::meta::make_parameterized_name(name, args))
         }
-        Some(TypeMeta::AsyncOperation(inner)) => py_return_type(Some(inner)),
-        Some(TypeMeta::AsyncOperationWithProgress(result, _)) => py_return_type(Some(result)),
-        Some(TypeMeta::AsyncAction) | Some(TypeMeta::AsyncActionWithProgress(_)) => {
-            "None".to_string()
+        Some(TypeMeta::AsyncOperation(inner)) => {
+            format!("WinRTAsync[{}]", py_return_type(Some(inner)))
         }
+        Some(TypeMeta::AsyncOperationWithProgress(result, progress)) => format!(
+            "WinRTAsyncWithProgress[{}, {}]",
+            py_return_type(Some(result)),
+            py_return_type(Some(progress))
+        ),
+        Some(TypeMeta::AsyncAction) => "WinRTAsync[None]".to_string(),
+        Some(TypeMeta::AsyncActionWithProgress(progress)) => format!(
+            "WinRTAsyncWithProgress[None, {}]",
+            py_return_type(Some(progress))
+        ),
         Some(TypeMeta::Array(inner)) => py_array_element_type(inner, &HashSet::new()),
         Some(TypeMeta::Object) | Some(TypeMeta::Delegate { .. }) => "'DynWinRTValue'".to_string(),
         Some(TypeMeta::Struct { name, .. }) if name == "HResult" => "int".to_string(),

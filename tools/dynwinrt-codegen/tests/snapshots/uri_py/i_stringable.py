@@ -27,11 +27,6 @@ def _dynwinrt_enum(module, name, value):
         return value
 
 
-def _dynwinrt_wait_action(value):
-    value.wait()
-    return None
-
-
 IID_IStringable = WinGUID.parse('96369f54-8eb6-48f0-abce-c1b211e627c3')
 
 _IStringable = DynWinRTType.register_interface(

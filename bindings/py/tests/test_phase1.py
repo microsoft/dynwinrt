@@ -7,6 +7,7 @@ Phase 1 — Python binding API additions for JS parity.
 Covers:
   * DynWinRTMethodHandle.invoke_all  — multi-out-parameter invocation
   * DynWinRTValue.cancel             — IAsyncInfo::Cancel
+  * WinRTAsync                       — public asyncio-compatible protocols
   * DynWinRTArray.to_bytes/from_bytes — Pythonic byte-buffer interop
   * DynWinRTArray.from_object_values — T[] of object/interface elements
 """
@@ -19,8 +20,14 @@ from dynwinrt_py import (
     DynWinRTMethodSig,
     DynWinRTValue,
     DynWinRTArray,
+    WinRTAsync,
+    WinRTAsyncWithProgress,
     WinGUID,
     ro_initialize,
+)
+from dynwinrt_py.dynwinrt_py import (
+    _DynWinRTAsync,
+    _DynWinRTAsyncWithProgress,
 )
 
 
@@ -97,6 +104,26 @@ def test_cancel_on_async_no_raise_after_completion():
     scenario will be covered in the E2E suite."""
     # Reuses the non-async guard above; the real-async case is covered in E2E (TODO p1-tests)
     assert callable(DynWinRTValue.from_i32(0).cancel)
+
+
+def test_async_wrapper_rejects_non_async_value():
+    with pytest.raises(RuntimeError, match="not a WinRT async operation"):
+        _DynWinRTAsync(DynWinRTValue.from_i32(42), lambda value: value.to_number())
+
+
+def test_progress_wrapper_rejects_non_async_value():
+    with pytest.raises(RuntimeError, match="not a WinRT async operation"):
+        _DynWinRTAsyncWithProgress(
+            DynWinRTValue.from_i32(42),
+            lambda value: value.to_number(),
+            lambda value: value.to_number(),
+        )
+
+
+def test_async_protocols_are_public():
+    assert WinRTAsync.__name__ == "WinRTAsync"
+    assert WinRTAsyncWithProgress.__name__ == "WinRTAsyncWithProgress"
+    assert not hasattr(dynwinrt_py, "_DynWinRTAsync")
 
 
 # ----------------------------------------------------------------------

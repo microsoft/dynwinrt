@@ -14,6 +14,7 @@ pub enum Error {
     TypeNotFound(String),
     NotAnInterface(String),
     MethodNotFound(String, String),
+    ExpectedAsync(TypeKind),
     /// An async operation was canceled (status == AsyncStatus::Canceled).
     Canceled,
 }
@@ -45,6 +46,9 @@ impl Error {
             Error::NotAnInterface(name) => format!("Not an interface: {}", name),
             Error::MethodNotFound(iface, method) => {
                 format!("Method '{}' not found on interface '{}'", method, iface)
+            }
+            Error::ExpectedAsync(actual) => {
+                format!("Expected an async value, found {:?}", actual)
             }
             Error::Canceled => "Async operation was canceled".to_string(),
         }

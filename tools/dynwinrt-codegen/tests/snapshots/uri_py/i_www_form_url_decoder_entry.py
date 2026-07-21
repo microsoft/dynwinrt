@@ -27,11 +27,6 @@ def _dynwinrt_enum(module, name, value):
         return value
 
 
-def _dynwinrt_wait_action(value):
-    value.wait()
-    return None
-
-
 IID_IWwwFormUrlDecoderEntry = WinGUID.parse('125e7431-f678-4e8e-b670-20a9b06c512d')
 
 _IWwwFormUrlDecoderEntry = DynWinRTType.register_interface(

@@ -9,9 +9,10 @@
 
 use core::ffi::c_void;
 use windows_core::{GUID, HRESULT, IUnknown, Interface};
+use windows_future::IAsyncInfo;
 
 use crate::metadata_table::TypeHandle;
-use crate::value::WinRTValue;
+use crate::value::{AsyncInfo, WinRTValue};
 
 // ======================================================================
 // DynamicDelegate — general-purpose WinRT delegate COM object
@@ -227,7 +228,10 @@ impl DynamicDelegate {
 
         for (i, pt) in delegate.param_types.iter().enumerate() {
             if i < raw_args.len() {
-                values.push(marshal_abi_ptr(raw_args[i], pt));
+                match marshal_abi_ptr(raw_args[i], pt) {
+                    Ok(value) => values.push(value),
+                    Err(error) => return error,
+                }
             }
         }
 
@@ -246,7 +250,10 @@ impl DynamicDelegate {
         let mut values = Vec::with_capacity(delegate.param_types.len());
 
         if delegate.param_types.len() >= 1 {
-            values.push(marshal_abi_ptr(arg0, &delegate.param_types[0]));
+            match marshal_abi_ptr(arg0, &delegate.param_types[0]) {
+                Ok(value) => values.push(value),
+                Err(error) => return error,
+            }
         }
         if delegate.param_types.len() >= 2 {
             values.push(WinRTValue::F64(arg1));
@@ -265,7 +272,10 @@ impl DynamicDelegate {
         let mut values = Vec::with_capacity(delegate.param_types.len());
 
         if delegate.param_types.len() >= 1 {
-            values.push(marshal_abi_ptr(arg0, &delegate.param_types[0]));
+            match marshal_abi_ptr(arg0, &delegate.param_types[0]) {
+                Ok(value) => values.push(value),
+                Err(error) => return error,
+            }
         }
         if delegate.param_types.len() >= 2 {
             values.push(WinRTValue::F32(arg1));
@@ -288,7 +298,7 @@ impl DynamicDelegate {
 }
 
 /// Convert a raw ABI pointer-sized argument to WinRTValue, based on type.
-fn marshal_abi_ptr(raw: *mut c_void, typ: &TypeHandle) -> WinRTValue {
+fn marshal_abi_ptr(raw: *mut c_void, typ: &TypeHandle) -> Result<WinRTValue, HRESULT> {
     use crate::metadata_table::TypeKind;
     match typ.kind() {
         // Pointer-sized types: wrap as Object (AddRef via from_raw_borrowed + clone)
@@ -298,42 +308,62 @@ fn marshal_abi_ptr(raw: *mut c_void, typ: &TypeHandle) -> WinRTValue {
         | TypeKind::Delegate(_)
         | TypeKind::Parameterized(_) => {
             if raw.is_null() {
-                WinRTValue::Null
+                Ok(WinRTValue::Null)
             } else {
                 let obj = unsafe { IUnknown::from_raw_borrowed(&raw) }.unwrap();
-                WinRTValue::Object(obj.clone())
+                Ok(WinRTValue::Object(obj.clone()))
+            }
+        }
+        TypeKind::IAsyncAction
+        | TypeKind::IAsyncOperation(_)
+        | TypeKind::IAsyncActionWithProgress(_)
+        | TypeKind::IAsyncOperationWithProgress(_) => {
+            if raw.is_null() {
+                Ok(WinRTValue::Null)
+            } else {
+                let object = unsafe { IUnknown::from_raw_borrowed(&raw) }
+                    .unwrap()
+                    .clone();
+                let info: IAsyncInfo = object.cast().map_err(|error| error.code())?;
+                Ok(WinRTValue::Async(AsyncInfo {
+                    info,
+                    async_type: typ.clone(),
+                }))
             }
         }
         // HString: transmute the raw HSTRING handle
         TypeKind::HString => {
             if raw.is_null() {
-                WinRTValue::HString(windows_core::HSTRING::new())
+                Ok(WinRTValue::HString(windows_core::HSTRING::new()))
             } else {
                 let hstr: &windows_core::HSTRING =
                     unsafe { &*(&raw as *const *mut c_void as *const windows_core::HSTRING) };
-                WinRTValue::HString(hstr.clone())
+                Ok(WinRTValue::HString(hstr.clone()))
             }
         }
         // Small integer types packed into pointer-sized arg
-        TypeKind::Bool => WinRTValue::Bool((raw as usize) != 0),
-        TypeKind::I32 => WinRTValue::I32(raw as i32),
-        TypeKind::Enum(_) => WinRTValue::Enum {
+        TypeKind::Bool => Ok(WinRTValue::Bool((raw as usize) != 0)),
+        TypeKind::I8 => Ok(WinRTValue::I8(raw as i8)),
+        TypeKind::U8 => Ok(WinRTValue::U8(raw as u8)),
+        TypeKind::I16 => Ok(WinRTValue::I16(raw as i16)),
+        TypeKind::U16 => Ok(WinRTValue::U16(raw as u16)),
+        TypeKind::Char16 => Ok(WinRTValue::U16(raw as u16)),
+        TypeKind::I32 => Ok(WinRTValue::I32(raw as i32)),
+        TypeKind::Enum(_) => Ok(WinRTValue::Enum {
             value: raw as i32,
             type_handle: typ.clone(),
-        },
-        TypeKind::U32 => WinRTValue::U32(raw as u32),
-        TypeKind::I64 => WinRTValue::I64(raw as i64),
-        TypeKind::U64 => WinRTValue::U64(raw as u64),
+        }),
+        TypeKind::U32 => Ok(WinRTValue::U32(raw as u32)),
+        TypeKind::HResult => Ok(WinRTValue::HResult(HRESULT(raw as i32))),
+        TypeKind::I64 => Ok(WinRTValue::I64(raw as i64)),
+        TypeKind::U64 => Ok(WinRTValue::U64(raw as u64)),
         TypeKind::F64 => {
             // f64 passed as pointer-sized raw bits (only valid on platforms where
             // the caller puts it in a GPR; see invoke_ptr_f64 for float-register ABI)
-            WinRTValue::F64(f64::from_bits(raw as u64))
+            Ok(WinRTValue::F64(f64::from_bits(raw as u64)))
         }
-        TypeKind::F32 => WinRTValue::F32(f32::from_bits(raw as u32)),
-        _ => {
-            // Fallback: treat as raw i64 (covers most ABI-compatible cases)
-            WinRTValue::I64(raw as i64)
-        }
+        TypeKind::F32 => Ok(WinRTValue::F32(f32::from_bits(raw as u32))),
+        _ => Err(HRESULT(0x80004001u32 as i32)),
     }
 }
 

@@ -12,11 +12,14 @@ Usage:
 """
 
 import argparse
+import asyncio
 import importlib
+import inspect
 import json
 import re
 import sys
 import os
+import threading
 
 
 def to_snake_case(name: str) -> str:
@@ -59,7 +62,7 @@ def wrap_arg(val):
     return val
 
 
-def run_spec(spec: dict, generated_dir: str, pkg_name: str) -> dict:
+async def run_spec(spec: dict, generated_dir: str, pkg_name: str) -> dict:
     """Run a single test spec. Returns a result dict."""
     ns = spec['namespace']
     cls_name = spec['class']
@@ -97,7 +100,7 @@ def run_spec(spec: dict, generated_dir: str, pkg_name: str) -> dict:
 
         # Run checks
         for check in spec.get('checks', []):
-            check_result = run_check(check, cls, obj, generated_dir, pkg_name)
+            check_result = await run_check(check, cls, obj, generated_dir, pkg_name)
             result['checks'].append(check_result)
             if not check_result['pass']:
                 result['pass'] = False
@@ -109,7 +112,7 @@ def run_spec(spec: dict, generated_dir: str, pkg_name: str) -> dict:
     return result
 
 
-def run_check(check: dict, cls, obj, generated_dir: str, pkg_name: str) -> dict:
+async def run_check(check: dict, cls, obj, generated_dir: str, pkg_name: str) -> dict:
     """Run a single check. Returns { kind, member, pass, error }."""
     kind = check['kind']
     member = to_snake_case(check['member']) if 'member' in check else ''
@@ -461,6 +464,9 @@ def run_check(check: dict, cls, obj, generated_dir: str, pkg_name: str) -> dict:
                 cr['pass'] = True
 
         elif kind == 'async_memory_roundtrip':
+            import dynwinrt_py as dw
+            from dynwinrt_py.dynwinrt_py import _DynWinRTAsync
+
             write_val = check.get('write_value', 42)
             stream = cls.create() if hasattr(cls, 'create') else cls.create_default()
 
@@ -471,18 +477,184 @@ def run_check(check: dict, cls, obj, generated_dir: str, pkg_name: str) -> dict:
 
             writer = writer_cls.create_data_writer(stream.get_output_stream_at(0))
             writer.write_int32(write_val)
-            stored = writer.store_async()
+            store_op = writer.store_async()
+            if not inspect.isawaitable(store_op):
+                cr['error'] = 'store_async() did not return an awaitable'
+                return cr
+            stored = await store_op
+            stored_again = await store_op
 
             stream.seek(0)
             reader = reader_cls.create_data_reader(stream.get_input_stream_at(0))
-            loaded = reader.load_async(4)
+            loaded = await reader.load_async(4)
             read_val = reader.read_int32()
 
-            if stored < 4 or loaded < 4 or read_val != write_val:
+            def blocking_store():
+                import dynwinrt_py as dw
+
+                dw.ro_initialize(1)
+                try:
+                    blocking_stream = (
+                        cls.create() if hasattr(cls, 'create') else cls.create_default()
+                    )
+                    blocking_writer = writer_cls.create_data_writer(
+                        blocking_stream.get_output_stream_at(0)
+                    )
+                    blocking_writer.write_int32(write_val)
+                    return blocking_writer.store_async().wait()
+                finally:
+                    dw.ro_uninitialize()
+
+            blocked = await asyncio.get_running_loop().run_in_executor(
+                None, blocking_store
+            )
+
+            conversion_threads = []
+            loop_thread = threading.get_ident()
+            conversion_stream = (
+                cls.create() if hasattr(cls, 'create') else cls.create_default()
+            )
+            conversion_writer = writer_cls.create_data_writer(
+                conversion_stream.get_output_stream_at(0)
+            )
+            conversion_writer.write_int32(write_val)
+            raw_store = writer_mod._IDataWriter.method_by_name('StoreAsync').invoke(
+                conversion_writer._obj, []
+            )
+
+            def convert_store_result(value):
+                conversion_threads.append(threading.get_ident())
+                return value.to_number()
+
+            converted = await _DynWinRTAsync(raw_store, convert_store_result)
+
+            buffer_mod = importlib.import_module(f"{pkg_name}.buffer")
+            buffer_cls = getattr(buffer_mod, 'Buffer')
+            progress_buffer = buffer_cls.create(1024 * 1024)
+            progress_buffer.length = progress_buffer.capacity
+            progress = []
+            write_op = stream.get_output_stream_at(stream.size).write_async(progress_buffer)
+            write_op.progress(progress.append)
+            written = await write_op
+            await asyncio.sleep(0)
+
+            if (
+                stored < 4
+                or stored_again != stored
+                or loaded < 4
+                or blocked < 4
+                or read_val != write_val
+                or converted < 4
+                or conversion_threads != [loop_thread]
+                or written != progress_buffer.length
+                or not all(isinstance(value, int) for value in progress)
+            ):
                 cr['error'] = (
-                    f'async roundtrip failed: stored={stored}, loaded={loaded}, '
-                    f'wrote {write_val}, read {read_val}'
+                    f'async roundtrip failed: stored={stored}, stored_again={stored_again}, '
+                    f'loaded={loaded}, blocked={blocked}, converted={converted}, '
+                    f'conversion_threads={conversion_threads}, loop_thread={loop_thread}, '
+                    f'written={written}, '
+                    f'progress={progress!r}, wrote {write_val}, read {read_val}'
                 )
+            else:
+                cr['pass'] = True
+
+        elif kind == 'async_cancellation':
+            import dynwinrt_py as dw
+
+            handler_mod = importlib.import_module(f'{pkg_name}.work_item_handler')
+            info_iid = dw.WinGUID.parse('00000036-0000-0000-c000-000000000046')
+            info_type = (
+                dw.DynWinRTType.register_interface('IAsyncInfoE2E', info_iid)
+                .add_method(
+                    'get_Id',
+                    dw.DynWinRTMethodSig().add_out(dw.DynWinRTType.u32_type()),
+                )
+                .add_method(
+                    'get_Status',
+                    dw.DynWinRTMethodSig().add_out(dw.DynWinRTType.i32_type()),
+                )
+            )
+            status_method = info_type.method(7)
+            started = threading.Event()
+            release = threading.Event()
+            cancel_seen = threading.Event()
+            worker_errors = []
+
+            def work(action):
+                started.set()
+                try:
+                    action = action.cast(info_iid)
+                    while not release.wait(0.01):
+                        if status_method.invoke(action, []).to_number() == 2:
+                            cancel_seen.set()
+                            break
+                except BaseException as error:
+                    worker_errors.append(error)
+
+            handler = dw.DynWinRtDelegate.create(
+                handler_mod.IID_WorkItemHandler,
+                handler_mod.WorkItemHandler_PARAM_TYPES,
+                work,
+            )
+            operation = cls.run_async(handler.to_value())
+            loop = asyncio.get_running_loop()
+
+            if not await loop.run_in_executor(None, started.wait, 2.0):
+                release.set()
+                cr['error'] = 'ThreadPool work item did not start'
+                return cr
+
+            try:
+                operation.wait()
+                release.set()
+                cr['error'] = 'wait() was not rejected on a running asyncio loop'
+                return cr
+            except RuntimeError as error:
+                if 'asyncio event loop' not in str(error):
+                    release.set()
+                    cr['error'] = f'unexpected asyncio wait() error: {error}'
+                    return cr
+
+            sta_errors = []
+
+            def block_on_sta():
+                dw.ro_initialize(0)
+                try:
+                    operation.wait()
+                except RuntimeError as error:
+                    sta_errors.append(str(error))
+                finally:
+                    dw.ro_uninitialize()
+
+            sta_thread = threading.Thread(target=block_on_sta)
+            sta_thread.start()
+            await loop.run_in_executor(None, sta_thread.join, 2.0)
+            if sta_thread.is_alive():
+                release.set()
+                cr['error'] = 'STA wait() did not return'
+                return cr
+            if not sta_errors or 'STA thread' not in sta_errors[0]:
+                release.set()
+                cr['error'] = f'wait() was not rejected on STA: {sta_errors!r}'
+                return cr
+
+            task = asyncio.ensure_future(operation)
+            await asyncio.sleep(0)
+            task.cancel()
+            try:
+                await task
+                cr['error'] = 'cancelled asyncio task completed successfully'
+                return cr
+            except asyncio.CancelledError:
+                pass
+
+            observed = await loop.run_in_executor(None, cancel_seen.wait, 2.0)
+            release.set()
+            if worker_errors:
+                cr['error'] = f'work item failed: {worker_errors[0]}'
+            elif not observed:
+                cr['error'] = 'IAsyncInfo.Cancel was not observed by the work item'
             else:
                 cr['pass'] = True
 
@@ -522,9 +694,15 @@ def main():
     passed = 0
     failed = 0
 
-    for spec in specs:
-        r = run_spec(spec, args.generated, gen_pkg)
-        results.append(r)
+    async def run_all_specs():
+        all_results = []
+        for spec in specs:
+            all_results.append(await run_spec(spec, args.generated, gen_pkg))
+        return all_results
+
+    results = asyncio.run(run_all_specs())
+
+    for r in results:
         if r['pass']:
             passed += 1
             print(f"  PASS {r['id']}")

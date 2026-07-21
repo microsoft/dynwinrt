@@ -290,13 +290,12 @@ pub(crate) fn py_convert_return(
     known_types: &HashSet<String>,
 ) -> String {
     if is_async {
-        let inner_type = match return_type {
-            Some(TypeMeta::AsyncOperation(inner)) => Some(inner.as_ref()),
-            Some(TypeMeta::AsyncOperationWithProgress(inner, _)) => Some(inner.as_ref()),
-            _ => None,
-        };
-        let waited = format!("{}.wait()", expr);
-        return py_convert_return(&waited, inner_type, false, known_types);
+        return py_wrap_async(
+            expr,
+            return_type.expect("async conversion requires a return type"),
+            None,
+            known_types,
+        );
     }
     match return_type {
         Some(TypeMeta::String) | Some(TypeMeta::Guid) => format!("{}.to_string()", expr),
@@ -320,6 +319,7 @@ pub(crate) fn py_convert_return(
                 expr
             )
         }
+
         Some(TypeMeta::Enum { .. }) => format!("{}.to_number()", expr),
         Some(typ @ TypeMeta::Parameterized { name, args, .. })
             if ireference_inner_type(typ).is_some() =>
@@ -353,6 +353,46 @@ pub(crate) fn py_convert_return(
             py_convert_array_return(&arr_expr, inner, known_types)
         }
         _ => expr.to_string(),
+    }
+}
+
+fn py_value_converter(typ: &TypeMeta, known_types: &HashSet<String>) -> String {
+    format!(
+        "lambda value: {}",
+        py_convert_return("value", Some(typ), false, known_types)
+    )
+}
+
+pub(crate) fn py_wrap_async(
+    expr: &str,
+    async_type: &TypeMeta,
+    result_converter: Option<String>,
+    known_types: &HashSet<String>,
+) -> String {
+    match async_type {
+        TypeMeta::AsyncAction => format!(
+            "_DynWinRTAsync({}, {})",
+            expr,
+            result_converter.unwrap_or_else(|| "lambda _value: None".to_string())
+        ),
+        TypeMeta::AsyncOperation(result) => format!(
+            "_DynWinRTAsync({}, {})",
+            expr,
+            result_converter.unwrap_or_else(|| py_value_converter(result, known_types))
+        ),
+        TypeMeta::AsyncActionWithProgress(progress) => format!(
+            "_DynWinRTAsyncWithProgress({}, {}, {})",
+            expr,
+            result_converter.unwrap_or_else(|| "lambda _value: None".to_string()),
+            py_value_converter(progress, known_types)
+        ),
+        TypeMeta::AsyncOperationWithProgress(result, progress) => format!(
+            "_DynWinRTAsyncWithProgress({}, {}, {})",
+            expr,
+            result_converter.unwrap_or_else(|| py_value_converter(result, known_types)),
+            py_value_converter(progress, known_types)
+        ),
+        _ => panic!("py_wrap_async requires an async type: {:?}", async_type),
     }
 }
 

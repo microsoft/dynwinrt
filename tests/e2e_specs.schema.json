@@ -65,6 +65,7 @@
              "static_expect_error",
              "cross_class_chain",
              "async_memory_roundtrip",
+             "async_cancellation",
              "property_set_equals",
              "vector_view_access",
              "vector_index_of",

@@ -598,11 +598,13 @@ impl DynWinRTValue {
     /// Await an async WinRT operation (blocks the current thread).
     /// Releases the Python GIL while waiting so other threads can proceed.
     fn wait(&self, py: Python<'_>) -> PyResult<DynWinRTValue> {
-        py.detach(|| {
-            let v = pollster::block_on(async { (&self.0).await })
-                .map_err(|e| PyRuntimeError::new_err(e.message()))?;
-            Ok(DynWinRTValue(v))
-        })
+        super::async_runtime::wait_for_async(&self.0, py).map(DynWinRTValue)
+    }
+
+    fn _get_async_results(&self) -> PyResult<DynWinRTValue> {
+        dynwinrt::get_async_results(&self.0)
+            .map(DynWinRTValue)
+            .map_err(|error| PyRuntimeError::new_err(error.message()))
     }
 
     /// Cancel the underlying WinRT async operation (calls `IAsyncInfo::Cancel`).
@@ -629,6 +631,7 @@ impl DynWinRTValue {
         let progress_type = async_info
             .progress_type()
             .ok_or_else(|| PyRuntimeError::new_err("on_progress: not a WithProgress async type"))?;
+        super::async_runtime::ensure_progress_type_supported(&progress_type)?;
 
         let handler_iid = async_info.progress_handler_iid().ok_or_else(|| {
             PyRuntimeError::new_err("on_progress: cannot compute progress handler IID")

@@ -27,11 +27,6 @@ def _dynwinrt_enum(module, name, value):
         return value
 
 
-def _dynwinrt_wait_action(value):
-    value.wait()
-    return None
-
-
 if TYPE_CHECKING:
     from .i_iterator_i_www_form_url_decoder_entry import IIterator_IWwwFormUrlDecoderEntry  # noqa: F401
     from .i_www_form_url_decoder_entry import IID_IWwwFormUrlDecoderEntry, IWwwFormUrlDecoderEntry  # noqa: F401

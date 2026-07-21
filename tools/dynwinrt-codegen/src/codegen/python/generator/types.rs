@@ -80,6 +80,9 @@ pub fn generate_interface(
     out.push_str(HEADER);
     out.push_str(FUTURE_ANNOTATIONS);
     out.push_str(IMPORT_LINE);
+    if methods_have_async_output(iface.methods.iter()) {
+        out.push_str(ASYNC_IMPORT_LINE);
+    }
     if has_ireference_input(iface.methods.iter()) {
         out.push_str(IREFERENCE_HELPER);
     }
@@ -250,12 +253,17 @@ fn generate_delegate(iface: &InterfaceMeta) -> String {
         })
         .unwrap_or_default();
 
-    if !iface.iid.is_empty() {
+    if iface.generic_piid.is_some() {
         out.push_str(&format!(
             "IID_{} = DynWinRTType.parameterized(WinGUID.parse('{}'), [{}]).iid()\n",
             iface.name,
             iface.iid,
             param_exprs.join(", ")
+        ));
+    } else if !iface.iid.is_empty() {
+        out.push_str(&format!(
+            "IID_{} = WinGUID.parse('{}')\n",
+            iface.name, iface.iid
         ));
     } else {
         out.push_str(&format!("IID_{} = None\n", iface.name));
@@ -276,4 +284,33 @@ fn generate_delegate(iface: &InterfaceMeta) -> String {
     }
 
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fixed_delegate_uses_declared_iid() {
+        let iface = InterfaceMeta {
+            name: "WorkItemHandler".into(),
+            iid: "1d1a8b8b-fa66-414f-9cbd-b65fc99d17fa".into(),
+            methods: vec![MethodMeta {
+                name: "Invoke".into(),
+                params: vec![crate::meta::ParamMeta {
+                    name: "operation".into(),
+                    typ: TypeMeta::AsyncAction,
+                    direction: ParamDirection::In,
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let code = generate_delegate(&iface);
+        assert!(code.contains(
+            "IID_WorkItemHandler = WinGUID.parse('1d1a8b8b-fa66-414f-9cbd-b65fc99d17fa')"
+        ));
+        assert!(!code.contains("DynWinRTType.parameterized"));
+    }
 }

@@ -22,6 +22,13 @@ pub fn generate_class(
     out.push_str(HEADER);
     out.push_str(FUTURE_ANNOTATIONS);
     out.push_str(IMPORT_LINE);
+    if methods_have_async_output(
+        class
+            .all_interfaces()
+            .flat_map(|interface| interface.methods.iter()),
+    ) {
+        out.push_str(ASYNC_IMPORT_LINE);
+    }
     if has_ireference_input(
         class
             .all_interfaces()

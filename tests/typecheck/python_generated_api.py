@@ -1,10 +1,12 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
-from typing import List, Tuple
+from typing import Awaitable, List, Tuple
 
 from dynwinrt_py import (
     DynWinRTArray,
+    WinRTAsync,
+    WinRTAsyncWithProgress,
     DynWinRTMethodSig,
     DynWinRTType,
     DynWinRTValue,
@@ -12,6 +14,9 @@ from dynwinrt_py import (
 )
 from python_bindings.calendar import Calendar
 from python_bindings.contact_date import ContactDate
+from python_bindings.data_writer import DataWriter
+from python_bindings.i_buffer import IBuffer
+from python_bindings.i_output_stream import IOutputStream
 from python_bindings.i_reference_u_int32 import IReference_UInt32
 from python_bindings.i_vector_view_string import IVectorView_String
 from python_bindings.i_www_form_url_decoder_entry import IWwwFormUrlDecoderEntry
@@ -74,3 +79,16 @@ def check_object_vector(
         Tuple[int, bool],
         List[IWwwFormUrlDecoderEntry],
     ] = (first, located, many)
+
+
+def check_async_types(
+    writer: DataWriter,
+    output: IOutputStream,
+    buffer: IBuffer,
+) -> None:
+    store: WinRTAsync[int] = writer.store_async()
+    awaitable: Awaitable[int] = store
+    write: WinRTAsyncWithProgress[int, int] = output.write_async(buffer)
+    write.progress(lambda value: value)
+    progress_awaitable: Awaitable[int] = write
+    _: Tuple[Awaitable[int], Awaitable[int]] = (awaitable, progress_awaitable)

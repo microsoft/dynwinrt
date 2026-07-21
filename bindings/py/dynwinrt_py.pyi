@@ -1,4 +1,7 @@
-from typing import Callable, List, Optional, Sequence, Union, final
+from typing import Awaitable, Callable, List, Optional, Protocol, Sequence, TypeVar, Union, final
+
+_T = TypeVar("_T", covariant=True)
+_P = TypeVar("_P", covariant=True)
 
 __all__ = [
     "WinAppSDKContext",
@@ -10,6 +13,8 @@ __all__ = [
     "DynWinRTArray",
     "DynWinRTStruct",
     "DynWinRtDelegate",
+    "WinRTAsync",
+    "WinRTAsyncWithProgress",
     "init_winappsdk",
     "ro_initialize",
     "ro_uninitialize",
@@ -216,6 +221,15 @@ class DynWinRTValue:
     def as_struct(self) -> DynWinRTStruct: ...
     def __repr__(self) -> str: ...
     def __str__(self) -> str: ...
+
+
+class WinRTAsync(Awaitable[_T], Protocol[_T]):
+    def wait(self) -> _T: ...
+    def cancel(self) -> None: ...
+
+
+class WinRTAsyncWithProgress(WinRTAsync[_T], Protocol[_T, _P]):
+    def progress(self, callback: Callable[[_P], object]) -> None: ...
 
 
 @final

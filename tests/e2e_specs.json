@@ -293,10 +293,20 @@
       "namespace": "Windows.Storage.Streams",
       "class": "InMemoryRandomAccessStream",
       "langs": ["py", "ts"],
-      "extra_classes": ["DataWriter", "DataReader"],
+      "extra_classes": ["DataWriter", "DataReader", "Buffer"],
       "instantiate": { "kind": "none" },
       "checks": [
         { "kind": "async_memory_roundtrip", "member": "roundtrip", "write_value": 42 }
+      ]
+    },
+    {
+      "id": "python_async_cancellation",
+      "namespace": "Windows.System.Threading",
+      "class": "ThreadPool",
+      "langs": ["py"],
+      "instantiate": { "kind": "none" },
+      "checks": [
+        { "kind": "async_cancellation", "member": "run_async" }
       ]
     },
     {
