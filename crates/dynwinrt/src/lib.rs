@@ -18,6 +18,7 @@ mod array;
 mod com_helpers;
 mod dasync;
 pub mod delegate;
+pub mod element_factory;
 pub mod map;
 mod meta;
 pub mod metadata_table;
@@ -27,6 +28,10 @@ pub mod vector;
 pub use crate::array::ArrayData;
 pub use crate::dasync::{
     ProgressCallback, WinRTAsyncFuture, create_progress_handler, get_async_results,
+};
+pub use crate::element_factory::{
+    ElementFactoryGetCallback, ElementFactoryRecycleCallback, create_element_factory,
+    create_element_factory_value,
 };
 pub use crate::metadata_table::{MetadataTable, MethodHandle, TypeHandle, TypeKind, ValueTypeData};
 pub use crate::reference::box_ireference;

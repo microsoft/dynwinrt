@@ -55,6 +55,16 @@ the native window and XAML core are destroyed. Projects that never create a
 scope do not allocate WeakRefs or retain projected values. Direct runtime users
 can release an individual `DynWinRtValue` with `value.release()`.
 
+Generated WinUI `IElementFactory` bindings expose `IElementFactory.create()`.
+It creates a synchronous, UI-thread factory backed by JavaScript
+`getElement`/`recycleElement` callbacks. Call `releaseCallbacks()` on the
+returned factory after clearing its ItemsRepeater source so JavaScript item
+state can be released before the native repeater is destroyed.
+
+`DynWinRtValue.createVector()` objects implement `IObservableVector<T>` in
+addition to `IIterable<T>`, `IVector<T>`, and `IVectorView<T>`. Mutations emit
+the standard `VectorChanged` collection-change notifications.
+
 ## Platform support
 
 - **Windows 10 / 11** — x64 and arm64 native binaries shipped via `napi-rs` prebuilds

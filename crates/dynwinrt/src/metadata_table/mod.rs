@@ -318,6 +318,9 @@ impl MetadataTable {
             iterable: self.compute_parameterized_iid(&IITERABLE, &[elem]),
             vector: self.compute_parameterized_iid(&IVECTOR, &[elem]),
             vector_view: self.compute_parameterized_iid(&IVECTOR_VIEW, &[elem]),
+            observable_vector: self.compute_parameterized_iid(&IOBSERVABLE_VECTOR, &[elem]),
+            vector_changed_handler: self
+                .compute_parameterized_iid(&VECTOR_CHANGED_EVENT_HANDLER, &[elem]),
             iterator: self.compute_parameterized_iid(&IITERATOR, &[elem]),
         }
     }
