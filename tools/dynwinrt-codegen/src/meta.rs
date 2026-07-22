@@ -1522,7 +1522,12 @@ fn parse_flat_apis_from_index(
 
     let mut methods: Vec<FlatMethodMeta> = Vec::new();
     let mut referenced_enums: Vec<TypeMeta> = Vec::new();
-    let mut seen_enum_names: HashSet<String> = HashSet::new();
+    // Deduplicate referenced enums by (namespace, name) to avoid silently
+    // dropping a distinct type with the same simple name from a different
+    // namespace (e.g. `SomeNs.WIN32_ERROR` vs `Windows.Win32.Foundation
+    // .WIN32_ERROR`). Keying by `name` alone would keep only the first-
+    // seen variant and emit incorrect sibling files.
+    let mut seen_enum_keys: HashSet<(String, String)> = HashSet::new();
 
     for m in def.methods() {
         let Some(imap) = m.impl_map() else {
@@ -1539,7 +1544,7 @@ fn parse_flat_apis_from_index(
 
         let sig = m.signature(&[]);
         let return_type = map_flat_type(&sig.return_type, index, &mut |e| {
-            collect_enum(e, &mut seen_enum_names, &mut referenced_enums)
+            collect_enum(e, &mut seen_enum_keys, &mut referenced_enums)
         });
         // Preserve typedef intent from the raw return Type: only project as
         // a `.status` numeric field when the return is a known Win32 status
@@ -1572,7 +1577,7 @@ fn parse_flat_apis_from_index(
         for (i, pd) in param_defs.iter().enumerate() {
             let ty = &sig.types[i];
             let abi = map_flat_type(ty, index, &mut |e| {
-                collect_enum(e, &mut seen_enum_names, &mut referenced_enums)
+                collect_enum(e, &mut seen_enum_keys, &mut referenced_enums)
             });
             let flags = pd.flags();
             let is_in = flags.contains(windows_metadata::ParamAttributes::In);
@@ -1620,11 +1625,11 @@ fn parse_flat_apis_from_index(
 
 fn collect_enum(
     en: TypeMeta,
-    seen: &mut HashSet<String>,
+    seen: &mut HashSet<(String, String)>,
     sink: &mut Vec<TypeMeta>,
 ) {
-    if let TypeMeta::Enum { name, .. } = &en {
-        if seen.insert(name.clone()) {
+    if let TypeMeta::Enum { namespace, name, .. } = &en {
+        if seen.insert((namespace.clone(), name.clone())) {
             sink.push(en);
         }
     }

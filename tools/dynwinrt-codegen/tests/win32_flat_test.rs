@@ -754,3 +754,44 @@ fn cli_rejects_non_js_lang_for_flat_apis() {
     );
     let _ = fs::remove_dir_all(&out_dir);
 }
+
+/// `parse_flat_apis_from_index` deduplicates referenced enums by
+/// `(namespace, name)`, not `name` alone, so an `Apis` class that
+/// references two enums that happen to share a simple name across
+/// distinct namespaces keeps both entries. The emitter then fails
+/// loud with a clear panic instead of silently emitting a
+/// wrong-shape sibling file (only one variant would survive because
+/// enum-file names use the simple name).
+#[test]
+#[should_panic(expected = "multiple distinct enums named `Status`")]
+fn flat_fails_loud_on_simple_name_enum_collision() {
+    use dynwinrt_codegen::types::{EnumMember, TypeMeta};
+
+    let make_enum = |ns: &str, member: &str| TypeMeta::Enum {
+        namespace: ns.into(),
+        name: "Status".into(),
+        underlying: Box::new(TypeMeta::I32),
+        members: vec![EnumMember {
+            name: member.into(),
+            value: 0,
+            doc: None,
+        }],
+        doc: None,
+        deprecated: None,
+    };
+    // Two distinct enums with the same simple name from different
+    // namespaces. Both must reach codegen (post-dedup) because the
+    // `(namespace, name)` key differs.
+    let apis = FlatApisMeta {
+        namespace: "Fake.Ns".into(),
+        class_name: "Apis".into(),
+        methods: vec![synth_method("Noop", FlatAbiType::I32)],
+        referenced_enums: vec![
+            make_enum("Fake.NsA", "AVariant"),
+            make_enum("Fake.NsB", "BVariant"),
+        ],
+    };
+    // Should panic before returning FlatGeneratedOutput.
+    let _ = flat::generate_flat_apis_files(&apis);
+}
+

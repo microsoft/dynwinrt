@@ -67,6 +67,34 @@ pub fn generate_flat_apis_files(meta: &FlatApisMeta) -> FlatGeneratedOutput {
     let dts = render_dts(&filtered_meta);
 
     // Sibling files: one per referenced enum.
+    //
+    // Enum sibling files (`Foo.js`, `Foo.d.ts`) key on the simple name only,
+    // so two distinct enums that share the same simple name from different
+    // namespaces would collide here and produce a wrong-shape enum file
+    // (only one variant survives). `parse_flat_apis_from_index` already
+    // deduplicates by `(namespace, name)` — but if the caller assembles a
+    // `FlatApisMeta` with a genuine simple-name collision across
+    // namespaces, we fail loud with a diagnostic rather than emit a
+    // corrupt Apis module.
+    let mut by_simple_name: std::collections::BTreeMap<&str, Vec<&str>> =
+        std::collections::BTreeMap::new();
+    for en in &filtered_meta.referenced_enums {
+        if let TypeMeta::Enum { namespace, name, .. } = en {
+            by_simple_name.entry(name).or_default().push(namespace);
+        }
+    }
+    for (name, namespaces) in &by_simple_name {
+        if namespaces.len() > 1 {
+            panic!(
+                "flat codegen: multiple distinct enums named `{name}` referenced by \
+                 `{}` from namespaces {:?}. Sibling-file emission would collide on the \
+                 `{name}` simple name. Split the export or add namespace-qualified \
+                 aliasing in the codegen before proceeding.",
+                filtered_meta.class_name, namespaces,
+            );
+        }
+    }
+
     let mut extra_files: Vec<(String, String)> = Vec::new();
     for en in &filtered_meta.referenced_enums {
         if let TypeMeta::Enum { name, .. } = en {
