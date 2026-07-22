@@ -8,6 +8,8 @@ use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use windows::core::{GUID, HSTRING, IUnknown, Interface};
 
+use crate::errors::{map_dynwinrt_error, map_dynwinrt_error_with_context, map_windows_error};
+
 /// Shared MetadataTable — created once, used everywhere.
 static TABLE: std::sync::LazyLock<Arc<dynwinrt::MetadataTable>> =
     std::sync::LazyLock::new(|| dynwinrt::MetadataTable::new());
@@ -19,11 +21,88 @@ static TABLE: std::sync::LazyLock<Arc<dynwinrt::MetadataTable>> =
 #[pyclass]
 pub struct WinAppSDKContext(#[allow(dead_code)] dynwinrt::WinAppSdkContext);
 
+#[pyclass(unsendable)]
+pub struct RoApartment {
+    apartment_type: i32,
+    active: bool,
+}
+
+impl RoApartment {
+    fn initialize(&mut self) -> PyResult<()> {
+        if self.active {
+            return Err(PyRuntimeError::new_err(
+                "the COM apartment context is already active",
+            ));
+        }
+        use windows::Win32::System::WinRT::{
+            RO_INIT_MULTITHREADED, RO_INIT_SINGLETHREADED, RoInitialize,
+        };
+        let init_type = match self.apartment_type {
+            0 => RO_INIT_SINGLETHREADED,
+            _ => RO_INIT_MULTITHREADED,
+        };
+        unsafe { RoInitialize(init_type) }.map_err(map_windows_error)?;
+        self.active = true;
+        Ok(())
+    }
+
+    fn uninitialize(&mut self) {
+        if self.active {
+            unsafe { windows::Win32::System::WinRT::RoUninitialize() };
+            self.active = false;
+        }
+    }
+}
+
+impl Drop for RoApartment {
+    fn drop(&mut self) {
+        self.uninitialize();
+    }
+}
+
+#[pymethods]
+impl RoApartment {
+    #[new]
+    #[pyo3(signature = (apartment_type=None))]
+    fn new(apartment_type: Option<i32>) -> Self {
+        Self {
+            apartment_type: apartment_type.unwrap_or(1),
+            active: false,
+        }
+    }
+
+    fn __enter__(mut slf: PyRefMut<'_, Self>) -> PyResult<PyRefMut<'_, Self>> {
+        slf.initialize()?;
+        Ok(slf)
+    }
+
+    fn __exit__(
+        &mut self,
+        _exc_type: &Bound<'_, PyAny>,
+        _exc_value: &Bound<'_, PyAny>,
+        _traceback: &Bound<'_, PyAny>,
+    ) -> bool {
+        self.uninitialize();
+        false
+    }
+
+    fn close(&mut self) {
+        self.uninitialize();
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RoApartment(apartment_type={}, active={})",
+            self.apartment_type, self.active
+        )
+    }
+}
+
 #[pyfunction]
 pub fn init_winappsdk(major: u32, minor: u32) -> PyResult<WinAppSDKContext> {
     dynwinrt::initialize_winappsdk(major, minor)
         .map(WinAppSDKContext)
-        .map_err(|e| PyRuntimeError::new_err(e.message()))
+        .map_err(map_dynwinrt_error)
 }
 
 #[pyfunction]
@@ -35,7 +114,7 @@ pub fn ro_initialize(apartment_type: Option<i32>) -> PyResult<()> {
         0 => RO_INIT_SINGLETHREADED,
         _ => RO_INIT_MULTITHREADED,
     };
-    unsafe { RoInitialize(init_type) }.map_err(|e| PyRuntimeError::new_err(e.message()))
+    unsafe { RoInitialize(init_type) }.map_err(map_windows_error)
 }
 
 #[pyfunction]
@@ -48,7 +127,7 @@ pub fn ro_uninitialize() {
 // WinGUID
 // ======================================================================
 
-#[pyclass]
+#[pyclass(from_py_object)]
 #[derive(Debug, Clone, Copy)]
 pub struct WinGUID(pub(crate) GUID);
 
@@ -74,7 +153,7 @@ impl WinGUID {
 // DynWinRTType — wraps TypeHandle
 // ======================================================================
 
-#[pyclass]
+#[pyclass(from_py_object)]
 #[derive(Clone)]
 pub struct DynWinRTType(pub(crate) dynwinrt::TypeHandle);
 
@@ -276,7 +355,7 @@ impl DynWinRTType {
 // DynWinRTMethodSig — builder for method parameter descriptions
 // ======================================================================
 
-#[pyclass]
+#[pyclass(from_py_object)]
 #[derive(Clone)]
 pub struct DynWinRTMethodSig(pub(crate) dynwinrt::MethodSignature);
 
@@ -319,10 +398,7 @@ impl DynWinRTMethodHandle {
             _ => return Err(PyRuntimeError::new_err("invoke() requires an Object value")),
         };
         let wrt_args: Vec<dynwinrt::WinRTValue> = args.iter().map(|a| a.0.clone()).collect();
-        let results = self
-            .0
-            .invoke(raw, &wrt_args)
-            .map_err(|e| PyRuntimeError::new_err(e.message()))?;
+        let results = self.0.invoke(raw, &wrt_args).map_err(map_dynwinrt_error)?;
         if results.is_empty() {
             Ok(DynWinRTValue(dynwinrt::WinRTValue::I32(0)))
         } else {
@@ -346,10 +422,7 @@ impl DynWinRTMethodHandle {
             }
         };
         let wrt_args: Vec<dynwinrt::WinRTValue> = args.iter().map(|a| a.0.clone()).collect();
-        let results = self
-            .0
-            .invoke(raw, &wrt_args)
-            .map_err(|e| PyRuntimeError::new_err(e.message()))?;
+        let results = self.0.invoke(raw, &wrt_args).map_err(map_dynwinrt_error)?;
         Ok(results.into_iter().map(DynWinRTValue).collect())
     }
 
@@ -365,7 +438,7 @@ impl DynWinRTMethodHandle {
         let hs = self
             .0
             .call_getter_hstring(raw)
-            .map_err(|e| PyRuntimeError::new_err(e.message()))?;
+            .map_err(map_dynwinrt_error)?;
         Ok(hs.to_string())
     }
 
@@ -376,9 +449,7 @@ impl DynWinRTMethodHandle {
             .as_object()
             .ok_or_else(|| PyRuntimeError::new_err("get_i32: not an Object"))?
             .as_raw();
-        self.0
-            .call_getter_i32(raw)
-            .map_err(|e| PyRuntimeError::new_err(e.message()))
+        self.0.call_getter_i32(raw).map_err(map_dynwinrt_error)
     }
 
     /// Getter → bool (0 args, zero Vec allocation)
@@ -388,9 +459,7 @@ impl DynWinRTMethodHandle {
             .as_object()
             .ok_or_else(|| PyRuntimeError::new_err("get_bool: not an Object"))?
             .as_raw();
-        self.0
-            .call_getter_bool(raw)
-            .map_err(|e| PyRuntimeError::new_err(e.message()))
+        self.0.call_getter_bool(raw).map_err(map_dynwinrt_error)
     }
 
     /// Getter → DynWinRTValue object (0 args, zero Vec allocation)
@@ -403,7 +472,7 @@ impl DynWinRTMethodHandle {
         self.0
             .call_getter_object(raw)
             .map(DynWinRTValue)
-            .map_err(|e| PyRuntimeError::new_err(e.message()))
+            .map_err(map_dynwinrt_error)
     }
 
     /// 1-arg invoke with hstring input → DynWinRTValue result
@@ -416,7 +485,7 @@ impl DynWinRTMethodHandle {
         let results = self
             .0
             .invoke(raw, &[dynwinrt::WinRTValue::HString(HSTRING::from(arg))])
-            .map_err(|e| PyRuntimeError::new_err(e.message()))?;
+            .map_err(map_dynwinrt_error)?;
         Ok(DynWinRTValue(results.into_iter().next().ok_or_else(
             || PyRuntimeError::new_err("invoke_hstring: no result"),
         )?))
@@ -432,7 +501,7 @@ impl DynWinRTMethodHandle {
         let results = self
             .0
             .invoke(raw, &[dynwinrt::WinRTValue::I32(arg)])
-            .map_err(|e| PyRuntimeError::new_err(e.message()))?;
+            .map_err(map_dynwinrt_error)?;
         Ok(DynWinRTValue(results.into_iter().next().ok_or_else(
             || PyRuntimeError::new_err("invoke_i32: no result"),
         )?))
@@ -443,7 +512,7 @@ impl DynWinRTMethodHandle {
 // DynWinRTValue — main value container
 // ======================================================================
 
-#[pyclass]
+#[pyclass(from_py_object)]
 #[derive(Clone)]
 pub struct DynWinRTValue(pub(crate) dynwinrt::WinRTValue);
 
@@ -453,7 +522,7 @@ impl DynWinRTValue {
     fn activation_factory(name: String) -> PyResult<DynWinRTValue> {
         dynwinrt::ro_get_activation_factory_2(&HSTRING::from(name))
             .map(DynWinRTValue)
-            .map_err(|e| PyRuntimeError::new_err(e.message()))
+            .map_err(map_dynwinrt_error)
     }
 
     // -- Scalar constructors (full parity with JS) --
@@ -528,7 +597,7 @@ impl DynWinRTValue {
     fn box_reference(value: &DynWinRTValue, value_type: &DynWinRTType) -> PyResult<DynWinRTValue> {
         dynwinrt::box_ireference(value.0.clone(), value_type.0.clone())
             .map(DynWinRTValue)
-            .map_err(|e| PyRuntimeError::new_err(e.message()))
+            .map_err(map_dynwinrt_error)
     }
 
     /// Get the i32 value of an enum. Returns None if not an enum.
@@ -556,11 +625,9 @@ impl DynWinRTValue {
         element_type: &DynWinRTType,
     ) -> PyResult<DynWinRTValue> {
         let iids = TABLE.vector_iids(&element_type.0);
-        let is_value_type = matches!(element_type.0.kind(), dynwinrt::TypeKind::Struct(_));
-        let elem_size = element_type.0.size_of();
         let wrt_items: Vec<dynwinrt::WinRTValue> = items.iter().map(|i| i.0.clone()).collect();
-        let vector =
-            dynwinrt::vector::create_vector_from_values(&wrt_items, is_value_type, elem_size, iids);
+        let vector = dynwinrt::vector::create_vector_from_values(&wrt_items, &element_type.0, iids)
+            .map_err(map_dynwinrt_error)?;
         Ok(DynWinRTValue(dynwinrt::WinRTValue::Object(vector)))
     }
 
@@ -578,31 +645,26 @@ impl DynWinRTValue {
             ));
         }
         let iids = TABLE.map_iids(&key_type.0, &value_type.0);
-        let entries: Vec<(IUnknown, IUnknown)> = keys
+        let entries: Vec<(dynwinrt::WinRTValue, dynwinrt::WinRTValue)> = keys
             .iter()
             .zip(values.iter())
-            .map(|(k, v)| {
-                let key = k.0.as_object().ok_or_else(|| {
-                    PyRuntimeError::new_err("create_map: all keys must be Object values")
-                })?;
-                let val = v.0.as_object().ok_or_else(|| {
-                    PyRuntimeError::new_err("create_map: all values must be Object values")
-                })?;
-                Ok((key, val))
-            })
-            .collect::<PyResult<Vec<_>>>()?;
-        let map = dynwinrt::map::create_map(entries, iids);
+            .map(|(key, value)| (key.0.clone(), value.0.clone()))
+            .collect();
+        let map = dynwinrt::map::create_map_from_values(&entries, &key_type.0, &value_type.0, iids)
+            .map_err(map_dynwinrt_error)?;
         Ok(DynWinRTValue(dynwinrt::WinRTValue::Object(map)))
     }
 
     /// Await an async WinRT operation (blocks the current thread).
     /// Releases the Python GIL while waiting so other threads can proceed.
     fn wait(&self, py: Python<'_>) -> PyResult<DynWinRTValue> {
-        py.detach(|| {
-            let v = pollster::block_on(async { (&self.0).await })
-                .map_err(|e| PyRuntimeError::new_err(e.message()))?;
-            Ok(DynWinRTValue(v))
-        })
+        super::async_runtime::wait_for_async(&self.0, py).map(DynWinRTValue)
+    }
+
+    fn _get_async_results(&self) -> PyResult<DynWinRTValue> {
+        dynwinrt::get_async_results(&self.0)
+            .map(DynWinRTValue)
+            .map_err(map_dynwinrt_error)
     }
 
     /// Cancel the underlying WinRT async operation (calls `IAsyncInfo::Cancel`).
@@ -616,7 +678,7 @@ impl DynWinRTValue {
         };
         async_info
             .cancel()
-            .map_err(|e| PyRuntimeError::new_err(format!("Cancel failed: {}", e.message())))
+            .map_err(|error| map_dynwinrt_error_with_context(error, "Cancel failed"))
     }
 
     /// Register a progress callback on an async-with-progress operation.
@@ -629,6 +691,7 @@ impl DynWinRTValue {
         let progress_type = async_info
             .progress_type()
             .ok_or_else(|| PyRuntimeError::new_err("on_progress: not a WithProgress async type"))?;
+        super::async_runtime::ensure_progress_type_supported(&progress_type)?;
 
         let handler_iid = async_info.progress_handler_iid().ok_or_else(|| {
             PyRuntimeError::new_err("on_progress: cannot compute progress handler IID")
@@ -648,7 +711,7 @@ impl DynWinRTValue {
 
         async_info
             .set_progress_handler(&handler)
-            .map_err(|e| PyRuntimeError::new_err(format!("SetProgress failed: {}", e.message())))?;
+            .map_err(|error| map_dynwinrt_error_with_context(error, "SetProgress failed"))?;
 
         Ok(())
     }
@@ -777,7 +840,7 @@ impl DynWinRTValue {
         self.0
             .cast(&iid.0)
             .map(DynWinRTValue)
-            .map_err(|e| PyRuntimeError::new_err(e.message()))
+            .map_err(map_dynwinrt_error)
     }
 
     /// Call IActivationFactory::ActivateInstance (vtable[6]) to create a default instance.
@@ -791,9 +854,7 @@ impl DynWinRTValue {
             .as_object()
             .ok_or_else(|| PyRuntimeError::new_err("activate: not an Object"))?
             .as_raw();
-        let result = method
-            .call_dynamic(raw, &[])
-            .map_err(|e| PyRuntimeError::new_err(e.message()))?;
+        let result = method.call_dynamic(raw, &[]).map_err(map_windows_error)?;
         Ok(DynWinRTValue(result.into_iter().next().ok_or_else(
             || PyRuntimeError::new_err("activate: no result"),
         )?))
@@ -813,7 +874,7 @@ impl DynWinRTValue {
             .as_raw();
         let result = method
             .call_dynamic(obj_raw, &[])
-            .map_err(|e| PyRuntimeError::new_err(e.message()))?;
+            .map_err(map_windows_error)?;
         Ok(DynWinRTValue(result.into_iter().next().unwrap()))
     }
 
@@ -836,7 +897,7 @@ impl DynWinRTValue {
             .as_raw();
         let result = method
             .call_dynamic(obj_raw, &[v1.0.clone()])
-            .map_err(|e| PyRuntimeError::new_err(e.message()))?;
+            .map_err(map_windows_error)?;
         Ok(DynWinRTValue(result.into_iter().next().unwrap()))
     }
 
@@ -870,7 +931,7 @@ impl DynWinRTValue {
         let winrt_args: Vec<dynwinrt::WinRTValue> = args.iter().map(|a| a.0.clone()).collect();
         let result = iface.methods[target_index]
             .call_dynamic(obj, &winrt_args)
-            .map_err(|e| PyRuntimeError::new_err(e.message()))?;
+            .map_err(map_windows_error)?;
 
         if result.is_empty() {
             Ok(DynWinRTValue(dynwinrt::WinRTValue::I32(0)))
@@ -908,7 +969,7 @@ impl DynWinRTValue {
 // DynWinRTArray — array container with blittable fast paths
 // ======================================================================
 
-#[pyclass(unsendable)]
+#[pyclass(unsendable, from_py_object)]
 #[derive(Clone)]
 pub struct DynWinRTArray(dynwinrt::ArrayData);
 
@@ -1088,6 +1149,16 @@ impl DynWinRTArray {
         ))
     }
 
+    #[staticmethod]
+    fn from_values(values: Vec<DynWinRTValue>, element_type: &DynWinRTType) -> DynWinRTArray {
+        let values: Vec<dynwinrt::WinRTValue> =
+            values.iter().map(|value| value.0.clone()).collect();
+        DynWinRTArray(dynwinrt::ArrayData::from_values(
+            element_type.0.clone(),
+            &values,
+        ))
+    }
+
     /// Build a DynWinRTArray of WinRT object/interface elements.
     ///
     /// Use for `T[]` ABI in-parameters where `T` is a runtime class or
@@ -1099,11 +1170,7 @@ impl DynWinRTArray {
         values: Vec<DynWinRTValue>,
         element_type: &DynWinRTType,
     ) -> DynWinRTArray {
-        let wvals: Vec<dynwinrt::WinRTValue> = values.iter().map(|v| v.0.clone()).collect();
-        DynWinRTArray(dynwinrt::ArrayData::from_values(
-            element_type.0.clone(),
-            &wvals,
-        ))
+        Self::from_values(values, element_type)
     }
 
     /// Return the u8 array data as a Python `bytes` object. Safe for both
@@ -1156,7 +1223,7 @@ impl DynWinRTArray {
 // DynWinRTStruct — typed field access by index
 // ======================================================================
 
-#[pyclass(unsendable)]
+#[pyclass(unsendable, from_py_object)]
 #[derive(Clone)]
 pub struct DynWinRTStruct(dynwinrt::ValueTypeData);
 
@@ -1335,6 +1402,43 @@ impl DynWinRTStruct {
 #[pyclass]
 pub struct DynWinRtDelegate(dynwinrt::WinRTValue);
 
+const PYWINRT_E_UNRAISABLE_PYTHON_EXCEPTION: windows::core::HRESULT =
+    windows::core::HRESULT(0xA0EE4005_u32 as i32);
+
+fn create_python_delegate(
+    iid: GUID,
+    type_handles: Vec<dynwinrt::TypeHandle>,
+    callback: Py<PyAny>,
+) -> dynwinrt::WinRTValue {
+    let delegate_callback: dynwinrt::delegate::DelegateCallback =
+        Box::new(move |args: &[dynwinrt::WinRTValue]| {
+            Python::attach(|py| {
+                let result = (|| -> PyResult<()> {
+                    let py_args = args
+                        .iter()
+                        .map(|arg| {
+                            Ok(DynWinRTValue(arg.clone())
+                                .into_pyobject(py)?
+                                .into_any()
+                                .unbind())
+                        })
+                        .collect::<PyResult<Vec<Py<PyAny>>>>()?;
+                    let py_tuple = pyo3::types::PyTuple::new(py, &py_args)?;
+                    callback.call1(py, py_tuple)?;
+                    Ok(())
+                })();
+                match result {
+                    Ok(()) => windows::core::HRESULT(0),
+                    Err(error) => {
+                        error.write_unraisable(py, Some(callback.bind(py)));
+                        PYWINRT_E_UNRAISABLE_PYTHON_EXCEPTION
+                    }
+                }
+            })
+        });
+    dynwinrt::delegate::create_delegate_value(iid, type_handles, delegate_callback)
+}
+
 #[pymethods]
 impl DynWinRtDelegate {
     /// Create a delegate COM object from a Python callback function.
@@ -1350,28 +1454,7 @@ impl DynWinRtDelegate {
     ) -> PyResult<DynWinRtDelegate> {
         let type_handles: Vec<dynwinrt::TypeHandle> =
             param_types.iter().map(|t| t.0.clone()).collect();
-
-        let delegate_callback: dynwinrt::delegate::DelegateCallback =
-            Box::new(move |args: &[dynwinrt::WinRTValue]| {
-                Python::attach(|py| {
-                    let py_args: Vec<Py<PyAny>> = args
-                        .iter()
-                        .map(|a| {
-                            DynWinRTValue(a.clone())
-                                .into_pyobject(py)
-                                .unwrap()
-                                .into_any()
-                                .unbind()
-                        })
-                        .collect();
-                    let py_tuple = pyo3::types::PyTuple::new(py, &py_args).unwrap();
-                    let _ = callback.call1(py, py_tuple);
-                });
-                windows::core::HRESULT(0)
-            });
-
-        let value =
-            dynwinrt::delegate::create_delegate_value(iid.0, type_handles, delegate_callback);
+        let value = create_python_delegate(iid.0, type_handles, callback);
         Ok(DynWinRtDelegate(value))
     }
 
@@ -1409,5 +1492,98 @@ pub fn get_computer_name() -> PyResult<String> {
         } else {
             Err(PyRuntimeError::new_err("Failed to get computer name"))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pyo3::types::PyDict;
+
+    #[repr(C)]
+    struct TestDelegateVtbl {
+        base: windows::core::IUnknown_Vtbl,
+        invoke: unsafe extern "system" fn(
+            *mut std::ffi::c_void,
+            *mut std::ffi::c_void,
+            *mut std::ffi::c_void,
+        ) -> windows::core::HRESULT,
+    }
+
+    unsafe fn invoke_delegate(value: &dynwinrt::WinRTValue) -> windows::core::HRESULT {
+        let dynwinrt::WinRTValue::Object(object) = value else {
+            panic!("expected delegate object")
+        };
+        let raw = object.as_raw();
+        let vtable = unsafe { *(raw as *const *const TestDelegateVtbl) };
+        unsafe { ((*vtable).invoke)(raw, std::ptr::null_mut(), std::ptr::null_mut()) }
+    }
+
+    #[test]
+    fn python_delegate_reports_unraisable_callback_errors() {
+        Python::initialize();
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                c"captured = []\ndef hook(args):\n    captured.append(args)\ndef success():\n    pass\ndef failure():\n    raise RuntimeError('callback failed')",
+                Some(&locals),
+                Some(&locals),
+            )
+            .unwrap();
+
+            let sys = py.import("sys").unwrap();
+            let original_hook = sys.getattr("unraisablehook").unwrap().unbind();
+            sys.setattr("unraisablehook", locals.get_item("hook").unwrap().unwrap())
+                .unwrap();
+
+            let success = create_python_delegate(
+                GUID::zeroed(),
+                Vec::new(),
+                locals.get_item("success").unwrap().unwrap().unbind(),
+            );
+            let failure = create_python_delegate(
+                GUID::zeroed(),
+                Vec::new(),
+                locals
+                    .get_item("failure")
+                    .unwrap()
+                    .unwrap()
+                    .clone()
+                    .unbind(),
+            );
+            let cross_thread_failure = create_python_delegate(
+                GUID::zeroed(),
+                Vec::new(),
+                locals.get_item("failure").unwrap().unwrap().unbind(),
+            );
+
+            let success_result = unsafe { invoke_delegate(&success) };
+            let failure_result = unsafe { invoke_delegate(&failure) };
+            let cross_thread_result = py.detach(|| {
+                std::thread::spawn(move || unsafe { invoke_delegate(&cross_thread_failure) })
+                    .join()
+                    .unwrap()
+            });
+            sys.setattr("unraisablehook", original_hook).unwrap();
+
+            assert_eq!(success_result, windows::core::HRESULT(0));
+            assert_eq!(failure_result, PYWINRT_E_UNRAISABLE_PYTHON_EXCEPTION);
+            assert_eq!(cross_thread_result, PYWINRT_E_UNRAISABLE_PYTHON_EXCEPTION);
+            let captured = locals
+                .get_item("captured")
+                .unwrap()
+                .unwrap()
+                .cast_into::<pyo3::types::PyList>()
+                .unwrap();
+            assert_eq!(captured.len(), 2);
+            assert!(
+                captured
+                    .get_item(0)
+                    .unwrap()
+                    .getattr("exc_value")
+                    .unwrap()
+                    .is_instance_of::<pyo3::exceptions::PyRuntimeError>()
+            );
+        });
     }
 }

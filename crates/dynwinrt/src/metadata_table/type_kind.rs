@@ -21,6 +21,10 @@ pub const IMAP: GUID = GUID::from_u128(0x3c2925fe_8519_45c1_aa79_197b6718c1c1);
 pub const IMAP_VIEW: GUID = GUID::from_u128(0xe9bdaaf0_cbf6_4c39_de49_316b34326a17);
 pub const IKEY_VALUE_PAIR: GUID = GUID::from_u128(0x02b51929_c1c4_4a7e_8940_0312b5c18500);
 pub const IOBSERVABLE_VECTOR: GUID = GUID::from_u128(0x5917eb53_50b4_4a0d_b309_65862b3f1dbc);
+pub const VECTOR_CHANGED_EVENT_HANDLER: GUID =
+    GUID::from_u128(0x0c051752_9fbf_4c70_aa0c_0e4c82d9a761);
+pub const IVECTOR_CHANGED_EVENT_ARGS: GUID =
+    GUID::from_u128(0x575933df_34fe_4480_af15_07691f3d5d9b);
 pub const IREFERENCE: GUID = GUID::from_u128(0x61c17706_2d65_11e0_9ae8_d48564015472);
 
 pub const ASYNC_ACTION_COMPLETED_HANDLER: GUID = windows_future::AsyncActionCompletedHandler::IID;

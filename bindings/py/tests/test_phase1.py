@@ -7,9 +7,14 @@ Phase 1 — Python binding API additions for JS parity.
 Covers:
   * DynWinRTMethodHandle.invoke_all  — multi-out-parameter invocation
   * DynWinRTValue.cancel             — IAsyncInfo::Cancel
+  * WinRTAsync                       — public asyncio-compatible protocols
   * DynWinRTArray.to_bytes/from_bytes — Pythonic byte-buffer interop
   * DynWinRTArray.from_object_values — T[] of object/interface elements
 """
+
+import asyncio
+from datetime import datetime, timedelta, timezone
+import threading
 
 import pytest
 
@@ -19,8 +24,19 @@ from dynwinrt_py import (
     DynWinRTMethodSig,
     DynWinRTValue,
     DynWinRTArray,
+    RoApartment,
+    WinRTAsync,
+    WinRTAsyncWithProgress,
     WinGUID,
     ro_initialize,
+)
+from dynwinrt_py.dynwinrt_py import (
+    _DynWinRTAsync,
+    _DynWinRTAsyncWithProgress,
+    _dynwinrt_datetime_to_ticks,
+    _dynwinrt_ticks_to_datetime,
+    _dynwinrt_ticks_to_timedelta,
+    _dynwinrt_timedelta_to_ticks,
 )
 
 
@@ -28,6 +44,8 @@ from dynwinrt_py import (
 IID_IURI_FACTORY = "44A9796F-723E-4FDF-A218-033E75B0C084"
 # IUriRuntimeClass IID — get_AbsoluteUri at vtable index 6
 IID_IURI = "9E365E57-48B2-4160-956F-C7385120BBFC"
+IID_ISTORAGE_FILE = "FA3F6186-4214-428C-A64C-14C9AC7315EA"
+IID_ISTORAGE_FILE_STATICS = "5984C710-DAF2-43C8-8BB4-A4D3EACFD03F"
 
 
 def _setup_module():
@@ -80,6 +98,83 @@ def test_invoke_all_vs_invoke_consistency():
 
 
 # ----------------------------------------------------------------------
+# WinRT error mapping
+# ----------------------------------------------------------------------
+
+def test_sync_hresult_maps_to_os_error_with_winerror():
+    factory_iid = WinGUID.parse(IID_IURI_FACTORY)
+    factory_t = DynWinRTType.register_interface(
+        "IUriRuntimeClassFactoryErrorMapping",
+        factory_iid,
+    ).add_method(
+        "CreateUri",
+        DynWinRTMethodSig()
+        .add_in(DynWinRTType.hstring())
+        .add_out(DynWinRTType.object()),
+    )
+    factory = DynWinRTValue.activation_factory("Windows.Foundation.Uri").cast(
+        factory_iid,
+    )
+
+    with pytest.raises(OSError) as exc_info:
+        factory_t.method(6).invoke(
+            factory,
+            [DynWinRTValue.from_hstring("")],
+        )
+
+    assert exc_info.value.winerror == -2147467261  # E_POINTER
+    assert exc_info.value.strerror
+
+
+def _missing_storage_file_operation(path: str):
+    statics_iid = WinGUID.parse(IID_ISTORAGE_FILE_STATICS)
+    storage_file_type = DynWinRTType.runtime_class(
+        "Windows.Storage.StorageFile",
+        WinGUID.parse(IID_ISTORAGE_FILE),
+    )
+    statics = DynWinRTType.register_interface(
+        "IStorageFileStaticsErrorMapping",
+        statics_iid,
+    ).add_method(
+        "GetFileFromPathAsync",
+        DynWinRTMethodSig()
+        .add_in(DynWinRTType.hstring())
+        .add_out(DynWinRTType.i_async_operation(storage_file_type)),
+    )
+    factory = DynWinRTValue.activation_factory("Windows.Storage.StorageFile").cast(
+        statics_iid,
+    )
+    raw_operation = statics.method(6).invoke(
+        factory,
+        [DynWinRTValue.from_hstring(path)],
+    )
+    return _DynWinRTAsync(raw_operation, lambda value: value)
+
+
+def test_async_hresult_maps_to_os_error_with_winerror(tmp_path):
+    missing_path = str(tmp_path / "missing-dynwinrt-file")
+
+    async def await_missing_file():
+        await _missing_storage_file_operation(missing_path)
+
+    with pytest.raises(OSError) as exc_info:
+        asyncio.run(await_missing_file())
+
+    assert exc_info.value.winerror == -2147024894  # HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND)
+    assert exc_info.value.strerror
+
+
+def test_blocking_async_hresult_maps_to_os_error_with_winerror(tmp_path):
+    missing_path = str(tmp_path / "missing-dynwinrt-file")
+
+    with pytest.raises(OSError) as exc_info:
+        _missing_storage_file_operation(missing_path).wait()
+
+    assert exc_info.value.winerror == -2147024894  # HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND)
+    assert exc_info.value.strerror
+
+
+# ----------------------------------------------------------------------
 # DynWinRTValue.cancel
 # ----------------------------------------------------------------------
 
@@ -97,6 +192,73 @@ def test_cancel_on_async_no_raise_after_completion():
     scenario will be covered in the E2E suite."""
     # Reuses the non-async guard above; the real-async case is covered in E2E (TODO p1-tests)
     assert callable(DynWinRTValue.from_i32(0).cancel)
+
+
+def test_async_wrapper_rejects_non_async_value():
+    with pytest.raises(RuntimeError, match="not a WinRT async operation"):
+        _DynWinRTAsync(DynWinRTValue.from_i32(42), lambda value: value.to_number())
+
+
+def test_progress_wrapper_rejects_non_async_value():
+    with pytest.raises(RuntimeError, match="not a WinRT async operation"):
+        _DynWinRTAsyncWithProgress(
+            DynWinRTValue.from_i32(42),
+            lambda value: value.to_number(),
+            lambda value: value.to_number(),
+        )
+
+
+def test_async_protocols_are_public():
+    assert WinRTAsync.__name__ == "WinRTAsync"
+    assert WinRTAsyncWithProgress.__name__ == "WinRTAsyncWithProgress"
+    assert not hasattr(dynwinrt_py, "_DynWinRTAsync")
+
+
+def test_ro_apartment_balances_nested_initialization():
+    errors = []
+
+    def worker():
+        try:
+            with RoApartment(1):
+                DynWinRTValue.activation_factory("Windows.Foundation.Uri")
+                with RoApartment(1):
+                    DynWinRTValue.activation_factory("Windows.Foundation.Uri")
+                DynWinRTValue.activation_factory("Windows.Foundation.Uri")
+                with pytest.raises(OSError):
+                    with RoApartment(0):
+                        pass
+            apartment = RoApartment(0)
+            apartment.__enter__()
+            apartment.__exit__(None, None, None)
+            apartment.__exit__(None, None, None)
+            with RoApartment(1):
+                DynWinRTValue.activation_factory("Windows.Foundation.Uri")
+        except BaseException as error:
+            errors.append(error)
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    thread.join()
+    assert not errors
+
+
+def test_ro_apartment_rejects_changed_mode():
+    errors = []
+
+    def worker():
+        try:
+            with RoApartment(0):
+                with pytest.raises(OSError) as exc_info:
+                    with RoApartment(1):
+                        pass
+                assert exc_info.value.winerror == -2147417850  # RPC_E_CHANGED_MODE
+        except BaseException as error:
+            errors.append(error)
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    thread.join()
+    assert not errors
 
 
 # ----------------------------------------------------------------------
@@ -129,6 +291,22 @@ def test_from_bytes_accepts_bytearray():
     data = bytearray(b"\x00\x01\x02\xff")
     arr = DynWinRTArray.from_bytes(data)
     assert arr.to_bytes() == bytes(data)
+
+
+def test_winrt_datetime_round_trip():
+    value = datetime(2024, 1, 2, 3, 4, 5, 678901, tzinfo=timezone.utc)
+    assert _dynwinrt_ticks_to_datetime(_dynwinrt_datetime_to_ticks(value)) == value
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        timedelta(days=2, seconds=3, microseconds=4),
+        timedelta(days=-2, seconds=3, microseconds=4),
+    ],
+)
+def test_winrt_timedelta_round_trip(value):
+    assert _dynwinrt_ticks_to_timedelta(_dynwinrt_timedelta_to_ticks(value)) == value
 
 
 # ----------------------------------------------------------------------

@@ -105,13 +105,12 @@ macro_rules! inspectable_stubs {
     };
 }
 
-/// Generate triple-vtable COM boilerplate for structs with three vtable pointers
-/// (first = iterable, second = vector, third = vector_view).
+/// Generate four-vtable COM boilerplate for collection structs.
 ///
-/// The struct layout must be: vtable_first, vtable_second, vtable_third, ...
-macro_rules! triple_vtable_com {
-    ($first_suffix:ident, $second_suffix:ident, $third_suffix:ident,
-     $second_iid_field:ident, $third_iid_field:ident) => {
+/// The struct layout must begin with the four vtable pointers in order.
+macro_rules! quad_vtable_com {
+    ($first_suffix:ident, $second_suffix:ident, $third_suffix:ident, $fourth_suffix:ident,
+     $second_iid_field:ident, $third_iid_field:ident, $fourth_iid_field:ident) => {
         paste::paste! {
             /// Recover &Self from the first (iterable) vtable pointer.
             unsafe fn [<from_ $first_suffix _ptr>](this: *mut ::core::ffi::c_void) -> &'static Self {
@@ -127,6 +126,11 @@ macro_rules! triple_vtable_com {
             /// Recover &Self from the third vtable pointer.
             unsafe fn [<from_ $third_suffix _ptr>](this: *mut ::core::ffi::c_void) -> &'static Self {
                 let base = (this as *const *const ::core::ffi::c_void).sub(2) as *const Self;
+                &*base
+            }
+
+            unsafe fn [<from_ $fourth_suffix _ptr>](this: *mut ::core::ffi::c_void) -> &'static Self {
+                let base = (this as *const *const ::core::ffi::c_void).sub(3) as *const Self;
                 &*base
             }
 
@@ -208,6 +212,31 @@ macro_rules! triple_vtable_com {
                 remaining
             }
 
+            // -- IUnknown for fourth interface --
+
+            unsafe extern "system" fn [<qi_ $fourth_suffix>](
+                this: *mut ::core::ffi::c_void,
+                iid: *const ::windows_core::GUID,
+                ppv: *mut *mut ::core::ffi::c_void,
+            ) -> ::windows_core::HRESULT {
+                let me = Self::[<from_ $fourth_suffix _ptr>](this);
+                Self::qi_impl(me, Self::[<as_ $first_suffix _ptr>](me as *const Self), iid, ppv)
+            }
+
+            unsafe extern "system" fn [<add_ref_ $fourth_suffix>](this: *mut ::core::ffi::c_void) -> u32 {
+                Self::[<from_ $fourth_suffix _ptr>](this).ref_count.add_ref()
+            }
+
+            unsafe extern "system" fn [<release_ $fourth_suffix>](this: *mut ::core::ffi::c_void) -> u32 {
+                let me = Self::[<from_ $fourth_suffix _ptr>](this);
+                let remaining = me.ref_count.release();
+                if remaining == 0 {
+                    let base = Self::[<as_ $first_suffix _ptr>](me as *const Self);
+                    drop(Box::from_raw(base as *mut Self));
+                }
+                remaining
+            }
+
             // -- Shared QI --
 
             unsafe fn qi_impl(
@@ -234,6 +263,10 @@ macro_rules! triple_vtable_com {
                     $crate::com_helpers::S_OK
                 } else if *iid == me.iids.$third_iid_field {
                     *ppv = (identity as *const *const ::core::ffi::c_void).add(2) as *mut ::core::ffi::c_void;
+                    me.ref_count.add_ref();
+                    $crate::com_helpers::S_OK
+                } else if *iid == me.iids.$fourth_iid_field {
+                    *ppv = (identity as *const *const ::core::ffi::c_void).add(3) as *mut ::core::ffi::c_void;
                     me.ref_count.add_ref();
                     $crate::com_helpers::S_OK
                 } else if *iid == ::windows_core::imp::IMarshal::IID {
@@ -416,42 +449,6 @@ macro_rules! single_vtable_com {
     };
 }
 
-/// Generate a Drop impl that releases all COM items if !is_value_type.
-/// $items_expr: how to get an iterable of &usize from &self (e.g. self.items.lock().unwrap()).
-macro_rules! impl_drop_release_items {
-    ($ty:ty, lock) => {
-        impl Drop for $ty {
-            fn drop(&mut self) {
-                if !self.is_value_type {
-                    // Use if-let to avoid panic on poisoned mutex during drop.
-                    // If the lock is poisoned, we leak COM references rather than
-                    // panicking across an FFI boundary.
-                    if let Ok(items) = self.items.lock() {
-                        for &raw in items.iter() {
-                            unsafe {
-                                $crate::com_helpers::com_usize_release(raw);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    };
-    ($ty:ty, direct) => {
-        impl Drop for $ty {
-            fn drop(&mut self) {
-                if !self.is_value_type {
-                    for &raw in &self.items {
-                        unsafe {
-                            $crate::com_helpers::com_usize_release(raw);
-                        }
-                    }
-                }
-            }
-        }
-    };
-}
-
 /// Safely lock a Mutex in a COM vtable callback. Returns E_FAIL on poison.
 /// Usage: `let items = lock_or!(me.items, E_FAIL);`
 macro_rules! lock_or {
@@ -465,7 +462,6 @@ macro_rules! lock_or {
 
 // Export macros for use within the crate
 pub(crate) use dual_vtable_com;
-pub(crate) use impl_drop_release_items;
 pub(crate) use inspectable_stubs;
 pub(crate) use lock_or;
 pub(crate) use single_vtable_com;

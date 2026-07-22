@@ -78,6 +78,13 @@ impl AsyncInfo {
         self.async_type.progress_handler_iid()
     }
 
+    pub fn is_started(&self) -> result::Result<bool> {
+        self.info
+            .Status()
+            .map(|status| status == windows_future::AsyncStatus::Started)
+            .map_err(result::Error::WindowsError)
+    }
+
     /// Register a progress handler on a WithProgress async operation (vtable index 6 = put_Progress).
     pub fn set_progress_handler(&self, handler: &IUnknown) -> result::Result<()> {
         match self.async_type.kind() {
@@ -216,6 +223,11 @@ impl WinRTValue {
             WinRTValue::Object(obj) => {
                 let mut result = std::ptr::null_mut();
                 unsafe { obj.query(iid, &mut result) }.ok()?;
+                Ok(WinRTValue::Object(unsafe { IUnknown::from_raw(result) }))
+            }
+            WinRTValue::Async(info) => {
+                let mut result = std::ptr::null_mut();
+                unsafe { info.info.query(iid, &mut result) }.ok()?;
                 Ok(WinRTValue::Object(unsafe { IUnknown::from_raw(result) }))
             }
             _ => Err(result::Error::ExpectObjectTypeError(self.get_type_kind())),

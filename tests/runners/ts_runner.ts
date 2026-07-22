@@ -30,6 +30,7 @@ interface ArgsFactory {
 interface Check {
   kind: string;
   member: string;
+  langs?: string[];
   args?: any[];
   args_factory?: ArgsFactory;
   expected?: any;
@@ -125,6 +126,7 @@ async function runSpec(
 
     // Run checks
     for (const check of spec.checks) {
+      if (!(check.langs || ['py', 'ts']).includes('ts')) continue;
       const cr = await runCheck(check, cls, spec.class, obj, generatedDir, runtime);
       result.checks.push(cr);
       if (!cr.pass) result.pass = false;

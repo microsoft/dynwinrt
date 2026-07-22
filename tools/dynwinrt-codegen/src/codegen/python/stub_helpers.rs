@@ -10,8 +10,10 @@ use crate::meta::MethodMeta;
 use crate::types::{TypeKind, TypeMeta};
 
 use super::naming::{to_snake_case, to_snake_case_filename};
+use super::native_types::{FoundationType, foundation_type};
 use super::type_helpers::{
-    py_method_return_type, py_param_list, py_param_type_safe, py_return_type_safe,
+    py_factory_return_type, py_method_return_type, py_param_list, py_param_type_safe,
+    py_return_type_safe,
 };
 
 pub(super) fn format_py_type_import(name: &str, kind: TypeKind) -> String {
@@ -38,6 +40,22 @@ pub(super) fn py_struct_export_names(s: &TypeMeta) -> Vec<String> {
 }
 
 pub(super) fn emit_struct_stub(s: &TypeMeta) -> String {
+    if let Some(kind) = foundation_type(s) {
+        let TypeMeta::Struct { name, .. } = s else {
+            unreachable!()
+        };
+        let snake_name = to_snake_case(name);
+        let native_type = match kind {
+            FoundationType::DateTime => "datetime",
+            FoundationType::TimeSpan => "timedelta",
+        };
+        return format!(
+            "\ndef unpack_{snake_name}(v: DynWinRTValue) -> {native_type}: ...\n\
+             {name}_TYPE: 'DynWinRTType'\n\
+             def pack_{snake_name}(v: {native_type}) -> DynWinRTStruct: ...\n"
+        );
+    }
+
     let (_namespace, name, fields) = match s {
         TypeMeta::Struct {
             namespace,
@@ -96,15 +114,18 @@ pub(super) fn py_struct_field_stub_type(typ: &TypeMeta) -> String {
         | TypeMeta::U8
         | TypeMeta::I16
         | TypeMeta::U16
-        | TypeMeta::Char16
         | TypeMeta::I32
         | TypeMeta::U32
         | TypeMeta::I64
         | TypeMeta::U64
         | TypeMeta::Enum { .. } => "int".to_string(),
+        TypeMeta::Char16 => "str".to_string(),
         TypeMeta::F32 | TypeMeta::F64 => "float".to_string(),
-        TypeMeta::String | TypeMeta::Guid => "str".to_string(),
+        TypeMeta::String => "str".to_string(),
+        TypeMeta::Guid => "UUID".to_string(),
         TypeMeta::Struct { name, .. } if name == "HResult" => "int".to_string(),
+        typ if foundation_type(typ) == Some(FoundationType::DateTime) => "datetime".to_string(),
+        typ if foundation_type(typ) == Some(FoundationType::TimeSpan) => "timedelta".to_string(),
         TypeMeta::Struct { name, .. } => format!("'{}'", name),
         _ => "object".to_string(),
     }
@@ -116,6 +137,22 @@ pub(super) fn emit_method_stub(
     delegate_type_names: &HashSet<String>,
     indent_spaces: usize,
 ) -> String {
+    emit_method_stub_named(
+        method,
+        known_types,
+        delegate_type_names,
+        indent_spaces,
+        None,
+    )
+}
+
+pub(super) fn emit_method_stub_named(
+    method: &MethodMeta,
+    known_types: &HashSet<String>,
+    delegate_type_names: &HashSet<String>,
+    indent_spaces: usize,
+    name_override: Option<&str>,
+) -> String {
     let indent = " ".repeat(indent_spaces);
     let in_params = get_in_params(method);
     let return_type = method.return_type.as_ref();
@@ -124,6 +161,9 @@ pub(super) fn emit_method_stub(
         match typ {
             Some(TypeMeta::Delegate { .. }) => true,
             Some(TypeMeta::Interface { name, .. }) => delegate_type_names.contains(name),
+            Some(TypeMeta::Parameterized { name, args, .. }) => {
+                delegate_type_names.contains(&crate::meta::make_parameterized_name(name, args))
+            }
             _ => false,
         }
     };
@@ -166,7 +206,7 @@ pub(super) fn emit_method_stub(
             .first()
             .is_some_and(|p| is_delegate_type(Some(&p.typ)))
         {
-            "'DynWinRTValue'".to_string()
+            "Callable[..., object] | 'DynWinRTValue'".to_string()
         } else {
             in_params
                 .first()
@@ -181,7 +221,9 @@ pub(super) fn emit_method_stub(
     } else {
         let py_params = py_param_list(&in_params, known_types, delegate_type_names);
         let py_return = py_method_return_type(method, known_types, delegate_type_names);
-        let method_name = to_snake_case(&method.name);
+        let method_name = name_override
+            .map(str::to_string)
+            .unwrap_or_else(|| to_snake_case(&method.name));
         let self_and_params = if py_params.is_empty() {
             "self".to_string()
         } else {
@@ -197,17 +239,35 @@ pub(super) fn emit_method_stub(
 }
 
 pub(super) fn emit_static_method_stub(
-    _class_name: &str,
+    class_name: &str,
     method: &MethodMeta,
     known_types: &HashSet<String>,
     is_factory: bool,
     delegate_type_names: &HashSet<String>,
 ) -> String {
+    emit_static_method_stub_named(
+        class_name,
+        method,
+        known_types,
+        is_factory,
+        delegate_type_names,
+        None,
+    )
+}
+
+pub(super) fn emit_static_method_stub_named(
+    class_name: &str,
+    method: &MethodMeta,
+    known_types: &HashSet<String>,
+    is_factory: bool,
+    delegate_type_names: &HashSet<String>,
+    name_override: Option<&str>,
+) -> String {
     let in_params = get_in_params(method);
     let py_params = py_param_list(&in_params, known_types, delegate_type_names);
 
     let py_return = if is_factory {
-        format!("'{}'", _class_name)
+        py_factory_return_type(class_name, method, known_types)
     } else {
         py_method_return_type(method, known_types, delegate_type_names)
     };
@@ -215,7 +275,9 @@ pub(super) fn emit_static_method_stub(
     let mut out = String::new();
 
     if is_factory || !method.is_property_getter || !in_params.is_empty() {
-        let method_name = to_snake_case(&method.name);
+        let method_name = name_override
+            .map(str::to_string)
+            .unwrap_or_else(|| to_snake_case(&method.name));
         out.push_str("    @staticmethod\n");
         if py_params.is_empty() {
             out.push_str(&format!(

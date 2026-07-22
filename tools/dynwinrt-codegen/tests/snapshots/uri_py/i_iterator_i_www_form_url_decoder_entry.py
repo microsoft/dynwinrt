@@ -2,10 +2,20 @@
 from __future__ import annotations
 from functools import lru_cache
 from importlib import import_module
+from collections.abc import (
+    Callable, Iterable, Iterator, Mapping, MutableMapping, MutableSequence, Sequence,
+)
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
+from uuid import UUID
 from dynwinrt_py import (
     DynWinRTType, DynWinRTMethodSig, DynWinRTValue, DynWinRTArray,
     DynWinRTStruct, DynWinRtDelegate, WinGUID,
+)
+from dynwinrt_py.dynwinrt_py import (
+    _dynwinrt_array, _dynwinrt_bind_overload, _dynwinrt_datetime_to_ticks, _dynwinrt_guid,
+    _dynwinrt_map, _dynwinrt_ticks_to_datetime, _dynwinrt_ticks_to_timedelta,
+    _dynwinrt_timedelta_to_ticks, _dynwinrt_uuid, _dynwinrt_vector,
 )
 
 
@@ -16,7 +26,8 @@ def _dynwinrt_symbol(module, name):
 
 def _dynwinrt_wrap_values(module, name, values):
     wrapper = _dynwinrt_symbol(module, name)
-    return [wrapper(value) for value in values]
+    wrap = getattr(wrapper, '_from_native', wrapper)
+    return [wrap(value) for value in values]
 
 
 def _dynwinrt_enum(module, name, value):
@@ -27,10 +38,15 @@ def _dynwinrt_enum(module, name, value):
         return value
 
 
-def _dynwinrt_wait_action(value):
-    value.wait()
-    return None
+def _dynwinrt_delegate(value, iid, parameter_types):
+    raw = getattr(value, '_obj', value)
+    if isinstance(raw, DynWinRTValue):
+        return raw
+    if not callable(value):
+        raise TypeError('delegate value must be callable or a DynWinRTValue')
+    return DynWinRtDelegate.create(iid, parameter_types, value).to_value()
 
+from dynwinrt_py.dynwinrt_py import _WinRTIteratorMixin
 
 if TYPE_CHECKING:
     from .i_www_form_url_decoder_entry import IID_IWwwFormUrlDecoderEntry, IWwwFormUrlDecoderEntry  # noqa: F401
@@ -45,7 +61,7 @@ _IIterator_IWwwFormUrlDecoderEntry = DynWinRTType.register_interface(
     .add_method("GetMany", DynWinRTMethodSig().add_out_fill(DynWinRTType.array_type(DynWinRTType.interface(WinGUID.parse('125e7431-f678-4e8e-b670-20a9b06c512d')))).add_out(DynWinRTType.u32_type()))
 
 
-class IIterator_IWwwFormUrlDecoderEntry:
+class IIterator_IWwwFormUrlDecoderEntry(_WinRTIteratorMixin):
     def __init__(self, obj: DynWinRTValue):
         self._obj = obj.cast(IID_IIterator_IWwwFormUrlDecoderEntry)
 
@@ -65,6 +81,6 @@ class IIterator_IWwwFormUrlDecoderEntry:
     def move_next(self) -> bool:
         return _IIterator_IWwwFormUrlDecoderEntry.method(8).invoke(self._obj, []).to_bool()
 
-    def get_many(self, items: 'DynWinRTArray') -> list['IWwwFormUrlDecoderEntry']:
-        _results = _IIterator_IWwwFormUrlDecoderEntry.method(9).invoke_all(self._obj, [items.to_value()])
+    def get_many(self, items: DynWinRTArray | Sequence['IWwwFormUrlDecoderEntry']) -> list['IWwwFormUrlDecoderEntry']:
+        _results = _IIterator_IWwwFormUrlDecoderEntry.method(9).invoke_all(self._obj, [_dynwinrt_array(items, lambda item: getattr(item, '_obj', item), DynWinRTType.interface(WinGUID.parse('125e7431-f678-4e8e-b670-20a9b06c512d')), False)])
         return _dynwinrt_wrap_values('i_www_form_url_decoder_entry', 'IWwwFormUrlDecoderEntry', _results[0].as_array().to_values())[:_results[1].to_number()]
