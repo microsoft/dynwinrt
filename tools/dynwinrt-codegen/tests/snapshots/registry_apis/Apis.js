@@ -23,6 +23,29 @@ function _wideStringBuffer(str) {
     buf.write(str, 'utf16le');
     return buf;
 }
+// Build a NUL-terminated UTF-8 Buffer for LPCSTR/PSTR args. Distinct from
+// the wide-string helper because ANSI/UTF-8 Win32 A-suffixed exports
+// (e.g. `RegOpenKeyExA`) take a single-byte `char*`, not `wchar_t*` —
+// writing UTF-16LE bytes into them corrupts parameters and can smash the
+// callee's stack. On modern Windows (10 1903+) with the app manifested
+// for UTF-8 ACP, or on OS versions that natively accept UTF-8 for A-APIs,
+// this is the correct encoding; if a caller needs a legacy ANSI code page
+// they can pre-encode to a Buffer and pass that directly.
+// Rejects embedded U+0000 for the same truncation-safety reason as the
+// wide-string helper.
+function _narrowStringBuffer(str) {
+    if (str === null || str === undefined) return null;
+    if (typeof str !== 'string') {
+        throw new TypeError(`expected string, got ${typeof str}`);
+    }
+    if (str.indexOf('\u0000') !== -1) {
+        throw new RangeError('string contains embedded NUL (U+0000)');
+    }
+    const byteLen = Buffer.byteLength(str, 'utf8');
+    const buf = Buffer.alloc(byteLen + 1);
+    buf.write(str, 'utf8');
+    return buf;
+}
 
 /**
  * GetRegistryValueWithFallbackW — api-ms-win-core-state-helpers-l1-1-0.dll export.
@@ -71,7 +94,7 @@ export function regCloseKey(hKey) {
  */
 export function regConnectRegistryA(machineName, hKey) {
     const _phkResultSlot = Buffer.alloc(8);
-    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegConnectRegistryA', 'I32', [DynWinRtValue.pointer(_wideStringBuffer(machineName)), DynWinRtValue.pointer(hKey), DynWinRtValue.pointer(_phkResultSlot)]);
+    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegConnectRegistryA', 'I32', [DynWinRtValue.pointer(_narrowStringBuffer(machineName)), DynWinRtValue.pointer(hKey), DynWinRtValue.pointer(_phkResultSlot)]);
     return {
         status: _ret.toNumber(),
         phkResult: _phkResultSlot.readBigUInt64LE(0),
@@ -89,7 +112,7 @@ export function regConnectRegistryA(machineName, hKey) {
  */
 export function regConnectRegistryExA(machineName, hKey, flags) {
     const _phkResultSlot = Buffer.alloc(8);
-    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegConnectRegistryExA', 'I32', [DynWinRtValue.pointer(_wideStringBuffer(machineName)), DynWinRtValue.pointer(hKey), DynWinRtValue.u32(flags), DynWinRtValue.pointer(_phkResultSlot)]);
+    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegConnectRegistryExA', 'I32', [DynWinRtValue.pointer(_narrowStringBuffer(machineName)), DynWinRtValue.pointer(hKey), DynWinRtValue.u32(flags), DynWinRtValue.pointer(_phkResultSlot)]);
     return {
         status: _ret.toNumber(),
         phkResult: _phkResultSlot.readBigUInt64LE(0),
@@ -140,7 +163,7 @@ export function regConnectRegistryW(machineName, hKey) {
  * @returns { status: number }
  */
 export function regCopyTreeA(hKeySrc, subKey, hKeyDest) {
-    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegCopyTreeA', 'I32', [DynWinRtValue.pointer(hKeySrc), DynWinRtValue.pointer(_wideStringBuffer(subKey)), DynWinRtValue.pointer(hKeyDest)]);
+    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegCopyTreeA', 'I32', [DynWinRtValue.pointer(hKeySrc), DynWinRtValue.pointer(_narrowStringBuffer(subKey)), DynWinRtValue.pointer(hKeyDest)]);
     return { status: _ret.toNumber() };
 }
 
@@ -167,7 +190,7 @@ export function regCopyTreeW(hKeySrc, subKey, hKeyDest) {
  */
 export function regCreateKeyA(hKey, subKey) {
     const _phkResultSlot = Buffer.alloc(8);
-    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegCreateKeyA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.pointer(_wideStringBuffer(subKey)), DynWinRtValue.pointer(_phkResultSlot)]);
+    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegCreateKeyA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.pointer(_narrowStringBuffer(subKey)), DynWinRtValue.pointer(_phkResultSlot)]);
     return {
         status: _ret.toNumber(),
         phkResult: _phkResultSlot.readBigUInt64LE(0),
@@ -191,7 +214,7 @@ export function regCreateKeyA(hKey, subKey) {
 export function regCreateKeyExA(hKey, subKey, reserved, class_, options, samDesired, securityAttributes) {
     const _phkResultSlot = Buffer.alloc(8);
     const _lpdwDispositionSlot = Buffer.alloc(4);
-    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegCreateKeyExA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.pointer(_wideStringBuffer(subKey)), DynWinRtValue.u32(reserved), DynWinRtValue.pointer(_wideStringBuffer(class_)), DynWinRtValue.i32(options), DynWinRtValue.i32(samDesired), DynWinRtValue.pointer(securityAttributes), DynWinRtValue.pointer(_phkResultSlot), DynWinRtValue.pointer(_lpdwDispositionSlot)]);
+    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegCreateKeyExA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.pointer(_narrowStringBuffer(subKey)), DynWinRtValue.u32(reserved), DynWinRtValue.pointer(_narrowStringBuffer(class_)), DynWinRtValue.i32(options), DynWinRtValue.i32(samDesired), DynWinRtValue.pointer(securityAttributes), DynWinRtValue.pointer(_phkResultSlot), DynWinRtValue.pointer(_lpdwDispositionSlot)]);
     return {
         status: _ret.toNumber(),
         phkResult: _phkResultSlot.readBigUInt64LE(0),
@@ -243,7 +266,7 @@ export function regCreateKeyExW(hKey, subKey, reserved, class_, options, samDesi
 export function regCreateKeyTransactedA(hKey, subKey, reserved, class_, options, samDesired, securityAttributes, hTransaction, pExtendedParemeter) {
     const _phkResultSlot = Buffer.alloc(8);
     const _lpdwDispositionSlot = Buffer.alloc(4);
-    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegCreateKeyTransactedA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.pointer(_wideStringBuffer(subKey)), DynWinRtValue.u32(reserved), DynWinRtValue.pointer(_wideStringBuffer(class_)), DynWinRtValue.i32(options), DynWinRtValue.i32(samDesired), DynWinRtValue.pointer(securityAttributes), DynWinRtValue.pointer(_phkResultSlot), DynWinRtValue.pointer(_lpdwDispositionSlot), DynWinRtValue.pointer(hTransaction), DynWinRtValue.pointer(pExtendedParemeter)]);
+    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegCreateKeyTransactedA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.pointer(_narrowStringBuffer(subKey)), DynWinRtValue.u32(reserved), DynWinRtValue.pointer(_narrowStringBuffer(class_)), DynWinRtValue.i32(options), DynWinRtValue.i32(samDesired), DynWinRtValue.pointer(securityAttributes), DynWinRtValue.pointer(_phkResultSlot), DynWinRtValue.pointer(_lpdwDispositionSlot), DynWinRtValue.pointer(hTransaction), DynWinRtValue.pointer(pExtendedParemeter)]);
     return {
         status: _ret.toNumber(),
         phkResult: _phkResultSlot.readBigUInt64LE(0),
@@ -303,7 +326,7 @@ export function regCreateKeyW(hKey, subKey) {
  * @returns { status: number }
  */
 export function regDeleteKeyA(hKey, subKey) {
-    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegDeleteKeyA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.pointer(_wideStringBuffer(subKey))]);
+    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegDeleteKeyA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.pointer(_narrowStringBuffer(subKey))]);
     return { status: _ret.toNumber() };
 }
 
@@ -317,7 +340,7 @@ export function regDeleteKeyA(hKey, subKey) {
  * @returns { status: number }
  */
 export function regDeleteKeyExA(hKey, subKey, samDesired, reserved) {
-    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegDeleteKeyExA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.pointer(_wideStringBuffer(subKey)), DynWinRtValue.u32(samDesired), DynWinRtValue.u32(reserved)]);
+    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegDeleteKeyExA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.pointer(_narrowStringBuffer(subKey)), DynWinRtValue.u32(samDesired), DynWinRtValue.u32(reserved)]);
     return { status: _ret.toNumber() };
 }
 
@@ -347,7 +370,7 @@ export function regDeleteKeyExW(hKey, subKey, samDesired, reserved) {
  * @returns { status: number }
  */
 export function regDeleteKeyTransactedA(hKey, subKey, samDesired, reserved, hTransaction, pExtendedParameter) {
-    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegDeleteKeyTransactedA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.pointer(_wideStringBuffer(subKey)), DynWinRtValue.u32(samDesired), DynWinRtValue.u32(reserved), DynWinRtValue.pointer(hTransaction), DynWinRtValue.pointer(pExtendedParameter)]);
+    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegDeleteKeyTransactedA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.pointer(_narrowStringBuffer(subKey)), DynWinRtValue.u32(samDesired), DynWinRtValue.u32(reserved), DynWinRtValue.pointer(hTransaction), DynWinRtValue.pointer(pExtendedParameter)]);
     return { status: _ret.toNumber() };
 }
 
@@ -376,7 +399,7 @@ export function regDeleteKeyTransactedW(hKey, subKey, samDesired, reserved, hTra
  * @returns { status: number }
  */
 export function regDeleteKeyValueA(hKey, subKey, valueName) {
-    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegDeleteKeyValueA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.pointer(_wideStringBuffer(subKey)), DynWinRtValue.pointer(_wideStringBuffer(valueName))]);
+    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegDeleteKeyValueA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.pointer(_narrowStringBuffer(subKey)), DynWinRtValue.pointer(_narrowStringBuffer(valueName))]);
     return { status: _ret.toNumber() };
 }
 
@@ -413,7 +436,7 @@ export function regDeleteKeyW(hKey, subKey) {
  * @returns { status: number }
  */
 export function regDeleteTreeA(hKey, subKey) {
-    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegDeleteTreeA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.pointer(_wideStringBuffer(subKey))]);
+    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegDeleteTreeA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.pointer(_narrowStringBuffer(subKey))]);
     return { status: _ret.toNumber() };
 }
 
@@ -437,7 +460,7 @@ export function regDeleteTreeW(hKey, subKey) {
  * @returns { status: number }
  */
 export function regDeleteValueA(hKey, valueName) {
-    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegDeleteValueA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.pointer(_wideStringBuffer(valueName))]);
+    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegDeleteValueA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.pointer(_narrowStringBuffer(valueName))]);
     return { status: _ret.toNumber() };
 }
 
@@ -505,7 +528,7 @@ export function regEnableReflectionKey(hBase) {
  * @returns { status: number }
  */
 export function regEnumKeyA(hKey, index, name, cchName) {
-    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegEnumKeyA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.u32(index), DynWinRtValue.pointer(_wideStringBuffer(name)), DynWinRtValue.u32(cchName)]);
+    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegEnumKeyA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.u32(index), DynWinRtValue.pointer(_narrowStringBuffer(name)), DynWinRtValue.u32(cchName)]);
     return { status: _ret.toNumber() };
 }
 
@@ -527,7 +550,7 @@ export function regEnumKeyExA(hKey, index, name, lpcchName, reserved, class_, lp
     _lpcchNameSlot.writeUInt32LE(lpcchName, 0);
     const _lpcchClassSlot = Buffer.alloc(4);
     _lpcchClassSlot.writeUInt32LE(lpcchClass, 0);
-    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegEnumKeyExA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.u32(index), DynWinRtValue.pointer(_wideStringBuffer(name)), DynWinRtValue.pointer(_lpcchNameSlot), DynWinRtValue.pointer(reserved), DynWinRtValue.pointer(_wideStringBuffer(class_)), DynWinRtValue.pointer(_lpcchClassSlot), DynWinRtValue.pointer(lpftLastWriteTime)]);
+    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegEnumKeyExA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.u32(index), DynWinRtValue.pointer(_narrowStringBuffer(name)), DynWinRtValue.pointer(_lpcchNameSlot), DynWinRtValue.pointer(reserved), DynWinRtValue.pointer(_narrowStringBuffer(class_)), DynWinRtValue.pointer(_lpcchClassSlot), DynWinRtValue.pointer(lpftLastWriteTime)]);
     return {
         status: _ret.toNumber(),
         lpcchName: _lpcchNameSlot.readUInt32LE(0),
@@ -594,7 +617,7 @@ export function regEnumValueA(hKey, index, valueName, lpcchValueName, reserved, 
     const _typeSlot = Buffer.alloc(4);
     const _lpcbDataSlot = Buffer.alloc(4);
     _lpcbDataSlot.writeUInt32LE(lpcbData, 0);
-    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegEnumValueA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.u32(index), DynWinRtValue.pointer(_wideStringBuffer(valueName)), DynWinRtValue.pointer(_lpcchValueNameSlot), DynWinRtValue.pointer(reserved), DynWinRtValue.pointer(_typeSlot), DynWinRtValue.pointer(data), DynWinRtValue.pointer(_lpcbDataSlot)]);
+    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegEnumValueA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.u32(index), DynWinRtValue.pointer(_narrowStringBuffer(valueName)), DynWinRtValue.pointer(_lpcchValueNameSlot), DynWinRtValue.pointer(reserved), DynWinRtValue.pointer(_typeSlot), DynWinRtValue.pointer(data), DynWinRtValue.pointer(_lpcbDataSlot)]);
     return {
         status: _ret.toNumber(),
         lpcchValueName: _lpcchValueNameSlot.readUInt32LE(0),
@@ -677,7 +700,7 @@ export function regGetValueA(hkey, subKey, value, flags, data, pcbData) {
     const _pdwTypeSlot = Buffer.alloc(4);
     const _pcbDataSlot = Buffer.alloc(4);
     _pcbDataSlot.writeUInt32LE(pcbData, 0);
-    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegGetValueA', 'I32', [DynWinRtValue.pointer(hkey), DynWinRtValue.pointer(_wideStringBuffer(subKey)), DynWinRtValue.pointer(_wideStringBuffer(value)), DynWinRtValue.i32(flags), DynWinRtValue.pointer(_pdwTypeSlot), DynWinRtValue.pointer(data), DynWinRtValue.pointer(_pcbDataSlot)]);
+    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegGetValueA', 'I32', [DynWinRtValue.pointer(hkey), DynWinRtValue.pointer(_narrowStringBuffer(subKey)), DynWinRtValue.pointer(_narrowStringBuffer(value)), DynWinRtValue.i32(flags), DynWinRtValue.pointer(_pdwTypeSlot), DynWinRtValue.pointer(data), DynWinRtValue.pointer(_pcbDataSlot)]);
     return {
         status: _ret.toNumber(),
         pdwType: _pdwTypeSlot.readInt32LE(0),
@@ -721,7 +744,7 @@ export function regGetValueW(hkey, subKey, value, flags, data, pcbData) {
  */
 export function regLoadAppKeyA(file, samDesired, options, reserved) {
     const _phkResultSlot = Buffer.alloc(8);
-    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegLoadAppKeyA', 'I32', [DynWinRtValue.pointer(_wideStringBuffer(file)), DynWinRtValue.pointer(_phkResultSlot), DynWinRtValue.u32(samDesired), DynWinRtValue.u32(options), DynWinRtValue.u32(reserved)]);
+    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegLoadAppKeyA', 'I32', [DynWinRtValue.pointer(_narrowStringBuffer(file)), DynWinRtValue.pointer(_phkResultSlot), DynWinRtValue.u32(samDesired), DynWinRtValue.u32(options), DynWinRtValue.u32(reserved)]);
     return {
         status: _ret.toNumber(),
         phkResult: _phkResultSlot.readBigUInt64LE(0),
@@ -756,7 +779,7 @@ export function regLoadAppKeyW(file, samDesired, options, reserved) {
  * @returns { status: number }
  */
 export function regLoadKeyA(hKey, subKey, file) {
-    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegLoadKeyA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.pointer(_wideStringBuffer(subKey)), DynWinRtValue.pointer(_wideStringBuffer(file))]);
+    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegLoadKeyA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.pointer(_narrowStringBuffer(subKey)), DynWinRtValue.pointer(_narrowStringBuffer(file))]);
     return { status: _ret.toNumber() };
 }
 
@@ -787,7 +810,7 @@ export function regLoadKeyW(hKey, subKey, file) {
  */
 export function regLoadMUIStringA(hKey, value, outBuf, outBuf_2, flags, directory) {
     const _pcbDataSlot = Buffer.alloc(4);
-    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegLoadMUIStringA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.pointer(_wideStringBuffer(value)), DynWinRtValue.pointer(_wideStringBuffer(outBuf)), DynWinRtValue.u32(outBuf_2), DynWinRtValue.pointer(_pcbDataSlot), DynWinRtValue.u32(flags), DynWinRtValue.pointer(_wideStringBuffer(directory))]);
+    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegLoadMUIStringA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.pointer(_narrowStringBuffer(value)), DynWinRtValue.pointer(_narrowStringBuffer(outBuf)), DynWinRtValue.u32(outBuf_2), DynWinRtValue.pointer(_pcbDataSlot), DynWinRtValue.u32(flags), DynWinRtValue.pointer(_narrowStringBuffer(directory))]);
     return {
         status: _ret.toNumber(),
         pcbData: _pcbDataSlot.readUInt32LE(0),
@@ -856,7 +879,7 @@ export function regOpenCurrentUser(samDesired) {
  */
 export function regOpenKeyA(hKey, subKey) {
     const _phkResultSlot = Buffer.alloc(8);
-    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegOpenKeyA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.pointer(_wideStringBuffer(subKey)), DynWinRtValue.pointer(_phkResultSlot)]);
+    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegOpenKeyA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.pointer(_narrowStringBuffer(subKey)), DynWinRtValue.pointer(_phkResultSlot)]);
     return {
         status: _ret.toNumber(),
         phkResult: _phkResultSlot.readBigUInt64LE(0),
@@ -875,7 +898,7 @@ export function regOpenKeyA(hKey, subKey) {
  */
 export function regOpenKeyExA(hKey, subKey, ulOptions, samDesired) {
     const _phkResultSlot = Buffer.alloc(8);
-    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegOpenKeyExA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.pointer(_wideStringBuffer(subKey)), DynWinRtValue.u32(ulOptions), DynWinRtValue.i32(samDesired), DynWinRtValue.pointer(_phkResultSlot)]);
+    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegOpenKeyExA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.pointer(_narrowStringBuffer(subKey)), DynWinRtValue.u32(ulOptions), DynWinRtValue.i32(samDesired), DynWinRtValue.pointer(_phkResultSlot)]);
     return {
         status: _ret.toNumber(),
         phkResult: _phkResultSlot.readBigUInt64LE(0),
@@ -915,7 +938,7 @@ export function regOpenKeyExW(hKey, subKey, ulOptions, samDesired) {
  */
 export function regOpenKeyTransactedA(hKey, subKey, ulOptions, samDesired, hTransaction, pExtendedParemeter) {
     const _phkResultSlot = Buffer.alloc(8);
-    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegOpenKeyTransactedA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.pointer(_wideStringBuffer(subKey)), DynWinRtValue.u32(ulOptions), DynWinRtValue.i32(samDesired), DynWinRtValue.pointer(_phkResultSlot), DynWinRtValue.pointer(hTransaction), DynWinRtValue.pointer(pExtendedParemeter)]);
+    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegOpenKeyTransactedA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.pointer(_narrowStringBuffer(subKey)), DynWinRtValue.u32(ulOptions), DynWinRtValue.i32(samDesired), DynWinRtValue.pointer(_phkResultSlot), DynWinRtValue.pointer(hTransaction), DynWinRtValue.pointer(pExtendedParemeter)]);
     return {
         status: _ret.toNumber(),
         phkResult: _phkResultSlot.readBigUInt64LE(0),
@@ -1017,7 +1040,7 @@ export function regQueryInfoKeyA(hKey, class_, lpcchClass, reserved, lpftLastWri
     const _lpcbMaxValueNameLenSlot = Buffer.alloc(4);
     const _lpcbMaxValueLenSlot = Buffer.alloc(4);
     const _lpcbSecurityDescriptorSlot = Buffer.alloc(4);
-    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegQueryInfoKeyA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.pointer(_wideStringBuffer(class_)), DynWinRtValue.pointer(_lpcchClassSlot), DynWinRtValue.pointer(reserved), DynWinRtValue.pointer(_lpcSubKeysSlot), DynWinRtValue.pointer(_lpcbMaxSubKeyLenSlot), DynWinRtValue.pointer(_lpcbMaxClassLenSlot), DynWinRtValue.pointer(_lpcValuesSlot), DynWinRtValue.pointer(_lpcbMaxValueNameLenSlot), DynWinRtValue.pointer(_lpcbMaxValueLenSlot), DynWinRtValue.pointer(_lpcbSecurityDescriptorSlot), DynWinRtValue.pointer(lpftLastWriteTime)]);
+    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegQueryInfoKeyA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.pointer(_narrowStringBuffer(class_)), DynWinRtValue.pointer(_lpcchClassSlot), DynWinRtValue.pointer(reserved), DynWinRtValue.pointer(_lpcSubKeysSlot), DynWinRtValue.pointer(_lpcbMaxSubKeyLenSlot), DynWinRtValue.pointer(_lpcbMaxClassLenSlot), DynWinRtValue.pointer(_lpcValuesSlot), DynWinRtValue.pointer(_lpcbMaxValueNameLenSlot), DynWinRtValue.pointer(_lpcbMaxValueLenSlot), DynWinRtValue.pointer(_lpcbSecurityDescriptorSlot), DynWinRtValue.pointer(lpftLastWriteTime)]);
     return {
         status: _ret.toNumber(),
         lpcchClass: _lpcchClassSlot.readUInt32LE(0),
@@ -1085,7 +1108,7 @@ export function regQueryInfoKeyW(hKey, class_, lpcchClass, reserved, lpftLastWri
 export function regQueryMultipleValuesA(hKey, val_list, num_vals, valueBuf, ldwTotsize) {
     const _ldwTotsizeSlot = Buffer.alloc(4);
     _ldwTotsizeSlot.writeUInt32LE(ldwTotsize, 0);
-    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegQueryMultipleValuesA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.pointer(val_list), DynWinRtValue.u32(num_vals), DynWinRtValue.pointer(_wideStringBuffer(valueBuf)), DynWinRtValue.pointer(_ldwTotsizeSlot)]);
+    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegQueryMultipleValuesA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.pointer(val_list), DynWinRtValue.u32(num_vals), DynWinRtValue.pointer(_narrowStringBuffer(valueBuf)), DynWinRtValue.pointer(_ldwTotsizeSlot)]);
     return {
         status: _ret.toNumber(),
         ldwTotsize: _ldwTotsizeSlot.readUInt32LE(0),
@@ -1140,7 +1163,7 @@ export function regQueryReflectionKey(hBase) {
 export function regQueryValueA(hKey, subKey, data, lpcbData) {
     const _lpcbDataSlot = Buffer.alloc(4);
     _lpcbDataSlot.writeInt32LE(lpcbData, 0);
-    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegQueryValueA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.pointer(_wideStringBuffer(subKey)), DynWinRtValue.pointer(_wideStringBuffer(data)), DynWinRtValue.pointer(_lpcbDataSlot)]);
+    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegQueryValueA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.pointer(_narrowStringBuffer(subKey)), DynWinRtValue.pointer(_narrowStringBuffer(data)), DynWinRtValue.pointer(_lpcbDataSlot)]);
     return {
         status: _ret.toNumber(),
         lpcbData: _lpcbDataSlot.readInt32LE(0),
@@ -1162,7 +1185,7 @@ export function regQueryValueExA(hKey, valueName, reserved, data, lpcbData) {
     const _typeSlot = Buffer.alloc(4);
     const _lpcbDataSlot = Buffer.alloc(4);
     _lpcbDataSlot.writeUInt32LE(lpcbData, 0);
-    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegQueryValueExA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.pointer(_wideStringBuffer(valueName)), DynWinRtValue.pointer(reserved), DynWinRtValue.pointer(_typeSlot), DynWinRtValue.pointer(data), DynWinRtValue.pointer(_lpcbDataSlot)]);
+    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegQueryValueExA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.pointer(_narrowStringBuffer(valueName)), DynWinRtValue.pointer(reserved), DynWinRtValue.pointer(_typeSlot), DynWinRtValue.pointer(data), DynWinRtValue.pointer(_lpcbDataSlot)]);
     return {
         status: _ret.toNumber(),
         type: _typeSlot.readInt32LE(0),
@@ -1235,7 +1258,7 @@ export function regRenameKey(hKey, subKeyName, newKeyName) {
  * @returns { status: number }
  */
 export function regReplaceKeyA(hKey, subKey, newFile, oldFile) {
-    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegReplaceKeyA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.pointer(_wideStringBuffer(subKey)), DynWinRtValue.pointer(_wideStringBuffer(newFile)), DynWinRtValue.pointer(_wideStringBuffer(oldFile))]);
+    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegReplaceKeyA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.pointer(_narrowStringBuffer(subKey)), DynWinRtValue.pointer(_narrowStringBuffer(newFile)), DynWinRtValue.pointer(_narrowStringBuffer(oldFile))]);
     return { status: _ret.toNumber() };
 }
 
@@ -1262,7 +1285,7 @@ export function regReplaceKeyW(hKey, subKey, newFile, oldFile) {
  * @returns { status: number }
  */
 export function regRestoreKeyA(hKey, file, flags) {
-    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegRestoreKeyA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.pointer(_wideStringBuffer(file)), DynWinRtValue.u32(flags)]);
+    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegRestoreKeyA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.pointer(_narrowStringBuffer(file)), DynWinRtValue.u32(flags)]);
     return { status: _ret.toNumber() };
 }
 
@@ -1288,7 +1311,7 @@ export function regRestoreKeyW(hKey, file, flags) {
  * @returns { status: number }
  */
 export function regSaveKeyA(hKey, file, securityAttributes) {
-    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegSaveKeyA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.pointer(_wideStringBuffer(file)), DynWinRtValue.pointer(securityAttributes)]);
+    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegSaveKeyA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.pointer(_narrowStringBuffer(file)), DynWinRtValue.pointer(securityAttributes)]);
     return { status: _ret.toNumber() };
 }
 
@@ -1302,7 +1325,7 @@ export function regSaveKeyA(hKey, file, securityAttributes) {
  * @returns { status: number }
  */
 export function regSaveKeyExA(hKey, file, securityAttributes, flags) {
-    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegSaveKeyExA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.pointer(_wideStringBuffer(file)), DynWinRtValue.pointer(securityAttributes), DynWinRtValue.i32(flags)]);
+    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegSaveKeyExA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.pointer(_narrowStringBuffer(file)), DynWinRtValue.pointer(securityAttributes), DynWinRtValue.i32(flags)]);
     return { status: _ret.toNumber() };
 }
 
@@ -1358,7 +1381,7 @@ export function regSetKeySecurity(hKey, securityInformation, pSecurityDescriptor
  * @returns { status: number }
  */
 export function regSetKeyValueA(hKey, subKey, valueName, type, data, data_2) {
-    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegSetKeyValueA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.pointer(_wideStringBuffer(subKey)), DynWinRtValue.pointer(_wideStringBuffer(valueName)), DynWinRtValue.u32(type), DynWinRtValue.pointer(data), DynWinRtValue.u32(data_2)]);
+    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegSetKeyValueA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.pointer(_narrowStringBuffer(subKey)), DynWinRtValue.pointer(_narrowStringBuffer(valueName)), DynWinRtValue.u32(type), DynWinRtValue.pointer(data), DynWinRtValue.u32(data_2)]);
     return { status: _ret.toNumber() };
 }
 
@@ -1389,7 +1412,7 @@ export function regSetKeyValueW(hKey, subKey, valueName, type, data, data_2) {
  * @returns { status: number }
  */
 export function regSetValueA(hKey, subKey, type, data, data_2) {
-    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegSetValueA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.pointer(_wideStringBuffer(subKey)), DynWinRtValue.i32(type), DynWinRtValue.pointer(_wideStringBuffer(data)), DynWinRtValue.u32(data_2)]);
+    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegSetValueA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.pointer(_narrowStringBuffer(subKey)), DynWinRtValue.i32(type), DynWinRtValue.pointer(_narrowStringBuffer(data)), DynWinRtValue.u32(data_2)]);
     return { status: _ret.toNumber() };
 }
 
@@ -1405,7 +1428,7 @@ export function regSetValueA(hKey, subKey, type, data, data_2) {
  * @returns { status: number }
  */
 export function regSetValueExA(hKey, valueName, reserved, type, data, data_2) {
-    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegSetValueExA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.pointer(_wideStringBuffer(valueName)), DynWinRtValue.u32(reserved), DynWinRtValue.i32(type), DynWinRtValue.pointer(data), DynWinRtValue.u32(data_2)]);
+    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegSetValueExA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.pointer(_narrowStringBuffer(valueName)), DynWinRtValue.u32(reserved), DynWinRtValue.i32(type), DynWinRtValue.pointer(data), DynWinRtValue.u32(data_2)]);
     return { status: _ret.toNumber() };
 }
 
@@ -1448,7 +1471,7 @@ export function regSetValueW(hKey, subKey, type, data, data_2) {
  * @returns { status: number }
  */
 export function regUnLoadKeyA(hKey, subKey) {
-    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegUnLoadKeyA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.pointer(_wideStringBuffer(subKey))]);
+    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegUnLoadKeyA', 'I32', [DynWinRtValue.pointer(hKey), DynWinRtValue.pointer(_narrowStringBuffer(subKey))]);
     return { status: _ret.toNumber() };
 }
 

@@ -368,7 +368,13 @@ fn dts_type_of(t: &FlatAbiType) -> String {
         FlatAbiType::Enum { name, .. } => name.clone(),
         FlatAbiType::Ptr => "bigint | Buffer | null".into(),
         FlatAbiType::PtrTo(_) => "bigint | Buffer | null".into(),
-        FlatAbiType::Unknown => "unknown".into(),
+        // Opaque type we couldn't classify from metadata. At runtime it is
+        // marshalled as `DynWinRtValue.pointer(var)` (the same shape as
+        // `Ptr`), so the .d.ts input type must match the runtime contract:
+        // a pointer-like BigInt/Buffer, not a permissive `unknown`. Using
+        // `unknown` here silently accepts arbitrary JS values that would
+        // then crash inside `DynWinRtValue.pointer(...)` with a type error.
+        FlatAbiType::Unknown => "bigint | Buffer | null".into(),
     }
 }
 
@@ -396,9 +402,11 @@ fn render_js(meta: &FlatApisMeta) -> String {
         "import {{ DynWinRtValue }} from '{runtime_import}';\n\n"
     ));
 
-    // A small runtime helper for wide-string marshalling. Emitted inline so the
-    // generated file has no cross-file runtime dependencies beyond `dynwinrt`.
+    // A small runtime helper for wide- and narrow-string marshalling.
+    // Emitted inline so the generated file has no cross-file runtime
+    // dependencies beyond `dynwinrt`.
     out.push_str(WIDE_STRING_HELPER);
+    out.push_str(NARROW_STRING_HELPER);
     out.push_str("\n");
 
     for m in &meta.methods {
@@ -444,6 +452,32 @@ function _wideStringBuffer(str) {
     }
     const buf = Buffer.alloc((str.length + 1) * 2);
     buf.write(str, 'utf16le');
+    return buf;
+}
+";
+
+const NARROW_STRING_HELPER: &str = "\
+// Build a NUL-terminated UTF-8 Buffer for LPCSTR/PSTR args. Distinct from
+// the wide-string helper because ANSI/UTF-8 Win32 A-suffixed exports
+// (e.g. `RegOpenKeyExA`) take a single-byte `char*`, not `wchar_t*` —
+// writing UTF-16LE bytes into them corrupts parameters and can smash the
+// callee's stack. On modern Windows (10 1903+) with the app manifested
+// for UTF-8 ACP, or on OS versions that natively accept UTF-8 for A-APIs,
+// this is the correct encoding; if a caller needs a legacy ANSI code page
+// they can pre-encode to a Buffer and pass that directly.
+// Rejects embedded U+0000 for the same truncation-safety reason as the
+// wide-string helper.
+function _narrowStringBuffer(str) {
+    if (str === null || str === undefined) return null;
+    if (typeof str !== 'string') {
+        throw new TypeError(`expected string, got ${typeof str}`);
+    }
+    if (str.indexOf('\\u0000') !== -1) {
+        throw new RangeError('string contains embedded NUL (U+0000)');
+    }
+    const byteLen = Buffer.byteLength(str, 'utf8');
+    const buf = Buffer.alloc(byteLen + 1);
+    buf.write(str, 'utf8');
     return buf;
 }
 ";
@@ -684,8 +718,11 @@ fn wrap_arg_js(t: &FlatAbiType, var: &str) -> String {
         // wrong. Never emit `pointer(<float>)` here.
         FlatAbiType::F32 => format!("DynWinRtValue.f32({var})"),
         FlatAbiType::F64 => format!("DynWinRtValue.f64({var})"),
-        FlatAbiType::PWStr | FlatAbiType::PStr => {
+        FlatAbiType::PWStr => {
             format!("DynWinRtValue.pointer(_wideStringBuffer({var}))")
+        }
+        FlatAbiType::PStr => {
+            format!("DynWinRtValue.pointer(_narrowStringBuffer({var}))")
         }
         FlatAbiType::Handle { .. } => format!("DynWinRtValue.pointer({var})"),
         FlatAbiType::Ptr | FlatAbiType::PtrTo(_) => format!("DynWinRtValue.pointer({var})"),

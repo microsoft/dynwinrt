@@ -1602,8 +1602,16 @@ fn resolve_named_flat_type(
     // depend on TypeDef lookup succeeding for well-known types.
     if namespace == "Windows.Win32.Foundation" {
         match name {
-            "PWSTR" | "PCWSTR" | "BSTR" => return FlatAbiType::PWStr,
+            "PWSTR" | "PCWSTR" => return FlatAbiType::PWStr,
             "PSTR" | "PCSTR" => return FlatAbiType::PStr,
+            // BSTR is a length-prefixed, SysAllocString-owned COM string —
+            // NOT a NUL-terminated PWSTR/PCWSTR. Marshalling as PWStr would
+            // silently drop the 4-byte length prefix and can crash callees
+            // that use SysStringLen. Treat as an opaque pointer so callers
+            // must supply a properly-allocated BSTR (or generation fails
+            // loudly with an unsupported-arg error at call time) instead
+            // of silently mis-marshalling.
+            "BSTR" => return FlatAbiType::Unknown,
             "BOOL" => return FlatAbiType::Bool32,
             "BOOLEAN" => return FlatAbiType::U8,
             "HRESULT" => return FlatAbiType::I32,
