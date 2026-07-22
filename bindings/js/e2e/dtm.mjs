@@ -11,21 +11,58 @@
 
 import { DynWinRtValue } from '../dist/index.js';
 import { DataTransferManager } from './DataTransferManager.js';
-import { acquireHwndBigInt } from './hwnd.mjs';
 
 function fail(msg) {
     console.error(`[e2e] FAIL: ${msg}`);
     process.exit(1);
 }
 
-console.log('[e2e] step 1: acquiring a process-owned HWND via napi createTestHwnd()');
-// The classic-vertical does not bundle flat-Win32, so we obtain a
-// process-owned HWND via a small napi helper (`createTestHwnd`) instead of
-// `flatInvoke(user32!CreateWindowExW, ...)`. This keeps the E2E
-// self-contained with respect to the classic vertical's surface area.
-const hwndBig = acquireHwndBigInt();
-console.log(`[e2e]   HWND → 0x${hwndBig.toString(16)}`);
-if (hwndBig === 0n) fail('acquireHwndBigInt returned NULL');
+function toBigInt(v) {
+    if (typeof v === 'bigint') return v;
+    if (typeof v === 'number') return BigInt(v);
+    if (v && typeof v.asPointerBigint === 'function') return v.asPointerBigint();
+    fail(`cannot convert value to bigint: ${typeof v}`);
+    return 0n; // unreachable
+}
+
+function wideCString(s) {
+    // UTF-16LE + NUL terminator. Node's Buffer.from(s, 'utf16le') already emits LE.
+    const body = Buffer.from(s, 'utf16le');
+    const out = Buffer.alloc(body.length + 2);
+    body.copy(out, 0);
+    return out;
+}
+
+console.log('[e2e] step 1: creating a private HWND via CreateWindowExW("STATIC", ...)');
+// GetForWindow requires an HWND OWNED by this process (else E_ACCESSDENIED).
+// The desktop / foreground windows aren't ours, so we synthesise our own via
+// the pre-registered system class "STATIC" — no need for RegisterClass.
+const classNameBuf = wideCString('STATIC');
+const titleBuf     = wideCString('dtm-e2e-test');
+const p = DynWinRtValue.pointer;
+const i = DynWinRtValue.i32;
+const u = DynWinRtValue.u32;
+const NULL_PTR = p(0n);
+
+const hwndValue = DynWinRtValue.flatInvoke(
+    'user32.dll',
+    'CreateWindowExW',
+    'Ptr',
+    [
+        u(0),                        // dwExStyle
+        p(classNameBuf),             // lpClassName = "STATIC"
+        p(titleBuf),                 // lpWindowName
+        u(0),                        // dwStyle = WS_OVERLAPPED (0)
+        i(0), i(0), i(1), i(1),       // X, Y, nWidth, nHeight
+        NULL_PTR,                    // hWndParent
+        NULL_PTR,                    // hMenu
+        NULL_PTR,                    // hInstance
+        NULL_PTR,                    // lpParam
+    ],
+);
+const hwndBig = toBigInt(hwndValue);
+console.log(`[e2e]   CreateWindowExW → 0x${hwndBig.toString(16)}`);
+if (hwndBig === 0n) fail('CreateWindowExW returned NULL');
 
 console.log('[e2e] step 2: DataTransferManager.getForWindow(hwnd)  [HIGH-LEVEL WRAPPER]');
 let dtm;

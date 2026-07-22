@@ -644,69 +644,6 @@ impl DynWinRTValue {
       })
   }
 
-  /// Create a hidden top-level HWND owned by this (Node) process, for use
-  /// with classic-COM/WinRT interop APIs that require a process-owned window
-  /// (e.g. `IDataTransferManagerInterop::GetForWindow`,
-  /// `ISystemMediaTransportControlsInterop::GetForWindow`).
-  ///
-  /// The window is a hidden `WS_POPUP` window using the pre-registered
-  /// `STATIC` class; it is intentionally leaked (never destroyed) because
-  /// tests are short-lived and cleanup is unnecessary. Returns the HWND
-  /// as a `bigint`.
-  ///
-  /// This lives in classic-vertical because it is the classic-COM/interop
-  /// vertical's own way to obtain a process-owned HWND for testing — it
-  /// avoids taking a flat-Win32 dependency for the classic tests.
-  /// Create a small process-owned HWND for use by the classic-COM E2E
-  /// tests. Returns the same cached HWND on subsequent calls to avoid
-  /// leaking window handles in long-lived Node processes (test runners,
-  /// REPLs, Electron). Marshalled as a `bigint`; on the way back into a
-  /// classic-COM call, wrap with `DynWinRtValue.pointer(bigint)`.
-  ///
-  /// Kept as a napi export (not a Node-side test helper) because it
-  /// avoids taking a flat-Win32 dependency for the classic tests.
-  #[napi]
-  pub fn create_test_hwnd() -> napi::Result<BigInt> {
-    use windows::Win32::UI::WindowsAndMessaging::{CreateWindowExW, WINDOW_EX_STYLE, WS_POPUP};
-
-    // Guard: return the previously-created HWND on repeat calls. Storing
-    // the pointer bits as an `AtomicUsize` (rather than a full HWND) keeps
-    // the static Send/Sync without needing an unsafe impl.
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    static CACHED_HWND: AtomicUsize = AtomicUsize::new(0);
-    let cached = CACHED_HWND.load(Ordering::Acquire);
-    if cached != 0 {
-      return Ok(BigInt::from(cached as u64));
-    }
-
-    let class_name: Vec<u16> = "STATIC".encode_utf16().chain(std::iter::once(0)).collect();
-    let title: Vec<u16> = "dynwinrt-test-hwnd\0".encode_utf16().collect();
-    let hwnd = unsafe {
-      CreateWindowExW(
-        WINDOW_EX_STYLE(0),
-        windows::core::PCWSTR(class_name.as_ptr()),
-        windows::core::PCWSTR(title.as_ptr()),
-        WS_POPUP,
-        0,
-        0,
-        1,
-        1,
-        None,
-        None,
-        None,
-        None,
-      )
-    }
-    .map_err(|e| napi::Error::from_reason(format!("CreateWindowExW: {}", e)))?;
-    let bits = hwnd.0 as usize;
-    // Only publish to the cache if creation succeeded. Losing a race here
-    // is harmless: one of the racers wins, the losers' HWND is used once
-    // and then never destroyed — the cache guarantees at most O(#racers)
-    // leaked windows, not O(#calls).
-    CACHED_HWND.store(bits, Ordering::Release);
-    Ok(BigInt::from(bits as u64))
-  }
-
   /// Wrap a pointer/handle (BigInt, Buffer, or another `DynWinRtValue` holding
   /// an object/raw pointer) as a `WinRTValue::RawPtr` for classic-COM calls
   /// with `void*` / HWND / PWSTR / function-pointer parameters.
@@ -861,7 +798,7 @@ impl DynWinRTValue {
   }
 
   /// Get the underlying pointer of an Object/RawPtr value as a BigInt.
-  /// Useful for turning a pointer result (e.g. HWND from
+  /// Useful for turning a `flatInvoke` pointer result (e.g. HWND from
   /// `GetConsoleWindow`) into a bigint you can then feed into other calls.
   #[napi]
   pub fn as_pointer_bigint(&self) -> napi::Result<BigInt> {
@@ -877,6 +814,45 @@ impl DynWinRTValue {
       }
     };
     Ok(BigInt::from(bits as u64))
+  }
+
+  /// Invoke a flat Win32 export via `LoadLibraryW` + `GetProcAddress` + libffi.
+  /// `retKind` selects the return marshalling: `'I32' | 'U32' | 'Ptr'`.
+  ///
+  /// `args` may contain: `DynWinRtValue.i32(...)`, `DynWinRtValue.u32(...)`,
+  /// `DynWinRtValue.i64(...)`, `DynWinRtValue.u64(...)`, or
+  /// `DynWinRtValue.pointer(...)`. Other kinds cause a runtime error.
+  #[napi]
+  pub fn flat_invoke(
+    dll: String,
+    entry: String,
+    ret_kind: String,
+    args: Vec<&DynWinRTValue>,
+  ) -> napi::Result<DynWinRTValue> {
+    let ret = match ret_kind.as_str() {
+      "I32" | "i32" => dynwinrt::flat_call::FlatReturnKind::I32,
+      "U32" | "u32" => dynwinrt::flat_call::FlatReturnKind::U32,
+      "Ptr" | "ptr" | "Pointer" | "pointer" => dynwinrt::flat_call::FlatReturnKind::Ptr,
+      other => {
+        return Err(napi::Error::from_reason(format!(
+          "flatInvoke: unsupported return kind '{}' (expected 'I32', 'U32', or 'Ptr')",
+          other
+        )));
+      }
+    };
+    let wrt_args: Vec<dynwinrt::WinRTValue> = args.iter().map(|a| a.0.clone()).collect();
+    let result = unsafe { dynwinrt::flat_call::flat_invoke(&dll, &entry, ret, &wrt_args) }
+      .map_err(|e| {
+        napi::Error::from_reason(format!("flatInvoke({}!{}): {}", dll, entry, e.message()))
+      })?;
+    Ok(DynWinRTValue(result))
+  }
+
+  /// Return `GetLastError()` as a u32. Companion to `flatInvoke` for functions
+  /// that use the SetLastError model (e.g. `GetModuleHandleW`).
+  #[napi]
+  pub fn flat_last_error() -> u32 {
+    dynwinrt::flat_call::get_last_error()
   }
 
   #[napi]

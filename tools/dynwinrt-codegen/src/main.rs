@@ -8,6 +8,7 @@ use std::path::Path;
 use clap::{Parser, Subcommand};
 
 use dynwinrt_codegen::codegen::com;
+use dynwinrt_codegen::codegen::flat;
 use dynwinrt_codegen::codegen::python;
 use dynwinrt_codegen::codegen::render_package_json;
 use dynwinrt_codegen::codegen::typescript;
@@ -270,10 +271,23 @@ fn run() -> Result<(), String> {
                     .filter(|s| !s.is_empty())
                     .collect();
 
-                // First: partition into WinRT classes and classic-COM interfaces.
+                // First: partition into WinRT classes, classic-COM interfaces,
+                // and flat-Win32 [DllImport] Apis classes.
                 let mut classes = Vec::new();
                 let mut com_interfaces: Vec<meta::ComInterfaceMeta> = Vec::new();
+                let mut flat_apis: Vec<meta::FlatApisMeta> = Vec::new();
                 for cls in &class_names {
+                    // Flat-Win32 [DllImport] discovery: an `Apis`-shaped class
+                    // whose methods carry DllImport module refs. If ANY method
+                    // qualifies, treat the whole class as a flat-exports module.
+                    // This runs BEFORE parse_com_interface because Win32 `Apis`
+                    // classes appear as classes (not interfaces) in metadata,
+                    // but this ordering guarantees we never fall through to
+                    // parse_class for a genuine flat-Apis class.
+                    if let Some(apis) = meta::parse_flat_apis(&winmd, ns, cls) {
+                        flat_apis.push(apis);
+                        continue;
+                    }
                     if let Some(com_iface) = meta::parse_com_interface(&winmd, ns, cls) {
                         // Route through classic-COM path when:
                         //   1) The interface is IUnknown-rooted (base +3), OR
@@ -312,29 +326,72 @@ fn run() -> Result<(), String> {
                     }
                 }
 
-                // Fail loud: classic-COM codegen only emits `.js` + `.d.ts`
-                // today. If the user asked for a different language
-                // (e.g. `--lang py`) but any of the requested `--class-name`
-                // inputs resolved to a classic-COM interface, silently writing
-                // JS files into a Python output directory would produce the
-                // wrong artifact types with no diagnostic. Reject the
-                // combination up front.
-                if lang != "js" && !com_interfaces.is_empty() {
+                // Fail loud: flat-Win32 [DllImport] and classic-COM codegen
+                // only emit `.js` + `.d.ts` today. If the user asked for a
+                // different language (e.g. `--lang py`) but any of the
+                // requested `--class-name` inputs resolved to a flat-Apis or
+                // classic-COM interface, silently writing JS files into a
+                // Python output directory would produce the wrong artifact
+                // types with no diagnostic. Reject the combination up front.
+                if lang != "js" && (!flat_apis.is_empty() || !com_interfaces.is_empty()) {
                     let mut offenders: Vec<String> = Vec::new();
+                    for apis in &flat_apis {
+                        offenders.push(format!("{}.{} (flat-Win32 [DllImport])",
+                            apis.namespace, apis.class_name));
+                    }
                     for ci in &com_interfaces {
                         offenders.push(format!("{}.{} (classic-COM interface)",
                             ci.interface.namespace, ci.interface.name));
                     }
                     return Err(format!(
-                        "`--lang {}` is not supported for classic-COM interfaces \
-                         (they emit only `.js` + `.d.ts` today). \
+                        "`--lang {}` is not supported for flat-Win32 [DllImport] modules or \
+                         classic-COM interfaces (both emit only `.js` + `.d.ts` today). \
                          Offending inputs: {}. Re-run with `--lang js`, or split the \
                          invocation so the WinRT classes are generated with `--lang {}` and \
-                         the COM classes with `--lang js`.",
+                         the flat/COM classes with `--lang js`.",
                         lang,
                         offenders.join(", "),
                         lang
                     ));
+                }
+
+                // Emit flat-Win32 [DllImport] Apis modules (standalone; no
+                // WinRT index/barrel wiring — flat exports are a separate
+                // surface area).
+                if !flat_apis.is_empty() {
+                    for apis in &flat_apis {
+                        let out = flat::generate_flat_apis_files(apis);
+                        let js_name = format!("{}.js", apis.class_name);
+                        let dts_name = format!("{}.d.ts", apis.class_name);
+                        if !dry_run {
+                            fs::write(output_dir.join(&js_name), &out.js).map_err(|e| {
+                                format!("Failed to write {}: {}", js_name, e)
+                            })?;
+                            fs::write(output_dir.join(&dts_name), &out.dts).map_err(|e| {
+                                format!("Failed to write {}: {}", dts_name, e)
+                            })?;
+                            for (name, content) in &out.extra_files {
+                                fs::write(output_dir.join(name), content).map_err(|e| {
+                                    format!("Failed to write {}: {}", name, e)
+                                })?;
+                            }
+                            println!(
+                                "Generated flat-Win32 {}.{} ({} methods, {} extra files)",
+                                apis.namespace,
+                                apis.class_name,
+                                apis.methods.len(),
+                                out.extra_files.len()
+                            );
+                        } else {
+                            println!(
+                                "[dry-run] Would generate flat-Win32 {}.{}",
+                                apis.namespace, apis.class_name
+                            );
+                        }
+                    }
+                    if classes.is_empty() && com_interfaces.is_empty() {
+                        return Ok(());
+                    }
                 }
 
                 // Emit classic-COM interfaces (standalone; not wired into WinRT index/barrel).

@@ -9,21 +9,36 @@
 import { DynWinRtValue, WinGuid } from '../dist/index.js';
 import { ITaskbarList3 } from './ITaskbarList3.js';
 import { TBPFLAG } from './TBPFLAG.js';
-import { acquireHwndBigInt } from './hwnd.mjs';
 
 function fail(msg) {
     console.error(`[e2e] FAIL: ${msg}`);
     process.exit(1);
 }
 
-console.log('[e2e] step 1: acquiring a process-owned HWND via napi createTestHwnd()');
-// The classic-vertical does not bundle flat-Win32, so we obtain a
-// process-owned HWND via a small napi helper (`createTestHwnd`) instead of
-// `flatInvoke(user32!CreateWindowExW, ...)`. This keeps the E2E
-// self-contained with respect to the classic vertical's surface area.
-const hwndBig = acquireHwndBigInt();
-console.log(`[e2e]   HWND → 0x${hwndBig.toString(16)}`);
-if (hwndBig === 0n) fail('acquireHwndBigInt returned NULL');
+function toBigInt(v) {
+    if (typeof v === 'bigint') return v;
+    if (typeof v === 'number') return BigInt(v);
+    if (v && typeof v.asPointerBigint === 'function') return v.asPointerBigint();
+    fail(`cannot convert value to bigint: ${typeof v}`);
+    return 0n; // unreachable
+}
+
+console.log('[e2e] step 1: acquiring an HWND via flatInvoke(kernel32!GetConsoleWindow)');
+
+let hwndValue = DynWinRtValue.flatInvoke('kernel32.dll', 'GetConsoleWindow', 'Ptr', []);
+let hwndBig = toBigInt(hwndValue);
+console.log(`[e2e]   GetConsoleWindow() → 0x${hwndBig.toString(16)}`);
+
+if (hwndBig === 0n) {
+    console.log('[e2e]   console HWND is null (no console), falling back to GetDesktopWindow()');
+    hwndValue = DynWinRtValue.flatInvoke('user32.dll', 'GetDesktopWindow', 'Ptr', []);
+    hwndBig = toBigInt(hwndValue);
+    console.log(`[e2e]   GetDesktopWindow() → 0x${hwndBig.toString(16)}`);
+}
+
+if (hwndBig === 0n) {
+    fail('could not obtain a non-null HWND from GetConsoleWindow or GetDesktopWindow');
+}
 
 console.log('[e2e] step 2: CoCreateInstance(CLSID_TaskbarList, IID_ITaskbarList3)');
 

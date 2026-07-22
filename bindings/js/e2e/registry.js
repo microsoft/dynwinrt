@@ -1,0 +1,289 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+//
+// High-level, natural `Registry` wrapper for Win32 flat registry APIs. Built
+// on top of the extended `DynWinRtValue.flatInvoke` marshalling primitives:
+//
+//   * `DynWinRtValue.pointer(Buffer)`        - caller-allocated byte buffer
+//                                              used both for LPCWSTR inputs
+//                                              and LPBYTE / PHKEY out slots
+//   * `DynWinRtValue.pointer(bigint | null)` - predefined HKEY constants +
+//                                              NULL reserved slots
+//   * `flatInvoke(..., 'I32')`               - LSTATUS return
+//
+// The E2E test consumes this file directly through the public shape
+// `Registry.getString(hive, subKey, valueName)`.
+//
+// Follow-on (out of scope for this branch): flat-Win32 codegen path that
+// discovers `[DllImport]` static methods on `Apis` classes in
+// Windows.Win32.winmd and emits this wrapper automatically. The registry
+// APIs are only three exports so hand-writing gives the natural JS shape
+// without a codegen redesign.
+
+import { DynWinRtValue } from '../dist/index.js';
+
+// ------------------------------------------------------------------
+// Predefined HKEY constants + hive alias lookup
+// ------------------------------------------------------------------
+
+export const HKEY = Object.freeze({
+    CLASSES_ROOT: 0x80000000n,
+    CURRENT_USER: 0x80000001n,
+    LOCAL_MACHINE: 0x80000002n,
+    USERS: 0x80000003n,
+    CURRENT_CONFIG: 0x80000005n,
+});
+
+const HIVE_ALIASES = Object.freeze({
+    HKEY_CLASSES_ROOT: HKEY.CLASSES_ROOT,
+    HKCR: HKEY.CLASSES_ROOT,
+    HKEY_CURRENT_USER: HKEY.CURRENT_USER,
+    HKCU: HKEY.CURRENT_USER,
+    HKEY_LOCAL_MACHINE: HKEY.LOCAL_MACHINE,
+    HKLM: HKEY.LOCAL_MACHINE,
+    HKEY_USERS: HKEY.USERS,
+    HKU: HKEY.USERS,
+    HKEY_CURRENT_CONFIG: HKEY.CURRENT_CONFIG,
+    HKCC: HKEY.CURRENT_CONFIG,
+});
+
+// KEY_READ = STANDARD_RIGHTS_READ | KEY_QUERY_VALUE
+//          | KEY_ENUMERATE_SUB_KEYS | KEY_NOTIFY
+const KEY_READ = 0x20019;
+
+// LSTATUS codes we surface by name.
+export const REG_ERROR = Object.freeze({
+    SUCCESS: 0,
+    FILE_NOT_FOUND: 2,
+    ACCESS_DENIED: 5,
+    MORE_DATA: 234,
+});
+
+// REG_* value types.
+export const REG_TYPE = Object.freeze({
+    NONE: 0,
+    SZ: 1,
+    EXPAND_SZ: 2,
+    BINARY: 3,
+    DWORD: 4,
+    MULTI_SZ: 7,
+    QWORD: 11,
+});
+
+// ------------------------------------------------------------------
+// Error types
+// ------------------------------------------------------------------
+
+export class RegistryError extends Error {
+    constructor(op, code, extra) {
+        const suffix = extra ? ` (${extra})` : '';
+        super(`Registry.${op} failed: LSTATUS=${code}${suffix}`);
+        this.name = 'RegistryError';
+        this.op = op;
+        this.code = code;
+    }
+}
+
+export class RegistryValueNotFoundError extends RegistryError {
+    constructor(op, extra) {
+        super(op, REG_ERROR.FILE_NOT_FOUND, extra);
+        this.name = 'RegistryValueNotFoundError';
+    }
+}
+
+// ------------------------------------------------------------------
+// Internal helpers
+// ------------------------------------------------------------------
+
+function resolveHive(hive) {
+    if (typeof hive === 'bigint') return hive;
+    if (typeof hive === 'number') return BigInt(hive >>> 0);
+    if (typeof hive === 'string') {
+        const resolved = HIVE_ALIASES[hive.toUpperCase()];
+        if (resolved === undefined) {
+            throw new TypeError(`Registry: unknown hive alias '${hive}'`);
+        }
+        return resolved;
+    }
+    throw new TypeError(
+        `Registry: hive must be a string alias, bigint, or number; got ${typeof hive}`,
+    );
+}
+
+// Build a NUL-terminated UTF-16LE buffer suitable for an LPCWSTR argument.
+// Buffer.alloc zeroes so the trailing wchar_t NUL is already in place.
+//
+// Win32 wide-string APIs consume NUL-terminated UTF-16 strings, so any
+// embedded U+0000 would silently truncate the value at the first NUL and
+// could be exploited to bypass caller-side validation (e.g. subkey path
+// checks). Reject such inputs up front.
+function wideStringBuffer(str) {
+    if (typeof str !== 'string') {
+        throw new TypeError(
+            `wideStringBuffer: expected string, got ${typeof str}`,
+        );
+    }
+    if (str.indexOf('\u0000') !== -1) {
+        throw new RangeError(
+            'wideStringBuffer: input contains embedded NUL (U+0000), ' +
+                'which would be truncated by Win32 wide-string APIs',
+        );
+    }
+    const buf = Buffer.alloc((str.length + 1) * 2);
+    buf.write(str, 'utf16le');
+    return buf;
+}
+
+// Decode a REG_SZ / REG_EXPAND_SZ payload: UTF-16LE bytes, possibly with a
+// trailing wchar_t NUL. `cbBytes` is the byte count reported by
+// RegQueryValueExW; we truncate to it, then drop any trailing NULs.
+function decodeRegSz(buffer, cbBytes) {
+    let byteLen = Math.min(cbBytes, buffer.length);
+    // Round down to a whole wchar.
+    byteLen -= byteLen % 2;
+    let str = buffer.subarray(0, byteLen).toString('utf16le');
+    // Strip any trailing NUL wchars (docs allow, but do not require, one).
+    while (str.length > 0 && str.charCodeAt(str.length - 1) === 0) {
+        str = str.slice(0, -1);
+    }
+    return str;
+}
+
+function flatRegCall(op, entry, args) {
+    const status = DynWinRtValue.flatInvoke('advapi32.dll', entry, 'I32', args);
+    return status.toNumber();
+}
+
+function regOpenKeyEx(parent, subKey) {
+    const subKeyBuf = wideStringBuffer(subKey);
+    // 8-byte slot for the out HKEY (pointer-sized on x64).
+    const hkeyOut = Buffer.alloc(8);
+    const status = flatRegCall('RegOpenKeyExW', 'RegOpenKeyExW', [
+        DynWinRtValue.pointer(parent),
+        DynWinRtValue.pointer(subKeyBuf),
+        DynWinRtValue.u32(0),
+        DynWinRtValue.u32(KEY_READ),
+        DynWinRtValue.pointer(hkeyOut),
+    ]);
+    return { status, hkey: status === REG_ERROR.SUCCESS ? hkeyOut.readBigUInt64LE(0) : 0n };
+}
+
+function regCloseKey(hkey) {
+    return flatRegCall('RegCloseKey', 'RegCloseKey', [DynWinRtValue.pointer(hkey)]);
+}
+
+// Returns { status, type, size } and mutates `buffer` in place with the
+// callee-written bytes. `buffer` may be a zero-length Buffer to run the
+// documented size-query variant (lpData=NULL).
+function regQueryValueEx(hkey, valueName, buffer) {
+    const valueBuf = wideStringBuffer(valueName);
+    const typeSlot = Buffer.alloc(4);
+    const sizeSlot = Buffer.alloc(4);
+    sizeSlot.writeUInt32LE(buffer.length, 0);
+    const dataArg =
+        buffer.length === 0 ? DynWinRtValue.pointer(null) : DynWinRtValue.pointer(buffer);
+    const status = flatRegCall('RegQueryValueExW', 'RegQueryValueExW', [
+        DynWinRtValue.pointer(hkey),
+        DynWinRtValue.pointer(valueBuf),
+        DynWinRtValue.pointer(null), // lpReserved
+        DynWinRtValue.pointer(typeSlot),
+        dataArg,
+        DynWinRtValue.pointer(sizeSlot),
+    ]);
+    return {
+        status,
+        type: typeSlot.readUInt32LE(0),
+        size: sizeSlot.readUInt32LE(0),
+    };
+}
+
+function withOpenKey(hive, subKey, op, fn) {
+    const parent = resolveHive(hive);
+    const { status: openStatus, hkey } = regOpenKeyEx(parent, subKey);
+    if (openStatus !== REG_ERROR.SUCCESS) {
+        if (openStatus === REG_ERROR.FILE_NOT_FOUND) {
+            throw new RegistryValueNotFoundError(op, `subkey '${subKey}' not found`);
+        }
+        throw new RegistryError(op, openStatus, `RegOpenKeyExW subkey='${subKey}'`);
+    }
+    try {
+        return fn(hkey);
+    } finally {
+        regCloseKey(hkey);
+    }
+}
+
+// ------------------------------------------------------------------
+// Public API
+// ------------------------------------------------------------------
+
+export const Registry = Object.freeze({
+    /**
+     * Read a REG_SZ / REG_EXPAND_SZ value as a JS string.
+     *
+     * @param {string|bigint|number} hive  Predefined hive: 'HKEY_LOCAL_MACHINE',
+     *   'HKCU', HKEY.LOCAL_MACHINE (bigint), etc.
+     * @param {string} subKey              Backslash-separated subkey path.
+     * @param {string} valueName           Value name. Use '' for the default
+     *                                     value of the key.
+     * @returns {string}                   The string content of the value.
+     *
+     * @throws {RegistryValueNotFoundError} If the subkey or value does not exist.
+     * @throws {RegistryError}              For any other Win32 LSTATUS != 0.
+     * @throws {TypeError}                  If the value is not a string type.
+     */
+    getString(hive, subKey, valueName) {
+        return withOpenKey(hive, subKey, 'getString', (hkey) => {
+            // Step 1: size query (documented lpData=NULL variant).
+            const sizeProbe = regQueryValueEx(hkey, valueName, Buffer.alloc(0));
+            if (sizeProbe.status === REG_ERROR.FILE_NOT_FOUND) {
+                throw new RegistryValueNotFoundError(
+                    'getString',
+                    `value '${valueName}' not found under '${subKey}'`,
+                );
+            }
+            if (sizeProbe.status !== REG_ERROR.SUCCESS) {
+                throw new RegistryError(
+                    'getString',
+                    sizeProbe.status,
+                    `size-query for '${valueName}'`,
+                );
+            }
+            if (
+                sizeProbe.type !== REG_TYPE.SZ &&
+                sizeProbe.type !== REG_TYPE.EXPAND_SZ
+            ) {
+                throw new TypeError(
+                    `Registry.getString: value '${valueName}' has type ${sizeProbe.type}, expected REG_SZ or REG_EXPAND_SZ`,
+                );
+            }
+            if (sizeProbe.size === 0) {
+                return '';
+            }
+
+            // Step 2: allocate and read.
+            const buffer = Buffer.alloc(sizeProbe.size);
+            const read = regQueryValueEx(hkey, valueName, buffer);
+            if (read.status !== REG_ERROR.SUCCESS) {
+                throw new RegistryError(
+                    'getString',
+                    read.status,
+                    `read for '${valueName}'`,
+                );
+            }
+            return decodeRegSz(buffer, read.size);
+        });
+    },
+
+    /**
+     * Non-throwing sibling: returns `undefined` if the subkey/value is missing.
+     */
+    tryGetString(hive, subKey, valueName) {
+        try {
+            return Registry.getString(hive, subKey, valueName);
+        } catch (e) {
+            if (e instanceof RegistryValueNotFoundError) return undefined;
+            throw e;
+        }
+    },
+});

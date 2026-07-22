@@ -3,6 +3,7 @@
 
 pub mod com;
 pub mod common;
+pub mod flat;
 pub mod javascript;
 pub mod python;
 pub(crate) mod shared;

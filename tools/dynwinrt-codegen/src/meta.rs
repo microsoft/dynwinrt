@@ -1327,6 +1327,378 @@ fn parse_com_interface_from_index(
     })
 }
 
+// ---------------------------------------------------------------------------
+// Flat-Win32 [DllImport] method discovery
+// ---------------------------------------------------------------------------
+
+/// A single flat-Win32 export parameter with its ABI shape preserved.
+///
+/// Unlike WinRT `ParamMeta`, this keeps raw pointer types (`PtrMut`/`PtrConst`)
+/// distinct from opaque handles so the flat emitter can project pointer-based
+/// out-params (e.g. `PHKEY`) as JS return values.
+#[derive(Debug, Clone)]
+pub struct FlatParamMeta {
+    pub name: String,
+    pub abi: FlatAbiType,
+    pub direction: FlatDirection,
+}
+
+/// Direction of a flat-Win32 parameter, computed from `ParamAttributes`
+/// (`In=0x01`, `Out=0x02`; a pointer that's both is `InOut`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlatDirection {
+    In,
+    Out,
+    InOut,
+}
+
+/// A restricted ABI type space for flat-Win32 exports.
+///
+/// This is intentionally SEPARATE from `TypeMeta`: `map_winmd_type_with_generics`
+/// collapses pointer types (`PtrMut`, `PtrConst`) to `TypeMeta::Object`, losing
+/// the pointee direction we need to project out-params. Flat marshalling also
+/// treats Win32 typedef wrappers (HKEY, PWSTR, LSTATUS, WIN32_ERROR) as first-
+/// class shapes so the emitter can pick a natural JS surface (string, bigint,
+/// enum-number) per shape.
+#[derive(Debug, Clone, PartialEq)]
+pub enum FlatAbiType {
+    Void,
+    Bool,
+    I8,
+    U8,
+    I16,
+    U16,
+    I32,
+    U32,
+    I64,
+    U64,
+    F32,
+    F64,
+    /// Wide-character UCS-2 code unit.
+    Char16,
+    /// Opaque pointer of any pointee type (raw `void*`).
+    Ptr,
+    /// A pointer with a KNOWN pointee ABI type. Used for out/inout scalar
+    /// slots we can project (e.g. `PtrMut(HKEY)` → out HKEY value;
+    /// `PtrMut(U32)` [InOut] → in-out DWORD).
+    PtrTo(Box<FlatAbiType>),
+    /// PWSTR / LPCWSTR: null-terminated UTF-16 string. Natural surface is
+    /// `string | null` — the flat emitter builds a `Buffer` on demand.
+    PWStr,
+    /// PSTR / LPCSTR: null-terminated 8-bit string.
+    PStr,
+    /// A Win32 opaque handle struct (single `Value` field with a pointer or
+    /// integer shape). Natural surface is `bigint | Buffer` — the same
+    /// projection that classic-COM uses for HWND et al.
+    Handle {
+        namespace: String,
+        name: String,
+    },
+    /// Win32 BOOL — 32-bit integer at the ABI, `boolean` on the surface.
+    Bool32,
+    /// A named `[Flags]` or plain enum from the winmd. `underlying` is the
+    /// storage type (usually `U32`). The surface projects as `number`.
+    Enum {
+        namespace: String,
+        name: String,
+        underlying: Box<FlatAbiType>,
+        members: Vec<crate::types::EnumMember>,
+    },
+    /// Anything we cannot classify precisely. Emitted as an opaque pointer at
+    /// the ABI; the surface will require the caller to pass a `Buffer|bigint`.
+    Unknown,
+}
+
+/// A single flat-Win32 export from an `Apis`-class static method.
+#[derive(Debug, Clone)]
+pub struct FlatMethodMeta {
+    /// PascalCase name of the method in the winmd (e.g. `RegOpenKeyExW`).
+    pub name: String,
+    /// DLL name from the `[DllImport]` module ref (e.g. `ADVAPI32.dll`).
+    pub dll: String,
+    /// Entry-point name from `ImplMap.import_name` — usually identical to
+    /// `name`, but can differ for aliased exports.
+    pub entry_point: String,
+    /// Return type at the ABI.
+    pub return_type: FlatAbiType,
+    /// Ordered parameters, with `[in]` / `[out]` / `[in,out]` direction
+    /// recovered from `ParamAttributes`.
+    pub params: Vec<FlatParamMeta>,
+}
+
+/// A container class whose static methods are all `[DllImport]` exports —
+/// the `Apis` class pattern used throughout `Windows.Win32.winmd`.
+#[derive(Debug, Clone)]
+pub struct FlatApisMeta {
+    pub namespace: String,
+    pub class_name: String,
+    pub methods: Vec<FlatMethodMeta>,
+    /// Distinct enum types referenced by any parameter or return type. The
+    /// generator emits a per-enum sibling `.js`/`.d.ts` for each one.
+    pub referenced_enums: Vec<TypeMeta>,
+}
+
+/// Parse a flat-Win32 `Apis`-shaped class (a container of `[DllImport]` static
+/// methods) from the winmd. Returns `None` when the class does not exist,
+/// when it has no DllImport methods (i.e. it's actually a WinRT class), or
+/// when it fails to parse.
+pub fn parse_flat_apis(
+    winmd_paths: &str,
+    namespace: &str,
+    class_name: &str,
+) -> Option<FlatApisMeta> {
+    let index = load_index(winmd_paths)?;
+    parse_flat_apis_from_index(&index, namespace, class_name)
+}
+
+fn parse_flat_apis_from_index(
+    index: &reader::Index,
+    namespace: &str,
+    class_name: &str,
+) -> Option<FlatApisMeta> {
+    let def = index.get(namespace, class_name).next()?;
+
+    // Determine target platform-pointer size. The Win32 winmd's PtrMut carries
+    // an explicit size for fixed-size pointers, but its `usize` is only ever 1
+    // for `void*`-shaped values. We always compile on 64-bit here so pointer
+    // width = 8 bytes.
+
+    let mut methods: Vec<FlatMethodMeta> = Vec::new();
+    let mut referenced_enums: Vec<TypeMeta> = Vec::new();
+    let mut seen_enum_names: HashSet<String> = HashSet::new();
+
+    for m in def.methods() {
+        let Some(imap) = m.impl_map() else {
+            // Not a [DllImport] method — skip. (An Apis class may also have
+            // constructor stubs; we intentionally ignore those.)
+            continue;
+        };
+        // Skip .ctor (unlikely on Apis, but future-proof).
+        if m.name() == ".ctor" || m.name() == ".cctor" {
+            continue;
+        }
+        let dll = imap.import_scope().name().to_string();
+        let entry_point = imap.import_name().to_string();
+
+        let sig = m.signature(&[]);
+        let return_type = map_flat_type(&sig.return_type, index, &mut |e| {
+            collect_enum(e, &mut seen_enum_names, &mut referenced_enums)
+        });
+
+        let param_defs: Vec<_> = m.params().filter(|p| p.sequence() > 0).collect();
+        let mut params: Vec<FlatParamMeta> = Vec::with_capacity(param_defs.len());
+        for (i, pd) in param_defs.iter().enumerate() {
+            if i >= sig.types.len() {
+                break;
+            }
+            let ty = &sig.types[i];
+            let abi = map_flat_type(ty, index, &mut |e| {
+                collect_enum(e, &mut seen_enum_names, &mut referenced_enums)
+            });
+            let flags = pd.flags();
+            let is_in = flags.contains(windows_metadata::ParamAttributes::In);
+            let is_out = flags.contains(windows_metadata::ParamAttributes::Out);
+            let direction = match (is_in, is_out) {
+                (_, true) if is_in => FlatDirection::InOut,
+                (_, true) => FlatDirection::Out,
+                _ => FlatDirection::In,
+            };
+            params.push(FlatParamMeta {
+                name: pd.name().to_string(),
+                abi,
+                direction,
+            });
+        }
+
+        methods.push(FlatMethodMeta {
+            name: m.name().to_string(),
+            dll,
+            entry_point,
+            return_type,
+            params,
+        });
+    }
+
+    if methods.is_empty() {
+        return None;
+    }
+    // Stable order: winmd row order is arbitrary. Sort by name so snapshots
+    // are deterministic across metadata rewrites.
+    methods.sort_by(|a, b| a.name.cmp(&b.name));
+    referenced_enums.sort_by(|a, b| match (a, b) {
+        (TypeMeta::Enum { name: an, .. }, TypeMeta::Enum { name: bn, .. }) => an.cmp(bn),
+        _ => std::cmp::Ordering::Equal,
+    });
+
+    Some(FlatApisMeta {
+        namespace: namespace.to_string(),
+        class_name: class_name.to_string(),
+        methods,
+        referenced_enums,
+    })
+}
+
+fn collect_enum(
+    en: TypeMeta,
+    seen: &mut HashSet<String>,
+    sink: &mut Vec<TypeMeta>,
+) {
+    if let TypeMeta::Enum { name, .. } = &en {
+        if seen.insert(name.clone()) {
+            sink.push(en);
+        }
+    }
+}
+
+/// Map a `windows_metadata::Type` to a `FlatAbiType`, following `Windows.Win32`
+/// typedef conventions (single-field structs with `NativeTypedefAttribute`
+/// wrapping a primitive → the underlying primitive OR a Handle/String flavour
+/// depending on the pointee).
+fn map_flat_type(
+    ty: &windows_metadata::Type,
+    index: &reader::Index,
+    enum_sink: &mut dyn FnMut(TypeMeta),
+) -> FlatAbiType {
+    use windows_metadata::Type;
+    match ty {
+        Type::Void => FlatAbiType::Void,
+        Type::Bool => FlatAbiType::Bool,
+        Type::Char => FlatAbiType::Char16,
+        Type::I8 => FlatAbiType::I8,
+        Type::U8 => FlatAbiType::U8,
+        Type::I16 => FlatAbiType::I16,
+        Type::U16 => FlatAbiType::U16,
+        Type::I32 => FlatAbiType::I32,
+        Type::U32 => FlatAbiType::U32,
+        Type::I64 => FlatAbiType::I64,
+        Type::U64 => FlatAbiType::U64,
+        Type::F32 => FlatAbiType::F32,
+        Type::F64 => FlatAbiType::F64,
+        Type::PtrMut(inner, _) | Type::PtrConst(inner, _) => {
+            // A pointer to `Void` is opaque; any other pointer keeps the
+            // pointee so out-params can be projected.
+            match inner.as_ref() {
+                Type::Void => FlatAbiType::Ptr,
+                _ => {
+                    let pointee = map_flat_type(inner, index, enum_sink);
+                    FlatAbiType::PtrTo(Box::new(pointee))
+                }
+            }
+        }
+        Type::Name(tn) => resolve_named_flat_type(&tn.namespace, &tn.name, index, enum_sink),
+        // Anything else (Array, ConstRef, generics, …) is not a valid flat
+        // ABI shape in practice — surface as unknown pointer.
+        _ => FlatAbiType::Unknown,
+    }
+}
+
+fn resolve_named_flat_type(
+    namespace: &str,
+    name: &str,
+    index: &reader::Index,
+    enum_sink: &mut dyn FnMut(TypeMeta),
+) -> FlatAbiType {
+    // Handle well-known Win32 typedef wrappers directly by name so we don't
+    // depend on TypeDef lookup succeeding for well-known types.
+    if namespace == "Windows.Win32.Foundation" {
+        match name {
+            "PWSTR" | "PCWSTR" | "BSTR" => return FlatAbiType::PWStr,
+            "PSTR" | "PCSTR" => return FlatAbiType::PStr,
+            "BOOL" => return FlatAbiType::Bool32,
+            "BOOLEAN" => return FlatAbiType::U8,
+            "HRESULT" => return FlatAbiType::I32,
+            "NTSTATUS" => return FlatAbiType::I32,
+            _ => {}
+        }
+    }
+    let Some(def) = index.get(namespace, name).next() else {
+        return FlatAbiType::Unknown;
+    };
+    let Some(ext) = def.extends() else {
+        return FlatAbiType::Unknown;
+    };
+    // Enum: extends System.Enum.
+    if ext.namespace() == "System" && ext.name() == "Enum" {
+        let en = parse_enum_def(&def);
+        if let TypeMeta::Enum {
+            underlying,
+            members,
+            ..
+        } = &en
+        {
+            let underlying_flat = match underlying.as_ref() {
+                TypeMeta::U32 => FlatAbiType::U32,
+                TypeMeta::I32 => FlatAbiType::I32,
+                TypeMeta::U16 => FlatAbiType::U16,
+                TypeMeta::I16 => FlatAbiType::I16,
+                TypeMeta::U8 => FlatAbiType::U8,
+                TypeMeta::I8 => FlatAbiType::I8,
+                TypeMeta::U64 => FlatAbiType::U64,
+                TypeMeta::I64 => FlatAbiType::I64,
+                _ => FlatAbiType::I32,
+            };
+            let result = FlatAbiType::Enum {
+                namespace: namespace.to_string(),
+                name: name.to_string(),
+                underlying: Box::new(underlying_flat),
+                members: members.clone(),
+            };
+            enum_sink(en);
+            return result;
+        }
+    }
+    // Struct: extends System.ValueType. Handle-like typedefs are single-field
+    // wrappers named `{ Value: T }` — we treat these as opaque handles.
+    if ext.namespace() == "System" && ext.name() == "ValueType" {
+        let fields: Vec<(String, windows_metadata::Type)> = def
+            .fields()
+            .map(|f| (f.name().to_string(), f.ty()))
+            .collect();
+        if fields.len() == 1 && fields[0].0 == "Value" {
+            match &fields[0].1 {
+                windows_metadata::Type::PtrMut(inner, _)
+                | windows_metadata::Type::PtrConst(inner, _) => {
+                    // Pointer typedef (HANDLE-like). If the pointee is Char/U8
+                    // this is a string handle — project as PWStr/PStr; else
+                    // treat as an opaque handle for natural marshalling.
+                    return match inner.as_ref() {
+                        windows_metadata::Type::Char => FlatAbiType::PWStr,
+                        windows_metadata::Type::U8 => FlatAbiType::PStr,
+                        _ => FlatAbiType::Handle {
+                            namespace: namespace.to_string(),
+                            name: name.to_string(),
+                        },
+                    };
+                }
+                windows_metadata::Type::I32 => {
+                    // `{ Value: I32 }` typedefs are integer handles (BOOL is
+                    // handled by name above; other examples: HRESULT.). Treat
+                    // as `i32` at the ABI to avoid surfacing them as pointer.
+                    if is_hresult_named(namespace, name) {
+                        return FlatAbiType::I32;
+                    }
+                    return FlatAbiType::Handle {
+                        namespace: namespace.to_string(),
+                        name: name.to_string(),
+                    };
+                }
+                windows_metadata::Type::U32 => {
+                    return FlatAbiType::U32;
+                }
+                _ => {}
+            }
+        }
+        // Multi-field struct — fall through to unknown (opaque pointer at ABI).
+        return FlatAbiType::Unknown;
+    }
+    FlatAbiType::Unknown
+}
+
+fn is_hresult_named(ns: &str, name: &str) -> bool {
+    ns == "Windows.Win32.Foundation" && name == "HRESULT"
+}
+
+
 /// Parse an interface's OWN methods (no inheritance flattening) with a caller-
 /// supplied base offset. Used by `parse_com_interface_from_index` to lay out
 /// base-class methods at the correct absolute vtable slots.
