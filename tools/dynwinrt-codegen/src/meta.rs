@@ -209,7 +209,14 @@ pub fn find_runtime_class_default_iid(
                 // separate computation.
                 continue;
             }
-            let iface_def = index.get(&tn.namespace, &tn.name).next()?;
+            let Some(iface_def) = index.get(&tn.namespace, &tn.name).next() else {
+                // Unreadable/missing TypeDef for this DefaultAttribute impl
+                // — skip *this* candidate rather than aborting the whole
+                // lookup. Other matching runtime classes (or other
+                // DefaultAttribute impls on the same class) can still resolve
+                // successfully.
+                continue;
+            };
             let iid = extract_iid(&iface_def);
             if iid.is_empty() {
                 continue;
