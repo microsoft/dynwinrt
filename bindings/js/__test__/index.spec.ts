@@ -2,6 +2,8 @@
 // Licensed under the MIT License.
 
 import test from 'ava'
+import { spawn } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 
 import {
   DynWinRtArray,
@@ -64,10 +66,7 @@ test('round-trip WinRT values', (t) => {
 
 test('box IReference values', (t) => {
   const valueType = DynWinRtType.u32()
-  const referenceType = DynWinRtType.parameterized(
-    WinGuid.parse('61c17706-2d65-11e0-9ae8-d48564015472'),
-    [valueType],
-  )
+  const referenceType = DynWinRtType.parameterized(WinGuid.parse('61c17706-2d65-11e0-9ae8-d48564015472'), [valueType])
   const reference = DynWinRtType.registerInterface('IReference_UInt32_Test', referenceType.iid()).addMethod(
     'get_Value',
     new DynWinRtMethodSig().addOut(valueType),
@@ -102,4 +101,44 @@ test('parse GUIDs', (t) => {
 
 test('report package identity state', (t) => {
   t.is(typeof hasPackageIdentity(), 'boolean')
+})
+
+test('progress callbacks do not keep Node alive after completion', async (t) => {
+  const child = spawn(process.execPath, [fileURLToPath(new URL('./progress-exit-child.mjs', import.meta.url))], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
+  })
+
+  let stdout = ''
+  let stderr = ''
+  child.stdout.setEncoding('utf8')
+  child.stderr.setEncoding('utf8')
+  child.stdout.on('data', (chunk) => {
+    stdout += chunk
+  })
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk
+  })
+
+  let timedOut = false
+  const timeout = setTimeout(() => {
+    timedOut = true
+    child.kill()
+  }, 10_000)
+  t.teardown(() => {
+    clearTimeout(timeout)
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill()
+    }
+  })
+
+  const code = await new Promise<number | null>((resolve, reject) => {
+    child.once('error', reject)
+    child.once('close', resolve)
+  })
+  clearTimeout(timeout)
+
+  t.false(timedOut, 'child process remained alive after the progress operation completed')
+  t.is(code, 0, stderr)
+  t.regex(stdout, /progress-exit-ok/)
 })

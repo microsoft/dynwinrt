@@ -758,7 +758,11 @@ impl DynWinRTValue {
       .progress_handler_iid()
       .ok_or_else(|| napi::Error::from_reason("onProgress: cannot compute progress handler IID"))?;
 
-    let tsfn = callback.build_threadsafe_function().build()?;
+    // Progress callbacks must not keep an otherwise idle Node process alive.
+    let tsfn = callback
+      .build_threadsafe_function()
+      .weak::<true>()
+      .build()?;
     let progress_cb: dynwinrt::ProgressCallback = Box::new(move |val: dynwinrt::WinRTValue| {
       tsfn.call(DynWinRTValue(val), ThreadsafeFunctionCallMode::NonBlocking);
     });
