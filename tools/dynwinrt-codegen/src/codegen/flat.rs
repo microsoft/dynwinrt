@@ -116,6 +116,19 @@ fn unsupported_return_reason(t: &FlatAbiType) -> Option<&'static str> {
             "return type is floating-point; the current flatInvoke ABI has \
              no F32/F64 return kind (would silently mis-marshal as I32).",
         ),
+        // `flat_invoke` in the Rust runtime is `unsafe` with a documented
+        // contract that `retKind` must match the export's ABI signature.
+        // Requesting `I32` from a void-return function reads whatever bits
+        // happen to be in RAX/EAX at call return — undefined per the Win64
+        // ABI. Skipping void-return methods keeps the codegen fail-loud:
+        // the wrapper's absence is safer than emitting one that silently
+        // technically-violates the retKind contract. Adding a real
+        // `FlatReturnKind::Void` is a follow-up in the runtime crate.
+        FlatAbiType::Void => Some(
+            "return type is void; the current flatInvoke ABI has no dedicated \
+             void return kind, and using I32 as a fallback would violate the \
+             flat_invoke safety contract (retKind must match the ABI signature).",
+        ),
         FlatAbiType::Enum { underlying, .. } => unsupported_return_reason(underlying),
         _ => None,
     }
@@ -152,6 +165,20 @@ fn classify(p: &FlatParamMeta) -> ParamSurface {
             }
         }
         FlatAbiType::Ptr => ParamSurface::OpaquePointer,
+        // A PWSTR/PSTR (LPWSTR/LPSTR) parameter marked `[out]` or
+        // `[in,out]` is a caller-allocated output buffer (e.g.
+        // `RegEnumKeyW(..., LPWSTR name, ...)`, `RegLoadMUIStringW`), NOT
+        // a read-only string input. Surfacing it as `string | null` and
+        // marshalling via `_wideStringBuffer` would make these APIs
+        // unusable (the caller can't observe what was written into the
+        // freshly-allocated internal buffer). Route them through
+        // `OpaquePointer` so the caller supplies a Buffer they own,
+        // matching the actual Win32 usage pattern.
+        FlatAbiType::PWStr | FlatAbiType::PStr
+            if matches!(p.direction, FlatDirection::Out | FlatDirection::InOut) =>
+        {
+            ParamSurface::OpaquePointer
+        }
         _ => ParamSurface::Input,
     }
 }
@@ -193,11 +220,11 @@ fn is_status_return(m: &FlatMethodMeta) -> bool {
 
 fn flat_ret_kind_literal(t: &FlatAbiType) -> &'static str {
     // Map return type to the string literal passed to DynWinRtValue.flatInvoke.
-    // Callers with unsupported return kinds (I64/U64/F32/F64) must be filtered
-    // out upstream by `partition_supported_methods` — reaching this fn with
-    // those types would produce a silently-wrong I32 wrapper. We still return
-    // "I32" for them defensively but debug_assert to catch the missing-filter
-    // bug in tests. See `unsupported_return_reason`.
+    // Callers with unsupported return kinds (I64/U64/F32/F64, Void) must be
+    // filtered out upstream by `partition_supported_methods` — reaching this
+    // fn with those types would produce a silently-wrong I32 wrapper. We
+    // still return "I32" defensively but debug_assert to catch the
+    // missing-filter bug in tests. See `unsupported_return_reason`.
     match t {
         FlatAbiType::I32
         | FlatAbiType::I16
@@ -215,7 +242,10 @@ fn flat_ret_kind_literal(t: &FlatAbiType) -> &'static str {
             FlatAbiType::I16 => "I32",
             _ => "U32",
         },
-        FlatAbiType::Void => "I32", // no return; we still request I32 and discard
+        FlatAbiType::Void => {
+            debug_assert!(false, "flat_ret_kind_literal: Void return should have been filtered upstream (see partition_supported_methods)");
+            "I32"
+        }
         FlatAbiType::Ptr
         | FlatAbiType::PtrTo(_)
         | FlatAbiType::PWStr
@@ -600,7 +630,15 @@ fn render_method_js(out: &mut String, m: &FlatMethodMeta) {
                 let slot = format!("_{jname}Slot");
                 format!("DynWinRtValue.pointer({slot})")
             }
-            _ => {
+            ParamSurface::OpaquePointer => {
+                // Caller-supplied Buffer / bigint / null — pass through
+                // untouched. Skip `wrap_arg_js`, which would incorrectly
+                // apply the string-input transformation (`_wideStringBuffer`
+                // et al.) to a PWStr/PStr param that the caller wants to
+                // treat as a raw byte buffer.
+                format!("DynWinRtValue.pointer({jname})")
+            }
+            ParamSurface::Input => {
                 // If this is a string param with a keep-alive local,
                 // pass the local directly to pointer() — do NOT recreate
                 // a fresh temp Buffer inline.

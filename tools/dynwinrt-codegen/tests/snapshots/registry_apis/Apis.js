@@ -556,13 +556,12 @@ export function regEnableReflectionKey(hBase) {
  *
  * @param hKey  [in] HKEY handle
  * @param index  [in] U32
- * @param name  [in] LPCSTR string
+ * @param name  [in/out pointer] LPCSTR string
  * @param cchName  [in] U32
  * @returns { status: number }
  */
 export function regEnumKeyA(hKey, index, name, cchName) {
-    const _nameBuf = _narrowStringBuffer(name);
-    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegEnumKeyA', 'I32', [DynWinRtValue.pointer(BigInt(hKey)), DynWinRtValue.u32(index), DynWinRtValue.pointer(_nameBuf), DynWinRtValue.u32(cchName)]);
+    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegEnumKeyA', 'I32', [DynWinRtValue.pointer(BigInt(hKey)), DynWinRtValue.u32(index), DynWinRtValue.pointer(name), DynWinRtValue.u32(cchName)]);
     return { status: _ret.toNumber() };
 }
 
@@ -571,10 +570,10 @@ export function regEnumKeyA(hKey, index, name, cchName) {
  *
  * @param hKey  [in] HKEY handle
  * @param index  [in] U32
- * @param name  [in] LPCSTR string
+ * @param name  [in/out pointer] LPCSTR string
  * @param lpcchName  [in,out] pointer to U32
  * @param reserved  [in/out pointer] pointer to U32
- * @param class_  [in] LPCSTR string
+ * @param class_  [in/out pointer] LPCSTR string
  * @param lpcchClass  [in,out] pointer to U32
  * @param lpftLastWriteTime  [in/out pointer] pointer to Unknown
  * @returns { status: number, lpcchName: <out>, lpcchClass: <out> }
@@ -584,9 +583,7 @@ export function regEnumKeyExA(hKey, index, name, lpcchName, reserved, class_, lp
     _lpcchNameSlot.writeUInt32LE(lpcchName, 0);
     const _lpcchClassSlot = Buffer.alloc(4);
     _lpcchClassSlot.writeUInt32LE(lpcchClass, 0);
-    const _nameBuf = _narrowStringBuffer(name);
-    const _class_Buf = _narrowStringBuffer(class_);
-    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegEnumKeyExA', 'I32', [DynWinRtValue.pointer(BigInt(hKey)), DynWinRtValue.u32(index), DynWinRtValue.pointer(_nameBuf), DynWinRtValue.pointer(_lpcchNameSlot), DynWinRtValue.pointer(reserved), DynWinRtValue.pointer(_class_Buf), DynWinRtValue.pointer(_lpcchClassSlot), DynWinRtValue.pointer(lpftLastWriteTime)]);
+    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegEnumKeyExA', 'I32', [DynWinRtValue.pointer(BigInt(hKey)), DynWinRtValue.u32(index), DynWinRtValue.pointer(name), DynWinRtValue.pointer(_lpcchNameSlot), DynWinRtValue.pointer(reserved), DynWinRtValue.pointer(class_), DynWinRtValue.pointer(_lpcchClassSlot), DynWinRtValue.pointer(lpftLastWriteTime)]);
     return {
         status: _ret.toNumber(),
         lpcchName: _lpcchNameSlot.readUInt32LE(0),
@@ -599,10 +596,10 @@ export function regEnumKeyExA(hKey, index, name, lpcchName, reserved, class_, lp
  *
  * @param hKey  [in] HKEY handle
  * @param index  [in] U32
- * @param name  [in] LPCWSTR string
+ * @param name  [in/out pointer] LPCWSTR string
  * @param lpcchName  [in,out] pointer to U32
  * @param reserved  [in/out pointer] pointer to U32
- * @param class_  [in] LPCWSTR string
+ * @param class_  [in/out pointer] LPCWSTR string
  * @param lpcchClass  [in,out] pointer to U32
  * @param lpftLastWriteTime  [in/out pointer] pointer to Unknown
  * @returns { status: number, lpcchName: <out>, lpcchClass: <out> }
@@ -612,9 +609,7 @@ export function regEnumKeyExW(hKey, index, name, lpcchName, reserved, class_, lp
     _lpcchNameSlot.writeUInt32LE(lpcchName, 0);
     const _lpcchClassSlot = Buffer.alloc(4);
     _lpcchClassSlot.writeUInt32LE(lpcchClass, 0);
-    const _nameBuf = _wideStringBuffer(name);
-    const _class_Buf = _wideStringBuffer(class_);
-    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegEnumKeyExW', 'I32', [DynWinRtValue.pointer(BigInt(hKey)), DynWinRtValue.u32(index), DynWinRtValue.pointer(_nameBuf), DynWinRtValue.pointer(_lpcchNameSlot), DynWinRtValue.pointer(reserved), DynWinRtValue.pointer(_class_Buf), DynWinRtValue.pointer(_lpcchClassSlot), DynWinRtValue.pointer(lpftLastWriteTime)]);
+    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegEnumKeyExW', 'I32', [DynWinRtValue.pointer(BigInt(hKey)), DynWinRtValue.u32(index), DynWinRtValue.pointer(name), DynWinRtValue.pointer(_lpcchNameSlot), DynWinRtValue.pointer(reserved), DynWinRtValue.pointer(class_), DynWinRtValue.pointer(_lpcchClassSlot), DynWinRtValue.pointer(lpftLastWriteTime)]);
     return {
         status: _ret.toNumber(),
         lpcchName: _lpcchNameSlot.readUInt32LE(0),
@@ -627,13 +622,12 @@ export function regEnumKeyExW(hKey, index, name, lpcchName, reserved, class_, lp
  *
  * @param hKey  [in] HKEY handle
  * @param index  [in] U32
- * @param name  [in] LPCWSTR string
+ * @param name  [in/out pointer] LPCWSTR string
  * @param cchName  [in] U32
  * @returns { status: number }
  */
 export function regEnumKeyW(hKey, index, name, cchName) {
-    const _nameBuf = _wideStringBuffer(name);
-    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegEnumKeyW', 'I32', [DynWinRtValue.pointer(BigInt(hKey)), DynWinRtValue.u32(index), DynWinRtValue.pointer(_nameBuf), DynWinRtValue.u32(cchName)]);
+    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegEnumKeyW', 'I32', [DynWinRtValue.pointer(BigInt(hKey)), DynWinRtValue.u32(index), DynWinRtValue.pointer(name), DynWinRtValue.u32(cchName)]);
     return { status: _ret.toNumber() };
 }
 
@@ -642,7 +636,7 @@ export function regEnumKeyW(hKey, index, name, cchName) {
  *
  * @param hKey  [in] HKEY handle
  * @param index  [in] U32
- * @param valueName  [in] LPCSTR string
+ * @param valueName  [in/out pointer] LPCSTR string
  * @param lpcchValueName  [in,out] pointer to U32
  * @param reserved  [in/out pointer] pointer to U32
  * @param type  [out] pointer to U32
@@ -656,8 +650,7 @@ export function regEnumValueA(hKey, index, valueName, lpcchValueName, reserved, 
     const _typeSlot = Buffer.alloc(4);
     const _lpcbDataSlot = Buffer.alloc(4);
     _lpcbDataSlot.writeUInt32LE(lpcbData, 0);
-    const _valueNameBuf = _narrowStringBuffer(valueName);
-    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegEnumValueA', 'I32', [DynWinRtValue.pointer(BigInt(hKey)), DynWinRtValue.u32(index), DynWinRtValue.pointer(_valueNameBuf), DynWinRtValue.pointer(_lpcchValueNameSlot), DynWinRtValue.pointer(reserved), DynWinRtValue.pointer(_typeSlot), DynWinRtValue.pointer(data), DynWinRtValue.pointer(_lpcbDataSlot)]);
+    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegEnumValueA', 'I32', [DynWinRtValue.pointer(BigInt(hKey)), DynWinRtValue.u32(index), DynWinRtValue.pointer(valueName), DynWinRtValue.pointer(_lpcchValueNameSlot), DynWinRtValue.pointer(reserved), DynWinRtValue.pointer(_typeSlot), DynWinRtValue.pointer(data), DynWinRtValue.pointer(_lpcbDataSlot)]);
     return {
         status: _ret.toNumber(),
         lpcchValueName: _lpcchValueNameSlot.readUInt32LE(0),
@@ -671,7 +664,7 @@ export function regEnumValueA(hKey, index, valueName, lpcchValueName, reserved, 
  *
  * @param hKey  [in] HKEY handle
  * @param index  [in] U32
- * @param valueName  [in] LPCWSTR string
+ * @param valueName  [in/out pointer] LPCWSTR string
  * @param lpcchValueName  [in,out] pointer to U32
  * @param reserved  [in/out pointer] pointer to U32
  * @param type  [out] pointer to U32
@@ -685,8 +678,7 @@ export function regEnumValueW(hKey, index, valueName, lpcchValueName, reserved, 
     const _typeSlot = Buffer.alloc(4);
     const _lpcbDataSlot = Buffer.alloc(4);
     _lpcbDataSlot.writeUInt32LE(lpcbData, 0);
-    const _valueNameBuf = _wideStringBuffer(valueName);
-    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegEnumValueW', 'I32', [DynWinRtValue.pointer(BigInt(hKey)), DynWinRtValue.u32(index), DynWinRtValue.pointer(_valueNameBuf), DynWinRtValue.pointer(_lpcchValueNameSlot), DynWinRtValue.pointer(reserved), DynWinRtValue.pointer(_typeSlot), DynWinRtValue.pointer(data), DynWinRtValue.pointer(_lpcbDataSlot)]);
+    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegEnumValueW', 'I32', [DynWinRtValue.pointer(BigInt(hKey)), DynWinRtValue.u32(index), DynWinRtValue.pointer(valueName), DynWinRtValue.pointer(_lpcchValueNameSlot), DynWinRtValue.pointer(reserved), DynWinRtValue.pointer(_typeSlot), DynWinRtValue.pointer(data), DynWinRtValue.pointer(_lpcbDataSlot)]);
     return {
         status: _ret.toNumber(),
         lpcchValueName: _lpcchValueNameSlot.readUInt32LE(0),
@@ -852,7 +844,7 @@ export function regLoadKeyW(hKey, subKey, file) {
  *
  * @param hKey  [in] HKEY handle
  * @param value  [in] LPCSTR string
- * @param outBuf  [in] LPCSTR string
+ * @param outBuf  [in/out pointer] LPCSTR string
  * @param outBuf_2  [in] U32
  * @param pcbData  [out] pointer to U32
  * @param flags  [in] U32
@@ -862,9 +854,8 @@ export function regLoadKeyW(hKey, subKey, file) {
 export function regLoadMUIStringA(hKey, value, outBuf, outBuf_2, flags, directory) {
     const _pcbDataSlot = Buffer.alloc(4);
     const _valueBuf = _narrowStringBuffer(value);
-    const _outBufBuf = _narrowStringBuffer(outBuf);
     const _directoryBuf = _narrowStringBuffer(directory);
-    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegLoadMUIStringA', 'I32', [DynWinRtValue.pointer(BigInt(hKey)), DynWinRtValue.pointer(_valueBuf), DynWinRtValue.pointer(_outBufBuf), DynWinRtValue.u32(outBuf_2), DynWinRtValue.pointer(_pcbDataSlot), DynWinRtValue.u32(flags), DynWinRtValue.pointer(_directoryBuf)]);
+    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegLoadMUIStringA', 'I32', [DynWinRtValue.pointer(BigInt(hKey)), DynWinRtValue.pointer(_valueBuf), DynWinRtValue.pointer(outBuf), DynWinRtValue.u32(outBuf_2), DynWinRtValue.pointer(_pcbDataSlot), DynWinRtValue.u32(flags), DynWinRtValue.pointer(_directoryBuf)]);
     return {
         status: _ret.toNumber(),
         pcbData: _pcbDataSlot.readUInt32LE(0),
@@ -876,7 +867,7 @@ export function regLoadMUIStringA(hKey, value, outBuf, outBuf_2, flags, director
  *
  * @param hKey  [in] HKEY handle
  * @param value  [in] LPCWSTR string
- * @param outBuf  [in] LPCWSTR string
+ * @param outBuf  [in/out pointer] LPCWSTR string
  * @param outBuf_2  [in] U32
  * @param pcbData  [out] pointer to U32
  * @param flags  [in] U32
@@ -886,9 +877,8 @@ export function regLoadMUIStringA(hKey, value, outBuf, outBuf_2, flags, director
 export function regLoadMUIStringW(hKey, value, outBuf, outBuf_2, flags, directory) {
     const _pcbDataSlot = Buffer.alloc(4);
     const _valueBuf = _wideStringBuffer(value);
-    const _outBufBuf = _wideStringBuffer(outBuf);
     const _directoryBuf = _wideStringBuffer(directory);
-    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegLoadMUIStringW', 'I32', [DynWinRtValue.pointer(BigInt(hKey)), DynWinRtValue.pointer(_valueBuf), DynWinRtValue.pointer(_outBufBuf), DynWinRtValue.u32(outBuf_2), DynWinRtValue.pointer(_pcbDataSlot), DynWinRtValue.u32(flags), DynWinRtValue.pointer(_directoryBuf)]);
+    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegLoadMUIStringW', 'I32', [DynWinRtValue.pointer(BigInt(hKey)), DynWinRtValue.pointer(_valueBuf), DynWinRtValue.pointer(outBuf), DynWinRtValue.u32(outBuf_2), DynWinRtValue.pointer(_pcbDataSlot), DynWinRtValue.u32(flags), DynWinRtValue.pointer(_directoryBuf)]);
     return {
         status: _ret.toNumber(),
         pcbData: _pcbDataSlot.readUInt32LE(0),
@@ -1080,7 +1070,7 @@ export function regOverridePredefKey(hKey, hNewHKey) {
  * RegQueryInfoKeyA — ADVAPI32.dll export.
  *
  * @param hKey  [in] HKEY handle
- * @param class_  [in] LPCSTR string
+ * @param class_  [in/out pointer] LPCSTR string
  * @param lpcchClass  [in,out] pointer to U32
  * @param reserved  [in/out pointer] pointer to U32
  * @param lpcSubKeys  [out] pointer to U32
@@ -1103,8 +1093,7 @@ export function regQueryInfoKeyA(hKey, class_, lpcchClass, reserved, lpftLastWri
     const _lpcbMaxValueNameLenSlot = Buffer.alloc(4);
     const _lpcbMaxValueLenSlot = Buffer.alloc(4);
     const _lpcbSecurityDescriptorSlot = Buffer.alloc(4);
-    const _class_Buf = _narrowStringBuffer(class_);
-    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegQueryInfoKeyA', 'I32', [DynWinRtValue.pointer(BigInt(hKey)), DynWinRtValue.pointer(_class_Buf), DynWinRtValue.pointer(_lpcchClassSlot), DynWinRtValue.pointer(reserved), DynWinRtValue.pointer(_lpcSubKeysSlot), DynWinRtValue.pointer(_lpcbMaxSubKeyLenSlot), DynWinRtValue.pointer(_lpcbMaxClassLenSlot), DynWinRtValue.pointer(_lpcValuesSlot), DynWinRtValue.pointer(_lpcbMaxValueNameLenSlot), DynWinRtValue.pointer(_lpcbMaxValueLenSlot), DynWinRtValue.pointer(_lpcbSecurityDescriptorSlot), DynWinRtValue.pointer(lpftLastWriteTime)]);
+    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegQueryInfoKeyA', 'I32', [DynWinRtValue.pointer(BigInt(hKey)), DynWinRtValue.pointer(class_), DynWinRtValue.pointer(_lpcchClassSlot), DynWinRtValue.pointer(reserved), DynWinRtValue.pointer(_lpcSubKeysSlot), DynWinRtValue.pointer(_lpcbMaxSubKeyLenSlot), DynWinRtValue.pointer(_lpcbMaxClassLenSlot), DynWinRtValue.pointer(_lpcValuesSlot), DynWinRtValue.pointer(_lpcbMaxValueNameLenSlot), DynWinRtValue.pointer(_lpcbMaxValueLenSlot), DynWinRtValue.pointer(_lpcbSecurityDescriptorSlot), DynWinRtValue.pointer(lpftLastWriteTime)]);
     return {
         status: _ret.toNumber(),
         lpcchClass: _lpcchClassSlot.readUInt32LE(0),
@@ -1122,7 +1111,7 @@ export function regQueryInfoKeyA(hKey, class_, lpcchClass, reserved, lpftLastWri
  * RegQueryInfoKeyW — ADVAPI32.dll export.
  *
  * @param hKey  [in] HKEY handle
- * @param class_  [in] LPCWSTR string
+ * @param class_  [in/out pointer] LPCWSTR string
  * @param lpcchClass  [in,out] pointer to U32
  * @param reserved  [in/out pointer] pointer to U32
  * @param lpcSubKeys  [out] pointer to U32
@@ -1145,8 +1134,7 @@ export function regQueryInfoKeyW(hKey, class_, lpcchClass, reserved, lpftLastWri
     const _lpcbMaxValueNameLenSlot = Buffer.alloc(4);
     const _lpcbMaxValueLenSlot = Buffer.alloc(4);
     const _lpcbSecurityDescriptorSlot = Buffer.alloc(4);
-    const _class_Buf = _wideStringBuffer(class_);
-    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegQueryInfoKeyW', 'I32', [DynWinRtValue.pointer(BigInt(hKey)), DynWinRtValue.pointer(_class_Buf), DynWinRtValue.pointer(_lpcchClassSlot), DynWinRtValue.pointer(reserved), DynWinRtValue.pointer(_lpcSubKeysSlot), DynWinRtValue.pointer(_lpcbMaxSubKeyLenSlot), DynWinRtValue.pointer(_lpcbMaxClassLenSlot), DynWinRtValue.pointer(_lpcValuesSlot), DynWinRtValue.pointer(_lpcbMaxValueNameLenSlot), DynWinRtValue.pointer(_lpcbMaxValueLenSlot), DynWinRtValue.pointer(_lpcbSecurityDescriptorSlot), DynWinRtValue.pointer(lpftLastWriteTime)]);
+    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegQueryInfoKeyW', 'I32', [DynWinRtValue.pointer(BigInt(hKey)), DynWinRtValue.pointer(class_), DynWinRtValue.pointer(_lpcchClassSlot), DynWinRtValue.pointer(reserved), DynWinRtValue.pointer(_lpcSubKeysSlot), DynWinRtValue.pointer(_lpcbMaxSubKeyLenSlot), DynWinRtValue.pointer(_lpcbMaxClassLenSlot), DynWinRtValue.pointer(_lpcValuesSlot), DynWinRtValue.pointer(_lpcbMaxValueNameLenSlot), DynWinRtValue.pointer(_lpcbMaxValueLenSlot), DynWinRtValue.pointer(_lpcbSecurityDescriptorSlot), DynWinRtValue.pointer(lpftLastWriteTime)]);
     return {
         status: _ret.toNumber(),
         lpcchClass: _lpcchClassSlot.readUInt32LE(0),
@@ -1166,15 +1154,14 @@ export function regQueryInfoKeyW(hKey, class_, lpcchClass, reserved, lpftLastWri
  * @param hKey  [in] HKEY handle
  * @param val_list  [in/out pointer] pointer to Unknown
  * @param num_vals  [in] U32
- * @param valueBuf  [in] LPCSTR string
+ * @param valueBuf  [in/out pointer] LPCSTR string
  * @param ldwTotsize  [in,out] pointer to U32
  * @returns { status: number, ldwTotsize: <out> }
  */
 export function regQueryMultipleValuesA(hKey, val_list, num_vals, valueBuf, ldwTotsize) {
     const _ldwTotsizeSlot = Buffer.alloc(4);
     _ldwTotsizeSlot.writeUInt32LE(ldwTotsize, 0);
-    const _valueBufBuf = _narrowStringBuffer(valueBuf);
-    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegQueryMultipleValuesA', 'I32', [DynWinRtValue.pointer(BigInt(hKey)), DynWinRtValue.pointer(val_list), DynWinRtValue.u32(num_vals), DynWinRtValue.pointer(_valueBufBuf), DynWinRtValue.pointer(_ldwTotsizeSlot)]);
+    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegQueryMultipleValuesA', 'I32', [DynWinRtValue.pointer(BigInt(hKey)), DynWinRtValue.pointer(val_list), DynWinRtValue.u32(num_vals), DynWinRtValue.pointer(valueBuf), DynWinRtValue.pointer(_ldwTotsizeSlot)]);
     return {
         status: _ret.toNumber(),
         ldwTotsize: _ldwTotsizeSlot.readUInt32LE(0),
@@ -1187,15 +1174,14 @@ export function regQueryMultipleValuesA(hKey, val_list, num_vals, valueBuf, ldwT
  * @param hKey  [in] HKEY handle
  * @param val_list  [in/out pointer] pointer to Unknown
  * @param num_vals  [in] U32
- * @param valueBuf  [in] LPCWSTR string
+ * @param valueBuf  [in/out pointer] LPCWSTR string
  * @param ldwTotsize  [in,out] pointer to U32
  * @returns { status: number, ldwTotsize: <out> }
  */
 export function regQueryMultipleValuesW(hKey, val_list, num_vals, valueBuf, ldwTotsize) {
     const _ldwTotsizeSlot = Buffer.alloc(4);
     _ldwTotsizeSlot.writeUInt32LE(ldwTotsize, 0);
-    const _valueBufBuf = _wideStringBuffer(valueBuf);
-    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegQueryMultipleValuesW', 'I32', [DynWinRtValue.pointer(BigInt(hKey)), DynWinRtValue.pointer(val_list), DynWinRtValue.u32(num_vals), DynWinRtValue.pointer(_valueBufBuf), DynWinRtValue.pointer(_ldwTotsizeSlot)]);
+    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegQueryMultipleValuesW', 'I32', [DynWinRtValue.pointer(BigInt(hKey)), DynWinRtValue.pointer(val_list), DynWinRtValue.u32(num_vals), DynWinRtValue.pointer(valueBuf), DynWinRtValue.pointer(_ldwTotsizeSlot)]);
     return {
         status: _ret.toNumber(),
         ldwTotsize: _ldwTotsizeSlot.readUInt32LE(0),
@@ -1223,7 +1209,7 @@ export function regQueryReflectionKey(hBase) {
  *
  * @param hKey  [in] HKEY handle
  * @param subKey  [in] LPCSTR string
- * @param data  [in] LPCSTR string
+ * @param data  [in/out pointer] LPCSTR string
  * @param lpcbData  [in,out] pointer to I32
  * @returns { status: number, lpcbData: <out> }
  */
@@ -1231,8 +1217,7 @@ export function regQueryValueA(hKey, subKey, data, lpcbData) {
     const _lpcbDataSlot = Buffer.alloc(4);
     _lpcbDataSlot.writeInt32LE(lpcbData, 0);
     const _subKeyBuf = _narrowStringBuffer(subKey);
-    const _dataBuf = _narrowStringBuffer(data);
-    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegQueryValueA', 'I32', [DynWinRtValue.pointer(BigInt(hKey)), DynWinRtValue.pointer(_subKeyBuf), DynWinRtValue.pointer(_dataBuf), DynWinRtValue.pointer(_lpcbDataSlot)]);
+    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegQueryValueA', 'I32', [DynWinRtValue.pointer(BigInt(hKey)), DynWinRtValue.pointer(_subKeyBuf), DynWinRtValue.pointer(data), DynWinRtValue.pointer(_lpcbDataSlot)]);
     return {
         status: _ret.toNumber(),
         lpcbData: _lpcbDataSlot.readInt32LE(0),
@@ -1292,7 +1277,7 @@ export function regQueryValueExW(hKey, valueName, reserved, data, lpcbData) {
  *
  * @param hKey  [in] HKEY handle
  * @param subKey  [in] LPCWSTR string
- * @param data  [in] LPCWSTR string
+ * @param data  [in/out pointer] LPCWSTR string
  * @param lpcbData  [in,out] pointer to I32
  * @returns { status: number, lpcbData: <out> }
  */
@@ -1300,8 +1285,7 @@ export function regQueryValueW(hKey, subKey, data, lpcbData) {
     const _lpcbDataSlot = Buffer.alloc(4);
     _lpcbDataSlot.writeInt32LE(lpcbData, 0);
     const _subKeyBuf = _wideStringBuffer(subKey);
-    const _dataBuf = _wideStringBuffer(data);
-    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegQueryValueW', 'I32', [DynWinRtValue.pointer(BigInt(hKey)), DynWinRtValue.pointer(_subKeyBuf), DynWinRtValue.pointer(_dataBuf), DynWinRtValue.pointer(_lpcbDataSlot)]);
+    const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegQueryValueW', 'I32', [DynWinRtValue.pointer(BigInt(hKey)), DynWinRtValue.pointer(_subKeyBuf), DynWinRtValue.pointer(data), DynWinRtValue.pointer(_lpcbDataSlot)]);
     return {
         status: _ret.toNumber(),
         lpcbData: _lpcbDataSlot.readInt32LE(0),
