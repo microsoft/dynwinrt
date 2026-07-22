@@ -521,7 +521,7 @@ fn render_method_js(out: &mut String, m: &FlatMethodMeta) {
     }
     out.push_str(&format!(
         " * @returns {}\n",
-        describe_return_shape(m, &classified)
+        describe_return_shape(m, &classified, &jnames)
     ));
     out.push_str(" */\n");
 
@@ -786,11 +786,15 @@ fn describe_abi(t: &FlatAbiType) -> String {
     }
 }
 
-fn describe_return_shape(m: &FlatMethodMeta, classified: &[(usize, ParamSurface)]) -> String {
-    let outs: Vec<&FlatParamMeta> = classified
+fn describe_return_shape(
+    m: &FlatMethodMeta,
+    classified: &[(usize, ParamSurface)],
+    jnames: &[String],
+) -> String {
+    let outs: Vec<(usize, &FlatParamMeta)> = classified
         .iter()
         .filter(|(_, s)| matches!(s, ParamSurface::OutScalar | ParamSurface::InOutScalar))
-        .map(|(i, _)| &m.params[*i])
+        .map(|(i, _)| (*i, &m.params[*i]))
         .collect();
     if outs.is_empty() {
         if matches!(m.return_type, FlatAbiType::Void) {
@@ -807,8 +811,13 @@ fn describe_return_shape(m: &FlatMethodMeta, classified: &[(usize, ParamSurface)
         } else if !matches!(m.return_type, FlatAbiType::Void) {
             parts.push("result: <return>".into());
         }
-        for p in outs {
-            parts.push(format!("{}: <out>", p.name));
+        // Use the SANITIZED JS identifiers (jnames) — not raw winmd param
+        // names — because the emitter uses these same identifiers as the
+        // return-object field names (see the `return { <jname>: ... }` emit
+        // site). Documenting `p.name` would show Hungarian-prefixed / raw
+        // names that don't actually exist on the returned object.
+        for (i, _p) in outs {
+            parts.push(format!("{}: <out>", jnames[i]));
         }
         format!("{{ {} }}", parts.join(", "))
     }

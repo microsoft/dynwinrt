@@ -648,7 +648,7 @@ export function regEnumKeyW(hKey, index, name, cchName) {
  * @param type  [out] pointer to U32
  * @param data  [in/out pointer] pointer to U8
  * @param lpcbData  [in,out] pointer to U32
- * @returns { status: number, lpcchValueName: <out>, lpType: <out>, lpcbData: <out> }
+ * @returns { status: number, lpcchValueName: <out>, type: <out>, lpcbData: <out> }
  */
 export function regEnumValueA(hKey, index, valueName, lpcchValueName, reserved, data, lpcbData) {
     const _lpcchValueNameSlot = Buffer.alloc(4);
@@ -677,7 +677,7 @@ export function regEnumValueA(hKey, index, valueName, lpcchValueName, reserved, 
  * @param type  [out] pointer to U32
  * @param data  [in/out pointer] pointer to U8
  * @param lpcbData  [in,out] pointer to U32
- * @returns { status: number, lpcchValueName: <out>, lpType: <out>, lpcbData: <out> }
+ * @returns { status: number, lpcchValueName: <out>, type: <out>, lpcbData: <out> }
  */
 export function regEnumValueW(hKey, index, valueName, lpcchValueName, reserved, data, lpcbData) {
     const _lpcchValueNameSlot = Buffer.alloc(4);
@@ -1248,7 +1248,7 @@ export function regQueryValueA(hKey, subKey, data, lpcbData) {
  * @param type  [out] pointer to REG_VALUE_TYPE enum
  * @param data  [in/out pointer] pointer to U8
  * @param lpcbData  [in,out] pointer to U32
- * @returns { status: number, lpType: <out>, lpcbData: <out> }
+ * @returns { status: number, type: <out>, lpcbData: <out> }
  */
 export function regQueryValueExA(hKey, valueName, reserved, data, lpcbData) {
     const _typeSlot = Buffer.alloc(4);
@@ -1272,7 +1272,7 @@ export function regQueryValueExA(hKey, valueName, reserved, data, lpcbData) {
  * @param type  [out] pointer to REG_VALUE_TYPE enum
  * @param data  [in/out pointer] pointer to U8
  * @param lpcbData  [in,out] pointer to U32
- * @returns { status: number, lpType: <out>, lpcbData: <out> }
+ * @returns { status: number, type: <out>, lpcbData: <out> }
  */
 export function regQueryValueExW(hKey, valueName, reserved, data, lpcbData) {
     const _typeSlot = Buffer.alloc(4);
