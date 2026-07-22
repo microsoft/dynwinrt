@@ -735,15 +735,14 @@ fn scalar_slot_write(t: &FlatAbiType, value_var: &str) -> WriteExpr {
         FlatAbiType::U64 => WriteExpr::new(&format!(
             "{{slot}}.writeBigUInt64LE(BigInt({value_var}), 0)"
         )),
-        // Handle in-out slots must accept both `bigint` and `Buffer` (both
-        // are legal input shapes per the `.d.ts` — an opaque handle can be
-        // passed either as its numeric value or as a raw pointer-bits
-        // buffer). `BigInt(<Buffer>)` throws, so branch on the runtime
-        // type: read the u64 out of the buffer when it's a Buffer, and
-        // coerce otherwise (also covers `number` for callers who pass a
-        // narrow handle value).
+        // Handle in-out slots accept both bigint and number (Buffer is
+        // intentionally NOT a valid Handle input — see the handle typedef
+        // in the .d.ts — because `DynWinRtValue.pointer(Buffer)` uses the
+        // buffer's own address, not the bytes it contains). `BigInt(x)`
+        // safely handles bigint (identity) and number (coerce); the same
+        // shape U64 uses.
         FlatAbiType::Handle { .. } => WriteExpr::new(&format!(
-            "{{slot}}.writeBigUInt64LE(typeof {value_var} === 'bigint' ? {value_var} : Buffer.isBuffer({value_var}) ? {value_var}.readBigUInt64LE(0) : BigInt({value_var}), 0)"
+            "{{slot}}.writeBigUInt64LE(BigInt({value_var}), 0)"
         )),
         FlatAbiType::Enum { underlying, .. } => scalar_slot_write(underlying, value_var),
         _ => WriteExpr::new(&format!("{{slot}}.writeUInt32LE({value_var}, 0)")),
@@ -775,7 +774,13 @@ fn wrap_arg_js(t: &FlatAbiType, var: &str) -> String {
         FlatAbiType::PStr => {
             format!("DynWinRtValue.pointer(_narrowStringBuffer({var}))")
         }
-        FlatAbiType::Handle { .. } => format!("DynWinRtValue.pointer({var})"),
+        // Handles: type is `bigint | number` (see the handle typedef in
+        // the .d.ts). Coerce via BigInt so `pointer(BigInt(x))` receives
+        // a bigint on the fast path — bigint is identity, number coerces
+        // cleanly. Passing a raw JS number would still hit the number
+        // fast path in `pointer`, but explicitly coercing avoids the JS
+        // Number.MAX_SAFE_INTEGER ambiguity for full-64-bit handles.
+        FlatAbiType::Handle { .. } => format!("DynWinRtValue.pointer(BigInt({var}))"),
         FlatAbiType::Ptr | FlatAbiType::PtrTo(_) => format!("DynWinRtValue.pointer({var})"),
         FlatAbiType::Enum { underlying, .. } => wrap_arg_js(underlying, var),
         FlatAbiType::Void | FlatAbiType::Unknown => {
@@ -864,7 +869,7 @@ fn render_dts(meta: &FlatApisMeta) -> String {
     let handle_aliases = collect_handle_aliases(meta);
     for h in &handle_aliases {
         out.push_str(&format!(
-            "/** Opaque Win32 handle. Accepts either a raw pointer as `bigint` or a `Buffer`. */\nexport type {h} = bigint | Buffer;\n"
+            "/** Opaque Win32 handle. Pass either a raw pointer value as a `bigint` (safe for full 64-bit handle values) or a `number` (only for handles that fit in a JS safe integer, e.g. HWND with small window IDs). Do NOT pass a `Buffer` — `DynWinRtValue.pointer(Buffer)` uses the buffer's own address, not the bytes it contains, so a Buffer of pointer bits would be misinterpreted as a pointer TO an HKEY. */\nexport type {h} = bigint | number;\n"
         ));
     }
     if !handle_aliases.is_empty() {

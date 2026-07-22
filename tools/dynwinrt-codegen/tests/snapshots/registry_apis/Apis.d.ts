@@ -11,12 +11,12 @@ import { REG_SAVE_FORMAT } from './REG_SAVE_FORMAT.js';
 import { REG_VALUE_TYPE } from './REG_VALUE_TYPE.js';
 import { WIN32_ERROR } from './WIN32_ERROR.js';
 
-/** Opaque Win32 handle. Accepts either a raw pointer as `bigint` or a `Buffer`. */
-export type HANDLE = bigint | Buffer;
-/** Opaque Win32 handle. Accepts either a raw pointer as `bigint` or a `Buffer`. */
-export type HKEY = bigint | Buffer;
-/** Opaque Win32 handle. Accepts either a raw pointer as `bigint` or a `Buffer`. */
-export type PSECURITY_DESCRIPTOR = bigint | Buffer;
+/** Opaque Win32 handle. Pass either a raw pointer value as a `bigint` (safe for full 64-bit handle values) or a `number` (only for handles that fit in a JS safe integer, e.g. HWND with small window IDs). Do NOT pass a `Buffer` — `DynWinRtValue.pointer(Buffer)` uses the buffer's own address, not the bytes it contains, so a Buffer of pointer bits would be misinterpreted as a pointer TO an HKEY. */
+export type HANDLE = bigint | number;
+/** Opaque Win32 handle. Pass either a raw pointer value as a `bigint` (safe for full 64-bit handle values) or a `number` (only for handles that fit in a JS safe integer, e.g. HWND with small window IDs). Do NOT pass a `Buffer` — `DynWinRtValue.pointer(Buffer)` uses the buffer's own address, not the bytes it contains, so a Buffer of pointer bits would be misinterpreted as a pointer TO an HKEY. */
+export type HKEY = bigint | number;
+/** Opaque Win32 handle. Pass either a raw pointer value as a `bigint` (safe for full 64-bit handle values) or a `number` (only for handles that fit in a JS safe integer, e.g. HWND with small window IDs). Do NOT pass a `Buffer` — `DynWinRtValue.pointer(Buffer)` uses the buffer's own address, not the bytes it contains, so a Buffer of pointer bits would be misinterpreted as a pointer TO an HKEY. */
+export type PSECURITY_DESCRIPTOR = bigint | number;
 
 /** GetRegistryValueWithFallbackW — api-ms-win-core-state-helpers-l1-1-0.dll export. */
 export declare function getRegistryValueWithFallbackW(hkeyPrimary: HKEY, primarySubKey: string | null, hkeyFallback: HKEY, fallbackSubKey: string | null, value: string | null, flags: number, data: bigint | Buffer | null, dataIn: number): { readonly status: number; readonly pdwType: number; readonly pcbDataOut: number };
