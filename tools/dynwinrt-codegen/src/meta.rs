@@ -1382,14 +1382,29 @@ pub enum FlatAbiType {
     /// slots we can project (e.g. `PtrMut(HKEY)` → out HKEY value;
     /// `PtrMut(U32)` [InOut] → in-out DWORD).
     PtrTo(Box<FlatAbiType>),
-    /// PWSTR / LPCWSTR: null-terminated UTF-16 string. Natural surface is
-    /// `string | null` — the flat emitter builds a `Buffer` on demand.
+    /// PWSTR / PCWSTR / LPCWSTR: pointer to a UTF-16 string. The flat
+    /// emitter models these as *read-only* string inputs: the wrapper
+    /// builds a NUL-terminated UTF-16 `Buffer` on demand from a
+    /// `string | null` argument. This is correct for `PCWSTR` / `LPCWSTR`
+    /// (Win32's const-form pointer-to-CH); for the mutable `PWSTR` form
+    /// used as an OUT/INOUT string buffer, this projection would be too
+    /// narrow (the caller would need a pre-sized `Buffer` — that case
+    /// falls through the ``[out]``/``[in,out]`` param classification in
+    /// `flat.rs` and is currently marshalled via ``pointer(<user buf>)``
+    /// rather than via the string-input path).
     PWStr,
-    /// PSTR / LPCSTR: null-terminated 8-bit string.
+    /// PSTR / PCSTR / LPCSTR: pointer to an 8-bit / ANSI / UTF-8 string.
+    /// Same read-only string-input projection as `PWStr` above; the
+    /// mutable `PSTR` output form flows through the `Buffer` marshalling
+    /// path in `flat.rs`.
     PStr,
-    /// A Win32 opaque handle struct (single `Value` field with a pointer or
-    /// integer shape). Natural surface is `bigint | Buffer` — the same
-    /// projection that classic-COM uses for HWND et al.
+    /// A Win32 opaque handle struct (single `Value` field with a pointer
+    /// or integer shape). Natural surface is `bigint | number` — see the
+    /// handle typedef doc in `codegen/flat.rs`. `Buffer` is intentionally
+    /// NOT a valid input shape because `DynWinRtValue.pointer(Buffer)`
+    /// uses the buffer's own base address rather than the pointer bits
+    /// contained in it, which would be misinterpreted as a pointer to
+    /// the handle (an address-of-address) instead of the handle itself.
     Handle {
         namespace: String,
         name: String,
