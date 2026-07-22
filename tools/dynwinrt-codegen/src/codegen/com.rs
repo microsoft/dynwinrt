@@ -725,7 +725,7 @@ fn render_dts(meta: &ComInterfaceMeta, interop: Option<&InteropInfo>) -> String 
     let handle_aliases = collect_handle_aliases(meta);
     for h in &handle_aliases {
         out.push_str(&format!(
-            "/** Opaque Win32 handle. Accepts either a raw pointer as `bigint` or a `Buffer`. */\nexport type {h} = bigint | Buffer;\n",
+            "/** Opaque Win32 handle or pointer newtype (e.g. HWND, PWSTR). Accepts either a raw pointer as `bigint` or a `Buffer`. */\nexport type {h} = bigint | Buffer;\n",
             h = h
         ));
     }
@@ -958,7 +958,7 @@ fn render_projected_class_files(
     let handle_aliases = collect_handle_aliases(meta);
     for h in &handle_aliases {
         dts.push_str(&format!(
-            "/** Opaque Win32 handle. Accepts either a raw pointer as `bigint` or a `Buffer`. */\nexport type {h} = bigint | Buffer;\n",
+            "/** Opaque Win32 handle or pointer newtype (e.g. HWND, PWSTR). Accepts either a raw pointer as `bigint` or a `Buffer`. */\nexport type {h} = bigint | Buffer;\n",
             h = h
         ));
     }

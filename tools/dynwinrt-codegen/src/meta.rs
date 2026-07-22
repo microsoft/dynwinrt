@@ -172,7 +172,14 @@ pub fn find_runtime_class_default_iid(
     simple_name: &str,
 ) -> Option<(String, String, String)> {
     let index = load_index(winmd_paths)?;
-    // Iterate ALL TypeDefs looking for a runtime class matching `simple_name`.
+    // Collect *all* runtime classes with this simple name so we can detect
+    // cross-namespace collisions (e.g. two runtime classes both called
+    // `SomeThing` in different namespaces). Returning the first match blindly
+    // would silently drive interop codegen with the wrong default-interface
+    // IID → wrappers that call `GetForWindow(riid=…, ppv)` for a different
+    // interface than the caller expects.
+    let mut found: Option<(String, String, String)> = None;
+    let mut collisions: Vec<(String, String, String)> = Vec::new();
     for def in index.all() {
         if def.name() != simple_name {
             continue;
@@ -207,10 +214,28 @@ pub fn find_runtime_class_default_iid(
             if iid.is_empty() {
                 continue;
             }
-            return Some((namespace, tn.name.clone(), iid));
+            let candidate = (namespace.clone(), tn.name.clone(), iid);
+            match &found {
+                None => found = Some(candidate),
+                Some(prev) if prev == &candidate => {
+                    // Exact duplicate — same namespace + same IID means the
+                    // same TypeDef, harmless.
+                }
+                Some(_) => collisions.push(candidate),
+            }
+            break; // stop looking at this class's other interface_impls
         }
     }
-    None
+    if !collisions.is_empty() {
+        let mut all = vec![found.clone().unwrap()];
+        all.extend(collisions);
+        eprintln!(
+            "warning: find_runtime_class_default_iid({}): multiple runtime classes with this simple name resolve to distinct default IIDs — refusing to guess. Candidates: {:?}",
+            simple_name, all
+        );
+        return None;
+    }
+    found
 }
 
 /// Discover the NEWEST installed Windows SDK `Windows.winmd` by enumerating the
