@@ -617,6 +617,76 @@ fn flat_float_params_use_typed_wrappers_not_pointer() {
     );
 }
 
+/// The `.d.ts` return type for pointer-like return kinds MUST match what
+/// `.js` actually produces at runtime. Any `retKind === "Ptr"` (see
+/// `flat_ret_kind_literal` — `Ptr`, `PtrTo(_)`, `PWStr`, `PStr`,
+/// `Handle{..}`) is unconditionally converted through
+/// `_ret.asPointerBigint()`, which returns a plain `bigint` (`0n` for
+/// null). Typing the `.d.ts` `result` as `bigint | Buffer | null` /
+/// `string | null` / a HANDLE alias (as `dts_type_of` does for input
+/// params) would misdescribe the runtime and force callers into
+/// wrong-branch narrowing (checking for `Buffer`/`null` values that
+/// never appear).
+#[test]
+fn flat_dts_return_types_match_js_runtime() {
+    // Cover every pointer-like return kind that `flat_ret_kind_literal`
+    // routes to "Ptr". All should surface as `bigint` in the .d.ts.
+    let apis = synth_apis(vec![
+        synth_method("ReturnsRawPtr", FlatAbiType::Ptr),
+        synth_method("ReturnsPtrToU32", FlatAbiType::PtrTo(Box::new(FlatAbiType::U32))),
+        synth_method("ReturnsPWStr", FlatAbiType::PWStr),
+        synth_method("ReturnsPStr", FlatAbiType::PStr),
+        synth_method(
+            "ReturnsHandle",
+            FlatAbiType::Handle {
+                namespace: "Windows.Win32.Foundation".into(),
+                name: "HWND".into(),
+            },
+        ),
+        // Non-pointer sanity check: I32 must still project as `number`.
+        synth_method("ReturnsI32", FlatAbiType::I32),
+    ]);
+    let out = flat::generate_flat_apis_files(&apis);
+    // Pointer-family returns all show `result: bigint`.
+    for camel in &[
+        "returnsRawPtr",
+        "returnsPtrToU32",
+        "returnsPWStr",
+        "returnsPStr",
+        "returnsHandle",
+    ] {
+        let needle = format!("function {camel}(");
+        let idx = out
+            .dts
+            .find(&needle)
+            .unwrap_or_else(|| panic!(".d.ts missing declaration for {camel}:\n{}", out.dts));
+        let sig = &out.dts[idx..];
+        let end = sig.find(';').unwrap_or(sig.len());
+        let sig = &sig[..end];
+        assert!(
+            sig.contains("readonly result: bigint"),
+            ".d.ts for {camel} must type result as bigint (matches asPointerBigint at runtime), got: {sig}",
+        );
+        assert!(
+            !sig.contains("Buffer") && !sig.contains("string"),
+            ".d.ts for {camel} must NOT surface Buffer/string return (input-only shape), got: {sig}",
+        );
+    }
+    // Non-pointer sanity check.
+    assert!(
+        out.dts
+            .contains("function returnsI32(arg: number): { readonly result: number }"),
+        ".d.ts for returnsI32 must project result as number:\n{}",
+        out.dts
+    );
+    // And the same signals in the .js confirm the contract we're describing.
+    assert!(
+        out.js.contains("asPointerBigint()"),
+        ".js must convert pointer returns via asPointerBigint():\n{}",
+        out.js
+    );
+}
+
 /// The CLI must fail loud when `--lang py` (or any non-`js` language) is
 /// combined with a `--class-name` that resolves to a flat-Win32 `[DllImport]`
 /// module — those emitters produce only `.js` + `.d.ts` and would otherwise

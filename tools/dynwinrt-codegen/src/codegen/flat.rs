@@ -402,6 +402,31 @@ fn dts_type_of(t: &FlatAbiType) -> String {
     }
 }
 
+/// Return-position type for the flat wrapper.
+///
+/// Distinct from [`dts_type_of`] because the runtime read side
+/// (`render_method_js` around `_ret.asPointerBigint()` / `_ret.toNumber()`)
+/// produces different JS values than the input-side types [`dts_type_of`]
+/// accepts. Concretely: any `retKind === "Ptr"` (per
+/// [`flat_ret_kind_literal`] — `Ptr`, `PtrTo(_)`, `PWStr`, `PStr`,
+/// `Handle{..}`) is unconditionally converted via `asPointerBigint()`,
+/// which returns a plain `bigint` (`0n` for null). Typing the `.d.ts`
+/// `result` as `bigint | Buffer | null` or `string | null` (as
+/// [`dts_type_of`] does for input params) would misdescribe the runtime.
+/// All other kinds match [`dts_type_of`]: booleans → `boolean`, small
+/// integers → `number` (from `_ret.toNumber()`), enums → their alias.
+fn dts_return_type_of(t: &FlatAbiType) -> String {
+    match t {
+        FlatAbiType::Void => "void".into(),
+        FlatAbiType::Ptr
+        | FlatAbiType::PtrTo(_)
+        | FlatAbiType::PWStr
+        | FlatAbiType::PStr
+        | FlatAbiType::Handle { .. } => "bigint".into(),
+        _ => dts_type_of(t),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // .js rendering
 // ---------------------------------------------------------------------------
@@ -970,7 +995,10 @@ fn render_method_dts(out: &mut String, m: &FlatMethodMeta) {
         } else if is_status_return(m) {
             "{ readonly status: number }".to_string()
         } else {
-            format!("{{ readonly result: {} }}", dts_type_of(&m.return_type))
+            format!(
+                "{{ readonly result: {} }}",
+                dts_return_type_of(&m.return_type)
+            )
         }
     } else {
         let mut fields: Vec<String> = Vec::new();
@@ -979,7 +1007,7 @@ fn render_method_dts(out: &mut String, m: &FlatMethodMeta) {
         } else if !matches!(m.return_type, FlatAbiType::Void) {
             fields.push(format!(
                 "readonly result: {}",
-                dts_type_of(&m.return_type)
+                dts_return_type_of(&m.return_type)
             ));
         }
         for i in &out_indices {
