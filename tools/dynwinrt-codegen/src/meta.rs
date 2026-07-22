@@ -1696,6 +1696,15 @@ fn resolve_named_flat_type(
             "BOOLEAN" => return FlatAbiType::U8,
             "HRESULT" => return FlatAbiType::I32,
             "NTSTATUS" => return FlatAbiType::I32,
+            // LSTATUS is a plain Int32 typedef in the win32 metadata, but
+            // if a future metadata revision ever exposed it as a
+            // `struct { Value: I32 }` (like Handle typedefs) the TypeDef
+            // path below would classify it as a Handle — which routes
+            // returns through the `'Ptr'` retKind and would mis-marshal
+            // the status code as a pointer. Also route it through I32
+            // explicitly so it stays consistent with is_status_return_type
+            // in this module (which treats LSTATUS as a status typedef).
+            "LSTATUS" => return FlatAbiType::I32,
             _ => {}
         }
     }
