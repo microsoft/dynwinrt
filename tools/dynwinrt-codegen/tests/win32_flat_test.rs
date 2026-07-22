@@ -776,6 +776,7 @@ fn flat_fails_loud_on_simple_name_enum_collision() {
             value: 0,
             doc: None,
         }],
+        is_flags: false,
         doc: None,
         deprecated: None,
     };
