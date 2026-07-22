@@ -255,6 +255,7 @@ mod tests {
                     name: "Kind".into(),
                     underlying: Box::new(TypeMeta::I32),
                     members: vec![],
+                    is_flags: false,
                     doc: None,
                     deprecated: None,
                 })
@@ -515,6 +516,7 @@ mod tests {
                     name: "Kind".into(),
                     underlying: Box::new(TypeMeta::I32),
                     members: vec![],
+                    is_flags: false,
                     doc: None,
                     deprecated: None,
                 })
@@ -556,7 +558,7 @@ mod tests {
         };
         assert_eq!(
             py_convert_return("r", Some(&rt), false, &known),
-            "_dynwinrt_symbol('uri', 'Uri')(r)"
+            "_dynwinrt_symbol('uri', 'Uri')._from_native(r)"
         );
         assert_eq!(
             py_convert_array_return("r", &rt, &known),
@@ -571,6 +573,7 @@ mod tests {
             name: "DayOfWeek".into(),
             underlying: Box::new(TypeMeta::I32),
             members: Vec::new(),
+            is_flags: false,
             doc: None,
             deprecated: None,
         };

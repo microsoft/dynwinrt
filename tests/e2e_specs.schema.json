@@ -40,7 +40,7 @@
       "type": "object",
       "required": ["kind"],
       "properties": {
-        "kind": { "enum": ["activate", "static_factory", "none"] },
+        "kind": { "enum": ["activate", "static_factory", "constructor", "none"] },
         "method": { "type": "string", "description": "Factory method name (snake_case)" },
         "args": { "type": "array", "description": "Factory method arguments" }
       }
@@ -49,6 +49,11 @@
       "type": "object",
       "required": ["kind", "member"],
       "properties": {
+        "langs": {
+          "type": "array",
+          "items": { "enum": ["py", "ts"] },
+          "default": ["py", "ts"]
+        },
         "kind": {
           "enum": [
             "property_equals",
@@ -72,6 +77,15 @@
              "vector_get_many",
              "ireference_roundtrip",
              "event_callback",
+             "sequence_protocol",
+             "mutable_sequence_protocol",
+             "mapping_protocol",
+             "datetime_roundtrip",
+             "static_uuid_roundtrip",
+             "static_uuid_input",
+             "static_bytes_input",
+             "static_sequence_input",
+             "closable_context",
              "method_then_property_equals"
            ]
          },
@@ -87,6 +101,7 @@
           }
         },
         "expected": { "description": "Expected return value (string, number, boolean)" },
+         "expected_winerror": { "type": "integer", "description": "Expected signed HRESULT in OSError.winerror" },
          "contains": { "type": "string", "description": "Expected substring in result" },
          "min": { "type": "number", "description": "Minimum value for property_in_range" },
          "max": { "type": "number", "description": "Maximum value for property_in_range" },
@@ -125,7 +140,10 @@
            "type": "array",
            "items": { "type": "string" },
            "description": "Property path read after method_then_property_equals invokes member"
-         }
+         },
+         "expected_size": { "type": "integer", "description": "Expected collection size" },
+         "set_key": { "description": "Mapping key used for mutation checks" },
+         "set_value": { "description": "Collection value used for mutation checks" }
        }
      }
    }

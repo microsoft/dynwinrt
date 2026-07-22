@@ -9,6 +9,8 @@ use crate::meta::{InterfaceMeta, MethodMeta, ParamDirection};
 use crate::types::TypeMeta;
 
 use super::naming::{to_snake_case, to_snake_case_filename};
+use crate::codegen::python::collections::{CollectionKind, is_mapping_input, type_kind};
+use crate::codegen::python::native_types::{FoundationType, foundation_type};
 use crate::codegen::shared::imports::ireference_inner_type;
 
 pub(crate) fn py_runtime_symbol(type_name: &str, symbol_name: &str) -> String {
@@ -202,31 +204,48 @@ pub(crate) fn py_wrap_arg(name: &str, typ: &TypeMeta) -> String {
         );
     }
 
+    if let Some(wrapped) = py_wrap_collection(name, typ) {
+        return wrapped;
+    }
+
     match typ {
         TypeMeta::String => format!("DynWinRTValue.from_hstring({})", name),
         TypeMeta::Bool => format!("DynWinRTValue.from_bool({})", name),
-        TypeMeta::I32
-        | TypeMeta::U32
-        | TypeMeta::Enum { .. }
-        | TypeMeta::I8
-        | TypeMeta::U8
-        | TypeMeta::I16
-        | TypeMeta::U16
-        | TypeMeta::Char16 => {
-            format!("DynWinRTValue.from_i32({})", name)
-        }
-        TypeMeta::I64 | TypeMeta::U64 => format!("DynWinRTValue.from_i64({})", name),
+        TypeMeta::I8 => format!("DynWinRTValue.from_i8({})", name),
+        TypeMeta::U8 => format!("DynWinRTValue.from_u8({})", name),
+        TypeMeta::I16 => format!("DynWinRTValue.from_i16({})", name),
+        TypeMeta::U16 => format!("DynWinRTValue.from_u16({})", name),
+        TypeMeta::Char16 => format!("DynWinRTValue.from_u16(ord({}))", name),
+        TypeMeta::I32 => format!("DynWinRTValue.from_i32({})", name),
+        TypeMeta::U32 => format!("DynWinRTValue.from_u32({})", name),
+        TypeMeta::I64 => format!("DynWinRTValue.from_i64({})", name),
+        TypeMeta::U64 => format!("DynWinRTValue.from_u64({})", name),
+        TypeMeta::Enum { .. } => format!(
+            "DynWinRTValue.enum_value({}, int({}))",
+            py_dynwinrt_type(typ),
+            name
+        ),
         TypeMeta::F32 => format!("DynWinRTValue.from_f32({})", name),
         TypeMeta::F64 => format!("DynWinRTValue.from_f64({})", name),
-        TypeMeta::Guid => format!("DynWinRTValue.from_guid({})", name),
+        TypeMeta::Guid => format!("DynWinRTValue.from_guid(_dynwinrt_guid({}))", name),
         TypeMeta::RuntimeClass { .. }
         | TypeMeta::Object
         | TypeMeta::Interface { .. }
-        | TypeMeta::Parameterized { .. }
         | TypeMeta::Delegate { .. } => {
             format!("getattr({}, '_obj', {})", name, name)
         }
-        TypeMeta::Array(_) => format!("{}.to_value()", name),
+        TypeMeta::Parameterized { .. } => format!("getattr({}, '_obj', {})", name, name),
+        TypeMeta::Array(inner) => format!(
+            "_dynwinrt_array({}, lambda item: {}, {}, {})",
+            name,
+            py_wrap_native_value("item", inner),
+            py_dynwinrt_type(inner),
+            if matches!(inner.as_ref(), TypeMeta::U8) {
+                "True"
+            } else {
+                "False"
+            }
+        ),
         TypeMeta::Struct {
             name: struct_name, ..
         } if struct_name == "HResult" => {
@@ -242,12 +261,17 @@ pub(crate) fn py_wrap_arg(name: &str, typ: &TypeMeta) -> String {
 }
 
 fn py_wrap_reference_value(name: &str, typ: &TypeMeta) -> String {
+    py_wrap_native_value(name, typ)
+}
+
+pub(crate) fn py_wrap_native_value(name: &str, typ: &TypeMeta) -> String {
     match typ {
         TypeMeta::Bool => format!("DynWinRTValue.from_bool({})", name),
         TypeMeta::I8 => format!("DynWinRTValue.from_i8({})", name),
         TypeMeta::U8 => format!("DynWinRTValue.from_u8({})", name),
         TypeMeta::I16 => format!("DynWinRTValue.from_i16({})", name),
-        TypeMeta::U16 | TypeMeta::Char16 => format!("DynWinRTValue.from_u16({})", name),
+        TypeMeta::U16 => format!("DynWinRTValue.from_u16({})", name),
+        TypeMeta::Char16 => format!("DynWinRTValue.from_u16(ord({}))", name),
         TypeMeta::I32 => format!("DynWinRTValue.from_i32({})", name),
         TypeMeta::U32 => format!("DynWinRTValue.from_u32({})", name),
         TypeMeta::I64 => format!("DynWinRTValue.from_i64({})", name),
@@ -255,11 +279,11 @@ fn py_wrap_reference_value(name: &str, typ: &TypeMeta) -> String {
         TypeMeta::F32 => format!("DynWinRTValue.from_f32({})", name),
         TypeMeta::F64 => format!("DynWinRTValue.from_f64({})", name),
         TypeMeta::String => format!("DynWinRTValue.from_hstring({})", name),
-        TypeMeta::Guid => format!("DynWinRTValue.from_guid(WinGUID.parse({}))", name),
+        TypeMeta::Guid => format!("DynWinRTValue.from_guid(_dynwinrt_guid({}))", name),
         TypeMeta::Enum { .. } => format!(
             "DynWinRTValue.enum_value({}, {})",
             py_dynwinrt_type(typ),
-            name
+            format!("int({name})")
         ),
         TypeMeta::Struct {
             name: struct_name, ..
@@ -269,17 +293,151 @@ fn py_wrap_reference_value(name: &str, typ: &TypeMeta) -> String {
         TypeMeta::Struct {
             name: struct_name, ..
         } => format!("_pack_{}({}).to_value()", to_snake_case(struct_name), name),
-        _ => panic!("unsupported IReference inner type: {:?}", typ),
+        TypeMeta::RuntimeClass { .. }
+        | TypeMeta::Object
+        | TypeMeta::Interface { .. }
+        | TypeMeta::Parameterized { .. }
+        | TypeMeta::Delegate { .. } => format!("getattr({}, '_obj', {})", name, name),
+        TypeMeta::Array(inner) => format!(
+            "_dynwinrt_array({}, lambda item: {}, {}, {})",
+            name,
+            py_wrap_native_value("item", inner),
+            py_dynwinrt_type(inner),
+            if matches!(inner.as_ref(), TypeMeta::U8) {
+                "True"
+            } else {
+                "False"
+            }
+        ),
+        _ => panic!("unsupported Python value type: {:?}", typ),
     }
 }
 
-/// Build Python args list expression for method call.
-pub(crate) fn py_build_args_expr(in_params: &[&crate::meta::ParamMeta]) -> String {
-    in_params
-        .iter()
-        .map(|p| py_wrap_arg(&to_snake_case(&p.name), &p.typ))
-        .collect::<Vec<_>>()
-        .join(", ")
+fn py_wrap_collection(name: &str, typ: &TypeMeta) -> Option<String> {
+    let TypeMeta::Parameterized { args, .. } = typ else {
+        return None;
+    };
+    let kind = type_kind(typ)?;
+    if is_mapping_input(kind, args) {
+        let (key, value) = if matches!(
+            kind,
+            CollectionKind::Mapping | CollectionKind::MutableMapping
+        ) {
+            (args.first()?, args.get(1)?)
+        } else {
+            match args.first()? {
+                TypeMeta::Parameterized {
+                    args: pair_args, ..
+                } => (pair_args.first()?, pair_args.get(1)?),
+                _ => return None,
+            }
+        };
+        return Some(format!(
+            "_dynwinrt_map({}, lambda item: {}, lambda item: {}, {}, {})",
+            name,
+            py_wrap_native_value("item", key),
+            py_wrap_native_value("item", value),
+            py_dynwinrt_type(key),
+            py_dynwinrt_type(value)
+        ));
+    }
+    if matches!(
+        kind,
+        CollectionKind::Iterable | CollectionKind::Sequence | CollectionKind::MutableSequence
+    ) {
+        let element = args.first()?;
+        return Some(format!(
+            "_dynwinrt_vector({}, lambda item: {}, {})",
+            name,
+            py_wrap_native_value("item", element),
+            py_dynwinrt_type(element)
+        ));
+    }
+    None
+}
+
+pub(crate) fn py_type_guard(name: &str, typ: &TypeMeta, known_types: &HashSet<String>) -> String {
+    if let Some(inner) = ireference_inner_type(typ) {
+        return format!(
+            "({name} is None or {})",
+            py_type_guard(name, inner, known_types)
+        );
+    }
+    if let TypeMeta::Parameterized { args, .. } = typ
+        && let Some(kind) = type_kind(typ)
+    {
+        if is_mapping_input(kind, args) {
+            return format!("isinstance({name}, Mapping)");
+        }
+        if matches!(
+            kind,
+            CollectionKind::Iterable
+                | CollectionKind::Iterator
+                | CollectionKind::Sequence
+                | CollectionKind::MutableSequence
+        ) {
+            return format!(
+                "isinstance({name}, Iterable) and not isinstance({name}, (str, bytes, bytearray))"
+            );
+        }
+    }
+    match typ {
+        TypeMeta::Bool => format!("isinstance({name}, bool)"),
+        TypeMeta::I8
+        | TypeMeta::U8
+        | TypeMeta::I16
+        | TypeMeta::U16
+        | TypeMeta::I32
+        | TypeMeta::U32
+        | TypeMeta::I64
+        | TypeMeta::U64 => {
+            format!("isinstance({name}, int) and not isinstance({name}, bool)")
+        }
+        TypeMeta::F32 | TypeMeta::F64 => {
+            format!("isinstance({name}, (int, float)) and not isinstance({name}, bool)")
+        }
+        TypeMeta::Char16 => format!("isinstance({name}, str) and len({name}) == 1"),
+        TypeMeta::String => format!("isinstance({name}, str)"),
+        TypeMeta::Guid => format!("isinstance({name}, UUID)"),
+        TypeMeta::Enum {
+            name: type_name, ..
+        } if known_types.contains(type_name) => format!(
+            "isinstance({name}, {})",
+            py_runtime_symbol(type_name, type_name)
+        ),
+        TypeMeta::Enum { .. } => {
+            format!("isinstance({name}, int) and not isinstance({name}, bool)")
+        }
+        TypeMeta::Array(_) => format!(
+            "isinstance({name}, (DynWinRTArray, bytes, bytearray, Sequence)) and not isinstance({name}, str)"
+        ),
+        typ if foundation_type(typ) == Some(FoundationType::DateTime) => {
+            format!("isinstance({name}, datetime)")
+        }
+        typ if foundation_type(typ) == Some(FoundationType::TimeSpan) => {
+            format!("isinstance({name}, timedelta)")
+        }
+        TypeMeta::Struct {
+            name: type_name, ..
+        } => format!("isinstance({name}, {type_name})"),
+        TypeMeta::RuntimeClass {
+            name: type_name, ..
+        }
+        | TypeMeta::Interface {
+            name: type_name, ..
+        } if known_types.contains(type_name) => format!(
+            "isinstance({name}, {})",
+            py_runtime_symbol(type_name, type_name)
+        ),
+        TypeMeta::Object
+        | TypeMeta::Delegate { .. }
+        | TypeMeta::RuntimeClass { .. }
+        | TypeMeta::Interface { .. }
+        | TypeMeta::Parameterized { .. } => {
+            format!("isinstance(getattr({name}, '_obj', {name}), DynWinRTValue)")
+        }
+        _ => "True".to_string(),
+    }
 }
 
 /// Convert a Python return expression, given the raw `.call()` result expression.
@@ -298,16 +456,17 @@ pub(crate) fn py_convert_return(
         );
     }
     match return_type {
-        Some(TypeMeta::String) | Some(TypeMeta::Guid) => format!("{}.to_string()", expr),
+        Some(TypeMeta::String) => format!("{}.to_string()", expr),
+        Some(TypeMeta::Guid) => format!("_dynwinrt_uuid({}.to_guid())", expr),
         Some(
             TypeMeta::I8
             | TypeMeta::U8
             | TypeMeta::I16
             | TypeMeta::U16
-            | TypeMeta::Char16
             | TypeMeta::I32
             | TypeMeta::U32,
         ) => format!("{}.to_number()", expr),
+        Some(TypeMeta::Char16) => format!("chr({}.to_number())", expr),
         Some(TypeMeta::I64 | TypeMeta::U64) => format!("{}.to_i64()", expr),
         Some(TypeMeta::F32 | TypeMeta::F64) => format!("{}.to_f64()", expr),
         Some(TypeMeta::Bool) => format!("{}.to_bool()", expr),
@@ -332,7 +491,7 @@ pub(crate) fn py_convert_return(
             )
         }
         Some(TypeMeta::RuntimeClass { name, .. }) if known_types.contains(name) => {
-            format!("{}({})", py_runtime_symbol(name, name), expr)
+            format!("{}._from_native({})", py_runtime_symbol(name, name), expr)
         }
         Some(TypeMeta::Struct { name, .. }) if name == "HResult" => format!("{}.to_number()", expr),
         Some(TypeMeta::Struct { name, .. }) => format!("_unpack_{}({})", to_snake_case(name), expr),
@@ -404,10 +563,17 @@ pub(crate) fn py_convert_array_return(
 ) -> String {
     match inner {
         TypeMeta::I8 => format!("{}.to_i8_list()", arr_expr),
-        TypeMeta::U8 => format!("{}.to_u8_list()", arr_expr),
+        TypeMeta::U8 => format!("{}.to_bytes()", arr_expr),
         TypeMeta::I16 => format!("{}.to_i16_list()", arr_expr),
         TypeMeta::U16 | TypeMeta::Char16 => format!("{}.to_u16_list()", arr_expr),
-        TypeMeta::I32 | TypeMeta::Enum { .. } => format!("{}.to_i32_list()", arr_expr),
+        TypeMeta::I32 => format!("{}.to_i32_list()", arr_expr),
+        TypeMeta::Enum { name, .. } if known_types.contains(name) => format!(
+            "[_dynwinrt_enum('{}', '{}', value) for value in {}.to_i32_list()]",
+            to_snake_case_filename(name),
+            name,
+            arr_expr
+        ),
+        TypeMeta::Enum { .. } => format!("{}.to_i32_list()", arr_expr),
         TypeMeta::U32 => format!("{}.to_u32_list()", arr_expr),
         TypeMeta::I64 => format!("{}.to_i64_list()", arr_expr),
         TypeMeta::U64 => format!("{}.to_u64_list()", arr_expr),
@@ -415,7 +581,10 @@ pub(crate) fn py_convert_array_return(
         TypeMeta::F64 => format!("{}.to_f64_list()", arr_expr),
         TypeMeta::Bool => format!("[v.to_bool() for v in {}.to_values()]", arr_expr),
         TypeMeta::String => format!("{}.to_string_list()", arr_expr),
-        TypeMeta::Guid => format!("[v.to_string() for v in {}.to_values()]", arr_expr),
+        TypeMeta::Guid => format!(
+            "[_dynwinrt_uuid(v.to_guid()) for v in {}.to_values()]",
+            arr_expr
+        ),
         TypeMeta::Struct { name, .. } if name == "HResult" => format!("{}.to_i32_list()", arr_expr),
         TypeMeta::Struct { name, .. } => format!(
             "[_unpack_{}(v) for v in {}.to_values()]",

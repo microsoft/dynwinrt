@@ -6,24 +6,35 @@
 use super::imports::{emit_type_checking_imports, format_py_type_import};
 use super::structs::generate_struct_helpers;
 use super::*;
+use crate::codegen::python::collections::{
+    CollectionKind, interface_kind, map_iterable_name, runtime_mixin,
+};
 
 /// Generate a Python file for a single enum.
 pub fn generate_enum(en: &TypeMeta) -> Option<String> {
-    let (name, members, enum_doc, enum_dep) = match en {
+    let (name, members, is_flags, enum_doc, enum_dep) = match en {
         TypeMeta::Enum {
             name,
             members,
+            is_flags,
             doc,
             deprecated,
             ..
-        } => (name, members, doc.as_deref(), deprecated.as_deref()),
+        } => (
+            name,
+            members,
+            *is_flags,
+            doc.as_deref(),
+            deprecated.as_deref(),
+        ),
         _ => return None,
     };
 
     let mut out = String::new();
     out.push_str(HEADER);
-    out.push_str("from enum import IntEnum\n\n\n");
-    out.push_str(&format!("class {}(IntEnum):\n", name));
+    let enum_base = if is_flags { "IntFlag" } else { "IntEnum" };
+    out.push_str(&format!("from enum import {enum_base}\n\n\n"));
+    out.push_str(&format!("class {}({enum_base}):\n", name));
     let type_doc = crate::codegen::shared::docs::DocText {
         summary: enum_doc,
         deprecated: enum_dep,
@@ -80,6 +91,10 @@ pub fn generate_interface(
     out.push_str(HEADER);
     out.push_str(FUTURE_ANNOTATIONS);
     out.push_str(IMPORT_LINE);
+    let collection_kind = interface_kind(iface);
+    if let Some(mixin) = collection_kind.and_then(runtime_mixin) {
+        out.push_str(&format!("from dynwinrt_py.dynwinrt_py import {mixin}\n"));
+    }
     if methods_have_async_output(iface.methods.iter()) {
         out.push_str(ASYNC_IMPORT_LINE);
     }
@@ -155,7 +170,11 @@ pub fn generate_interface(
     }
 
     // Wrapper class
-    out.push_str(&format!("\nclass {}:\n", iface.name));
+    if let Some(mixin) = collection_kind.and_then(runtime_mixin) {
+        out.push_str(&format!("\nclass {}({mixin}):\n", iface.name));
+    } else {
+        out.push_str(&format!("\nclass {}:\n", iface.name));
+    }
     {
         let doc = crate::codegen::shared::docs::DocText {
             summary: iface.doc.as_deref(),
@@ -193,40 +212,75 @@ pub fn generate_interface(
     if let Some(ref piid) = iface.generic_piid {
         if piid == "913337e9-11a1-4345-a3a2-4e7f956e222d" && iface.generic_args.len() == 1 {
             let elem_type = py_dynwinrt_type(&iface.generic_args[0]);
+            let elem_annotation = crate::codegen::python::type_helpers::py_return_type_safe(
+                Some(&iface.generic_args[0]),
+                known_types,
+            );
+            let wrap = py_wrap_native_value("item", &iface.generic_args[0]);
             out.push_str("    @staticmethod\n");
             out.push_str(&format!(
-                "    def create(items: list[DynWinRTValue]) -> '{}':\n",
-                iface.name
+                "    def create(items: Iterable[{}]) -> '{}':\n",
+                elem_annotation, iface.name
             ));
             out.push_str(&format!(
-                "        return {}(DynWinRTValue.create_vector([getattr(i, '_obj', i) for i in items], {}))\n",
-                iface.name, elem_type
+                "        return {}(_dynwinrt_vector(items, lambda item: {}, {}))\n",
+                iface.name, wrap, elem_type
             ));
             out.push('\n');
         } else if piid == "3c2925fe-8519-45c1-aa79-197b6718c1c1" && iface.generic_args.len() == 2 {
             let key_type = py_dynwinrt_type(&iface.generic_args[0]);
             let val_type = py_dynwinrt_type(&iface.generic_args[1]);
+            let key_annotation = crate::codegen::python::type_helpers::py_return_type_safe(
+                Some(&iface.generic_args[0]),
+                known_types,
+            );
+            let val_annotation = crate::codegen::python::type_helpers::py_return_type_safe(
+                Some(&iface.generic_args[1]),
+                known_types,
+            );
+            let wrap_key = py_wrap_native_value("item", &iface.generic_args[0]);
+            let wrap_value = py_wrap_native_value("item", &iface.generic_args[1]);
             out.push_str("    @staticmethod\n");
             out.push_str(&format!(
-                "    def create(keys: list[DynWinRTValue], values: list[DynWinRTValue]) -> '{}':\n",
-                iface.name
+                "    def create(items: Mapping[{}, {}]) -> '{}':\n",
+                key_annotation, val_annotation, iface.name
             ));
             out.push_str(&format!(
-                "        return {}(DynWinRTValue.create_map([getattr(k, '_obj', k) for k in keys], [getattr(v, '_obj', v) for v in values], {}, {}))\n",
-                iface.name, key_type, val_type
+                "        return {}(_dynwinrt_map(items, lambda item: {}, lambda item: {}, {}, {}))\n",
+                iface.name, wrap_key, wrap_value, key_type, val_type
             ));
             out.push('\n');
         }
     }
 
+    if matches!(
+        collection_kind,
+        Some(CollectionKind::Mapping | CollectionKind::MutableMapping)
+    ) && let Some(iterable_name) = map_iterable_name(&iface.generic_args)
+    {
+        out.push_str("    def _iter_pairs(self):\n");
+        out.push_str(&format!(
+            "        return iter({}(self._obj))\n\n",
+            py_runtime_symbol(&iterable_name, &iterable_name)
+        ));
+    }
+
     // Instance methods (reorder so @property comes before @x.setter)
     let iface_var = format!("_{}", iface.name);
-    for method in reorder_getters_before_setters(&iface.methods) {
+    for methods in crate::codegen::python::overloads::grouped_methods(
+        reorder_getters_before_setters(&iface.methods),
+    ) {
         out.push('\n');
-        out.push_str(&generate_iface_instance_method(
-            iface,
-            &iface_var,
-            method,
+        let overloads = methods
+            .into_iter()
+            .map(|method| InstanceOverload {
+                iface_var: iface_var.clone(),
+                obj_expr: "self._obj".to_string(),
+                method,
+            })
+            .collect::<Vec<_>>();
+        out.push_str(&generate_instance_method_group(
+            &overloads,
             known_types,
             &delegate_names,
         ));
@@ -289,6 +343,7 @@ fn generate_delegate(iface: &InterfaceMeta) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::EnumMember;
 
     #[test]
     fn fixed_delegate_uses_declared_iid() {
@@ -312,5 +367,26 @@ mod tests {
             "IID_WorkItemHandler = WinGUID.parse('1d1a8b8b-fa66-414f-9cbd-b65fc99d17fa')"
         ));
         assert!(!code.contains("DynWinRTType.parameterized"));
+    }
+
+    #[test]
+    fn flags_enum_uses_int_flag() {
+        let value = TypeMeta::Enum {
+            namespace: "Test".into(),
+            name: "Options".into(),
+            underlying: Box::new(TypeMeta::U32),
+            members: vec![EnumMember {
+                name: "First".into(),
+                value: 1,
+                doc: None,
+            }],
+            is_flags: true,
+            doc: None,
+            deprecated: None,
+        };
+
+        let code = generate_enum(&value).unwrap();
+        assert!(code.contains("from enum import IntFlag"));
+        assert!(code.contains("class Options(IntFlag):"));
     }
 }

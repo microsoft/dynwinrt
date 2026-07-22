@@ -33,6 +33,23 @@
       ]
     },
     {
+      "id": "uri_python_constructor",
+      "namespace": "Windows.Foundation",
+      "class": "Uri",
+      "langs": ["py"],
+      "instantiate": {
+        "kind": "constructor",
+        "args": ["https://example.com/root/", "child"]
+      },
+      "checks": [
+        {
+          "kind": "property_equals",
+          "member": "absolute_uri",
+          "expected": "https://example.com/root/child"
+        }
+      ]
+    },
+    {
       "id": "uri_equals",
       "namespace": "Windows.Foundation",
       "class": "Uri",
@@ -124,7 +141,10 @@
         { "kind": "static_not_null", "member": "create_int64", "args": [123456] },
         { "kind": "static_not_null", "member": "create_single", "args": [1.5] },
         { "kind": "static_not_null", "member": "create_u_int8", "args": [200] },
-        { "kind": "static_not_null", "member": "create_u_int32", "args": [100000] }
+        { "kind": "static_not_null", "member": "create_u_int32", "args": [100000] },
+        { "kind": "static_uuid_input", "member": "create_guid", "langs": ["py"] },
+        { "kind": "static_bytes_input", "member": "create_u_int8_array", "langs": ["py"] },
+        { "kind": "static_sequence_input", "member": "create_int32_array", "langs": ["py"] }
       ]
     },
     {
@@ -139,7 +159,8 @@
       },
       "checks": [
         { "kind": "method_equals", "member": "get_first_value_by_name", "args": ["a"], "expected": "1" },
-        { "kind": "method_equals", "member": "get_first_value_by_name", "args": ["b"], "expected": "2" }
+        { "kind": "method_equals", "member": "get_first_value_by_name", "args": ["b"], "expected": "2" },
+        { "kind": "sequence_protocol", "member": "self", "expected_size": 2, "langs": ["py"] }
       ]
     },
     {
@@ -247,7 +268,57 @@
       "langs": ["py", "ts"],
       "instantiate": { "kind": "none" },
       "checks": [
-        { "kind": "static_not_null", "member": "create_new_guid" }
+        { "kind": "static_not_null", "member": "create_new_guid" },
+        { "kind": "static_uuid_roundtrip", "member": "create_new_guid", "langs": ["py"] }
+      ]
+    },
+    {
+      "id": "calendar_python_native_inputs",
+      "namespace": "Windows.Globalization",
+      "class": "Calendar",
+      "langs": ["py"],
+      "instantiate": {
+        "kind": "static_factory",
+        "method": "create_calendar_default_calendar_and_clock",
+        "args": [["en-US"]]
+      },
+      "checks": [
+        { "kind": "sequence_protocol", "member": "languages", "expected_size": 1 },
+        { "kind": "datetime_roundtrip", "member": "date_time" }
+      ]
+    },
+    {
+      "id": "notification_data_mapping",
+      "namespace": "Windows.UI.Notifications",
+      "class": "NotificationData",
+      "langs": ["py"],
+      "instantiate": {
+        "kind": "static_factory",
+        "method": "create_notification_data_with_values_and_sequence_number",
+        "args": [{"name": "Ada", "state": "ready"}, 7]
+      },
+      "checks": [
+        {
+          "kind": "mapping_protocol",
+          "member": "values",
+          "expected_size": 2,
+          "set_key": "phase",
+          "set_value": "complete"
+        }
+      ]
+    },
+    {
+      "id": "file_open_picker_mutable_sequence",
+      "namespace": "Windows.Storage.Pickers",
+      "class": "FileOpenPicker",
+      "langs": ["py"],
+      "instantiate": { "kind": "activate" },
+      "checks": [
+        {
+          "kind": "mutable_sequence_protocol",
+          "member": "file_type_filter",
+          "set_value": [".png", ".jpg", ".gif"]
+        }
       ]
     },
     {
@@ -285,7 +356,12 @@
       "langs": ["py", "ts"],
       "instantiate": { "kind": "none" },
       "checks": [
-        { "kind": "static_expect_error", "member": "create_uri", "args": [""] }
+        {
+          "kind": "static_expect_error",
+          "member": "create_uri",
+          "args": [""],
+          "expected_winerror": -2147467261
+        }
       ]
     },
     {
@@ -370,7 +446,8 @@
         "args": [64]
       },
       "checks": [
-        { "kind": "event_callback", "member": "create_reference", "event_name": "Closed", "trigger": "close" }
+        { "kind": "event_callback", "member": "create_reference", "event_name": "Closed", "trigger": "close" },
+        { "kind": "closable_context", "member": "context", "args": [32], "langs": ["py"] }
       ]
     },
     {

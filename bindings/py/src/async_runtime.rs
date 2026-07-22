@@ -6,7 +6,6 @@ use std::future::IntoFuture;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use pyo3::exceptions::PyRuntimeError;
-use pyo3::exceptions::asyncio::CancelledError as PyCancelledError;
 use pyo3::prelude::*;
 use windows::Win32::Foundation::CO_E_NOTINITIALIZED;
 use windows::Win32::System::Com::{
@@ -15,6 +14,9 @@ use windows::Win32::System::Com::{
 };
 use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize, RoUninitialize};
 
+use crate::errors::{
+    map_dynwinrt_error, map_dynwinrt_error_with_context, map_windows_error_with_context,
+};
 use crate::runtime::DynWinRTValue;
 
 thread_local! {
@@ -61,24 +63,16 @@ pub(crate) fn ensure_progress_type_supported(progress_type: &dynwinrt::TypeHandl
     }
 }
 
-fn map_async_error(error: dynwinrt::Error) -> PyErr {
-    match error {
-        dynwinrt::Error::Canceled => {
-            PyCancelledError::new_err("WinRT async operation was canceled")
-        }
-        other => PyRuntimeError::new_err(other.message()),
-    }
-}
-
 fn current_thread_is_sta() -> PyResult<bool> {
     let mut apartment_type = APTTYPE_CURRENT;
     let mut qualifier: APTTYPEQUALIFIER = APTTYPEQUALIFIER_NONE;
     match unsafe { CoGetApartmentType(&mut apartment_type, &mut qualifier) } {
         Ok(()) => Ok(apartment_type == APTTYPE_STA || apartment_type == APTTYPE_MAINSTA),
         Err(error) if error.code() == CO_E_NOTINITIALIZED => Ok(false),
-        Err(error) => Err(PyRuntimeError::new_err(format!(
-            "failed to inspect the current COM apartment: {error}"
-        ))),
+        Err(error) => Err(map_windows_error_with_context(
+            error,
+            "failed to inspect the current COM apartment",
+        )),
     }
 }
 
@@ -95,9 +89,7 @@ pub(crate) fn wait_for_async(
     py: Python<'_>,
 ) -> PyResult<dynwinrt::WinRTValue> {
     let is_started = match value {
-        dynwinrt::WinRTValue::Async(info) => info
-            .is_started()
-            .map_err(|error| PyRuntimeError::new_err(error.message()))?,
+        dynwinrt::WinRTValue::Async(info) => info.is_started().map_err(map_dynwinrt_error)?,
         _ => {
             return Err(PyRuntimeError::new_err(
                 "value is not a WinRT async operation",
@@ -117,7 +109,7 @@ pub(crate) fn wait_for_async(
         }
     }
 
-    py.detach(|| pollster::block_on(async { value.await }).map_err(map_async_error))
+    py.detach(|| pollster::block_on(async { value.await }).map_err(map_dynwinrt_error))
 }
 
 enum ExecutionState {
@@ -164,7 +156,7 @@ impl AsyncOperation {
         let winrt_future = value.into_future().defer_get_results().cancel_on_drop();
         let raw_future = pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let result = winrt_future.await;
-            let result = result.map_err(map_async_error)?;
+            let result = result.map_err(map_dynwinrt_error)?;
             Ok(DynWinRTValue(result))
         })?;
 
@@ -218,9 +210,9 @@ impl AsyncOperation {
 
     fn cancel(&self) -> PyResult<()> {
         match &self.value {
-            dynwinrt::WinRTValue::Async(info) => info.cancel().map_err(|error| {
-                PyRuntimeError::new_err(format!("Cancel failed: {}", error.message()))
-            }),
+            dynwinrt::WinRTValue::Async(info) => info
+                .cancel()
+                .map_err(|error| map_dynwinrt_error_with_context(error, "Cancel failed")),
             _ => Err(PyRuntimeError::new_err(
                 "value is not a WinRT async operation",
             )),
@@ -318,10 +310,7 @@ impl DynWinRTAsyncWithProgress {
                 ));
             }
         };
-        if !info
-            .is_started()
-            .map_err(|error| PyRuntimeError::new_err(error.message()))?
-        {
+        if !info.is_started().map_err(map_dynwinrt_error)? {
             return Ok(());
         }
         let progress_type = info.progress_type().ok_or_else(|| {
@@ -363,11 +352,9 @@ impl DynWinRTAsyncWithProgress {
         match info.set_progress_handler(&handler) {
             Ok(()) => Ok(()),
             Err(error) => {
-                let is_started = info
-                    .is_started()
-                    .map_err(|status_error| PyRuntimeError::new_err(status_error.message()))?;
+                let is_started = info.is_started().map_err(map_dynwinrt_error)?;
                 if is_started {
-                    Err(PyRuntimeError::new_err(error.message()))
+                    Err(map_dynwinrt_error_with_context(error, "SetProgress failed"))
                 } else {
                     Ok(())
                 }

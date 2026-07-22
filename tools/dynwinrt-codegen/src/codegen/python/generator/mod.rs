@@ -21,12 +21,14 @@ use crate::codegen::shared::structs::{
 };
 
 use super::method::{
-    generate_factory_method_invoke, generate_iface_instance_method, generate_static_method_invoke,
+    InstanceOverload, StaticOverload, StaticOverloadKind, generate_iface_instance_method,
+    generate_instance_method_group, generate_static_method_group, py_method_type_guard,
 };
 use super::naming::{is_py_reserved, to_snake_case, to_snake_case_filename};
 use super::shared::reorder_getters_before_setters;
 use super::signature::{
     py_dynwinrt_type, py_generate_interface_registration, py_interface_iid_expr, py_runtime_symbol,
+    py_wrap_native_value,
 };
 use super::structs::{py_struct_field_getter, py_struct_field_setter, py_struct_field_type};
 use super::type_helpers::methods_have_async_output;
@@ -36,10 +38,20 @@ const FUTURE_ANNOTATIONS: &str = "from __future__ import annotations\n";
 const IMPORT_LINE: &str = "\
 from functools import lru_cache
 from importlib import import_module
+from collections.abc import (
+    Callable, Iterable, Iterator, Mapping, MutableMapping, MutableSequence, Sequence,
+)
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
+from uuid import UUID
 from dynwinrt_py import (
     DynWinRTType, DynWinRTMethodSig, DynWinRTValue, DynWinRTArray,
     DynWinRTStruct, DynWinRtDelegate, WinGUID,
+)
+from dynwinrt_py.dynwinrt_py import (
+    _dynwinrt_array, _dynwinrt_bind_overload, _dynwinrt_datetime_to_ticks, _dynwinrt_guid,
+    _dynwinrt_map, _dynwinrt_ticks_to_datetime, _dynwinrt_ticks_to_timedelta,
+    _dynwinrt_timedelta_to_ticks, _dynwinrt_uuid, _dynwinrt_vector,
 )
 
 
@@ -50,7 +62,8 @@ def _dynwinrt_symbol(module, name):
 
 def _dynwinrt_wrap_values(module, name, values):
     wrapper = _dynwinrt_symbol(module, name)
-    return [wrapper(value) for value in values]
+    wrap = getattr(wrapper, '_from_native', wrapper)
+    return [wrap(value) for value in values]
 
 
 def _dynwinrt_enum(module, name, value):
@@ -59,6 +72,15 @@ def _dynwinrt_enum(module, name, value):
         return enum_type(value)
     except ValueError:
         return value
+
+
+def _dynwinrt_delegate(value, iid, parameter_types):
+    raw = getattr(value, '_obj', value)
+    if isinstance(raw, DynWinRTValue):
+        return raw
+    if not callable(value):
+        raise TypeError('delegate value must be callable or a DynWinRTValue')
+    return DynWinRtDelegate.create(iid, parameter_types, value).to_value()
 \n";
 
 const ASYNC_IMPORT_LINE: &str = "\

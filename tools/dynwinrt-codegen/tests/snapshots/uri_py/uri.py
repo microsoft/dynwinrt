@@ -2,10 +2,20 @@
 from __future__ import annotations
 from functools import lru_cache
 from importlib import import_module
+from collections.abc import (
+    Callable, Iterable, Iterator, Mapping, MutableMapping, MutableSequence, Sequence,
+)
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
+from uuid import UUID
 from dynwinrt_py import (
     DynWinRTType, DynWinRTMethodSig, DynWinRTValue, DynWinRTArray,
     DynWinRTStruct, DynWinRtDelegate, WinGUID,
+)
+from dynwinrt_py.dynwinrt_py import (
+    _dynwinrt_array, _dynwinrt_bind_overload, _dynwinrt_datetime_to_ticks, _dynwinrt_guid,
+    _dynwinrt_map, _dynwinrt_ticks_to_datetime, _dynwinrt_ticks_to_timedelta,
+    _dynwinrt_timedelta_to_ticks, _dynwinrt_uuid, _dynwinrt_vector,
 )
 
 
@@ -16,7 +26,8 @@ def _dynwinrt_symbol(module, name):
 
 def _dynwinrt_wrap_values(module, name, values):
     wrapper = _dynwinrt_symbol(module, name)
-    return [wrapper(value) for value in values]
+    wrap = getattr(wrapper, '_from_native', wrapper)
+    return [wrap(value) for value in values]
 
 
 def _dynwinrt_enum(module, name, value):
@@ -25,6 +36,15 @@ def _dynwinrt_enum(module, name, value):
         return enum_type(value)
     except ValueError:
         return value
+
+
+def _dynwinrt_delegate(value, iid, parameter_types):
+    raw = getattr(value, '_obj', value)
+    if isinstance(raw, DynWinRTValue):
+        return raw
+    if not callable(value):
+        raise TypeError('delegate value must be callable or a DynWinRTValue')
+    return DynWinRtDelegate.create(iid, parameter_types, value).to_value()
 
 
 if TYPE_CHECKING:
@@ -77,8 +97,28 @@ _IStringable = DynWinRTType.register_interface(
 
 
 class Uri:
-    def __init__(self, obj: DynWinRTValue):
+    def _set_native(self, obj: DynWinRTValue):
         self._obj = obj.cast(IID_IUriRuntimeClass)
+
+    @classmethod
+    def _from_native(cls, obj: DynWinRTValue):
+        instance = cls.__new__(cls)
+        instance._set_native(obj)
+        return instance
+
+    def __init__(self, *args, **kwargs):
+        if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):
+            self._set_native(args[0])
+            return
+        _bound = _dynwinrt_bind_overload(('uri',), args, kwargs)
+        if _bound is not None and isinstance(_bound[0], str):
+            self._set_native(type(self).create_uri(*_bound)._obj)
+            return
+        _bound = _dynwinrt_bind_overload(('base_uri', 'relative_uri',), args, kwargs)
+        if _bound is not None and isinstance(_bound[0], str) and isinstance(_bound[1], str):
+            self._set_native(type(self).create_with_relative_uri(*_bound)._obj)
+            return
+        raise TypeError("No matching constructor for Uri")
 
     _f_IUriRuntimeClassFactory = None
 
@@ -99,11 +139,11 @@ class Uri:
 
     @staticmethod
     def create_uri(uri: str) -> 'Uri':
-        return Uri(_IUriRuntimeClassFactory.method(6).invoke(Uri._get_f_IUriRuntimeClassFactory(), [DynWinRTValue.from_hstring(uri)]))
+        return Uri._from_native(_IUriRuntimeClassFactory.method(6).invoke(Uri._get_f_IUriRuntimeClassFactory(), [DynWinRTValue.from_hstring(uri)]))
 
     @staticmethod
     def create_with_relative_uri(base_uri: str, relative_uri: str) -> 'Uri':
-        return Uri(_IUriRuntimeClassFactory.method(7).invoke(Uri._get_f_IUriRuntimeClassFactory(), [DynWinRTValue.from_hstring(base_uri), DynWinRTValue.from_hstring(relative_uri)]))
+        return Uri._from_native(_IUriRuntimeClassFactory.method(7).invoke(Uri._get_f_IUriRuntimeClassFactory(), [DynWinRTValue.from_hstring(base_uri), DynWinRTValue.from_hstring(relative_uri)]))
 
     @staticmethod
     def unescape_component(to_unescape: str) -> str:
@@ -151,7 +191,7 @@ class Uri:
 
     @property
     def query_parsed(self) -> 'WwwFormUrlDecoder':
-        return _dynwinrt_symbol('www_form_url_decoder', 'WwwFormUrlDecoder')(_IUriRuntimeClass.method(15).invoke(self._obj, []))
+        return _dynwinrt_symbol('www_form_url_decoder', 'WwwFormUrlDecoder')._from_native(_IUriRuntimeClass.method(15).invoke(self._obj, []))
 
     @property
     def raw_uri(self) -> str:
@@ -177,7 +217,18 @@ class Uri:
         return _IUriRuntimeClass.method(21).invoke(self._obj, [getattr(p_uri, '_obj', p_uri)]).to_bool()
 
     def combine_uri(self, relative_uri: str) -> 'Uri':
-        return _dynwinrt_symbol('uri', 'Uri')(_IUriRuntimeClass.method(22).invoke(self._obj, [DynWinRTValue.from_hstring(relative_uri)]))
+        return _dynwinrt_symbol('uri', 'Uri')._from_native(_IUriRuntimeClass.method(22).invoke(self._obj, [DynWinRTValue.from_hstring(relative_uri)]))
+
+    @property
+    def absolute_canonical_uri(self) -> str:
+        return _IUriRuntimeClassWithAbsoluteCanonicalUri.method(6).invoke(self._obj.cast(IID_IUriRuntimeClassWithAbsoluteCanonicalUri), []).to_string()
+
+    @property
+    def display_iri(self) -> str:
+        return _IUriRuntimeClassWithAbsoluteCanonicalUri.method(7).invoke(self._obj.cast(IID_IUriRuntimeClassWithAbsoluteCanonicalUri), []).to_string()
+
+    def to_string(self) -> str:
+        return _IStringable.method(6).invoke(self._obj.cast(IID_IStringable), []).to_string()
 
     def as_interface(self, interface_class):
         return interface_class.from_value(self._obj)
@@ -185,7 +236,7 @@ class Uri:
 
 class IUriRuntimeClassWithAbsoluteCanonicalUri:
     def __init__(self, obj: DynWinRTValue):
-        self._obj = obj
+        self._obj = obj.cast(IID_IUriRuntimeClassWithAbsoluteCanonicalUri)
 
     @staticmethod
     def from_value(obj: DynWinRTValue) -> 'IUriRuntimeClassWithAbsoluteCanonicalUri':
@@ -202,7 +253,7 @@ class IUriRuntimeClassWithAbsoluteCanonicalUri:
 
 class IStringable:
     def __init__(self, obj: DynWinRTValue):
-        self._obj = obj
+        self._obj = obj.cast(IID_IStringable)
 
     @staticmethod
     def from_value(obj: DynWinRTValue) -> 'IStringable':

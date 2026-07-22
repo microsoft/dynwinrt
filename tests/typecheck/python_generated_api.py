@@ -1,6 +1,7 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
+from collections.abc import Sequence
 from typing import Awaitable, List, Tuple
 
 from dynwinrt_py import (
@@ -18,12 +19,8 @@ from python_bindings.data_writer import DataWriter
 from python_bindings.i_buffer import IBuffer
 from python_bindings.i_output_stream import IOutputStream
 from python_bindings.i_reference_u_int32 import IReference_UInt32
-from python_bindings.i_vector_view_string import IVectorView_String
 from python_bindings.i_www_form_url_decoder_entry import IWwwFormUrlDecoderEntry
 from python_bindings.uri import Uri
-from python_bindings.www_form_url_decoder import (
-    IVectorView_IWwwFormUrlDecoderEntry,
-)
 
 
 def check_runtime_stubs() -> None:
@@ -39,10 +36,11 @@ def check_runtime_stubs() -> None:
 
 
 def check_uri() -> None:
-    uri: Uri = Uri.create_uri("https://example.com")
+    uri: Uri = Uri("https://example.com")
+    relative: Uri = Uri("https://example.com/root/", "child")
     host: str = uri.host
     combined: Uri = uri.combine_uri("child")
-    _: Tuple[str, Uri] = (host, combined)
+    _: Tuple[str, Uri, Uri] = (host, relative, combined)
 
 
 def check_nullable_value(
@@ -58,25 +56,24 @@ def check_nullable_value(
 
 
 def check_string_vector(calendar: Calendar) -> None:
-    languages: IVectorView_String = calendar.languages
-    first: str = languages.get_at(0)
-    located: Tuple[int, bool] = languages.index_of(first)
-    buffer = DynWinRTArray.from_string_values([""] * 4)
-    many: List[str] = languages.get_many(0, buffer)
-    _: Tuple[Tuple[int, bool], List[str]] = (located, many)
+    languages: Sequence[str] = calendar.languages
+    first: str = languages[0]
+    located: int = languages.index(first)
+    many: List[str] = list(languages[:4])
+    _: Tuple[int, List[str]] = (located, many)
 
 
 def check_object_vector(
-    entries: IVectorView_IWwwFormUrlDecoderEntry,
+    entries: Sequence[IWwwFormUrlDecoderEntry],
     entry: IWwwFormUrlDecoderEntry,
     buffer: DynWinRTArray,
 ) -> None:
-    first: IWwwFormUrlDecoderEntry = entries.get_at(0)
-    located: Tuple[int, bool] = entries.index_of(entry)
-    many: List[IWwwFormUrlDecoderEntry] = entries.get_many(0, buffer)
+    first: IWwwFormUrlDecoderEntry = entries[0]
+    located: int = entries.index(entry)
+    many: List[IWwwFormUrlDecoderEntry] = list(entries[:4])
     _: Tuple[
         IWwwFormUrlDecoderEntry,
-        Tuple[int, bool],
+        int,
         List[IWwwFormUrlDecoderEntry],
     ] = (first, located, many)
 

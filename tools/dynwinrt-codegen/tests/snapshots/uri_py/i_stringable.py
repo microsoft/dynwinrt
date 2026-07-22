@@ -2,10 +2,20 @@
 from __future__ import annotations
 from functools import lru_cache
 from importlib import import_module
+from collections.abc import (
+    Callable, Iterable, Iterator, Mapping, MutableMapping, MutableSequence, Sequence,
+)
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
+from uuid import UUID
 from dynwinrt_py import (
     DynWinRTType, DynWinRTMethodSig, DynWinRTValue, DynWinRTArray,
     DynWinRTStruct, DynWinRtDelegate, WinGUID,
+)
+from dynwinrt_py.dynwinrt_py import (
+    _dynwinrt_array, _dynwinrt_bind_overload, _dynwinrt_datetime_to_ticks, _dynwinrt_guid,
+    _dynwinrt_map, _dynwinrt_ticks_to_datetime, _dynwinrt_ticks_to_timedelta,
+    _dynwinrt_timedelta_to_ticks, _dynwinrt_uuid, _dynwinrt_vector,
 )
 
 
@@ -16,7 +26,8 @@ def _dynwinrt_symbol(module, name):
 
 def _dynwinrt_wrap_values(module, name, values):
     wrapper = _dynwinrt_symbol(module, name)
-    return [wrapper(value) for value in values]
+    wrap = getattr(wrapper, '_from_native', wrapper)
+    return [wrap(value) for value in values]
 
 
 def _dynwinrt_enum(module, name, value):
@@ -25,6 +36,15 @@ def _dynwinrt_enum(module, name, value):
         return enum_type(value)
     except ValueError:
         return value
+
+
+def _dynwinrt_delegate(value, iid, parameter_types):
+    raw = getattr(value, '_obj', value)
+    if isinstance(raw, DynWinRTValue):
+        return raw
+    if not callable(value):
+        raise TypeError('delegate value must be callable or a DynWinRTValue')
+    return DynWinRtDelegate.create(iid, parameter_types, value).to_value()
 
 
 IID_IStringable = WinGUID.parse('96369f54-8eb6-48f0-abce-c1b211e627c3')

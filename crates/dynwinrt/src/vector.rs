@@ -13,15 +13,13 @@ use std::sync::{
     Mutex,
     atomic::{AtomicI64, Ordering},
 };
-use windows_core::{GUID, HRESULT, IUnknown, Interface};
+use windows_core::{GUID, HRESULT, HSTRING, IUnknown, Interface};
 
 use crate::com_helpers::{
     E_BOUNDS, E_FAIL, IInspectableVtbl, S_OK, com_to_usize, com_usize_addref_out, com_usize_release,
 };
 #[allow(unused_imports)]
-use crate::com_helpers::{
-    dual_vtable_com, impl_drop_release_items, inspectable_stubs, lock_or, single_vtable_com,
-};
+use crate::com_helpers::{dual_vtable_com, inspectable_stubs, lock_or, single_vtable_com};
 
 // ======================================================================
 // IIDs for collection PIIDs
@@ -172,18 +170,60 @@ impl VectorChangedEventArgs {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CollectionStorage {
+    pub(crate) is_value_type: bool,
+    pub(crate) is_hstring: bool,
+    pub(crate) elem_size: usize,
+}
+
+pub(crate) fn collection_storage(
+    element_type: &crate::TypeHandle,
+) -> crate::Result<CollectionStorage> {
+    use crate::TypeKind;
+
+    let kind = element_type.kind();
+    let elem_size = element_type.size_of();
+    if matches!(kind, TypeKind::F32 | TypeKind::F64 | TypeKind::Guid)
+        || (matches!(kind, TypeKind::Struct(_)) && elem_size > std::mem::size_of::<usize>())
+    {
+        return Err(crate::Error::UnsupportedCollectionElement(kind));
+    }
+    Ok(CollectionStorage {
+        is_hstring: kind == TypeKind::HString,
+        is_value_type: matches!(
+            kind,
+            TypeKind::Bool
+                | TypeKind::I8
+                | TypeKind::U8
+                | TypeKind::I16
+                | TypeKind::U16
+                | TypeKind::Char16
+                | TypeKind::I32
+                | TypeKind::U32
+                | TypeKind::I64
+                | TypeKind::U64
+                | TypeKind::Enum(_)
+                | TypeKind::HResult
+                | TypeKind::Struct(_)
+        ),
+        elem_size,
+    })
+}
+
 /// Write a raw usize item to an output pointer, AddRef'ing if it's a COM reference type.
 /// For value types, only writes `elem_size` bytes to avoid overwriting adjacent memory.
 #[inline(always)]
-unsafe fn write_item_out(
-    is_value_type: bool,
-    elem_size: usize,
+pub(crate) unsafe fn write_item_out(
+    storage: CollectionStorage,
     raw: usize,
     result: *mut *mut c_void,
 ) {
-    if is_value_type {
+    if storage.is_hstring {
+        *result = clone_hstring_raw(raw) as *mut c_void;
+    } else if storage.is_value_type {
         // Write only elem_size bytes, clamped to usize width for safety.
-        let write_size = elem_size.min(std::mem::size_of::<usize>());
+        let write_size = storage.elem_size.min(std::mem::size_of::<usize>());
         unsafe {
             std::ptr::copy_nonoverlapping(
                 &raw as *const usize as *const u8,
@@ -193,6 +233,81 @@ unsafe fn write_item_out(
         }
     } else {
         *result = com_usize_addref_out(raw);
+    }
+}
+
+unsafe fn clone_hstring_raw(raw: usize) -> usize {
+    if raw == 0 {
+        return 0;
+    }
+    let raw_ptr = raw as *mut c_void;
+    let value: &HSTRING = &*(&raw_ptr as *const *mut c_void as *const HSTRING);
+    let cloned: *mut c_void = std::mem::transmute(value.clone());
+    cloned as usize
+}
+
+unsafe fn release_hstring_raw(raw: usize) {
+    if raw != 0 {
+        let _value: HSTRING = std::mem::transmute(raw as *mut c_void);
+    }
+}
+
+pub(crate) unsafe fn clone_stored_item(storage: CollectionStorage, raw: usize) -> usize {
+    if storage.is_hstring {
+        clone_hstring_raw(raw)
+    } else if storage.is_value_type {
+        raw
+    } else {
+        com_to_usize(raw as *mut c_void)
+    }
+}
+
+pub(crate) unsafe fn store_abi_item(storage: CollectionStorage, raw: *mut c_void) -> usize {
+    if storage.is_hstring {
+        clone_hstring_raw(raw as usize)
+    } else if storage.is_value_type {
+        normalize_value_word(raw as usize, storage.elem_size)
+    } else {
+        com_to_usize(raw)
+    }
+}
+
+pub(crate) unsafe fn release_stored_item(storage: CollectionStorage, raw: usize) {
+    if storage.is_hstring {
+        release_hstring_raw(raw);
+    } else if !storage.is_value_type {
+        com_usize_release(raw);
+    }
+}
+
+pub(crate) unsafe fn stored_items_equal(
+    storage: CollectionStorage,
+    left: usize,
+    right: usize,
+) -> bool {
+    if !storage.is_hstring {
+        return if storage.is_value_type {
+            normalize_value_word(left, storage.elem_size)
+                == normalize_value_word(right, storage.elem_size)
+        } else {
+            left == right
+        };
+    }
+    if left == 0 || right == 0 {
+        return left == right;
+    }
+    let left_ptr = left as *mut c_void;
+    let right_ptr = right as *mut c_void;
+    let left: &HSTRING = &*(&left_ptr as *const *mut c_void as *const HSTRING);
+    let right: &HSTRING = &*(&right_ptr as *const *mut c_void as *const HSTRING);
+    left == right
+}
+
+fn normalize_value_word(value: usize, elem_size: usize) -> usize {
+    if elem_size == 0 || elem_size >= std::mem::size_of::<usize>() {
+        value
+    } else {
+        value & ((1usize << (elem_size * 8)) - 1)
     }
 }
 
@@ -222,8 +337,7 @@ struct SingleThreadedVector {
     items: Mutex<Vec<usize>>,
     handlers: Mutex<HashMap<i64, IUnknown>>,
     next_token: AtomicI64,
-    is_value_type: bool,
-    elem_size: usize,
+    storage: CollectionStorage,
     iids: VectorIids,
 }
 
@@ -320,20 +434,11 @@ impl SingleThreadedVector {
     unsafe extern "system" fn first(this: *mut c_void, result: *mut *mut c_void) -> HRESULT {
         let me = Self::from_iterable_ptr(this);
         let items = lock_or!(me.items, E_FAIL);
-        let snapshot = if me.is_value_type {
-            items.clone()
-        } else {
-            items
-                .iter()
-                .map(|&raw| com_to_usize(raw as *mut c_void))
-                .collect()
-        };
-        let iter = SingleThreadedIterator::create(
-            snapshot,
-            me.is_value_type,
-            me.elem_size,
-            me.iids.iterator,
-        );
+        let snapshot = items
+            .iter()
+            .map(|&raw| unsafe { clone_stored_item(me.storage, raw) })
+            .collect();
+        let iter = SingleThreadedIterator::create(snapshot, me.storage, me.iids.iterator);
         *result = iter.into_raw();
         S_OK
     }
@@ -416,7 +521,7 @@ impl SingleThreadedVector {
             return E_BOUNDS;
         }
         let raw = items[index as usize];
-        write_item_out(me.is_value_type, me.elem_size, raw, result);
+        write_item_out(me.storage, raw, result);
         S_OK
     }
 
@@ -429,20 +534,11 @@ impl SingleThreadedVector {
     unsafe extern "system" fn get_view(this: *mut c_void, result: *mut *mut c_void) -> HRESULT {
         let me = Self::from_vector_ptr(this);
         let items = lock_or!(me.items, E_FAIL);
-        let snapshot = if me.is_value_type {
-            items.clone()
-        } else {
-            items
-                .iter()
-                .map(|&raw| com_to_usize(raw as *mut c_void))
-                .collect()
-        };
-        let view = SingleThreadedVectorView::create(
-            snapshot,
-            me.is_value_type,
-            me.elem_size,
-            me.iids.clone(),
-        );
+        let snapshot = items
+            .iter()
+            .map(|&raw| unsafe { clone_stored_item(me.storage, raw) })
+            .collect();
+        let view = SingleThreadedVectorView::create(snapshot, me.storage, me.iids.clone());
         // WinRT ABI: get_view must return an IVectorView pointer (second vtable),
         // not the identity/IIterable pointer (first vtable).
         let identity = view.into_raw();
@@ -460,7 +556,7 @@ impl SingleThreadedVector {
         let items = lock_or!(me.items, E_FAIL);
         let needle = value as usize;
         for (i, &item) in items.iter().enumerate() {
-            if item == needle {
+            if stored_items_equal(me.storage, item, needle) {
                 *index = i as u32;
                 *found = true;
                 return S_OK;
@@ -479,13 +575,8 @@ impl SingleThreadedVector {
                 return E_BOUNDS;
             }
             let old = items[index as usize];
-            items[index as usize] = if me.is_value_type {
-                value as usize
-            } else {
-                let new_val = com_to_usize(value);
-                com_usize_release(old);
-                new_val
-            };
+            items[index as usize] = store_abi_item(me.storage, value);
+            release_stored_item(me.storage, old);
         }
         me.notify_changed(COLLECTION_CHANGE_ITEM_CHANGED, index)
     }
@@ -501,11 +592,7 @@ impl SingleThreadedVector {
             if (index as usize) > items.len() {
                 return E_BOUNDS;
             }
-            let val = if me.is_value_type {
-                value as usize
-            } else {
-                com_to_usize(value)
-            };
+            let val = store_abi_item(me.storage, value);
             items.insert(index as usize, val);
         }
         me.notify_changed(COLLECTION_CHANGE_ITEM_INSERTED, index)
@@ -520,19 +607,13 @@ impl SingleThreadedVector {
             }
             items.remove(index as usize)
         };
-        if !me.is_value_type {
-            com_usize_release(removed);
-        }
+        release_stored_item(me.storage, removed);
         me.notify_changed(COLLECTION_CHANGE_ITEM_REMOVED, index)
     }
 
     unsafe extern "system" fn append(this: *mut c_void, value: *mut c_void) -> HRESULT {
         let me = Self::from_vector_ptr(this);
-        let val = if me.is_value_type {
-            value as usize
-        } else {
-            com_to_usize(value)
-        };
+        let val = store_abi_item(me.storage, value);
         let index = {
             let mut items = lock_or!(me.items, E_FAIL);
             let index = items.len() as u32;
@@ -556,19 +637,15 @@ impl SingleThreadedVector {
             };
             (removed, index)
         };
-        if !me.is_value_type {
-            com_usize_release(removed);
-        }
+        release_stored_item(me.storage, removed);
         me.notify_changed(COLLECTION_CHANGE_ITEM_REMOVED, index)
     }
 
     unsafe extern "system" fn clear(this: *mut c_void) -> HRESULT {
         let me = Self::from_vector_ptr(this);
         let old_items: Vec<usize> = lock_or!(me.items, E_FAIL).drain(..).collect();
-        if !me.is_value_type {
-            for raw in old_items {
-                com_usize_release(raw);
-            }
+        for raw in old_items {
+            release_stored_item(me.storage, raw);
         }
         me.notify_changed(COLLECTION_CHANGE_RESET, 0)
     }
@@ -590,7 +667,7 @@ impl SingleThreadedVector {
         let count = std::cmp::min(capacity as usize, items.len() - start);
         for i in 0..count {
             let raw = items[start + i];
-            write_item_out(me.is_value_type, me.elem_size, raw, items_out.add(i));
+            write_item_out(me.storage, raw, items_out.add(i));
         }
         *actual = count as u32;
         S_OK
@@ -603,19 +680,13 @@ impl SingleThreadedVector {
     ) -> HRESULT {
         let me = Self::from_vector_ptr(this);
         let old_items: Vec<usize> = lock_or!(me.items, E_FAIL).drain(..).collect();
-        if !me.is_value_type {
-            for raw in old_items {
-                com_usize_release(raw);
-            }
+        for raw in old_items {
+            release_stored_item(me.storage, raw);
         }
         let mut items = lock_or!(me.items, E_FAIL);
         for i in 0..count as usize {
             let raw = *values.add(i);
-            let val = if me.is_value_type {
-                raw as usize
-            } else {
-                com_to_usize(raw)
-            };
+            let val = store_abi_item(me.storage, raw);
             items.push(val);
         }
         drop(items);
@@ -636,12 +707,7 @@ impl SingleThreadedVector {
         if (index as usize) >= items.len() {
             return E_BOUNDS;
         }
-        write_item_out(
-            me.is_value_type,
-            me.elem_size,
-            items[index as usize],
-            result,
-        );
+        write_item_out(me.storage, items[index as usize], result);
         S_OK
     }
 
@@ -661,7 +727,7 @@ impl SingleThreadedVector {
         let items = lock_or!(me.items, E_FAIL);
         let needle = value as usize;
         for (i, &item) in items.iter().enumerate() {
-            if item == needle {
+            if stored_items_equal(me.storage, item, needle) {
                 *index = i as u32;
                 *found = true;
                 return S_OK;
@@ -688,19 +754,24 @@ impl SingleThreadedVector {
         }
         let count = std::cmp::min(capacity as usize, items.len() - start);
         for i in 0..count {
-            write_item_out(
-                me.is_value_type,
-                me.elem_size,
-                items[start + i],
-                items_out.add(i),
-            );
+            write_item_out(me.storage, items[start + i], items_out.add(i));
         }
         *actual = count as u32;
         S_OK
     }
 }
 
-impl_drop_release_items!(SingleThreadedVector, lock);
+impl Drop for SingleThreadedVector {
+    fn drop(&mut self) {
+        if let Ok(items) = self.items.lock() {
+            for &raw in items.iter() {
+                unsafe {
+                    release_stored_item(self.storage, raw);
+                }
+            }
+        }
+    }
+}
 
 // ======================================================================
 // SingleThreadedVectorView
@@ -712,8 +783,7 @@ struct SingleThreadedVectorView {
     vtable_view: *const VectorViewVtbl,
     ref_count: windows_core::imp::RefCount,
     items: Vec<usize>,
-    is_value_type: bool,
-    elem_size: usize,
+    storage: CollectionStorage,
     iids: VectorIids,
 }
 
@@ -752,19 +822,13 @@ impl SingleThreadedVectorView {
         get_many: Self::get_many,
     };
 
-    fn create(
-        items: Vec<usize>,
-        is_value_type: bool,
-        elem_size: usize,
-        iids: VectorIids,
-    ) -> IUnknown {
+    fn create(items: Vec<usize>, storage: CollectionStorage, iids: VectorIids) -> IUnknown {
         let view = Box::new(Self {
             vtable_iterable: &Self::ITERABLE_VTBL,
             vtable_view: &Self::VIEW_VTBL,
             ref_count: windows_core::imp::RefCount::new(1),
             items,
-            is_value_type,
-            elem_size,
+            storage,
             iids,
         });
         unsafe { IUnknown::from_raw(Box::into_raw(view) as *mut c_void) }
@@ -777,20 +841,12 @@ impl SingleThreadedVectorView {
 
     unsafe extern "system" fn first(this: *mut c_void, result: *mut *mut c_void) -> HRESULT {
         let me = Self::from_iterable_ptr(this);
-        let snapshot = if me.is_value_type {
-            me.items.clone()
-        } else {
-            me.items
-                .iter()
-                .map(|&raw| com_to_usize(raw as *mut c_void))
-                .collect()
-        };
-        let iter = SingleThreadedIterator::create(
-            snapshot,
-            me.is_value_type,
-            me.elem_size,
-            me.iids.iterator,
-        );
+        let snapshot = me
+            .items
+            .iter()
+            .map(|&raw| unsafe { clone_stored_item(me.storage, raw) })
+            .collect();
+        let iter = SingleThreadedIterator::create(snapshot, me.storage, me.iids.iterator);
         *result = iter.into_raw();
         S_OK
     }
@@ -807,7 +863,7 @@ impl SingleThreadedVectorView {
             return E_BOUNDS;
         }
         let raw = me.items[index as usize];
-        write_item_out(me.is_value_type, me.elem_size, raw, result);
+        write_item_out(me.storage, raw, result);
         S_OK
     }
 
@@ -826,7 +882,7 @@ impl SingleThreadedVectorView {
         let me = Self::from_view_ptr(this);
         let needle = value as usize;
         for (i, &item) in me.items.iter().enumerate() {
-            if item == needle {
+            if stored_items_equal(me.storage, item, needle) {
                 *index = i as u32;
                 *found = true;
                 return S_OK;
@@ -853,14 +909,22 @@ impl SingleThreadedVectorView {
         let count = std::cmp::min(capacity as usize, me.items.len() - start);
         for i in 0..count {
             let raw = me.items[start + i];
-            write_item_out(me.is_value_type, me.elem_size, raw, items_out.add(i));
+            write_item_out(me.storage, raw, items_out.add(i));
         }
         *actual = count as u32;
         S_OK
     }
 }
 
-impl_drop_release_items!(SingleThreadedVectorView, direct);
+impl Drop for SingleThreadedVectorView {
+    fn drop(&mut self) {
+        for &raw in &self.items {
+            unsafe {
+                release_stored_item(self.storage, raw);
+            }
+        }
+    }
+}
 
 // ======================================================================
 // SingleThreadedIterator
@@ -871,8 +935,7 @@ pub(crate) struct SingleThreadedIterator {
     vtable: *const IteratorVtbl,
     ref_count: windows_core::imp::RefCount,
     items: Vec<usize>,
-    is_value_type: bool,
-    elem_size: usize,
+    storage: CollectionStorage,
     cursor: Mutex<usize>,
     iid_iterator: GUID,
 }
@@ -900,16 +963,14 @@ impl SingleThreadedIterator {
 
     pub(crate) fn create(
         items: Vec<usize>,
-        is_value_type: bool,
-        elem_size: usize,
+        storage: CollectionStorage,
         iid_iterator: GUID,
     ) -> IUnknown {
         let iter = Box::new(Self {
             vtable: &Self::VTBL,
             ref_count: windows_core::imp::RefCount::new(1),
             items,
-            is_value_type,
-            elem_size,
+            storage,
             cursor: Mutex::new(0),
             iid_iterator,
         });
@@ -926,7 +987,7 @@ impl SingleThreadedIterator {
             return E_BOUNDS;
         }
         let raw = me.items[cursor];
-        write_item_out(me.is_value_type, me.elem_size, raw, result);
+        write_item_out(me.storage, raw, result);
         S_OK
     }
 
@@ -958,7 +1019,7 @@ impl SingleThreadedIterator {
         let count = std::cmp::min(capacity as usize, remaining);
         for i in 0..count {
             let raw = me.items[*cursor + i];
-            write_item_out(me.is_value_type, me.elem_size, raw, items_out.add(i));
+            write_item_out(me.storage, raw, items_out.add(i));
         }
         *cursor += count;
         *actual = count as u32;
@@ -966,7 +1027,15 @@ impl SingleThreadedIterator {
     }
 }
 
-impl_drop_release_items!(SingleThreadedIterator, direct);
+impl Drop for SingleThreadedIterator {
+    fn drop(&mut self) {
+        for &raw in &self.items {
+            unsafe {
+                release_stored_item(self.storage, raw);
+            }
+        }
+    }
+}
 
 // ======================================================================
 // Public API
@@ -978,48 +1047,110 @@ impl_drop_release_items!(SingleThreadedIterator, direct);
 /// and value types (structs ≤ pointer size → raw bytes, no refcounting).
 pub fn create_vector_from_values(
     items: &[crate::WinRTValue],
-    is_value_type: bool,
-    elem_size: usize,
+    element_type: &crate::TypeHandle,
     iids: VectorIids,
-) -> IUnknown {
-    let packed = if is_value_type {
-        if !items.is_empty() {
-            assert!(
-                elem_size <= std::mem::size_of::<usize>(),
-                "create_vector: struct elem_size {} exceeds pointer size; not yet supported",
-                elem_size
-            );
-        }
-        items
-            .iter()
-            .map(|item| {
-                let data = item
-                    .as_struct()
-                    .expect("struct-typed vector requires Struct values");
-                let mut val: usize = 0;
-                unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        data.as_ptr(),
-                        &mut val as *mut usize as *mut u8,
-                        elem_size.min(std::mem::size_of::<usize>()),
-                    );
-                }
-                val
-            })
-            .collect()
+) -> crate::Result<IUnknown> {
+    let storage = collection_storage(element_type)?;
+    for item in items {
+        validate_collection_item(item, storage)?;
+    }
+    let packed = items
+        .iter()
+        .map(|item| pack_validated_collection_item(item, storage))
+        .collect();
+    Ok(new_vector(packed, storage, iids))
+}
+
+pub(crate) fn validate_collection_item(
+    item: &crate::WinRTValue,
+    storage: CollectionStorage,
+) -> crate::Result<()> {
+    let valid = if storage.is_hstring {
+        matches!(item, crate::WinRTValue::HString(_))
+    } else if !storage.is_value_type {
+        matches!(
+            item,
+            crate::WinRTValue::Object(_) | crate::WinRTValue::Async(_) | crate::WinRTValue::Null
+        )
     } else {
-        items
-            .iter()
-            .map(|item| {
-                let obj = item
-                    .as_object()
-                    .expect("reference-typed vector requires Object values");
-                let raw = obj.as_raw() as usize;
-                unsafe { com_to_usize(raw as *mut c_void) }
-            })
-            .collect()
+        matches!(
+            item,
+            crate::WinRTValue::Bool(_)
+                | crate::WinRTValue::I8(_)
+                | crate::WinRTValue::U8(_)
+                | crate::WinRTValue::I16(_)
+                | crate::WinRTValue::U16(_)
+                | crate::WinRTValue::I32(_)
+                | crate::WinRTValue::U32(_)
+                | crate::WinRTValue::I64(_)
+                | crate::WinRTValue::U64(_)
+                | crate::WinRTValue::Enum { .. }
+                | crate::WinRTValue::HResult(_)
+                | crate::WinRTValue::Struct(_)
+        )
     };
-    new_vector(packed, is_value_type, elem_size, iids)
+    if valid {
+        Ok(())
+    } else {
+        let expected = if storage.is_hstring {
+            "HSTRING"
+        } else if storage.is_value_type {
+            "a pointer-sized scalar or struct"
+        } else {
+            "a COM object or null"
+        };
+        Err(crate::Error::InvalidCollectionValue(expected))
+    }
+}
+
+pub(crate) fn pack_validated_collection_item(
+    item: &crate::WinRTValue,
+    storage: CollectionStorage,
+) -> usize {
+    if storage.is_hstring {
+        return match item {
+            crate::WinRTValue::HString(value) => {
+                let cloned: *mut c_void = unsafe { std::mem::transmute(value.clone()) };
+                cloned as usize
+            }
+            _ => unreachable!("collection item was validated"),
+        };
+    }
+    if !storage.is_value_type {
+        return match item {
+            crate::WinRTValue::Null => 0,
+            _ => {
+                let object = item.as_object().expect("collection item was validated");
+                unsafe { com_to_usize(object.as_raw()) }
+            }
+        };
+    }
+
+    match item {
+        crate::WinRTValue::Bool(value) => usize::from(*value),
+        crate::WinRTValue::I8(value) => *value as usize,
+        crate::WinRTValue::U8(value) => *value as usize,
+        crate::WinRTValue::I16(value) => *value as usize,
+        crate::WinRTValue::U16(value) => *value as usize,
+        crate::WinRTValue::I32(value) => *value as usize,
+        crate::WinRTValue::U32(value) => *value as usize,
+        crate::WinRTValue::I64(value) => *value as usize,
+        crate::WinRTValue::U64(value) => *value as usize,
+        crate::WinRTValue::Enum { value, .. } => *value as usize,
+        crate::WinRTValue::HResult(value) => value.0 as usize,
+        crate::WinRTValue::Struct(data) => {
+            let mut value = 0usize;
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    data.as_ptr(),
+                    &mut value as *mut usize as *mut u8,
+                    storage.elem_size,
+                );
+            }
+            value
+        }
+        _ => unreachable!("collection item was validated"),
+    }
 }
 
 /// Create an IVector<T> COM object from a Vec of IUnknown items (reference types).
@@ -1028,7 +1159,15 @@ pub fn create_vector(items: Vec<IUnknown>, iids: VectorIids) -> IUnknown {
         .into_iter()
         .map(|obj| obj.into_raw() as usize)
         .collect();
-    new_vector(raw_items, false, std::mem::size_of::<*mut c_void>(), iids)
+    new_vector(
+        raw_items,
+        CollectionStorage {
+            is_value_type: false,
+            is_hstring: false,
+            elem_size: std::mem::size_of::<*mut c_void>(),
+        },
+        iids,
+    )
 }
 
 /// Create an IVector<T> COM object for value types (structs ≤ pointer size).
@@ -1054,15 +1193,18 @@ pub fn create_value_vector(items: Vec<Vec<u8>>, elem_size: usize, iids: VectorIi
             val
         })
         .collect();
-    new_vector(packed, true, elem_size, iids)
+    new_vector(
+        packed,
+        CollectionStorage {
+            is_value_type: true,
+            is_hstring: false,
+            elem_size,
+        },
+        iids,
+    )
 }
 
-fn new_vector(
-    items: Vec<usize>,
-    is_value_type: bool,
-    elem_size: usize,
-    iids: VectorIids,
-) -> IUnknown {
+fn new_vector(items: Vec<usize>, storage: CollectionStorage, iids: VectorIids) -> IUnknown {
     let vector = Box::new(SingleThreadedVector {
         vtable_iterable: &SingleThreadedVector::ITERABLE_VTBL,
         vtable_vector: &SingleThreadedVector::VECTOR_VTBL,
@@ -1072,8 +1214,7 @@ fn new_vector(
         items: Mutex::new(items),
         handlers: Mutex::new(HashMap::new()),
         next_token: AtomicI64::new(1),
-        is_value_type,
-        elem_size,
+        storage,
         iids,
     });
     unsafe { IUnknown::from_raw(Box::into_raw(vector) as *mut c_void) }
@@ -1378,6 +1519,19 @@ mod tests {
             S_OK,
         );
         assert_eq!(size, 2);
+    }
+
+    #[test]
+    fn test_invalid_collection_value_returns_error() {
+        let table = MetadataTable::new();
+        let element_type = table.hstring();
+        let iids = table.vector_iids(&element_type);
+        let result = create_vector_from_values(&[crate::WinRTValue::I32(1)], &element_type, iids);
+
+        assert!(matches!(
+            result,
+            Err(crate::Error::InvalidCollectionValue("HSTRING"))
+        ));
     }
 
     #[test]

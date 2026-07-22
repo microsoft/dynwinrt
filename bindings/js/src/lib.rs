@@ -673,11 +673,9 @@ impl DynWinRTValue {
     element_type: &DynWinRTType,
   ) -> napi::Result<DynWinRTValue> {
     let iids = TABLE.vector_iids(&element_type.0);
-    let is_value_type = matches!(element_type.0.kind(), dynwinrt::TypeKind::Struct(_));
-    let elem_size = element_type.0.size_of();
     let wrt_items: Vec<dynwinrt::WinRTValue> = items.iter().map(|i| i.0.clone()).collect();
-    let vector =
-      dynwinrt::vector::create_vector_from_values(&wrt_items, is_value_type, elem_size, iids);
+    let vector = dynwinrt::vector::create_vector_from_values(&wrt_items, &element_type.0, iids)
+      .map_err(|error| napi::Error::from_reason(error.message()))?;
     Ok(DynWinRTValue(dynwinrt::WinRTValue::Object(vector)))
   }
 
@@ -696,22 +694,13 @@ impl DynWinRTValue {
       ));
     }
     let iids = TABLE.map_iids(&key_type.0, &value_type.0);
-    let entries: Vec<(IUnknown, IUnknown)> = keys
+    let entries: Vec<(dynwinrt::WinRTValue, dynwinrt::WinRTValue)> = keys
       .iter()
       .zip(values.iter())
-      .map(|(k, v)| {
-        let key = k
-          .0
-          .as_object()
-          .ok_or_else(|| napi::Error::from_reason("createMap: all keys must be Object values"))?;
-        let val = v
-          .0
-          .as_object()
-          .ok_or_else(|| napi::Error::from_reason("createMap: all values must be Object values"))?;
-        Ok((key, val))
-      })
-      .collect::<napi::Result<Vec<_>>>()?;
-    let map = dynwinrt::map::create_map(entries, iids);
+      .map(|(key, value)| (key.0.clone(), value.0.clone()))
+      .collect();
+    let map = dynwinrt::map::create_map_from_values(&entries, &key_type.0, &value_type.0, iids)
+      .map_err(|error| napi::Error::from_reason(error.message()))?;
     Ok(DynWinRTValue(dynwinrt::WinRTValue::Object(map)))
   }
 

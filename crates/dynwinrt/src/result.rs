@@ -15,6 +15,8 @@ pub enum Error {
     NotAnInterface(String),
     MethodNotFound(String, String),
     ExpectedAsync(TypeKind),
+    UnsupportedCollectionElement(TypeKind),
+    InvalidCollectionValue(&'static str),
     /// An async operation was canceled (status == AsyncStatus::Canceled).
     Canceled,
 }
@@ -49,6 +51,12 @@ impl Error {
             }
             Error::ExpectedAsync(actual) => {
                 format!("Expected an async value, found {:?}", actual)
+            }
+            Error::UnsupportedCollectionElement(actual) => {
+                format!("Unsupported dynamic collection element type: {:?}", actual)
+            }
+            Error::InvalidCollectionValue(expected) => {
+                format!("Invalid dynamic collection value: expected {expected}")
             }
             Error::Canceled => "Async operation was canceled".to_string(),
         }

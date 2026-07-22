@@ -955,6 +955,7 @@ fn parse_interface_type(
         &type_name.name,
         &type_name.generics,
         index,
+        &[],
     )
     else {
         return None;
@@ -1147,7 +1148,49 @@ fn type_meta_to_winmd_type(typ: &TypeMeta) -> windows_metadata::Type {
         | TypeMeta::Struct {
             namespace, name, ..
         } => windows_metadata::Type::named(namespace, name),
-        _ => windows_metadata::Type::Object,
+        TypeMeta::Parameterized {
+            namespace,
+            name,
+            args,
+            ..
+        } => windows_metadata::Type::Name(windows_metadata::TypeName {
+            namespace: namespace.clone(),
+            name: name.clone(),
+            generics: args.iter().map(type_meta_to_winmd_type).collect(),
+        }),
+        TypeMeta::Array(inner) => {
+            windows_metadata::Type::Array(Box::new(type_meta_to_winmd_type(inner)))
+        }
+        TypeMeta::AsyncAction => {
+            windows_metadata::Type::named("Windows.Foundation", "IAsyncAction")
+        }
+        TypeMeta::AsyncOperation(inner) => {
+            windows_metadata::Type::Name(windows_metadata::TypeName {
+                namespace: "Windows.Foundation".to_string(),
+                name: "IAsyncOperation`1".to_string(),
+                generics: vec![type_meta_to_winmd_type(inner)],
+            })
+        }
+        TypeMeta::AsyncActionWithProgress(progress) => {
+            windows_metadata::Type::Name(windows_metadata::TypeName {
+                namespace: "Windows.Foundation".to_string(),
+                name: "IAsyncActionWithProgress`1".to_string(),
+                generics: vec![type_meta_to_winmd_type(progress)],
+            })
+        }
+        TypeMeta::AsyncOperationWithProgress(result, progress) => {
+            windows_metadata::Type::Name(windows_metadata::TypeName {
+                namespace: "Windows.Foundation".to_string(),
+                name: "IAsyncOperationWithProgress`2".to_string(),
+                generics: vec![
+                    type_meta_to_winmd_type(result),
+                    type_meta_to_winmd_type(progress),
+                ],
+            })
+        }
+        TypeMeta::Delegate {
+            namespace, name, ..
+        } => windows_metadata::Type::named(namespace, name),
     }
 }
 
@@ -1208,6 +1251,7 @@ fn find_default_interface_type(def: &reader::TypeDef, index: &reader::Index) -> 
                 &tn.name,
                 &tn.generics,
                 index,
+                &[],
             ));
         }
     }
@@ -1240,6 +1284,7 @@ fn parse_enum_def(def: &reader::TypeDef) -> TypeMeta {
         name: def.name().to_string(),
         underlying: Box::new(TypeMeta::I32),
         members,
+        is_flags: def.has_attribute("FlagsAttribute"),
         doc: None,
         deprecated: None,
     }
@@ -1280,7 +1325,9 @@ fn map_winmd_type_with_generics(
             }
         }
 
-        Type::Name(tn) => resolve_named_type(&tn.namespace, &tn.name, &tn.generics, index),
+        Type::Name(tn) => {
+            resolve_named_type(&tn.namespace, &tn.name, &tn.generics, index, generic_args)
+        }
 
         Type::Array(inner) | Type::ArrayRef(inner) => TypeMeta::Array(Box::new(
             map_winmd_type_with_generics(inner, index, generic_args),
@@ -1295,6 +1342,7 @@ fn resolve_named_type(
     name: &str,
     generics: &[windows_metadata::Type],
     index: &reader::Index,
+    outer_generic_args: &[TypeMeta],
 ) -> TypeMeta {
     // System.Guid — not in Windows.winmd, handle as primitive
     if namespace == "System" && name == "Guid" {
@@ -1306,18 +1354,31 @@ fn resolve_named_type(
         match name {
             "IAsyncAction" => return TypeMeta::AsyncAction,
             "IAsyncOperation`1" if generics.len() == 1 => {
-                return TypeMeta::AsyncOperation(Box::new(map_winmd_type(&generics[0], index)));
-            }
-            "IAsyncActionWithProgress`1" if generics.len() == 1 => {
-                return TypeMeta::AsyncActionWithProgress(Box::new(map_winmd_type(
+                return TypeMeta::AsyncOperation(Box::new(map_winmd_type_with_generics(
                     &generics[0],
                     index,
+                    outer_generic_args,
+                )));
+            }
+            "IAsyncActionWithProgress`1" if generics.len() == 1 => {
+                return TypeMeta::AsyncActionWithProgress(Box::new(map_winmd_type_with_generics(
+                    &generics[0],
+                    index,
+                    outer_generic_args,
                 )));
             }
             "IAsyncOperationWithProgress`2" if generics.len() == 2 => {
                 return TypeMeta::AsyncOperationWithProgress(
-                    Box::new(map_winmd_type(&generics[0], index)),
-                    Box::new(map_winmd_type(&generics[1], index)),
+                    Box::new(map_winmd_type_with_generics(
+                        &generics[0],
+                        index,
+                        outer_generic_args,
+                    )),
+                    Box::new(map_winmd_type_with_generics(
+                        &generics[1],
+                        index,
+                        outer_generic_args,
+                    )),
                 );
             }
             _ => {}
@@ -1338,7 +1399,10 @@ fn resolve_named_type(
                 String::new()
             }
         };
-        let args = generics.iter().map(|g| map_winmd_type(g, index)).collect();
+        let args = generics
+            .iter()
+            .map(|generic| map_winmd_type_with_generics(generic, index, outer_generic_args))
+            .collect();
         return TypeMeta::Parameterized {
             namespace: namespace.to_string(),
             name: name.to_string(),

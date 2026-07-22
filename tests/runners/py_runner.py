@@ -45,6 +45,17 @@ def literal_arg(val):
     return val
 
 
+def projected_values_equal(left, right):
+    if type(left) is not type(right):
+        return False
+    for attribute in ("name", "value", "path"):
+        if hasattr(left, attribute) and hasattr(right, attribute):
+            return getattr(left, attribute) == getattr(right, attribute)
+    if isinstance(left, (str, bytes, int, float, bool, tuple)):
+        return left == right
+    return True
+
+
 def wrap_arg(val):
     """Wrap a Python value into a DynWinRTValue for method args."""
     import dynwinrt_py as dw
@@ -96,10 +107,15 @@ async def run_spec(spec: dict, generated_dir: str, pkg_name: str) -> dict:
             args = [literal_arg(a) for a in spec['instantiate'].get('args', [])]
             factory = getattr(cls, method_name)
             obj = factory(*args)
+        elif inst_kind == 'constructor':
+            args = [literal_arg(a) for a in spec['instantiate'].get('args', [])]
+            obj = cls(*args)
         # kind == 'none': no instantiation
 
         # Run checks
         for check in spec.get('checks', []):
+            if 'py' not in check.get('langs', ['py', 'ts']):
+                continue
             check_result = await run_check(check, cls, obj, generated_dir, pkg_name)
             result['checks'].append(check_result)
             if not check_result['pass']:
@@ -431,7 +447,139 @@ async def run_check(check: dict, cls, obj, generated_dir: str, pkg_name: str) ->
             try:
                 method(*args)
                 cr['error'] = 'expected error but call succeeded'
-            except Exception:
+            except OSError as error:
+                expected_winerror = check.get('expected_winerror')
+                if expected_winerror is not None and error.winerror != expected_winerror:
+                    cr['error'] = (
+                        f'expected winerror {expected_winerror}, '
+                        f'got {error.winerror}'
+                    )
+                elif not isinstance(error.winerror, int):
+                    cr['error'] = f'expected integer winerror, got {error.winerror!r}'
+                else:
+                    cr['pass'] = True
+            except Exception as error:
+                cr['error'] = f'expected OSError, got {type(error).__name__}: {error}'
+
+        elif kind == 'sequence_protocol':
+            sequence = obj if member == 'self' else getattr(obj, member)
+            expected_size = check['expected_size']
+            values = list(sequence)
+            if len(sequence) != expected_size or len(values) != expected_size:
+                cr['error'] = (
+                    f'expected sequence size {expected_size}, '
+                    f'got len={len(sequence)}, iter={len(values)}'
+                )
+            elif expected_size and not projected_values_equal(sequence[-1], values[-1]):
+                cr['error'] = 'negative indexing returned a different value'
+            elif len(sequence[:]) != len(values) or any(
+                not projected_values_equal(left, right)
+                for left, right in zip(sequence[:], values)
+            ):
+                cr['error'] = 'full slice did not match iteration'
+            else:
+                cr['pass'] = True
+
+        elif kind == 'mapping_protocol':
+            mapping = getattr(obj, member)
+            expected_size = check['expected_size']
+            snapshot = dict(mapping)
+            if len(mapping) != expected_size or len(snapshot) != expected_size:
+                cr['error'] = (
+                    f'expected mapping size {expected_size}, '
+                    f'got len={len(mapping)}, items={len(snapshot)}'
+                )
+            elif set(iter(mapping)) != set(snapshot):
+                cr['error'] = 'mapping iteration did not yield its keys'
+            else:
+                key = next(iter(snapshot))
+                if mapping[key] != snapshot[key]:
+                    cr['error'] = 'mapping lookup disagreed with items()'
+                else:
+                    if 'set_key' in check:
+                        mapping[check['set_key']] = check['set_value']
+                        if mapping[check['set_key']] != check['set_value']:
+                            cr['error'] = 'mapping assignment did not round-trip'
+                            return cr
+                        del mapping[check['set_key']]
+                        if check['set_key'] in mapping:
+                            cr['error'] = 'mapping deletion did not remove the key'
+                            return cr
+                    cr['pass'] = True
+
+        elif kind == 'mutable_sequence_protocol':
+            sequence = getattr(obj, member)
+            values = check['set_value']
+            sequence.extend(values)
+            if list(sequence) != values:
+                cr['error'] = f'extend mismatch: {list(sequence)!r}'
+            else:
+                sequence[0] = values[-1]
+                sequence.insert(-100, values[0])
+                del sequence[2:]
+                expected = [values[0], values[-1]]
+                if list(sequence) != expected:
+                    cr['error'] = (
+                        f'mutable sequence operations expected {expected!r}, '
+                        f'got {list(sequence)!r}'
+                    )
+                else:
+                    cr['pass'] = True
+
+        elif kind == 'datetime_roundtrip':
+            from datetime import datetime, timezone
+
+            value = datetime(2024, 1, 2, 3, 4, 5, 678901, tzinfo=timezone.utc)
+            getattr(obj, f'set_{member}')(value)
+            actual = getattr(obj, f'get_{member}')()
+            if actual != value:
+                cr['error'] = f'expected {value!r}, got {actual!r}'
+            else:
+                cr['pass'] = True
+
+        elif kind == 'static_uuid_roundtrip':
+            from uuid import UUID
+
+            actual = getattr(cls, member)()
+            if not isinstance(actual, UUID):
+                cr['error'] = f'expected UUID, got {type(actual).__name__}'
+            else:
+                cr['pass'] = True
+
+        elif kind == 'static_uuid_input':
+            from uuid import uuid4
+
+            actual = getattr(cls, member)(uuid4())
+            if actual is None:
+                cr['error'] = 'UUID input returned None'
+            else:
+                cr['pass'] = True
+
+        elif kind == 'static_bytes_input':
+            actual = getattr(cls, member)(bytes([0, 1, 127, 255]))
+            if actual is None:
+                cr['error'] = 'bytes input returned None'
+            else:
+                cr['pass'] = True
+
+        elif kind == 'static_sequence_input':
+            actual = getattr(cls, member)([1, 2, 3])
+            if actual is None:
+                cr['error'] = 'sequence input returned None'
+            else:
+                cr['pass'] = True
+
+        elif kind == 'closable_context':
+            resource = cls(*[literal_arg(value) for value in check.get('args', [])])
+            with resource as entered:
+                if entered is not resource:
+                    cr['error'] = '__enter__ returned a different object'
+                    return cr
+            resource.close()
+            try:
+                resource.__enter__()
+                cr['error'] = 'closed object allowed context re-entry'
+            except RuntimeError:
                 cr['pass'] = True
 
         elif kind == 'cross_class_chain':
@@ -562,7 +710,6 @@ async def run_check(check: dict, cls, obj, generated_dir: str, pkg_name: str) ->
         elif kind == 'async_cancellation':
             import dynwinrt_py as dw
 
-            handler_mod = importlib.import_module(f'{pkg_name}.work_item_handler')
             info_iid = dw.WinGUID.parse('00000036-0000-0000-c000-000000000046')
             info_type = (
                 dw.DynWinRTType.register_interface('IAsyncInfoE2E', info_iid)
@@ -592,12 +739,7 @@ async def run_check(check: dict, cls, obj, generated_dir: str, pkg_name: str) ->
                 except BaseException as error:
                     worker_errors.append(error)
 
-            handler = dw.DynWinRtDelegate.create(
-                handler_mod.IID_WorkItemHandler,
-                handler_mod.WorkItemHandler_PARAM_TYPES,
-                work,
-            )
-            operation = cls.run_async(handler.to_value())
+            operation = cls.run_async(work)
             loop = asyncio.get_running_loop()
 
             if not await loop.run_in_executor(None, started.wait, 2.0):

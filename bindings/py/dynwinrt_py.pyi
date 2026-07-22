@@ -5,6 +5,7 @@ _P = TypeVar("_P", covariant=True)
 
 __all__ = [
     "WinAppSDKContext",
+    "RoApartment",
     "WinGUID",
     "DynWinRTType",
     "DynWinRTMethodSig",
@@ -24,6 +25,19 @@ __all__ = [
 
 @final
 class WinAppSDKContext: ...
+
+
+@final
+class RoApartment:
+    def __new__(
+        cls, apartment_type: Optional[int] = ...
+    ) -> RoApartment: ...
+    def __enter__(self) -> RoApartment: ...
+    def __exit__(
+        self, exc_type: object, exc_value: object, traceback: object
+    ) -> bool: ...
+    def close(self) -> None: ...
+    def __repr__(self) -> str: ...
 
 
 @final
@@ -270,6 +284,10 @@ class DynWinRTArray:
     def from_u64_values(values: Sequence[int]) -> DynWinRTArray: ...
     @staticmethod
     def from_string_values(values: Sequence[str]) -> DynWinRTArray: ...
+    @staticmethod
+    def from_values(
+        values: Sequence[DynWinRTValue], element_type: DynWinRTType
+    ) -> DynWinRTArray: ...
     @staticmethod
     def from_object_values(
         values: Sequence[DynWinRTValue], element_type: DynWinRTType
