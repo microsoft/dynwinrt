@@ -22,6 +22,7 @@ version = ">=0.59, <=0.62"
 features = [
     "ApplicationModel",
     "Data_Xml_Dom",
+    "Foundation_Collections",
     "Devices_Geolocation",
     "Storage_Streams",
     "System_Threading",

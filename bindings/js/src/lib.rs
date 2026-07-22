@@ -4,7 +4,7 @@
 #![deny(clippy::all)]
 #![allow(clippy::missing_safety_doc)]
 
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use dynwinrt;
 use napi::bindgen_prelude::BigInt;
@@ -673,11 +673,9 @@ impl DynWinRTValue {
     element_type: &DynWinRTType,
   ) -> napi::Result<DynWinRTValue> {
     let iids = TABLE.vector_iids(&element_type.0);
-    let is_value_type = matches!(element_type.0.kind(), dynwinrt::TypeKind::Struct(_));
-    let elem_size = element_type.0.size_of();
     let wrt_items: Vec<dynwinrt::WinRTValue> = items.iter().map(|i| i.0.clone()).collect();
-    let vector =
-      dynwinrt::vector::create_vector_from_values(&wrt_items, is_value_type, elem_size, iids);
+    let vector = dynwinrt::vector::create_vector_from_values(&wrt_items, &element_type.0, iids)
+      .map_err(|error| napi::Error::from_reason(error.message()))?;
     Ok(DynWinRTValue(dynwinrt::WinRTValue::Object(vector)))
   }
 
@@ -696,22 +694,13 @@ impl DynWinRTValue {
       ));
     }
     let iids = TABLE.map_iids(&key_type.0, &value_type.0);
-    let entries: Vec<(IUnknown, IUnknown)> = keys
+    let entries: Vec<(dynwinrt::WinRTValue, dynwinrt::WinRTValue)> = keys
       .iter()
       .zip(values.iter())
-      .map(|(k, v)| {
-        let key = k
-          .0
-          .as_object()
-          .ok_or_else(|| napi::Error::from_reason("createMap: all keys must be Object values"))?;
-        let val = v
-          .0
-          .as_object()
-          .ok_or_else(|| napi::Error::from_reason("createMap: all values must be Object values"))?;
-        Ok((key, val))
-      })
-      .collect::<napi::Result<Vec<_>>>()?;
-    let map = dynwinrt::map::create_map(entries, iids);
+      .map(|(key, value)| (key.0.clone(), value.0.clone()))
+      .collect();
+    let map = dynwinrt::map::create_map_from_values(&entries, &key_type.0, &value_type.0, iids)
+      .map_err(|error| napi::Error::from_reason(error.message()))?;
     Ok(DynWinRTValue(dynwinrt::WinRTValue::Object(map)))
   }
 
@@ -758,7 +747,11 @@ impl DynWinRTValue {
       .progress_handler_iid()
       .ok_or_else(|| napi::Error::from_reason("onProgress: cannot compute progress handler IID"))?;
 
-    let tsfn = callback.build_threadsafe_function().build()?;
+    // Progress callbacks must not keep an otherwise idle Node process alive.
+    let tsfn = callback
+      .build_threadsafe_function()
+      .weak::<true>()
+      .build()?;
     let progress_cb: dynwinrt::ProgressCallback = Box::new(move |val: dynwinrt::WinRTValue| {
       tsfn.call(DynWinRTValue(val), ThreadsafeFunctionCallMode::NonBlocking);
     });
@@ -1744,6 +1737,265 @@ impl DynWinRtDelegate {
   #[napi]
   pub fn to_value(&self) -> DynWinRTValue {
     DynWinRTValue(self.0.clone())
+  }
+}
+
+// ======================================================================
+// DynWinRtElementFactory — synchronous WinUI IElementFactory binding
+// ======================================================================
+
+type ElementFactoryGetFunction =
+  napi::bindgen_prelude::Function<'static, DynWinRTValue, DynWinRTValue>;
+type ElementFactoryRecycleFunction = napi::bindgen_prelude::Function<'static, DynWinRTValue, ()>;
+
+struct ElementFactoryCallbackRefs {
+  get_element: Option<Arc<napi::bindgen_prelude::FunctionRef<DynWinRTValue, DynWinRTValue>>>,
+  recycle_element: Option<Arc<napi::bindgen_prelude::FunctionRef<DynWinRTValue, ()>>>,
+}
+
+#[napi]
+pub struct DynWinRtElementFactory {
+  value: dynwinrt::WinRTValue,
+  callbacks: Arc<Mutex<ElementFactoryCallbackRefs>>,
+}
+
+unsafe fn take_pending_exception_message(env: napi::sys::napi_env) -> Option<String> {
+  let mut pending = false;
+  if napi::sys::napi_is_exception_pending(env, &mut pending) != napi::sys::Status::napi_ok
+    || !pending
+  {
+    return None;
+  }
+
+  let mut exception = std::ptr::null_mut();
+  if napi::sys::napi_get_and_clear_last_exception(env, &mut exception) != napi::sys::Status::napi_ok
+  {
+    return None;
+  }
+  let mut text = std::ptr::null_mut();
+  if napi::sys::napi_coerce_to_string(env, exception, &mut text) != napi::sys::Status::napi_ok {
+    return None;
+  }
+
+  let mut length = 0usize;
+  if napi::sys::napi_get_value_string_utf8(env, text, std::ptr::null_mut(), 0, &mut length)
+    != napi::sys::Status::napi_ok
+  {
+    return None;
+  }
+  let mut buffer = vec![0u8; length + 1];
+  let mut written = 0usize;
+  if napi::sys::napi_get_value_string_utf8(
+    env,
+    text,
+    buffer.as_mut_ptr().cast(),
+    buffer.len(),
+    &mut written,
+  ) != napi::sys::Status::napi_ok
+  {
+    return None;
+  }
+  Some(String::from_utf8_lossy(&buffer[..written]).into_owned())
+}
+
+#[napi]
+impl DynWinRtElementFactory {
+  #[napi(factory)]
+  pub fn create(
+    #[napi(ts_arg_type = "(args: DynWinRtValue) => DynWinRtValue")]
+    get_element: ElementFactoryGetFunction,
+    #[napi(ts_arg_type = "(args: DynWinRtValue) => void")]
+    recycle_element: ElementFactoryRecycleFunction,
+  ) -> napi::Result<DynWinRtElementFactory> {
+    use napi::bindgen_prelude::{FromNapiValue, ToNapiValue};
+    use napi::JsValue;
+    use windows::Win32::System::Threading::GetCurrentThreadId;
+
+    const E_FAIL: windows::core::HRESULT = windows::core::HRESULT(0x80004005u32 as i32);
+    const E_UNEXPECTED: windows::core::HRESULT = windows::core::HRESULT(0x8000FFFFu32 as i32);
+    const RPC_E_WRONG_THREAD: windows::core::HRESULT = windows::core::HRESULT(0x8001010Eu32 as i32);
+    const RO_E_CLOSED: windows::core::HRESULT = windows::core::HRESULT(0x80000013u32 as i32);
+
+    struct SendableEnv(napi::sys::napi_env);
+    unsafe impl Send for SendableEnv {}
+    unsafe impl Sync for SendableEnv {}
+
+    let register_tid = unsafe { GetCurrentThreadId() };
+    let raw_env = Arc::new(SendableEnv(get_element.value().env));
+    let callbacks = Arc::new(Mutex::new(ElementFactoryCallbackRefs {
+      get_element: Some(Arc::new(get_element.create_ref()?)),
+      recycle_element: Some(Arc::new(recycle_element.create_ref()?)),
+    }));
+
+    let get_env = raw_env.clone();
+    let get_callbacks = callbacks.clone();
+    let get_callback: dynwinrt::ElementFactoryGetCallback = Box::new(move |args| {
+      if unsafe { GetCurrentThreadId() } != register_tid {
+        return Err(RPC_E_WRONG_THREAD);
+      }
+
+      let get_ref = match get_callbacks.lock() {
+        Ok(callbacks) => {
+          let Some(callback) = callbacks.get_element.as_ref() else {
+            return Err(RO_E_CLOSED);
+          };
+          callback.clone()
+        }
+        Err(_) => return Err(E_FAIL),
+      };
+      let raw_env = get_env.0;
+      let js_arg = DynWinRTValue(args.clone());
+      let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+        || -> napi::Result<dynwinrt::WinRTValue> {
+          unsafe {
+            let mut scope = std::ptr::null_mut();
+            if napi::sys::napi_open_handle_scope(raw_env, &mut scope) != napi::sys::Status::napi_ok
+            {
+              return Err(napi::Error::from_reason("napi_open_handle_scope failed"));
+            }
+
+            let call_result = (|| -> napi::Result<dynwinrt::WinRTValue> {
+              let env = napi::Env::from_raw(raw_env);
+              let function = get_ref.borrow_back(&env)?;
+              let function_value = napi::JsValue::raw(&function);
+              let argument = DynWinRTValue::to_napi_value(raw_env, js_arg)?;
+              let mut undefined = std::ptr::null_mut();
+              napi::sys::napi_get_undefined(raw_env, &mut undefined);
+              let mut raw_result = std::ptr::null_mut();
+              let status = napi::sys::napi_call_function(
+                raw_env,
+                undefined,
+                function_value,
+                1,
+                &argument,
+                &mut raw_result,
+              );
+              if status != napi::sys::Status::napi_ok {
+                let detail = take_pending_exception_message(raw_env)
+                  .unwrap_or_else(|| "unknown JavaScript exception".into());
+                return Err(napi::Error::from_reason(format!(
+                  "IElementFactory getElement callback failed: {detail}"
+                )));
+              }
+              Ok(
+                <&DynWinRTValue>::from_napi_value(raw_env, raw_result)?
+                  .0
+                  .clone(),
+              )
+            })();
+            let call_result =
+              call_result.map_err(|error| match take_pending_exception_message(raw_env) {
+                Some(detail) => napi::Error::from_reason(format!("{error}: {detail}")),
+                None => error,
+              });
+            napi::sys::napi_close_handle_scope(raw_env, scope);
+            call_result
+          }
+        },
+      ));
+
+      match result {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(error)) => {
+          eprintln!("[dynwinrt] IElementFactory getElement dispatch error: {error}");
+          Err(E_FAIL)
+        }
+        Err(_) => Err(E_UNEXPECTED),
+      }
+    });
+
+    let recycle_env = raw_env.clone();
+    let recycle_callbacks = callbacks.clone();
+    let recycle_callback: dynwinrt::ElementFactoryRecycleCallback = Box::new(move |args| {
+      if unsafe { GetCurrentThreadId() } != register_tid {
+        return RPC_E_WRONG_THREAD;
+      }
+
+      let recycle_ref = match recycle_callbacks.lock() {
+        Ok(callbacks) => {
+          let Some(callback) = callbacks.recycle_element.as_ref() else {
+            return RO_E_CLOSED;
+          };
+          callback.clone()
+        }
+        Err(_) => return E_FAIL,
+      };
+      let raw_env = recycle_env.0;
+      let js_arg = DynWinRTValue(args.clone());
+      let result =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> napi::Result<()> {
+          unsafe {
+            let mut scope = std::ptr::null_mut();
+            if napi::sys::napi_open_handle_scope(raw_env, &mut scope) != napi::sys::Status::napi_ok
+            {
+              return Err(napi::Error::from_reason("napi_open_handle_scope failed"));
+            }
+
+            let call_result = (|| -> napi::Result<()> {
+              let env = napi::Env::from_raw(raw_env);
+              let function = recycle_ref.borrow_back(&env)?;
+              let function_value = napi::JsValue::raw(&function);
+              let argument = DynWinRTValue::to_napi_value(raw_env, js_arg)?;
+              let mut undefined = std::ptr::null_mut();
+              napi::sys::napi_get_undefined(raw_env, &mut undefined);
+              let mut raw_result = std::ptr::null_mut();
+              let status = napi::sys::napi_call_function(
+                raw_env,
+                undefined,
+                function_value,
+                1,
+                &argument,
+                &mut raw_result,
+              );
+              if status != napi::sys::Status::napi_ok {
+                let detail = take_pending_exception_message(raw_env)
+                  .unwrap_or_else(|| "unknown JavaScript exception".into());
+                return Err(napi::Error::from_reason(format!(
+                  "IElementFactory recycleElement callback failed: {detail}"
+                )));
+              }
+              Ok(())
+            })();
+            let call_result =
+              call_result.map_err(|error| match take_pending_exception_message(raw_env) {
+                Some(detail) => napi::Error::from_reason(format!("{error}: {detail}")),
+                None => error,
+              });
+            napi::sys::napi_close_handle_scope(raw_env, scope);
+            call_result
+          }
+        }));
+
+      match result {
+        Ok(Ok(())) => windows::core::HRESULT(0),
+        Ok(Err(error)) => {
+          eprintln!("[dynwinrt] IElementFactory recycleElement dispatch error: {error}");
+          E_FAIL
+        }
+        Err(_) => E_UNEXPECTED,
+      }
+    });
+
+    Ok(DynWinRtElementFactory {
+      value: dynwinrt::create_element_factory_value(get_callback, recycle_callback),
+      callbacks,
+    })
+  }
+
+  #[napi]
+  pub fn to_value(&self) -> DynWinRTValue {
+    DynWinRTValue(self.value.clone())
+  }
+
+  #[napi]
+  pub fn release_callbacks(&self) -> napi::Result<()> {
+    let mut callbacks = self
+      .callbacks
+      .lock()
+      .map_err(|_| napi::Error::from_reason("IElementFactory callback state is poisoned"))?;
+    callbacks.get_element = None;
+    callbacks.recycle_element = None;
+    Ok(())
   }
 }
 

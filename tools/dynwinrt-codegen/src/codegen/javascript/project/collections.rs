@@ -510,6 +510,7 @@ pub(super) fn project_collection_create(
     iface: &InterfaceMeta,
     known_types: &HashSet<String>,
     members: &mut Vec<ProjectedMember>,
+    imports: &mut Vec<ProjectedImport>,
 ) {
     let Some(ref piid) = iface.generic_piid else {
         return;
@@ -538,6 +539,54 @@ pub(super) fn project_collection_create(
             sync_return_expr: Some(format!(
                 "new {}(DynWinRtValue.createVector(items.map(i => _unwrap(i)), {}))",
                 iface.name, elem_type
+            )),
+            async_convert_v: None,
+            is_void: false,
+            array_return_expr: None,
+            delegate_wraps: vec![],
+            progress_convert: None,
+            js_only: false,
+            overload_of: None,
+        }));
+    } else if piid == PIID_IOBSERVABLE_VECTOR && iface.generic_args.len() == 1 {
+        let elem_type = ts_dynwinrt_type(&iface.generic_args[0]);
+        let elem_ts = ts_param_type_safe(&iface.generic_args[0], known_types);
+        let vector_name = iface.name.replacen("IObservableVector", "IVector", 1);
+        imports.push(ProjectedImport {
+            symbols: vec![vector_name.clone()],
+            from: format!("./{}.js", vector_name),
+            runtime_only: false,
+            dts_only: false,
+            is_runtime_package: false,
+        });
+        members.push(ProjectedMember::Method(ProjectedMethod {
+            name: "create".into(),
+            doc: Some(DocInfo {
+                summary: Some(
+                    "Create an observable mutable vector from an array of items."
+                        .into(),
+                ),
+                deprecated: None,
+                returns: None,
+                params: vec![],
+            }),
+            params: vec![ProjectedParam {
+                name: "items".into(),
+                ts_type: format!("{}[]", elem_ts),
+                optional: false,
+                delegate_wrap: None,
+            }],
+            return_type: format!(
+                "{} & {}",
+                iface.name, vector_name,
+            ),
+            async_kind: AsyncKind::None,
+            is_static: true,
+            invoke_expr: String::new(),
+            sync_return_expr: Some(format!(
+                "(() => {{ const value = DynWinRtValue.createVector(items.map(i => _unwrap(i)), {elem_type}); const observable = new {observable}(value); const vector = new ((__load_{vector}()).{vector})(value); Object.defineProperties(vector, {{ onVectorChanged: {{ value: observable.onVectorChanged.bind(observable) }}, onceVectorChanged: {{ value: observable.onceVectorChanged.bind(observable) }}, offVectorChanged: {{ value: observable.offVectorChanged.bind(observable) }} }}); return vector; }})()",
+                observable = iface.name,
+                vector = vector_name,
             )),
             async_convert_v: None,
             is_void: false,

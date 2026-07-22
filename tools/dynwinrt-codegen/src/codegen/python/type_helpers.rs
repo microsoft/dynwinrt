@@ -12,8 +12,10 @@ use crate::codegen::shared::imports::{
 use crate::meta::MethodMeta;
 use crate::types::TypeMeta;
 
+use super::collections::{CollectionKind, is_mapping_input, type_kind};
 use super::docs::format_pydoc;
 use super::naming::to_snake_case;
+use super::native_types::{FoundationType, foundation_type};
 
 /// Build the Python docstring for a method body. Uses snake_case param display
 /// names (matching the generated signature). Returns an empty string when no
@@ -63,28 +65,31 @@ fn py_param_type(typ: &TypeMeta) -> String {
         | TypeMeta::U8
         | TypeMeta::I16
         | TypeMeta::U16
-        | TypeMeta::Char16
         | TypeMeta::I32
         | TypeMeta::U32
         | TypeMeta::I64
         | TypeMeta::U64 => "int".to_string(),
         TypeMeta::F32 | TypeMeta::F64 => "float".to_string(),
-        TypeMeta::String | TypeMeta::Guid => "str".to_string(),
+        TypeMeta::String => "str".to_string(),
+        TypeMeta::Char16 => "str".to_string(),
+        TypeMeta::Guid => "UUID".to_string(),
         TypeMeta::RuntimeClass { name, .. }
         | TypeMeta::Enum { name, .. }
         | TypeMeta::Interface { name, .. } => format!("'{}'", name),
         TypeMeta::Parameterized { name, args, .. } => {
             format!("'{}'", crate::meta::make_parameterized_name(name, args))
         }
-        TypeMeta::Array(_) => "'DynWinRTArray'".to_string(),
+        TypeMeta::Array(inner) => py_array_param_type(inner, &HashSet::new()),
         TypeMeta::Object | TypeMeta::Delegate { .. } => "'DynWinRTValue'".to_string(),
         TypeMeta::Struct { name, .. } if name == "HResult" => "int".to_string(),
+        typ if foundation_type(typ) == Some(FoundationType::DateTime) => "datetime".to_string(),
+        typ if foundation_type(typ) == Some(FoundationType::TimeSpan) => "timedelta".to_string(),
         TypeMeta::Struct { name, .. } => format!("'{}'", name),
         _ => "object".to_string(),
     }
 }
 
-pub(super) fn py_param_type_safe(typ: &TypeMeta, known: &HashSet<String>) -> String {
+pub(crate) fn py_param_type_safe(typ: &TypeMeta, known: &HashSet<String>) -> String {
     if let Some(inner) = ireference_inner_type(typ) {
         let native = py_optional_type(py_return_type_safe(Some(inner), known));
         let wrapper = match typ {
@@ -94,6 +99,13 @@ pub(super) fn py_param_type_safe(typ: &TypeMeta, known: &HashSet<String>) -> Str
             _ => unreachable!(),
         };
         return format!("{} | {}", native, wrapper);
+    }
+
+    if let Some(annotation) = py_collection_param_type(typ, known) {
+        return annotation;
+    }
+    if let TypeMeta::Array(inner) = typ {
+        return py_array_param_type(inner, known);
     }
 
     match typ {
@@ -108,9 +120,15 @@ pub(super) fn py_param_type_safe(typ: &TypeMeta, known: &HashSet<String>) -> Str
     }
 }
 
-pub(super) fn py_return_type_safe(typ: Option<&TypeMeta>, known: &HashSet<String>) -> String {
+pub(crate) fn py_return_type_safe(typ: Option<&TypeMeta>, known: &HashSet<String>) -> String {
     if let Some(inner) = typ.and_then(ireference_inner_type) {
         return py_optional_type(py_return_type_safe(Some(inner), known));
+    }
+    if let Some(async_type) = typ.and_then(|typ| py_async_return_type(typ, known)) {
+        return async_type;
+    }
+    if let Some(annotation) = typ.and_then(|typ| py_collection_return_type(typ, known)) {
+        return annotation;
     }
 
     match typ {
@@ -121,16 +139,62 @@ pub(super) fn py_return_type_safe(typ: Option<&TypeMeta>, known: &HashSet<String
         {
             "'DynWinRTValue'".to_string()
         }
-        Some(TypeMeta::AsyncOperation(inner)) => py_return_type_safe(Some(inner), known),
-        Some(TypeMeta::AsyncOperationWithProgress(result, _)) => {
-            py_return_type_safe(Some(result), known)
-        }
-        Some(TypeMeta::AsyncActionWithProgress(_)) | Some(TypeMeta::AsyncAction) => {
-            "None".to_string()
-        }
-        Some(TypeMeta::Array(inner)) => py_array_element_type(inner, known),
+        Some(TypeMeta::Array(inner)) => py_array_return_type(inner, known),
         _ => py_return_type(typ),
     }
+}
+
+fn py_async_return_type_with_result(
+    typ: &TypeMeta,
+    result_override: Option<String>,
+    known: &HashSet<String>,
+) -> Option<String> {
+    match typ {
+        TypeMeta::AsyncAction => Some("WinRTAsync[None]".to_string()),
+        TypeMeta::AsyncOperation(result) => Some(format!(
+            "WinRTAsync[{}]",
+            result_override.unwrap_or_else(|| py_return_type_safe(Some(result), known))
+        )),
+        TypeMeta::AsyncActionWithProgress(progress) => Some(format!(
+            "WinRTAsyncWithProgress[None, {}]",
+            py_return_type_safe(Some(progress), known)
+        )),
+        TypeMeta::AsyncOperationWithProgress(result, progress) => Some(format!(
+            "WinRTAsyncWithProgress[{}, {}]",
+            result_override.unwrap_or_else(|| py_return_type_safe(Some(result), known)),
+            py_return_type_safe(Some(progress), known)
+        )),
+        _ => None,
+    }
+}
+
+pub(super) fn py_async_return_type(typ: &TypeMeta, known: &HashSet<String>) -> Option<String> {
+    py_async_return_type_with_result(typ, None, known)
+}
+
+pub(super) fn py_factory_return_type(
+    class_name: &str,
+    method: &MethodMeta,
+    known: &HashSet<String>,
+) -> String {
+    method
+        .return_type
+        .as_ref()
+        .and_then(|typ| {
+            py_async_return_type_with_result(typ, Some(format!("'{}'", class_name)), known)
+        })
+        .unwrap_or_else(|| format!("'{}'", class_name))
+}
+
+pub(super) fn methods_have_async_output<'a>(
+    methods: impl IntoIterator<Item = &'a MethodMeta>,
+) -> bool {
+    methods.into_iter().any(|method| {
+        method.return_type.as_ref().is_some_and(TypeMeta::is_async)
+            || method.params.iter().any(|param| {
+                param.direction != crate::meta::ParamDirection::In && param.typ.is_async()
+            })
+    })
 }
 
 pub(super) fn py_method_abi_output_count(method: &MethodMeta) -> usize {
@@ -204,19 +268,20 @@ pub(super) fn py_method_return_type(
 
 fn py_return_type(typ: Option<&TypeMeta>) -> String {
     match typ {
-        Some(TypeMeta::String) | Some(TypeMeta::Guid) => "str".to_string(),
+        Some(TypeMeta::String) => "str".to_string(),
+        Some(TypeMeta::Guid) => "UUID".to_string(),
         Some(TypeMeta::Bool) => "bool".to_string(),
         Some(
             TypeMeta::I8
             | TypeMeta::U8
             | TypeMeta::I16
             | TypeMeta::U16
-            | TypeMeta::Char16
             | TypeMeta::I32
             | TypeMeta::U32
             | TypeMeta::I64
             | TypeMeta::U64,
         ) => "int".to_string(),
+        Some(TypeMeta::Char16) => "str".to_string(),
         Some(TypeMeta::F32 | TypeMeta::F64) => "float".to_string(),
         Some(TypeMeta::RuntimeClass { name, .. }) => format!("'{}'", name),
         Some(TypeMeta::Enum { name, .. }) => format!("'{}'", name),
@@ -224,44 +289,145 @@ fn py_return_type(typ: Option<&TypeMeta>) -> String {
         Some(TypeMeta::Parameterized { name, args, .. }) => {
             format!("'{}'", crate::meta::make_parameterized_name(name, args))
         }
-        Some(TypeMeta::AsyncOperation(inner)) => py_return_type(Some(inner)),
-        Some(TypeMeta::AsyncOperationWithProgress(result, _)) => py_return_type(Some(result)),
-        Some(TypeMeta::AsyncAction) | Some(TypeMeta::AsyncActionWithProgress(_)) => {
-            "None".to_string()
+        Some(TypeMeta::AsyncOperation(inner)) => {
+            format!("WinRTAsync[{}]", py_return_type(Some(inner)))
         }
-        Some(TypeMeta::Array(inner)) => py_array_element_type(inner, &HashSet::new()),
+        Some(TypeMeta::AsyncOperationWithProgress(result, progress)) => format!(
+            "WinRTAsyncWithProgress[{}, {}]",
+            py_return_type(Some(result)),
+            py_return_type(Some(progress))
+        ),
+        Some(TypeMeta::AsyncAction) => "WinRTAsync[None]".to_string(),
+        Some(TypeMeta::AsyncActionWithProgress(progress)) => format!(
+            "WinRTAsyncWithProgress[None, {}]",
+            py_return_type(Some(progress))
+        ),
+        Some(TypeMeta::Array(inner)) => py_array_return_type(inner, &HashSet::new()),
         Some(TypeMeta::Object) | Some(TypeMeta::Delegate { .. }) => "'DynWinRTValue'".to_string(),
         Some(TypeMeta::Struct { name, .. }) if name == "HResult" => "int".to_string(),
+        Some(typ) if foundation_type(typ) == Some(FoundationType::DateTime) => {
+            "datetime".to_string()
+        }
+        Some(typ) if foundation_type(typ) == Some(FoundationType::TimeSpan) => {
+            "timedelta".to_string()
+        }
         Some(TypeMeta::Struct { name, .. }) => format!("'{}'", name),
         None => "None".to_string(),
     }
 }
 
-pub(super) fn py_array_element_type(inner: &TypeMeta, known_types: &HashSet<String>) -> String {
+fn py_native_element_type(inner: &TypeMeta, known_types: &HashSet<String>) -> String {
     match inner {
-        TypeMeta::Bool => "list[bool]".to_string(),
-        TypeMeta::String | TypeMeta::Guid => "list[str]".to_string(),
+        TypeMeta::Bool => "bool".to_string(),
+        TypeMeta::String => "str".to_string(),
+        TypeMeta::Guid => "UUID".to_string(),
         TypeMeta::I8
         | TypeMeta::U8
         | TypeMeta::I16
         | TypeMeta::U16
-        | TypeMeta::Char16
         | TypeMeta::I32
         | TypeMeta::U32
         | TypeMeta::I64
-        | TypeMeta::U64
-        | TypeMeta::Enum { .. } => "list[int]".to_string(),
-        TypeMeta::F32 | TypeMeta::F64 => "list[float]".to_string(),
-        TypeMeta::Struct { name, .. } if name == "HResult" => "list[int]".to_string(),
-        TypeMeta::Struct { name, .. } => format!("list['{}']", name),
+        | TypeMeta::U64 => "int".to_string(),
+        TypeMeta::Char16 => "str".to_string(),
+        TypeMeta::Enum { name, .. } if known_types.contains(name) => format!("'{name}'"),
+        TypeMeta::Enum { .. } => "int".to_string(),
+        TypeMeta::F32 | TypeMeta::F64 => "float".to_string(),
+        TypeMeta::Struct { name, .. } if name == "HResult" => "int".to_string(),
+        typ if foundation_type(typ) == Some(FoundationType::DateTime) => "datetime".to_string(),
+        typ if foundation_type(typ) == Some(FoundationType::TimeSpan) => "timedelta".to_string(),
+        TypeMeta::Struct { name, .. } => format!("'{name}'"),
         TypeMeta::RuntimeClass { name, .. } if known_types.contains(name) => {
-            format!("list['{}']", name)
+            format!("'{name}'")
         }
         TypeMeta::Interface { name, .. } if known_types.contains(name) => {
-            format!("list['{}']", name)
+            format!("'{name}'")
         }
-        _ => "list['DynWinRTValue']".to_string(),
+        TypeMeta::Parameterized { name, args, .. } => {
+            let concrete = crate::meta::make_parameterized_name(name, args);
+            if known_types.contains(&concrete) {
+                format!("'{concrete}'")
+            } else {
+                "'DynWinRTValue'".to_string()
+            }
+        }
+        _ => "'DynWinRTValue'".to_string(),
     }
+}
+
+fn py_array_param_type(inner: &TypeMeta, known_types: &HashSet<String>) -> String {
+    let element = py_native_element_type(inner, known_types);
+    if matches!(inner, TypeMeta::U8) {
+        format!("DynWinRTArray | bytes | bytearray | Sequence[{element}]")
+    } else {
+        format!("DynWinRTArray | Sequence[{element}]")
+    }
+}
+
+fn py_array_return_type(inner: &TypeMeta, known_types: &HashSet<String>) -> String {
+    if matches!(inner, TypeMeta::U8) {
+        "bytes".to_string()
+    } else {
+        format!("list[{}]", py_native_element_type(inner, known_types))
+    }
+}
+
+fn py_collection_param_type(typ: &TypeMeta, known_types: &HashSet<String>) -> Option<String> {
+    let TypeMeta::Parameterized { args, .. } = typ else {
+        return None;
+    };
+    let kind = type_kind(typ)?;
+    if is_mapping_input(kind, args) {
+        let (key, value) = if matches!(
+            kind,
+            CollectionKind::Mapping | CollectionKind::MutableMapping
+        ) {
+            (args.first()?, args.get(1)?)
+        } else {
+            match args.first()? {
+                TypeMeta::Parameterized {
+                    args: pair_args, ..
+                } => (pair_args.first()?, pair_args.get(1)?),
+                _ => return None,
+            }
+        };
+        return Some(format!(
+            "Mapping[{}, {}]",
+            py_native_element_type(key, known_types),
+            py_native_element_type(value, known_types)
+        ));
+    }
+    let element = args.first()?;
+    match kind {
+        CollectionKind::Iterable
+        | CollectionKind::Iterator
+        | CollectionKind::Sequence
+        | CollectionKind::MutableSequence => Some(format!(
+            "{}[{}]",
+            if kind == CollectionKind::Iterator {
+                "Iterator"
+            } else if kind == CollectionKind::Iterable {
+                "Iterable"
+            } else {
+                "Sequence"
+            },
+            py_native_element_type(element, known_types)
+        )),
+        _ => None,
+    }
+}
+
+fn py_collection_return_type(typ: &TypeMeta, known_types: &HashSet<String>) -> Option<String> {
+    let TypeMeta::Parameterized { args, .. } = typ else {
+        return None;
+    };
+    let kind = type_kind(typ)?;
+    let abc = super::collections::abc_name(kind)?;
+    let types = args
+        .iter()
+        .map(|arg| py_native_element_type(arg, known_types))
+        .collect::<Vec<_>>();
+    Some(format!("{abc}[{}]", types.join(", ")))
 }
 
 pub(super) fn py_param_list(
@@ -273,15 +439,15 @@ pub(super) fn py_param_list(
         .iter()
         .map(|p| {
             let param_type = match &p.typ {
-                TypeMeta::Delegate { .. } => "'DynWinRTValue'".to_string(),
+                TypeMeta::Delegate { .. } => "Callable[..., object] | 'DynWinRTValue'".to_string(),
                 TypeMeta::Interface { name, .. } if delegate_type_names.contains(name) => {
-                    "'DynWinRTValue'".to_string()
+                    "Callable[..., object] | 'DynWinRTValue'".to_string()
                 }
                 TypeMeta::Parameterized { name, args, .. }
                     if delegate_type_names
                         .contains(&crate::meta::make_parameterized_name(name, args)) =>
                 {
-                    "'DynWinRTValue'".to_string()
+                    "Callable[..., object] | 'DynWinRTValue'".to_string()
                 }
                 _ => py_param_type_safe(&p.typ, known_types),
             };
@@ -371,13 +537,13 @@ mod tests {
     #[test]
     fn object_arrays_return_typed_runtime_values() {
         assert_eq!(
-            py_array_element_type(&TypeMeta::Object, &HashSet::new()),
+            py_array_return_type(&TypeMeta::Object, &HashSet::new()),
             "list['DynWinRTValue']"
         );
     }
 
     #[test]
-    fn delegate_interfaces_are_typed_as_runtime_values() {
+    fn delegate_inputs_accept_callables_and_runtime_values() {
         let param = ParamMeta {
             name: "handler".into(),
             typ: TypeMeta::Interface {
@@ -393,7 +559,7 @@ mod tests {
                 &HashSet::from(["Handler".into()]),
                 &HashSet::from(["Handler".into()])
             ),
-            "handler: 'DynWinRTValue'"
+            "handler: Callable[..., object] | 'DynWinRTValue'"
         );
     }
 

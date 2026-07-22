@@ -66,8 +66,12 @@ For each WinRT class, the codegen emits:
 - **JavaScript constructors** for unambiguous public default, factory, and composable activations
 - **The original factory methods** (`.create(...)`, `.createInstance(...)`) for compatibility
 - **An interface registration** (`DynWinRtType.registerInterface()`) wired to the COM vtable
+- **A JavaScript-backed `IElementFactory.create()` helper** for WinUI
+  ItemsRepeater realization and recycling
 - **`IAsyncOperation<T>` awaitables** with `.progress(cb)` for streaming results
 - **Generic collections** (`IVector<T>`, `IMap<K,V>`, `IIterable<T>`)
+- **Creatable observable vectors** that expose both `IObservableVector<T>`
+  events and `IVector<T>` mutation helpers
 - **Structs** with `pack`/`unpack` helpers
 - **Enums** (`Object.freeze`'d in JS, `enum` in `.d.ts`)
 - **Delegate types** (IID + parameter signatures) for event handlers

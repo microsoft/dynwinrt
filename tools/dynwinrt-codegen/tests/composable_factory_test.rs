@@ -111,7 +111,7 @@ fn composable_factory_returns_public_instance() {
     );
     assert!(
         py.contains("_IWidgetFactory.method(6).invoke_all(")
-            && py.contains("return Widget(_results[1])"),
+            && py.contains("return Widget._from_native(_results[1])"),
         "Python composable factory must select the final public-instance output:\n{py}"
     );
     assert!(pyi.contains("def create_instance(outer: 'DynWinRTValue') -> 'Widget': ..."));

@@ -64,6 +64,7 @@ use structs::project_struct_helpers;
 // ======================================================================
 const PIID_IVECTOR: &str = "913337e9-11a1-4345-a3a2-4e7f956e222d";
 const PIID_IVECTOR_VIEW: &str = "bbe1fa4c-b0e3-4583-baef-1f1b2e483e56";
+const PIID_IOBSERVABLE_VECTOR: &str = "5917eb53-50b4-4a0d-b309-65862b3f1dbc";
 const PIID_IITERATOR: &str = "6a79e863-4300-459a-9966-cbb660963ee1";
 const PIID_IITERABLE: &str = "faa585ea-6214-4217-afda-7f46de5869b3";
 const PIID_IMAP: &str = "3c2925fe-8519-45c1-aa79-197b6718c1c1";
@@ -1064,7 +1065,58 @@ pub fn project_interface(
     project_collection_helpers(iface, known_types, &mut members, &mut imports, "this._obj");
 
     // Static create() for IVector / IMap
-    project_collection_create(iface, known_types, &mut members);
+    project_collection_create(iface, known_types, &mut members, &mut imports);
+
+    if iface.name == "IElementFactory" {
+        imports[0].symbols.push("DynWinRtElementFactory".into());
+        members.push(ProjectedMember::Method(ProjectedMethod {
+            name: "create".into(),
+            doc: Some(DocInfo {
+                summary: Some(
+                    "Create an IElementFactory backed by synchronous JavaScript callbacks.".into(),
+                ),
+                deprecated: None,
+                returns: None,
+                params: vec![],
+            }),
+            params: vec![
+                ProjectedParam {
+                    name: "getElement".into(),
+                    ts_type:
+                        "(args: ElementFactoryGetArgs) => UIElement"
+                            .into(),
+                    optional: false,
+                    delegate_wrap: None,
+                },
+                ProjectedParam {
+                    name: "recycleElement".into(),
+                    ts_type:
+                        "(args: ElementFactoryRecycleArgs) => void"
+                            .into(),
+                    optional: false,
+                    delegate_wrap: None,
+                },
+            ],
+            return_type: format!(
+                "{} & {{ releaseCallbacks(): void }}",
+                iface.name,
+            ),
+            async_kind: AsyncKind::None,
+            is_static: true,
+            invoke_expr: String::new(),
+            sync_return_expr: Some(format!(
+                "(() => {{ const elements = new Map(); const implementation = DynWinRtElementFactory.create((args) => {{ const element = getElement((__get_ElementFactoryGetArgs())._fromNative(args)); const nativeElement = _unwrap(element).cast((__load_UIElement()).IID_UIElement); elements.set(nativeElement.asRaw(), element); return nativeElement; }}, (args) => {{ const projectedArgs = (__get_ElementFactoryRecycleArgs())._fromNative(args); const projectedElement = projectedArgs.element; const identity = _unwrap(projectedElement).asRaw(); const element = elements.get(identity) ?? projectedElement; elements.delete(identity); const recycleArgs = Object.create(projectedArgs); Object.defineProperty(recycleArgs, 'element', {{ value: element }}); recycleElement(recycleArgs); }}); const factory = new {0}(implementation.toValue()); Object.defineProperty(factory, 'releaseCallbacks', {{ value: () => implementation.releaseCallbacks() }}); return factory; }})()",
+                iface.name,
+            )),
+            async_convert_v: None,
+            is_void: false,
+            array_return_expr: None,
+            delegate_wraps: vec![],
+            progress_convert: None,
+            js_only: false,
+            overload_of: None,
+        }));
+    }
 
     let has_parameterized_cast = iface.generic_piid.is_some();
     let needs_unwrap = check_needs_unwrap_simple(&members);
@@ -1153,6 +1205,11 @@ pub fn project_delegate(
                 .collect()
         })
         .unwrap_or_default();
+    let iid_arg_exprs: Vec<String> = if iface.generic_args.is_empty() {
+        param_exprs.clone()
+    } else {
+        iface.generic_args.iter().map(ts_dynwinrt_type).collect()
+    };
 
     let iid_rhs =
         if !iface.iid.is_empty() && iface.generic_args.is_empty() && iface.generic_piid.is_none() {
@@ -1161,7 +1218,7 @@ pub fn project_delegate(
             format!(
                 "DynWinRtType.parameterized(WinGuid.parse('{}'), [{}]).iid()",
                 iface.iid,
-                param_exprs.join(", ")
+                iid_arg_exprs.join(", ")
             )
         } else {
             "undefined".into()
