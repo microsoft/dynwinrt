@@ -1089,6 +1089,19 @@ fn parse_com_interface_from_index(
 ) -> Option<ComInterfaceMeta> {
     let def = index.get(namespace, name).next()?;
 
+    // Guard: refuse to treat non-interface TypeDefs (WinRT runtime classes,
+    // enums, structs, delegates) as classic-COM interfaces. Without this,
+    // routing a name that happens to resolve to e.g. a `*Interop` runtime
+    // class through this path would walk its `interface_impls()` and produce
+    // a bogus flattened method list. Callers see `None` and can fall through
+    // to the correct WinRT code path in `main.rs`.
+    if !def
+        .flags()
+        .contains(windows_metadata::TypeAttributes::Interface)
+    {
+        return None;
+    }
+
     // Walk the interface_impls chain: for each base, collect its own method
     // count, and stop at IUnknown or IInspectable. Traverse from the leaf up
     // so we can compute cumulative offsets.
