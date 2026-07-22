@@ -1216,14 +1216,24 @@ fn parse_com_interface_from_index(
     chain_top_down.retain(|(_, n, _)| n != "IUnknown" && n != "IInspectable");
 
     for (base_ns, base_name, _own_count) in chain_top_down {
-        if let Some(base_iface) = parse_interface_with_offset(index, base_ns, base_name, slot_cursor) {
-            slot_cursor += base_iface.methods.len();
-            methods.extend(base_iface.methods);
-        } else {
-            eprintln!(
-                "warning: could not parse base classic-COM interface {}.{}",
-                base_ns, base_name
-            );
+        match parse_interface_with_offset(index, base_ns, base_name, slot_cursor) {
+            Some(base_iface) => {
+                slot_cursor += base_iface.methods.len();
+                methods.extend(base_iface.methods);
+            }
+            None => {
+                // Fail loud: if we can't parse a base interface's methods,
+                // the flattened method list would be missing entries and the
+                // leaf's absolute vtable indices would be wrong. In release
+                // the `debug_assert_eq!` below is compiled out, so we'd
+                // silently emit wrappers that dispatch to the wrong COM
+                // methods. Return None so callers surface a clear error.
+                eprintln!(
+                    "warning: could not parse base classic-COM interface {}.{} — refusing to emit {}.{} with a truncated vtable",
+                    base_ns, base_name, namespace, name
+                );
+                return None;
+            }
         }
     }
     // Assert the invariant that we lined up correctly.
