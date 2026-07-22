@@ -558,6 +558,44 @@ fn render_method_js(out: &mut String, m: &FlatMethodMeta) {
         }
     }
 
+    // Emit keep-alive locals for wide/narrow string buffers so the
+    // freshly-allocated Buffer stays reachable from a JS local through
+    // the flatInvoke call. `DynWinRtValue.pointer(Buffer)` extracts the
+    // Buffer's `as_ptr()` but does NOT retain the Buffer itself, so the
+    // temporary `_wideStringBuffer(x)` / `_narrowStringBuffer(x)` value
+    // would become unreachable the moment `pointer(...)` returned and
+    // could be reclaimed by GC before the callee runs — passing a
+    // dangling pointer to the flat Win32 export. A named `const` in the
+    // function's stack frame keeps the Buffer alive across the invoke
+    // call (JS engines must consider identifiers reachable through
+    // the enclosing scope until they leave scope), which is the same
+    // pattern used for the out/in-out `_*Slot` Buffers above.
+    let mut string_keepalive: Vec<(usize, String, &'static str)> = Vec::new();
+    for (i, s) in &classified {
+        if *s != ParamSurface::Input {
+            continue;
+        }
+        let p = &m.params[*i];
+        let jname = &jnames[*i];
+        match &p.abi {
+            FlatAbiType::PWStr => {
+                let local = format!("_{jname}Buf");
+                out.push_str(&format!(
+                    "    const {local} = _wideStringBuffer({jname});\n"
+                ));
+                string_keepalive.push((*i, local, "wide"));
+            }
+            FlatAbiType::PStr => {
+                let local = format!("_{jname}Buf");
+                out.push_str(&format!(
+                    "    const {local} = _narrowStringBuffer({jname});\n"
+                ));
+                string_keepalive.push((*i, local, "narrow"));
+            }
+            _ => {}
+        }
+    }
+
     // Build the flatInvoke args array.
     let mut arg_exprs: Vec<String> = Vec::with_capacity(m.params.len());
     for (i, s) in &classified {
@@ -568,7 +606,16 @@ fn render_method_js(out: &mut String, m: &FlatMethodMeta) {
                 let slot = format!("_{jname}Slot");
                 format!("DynWinRtValue.pointer({slot})")
             }
-            _ => wrap_arg_js(&p.abi, jname),
+            _ => {
+                // If this is a string param with a keep-alive local,
+                // pass the local directly to pointer() — do NOT recreate
+                // a fresh temp Buffer inline.
+                if let Some((_, local, _)) = string_keepalive.iter().find(|(idx, _, _)| idx == i) {
+                    format!("DynWinRtValue.pointer({local})")
+                } else {
+                    wrap_arg_js(&p.abi, jname)
+                }
+            }
         };
         arg_exprs.push(expr);
     }
