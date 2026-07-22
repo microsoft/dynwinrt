@@ -822,6 +822,37 @@ impl DynWinRTValue {
   /// `args` may contain: `DynWinRtValue.i32(...)`, `DynWinRtValue.u32(...)`,
   /// `DynWinRtValue.i64(...)`, `DynWinRtValue.u64(...)`, or
   /// `DynWinRtValue.pointer(...)`. Other kinds cause a runtime error.
+  ///
+  /// ## Buffer lifetimes (IMPORTANT)
+  ///
+  /// `DynWinRtValue.pointer(Buffer | Uint8Array)` intentionally stores
+  /// only the raw pointer bits (`slice.as_ptr()`) — it does NOT retain
+  /// the underlying JS Buffer/typed array, so the array is eligible for
+  /// GC the moment the last JS reference to it drops. If you inline a
+  /// buffer allocation into the argument list, e.g.
+  /// `pointer(Buffer.alloc(32))` or `pointer(_wideStringBuffer(x))`,
+  /// the temporary buffer becomes unreachable the moment `pointer(...)`
+  /// returns, and can be reclaimed BEFORE `flatInvoke` reaches the
+  /// native call — passing a dangling pointer to the Win32 export.
+  ///
+  /// Always keep the original buffer alive in a named local until
+  /// `flatInvoke` returns:
+  ///
+  /// ```js
+  /// // BAD — temporary buffer may be GC'd before flatInvoke runs.
+  /// DynWinRtValue.flatInvoke(dll, entry, 'I32',
+  ///     [DynWinRtValue.pointer(Buffer.alloc(32))]);
+  ///
+  /// // GOOD — buf remains reachable through the function's scope.
+  /// const buf = Buffer.alloc(32);
+  /// DynWinRtValue.flatInvoke(dll, entry, 'I32',
+  ///     [DynWinRtValue.pointer(buf)]);
+  /// ```
+  ///
+  /// The codegen output emitted by `dynwinrt-codegen --lang js` follows
+  /// this rule: every wide/narrow string wrapper and every out-slot
+  /// `Buffer.alloc` is hoisted to a named `const` before the
+  /// `flatInvoke` call. Hand-written callers must do the same.
   #[napi]
   pub fn flat_invoke(
     dll: String,
