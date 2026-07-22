@@ -1096,6 +1096,13 @@ fn parse_com_interface_from_index(
     let mut cur_ns = namespace.to_string();
     let mut cur_name = name.to_string();
     let mut is_iunknown_rooted = false;
+    // Explicit-termination flag: set only when the walk reaches a well-known
+    // COM/WinRT root (IUnknown or IInspectable). If we exit the loop without
+    // this being set — malformed/incomplete winmd, missing `interface_impls`,
+    // or a depth-limit overrun — the offset-3 vs. offset-6 decision below
+    // would be guesswork. In that case we return None rather than emit code
+    // with silently-wrong vtable slots.
+    let mut terminated_at_known_root = false;
 
     // Walk up to 32 levels deep as a safety limit (real chains are 3-4 deep).
     for _ in 0..32 {
@@ -1113,10 +1120,12 @@ fn parse_com_interface_from_index(
         // Terminate at IUnknown or IInspectable.
         if base.1 == "IUnknown" {
             is_iunknown_rooted = true;
+            terminated_at_known_root = true;
             base_chain.push(("Windows.Win32.System.Com".to_string(), "IUnknown".to_string(), 0));
             break;
         }
         if base.1 == "IInspectable" {
+            terminated_at_known_root = true;
             base_chain.push(("Windows.Foundation".to_string(), "IInspectable".to_string(), 0));
             break;
         }
@@ -1129,6 +1138,18 @@ fn parse_com_interface_from_index(
         base_chain.push((base.0.clone(), base.1.clone(), own_count));
         cur_ns = base.0;
         cur_name = base.1;
+    }
+
+    // Refuse to guess a root offset when the walk didn't terminate cleanly:
+    // an unknown-shape base chain would produce wrong absolute vtable slots
+    // and therefore wrong method dispatch. Callers see `None` and can log /
+    // surface a clearer error than a silent mis-generation.
+    if !terminated_at_known_root {
+        eprintln!(
+            "warning: base-chain walk for {}.{} did not terminate at IUnknown or IInspectable — refusing to guess vtable root offset",
+            namespace, name
+        );
+        return None;
     }
 
     // Compute root offset (3 for IUnknown, 6 for IInspectable) and the

@@ -584,7 +584,13 @@ fn unwrap_return_js(t: &TypeMeta, expr: &str) -> String {
     }
     if handle_type_name(t).is_some() {
         // Opaque Win32 handle (HWND, PWSTR, etc.) → raw pointer as bigint.
-        return format!("{expr}.toI64()");
+        // Use `asPointerBigint` (not `toI64`): the runtime may return the
+        // handle as a `WinRTValue::Object`/`RawPtr`/`Null` when the handle's
+        // inner `Value` field is a `void*`-shaped type, and `toI64` panics
+        // on those variants (it falls back to `toNumber`, which explicitly
+        // panics for non-numeric WinRTValues). `asPointerBigint` cleanly
+        // handles Object/RawPtr/Null and preserves all 64 pointer bits.
+        return format!("{expr}.asPointerBigint()");
     }
     match t {
         TypeMeta::Bool => format!("{expr}.toBool()"),
