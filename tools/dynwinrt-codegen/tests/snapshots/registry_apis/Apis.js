@@ -112,14 +112,14 @@ export function regConnectRegistryA(machineName, hKey) {
  * @param hKey  [in] HKEY handle
  * @param flags  [in] U32
  * @param phkResult  [out] pointer to HKEY handle
- * @returns { status: number, phkResult: <out> }
+ * @returns { result: <return>, phkResult: <out> }
  */
 export function regConnectRegistryExA(machineName, hKey, flags) {
     const _phkResultSlot = Buffer.alloc(8);
     const _machineNameBuf = _narrowStringBuffer(machineName);
     const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegConnectRegistryExA', 'I32', [DynWinRtValue.pointer(_machineNameBuf), DynWinRtValue.pointer(hKey), DynWinRtValue.u32(flags), DynWinRtValue.pointer(_phkResultSlot)]);
     return {
-        status: _ret.toNumber(),
+        result: _ret.toNumber(),
         phkResult: _phkResultSlot.readBigUInt64LE(0),
     };
 }
@@ -131,14 +131,14 @@ export function regConnectRegistryExA(machineName, hKey, flags) {
  * @param hKey  [in] HKEY handle
  * @param flags  [in] U32
  * @param phkResult  [out] pointer to HKEY handle
- * @returns { status: number, phkResult: <out> }
+ * @returns { result: <return>, phkResult: <out> }
  */
 export function regConnectRegistryExW(machineName, hKey, flags) {
     const _phkResultSlot = Buffer.alloc(8);
     const _machineNameBuf = _wideStringBuffer(machineName);
     const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegConnectRegistryExW', 'I32', [DynWinRtValue.pointer(_machineNameBuf), DynWinRtValue.pointer(hKey), DynWinRtValue.u32(flags), DynWinRtValue.pointer(_phkResultSlot)]);
     return {
-        status: _ret.toNumber(),
+        result: _ret.toNumber(),
         phkResult: _phkResultSlot.readBigUInt64LE(0),
     };
 }

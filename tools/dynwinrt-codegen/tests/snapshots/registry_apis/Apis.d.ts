@@ -28,10 +28,10 @@ export declare function regCloseKey(hKey: HKEY): { readonly status: number };
 export declare function regConnectRegistryA(machineName: string | null, hKey: HKEY): { readonly status: number; readonly phkResult: HKEY };
 
 /** RegConnectRegistryExA — ADVAPI32.dll export. */
-export declare function regConnectRegistryExA(machineName: string | null, hKey: HKEY, flags: number): { readonly status: number; readonly phkResult: HKEY };
+export declare function regConnectRegistryExA(machineName: string | null, hKey: HKEY, flags: number): { readonly result: number; readonly phkResult: HKEY };
 
 /** RegConnectRegistryExW — ADVAPI32.dll export. */
-export declare function regConnectRegistryExW(machineName: string | null, hKey: HKEY, flags: number): { readonly status: number; readonly phkResult: HKEY };
+export declare function regConnectRegistryExW(machineName: string | null, hKey: HKEY, flags: number): { readonly result: number; readonly phkResult: HKEY };
 
 /** RegConnectRegistryW — ADVAPI32.dll export. */
 export declare function regConnectRegistryW(machineName: string | null, hKey: HKEY): { readonly status: number; readonly phkResult: HKEY };

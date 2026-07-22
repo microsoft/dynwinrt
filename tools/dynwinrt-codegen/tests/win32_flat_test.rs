@@ -477,6 +477,7 @@ fn synth_method(name: &str, ret: FlatAbiType) -> FlatMethodMeta {
             abi: FlatAbiType::U32,
             direction: FlatDirection::In,
         }],
+        return_is_status: false,
     }
 }
 
@@ -590,6 +591,7 @@ fn flat_float_params_use_typed_wrappers_not_pointer() {
                 direction: FlatDirection::In,
             },
         ],
+        return_is_status: false,
     };
     let out = flat::generate_flat_apis_files(&synth_apis(vec![m]));
     assert!(

@@ -1424,6 +1424,14 @@ pub struct FlatMethodMeta {
     /// Ordered parameters, with `[in]` / `[out]` / `[in,out]` direction
     /// recovered from `ParamAttributes`.
     pub params: Vec<FlatParamMeta>,
+    /// True when the return type is a known Win32 status typedef (HRESULT,
+    /// NTSTATUS, LSTATUS) or a WIN32_ERROR-family enum. Callers should
+    /// project the return as a numeric `.status` field so consumers can
+    /// branch on ERROR_SUCCESS / ERROR_FILE_NOT_FOUND / etc. FALSE for
+    /// plain I32/U32 returns (e.g. `GetCurrentProcessId -> u32`,
+    /// `MulDiv -> i32`) — those are real integer values and must be
+    /// projected as `.result` rather than mis-labelled as status codes.
+    pub return_is_status: bool,
 }
 
 /// A container class whose static methods are all `[DllImport]` exports —
@@ -1449,6 +1457,40 @@ pub fn parse_flat_apis(
 ) -> Option<FlatApisMeta> {
     let index = load_index(winmd_paths)?;
     parse_flat_apis_from_index(&index, namespace, class_name)
+}
+
+/// True when the RAW winmd return type is a known Win32 status typedef —
+/// HRESULT / NTSTATUS / LSTATUS in `Windows.Win32.Foundation`. Preserves
+/// typedef intent that would otherwise be lost by `map_flat_type` collapsing
+/// them all to `FlatAbiType::I32`, so the emitter can distinguish real
+/// status codes (project as `.status`) from integer-return APIs like
+/// `MulDiv` or `GetCurrentProcessId` (project as `.result`).
+fn is_status_return_type(ty: &windows_metadata::Type) -> bool {
+    use windows_metadata::Type;
+    match ty {
+        Type::Name(tn) => {
+            tn.namespace == "Windows.Win32.Foundation"
+                && matches!(tn.name.as_ref(), "HRESULT" | "NTSTATUS" | "LSTATUS")
+        }
+        _ => false,
+    }
+}
+
+/// True when the mapped `FlatAbiType` is a WIN32_ERROR-family enum whose
+/// underlying storage is a 32-bit integer. The Win32 winmd exposes many
+/// error/status typedefs as `[Flags]`-style enums (e.g. `WIN32_ERROR`,
+/// `NTSTATUS`-like enums whose name ends with `STATUS`) — those still count
+/// as status codes for return-value projection.
+fn is_status_return_enum(t: &FlatAbiType) -> bool {
+    if let FlatAbiType::Enum {
+        name, underlying, ..
+    } = t
+    {
+        (name == "WIN32_ERROR" || name.ends_with("STATUS"))
+            && matches!(**underlying, FlatAbiType::U32 | FlatAbiType::I32)
+    } else {
+        false
+    }
 }
 
 fn parse_flat_apis_from_index(
@@ -1484,13 +1526,35 @@ fn parse_flat_apis_from_index(
         let return_type = map_flat_type(&sig.return_type, index, &mut |e| {
             collect_enum(e, &mut seen_enum_names, &mut referenced_enums)
         });
+        // Preserve typedef intent from the raw return Type: only project as
+        // a `.status` numeric field when the return is a known Win32 status
+        // typedef (HRESULT/NTSTATUS/LSTATUS) OR a WIN32_ERROR-family enum
+        // after mapping. A plain I32/U32 return (e.g. `GetCurrentProcessId`,
+        // `MulDiv`) is a real value, NOT a status code, and must project as
+        // `{ result: number }` — see `render_method_js`.
+        let return_is_status =
+            is_status_return_type(&sig.return_type) || is_status_return_enum(&return_type);
 
         let param_defs: Vec<_> = m.params().filter(|p| p.sequence() > 0).collect();
+        // Fail-loud on parameter/signature divergence. Silently truncating
+        // to the shorter list would emit a wrapper with a fabricated
+        // argument list, and a mismatched flat call is UB. Skip the whole
+        // method (with a stderr warning) instead — the codegen surface then
+        // simply lacks this export, which is far safer than a wrapper that
+        // corrupts the callee's stack.
+        if param_defs.len() != sig.types.len() {
+            eprintln!(
+                "warning: skipping {}.{}.{} — param count ({}) differs from signature type count ({}); metadata is inconsistent",
+                namespace,
+                class_name,
+                m.name(),
+                param_defs.len(),
+                sig.types.len(),
+            );
+            continue;
+        }
         let mut params: Vec<FlatParamMeta> = Vec::with_capacity(param_defs.len());
         for (i, pd) in param_defs.iter().enumerate() {
-            if i >= sig.types.len() {
-                break;
-            }
             let ty = &sig.types[i];
             let abi = map_flat_type(ty, index, &mut |e| {
                 collect_enum(e, &mut seen_enum_names, &mut referenced_enums)
@@ -1516,6 +1580,7 @@ fn parse_flat_apis_from_index(
             entry_point,
             return_type,
             params,
+            return_is_status,
         });
     }
 

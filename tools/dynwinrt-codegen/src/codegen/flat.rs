@@ -180,21 +180,15 @@ fn is_small_scalarish(t: &FlatAbiType) -> bool {
 // Return / status classification
 // ---------------------------------------------------------------------------
 
-/// Whether the ABI return type is a Win32 status code (LSTATUS, HRESULT,
-/// WIN32_ERROR-enum) — projected as a numeric `.status` field so callers can
-/// branch on ERROR_SUCCESS / ERROR_FILE_NOT_FOUND / etc.
-fn is_status_return(t: &FlatAbiType) -> bool {
-    match t {
-        FlatAbiType::I32 => true, // LSTATUS / HRESULT / NTSTATUS
-        FlatAbiType::U32 => true, // DWORD (also used for WIN32_ERROR)
-        FlatAbiType::Enum {
-            name, underlying, ..
-        } => {
-            (name == "WIN32_ERROR" || name.ends_with("STATUS"))
-                && matches!(**underlying, FlatAbiType::U32 | FlatAbiType::I32)
-        }
-        _ => false,
-    }
+/// Whether the method's return should project as a Win32 `.status` numeric
+/// field. Backed by `FlatMethodMeta::return_is_status`, which is set at
+/// parse time by inspecting the raw winmd Type (HRESULT/NTSTATUS/LSTATUS)
+/// and the mapped enum name (WIN32_ERROR-family). Deliberately does NOT
+/// treat every I32/U32 as a status code — plain integer returns like
+/// `GetCurrentProcessId -> u32` or `MulDiv -> i32` are real values and
+/// must project as `{ result: number }`, not `{ status: number }`.
+fn is_status_return(m: &FlatMethodMeta) -> bool {
+    m.return_is_status
 }
 
 fn flat_ret_kind_literal(t: &FlatAbiType) -> &'static str {
@@ -638,7 +632,7 @@ fn render_method_js(out: &mut String, m: &FlatMethodMeta) {
         // Simple return: status/return value.
         if matches!(m.return_type, FlatAbiType::Void) {
             out.push_str("    return undefined;\n");
-        } else if is_status_return(&m.return_type) {
+        } else if is_status_return(m) {
             out.push_str(&format!("    return {{ status: {ret_val} }};\n"));
         } else {
             out.push_str(&format!("    return {{ result: {ret_val} }};\n"));
@@ -646,7 +640,7 @@ fn render_method_js(out: &mut String, m: &FlatMethodMeta) {
     } else {
         // Build result object.
         out.push_str("    return {\n");
-        if is_status_return(&m.return_type) {
+        if is_status_return(m) {
             out.push_str(&format!("        status: {ret_val},\n"));
         } else if !matches!(m.return_type, FlatAbiType::Void) {
             out.push_str(&format!("        result: {ret_val},\n"));
@@ -801,14 +795,14 @@ fn describe_return_shape(m: &FlatMethodMeta, classified: &[(usize, ParamSurface)
     if outs.is_empty() {
         if matches!(m.return_type, FlatAbiType::Void) {
             "undefined".into()
-        } else if is_status_return(&m.return_type) {
+        } else if is_status_return(m) {
             "{ status: number }".into()
         } else {
             "{ result: <return> }".into()
         }
     } else {
         let mut parts: Vec<String> = Vec::new();
-        if is_status_return(&m.return_type) {
+        if is_status_return(m) {
             parts.push("status: number".into());
         } else if !matches!(m.return_type, FlatAbiType::Void) {
             parts.push("result: <return>".into());
@@ -911,14 +905,14 @@ fn render_method_dts(out: &mut String, m: &FlatMethodMeta) {
     let ret_ty = if out_indices.is_empty() {
         if matches!(m.return_type, FlatAbiType::Void) {
             "void".to_string()
-        } else if is_status_return(&m.return_type) {
+        } else if is_status_return(m) {
             "{ readonly status: number }".to_string()
         } else {
             format!("{{ readonly result: {} }}", dts_type_of(&m.return_type))
         }
     } else {
         let mut fields: Vec<String> = Vec::new();
-        if is_status_return(&m.return_type) {
+        if is_status_return(m) {
             fields.push("readonly status: number".into());
         } else if !matches!(m.return_type, FlatAbiType::Void) {
             fields.push(format!(
@@ -1084,16 +1078,32 @@ mod tests {
     }
 
     #[test]
-    fn status_return_matches_lstatus_and_win32_error() {
-        assert!(is_status_return(&FlatAbiType::I32));
-        assert!(is_status_return(&FlatAbiType::U32));
-        assert!(is_status_return(&FlatAbiType::Enum {
-            namespace: "Windows.Win32.Foundation".into(),
-            name: "WIN32_ERROR".into(),
-            underlying: Box::new(FlatAbiType::U32),
-            members: vec![],
-        }));
-        assert!(!is_status_return(&FlatAbiType::PWStr));
+    fn status_return_reads_flag_not_type() {
+        // Since the flag is populated at parse time from raw winmd type
+        // info, the unit test just verifies the accessor reads what's
+        // stored — the parse-time classification is covered by snapshot
+        // tests against real Win32 metadata (see registry_apis snapshot).
+        fn method(return_type: FlatAbiType, return_is_status: bool) -> FlatMethodMeta {
+            FlatMethodMeta {
+                name: "F".into(),
+                dll: "x.dll".into(),
+                entry_point: "F".into(),
+                return_type,
+                params: vec![],
+                return_is_status,
+            }
+        }
+        assert!(is_status_return(&method(FlatAbiType::I32, true)));
+        assert!(!is_status_return(&method(FlatAbiType::I32, false)));
+        assert!(is_status_return(&method(
+            FlatAbiType::Enum {
+                namespace: "Windows.Win32.Foundation".into(),
+                name: "WIN32_ERROR".into(),
+                underlying: Box::new(FlatAbiType::U32),
+                members: vec![],
+            },
+            true,
+        )));
     }
 
     #[test]
@@ -1122,6 +1132,7 @@ mod tests {
                     direction: FlatDirection::In,
                 },
             ],
+            return_is_status: false,
         };
         let apis = FlatApisMeta {
             namespace: "Test".into(),
