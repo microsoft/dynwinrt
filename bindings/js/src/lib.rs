@@ -823,6 +823,26 @@ impl DynWinRTValue {
   /// `DynWinRtValue.i64(...)`, `DynWinRtValue.u64(...)`, or
   /// `DynWinRtValue.pointer(...)`. Other kinds cause a runtime error.
   ///
+  /// ## DLL loading (SECURITY)
+  ///
+  /// This ultimately calls `LoadLibraryW`, which uses the default DLL
+  /// search order. That means an untrusted DLL name (or a bare short
+  /// name where a same-named DLL exists in the process's working
+  /// directory / PATH earlier than the intended system location) can
+  /// silently resolve to an attacker-controlled binary — the classic
+  /// "DLL preloading / hijacking" attack. Pass DLLs that are either:
+  ///
+  ///   - Well-known system DLLs whose search-order first hit is under
+  ///     `System32` (e.g. `'kernel32.dll'`, `'user32.dll'`,
+  ///     `'ADVAPI32.dll'`) — safe on standard Windows installs
+  ///     provided the app itself has not tampered with the search path.
+  ///   - Or a fully qualified absolute path (`C:\\Path\\To\\my.dll`)
+  ///     that you control and have integrity-checked.
+  ///
+  /// Do NOT accept the DLL name from untrusted input. The generated
+  /// `--lang js` wrappers emitted by `dynwinrt-codegen` always pass a
+  /// hard-coded DLL name matched to a specific export in the winmd.
+  ///
   /// ## Buffer lifetimes (IMPORTANT)
   ///
   /// `DynWinRtValue.pointer(Buffer | Uint8Array)` intentionally stores

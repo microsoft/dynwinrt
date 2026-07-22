@@ -732,8 +732,18 @@ fn scalar_slot_write(t: &FlatAbiType, value_var: &str) -> WriteExpr {
         FlatAbiType::I64 => WriteExpr::new(&format!(
             "{{slot}}.writeBigInt64LE(BigInt({value_var}), 0)"
         )),
-        FlatAbiType::U64 | FlatAbiType::Handle { .. } => WriteExpr::new(&format!(
+        FlatAbiType::U64 => WriteExpr::new(&format!(
             "{{slot}}.writeBigUInt64LE(BigInt({value_var}), 0)"
+        )),
+        // Handle in-out slots must accept both `bigint` and `Buffer` (both
+        // are legal input shapes per the `.d.ts` — an opaque handle can be
+        // passed either as its numeric value or as a raw pointer-bits
+        // buffer). `BigInt(<Buffer>)` throws, so branch on the runtime
+        // type: read the u64 out of the buffer when it's a Buffer, and
+        // coerce otherwise (also covers `number` for callers who pass a
+        // narrow handle value).
+        FlatAbiType::Handle { .. } => WriteExpr::new(&format!(
+            "{{slot}}.writeBigUInt64LE(typeof {value_var} === 'bigint' ? {value_var} : Buffer.isBuffer({value_var}) ? {value_var}.readBigUInt64LE(0) : BigInt({value_var}), 0)"
         )),
         FlatAbiType::Enum { underlying, .. } => scalar_slot_write(underlying, value_var),
         _ => WriteExpr::new(&format!("{{slot}}.writeUInt32LE({value_var}, 0)")),

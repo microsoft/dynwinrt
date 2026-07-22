@@ -355,9 +355,9 @@ fn out_param_projects_as_return() {
     );
 }
 
-/// 7. Void / no-arg export: `RegCloseKey(HKEY) -> LSTATUS` — takes a single
-///    HKEY and returns just a status. Ensure the emitter handles the "no
-///    out-params" case cleanly.
+/// 7. Status-only return, single input, no out-params: `RegCloseKey(HKEY)
+///    -> LSTATUS` — exercise the "one [in] param + status return, no out
+///    projection" shape so we don't regress it when the emitter changes.
 #[test]
 fn no_arg_and_void_returns_are_emitted() {
     if !win32_available() {
