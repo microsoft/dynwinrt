@@ -1789,6 +1789,7 @@ mod tests {
                     name: "MyKind".into(),
                     underlying: Box::new(TypeMeta::I32),
                     members: Vec::new(),
+                    is_flags: false,
                     doc: None,
                     deprecated: None,
                 },
