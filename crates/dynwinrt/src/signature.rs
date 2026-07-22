@@ -288,8 +288,38 @@ fn coerce_input_object(
     let Some(iid) = expected_object_iid(expected) else {
         return Ok(None);
     };
+    // Null objects are always allowed (`WinRTValue::Null` and the
+    // Object-typed null variant both project as "no coercion needed" — the
+    // ABI receives a null pointer directly).
     if value.is_null_object() {
         return Ok(None);
+    }
+    // A `WinRTValue::RawPtr` is a raw ABI pointer supplied by the caller
+    // (e.g. `DynWinRtValue.pointer(hwnd)`). It is legitimate ONLY when the
+    // parameter is untyped `TypeKind::Object` (the codegen's `pointer()`
+    // alias, used for HWND / PWSTR / void* / function-pointer slots).
+    //
+    // For a TYPED interface / delegate / runtime class / async parameter
+    // the runtime would otherwise blindly forward the caller's pointer bits
+    // into the vtable dispatch, without QI'ing to the required IID. If
+    // the pointer wasn't actually a live COM object with the expected
+    // vtable layout the dispatch would read a bogus vtable → crash / UB.
+    // Reject up-front with E_INVALIDARG so callers pass a real `Object`
+    // (or an explicitly `.cast()`-ed one) instead.
+    if matches!(value, WinRTValue::RawPtr(_)) {
+        if matches!(expected.kind(), TypeKind::Object) {
+            return Ok(None);
+        }
+        return Err(windows_core::Error::new(
+            windows_core::HRESULT(0x80070057u32 as i32),
+            &format!(
+                "Refusing to pass a raw pointer as a typed COM parameter ({}). \
+                 Only untyped Object / void* / handle parameters accept \
+                 DynWinRtValue.pointer(...); for a concrete interface pass a \
+                 real object (or one obtained via `.cast(IID)`).",
+                expected.signature_string(),
+            ),
+        ));
     }
 
     let object = value.as_object().ok_or_else(|| {
@@ -793,6 +823,67 @@ mod tests {
             inspectable.as_raw()
         );
         Ok(())
+    }
+
+    /// Regression: `coerce_input_object` must accept `WinRTValue::RawPtr`
+    /// ONLY when the expected parameter type is the untyped
+    /// `TypeKind::Object` (the codegen's `pointer()` alias used for HWND /
+    /// void* / handle slots). Passing a raw pointer where a *typed*
+    /// interface / delegate / runtime class / async parameter is expected
+    /// must be rejected up-front with `E_INVALIDARG`, so we don't
+    /// blindly forward pointer bits into a vtable dispatch that would
+    /// then read a bogus vtable and crash / UB.
+    #[test]
+    fn raw_pointer_only_accepted_for_untyped_object_params() {
+        let table = MetadataTable::new();
+        let bogus = WinRTValue::RawPtr(0xDEADBEEF as *mut std::ffi::c_void);
+
+        // Legitimate case: `TypeKind::Object` (a.k.a. codegen's `pointer()` /
+        // HWND / void*) accepts RawPtr — bypass coercion so the raw ABI
+        // pointer is forwarded to the callee unchanged.
+        let object_ty = table.object();
+        assert!(
+            matches!(object_ty.kind(), TypeKind::Object),
+            "sanity: table.object() must be TypeKind::Object"
+        );
+        assert!(
+            coerce_input_object(&object_ty, &bogus)
+                .expect("RawPtr into TypeKind::Object must be allowed")
+                .is_none(),
+            "RawPtr into TypeKind::Object should bypass coercion (Ok(None))",
+        );
+
+        // Unsafe case: RawPtr into a typed `TypeKind::Interface(IID)`
+        // must FAIL with E_INVALIDARG, not silently succeed.
+        let iface_ty = table.interface(IStringable::IID);
+        let err = coerce_input_object(&iface_ty, &bogus)
+            .expect_err("RawPtr into a typed interface must be rejected");
+        assert_eq!(
+            err.code().0,
+            0x80070057u32 as i32,
+            "typed-interface RawPtr rejection must use E_INVALIDARG (got {:?})",
+            err
+        );
+        let msg = err.message();
+        assert!(
+            msg.contains("raw pointer") && msg.contains("typed"),
+            "rejection error must explain the constraint, got: {}",
+            msg
+        );
+
+        // Null objects remain allowed for both untyped and typed slots
+        // (a null pointer is a valid COM null-object).
+        let null_object = WinRTValue::Null;
+        assert!(
+            coerce_input_object(&object_ty, &null_object)
+                .expect("null into TypeKind::Object must be allowed")
+                .is_none(),
+        );
+        assert!(
+            coerce_input_object(&iface_ty, &null_object)
+                .expect("null into typed interface must be allowed")
+                .is_none(),
+        );
     }
 
     #[test]

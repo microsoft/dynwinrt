@@ -241,6 +241,19 @@ impl MetadataTable {
         self.make(kind)
     }
 
+    /// Register a named IUnknown-based (classic COM) interface. User methods
+    /// start at vtable slot 3 (QI/AddRef/Release occupy 0/1/2), rather than the
+    /// WinRT default of 6 (IInspectable adds three more slots at 3/4/5).
+    pub fn register_interface_iunknown(self: &Arc<Self>, name: &str, iid: GUID) -> TypeHandle {
+        if let Some(kind) = self.get_named_type(name) {
+            return self.make(kind);
+        }
+        self.create_interface_method_table_with_base(iid, 3);
+        let kind = TypeKind::Interface(iid);
+        self.insert_named_type(name, kind);
+        self.make(kind)
+    }
+
     /// Register a named struct with dedup. If already registered, returns
     /// the existing TypeHandle.
     pub fn struct_type(self: &Arc<Self>, name: &str, fields: &[TypeHandle]) -> TypeHandle {

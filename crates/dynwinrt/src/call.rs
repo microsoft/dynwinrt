@@ -74,6 +74,7 @@ macro_rules! dispatch_scalar {
             WinRTValue::F64(v) => $call(*v),
             WinRTValue::Object(o) => $call(o.as_raw()),
             WinRTValue::Null => $call(std::ptr::null_mut::<c_void>()),
+            WinRTValue::RawPtr(p) => $call(*p),
             WinRTValue::Guid(g) => $call(*g),
             _ => panic!("dispatch_scalar: unsupported type {:?}", $in_val),
         }

@@ -5,6 +5,7 @@ use windows::core::*;
 
 mod abi;
 mod call;
+pub mod classic_com;
 mod interfaces;
 mod result;
 mod roapi;
