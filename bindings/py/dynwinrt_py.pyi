@@ -1,7 +1,11 @@
-from typing import Callable, List, Optional, Sequence, Union, final
+from typing import Awaitable, Callable, List, Optional, Protocol, Sequence, TypeVar, Union, final
+
+_T = TypeVar("_T", covariant=True)
+_P = TypeVar("_P", covariant=True)
 
 __all__ = [
     "WinAppSDKContext",
+    "RoApartment",
     "WinGUID",
     "DynWinRTType",
     "DynWinRTMethodSig",
@@ -10,6 +14,8 @@ __all__ = [
     "DynWinRTArray",
     "DynWinRTStruct",
     "DynWinRtDelegate",
+    "WinRTAsync",
+    "WinRTAsyncWithProgress",
     "init_winappsdk",
     "ro_initialize",
     "ro_uninitialize",
@@ -19,6 +25,19 @@ __all__ = [
 
 @final
 class WinAppSDKContext: ...
+
+
+@final
+class RoApartment:
+    def __new__(
+        cls, apartment_type: Optional[int] = ...
+    ) -> RoApartment: ...
+    def __enter__(self) -> RoApartment: ...
+    def __exit__(
+        self, exc_type: object, exc_value: object, traceback: object
+    ) -> bool: ...
+    def close(self) -> None: ...
+    def __repr__(self) -> str: ...
 
 
 @final
@@ -218,6 +237,15 @@ class DynWinRTValue:
     def __str__(self) -> str: ...
 
 
+class WinRTAsync(Awaitable[_T], Protocol[_T]):
+    def wait(self) -> _T: ...
+    def cancel(self) -> None: ...
+
+
+class WinRTAsyncWithProgress(WinRTAsync[_T], Protocol[_T, _P]):
+    def progress(self, callback: Callable[[_P], object]) -> None: ...
+
+
 @final
 class DynWinRTArray:
     def __len__(self) -> int: ...
@@ -256,6 +284,10 @@ class DynWinRTArray:
     def from_u64_values(values: Sequence[int]) -> DynWinRTArray: ...
     @staticmethod
     def from_string_values(values: Sequence[str]) -> DynWinRTArray: ...
+    @staticmethod
+    def from_values(
+        values: Sequence[DynWinRTValue], element_type: DynWinRTType
+    ) -> DynWinRTArray: ...
     @staticmethod
     def from_object_values(
         values: Sequence[DynWinRTValue], element_type: DynWinRTType

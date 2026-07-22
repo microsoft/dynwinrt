@@ -3,6 +3,10 @@
 This checklist tracks the path from the current source-built Python prototype
 to a distributable, typed, and reliable WinRT projection.
 
+See [`docs/python-ui-ecosystem.md`](docs/python-ui-ecosystem.md) for research on
+Python UI frameworks, static pywinrt adoption, real integrations, and the value
+of a dynamic projection.
+
 ## Target states
 
 - **Data API preview:** a clean machine can install wheels and generated
@@ -20,7 +24,7 @@ to a distributable, typed, and reliable WinRT projection.
       APIs on ARM64.
 - [x] Python generation emits `.py` implementations.
 - [x] `--lang py` emits `.pyi`, `__init__.pyi`, and `py.typed` by default.
-- [x] Generated Python E2E covers 25 Windows SDK scenarios.
+- [x] Generated Python E2E covers 34 Windows SDK scenarios.
 - [x] Runtime primitives exist for arrays, structs, delegates, events,
       cancellation, progress callbacks, vectors, and maps.
 - [x] Python codegen snapshots cover the `Uri` implementation and stubs.
@@ -55,13 +59,13 @@ to a distributable, typed, and reliable WinRT projection.
 
 ## P0: async semantics
 
-- [ ] Return a Python awaitable instead of blocking inside generated async
+- [x] Return a Python awaitable instead of blocking inside generated async
       methods.
-- [ ] Integrate WinRT completion with an `asyncio` event loop.
-- [ ] Propagate Python cancellation to `IAsyncInfo.Cancel`.
-- [ ] Expose progress without forcing generated wrappers to call `.wait()`.
-- [ ] Keep an explicit blocking API for scripts and non-async hosts.
-- [ ] Reject blocking waits from an STA when they could deadlock.
+- [x] Integrate WinRT completion with an `asyncio` event loop.
+- [x] Propagate Python cancellation to `IAsyncInfo.Cancel`.
+- [x] Expose progress without forcing generated wrappers to call `.wait()`.
+- [x] Keep an explicit blocking API for scripts and non-async hosts.
+- [x] Reject blocking waits from an STA when they could deadlock.
 
 ## P0: CI and distribution
 
@@ -77,21 +81,21 @@ to a distributable, typed, and reliable WinRT projection.
 
 ## P1: Python-native behavior
 
-- [ ] Map HRESULT failures to `OSError` with a stable `.winerror`.
-- [ ] Include restricted WinRT error information when available.
-- [ ] Surface Python callback failures instead of returning unconditional
+- [x] Map HRESULT failures to `OSError` with a stable `.winerror`.
+- [x] Include restricted WinRT error information when available.
+- [x] Surface Python callback failures instead of returning unconditional
       success to WinRT.
-- [ ] Document callback threads and require explicit event unsubscription.
-- [ ] Implement Python collection protocols for iterable, vector, and map
+- [x] Document callback threads and require explicit event unsubscription.
+- [x] Implement Python collection protocols for iterable, vector, and map
       projections.
-- [ ] Accept normal Python sequences, mappings, bytes, UUIDs, datetimes, and
+- [x] Accept normal Python sequences, mappings, bytes, UUIDs, datetimes, and
       timedeltas where the WinRT signature permits them.
-- [ ] Emit `IntFlag` for flags enums.
-- [ ] Add overload-aware runtime dispatch and `typing.overload` stubs.
-- [ ] Generate idiomatic constructors such as `Uri(...)` while retaining an
+- [x] Emit `IntFlag` for flags enums.
+- [x] Add overload-aware runtime dispatch and `typing.overload` stubs.
+- [x] Generate idiomatic constructors such as `Uri(...)` while retaining an
       internal wrapper path for returned native objects.
-- [ ] Replace deprecated PyO3 automatic `FromPyObject` behavior explicitly.
-- [ ] Document COM apartment ownership and provide a balanced context manager.
+- [x] Replace deprecated PyO3 automatic `FromPyObject` behavior explicitly.
+- [x] Document COM apartment ownership and provide a balanced context manager.
 
 ## P1: tooling and documentation
 
@@ -141,3 +145,10 @@ to a distributable, typed, and reliable WinRT projection.
 10. [x] Generate Python stubs by default and type-check generated E2E APIs.
 11. [x] Unbox `IReference<T>` returns as `T | None`.
 12. [x] Box native Python values and `None` for `IReference<T>` inputs.
+13. [x] Map synchronous and asynchronous HRESULT failures to `OSError`.
+14. [x] Preserve signed HRESULTs in `.winerror` and captured WinRT error messages.
+15. [x] Project WinRT collections through Python sequence, mapping, and iterator protocols.
+16. [x] Accept Python-native containers, bytes, UUID, datetime, and timedelta values.
+17. [x] Route delegate exceptions through `sys.unraisablehook` and fail WinRT invocation.
+18. [x] Emit `IntFlag`, overload dispatch/stubs, and idiomatic runtime-class constructors.
+19. [x] Balance COM initialization with `RoApartment` and add deterministic `IClosable` cleanup.

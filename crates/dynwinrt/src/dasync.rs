@@ -122,6 +122,8 @@ use crate::value::AsyncInfo;
 pub struct WinRTAsyncFuture {
     async_info: AsyncInfo,
     waker: Option<Arc<Mutex<Waker>>>,
+    cancel_on_drop: bool,
+    defer_get_results: bool,
 }
 
 // WinRT async operations are agile objects and safe to send across threads.
@@ -133,6 +135,8 @@ impl WinRTAsyncFuture {
             WinRTValue::Async(a) => Self {
                 async_info: a,
                 waker: None,
+                cancel_on_drop: false,
+                defer_get_results: false,
             },
             _ => panic!("WinRTAsyncFuture::from_value called with non-async WinRTValue"),
         }
@@ -142,7 +146,21 @@ impl WinRTAsyncFuture {
         Self {
             async_info: info,
             waker: None,
+            cancel_on_drop: false,
+            defer_get_results: false,
         }
+    }
+
+    /// Cancel the underlying WinRT operation if this future is dropped while pending.
+    pub fn cancel_on_drop(mut self) -> Self {
+        self.cancel_on_drop = true;
+        self
+    }
+
+    /// Complete with the async handle so GetResults can run on the consuming thread.
+    pub fn defer_get_results(mut self) -> Self {
+        self.defer_get_results = true;
+        self
     }
 
     /// QI from IAsyncInfo to the concrete async interface.
@@ -184,6 +202,7 @@ impl WinRTAsyncFuture {
             if let WinRTValue::RawPtr(raw_ptr) = out {
                 out = rt.from_out(raw_ptr)?;
             }
+
             out.sanitize_null_object();
             Ok(out)
         } else {
@@ -192,6 +211,14 @@ impl WinRTAsyncFuture {
                 crate::call::call_winrt_method_1(get_results_index, concrete.as_raw(), &mut dummy);
             hr.ok().map_err(Error::WindowsError)?;
             Ok(WinRTValue::HResult(HRESULT(0)))
+        }
+    }
+
+    fn completed_value(&self) -> Result<WinRTValue> {
+        if self.defer_get_results {
+            Ok(WinRTValue::Async(self.async_info.clone()))
+        } else {
+            self.get_results()
         }
     }
 
@@ -231,11 +258,18 @@ impl Future for WinRTAsyncFuture {
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         // Fast path: already completed before first poll
         match self.async_info.info.Status() {
-            Ok(AsyncStatus::Canceled) => return Poll::Ready(Err(Error::Canceled)),
-            Ok(status) if status != AsyncStatus::Started => {
-                return Poll::Ready(self.get_results());
+            Ok(AsyncStatus::Canceled) => {
+                self.cancel_on_drop = false;
+                return Poll::Ready(Err(Error::Canceled));
             }
-            Err(e) => return Poll::Ready(Err(Error::WindowsError(e))),
+            Ok(status) if status != AsyncStatus::Started => {
+                let result = self.completed_value();
+                self.cancel_on_drop = false;
+                return Poll::Ready(result);
+            }
+            Err(e) => {
+                return Poll::Ready(Err(Error::WindowsError(e)));
+            }
             _ => {}
         }
 
@@ -246,11 +280,19 @@ impl Future for WinRTAsyncFuture {
             }
             // Re-check status (race: completion may have fired between status check and here)
             match self.async_info.info.Status() {
-                Ok(AsyncStatus::Canceled) => return Poll::Ready(Err(Error::Canceled)),
-                Ok(status) if status != AsyncStatus::Started => {
-                    return Poll::Ready(self.get_results());
+                Ok(AsyncStatus::Canceled) => {
+                    self.cancel_on_drop = false;
+                    return Poll::Ready(Err(Error::Canceled));
                 }
-                Err(e) => return Poll::Ready(Err(Error::WindowsError(e))),
+                Ok(status) if status != AsyncStatus::Started => {
+                    let result = self.completed_value();
+                    self.cancel_on_drop = false;
+                    return Poll::Ready(result);
+                }
+
+                Err(e) => {
+                    return Poll::Ready(Err(Error::WindowsError(e)));
+                }
                 _ => {}
             }
         } else {
@@ -264,6 +306,21 @@ impl Future for WinRTAsyncFuture {
         }
 
         Poll::Pending
+    }
+}
+
+pub fn get_async_results(value: &WinRTValue) -> Result<WinRTValue> {
+    match value {
+        WinRTValue::Async(info) => WinRTAsyncFuture::from_async_info(info.clone()).get_results(),
+        other => Err(Error::ExpectedAsync(other.get_type_kind())),
+    }
+}
+
+impl Drop for WinRTAsyncFuture {
+    fn drop(&mut self) {
+        if self.cancel_on_drop {
+            let _ = self.async_info.cancel();
+        }
     }
 }
 
@@ -340,7 +397,7 @@ pub fn create_progress_handler(
 mod tests {
     use windows::System::Threading::{ThreadPool, WorkItemHandler};
     use windows::core::Interface;
-    use windows_future::IAsyncInfo;
+    use windows_future::{AsyncStatus, IAsyncInfo};
 
     use crate::metadata_table::MetadataTable;
     use crate::result::{Error, Result};
@@ -392,6 +449,25 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn test_deferred_get_results_keeps_async_handle() -> Result<()> {
+        let handler = WorkItemHandler::new(|_| Ok(()));
+        let operation = ThreadPool::RunAsync(&handler).map_err(Error::WindowsError)?;
+        let info: IAsyncInfo = operation.cast().map_err(Error::WindowsError)?;
+        let value = WinRTValue::Async(AsyncInfo {
+            info,
+            async_type: MetadataTable::new().async_action(),
+        });
+
+        let completed = value.into_future().defer_get_results().await?;
+        assert!(matches!(completed, WinRTValue::Async(_)));
+        assert!(matches!(
+            super::get_async_results(&completed)?,
+            WinRTValue::HResult(windows_core::HRESULT(0))
+        ));
+        Ok(())
+    }
+
     /// Verify progress handler IID computation matches windows-rs for known types.
     #[test]
     fn test_progress_handler_iid_u64_u64() {
@@ -418,6 +494,58 @@ mod tests {
             our_iid, expected_iid
         );
         println!("Progress handler IID for <u64, u64>: {:?}", our_iid);
+    }
+
+    #[test]
+    fn test_progress_handler_marshals_u64_value() {
+        use crate::metadata_table::TypeKind;
+        use std::sync::{
+            Arc,
+            atomic::{AtomicU64, Ordering},
+        };
+        use windows_core::{HRESULT, IUnknown_Vtbl};
+
+        #[repr(C)]
+        struct ProgressHandlerVtbl {
+            base: IUnknown_Vtbl,
+            invoke: unsafe extern "system" fn(
+                *mut std::ffi::c_void,
+                *mut std::ffi::c_void,
+                *mut std::ffi::c_void,
+            ) -> HRESULT,
+        }
+
+        let reg = MetadataTable::new();
+        let result_type = reg.make(TypeKind::U64);
+        let progress_type = reg.make(TypeKind::U64);
+        let async_type = reg.async_operation_with_progress(&result_type, &progress_type);
+        let handler_iid = async_type
+            .progress_handler_iid()
+            .expect("should have progress handler IID");
+
+        let received = Arc::new(AtomicU64::new(0));
+        let received_callback = received.clone();
+        let handler = super::create_progress_handler(
+            handler_iid,
+            progress_type,
+            Box::new(move |value| {
+                if let WinRTValue::U64(value) = value {
+                    received_callback.store(value, Ordering::SeqCst);
+                }
+            }),
+        );
+
+        let vtable = unsafe { &**(handler.as_raw() as *const *const ProgressHandlerVtbl) };
+        let result = unsafe {
+            (vtable.invoke)(
+                handler.as_raw(),
+                std::ptr::null_mut(),
+                42usize as *mut std::ffi::c_void,
+            )
+        };
+
+        assert!(result.is_ok());
+        assert_eq!(received.load(Ordering::SeqCst), 42);
     }
 
     /// Test SetProgress on a real IAsyncOperationWithProgress using HTTP BufferAllAsync.
@@ -714,6 +842,52 @@ mod tests {
                     .unwrap_or_else(|e| format!("Err({:?})", e))
             ),
         }
+    }
+
+    #[test]
+    fn test_cancel_on_drop_cancels_pending_operation() -> Result<()> {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+
+        let started = Arc::new(AtomicBool::new(false));
+        let started_callback = started.clone();
+        let release = Arc::new(AtomicBool::new(false));
+        let release_callback = release.clone();
+        let handler = WorkItemHandler::new(move |_| {
+            started_callback.store(true, Ordering::SeqCst);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while !release_callback.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Ok(())
+        });
+        let operation = ThreadPool::RunAsync(&handler).map_err(Error::WindowsError)?;
+        let info: IAsyncInfo = operation.cast().map_err(Error::WindowsError)?;
+        let value = WinRTValue::Async(AsyncInfo {
+            info: info.clone(),
+            async_type: MetadataTable::new().async_action(),
+        });
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !started.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(started.load(Ordering::SeqCst), "work item did not start");
+
+        drop(value.into_future().cancel_on_drop());
+
+        let cancel_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while info.Status().map_err(Error::WindowsError)? == AsyncStatus::Started
+            && std::time::Instant::now() < cancel_deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let status = info.Status().map_err(Error::WindowsError)?;
+        release.store(true, Ordering::SeqCst);
+        assert_eq!(status, AsyncStatus::Canceled);
+        Ok(())
     }
 
     /// Verify `cancel()` on an already-completed async operation is a no-op

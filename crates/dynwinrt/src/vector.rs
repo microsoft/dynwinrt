@@ -8,16 +8,18 @@
 //! allowing JS callers to construct vectors and pass them to WinRT APIs.
 
 use core::ffi::c_void;
-use std::sync::Mutex;
-use windows_core::{GUID, HRESULT, IUnknown, Interface};
+use std::collections::HashMap;
+use std::sync::{
+    Mutex,
+    atomic::{AtomicI64, Ordering},
+};
+use windows_core::{GUID, HRESULT, HSTRING, IUnknown, Interface};
 
 use crate::com_helpers::{
     E_BOUNDS, E_FAIL, IInspectableVtbl, S_OK, com_to_usize, com_usize_addref_out, com_usize_release,
 };
 #[allow(unused_imports)]
-use crate::com_helpers::{
-    dual_vtable_com, impl_drop_release_items, inspectable_stubs, lock_or, single_vtable_com,
-};
+use crate::com_helpers::{dual_vtable_com, inspectable_stubs, lock_or, single_vtable_com};
 
 // ======================================================================
 // IIDs for collection PIIDs
@@ -29,6 +31,8 @@ pub struct VectorIids {
     pub iterable: GUID,
     pub vector: GUID,
     pub vector_view: GUID,
+    pub observable_vector: GUID,
+    pub vector_changed_handler: GUID,
     pub iterator: GUID,
 }
 
@@ -73,6 +77,14 @@ struct VectorViewVtbl {
         unsafe extern "system" fn(*mut c_void, u32, u32, *mut *mut c_void, *mut u32) -> HRESULT,
 }
 
+/// IObservableVector<T> vtable: IInspectable + VectorChanged add/remove.
+#[repr(C)]
+struct ObservableVectorVtbl {
+    base: IInspectableVtbl,
+    add_vector_changed: unsafe extern "system" fn(*mut c_void, *mut c_void, *mut i64) -> HRESULT,
+    remove_vector_changed: unsafe extern "system" fn(*mut c_void, i64) -> HRESULT,
+}
+
 /// IIterator<T> vtable: IInspectable + 4 methods
 #[repr(C)]
 struct IteratorVtbl {
@@ -83,18 +95,135 @@ struct IteratorVtbl {
     get_many: unsafe extern "system" fn(*mut c_void, u32, *mut *mut c_void, *mut u32) -> HRESULT,
 }
 
+const IID_IVECTOR_CHANGED_EVENT_ARGS: GUID =
+    GUID::from_u128(0x575933df_34fe_4480_af15_07691f3d5d9b);
+const COLLECTION_CHANGE_RESET: i32 = 0;
+const COLLECTION_CHANGE_ITEM_INSERTED: i32 = 1;
+const COLLECTION_CHANGE_ITEM_REMOVED: i32 = 2;
+const COLLECTION_CHANGE_ITEM_CHANGED: i32 = 3;
+
+#[repr(C)]
+struct VectorChangedEventArgsVtbl {
+    base: IInspectableVtbl,
+    get_collection_change: unsafe extern "system" fn(*mut c_void, *mut i32) -> HRESULT,
+    get_index: unsafe extern "system" fn(*mut c_void, *mut u32) -> HRESULT,
+}
+
+#[repr(C)]
+struct VectorChangedEventArgs {
+    vtable: *const VectorChangedEventArgsVtbl,
+    ref_count: windows_core::imp::RefCount,
+    collection_change: i32,
+    index: u32,
+}
+
+impl VectorChangedEventArgs {
+    const VTBL: VectorChangedEventArgsVtbl = VectorChangedEventArgsVtbl {
+        base: IInspectableVtbl {
+            base: windows_core::IUnknown_Vtbl {
+                QueryInterface: Self::qi,
+                AddRef: Self::add_ref,
+                Release: Self::release,
+            },
+            get_iids: Self::get_iids_stub,
+            get_runtime_class_name: Self::get_runtime_class_name_stub,
+            get_trust_level: Self::get_trust_level_stub,
+        },
+        get_collection_change: Self::get_collection_change,
+        get_index: Self::get_index,
+    };
+
+    fn create(collection_change: i32, index: u32) -> IUnknown {
+        let args = Box::new(Self {
+            vtable: &Self::VTBL,
+            ref_count: windows_core::imp::RefCount::new(1),
+            collection_change,
+            index,
+        });
+        unsafe { IUnknown::from_raw(Box::into_raw(args) as *mut c_void) }
+    }
+
+    single_vtable_com!(|_me: &Self| IID_IVECTOR_CHANGED_EVENT_ARGS);
+    inspectable_stubs!(stub);
+
+    unsafe extern "system" fn get_collection_change(
+        this: *mut c_void,
+        result: *mut i32,
+    ) -> HRESULT {
+        if result.is_null() {
+            return crate::com_helpers::E_POINTER;
+        }
+        *result = Self::from_ptr(this).collection_change;
+        S_OK
+    }
+
+    unsafe extern "system" fn get_index(this: *mut c_void, result: *mut u32) -> HRESULT {
+        if result.is_null() {
+            return crate::com_helpers::E_POINTER;
+        }
+        *result = Self::from_ptr(this).index;
+        S_OK
+    }
+
+    unsafe fn from_ptr(this: *mut c_void) -> &'static Self {
+        &*(this as *const Self)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CollectionStorage {
+    pub(crate) is_value_type: bool,
+    pub(crate) is_hstring: bool,
+    pub(crate) elem_size: usize,
+}
+
+pub(crate) fn collection_storage(
+    element_type: &crate::TypeHandle,
+) -> crate::Result<CollectionStorage> {
+    use crate::TypeKind;
+
+    let kind = element_type.kind();
+    let elem_size = element_type.size_of();
+    if matches!(kind, TypeKind::F32 | TypeKind::F64 | TypeKind::Guid)
+        || (matches!(kind, TypeKind::Struct(_)) && elem_size > std::mem::size_of::<usize>())
+    {
+        return Err(crate::Error::UnsupportedCollectionElement(kind));
+    }
+    Ok(CollectionStorage {
+        is_hstring: kind == TypeKind::HString,
+        is_value_type: matches!(
+            kind,
+            TypeKind::Bool
+                | TypeKind::I8
+                | TypeKind::U8
+                | TypeKind::I16
+                | TypeKind::U16
+                | TypeKind::Char16
+                | TypeKind::I32
+                | TypeKind::U32
+                | TypeKind::I64
+                | TypeKind::U64
+                | TypeKind::Enum(_)
+                | TypeKind::HResult
+                | TypeKind::Struct(_)
+        ),
+        elem_size,
+    })
+}
+
 /// Write a raw usize item to an output pointer, AddRef'ing if it's a COM reference type.
 /// For value types, only writes `elem_size` bytes to avoid overwriting adjacent memory.
 #[inline(always)]
-unsafe fn write_item_out(
-    is_value_type: bool,
-    elem_size: usize,
+pub(crate) unsafe fn write_item_out(
+    storage: CollectionStorage,
     raw: usize,
     result: *mut *mut c_void,
 ) {
-    if is_value_type {
+    if storage.is_hstring {
+        *result = clone_hstring_raw(raw) as *mut c_void;
+    } else if storage.is_value_type {
         // Write only elem_size bytes, clamped to usize width for safety.
-        let write_size = elem_size.min(std::mem::size_of::<usize>());
+        let write_size = storage.elem_size.min(std::mem::size_of::<usize>());
         unsafe {
             std::ptr::copy_nonoverlapping(
                 &raw as *const usize as *const u8,
@@ -107,30 +236,108 @@ unsafe fn write_item_out(
     }
 }
 
+unsafe fn clone_hstring_raw(raw: usize) -> usize {
+    if raw == 0 {
+        return 0;
+    }
+    let raw_ptr = raw as *mut c_void;
+    let value: &HSTRING = &*(&raw_ptr as *const *mut c_void as *const HSTRING);
+    let cloned: *mut c_void = std::mem::transmute(value.clone());
+    cloned as usize
+}
+
+unsafe fn release_hstring_raw(raw: usize) {
+    if raw != 0 {
+        let _value: HSTRING = std::mem::transmute(raw as *mut c_void);
+    }
+}
+
+pub(crate) unsafe fn clone_stored_item(storage: CollectionStorage, raw: usize) -> usize {
+    if storage.is_hstring {
+        clone_hstring_raw(raw)
+    } else if storage.is_value_type {
+        raw
+    } else {
+        com_to_usize(raw as *mut c_void)
+    }
+}
+
+pub(crate) unsafe fn store_abi_item(storage: CollectionStorage, raw: *mut c_void) -> usize {
+    if storage.is_hstring {
+        clone_hstring_raw(raw as usize)
+    } else if storage.is_value_type {
+        normalize_value_word(raw as usize, storage.elem_size)
+    } else {
+        com_to_usize(raw)
+    }
+}
+
+pub(crate) unsafe fn release_stored_item(storage: CollectionStorage, raw: usize) {
+    if storage.is_hstring {
+        release_hstring_raw(raw);
+    } else if !storage.is_value_type {
+        com_usize_release(raw);
+    }
+}
+
+pub(crate) unsafe fn stored_items_equal(
+    storage: CollectionStorage,
+    left: usize,
+    right: usize,
+) -> bool {
+    if !storage.is_hstring {
+        return if storage.is_value_type {
+            normalize_value_word(left, storage.elem_size)
+                == normalize_value_word(right, storage.elem_size)
+        } else {
+            left == right
+        };
+    }
+    if left == 0 || right == 0 {
+        return left == right;
+    }
+    let left_ptr = left as *mut c_void;
+    let right_ptr = right as *mut c_void;
+    let left: &HSTRING = &*(&left_ptr as *const *mut c_void as *const HSTRING);
+    let right: &HSTRING = &*(&right_ptr as *const *mut c_void as *const HSTRING);
+    left == right
+}
+
+fn normalize_value_word(value: usize, elem_size: usize) -> usize {
+    if elem_size == 0 || elem_size >= std::mem::size_of::<usize>() {
+        value
+    } else {
+        value & ((1usize << (elem_size * 8)) - 1)
+    }
+}
+
 // ======================================================================
 // SingleThreadedVector
 // ======================================================================
 
-/// A dynamically-constructed WinRT IVector<T> + IVectorView<T> + IIterable<T> COM object.
+/// A dynamically-constructed observable WinRT vector COM object.
 ///
 /// Stores items as raw `usize` values. For reference types (COM objects),
 /// each usize is a raw IUnknown pointer with manual AddRef/Release.
 /// For value types (structs ≤ pointer size), each usize holds the struct
 /// bytes directly — no refcounting needed.
 ///
-/// Implements three interfaces (like C++/WinRT's single_threaded_vector):
+/// Implements four interfaces:
 /// - IIterable<T>: First() for iteration
 /// - IVector<T>: mutable collection operations
 /// - IVectorView<T>: read-only live view over the same data
+/// - IObservableVector<T>: change notifications for native controls
 #[repr(C)]
 struct SingleThreadedVector {
     vtable_iterable: *const IterableVtbl,
     vtable_vector: *const VectorVtbl,
     vtable_view: *const VectorViewVtbl,
+    vtable_observable: *const ObservableVectorVtbl,
     ref_count: windows_core::imp::RefCount,
     items: Mutex<Vec<usize>>,
-    is_value_type: bool,
-    elem_size: usize,
+    handlers: Mutex<HashMap<i64, IUnknown>>,
+    next_token: AtomicI64,
+    storage: CollectionStorage,
     iids: VectorIids,
 }
 
@@ -194,8 +401,31 @@ impl SingleThreadedVector {
         get_many: Self::view_get_many,
     };
 
-    triple_vtable_com!(iterable, vector, view, vector, vector_view);
-    inspectable_stubs!(iterable, vector, view);
+    const OBSERVABLE_VTBL: ObservableVectorVtbl = ObservableVectorVtbl {
+        base: IInspectableVtbl {
+            base: windows_core::IUnknown_Vtbl {
+                QueryInterface: Self::qi_observable,
+                AddRef: Self::add_ref_observable,
+                Release: Self::release_observable,
+            },
+            get_iids: Self::get_iids_observable,
+            get_runtime_class_name: Self::get_runtime_class_name_observable,
+            get_trust_level: Self::get_trust_level_observable,
+        },
+        add_vector_changed: Self::add_vector_changed,
+        remove_vector_changed: Self::remove_vector_changed,
+    };
+
+    quad_vtable_com!(
+        iterable,
+        vector,
+        view,
+        observable,
+        vector,
+        vector_view,
+        observable_vector
+    );
+    inspectable_stubs!(iterable, vector, view, observable);
 
     // ------------------------------------------------------------------
     // IIterable<T>
@@ -204,21 +434,75 @@ impl SingleThreadedVector {
     unsafe extern "system" fn first(this: *mut c_void, result: *mut *mut c_void) -> HRESULT {
         let me = Self::from_iterable_ptr(this);
         let items = lock_or!(me.items, E_FAIL);
-        let snapshot = if me.is_value_type {
-            items.clone()
-        } else {
-            items
-                .iter()
-                .map(|&raw| com_to_usize(raw as *mut c_void))
-                .collect()
-        };
-        let iter = SingleThreadedIterator::create(
-            snapshot,
-            me.is_value_type,
-            me.elem_size,
-            me.iids.iterator,
-        );
+        let snapshot = items
+            .iter()
+            .map(|&raw| unsafe { clone_stored_item(me.storage, raw) })
+            .collect();
+        let iter = SingleThreadedIterator::create(snapshot, me.storage, me.iids.iterator);
         *result = iter.into_raw();
+        S_OK
+    }
+
+    // ------------------------------------------------------------------
+    // IObservableVector<T>
+    // ------------------------------------------------------------------
+
+    fn observable_ptr(&self) -> *mut c_void {
+        unsafe { (self as *const Self as *const *const c_void).add(3) as *mut c_void }
+    }
+
+    fn notify_changed(&self, collection_change: i32, index: u32) -> HRESULT {
+        let handlers: Vec<IUnknown> = match self.handlers.lock() {
+            Ok(handlers) => handlers.values().cloned().collect(),
+            Err(_) => return E_FAIL,
+        };
+        if handlers.is_empty() {
+            return S_OK;
+        }
+
+        let args = VectorChangedEventArgs::create(collection_change, index);
+        let sender = self.observable_ptr();
+        let mut first_error = S_OK;
+        for handler in handlers {
+            let function = unsafe {
+                let vtable = *(handler.as_raw() as *const *const *mut c_void);
+                *vtable.add(3)
+            };
+            let invoke: unsafe extern "system" fn(
+                *mut c_void,
+                *mut c_void,
+                *mut c_void,
+            ) -> HRESULT = unsafe { std::mem::transmute(function) };
+            let result = unsafe { invoke(handler.as_raw(), sender, args.as_raw()) };
+            if result.is_err() && first_error.is_ok() {
+                first_error = result;
+            }
+        }
+        first_error
+    }
+
+    unsafe extern "system" fn add_vector_changed(
+        this: *mut c_void,
+        handler: *mut c_void,
+        token: *mut i64,
+    ) -> HRESULT {
+        if handler.is_null() || token.is_null() {
+            return crate::com_helpers::E_POINTER;
+        }
+        let me = Self::from_observable_ptr(this);
+        let borrowed = match IUnknown::from_raw_borrowed(&handler) {
+            Some(handler) => handler,
+            None => return crate::com_helpers::E_POINTER,
+        };
+        let next = me.next_token.fetch_add(1, Ordering::Relaxed);
+        lock_or!(me.handlers, E_FAIL).insert(next, borrowed.clone());
+        *token = next;
+        S_OK
+    }
+
+    unsafe extern "system" fn remove_vector_changed(this: *mut c_void, token: i64) -> HRESULT {
+        let me = Self::from_observable_ptr(this);
+        lock_or!(me.handlers, E_FAIL).remove(&token);
         S_OK
     }
 
@@ -237,7 +521,7 @@ impl SingleThreadedVector {
             return E_BOUNDS;
         }
         let raw = items[index as usize];
-        write_item_out(me.is_value_type, me.elem_size, raw, result);
+        write_item_out(me.storage, raw, result);
         S_OK
     }
 
@@ -250,20 +534,11 @@ impl SingleThreadedVector {
     unsafe extern "system" fn get_view(this: *mut c_void, result: *mut *mut c_void) -> HRESULT {
         let me = Self::from_vector_ptr(this);
         let items = lock_or!(me.items, E_FAIL);
-        let snapshot = if me.is_value_type {
-            items.clone()
-        } else {
-            items
-                .iter()
-                .map(|&raw| com_to_usize(raw as *mut c_void))
-                .collect()
-        };
-        let view = SingleThreadedVectorView::create(
-            snapshot,
-            me.is_value_type,
-            me.elem_size,
-            me.iids.clone(),
-        );
+        let snapshot = items
+            .iter()
+            .map(|&raw| unsafe { clone_stored_item(me.storage, raw) })
+            .collect();
+        let view = SingleThreadedVectorView::create(snapshot, me.storage, me.iids.clone());
         // WinRT ABI: get_view must return an IVectorView pointer (second vtable),
         // not the identity/IIterable pointer (first vtable).
         let identity = view.into_raw();
@@ -281,7 +556,7 @@ impl SingleThreadedVector {
         let items = lock_or!(me.items, E_FAIL);
         let needle = value as usize;
         for (i, &item) in items.iter().enumerate() {
-            if item == needle {
+            if stored_items_equal(me.storage, item, needle) {
                 *index = i as u32;
                 *found = true;
                 return S_OK;
@@ -294,19 +569,16 @@ impl SingleThreadedVector {
 
     unsafe extern "system" fn set_at(this: *mut c_void, index: u32, value: *mut c_void) -> HRESULT {
         let me = Self::from_vector_ptr(this);
-        let mut items = lock_or!(me.items, E_FAIL);
-        if (index as usize) >= items.len() {
-            return E_BOUNDS;
+        {
+            let mut items = lock_or!(me.items, E_FAIL);
+            if (index as usize) >= items.len() {
+                return E_BOUNDS;
+            }
+            let old = items[index as usize];
+            items[index as usize] = store_abi_item(me.storage, value);
+            release_stored_item(me.storage, old);
         }
-        let old = items[index as usize];
-        items[index as usize] = if me.is_value_type {
-            value as usize
-        } else {
-            let new_val = com_to_usize(value);
-            com_usize_release(old);
-            new_val
-        };
-        S_OK
+        me.notify_changed(COLLECTION_CHANGE_ITEM_CHANGED, index)
     }
 
     unsafe extern "system" fn insert_at(
@@ -315,68 +587,67 @@ impl SingleThreadedVector {
         value: *mut c_void,
     ) -> HRESULT {
         let me = Self::from_vector_ptr(this);
-        let mut items = lock_or!(me.items, E_FAIL);
-        if (index as usize) > items.len() {
-            return E_BOUNDS;
+        {
+            let mut items = lock_or!(me.items, E_FAIL);
+            if (index as usize) > items.len() {
+                return E_BOUNDS;
+            }
+            let val = store_abi_item(me.storage, value);
+            items.insert(index as usize, val);
         }
-        let val = if me.is_value_type {
-            value as usize
-        } else {
-            com_to_usize(value)
-        };
-        items.insert(index as usize, val);
-        S_OK
+        me.notify_changed(COLLECTION_CHANGE_ITEM_INSERTED, index)
     }
 
     unsafe extern "system" fn remove_at(this: *mut c_void, index: u32) -> HRESULT {
         let me = Self::from_vector_ptr(this);
-        let mut items = lock_or!(me.items, E_FAIL);
-        if (index as usize) >= items.len() {
-            return E_BOUNDS;
-        }
-        let removed = items.remove(index as usize);
-        if !me.is_value_type {
-            com_usize_release(removed);
-        }
-        S_OK
+        let removed = {
+            let mut items = lock_or!(me.items, E_FAIL);
+            if (index as usize) >= items.len() {
+                return E_BOUNDS;
+            }
+            items.remove(index as usize)
+        };
+        release_stored_item(me.storage, removed);
+        me.notify_changed(COLLECTION_CHANGE_ITEM_REMOVED, index)
     }
 
     unsafe extern "system" fn append(this: *mut c_void, value: *mut c_void) -> HRESULT {
         let me = Self::from_vector_ptr(this);
-        let val = if me.is_value_type {
-            value as usize
-        } else {
-            com_to_usize(value)
+        let val = store_abi_item(me.storage, value);
+        let index = {
+            let mut items = lock_or!(me.items, E_FAIL);
+            let index = items.len() as u32;
+            items.push(val);
+            index
         };
-        lock_or!(me.items, E_FAIL).push(val);
-        S_OK
+        me.notify_changed(COLLECTION_CHANGE_ITEM_INSERTED, index)
     }
 
     unsafe extern "system" fn remove_at_end(this: *mut c_void) -> HRESULT {
         let me = Self::from_vector_ptr(this);
-        let mut items = lock_or!(me.items, E_FAIL);
-        if items.is_empty() {
-            return E_BOUNDS;
-        }
-        let removed = match items.pop() {
-            Some(v) => v,
-            None => return E_BOUNDS,
+        let (removed, index) = {
+            let mut items = lock_or!(me.items, E_FAIL);
+            if items.is_empty() {
+                return E_BOUNDS;
+            }
+            let index = (items.len() - 1) as u32;
+            let removed = match items.pop() {
+                Some(v) => v,
+                None => return E_BOUNDS,
+            };
+            (removed, index)
         };
-        if !me.is_value_type {
-            com_usize_release(removed);
-        }
-        S_OK
+        release_stored_item(me.storage, removed);
+        me.notify_changed(COLLECTION_CHANGE_ITEM_REMOVED, index)
     }
 
     unsafe extern "system" fn clear(this: *mut c_void) -> HRESULT {
         let me = Self::from_vector_ptr(this);
         let old_items: Vec<usize> = lock_or!(me.items, E_FAIL).drain(..).collect();
-        if !me.is_value_type {
-            for raw in old_items {
-                com_usize_release(raw);
-            }
+        for raw in old_items {
+            release_stored_item(me.storage, raw);
         }
-        S_OK
+        me.notify_changed(COLLECTION_CHANGE_RESET, 0)
     }
 
     unsafe extern "system" fn get_many(
@@ -396,7 +667,7 @@ impl SingleThreadedVector {
         let count = std::cmp::min(capacity as usize, items.len() - start);
         for i in 0..count {
             let raw = items[start + i];
-            write_item_out(me.is_value_type, me.elem_size, raw, items_out.add(i));
+            write_item_out(me.storage, raw, items_out.add(i));
         }
         *actual = count as u32;
         S_OK
@@ -409,22 +680,17 @@ impl SingleThreadedVector {
     ) -> HRESULT {
         let me = Self::from_vector_ptr(this);
         let old_items: Vec<usize> = lock_or!(me.items, E_FAIL).drain(..).collect();
-        if !me.is_value_type {
-            for raw in old_items {
-                com_usize_release(raw);
-            }
+        for raw in old_items {
+            release_stored_item(me.storage, raw);
         }
         let mut items = lock_or!(me.items, E_FAIL);
         for i in 0..count as usize {
             let raw = *values.add(i);
-            let val = if me.is_value_type {
-                raw as usize
-            } else {
-                com_to_usize(raw)
-            };
+            let val = store_abi_item(me.storage, raw);
             items.push(val);
         }
-        S_OK
+        drop(items);
+        me.notify_changed(COLLECTION_CHANGE_RESET, 0)
     }
 
     // ------------------------------------------------------------------
@@ -441,12 +707,7 @@ impl SingleThreadedVector {
         if (index as usize) >= items.len() {
             return E_BOUNDS;
         }
-        write_item_out(
-            me.is_value_type,
-            me.elem_size,
-            items[index as usize],
-            result,
-        );
+        write_item_out(me.storage, items[index as usize], result);
         S_OK
     }
 
@@ -466,7 +727,7 @@ impl SingleThreadedVector {
         let items = lock_or!(me.items, E_FAIL);
         let needle = value as usize;
         for (i, &item) in items.iter().enumerate() {
-            if item == needle {
+            if stored_items_equal(me.storage, item, needle) {
                 *index = i as u32;
                 *found = true;
                 return S_OK;
@@ -493,19 +754,24 @@ impl SingleThreadedVector {
         }
         let count = std::cmp::min(capacity as usize, items.len() - start);
         for i in 0..count {
-            write_item_out(
-                me.is_value_type,
-                me.elem_size,
-                items[start + i],
-                items_out.add(i),
-            );
+            write_item_out(me.storage, items[start + i], items_out.add(i));
         }
         *actual = count as u32;
         S_OK
     }
 }
 
-impl_drop_release_items!(SingleThreadedVector, lock);
+impl Drop for SingleThreadedVector {
+    fn drop(&mut self) {
+        if let Ok(items) = self.items.lock() {
+            for &raw in items.iter() {
+                unsafe {
+                    release_stored_item(self.storage, raw);
+                }
+            }
+        }
+    }
+}
 
 // ======================================================================
 // SingleThreadedVectorView
@@ -517,8 +783,7 @@ struct SingleThreadedVectorView {
     vtable_view: *const VectorViewVtbl,
     ref_count: windows_core::imp::RefCount,
     items: Vec<usize>,
-    is_value_type: bool,
-    elem_size: usize,
+    storage: CollectionStorage,
     iids: VectorIids,
 }
 
@@ -557,19 +822,13 @@ impl SingleThreadedVectorView {
         get_many: Self::get_many,
     };
 
-    fn create(
-        items: Vec<usize>,
-        is_value_type: bool,
-        elem_size: usize,
-        iids: VectorIids,
-    ) -> IUnknown {
+    fn create(items: Vec<usize>, storage: CollectionStorage, iids: VectorIids) -> IUnknown {
         let view = Box::new(Self {
             vtable_iterable: &Self::ITERABLE_VTBL,
             vtable_view: &Self::VIEW_VTBL,
             ref_count: windows_core::imp::RefCount::new(1),
             items,
-            is_value_type,
-            elem_size,
+            storage,
             iids,
         });
         unsafe { IUnknown::from_raw(Box::into_raw(view) as *mut c_void) }
@@ -582,20 +841,12 @@ impl SingleThreadedVectorView {
 
     unsafe extern "system" fn first(this: *mut c_void, result: *mut *mut c_void) -> HRESULT {
         let me = Self::from_iterable_ptr(this);
-        let snapshot = if me.is_value_type {
-            me.items.clone()
-        } else {
-            me.items
-                .iter()
-                .map(|&raw| com_to_usize(raw as *mut c_void))
-                .collect()
-        };
-        let iter = SingleThreadedIterator::create(
-            snapshot,
-            me.is_value_type,
-            me.elem_size,
-            me.iids.iterator,
-        );
+        let snapshot = me
+            .items
+            .iter()
+            .map(|&raw| unsafe { clone_stored_item(me.storage, raw) })
+            .collect();
+        let iter = SingleThreadedIterator::create(snapshot, me.storage, me.iids.iterator);
         *result = iter.into_raw();
         S_OK
     }
@@ -612,7 +863,7 @@ impl SingleThreadedVectorView {
             return E_BOUNDS;
         }
         let raw = me.items[index as usize];
-        write_item_out(me.is_value_type, me.elem_size, raw, result);
+        write_item_out(me.storage, raw, result);
         S_OK
     }
 
@@ -631,7 +882,7 @@ impl SingleThreadedVectorView {
         let me = Self::from_view_ptr(this);
         let needle = value as usize;
         for (i, &item) in me.items.iter().enumerate() {
-            if item == needle {
+            if stored_items_equal(me.storage, item, needle) {
                 *index = i as u32;
                 *found = true;
                 return S_OK;
@@ -658,14 +909,22 @@ impl SingleThreadedVectorView {
         let count = std::cmp::min(capacity as usize, me.items.len() - start);
         for i in 0..count {
             let raw = me.items[start + i];
-            write_item_out(me.is_value_type, me.elem_size, raw, items_out.add(i));
+            write_item_out(me.storage, raw, items_out.add(i));
         }
         *actual = count as u32;
         S_OK
     }
 }
 
-impl_drop_release_items!(SingleThreadedVectorView, direct);
+impl Drop for SingleThreadedVectorView {
+    fn drop(&mut self) {
+        for &raw in &self.items {
+            unsafe {
+                release_stored_item(self.storage, raw);
+            }
+        }
+    }
+}
 
 // ======================================================================
 // SingleThreadedIterator
@@ -676,8 +935,7 @@ pub(crate) struct SingleThreadedIterator {
     vtable: *const IteratorVtbl,
     ref_count: windows_core::imp::RefCount,
     items: Vec<usize>,
-    is_value_type: bool,
-    elem_size: usize,
+    storage: CollectionStorage,
     cursor: Mutex<usize>,
     iid_iterator: GUID,
 }
@@ -705,16 +963,14 @@ impl SingleThreadedIterator {
 
     pub(crate) fn create(
         items: Vec<usize>,
-        is_value_type: bool,
-        elem_size: usize,
+        storage: CollectionStorage,
         iid_iterator: GUID,
     ) -> IUnknown {
         let iter = Box::new(Self {
             vtable: &Self::VTBL,
             ref_count: windows_core::imp::RefCount::new(1),
             items,
-            is_value_type,
-            elem_size,
+            storage,
             cursor: Mutex::new(0),
             iid_iterator,
         });
@@ -731,7 +987,7 @@ impl SingleThreadedIterator {
             return E_BOUNDS;
         }
         let raw = me.items[cursor];
-        write_item_out(me.is_value_type, me.elem_size, raw, result);
+        write_item_out(me.storage, raw, result);
         S_OK
     }
 
@@ -763,7 +1019,7 @@ impl SingleThreadedIterator {
         let count = std::cmp::min(capacity as usize, remaining);
         for i in 0..count {
             let raw = me.items[*cursor + i];
-            write_item_out(me.is_value_type, me.elem_size, raw, items_out.add(i));
+            write_item_out(me.storage, raw, items_out.add(i));
         }
         *cursor += count;
         *actual = count as u32;
@@ -771,7 +1027,15 @@ impl SingleThreadedIterator {
     }
 }
 
-impl_drop_release_items!(SingleThreadedIterator, direct);
+impl Drop for SingleThreadedIterator {
+    fn drop(&mut self) {
+        for &raw in &self.items {
+            unsafe {
+                release_stored_item(self.storage, raw);
+            }
+        }
+    }
+}
 
 // ======================================================================
 // Public API
@@ -783,48 +1047,110 @@ impl_drop_release_items!(SingleThreadedIterator, direct);
 /// and value types (structs ≤ pointer size → raw bytes, no refcounting).
 pub fn create_vector_from_values(
     items: &[crate::WinRTValue],
-    is_value_type: bool,
-    elem_size: usize,
+    element_type: &crate::TypeHandle,
     iids: VectorIids,
-) -> IUnknown {
-    let packed = if is_value_type {
-        if !items.is_empty() {
-            assert!(
-                elem_size <= std::mem::size_of::<usize>(),
-                "create_vector: struct elem_size {} exceeds pointer size; not yet supported",
-                elem_size
-            );
-        }
-        items
-            .iter()
-            .map(|item| {
-                let data = item
-                    .as_struct()
-                    .expect("struct-typed vector requires Struct values");
-                let mut val: usize = 0;
-                unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        data.as_ptr(),
-                        &mut val as *mut usize as *mut u8,
-                        elem_size.min(std::mem::size_of::<usize>()),
-                    );
-                }
-                val
-            })
-            .collect()
+) -> crate::Result<IUnknown> {
+    let storage = collection_storage(element_type)?;
+    for item in items {
+        validate_collection_item(item, storage)?;
+    }
+    let packed = items
+        .iter()
+        .map(|item| pack_validated_collection_item(item, storage))
+        .collect();
+    Ok(new_vector(packed, storage, iids))
+}
+
+pub(crate) fn validate_collection_item(
+    item: &crate::WinRTValue,
+    storage: CollectionStorage,
+) -> crate::Result<()> {
+    let valid = if storage.is_hstring {
+        matches!(item, crate::WinRTValue::HString(_))
+    } else if !storage.is_value_type {
+        matches!(
+            item,
+            crate::WinRTValue::Object(_) | crate::WinRTValue::Async(_) | crate::WinRTValue::Null
+        )
     } else {
-        items
-            .iter()
-            .map(|item| {
-                let obj = item
-                    .as_object()
-                    .expect("reference-typed vector requires Object values");
-                let raw = obj.as_raw() as usize;
-                unsafe { com_to_usize(raw as *mut c_void) }
-            })
-            .collect()
+        matches!(
+            item,
+            crate::WinRTValue::Bool(_)
+                | crate::WinRTValue::I8(_)
+                | crate::WinRTValue::U8(_)
+                | crate::WinRTValue::I16(_)
+                | crate::WinRTValue::U16(_)
+                | crate::WinRTValue::I32(_)
+                | crate::WinRTValue::U32(_)
+                | crate::WinRTValue::I64(_)
+                | crate::WinRTValue::U64(_)
+                | crate::WinRTValue::Enum { .. }
+                | crate::WinRTValue::HResult(_)
+                | crate::WinRTValue::Struct(_)
+        )
     };
-    new_vector(packed, is_value_type, elem_size, iids)
+    if valid {
+        Ok(())
+    } else {
+        let expected = if storage.is_hstring {
+            "HSTRING"
+        } else if storage.is_value_type {
+            "a pointer-sized scalar or struct"
+        } else {
+            "a COM object or null"
+        };
+        Err(crate::Error::InvalidCollectionValue(expected))
+    }
+}
+
+pub(crate) fn pack_validated_collection_item(
+    item: &crate::WinRTValue,
+    storage: CollectionStorage,
+) -> usize {
+    if storage.is_hstring {
+        return match item {
+            crate::WinRTValue::HString(value) => {
+                let cloned: *mut c_void = unsafe { std::mem::transmute(value.clone()) };
+                cloned as usize
+            }
+            _ => unreachable!("collection item was validated"),
+        };
+    }
+    if !storage.is_value_type {
+        return match item {
+            crate::WinRTValue::Null => 0,
+            _ => {
+                let object = item.as_object().expect("collection item was validated");
+                unsafe { com_to_usize(object.as_raw()) }
+            }
+        };
+    }
+
+    match item {
+        crate::WinRTValue::Bool(value) => usize::from(*value),
+        crate::WinRTValue::I8(value) => *value as usize,
+        crate::WinRTValue::U8(value) => *value as usize,
+        crate::WinRTValue::I16(value) => *value as usize,
+        crate::WinRTValue::U16(value) => *value as usize,
+        crate::WinRTValue::I32(value) => *value as usize,
+        crate::WinRTValue::U32(value) => *value as usize,
+        crate::WinRTValue::I64(value) => *value as usize,
+        crate::WinRTValue::U64(value) => *value as usize,
+        crate::WinRTValue::Enum { value, .. } => *value as usize,
+        crate::WinRTValue::HResult(value) => value.0 as usize,
+        crate::WinRTValue::Struct(data) => {
+            let mut value = 0usize;
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    data.as_ptr(),
+                    &mut value as *mut usize as *mut u8,
+                    storage.elem_size,
+                );
+            }
+            value
+        }
+        _ => unreachable!("collection item was validated"),
+    }
 }
 
 /// Create an IVector<T> COM object from a Vec of IUnknown items (reference types).
@@ -833,7 +1159,15 @@ pub fn create_vector(items: Vec<IUnknown>, iids: VectorIids) -> IUnknown {
         .into_iter()
         .map(|obj| obj.into_raw() as usize)
         .collect();
-    new_vector(raw_items, false, std::mem::size_of::<*mut c_void>(), iids)
+    new_vector(
+        raw_items,
+        CollectionStorage {
+            is_value_type: false,
+            is_hstring: false,
+            elem_size: std::mem::size_of::<*mut c_void>(),
+        },
+        iids,
+    )
 }
 
 /// Create an IVector<T> COM object for value types (structs ≤ pointer size).
@@ -859,23 +1193,28 @@ pub fn create_value_vector(items: Vec<Vec<u8>>, elem_size: usize, iids: VectorIi
             val
         })
         .collect();
-    new_vector(packed, true, elem_size, iids)
+    new_vector(
+        packed,
+        CollectionStorage {
+            is_value_type: true,
+            is_hstring: false,
+            elem_size,
+        },
+        iids,
+    )
 }
 
-fn new_vector(
-    items: Vec<usize>,
-    is_value_type: bool,
-    elem_size: usize,
-    iids: VectorIids,
-) -> IUnknown {
+fn new_vector(items: Vec<usize>, storage: CollectionStorage, iids: VectorIids) -> IUnknown {
     let vector = Box::new(SingleThreadedVector {
         vtable_iterable: &SingleThreadedVector::ITERABLE_VTBL,
         vtable_vector: &SingleThreadedVector::VECTOR_VTBL,
         vtable_view: &SingleThreadedVector::VIEW_VTBL,
+        vtable_observable: &SingleThreadedVector::OBSERVABLE_VTBL,
         ref_count: windows_core::imp::RefCount::new(1),
         items: Mutex::new(items),
-        is_value_type,
-        elem_size,
+        handlers: Mutex::new(HashMap::new()),
+        next_token: AtomicI64::new(1),
+        storage,
         iids,
     });
     unsafe { IUnknown::from_raw(Box::into_raw(vector) as *mut c_void) }
@@ -957,7 +1296,249 @@ mod tests {
     }
 
     #[test]
+    fn test_observable_vector_notifications() {
+        use std::sync::Arc;
+
+        use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize};
+
+        let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
+        let table = MetadataTable::new();
+        let object_type = table.object();
+        let iids = table.vector_iids(&object_type);
+        let vector = create_vector(Vec::new(), iids.clone());
+        let changes = Arc::new(Mutex::new(Vec::<(i32, u32)>::new()));
+        let callback_changes = changes.clone();
+        let args_type = table.interface(IID_IVECTOR_CHANGED_EVENT_ARGS);
+        let handler = crate::delegate::create_delegate(
+            iids.vector_changed_handler,
+            vec![table.object(), args_type],
+            Box::new(move |args| {
+                let event_args = args[1].as_object().unwrap();
+                let mut raw_args = std::ptr::null_mut();
+                unsafe {
+                    event_args
+                        .query(&IID_IVECTOR_CHANGED_EVENT_ARGS, &mut raw_args)
+                        .ok()
+                        .unwrap();
+                }
+                let args_object = unsafe { IUnknown::from_raw(raw_args) };
+                let vtable =
+                    unsafe { *(args_object.as_raw() as *const *const VectorChangedEventArgsVtbl) };
+                let mut change = -1;
+                let mut index = u32::MAX;
+                assert_eq!(
+                    unsafe { ((*vtable).get_collection_change)(args_object.as_raw(), &mut change) },
+                    S_OK,
+                );
+                assert_eq!(
+                    unsafe { ((*vtable).get_index)(args_object.as_raw(), &mut index,) },
+                    S_OK,
+                );
+                callback_changes.lock().unwrap().push((change, index));
+                S_OK
+            }),
+        );
+
+        let mut observable_ptr = std::ptr::null_mut();
+        unsafe {
+            vector
+                .query(&iids.observable_vector, &mut observable_ptr)
+                .ok()
+                .unwrap();
+        }
+        let observable = unsafe { IUnknown::from_raw(observable_ptr) };
+        let observable_vtable =
+            unsafe { *(observable.as_raw() as *const *const ObservableVectorVtbl) };
+        let mut token = 0i64;
+        assert_eq!(
+            unsafe {
+                ((*observable_vtable).add_vector_changed)(
+                    observable.as_raw(),
+                    handler.as_raw(),
+                    &mut token,
+                )
+            },
+            S_OK,
+        );
+
+        let mut vector_ptr = std::ptr::null_mut();
+        unsafe {
+            vector.query(&iids.vector, &mut vector_ptr).ok().unwrap();
+        }
+        let mutable = unsafe { IUnknown::from_raw(vector_ptr) };
+        let vector_vtable = unsafe { *(mutable.as_raw() as *const *const VectorVtbl) };
+        let uri = |suffix: &str| {
+            windows::Foundation::Uri::CreateUri(&windows_core::HSTRING::from(format!(
+                "https://example.com/{suffix}",
+            )))
+            .unwrap()
+            .cast::<IUnknown>()
+            .unwrap()
+        };
+        let first = uri("first");
+        let second = uri("second");
+        let inserted = uri("inserted");
+
+        assert_eq!(
+            unsafe { ((*vector_vtable).append)(mutable.as_raw(), first.as_raw(),) },
+            S_OK,
+        );
+        assert_eq!(
+            unsafe { ((*vector_vtable).set_at)(mutable.as_raw(), 0, second.as_raw(),) },
+            S_OK,
+        );
+        assert_eq!(
+            unsafe { ((*vector_vtable).insert_at)(mutable.as_raw(), 0, inserted.as_raw(),) },
+            S_OK,
+        );
+        assert_eq!(
+            unsafe { ((*vector_vtable).remove_at)(mutable.as_raw(), 1,) },
+            S_OK,
+        );
+        assert_eq!(unsafe { ((*vector_vtable).clear)(mutable.as_raw()) }, S_OK,);
+
+        assert_eq!(
+            changes.lock().unwrap().as_slice(),
+            [
+                (COLLECTION_CHANGE_ITEM_INSERTED, 0),
+                (COLLECTION_CHANGE_ITEM_CHANGED, 0),
+                (COLLECTION_CHANGE_ITEM_INSERTED, 0),
+                (COLLECTION_CHANGE_ITEM_REMOVED, 1),
+                (COLLECTION_CHANGE_RESET, 0),
+            ],
+        );
+
+        assert_eq!(
+            unsafe { ((*observable_vtable).remove_vector_changed)(observable.as_raw(), token,) },
+            S_OK,
+        );
+        let after_remove = uri("after-remove");
+        assert_eq!(
+            unsafe { ((*vector_vtable).append)(mutable.as_raw(), after_remove.as_raw(),) },
+            S_OK,
+        );
+        assert_eq!(changes.lock().unwrap().len(), 5);
+    }
+
+    #[test]
+    fn test_observable_vector_allows_reentrant_unsubscribe_and_mutation() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicI64, AtomicUsize, Ordering},
+        };
+
+        use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize};
+
+        let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
+        let table = MetadataTable::new();
+        let iids = table.vector_iids(&table.object());
+        let vector = create_vector(Vec::new(), iids.clone());
+        let mut observable_ptr = std::ptr::null_mut();
+        let mut vector_ptr = std::ptr::null_mut();
+        unsafe {
+            vector
+                .query(&iids.observable_vector, &mut observable_ptr)
+                .ok()
+                .unwrap();
+            vector.query(&iids.vector, &mut vector_ptr).ok().unwrap();
+        }
+        let observable = unsafe { IUnknown::from_raw(observable_ptr) };
+        let mutable = unsafe { IUnknown::from_raw(vector_ptr) };
+        let observable_raw = observable.as_raw() as usize;
+        let vector_raw = mutable.as_raw() as usize;
+        let token = Arc::new(AtomicI64::new(0));
+        let callback_token = token.clone();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let callback_calls = calls.clone();
+        let reentrant_item =
+            windows::Foundation::Uri::CreateUri(windows_core::h!("https://example.com/reentrant"))
+                .unwrap()
+                .cast::<IUnknown>()
+                .unwrap();
+        let reentrant_raw = reentrant_item.as_raw() as usize;
+        let handler = crate::delegate::create_delegate(
+            iids.vector_changed_handler,
+            vec![
+                table.object(),
+                table.interface(IID_IVECTOR_CHANGED_EVENT_ARGS),
+            ],
+            Box::new(move |_args| {
+                callback_calls.fetch_add(1, Ordering::SeqCst);
+                let observable_ptr = observable_raw as *mut c_void;
+                let observable_vtable =
+                    unsafe { *(observable_ptr as *const *const ObservableVectorVtbl) };
+                assert_eq!(
+                    unsafe {
+                        ((*observable_vtable).remove_vector_changed)(
+                            observable_ptr,
+                            callback_token.load(Ordering::SeqCst),
+                        )
+                    },
+                    S_OK,
+                );
+
+                let vector_ptr = vector_raw as *mut c_void;
+                let vector_vtable = unsafe { *(vector_ptr as *const *const VectorVtbl) };
+                assert_eq!(
+                    unsafe { ((*vector_vtable).append)(vector_ptr, reentrant_raw as *mut c_void,) },
+                    S_OK,
+                );
+                S_OK
+            }),
+        );
+        let observable_vtable =
+            unsafe { *(observable.as_raw() as *const *const ObservableVectorVtbl) };
+        let mut raw_token = 0i64;
+        assert_eq!(
+            unsafe {
+                ((*observable_vtable).add_vector_changed)(
+                    observable.as_raw(),
+                    handler.as_raw(),
+                    &mut raw_token,
+                )
+            },
+            S_OK,
+        );
+        token.store(raw_token, Ordering::SeqCst);
+
+        let initial =
+            windows::Foundation::Uri::CreateUri(windows_core::h!("https://example.com/initial"))
+                .unwrap()
+                .cast::<IUnknown>()
+                .unwrap();
+        let vector_vtable = unsafe { *(mutable.as_raw() as *const *const VectorVtbl) };
+        assert_eq!(
+            unsafe { ((*vector_vtable).append)(mutable.as_raw(), initial.as_raw(),) },
+            S_OK,
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        let mut size = 0u32;
+        assert_eq!(
+            unsafe { ((*vector_vtable).get_size)(mutable.as_raw(), &mut size,) },
+            S_OK,
+        );
+        assert_eq!(size, 2);
+    }
+
+    #[test]
+    fn test_invalid_collection_value_returns_error() {
+        let table = MetadataTable::new();
+        let element_type = table.hstring();
+        let iids = table.vector_iids(&element_type);
+        let result = create_vector_from_values(&[crate::WinRTValue::I32(1)], &element_type, iids);
+
+        assert!(matches!(
+            result,
+            Err(crate::Error::InvalidCollectionValue("HSTRING"))
+        ));
+    }
+
+    #[test]
     fn test_vector_iid_computation() {
+        use windows::Foundation::Collections::{IObservableVector, VectorChangedEventHandler};
+        use windows_core::HSTRING;
+
         let table = MetadataTable::new();
 
         // IVector<String> IID should match the known PIID computation
@@ -967,6 +1548,13 @@ mod tests {
         assert_ne!(iids.iterable, GUID::zeroed());
         assert_ne!(iids.vector, GUID::zeroed());
         assert_ne!(iids.vector_view, GUID::zeroed());
+        assert_ne!(iids.observable_vector, GUID::zeroed());
+        assert_ne!(iids.vector_changed_handler, GUID::zeroed());
+        assert_eq!(iids.observable_vector, IObservableVector::<HSTRING>::IID,);
+        assert_eq!(
+            iids.vector_changed_handler,
+            VectorChangedEventHandler::<HSTRING>::IID,
+        );
         assert_ne!(iids.iterator, GUID::zeroed());
 
         // All should be different from each other

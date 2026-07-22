@@ -4,12 +4,17 @@
 //! Python struct projection helpers.
 
 use super::*;
+use crate::codegen::python::native_types::{FoundationType, foundation_type};
 
 // ======================================================================
 // Struct helpers: Python dataclass-style + _unpack/_pack functions
 // ======================================================================
 
 pub(super) fn generate_struct_helpers(s: &TypeMeta) -> String {
+    if let Some(kind) = foundation_type(s) {
+        return generate_foundation_struct_helpers(s, kind);
+    }
+
     let (namespace, name, fields) = match s {
         TypeMeta::Struct {
             namespace,
@@ -99,6 +104,48 @@ pub(super) fn generate_struct_helpers(s: &TypeMeta) -> String {
     out
 }
 
+fn generate_foundation_struct_helpers(s: &TypeMeta, kind: FoundationType) -> String {
+    let TypeMeta::Struct {
+        namespace,
+        name,
+        fields,
+    } = s
+    else {
+        unreachable!()
+    };
+    let snake_name = to_snake_case(name);
+    let native_type = match kind {
+        FoundationType::DateTime => "datetime",
+        FoundationType::TimeSpan => "timedelta",
+    };
+    let from_ticks = match kind {
+        FoundationType::DateTime => "_dynwinrt_ticks_to_datetime",
+        FoundationType::TimeSpan => "_dynwinrt_ticks_to_timedelta",
+    };
+    let to_ticks = match kind {
+        FoundationType::DateTime => "_dynwinrt_datetime_to_ticks",
+        FoundationType::TimeSpan => "_dynwinrt_timedelta_to_ticks",
+    };
+    let field_types = fields
+        .iter()
+        .map(|field| py_dynwinrt_type(&field.typ))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "\ndef unpack_{snake_name}(v: DynWinRTValue) -> {native_type}:\n\
+         \x20   return {from_ticks}(v.as_struct().get_i64(0))\n\
+         _unpack_{snake_name} = unpack_{snake_name}\n\
+         {name}_TYPE = DynWinRTType.struct_type('{namespace}.{name}', [{field_types}])\n\
+         _{name}_TYPE = {name}_TYPE\n\
+         \n\
+         def pack_{snake_name}(v: {native_type}) -> DynWinRTStruct:\n\
+         \x20   s = DynWinRTStruct.create({name}_TYPE)\n\
+         \x20   s.set_i64(0, {to_ticks}(v))\n\
+         \x20   return s\n\
+         _pack_{snake_name} = pack_{snake_name}\n"
+    )
+}
+
 /// Python default value for struct field initialization.
 pub(super) fn py_default_value(typ: &TypeMeta) -> String {
     match typ {
@@ -107,15 +154,15 @@ pub(super) fn py_default_value(typ: &TypeMeta) -> String {
         | TypeMeta::U8
         | TypeMeta::I16
         | TypeMeta::U16
-        | TypeMeta::Char16
         | TypeMeta::I32
         | TypeMeta::U32
         | TypeMeta::I64
         | TypeMeta::U64
         | TypeMeta::Enum { .. } => "0".to_string(),
+        TypeMeta::Char16 => "'\\0'".to_string(),
         TypeMeta::F32 | TypeMeta::F64 => "0.0".to_string(),
         TypeMeta::String => "''".to_string(),
-        TypeMeta::Guid => "''".to_string(),
+        TypeMeta::Guid => "UUID(int=0)".to_string(),
         _ => "None".to_string(),
     }
 }

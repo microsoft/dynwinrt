@@ -81,6 +81,7 @@ pub enum TypeMeta {
         name: String,
         underlying: Box<TypeMeta>,
         members: Vec<EnumMember>,
+        is_flags: bool,
         /// XML doc summary for the enum itself (populated from sibling .xml).
         doc: Option<String>,
         /// Deprecation text if marked `[Deprecated(...)]`.
