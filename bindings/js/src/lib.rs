@@ -858,11 +858,37 @@ impl DynWinRTValue {
     Ok(BigInt::from(bits as u64))
   }
 
+  /// Decode an I64 value as a JS BigInt without truncating through Number.
+  #[napi(js_name = "toI64BigInt")]
+  pub fn to_i64_bigint(&self) -> napi::Result<BigInt> {
+    match &self.0 {
+      dynwinrt::WinRTValue::I64(v) => Ok(BigInt::from(*v)),
+      _ => Err(napi::Error::from_reason(format!(
+        "toI64BigInt: not an I64 value ({:?})",
+        self.0.get_type_kind()
+      ))),
+    }
+  }
+
+  /// Decode a U64 value as a JS BigInt without truncating through Number.
+  #[napi(js_name = "toU64BigInt")]
+  pub fn to_u64_bigint(&self) -> napi::Result<BigInt> {
+    match &self.0 {
+      dynwinrt::WinRTValue::U64(v) => Ok(BigInt::from(*v)),
+      _ => Err(napi::Error::from_reason(format!(
+        "toU64BigInt: not a U64 value ({:?})",
+        self.0.get_type_kind()
+      ))),
+    }
+  }
+
   /// Invoke a flat Win32 export via `LoadLibraryW` + `GetProcAddress` + libffi.
-  /// `retKind` selects the return marshalling: `'I32' | 'U32' | 'Ptr'`.
+  /// `retKind` selects the return marshalling:
+  /// `'Void' | 'I32' | 'U32' | 'I64' | 'U64' | 'F32' | 'F64' | 'Ptr'`.
   ///
   /// `args` may contain: `DynWinRtValue.i32(...)`, `DynWinRtValue.u32(...)`,
-  /// `DynWinRtValue.i64(...)`, `DynWinRtValue.u64(...)`, or
+  /// `DynWinRtValue.i64(...)`, `DynWinRtValue.u64(...)`,
+  /// `DynWinRtValue.f32(...)`, `DynWinRtValue.f64(...)`, or
   /// `DynWinRtValue.pointer(...)`. Other kinds cause a runtime error.
   ///
   /// ## DLL loading (SECURITY)
@@ -922,13 +948,18 @@ impl DynWinRTValue {
     ret_kind: String,
     args: Vec<&DynWinRTValue>,
   ) -> napi::Result<DynWinRTValue> {
-    let ret = match ret_kind.as_str() {
-      "I32" | "i32" => dynwinrt::flat_call::FlatReturnKind::I32,
-      "U32" | "u32" => dynwinrt::flat_call::FlatReturnKind::U32,
-      "Ptr" | "ptr" | "Pointer" | "pointer" => dynwinrt::flat_call::FlatReturnKind::Ptr,
+    let ret = match ret_kind.to_ascii_lowercase().as_str() {
+      "void" => dynwinrt::flat_call::FlatReturnKind::Void,
+      "i32" => dynwinrt::flat_call::FlatReturnKind::I32,
+      "u32" => dynwinrt::flat_call::FlatReturnKind::U32,
+      "i64" => dynwinrt::flat_call::FlatReturnKind::I64,
+      "u64" => dynwinrt::flat_call::FlatReturnKind::U64,
+      "f32" => dynwinrt::flat_call::FlatReturnKind::F32,
+      "f64" => dynwinrt::flat_call::FlatReturnKind::F64,
+      "ptr" | "pointer" => dynwinrt::flat_call::FlatReturnKind::Ptr,
       other => {
         return Err(napi::Error::from_reason(format!(
-          "flatInvoke: unsupported return kind '{}' (expected 'I32', 'U32', or 'Ptr')",
+          "flatInvoke: unsupported return kind '{}' (expected 'Void', 'I32', 'U32', 'I64', 'U64', 'F32', 'F64', or 'Ptr')",
           other
         )));
       }

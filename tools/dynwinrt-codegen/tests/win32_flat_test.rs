@@ -70,6 +70,7 @@ fn parse_reg_open_key_ex_w() {
         eprintln!("Skipping: Win32 winmd not available");
         return;
     }
+
     let apis = meta::parse_flat_apis(WIN32_WINMD, REGISTRY_NS, "Apis").unwrap();
     let m = apis
         .methods
@@ -129,10 +130,38 @@ fn parse_reg_open_key_ex_w() {
         },
         other => panic!("phkResult must be PtrTo(HKEY): {:?}", other),
     }
+
     assert_eq!(
         phk.direction,
         FlatDirection::Out,
         "phkResult must be [out]"
+    );
+}
+
+#[test]
+fn parse_get_proc_address_return_is_pointer() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+    let apis = meta::parse_flat_apis(WIN32_WINMD, "Windows.Win32.System.LibraryLoader", "Apis")
+        .expect("LibraryLoader Apis should parse");
+    let m = apis
+        .methods
+        .iter()
+        .find(|m| m.name == "GetProcAddress")
+        .expect("GetProcAddress must be discovered");
+    assert_eq!(m.return_type, FlatAbiType::Ptr);
+    let out = flat::generate_flat_apis_files(&synth_apis(vec![m.clone()]));
+    assert!(
+        out.js.contains("'GetProcAddress', 'Ptr'"),
+        "GetProcAddress must use Ptr retKind:\n{}",
+        out.js
+    );
+    assert!(
+        out.js.contains("_ret.asPointerBigint()"),
+        "GetProcAddress must decode pointer returns as BigInt:\n{}",
+        out.js
     );
 }
 
@@ -490,9 +519,8 @@ fn synth_apis(methods: Vec<FlatMethodMeta>) -> FlatApisMeta {
     }
 }
 
-/// A flat export returning I64 (e.g. `GetTickCount64`) must NOT be emitted as
-/// an I32-returning wrapper (which would silently truncate to 32 bits). It
-/// must be skipped from the generated .js and .d.ts entirely.
+/// A flat export returning I64/U64 must be emitted with an explicit 64-bit
+/// retKind and decoded as BigInt, never through the truncating number path.
 #[test]
 fn flat_skips_i64_return_instead_of_silently_truncating() {
     let apis = synth_apis(vec![
@@ -501,32 +529,37 @@ fn flat_skips_i64_return_instead_of_silently_truncating() {
         synth_method("GetLargeCounter", FlatAbiType::I64),
     ]);
     let out = flat::generate_flat_apis_files(&apis);
-    // Kept:
+    assert!(out.js.contains("export function goodStatus"));
     assert!(
-        out.js.contains("export function goodStatus"),
-        ".js must still include the supported method:\n{}",
-        out.js
-    );
-    // Skipped:
-    assert!(
-        !out.js.contains("getTickCount64"),
-        ".js must NOT include the U64-returning export (would truncate):\n{}",
+        out.js.contains("flatInvoke('FAKE.dll', 'GetTickCount64', 'U64'"),
+        ".js must invoke U64 returns with retKind U64:\n{}",
         out.js
     );
     assert!(
-        !out.js.contains("getLargeCounter"),
-        ".js must NOT include the I64-returning export (would truncate):\n{}",
+        out.js.contains("_ret.toU64BigInt()"),
+        ".js must decode U64 returns with toU64BigInt():\n{}",
         out.js
     );
     assert!(
-        !out.dts.contains("getTickCount64") && !out.dts.contains("getLargeCounter"),
-        ".d.ts must NOT declare skipped exports:\n{}",
+        out.js.contains("flatInvoke('FAKE.dll', 'GetLargeCounter', 'I64'"),
+        ".js must invoke I64 returns with retKind I64:\n{}",
+        out.js
+    );
+    assert!(
+        out.js.contains("_ret.toI64BigInt()"),
+        ".js must decode I64 returns with toI64BigInt():\n{}",
+        out.js
+    );
+    assert!(
+        out.dts.contains("getTickCount64(arg: number): { readonly result: bigint }")
+            && out.dts.contains("getLargeCounter(arg: number): { readonly result: bigint }"),
+        ".d.ts must declare I64/U64 returns as bigint:\n{}",
         out.dts
     );
 }
 
-/// A flat export returning F32 or F64 must be skipped for the same reason —
-/// the current flatInvoke ABI has no float return kind.
+/// A flat export returning F32/F64 must be emitted with explicit float
+/// retKinds and decoded as JS numbers via toF64().
 #[test]
 fn flat_skips_float_return_instead_of_silently_mismarshalling() {
     let apis = synth_apis(vec![
@@ -537,9 +570,80 @@ fn flat_skips_float_return_instead_of_silently_mismarshalling() {
     let out = flat::generate_flat_apis_files(&apis);
     assert!(out.js.contains("export function ok"));
     assert!(
-        !out.js.contains("floatFn") && !out.js.contains("doubleFn"),
-        ".js must NOT include F32/F64-returning exports:\n{}",
+        out.js.contains("flatInvoke('FAKE.dll', 'FloatFn', 'F32'"),
+        ".js must invoke F32 returns with retKind F32:\n{}",
         out.js
+    );
+    assert!(
+        out.js.contains("flatInvoke('FAKE.dll', 'DoubleFn', 'F64'"),
+        ".js must invoke F64 returns with retKind F64:\n{}",
+        out.js
+    );
+    assert!(
+        out.js.matches("_ret.toF64()").count() >= 2,
+        ".js must decode F32/F64 returns with toF64():\n{}",
+        out.js
+    );
+    assert!(
+        out.dts.contains("floatFn(arg: number): { readonly result: number }")
+            && out.dts.contains("doubleFn(arg: number): { readonly result: number }"),
+        ".d.ts must declare F32/F64 returns as number:\n{}",
+        out.dts
+    );
+}
+
+/// Unknown return types must be skipped instead of falling back to I32.
+#[test]
+fn flat_skips_unknown_return_instead_of_silently_truncating() {
+    let apis = synth_apis(vec![
+        synth_method("Ok", FlatAbiType::I32),
+        synth_method("Mystery", FlatAbiType::Unknown),
+    ]);
+    let out = flat::generate_flat_apis_files(&apis);
+    assert!(out.js.contains("export function ok"));
+    assert!(
+        !out.js.contains("mystery") && !out.dts.contains("mystery"),
+        "Unknown-returning export must be skipped, not emitted with I32 fallback:\n{}\n{}",
+        out.js,
+        out.dts
+    );
+}
+
+#[test]
+fn flat_emits_void_return_without_result_field() {
+    let apis = synth_apis(vec![
+        synth_method("NoOuts", FlatAbiType::Void),
+        FlatMethodMeta {
+            name: "WithOut".into(),
+            dll: "FAKE.dll".into(),
+            entry_point: "WithOut".into(),
+            return_type: FlatAbiType::Void,
+            params: vec![FlatParamMeta {
+                name: "value".into(),
+                abi: FlatAbiType::PtrTo(Box::new(FlatAbiType::U32)),
+                direction: FlatDirection::Out,
+            }],
+            return_is_status: false,
+        },
+    ]);
+    let out = flat::generate_flat_apis_files(&apis);
+    assert!(
+        out.js.contains("flatInvoke('FAKE.dll', 'NoOuts', 'Void'")
+            && out.js.contains("return undefined;"),
+        "void/no-out export must use Void retKind and return undefined:\n{}",
+        out.js
+    );
+    assert!(
+        out.js.contains("flatInvoke('FAKE.dll', 'WithOut', 'Void'")
+            && out.js.contains("value: _valueSlot.readUInt32LE(0)"),
+        "void/out export must omit result and project out params:\n{}",
+        out.js
+    );
+    assert!(
+        out.dts.contains("noOuts(arg: number): void")
+            && out.dts.contains("withOut(): { readonly value: number }"),
+        ".d.ts must model void returns without result fields:\n{}",
+        out.dts
     );
 }
 
@@ -795,4 +899,3 @@ fn flat_fails_loud_on_simple_name_enum_collision() {
     // Should panic before returning FlatGeneratedOutput.
     let _ = flat::generate_flat_apis_files(&apis);
 }
-

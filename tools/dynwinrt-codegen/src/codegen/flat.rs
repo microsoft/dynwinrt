@@ -47,10 +47,9 @@ pub struct FlatGeneratedOutput {
 
 pub fn generate_flat_apis_files(meta: &FlatApisMeta) -> FlatGeneratedOutput {
     // Fail-loud filter: methods whose return type isn't representable by the
-    // current `flatInvoke` ABI (I64/U64/F32/F64) MUST be skipped rather than
-    // silently emitted as a truncating I32 read. Print a per-skip warning so
-    // the operator sees what was omitted and why. When the underlying ABI
-    // gains support for these return kinds this filter should be relaxed.
+    // current `flatInvoke` ABI MUST be skipped rather than silently emitted as
+    // a truncating I32 read. Print a per-skip warning so the operator sees
+    // what was omitted and why.
     let (kept, skipped) = partition_supported_methods(&meta.methods);
     for (name, reason) in &skipped {
         eprintln!(
@@ -136,28 +135,25 @@ fn partition_supported_methods(
 /// representable and the method can be emitted.
 fn unsupported_return_reason(t: &FlatAbiType) -> Option<&'static str> {
     match t {
-        FlatAbiType::I64 | FlatAbiType::U64 => Some(
-            "return type is 64-bit integer; the current flatInvoke ABI has \
-             no I64/U64 return kind (would silently truncate to I32).",
+        FlatAbiType::Enum { underlying, .. }
+            if !matches!(
+                **underlying,
+                FlatAbiType::I8
+                    | FlatAbiType::U8
+                    | FlatAbiType::I16
+                    | FlatAbiType::U16
+                    | FlatAbiType::I32
+                    | FlatAbiType::U32
+            ) =>
+        {
+            Some(
+                "enum return type has no supported JS enum return projection for its \
+                 underlying ABI; refusing to emit an unsafe fallback.",
+            )
+        }
+        FlatAbiType::Unknown => Some(
+            "return type could not be classified; refusing to emit an ABI-unsafe I32 fallback",
         ),
-        FlatAbiType::F32 | FlatAbiType::F64 => Some(
-            "return type is floating-point; the current flatInvoke ABI has \
-             no F32/F64 return kind (would silently mis-marshal as I32).",
-        ),
-        // `flat_invoke` in the Rust runtime is `unsafe` with a documented
-        // contract that `retKind` must match the export's ABI signature.
-        // Requesting `I32` from a void-return function reads whatever bits
-        // happen to be in RAX/EAX at call return — undefined per the Win64
-        // ABI. Skipping void-return methods keeps the codegen fail-loud:
-        // the wrapper's absence is safer than emitting one that silently
-        // technically-violates the retKind contract. Adding a real
-        // `FlatReturnKind::Void` is a follow-up in the runtime crate.
-        FlatAbiType::Void => Some(
-            "return type is void; the current flatInvoke ABI has no dedicated \
-             void return kind, and using I32 as a fallback would violate the \
-             flat_invoke safety contract (retKind must match the ABI signature).",
-        ),
-        FlatAbiType::Enum { underlying, .. } => unsupported_return_reason(underlying),
         _ => None,
     }
 }
@@ -248,11 +244,6 @@ fn is_status_return(m: &FlatMethodMeta) -> bool {
 
 fn flat_ret_kind_literal(t: &FlatAbiType) -> &'static str {
     // Map return type to the string literal passed to DynWinRtValue.flatInvoke.
-    // Callers with unsupported return kinds (I64/U64/F32/F64, Void) must be
-    // filtered out upstream by `partition_supported_methods` — reaching this
-    // fn with those types would produce a silently-wrong I32 wrapper. We
-    // still return "I32" defensively but debug_assert to catch the
-    // missing-filter bug in tests. See `unsupported_return_reason`.
     match t {
         FlatAbiType::I32
         | FlatAbiType::I16
@@ -260,30 +251,29 @@ fn flat_ret_kind_literal(t: &FlatAbiType) -> &'static str {
         | FlatAbiType::Bool
         | FlatAbiType::Bool32 => "I32",
         FlatAbiType::U32 | FlatAbiType::U16 | FlatAbiType::U8 | FlatAbiType::Char16 => "U32",
-        FlatAbiType::I64 | FlatAbiType::U64 => {
-            debug_assert!(false, "flat_ret_kind_literal: I64/U64 return should have been filtered upstream (see partition_supported_methods)");
-            "I32"
-        }
+        FlatAbiType::I64 => "I64",
+        FlatAbiType::U64 => "U64",
         FlatAbiType::Enum { underlying, .. } => match **underlying {
             FlatAbiType::I32 => "I32",
             FlatAbiType::I8 => "I32",
             FlatAbiType::I16 => "I32",
             _ => "U32",
         },
-        FlatAbiType::Void => {
-            debug_assert!(false, "flat_ret_kind_literal: Void return should have been filtered upstream (see partition_supported_methods)");
-            "I32"
-        }
+        FlatAbiType::Void => "Void",
         FlatAbiType::Ptr
         | FlatAbiType::PtrTo(_)
         | FlatAbiType::PWStr
         | FlatAbiType::PStr
         | FlatAbiType::Handle { .. } => "Ptr",
-        FlatAbiType::F32 | FlatAbiType::F64 => {
-            debug_assert!(false, "flat_ret_kind_literal: F32/F64 return should have been filtered upstream (see partition_supported_methods)");
+        FlatAbiType::F32 => "F32",
+        FlatAbiType::F64 => "F64",
+        FlatAbiType::Unknown => {
+            debug_assert!(
+                false,
+                "flat_ret_kind_literal: Unknown return should have been filtered upstream"
+            );
             "I32"
         }
-        FlatAbiType::Unknown => "I32",
     }
 }
 
@@ -712,6 +702,10 @@ fn render_method_js(out: &mut String, m: &FlatMethodMeta) {
     ));
     let ret_val = match ret_kind {
         "Ptr" => "_ret.asPointerBigint()".to_string(),
+        "I64" => "_ret.toI64BigInt()".to_string(),
+        "U64" => "_ret.toU64BigInt()".to_string(),
+        "F32" | "F64" => "_ret.toF64()".to_string(),
+        "Void" => "undefined".to_string(),
         _ => "_ret.toNumber()".to_string(),
     };
 

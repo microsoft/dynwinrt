@@ -85,8 +85,13 @@ pub fn get_last_error() -> u32 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FlatReturnKind {
+    Void,
     I32,
     U32,
+    I64,
+    U64,
+    F32,
+    F64,
     Ptr,
 }
 
@@ -139,6 +144,8 @@ fn flat_arg_type(value: &WinRTValue) -> Result<Type> {
         WinRTValue::U32(_) => Ok(Type::u32()),
         WinRTValue::I64(_) => Ok(Type::i64()),
         WinRTValue::U64(_) => Ok(Type::u64()),
+        WinRTValue::F32(_) => Ok(Type::f32()),
+        WinRTValue::F64(_) => Ok(Type::f64()),
         _ => Err(invalid_arg_error()),
     }
 }
@@ -149,6 +156,8 @@ fn flat_arg(value: &WinRTValue) -> Result<Arg<'_>> {
         | WinRTValue::U32(_)
         | WinRTValue::I64(_)
         | WinRTValue::U64(_)
+        | WinRTValue::F32(_)
+        | WinRTValue::F64(_)
         | WinRTValue::RawPtr(_) => Ok(value.libffi_arg()),
         _ => Err(invalid_arg_error()),
     }
@@ -156,8 +165,13 @@ fn flat_arg(value: &WinRTValue) -> Result<Arg<'_>> {
 
 fn flat_return_type(kind: FlatReturnKind) -> Result<Type> {
     match kind {
+        FlatReturnKind::Void => Ok(Type::void()),
         FlatReturnKind::I32 => Ok(Type::i32()),
         FlatReturnKind::U32 => Ok(Type::u32()),
+        FlatReturnKind::I64 => Ok(Type::i64()),
+        FlatReturnKind::U64 => Ok(Type::u64()),
+        FlatReturnKind::F32 => Ok(Type::f32()),
+        FlatReturnKind::F64 => Ok(Type::f64()),
         FlatReturnKind::Ptr => Ok(Type::pointer()),
     }
 }
@@ -169,8 +183,16 @@ unsafe fn call_and_convert(
     ret: FlatReturnKind,
 ) -> Result<WinRTValue> {
     match ret {
+        FlatReturnKind::Void => {
+            let _: () = unsafe { cif.call(CodePtr(proc), args) };
+            Ok(WinRTValue::Null)
+        }
         FlatReturnKind::I32 => Ok(WinRTValue::I32(unsafe { cif.call(CodePtr(proc), args) })),
         FlatReturnKind::U32 => Ok(WinRTValue::U32(unsafe { cif.call(CodePtr(proc), args) })),
+        FlatReturnKind::I64 => Ok(WinRTValue::I64(unsafe { cif.call(CodePtr(proc), args) })),
+        FlatReturnKind::U64 => Ok(WinRTValue::U64(unsafe { cif.call(CodePtr(proc), args) })),
+        FlatReturnKind::F32 => Ok(WinRTValue::F32(unsafe { cif.call(CodePtr(proc), args) })),
+        FlatReturnKind::F64 => Ok(WinRTValue::F64(unsafe { cif.call(CodePtr(proc), args) })),
         FlatReturnKind::Ptr => Ok(WinRTValue::RawPtr(unsafe {
             cif.call::<*mut c_void>(CodePtr(proc), args)
         })),
@@ -200,6 +222,7 @@ fn unsupported_platform_error() -> Error {
 #[cfg(all(test, windows, target_pointer_width = "64"))]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
     use windows::Win32::Foundation::WIN32_ERROR;
 
     fn invoke(
@@ -209,6 +232,82 @@ mod tests {
         args: &[WinRTValue],
     ) -> Result<WinRTValue> {
         unsafe { flat_invoke(dll, entry, ret, args) }
+    }
+
+    unsafe fn invoke_proc(
+        proc: *mut c_void,
+        ret: FlatReturnKind,
+        args: &[WinRTValue],
+    ) -> Result<WinRTValue> {
+        let arg_types = args
+            .iter()
+            .map(flat_arg_type)
+            .collect::<Result<Vec<Type>>>()?;
+        let ffi_args = args.iter().map(flat_arg).collect::<Result<Vec<Arg>>>()?;
+        let ret_type = flat_return_type(ret)?;
+        let cif = Cif::new(arg_types, ret_type);
+        unsafe { call_and_convert(&cif, proc, &ffi_args, ret) }
+    }
+
+    extern "C" fn test_returns_f64(x: f64) -> f64 {
+        x * 2.0
+    }
+
+    extern "C" fn test_returns_u64() -> u64 {
+        0x1_0000_0001
+    }
+
+    static VOID_CALLED: AtomicU32 = AtomicU32::new(0);
+
+    extern "C" fn test_returns_void(value: u32) {
+        VOID_CALLED.store(value, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn flat_call_invokes_test_f64_return_and_arg() -> Result<()> {
+        let result = unsafe {
+            invoke_proc(
+                test_returns_f64 as *mut c_void,
+                FlatReturnKind::F64,
+                &[WinRTValue::F64(2.25)],
+            )
+        }?;
+        let WinRTValue::F64(v) = result else {
+            panic!("expected F64 return");
+        };
+        assert!((v - 4.5).abs() < f64::EPSILON);
+        Ok(())
+    }
+
+    #[test]
+    fn flat_call_invokes_test_u64_return_without_truncation() -> Result<()> {
+        let result = unsafe {
+            invoke_proc(
+                test_returns_u64 as *mut c_void,
+                FlatReturnKind::U64,
+                &[],
+            )
+        }?;
+        let WinRTValue::U64(v) = result else {
+            panic!("expected U64 return");
+        };
+        assert_eq!(v, 0x1_0000_0001);
+        Ok(())
+    }
+
+    #[test]
+    fn flat_call_invokes_test_void_return_as_null() -> Result<()> {
+        VOID_CALLED.store(0, Ordering::SeqCst);
+        let result = unsafe {
+            invoke_proc(
+                test_returns_void as *mut c_void,
+                FlatReturnKind::Void,
+                &[WinRTValue::U32(1234)],
+            )
+        }?;
+        assert!(matches!(result, WinRTValue::Null));
+        assert_eq!(VOID_CALLED.load(Ordering::SeqCst), 1234);
+        Ok(())
     }
 
     #[test]

@@ -1723,6 +1723,7 @@ fn resolve_named_flat_type(
             "BSTR" => return FlatAbiType::Unknown,
             "BOOL" => return FlatAbiType::Bool32,
             "BOOLEAN" => return FlatAbiType::U8,
+            "FARPROC" | "PROC" | "NEARPROC" => return FlatAbiType::Ptr,
             "HRESULT" => return FlatAbiType::I32,
             "NTSTATUS" => return FlatAbiType::I32,
             // LSTATUS is a plain Int32 typedef in the win32 metadata, but
@@ -1743,6 +1744,9 @@ fn resolve_named_flat_type(
     let Some(ext) = def.extends() else {
         return FlatAbiType::Unknown;
     };
+    if ext.namespace() == "System" && matches!(ext.name(), "Delegate" | "MulticastDelegate") {
+        return FlatAbiType::Ptr;
+    }
     // Enum: extends System.Enum.
     if ext.namespace() == "System" && ext.name() == "Enum" {
         let en = parse_enum_def(&def);
