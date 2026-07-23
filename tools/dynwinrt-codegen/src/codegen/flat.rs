@@ -26,7 +26,7 @@
 //! LSTATUS — the caller decides what to do (mirroring the hand-written
 //! `bindings/js/e2e/registry.js` design).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 
 use crate::meta::{FlatAbiType, FlatApisMeta, FlatDirection, FlatMethodMeta, FlatParamMeta};
 use crate::types::TypeMeta;
@@ -57,8 +57,21 @@ pub fn generate_flat_apis_files(meta: &FlatApisMeta) -> FlatGeneratedOutput {
             meta.class_name, name, reason
         );
     }
+    let kept_enum_keys = referenced_enum_keys_for_methods(&kept);
+    let referenced_enums = meta
+        .referenced_enums
+        .iter()
+        .filter(|en| match en {
+            TypeMeta::Enum {
+                namespace, name, ..
+            } => kept_enum_keys.contains(&(namespace.clone(), name.clone())),
+            _ => false,
+        })
+        .cloned()
+        .collect();
     let filtered_meta = FlatApisMeta {
         methods: kept,
+        referenced_enums,
         ..meta.clone()
     };
 
@@ -128,6 +141,33 @@ fn partition_supported_methods(
         kept.push(m.clone());
     }
     (kept, skipped)
+}
+
+fn referenced_enum_keys_for_methods(methods: &[FlatMethodMeta]) -> HashSet<(String, String)> {
+    let mut keys = HashSet::new();
+    for m in methods {
+        collect_referenced_enum_keys(&m.return_type, &mut keys);
+        for p in &m.params {
+            collect_referenced_enum_keys(&p.abi, &mut keys);
+        }
+    }
+    keys
+}
+
+fn collect_referenced_enum_keys(t: &FlatAbiType, keys: &mut HashSet<(String, String)>) {
+    match t {
+        FlatAbiType::PtrTo(inner) => collect_referenced_enum_keys(inner, keys),
+        FlatAbiType::Enum {
+            namespace,
+            name,
+            underlying,
+            ..
+        } => {
+            keys.insert((namespace.clone(), name.clone()));
+            collect_referenced_enum_keys(underlying, keys);
+        }
+        _ => {}
+    }
 }
 
 /// Returns `Some(reason)` if the given return type has no faithful mapping

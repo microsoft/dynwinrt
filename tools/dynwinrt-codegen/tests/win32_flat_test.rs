@@ -18,6 +18,7 @@ use dynwinrt_codegen::codegen::com;
 use dynwinrt_codegen::codegen::flat;
 use dynwinrt_codegen::meta;
 use dynwinrt_codegen::meta::{FlatAbiType, FlatDirection};
+use dynwinrt_codegen::types::TypeMeta;
 
 const WIN32_WINMD: &str = r"C:\s\win32metadata\Windows.Win32.winmd";
 const REGISTRY_NS: &str = "Windows.Win32.System.Registry";
@@ -548,6 +549,37 @@ fn synth_apis(methods: Vec<FlatMethodMeta>) -> FlatApisMeta {
     }
 }
 
+fn synth_enum_meta(namespace: &str, name: &str, member: &str) -> TypeMeta {
+    use dynwinrt_codegen::types::EnumMember;
+
+    TypeMeta::Enum {
+        namespace: namespace.into(),
+        name: name.into(),
+        underlying: Box::new(TypeMeta::I32),
+        members: vec![EnumMember {
+            name: member.into(),
+            value: 0,
+            doc: None,
+        }],
+        is_flags: false,
+        doc: None,
+        deprecated: None,
+    }
+}
+
+fn synth_enum_abi(namespace: &str, name: &str, member: &str) -> FlatAbiType {
+    FlatAbiType::Enum {
+        namespace: namespace.into(),
+        name: name.into(),
+        underlying: Box::new(FlatAbiType::I32),
+        members: vec![dynwinrt_codegen::types::EnumMember {
+            name: member.into(),
+            value: 0,
+            doc: None,
+        }],
+    }
+}
+
 /// A flat export returning I64/U64 must be emitted with an explicit 64-bit
 /// retKind and decoded as BigInt, never through the truncating number path.
 #[test]
@@ -890,6 +922,70 @@ fn flat_dts_return_types_match_js_runtime() {
     );
 }
 
+#[test]
+fn flat_filters_referenced_enums_to_kept_methods_only() {
+    let kept_enum = synth_enum_abi("Fake.Kept", "KeptStatus", "Ok");
+    let skipped_a = synth_enum_abi("Fake.SkippedA", "Status", "A");
+    let skipped_b = synth_enum_abi("Fake.SkippedB", "Status", "B");
+    let kept = FlatMethodMeta {
+        name: "Kept".into(),
+        dll: "FAKE.dll".into(),
+        entry_point: "Kept".into(),
+        return_type: FlatAbiType::I32,
+        params: vec![FlatParamMeta {
+            name: "status".into(),
+            abi: kept_enum,
+            direction: FlatDirection::In,
+        }],
+        return_is_status: false,
+    };
+    let skipped_one = FlatMethodMeta {
+        name: "SkippedOne".into(),
+        dll: "FAKE.dll".into(),
+        entry_point: "SkippedOne".into(),
+        return_type: FlatAbiType::Unknown,
+        params: vec![FlatParamMeta {
+            name: "status".into(),
+            abi: skipped_a,
+            direction: FlatDirection::In,
+        }],
+        return_is_status: false,
+    };
+    let skipped_two = FlatMethodMeta {
+        name: "SkippedTwo".into(),
+        dll: "FAKE.dll".into(),
+        entry_point: "SkippedTwo".into(),
+        return_type: FlatAbiType::Unknown,
+        params: vec![FlatParamMeta {
+            name: "status".into(),
+            abi: skipped_b,
+            direction: FlatDirection::In,
+        }],
+        return_is_status: false,
+    };
+    let apis = FlatApisMeta {
+        namespace: "Fake.Ns".into(),
+        class_name: "Apis".into(),
+        methods: vec![kept, skipped_one, skipped_two],
+        referenced_enums: vec![
+            synth_enum_meta("Fake.Kept", "KeptStatus", "Ok"),
+            synth_enum_meta("Fake.SkippedA", "Status", "A"),
+            synth_enum_meta("Fake.SkippedB", "Status", "B"),
+        ],
+    };
+
+    let out = std::panic::catch_unwind(|| flat::generate_flat_apis_files(&apis))
+        .expect("skipped-only enum simple-name collisions must not abort generation");
+    let extra_names: Vec<&str> = out.extra_files.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(
+        extra_names,
+        vec!["KeptStatus.d.ts", "KeptStatus.js"],
+        "only enums referenced by emitted methods should produce sibling files"
+    );
+    assert!(out.js.contains("export function kept"));
+    assert!(!out.js.contains("skippedOne") && !out.js.contains("skippedTwo"));
+}
+
 /// The CLI must fail loud when `--lang py` (or any non-`js` language) is
 /// combined with a `--class-name` that resolves to a flat-Win32 `[DllImport]`
 /// module — those emitters produce only `.js` + `.d.ts` and would otherwise
@@ -964,31 +1060,34 @@ fn cli_rejects_non_js_lang_for_flat_apis() {
 #[test]
 #[should_panic(expected = "multiple distinct enums named `Status`")]
 fn flat_fails_loud_on_simple_name_enum_collision() {
-    use dynwinrt_codegen::types::{EnumMember, TypeMeta};
-
-    let make_enum = |ns: &str, member: &str| TypeMeta::Enum {
-        namespace: ns.into(),
-        name: "Status".into(),
-        underlying: Box::new(TypeMeta::I32),
-        members: vec![EnumMember {
-            name: member.into(),
-            value: 0,
-            doc: None,
-        }],
-        is_flags: false,
-        doc: None,
-        deprecated: None,
-    };
     // Two distinct enums with the same simple name from different
     // namespaces. Both must reach codegen (post-dedup) because the
     // `(namespace, name)` key differs.
     let apis = FlatApisMeta {
         namespace: "Fake.Ns".into(),
         class_name: "Apis".into(),
-        methods: vec![synth_method("Noop", FlatAbiType::I32)],
+        methods: vec![FlatMethodMeta {
+            name: "Noop".into(),
+            dll: "FAKE.dll".into(),
+            entry_point: "Noop".into(),
+            return_type: FlatAbiType::I32,
+            params: vec![
+                FlatParamMeta {
+                    name: "a".into(),
+                    abi: synth_enum_abi("Fake.NsA", "Status", "AVariant"),
+                    direction: FlatDirection::In,
+                },
+                FlatParamMeta {
+                    name: "b".into(),
+                    abi: synth_enum_abi("Fake.NsB", "Status", "BVariant"),
+                    direction: FlatDirection::In,
+                },
+            ],
+            return_is_status: false,
+        }],
         referenced_enums: vec![
-            make_enum("Fake.NsA", "AVariant"),
-            make_enum("Fake.NsB", "BVariant"),
+            synth_enum_meta("Fake.NsA", "Status", "AVariant"),
+            synth_enum_meta("Fake.NsB", "Status", "BVariant"),
         ],
     };
     // Should panic before returning FlatGeneratedOutput.
