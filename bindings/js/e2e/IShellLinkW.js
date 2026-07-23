@@ -92,7 +92,7 @@ export class IShellLinkW {
         return _out;
     }
     setHotkey(wHotkey) {
-        _IShellLinkW.method(13).invoke(this._obj, [DynWinRtValue.u16Value(wHotkey)]);
+        _IShellLinkW.method(13).invoke(this._obj, [DynWinRtValue.u16(wHotkey)]);
     }
     getShowCmd() {
         const _out = _IShellLinkW.method(14).invoke(this._obj, []);

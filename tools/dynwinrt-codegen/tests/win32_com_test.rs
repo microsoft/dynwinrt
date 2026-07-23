@@ -723,3 +723,32 @@ fn shellitem_getdisplayname_is_not_classified_as_caller_owned_string_buffer() {
         out.js
     );
 }
+
+#[test]
+fn u16_input_param_uses_existing_u16_value_ctor_not_u16value() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+
+    // IShellLinkW.SetHotkey takes a [in] u16 (WORD). The napi value ctor is
+    // DynWinRtValue.u16(...) — there is no `u16Value`/`i16Value`. Regression
+    // guard: the arg-wrapper must emit the ctor that actually exists, or the
+    // generated call throws at runtime.
+    let com_iface =
+        meta::parse_com_interface(WIN32_WINMD, "Windows.Win32.UI.Shell", "IShellLinkW")
+            .expect("IShellLinkW must exist");
+    let out = com::generate_com_interface_files(&com_iface, WIN32_WINMD)
+        .expect("codegen must succeed for IShellLinkW");
+
+    assert!(
+        out.js.contains("DynWinRtValue.u16(wHotkey)"),
+        "u16 input param must wrap via the existing DynWinRtValue.u16(...):\n{}",
+        out.js
+    );
+    assert!(
+        !out.js.contains("u16Value(") && !out.js.contains("i16Value("),
+        "codegen must not emit non-existent DynWinRtValue.u16Value/i16Value:\n{}",
+        out.js
+    );
+}
