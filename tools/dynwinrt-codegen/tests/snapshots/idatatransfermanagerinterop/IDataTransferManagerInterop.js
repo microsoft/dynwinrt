@@ -8,7 +8,7 @@ const IID_DataTransferManager_default = WinGuid.parse('a5caee9b-8708-49d1-8d36-6
 let _IDataTransferManagerInteropCache;
 const _IDataTransferManagerInterop = new Proxy({}, {
     get(_target, prop) {
-        _IDataTransferManagerInteropCache ??= DynWinRtType.registerInterfaceUnknown('IDataTransferManagerInterop', IID_IDataTransferManagerInterop)
+        _IDataTransferManagerInteropCache ??= DynWinRtType.registerInterfaceUnknown('Windows.Win32.UI.Shell.IDataTransferManagerInterop', IID_IDataTransferManagerInterop)
             .addMethod('GetForWindow', new DynWinRtMethodSig().addIn(DynWinRtType.pointer()).addIn(DynWinRtType.pointer()).addOut(DynWinRtType.pointer()))
             .addMethod('ShowShareUIForWindow', new DynWinRtMethodSig().addIn(DynWinRtType.pointer()));
         const value = _IDataTransferManagerInteropCache[prop];
