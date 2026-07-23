@@ -582,8 +582,10 @@ const NARROW_STRING_HELPER: &str = "\
 // writing UTF-16LE bytes into them corrupts parameters and can smash the
 // callee's stack. On modern Windows (10 1903+) with the app manifested
 // for UTF-8 ACP, or on OS versions that natively accept UTF-8 for A-APIs,
-// this is the correct encoding; if a caller needs a legacy ANSI code page
-// they can pre-encode to a Buffer and pass that directly.
+// this is the correct encoding. This typed wrapper always UTF-8-encodes the
+// string; a caller needing a different/legacy ANSI code page must bypass the
+// generated wrapper and call `DynWinRtValue.flatInvoke` directly with a
+// pre-encoded Buffer (this helper only accepts a JS string).
 // Rejects embedded U+0000 for the same truncation-safety reason as the
 // wide-string helper.
 function _narrowStringBuffer(str) {
