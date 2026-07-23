@@ -496,13 +496,8 @@ fn winrt_generation_still_works() {
     // Invoke the CLI via `cargo run`.
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let workspace_root = manifest_dir.ancestors().nth(2).expect("workspace root");
-    let status = Command::new("cargo")
+    let status = Command::new(env!("CARGO_BIN_EXE_dynwinrt-codegen"))
         .args([
-            "run",
-            "-q",
-            "-p",
-            "dynwinrt-codegen",
-            "--",
             "generate",
             "--namespace",
             "Windows.Foundation",
@@ -1145,13 +1140,8 @@ fn cli_rejects_non_js_lang_for_flat_apis() {
 
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let workspace_root = manifest_dir.ancestors().nth(2).expect("workspace root");
-    let output = Command::new("cargo")
+    let output = Command::new(env!("CARGO_BIN_EXE_dynwinrt-codegen"))
         .args([
-            "run",
-            "-q",
-            "-p",
-            "dynwinrt-codegen",
-            "--",
             "generate",
             "--winmd",
             WIN32_WINMD,
