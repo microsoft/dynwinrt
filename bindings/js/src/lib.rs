@@ -7,7 +7,7 @@
 use std::sync::{Arc, Mutex, OnceLock};
 
 use dynwinrt;
-use napi::bindgen_prelude::BigInt;
+use napi::bindgen_prelude::{BigInt, Either};
 use napi::threadsafe_function::ThreadsafeFunctionCallMode;
 use napi::JsValue;
 use napi_derive::napi;
@@ -933,14 +933,32 @@ impl DynWinRTValue {
     DynWinRTValue::new(dynwinrt::WinRTValue::I64(value))
   }
   #[napi]
-  pub fn u64(value: BigInt) -> napi::Result<DynWinRTValue> {
-    let (negative, value, lossless) = value.get_u64();
-    if negative || !lossless {
-      return Err(napi::Error::from_reason(
-        "DynWinRtValue.u64(): value must fit in an unsigned 64-bit integer",
-      ));
-    }
-    Ok(DynWinRTValue::new(dynwinrt::WinRTValue::U64(value)))
+  pub fn u64(
+    #[napi(ts_arg_type = "number | bigint")] value: Either<BigInt, i64>,
+  ) -> napi::Result<DynWinRTValue> {
+    // Accept either a JS `bigint` (full unsigned-64 range) or a plain `number`
+    // (the common case — WinRT/collection codegen passes numeric sizes/positions
+    // without a BigInt wrapper). Both convert losslessly to a u64.
+    let v: u64 = match value {
+      Either::A(bi) => {
+        let (negative, value, lossless) = bi.get_u64();
+        if negative || !lossless {
+          return Err(napi::Error::from_reason(
+            "DynWinRtValue.u64(): value must fit in an unsigned 64-bit integer",
+          ));
+        }
+        value
+      }
+      Either::B(n) => {
+        if n < 0 {
+          return Err(napi::Error::from_reason(
+            "DynWinRtValue.u64(): value must be non-negative",
+          ));
+        }
+        n as u64
+      }
+    };
+    Ok(DynWinRTValue::new(dynwinrt::WinRTValue::U64(v)))
   }
   #[napi]
   pub fn f32(value: f64) -> DynWinRTValue {
