@@ -334,7 +334,9 @@ fn check_property_value_dynamic_type_mismatch_returns_golden_error() -> windows_
     let err = value_iface.methods[19]
         .call_dynamic(int_obj.as_raw(), &[])
         .expect_err("GetString on an Int32 PropertyValue should fail");
-    assert_eq!(err.code(), HRESULT(0x80028CA0u32 as i32));
+    // GetString on a non-string IPropertyValue fails with TYPE_E_TYPEMISMATCH.
+    const TYPE_E_TYPEMISMATCH: HRESULT = HRESULT(0x8002_8CA0u32 as i32);
+    assert_eq!(err.code(), TYPE_E_TYPEMISMATCH);
 
     Ok(())
 }
