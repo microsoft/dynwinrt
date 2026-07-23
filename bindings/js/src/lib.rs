@@ -941,6 +941,24 @@ impl DynWinRTValue {
   /// this rule: every wide/narrow string wrapper and every out-slot
   /// `Buffer.alloc` is hoisted to a named `const` before the
   /// `flatInvoke` call. Hand-written callers must do the same.
+  ///
+  /// ## DLL residency and `'Ptr'` returns (IMPORTANT)
+  ///
+  /// Each call loads the DLL with `LoadLibraryW` and releases it with
+  /// `FreeLibrary` before returning (see `flat_call::flat_invoke`). For
+  /// a module already resident in the process (e.g. `kernel32.dll`,
+  /// `ADVAPI32.dll`) this only decrements the reference count and the
+  /// module stays loaded. But if `flatInvoke` is the only thing keeping
+  /// a rarely-used DLL loaded, `FreeLibrary` can UNLOAD it on return.
+  ///
+  /// Consequently, a `retKind: 'Ptr'` result (a raw pointer / function
+  /// pointer / handle) that points INTO the just-loaded module may be
+  /// dangling by the time it reaches JS. Do not cache or dereference a
+  /// returned `Ptr` unless the module it refers to is independently kept
+  /// resident (e.g. an always-loaded system DLL, or you hold your own
+  /// `LoadLibrary` reference). Function pointers obtained via
+  /// `GetProcAddress` against a permanently-resident module are safe;
+  /// pointers into transiently-loaded DLLs are not.
   #[napi]
   pub fn flat_invoke(
     dll: String,
