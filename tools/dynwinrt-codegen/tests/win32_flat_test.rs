@@ -746,6 +746,54 @@ fn flat_skips_unknown_return_instead_of_silently_truncating() {
 }
 
 #[test]
+fn flat_skips_bare_unknown_param_but_keeps_opaque_pointer_param() {
+    let by_value_struct = FlatMethodMeta {
+        name: "ByValueStruct".into(),
+        dll: "FAKE.dll".into(),
+        entry_point: "ByValueStruct".into(),
+        return_type: FlatAbiType::I32,
+        params: vec![FlatParamMeta {
+            name: "value".into(),
+            abi: FlatAbiType::Unknown,
+            direction: FlatDirection::In,
+        }],
+        return_is_status: false,
+    };
+    let struct_pointer = FlatMethodMeta {
+        name: "StructPointer".into(),
+        dll: "FAKE.dll".into(),
+        entry_point: "StructPointer".into(),
+        return_type: FlatAbiType::I32,
+        params: vec![FlatParamMeta {
+            name: "buffer".into(),
+            abi: FlatAbiType::PtrTo(Box::new(FlatAbiType::Unknown)),
+            direction: FlatDirection::In,
+        }],
+        return_is_status: false,
+    };
+
+    let out = flat::generate_flat_apis_files(&synth_apis(vec![by_value_struct, struct_pointer]));
+    assert!(
+        !out.js.contains("byValueStruct") && !out.dts.contains("byValueStruct"),
+        "bare Unknown by-value params must be skipped to avoid pointer-for-struct ABI mismatch:\n{}\n{}",
+        out.js,
+        out.dts
+    );
+    assert!(
+        out.js.contains("export function structPointer(buffer)")
+            && out.js.contains("DynWinRtValue.pointer(buffer)"),
+        "PtrTo(Unknown) struct pointer params remain valid opaque pointer inputs:\n{}",
+        out.js
+    );
+    assert!(
+        out.dts
+            .contains("structPointer(buffer: bigint | Buffer | null)"),
+        "PtrTo(Unknown) should stay in the typed surface as an opaque pointer:\n{}",
+        out.dts
+    );
+}
+
+#[test]
 fn flat_emits_void_return_without_result_field() {
     let apis = synth_apis(vec![
         synth_method("NoOuts", FlatAbiType::Void),

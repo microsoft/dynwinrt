@@ -138,6 +138,10 @@ fn partition_supported_methods(
             skipped.push((m.name.clone(), reason));
             continue;
         }
+        if let Some(reason) = m.params.iter().find_map(|p| unsupported_param_reason(&p.abi)) {
+            skipped.push((m.name.clone(), reason));
+            continue;
+        }
         kept.push(m.clone());
     }
     (kept, skipped)
@@ -193,6 +197,17 @@ fn unsupported_return_reason(t: &FlatAbiType) -> Option<&'static str> {
         }
         FlatAbiType::Unknown => Some(
             "return type could not be classified; refusing to emit an ABI-unsafe I32 fallback",
+        ),
+        _ => None,
+    }
+}
+
+fn unsupported_param_reason(t: &FlatAbiType) -> Option<&'static str> {
+    match t {
+        FlatAbiType::Unknown => Some(
+            "parameter type could not be classified as a by-value ABI type; \
+             refusing to emit a wrapper that would pass a pointer where the callee \
+             expects an inline value",
         ),
         _ => None,
     }
