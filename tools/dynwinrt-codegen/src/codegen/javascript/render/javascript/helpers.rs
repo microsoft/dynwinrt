@@ -122,6 +122,50 @@ pub(super) fn inject_unwrap(code: String) -> String {
     }
 }
 
+pub(super) fn emit_delegate_wraps(out: &mut String, method: &ProjectedMethod) {
+    for (param_name, delegate_name) in &method.delegate_wraps {
+        let needs_wrap = method
+            .params
+            .iter()
+            .find(|p| &p.name == param_name)
+            .and_then(|p| p.delegate_wrap.as_ref())
+            .map(|dw| {
+                dw.param_wraps
+                    .iter()
+                    .enumerate()
+                    .any(|(i, wrap)| *wrap != format!("__a{}__", i))
+            })
+            .unwrap_or(false);
+        if needs_wrap {
+            let wrap = method
+                .params
+                .iter()
+                .find(|p| &p.name == param_name)
+                .and_then(|p| p.delegate_wrap.as_ref())
+                .unwrap();
+            let arg_vars: Vec<String> = (0..wrap.param_wraps.len())
+                .map(|i| format!("__a{}__", i))
+                .collect();
+            out.push_str(&format!(
+                "        const _{}_wrapped = ({}) => {}({});\n",
+                param_name,
+                arg_vars.join(", "),
+                param_name,
+                wrap.param_wraps.join(", ")
+            ));
+            out.push_str(&format!(
+                "        const _{}_d = DynWinRtDelegate.create(IID_{}, {}_PARAM_TYPES, _{}_wrapped).toValue();\n",
+                param_name, delegate_name, delegate_name, param_name
+            ));
+        } else {
+            out.push_str(&format!(
+                "        const _{}_d = DynWinRtDelegate.create(IID_{}, {}_PARAM_TYPES, {}).toValue();\n",
+                param_name, delegate_name, delegate_name, param_name
+            ));
+        }
+    }
+}
+
 /// Generate a JS dispatcher for same-class overloads (from OverloadAttribute).
 /// Emits internal `_methodName__N` implementations and a public dispatcher.
 pub(super) fn render_same_class_overload_js(
@@ -152,6 +196,7 @@ pub(super) fn render_same_class_overload_js(
             "    {}{}{}({}) {{\n",
             static_kw, async_kw, internal_name, params_str
         ));
+        emit_delegate_wraps(out, method);
         match &method.async_kind {
             AsyncKind::None => {
                 if let Some(ref arr_expr) = method.array_return_expr {
@@ -341,46 +386,7 @@ pub(super) fn render_overload_dispatcher_js(
 
     // Fall through to original method body
     // Re-render the original method body inline (skip the signature, we already emitted it)
-    for (param_name, delegate_name) in &main_method.delegate_wraps {
-        let needs_wrap = main_method
-            .params
-            .iter()
-            .find(|p| &p.name == param_name)
-            .and_then(|p| p.delegate_wrap.as_ref())
-            .map(|dw| {
-                dw.param_wraps
-                    .iter()
-                    .enumerate()
-                    .any(|(i, w)| *w != format!("__a{}__", i))
-            })
-            .unwrap_or(false);
-        if needs_wrap {
-            let dw = main_method
-                .params
-                .iter()
-                .find(|p| &p.name == param_name)
-                .and_then(|p| p.delegate_wrap.as_ref())
-                .unwrap();
-            let arg_vars: Vec<String> = (0..dw.param_wraps.len())
-                .map(|i| format!("__a{}__", i))
-                .collect();
-            let args_str = arg_vars.join(", ");
-            let wraps_str = dw.param_wraps.join(", ");
-            out.push_str(&format!(
-                "        const _{}_wrapped = ({}) => {}({});\n",
-                param_name, args_str, param_name, wraps_str
-            ));
-            out.push_str(&format!(
-                "        const _{}_d = DynWinRtDelegate.create(IID_{}, {}_PARAM_TYPES, _{}_wrapped).toValue();\n",
-                param_name, delegate_name, delegate_name, param_name
-            ));
-        } else {
-            out.push_str(&format!(
-                "        const _{}_d = DynWinRtDelegate.create(IID_{}, {}_PARAM_TYPES, {}).toValue();\n",
-                param_name, delegate_name, delegate_name, param_name
-            ));
-        }
-    }
+    emit_delegate_wraps(out, main_method);
     match &main_method.async_kind {
         AsyncKind::None => {
             if let Some(ref arr_expr) = main_method.array_return_expr {

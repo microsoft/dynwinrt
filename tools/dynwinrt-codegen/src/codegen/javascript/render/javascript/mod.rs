@@ -15,8 +15,8 @@ use crate::codegen::javascript::signature::ref_marker;
 
 use commonjs::convert_to_cjs_with_lazy;
 use helpers::{
-    emit_abortable_async_body, emit_with_progress_body, inject_unwrap, render_jsdoc,
-    render_overload_dispatcher_js, render_same_class_overload_js,
+    emit_abortable_async_body, emit_delegate_wraps, emit_with_progress_body, inject_unwrap,
+    render_jsdoc, render_overload_dispatcher_js, render_same_class_overload_js,
 };
 
 /// Render a projected file as CJS with lazy sibling requires.
@@ -410,48 +410,7 @@ fn render_member_js(out: &mut String, member: &ProjectedMember, _class_name: &st
                 static_kw, async_kw, method.name, params_str
             ));
 
-            // Wrap delegate params before invoke
-            for (param_name, delegate_name) in &method.delegate_wraps {
-                // Find param_wraps from the corresponding ProjectedParam
-                let needs_wrap = method
-                    .params
-                    .iter()
-                    .find(|p| &p.name == param_name)
-                    .and_then(|p| p.delegate_wrap.as_ref())
-                    .map(|dw| {
-                        dw.param_wraps
-                            .iter()
-                            .enumerate()
-                            .any(|(i, w)| *w != format!("__a{}__", i))
-                    })
-                    .unwrap_or(false);
-                if needs_wrap {
-                    let dw = method
-                        .params
-                        .iter()
-                        .find(|p| &p.name == param_name)
-                        .and_then(|p| p.delegate_wrap.as_ref())
-                        .unwrap();
-                    let arg_vars: Vec<String> = (0..dw.param_wraps.len())
-                        .map(|i| format!("__a{}__", i))
-                        .collect();
-                    let args_str = arg_vars.join(", ");
-                    let wraps_str = dw.param_wraps.join(", ");
-                    out.push_str(&format!(
-                        "        const _{}_wrapped = ({}) => {}({});\n",
-                        param_name, args_str, param_name, wraps_str
-                    ));
-                    out.push_str(&format!(
-                        "        const _{}_d = DynWinRtDelegate.create(IID_{}, {}_PARAM_TYPES, _{}_wrapped).toValue();\n",
-                        param_name, delegate_name, delegate_name, param_name
-                    ));
-                } else {
-                    out.push_str(&format!(
-                        "        const _{}_d = DynWinRtDelegate.create(IID_{}, {}_PARAM_TYPES, {}).toValue();\n",
-                        param_name, delegate_name, delegate_name, param_name
-                    ));
-                }
-            }
+            emit_delegate_wraps(out, method);
 
             match &method.async_kind {
                 AsyncKind::None => {
