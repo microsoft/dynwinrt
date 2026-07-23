@@ -25,16 +25,16 @@ export declare function getRegistryValueWithFallbackW(hkeyPrimary: HKEY, primary
 export declare function regCloseKey(hKey: HKEY): { readonly status: number };
 
 /** RegConnectRegistryA — ADVAPI32.dll export. */
-export declare function regConnectRegistryA(machineName: string | null, hKey: HKEY): { readonly status: number; readonly phkResult: HKEY };
+export declare function regConnectRegistryA(machineName: string | null, hKey: HKEY): { readonly status: number; readonly phkResult: bigint };
 
 /** RegConnectRegistryExA — ADVAPI32.dll export. */
-export declare function regConnectRegistryExA(machineName: string | null, hKey: HKEY, flags: number): { readonly status: number; readonly phkResult: HKEY };
+export declare function regConnectRegistryExA(machineName: string | null, hKey: HKEY, flags: number): { readonly status: number; readonly phkResult: bigint };
 
 /** RegConnectRegistryExW — ADVAPI32.dll export. */
-export declare function regConnectRegistryExW(machineName: string | null, hKey: HKEY, flags: number): { readonly status: number; readonly phkResult: HKEY };
+export declare function regConnectRegistryExW(machineName: string | null, hKey: HKEY, flags: number): { readonly status: number; readonly phkResult: bigint };
 
 /** RegConnectRegistryW — ADVAPI32.dll export. */
-export declare function regConnectRegistryW(machineName: string | null, hKey: HKEY): { readonly status: number; readonly phkResult: HKEY };
+export declare function regConnectRegistryW(machineName: string | null, hKey: HKEY): { readonly status: number; readonly phkResult: bigint };
 
 /** RegCopyTreeA — ADVAPI32.dll export. */
 export declare function regCopyTreeA(hKeySrc: HKEY, subKey: string | null, hKeyDest: HKEY): { readonly status: number };
@@ -43,22 +43,22 @@ export declare function regCopyTreeA(hKeySrc: HKEY, subKey: string | null, hKeyD
 export declare function regCopyTreeW(hKeySrc: HKEY, subKey: string | null, hKeyDest: HKEY): { readonly status: number };
 
 /** RegCreateKeyA — ADVAPI32.dll export. */
-export declare function regCreateKeyA(hKey: HKEY, subKey: string | null): { readonly status: number; readonly phkResult: HKEY };
+export declare function regCreateKeyA(hKey: HKEY, subKey: string | null): { readonly status: number; readonly phkResult: bigint };
 
 /** RegCreateKeyExA — ADVAPI32.dll export. */
-export declare function regCreateKeyExA(hKey: HKEY, subKey: string | null, reserved: number, class_: string | null, options: REG_OPEN_CREATE_OPTIONS, samDesired: REG_SAM_FLAGS, securityAttributes: bigint | Buffer | null): { readonly status: number; readonly phkResult: HKEY; readonly lpdwDisposition: REG_CREATE_KEY_DISPOSITION };
+export declare function regCreateKeyExA(hKey: HKEY, subKey: string | null, reserved: number, class_: string | null, options: REG_OPEN_CREATE_OPTIONS, samDesired: REG_SAM_FLAGS, securityAttributes: bigint | Buffer | null): { readonly status: number; readonly phkResult: bigint; readonly lpdwDisposition: REG_CREATE_KEY_DISPOSITION };
 
 /** RegCreateKeyExW — ADVAPI32.dll export. */
-export declare function regCreateKeyExW(hKey: HKEY, subKey: string | null, reserved: number, class_: string | null, options: REG_OPEN_CREATE_OPTIONS, samDesired: REG_SAM_FLAGS, securityAttributes: bigint | Buffer | null): { readonly status: number; readonly phkResult: HKEY; readonly lpdwDisposition: REG_CREATE_KEY_DISPOSITION };
+export declare function regCreateKeyExW(hKey: HKEY, subKey: string | null, reserved: number, class_: string | null, options: REG_OPEN_CREATE_OPTIONS, samDesired: REG_SAM_FLAGS, securityAttributes: bigint | Buffer | null): { readonly status: number; readonly phkResult: bigint; readonly lpdwDisposition: REG_CREATE_KEY_DISPOSITION };
 
 /** RegCreateKeyTransactedA — ADVAPI32.dll export. */
-export declare function regCreateKeyTransactedA(hKey: HKEY, subKey: string | null, reserved: number, class_: string | null, options: REG_OPEN_CREATE_OPTIONS, samDesired: REG_SAM_FLAGS, securityAttributes: bigint | Buffer | null, hTransaction: HANDLE, pExtendedParemeter: bigint | Buffer | null): { readonly status: number; readonly phkResult: HKEY; readonly lpdwDisposition: REG_CREATE_KEY_DISPOSITION };
+export declare function regCreateKeyTransactedA(hKey: HKEY, subKey: string | null, reserved: number, class_: string | null, options: REG_OPEN_CREATE_OPTIONS, samDesired: REG_SAM_FLAGS, securityAttributes: bigint | Buffer | null, hTransaction: HANDLE, pExtendedParemeter: bigint | Buffer | null): { readonly status: number; readonly phkResult: bigint; readonly lpdwDisposition: REG_CREATE_KEY_DISPOSITION };
 
 /** RegCreateKeyTransactedW — ADVAPI32.dll export. */
-export declare function regCreateKeyTransactedW(hKey: HKEY, subKey: string | null, reserved: number, class_: string | null, options: REG_OPEN_CREATE_OPTIONS, samDesired: REG_SAM_FLAGS, securityAttributes: bigint | Buffer | null, hTransaction: HANDLE, pExtendedParemeter: bigint | Buffer | null): { readonly status: number; readonly phkResult: HKEY; readonly lpdwDisposition: REG_CREATE_KEY_DISPOSITION };
+export declare function regCreateKeyTransactedW(hKey: HKEY, subKey: string | null, reserved: number, class_: string | null, options: REG_OPEN_CREATE_OPTIONS, samDesired: REG_SAM_FLAGS, securityAttributes: bigint | Buffer | null, hTransaction: HANDLE, pExtendedParemeter: bigint | Buffer | null): { readonly status: number; readonly phkResult: bigint; readonly lpdwDisposition: REG_CREATE_KEY_DISPOSITION };
 
 /** RegCreateKeyW — ADVAPI32.dll export. */
-export declare function regCreateKeyW(hKey: HKEY, subKey: string | null): { readonly status: number; readonly phkResult: HKEY };
+export declare function regCreateKeyW(hKey: HKEY, subKey: string | null): { readonly status: number; readonly phkResult: bigint };
 
 /** RegDeleteKeyA — ADVAPI32.dll export. */
 export declare function regDeleteKeyA(hKey: HKEY, subKey: string | null): { readonly status: number };
@@ -139,10 +139,10 @@ export declare function regGetValueA(hkey: HKEY, subKey: string | null, value: s
 export declare function regGetValueW(hkey: HKEY, subKey: string | null, value: string | null, flags: REG_ROUTINE_FLAGS, data: bigint | Buffer | null, pcbData: number): { readonly status: number; readonly pdwType: REG_VALUE_TYPE; readonly pcbData: number };
 
 /** RegLoadAppKeyA — ADVAPI32.dll export. */
-export declare function regLoadAppKeyA(file: string | null, samDesired: number, options: number, reserved: number): { readonly status: number; readonly phkResult: HKEY };
+export declare function regLoadAppKeyA(file: string | null, samDesired: number, options: number, reserved: number): { readonly status: number; readonly phkResult: bigint };
 
 /** RegLoadAppKeyW — ADVAPI32.dll export. */
-export declare function regLoadAppKeyW(file: string | null, samDesired: number, options: number, reserved: number): { readonly status: number; readonly phkResult: HKEY };
+export declare function regLoadAppKeyW(file: string | null, samDesired: number, options: number, reserved: number): { readonly status: number; readonly phkResult: bigint };
 
 /** RegLoadKeyA — ADVAPI32.dll export. */
 export declare function regLoadKeyA(hKey: HKEY, subKey: string | null, file: string | null): { readonly status: number };
@@ -160,28 +160,28 @@ export declare function regLoadMUIStringW(hKey: HKEY, value: string | null, outB
 export declare function regNotifyChangeKeyValue(hKey: HKEY, bWatchSubtree: boolean, notifyFilter: REG_NOTIFY_FILTER, hEvent: HANDLE, fAsynchronous: boolean): { readonly status: number };
 
 /** RegOpenCurrentUser — ADVAPI32.dll export. */
-export declare function regOpenCurrentUser(samDesired: number): { readonly status: number; readonly phkResult: HKEY };
+export declare function regOpenCurrentUser(samDesired: number): { readonly status: number; readonly phkResult: bigint };
 
 /** RegOpenKeyA — ADVAPI32.dll export. */
-export declare function regOpenKeyA(hKey: HKEY, subKey: string | null): { readonly status: number; readonly phkResult: HKEY };
+export declare function regOpenKeyA(hKey: HKEY, subKey: string | null): { readonly status: number; readonly phkResult: bigint };
 
 /** RegOpenKeyExA — ADVAPI32.dll export. */
-export declare function regOpenKeyExA(hKey: HKEY, subKey: string | null, ulOptions: number, samDesired: REG_SAM_FLAGS): { readonly status: number; readonly phkResult: HKEY };
+export declare function regOpenKeyExA(hKey: HKEY, subKey: string | null, ulOptions: number, samDesired: REG_SAM_FLAGS): { readonly status: number; readonly phkResult: bigint };
 
 /** RegOpenKeyExW — ADVAPI32.dll export. */
-export declare function regOpenKeyExW(hKey: HKEY, subKey: string | null, ulOptions: number, samDesired: REG_SAM_FLAGS): { readonly status: number; readonly phkResult: HKEY };
+export declare function regOpenKeyExW(hKey: HKEY, subKey: string | null, ulOptions: number, samDesired: REG_SAM_FLAGS): { readonly status: number; readonly phkResult: bigint };
 
 /** RegOpenKeyTransactedA — ADVAPI32.dll export. */
-export declare function regOpenKeyTransactedA(hKey: HKEY, subKey: string | null, ulOptions: number, samDesired: REG_SAM_FLAGS, hTransaction: HANDLE, pExtendedParemeter: bigint | Buffer | null): { readonly status: number; readonly phkResult: HKEY };
+export declare function regOpenKeyTransactedA(hKey: HKEY, subKey: string | null, ulOptions: number, samDesired: REG_SAM_FLAGS, hTransaction: HANDLE, pExtendedParemeter: bigint | Buffer | null): { readonly status: number; readonly phkResult: bigint };
 
 /** RegOpenKeyTransactedW — ADVAPI32.dll export. */
-export declare function regOpenKeyTransactedW(hKey: HKEY, subKey: string | null, ulOptions: number, samDesired: REG_SAM_FLAGS, hTransaction: HANDLE, pExtendedParemeter: bigint | Buffer | null): { readonly status: number; readonly phkResult: HKEY };
+export declare function regOpenKeyTransactedW(hKey: HKEY, subKey: string | null, ulOptions: number, samDesired: REG_SAM_FLAGS, hTransaction: HANDLE, pExtendedParemeter: bigint | Buffer | null): { readonly status: number; readonly phkResult: bigint };
 
 /** RegOpenKeyW — ADVAPI32.dll export. */
-export declare function regOpenKeyW(hKey: HKEY, subKey: string | null): { readonly status: number; readonly phkResult: HKEY };
+export declare function regOpenKeyW(hKey: HKEY, subKey: string | null): { readonly status: number; readonly phkResult: bigint };
 
 /** RegOpenUserClassesRoot — ADVAPI32.dll export. */
-export declare function regOpenUserClassesRoot(hToken: HANDLE, options: number, samDesired: number): { readonly status: number; readonly phkResult: HKEY };
+export declare function regOpenUserClassesRoot(hToken: HANDLE, options: number, samDesired: number): { readonly status: number; readonly phkResult: bigint };
 
 /** RegOverridePredefKey — ADVAPI32.dll export. */
 export declare function regOverridePredefKey(hKey: HKEY, hNewHKey: HKEY): { readonly status: number };

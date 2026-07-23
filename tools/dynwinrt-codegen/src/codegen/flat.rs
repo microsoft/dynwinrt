@@ -1115,7 +1115,7 @@ fn render_method_dts(out: &mut String, m: &FlatMethodMeta) {
         for i in &out_indices {
             let p = &m.params[*i];
             let jname = &jnames[*i];
-            let ty = dts_type_of(&pointee(&p.abi));
+            let ty = dts_return_type_of(&pointee(&p.abi));
             fields.push(format!("readonly {jname}: {ty}"));
         }
         format!("{{ {} }}", fields.join("; "))
