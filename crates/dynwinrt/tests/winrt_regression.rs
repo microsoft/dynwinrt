@@ -1,5 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
+#![cfg(windows)]
 
 use dynwinrt::{InterfaceSignature, MetadataTable, MethodSignature, WinRTValue};
 use windows::Devices::Geolocation::{BasicGeoposition, Geopoint, IGeopoint, IGeopointFactory};
@@ -8,9 +9,19 @@ use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize};
 use windows_core::{GUID, HRESULT, HSTRING, Interface};
 
 fn init_winrt() {
-    // The process may already be initialized by another test; both success and
-    // already-initialized failures are acceptable for these headless WinRT calls.
-    let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
+    // The process may already be initialized by another test. `RoInitialize`
+    // returns `Ok` for S_FALSE (already initialized in the same apartment), and
+    // `RPC_E_CHANGED_MODE` when it is already initialized in a different
+    // apartment — both are acceptable for these headless WinRT calls. Any other
+    // failure is a genuine problem and must not be silently ignored.
+    const RPC_E_CHANGED_MODE: HRESULT = HRESULT(0x8001_0106u32 as i32);
+    if let Err(e) = unsafe { RoInitialize(RO_INIT_MULTITHREADED) } {
+        assert_eq!(
+            e.code(),
+            RPC_E_CHANGED_MODE,
+            "RoInitialize failed unexpectedly (only RPC_E_CHANGED_MODE is benign): {e:?}"
+        );
+    }
 }
 
 fn assert_hstring(value: &WinRTValue, expected: &str) {
