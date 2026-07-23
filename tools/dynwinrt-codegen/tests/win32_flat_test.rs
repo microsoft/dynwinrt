@@ -572,6 +572,44 @@ fn winrt_generation_still_works() {
 
 use dynwinrt_codegen::meta::{FlatApisMeta, FlatMethodMeta, FlatParamMeta};
 
+#[test]
+fn flat_skips_methods_with_64bit_or_float_underlying_enum_params() {
+    use dynwinrt_codegen::types::EnumMember;
+    let enum_param = |ename: &str, underlying: FlatAbiType| FlatParamMeta {
+        name: "flags".into(),
+        abi: FlatAbiType::Enum {
+            namespace: "Fake.Ns".into(),
+            name: ename.into(),
+            underlying: Box::new(underlying),
+            members: vec![EnumMember {
+                name: "A".into(),
+                value: 0,
+                doc: None,
+            }],
+        },
+        direction: FlatDirection::In,
+    };
+    // A method whose enum param has a U64 underlying is NOT faithfully
+    // representable (i32-backed members, number-typed surface) -> must be
+    // skipped fail-loud. A U32-underlying enum param IS representable -> kept.
+    let mut bad = synth_method("BadEnumMethod", FlatAbiType::U32);
+    bad.params = vec![enum_param("BigEnum", FlatAbiType::U64)];
+    let mut good = synth_method("GoodEnumMethod", FlatAbiType::U32);
+    good.params = vec![enum_param("SmallEnum", FlatAbiType::U32)];
+
+    let out = flat::generate_flat_apis_files(&synth_apis(vec![bad, good]));
+    assert!(
+        !out.js.contains("badEnumMethod") && !out.dts.contains("badEnumMethod"),
+        "method with a 64-bit-underlying enum param must be skipped:\n{}",
+        out.js
+    );
+    assert!(
+        out.js.contains("goodEnumMethod"),
+        "method with a 32-bit-underlying enum param must be emitted:\n{}",
+        out.js
+    );
+}
+
 fn synth_method(name: &str, ret: FlatAbiType) -> FlatMethodMeta {
     FlatMethodMeta {
         name: name.into(),

@@ -174,11 +174,15 @@ fn collect_referenced_enum_keys(t: &FlatAbiType, keys: &mut HashSet<(String, Str
     }
 }
 
-/// Returns `Some(reason)` if the given return type has no faithful mapping
-/// to the current `flatInvoke` return-kind ABI. `None` means the type is
-/// representable and the method can be emitted.
-fn unsupported_return_reason(t: &FlatAbiType) -> Option<&'static str> {
-    match t {
+/// True when an enum's underlying ABI type cannot be faithfully represented on
+/// the current JS enum surface. Enum members are `i32`-backed and project as a
+/// `number`-based union, so only 32-bit-or-smaller integer underlyings are
+/// representable. A 64-bit (`I64`/`U64`) or float (`F32`/`F64`) underlying would
+/// silently emit truncated/wrong member constants and an ABI-mismatched calling
+/// convention, so such methods are skipped fail-loud instead.
+fn enum_underlying_unrepresentable(t: &FlatAbiType) -> bool {
+    matches!(
+        t,
         FlatAbiType::Enum { underlying, .. }
             if !matches!(
                 **underlying,
@@ -188,13 +192,21 @@ fn unsupported_return_reason(t: &FlatAbiType) -> Option<&'static str> {
                     | FlatAbiType::U16
                     | FlatAbiType::I32
                     | FlatAbiType::U32
-            ) =>
-        {
-            Some(
-                "enum return type has no supported JS enum return projection for its \
-                 underlying ABI; refusing to emit an unsafe fallback.",
             )
-        }
+    )
+}
+
+/// Returns `Some(reason)` if the given return type has no faithful mapping
+/// to the current `flatInvoke` return-kind ABI. `None` means the type is
+/// representable and the method can be emitted.
+fn unsupported_return_reason(t: &FlatAbiType) -> Option<&'static str> {
+    if enum_underlying_unrepresentable(t) {
+        return Some(
+            "enum return type has a 64-bit/float underlying ABI with no faithful JS \
+             enum projection; refusing to emit an unsafe fallback.",
+        );
+    }
+    match t {
         FlatAbiType::Unknown => Some(
             "return type could not be classified; refusing to emit an ABI-unsafe I32 fallback",
         ),
@@ -203,6 +215,17 @@ fn unsupported_return_reason(t: &FlatAbiType) -> Option<&'static str> {
 }
 
 fn unsupported_param_reason(t: &FlatAbiType) -> Option<&'static str> {
+    // Enum params (by value) OR enum out-params (PtrTo(Enum)) with a 64-bit/float
+    // underlying can't be faithfully represented (i32-backed members, number-typed
+    // surface), so skip rather than emit ABI-mismatched constants/calling convention.
+    if enum_underlying_unrepresentable(t)
+        || matches!(t, FlatAbiType::PtrTo(inner) if enum_underlying_unrepresentable(inner))
+    {
+        return Some(
+            "enum parameter has a 64-bit/float underlying ABI that the JS enum surface \
+             cannot faithfully represent; refusing to emit an ABI-mismatched wrapper.",
+        );
+    }
     match t {
         FlatAbiType::Unknown => Some(
             "parameter type could not be classified as a by-value ABI type; \
