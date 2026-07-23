@@ -1757,9 +1757,11 @@ fn find_default_interface_type(def: &reader::TypeDef, index: &reader::Index) -> 
 
 fn parse_enum_def(def: &reader::TypeDef) -> TypeMeta {
     let mut members = Vec::new();
+    let mut underlying = TypeMeta::I32;
     for field in def.fields() {
         let name = field.name().to_string();
         if name == "value__" {
+            underlying = enum_underlying_type(&field.ty());
             continue; // Skip the underlying value field
         }
         // Enum fields have constant values
@@ -1779,11 +1781,25 @@ fn parse_enum_def(def: &reader::TypeDef) -> TypeMeta {
     TypeMeta::Enum {
         namespace: def.namespace().to_string(),
         name: def.name().to_string(),
-        underlying: Box::new(TypeMeta::I32),
+        underlying: Box::new(underlying),
         members,
         is_flags: def.has_attribute("FlagsAttribute"),
         doc: None,
         deprecated: None,
+    }
+}
+
+fn enum_underlying_type(ty: &windows_metadata::Type) -> TypeMeta {
+    match ty {
+        windows_metadata::Type::I8 => TypeMeta::I8,
+        windows_metadata::Type::U8 => TypeMeta::U8,
+        windows_metadata::Type::I16 => TypeMeta::I16,
+        windows_metadata::Type::U16 => TypeMeta::U16,
+        windows_metadata::Type::I32 => TypeMeta::I32,
+        windows_metadata::Type::U32 => TypeMeta::U32,
+        windows_metadata::Type::I64 => TypeMeta::I64,
+        windows_metadata::Type::U64 => TypeMeta::U64,
+        _ => TypeMeta::I32,
     }
 }
 

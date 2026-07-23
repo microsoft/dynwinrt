@@ -586,21 +586,19 @@ impl DynWinRTValue {
       })
   }
 
-  /// Wrap a pointer/handle (BigInt, Buffer, or another `DynWinRtValue` holding
-  /// an object/raw pointer) as a `WinRTValue::RawPtr` for classic-COM calls
+  /// Wrap a pointer/handle (BigInt, number, Buffer, Uint8Array, or null) as a
+  /// `WinRTValue::RawPtr` for classic-COM calls
   /// with `void*` / HWND / PWSTR / function-pointer parameters.
   ///
   /// Accepts:
   ///   - BigInt: interpreted as a raw pointer value (u64 on x64).
   ///   - Buffer: uses the buffer's byte-pointer directly (does not clone).
   ///     Caller keeps the Buffer alive for the duration of the COM call.
-  ///   - DynWinRtValue: reuses its underlying pointer (Object/RawPtr) or
-  ///     handles Null.
   ///   - null/undefined: null pointer.
   #[napi]
   pub fn pointer(
     #[napi(
-      ts_arg_type = "bigint | number | Buffer | Uint8Array | DynWinRtValue | null | undefined"
+      ts_arg_type = "bigint | number | Buffer | Uint8Array | null | undefined"
     )]
     value: napi::bindgen_prelude::Unknown,
   ) -> napi::Result<DynWinRTValue> {
@@ -712,24 +710,20 @@ impl DynWinRTValue {
       )));
     }
 
-    // Fast path 5: existing DynWinRtValue → reuse its pointer.
+    // Fast path 5: existing DynWinRtValue → reject. Borrowing an Object's raw
+    // COM pointer here makes it indistinguishable from an owned raw pointer to
+    // adoptComPointer(), which can double-release the original wrapper's COM
+    // object. Callers that already have raw pointer bits should pass those bits.
     if let Ok(v) = unsafe { <&DynWinRTValue>::from_napi_value(raw_env, raw_val) } {
-      return match &v.0 {
-        dynwinrt::WinRTValue::Object(o) => {
-          Ok(DynWinRTValue::new(dynwinrt::WinRTValue::RawPtr(o.as_raw())))
-        }
-        dynwinrt::WinRTValue::RawPtr(p) => Ok(DynWinRTValue::new(dynwinrt::WinRTValue::RawPtr(*p))),
-        dynwinrt::WinRTValue::Null => Ok(DynWinRTValue::new(dynwinrt::WinRTValue::RawPtr(
-          std::ptr::null_mut(),
-        ))),
-        _ => Err(napi::Error::from_reason(
-          "pointer(): DynWinRtValue must wrap an object or raw pointer",
-        )),
-      };
+      let kind = v.0.get_type_kind();
+      return Err(napi::Error::from_reason(format!(
+        "pointer(): DynWinRtValue inputs are not accepted (got {:?}); pass raw pointer bits, Buffer/Uint8Array, or null instead",
+        kind
+      )));
     }
 
     Err(napi::Error::from_reason(
-      "pointer(): expected bigint, number, Buffer, Uint8Array, DynWinRtValue, null, or undefined",
+      "pointer(): expected bigint, number, Buffer, Uint8Array, null, or undefined",
     ))
   }
 
@@ -939,8 +933,14 @@ impl DynWinRTValue {
     DynWinRTValue::new(dynwinrt::WinRTValue::I64(value))
   }
   #[napi]
-  pub fn u64(value: i64) -> DynWinRTValue {
-    DynWinRTValue::new(dynwinrt::WinRTValue::U64(value as u64))
+  pub fn u64(value: BigInt) -> napi::Result<DynWinRTValue> {
+    let (negative, value, lossless) = value.get_u64();
+    if negative || !lossless {
+      return Err(napi::Error::from_reason(
+        "DynWinRtValue.u64(): value must fit in an unsigned 64-bit integer",
+      ));
+    }
+    Ok(DynWinRTValue::new(dynwinrt::WinRTValue::U64(value)))
   }
   #[napi]
   pub fn f32(value: f64) -> DynWinRTValue {

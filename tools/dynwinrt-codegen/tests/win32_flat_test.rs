@@ -128,6 +128,13 @@ fn parse_reg_open_key_ex_w() {
         "samDesired must be REG_SAM_FLAGS enum: {:?}",
         sam.abi
     );
+    if let FlatAbiType::Enum { underlying, .. } = &sam.abi {
+        assert!(
+            matches!(**underlying, FlatAbiType::U32),
+            "REG_SAM_FLAGS must preserve its unsigned U32 backing type: {:?}",
+            sam.abi
+        );
+    }
 
     let phk = by("phkResult");
     match &phk.abi {
@@ -139,6 +146,46 @@ fn parse_reg_open_key_ex_w() {
     }
 
     assert_eq!(phk.direction, FlatDirection::Out, "phkResult must be [out]");
+}
+
+#[test]
+fn parse_unsigned_win32_enum_preserves_u32_backing_and_codegen_coerces_high_bit() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+
+    let apis = meta::parse_flat_apis(WIN32_WINMD, REGISTRY_NS, "Apis").unwrap();
+    let m = apis
+        .methods
+        .iter()
+        .find(|m| m.name == "RegSetKeySecurity")
+        .expect("RegSetKeySecurity must be discovered");
+    let security_information = m
+        .params
+        .iter()
+        .find(|p| p.name == "SecurityInformation")
+        .expect("SecurityInformation param must be discovered");
+    match &security_information.abi {
+        FlatAbiType::Enum {
+            name, underlying, ..
+        } => {
+            assert_eq!(name, "OBJECT_SECURITY_INFORMATION");
+            assert!(
+                matches!(**underlying, FlatAbiType::U32),
+                "OBJECT_SECURITY_INFORMATION must preserve unsigned U32 backing: {:?}",
+                security_information.abi
+            );
+        }
+        other => panic!("expected OBJECT_SECURITY_INFORMATION enum, got {:?}", other),
+    }
+
+    let out = flat::generate_flat_apis_files(&apis);
+    assert!(
+        out.js.contains("DynWinRtValue.u32((securityInformation) >>> 0)"),
+        "unsigned high-bit enum args must coerce through >>> 0 before napi u32 conversion:\n{}",
+        out.js
+    );
 }
 
 #[test]

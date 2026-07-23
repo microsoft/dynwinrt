@@ -93,12 +93,15 @@ pass(`GetNativeSystemInfo returned undefined and filled pageSize=${pageSize}, pr
 // but keep this resilient because the Rust flat_call unit is the authoritative
 // float ABI proof.
 const direct2DPath = fixture('generated/flat_returns_direct2d/Apis.js');
+let floatLiveCheckSkipped = undefined;
 if (!existsSync(direct2DPath)) {
-    console.log('[e2e] SKIP: Direct2D fixture not generated');
+    floatLiveCheckSkipped = 'Direct2D fixture not generated';
+    console.log(`[e2e] SKIP: ${floatLiveCheckSkipped}`);
 } else {
     const direct2D = await import(pathToFileURL(direct2DPath).href);
     if (typeof direct2D.d2D1Tan !== 'function') {
-        console.log('[e2e] SKIP: Direct2D D2D1Tan export unavailable in generated fixture');
+        floatLiveCheckSkipped = 'Direct2D D2D1Tan export unavailable in generated fixture';
+        console.log(`[e2e] SKIP: ${floatLiveCheckSkipped}`);
     } else {
         const zero = direct2D.d2D1Tan(0).result;
         const one = direct2D.d2D1Tan(Math.PI / 4).result;
@@ -110,4 +113,8 @@ if (!existsSync(direct2DPath)) {
     }
 }
 
-console.log('PASS');
+if (floatLiveCheckSkipped) {
+    console.log(`PASS (float live check SKIPPED — ${floatLiveCheckSkipped}; covered by Rust unit test)`);
+} else {
+    console.log('PASS');
+}
