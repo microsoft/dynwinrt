@@ -121,6 +121,11 @@ async function runSpec(
       const methodName = toCamelCase(spec.instantiate.method!);
       const args = spec.instantiate.args || [];
       obj = cls[methodName](...args);
+    } else if (instKind === 'constructor') {
+      const args = spec.instantiate.args || [];
+      obj = new cls(...args);
+    } else if (instKind !== 'none') {
+      throw new Error(`Unknown instantiate.kind '${instKind}' for ${spec.class}`);
     }
     // kind === 'none': no instantiation
 
