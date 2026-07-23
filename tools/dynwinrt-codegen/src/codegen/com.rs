@@ -405,14 +405,16 @@ fn render_js(meta: &ComInterfaceMeta, interop: Option<&InteropInfo>) -> String {
     } else {
         "registerInterface"
     };
+    let registration_name = format!("{}.{}", iface.namespace, name);
     let cache_var = format!("_{name}Cache", name = name);
     let iface_var = format!("_{name}", name = name);
     out.push_str(&format!("let {cache_var};\n", cache_var = cache_var));
     out.push_str(&format!(
-        "const {iface_var} = new Proxy({{}}, {{\n    get(_target, prop) {{\n        {cache_var} ??= DynWinRtType.{register_fn}('{name}', IID_{name})\n",
+        "const {iface_var} = new Proxy({{}}, {{\n    get(_target, prop) {{\n        {cache_var} ??= DynWinRtType.{register_fn}('{registration_name}', IID_{name})\n",
         iface_var = iface_var,
         cache_var = cache_var,
         name = name,
+        registration_name = registration_name,
         register_fn = register_fn,
     ));
     for m in &iface.methods {

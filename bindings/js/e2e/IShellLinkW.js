@@ -17,7 +17,7 @@ export const IID_IShellLinkW = WinGuid.parse('000214f9-0000-0000-c000-0000000000
 let _IShellLinkWCache;
 const _IShellLinkW = new Proxy({}, {
     get(_target, prop) {
-        _IShellLinkWCache ??= DynWinRtType.registerInterfaceUnknown('IShellLinkW', IID_IShellLinkW)
+        _IShellLinkWCache ??= DynWinRtType.registerInterfaceUnknown('Windows.Win32.UI.Shell.IShellLinkW', IID_IShellLinkW)
             .addMethod('GetPath', new DynWinRtMethodSig().addIn(DynWinRtType.pointer()).addIn(DynWinRtType.i32Type()).addIn(DynWinRtType.pointer()).addIn(DynWinRtType.u32Type()))
             .addMethod('GetIDList', new DynWinRtMethodSig().addOut(DynWinRtType.pointer()))
             .addMethod('SetIDList', new DynWinRtMethodSig().addIn(DynWinRtType.pointer()))

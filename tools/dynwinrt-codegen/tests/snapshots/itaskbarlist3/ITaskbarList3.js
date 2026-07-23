@@ -7,7 +7,7 @@ export const IID_ITaskbarList3 = WinGuid.parse('ea1afb91-9e28-4b86-90e9-9e9f8a5e
 let _ITaskbarList3Cache;
 const _ITaskbarList3 = new Proxy({}, {
     get(_target, prop) {
-        _ITaskbarList3Cache ??= DynWinRtType.registerInterfaceUnknown('ITaskbarList3', IID_ITaskbarList3)
+        _ITaskbarList3Cache ??= DynWinRtType.registerInterfaceUnknown('Windows.Win32.UI.Shell.ITaskbarList3', IID_ITaskbarList3)
             .addMethod('HrInit', new DynWinRtMethodSig())
             .addMethod('AddTab', new DynWinRtMethodSig().addIn(DynWinRtType.pointer()))
             .addMethod('DeleteTab', new DynWinRtMethodSig().addIn(DynWinRtType.pointer()))

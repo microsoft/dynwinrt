@@ -8,7 +8,7 @@ const IID_SystemMediaTransportControls_default = WinGuid.parse('99fa3ff4-1742-42
 let _ISystemMediaTransportControlsInteropCache;
 const _ISystemMediaTransportControlsInterop = new Proxy({}, {
     get(_target, prop) {
-        _ISystemMediaTransportControlsInteropCache ??= DynWinRtType.registerInterface('ISystemMediaTransportControlsInterop', IID_ISystemMediaTransportControlsInterop)
+        _ISystemMediaTransportControlsInteropCache ??= DynWinRtType.registerInterface('Windows.Win32.System.WinRT.ISystemMediaTransportControlsInterop', IID_ISystemMediaTransportControlsInterop)
             .addMethod('GetForWindow', new DynWinRtMethodSig().addIn(DynWinRtType.pointer()).addIn(DynWinRtType.pointer()).addOut(DynWinRtType.pointer()));
         const value = _ISystemMediaTransportControlsInteropCache[prop];
         return typeof value === 'function' ? value.bind(_ISystemMediaTransportControlsInteropCache) : value;

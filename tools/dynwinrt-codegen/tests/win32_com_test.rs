@@ -357,6 +357,7 @@ fn js_body_uses_cocreateinstance_and_correct_slots() {
         ".js must use registerInterfaceUnknown for classic COM:\n{}",
         js
     );
+    assert!(js.contains("Windows.Win32.UI.Shell.ITaskbarList3"));
 
     // Base-aware slots
     assert!(js.contains("method(3)"), "HrInit slot 3");
