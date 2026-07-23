@@ -891,6 +891,21 @@ impl DynWinRTValue {
   /// `DynWinRtValue.f32(...)`, `DynWinRtValue.f64(...)`, or
   /// `DynWinRtValue.pointer(...)`. Other kinds cause a runtime error.
   ///
+  /// ## ABI / signature safety (IMPORTANT)
+  ///
+  /// This performs a raw libffi call using ONLY the `retKind` and the runtime
+  /// kinds of the `args` you pass — it has no knowledge of the target export's
+  /// real signature. Passing the wrong argument COUNT, the wrong argument ABI
+  /// kinds, or the wrong `retKind` for the actual export produces an ABI
+  /// mismatch that libffi cannot detect: it can read/write the wrong registers
+  /// or stack slots, crash the Node process, or corrupt memory. There is no
+  /// safety net here.
+  ///
+  /// Prefer the generated `dynwinrt-codegen --lang js` wrappers, which encode
+  /// the exact parameter/return ABI taken from the winmd for each export. Only
+  /// call `flatInvoke` directly if you have independently verified the target's
+  /// signature and are marshalling every argument and the return to match it.
+  ///
   /// ## DLL loading (SECURITY)
   ///
   /// This ultimately calls `LoadLibraryW`, which uses the default DLL

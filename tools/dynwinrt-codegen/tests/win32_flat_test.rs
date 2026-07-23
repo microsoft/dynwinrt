@@ -477,6 +477,10 @@ fn winrt_generation_still_works() {
         eprintln!("Skipping: Win32 winmd not available");
         return;
     }
+    if meta::discover_newest_windows_winmd().is_none() {
+        eprintln!("Skipping: Windows SDK Windows.winmd not available (needed to generate Windows.Foundation.Uri)");
+        return;
+    }
     // Use a unique per-process directory under the OS temp dir to avoid
     // cross-test interference when Rust runs tests in parallel and to prevent
     // stale state from a previous interrupted run leaking in.
