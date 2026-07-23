@@ -232,34 +232,31 @@ impl MetadataTable {
     /// Register a named interface. Creates an IID → method table.
     /// Returns a TypeHandle for chaining `.add_method()`.
     pub fn register_interface(self: &Arc<Self>, name: &str, iid: GUID) -> TypeHandle {
-        // See `register_interface_iunknown` for the rationale: always route
-        // through the assertive method-table creator so a stale registration
-        // with a mismatched base_slot fails loudly instead of silently
-        // returning the wrong vtable.
-        self.create_interface_method_table(iid);
         if let Some(kind) = self.get_named_type(name) {
             return self.make(kind);
         }
+        self.create_interface_method_table(iid, 6);
         let kind = TypeKind::Interface(iid);
         self.insert_named_type(name, kind);
         self.make(kind)
     }
 
-    /// Register a named IUnknown-based (classic COM) interface. User methods
-    /// start at vtable slot 3 (QI/AddRef/Release occupy 0/1/2), rather than the
-    /// WinRT default of 6 (IInspectable adds three more slots at 3/4/5).
-    pub fn register_interface_iunknown(self: &Arc<Self>, name: &str, iid: GUID) -> TypeHandle {
-        // Even if the name already resolves to a TypeKind, still route through
-        // `create_interface_method_table_with_base(iid, 3)`. That call is
-        // idempotent when the IID's method table already exists with the same
-        // base_slot, and panics loudly (see arena.rs:131) if a prior
-        // `register_interface` created it with base_slot=6. This closes the
-        // window where callers would otherwise silently reuse a WinRT-shaped
-        // vtable for classic-COM dispatch and get wrong absolute slots.
-        self.create_interface_method_table_with_base(iid, 3);
+    pub(crate) fn register_com_interface(
+        self: &Arc<Self>,
+        name: &str,
+        iid: GUID,
+        base_slot: usize,
+    ) -> TypeHandle {
         if let Some(kind) = self.get_named_type(name) {
+            assert_eq!(
+                kind,
+                TypeKind::Interface(iid),
+                "type name {name:?} is already registered with a different type or IID"
+            );
+            self.create_interface_method_table(iid, base_slot);
             return self.make(kind);
         }
+        self.create_interface_method_table(iid, base_slot);
         let kind = TypeKind::Interface(iid);
         self.insert_named_type(name, kind);
         self.make(kind)

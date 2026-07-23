@@ -5,7 +5,11 @@ use core::ffi::c_void;
 use libffi::middle::{Arg, arg};
 use windows_core::{HRESULT, Interface};
 
-use crate::{abi::AbiValue, signature::Parameter, value::WinRTValue};
+use crate::{
+    abi::{AbiType, AbiValue},
+    signature::{MethodReturn, Parameter},
+    value::WinRTValue,
+};
 
 pub(crate) trait ArgumentList {
     fn get_value(&self, index: usize) -> &WinRTValue;
@@ -117,7 +121,7 @@ pub fn call_fill_array_1in(
     })
 }
 
-use crate::metadata_table::{TypeHandle, TypeKind};
+use crate::metadata_table::TypeHandle;
 
 /// Stable heap storage for array in-param data.
 /// Owns the serialized byte buffer so it stays alive for the FFI call.
@@ -180,12 +184,40 @@ impl Drop for FillArraySlot {
     }
 }
 
-pub fn call_winrt_method_dynamic<A: ArgumentList + ?Sized>(
+fn input_abi_value(value: &WinRTValue) -> windows_core::Result<AbiValue> {
+    let value = match value {
+        WinRTValue::Bool(value) => AbiValue::Bool(u8::from(*value)),
+        WinRTValue::I8(value) => AbiValue::I8(*value),
+        WinRTValue::U8(value) => AbiValue::U8(*value),
+        WinRTValue::I16(value) => AbiValue::I16(*value),
+        WinRTValue::U16(value) => AbiValue::U16(*value),
+        WinRTValue::I32(value) => AbiValue::I32(*value),
+        WinRTValue::U32(value) => AbiValue::U32(*value),
+        WinRTValue::I64(value) => AbiValue::I64(*value),
+        WinRTValue::U64(value) => AbiValue::U64(*value),
+        WinRTValue::F32(value) => AbiValue::F32(*value),
+        WinRTValue::F64(value) => AbiValue::F64(*value),
+        WinRTValue::HResult(value) => AbiValue::I32(value.0),
+        WinRTValue::Enum { value, .. } => AbiValue::I32(*value),
+        WinRTValue::RawPtr(value) => AbiValue::Pointer(*value),
+        WinRTValue::Null => AbiValue::Pointer(std::ptr::null_mut()),
+        _ => {
+            return Err(windows_core::Error::new(
+                windows_core::HRESULT(0x80070057u32 as i32),
+                "unsupported in/out argument value",
+            ));
+        }
+    };
+    Ok(value)
+}
+
+pub fn call_method_dynamic<A: ArgumentList + ?Sized>(
     vtable_index: usize,
     obj: *mut c_void,
     parameters: &[Parameter],
     args: &A,
     out_count: usize,
+    return_kind: &MethodReturn,
     cif: &libffi::middle::Cif,
 ) -> windows_core::Result<Vec<WinRTValue>> {
     use crate::metadata_table::ValueTypeData;
@@ -196,6 +228,7 @@ pub fn call_winrt_method_dynamic<A: ArgumentList + ?Sized>(
     let mut out_values: Vec<AbiValue> = Vec::with_capacity(out_count);
     let mut out_ptrs: Vec<*const std::ffi::c_void> = Vec::with_capacity(out_count);
     let mut struct_out_values: Vec<Option<ValueTypeData>> = Vec::with_capacity(out_count);
+    let mut guid_out_values: Vec<Option<Box<windows_core::GUID>>> = Vec::with_capacity(out_count);
 
     // Array storage: Box'd for pointer stability (addresses don't change after creation)
     let mut array_out_slots: Vec<Box<ArrayOutSlot>> = Vec::new();
@@ -242,6 +275,7 @@ pub fn call_winrt_method_dynamic<A: ArgumentList + ?Sized>(
                 out_values.push(AbiValue::Pointer(std::ptr::null_mut()));
                 out_ptrs.push(std::ptr::null());
                 struct_out_values.push(None);
+                guid_out_values.push(None);
                 array_out_map.push(None);
             } else if p.typ.is_array() {
                 let slot = Box::new(ArrayOutSlot {
@@ -258,18 +292,46 @@ pub fn call_winrt_method_dynamic<A: ArgumentList + ?Sized>(
                 out_values.push(AbiValue::Pointer(std::ptr::null_mut()));
                 out_ptrs.push(std::ptr::null());
                 struct_out_values.push(None);
+                guid_out_values.push(None);
                 fill_array_map.push(None);
-            } else if matches!(p.typ.kind(), TypeKind::Struct(_)) {
-                let val = p.typ.default_value();
+            } else if p.typ.is_guid() {
+                let value = Box::new(windows_core::GUID::zeroed());
+                out_ptrs.push((&*value as *const windows_core::GUID).cast());
+                out_values.push(AbiValue::Pointer(std::ptr::null_mut()));
+                struct_out_values.push(None);
+                guid_out_values.push(Some(value));
+                array_out_map.push(None);
+                fill_array_map.push(None);
+            } else if p.typ.is_struct() {
+                let val = if p.is_in_out() {
+                    args.get_value(p.input_index.expect("in/out input index"))
+                        .as_struct()
+                        .ok_or_else(|| {
+                            windows_core::Error::new(
+                                windows_core::HRESULT(0x80070057u32 as i32),
+                                "expected struct value for in/out parameter",
+                            )
+                        })?
+                        .clone()
+                } else {
+                    p.typ.default_struct_value()
+                };
                 out_ptrs.push(val.as_ptr() as *const std::ffi::c_void);
                 out_values.push(AbiValue::Pointer(std::ptr::null_mut()));
                 struct_out_values.push(Some(val));
+                guid_out_values.push(None);
                 array_out_map.push(None);
                 fill_array_map.push(None);
             } else {
-                out_values.push(p.typ.abi_type().default_value());
+                let value = if p.is_in_out() {
+                    input_abi_value(args.get_value(p.input_index.expect("in/out input index")))?
+                } else {
+                    p.typ.abi_type().default_value()
+                };
+                out_values.push(value);
                 out_ptrs.push(out_values.last().unwrap().as_out_ptr());
                 struct_out_values.push(None);
+                guid_out_values.push(None);
                 array_out_map.push(None);
                 fill_array_map.push(None);
             }
@@ -278,7 +340,7 @@ pub fn call_winrt_method_dynamic<A: ArgumentList + ?Sized>(
 
     // Phase 1b: Pre-compute all array in-param data (must happen before Phase 2)
     for p in parameters {
-        if !p.is_out() && p.typ.is_array() {
+        if p.is_input() && !p.is_out() && p.typ.is_array() {
             let array_data = args
                 .get_value(p.value_index)
                 .as_array()
@@ -323,8 +385,41 @@ pub fn call_winrt_method_dynamic<A: ArgumentList + ?Sized>(
     }
 
     // Phase 3: Call
-    let hr: windows_core::HRESULT = unsafe { cif.call(CodePtr(fptr), &ffi_args) };
-    hr.ok()?;
+    let return_value = unsafe {
+        match return_kind {
+            MethodReturn::HResult => {
+                let hr: windows_core::HRESULT = cif.call(CodePtr(fptr), &ffi_args);
+                hr.ok()?;
+                None
+            }
+            MethodReturn::Void => {
+                cif.call::<()>(CodePtr(fptr), &ffi_args);
+                None
+            }
+            MethodReturn::Value(typ) => {
+                let value = match typ.abi_type() {
+                    AbiType::Bool => AbiValue::Bool(cif.call(CodePtr(fptr), &ffi_args)),
+                    AbiType::I8 => AbiValue::I8(cif.call(CodePtr(fptr), &ffi_args)),
+                    AbiType::U8 => AbiValue::U8(cif.call(CodePtr(fptr), &ffi_args)),
+                    AbiType::I16 => AbiValue::I16(cif.call(CodePtr(fptr), &ffi_args)),
+                    AbiType::U16 => AbiValue::U16(cif.call(CodePtr(fptr), &ffi_args)),
+                    AbiType::I32 => AbiValue::I32(cif.call(CodePtr(fptr), &ffi_args)),
+                    AbiType::U32 => AbiValue::U32(cif.call(CodePtr(fptr), &ffi_args)),
+                    AbiType::I64 => AbiValue::I64(cif.call(CodePtr(fptr), &ffi_args)),
+                    AbiType::U64 => AbiValue::U64(cif.call(CodePtr(fptr), &ffi_args)),
+                    AbiType::F32 => AbiValue::F32(cif.call(CodePtr(fptr), &ffi_args)),
+                    AbiType::F64 => AbiValue::F64(cif.call(CodePtr(fptr), &ffi_args)),
+                    AbiType::Ptr => AbiValue::Pointer(cif.call(CodePtr(fptr), &ffi_args)),
+                };
+                Some(typ.from_out_value(&value).map_err(|error| {
+                    windows_core::Error::new(
+                        windows_core::HRESULT(0x80070057u32 as i32),
+                        &error.message(),
+                    )
+                })?)
+            }
+        }
+    };
 
     // Counted FillArray methods (for example GetMany) carry the actual count
     // as their UInt32 retval. Other FillArray methods write the full capacity.
@@ -335,7 +430,7 @@ pub fn call_winrt_method_dynamic<A: ArgumentList + ?Sized>(
             .iter()
             .rev()
             .find(|param| param.is_out() && !param.is_fill_array())
-            .filter(|param| matches!(param.typ.kind(), TypeKind::U32))
+            .filter(|param| param.typ.is_u32())
             .and_then(|param| match out_values[param.value_index] {
                 AbiValue::U32(value) => Some(value),
                 _ => None,
@@ -343,7 +438,11 @@ pub fn call_winrt_method_dynamic<A: ArgumentList + ?Sized>(
     };
 
     // Phase 4: Extract results
-    let mut result_values: Vec<WinRTValue> = Vec::with_capacity(out_count);
+    let mut result_values: Vec<WinRTValue> =
+        Vec::with_capacity(out_count + usize::from(return_value.is_some()));
+    if let Some(value) = return_value {
+        result_values.push(value);
+    }
     for p in parameters {
         if p.is_out() {
             if let Some(slot_idx) = fill_array_map[p.value_index] {
@@ -383,6 +482,8 @@ pub fn call_winrt_method_dynamic<A: ArgumentList + ?Sized>(
                     )
                 };
                 result_values.push(WinRTValue::Array(array_value));
+            } else if let Some(guid) = guid_out_values[p.value_index].take() {
+                result_values.push(WinRTValue::Guid(*guid));
             } else if let Some(struct_val) = struct_out_values[p.value_index].take() {
                 result_values.push(WinRTValue::Struct(struct_val));
             } else {

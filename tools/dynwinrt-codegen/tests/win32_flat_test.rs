@@ -16,6 +16,7 @@ use std::process::Command;
 
 use dynwinrt_codegen::codegen::com;
 use dynwinrt_codegen::codegen::flat;
+use dynwinrt_codegen::com_metadata;
 use dynwinrt_codegen::meta;
 use dynwinrt_codegen::meta::{FlatAbiType, FlatDirection};
 use dynwinrt_codegen::types::TypeMeta;
@@ -57,7 +58,7 @@ fn discover_flat_apis_for_registry_namespace() {
 
     // The `Apis` class is NOT a COM interface — parse_com_interface should
     // return None (no interface with that name) OR a Some whose IID is empty.
-    let as_com = meta::parse_com_interface(WIN32_WINMD, REGISTRY_NS, "Apis");
+    let as_com = com_metadata::parse_com_interface(WIN32_WINMD, REGISTRY_NS, "Apis");
     if let Some(ci) = as_com {
         assert!(
             ci.interface.iid.is_empty(),
@@ -460,7 +461,7 @@ fn com_interface_generation_still_works() {
         return;
     }
     let com_iface =
-        meta::parse_com_interface(WIN32_WINMD, "Windows.Win32.UI.Shell", "ITaskbarList3")
+        com_metadata::parse_com_interface(WIN32_WINMD, "Windows.Win32.UI.Shell", "ITaskbarList3")
             .expect("ITaskbarList3 must exist");
     let out = com::generate_com_interface_files(&com_iface, WIN32_WINMD)
         .expect("COM codegen must succeed");
@@ -477,7 +478,7 @@ fn winrt_generation_still_works() {
         eprintln!("Skipping: Win32 winmd not available");
         return;
     }
-    if meta::discover_newest_windows_winmd().is_none() {
+    if com_metadata::discover_newest_windows_winmd().is_none() {
         eprintln!("Skipping: Windows SDK Windows.winmd not available (needed to generate Windows.Foundation.Uri)");
         return;
     }

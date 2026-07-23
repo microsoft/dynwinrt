@@ -18,9 +18,10 @@
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
-import { DynWinRtValue } from '../dist/index.js';
+import { DynCom, DynComMethodSig, WinGuid } from '../dist/index.js';
 // Classic-COM interop wrapper: gets the SMTC pointer from an HWND.
 import { ISystemMediaTransportControlsInterop } from './ISystemMediaTransportControlsInterop.js';
+import { acquireHwndBigInt } from './hwnd.mjs';
 
 // The SMTC full-WinRT projection under ./smtc-projected/ is a bulky generated
 // fixture and is intentionally gitignored. On a clean checkout it must be
@@ -54,73 +55,40 @@ function fail(msg) {
     process.exit(1);
 }
 
-function toBigInt(v) {
-    if (typeof v === 'bigint') return v;
-    if (typeof v === 'number') return BigInt(v);
-    if (v && typeof v.asPointerBigint === 'function') return v.asPointerBigint();
-    fail(`cannot convert value to bigint: ${typeof v}`);
-    return 0n; // unreachable
-}
-
-function wideCString(s) {
-    const body = Buffer.from(s, 'utf16le');
-    const out = Buffer.alloc(body.length + 2);
-    body.copy(out, 0);
-    return out;
-}
-
 // SMTC (unlike DTM) is documented as requiring a real top-level window that
-// owns a media session — not the message-only STATIC control. We therefore
-// create a WS_OVERLAPPEDWINDOW-style top-level window here (still hidden — we
-// never call ShowWindow — so the test doesn't flicker anything on screen).
-const WS_OVERLAPPEDWINDOW = 0x00CF0000;
+// owns a media session. The classic-vertical `createTestHwnd()` helper
+// creates a hidden `WS_POPUP` window owned by this process; that has been
+// sufficient for interop dispatch on tested Windows builds.
 
-console.log('[e2e] step 1: create a top-level HWND owned by this process (CreateWindowExW "STATIC", WS_OVERLAPPEDWINDOW)');
-const classNameBuf = wideCString('STATIC');
-const titleBuf     = wideCString('smtc-e2e-test');
-const p = DynWinRtValue.pointer;
-const i = DynWinRtValue.i32;
-const u = DynWinRtValue.u32;
-const NULL_PTR = p(0n);
-
-const hwndValue = DynWinRtValue.flatInvoke(
-    'user32.dll',
-    'CreateWindowExW',
-    'Ptr',
-    [
-        u(0),                        // dwExStyle
-        p(classNameBuf),             // lpClassName = "STATIC"
-        p(titleBuf),                 // lpWindowName
-        u(WS_OVERLAPPEDWINDOW),      // dwStyle (top-level, non-message-only)
-        i(0), i(0), i(100), i(100),   // X, Y, nWidth, nHeight
-        NULL_PTR,                    // hWndParent
-        NULL_PTR,                    // hMenu
-        NULL_PTR,                    // hInstance
-        NULL_PTR,                    // lpParam
-    ],
-);
-const hwndBig = toBigInt(hwndValue);
-console.log(`[e2e]   CreateWindowExW → 0x${hwndBig.toString(16)}`);
-if (hwndBig === 0n) fail('CreateWindowExW returned NULL');
+console.log('[e2e] step 1: acquiring a process-owned HWND via napi createTestHwnd()');
+const hwndBig = acquireHwndBigInt();
+console.log(`[e2e]   HWND → 0x${hwndBig.toString(16)}`);
+if (hwndBig === 0n) fail('acquireHwndBigInt returned NULL');
 
 console.log('[e2e] step 2: ISystemMediaTransportControlsInterop.getForWindow(hwnd)  [HIGH-LEVEL WRAPPER, IInspectable-rooted +6]');
-let smtcStub;
+let smtcRaw;
 try {
     const interop = ISystemMediaTransportControlsInterop.create();
-    smtcStub = interop.getForWindow(hwndBig);
+    smtcRaw = interop.getForWindow(hwndBig);
 } catch (e) {
     fail(`ISystemMediaTransportControlsInterop.getForWindow threw: ${e && e.message ? e.message : e}`);
 }
-if (smtcStub == null) fail('getForWindow returned null');
-console.log(`[e2e]   got SystemMediaTransportControls (companion stub) = ${smtcStub}`);
-if (!smtcStub._obj) fail('companion stub is missing native _obj');
+if (smtcRaw == null) fail('getForWindow returned null');
+console.log(`[e2e]   got SystemMediaTransportControls pointer = ${smtcRaw}`);
 
-console.log('[e2e] step 3: prove liveness via IInspectable::GetRuntimeClassName (companion stub property)');
+console.log('[e2e] step 3: prove liveness via IInspectable::GetRuntimeClassName');
+const inspectable = DynCom.registerIUnknownInterface(
+    'IInspectable_smtc_e2e',
+    WinGuid.parse('af86e2e0-b12d-4c6a-9c5a-d7aa65101e90'),
+)
+    .addMethod('GetIids', new DynComMethodSig().addOut(DynCom.pointerType()).addOut(DynCom.pointerType()))
+    .addMethod('GetRuntimeClassName', new DynComMethodSig().addOut(DynCom.hstringType()))
+    .addMethod('GetTrustLevel', new DynComMethodSig().addOut(DynCom.i32Type()));
 let name;
 try {
-    name = smtcStub.runtimeClassName;
+    name = inspectable.method(4).getString(smtcRaw);
 } catch (e) {
-    fail(`smtcStub.runtimeClassName threw: ${e && e.message ? e.message : e}`);
+    fail(`GetRuntimeClassName threw: ${e && e.message ? e.message : e}`);
 }
 console.log(`[e2e]   runtimeClassName = ${JSON.stringify(name)}`);
 const expected = 'Windows.Media.SystemMediaTransportControls';
@@ -129,7 +97,7 @@ if (name !== expected) fail(`expected runtimeClassName='${expected}', got '${nam
 console.log('[e2e] step 4: MEANINGFUL — exercise real SMTC members through the natural WinRT wrapper');
 // Re-wrap the SAME native pointer with the full WinRT projection.
 // This is still 100% "generated wrapper" code — no manual registerInterface.
-const smtc = SmtcProjected._fromNative(smtcStub._obj);
+const smtc = SmtcProjected._fromNative(smtcRaw);
 
 // (a) round-trip a boolean property.
 console.log('[e2e]   set isPlayEnabled = true');

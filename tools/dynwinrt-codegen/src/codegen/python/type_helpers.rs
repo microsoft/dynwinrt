@@ -207,8 +207,7 @@ pub(super) fn py_method_outputs(method: &MethodMeta) -> Vec<(usize, &TypeMeta)> 
 
     for param in &method.params {
         match param.direction {
-            crate::meta::ParamDirection::Out
-            | crate::meta::ParamDirection::OutStringBuffer { .. } => {
+            crate::meta::ParamDirection::Out => {
                 outputs.push((result_index, &param.typ));
                 result_index += 1;
             }

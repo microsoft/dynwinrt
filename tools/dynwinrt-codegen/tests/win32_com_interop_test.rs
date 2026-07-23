@@ -21,7 +21,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use dynwinrt_codegen::codegen::com;
-use dynwinrt_codegen::meta;
+use dynwinrt_codegen::com_metadata;
 
 const WIN32_WINMD: &str = r"C:\s\win32metadata\Windows.Win32.winmd";
 
@@ -33,7 +33,7 @@ fn win32_available() -> bool {
 /// can auto-resolve the projected class IID. Uses the SAME discovery logic the
 /// codegen itself uses — no pinned version.
 fn newest_windows_winmd_available() -> bool {
-    meta::discover_newest_windows_winmd().is_some()
+    com_metadata::discover_newest_windows_winmd().is_some()
 }
 
 /// 1. IDataTransferManagerInterop parses cleanly, is IUnknown-rooted (+3),
@@ -44,7 +44,7 @@ fn parse_data_transfer_manager_interop() {
         eprintln!("Skipping: Win32 winmd not available");
         return;
     }
-    let com = meta::parse_com_interface(
+    let com = com_metadata::parse_com_interface(
         WIN32_WINMD,
         "Windows.Win32.UI.Shell",
         "IDataTransferManagerInterop",
@@ -71,7 +71,7 @@ fn parse_smtc_interop() {
         eprintln!("Skipping: Win32 winmd not available");
         return;
     }
-    let com = meta::parse_com_interface(
+    let com = com_metadata::parse_com_interface(
         WIN32_WINMD,
         "Windows.Win32.System.WinRT",
         "ISystemMediaTransportControlsInterop",
@@ -99,7 +99,7 @@ fn interop_dts_hides_riid_and_out_ptr_for_datatransfermanager() {
         eprintln!("Skipping: winmd(s) not available");
         return;
     }
-    let com = meta::parse_com_interface(
+    let com = com_metadata::parse_com_interface(
         WIN32_WINMD,
         "Windows.Win32.UI.Shell",
         "IDataTransferManagerInterop",
@@ -153,7 +153,7 @@ fn interop_js_synthesizes_target_iid_for_datatransfermanager() {
         eprintln!("Skipping: winmd(s) not available");
         return;
     }
-    let com = meta::parse_com_interface(
+    let com = com_metadata::parse_com_interface(
         WIN32_WINMD,
         "Windows.Win32.UI.Shell",
         "IDataTransferManagerInterop",
@@ -184,6 +184,11 @@ fn interop_js_synthesizes_target_iid_for_datatransfermanager() {
         ".js must invoke slot 3 for GetForWindow:\n{}",
         js
     );
+    assert!(
+        js.contains("DynCom.adoptComPointer(_raw, IID_DataTransferManager_default)"),
+        ".js must adopt the AddRef-owned void** result:\n{}",
+        js
+    );
 
     // Activation: uses activationFactory (WinRT) for the projected class
     // + QI to the interop IID — NOT CoCreateInstance (which is for classic COM CLSIDs).
@@ -207,7 +212,7 @@ fn smtc_interop_js_uses_inspectable_base_slot_6() {
         eprintln!("Skipping: winmd(s) not available");
         return;
     }
-    let com = meta::parse_com_interface(
+    let com = com_metadata::parse_com_interface(
         WIN32_WINMD,
         "Windows.Win32.System.WinRT",
         "ISystemMediaTransportControlsInterop",
@@ -218,9 +223,10 @@ fn smtc_interop_js_uses_inspectable_base_slot_6() {
     let js = out.js.as_str();
 
     // IInspectable-rooted → register with the WinRT base (registerInterface),
-    // not registerInterfaceUnknown.
+    // not the IUnknown-rooted registration path.
     assert!(
-        js.contains("registerInterface(") && !js.contains("registerInterfaceUnknown("),
+        js.contains("DynCom.registerIInspectableInterface(")
+            && !js.contains("DynCom.registerIUnknownInterface("),
         ".js for an IInspectable-rooted interop must use registerInterface \
          (base_slot=6), got:\n{}",
         js
@@ -240,17 +246,15 @@ fn smtc_interop_js_uses_inspectable_base_slot_6() {
     );
 }
 
-/// 6. The interop wrapper's return object exposes `runtimeClassName` — a
-///    natural, meaningful property that reads via IInspectable::GetRuntimeClassName.
-///    This is what the E2E asserts to prove the returned object is a live WinRT
-///    object (not just a non-null pointer).
+/// 6. The COM projection returns the bridge value without synthesizing a
+///    partial WinRT runtime-class projection.
 #[test]
-fn interop_return_type_exposes_runtime_class_name() {
+fn interop_return_is_explicit_winrt_bridge_value() {
     if !win32_available() || !newest_windows_winmd_available() {
         eprintln!("Skipping: winmd(s) not available");
         return;
     }
-    let com = meta::parse_com_interface(
+    let com = com_metadata::parse_com_interface(
         WIN32_WINMD,
         "Windows.Win32.UI.Shell",
         "IDataTransferManagerInterop",
@@ -259,40 +263,17 @@ fn interop_return_type_exposes_runtime_class_name() {
     let out = com::generate_com_interface_files(&com, WIN32_WINMD)
         .expect("interop codegen must succeed when winmds are present");
 
-    // The projected class `DataTransferManager` is emitted as a separate
-    // sibling file (own .js + .d.ts), NOT inside the interop wrapper's .d.ts.
-    let projected_dts = out
-        .extra_files
-        .iter()
-        .find(|(name, _)| name == "DataTransferManager.d.ts")
-        .map(|(_, content)| content.as_str())
-        .expect(
-            "DataTransferManager.d.ts must be emitted as a projected companion \
-             (via Windows.winmd default-interface lookup)",
-        );
-
     assert!(
-        projected_dts.contains("runtimeClassName"),
-        "DataTransferManager.d.ts must declare a `runtimeClassName` getter:\n{}",
-        projected_dts
-    );
-    assert!(
-        projected_dts.contains("class DataTransferManager"),
-        "DataTransferManager.d.ts must declare `class DataTransferManager`:\n{}",
-        projected_dts
-    );
-    assert!(
-        projected_dts.contains("static getForWindow"),
-        "DataTransferManager.d.ts must expose `static getForWindow(hwnd)`:\n{}",
-        projected_dts
-    );
-
-    // Also confirm the interop's own .d.ts references DataTransferManager as
-    // the natural return type (verified via import).
-    assert!(
-        out.dts.contains("DataTransferManager"),
-        "interop .d.ts must reference the projected return type:\n{}",
         out.dts
+            .contains("getForWindow(appWindow: HWND): DynWinRtValue;"),
+        "interop .d.ts must expose the WinRT bridge value:\n{}",
+        out.dts
+    );
+    assert!(
+        !out.extra_files
+            .iter()
+            .any(|(name, _)| name.starts_with("DataTransferManager.")),
+        "COM codegen must not synthesize a WinRT class projection"
     );
 }
 
@@ -304,7 +285,7 @@ fn interop_generation_is_deterministic() {
         return;
     }
     let mk = || {
-        let com = meta::parse_com_interface(
+        let com = com_metadata::parse_com_interface(
             WIN32_WINMD,
             "Windows.Win32.UI.Shell",
             "IDataTransferManagerInterop",
@@ -328,7 +309,7 @@ fn snapshot_datatransfermanager_interop() {
         eprintln!("Skipping: winmd(s) not available");
         return;
     }
-    let com = meta::parse_com_interface(
+    let com = com_metadata::parse_com_interface(
         WIN32_WINMD,
         "Windows.Win32.UI.Shell",
         "IDataTransferManagerInterop",
@@ -411,8 +392,8 @@ fn fix1_interop_iid_resolution_is_portable_and_asserted() {
 
     // 1. IDataTransferManager: default interface IID must resolve to the
     //    well-known value regardless of which SDK version is installed.
-    let (ns_dtm, _iface_dtm, iid_dtm) = meta::find_runtime_class_default_iid(
-        &meta::discover_newest_windows_winmd().unwrap(),
+    let (ns_dtm, _iface_dtm, iid_dtm) = com_metadata::find_runtime_class_default_iid(
+        &com_metadata::discover_newest_windows_winmd().unwrap(),
         "DataTransferManager",
     )
     .expect("DataTransferManager must resolve via discovered SDK winmd");
@@ -420,8 +401,8 @@ fn fix1_interop_iid_resolution_is_portable_and_asserted() {
     assert_eq!(iid_dtm, "a5caee9b-8708-49d1-8d36-67d25a8da00c");
 
     // 2. SystemMediaTransportControls: same portability contract.
-    let (ns_smtc, _iface_smtc, iid_smtc) = meta::find_runtime_class_default_iid(
-        &meta::discover_newest_windows_winmd().unwrap(),
+    let (ns_smtc, _iface_smtc, iid_smtc) = com_metadata::find_runtime_class_default_iid(
+        &com_metadata::discover_newest_windows_winmd().unwrap(),
         "SystemMediaTransportControls",
     )
     .expect("SystemMediaTransportControls must resolve via discovered SDK winmd");
@@ -431,7 +412,7 @@ fn fix1_interop_iid_resolution_is_portable_and_asserted() {
     // 3. End-to-end: the classic-COM interop wrapper embeds the correct IID.
     //    Test intentionally passes ONLY the Win32 winmd (no Windows.winmd in
     //    winmd_paths) to exercise the newest-SDK fallback path.
-    let com = meta::parse_com_interface(
+    let com = com_metadata::parse_com_interface(
         WIN32_WINMD,
         "Windows.Win32.UI.Shell",
         "IDataTransferManagerInterop",
@@ -448,7 +429,7 @@ fn fix1_interop_iid_resolution_is_portable_and_asserted() {
     // Must NEVER emit the silent NULL riid sentinel that the pre-fix code
     // could produce when resolution failed.
     assert!(
-        !out.js.contains("DynWinRtValue.pointer(0n)"),
+        !out.js.contains("DynCom.pointer(0n)"),
         "generator must not emit a NULL riid — indicates silent failure:\n{}",
         out.js
     );
@@ -463,11 +444,11 @@ fn fix1_interop_iid_prefers_passed_winmds_over_sdk() {
         eprintln!("Skipping: winmd(s) not available");
         return;
     }
-    let sdk = meta::discover_newest_windows_winmd().unwrap();
+    let sdk = com_metadata::discover_newest_windows_winmd().unwrap();
     // Pass Windows.winmd as part of winmd_paths — the generator should find
     // the runtime class immediately without hitting the fallback path.
     let combined = format!("{};{}", WIN32_WINMD, sdk);
-    let com = meta::parse_com_interface(
+    let com = com_metadata::parse_com_interface(
         WIN32_WINMD,
         "Windows.Win32.UI.Shell",
         "IDataTransferManagerInterop",
