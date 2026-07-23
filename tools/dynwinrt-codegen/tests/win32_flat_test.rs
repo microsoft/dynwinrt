@@ -522,7 +522,7 @@ fn synth_apis(methods: Vec<FlatMethodMeta>) -> FlatApisMeta {
 /// A flat export returning I64/U64 must be emitted with an explicit 64-bit
 /// retKind and decoded as BigInt, never through the truncating number path.
 #[test]
-fn flat_skips_i64_return_instead_of_silently_truncating() {
+fn flat_emits_i64_u64_returns_with_bigint_decoders() {
     let apis = synth_apis(vec![
         synth_method("GoodStatus", FlatAbiType::I32),
         synth_method("GetTickCount64", FlatAbiType::U64),
@@ -561,7 +561,7 @@ fn flat_skips_i64_return_instead_of_silently_truncating() {
 /// A flat export returning F32/F64 must be emitted with explicit float
 /// retKinds and decoded as JS numbers via toF64().
 #[test]
-fn flat_skips_float_return_instead_of_silently_mismarshalling() {
+fn flat_emits_float_returns_with_number_decoder() {
     let apis = synth_apis(vec![
         synth_method("Ok", FlatAbiType::I32),
         synth_method("FloatFn", FlatAbiType::F32),
@@ -588,6 +588,61 @@ fn flat_skips_float_return_instead_of_silently_mismarshalling() {
         out.dts.contains("floatFn(arg: number): { readonly result: number }")
             && out.dts.contains("doubleFn(arg: number): { readonly result: number }"),
         ".d.ts must declare F32/F64 returns as number:\n{}",
+        out.dts
+    );
+}
+
+#[test]
+fn flat_bool_return_decodes_boolean_not_number() {
+    let apis = synth_apis(vec![
+        synth_method("ReturnsBool", FlatAbiType::Bool),
+        synth_method("ReturnsBool32", FlatAbiType::Bool32),
+        synth_method("ReturnsI32", FlatAbiType::I32),
+    ]);
+    let out = flat::generate_flat_apis_files(&apis);
+    assert!(
+        out.js.contains("return { result: (_ret.toNumber() !== 0) };"),
+        ".js must decode BOOL returns to boolean:\n{}",
+        out.js
+    );
+    assert!(
+        out.dts.contains("returnsBool(arg: number): { readonly result: boolean }")
+            && out.dts.contains("returnsBool32(arg: number): { readonly result: boolean }"),
+        ".d.ts must declare BOOL returns as boolean:\n{}",
+        out.dts
+    );
+    assert!(
+        out.js.contains("export function returnsI32")
+            && out.js.contains("return { result: _ret.toNumber() };"),
+        "non-bool I32 returns must remain numeric:\n{}",
+        out.js
+    );
+}
+
+#[test]
+fn flat_bool32_out_slot_decodes_boolean_not_number() {
+    let m = FlatMethodMeta {
+        name: "GetFlag".into(),
+        dll: "FAKE.dll".into(),
+        entry_point: "GetFlag".into(),
+        return_type: FlatAbiType::Void,
+        params: vec![FlatParamMeta {
+            name: "enabled".into(),
+            abi: FlatAbiType::PtrTo(Box::new(FlatAbiType::Bool32)),
+            direction: FlatDirection::Out,
+        }],
+        return_is_status: false,
+    };
+    let out = flat::generate_flat_apis_files(&synth_apis(vec![m]));
+    assert!(
+        out.js
+            .contains("enabled: (_enabledSlot.readInt32LE(0) !== 0)"),
+        ".js must decode BOOL out slots to boolean:\n{}",
+        out.js
+    );
+    assert!(
+        out.dts.contains("getFlag(): { readonly enabled: boolean }"),
+        ".d.ts must declare BOOL out slots as boolean:\n{}",
         out.dts
     );
 }

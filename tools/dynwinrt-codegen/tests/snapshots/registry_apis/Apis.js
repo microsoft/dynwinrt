@@ -1200,7 +1200,7 @@ export function regQueryReflectionKey(hBase) {
     const _ret = DynWinRtValue.flatInvoke('ADVAPI32.dll', 'RegQueryReflectionKey', 'I32', [DynWinRtValue.pointer(BigInt(hBase)), DynWinRtValue.pointer(_bIsReflectionDisabledSlot)]);
     return {
         status: _ret.toNumber(),
-        bIsReflectionDisabled: _bIsReflectionDisabledSlot.readInt32LE(0),
+        bIsReflectionDisabled: (_bIsReflectionDisabledSlot.readInt32LE(0) !== 0),
     };
 }
 

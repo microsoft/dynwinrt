@@ -277,6 +277,18 @@ fn flat_ret_kind_literal(t: &FlatAbiType) -> &'static str {
     }
 }
 
+fn flat_ret_decode_expr(t: &FlatAbiType, ret_kind: &str) -> String {
+    match (t, ret_kind) {
+        (FlatAbiType::Bool | FlatAbiType::Bool32, _) => "(_ret.toNumber() !== 0)".to_string(),
+        (_, "Ptr") => "_ret.asPointerBigint()".to_string(),
+        (_, "I64") => "_ret.toI64BigInt()".to_string(),
+        (_, "U64") => "_ret.toU64BigInt()".to_string(),
+        (_, "F32" | "F64") => "_ret.toF64()".to_string(),
+        (_, "Void") => "undefined".to_string(),
+        _ => "_ret.toNumber()".to_string(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Naming
 // ---------------------------------------------------------------------------
@@ -700,14 +712,7 @@ fn render_method_js(out: &mut String, m: &FlatMethodMeta) {
         "    const _ret = DynWinRtValue.flatInvoke('{}', '{}', '{}', [{}]);\n",
         m.dll, m.entry_point, ret_kind, args_line,
     ));
-    let ret_val = match ret_kind {
-        "Ptr" => "_ret.asPointerBigint()".to_string(),
-        "I64" => "_ret.toI64BigInt()".to_string(),
-        "U64" => "_ret.toU64BigInt()".to_string(),
-        "F32" | "F64" => "_ret.toF64()".to_string(),
-        "Void" => "undefined".to_string(),
-        _ => "_ret.toNumber()".to_string(),
-    };
+    let ret_val = flat_ret_decode_expr(&m.return_type, ret_kind);
 
     // Compose the return.
     let has_projected_out = classified
@@ -780,7 +785,11 @@ fn scalar_slot_alloc_and_read(t: &FlatAbiType) -> (String, String) {
         FlatAbiType::U16 | FlatAbiType::Char16 => {
             ("Buffer.alloc(2)".into(), "{slot}.readUInt16LE(0)".into())
         }
-        FlatAbiType::I32 | FlatAbiType::Bool32 => {
+        FlatAbiType::Bool | FlatAbiType::Bool32 => (
+            "Buffer.alloc(4)".into(),
+            "({slot}.readInt32LE(0) !== 0)".into(),
+        ),
+        FlatAbiType::I32 => {
             ("Buffer.alloc(4)".into(), "{slot}.readInt32LE(0)".into())
         }
         FlatAbiType::U32 => ("Buffer.alloc(4)".into(), "{slot}.readUInt32LE(0)".into()),
