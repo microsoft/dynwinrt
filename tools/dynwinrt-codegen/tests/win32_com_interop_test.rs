@@ -77,7 +77,10 @@ fn parse_smtc_interop() {
         "ISystemMediaTransportControlsInterop",
     )
     .expect("ISystemMediaTransportControlsInterop must exist");
-    assert!(!com.is_iunknown_rooted, "SMTC interop derives from IInspectable, not IUnknown");
+    assert!(
+        !com.is_iunknown_rooted,
+        "SMTC interop derives from IInspectable, not IUnknown"
+    );
     assert_eq!(com.base_offset, 6);
     let get_for_window = com
         .interface
@@ -102,7 +105,8 @@ fn interop_dts_hides_riid_and_out_ptr_for_datatransfermanager() {
         "IDataTransferManagerInterop",
     )
     .unwrap();
-    let out = com::generate_com_interface_files(&com, WIN32_WINMD).expect("interop codegen must succeed when winmds are present");
+    let out = com::generate_com_interface_files(&com, WIN32_WINMD)
+        .expect("interop codegen must succeed when winmds are present");
     let dts = out.dts.as_str();
 
     // The natural signature: hwnd only, NO riid, NO out-ptr.
@@ -155,7 +159,8 @@ fn interop_js_synthesizes_target_iid_for_datatransfermanager() {
         "IDataTransferManagerInterop",
     )
     .unwrap();
-    let out = com::generate_com_interface_files(&com, WIN32_WINMD).expect("interop codegen must succeed when winmds are present");
+    let out = com::generate_com_interface_files(&com, WIN32_WINMD)
+        .expect("interop codegen must succeed when winmds are present");
     let js = out.js.as_str();
 
     // The IDataTransferManager default interface IID must be embedded in .js
@@ -208,7 +213,8 @@ fn smtc_interop_js_uses_inspectable_base_slot_6() {
         "ISystemMediaTransportControlsInterop",
     )
     .unwrap();
-    let out = com::generate_com_interface_files(&com, WIN32_WINMD).expect("interop codegen must succeed when winmds are present");
+    let out = com::generate_com_interface_files(&com, WIN32_WINMD)
+        .expect("interop codegen must succeed when winmds are present");
     let js = out.js.as_str();
 
     // IInspectable-rooted → register with the WinRT base (registerInterface),
@@ -250,7 +256,8 @@ fn interop_return_type_exposes_runtime_class_name() {
         "IDataTransferManagerInterop",
     )
     .unwrap();
-    let out = com::generate_com_interface_files(&com, WIN32_WINMD).expect("interop codegen must succeed when winmds are present");
+    let out = com::generate_com_interface_files(&com, WIN32_WINMD)
+        .expect("interop codegen must succeed when winmds are present");
 
     // The projected class `DataTransferManager` is emitted as a separate
     // sibling file (own .js + .d.ts), NOT inside the interop wrapper's .d.ts.
@@ -303,7 +310,8 @@ fn interop_generation_is_deterministic() {
             "IDataTransferManagerInterop",
         )
         .unwrap();
-        com::generate_com_interface_files(&com, WIN32_WINMD).expect("interop codegen must succeed when winmds are present")
+        com::generate_com_interface_files(&com, WIN32_WINMD)
+            .expect("interop codegen must succeed when winmds are present")
     };
     let a = mk();
     let b = mk();
@@ -326,7 +334,8 @@ fn snapshot_datatransfermanager_interop() {
         "IDataTransferManagerInterop",
     )
     .unwrap();
-    let out = com::generate_com_interface_files(&com, WIN32_WINMD).expect("interop codegen must succeed when winmds are present");
+    let out = com::generate_com_interface_files(&com, WIN32_WINMD)
+        .expect("interop codegen must succeed when winmds are present");
 
     let snapshot_dir: PathBuf =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots/idatatransfermanagerinterop");
@@ -387,32 +396,35 @@ fn snapshot_datatransfermanager_interop() {
 #[test]
 fn fix1_interop_iid_resolution_is_portable_and_asserted() {
     if !win32_available() {
-        eprintln!("Skipping fix1_interop_iid_resolution_is_portable_and_asserted: Win32 winmd not available at {}", WIN32_WINMD);
+        eprintln!(
+            "Skipping fix1_interop_iid_resolution_is_portable_and_asserted: Win32 winmd not available at {}",
+            WIN32_WINMD
+        );
         return;
     }
     if !newest_windows_winmd_available() {
-        eprintln!("Skipping fix1_interop_iid_resolution_is_portable_and_asserted: no Windows SDK Windows.winmd discoverable");
+        eprintln!(
+            "Skipping fix1_interop_iid_resolution_is_portable_and_asserted: no Windows SDK Windows.winmd discoverable"
+        );
         return;
     }
 
     // 1. IDataTransferManager: default interface IID must resolve to the
     //    well-known value regardless of which SDK version is installed.
-    let (ns_dtm, _iface_dtm, iid_dtm) =
-        meta::find_runtime_class_default_iid(
-            &meta::discover_newest_windows_winmd().unwrap(),
-            "DataTransferManager",
-        )
-        .expect("DataTransferManager must resolve via discovered SDK winmd");
+    let (ns_dtm, _iface_dtm, iid_dtm) = meta::find_runtime_class_default_iid(
+        &meta::discover_newest_windows_winmd().unwrap(),
+        "DataTransferManager",
+    )
+    .expect("DataTransferManager must resolve via discovered SDK winmd");
     assert_eq!(ns_dtm, "Windows.ApplicationModel.DataTransfer");
     assert_eq!(iid_dtm, "a5caee9b-8708-49d1-8d36-67d25a8da00c");
 
     // 2. SystemMediaTransportControls: same portability contract.
-    let (ns_smtc, _iface_smtc, iid_smtc) =
-        meta::find_runtime_class_default_iid(
-            &meta::discover_newest_windows_winmd().unwrap(),
-            "SystemMediaTransportControls",
-        )
-        .expect("SystemMediaTransportControls must resolve via discovered SDK winmd");
+    let (ns_smtc, _iface_smtc, iid_smtc) = meta::find_runtime_class_default_iid(
+        &meta::discover_newest_windows_winmd().unwrap(),
+        "SystemMediaTransportControls",
+    )
+    .expect("SystemMediaTransportControls must resolve via discovered SDK winmd");
     assert_eq!(ns_smtc, "Windows.Media");
     assert_eq!(iid_smtc, "99fa3ff4-1742-42a6-902e-087d41f965ec");
 

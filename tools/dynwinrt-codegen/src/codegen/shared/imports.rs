@@ -218,7 +218,9 @@ pub(crate) fn method_abi_output_count(method: &MethodMeta) -> usize {
         .filter(|param| {
             matches!(
                 param.direction,
-                ParamDirection::Out | ParamDirection::OutFill
+                ParamDirection::Out
+                    | ParamDirection::OutFill
+                    | ParamDirection::OutStringBuffer { .. }
             )
         })
         .count()
@@ -229,7 +231,7 @@ pub(crate) fn fill_array_output_index(method: &MethodMeta) -> Option<usize> {
     let mut result_index = 0;
     for param in &method.params {
         match param.direction {
-            ParamDirection::Out => result_index += 1,
+            ParamDirection::Out | ParamDirection::OutStringBuffer { .. } => result_index += 1,
             ParamDirection::OutFill => return Some(result_index),
             ParamDirection::In => {}
         }

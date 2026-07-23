@@ -10,7 +10,9 @@ fn projected_method_outputs(method: &MethodMeta) -> Vec<(usize, &TypeMeta)> {
     let mut outputs = Vec::new();
     for param in &method.params {
         match param.direction {
-            ParamDirection::Out | ParamDirection::OutFill => {
+            ParamDirection::Out
+            | ParamDirection::OutFill
+            | ParamDirection::OutStringBuffer { .. } => {
                 outputs.push((result_index, &param.typ));
                 result_index += 1;
             }
