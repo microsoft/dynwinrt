@@ -963,7 +963,7 @@ fn render_dts(meta: &FlatApisMeta) -> String {
     let handle_aliases = collect_handle_aliases(meta);
     for h in &handle_aliases {
         out.push_str(&format!(
-            "/** Opaque Win32 handle. Pass either a raw pointer value as a `bigint` (safe for full 64-bit handle values) or a `number` (only for handles that fit in a JS safe integer, e.g. HWND with small window IDs). Do NOT pass a `Buffer` — `DynWinRtValue.pointer(Buffer)` uses the buffer's own address, not the bytes it contains, so a Buffer of pointer bits would be misinterpreted as a pointer TO an HKEY. */\nexport type {h} = bigint | number;\n"
+            "/** Opaque Win32 handle. Pass either a raw pointer value as a `bigint` (safe for full 64-bit handle values) or a `number` (only for handles that fit in a JS safe integer, e.g. HWND with small window IDs). Do NOT pass a `Buffer` — `DynWinRtValue.pointer(Buffer)` uses the buffer's own address, not the bytes it contains, so a Buffer of pointer bits would be misinterpreted as a pointer TO a `{h}`. */\nexport type {h} = bigint | number;\n"
         ));
     }
     if !handle_aliases.is_empty() {
