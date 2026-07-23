@@ -42,7 +42,10 @@ fn discover_flat_apis_for_registry_namespace() {
         .expect("Registry Apis class should parse as a flat-DllImport container");
     assert_eq!(apis.namespace, REGISTRY_NS);
     assert_eq!(apis.class_name, "Apis");
-    assert!(!apis.methods.is_empty(), "must discover at least one flat method");
+    assert!(
+        !apis.methods.is_empty(),
+        "must discover at least one flat method"
+    );
     let names: Vec<&str> = apis.methods.iter().map(|m| m.name.as_str()).collect();
     for expected in &["RegOpenKeyExW", "RegQueryValueExW", "RegCloseKey"] {
         assert!(
@@ -87,7 +90,9 @@ fn parse_reg_open_key_ex_w() {
     // Return type: WIN32_ERROR is a U32 enum but at the ABI it's a 32-bit int
     // (LSTATUS). The generator projects LSTATUS as a signed number.
     match &m.return_type {
-        FlatAbiType::Enum { name, underlying, .. } => {
+        FlatAbiType::Enum {
+            name, underlying, ..
+        } => {
             assert_eq!(name, "WIN32_ERROR");
             assert!(matches!(**underlying, FlatAbiType::U32 | FlatAbiType::I32));
         }
@@ -131,11 +136,7 @@ fn parse_reg_open_key_ex_w() {
         other => panic!("phkResult must be PtrTo(HKEY): {:?}", other),
     }
 
-    assert_eq!(
-        phk.direction,
-        FlatDirection::Out,
-        "phkResult must be [out]"
-    );
+    assert_eq!(phk.direction, FlatDirection::Out, "phkResult must be [out]");
 }
 
 #[test]
@@ -162,6 +163,40 @@ fn parse_get_proc_address_return_is_pointer() {
         out.js.contains("_ret.asPointerBigint()"),
         "GetProcAddress must decode pointer returns as BigInt:\n{}",
         out.js
+    );
+}
+
+#[test]
+fn reg_connect_registry_ex_projects_status_like_non_ex_variant() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+    let out = generate_registry_apis();
+    for name in ["regConnectRegistryW", "regConnectRegistryExW"] {
+        let idx = out
+            .js
+            .find(&format!("export function {name}"))
+            .unwrap_or_else(|| panic!("{name} must be generated"));
+        let body = &out.js[idx..out.js[idx..].find("\n}\n").map(|end| idx + end).unwrap()];
+        assert!(
+            body.contains("status: _ret.toNumber()"),
+            "{name} must project LSTATUS/WIN32_ERROR-family return as status:\n{body}"
+        );
+        assert!(
+            !body.contains("result: _ret.toNumber()"),
+            "{name} must not project status-code return as result:\n{body}"
+        );
+    }
+
+    let numeric = flat::generate_flat_apis_files(&synth_apis(vec![synth_method(
+        "PlainI32Value",
+        FlatAbiType::I32,
+    )]));
+    assert!(
+        numeric.js.contains("return { result: _ret.toNumber() };"),
+        "plain I32 value returns must still project as result:\n{}",
+        numeric.js
     );
 }
 
@@ -396,10 +431,7 @@ fn no_arg_and_void_returns_are_emitted() {
     let out = generate_registry_apis();
     let js = &out.js;
     let dts = &out.dts;
-    assert!(
-        js.contains("regCloseKey("),
-        ".js must expose regCloseKey"
-    );
+    assert!(js.contains("regCloseKey("), ".js must expose regCloseKey");
     let sig_line = dts
         .lines()
         .find(|l| l.contains("regCloseKey"))
@@ -429,8 +461,8 @@ fn com_interface_generation_still_works() {
     let com_iface =
         meta::parse_com_interface(WIN32_WINMD, "Windows.Win32.UI.Shell", "ITaskbarList3")
             .expect("ITaskbarList3 must exist");
-    let out =
-        com::generate_com_interface_files(&com_iface, WIN32_WINMD).expect("COM codegen must succeed");
+    let out = com::generate_com_interface_files(&com_iface, WIN32_WINMD)
+        .expect("COM codegen must succeed");
     assert!(out.js.contains("class ITaskbarList3"));
     assert!(out.dts.contains("ITaskbarList3"));
 }
@@ -458,10 +490,7 @@ fn winrt_generation_still_works() {
 
     // Invoke the CLI via `cargo run`.
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let workspace_root = manifest_dir
-        .ancestors()
-        .nth(2)
-        .expect("workspace root");
+    let workspace_root = manifest_dir.ancestors().nth(2).expect("workspace root");
     let status = Command::new("cargo")
         .args([
             "run",
@@ -531,7 +560,8 @@ fn flat_emits_i64_u64_returns_with_bigint_decoders() {
     let out = flat::generate_flat_apis_files(&apis);
     assert!(out.js.contains("export function goodStatus"));
     assert!(
-        out.js.contains("flatInvoke('FAKE.dll', 'GetTickCount64', 'U64'"),
+        out.js
+            .contains("flatInvoke('FAKE.dll', 'GetTickCount64', 'U64'"),
         ".js must invoke U64 returns with retKind U64:\n{}",
         out.js
     );
@@ -541,7 +571,8 @@ fn flat_emits_i64_u64_returns_with_bigint_decoders() {
         out.js
     );
     assert!(
-        out.js.contains("flatInvoke('FAKE.dll', 'GetLargeCounter', 'I64'"),
+        out.js
+            .contains("flatInvoke('FAKE.dll', 'GetLargeCounter', 'I64'"),
         ".js must invoke I64 returns with retKind I64:\n{}",
         out.js
     );
@@ -551,8 +582,11 @@ fn flat_emits_i64_u64_returns_with_bigint_decoders() {
         out.js
     );
     assert!(
-        out.dts.contains("getTickCount64(arg: number): { readonly result: bigint }")
-            && out.dts.contains("getLargeCounter(arg: number): { readonly result: bigint }"),
+        out.dts
+            .contains("getTickCount64(arg: number): { readonly result: bigint }")
+            && out
+                .dts
+                .contains("getLargeCounter(arg: number): { readonly result: bigint }"),
         ".d.ts must declare I64/U64 returns as bigint:\n{}",
         out.dts
     );
@@ -585,8 +619,11 @@ fn flat_emits_float_returns_with_number_decoder() {
         out.js
     );
     assert!(
-        out.dts.contains("floatFn(arg: number): { readonly result: number }")
-            && out.dts.contains("doubleFn(arg: number): { readonly result: number }"),
+        out.dts
+            .contains("floatFn(arg: number): { readonly result: number }")
+            && out
+                .dts
+                .contains("doubleFn(arg: number): { readonly result: number }"),
         ".d.ts must declare F32/F64 returns as number:\n{}",
         out.dts
     );
@@ -601,13 +638,17 @@ fn flat_bool_return_decodes_boolean_not_number() {
     ]);
     let out = flat::generate_flat_apis_files(&apis);
     assert!(
-        out.js.contains("return { result: (_ret.toNumber() !== 0) };"),
+        out.js
+            .contains("return { result: (_ret.toNumber() !== 0) };"),
         ".js must decode BOOL returns to boolean:\n{}",
         out.js
     );
     assert!(
-        out.dts.contains("returnsBool(arg: number): { readonly result: boolean }")
-            && out.dts.contains("returnsBool32(arg: number): { readonly result: boolean }"),
+        out.dts
+            .contains("returnsBool(arg: number): { readonly result: boolean }")
+            && out
+                .dts
+                .contains("returnsBool32(arg: number): { readonly result: boolean }"),
         ".d.ts must declare BOOL returns as boolean:\n{}",
         out.dts
     );
@@ -792,7 +833,10 @@ fn flat_dts_return_types_match_js_runtime() {
     // routes to "Ptr". All should surface as `bigint` in the .d.ts.
     let apis = synth_apis(vec![
         synth_method("ReturnsRawPtr", FlatAbiType::Ptr),
-        synth_method("ReturnsPtrToU32", FlatAbiType::PtrTo(Box::new(FlatAbiType::U32))),
+        synth_method(
+            "ReturnsPtrToU32",
+            FlatAbiType::PtrTo(Box::new(FlatAbiType::U32)),
+        ),
         synth_method("ReturnsPWStr", FlatAbiType::PWStr),
         synth_method("ReturnsPStr", FlatAbiType::PStr),
         synth_method(
@@ -895,11 +939,7 @@ fn cli_rejects_non_js_lang_for_flat_apis() {
         "CLI must reject --lang py for a flat-Apis class (got success)"
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        stderr
-    );
+    let combined = format!("{}{}", String::from_utf8_lossy(&output.stdout), stderr);
     assert!(
         combined.contains("--lang py")
             && (combined.contains("flat-Win32") || combined.contains("[DllImport]")),

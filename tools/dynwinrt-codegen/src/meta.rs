@@ -1532,6 +1532,23 @@ fn is_status_return_enum(t: &FlatAbiType) -> bool {
     }
 }
 
+/// Some Win32 metadata rows expose status-code returns as raw `I32` instead
+/// of preserving their LSTATUS/WIN32_ERROR typedef name. Keep this allowlist
+/// narrow so genuine scalar value returns (`MulDiv`, `GetCurrentProcessId`,
+/// etc.) continue to project as `.result`.
+fn is_known_raw_i32_status_return(
+    namespace: &str,
+    method_name: &str,
+    return_type: &FlatAbiType,
+) -> bool {
+    namespace == "Windows.Win32.System.Registry"
+        && matches!(
+            method_name,
+            "RegConnectRegistryExA" | "RegConnectRegistryExW"
+        )
+        && matches!(return_type, FlatAbiType::I32)
+}
+
 fn parse_flat_apis_from_index(
     index: &reader::Index,
     namespace: &str,
@@ -1576,8 +1593,9 @@ fn parse_flat_apis_from_index(
         // after mapping. A plain I32/U32 return (e.g. `GetCurrentProcessId`,
         // `MulDiv`) is a real value, NOT a status code, and must project as
         // `{ result: number }` — see `render_method_js`.
-        let return_is_status =
-            is_status_return_type(&sig.return_type) || is_status_return_enum(&return_type);
+        let return_is_status = is_status_return_type(&sig.return_type)
+            || is_status_return_enum(&return_type)
+            || is_known_raw_i32_status_return(namespace, m.name(), &return_type);
 
         let param_defs: Vec<_> = m.params().filter(|p| p.sequence() > 0).collect();
         // Fail-loud on parameter/signature divergence. Silently truncating
@@ -1647,12 +1665,11 @@ fn parse_flat_apis_from_index(
     })
 }
 
-fn collect_enum(
-    en: TypeMeta,
-    seen: &mut HashSet<(String, String)>,
-    sink: &mut Vec<TypeMeta>,
-) {
-    if let TypeMeta::Enum { namespace, name, .. } = &en {
+fn collect_enum(en: TypeMeta, seen: &mut HashSet<(String, String)>, sink: &mut Vec<TypeMeta>) {
+    if let TypeMeta::Enum {
+        namespace, name, ..
+    } = &en
+    {
         if seen.insert((namespace.clone(), name.clone())) {
             sink.push(en);
         }
@@ -1827,7 +1844,6 @@ fn resolve_named_flat_type(
 fn is_hresult_named(ns: &str, name: &str) -> bool {
     ns == "Windows.Win32.Foundation" && name == "HRESULT"
 }
-
 
 /// Parse an interface's OWN methods (no inheritance flattening) with a caller-
 /// supplied base offset. Used by `parse_com_interface_from_index` to lay out
