@@ -129,12 +129,15 @@ fn interop_dts_hides_riid_and_out_ptr_for_datatransfermanager() {
         dts
     );
 
-    // Return type — must be a NATURAL WinRT type name, not `bigint | Buffer`
-    // and not the raw `unknown` fallback.
-    // For IDataTransferManagerInterop → DataTransferManager.
+    // Return type — must be the explicit WinRT bridge value (`DynWinRtValue`),
+    // NOT the raw `bigint | Buffer` ABI leak and NOT a synthesized WinRT
+    // runtime-class projection. The runtime-class name only ever appears as
+    // part of the interop class name `IDataTransferManagerInterop`, never as
+    // the `getForWindow` return type (asserting a bare `DataTransferManager`
+    // substring would be a false positive that matches the class name).
     assert!(
-        dts.contains("DataTransferManager"),
-        ".d.ts must project the return type as DataTransferManager:\n{}",
+        dts.contains("getForWindow(appWindow: HWND): DynWinRtValue;"),
+        ".d.ts getForWindow must return the DynWinRtValue bridge:\n{}",
         dts
     );
     assert!(
