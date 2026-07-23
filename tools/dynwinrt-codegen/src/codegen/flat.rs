@@ -840,7 +840,13 @@ fn scalar_slot_alloc_and_read(t: &FlatAbiType) -> (String, String) {
             "Buffer.alloc(8)".into(),
             "{slot}.readBigUInt64LE(0)".into(),
         ),
-        FlatAbiType::Enum { underlying, .. } => scalar_slot_alloc_and_read(underlying),
+        FlatAbiType::Enum { underlying, .. } => match **underlying {
+            FlatAbiType::U32 => (
+                "Buffer.alloc(4)".into(),
+                "({slot}.readUInt32LE(0) | 0)".into(),
+            ),
+            _ => scalar_slot_alloc_and_read(underlying),
+        },
         _ => (
             // Fallback: 4-byte slot as an u32 (matches most Win32 DWORDs).
             "Buffer.alloc(4)".into(),
@@ -878,7 +884,12 @@ fn scalar_slot_write(t: &FlatAbiType, value_var: &str) -> WriteExpr {
         FlatAbiType::Handle { .. } => WriteExpr::new(&format!(
             "{{slot}}.writeBigUInt64LE(BigInt({value_var}), 0)"
         )),
-        FlatAbiType::Enum { underlying, .. } => scalar_slot_write(underlying, value_var),
+        FlatAbiType::Enum { underlying, .. } => match **underlying {
+            FlatAbiType::U32 => WriteExpr::new(&format!(
+                "{{slot}}.writeUInt32LE(({value_var}) >>> 0, 0)"
+            )),
+            _ => scalar_slot_write(underlying, value_var),
+        },
         _ => WriteExpr::new(&format!("{{slot}}.writeUInt32LE({value_var}, 0)")),
     }
 }
@@ -916,7 +927,10 @@ fn wrap_arg_js(t: &FlatAbiType, var: &str) -> String {
         // Number.MAX_SAFE_INTEGER ambiguity for full-64-bit handles.
         FlatAbiType::Handle { .. } => format!("DynWinRtValue.pointer(BigInt({var}))"),
         FlatAbiType::Ptr | FlatAbiType::PtrTo(_) => format!("DynWinRtValue.pointer({var})"),
-        FlatAbiType::Enum { underlying, .. } => wrap_arg_js(underlying, var),
+        FlatAbiType::Enum { underlying, .. } => match **underlying {
+            FlatAbiType::U32 => format!("DynWinRtValue.u32(({var}) >>> 0)"),
+            _ => wrap_arg_js(underlying, var),
+        },
         FlatAbiType::Void | FlatAbiType::Unknown => {
             format!("DynWinRtValue.pointer({var})")
         }

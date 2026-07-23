@@ -550,6 +550,10 @@ fn synth_apis(methods: Vec<FlatMethodMeta>) -> FlatApisMeta {
 }
 
 fn synth_enum_meta(namespace: &str, name: &str, member: &str) -> TypeMeta {
+    synth_enum_meta_with_value(namespace, name, member, 0)
+}
+
+fn synth_enum_meta_with_value(namespace: &str, name: &str, member: &str, value: i32) -> TypeMeta {
     use dynwinrt_codegen::types::EnumMember;
 
     TypeMeta::Enum {
@@ -558,7 +562,7 @@ fn synth_enum_meta(namespace: &str, name: &str, member: &str) -> TypeMeta {
         underlying: Box::new(TypeMeta::I32),
         members: vec![EnumMember {
             name: member.into(),
-            value: 0,
+            value,
             doc: None,
         }],
         is_flags: false,
@@ -568,13 +572,17 @@ fn synth_enum_meta(namespace: &str, name: &str, member: &str) -> TypeMeta {
 }
 
 fn synth_enum_abi(namespace: &str, name: &str, member: &str) -> FlatAbiType {
+    synth_enum_abi_with_value(namespace, name, member, 0)
+}
+
+fn synth_enum_abi_with_value(namespace: &str, name: &str, member: &str, value: i32) -> FlatAbiType {
     FlatAbiType::Enum {
         namespace: namespace.into(),
         name: name.into(),
         underlying: Box::new(FlatAbiType::I32),
         members: vec![dynwinrt_codegen::types::EnumMember {
             name: member.into(),
-            value: 0,
+            value,
             doc: None,
         }],
     }
@@ -845,6 +853,84 @@ fn flat_float_params_use_typed_wrappers_not_pointer() {
     assert!(
         !out.js.contains("DynWinRtValue.pointer(precise)"),
         ".js must NOT pointer-wrap F64 (silent mis-marshal):\n{}",
+        out.js
+    );
+}
+
+#[test]
+fn flat_unsigned_enum_high_bit_args_cross_u32_boundary_as_unsigned() {
+    let high_bit_enum = FlatAbiType::Enum {
+        namespace: "Fake.Ns".into(),
+        name: "UnsignedFlags".into(),
+        underlying: Box::new(FlatAbiType::U32),
+        members: vec![dynwinrt_codegen::types::EnumMember {
+            name: "HighBit".into(),
+            value: i32::MIN,
+            doc: None,
+        }],
+    };
+    let method = FlatMethodMeta {
+        name: "UseFlags".into(),
+        dll: "FAKE.dll".into(),
+        entry_point: "UseFlags".into(),
+        return_type: high_bit_enum.clone(),
+        params: vec![
+            FlatParamMeta {
+                name: "flags".into(),
+                abi: high_bit_enum.clone(),
+                direction: FlatDirection::In,
+            },
+            FlatParamMeta {
+                name: "inoutFlags".into(),
+                abi: FlatAbiType::PtrTo(Box::new(high_bit_enum)),
+                direction: FlatDirection::InOut,
+            },
+        ],
+        return_is_status: false,
+    };
+    let apis = FlatApisMeta {
+        namespace: "Fake.Ns".into(),
+        class_name: "Apis".into(),
+        methods: vec![method],
+        referenced_enums: vec![TypeMeta::Enum {
+            namespace: "Fake.Ns".into(),
+            name: "UnsignedFlags".into(),
+            underlying: Box::new(TypeMeta::U32),
+            members: vec![dynwinrt_codegen::types::EnumMember {
+                name: "HighBit".into(),
+                value: i32::MIN,
+                doc: None,
+            }],
+            is_flags: true,
+            doc: None,
+            deprecated: None,
+        }],
+    };
+    let out = flat::generate_flat_apis_files(&apis);
+
+    assert!(
+        out.extra_files
+            .iter()
+            .any(|(name, content)| name == "UnsignedFlags.js"
+                && content.contains("HighBit: -2147483648")),
+        "high-bit enum constants should remain signed i32 values so === comparisons with toNumber() returns keep working: {:?}",
+        out.extra_files
+    );
+    assert!(
+        out.js.contains("DynWinRtValue.u32((flags) >>> 0)"),
+        "unsigned enum input args must coerce signed high-bit constants before napi u32 conversion:\n{}",
+        out.js
+    );
+    assert!(
+        out.js
+            .contains("_inoutFlagsSlot.writeUInt32LE((inoutFlags) >>> 0, 0)"),
+        "unsigned enum inout args must coerce signed high-bit constants before writeUInt32LE:\n{}",
+        out.js
+    );
+    assert!(
+        out.js.contains("result: _ret.toNumber()")
+            && out.js.contains("inoutFlags: (_inoutFlagsSlot.readUInt32LE(0) | 0)"),
+        "unsigned enum returns/out slots should stay signed to match emitted constants:\n{}",
         out.js
     );
 }
