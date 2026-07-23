@@ -340,8 +340,10 @@ fn run() -> Result<(), String> {
                             apis.namespace, apis.class_name));
                     }
                     for ci in &com_interfaces {
-                        offenders.push(format!("{}.{} (classic-COM interface)",
-                            ci.interface.namespace, ci.interface.name));
+                        offenders.push(format!(
+                            "{}.{} (classic-COM interface)",
+                            ci.interface.namespace, ci.interface.name
+                        ));
                     }
                     return Err(format!(
                         "`--lang {}` is not supported for flat-Win32 [DllImport] modules or \
@@ -397,26 +399,30 @@ fn run() -> Result<(), String> {
                 // Emit classic-COM interfaces (standalone; not wired into WinRT index/barrel).
                 if !com_interfaces.is_empty() {
                     for com_iface in &com_interfaces {
-                        let out = com::generate_com_interface_files(com_iface, &winmd)
-                            .map_err(|e| format!("Classic-COM codegen for {} failed: {}", com_iface.interface.name, e))?;
+                        let out =
+                            com::generate_com_interface_files(com_iface, &winmd).map_err(|e| {
+                                format!(
+                                    "Classic-COM codegen for {} failed: {}",
+                                    com_iface.interface.name, e
+                                )
+                            })?;
                         let js_name = format!("{}.js", com_iface.interface.name);
                         let dts_name = format!("{}.d.ts", com_iface.interface.name);
                         if !dry_run {
-                            fs::write(output_dir.join(&js_name), &out.js).map_err(|e| {
-                                format!("Failed to write {}: {}", js_name, e)
-                            })?;
-                            fs::write(output_dir.join(&dts_name), &out.dts).map_err(|e| {
-                                format!("Failed to write {}: {}", dts_name, e)
-                            })?;
+                            fs::write(output_dir.join(&js_name), &out.js)
+                                .map_err(|e| format!("Failed to write {}: {}", js_name, e))?;
+                            fs::write(output_dir.join(&dts_name), &out.dts)
+                                .map_err(|e| format!("Failed to write {}: {}", dts_name, e))?;
                             for (name, content) in &out.extra_files {
-                                fs::write(output_dir.join(name), content).map_err(|e| {
-                                    format!("Failed to write {}: {}", name, e)
-                                })?;
+                                fs::write(output_dir.join(name), content)
+                                    .map_err(|e| format!("Failed to write {}: {}", name, e))?;
                             }
-                            println!("Generated {} ({} .js/.d.ts + {} extras)",
+                            println!(
+                                "Generated {} ({} .js/.d.ts + {} extras)",
                                 com_iface.interface.name,
                                 2,
-                                out.extra_files.len());
+                                out.extra_files.len()
+                            );
                         } else {
                             println!("[dry-run] Would generate {}", com_iface.interface.name);
                         }

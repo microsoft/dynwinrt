@@ -65,6 +65,19 @@ pub fn co_create_instance(clsid: GUID, iid: GUID) -> result::Result<WinRTValue> 
     Ok(WinRTValue::Object(unsafe { IUnknown::from_raw(result) }))
 }
 
+/// Adopt an AddRef-owned COM interface pointer into a managed Object value.
+///
+/// The pointer must represent a caller-owned COM reference (+1). This function
+/// takes ownership with `IUnknown::from_raw` and must not be used for borrowed
+/// pointers.
+pub unsafe fn adopt_com_pointer(ptr: *mut c_void) -> WinRTValue {
+    if ptr.is_null() {
+        WinRTValue::Null
+    } else {
+        WinRTValue::Object(unsafe { IUnknown::from_raw(ptr) })
+    }
+}
+
 pub fn call_method(
     vtable_index: usize,
     obj: *mut c_void,
@@ -208,6 +221,27 @@ mod tests {
         )?;
 
         assert_eq!(wide_to_string(&buffer), expected);
+        Ok(())
+    }
+
+    #[test]
+    fn adopt_com_pointer_accepts_addref_owned_pointer() -> result::Result<()> {
+        let shell_link = shell_link()?.as_object().unwrap();
+        let shell_link_raw = shell_link.as_raw();
+        let borrowed = unsafe { IUnknown::from_raw_borrowed(&shell_link_raw) }.unwrap();
+        let addref_owned = borrowed.clone();
+        let raw = addref_owned.as_raw();
+        std::mem::forget(addref_owned);
+
+        let adopted = unsafe { adopt_com_pointer(raw) };
+        let adopted = adopted.as_object().expect("adopted value must be Object");
+        let table = MetadataTable::new();
+        let iface = shell_link_signature(&table);
+
+        iface.methods[15].call_dynamic(adopted.as_raw(), &[WinRTValue::I32(7)])?;
+        let result = iface.methods[14].call_dynamic(adopted.as_raw(), &[])?;
+
+        assert_eq!(result[0].as_i32().unwrap(), 7);
         Ok(())
     }
 

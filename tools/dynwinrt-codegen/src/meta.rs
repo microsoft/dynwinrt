@@ -15,6 +15,11 @@ pub enum ParamDirection {
     Out,
     /// FillArray: caller allocates buffer, callee fills it.
     OutFill,
+    /// Caller-owned classic-COM string buffer, immediately sized by another
+    /// input parameter.
+    OutStringBuffer {
+        count_param_index: usize,
+    },
 }
 
 /// A single method parameter.
@@ -187,11 +192,17 @@ pub fn find_runtime_class_default_iid(
         // A WinRT runtime class extends System.Object AND carries the
         // WindowsRuntime flag on its type. Interfaces extend nothing;
         // classes extend Object/etc. We filter to actual runtime classes.
-        if !def.flags().contains(windows_metadata::TypeAttributes::WindowsRuntime) {
+        if !def
+            .flags()
+            .contains(windows_metadata::TypeAttributes::WindowsRuntime)
+        {
             continue;
         }
         // Must be a class (not interface/enum/struct).
-        if def.flags().contains(windows_metadata::TypeAttributes::Interface) {
+        if def
+            .flags()
+            .contains(windows_metadata::TypeAttributes::Interface)
+        {
             continue;
         }
         let namespace = def.namespace().to_string();
@@ -201,7 +212,9 @@ pub fn find_runtime_class_default_iid(
                 continue;
             }
             let iface_ty = iface_impl.interface(&[]);
-            let windows_metadata::Type::Name(tn) = &iface_ty else { continue };
+            let windows_metadata::Type::Name(tn) = &iface_ty else {
+                continue;
+            };
             // Resolve concrete (non-generic) interface's IID from its TypeDef.
             if !tn.generics.is_empty() {
                 // Skip generic default interfaces — interop projections don't
@@ -1166,12 +1179,20 @@ fn parse_com_interface_from_index(
         if base.1 == "IUnknown" {
             is_iunknown_rooted = true;
             terminated_at_known_root = true;
-            base_chain.push(("Windows.Win32.System.Com".to_string(), "IUnknown".to_string(), 0));
+            base_chain.push((
+                "Windows.Win32.System.Com".to_string(),
+                "IUnknown".to_string(),
+                0,
+            ));
             break;
         }
         if base.1 == "IInspectable" {
             terminated_at_known_root = true;
-            base_chain.push(("Windows.Foundation".to_string(), "IInspectable".to_string(), 0));
+            base_chain.push((
+                "Windows.Foundation".to_string(),
+                "IInspectable".to_string(),
+                0,
+            ));
             break;
         }
         // Otherwise this base is a real classic-COM interface — count its methods.
@@ -1244,8 +1265,11 @@ fn parse_com_interface_from_index(
         }
     }
     // Assert the invariant that we lined up correctly.
-    debug_assert_eq!(slot_cursor, own_methods_start,
-        "vtable cursor {} != computed own_methods_start {}", slot_cursor, own_methods_start);
+    debug_assert_eq!(
+        slot_cursor, own_methods_start,
+        "vtable cursor {} != computed own_methods_start {}",
+        slot_cursor, own_methods_start
+    );
 
     // Now the leaf's own methods
     let iid = extract_iid(&def);
@@ -1815,7 +1839,6 @@ fn parse_interface_with_offset(
     parse_interface_methods(index, &def, name, namespace, &iid, &[], base_offset)
 }
 
-
 fn parse_interface_type(
     index: &reader::Index,
     interface_type: &windows_metadata::Type,
@@ -1921,6 +1944,7 @@ fn parse_interface_methods(
                 });
             }
         }
+        mark_caller_owned_string_buffers(&mut params);
 
         let return_type = if sig.return_type == windows_metadata::Type::Void {
             None
@@ -2178,6 +2202,54 @@ fn parse_enum_def(def: &reader::TypeDef) -> TypeMeta {
     }
 }
 
+fn mark_caller_owned_string_buffers(params: &mut [ParamMeta]) {
+    if params.len() < 2 {
+        return;
+    }
+    for idx in 0..params.len() - 1 {
+        if params[idx].direction == ParamDirection::Out
+            && is_direct_win32_string_buffer(&params[idx].typ)
+            && params[idx + 1].direction == ParamDirection::In
+            && is_string_buffer_count_param(&params[idx].typ, &params[idx + 1])
+        {
+            params[idx].direction = ParamDirection::OutStringBuffer {
+                count_param_index: idx + 1,
+            };
+        }
+    }
+}
+
+fn is_direct_win32_string_buffer(t: &TypeMeta) -> bool {
+    matches!(
+        t,
+        TypeMeta::Struct { namespace, name, .. }
+            if namespace == "Windows.Win32.Foundation" && (name == "PWSTR" || name == "PSTR")
+    )
+}
+
+fn is_pwstr_type(t: &TypeMeta) -> bool {
+    matches!(
+        t,
+        TypeMeta::Struct {
+            namespace, name, ..
+        } if namespace == "Windows.Win32.Foundation" && name == "PWSTR"
+    )
+}
+
+fn is_string_buffer_count_param(buffer_type: &TypeMeta, p: &ParamMeta) -> bool {
+    let n = p.name.to_ascii_lowercase();
+    matches!(p.typ, TypeMeta::I32 | TypeMeta::U32)
+        && (n.starts_with("cch")
+            || (!is_pwstr_type(buffer_type) && n.starts_with("cb"))
+            || n == "len"
+            || n == "length"
+            || n == "size"
+            || n == "max"
+            || n == "count"
+            || n.starts_with("max")
+            || n.starts_with("size"))
+}
+
 fn map_winmd_type(ty: &windows_metadata::Type, index: &reader::Index) -> TypeMeta {
     map_winmd_type_with_generics(ty, index, &[])
 }
@@ -2389,6 +2461,110 @@ mod tests {
         };
         let name = make_parameterized_name("IIterable`1", &[inner]);
         assert_eq!(name, "IIterable_IVector_Int32");
+    }
+
+    fn pwstr_type() -> TypeMeta {
+        TypeMeta::Struct {
+            namespace: "Windows.Win32.Foundation".into(),
+            name: "PWSTR".into(),
+            fields: vec![crate::types::FieldMeta {
+                name: "Value".into(),
+                typ: TypeMeta::Object,
+            }],
+        }
+    }
+
+    #[test]
+    fn marks_direct_pwstr_plus_adjacent_count_as_out_string_buffer() {
+        let mut params = vec![
+            ParamMeta {
+                name: "pszName".into(),
+                typ: pwstr_type(),
+                direction: ParamDirection::Out,
+            },
+            ParamMeta {
+                name: "cch".into(),
+                typ: TypeMeta::I32,
+                direction: ParamDirection::In,
+            },
+        ];
+        mark_caller_owned_string_buffers(&mut params);
+        assert_eq!(
+            params[0].direction,
+            ParamDirection::OutStringBuffer {
+                count_param_index: 1
+            }
+        );
+    }
+
+    #[test]
+    fn does_not_mark_pwstr_plus_byte_count_as_out_string_buffer() {
+        let mut params = vec![
+            ParamMeta {
+                name: "pszName".into(),
+                typ: pwstr_type(),
+                direction: ParamDirection::Out,
+            },
+            ParamMeta {
+                name: "cbSize".into(),
+                typ: TypeMeta::U32,
+                direction: ParamDirection::In,
+            },
+        ];
+        mark_caller_owned_string_buffers(&mut params);
+        assert_eq!(params[0].direction, ParamDirection::Out);
+    }
+
+    #[test]
+    fn does_not_mark_callee_allocated_pwstr_pointer_object() {
+        let mut params = vec![ParamMeta {
+            name: "ppszName".into(),
+            typ: TypeMeta::Object,
+            direction: ParamDirection::Out,
+        }];
+        mark_caller_owned_string_buffers(&mut params);
+        assert_eq!(params[0].direction, ParamDirection::Out);
+    }
+
+    #[test]
+    fn does_not_mark_generic_object_plus_size() {
+        let mut params = vec![
+            ParamMeta {
+                name: "buffer".into(),
+                typ: TypeMeta::Object,
+                direction: ParamDirection::Out,
+            },
+            ParamMeta {
+                name: "size".into(),
+                typ: TypeMeta::U32,
+                direction: ParamDirection::In,
+            },
+        ];
+        mark_caller_owned_string_buffers(&mut params);
+        assert_eq!(params[0].direction, ParamDirection::Out);
+    }
+
+    #[test]
+    fn does_not_mark_non_adjacent_count() {
+        let mut params = vec![
+            ParamMeta {
+                name: "pszName".into(),
+                typ: pwstr_type(),
+                direction: ParamDirection::Out,
+            },
+            ParamMeta {
+                name: "flags".into(),
+                typ: TypeMeta::U32,
+                direction: ParamDirection::In,
+            },
+            ParamMeta {
+                name: "cch".into(),
+                typ: TypeMeta::I32,
+                direction: ParamDirection::In,
+            },
+        ];
+        mark_caller_owned_string_buffers(&mut params);
+        assert_eq!(params[0].direction, ParamDirection::Out);
     }
 
     #[test]

@@ -87,7 +87,11 @@ pub fn generate_com_interface_files(
 
     extra_files.sort_by(|a, b| a.0.cmp(&b.0));
 
-    Ok(ComGeneratedOutput { js, dts, extra_files })
+    Ok(ComGeneratedOutput {
+        js,
+        dts,
+        extra_files,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -325,7 +329,6 @@ fn resolve_projected_default_iid(
     crate::meta::find_runtime_class_default_iid(&sdk_winmd, simple_class_name)
 }
 
-
 // ---------------------------------------------------------------------------
 // .js rendering
 // ---------------------------------------------------------------------------
@@ -346,6 +349,11 @@ fn render_js(meta: &ComInterfaceMeta, interop: Option<&InteropInfo>) -> String {
     for en in enum_import_names(meta) {
         out.push_str(&format!("import {{ {} }} from './{}.js';\n", en, en));
     }
+    for iface in returned_interface_import_names(meta) {
+        if iface != *name {
+            out.push_str(&format!("import {{ {iface} }} from './{iface}.js';\n"));
+        }
+    }
     // Interop: import the projected class so we can wrap the returned object.
     if let Some(info) = interop {
         if !info.target_iid.is_empty() {
@@ -356,6 +364,20 @@ fn render_js(meta: &ComInterfaceMeta, interop: Option<&InteropInfo>) -> String {
         }
     }
     out.push('\n');
+
+    if has_string_buffer_method(meta) {
+        out.push_str("function _normalizeStringBufferCount(value, name) {\n");
+        out.push_str("    if (!Number.isInteger(value) || value <= 0) throw new TypeError(`${name} must be a positive integer`);\n");
+        out.push_str("    return value;\n");
+        out.push_str("}\n");
+        out.push_str("function _decodeWideString(buffer) {\n");
+        out.push_str("    let end = 0;\n");
+        out.push_str(
+            "    while (end + 1 < buffer.length && buffer.readUInt16LE(end) !== 0) end += 2;\n",
+        );
+        out.push_str("    return buffer.subarray(0, end).toString('utf16le');\n");
+        out.push_str("}\n\n");
+    }
 
     out.push_str(&format!(
         "export const IID_{name} = WinGuid.parse('{iid}');\n",
@@ -466,11 +488,20 @@ fn render_js(meta: &ComInterfaceMeta, interop: Option<&InteropInfo>) -> String {
 
 fn build_method_sig_js(m: &MethodMeta) -> String {
     let mut parts = Vec::new();
-    for p in &m.params {
+    let string_buffer = string_buffer_pattern(m);
+    for (idx, p) in m.params.iter().enumerate() {
         if p.direction == ParamDirection::In {
             parts.push(format!(".addIn({})", ts_type_expr_js(&p.typ)));
+        } else if matches!(p.direction, ParamDirection::OutStringBuffer { .. }) {
+            parts.push(".addIn(DynWinRtType.pointer())".to_string());
         } else if p.direction == ParamDirection::Out {
-            parts.push(format!(".addOut({})", ts_type_expr_js(&p.typ)));
+            if string_buffer.is_some_and(|(_, count_idx, _)| {
+                idx > count_idx && is_optional_find_data_out_after_string_count(p)
+            }) {
+                parts.push(".addIn(DynWinRtType.pointer())".to_string());
+            } else {
+                parts.push(format!(".addOut({})", ts_type_expr_js(&p.typ)));
+            }
         } else if p.direction == ParamDirection::OutFill {
             parts.push(format!(".addOutFill({})", ts_type_expr_js(&p.typ)));
         }
@@ -493,10 +524,11 @@ fn build_method_sig_js(m: &MethodMeta) -> String {
 
 fn emit_method_js(out: &mut String, m: &MethodMeta, iface_var: &str) {
     let camel = camel_case(&m.name);
-    let in_params: Vec<&ParamMeta> = m
+    let in_params: Vec<(usize, &ParamMeta)> = m
         .params
         .iter()
-        .filter(|p| p.direction == ParamDirection::In)
+        .enumerate()
+        .filter(|(_, p)| p.direction == ParamDirection::In)
         .collect();
     let out_params: Vec<&ParamMeta> = m
         .params
@@ -511,13 +543,24 @@ fn emit_method_js(out: &mut String, m: &MethodMeta, iface_var: &str) {
     let param_list: Vec<String> = in_params
         .iter()
         .enumerate()
-        .map(|(i, p)| js_param_name(&p.name, i))
+        .map(|(surface_i, (idx, p))| {
+            let name = js_param_name(&p.name, surface_i);
+            if let Some((_, count_idx, _)) = string_buffer_pattern(m) {
+                if *idx == count_idx {
+                    return format!("{name} = 260");
+                }
+                if *idx > count_idx {
+                    return format!("{name} = 0");
+                }
+            }
+            name
+        })
         .collect();
 
     let args_exprs: Vec<String> = in_params
         .iter()
         .enumerate()
-        .map(|(i, p)| wrap_arg_js(&p.typ, &js_param_name(&p.name, i)))
+        .map(|(i, (_, p))| wrap_arg_js(&p.typ, &js_param_name(&p.name, i)))
         .collect();
 
     out.push_str(&format!(
@@ -525,6 +568,55 @@ fn emit_method_js(out: &mut String, m: &MethodMeta, iface_var: &str) {
         camel = camel,
         params = param_list.join(", ")
     ));
+    if let Some((buffer_idx, count_idx, encoding)) = string_buffer_pattern(m) {
+        let count_surface_idx = in_params
+            .iter()
+            .position(|(idx, _)| *idx == count_idx)
+            .expect("count param must be an input");
+        let count_name = js_param_name(&m.params[count_idx].name, count_surface_idx);
+        if encoding == StringEncoding::Ansi {
+            out.push_str(
+                "        throw new Error('PSTR out buffers are not yet decoded safely');\n",
+            );
+            out.push_str("    }\n");
+            return;
+        }
+        let args: Vec<String> = m
+            .params
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, p)| {
+                if idx == buffer_idx {
+                    Some("DynWinRtValue.pointer(_buffer)".to_string())
+                } else if p.direction == ParamDirection::In {
+                    let surface_idx = in_params
+                        .iter()
+                        .position(|(param_idx, _)| *param_idx == idx)
+                        .expect("input param must have a surface index");
+                    Some(wrap_arg_js(&p.typ, &js_param_name(&p.name, surface_idx)))
+                } else if idx > count_idx && is_optional_find_data_out_after_string_count(p) {
+                    Some("DynWinRtValue.pointer(0n)".to_string())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        out.push_str(&format!(
+            "        {count_name} = _normalizeStringBufferCount({count_name}, '{count_name}');\n"
+        ));
+        out.push_str(&format!(
+            "        const _buffer = Buffer.alloc({count_name} * 2);\n"
+        ));
+        out.push_str(&format!(
+            "        {iface_var}.method({slot}).invoke(this._obj, [{args}]);\n",
+            iface_var = iface_var,
+            slot = m.vtable_index,
+            args = args.join(", ")
+        ));
+        out.push_str("        return _decodeWideString(_buffer);\n");
+        out.push_str("    }\n");
+        return;
+    }
     // Project trailing `[out]` params as JS return values, mirroring how the
     // WinRT codegen already handles out-params (see
     // `codegen/javascript/project/methods.rs` — `is_multi_output` / `invokeAll`).
@@ -549,6 +641,9 @@ fn emit_method_js(out: &mut String, m: &MethodMeta, iface_var: &str) {
                 slot = m.vtable_index,
                 args = args_exprs.join(", ")
             ));
+            if matches!(out_params[0].typ, TypeMeta::Object) {
+                out.push_str("        // TODO: raw COM interface pointer adoption requires preserved pointee metadata.\n");
+            }
             out.push_str(&format!(
                 "        return {};\n",
                 unwrap_return_js(&out_params[0].typ, "_out")
@@ -606,6 +701,9 @@ fn unwrap_return_js(t: &TypeMeta, expr: &str) -> String {
         TypeMeta::Guid => format!("{expr}.toGuid().toString()"),
         TypeMeta::Enum { underlying, .. } => unwrap_return_js(underlying, expr),
         TypeMeta::String => format!("{expr}.toString()"),
+        TypeMeta::Interface { name, iid, .. } if !iid.is_empty() => {
+            format!("{name}._fromNative({expr})")
+        }
         // Object / Interface / RuntimeClass / Struct pointer / etc.
         // Return the raw DynWinRtValue and let the caller decide (e.g. cast).
         _ => expr.to_string(),
@@ -616,6 +714,9 @@ fn unwrap_return_js(t: &TypeMeta, expr: &str) -> String {
 /// swallowed. Projects `[out]` params as the natural return type: 0 outs →
 /// `void`, 1 out → that type, N outs → a tuple.
 fn dts_return_type_for_outs(m: &MethodMeta) -> String {
+    if string_buffer_pattern(m).is_some() {
+        return "string".to_string();
+    }
     let out_params: Vec<&ParamMeta> = m
         .params
         .iter()
@@ -634,9 +735,33 @@ fn dts_return_type_for_outs(m: &MethodMeta) -> String {
     }
 }
 
+fn dts_params_for_method(m: &MethodMeta) -> Vec<String> {
+    let string_buffer = string_buffer_pattern(m);
+    m.params
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.direction == ParamDirection::In)
+        .enumerate()
+        .map(|(surface_i, (idx, p))| {
+            let mut name = js_param_name(&p.name, surface_i);
+            if let Some((_, count_idx, _)) = string_buffer {
+                if idx >= count_idx {
+                    name.push('?');
+                }
+            }
+            format!("{}: {}", name, ts_type_expr_dts(&p.typ))
+        })
+        .collect()
+}
+
 /// Emit an interop method: either natural (hide trailing REFIID + void**) or
 /// plain (fall back to the normal classic-COM emission).
-fn emit_interop_method_js(out: &mut String, im: &InteropMethod, iface_var: &str, info: &InteropInfo) {
+fn emit_interop_method_js(
+    out: &mut String,
+    im: &InteropMethod,
+    iface_var: &str,
+    info: &InteropInfo,
+) {
     let Some(natural_params) = &im.natural_params else {
         // Plain method — reuse the existing pass-through emission.
         if let Some(m) = &im.plain {
@@ -694,7 +819,6 @@ fn emit_interop_method_js(out: &mut String, im: &InteropMethod, iface_var: &str,
     out.push_str("    }\n");
 }
 
-
 // ---------------------------------------------------------------------------
 // .d.ts rendering
 // ---------------------------------------------------------------------------
@@ -709,6 +833,11 @@ fn render_dts(meta: &ComInterfaceMeta, interop: Option<&InteropInfo>) -> String 
     // Node.js `Buffer` is a global type; no import needed. We DO import enum types.
     for en in enum_import_names(meta) {
         out.push_str(&format!("import {{ {} }} from './{}.js';\n", en, en));
+    }
+    for iface in returned_interface_import_names(meta) {
+        if iface != *name {
+            out.push_str(&format!("import {{ {iface} }} from './{iface}.js';\n"));
+        }
     }
     // Interop: import the projected class declaration so return types resolve.
     if let Some(info) = interop {
@@ -733,7 +862,10 @@ fn render_dts(meta: &ComInterfaceMeta, interop: Option<&InteropInfo>) -> String 
         out.push('\n');
     }
 
-    out.push_str(&format!("export declare const IID_{name}: unknown;\n\n", name = name));
+    out.push_str(&format!(
+        "export declare const IID_{name}: unknown;\n\n",
+        name = name
+    ));
 
     out.push_str(&format!("export declare class {name} {{\n", name = name));
     if meta.coclass_clsid.is_some() {
@@ -763,7 +895,11 @@ fn render_dts(meta: &ComInterfaceMeta, interop: Option<&InteropInfo>) -> String 
                         .iter()
                         .enumerate()
                         .map(|(i, p)| {
-                            format!("{}: {}", js_param_name(&p.name, i), ts_type_expr_dts(&p.typ))
+                            format!(
+                                "{}: {}",
+                                js_param_name(&p.name, i),
+                                ts_type_expr_dts(&p.typ)
+                            )
                         })
                         .collect();
                     let ret = if !info.target_iid.is_empty() {
@@ -780,18 +916,7 @@ fn render_dts(meta: &ComInterfaceMeta, interop: Option<&InteropInfo>) -> String 
                 }
                 (None, Some(m)) => {
                     let camel = camel_case(&m.name);
-                    let in_params: Vec<&ParamMeta> = m
-                        .params
-                        .iter()
-                        .filter(|p| p.direction == ParamDirection::In)
-                        .collect();
-                    let ts_params: Vec<String> = in_params
-                        .iter()
-                        .enumerate()
-                        .map(|(i, p)| {
-                            format!("{}: {}", js_param_name(&p.name, i), ts_type_expr_dts(&p.typ))
-                        })
-                        .collect();
+                    let ts_params = dts_params_for_method(m);
                     let ret = match &m.return_type {
                         None => "void".to_string(),
                         // HRESULT is swallowed by the runtime (throw on failure).
@@ -812,18 +937,7 @@ fn render_dts(meta: &ComInterfaceMeta, interop: Option<&InteropInfo>) -> String 
     } else {
         for m in &iface.methods {
             let camel = camel_case(&m.name);
-            let in_params: Vec<&ParamMeta> = m
-                .params
-                .iter()
-                .filter(|p| p.direction == ParamDirection::In)
-                .collect();
-            let ts_params: Vec<String> = in_params
-                .iter()
-                .enumerate()
-                .map(|(i, p)| {
-                    format!("{}: {}", js_param_name(&p.name, i), ts_type_expr_dts(&p.typ))
-                })
-                .collect();
+            let ts_params = dts_params_for_method(m);
             let ret = match &m.return_type {
                 None => "void".to_string(),
                 // HRESULT is swallowed by the runtime (throw on failure).
@@ -903,7 +1017,9 @@ fn render_projected_class_files(
     js.push_str("            .addMethod('GetRuntimeClassName', new DynWinRtMethodSig().addOut(DynWinRtType.hstring()))\n");
     js.push_str("            .addMethod('GetTrustLevel', new DynWinRtMethodSig().addOut(DynWinRtType.i32Type()));\n");
     js.push_str("        const value = _IInspectableCache[prop];\n");
-    js.push_str("        return typeof value === 'function' ? value.bind(_IInspectableCache) : value;\n");
+    js.push_str(
+        "        return typeof value === 'function' ? value.bind(_IInspectableCache) : value;\n",
+    );
     js.push_str("    },\n});\n\n");
 
     js.push_str(&format!("export class {cls} {{\n", cls = info.class_name));
@@ -965,7 +1081,10 @@ fn render_projected_class_files(
     if !handle_aliases.is_empty() {
         dts.push('\n');
     }
-    dts.push_str(&format!("export declare class {cls} {{\n", cls = info.class_name));
+    dts.push_str(&format!(
+        "export declare class {cls} {{\n",
+        cls = info.class_name
+    ));
     dts.push_str(&format!(
         "    /** Wrap an existing native COM pointer (for QueryInterface bridging). */\n    static _fromNative(obj: unknown): {cls};\n",
         cls = info.class_name,
@@ -973,7 +1092,13 @@ fn render_projected_class_files(
     let ts_params: Vec<String> = primary_natural
         .iter()
         .enumerate()
-        .map(|(i, p)| format!("{}: {}", js_param_name(&p.name, i), ts_type_expr_dts(&p.typ)))
+        .map(|(i, p)| {
+            format!(
+                "{}: {}",
+                js_param_name(&p.name, i),
+                ts_type_expr_dts(&p.typ)
+            )
+        })
         .collect();
     dts.push_str(&format!(
         "    /** Get a `{cls}` for the given HWND (projected from `{full_class_name}`). */\n",
@@ -992,7 +1117,6 @@ fn render_projected_class_files(
 
     Some((js, dts))
 }
-
 
 fn collect_handle_aliases(meta: &ComInterfaceMeta) -> Vec<String> {
     let mut set = BTreeSet::new();
@@ -1019,7 +1143,10 @@ fn render_enum_files(en: &TypeMeta) -> (String, String) {
     // .js: a frozen object.
     let mut js = String::new();
     js.push_str("// Generated by dynwinrt-codegen — do not edit\n");
-    js.push_str(&format!("export const {name} = Object.freeze({{\n", name = name));
+    js.push_str(&format!(
+        "export const {name} = Object.freeze({{\n",
+        name = name
+    ));
     for m in members {
         js.push_str(&format!("    {}: {},\n", m.name, m.value));
     }
@@ -1054,9 +1181,84 @@ fn enum_import_names(meta: &ComInterfaceMeta) -> Vec<String> {
         .collect()
 }
 
+fn returned_interface_import_names(meta: &ComInterfaceMeta) -> Vec<String> {
+    let mut set = BTreeSet::new();
+    for m in &meta.interface.methods {
+        for p in &m.params {
+            if p.direction == ParamDirection::Out {
+                if let TypeMeta::Interface { name, iid, .. } = &p.typ {
+                    if !iid.is_empty() {
+                        set.insert(name.clone());
+                    }
+                }
+            }
+        }
+    }
+    set.into_iter().collect()
+}
+
 // ---------------------------------------------------------------------------
 // Type mapping helpers
 // ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StringEncoding {
+    Wide,
+    Ansi,
+}
+
+fn has_string_buffer_method(meta: &ComInterfaceMeta) -> bool {
+    meta.interface
+        .methods
+        .iter()
+        .any(|m| string_buffer_pattern(m).is_some())
+}
+
+fn string_buffer_pattern(m: &MethodMeta) -> Option<(usize, usize, StringEncoding)> {
+    for (idx, p) in m.params.iter().enumerate() {
+        let ParamDirection::OutStringBuffer { count_param_index } = p.direction else {
+            continue;
+        };
+        let encoding = string_buffer_encoding(&p.typ)?;
+        if m.params
+            .get(count_param_index)
+            .is_some_and(|count| count.direction == ParamDirection::In)
+        {
+            return Some((idx, count_param_index, encoding));
+        }
+    }
+    None
+}
+
+fn string_buffer_encoding(t: &TypeMeta) -> Option<StringEncoding> {
+    match t {
+        TypeMeta::Struct {
+            namespace, name, ..
+        } if namespace == "Windows.Win32.Foundation" && name == "PWSTR" => {
+            Some(StringEncoding::Wide)
+        }
+        TypeMeta::Struct {
+            namespace, name, ..
+        } if namespace == "Windows.Win32.Foundation" && name == "PSTR" => {
+            Some(StringEncoding::Ansi)
+        }
+        _ => None,
+    }
+}
+
+fn is_optional_find_data_out_after_string_count(p: &ParamMeta) -> bool {
+    if p.direction != ParamDirection::Out {
+        return false;
+    }
+    let n = p.name.to_ascii_lowercase();
+    if n == "pfd" || n.contains("finddata") || n.contains("find_data") {
+        return true;
+    }
+    matches!(
+        &p.typ,
+        TypeMeta::Struct { name, .. } if name == "WIN32_FIND_DATAW" || name == "WIN32_FIND_DATAA"
+    )
+}
 
 /// TS type expression for the `.d.ts` surface.
 fn ts_type_expr_dts(t: &TypeMeta) -> String {
@@ -1066,16 +1268,27 @@ fn ts_type_expr_dts(t: &TypeMeta) -> String {
     if is_win32_bool(t) {
         return "boolean".into();
     }
+    if is_hresult(t) {
+        return "number".into();
+    }
     if let Some(h) = handle_type_name(t) {
         return h;
     }
     match t {
         TypeMeta::Bool => "boolean".into(),
-        TypeMeta::I8 | TypeMeta::U8 | TypeMeta::I16 | TypeMeta::U16 | TypeMeta::I32 | TypeMeta::U32
-            | TypeMeta::F32 | TypeMeta::F64 | TypeMeta::Char16 => "number".into(),
+        TypeMeta::I8
+        | TypeMeta::U8
+        | TypeMeta::I16
+        | TypeMeta::U16
+        | TypeMeta::I32
+        | TypeMeta::U32
+        | TypeMeta::F32
+        | TypeMeta::F64
+        | TypeMeta::Char16 => "number".into(),
         TypeMeta::I64 | TypeMeta::U64 => "bigint".into(),
         TypeMeta::String => "string".into(),
         TypeMeta::Guid => "string".into(),
+        TypeMeta::Interface { name, iid, .. } if !iid.is_empty() => name.clone(),
         TypeMeta::Enum { name, .. } => name.clone(),
         TypeMeta::Struct { name, .. } => name.clone(),
         // Pointer-to-struct or unknown — opaque bigint|Buffer at the surface.
@@ -1088,6 +1301,9 @@ fn ts_type_expr_js(t: &TypeMeta) -> String {
     // Win32 BOOL marshals as a 32-bit int at the ABI (Win32 BOOL is `int`),
     // NOT an opaque pointer. Mirrors how enums map to their underlying i32.
     if is_win32_bool(t) {
+        return "DynWinRtType.i32Type()".into();
+    }
+    if is_hresult(t) {
         return "DynWinRtType.i32Type()".into();
     }
     if handle_type_name(t).is_some() {
@@ -1119,6 +1335,9 @@ fn wrap_arg_js(t: &TypeMeta, var: &str) -> String {
     // numerics are preserved so callers passing `1`/`0` still work.
     if is_win32_bool(t) {
         return format!("DynWinRtValue.i32({var} ? 1 : 0)", var = var);
+    }
+    if is_hresult(t) {
+        return format!("DynWinRtValue.i32({var})", var = var);
     }
     if handle_type_name(t).is_some() {
         return format!("DynWinRtValue.pointer({var})", var = var);
@@ -1155,7 +1374,11 @@ fn handle_type_name(t: &TypeMeta) -> Option<String> {
         return None;
     }
     match t {
-        TypeMeta::Struct { namespace, name, fields } => {
+        TypeMeta::Struct {
+            namespace,
+            name,
+            fields,
+        } => {
             if !is_win32_handle_namespace(namespace) {
                 return None;
             }
@@ -1274,12 +1497,12 @@ fn js_param_name(raw: &str, index: usize) -> String {
     }
     // Guard against JS reserved words.
     match out.as_str() {
-        "class" | "return" | "function" | "default" | "this" | "new" | "delete"
-        | "let" | "const" | "var" | "if" | "else" | "for" | "while" | "do" | "switch"
-        | "case" | "break" | "continue" | "true" | "false" | "null" | "undefined"
-        | "in" | "of" | "typeof" | "instanceof" | "throw" | "try" | "catch" | "finally"
-        | "yield" | "async" | "await" | "with" | "void" | "public" | "private" | "protected"
-        | "package" | "static" | "import" | "export" | "extends" | "super" | "arguments" => {
+        "class" | "return" | "function" | "default" | "this" | "new" | "delete" | "let"
+        | "const" | "var" | "if" | "else" | "for" | "while" | "do" | "switch" | "case"
+        | "break" | "continue" | "true" | "false" | "null" | "undefined" | "in" | "of"
+        | "typeof" | "instanceof" | "throw" | "try" | "catch" | "finally" | "yield" | "async"
+        | "await" | "with" | "void" | "public" | "private" | "protected" | "package" | "static"
+        | "import" | "export" | "extends" | "super" | "arguments" => {
             format!("{}_", out)
         }
         _ => out,
@@ -1292,9 +1515,8 @@ fn strip_hungarian(s: &str) -> &str {
     // like `h`, `p`, `i` cause too many false positives on real method-param
     // names (e.g. `hwnd` starts with `h` but isn't Hungarian; `pButton` is).
     let prefixes = [
-        "lpwsz", "pwsz", "lpsz", "psz", "lpsz", "pwstr", "pcwstr",
-        "hwnd", "dw", "sz", "cb", "cx", "cy", "cw", "ch", "cn", "cc",
-        "lp", "np", "ph", "pd", "pf", "pv", "ppv", "pp", "wsz",
+        "lpwsz", "pwsz", "lpsz", "psz", "lpsz", "pwstr", "pcwstr", "hwnd", "dw", "sz", "cb", "cx",
+        "cy", "cw", "ch", "cn", "cc", "lp", "np", "ph", "pd", "pf", "pv", "ppv", "pp", "wsz",
     ];
     for p in prefixes {
         if let Some(rest) = s.strip_prefix(p) {
@@ -1369,10 +1591,22 @@ mod tests {
             namespace: "Windows.Foundation".into(),
             name: "Rect".into(),
             fields: vec![
-                crate::types::FieldMeta { name: "X".into(), typ: TypeMeta::F32 },
-                crate::types::FieldMeta { name: "Y".into(), typ: TypeMeta::F32 },
-                crate::types::FieldMeta { name: "Width".into(), typ: TypeMeta::F32 },
-                crate::types::FieldMeta { name: "Height".into(), typ: TypeMeta::F32 },
+                crate::types::FieldMeta {
+                    name: "X".into(),
+                    typ: TypeMeta::F32,
+                },
+                crate::types::FieldMeta {
+                    name: "Y".into(),
+                    typ: TypeMeta::F32,
+                },
+                crate::types::FieldMeta {
+                    name: "Width".into(),
+                    typ: TypeMeta::F32,
+                },
+                crate::types::FieldMeta {
+                    name: "Height".into(),
+                    typ: TypeMeta::F32,
+                },
             ],
         };
         assert!(handle_type_name(&rect).is_none());
@@ -1396,8 +1630,10 @@ mod tests {
         let b = win32_bool_struct();
         // Sanity: it's the exact shape of a handle (single Value: I32) — the
         // special-case must WIN over the generic handle heuristic.
-        assert!(handle_type_name(&b).is_none(),
-            "BOOL must not be emitted as an opaque handle typedef");
+        assert!(
+            handle_type_name(&b).is_none(),
+            "BOOL must not be emitted as an opaque handle typedef"
+        );
     }
 
     #[test]
@@ -1411,6 +1647,56 @@ mod tests {
         assert_eq!(
             wrap_arg_js(&b, "fFullscreen"),
             "DynWinRtValue.i32(fFullscreen ? 1 : 0)"
+        );
+    }
+
+    #[test]
+    fn hresult_input_projects_as_number_and_i32_value() {
+        let hr = make_hresult();
+        assert_eq!(ts_type_expr_dts(&hr), "number");
+        assert_eq!(ts_type_expr_js(&hr), "DynWinRtType.i32Type()");
+        assert_eq!(wrap_arg_js(&hr, "hr"), "DynWinRtValue.i32(hr)");
+
+        let m = MethodMeta {
+            name: "Close".into(),
+            vtable_index: 4,
+            params: vec![ParamMeta {
+                name: "hr".into(),
+                typ: hr,
+                direction: ParamDirection::In,
+            }],
+            return_type: Some(make_hresult()),
+            ..Default::default()
+        };
+        let com = plain_iface_with_method(m);
+        let js = render_js(&com, None);
+        let dts = render_dts(&com, None);
+        assert!(
+            js.contains(
+                ".addMethod('Close', new DynWinRtMethodSig().addIn(DynWinRtType.i32Type()))"
+            ),
+            ".js must register HRESULT in-param as i32:\n{}",
+            js
+        );
+        assert!(
+            js.contains("DynWinRtValue.i32(hr)"),
+            ".js must pass HRESULT by value as i32:\n{}",
+            js
+        );
+        assert!(
+            !js.contains("DynWinRtValue.pointer(hr)"),
+            ".js must not pass HRESULT as a pointer:\n{}",
+            js
+        );
+        assert!(
+            dts.contains("close(hr: number): void;"),
+            ".d.ts must type HRESULT in-param as number:\n{}",
+            dts
+        );
+        assert!(
+            !dts.contains("HRESULT"),
+            ".d.ts must not expose an undefined HRESULT alias:\n{}",
+            dts
         );
     }
 
@@ -1455,9 +1741,8 @@ mod tests {
             return_type: Some(make_hresult()),
             ..Default::default()
         };
-        let natural = method_is_interop_shape(&m).expect(
-            "REFIID-shaped trailing in-param named `riid` must be recognised as interop",
-        );
+        let natural = method_is_interop_shape(&m)
+            .expect("REFIID-shaped trailing in-param named `riid` must be recognised as interop");
         // Natural in-params = every in EXCEPT the trailing REFIID.
         assert_eq!(natural.len(), 1);
         assert_eq!(natural[0].name, "appWindow");
@@ -1926,13 +2211,118 @@ mod tests {
             js
         );
         assert!(
-            !js.contains("return _out") && !js.contains("return _r") && !js.contains("return [") ,
+            !js.contains("return _out") && !js.contains("return _r") && !js.contains("return ["),
             ".js OutFill must not return anything (avoid half-broken projection):\n{}",
             js
         );
         assert!(
             dts.contains("getPath(cch: number): void;"),
             ".d.ts OutFill must stay `void`:\n{}",
+            dts
+        );
+    }
+
+    fn pwstr_struct() -> TypeMeta {
+        TypeMeta::Struct {
+            namespace: "Windows.Win32.Foundation".into(),
+            name: "PWSTR".into(),
+            fields: vec![crate::types::FieldMeta {
+                name: "Value".into(),
+                typ: TypeMeta::Object,
+            }],
+        }
+    }
+
+    #[test]
+    fn out_string_buffer_allocates_decodes_and_returns_string() {
+        let m = MethodMeta {
+            name: "GetDescription".into(),
+            vtable_index: 6,
+            params: vec![
+                ParamMeta {
+                    name: "pszName".into(),
+                    typ: pwstr_struct(),
+                    direction: ParamDirection::OutStringBuffer {
+                        count_param_index: 1,
+                    },
+                },
+                ParamMeta {
+                    name: "cch".into(),
+                    typ: TypeMeta::I32,
+                    direction: ParamDirection::In,
+                },
+            ],
+            return_type: Some(make_hresult()),
+            ..Default::default()
+        };
+        let com = plain_iface_with_method(m);
+        let js = render_js(&com, None);
+        let dts = render_dts(&com, None);
+        assert!(
+            js.contains("function _normalizeStringBufferCount"),
+            ".js must emit string buffer validation helper:\n{}",
+            js
+        );
+        assert!(
+            js.contains(".addMethod('GetDescription', new DynWinRtMethodSig().addIn(DynWinRtType.pointer()).addIn(DynWinRtType.i32Type()))"),
+            ".js must register string buffer as an input pointer:\n{}",
+            js
+        );
+        assert!(
+            js.contains("getDescription(cch = 260)") && js.contains("Buffer.alloc(cch * 2)"),
+            ".js must default cch and allocate a UTF-16 buffer:\n{}",
+            js
+        );
+        assert!(
+            js.contains("return _decodeWideString(_buffer);"),
+            ".js must return the decoded wide string:\n{}",
+            js
+        );
+        assert!(
+            dts.contains("getDescription(cch?: number): string;"),
+            ".d.ts must expose optional count and string return:\n{}",
+            dts
+        );
+    }
+
+    #[test]
+    fn interface_out_param_projects_as_typed_wrapper() {
+        let m = MethodMeta {
+            name: "GetThing".into(),
+            vtable_index: 7,
+            params: vec![ParamMeta {
+                name: "thing".into(),
+                typ: TypeMeta::Interface {
+                    namespace: "Windows.Win32.System.Com".into(),
+                    name: "IThing".into(),
+                    iid: "11111111-2222-3333-4444-555555555555".into(),
+                },
+                direction: ParamDirection::Out,
+            }],
+            return_type: Some(make_hresult()),
+            ..Default::default()
+        };
+        let com = plain_iface_with_method(m);
+        let js = render_js(&com, None);
+        let dts = render_dts(&com, None);
+        assert!(
+            js.contains("import { IThing } from './IThing.js';"),
+            ".js must import the returned interface wrapper:\n{}",
+            js
+        );
+        assert!(
+            js.contains("return IThing._fromNative(_out);"),
+            ".js must wrap the returned COM object in the typed interface wrapper:\n{}",
+            js
+        );
+        assert!(
+            dts.contains("import { IThing } from './IThing.js';"),
+            ".d.ts must import the returned interface type:\n{}",
+            dts
+        );
+        assert!(
+            dts.contains("getThing(): IThing;"),
+            ".d.ts must return the typed interface wrapper:\n{}",
             dts
         );
     }
