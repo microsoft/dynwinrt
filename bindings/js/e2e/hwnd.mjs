@@ -11,14 +11,16 @@
 // napi `createTestHwnd()` export, which creates a hidden `WS_POPUP`
 // window in the Node process using the pre-registered `STATIC` class.
 
-import { DynWinRtValue } from '../dist/index.js';
+import { DynCom, roInitialize } from '../dist/index.js';
+
+roInitialize(1);
 
 /**
  * Return a valid Win32 HWND owned by the current process, as a bigint.
  * Throws if window creation fails.
  */
 export function acquireHwndBigInt() {
-    const hwnd = DynWinRtValue.createTestHwnd();
+    const hwnd = DynCom.createTestHwnd();
     // napi BigInt → JS bigint.
     const n = typeof hwnd === 'bigint' ? hwnd : BigInt(hwnd);
     if (n === 0n) {

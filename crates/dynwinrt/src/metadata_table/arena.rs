@@ -40,8 +40,6 @@ pub(super) struct EnumData {
 pub(super) struct InterfaceMethodTable {
     pub(super) method_names: Vec<String>,
     pub(super) method_indices: Vec<u32>,
-    /// First user-method vtable slot for this interface.
-    /// 6 for IInspectable-based (WinRT) interfaces, 3 for IUnknown-based (classic COM).
     pub(super) base_slot: usize,
 }
 
@@ -116,30 +114,19 @@ impl MetadataTable {
     // -----------------------------------------------------------------------
 
     /// Create an interface method table. Called only when dedup already checked by caller.
-    pub(super) fn create_interface_method_table(&self, iid: GUID) {
-        self.create_interface_method_table_with_base(iid, 6);
-    }
-
-    /// Create an interface method table with a specific base vtable slot.
-    /// 6 = IInspectable-based (WinRT), 3 = IUnknown-based (classic COM).
-    ///
-    /// If a method table for this IID already exists, its `base_slot` MUST
-    /// match `base_slot`; otherwise subsequent method registrations for the
+    /// If a method table for this IID already exists, its base MUST match;
+    /// otherwise subsequent method registrations for the
     /// IID would compute wrong vtable indices for one of the callers.
-    /// Failing loudly is safer than silently keeping the first-registered
-    /// base slot (as `or_insert_with` would).
-    pub(super) fn create_interface_method_table_with_base(&self, iid: GUID, base_slot: usize) {
+    pub(super) fn create_interface_method_table(&self, iid: GUID, base_slot: usize) {
+        assert!(matches!(base_slot, 3 | 6));
         let mut tables = self.interface_methods.write().unwrap();
         match tables.entry(iid) {
             std::collections::hash_map::Entry::Occupied(existing) => {
                 let existing_base = existing.get().base_slot;
                 assert_eq!(
                     existing_base, base_slot,
-                    "interface IID {:?} registered twice with conflicting base slots \
-                     (existing={}, new={}). This would silently produce wrong vtable \
-                     indices; each IID must be registered with a single base_slot \
-                     (3 for IUnknown-based classic COM, 6 for IInspectable/WinRT).",
-                    iid, existing_base, base_slot,
+                    "interface IID {iid:?} registered twice with conflicting bases \
+                     (existing={existing_base}, new={base_slot})"
                 );
             }
             std::collections::hash_map::Entry::Vacant(v) => {

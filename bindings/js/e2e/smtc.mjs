@@ -18,7 +18,7 @@
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
-import { DynWinRtValue } from '../dist/index.js';
+import { DynCom, DynComMethodSig, WinGuid } from '../dist/index.js';
 // Classic-COM interop wrapper: gets the SMTC pointer from an HWND.
 import { ISystemMediaTransportControlsInterop } from './ISystemMediaTransportControlsInterop.js';
 import { acquireHwndBigInt } from './hwnd.mjs';
@@ -66,23 +66,29 @@ console.log(`[e2e]   HWND → 0x${hwndBig.toString(16)}`);
 if (hwndBig === 0n) fail('acquireHwndBigInt returned NULL');
 
 console.log('[e2e] step 2: ISystemMediaTransportControlsInterop.getForWindow(hwnd)  [HIGH-LEVEL WRAPPER, IInspectable-rooted +6]');
-let smtcStub;
+let smtcRaw;
 try {
     const interop = ISystemMediaTransportControlsInterop.create();
-    smtcStub = interop.getForWindow(hwndBig);
+    smtcRaw = interop.getForWindow(hwndBig);
 } catch (e) {
     fail(`ISystemMediaTransportControlsInterop.getForWindow threw: ${e && e.message ? e.message : e}`);
 }
-if (smtcStub == null) fail('getForWindow returned null');
-console.log(`[e2e]   got SystemMediaTransportControls (companion stub) = ${smtcStub}`);
-if (!smtcStub._obj) fail('companion stub is missing native _obj');
+if (smtcRaw == null) fail('getForWindow returned null');
+console.log(`[e2e]   got SystemMediaTransportControls pointer = ${smtcRaw}`);
 
-console.log('[e2e] step 3: prove liveness via IInspectable::GetRuntimeClassName (companion stub property)');
+console.log('[e2e] step 3: prove liveness via IInspectable::GetRuntimeClassName');
+const inspectable = DynCom.registerIUnknownInterface(
+    'IInspectable_smtc_e2e',
+    WinGuid.parse('af86e2e0-b12d-4c6a-9c5a-d7aa65101e90'),
+)
+    .addMethod('GetIids', new DynComMethodSig().addOut(DynCom.pointerType()).addOut(DynCom.pointerType()))
+    .addMethod('GetRuntimeClassName', new DynComMethodSig().addOut(DynCom.hstringType()))
+    .addMethod('GetTrustLevel', new DynComMethodSig().addOut(DynCom.i32Type()));
 let name;
 try {
-    name = smtcStub.runtimeClassName;
+    name = inspectable.method(4).getString(smtcRaw);
 } catch (e) {
-    fail(`smtcStub.runtimeClassName threw: ${e && e.message ? e.message : e}`);
+    fail(`GetRuntimeClassName threw: ${e && e.message ? e.message : e}`);
 }
 console.log(`[e2e]   runtimeClassName = ${JSON.stringify(name)}`);
 const expected = 'Windows.Media.SystemMediaTransportControls';
@@ -91,7 +97,7 @@ if (name !== expected) fail(`expected runtimeClassName='${expected}', got '${nam
 console.log('[e2e] step 4: MEANINGFUL — exercise real SMTC members through the natural WinRT wrapper');
 // Re-wrap the SAME native pointer with the full WinRT projection.
 // This is still 100% "generated wrapper" code — no manual registerInterface.
-const smtc = SmtcProjected._fromNative(smtcStub._obj);
+const smtc = SmtcProjected._fromNative(smtcRaw);
 
 // (a) round-trip a boolean property.
 console.log('[e2e]   set isPlayEnabled = true');

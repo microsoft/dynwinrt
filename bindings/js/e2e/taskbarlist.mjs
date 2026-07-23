@@ -6,7 +6,6 @@
 //
 // Run: node bindings/js/e2e/taskbarlist.mjs
 
-import { DynWinRtValue, WinGuid } from '../dist/index.js';
 import { ITaskbarList3 } from './ITaskbarList3.js';
 import { TBPFLAG } from './TBPFLAG.js';
 import { acquireHwndBigInt } from './hwnd.mjs';
@@ -69,7 +68,7 @@ try {
 }
 
 // Prove the BOOL → i32 codegen fix: markFullscreenWindow historically emitted
-// `DynWinRtValue.pointer(fFullscreen)` and typed `fFullscreen: BOOL = bigint | Buffer`,
+// `DynCom.pointer(fFullscreen)` and typed `fFullscreen: BOOL = bigint | Buffer`,
 // so passing a plain `false` threw at napi. After the fix, BOOL projects as an
 // i32 with a `boolean` surface, and this natural-JS call round-trips.
 console.log('[e2e] step 7: MarkFullscreenWindow(hwnd, false) — proves BOOL→i32 codegen fix');

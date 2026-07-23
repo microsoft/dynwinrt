@@ -12,6 +12,7 @@ use dynwinrt_codegen::codegen::python;
 use dynwinrt_codegen::codegen::render_package_json;
 use dynwinrt_codegen::codegen::typescript;
 use dynwinrt_codegen::codegen::{project, render_dts, render_js};
+use dynwinrt_codegen::com_metadata;
 use dynwinrt_codegen::meta;
 use dynwinrt_codegen::types::TypeMeta;
 use dynwinrt_codegen::xml_doc::DocTable;
@@ -272,9 +273,9 @@ fn run() -> Result<(), String> {
 
                 // First: partition into WinRT classes and classic-COM interfaces.
                 let mut classes = Vec::new();
-                let mut com_interfaces: Vec<meta::ComInterfaceMeta> = Vec::new();
+                let mut com_interfaces: Vec<com_metadata::ComInterfaceMeta> = Vec::new();
                 for cls in &class_names {
-                    if let Some(com_iface) = meta::parse_com_interface(&winmd, ns, cls) {
+                    if let Some(com_iface) = com_metadata::parse_com_interface(&winmd, ns, cls) {
                         // Route through classic-COM path when:
                         //   1) The interface is IUnknown-rooted (base +3), OR
                         //   2) It is a `*Interop` bridge (name ends with "Interop") — even

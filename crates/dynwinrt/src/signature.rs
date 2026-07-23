@@ -6,17 +6,164 @@ use std::sync::Arc;
 use windows::core::{GUID, HSTRING, IInspectable, Interface};
 
 use crate::{
+    abi::{AbiType, AbiValue},
     call,
     call::ArgumentList,
     metadata_table::{MetadataTable, TypeHandle, TypeKind},
     value::WinRTValue,
 };
 
+#[derive(Debug, Clone)]
+pub(crate) enum ParameterType {
+    WinRT(TypeHandle),
+    Pointer,
+}
+
+impl ParameterType {
+    pub(crate) fn winrt(typ: TypeHandle) -> Self {
+        Self::WinRT(typ)
+    }
+
+    pub(crate) fn pointer() -> Self {
+        Self::Pointer
+    }
+
+    pub(crate) fn as_winrt(&self) -> Option<&TypeHandle> {
+        match self {
+            Self::WinRT(typ) => Some(typ),
+            Self::Pointer => None,
+        }
+    }
+
+    pub(crate) fn is_array(&self) -> bool {
+        self.as_winrt().is_some_and(TypeHandle::is_array)
+    }
+
+    pub(crate) fn is_struct(&self) -> bool {
+        matches!(self, Self::WinRT(typ) if matches!(typ.kind(), TypeKind::Struct(_)))
+    }
+
+    pub(crate) fn is_hstring(&self) -> bool {
+        matches!(self, Self::WinRT(typ) if matches!(typ.kind(), TypeKind::HString))
+    }
+
+    pub(crate) fn is_u32(&self) -> bool {
+        matches!(self, Self::WinRT(typ) if matches!(typ.kind(), TypeKind::U32))
+    }
+
+    pub(crate) fn is_guid(&self) -> bool {
+        matches!(self, Self::WinRT(typ) if matches!(typ.kind(), TypeKind::Guid))
+    }
+
+    pub(crate) fn supports_in_out(&self) -> bool {
+        matches!(self, Self::Pointer)
+            || matches!(
+                self,
+                Self::WinRT(typ)
+                    if matches!(
+                        typ.kind(),
+                        TypeKind::Bool
+                            | TypeKind::I8
+                            | TypeKind::U8
+                            | TypeKind::I16
+                            | TypeKind::U16
+                            | TypeKind::Char16
+                            | TypeKind::I32
+                            | TypeKind::U32
+                            | TypeKind::I64
+                            | TypeKind::U64
+                            | TypeKind::F32
+                            | TypeKind::F64
+                            | TypeKind::HResult
+                            | TypeKind::Enum(_)
+                            | TypeKind::Struct(_)
+                    )
+            )
+    }
+
+    pub(crate) fn supports_direct_return(&self) -> bool {
+        matches!(self, Self::Pointer)
+            || matches!(
+                self,
+                Self::WinRT(typ)
+                    if matches!(
+                        typ.kind(),
+                        TypeKind::Bool
+                            | TypeKind::I8
+                            | TypeKind::U8
+                            | TypeKind::I16
+                            | TypeKind::U16
+                            | TypeKind::Char16
+                            | TypeKind::I32
+                            | TypeKind::U32
+                            | TypeKind::I64
+                            | TypeKind::U64
+                            | TypeKind::F32
+                            | TypeKind::F64
+                            | TypeKind::HResult
+                            | TypeKind::Enum(_)
+                    )
+            )
+    }
+
+    pub(crate) fn abi_type(&self) -> AbiType {
+        match self {
+            Self::WinRT(typ) => typ.abi_type(),
+            Self::Pointer => AbiType::Ptr,
+        }
+    }
+
+    pub(crate) fn libffi_type(&self) -> libffi::middle::Type {
+        match self {
+            Self::WinRT(typ) => typ.libffi_type(),
+            Self::Pointer => libffi::middle::Type::pointer(),
+        }
+    }
+
+    pub(crate) fn array_element_type(&self) -> TypeHandle {
+        self.as_winrt()
+            .expect("native pointer is not an array")
+            .array_element_type()
+    }
+
+    pub(crate) fn default_struct_value(&self) -> crate::metadata_table::ValueTypeData {
+        self.as_winrt()
+            .expect("native pointer is not a struct")
+            .default_value()
+    }
+
+    pub(crate) fn default_value(&self) -> WinRTValue {
+        match self {
+            Self::WinRT(typ) => typ.default_winrt_value(),
+            Self::Pointer => WinRTValue::RawPtr(std::ptr::null_mut()),
+        }
+    }
+
+    pub(crate) fn from_out(&self, ptr: *mut std::ffi::c_void) -> crate::result::Result<WinRTValue> {
+        match self {
+            Self::WinRT(typ) => typ.from_out(ptr),
+            Self::Pointer => Ok(WinRTValue::RawPtr(ptr)),
+        }
+    }
+
+    pub(crate) fn from_out_value(&self, value: &AbiValue) -> crate::result::Result<WinRTValue> {
+        match (self, value) {
+            (Self::WinRT(typ), value) => typ.from_out_value(value),
+            (Self::Pointer, AbiValue::Pointer(ptr)) => Ok(WinRTValue::RawPtr(*ptr)),
+            (Self::Pointer, value) => Err(crate::result::Error::InvalidTypeAbiToWinRT(
+                TypeKind::Object,
+                value.abi_type(),
+            )),
+        }
+    }
+}
+
 /// How a parameter is passed at the ABI level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParamKind {
     In,
     Out,
+    InOut,
     /// FillArray: caller allocates buffer, callee fills it.
     /// ABI expands to 2 params: (u32 capacity, T* items).
     OutFillArray,
@@ -24,7 +171,7 @@ pub enum ParamKind {
 
 #[derive(Debug, Clone)]
 pub struct Parameter {
-    pub typ: TypeHandle,
+    pub(crate) typ: ParameterType,
     /// Index in the method result vector for out and FillArray parameters.
     pub value_index: usize,
     /// Index in the caller-provided argument slice. FillArray parameters have
@@ -34,8 +181,19 @@ pub struct Parameter {
 }
 
 impl Parameter {
+    pub fn is_input(&self) -> bool {
+        matches!(self.kind, ParamKind::In | ParamKind::InOut)
+    }
+
     pub fn is_out(&self) -> bool {
-        matches!(self.kind, ParamKind::Out | ParamKind::OutFillArray)
+        matches!(
+            self.kind,
+            ParamKind::Out | ParamKind::InOut | ParamKind::OutFillArray
+        )
+    }
+
+    pub fn is_in_out(&self) -> bool {
+        self.kind == ParamKind::InOut
     }
 
     pub fn is_fill_array(&self) -> bool {
@@ -44,34 +202,47 @@ impl Parameter {
 }
 
 #[derive(Debug, Clone)]
-pub struct MethodSignature {
+pub(crate) struct AbiMethodSignature {
     out_count: usize,
     input_count: usize,
     parameters: Vec<Parameter>,
-    return_type: TypeHandle,
+    return_kind: MethodReturn,
     #[allow(dead_code)]
     is_opaque: bool,
     #[allow(dead_code)]
     table: Arc<MetadataTable>,
 }
 
-impl MethodSignature {
-    pub fn new(table: &Arc<MetadataTable>) -> Self {
-        MethodSignature {
+#[derive(Debug, Clone)]
+pub(crate) enum MethodReturn {
+    HResult,
+    Void,
+    Value(ParameterType),
+}
+
+impl MethodReturn {
+    fn libffi_type(&self) -> libffi::middle::Type {
+        match self {
+            Self::HResult => libffi::middle::Type::i32(),
+            Self::Void => libffi::middle::Type::void(),
+            Self::Value(typ) => typ.libffi_type(),
+        }
+    }
+}
+
+impl AbiMethodSignature {
+    pub(crate) fn new(table: &Arc<MetadataTable>) -> Self {
+        AbiMethodSignature {
             out_count: 0,
             input_count: 0,
             parameters: Vec::new(),
-            return_type: table.hresult(),
+            return_kind: MethodReturn::HResult,
             is_opaque: false,
             table: Arc::clone(table),
         }
     }
 
-    pub fn new_with_registry(table: &Arc<MetadataTable>) -> Self {
-        Self::new(table)
-    }
-
-    pub fn add_in(mut self, typ: TypeHandle) -> Self {
+    pub(crate) fn add_in_type(mut self, typ: ParameterType) -> Self {
         let input_index = self.input_count;
         self.input_count += 1;
         self.parameters.push(Parameter {
@@ -83,7 +254,7 @@ impl MethodSignature {
         self
     }
 
-    pub fn add_out(mut self, typ: TypeHandle) -> Self {
+    pub(crate) fn add_out_type(mut self, typ: ParameterType) -> Self {
         self.parameters.push(Parameter {
             kind: ParamKind::Out,
             typ,
@@ -94,9 +265,24 @@ impl MethodSignature {
         self
     }
 
-    /// Add a FillArray out parameter: caller allocates buffer, callee fills it.
-    /// ABI expands to (u32 capacity, T* items).
-    pub fn add_out_fill(mut self, typ: TypeHandle) -> Self {
+    pub(crate) fn add_in_out_type(mut self, typ: ParameterType) -> Self {
+        assert!(
+            typ.supports_in_out(),
+            "in/out currently supports native scalars, pointers, enums, and structs"
+        );
+        let input_index = self.input_count;
+        self.input_count += 1;
+        self.parameters.push(Parameter {
+            kind: ParamKind::InOut,
+            typ,
+            value_index: self.out_count,
+            input_index: Some(input_index),
+        });
+        self.out_count += 1;
+        self
+    }
+
+    pub(crate) fn add_out_fill_type(mut self, typ: ParameterType) -> Self {
         let input_index = self.input_count;
         self.input_count += 1;
         self.parameters.push(Parameter {
@@ -109,7 +295,21 @@ impl MethodSignature {
         self
     }
 
-    pub fn build(self, index: usize) -> Method {
+    pub(crate) fn returns_type(mut self, typ: ParameterType) -> Self {
+        assert!(
+            typ.supports_direct_return(),
+            "direct native returns currently support scalars, enums, and pointers"
+        );
+        self.return_kind = MethodReturn::Value(typ);
+        self
+    }
+
+    pub(crate) fn returns_void(mut self) -> Self {
+        self.return_kind = MethodReturn::Void;
+        self
+    }
+
+    pub(crate) fn build(self, index: usize) -> Method {
         use libffi::middle::Type;
         let mut types: Vec<Type> = Vec::with_capacity(self.parameters.len() + 1);
         types.push(Type::pointer()); // com object's this pointer
@@ -134,22 +334,23 @@ impl MethodSignature {
                 types.push(param.typ.libffi_type());
             }
         }
-        let in_count = self.parameters.len() - self.out_count;
-        let has_complex_param = self.parameters.iter().any(|p| {
-            p.typ.is_array() || p.is_fill_array() || matches!(p.typ.kind(), TypeKind::Struct(_))
-        });
+        let in_count = self.parameters.iter().filter(|p| p.is_input()).count();
+        let has_complex_param = self
+            .parameters
+            .iter()
+            .any(|p| p.typ.is_array() || p.is_fill_array() || p.is_in_out() || p.typ.is_struct());
 
         // Check if the single in-param (if any) is a simple non-HString, non-Struct type
         let simple_in = !has_complex_param && in_count == 1 && {
-            let in_param = self.parameters.iter().find(|p| !p.is_out()).unwrap();
-            !matches!(in_param.typ.kind(), TypeKind::HString)
+            let in_param = self.parameters.iter().find(|p| p.is_input()).unwrap();
+            !in_param.typ.is_hstring()
         };
 
         // Classify array parameters
         let array_in_count = self
             .parameters
             .iter()
-            .filter(|p| !p.is_out() && p.typ.is_array())
+            .filter(|p| p.is_input() && p.typ.is_array())
             .count();
         let fill_out_count = self.parameters.iter().filter(|p| p.is_fill_array()).count();
         let array_out_count = self
@@ -160,16 +361,22 @@ impl MethodSignature {
         let scalar_in_count = in_count - array_in_count;
         let scalar_out_count = self.out_count - fill_out_count - array_out_count;
 
-        let strategy = if !has_complex_param && in_count == 0 && self.out_count == 1 {
+        let returns_hresult = matches!(self.return_kind, MethodReturn::HResult);
+        let strategy = if returns_hresult
+            && !has_complex_param
+            && in_count == 0
+            && self.out_count == 1
+        {
             CallStrategy::Direct0In1Out
-        } else if !has_complex_param && in_count == 0 && self.out_count == 0 {
+        } else if returns_hresult && !has_complex_param && in_count == 0 && self.out_count == 0 {
             CallStrategy::Direct0In0Out
-        } else if simple_in && self.out_count == 0 {
+        } else if returns_hresult && simple_in && self.out_count == 0 {
             CallStrategy::Direct1In0Out
-        } else if simple_in && self.out_count == 1 {
+        } else if returns_hresult && simple_in && self.out_count == 1 {
             CallStrategy::Direct1In1Out
         // ReceiveArray only: fn(this, *mut u32, *mut *mut c_void) -> HRESULT
-        } else if scalar_in_count == 0
+        } else if returns_hresult
+            && scalar_in_count == 0
             && array_in_count == 0
             && array_out_count == 1
             && fill_out_count == 0
@@ -177,7 +384,8 @@ impl MethodSignature {
         {
             CallStrategy::DirectReceiveArray
         // PassArray + 1 out: fn(this, u32, *const u8, out) -> HRESULT
-        } else if scalar_in_count == 0
+        } else if returns_hresult
+            && scalar_in_count == 0
             && array_in_count == 1
             && array_out_count == 0
             && fill_out_count == 0
@@ -185,7 +393,8 @@ impl MethodSignature {
         {
             CallStrategy::DirectPassArray1Out
         // FillArray only: fn(this, u32, *mut u8, *mut u32) -> HRESULT
-        } else if scalar_in_count == 0
+        } else if returns_hresult
+            && scalar_in_count == 0
             && array_in_count == 0
             && fill_out_count == 1
             && array_out_count == 0
@@ -193,7 +402,8 @@ impl MethodSignature {
         {
             CallStrategy::DirectFillArray
         // 1 scalar in + FillArray: fn(this, val, u32, *mut u8, *mut u32) -> HRESULT
-        } else if scalar_in_count == 1
+        } else if returns_hresult
+            && scalar_in_count == 1
             && array_in_count == 0
             && fill_out_count == 1
             && array_out_count == 0
@@ -202,21 +412,15 @@ impl MethodSignature {
             let in_param = self
                 .parameters
                 .iter()
-                .find(|p| !p.is_out() && !p.typ.is_array())
+                .find(|p| p.is_input() && !p.typ.is_array())
                 .unwrap();
-            if !matches!(in_param.typ.kind(), TypeKind::HString | TypeKind::Struct(_)) {
+            if !in_param.typ.is_hstring() && !in_param.typ.is_struct() {
                 CallStrategy::Direct1InFillArray
             } else {
-                CallStrategy::Libffi(Cif::new(
-                    types.into_iter(),
-                    self.return_type.abi_type().libffi_type(),
-                ))
+                CallStrategy::Libffi(Cif::new(types.into_iter(), self.return_kind.libffi_type()))
             }
         } else {
-            CallStrategy::Libffi(Cif::new(
-                types.into_iter(),
-                self.return_type.abi_type().libffi_type(),
-            ))
+            CallStrategy::Libffi(Cif::new(types.into_iter(), self.return_kind.libffi_type()))
         };
 
         Method {
@@ -224,9 +428,43 @@ impl MethodSignature {
                 index,
                 parameters: self.parameters,
                 out_count: self.out_count,
+                return_kind: self.return_kind,
             },
             strategy,
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MethodSignature(AbiMethodSignature);
+
+impl MethodSignature {
+    pub(crate) fn from_abi(signature: AbiMethodSignature) -> Self {
+        Self(signature)
+    }
+
+    pub fn new(table: &Arc<MetadataTable>) -> Self {
+        Self(AbiMethodSignature::new(table))
+    }
+
+    pub fn new_with_registry(table: &Arc<MetadataTable>) -> Self {
+        Self::new(table)
+    }
+
+    pub fn add_in(self, typ: TypeHandle) -> Self {
+        Self(self.0.add_in_type(ParameterType::winrt(typ)))
+    }
+
+    pub fn add_out(self, typ: TypeHandle) -> Self {
+        Self(self.0.add_out_type(ParameterType::winrt(typ)))
+    }
+
+    pub fn add_out_fill(self, typ: TypeHandle) -> Self {
+        Self(self.0.add_out_fill_type(ParameterType::winrt(typ)))
+    }
+
+    pub fn build(self, index: usize) -> Method {
+        self.0.build(index)
     }
 }
 
@@ -235,6 +473,7 @@ pub struct MethodInfo {
     pub index: usize,
     pub parameters: Vec<Parameter>,
     pub out_count: usize,
+    pub(crate) return_kind: MethodReturn,
 }
 
 /// How a Method should be invoked — decided once at build time.
@@ -294,29 +533,15 @@ fn coerce_input_object(
     if value.is_null_object() {
         return Ok(None);
     }
-    // A `WinRTValue::RawPtr` is a raw ABI pointer supplied by the caller
-    // (e.g. `DynWinRtValue.pointer(hwnd)`). It is legitimate ONLY when the
-    // parameter is untyped `TypeKind::Object` (the codegen's `pointer()`
-    // alias, used for HWND / PWSTR / void* / function-pointer slots).
-    //
-    // For a TYPED interface / delegate / runtime class / async parameter
-    // the runtime would otherwise blindly forward the caller's pointer bits
-    // into the vtable dispatch, without QI'ing to the required IID. If
-    // the pointer wasn't actually a live COM object with the expected
-    // vtable layout the dispatch would read a bogus vtable → crash / UB.
-    // Reject up-front with E_INVALIDARG so callers pass a real `Object`
-    // (or an explicitly `.cast()`-ed one) instead.
+    // Raw pointers never satisfy a WinRT object parameter. Otherwise arbitrary
+    // pointer bits could reach a typed COM slot without QueryInterface validation.
     if matches!(value, WinRTValue::RawPtr(_)) {
-        if matches!(expected.kind(), TypeKind::Object) {
-            return Ok(None);
-        }
         return Err(windows_core::Error::new(
             windows_core::HRESULT(0x80070057u32 as i32),
             &format!(
                 "Refusing to pass a raw pointer as a typed COM parameter ({}). \
-                 Only untyped Object / void* / handle parameters accept \
-                 DynWinRtValue.pointer(...); for a concrete interface pass a \
-                 real object (or one obtained via `.cast(IID)`).",
+                 Use a Pointer signature for native pointers and handles; for \
+                 COM parameters pass a real object (or one obtained via `.cast(IID)`).",
                 expected.signature_string(),
             ),
         ));
@@ -485,15 +710,20 @@ impl Method {
         args: &[WinRTValue],
     ) -> windows_core::Result<Vec<WinRTValue>> {
         let mut args = InvocationArgs::new(args);
-        for parameter in self.info.parameters.iter().filter(|p| !p.is_out()) {
-            let value = args.get_value(parameter.value_index);
-            let coerced = if parameter.typ.is_array() {
-                coerce_input_array(&parameter.typ, value)?
+        for parameter in self.info.parameters.iter().filter(|p| p.is_input()) {
+            let input_index = parameter.input_index.expect("input parameter index");
+            let value = args.get_value(input_index);
+            let coerced = if let Some(typ) = parameter.typ.as_winrt() {
+                if typ.is_array() {
+                    coerce_input_array(typ, value)?
+                } else {
+                    coerce_input_object(typ, value)?
+                }
             } else {
-                coerce_input_object(&parameter.typ, value)?
+                None
             };
             if let Some(value) = coerced {
-                args.replace(parameter.value_index, value);
+                args.replace(input_index, value);
             }
         }
 
@@ -507,7 +737,7 @@ impl Method {
             CallStrategy::Direct0In1Out => {
                 // 0 in + 1 out: fn(this, out) -> HRESULT
                 let param = &self.info.parameters[0];
-                let mut out = param.typ.default_winrt_value();
+                let mut out = param.typ.default_value();
                 let hr = call::call_winrt_method_1(self.info.index, obj, out.out_ptr());
                 hr.ok()?;
                 // COM pointer types use RawPtr(null) as buffer to avoid IUnknown::from_raw(null) UB.
@@ -529,7 +759,7 @@ impl Method {
             CallStrategy::Direct1In1Out => {
                 // 1 in + 1 out: fn(this, val, out) -> HRESULT
                 let out_param = self.info.parameters.iter().find(|p| p.is_out()).unwrap();
-                let mut out = out_param.typ.default_winrt_value();
+                let mut out = out_param.typ.default_value();
                 let hr =
                     call::call_1in_1out(self.info.index, obj, args.get_value(0), out.out_ptr());
                 hr.ok()?;
@@ -584,11 +814,11 @@ impl Method {
             }
             CallStrategy::DirectPassArray1Out => {
                 // fn(this, u32, *const u8, out) -> HRESULT
-                let in_param = self.info.parameters.iter().find(|p| !p.is_out()).unwrap();
+                let in_param = self.info.parameters.iter().find(|p| p.is_input()).unwrap();
                 let out_param = self.info.parameters.iter().find(|p| p.is_out()).unwrap();
                 let array_data = args.get_value(in_param.value_index).as_array().unwrap();
                 let buffer = array_data.serialize_for_abi();
-                let mut out = out_param.typ.default_winrt_value();
+                let mut out = out_param.typ.default_value();
                 let fptr = call::get_vtable_function_ptr(obj, self.info.index);
                 let hr: windows_core::HRESULT = unsafe {
                     let method: unsafe extern "system" fn(
@@ -662,7 +892,7 @@ impl Method {
             }
             CallStrategy::Direct1InFillArray => {
                 // fn(this, val, u32, *mut u8) -> HRESULT
-                let in_param = self.info.parameters.iter().find(|p| !p.is_out()).unwrap();
+                let in_param = self.info.parameters.iter().find(|p| p.is_input()).unwrap();
                 let fill_param = self
                     .info
                     .parameters
@@ -704,12 +934,13 @@ impl Method {
                 );
                 Ok(vec![WinRTValue::Array(array)])
             }
-            CallStrategy::Libffi(cif) => call::call_winrt_method_dynamic(
+            CallStrategy::Libffi(cif) => call::call_method_dynamic(
                 self.info.index,
                 obj,
                 &self.info.parameters,
                 &args,
                 self.info.out_count,
+                &self.info.return_kind,
                 cif,
             ),
         }
@@ -825,36 +1056,16 @@ mod tests {
         Ok(())
     }
 
-    /// Regression: `coerce_input_object` must accept `WinRTValue::RawPtr`
-    /// ONLY when the expected parameter type is the untyped
-    /// `TypeKind::Object` (the codegen's `pointer()` alias used for HWND /
-    /// void* / handle slots). Passing a raw pointer where a *typed*
-    /// interface / delegate / runtime class / async parameter is expected
-    /// must be rejected up-front with `E_INVALIDARG`, so we don't
-    /// blindly forward pointer bits into a vtable dispatch that would
-    /// then read a bogus vtable and crash / UB.
     #[test]
-    fn raw_pointer_only_accepted_for_untyped_object_params() {
+    fn raw_pointer_is_rejected_for_winrt_object_params() {
         let table = MetadataTable::new();
         let bogus = WinRTValue::RawPtr(0xDEADBEEF as *mut std::ffi::c_void);
 
-        // Legitimate case: `TypeKind::Object` (a.k.a. codegen's `pointer()` /
-        // HWND / void*) accepts RawPtr — bypass coercion so the raw ABI
-        // pointer is forwarded to the callee unchanged.
         let object_ty = table.object();
-        assert!(
-            matches!(object_ty.kind(), TypeKind::Object),
-            "sanity: table.object() must be TypeKind::Object"
-        );
-        assert!(
-            coerce_input_object(&object_ty, &bogus)
-                .expect("RawPtr into TypeKind::Object must be allowed")
-                .is_none(),
-            "RawPtr into TypeKind::Object should bypass coercion (Ok(None))",
-        );
+        let object_err = coerce_input_object(&object_ty, &bogus)
+            .expect_err("RawPtr into Object must be rejected");
+        assert_eq!(object_err.code().0, 0x80070057u32 as i32);
 
-        // Unsafe case: RawPtr into a typed `TypeKind::Interface(IID)`
-        // must FAIL with E_INVALIDARG, not silently succeed.
         let iface_ty = table.interface(IStringable::IID);
         let err = coerce_input_object(&iface_ty, &bogus)
             .expect_err("RawPtr into a typed interface must be rejected");
@@ -871,8 +1082,6 @@ mod tests {
             msg
         );
 
-        // Null objects remain allowed for both untyped and typed slots
-        // (a null pointer is a valid COM null-object).
         let null_object = WinRTValue::Null;
         assert!(
             coerce_input_object(&object_ty, &null_object)

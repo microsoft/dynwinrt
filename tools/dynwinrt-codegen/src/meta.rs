@@ -15,11 +15,6 @@ pub enum ParamDirection {
     Out,
     /// FillArray: caller allocates buffer, callee fills it.
     OutFill,
-    /// Caller-owned classic-COM string buffer, immediately sized by another
-    /// input parameter.
-    OutStringBuffer {
-        count_param_index: usize,
-    },
 }
 
 /// A single method parameter.
@@ -159,137 +154,6 @@ pub fn list_namespaces(winmd_paths: &str) -> Vec<String> {
 pub fn parse_class(winmd_paths: &str, namespace: &str, name: &str) -> Option<ClassMeta> {
     let index = load_index(winmd_paths)?;
     parse_class_from_index(&index, namespace, name)
-}
-
-/// Look up a WinRT runtime class in `winmd_paths` by simple (unqualified) name
-/// and return `(full_namespace, default_interface_name, default_interface_iid)`.
-///
-/// Used by the classic-COM `*Interop` codegen to auto-resolve the target type
-/// of a `GetForWindow(HWND, REFIID, out void**)` method: the interface prefix
-/// `I` and suffix `Interop` are stripped, and this helper finds the runtime
-/// class of that name in `Windows.winmd` (or any provided WinRT metadata).
-///
-/// Returns `None` when the winmd is unreadable, when no such class exists,
-/// when the class isn't marked `[WindowsRuntime]`, or when it has no default
-/// interface with a resolvable IID.
-pub fn find_runtime_class_default_iid(
-    winmd_paths: &str,
-    simple_name: &str,
-) -> Option<(String, String, String)> {
-    let index = load_index(winmd_paths)?;
-    // Collect *all* runtime classes with this simple name so we can detect
-    // cross-namespace collisions (e.g. two runtime classes both called
-    // `SomeThing` in different namespaces). Returning the first match blindly
-    // would silently drive interop codegen with the wrong default-interface
-    // IID → wrappers that call `GetForWindow(riid=…, ppv)` for a different
-    // interface than the caller expects.
-    let mut found: Option<(String, String, String)> = None;
-    let mut collisions: Vec<(String, String, String)> = Vec::new();
-    for def in index.all() {
-        if def.name() != simple_name {
-            continue;
-        }
-        // A WinRT runtime class extends System.Object AND carries the
-        // WindowsRuntime flag on its type. Interfaces extend nothing;
-        // classes extend Object/etc. We filter to actual runtime classes.
-        if !def
-            .flags()
-            .contains(windows_metadata::TypeAttributes::WindowsRuntime)
-        {
-            continue;
-        }
-        // Must be a class (not interface/enum/struct).
-        if def
-            .flags()
-            .contains(windows_metadata::TypeAttributes::Interface)
-        {
-            continue;
-        }
-        let namespace = def.namespace().to_string();
-        // Look for the default interface via DefaultAttribute.
-        for iface_impl in def.interface_impls() {
-            if !iface_impl.has_attribute("DefaultAttribute") {
-                continue;
-            }
-            let iface_ty = iface_impl.interface(&[]);
-            let windows_metadata::Type::Name(tn) = &iface_ty else {
-                continue;
-            };
-            // Resolve concrete (non-generic) interface's IID from its TypeDef.
-            if !tn.generics.is_empty() {
-                // Skip generic default interfaces — interop projections don't
-                // hit them in practice, and the parameterized IID would need
-                // separate computation.
-                continue;
-            }
-            let Some(iface_def) = index.get(&tn.namespace, &tn.name).next() else {
-                // Unreadable/missing TypeDef for this DefaultAttribute impl
-                // — skip *this* candidate rather than aborting the whole
-                // lookup. Other matching runtime classes (or other
-                // DefaultAttribute impls on the same class) can still resolve
-                // successfully.
-                continue;
-            };
-            let iid = extract_iid(&iface_def);
-            if iid.is_empty() {
-                continue;
-            }
-            let candidate = (namespace.clone(), tn.name.clone(), iid);
-            match &found {
-                None => found = Some(candidate),
-                Some(prev) if prev == &candidate => {
-                    // Exact duplicate — same namespace + same IID means the
-                    // same TypeDef, harmless.
-                }
-                Some(_) => collisions.push(candidate),
-            }
-            break; // stop looking at this class's other interface_impls
-        }
-    }
-    if !collisions.is_empty() {
-        let mut all = vec![found.clone().unwrap()];
-        all.extend(collisions);
-        eprintln!(
-            "warning: find_runtime_class_default_iid({}): multiple runtime classes with this simple name resolve to distinct default IIDs — refusing to guess. Candidates: {:?}",
-            simple_name, all
-        );
-        return None;
-    }
-    found
-}
-
-/// Discover the NEWEST installed Windows SDK `Windows.winmd` by enumerating the
-/// versioned directories under `C:\Program Files (x86)\Windows Kits\10\UnionMetadata`
-/// and picking the highest version that actually contains a readable file.
-///
-/// Used as a portable fallback by the classic-COM interop code generator when
-/// the winmds explicitly loaded for generation don't contain the projected
-/// WinRT runtime class. Returns `None` when no SDK is installed.
-pub fn discover_newest_windows_winmd() -> Option<String> {
-    let base = std::path::Path::new(r"C:\Program Files (x86)\Windows Kits\10\UnionMetadata");
-    if !base.exists() {
-        return None;
-    }
-    let mut versions: Vec<String> = std::fs::read_dir(base)
-        .ok()?
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().is_dir())
-        .map(|e| e.file_name().to_string_lossy().to_string())
-        .filter(|name| name.starts_with("10."))
-        .collect();
-    // Sort by dotted-version tuple so `10.0.26100.0` beats `10.0.19041.0`.
-    versions.sort_by(|a, b| {
-        let pa: Vec<u64> = a.split('.').filter_map(|s| s.parse().ok()).collect();
-        let pb: Vec<u64> = b.split('.').filter_map(|s| s.parse().ok()).collect();
-        pa.cmp(&pb)
-    });
-    for version in versions.iter().rev() {
-        let winmd_path = base.join(version).join("Windows.winmd");
-        if winmd_path.exists() {
-            return Some(winmd_path.to_string_lossy().to_string());
-        }
-    }
-    None
 }
 
 /// Parse all RuntimeClasses in a given namespace.
@@ -815,7 +679,7 @@ pub fn expand_winmd_paths(winmd_paths: &str) -> String {
     all_paths.join(";")
 }
 
-fn load_index(winmd_paths: &str) -> Option<reader::Index> {
+pub(crate) fn load_index(winmd_paths: &str) -> Option<reader::Index> {
     let paths: Vec<&str> = winmd_paths.split(';').filter(|s| !s.is_empty()).collect();
     if paths.is_empty() {
         eprintln!("warning: no winmd paths provided");
@@ -1067,302 +931,7 @@ fn split_full_name(full_name: &str) -> Option<(&str, &str)> {
 fn parse_interface(index: &reader::Index, namespace: &str, name: &str) -> Option<InterfaceMeta> {
     let def = index.get(namespace, name).next()?;
     let iid = extract_iid(&def);
-    parse_interface_methods(index, &def, name, namespace, &iid, &[], 6)
-}
-
-// ==========================================================================
-// Classic-COM (option A) support
-// ==========================================================================
-
-/// Rich metadata for a classic-COM interface discovered by walking the
-/// `interface_impls()` chain. The `interface.methods` list is the *flattened*
-/// method set (own + all inherited, excluding IUnknown's QI/AddRef/Release)
-/// with absolute vtable indices — so the codegen renderer never has to think
-/// about inheritance again.
-///
-/// This is entirely separate from the WinRT `parse_class`/`parse_interface`
-/// path so we do not risk regressing IInspectable-based generation.
-#[derive(Debug, Clone)]
-pub struct ComInterfaceMeta {
-    /// Flattened interface with own + inherited methods, absolute vtable indices.
-    pub interface: InterfaceMeta,
-    /// The vtable index of the first user method in the flattened list:
-    /// - `3` for any IUnknown-rooted interface (QI/AddRef/Release occupy 0..2).
-    /// - `6` for any IInspectable-rooted interface (WinRT projection layout).
-    pub base_offset: usize,
-    /// `true` iff the inheritance chain terminates at IUnknown.
-    /// `false` iff it terminates at IInspectable (WinRT-projected classic COM).
-    pub is_iunknown_rooted: bool,
-    /// Ordered list of base names from immediate parent up to the root
-    /// (e.g. `["ITaskbarList2", "ITaskbarList", "IUnknown"]`).
-    pub base_chain: Vec<String>,
-    /// If a Win32 coclass matches this interface, the coclass GUID (=CLSID).
-    pub coclass_clsid: Option<String>,
-    /// The name of the discovered coclass, e.g. `"TaskbarList"`.
-    pub coclass_name: Option<String>,
-    /// The absolute vtable slot of this leaf interface's first *own* method
-    /// (i.e. the number of methods contributed by all bases plus the root
-    /// offset). Renderer helper — not core metadata.
-    pub own_methods_start: usize,
-    /// Enum types referenced by this interface's methods (directly resolved
-    /// during metadata parsing so codegen can emit them without a second
-    /// resolve_dependencies pass over the whole namespace).
-    pub referenced_enums: Vec<TypeMeta>,
-}
-
-/// Parse a classic-COM interface (IUnknown-rooted) by name, walking the
-/// `interface_impls()` chain to compute absolute vtable slots and flatten
-/// inherited methods.
-///
-/// Returns `None` if the type isn't found. Unlike `parse_interface`, this
-/// function also handles interfaces that inherit from other classic-COM
-/// interfaces via `interface_impls()` (the Windows.Win32 winmd doesn't
-/// use `[NativeInheritance]` attributes — it uses actual InterfaceImpl rows).
-pub fn parse_com_interface(
-    winmd_paths: &str,
-    namespace: &str,
-    name: &str,
-) -> Option<ComInterfaceMeta> {
-    let index = load_index(winmd_paths)?;
-    parse_com_interface_from_index(&index, namespace, name)
-}
-
-fn parse_com_interface_from_index(
-    index: &reader::Index,
-    namespace: &str,
-    name: &str,
-) -> Option<ComInterfaceMeta> {
-    let def = index.get(namespace, name).next()?;
-
-    // Guard: refuse to treat non-interface TypeDefs (WinRT runtime classes,
-    // enums, structs, delegates) as classic-COM interfaces. Without this,
-    // routing a name that happens to resolve to e.g. a `*Interop` runtime
-    // class through this path would walk its `interface_impls()` and produce
-    // a bogus flattened method list. Callers see `None` and can fall through
-    // to the correct WinRT code path in `main.rs`.
-    if !def
-        .flags()
-        .contains(windows_metadata::TypeAttributes::Interface)
-    {
-        return None;
-    }
-
-    // Walk the interface_impls chain: for each base, collect its own method
-    // count, and stop at IUnknown or IInspectable. Traverse from the leaf up
-    // so we can compute cumulative offsets.
-    let mut base_chain: Vec<(String, String, usize)> = Vec::new(); // (ns, name, own_method_count)
-    let mut cur_ns = namespace.to_string();
-    let mut cur_name = name.to_string();
-    let mut is_iunknown_rooted = false;
-    // Explicit-termination flag: set only when the walk reaches a well-known
-    // COM/WinRT root (IUnknown or IInspectable). If we exit the loop without
-    // this being set — malformed/incomplete winmd, missing `interface_impls`,
-    // or a depth-limit overrun — the offset-3 vs. offset-6 decision below
-    // would be guesswork. In that case we return None rather than emit code
-    // with silently-wrong vtable slots.
-    let mut terminated_at_known_root = false;
-
-    // Walk up to 32 levels deep as a safety limit (real chains are 3-4 deep).
-    for _ in 0..32 {
-        let cur_def = match index.get(&cur_ns, &cur_name).next() {
-            Some(d) => d,
-            None => break,
-        };
-        // Find the (single) base via interface_impls.
-        let base_ii = cur_def.interface_impls().next();
-        let base_type = base_ii.map(|ii| ii.interface(&[]));
-        let base = match base_type {
-            Some(windows_metadata::Type::Name(tn)) => (tn.namespace.clone(), tn.name.clone()),
-            _ => break,
-        };
-        // Terminate at IUnknown or IInspectable.
-        if base.1 == "IUnknown" {
-            is_iunknown_rooted = true;
-            terminated_at_known_root = true;
-            base_chain.push((
-                "Windows.Win32.System.Com".to_string(),
-                "IUnknown".to_string(),
-                0,
-            ));
-            break;
-        }
-        if base.1 == "IInspectable" {
-            terminated_at_known_root = true;
-            base_chain.push((
-                "Windows.Foundation".to_string(),
-                "IInspectable".to_string(),
-                0,
-            ));
-            break;
-        }
-        // Otherwise this base is a real classic-COM interface — count its methods.
-        let base_def = match index.get(&base.0, &base.1).next() {
-            Some(d) => d,
-            None => break,
-        };
-        let own_count = base_def.methods().count();
-        base_chain.push((base.0.clone(), base.1.clone(), own_count));
-        cur_ns = base.0;
-        cur_name = base.1;
-    }
-
-    // Refuse to guess a root offset when the walk didn't terminate cleanly:
-    // an unknown-shape base chain would produce wrong absolute vtable slots
-    // and therefore wrong method dispatch. Callers see `None` and can log /
-    // surface a clearer error than a silent mis-generation.
-    if !terminated_at_known_root {
-        eprintln!(
-            "warning: base-chain walk for {}.{} did not terminate at IUnknown or IInspectable — refusing to guess vtable root offset",
-            namespace, name
-        );
-        return None;
-    }
-
-    // Compute root offset (3 for IUnknown, 6 for IInspectable) and the
-    // absolute vtable slot at which THIS leaf interface's own methods start.
-    let root_offset = if is_iunknown_rooted { 3 } else { 6 };
-    let intermediate_methods: usize = base_chain
-        .iter()
-        .filter(|(_, name, _)| name != "IUnknown" && name != "IInspectable")
-        .map(|(_, _, c)| *c)
-        .sum();
-    let own_methods_start = root_offset + intermediate_methods;
-
-    // Build a flattened method list: iterate the chain top-down (from root
-    // toward the leaf, i.e. reverse `base_chain`), assigning consecutive
-    // vtable slots. Base interfaces contribute their own methods first.
-    //
-    // Vtable layout: [IUnknown 0..2] [base_N 3..] [base_{N-1} ...] ... [leaf's own].
-    let mut methods: Vec<MethodMeta> = Vec::new();
-
-    let mut slot_cursor = root_offset;
-    // Reverse: iterate from the outermost base (closest to IUnknown) down
-    // toward the immediate parent.
-    let mut chain_top_down: Vec<&(String, String, usize)> = base_chain.iter().rev().collect();
-    // Filter out the root (IUnknown/IInspectable, which contribute 0 own methods to the vtable
-    // *from the user-visible perspective* — their slots are already counted in `root_offset`).
-    chain_top_down.retain(|(_, n, _)| n != "IUnknown" && n != "IInspectable");
-
-    for (base_ns, base_name, _own_count) in chain_top_down {
-        match parse_interface_with_offset(index, base_ns, base_name, slot_cursor) {
-            Some(base_iface) => {
-                slot_cursor += base_iface.methods.len();
-                methods.extend(base_iface.methods);
-            }
-            None => {
-                // Fail loud: if we can't parse a base interface's methods,
-                // the flattened method list would be missing entries and the
-                // leaf's absolute vtable indices would be wrong. In release
-                // the `debug_assert_eq!` below is compiled out, so we'd
-                // silently emit wrappers that dispatch to the wrong COM
-                // methods. Return None so callers surface a clear error.
-                eprintln!(
-                    "warning: could not parse base classic-COM interface {}.{} — refusing to emit {}.{} with a truncated vtable",
-                    base_ns, base_name, namespace, name
-                );
-                return None;
-            }
-        }
-    }
-    // Assert the invariant that we lined up correctly.
-    debug_assert_eq!(
-        slot_cursor, own_methods_start,
-        "vtable cursor {} != computed own_methods_start {}",
-        slot_cursor, own_methods_start
-    );
-
-    // Now the leaf's own methods
-    let iid = extract_iid(&def);
-    let own = parse_interface_methods(index, &def, name, namespace, &iid, &[], slot_cursor)?;
-    methods.extend(own.methods);
-
-    // Build a mostly-standard InterfaceMeta wrapping the flattened method list.
-    let interface = InterfaceMeta {
-        name: name.to_string(),
-        namespace: namespace.to_string(),
-        iid: iid.clone(),
-        methods,
-        generic_piid: None,
-        generic_args: Vec::new(),
-        doc: None,
-        deprecated: None,
-    };
-
-    // Discover coclass CLSID. Heuristic: strip leading `I` from the interface
-    // name, then strip trailing digits (e.g. `ITaskbarList3` → `TaskbarList3`
-    // → `TaskbarList`). Return the first coclass matching either variant that
-    // has a GuidAttribute AND `extends System.ValueType`.
-    let mut candidates: Vec<String> = Vec::new();
-    if let Some(stripped) = name.strip_prefix('I') {
-        candidates.push(stripped.to_string());
-        // Also try trimming trailing digits: TaskbarList3 → TaskbarList
-        let trimmed: String = stripped
-            .trim_end_matches(|c: char| c.is_ascii_digit())
-            .to_string();
-        if trimmed != stripped {
-            candidates.push(trimmed);
-        }
-    }
-    let mut coclass_clsid: Option<String> = None;
-    let mut coclass_name: Option<String> = None;
-    for cand in &candidates {
-        if let Some(cc_def) = index.get(namespace, cand).next() {
-            let ext = cc_def.extends();
-            let is_coclass_shape = matches!(
-                ext.map(|e| (e.namespace().to_string(), e.name().to_string())),
-                Some((ref ns, ref n)) if ns == "System" && n == "ValueType"
-            );
-            if !is_coclass_shape {
-                continue;
-            }
-            let cc_iid = extract_iid(&cc_def);
-            if !cc_iid.is_empty() {
-                coclass_clsid = Some(cc_iid);
-                coclass_name = Some(cand.clone());
-                break;
-            }
-        }
-    }
-
-    // Collect enum types referenced in methods' parameters (direct only).
-    let mut referenced_enums: Vec<TypeMeta> = Vec::new();
-    let mut seen_enum_names: HashSet<String> = HashSet::new();
-    for m in &interface.methods {
-        for p in &m.params {
-            if let TypeMeta::Enum { .. } = &p.typ {
-                if let TypeMeta::Enum { name: en, .. } = &p.typ {
-                    if seen_enum_names.insert(en.clone()) {
-                        referenced_enums.push(p.typ.clone());
-                    }
-                }
-            }
-        }
-    }
-
-    Some(ComInterfaceMeta {
-        interface,
-        base_offset: root_offset,
-        is_iunknown_rooted,
-        base_chain: base_chain.into_iter().map(|(_, n, _)| n).collect(),
-        coclass_clsid,
-        coclass_name,
-        own_methods_start,
-        referenced_enums,
-    })
-}
-
-/// Parse an interface's OWN methods (no inheritance flattening) with a caller-
-/// supplied base offset. Used by `parse_com_interface_from_index` to lay out
-/// base-class methods at the correct absolute vtable slots.
-fn parse_interface_with_offset(
-    index: &reader::Index,
-    namespace: &str,
-    name: &str,
-    base_offset: usize,
-) -> Option<InterfaceMeta> {
-    let def = index.get(namespace, name).next()?;
-    let iid = extract_iid(&def);
-    parse_interface_methods(index, &def, name, namespace, &iid, &[], base_offset)
+    parse_interface_methods(index, &def, name, namespace, &iid, &[])
 }
 
 fn parse_interface_type(
@@ -1408,15 +977,10 @@ fn parse_parameterized_interface(
 ) -> Option<InterfaceMeta> {
     let trimmed_name = generic_name.split('`').next().unwrap_or(generic_name);
     let def = index.get(namespace, trimmed_name).next()?;
-    parse_interface_methods(index, &def, concrete_name, namespace, piid, generic_args, 6)
+    parse_interface_methods(index, &def, concrete_name, namespace, piid, generic_args)
 }
 
 /// Core interface parsing: extract methods from a TypeDef, optionally substituting generics.
-///
-/// `base_offset` is the vtable index of the first user method:
-/// - `6` for WinRT (IInspectable-rooted: QI/AddRef/Release + GetIids/GetRuntimeClassName/GetTrustLevel).
-/// - `3` for classic-COM IUnknown-rooted interfaces (QI/AddRef/Release only).
-/// - Or any absolute offset for a base-aware slot in a chained classic-COM interface.
 fn parse_interface_methods(
     index: &reader::Index,
     def: &reader::TypeDef,
@@ -1424,14 +988,13 @@ fn parse_interface_methods(
     namespace: &str,
     iid: &str,
     generic_args: &[TypeMeta],
-    base_offset: usize,
 ) -> Option<InterfaceMeta> {
     let winmd_generics: Vec<windows_metadata::Type> =
         generic_args.iter().map(type_meta_to_winmd_type).collect();
 
     let mut methods = Vec::new();
     for (i, method) in def.methods().enumerate() {
-        let vtable_index = base_offset + i;
+        let vtable_index = 6 + i;
         let sig = method.signature(&winmd_generics);
 
         let raw_name = method.name().to_string();
@@ -1449,14 +1012,10 @@ fn parse_interface_methods(
         for (j, param_def) in param_defs.iter().enumerate() {
             if j < sig.types.len() {
                 clr_sig_types.push(clr_type_name(&sig.types[j]));
+                let typ = map_winmd_type_with_generics(&sig.types[j], index, generic_args);
                 let is_out = param_def
                     .flags()
                     .contains(windows_metadata::ParamAttributes::Out);
-                let typ = if is_out {
-                    map_winmd_out_param_type(&sig.types[j], index, generic_args)
-                } else {
-                    map_winmd_type_with_generics(&sig.types[j], index, generic_args)
-                };
                 let direction = if is_out {
                     if matches!(sig.types[j], windows_metadata::Type::Array(_)) {
                         // [out] Array = FillArray (caller allocates buffer, callee fills)
@@ -1474,7 +1033,6 @@ fn parse_interface_methods(
                 });
             }
         }
-        mark_caller_owned_string_buffers(&mut params);
 
         let return_type = if sig.return_type == windows_metadata::Type::Void {
             None
@@ -1636,7 +1194,7 @@ fn type_meta_to_winmd_type(typ: &TypeMeta) -> windows_metadata::Type {
     }
 }
 
-fn extract_iid(def: &reader::TypeDef) -> String {
+pub(crate) fn extract_iid(def: &reader::TypeDef) -> String {
     if let Some(attr) = def.find_attribute("GuidAttribute") {
         let args: Vec<(String, windows_metadata::Value)> = attr.value();
         if args.len() >= 11 {
@@ -1732,59 +1290,11 @@ fn parse_enum_def(def: &reader::TypeDef) -> TypeMeta {
     }
 }
 
-fn mark_caller_owned_string_buffers(params: &mut [ParamMeta]) {
-    if params.len() < 2 {
-        return;
-    }
-    for idx in 0..params.len() - 1 {
-        if params[idx].direction == ParamDirection::Out
-            && is_direct_win32_string_buffer(&params[idx].typ)
-            && params[idx + 1].direction == ParamDirection::In
-            && is_string_buffer_count_param(&params[idx].typ, &params[idx + 1])
-        {
-            params[idx].direction = ParamDirection::OutStringBuffer {
-                count_param_index: idx + 1,
-            };
-        }
-    }
-}
-
-fn is_direct_win32_string_buffer(t: &TypeMeta) -> bool {
-    matches!(
-        t,
-        TypeMeta::Struct { namespace, name, .. }
-            if namespace == "Windows.Win32.Foundation" && (name == "PWSTR" || name == "PSTR")
-    )
-}
-
-fn is_pwstr_type(t: &TypeMeta) -> bool {
-    matches!(
-        t,
-        TypeMeta::Struct {
-            namespace, name, ..
-        } if namespace == "Windows.Win32.Foundation" && name == "PWSTR"
-    )
-}
-
-fn is_string_buffer_count_param(buffer_type: &TypeMeta, p: &ParamMeta) -> bool {
-    let n = p.name.to_ascii_lowercase();
-    matches!(p.typ, TypeMeta::I32 | TypeMeta::U32)
-        && (n.starts_with("cch")
-            || (!is_pwstr_type(buffer_type) && n.starts_with("cb"))
-            || n == "len"
-            || n == "length"
-            || n == "size"
-            || n == "max"
-            || n == "count"
-            || n.starts_with("max")
-            || n.starts_with("size"))
-}
-
 fn map_winmd_type(ty: &windows_metadata::Type, index: &reader::Index) -> TypeMeta {
     map_winmd_type_with_generics(ty, index, &[])
 }
 
-fn map_winmd_type_with_generics(
+pub(crate) fn map_winmd_type_with_generics(
     ty: &windows_metadata::Type,
     index: &reader::Index,
     generic_args: &[TypeMeta],
@@ -1825,42 +1335,6 @@ fn map_winmd_type_with_generics(
 
         _ => TypeMeta::Object,
     }
-}
-
-fn map_winmd_out_param_type(
-    ty: &windows_metadata::Type,
-    index: &reader::Index,
-    generic_args: &[TypeMeta],
-) -> TypeMeta {
-    match ty {
-        windows_metadata::Type::PtrMut(inner, _) | windows_metadata::Type::PtrConst(inner, _) => {
-            let pointee = map_winmd_type_with_generics(inner, index, generic_args);
-            if is_scalar_out_pointee(&pointee) {
-                pointee
-            } else {
-                map_winmd_type_with_generics(ty, index, generic_args)
-            }
-        }
-        _ => map_winmd_type_with_generics(ty, index, generic_args),
-    }
-}
-
-fn is_scalar_out_pointee(t: &TypeMeta) -> bool {
-    matches!(
-        t,
-        TypeMeta::Bool
-            | TypeMeta::I8
-            | TypeMeta::U8
-            | TypeMeta::I16
-            | TypeMeta::U16
-            | TypeMeta::I32
-            | TypeMeta::U32
-            | TypeMeta::I64
-            | TypeMeta::U64
-            | TypeMeta::F32
-            | TypeMeta::F64
-            | TypeMeta::Enum { .. }
-    )
 }
 
 fn resolve_named_type(
@@ -2027,131 +1501,6 @@ mod tests {
         };
         let name = make_parameterized_name("IIterable`1", &[inner]);
         assert_eq!(name, "IIterable_IVector_Int32");
-    }
-
-    fn pwstr_type() -> TypeMeta {
-        TypeMeta::Struct {
-            namespace: "Windows.Win32.Foundation".into(),
-            name: "PWSTR".into(),
-            fields: vec![crate::types::FieldMeta {
-                name: "Value".into(),
-                typ: TypeMeta::Object,
-            }],
-        }
-    }
-
-    #[test]
-    fn marks_direct_pwstr_plus_adjacent_count_as_out_string_buffer() {
-        let mut params = vec![
-            ParamMeta {
-                name: "pszName".into(),
-                typ: pwstr_type(),
-                direction: ParamDirection::Out,
-            },
-            ParamMeta {
-                name: "cch".into(),
-                typ: TypeMeta::I32,
-                direction: ParamDirection::In,
-            },
-        ];
-        mark_caller_owned_string_buffers(&mut params);
-        assert_eq!(
-            params[0].direction,
-            ParamDirection::OutStringBuffer {
-                count_param_index: 1
-            }
-        );
-    }
-
-    #[test]
-    fn does_not_mark_pwstr_plus_byte_count_as_out_string_buffer() {
-        let mut params = vec![
-            ParamMeta {
-                name: "pszName".into(),
-                typ: pwstr_type(),
-                direction: ParamDirection::Out,
-            },
-            ParamMeta {
-                name: "cbSize".into(),
-                typ: TypeMeta::U32,
-                direction: ParamDirection::In,
-            },
-        ];
-        mark_caller_owned_string_buffers(&mut params);
-        assert_eq!(params[0].direction, ParamDirection::Out);
-    }
-
-    #[test]
-    fn does_not_mark_callee_allocated_pwstr_pointer_object() {
-        let mut params = vec![ParamMeta {
-            name: "ppszName".into(),
-            typ: TypeMeta::Object,
-            direction: ParamDirection::Out,
-        }];
-        mark_caller_owned_string_buffers(&mut params);
-        assert_eq!(params[0].direction, ParamDirection::Out);
-    }
-
-    #[test]
-    fn does_not_mark_generic_object_plus_size() {
-        let mut params = vec![
-            ParamMeta {
-                name: "buffer".into(),
-                typ: TypeMeta::Object,
-                direction: ParamDirection::Out,
-            },
-            ParamMeta {
-                name: "size".into(),
-                typ: TypeMeta::U32,
-                direction: ParamDirection::In,
-            },
-        ];
-        mark_caller_owned_string_buffers(&mut params);
-        assert_eq!(params[0].direction, ParamDirection::Out);
-    }
-
-    #[test]
-    fn does_not_mark_non_adjacent_count() {
-        let mut params = vec![
-            ParamMeta {
-                name: "pszName".into(),
-                typ: pwstr_type(),
-                direction: ParamDirection::Out,
-            },
-            ParamMeta {
-                name: "flags".into(),
-                typ: TypeMeta::U32,
-                direction: ParamDirection::In,
-            },
-            ParamMeta {
-                name: "cch".into(),
-                typ: TypeMeta::I32,
-                direction: ParamDirection::In,
-            },
-        ];
-        mark_caller_owned_string_buffers(&mut params);
-        assert_eq!(params[0].direction, ParamDirection::Out);
-    }
-
-    #[test]
-    fn out_pointer_to_scalar_preserves_pointee_type() {
-        let index = reader::Index::new(vec![]);
-        assert_eq!(
-            map_winmd_out_param_type(
-                &windows_metadata::Type::PtrMut(Box::new(windows_metadata::Type::I32), 1),
-                &index,
-                &[],
-            ),
-            TypeMeta::I32
-        );
-        assert_eq!(
-            map_winmd_out_param_type(
-                &windows_metadata::Type::PtrMut(Box::new(windows_metadata::Type::U16), 1),
-                &index,
-                &[],
-            ),
-            TypeMeta::U16
-        );
     }
 
     #[test]
