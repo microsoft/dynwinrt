@@ -16,7 +16,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 interface Instantiate {
-  kind: 'activate' | 'static_factory' | 'none';
+  kind: 'activate' | 'static_factory' | 'constructor' | 'none';
   method?: string;
   args?: any[];
 }
