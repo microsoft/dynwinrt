@@ -1443,8 +1443,11 @@ pub enum FlatAbiType {
         underlying: Box<FlatAbiType>,
         members: Vec<crate::types::EnumMember>,
     },
-    /// Anything we cannot classify precisely. Emitted as an opaque pointer at
-    /// the ABI; the surface will require the caller to pass a `Buffer|bigint`.
+    /// Anything we cannot classify precisely. Flat codegen FAIL-LOUD SKIPS any
+    /// method with a bare `Unknown` by-value param or return (there is no safe
+    /// by-value ABI marshalling for it — see `unsupported_param_reason` /
+    /// `unsupported_return_reason`). Only `PtrTo(Unknown)` survives, as an opaque
+    /// pointer param where the caller supplies a `Buffer|bigint`.
     Unknown,
 }
 
