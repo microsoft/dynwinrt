@@ -20,9 +20,9 @@ export declare class IShellLinkW {
     setWorkingDirectory(dir: PWSTR): void;
     getArguments(cch?: number): string;
     setArguments(args: PWSTR): void;
-    getHotkey(): bigint | Buffer;
+    getHotkey(): number;
     setHotkey(wHotkey: number): void;
-    getShowCmd(): bigint | Buffer;
+    getShowCmd(): SHOW_WINDOW_CMD;
     setShowCmd(iShowCmd: SHOW_WINDOW_CMD): void;
     getIconLocation(cch?: number): string;
     setIconLocation(iconPath: PWSTR, iIcon: number): void;

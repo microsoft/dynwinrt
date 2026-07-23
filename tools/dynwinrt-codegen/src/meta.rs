@@ -1943,10 +1943,14 @@ fn parse_interface_methods(
         for (j, param_def) in param_defs.iter().enumerate() {
             if j < sig.types.len() {
                 clr_sig_types.push(clr_type_name(&sig.types[j]));
-                let typ = map_winmd_type_with_generics(&sig.types[j], index, generic_args);
                 let is_out = param_def
                     .flags()
                     .contains(windows_metadata::ParamAttributes::Out);
+                let typ = if is_out {
+                    map_winmd_out_param_type(&sig.types[j], index, generic_args)
+                } else {
+                    map_winmd_type_with_generics(&sig.types[j], index, generic_args)
+                };
                 let direction = if is_out {
                     if matches!(sig.types[j], windows_metadata::Type::Array(_)) {
                         // [out] Array = FillArray (caller allocates buffer, callee fills)
@@ -2317,6 +2321,42 @@ fn map_winmd_type_with_generics(
     }
 }
 
+fn map_winmd_out_param_type(
+    ty: &windows_metadata::Type,
+    index: &reader::Index,
+    generic_args: &[TypeMeta],
+) -> TypeMeta {
+    match ty {
+        windows_metadata::Type::PtrMut(inner, _) | windows_metadata::Type::PtrConst(inner, _) => {
+            let pointee = map_winmd_type_with_generics(inner, index, generic_args);
+            if is_scalar_out_pointee(&pointee) {
+                pointee
+            } else {
+                map_winmd_type_with_generics(ty, index, generic_args)
+            }
+        }
+        _ => map_winmd_type_with_generics(ty, index, generic_args),
+    }
+}
+
+fn is_scalar_out_pointee(t: &TypeMeta) -> bool {
+    matches!(
+        t,
+        TypeMeta::Bool
+            | TypeMeta::I8
+            | TypeMeta::U8
+            | TypeMeta::I16
+            | TypeMeta::U16
+            | TypeMeta::I32
+            | TypeMeta::U32
+            | TypeMeta::I64
+            | TypeMeta::U64
+            | TypeMeta::F32
+            | TypeMeta::F64
+            | TypeMeta::Enum { .. }
+    )
+}
+
 fn resolve_named_type(
     namespace: &str,
     name: &str,
@@ -2585,6 +2625,27 @@ mod tests {
         ];
         mark_caller_owned_string_buffers(&mut params);
         assert_eq!(params[0].direction, ParamDirection::Out);
+    }
+
+    #[test]
+    fn out_pointer_to_scalar_preserves_pointee_type() {
+        let index = reader::Index::new(vec![]);
+        assert_eq!(
+            map_winmd_out_param_type(
+                &windows_metadata::Type::PtrMut(Box::new(windows_metadata::Type::I32), 1),
+                &index,
+                &[],
+            ),
+            TypeMeta::I32
+        );
+        assert_eq!(
+            map_winmd_out_param_type(
+                &windows_metadata::Type::PtrMut(Box::new(windows_metadata::Type::U16), 1),
+                &index,
+                &[],
+            ),
+            TypeMeta::U16
+        );
     }
 
     #[test]

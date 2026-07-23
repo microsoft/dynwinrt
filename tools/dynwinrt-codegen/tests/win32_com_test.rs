@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 use dynwinrt_codegen::codegen::com;
 use dynwinrt_codegen::codegen::project::{get_import_name, set_import_name};
 use dynwinrt_codegen::meta;
+use dynwinrt_codegen::types::TypeMeta;
 
 const WIN32_WINMD: &str = r"C:\s\win32metadata\Windows.Win32.winmd";
 
@@ -201,6 +202,73 @@ fn param_type_mapping() {
     assert!(
         js.contains("method(9)"),
         ".js must call vtable slot 9 for SetProgressValue"
+    );
+}
+
+#[test]
+fn shelllink_scalar_out_pointers_preserve_pointees_and_codegen_as_scalars() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+    let com_iface =
+        meta::parse_com_interface(WIN32_WINMD, "Windows.Win32.UI.Shell", "IShellLinkW").unwrap();
+
+    let get_show_cmd = com_iface
+        .interface
+        .methods
+        .iter()
+        .find(|m| m.name == "GetShowCmd")
+        .expect("GetShowCmd");
+    assert!(matches!(
+        &get_show_cmd.params[0].typ,
+        TypeMeta::Enum { name, underlying, .. }
+            if name == "SHOW_WINDOW_CMD" && matches!(**underlying, TypeMeta::I32)
+    ));
+
+    let get_hotkey = com_iface
+        .interface
+        .methods
+        .iter()
+        .find(|m| m.name == "GetHotkey")
+        .expect("GetHotkey");
+    assert_eq!(get_hotkey.params[0].typ, TypeMeta::U16);
+
+    let get_icon_location = com_iface
+        .interface
+        .methods
+        .iter()
+        .find(|m| m.name == "GetIconLocation")
+        .expect("GetIconLocation");
+    assert_eq!(get_icon_location.params[2].typ, TypeMeta::I32);
+
+    let out = com::generate_com_interface_files(&com_iface, WIN32_WINMD)
+        .expect("codegen must succeed for IShellLinkW");
+    assert!(
+        out.js
+            .contains(".addMethod('GetHotkey', new DynWinRtMethodSig().addOut(DynWinRtType.u16Type()))"),
+        "GetHotkey must register WORD* out as u16:\n{}",
+        out.js
+    );
+    assert!(
+        out.js
+            .contains(".addMethod('GetShowCmd', new DynWinRtMethodSig().addOut(DynWinRtType.i32Type()))"),
+        "GetShowCmd must register SHOW_WINDOW_CMD* out as i32:\n{}",
+        out.js
+    );
+    assert!(
+        out.js
+            .contains(".addMethod('GetIconLocation', new DynWinRtMethodSig().addIn(DynWinRtType.pointer()).addIn(DynWinRtType.i32Type()).addOut(DynWinRtType.i32Type()))"),
+        "GetIconLocation's trailing int* out must register as i32:\n{}",
+        out.js
+    );
+    assert!(out.js.contains("getHotkey() {\n        const _out"));
+    assert!(out.js.contains("getShowCmd() {\n        const _out"));
+    assert!(out.js.contains("return _out.toNumber();"));
+    assert!(
+        !out.js.contains("getHotkey() {\n        const _out = _IShellLinkW.method(12).invoke(this._obj, []);\n        // TODO: raw COM interface pointer adoption"),
+        "GetHotkey must not get the COM-pointer TODO:\n{}",
+        out.js
     );
 }
 

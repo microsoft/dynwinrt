@@ -27,11 +27,11 @@ const _IShellLinkW = new Proxy({}, {
             .addMethod('SetWorkingDirectory', new DynWinRtMethodSig().addIn(DynWinRtType.pointer()))
             .addMethod('GetArguments', new DynWinRtMethodSig().addIn(DynWinRtType.pointer()).addIn(DynWinRtType.i32Type()))
             .addMethod('SetArguments', new DynWinRtMethodSig().addIn(DynWinRtType.pointer()))
-            .addMethod('GetHotkey', new DynWinRtMethodSig().addOut(DynWinRtType.pointer()))
+            .addMethod('GetHotkey', new DynWinRtMethodSig().addOut(DynWinRtType.u16Type()))
             .addMethod('SetHotkey', new DynWinRtMethodSig().addIn(DynWinRtType.u16Type()))
-            .addMethod('GetShowCmd', new DynWinRtMethodSig().addOut(DynWinRtType.pointer()))
+            .addMethod('GetShowCmd', new DynWinRtMethodSig().addOut(DynWinRtType.i32Type()))
             .addMethod('SetShowCmd', new DynWinRtMethodSig().addIn(DynWinRtType.i32Type()))
-            .addMethod('GetIconLocation', new DynWinRtMethodSig().addIn(DynWinRtType.pointer()).addIn(DynWinRtType.i32Type()).addOut(DynWinRtType.pointer()))
+            .addMethod('GetIconLocation', new DynWinRtMethodSig().addIn(DynWinRtType.pointer()).addIn(DynWinRtType.i32Type()).addOut(DynWinRtType.i32Type()))
             .addMethod('SetIconLocation', new DynWinRtMethodSig().addIn(DynWinRtType.pointer()).addIn(DynWinRtType.i32Type()))
             .addMethod('SetRelativePath', new DynWinRtMethodSig().addIn(DynWinRtType.pointer()).addIn(DynWinRtType.u32Type()))
             .addMethod('Resolve', new DynWinRtMethodSig().addIn(DynWinRtType.pointer()).addIn(DynWinRtType.u32Type()))
@@ -88,16 +88,14 @@ export class IShellLinkW {
     }
     getHotkey() {
         const _out = _IShellLinkW.method(12).invoke(this._obj, []);
-        // TODO: raw COM interface pointer adoption requires preserved pointee metadata.
-        return _out;
+        return _out.toNumber();
     }
     setHotkey(wHotkey) {
         _IShellLinkW.method(13).invoke(this._obj, [DynWinRtValue.u16(wHotkey)]);
     }
     getShowCmd() {
         const _out = _IShellLinkW.method(14).invoke(this._obj, []);
-        // TODO: raw COM interface pointer adoption requires preserved pointee metadata.
-        return _out;
+        return _out.toNumber();
     }
     setShowCmd(iShowCmd) {
         _IShellLinkW.method(15).invoke(this._obj, [DynWinRtValue.i32(iShowCmd)]);

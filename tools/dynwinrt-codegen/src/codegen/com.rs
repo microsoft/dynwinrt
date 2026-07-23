@@ -2008,6 +2008,16 @@ mod tests {
         let com = plain_iface_with_method(m);
         let js = render_js(&com, None);
         let dts = render_dts(&com, None);
+        assert!(
+            js.contains(".addMethod('GetShowCmd', new DynWinRtMethodSig().addOut(DynWinRtType.i32Type()))"),
+            ".js must register I32 out-param as i32, not pointer:\n{}",
+            js
+        );
+        assert!(
+            !js.contains(".addMethod('GetShowCmd', new DynWinRtMethodSig().addOut(DynWinRtType.pointer()))"),
+            ".js must not register scalar out-param as pointer:\n{}",
+            js
+        );
         // .js: must capture `_out` and return it as a JS number.
         assert!(
             js.contains("const _out = _IHasOut.method(8).invoke(this._obj, [])"),
@@ -2023,6 +2033,45 @@ mod tests {
         assert!(
             dts.contains("getShowCmd(): number;"),
             ".d.ts must project single-out I32 as `number`:\n{}",
+            dts
+        );
+    }
+
+    #[test]
+    fn plain_method_single_out_u16_projects_as_return() {
+        // Model: `HRESULT GetHotkey([out] WORD* pwHotkey)`.
+        let m = MethodMeta {
+            name: "GetHotkey".into(),
+            vtable_index: 9,
+            params: vec![ParamMeta {
+                name: "pwHotkey".into(),
+                typ: TypeMeta::U16,
+                direction: ParamDirection::Out,
+            }],
+            return_type: Some(make_hresult()),
+            ..Default::default()
+        };
+        let com = plain_iface_with_method(m);
+        let js = render_js(&com, None);
+        let dts = render_dts(&com, None);
+        assert!(
+            js.contains(".addMethod('GetHotkey', new DynWinRtMethodSig().addOut(DynWinRtType.u16Type()))"),
+            ".js must register U16 out-param as u16, not pointer:\n{}",
+            js
+        );
+        assert!(
+            js.contains("return _out.toNumber();"),
+            ".js must unwrap the U16 out as _out.toNumber():\n{}",
+            js
+        );
+        assert!(
+            !js.contains("raw COM interface pointer adoption"),
+            ".js must not emit COM-pointer adoption TODO for scalar outs:\n{}",
+            js
+        );
+        assert!(
+            dts.contains("getHotkey(): number;"),
+            ".d.ts must project single-out U16 as `number`:\n{}",
             dts
         );
     }
