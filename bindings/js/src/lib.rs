@@ -592,8 +592,11 @@ impl DynWinRTValue {
   ///
   /// Accepts:
   ///   - BigInt: interpreted as a raw pointer value (u64 on x64).
+  ///   - number: a non-negative safe integer, interpreted as a raw pointer
+  ///     value (use a BigInt for pointers above `Number.MAX_SAFE_INTEGER`).
   ///   - Buffer: uses the buffer's byte-pointer directly (does not clone).
   ///     Caller keeps the Buffer alive for the duration of the COM call.
+  ///   - Uint8Array: same as Buffer — uses the view's data pointer directly.
   ///   - null/undefined: null pointer.
   #[napi]
   pub fn pointer(
