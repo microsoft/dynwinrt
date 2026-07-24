@@ -21,11 +21,17 @@ use dynwinrt_codegen::meta;
 use dynwinrt_codegen::meta::{FlatAbiType, FlatDirection};
 use dynwinrt_codegen::types::TypeMeta;
 
-const WIN32_WINMD: &str = r"C:\s\win32metadata\Windows.Win32.winmd";
+/// Path to `Windows.Win32.winmd`. Overridable via the `DYNWINRT_WIN32_WINMD`
+/// environment variable so this suite can run on CI and other machines without
+/// editing the source; falls back to the common local checkout path.
+fn win32_winmd() -> String {
+    std::env::var("DYNWINRT_WIN32_WINMD")
+        .unwrap_or_else(|_| r"C:\s\win32metadata\Windows.Win32.winmd".to_string())
+}
 const REGISTRY_NS: &str = "Windows.Win32.System.Registry";
 
 fn win32_available() -> bool {
-    Path::new(WIN32_WINMD).exists()
+    Path::new(&win32_winmd()).exists()
 }
 
 // ---------------------------------------------------------------------------
@@ -40,7 +46,7 @@ fn discover_flat_apis_for_registry_namespace() {
         eprintln!("Skipping: Win32 winmd not available");
         return;
     }
-    let apis = meta::parse_flat_apis(WIN32_WINMD, REGISTRY_NS, "Apis")
+    let apis = meta::parse_flat_apis(&win32_winmd(), REGISTRY_NS, "Apis")
         .expect("Registry Apis class should parse as a flat-DllImport container");
     assert_eq!(apis.namespace, REGISTRY_NS);
     assert_eq!(apis.class_name, "Apis");
@@ -58,7 +64,7 @@ fn discover_flat_apis_for_registry_namespace() {
 
     // The `Apis` class is NOT a COM interface — parse_com_interface should
     // return None (no interface with that name) OR a Some whose IID is empty.
-    let as_com = com_metadata::parse_com_interface(WIN32_WINMD, REGISTRY_NS, "Apis");
+    let as_com = com_metadata::parse_com_interface(&win32_winmd(), REGISTRY_NS, "Apis");
     if let Some(ci) = as_com {
         assert!(
             ci.interface.iid.is_empty(),
@@ -76,7 +82,7 @@ fn parse_reg_open_key_ex_w() {
         return;
     }
 
-    let apis = meta::parse_flat_apis(WIN32_WINMD, REGISTRY_NS, "Apis").unwrap();
+    let apis = meta::parse_flat_apis(&win32_winmd(), REGISTRY_NS, "Apis").unwrap();
     let m = apis
         .methods
         .iter()
@@ -155,7 +161,7 @@ fn parse_unsigned_win32_enum_preserves_u32_backing_and_codegen_coerces_high_bit(
         return;
     }
 
-    let apis = meta::parse_flat_apis(WIN32_WINMD, REGISTRY_NS, "Apis").unwrap();
+    let apis = meta::parse_flat_apis(&win32_winmd(), REGISTRY_NS, "Apis").unwrap();
     let m = apis
         .methods
         .iter()
@@ -194,7 +200,7 @@ fn parse_get_proc_address_return_is_pointer() {
         eprintln!("Skipping: Win32 winmd not available");
         return;
     }
-    let apis = meta::parse_flat_apis(WIN32_WINMD, "Windows.Win32.System.LibraryLoader", "Apis")
+    let apis = meta::parse_flat_apis(&win32_winmd(), "Windows.Win32.System.LibraryLoader", "Apis")
         .expect("LibraryLoader Apis should parse");
     let m = apis
         .methods
@@ -254,7 +260,7 @@ fn reg_connect_registry_ex_projects_status_like_non_ex_variant() {
 // ---------------------------------------------------------------------------
 
 fn generate_registry_apis() -> flat::FlatGeneratedOutput {
-    let apis = meta::parse_flat_apis(WIN32_WINMD, REGISTRY_NS, "Apis").unwrap();
+    let apis = meta::parse_flat_apis(&win32_winmd(), REGISTRY_NS, "Apis").unwrap();
     flat::generate_flat_apis_files(&apis)
 }
 
@@ -321,7 +327,7 @@ fn partial_generation_only_requested_namespace() {
         eprintln!("Skipping: Win32 winmd not available");
         return;
     }
-    let registry = meta::parse_flat_apis(WIN32_WINMD, REGISTRY_NS, "Apis").unwrap();
+    let registry = meta::parse_flat_apis(&win32_winmd(), REGISTRY_NS, "Apis").unwrap();
     for m in &registry.methods {
         // Every method belongs to the Registry namespace's advapi32 exports.
         assert!(
@@ -508,9 +514,9 @@ fn com_interface_generation_still_works() {
         return;
     }
     let com_iface =
-        com_metadata::parse_com_interface(WIN32_WINMD, "Windows.Win32.UI.Shell", "ITaskbarList3")
+        com_metadata::parse_com_interface(&win32_winmd(), "Windows.Win32.UI.Shell", "ITaskbarList3")
             .expect("ITaskbarList3 must exist");
-    let out = com::generate_com_interface_files(&com_iface, WIN32_WINMD)
+    let out = com::generate_com_interface_files(&com_iface, &win32_winmd())
         .expect("COM codegen must succeed");
     assert!(out.js.contains("class ITaskbarList3"));
     assert!(out.dts.contains("ITaskbarList3"));
@@ -1230,7 +1236,7 @@ fn cli_rejects_non_js_lang_for_flat_apis() {
         .args([
             "generate",
             "--winmd",
-            WIN32_WINMD,
+            &win32_winmd(),
             "--namespace",
             REGISTRY_NS,
             "--class-name",
