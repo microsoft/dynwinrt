@@ -40,17 +40,28 @@ fn get_cached_module(dll: &str) -> Result<HMODULE> {
     if dll.encode_utf16().any(|unit| unit == 0) {
         return Err(invalid_arg_error());
     }
-    // Recover the map from a poisoned mutex (a prior panic while holding the
-    // lock) rather than propagating the panic and aborting the host process on
-    // a later flatInvoke; the cache is an append-only name→HMODULE map, so a
-    // partially-updated map is still safe to use.
-    let mut cache = module_cache().lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(cached) = cache.get(dll) {
-        return Ok(cached.0);
+    // Fast path: check the cache under a short-lived lock, then release it.
+    if let Some(module) = module_cache()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(dll)
+        .map(|cached| cached.0)
+    {
+        return Ok(module);
     }
+    // Load WITHOUT holding the cache lock. LoadLibraryW runs loader work and the
+    // DLL's DllMain, which can re-enter flat_invoke -> get_cached_module; holding
+    // the (non-reentrant) cache mutex across it would risk a deadlock and would
+    // serialize all flat calls during a load.
     let module = unsafe { LoadLibraryW(&HSTRING::from(dll)) }.map_err(Error::WindowsError)?;
-    cache.insert(dll.to_string(), CachedModule(module));
-    Ok(module)
+    // Re-acquire and insert. If another thread loaded the same DLL concurrently,
+    // keep the first entry; both HMODULEs refer to the same module and the extra
+    // reference is intentionally never released (process-lifetime residency).
+    let mut cache = module_cache().lock().unwrap_or_else(|e| e.into_inner());
+    Ok(cache
+        .entry(dll.to_string())
+        .or_insert(CachedModule(module))
+        .0)
 }
 
 fn proc_address(module: HMODULE, dll: &str, entry: &str) -> Result<*mut c_void> {

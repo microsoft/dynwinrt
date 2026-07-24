@@ -427,7 +427,7 @@ fn js_param_name(raw: &str, idx: usize) -> String {
         | "continue" | "true" | "false" | "null" | "undefined" | "in" | "of" | "typeof"
         | "instanceof" | "throw" | "try" | "catch" | "finally" | "yield" | "async" | "await"
         | "with" | "void" | "public" | "private" | "protected" | "package" | "static" | "import"
-        | "export" | "extends" | "super" | "arguments" | "status" => format!("{}_", out),
+        | "export" | "extends" | "super" | "arguments" | "status" | "result" => format!("{}_", out),
         _ => out,
     }
 }
@@ -1248,6 +1248,20 @@ mod tests {
         assert_eq!(camel_case("MulDiv"), "mulDiv");
         assert_eq!(camel_case("GetLastError"), "getLastError");
         assert_eq!(camel_case("URL"), "url");
+    }
+
+    #[test]
+    fn js_param_name_reserves_return_object_keys_and_js_keywords() {
+        // `status` and `result` are the return-object field names for a flat
+        // wrapper; a parameter/out-field that strips to either would collide
+        // with (and overwrite) the actual return value, so both are reserved.
+        assert_eq!(js_param_name("status", 0), "status_");
+        assert_eq!(js_param_name("result", 0), "result_");
+        // JS keywords are reserved too.
+        assert_eq!(js_param_name("class", 0), "class_");
+        assert_eq!(js_param_name("return", 0), "return_");
+        // Ordinary names are unchanged.
+        assert_eq!(js_param_name("hKey", 0), "hKey");
     }
 
     #[test]
