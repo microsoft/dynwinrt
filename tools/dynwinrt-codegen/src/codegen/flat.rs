@@ -1310,6 +1310,26 @@ mod tests {
     }
 
     #[test]
+    fn handle_arg_passes_through_without_lossy_bigint_wrap() {
+        // Regression (commit 16d293f): a handle ARG must be passed straight to
+        // pointer() — which accepts bigint|number and validates safe integers —
+        // NOT wrapped in BigInt(x). BigInt(number) for a value above 2^53-1 has
+        // already lost bits and bypasses pointer()'s validation.
+        let arg = wrap_arg_js(
+            &FlatAbiType::Handle {
+                namespace: "Windows.Win32.System.Registry".into(),
+                name: "HKEY".into(),
+            },
+            "hKey",
+        );
+        assert_eq!(arg, "DynWinRtValue.pointer(hKey)");
+        assert!(
+            !arg.contains("BigInt("),
+            "handle arg must not wrap in BigInt(): {arg}"
+        );
+    }
+
+    #[test]
     fn dts_type_of_scalars_and_handles() {
         assert_eq!(dts_type_of(&FlatAbiType::Bool), "boolean");
         assert_eq!(dts_type_of(&FlatAbiType::Bool32), "boolean");

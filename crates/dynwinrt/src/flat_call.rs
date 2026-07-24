@@ -373,6 +373,43 @@ mod tests {
     }
 
     #[test]
+    fn module_cache_recovers_from_poisoned_mutex() {
+        // Regression (commit 123d172): poison the module-cache mutex by
+        // panicking while holding it, then confirm get_cached_module still
+        // works — it recovers via `unwrap_or_else(|e| e.into_inner())` instead
+        // of propagating the panic and aborting the host process.
+        let _ = std::thread::spawn(|| {
+            let _guard = module_cache().lock().unwrap();
+            panic!("intentionally poison the module cache");
+        })
+        .join();
+        assert!(module_cache().is_poisoned());
+        let module = get_cached_module("kernel32.dll")
+            .expect("get_cached_module must recover from a poisoned mutex");
+        assert_ne!(module.0 as usize, 0);
+    }
+
+    #[test]
+    fn concurrent_first_load_does_not_deadlock() {
+        // Regression (commit 98b3f99): get_cached_module must NOT hold the
+        // cache mutex while calling LoadLibraryW. Several threads loading the
+        // same not-yet-cached DLL concurrently must all complete (this test
+        // finishing at all proves there is no self-deadlock) and agree on a
+        // non-null handle.
+        let handles: Vec<_> = (0..8)
+            .map(|_| std::thread::spawn(|| get_cached_module("winmm.dll").map(|m| m.0 as usize)))
+            .collect();
+        let results: Vec<usize> = handles
+            .into_iter()
+            .map(|h| h.join().unwrap().expect("winmm.dll must load"))
+            .collect();
+        assert!(results.iter().all(|&h| h != 0));
+        // After the race the cache is coherent: a subsequent lookup matches.
+        let again = get_cached_module("winmm.dll").unwrap().0 as usize;
+        assert_eq!(again, results[0]);
+    }
+
+    #[test]
     fn flat_call_get_current_process_id_matches_rust_process_id() -> Result<()> {
         let result = invoke(
             "kernel32.dll",
