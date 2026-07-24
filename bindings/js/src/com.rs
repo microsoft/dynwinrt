@@ -4,7 +4,7 @@
 use napi::bindgen_prelude::{BigInt, FromNapiValue, Unknown};
 use napi::JsValue;
 use napi_derive::napi;
-use windows::core::{IUnknown, Interface as _};
+use windows::core::{GUID, IUnknown, Interface as _};
 
 use super::{DynWinRTValue, WinGUID, TABLE};
 
@@ -14,15 +14,25 @@ pub(super) enum NativePointerOwner {
   Uint8Array(napi::bindgen_prelude::Uint8Array),
   ComObject(IUnknown),
   CoTaskMem(*mut std::ffi::c_void),
+  Guid(*mut GUID),
 }
 
 impl Drop for NativePointerOwner {
   fn drop(&mut self) {
-    if let Self::CoTaskMem(ptr) = self {
-      if !ptr.is_null() {
-        unsafe { windows::Win32::System::Com::CoTaskMemFree(Some(*ptr)) };
-        *ptr = std::ptr::null_mut();
+    match self {
+      Self::CoTaskMem(ptr) => {
+        if !ptr.is_null() {
+          unsafe { windows::Win32::System::Com::CoTaskMemFree(Some(*ptr)) };
+          *ptr = std::ptr::null_mut();
+        }
       }
+      Self::Guid(ptr) => {
+        if !ptr.is_null() {
+          drop(unsafe { Box::from_raw(*ptr) });
+          *ptr = std::ptr::null_mut();
+        }
+      }
+      _ => {}
     }
   }
 }
@@ -126,25 +136,17 @@ fn pointer(value: Unknown) -> napi::Result<DynWinRTValue> {
       NativePointerOwner::Uint8Array(array),
     ));
   }
-  if let Ok(existing) = unsafe { <&DynWinRTValue>::from_napi_value(env, raw) } {
-    return match &existing.0 {
-      dynwinrt::WinRTValue::Object(object) => Ok(DynWinRTValue::with_pointer_owner(
-        dynwinrt::WinRTValue::RawPtr(object.as_raw()),
-        NativePointerOwner::ComObject(object.clone()),
-      )),
-      dynwinrt::WinRTValue::RawPtr(ptr) if existing.1.is_none() => {
-        Ok(DynWinRTValue::new(dynwinrt::WinRTValue::RawPtr(*ptr)))
-      }
-      dynwinrt::WinRTValue::Null => Ok(DynWinRTValue::new(dynwinrt::WinRTValue::RawPtr(
-        std::ptr::null_mut(),
-      ))),
-      _ => Err(napi::Error::from_reason(
-        "pointer(): expected an object or unowned pointer value",
-      )),
-    };
+  // Reject existing DynWinRtValue inputs. Borrowing an Object's raw COM pointer
+  // here would make it indistinguishable from an owned raw pointer to
+  // adoptComPointer(), which can double-release the original wrapper's COM
+  // object. Callers that already have raw pointer bits should pass those bits.
+  if unsafe { <&DynWinRTValue>::from_napi_value(env, raw) }.is_ok() {
+    return Err(napi::Error::from_reason(
+      "pointer(): DynWinRtValue inputs are not accepted; pass raw pointer bits, Buffer/Uint8Array, or null instead",
+    ));
   }
   Err(napi::Error::from_reason(
-    "pointer(): expected bigint, number, Buffer, Uint8Array, object, null, or undefined",
+    "pointer(): expected bigint, number, Buffer, Uint8Array, null, or undefined",
   ))
 }
 
@@ -232,19 +234,15 @@ fn take_raw_pointer(
 }
 
 fn iid_pointer(value: &WinGUID) -> DynWinRTValue {
-  use std::collections::HashMap;
-  use std::sync::{Mutex, OnceLock};
-
-  static CACHE: OnceLock<Mutex<HashMap<u128, usize>>> = OnceLock::new();
-  let guid = value.0;
-  let key = u128::from_le_bytes(unsafe { std::mem::transmute(guid) });
-  let address = *CACHE
-    .get_or_init(|| Mutex::new(HashMap::new()))
-    .lock()
-    .unwrap()
-    .entry(key)
-    .or_insert_with(|| Box::into_raw(Box::new(guid)) as usize);
-  DynWinRTValue::new(dynwinrt::WinRTValue::RawPtr(address as *mut _))
+  // Owner-backed: the boxed GUID is freed when the returned DynWinRtValue is
+  // dropped / GC'd, instead of being leaked into a process-lifetime cache. The
+  // REFIID is only read during the synchronous COM call the value is passed to,
+  // and the JS temporary holding it outlives that call, so this is safe.
+  let ptr = Box::into_raw(Box::new(value.0));
+  DynWinRTValue::with_pointer_owner(
+    dynwinrt::WinRTValue::RawPtr(ptr as *mut std::ffi::c_void),
+    NativePointerOwner::Guid(ptr),
+  )
 }
 
 #[napi]
