@@ -562,14 +562,21 @@ fn render_js(meta: &FlatApisMeta) -> String {
     // A small runtime helper for wide- and narrow-string marshalling.
     // Emitted inline so the generated file has no cross-file runtime
     // dependencies beyond `dynwinrt`.
+    let mut methods_js = String::new();
+    for m in &meta.methods {
+        render_method_js(&mut methods_js, m);
+        methods_js.push('\n');
+    }
+
     out.push_str(WIDE_STRING_HELPER);
     out.push_str(NARROW_STRING_HELPER);
-    out.push_str("\n");
-
-    for m in &meta.methods {
-        render_method_js(&mut out, m);
-        out.push('\n');
+    // The handle-slot helper is only needed when a method writes a `bigint |
+    // number` handle into an in/out 64-bit slot; emit it only if referenced.
+    if methods_js.contains("_handleU64(") {
+        out.push_str(HANDLE_SLOT_HELPER);
     }
+    out.push_str("\n");
+    out.push_str(&methods_js);
 
     // Aggregate exports as a frozen object, mirroring the classic-COM
     // `export class` shape but for a module-namespace of functions.
@@ -638,6 +645,23 @@ function _narrowStringBuffer(str) {
     const buf = Buffer.alloc(byteLen + 1);
     buf.write(str, 'utf8');
     return buf;
+}
+";
+
+const HANDLE_SLOT_HELPER: &str = "\
+// Coerce a handle (bigint | number) to a BigInt for a 64-bit in/out slot.
+// A bigint carries full 64-bit handle bits; a number must be a non-negative
+// safe integer (a number above 2^53-1 has already lost bits, so it is
+// rejected rather than silently writing a wrong handle).
+function _handleU64(x) {
+    if (typeof x === 'bigint') return x;
+    if (typeof x === 'number') {
+        if (!Number.isSafeInteger(x) || x < 0) {
+            throw new RangeError('handle number must be a non-negative safe integer (use a bigint for a full 64-bit handle)');
+        }
+        return BigInt(x);
+    }
+    throw new TypeError(`expected a bigint or number handle, got ${typeof x}`);
 }
 ";
 
@@ -918,11 +942,13 @@ fn scalar_slot_write(t: &FlatAbiType, value_var: &str) -> WriteExpr {
         // Handle in-out slots accept both bigint and number (Buffer is
         // intentionally NOT a valid Handle input — see the handle typedef
         // in the .d.ts — because `DynWinRtValue.pointer(Buffer)` uses the
-        // buffer's own address, not the bytes it contains). `BigInt(x)`
-        // safely handles bigint (identity) and number (coerce); the same
-        // shape U64 uses.
+        // buffer's own address, not the bytes it contains). Route through
+        // `_handleU64`, which carries a bigint losslessly and rejects a
+        // number that is not a non-negative safe integer (a number above
+        // 2^53-1 has already lost bits, so `BigInt(x)` would write a wrong
+        // handle silently).
         FlatAbiType::Handle { .. } => WriteExpr::new(&format!(
-            "{{slot}}.writeBigUInt64LE(BigInt({value_var}), 0)"
+            "{{slot}}.writeBigUInt64LE(_handleU64({value_var}), 0)"
         )),
         FlatAbiType::Enum { underlying, .. } => match **underlying {
             FlatAbiType::U32 => WriteExpr::new(&format!(
@@ -1262,6 +1288,25 @@ mod tests {
         assert_eq!(js_param_name("return", 0), "return_");
         // Ordinary names are unchanged.
         assert_eq!(js_param_name("hKey", 0), "hKey");
+    }
+
+    #[test]
+    fn handle_inout_slot_write_validates_via_helper() {
+        // A handle in/out slot (.d.ts type `bigint | number`) must route the
+        // value through `_handleU64`, which rejects lossy numbers above 2^53-1
+        // rather than silently writing wrong handle bits via `BigInt(x)`.
+        let h = scalar_slot_write(
+            &FlatAbiType::Handle {
+                namespace: "Windows.Win32.Foundation".into(),
+                name: "HANDLE".into(),
+            },
+            "hFile",
+        );
+        assert_eq!(h.replace, "{slot}.writeBigUInt64LE(_handleU64(hFile), 0)");
+        // A `bigint`-typed U64 slot has no number ambiguity, so it keeps the
+        // direct BigInt() coercion.
+        let u = scalar_slot_write(&FlatAbiType::U64, "count");
+        assert_eq!(u.replace, "{slot}.writeBigUInt64LE(BigInt(count), 0)");
     }
 
     #[test]
