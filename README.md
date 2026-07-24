@@ -97,6 +97,17 @@ can omit the bootstrap call.
 
 Generate Win32/COM wrappers by pointing the codegen at the Win32 metadata (`Windows.Win32.winmd` from the [win32metadata](https://github.com/microsoft/win32metadata) package):
 
+### Getting `Windows.Win32.winmd`
+
+`Windows.Win32.winmd` is not on a stock Windows machine — it ships in the MIT-licensed NuGet package [`Microsoft.Windows.SDK.Win32Metadata`](https://www.nuget.org/packages/Microsoft.Windows.SDK.Win32Metadata). A `.nupkg` is just a zip, and the `.winmd` sits at its root, so you can grab it with one command (no NuGet client required):
+
+```powershell
+$v = '71.0.14-preview'  # latest at time of writing; see nuget.org for newer
+Invoke-WebRequest "https://api.nuget.org/v3-flatcontainer/microsoft.windows.sdk.win32metadata/$v/microsoft.windows.sdk.win32metadata.$v.nupkg" -OutFile win32meta.zip
+Expand-Archive win32meta.zip -DestinationPath win32meta
+# → win32meta\Windows.Win32.winmd   (pass this path to --winmd below)
+```
+
 ```bash
 npx dynwinrt-codegen generate \
   --winmd path/to/Windows.Win32.winmd \
