@@ -99,23 +99,17 @@ Generate Win32/COM wrappers by pointing the codegen at the Win32 metadata (`Wind
 
 ### Getting `Windows.Win32.winmd`
 
-`Windows.Win32.winmd` is not on a stock Windows machine — it ships in the MIT-licensed NuGet package [`Microsoft.Windows.SDK.Win32Metadata`](https://www.nuget.org/packages/Microsoft.Windows.SDK.Win32Metadata). A `.nupkg` is just a zip with the `.winmd` at its root, so this one block fetches the **latest** version and drops it in `./win32meta` — no NuGet client, and no version number to pick:
+`Windows.Win32.winmd` is not on a stock Windows machine — it ships in the MIT-licensed NuGet package [`Microsoft.Windows.SDK.Win32Metadata`](https://www.nuget.org/packages/Microsoft.Windows.SDK.Win32Metadata). A `.nupkg` is just a zip with the `.winmd` at its root, so **copy-paste this whole block into PowerShell as-is** — it fetches the latest winmd and generates `ITaskbarList3` wrappers into `./generated` (no NuGet client, no version number to pick):
 
 ```powershell
 $pkg = 'microsoft.windows.sdk.win32metadata'
 $ver = (Invoke-RestMethod "https://api.nuget.org/v3-flatcontainer/$pkg/index.json").versions[-1]
 Invoke-WebRequest "https://api.nuget.org/v3-flatcontainer/$pkg/$ver/$pkg.$ver.nupkg" -OutFile "$env:TEMP\win32meta.zip"
 Expand-Archive "$env:TEMP\win32meta.zip" -DestinationPath .\win32meta -Force
-# → .\win32meta\Windows.Win32.winmd
+npx dynwinrt-codegen generate --winmd .\win32meta\Windows.Win32.winmd --namespace Windows.Win32.UI.Shell --class-name ITaskbarList3 --output ./generated
 ```
 
-```bash
-npx dynwinrt-codegen generate \
-  --winmd ./win32meta/Windows.Win32.winmd \
-  --namespace Windows.Win32.UI.Shell \
-  --class-name ITaskbarList3 \
-  --output ./generated
-```
+Swap `--namespace` / `--class-name` for whatever API you need; reuse the same `.\win32meta\Windows.Win32.winmd` for every run.
 
 > Win32 and classic-COM generation currently emits JavaScript/TypeScript (`.js` + `.d.ts`).
 
