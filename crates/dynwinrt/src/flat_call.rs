@@ -40,11 +40,15 @@ fn get_cached_module(dll: &str) -> Result<HMODULE> {
     if dll.encode_utf16().any(|unit| unit == 0) {
         return Err(invalid_arg_error());
     }
+    // Windows DLL resolution is case-insensitive, so normalize the cache key:
+    // "ADVAPI32.dll" and "advapi32.dll" must share one cached module (and one
+    // LoadLibraryW reference) rather than creating duplicate entries.
+    let key = dll.to_ascii_lowercase();
     // Fast path: check the cache under a short-lived lock, then release it.
     if let Some(module) = module_cache()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .get(dll)
+        .get(&key)
         .map(|cached| cached.0)
     {
         return Ok(module);
@@ -58,10 +62,7 @@ fn get_cached_module(dll: &str) -> Result<HMODULE> {
     // keep the first entry; both HMODULEs refer to the same module and the extra
     // reference is intentionally never released (process-lifetime residency).
     let mut cache = module_cache().lock().unwrap_or_else(|e| e.into_inner());
-    Ok(cache
-        .entry(dll.to_string())
-        .or_insert(CachedModule(module))
-        .0)
+    Ok(cache.entry(key).or_insert(CachedModule(module)).0)
 }
 
 fn proc_address(module: HMODULE, dll: &str, entry: &str) -> Result<*mut c_void> {
@@ -407,6 +408,26 @@ mod tests {
         // After the race the cache is coherent: a subsequent lookup matches.
         let again = get_cached_module("winmm.dll").unwrap().0 as usize;
         assert_eq!(again, results[0]);
+    }
+
+    #[test]
+    fn module_cache_key_is_case_insensitive() {
+        // Regression: Windows DLL resolution is case-insensitive, so case
+        // variants of the same DLL name must map to ONE cache entry (one load /
+        // one reference), not a duplicate. Pre-fix (raw-string key) the second
+        // case variant added a new entry.
+        let _ = get_cached_module("gdi32.dll").unwrap();
+        let before = module_cache().lock().unwrap_or_else(|e| e.into_inner()).len();
+        let _ = get_cached_module("GDI32.DLL").unwrap();
+        let after = module_cache().lock().unwrap_or_else(|e| e.into_inner()).len();
+        assert_eq!(
+            before, after,
+            "a case-variant DLL name must reuse the same cache entry, not add a new one"
+        );
+        assert!(module_cache()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key("gdi32.dll"));
     }
 
     #[test]
