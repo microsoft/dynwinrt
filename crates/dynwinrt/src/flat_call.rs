@@ -40,7 +40,11 @@ fn get_cached_module(dll: &str) -> Result<HMODULE> {
     if dll.encode_utf16().any(|unit| unit == 0) {
         return Err(invalid_arg_error());
     }
-    let mut cache = module_cache().lock().unwrap();
+    // Recover the map from a poisoned mutex (a prior panic while holding the
+    // lock) rather than propagating the panic and aborting the host process on
+    // a later flatInvoke; the cache is an append-only name→HMODULE map, so a
+    // partially-updated map is still safe to use.
+    let mut cache = module_cache().lock().unwrap_or_else(|e| e.into_inner());
     if let Some(cached) = cache.get(dll) {
         return Ok(cached.0);
     }

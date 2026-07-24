@@ -587,8 +587,8 @@ impl DynWinRTValue {
   }
 
   /// Wrap a pointer/handle (BigInt, number, Buffer, Uint8Array, or null) as a
-  /// `WinRTValue::RawPtr` for classic-COM calls
-  /// with `void*` / HWND / PWSTR / function-pointer parameters.
+  /// `WinRTValue::RawPtr` for classic-COM and flat-Win32 (`flatInvoke`) calls
+  /// with `void*` / HWND / PWSTR / handle / function-pointer parameters.
   ///
   /// Accepts:
   ///   - BigInt: interpreted as a raw pointer value (u64 on x64).
@@ -927,11 +927,13 @@ impl DynWinRTValue {
   }
   #[napi]
   pub fn u64(
-    #[napi(ts_arg_type = "number | bigint")] value: Either<BigInt, i64>,
+    #[napi(ts_arg_type = "number | bigint")] value: Either<BigInt, f64>,
   ) -> napi::Result<DynWinRTValue> {
     // Accept either a JS `bigint` (full unsigned-64 range) or a plain `number`
     // (the common case — WinRT/collection codegen passes numeric sizes/positions
-    // without a BigInt wrapper). Both convert losslessly to a u64.
+    // without a BigInt wrapper). The bigint path is lossless; the number path is
+    // validated as a non-negative safe integer so an out-of-range or fractional
+    // number is rejected rather than silently rounded/truncated into a wrong u64.
     let v: u64 = match value {
       Either::A(bi) => {
         let (negative, value, lossless) = bi.get_u64();
@@ -943,9 +945,9 @@ impl DynWinRTValue {
         value
       }
       Either::B(n) => {
-        if n < 0 {
+        if !n.is_finite() || n < 0.0 || n.fract() != 0.0 || n > 9_007_199_254_740_991.0 {
           return Err(napi::Error::from_reason(
-            "DynWinRtValue.u64(): value must be non-negative",
+            "DynWinRtValue.u64(): number must be a non-negative safe integer (use a bigint for values above 2^53-1)",
           ));
         }
         n as u64
