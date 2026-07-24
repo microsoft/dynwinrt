@@ -99,18 +99,19 @@ Generate Win32/COM wrappers by pointing the codegen at the Win32 metadata (`Wind
 
 ### Getting `Windows.Win32.winmd`
 
-`Windows.Win32.winmd` is not on a stock Windows machine — it ships in the MIT-licensed NuGet package [`Microsoft.Windows.SDK.Win32Metadata`](https://www.nuget.org/packages/Microsoft.Windows.SDK.Win32Metadata). A `.nupkg` is just a zip, and the `.winmd` sits at its root, so you can grab it with one command (no NuGet client required):
+`Windows.Win32.winmd` is not on a stock Windows machine — it ships in the MIT-licensed NuGet package [`Microsoft.Windows.SDK.Win32Metadata`](https://www.nuget.org/packages/Microsoft.Windows.SDK.Win32Metadata). A `.nupkg` is just a zip with the `.winmd` at its root, so this one block fetches the **latest** version and drops it in `./win32meta` — no NuGet client, and no version number to pick:
 
 ```powershell
-$v = '71.0.14-preview'  # latest at time of writing; see nuget.org for newer
-Invoke-WebRequest "https://api.nuget.org/v3-flatcontainer/microsoft.windows.sdk.win32metadata/$v/microsoft.windows.sdk.win32metadata.$v.nupkg" -OutFile win32meta.zip
-Expand-Archive win32meta.zip -DestinationPath win32meta
-# → win32meta\Windows.Win32.winmd   (pass this path to --winmd below)
+$pkg = 'microsoft.windows.sdk.win32metadata'
+$ver = (Invoke-RestMethod "https://api.nuget.org/v3-flatcontainer/$pkg/index.json").versions[-1]
+Invoke-WebRequest "https://api.nuget.org/v3-flatcontainer/$pkg/$ver/$pkg.$ver.nupkg" -OutFile "$env:TEMP\win32meta.zip"
+Expand-Archive "$env:TEMP\win32meta.zip" -DestinationPath .\win32meta -Force
+# → .\win32meta\Windows.Win32.winmd
 ```
 
 ```bash
 npx dynwinrt-codegen generate \
-  --winmd path/to/Windows.Win32.winmd \
+  --winmd ./win32meta/Windows.Win32.winmd \
   --namespace Windows.Win32.UI.Shell \
   --class-name ITaskbarList3 \
   --output ./generated
@@ -124,8 +125,9 @@ npx dynwinrt-codegen generate \
 import { ITaskbarList3 } from './generated/ITaskbarList3.js';
 import { TBPFLAG } from './generated/TBPFLAG.js';
 
-// HWND is generated as `bigint | Buffer`. In Electron,
-// BrowserWindow.getNativeWindowHandle() returns a Buffer you can pass directly.
+// HWND is generated as `bigint | number`. In Electron, read the handle value
+// out of BrowserWindow.getNativeWindowHandle() (a Buffer) — don't pass the
+// Buffer itself:  const hwnd = win.getNativeWindowHandle().readBigUInt64LE(0);
 const hwnd = 0x0000000000123456n; // your real HWND
 
 const taskbar = ITaskbarList3.create(); // CoCreateInstance under the hood
@@ -141,7 +143,7 @@ The generated wrapper exposes natural typed methods while the runtime handles `C
 ```js
 import { IDataTransferManagerInterop } from './generated/IDataTransferManagerInterop.js';
 
-const hwnd = 0x0000000000123456n; // your real HWND or accepted Buffer handle
+const hwnd = 0x0000000000123456n; // your real HWND as a bigint (see the Electron note above)
 
 const interop = IDataTransferManagerInterop.create();
 const dtm = interop.getForWindow(hwnd); // → DynWinRtValue bridge to DataTransferManager
