@@ -264,6 +264,29 @@ fn generate_registry_apis() -> flat::FlatGeneratedOutput {
     flat::generate_flat_apis_files(&apis)
 }
 
+#[test]
+fn opaque_pointer_param_dts_accepts_uint8array() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+    // Regression: opaque pointer params (e.g. Registry `data`) must accept
+    // Uint8Array in the .d.ts. The runtime `DynWinRtValue.pointer()` accepts a
+    // Uint8Array, so typing only `bigint | Buffer` makes a valid Uint8Array
+    // argument a spurious TypeScript error.
+    let out = generate_registry_apis();
+    assert!(
+        out.dts.contains("bigint | Buffer | Uint8Array | null"),
+        "opaque pointer .d.ts must accept Uint8Array:\n{}",
+        out.dts
+    );
+    assert!(
+        !out.dts.contains("data: bigint | Buffer | null"),
+        "opaque pointer .d.ts must not omit Uint8Array:\n{}",
+        out.dts
+    );
+}
+
 /// 3. Emit a NATURAL wrapper whose `.js` calls
 ///    `DynWinRtValue.flatInvoke('advapi32.dll', 'RegOpenKeyExW', 'I32', [...])`
 ///    and whose `.d.ts` types params naturally — no raw `flatInvoke` string
@@ -878,7 +901,7 @@ fn flat_skips_bare_unknown_param_but_keeps_opaque_pointer_param() {
     );
     assert!(
         out.dts
-            .contains("structPointer(buffer: bigint | Buffer | null)"),
+            .contains("structPointer(buffer: bigint | Buffer | Uint8Array | null)"),
         "PtrTo(Unknown) should stay in the typed surface as an opaque pointer:\n{}",
         out.dts
     );

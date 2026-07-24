@@ -1130,7 +1130,7 @@ fn render_method_dts(out: &mut String, m: &FlatMethodMeta) {
             ParamSurface::Input => dts_type_of(&p.abi),
             ParamSurface::InOutScalar => dts_type_of(&pointee(&p.abi)),
             ParamSurface::OutScalar => continue,
-            ParamSurface::OpaquePointer => "bigint | Buffer | null".into(),
+            ParamSurface::OpaquePointer => "bigint | Buffer | Uint8Array | null".into(),
         };
         params.push(format!("{jname}: {ts_ty}"));
     }
