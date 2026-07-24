@@ -5,7 +5,7 @@ use core::ffi::c_void;
 use std::ffi::CString;
 
 use libffi::middle::{Arg, Cif, CodePtr, Type};
-use windows::Win32::Foundation::{FreeLibrary, GetLastError, HMODULE, SetLastError};
+use windows::Win32::Foundation::{GetLastError, HMODULE};
 use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 use windows_core::{HRESULT, HSTRING, PCSTR};
 
@@ -14,43 +14,47 @@ use crate::{
     value::WinRTValue,
 };
 
-struct LoadedLibrary {
-    module: HMODULE,
-    name: String,
+/// Wraps an `HMODULE` so it can live in a process-lifetime `static` cache across
+/// threads. Safe because an `HMODULE` is an opaque handle and `GetProcAddress`
+/// is thread-safe; the module is intentionally never unloaded.
+struct CachedModule(HMODULE);
+unsafe impl Send for CachedModule {}
+
+fn module_cache() -> &'static std::sync::Mutex<std::collections::HashMap<String, CachedModule>> {
+    static CACHE: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, CachedModule>>,
+    > = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
-impl LoadedLibrary {
-    fn load(dll: &str) -> Result<Self> {
-        if dll.encode_utf16().any(|unit| unit == 0) {
-            return Err(invalid_arg_error());
-        }
-
-        unsafe { LoadLibraryW(&HSTRING::from(dll)) }
-            .map(|module| Self {
-                module,
-                name: dll.to_string(),
-            })
-            .map_err(Error::WindowsError)
+/// Returns a process-lifetime `HMODULE` for `dll`, loading it once and caching
+/// it. The module is intentionally **never** `FreeLibrary`'d: flat exports can
+/// return pointers, strings, or function addresses that point *into* the loaded
+/// module, and unloading it after each call would leave those returns dangling.
+/// Holding a single reference for the life of the process matches how .NET
+/// `[DllImport]` behaves and also avoids repeated load/unload overhead.
+///
+/// `LoadLibraryW` uses the default DLL search order, so pass a trusted or fully
+/// qualified DLL path to avoid DLL preloading/hijacking risks.
+fn get_cached_module(dll: &str) -> Result<HMODULE> {
+    if dll.encode_utf16().any(|unit| unit == 0) {
+        return Err(invalid_arg_error());
     }
-
-    fn proc_address(&self, entry: &str) -> Result<*mut c_void> {
-        let proc_name = CString::new(entry).map_err(|_| invalid_arg_error())?;
-        let proc =
-            unsafe { GetProcAddress(self.module, PCSTR::from_raw(proc_name.as_ptr().cast())) };
-        match proc {
-            Some(proc) => Ok(unsafe { std::mem::transmute(proc) }),
-            None => Err(proc_not_found_error(&self.name, entry)),
-        }
+    let mut cache = module_cache().lock().unwrap();
+    if let Some(cached) = cache.get(dll) {
+        return Ok(cached.0);
     }
+    let module = unsafe { LoadLibraryW(&HSTRING::from(dll)) }.map_err(Error::WindowsError)?;
+    cache.insert(dll.to_string(), CachedModule(module));
+    Ok(module)
 }
 
-impl Drop for LoadedLibrary {
-    fn drop(&mut self) {
-        unsafe {
-            let last_error = GetLastError();
-            let _ = FreeLibrary(self.module);
-            SetLastError(last_error);
-        }
+fn proc_address(module: HMODULE, dll: &str, entry: &str) -> Result<*mut c_void> {
+    let proc_name = CString::new(entry).map_err(|_| invalid_arg_error())?;
+    let proc = unsafe { GetProcAddress(module, PCSTR::from_raw(proc_name.as_ptr().cast())) };
+    match proc {
+        Some(proc) => Ok(unsafe { std::mem::transmute(proc) }),
+        None => Err(proc_not_found_error(dll, entry)),
     }
 }
 
@@ -101,9 +105,9 @@ pub enum FlatReturnKind {
 ///
 /// The caller must ensure that `dll`/`entry`, `ret`, and `args` exactly match
 /// the target export's ABI signature, and that all pointer arguments remain
-/// valid for the duration of the call. The DLL is unloaded before this function
-/// returns, so `FlatReturnKind::Ptr` may only be used for pointers or handles
-/// whose validity does not depend on that loaded module remaining resident.
+/// valid for the duration of the call. The DLL is loaded once and cached for
+/// the lifetime of the process (never unloaded), so `FlatReturnKind::Ptr`
+/// returns that point into the module stay valid after the call.
 ///
 /// `LoadLibraryW` uses the default DLL search order, so pass a trusted or
 /// fully qualified DLL path to avoid DLL preloading/hijacking risks.
@@ -121,8 +125,8 @@ pub unsafe fn flat_invoke(
 
     #[cfg(all(windows, target_pointer_width = "64"))]
     {
-        let library = LoadedLibrary::load(dll)?;
-        let proc = library.proc_address(entry)?;
+        let module = get_cached_module(dll)?;
+        let proc = proc_address(module, dll, entry)?;
         let arg_types = args
             .iter()
             .map(flat_arg_type)
@@ -223,7 +227,7 @@ fn unsupported_platform_error() -> Error {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
-    use windows::Win32::Foundation::WIN32_ERROR;
+    use windows::Win32::Foundation::{SetLastError, WIN32_ERROR};
 
     fn invoke(
         dll: &str,
@@ -327,6 +331,29 @@ mod tests {
             &[WinRTValue::I32(7), WinRTValue::I32(1), WinRTValue::I32(2)],
         )?;
         assert_eq!(rounded.as_i32(), Some(4));
+        Ok(())
+    }
+
+    #[test]
+    fn module_cache_returns_stable_handle_and_ptr_return_survives() -> Result<()> {
+        // Same DLL resolves to the same cached HMODULE across calls: loaded
+        // once and never freed (regression for the flat `Ptr`-return dangling
+        // hazard, where a per-call FreeLibrary could unload the module before
+        // the caller uses a pointer that points into it).
+        let a = get_cached_module("kernel32.dll")?;
+        let b = get_cached_module("kernel32.dll")?;
+        assert_eq!(a.0 as usize, b.0 as usize);
+
+        // The cached module stays usable, and a Ptr-returning export's pointer
+        // is non-null after the call returns — nothing unloaded the module in
+        // between.
+        let proc = proc_address(a, "kernel32.dll", "GetCommandLineW")?;
+        assert!(!proc.is_null());
+        let value = invoke("kernel32.dll", "GetCommandLineW", FlatReturnKind::Ptr, &[])?;
+        match value {
+            WinRTValue::RawPtr(ptr) => assert!(!ptr.is_null()),
+            _ => panic!("expected a RawPtr return from GetCommandLineW"),
+        }
         Ok(())
     }
 
