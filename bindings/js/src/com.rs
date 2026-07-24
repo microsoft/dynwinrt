@@ -225,7 +225,7 @@ fn take_raw_pointer(
     other => {
       value.0 = other;
       Err(napi::Error::from_reason(format!(
-        "Expected a CoTaskMem-allocated {description} pointer"
+        "Expected a {description} raw pointer"
       )))
     }
   }
