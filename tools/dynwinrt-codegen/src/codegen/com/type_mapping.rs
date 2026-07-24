@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 
 use crate::com_metadata::{ComInterfaceMeta, MethodMeta, ParamDirection, ParamMeta};
 use crate::types::TypeMeta;
@@ -12,6 +12,12 @@ use super::naming::js_param_name;
 pub(super) enum StringEncoding {
     Wide,
     Ansi,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum HandleAliasKind {
+    HandleValue,
+    StringPointer,
 }
 
 pub(super) fn validate_com_abi(meta: &ComInterfaceMeta) -> Result<(), String> {
@@ -216,16 +222,16 @@ pub(super) fn dts_params_for_method(m: &MethodMeta) -> Vec<String> {
         .collect()
 }
 
-pub(super) fn collect_handle_aliases(meta: &ComInterfaceMeta) -> Vec<String> {
-    let mut aliases = BTreeSet::new();
+pub(super) fn collect_handle_aliases(meta: &ComInterfaceMeta) -> Vec<(String, HandleAliasKind)> {
+    let mut aliases = BTreeMap::new();
     for method in &meta.interface.methods {
         for param in &method.params {
-            if let Some(alias) = handle_type_name(&param.typ) {
-                aliases.insert(alias);
+            if let Some((alias, kind)) = handle_alias(&param.typ) {
+                aliases.insert(alias, kind);
             }
         }
-        if let Some(alias) = method.return_type.as_ref().and_then(handle_type_name) {
-            aliases.insert(alias);
+        if let Some((alias, kind)) = method.return_type.as_ref().and_then(handle_alias) {
+            aliases.insert(alias, kind);
         }
     }
     aliases.into_iter().collect()
@@ -409,6 +415,15 @@ pub(super) fn wrap_arg_js(t: &TypeMeta, var: &str) -> String {
 }
 
 pub(super) fn handle_type_name(t: &TypeMeta) -> Option<String> {
+    handle_alias(t).map(|(name, _)| name)
+}
+
+#[cfg(test)]
+pub(super) fn handle_alias_kind(t: &TypeMeta) -> Option<HandleAliasKind> {
+    handle_alias(t).map(|(_, kind)| kind)
+}
+
+fn handle_alias(t: &TypeMeta) -> Option<(String, HandleAliasKind)> {
     if is_win32_bool(t) {
         return None;
     }
@@ -426,10 +441,43 @@ pub(super) fn handle_type_name(t: &TypeMeta) -> Option<String> {
                 TypeMeta::Object | TypeMeta::U64 | TypeMeta::I64 | TypeMeta::U32 | TypeMeta::I32
             ) =>
         {
-            Some(name.clone())
+            Some((name.clone(), classify_handle_alias(namespace, name)))
         }
         _ => None,
     }
+}
+
+fn classify_handle_alias(_namespace: &str, name: &str) -> HandleAliasKind {
+    if is_string_pointer_alias_name(name) {
+        HandleAliasKind::StringPointer
+    } else {
+        HandleAliasKind::HandleValue
+    }
+}
+
+fn is_string_pointer_alias_name(name: &str) -> bool {
+    // Classic COM handle typedefs lose pointer-pointee detail by the time they
+    // reach TypeMeta (`Value: *mut u16` and `Value: *mut c_void` both become
+    // `Value: Object`). Keep the known Win32 NUL-terminated character-pointer
+    // aliases as Buffer-capable pointer parameters; all other handle-shaped
+    // structs are handle values and must not accept Buffer-of-bits inputs.
+    matches!(
+        name,
+        "PWSTR"
+            | "PCWSTR"
+            | "PSTR"
+            | "PCSTR"
+            | "LPWSTR"
+            | "LPCWSTR"
+            | "LPSTR"
+            | "LPCSTR"
+            | "PWCHAR"
+            | "PCWCHAR"
+            | "LPWCH"
+            | "LPCWCH"
+            | "LPCH"
+            | "LPCCH"
+    )
 }
 
 fn is_win32_handle_namespace(namespace: &str) -> bool {

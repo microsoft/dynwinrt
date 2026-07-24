@@ -693,4 +693,45 @@ mod tests {
     assert!(matches!(value.0, dynwinrt::WinRTValue::Null));
     assert!(take_raw_pointer(&mut value, "test").unwrap().is_null());
   }
+
+  #[test]
+  fn iid_pointer_is_owner_backed_and_holds_the_guid() {
+    // Regression (#4): iid_pointer must return an OWNER-BACKED value so the
+    // boxed GUID is freed on drop/GC — not leak one Box<GUID> per distinct GUID
+    // into a process-lifetime static cache. The pre-fix version returned an
+    // unowned RawPtr (`.1 == None`) into a static cache (stable address per
+    // GUID), so both assertions below fail against it.
+    let guid = GUID::from_u128(0xa5caee9b_8708_49d1_8d36_67d25a8da00c);
+
+    let value = iid_pointer(&WinGUID(guid));
+    assert!(
+      value.1.is_some(),
+      "iid_pointer must be owner-backed (NativePointerOwner::Guid) so it frees on drop"
+    );
+    match value.0 {
+      dynwinrt::WinRTValue::RawPtr(ptr) => {
+        assert!(!ptr.is_null());
+        let read = unsafe { *(ptr as *const GUID) };
+        assert_eq!(read, guid, "REFIID pointer must hold the correct GUID bytes");
+      }
+      _ => panic!("iid_pointer must return a RawPtr"),
+    }
+
+    // Two concurrently-live calls for the SAME GUID must allocate distinct
+    // boxes (distinct addresses) — proving there is no shared static cache.
+    let a = iid_pointer(&WinGUID(guid));
+    let b = iid_pointer(&WinGUID(guid));
+    let pa = match a.0 {
+      dynwinrt::WinRTValue::RawPtr(p) => p as usize,
+      _ => 0,
+    };
+    let pb = match b.0 {
+      dynwinrt::WinRTValue::RawPtr(p) => p as usize,
+      _ => 0,
+    };
+    assert_ne!(
+      pa, pb,
+      "each iid_pointer call must own its own boxed GUID, not share a static one"
+    );
+  }
 }
