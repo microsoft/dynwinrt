@@ -960,12 +960,14 @@ fn wrap_arg_js(t: &FlatAbiType, var: &str) -> String {
             format!("DynWinRtValue.pointer(_narrowStringBuffer({var}))")
         }
         // Handles: type is `bigint | number` (see the handle typedef in
-        // the .d.ts). Coerce via BigInt so `pointer(BigInt(x))` receives
-        // a bigint on the fast path — bigint is identity, number coerces
-        // cleanly. Passing a raw JS number would still hit the number
-        // fast path in `pointer`, but explicitly coercing avoids the JS
-        // Number.MAX_SAFE_INTEGER ambiguity for full-64-bit handles.
-        FlatAbiType::Handle { .. } => format!("DynWinRtValue.pointer(BigInt({var}))"),
+        // the .d.ts). Pass the value straight through to `pointer`, which
+        // accepts `bigint | number`: a bigint carries full 64-bit handle
+        // bits losslessly, and a JS number is validated as a safe integer
+        // (unsafe values are rejected, not silently truncated). Do NOT wrap
+        // in `BigInt(x)` — for a number above Number.MAX_SAFE_INTEGER the
+        // bits are already lost before BigInt sees them, and wrapping also
+        // bypasses `pointer`'s safe-integer validation.
+        FlatAbiType::Handle { .. } => format!("DynWinRtValue.pointer({var})"),
         FlatAbiType::Ptr | FlatAbiType::PtrTo(_) => format!("DynWinRtValue.pointer({var})"),
         FlatAbiType::Enum { underlying, .. } => match **underlying {
             FlatAbiType::U32 => format!("DynWinRtValue.u32(({var}) >>> 0)"),
