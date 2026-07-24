@@ -173,10 +173,10 @@ fn param_type_mapping() {
     let dts = out.dts.as_str();
     let js = out.js.as_str();
 
-    // HWND is a handle type → bigint | Buffer surface
+    // HWND is a handle value type → bigint | number surface (never Buffer).
     assert!(
-        dts.contains("bigint | Buffer") || dts.contains("bigint|Buffer"),
-        "HWND should be projected as `bigint | Buffer` in .d.ts, got:\n{}",
+        dts.contains("export type HWND = bigint | number;"),
+        "HWND should be projected as `bigint | number` in .d.ts, got:\n{}",
         dts
     );
 

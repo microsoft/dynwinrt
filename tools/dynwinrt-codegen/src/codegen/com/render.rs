@@ -14,9 +14,10 @@
 //! - `<InterfaceName>.js`: registration via `DynCom.registerIUnknownInterface`
 //!   + a natural class with camelCase methods and static `create()` /
 //!   `_fromNative()`.
-//! - `<InterfaceName>.d.ts`: PascalCase class, camelCase methods, opaque
-//!   handle typedefs (HWND etc.) as `bigint | Buffer`, HRESULT returns
-//!   projected to `void` (throwing on failure via the runtime).
+//! - `<InterfaceName>.d.ts`: PascalCase class, camelCase methods, handle-value
+//!   typedefs (HWND etc.) as `bigint | number`, string-pointer typedefs (PWSTR
+//!   etc.) as `bigint | Buffer`, HRESULT returns projected to `void` (throwing
+//!   on failure via the runtime).
 //! - Per-enum sibling files for each enum referenced by any method parameter.
 
 use crate::com_metadata::{ComInterfaceMeta, MethodMeta, ParamDirection, ParamMeta};
@@ -27,15 +28,15 @@ use super::naming::strip_hungarian;
 use super::naming::{camel_case, js_param_name};
 use super::projection::method_is_interop_shape;
 use super::projection::{InteropInfo, InteropMethod, detect_interop};
-#[cfg(test)]
-use super::type_mapping::handle_type_name;
 use super::type_mapping::{
-    MethodResult, StringEncoding, collect_handle_aliases, dts_params_for_method, dts_return_type,
-    enum_import_names, has_string_buffer_method, is_cotaskmem_owned, is_hresult,
+    HandleAliasKind, MethodResult, StringEncoding, collect_handle_aliases, dts_params_for_method,
+    dts_return_type, enum_import_names, has_string_buffer_method, is_cotaskmem_owned, is_hresult,
     is_optional_find_data_out_after_string_count, method_results, string_buffer_pattern,
     ts_type_expr_dts, ts_type_expr_js, unwrap_return_js, uses_winrt_bridge_value, validate_com_abi,
     wrap_arg_js,
 };
+#[cfg(test)]
+use super::type_mapping::{handle_alias_kind, handle_type_name};
 
 /// A rendered classic-COM output: primary `.js` + `.d.ts` for the interface,
 /// plus zero or more sibling files (one `.js` + `.d.ts` per referenced enum).
@@ -622,11 +623,15 @@ fn render_dts(meta: &ComInterfaceMeta, interop: Option<&InteropInfo>) -> String 
 
     // Emit typedef aliases for handles seen in method parameters.
     let handle_aliases = collect_handle_aliases(meta);
-    for h in &handle_aliases {
-        out.push_str(&format!(
-            "/** Opaque Win32 handle or pointer newtype (e.g. HWND, PWSTR). Accepts either a raw pointer as `bigint` or a `Buffer`. */\nexport type {h} = bigint | Buffer;\n",
-            h = h
-        ));
+    for (h, kind) in &handle_aliases {
+        match kind {
+            HandleAliasKind::HandleValue => out.push_str(&format!(
+                "/** Opaque Win32 handle. Pass either a raw pointer value as a `bigint` (safe for full 64-bit handle values) or a `number` (only for handles that fit in a JS safe integer, e.g. HWND with small window IDs). Do NOT pass a `Buffer` — `DynCom.pointer(Buffer)` uses the buffer's own address, not the bytes it contains; for an Electron `getNativeWindowHandle()` Buffer, read the handle value first (for example, `buf.readBigUInt64LE(0)`). */\nexport type {h} = bigint | number;\n"
+            )),
+            HandleAliasKind::StringPointer => out.push_str(&format!(
+                "/** Win32 NUL-terminated string pointer. Pass a `Buffer` holding the string bytes (including the NUL terminator), or pass a raw pointer as `bigint`. */\nexport type {h} = bigint | Buffer;\n"
+            )),
+        }
     }
     if !handle_aliases.is_empty() {
         out.push('\n');
@@ -834,6 +839,23 @@ mod tests {
             }],
         };
         assert_eq!(handle_type_name(&hwnd).as_deref(), Some("HWND"));
+    }
+
+    #[test]
+    fn handle_alias_kind_distinguishes_handle_values_from_string_pointers() {
+        let hwnd = TypeMeta::Struct {
+            namespace: "Windows.Win32.Foundation".into(),
+            name: "HWND".into(),
+            fields: vec![crate::types::FieldMeta {
+                name: "Value".into(),
+                typ: TypeMeta::Object,
+            }],
+        };
+        assert_eq!(handle_alias_kind(&hwnd), Some(HandleAliasKind::HandleValue));
+        assert_eq!(
+            handle_alias_kind(&pwstr_struct()),
+            Some(HandleAliasKind::StringPointer)
+        );
     }
 
     #[test]
@@ -1603,8 +1625,44 @@ mod tests {
         };
         let com = plain_iface_with_method(method);
         let dts = render_dts(&com, None);
-        assert!(dts.contains("export type HWND = bigint | Buffer;"));
+        assert!(dts.contains("export type HWND = bigint | number;"));
         assert!(dts.contains("getWindow(): HWND;"));
+    }
+
+    #[test]
+    fn handle_value_typedef_rejects_buffer_but_string_pointer_keeps_buffer() {
+        let hwnd = TypeMeta::Struct {
+            namespace: "Windows.Win32.Foundation".into(),
+            name: "HWND".into(),
+            fields: vec![crate::types::FieldMeta {
+                name: "Value".into(),
+                typ: TypeMeta::Object,
+            }],
+        };
+        let method = MethodMeta {
+            name: "SetOverlayIcon".into(),
+            params: vec![
+                ParamMeta {
+                    name: "hwnd".into(),
+                    typ: hwnd,
+                    direction: ParamDirection::In,
+                },
+                ParamMeta {
+                    name: "description".into(),
+                    typ: pwstr_struct(),
+                    direction: ParamDirection::In,
+                },
+            ],
+            return_type: Some(make_hresult()),
+            ..Default::default()
+        };
+        let dts = render_dts(&plain_iface_with_method(method), None);
+
+        assert!(dts.contains("export type HWND = bigint | number;"));
+        assert!(dts.contains("Do NOT pass a `Buffer`"));
+        assert!(dts.contains("export type PWSTR = bigint | Buffer;"));
+        assert!(dts.contains("Pass a `Buffer` holding the string bytes"));
+        assert!(dts.contains("setOverlayIcon(hwnd: HWND, description: PWSTR): void;"));
     }
 
     #[test]
