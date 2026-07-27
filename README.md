@@ -99,17 +99,17 @@ Generate Win32/COM wrappers by pointing the codegen at the Win32 metadata (`Wind
 
 ### Getting `Windows.Win32.winmd`
 
-`Windows.Win32.winmd` is not on a stock Windows machine — it ships in the MIT-licensed NuGet package [`Microsoft.Windows.SDK.Win32Metadata`](https://www.nuget.org/packages/Microsoft.Windows.SDK.Win32Metadata). A `.nupkg` is just a zip with the `.winmd` at its root, so **copy-paste this whole block into PowerShell as-is** — it fetches the latest winmd and generates `ITaskbarList3` wrappers into `./generated` (no NuGet client, no version number to pick):
+`Windows.Win32.winmd` is not on a stock Windows machine — it ships in the MIT-licensed NuGet package [`Microsoft.Windows.SDK.Win32Metadata`](https://www.nuget.org/packages/Microsoft.Windows.SDK.Win32Metadata). A `.nupkg` is just a zip with the `.winmd` at its root, so **copy-paste this whole block into PowerShell as-is** — it fetches the latest winmd and generates the **DWM window-effects** API (Windows 11 **dark title bar**, **Mica / Acrylic** backdrop, rounded corners) into `./generated` (no NuGet client, no version number to pick):
 
 ```powershell
 $pkg = 'microsoft.windows.sdk.win32metadata'
 $ver = (Invoke-RestMethod "https://api.nuget.org/v3-flatcontainer/$pkg/index.json").versions[-1]
 Invoke-WebRequest "https://api.nuget.org/v3-flatcontainer/$pkg/$ver/$pkg.$ver.nupkg" -OutFile "$env:TEMP\win32meta.zip"
 Expand-Archive "$env:TEMP\win32meta.zip" -DestinationPath .\win32meta -Force
-npx dynwinrt-codegen generate --winmd .\win32meta\Windows.Win32.winmd --namespace Windows.Win32.UI.Shell --class-name ITaskbarList3 --output ./generated
+npx dynwinrt-codegen generate --winmd .\win32meta\Windows.Win32.winmd --namespace Windows.Win32.Graphics.Dwm --class-name Apis --output ./generated
 ```
 
-Swap `--namespace` / `--class-name` for whatever API you need; reuse the same `.\win32meta\Windows.Win32.winmd` for every run.
+That gives you `dwmSetWindowAttribute` (the Windows 11 dark title bar / Mica look every Electron app wants — no native addon) against the same `HWND` Electron already hands you via `BrowserWindow.getNativeWindowHandle()`. Swap `--namespace` / `--class-name` for any other API — e.g. `Windows.Win32.UI.Shell` / `ITaskbarList3` (taskbar progress + overlay icons), `Windows.Win32.Security.Credentials` / `Apis` (Credential Manager — a drop-in for the deprecated `keytar`), or `Windows.Win32.System.Registry` / `Apis`. Reuse the same `.\win32meta\Windows.Win32.winmd` for every run.
 
 > Win32 and classic-COM generation currently emits JavaScript/TypeScript (`.js` + `.d.ts`).
 
