@@ -11,7 +11,7 @@ const { spawn } = require('node:child_process')
 
 const applicationModule = process.argv[2]
 const bootstrapDll = process.argv[3]
-const runtimeModule = process.argv[4] ?? path.resolve(__dirname, '../dist/index.js')
+const runtimeModule = process.argv[4] ?? path.resolve(__dirname, '../dist/winrt.js')
 const startMode = process.argv[5] ?? 'direct'
 if (!applicationModule || !bootstrapDll) {
   throw new Error(

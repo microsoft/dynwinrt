@@ -117,7 +117,7 @@ fn render_js(meta: &ComInterfaceMeta, interop: Option<&InteropInfo>) -> String {
     };
     out.push_str(&format!(
         "import {{ {runtime_imports} }} from '{}';\n",
-        crate::codegen::project::get_import_name()
+        com_runtime_import_name()
     ));
     for en in enum_import_names(meta) {
         out.push_str(&format!("import {{ {} }} from './{}.js';\n", en, en));
@@ -620,7 +620,7 @@ fn render_dts(meta: &ComInterfaceMeta, interop: Option<&InteropInfo>) -> String 
     {
         out.push_str(&format!(
             "import type {{ DynWinRtValue }} from '{}';\n",
-            crate::codegen::project::get_import_name()
+            com_runtime_import_name()
         ));
     }
     out.push('\n');
@@ -765,6 +765,15 @@ fn has_owned_pointer_output(meta: &ComInterfaceMeta) -> bool {
     })
 }
 
+fn com_runtime_import_name() -> String {
+    let import_name = crate::codegen::project::get_import_name();
+    if import_name == "@microsoft/dynwinrt" {
+        format!("{import_name}/com")
+    } else {
+        import_name
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Enum sibling files
 // ---------------------------------------------------------------------------
@@ -837,6 +846,14 @@ mod tests {
         assert_eq!(camel_case("AddTab"), "addTab");
         assert_eq!(camel_case("URL"), "url");
         assert_eq!(camel_case("IOHandle"), "ioHandle");
+    }
+
+    #[test]
+    fn default_runtime_import_uses_com_subpath() {
+        let previous = crate::codegen::project::get_import_name();
+        crate::codegen::project::set_import_name("@microsoft/dynwinrt");
+        assert_eq!(com_runtime_import_name(), "@microsoft/dynwinrt/com");
+        crate::codegen::project::set_import_name(&previous);
     }
 
     #[test]

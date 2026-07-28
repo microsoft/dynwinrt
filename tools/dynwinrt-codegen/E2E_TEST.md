@@ -29,7 +29,7 @@ cargo build -p dynwinrt-codegen --release
 
 # Build the JS native binding
 cd bindings/js
-npx napi build --no-const-enum --platform --release -o dist
+npm run build
 cd ../..
 ```
 

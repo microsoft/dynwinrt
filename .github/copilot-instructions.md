@@ -33,7 +33,7 @@ python -m pytest tests/ -v
 # JS binding (requires Node.js 18+)
 cd bindings/js
 npm install
-npx napi build --no-const-enum --platform --release -o dist
+npm run build
 
 # Code generation (JS + .d.ts is the default; --lang py for Python)
 cargo run -p dynwinrt-codegen -- generate --namespace Windows.Foundation --class-name Uri --output ./generated

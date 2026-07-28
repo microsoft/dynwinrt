@@ -8,7 +8,7 @@ import {
     DynWinRtType,
     DynWinRtMethodSig,
     WinGuid,
-} from '../dist/index.js'
+} from '../dist/winrt.js'
 
 // ======================================================================
 // Register interfaces (once)

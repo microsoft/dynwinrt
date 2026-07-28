@@ -251,7 +251,8 @@ mod tests {
     use windows::{
         ApplicationModel::DataTransfer::DataTransferManager,
         Win32::{
-            UI::Shell::IDataTransferManagerInterop,
+            System::Com::{CoGetMalloc, IMalloc, IPersistFile, IStream},
+            UI::Shell::{IDataTransferManagerInterop, SHCreateMemStream},
             UI::WindowsAndMessaging::{
                 CreateWindowExW, DestroyWindow, WINDOW_EX_STYLE, WS_OVERLAPPED,
             },
@@ -460,6 +461,45 @@ mod tests {
         iface
     }
 
+    fn native_usize_type(table: &std::sync::Arc<MetadataTable>) -> Type {
+        #[cfg(target_pointer_width = "64")]
+        {
+            Type::winrt(table.u64_type())
+        }
+        #[cfg(target_pointer_width = "32")]
+        {
+            Type::winrt(table.u32_type())
+        }
+    }
+
+    fn native_usize_value(value: usize) -> WinRTValue {
+        #[cfg(target_pointer_width = "64")]
+        {
+            WinRTValue::U64(value as u64)
+        }
+        #[cfg(target_pointer_width = "32")]
+        {
+            WinRTValue::U32(value as u32)
+        }
+    }
+
+    fn read_native_usize(value: &WinRTValue) -> usize {
+        #[cfg(target_pointer_width = "64")]
+        {
+            match value {
+                WinRTValue::U64(value) => *value as usize,
+                value => panic!("expected native u64, got {value:?}"),
+            }
+        }
+        #[cfg(target_pointer_width = "32")]
+        {
+            match value {
+                WinRTValue::U32(value) => *value as usize,
+                value => panic!("expected native u32, got {value:?}"),
+            }
+        }
+    }
+
     #[test]
     fn shell_link_set_get_show_cmd_round_trips_via_classic_com_vtable() -> result::Result<()> {
         let shell_link = shell_link()?.as_object().unwrap();
@@ -503,6 +543,150 @@ mod tests {
         )?;
 
         assert_eq!(wide_to_string(&buffer), expected);
+        Ok(())
+    }
+
+    #[test]
+    fn shell_link_query_interface_returns_owned_ipersistfile() -> result::Result<()> {
+        let shell_link = shell_link()?;
+        let persist = shell_link.cast(&IPersistFile::IID)?;
+        let persist = persist.as_object().expect("IPersistFile must be non-null");
+        let table = MetadataTable::new();
+        let result = call_method(
+            3,
+            persist.as_raw(),
+            MethodSignature::new(&table).add_out(Type::winrt(table.guid_type())),
+            &[],
+        )?;
+
+        assert!(matches!(
+            result.as_slice(),
+            [WinRTValue::Guid(clsid)] if *clsid == CLSID_SHELL_LINK
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn malloc_exercises_pointer_sized_and_non_hresult_abi() -> result::Result<()> {
+        initialize_apartment(ApartmentType::MultiThreaded)?;
+        let allocator = unsafe { CoGetMalloc(1) }.map_err(result::Error::WindowsError)?;
+        let table = MetadataTable::new();
+        let requested = 64usize;
+        let allocated = call_method(
+            3,
+            allocator.as_raw(),
+            MethodSignature::new(&table)
+                .add_in(native_usize_type(&table))
+                .returns(Type::pointer()),
+            &[native_usize_value(requested)],
+        )?;
+        let WinRTValue::RawPtr(ptr) = allocated[0] else {
+            panic!("IMalloc::Alloc must return a native pointer");
+        };
+        assert!(!ptr.is_null());
+
+        struct AllocationGuard {
+            allocator: IMalloc,
+            ptr: *mut c_void,
+        }
+        impl Drop for AllocationGuard {
+            fn drop(&mut self) {
+                if !self.ptr.is_null() {
+                    unsafe { self.allocator.Free(Some(self.ptr)) };
+                }
+            }
+        }
+        let mut allocation = AllocationGuard {
+            allocator: allocator.clone(),
+            ptr,
+        };
+
+        let size = call_method(
+            6,
+            allocator.as_raw(),
+            MethodSignature::new(&table)
+                .add_in(Type::pointer())
+                .returns(native_usize_type(&table)),
+            &[WinRTValue::RawPtr(ptr)],
+        )?;
+        assert!(read_native_usize(&size[0]) >= requested);
+
+        let owned = call_method(
+            7,
+            allocator.as_raw(),
+            MethodSignature::new(&table)
+                .add_in(Type::pointer())
+                .returns(Type::winrt(table.i32_type())),
+            &[WinRTValue::RawPtr(ptr)],
+        )?;
+        assert!(matches!(owned.as_slice(), [WinRTValue::I32(value)] if *value != 0));
+
+        let freed = call_method(
+            5,
+            allocator.as_raw(),
+            MethodSignature::new(&table)
+                .add_in(Type::pointer())
+                .returns_void(),
+            &[WinRTValue::RawPtr(ptr)],
+        )?;
+        allocation.ptr = std::ptr::null_mut();
+        assert!(freed.is_empty());
+
+        let minimized = call_method(
+            8,
+            allocator.as_raw(),
+            MethodSignature::new(&table).returns_void(),
+            &[],
+        )?;
+        assert!(minimized.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn memory_stream_exercises_counted_buffers_seek_and_interface_out() -> result::Result<()> {
+        initialize_apartment(ApartmentType::MultiThreaded)?;
+        let expected = b"dynwinrt";
+        let stream = unsafe { SHCreateMemStream(Some(expected)) }
+            .expect("SHCreateMemStream must return an IStream");
+        let table = MetadataTable::new();
+        let mut buffer = vec![0u8; expected.len()];
+
+        let read = call_method(
+            3,
+            stream.as_raw(),
+            MethodSignature::new(&table)
+                .add_in(Type::pointer())
+                .add_in(Type::winrt(table.u32_type()))
+                .add_out(Type::winrt(table.u32_type())),
+            &[
+                WinRTValue::RawPtr(buffer.as_mut_ptr().cast()),
+                WinRTValue::U32(buffer.len() as u32),
+            ],
+        )?;
+        assert!(
+            matches!(read.as_slice(), [WinRTValue::U32(count)] if *count == expected.len() as u32)
+        );
+        assert_eq!(buffer, expected);
+
+        let position = call_method(
+            5,
+            stream.as_raw(),
+            MethodSignature::new(&table)
+                .add_in(Type::winrt(table.i64_type()))
+                .add_in(Type::winrt(table.u32_type()))
+                .add_out(Type::winrt(table.u64_type())),
+            &[WinRTValue::I64(0), WinRTValue::U32(0)],
+        )?;
+        assert!(matches!(position.as_slice(), [WinRTValue::U64(0)]));
+
+        let cloned = call_method(
+            13,
+            stream.as_raw(),
+            MethodSignature::new(&table).add_out(Type::winrt(table.object())),
+            &[],
+        )?;
+        let clone = cloned[0].as_object().expect("IStream::Clone returned null");
+        let _: IStream = clone.cast().map_err(result::Error::WindowsError)?;
         Ok(())
     }
 

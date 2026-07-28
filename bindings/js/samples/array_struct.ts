@@ -18,7 +18,7 @@ import {
   DynWinRtStruct,
   WinGuid,
   roInitialize,
-} from '../dist/index.js'
+} from '../dist/winrt.js'
 
 // Initialize WinRT (MTA)
 roInitialize(1)

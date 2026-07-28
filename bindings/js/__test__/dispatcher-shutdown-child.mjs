@@ -14,7 +14,7 @@ const {
   registerWinuiDispatcherQueue,
   roInitialize,
   unregisterWinuiDispatcherQueue,
-} = require(process.env.DYNWINRT_TEST_RUNTIME ?? '../dist/index.js')
+} = require(process.env.DYNWINRT_TEST_RUNTIME ?? '../dist/winrt.js')
 
 roInitialize(0)
 

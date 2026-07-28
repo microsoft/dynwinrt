@@ -14,7 +14,7 @@ import {
     WinGuid,
     hasPackageIdentity,
     initWinappsdk,
-} from '../dist/index.js'
+} from '../dist/winrt.js'
 
 // ======================================================================
 // IIDs

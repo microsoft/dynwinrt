@@ -2,13 +2,12 @@
 // Licensed under the MIT License.
 
 import test from 'ava'
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import {
-  DynCom,
   DynWinRtArray,
   DynWinRtMethodSig,
   DynWinRtType,
@@ -18,7 +17,46 @@ import {
   getWindowsDirectory,
   hasPackageIdentity,
   roInitialize,
-} from '../dist/index.js'
+} from '../dist/winrt.js'
+import * as winrtRuntime from '../dist/winrt.js'
+import { DynCom } from '../dist/com.js'
+
+test('Classic COM is isolated from the WinRT root entrypoint', (t) => {
+  t.false(Object.prototype.hasOwnProperty.call(winrtRuntime, 'DynCom'))
+  t.truthy(DynCom)
+
+  const assertion =
+    "const assert = require('node:assert/strict');" +
+    "const winrt = require('@microsoft/dynwinrt');" +
+    "const com = require('@microsoft/dynwinrt/com');" +
+    "assert.equal(Object.prototype.hasOwnProperty.call(winrt, 'DynCom'), false);" +
+    "assert.equal(typeof winrt.DynWinRtType, 'function');" +
+    "assert.equal(typeof com.DynCom, 'function');" +
+    "console.log('runtime-entrypoints-ok')"
+  const cjs = spawnSync(process.execPath, ['--eval', assertion], {
+    cwd: resolve(process.cwd()),
+    encoding: 'utf8',
+    windowsHide: true,
+  })
+  t.is(cjs.status, 0, cjs.stderr)
+  t.regex(cjs.stdout, /runtime-entrypoints-ok/)
+
+  const esmAssertion =
+    "import assert from 'node:assert/strict';" +
+    "import * as winrt from '@microsoft/dynwinrt';" +
+    "import * as com from '@microsoft/dynwinrt/com';" +
+    "assert.equal(Object.prototype.hasOwnProperty.call(winrt, 'DynCom'), false);" +
+    "assert.equal(typeof winrt.DynWinRtType, 'function');" +
+    "assert.equal(typeof com.DynCom, 'function');" +
+    "console.log('runtime-entrypoints-ok')"
+  const esm = spawnSync(process.execPath, ['--input-type=module', '--eval', esmAssertion], {
+    cwd: resolve(process.cwd()),
+    encoding: 'utf8',
+    windowsHide: true,
+  })
+  t.is(esm.status, 0, esm.stderr)
+  t.regex(esm.stdout, /runtime-entrypoints-ok/)
+})
 
 test('DynCom rejects pointers after their TypedArray backing store is detached', (t) => {
   const bytes = new Uint8Array(16)
@@ -239,7 +277,7 @@ if (missingWinuiFixtures.length > 0) {
   test.skip('WinUI scheduled start drains Promise reactions inside Application.Start', () => {})
 } else {
   test('WinUI scheduled start drains Promise reactions inside Application.Start', async (t) => {
-    const runtimeModule = fileURLToPath(new URL('../dist/index.js', import.meta.url))
+    const runtimeModule = fileURLToPath(new URL('../dist/winrt.js', import.meta.url))
     const child = spawn(
       process.execPath,
       [

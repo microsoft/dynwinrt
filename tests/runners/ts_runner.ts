@@ -8,7 +8,7 @@
  * and executes checks against real WinRT APIs.
  *
  * Usage:
- *   npx tsx tests/runners/ts_runner.ts --specs tests/e2e_specs.json --generated tests/e2e_generated/ts --runtime bindings/js/dist/index.js [--output results.json]
+ *   npx tsx tests/runners/ts_runner.ts --specs tests/e2e_specs.json --generated tests/e2e_generated/ts --runtime bindings/js/dist/winrt.js [--output results.json]
  */
 
 import { strict as assert } from 'node:assert';

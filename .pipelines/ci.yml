@@ -174,14 +174,20 @@ extends:
             inputs:
               targetType: inline
               workingDirectory: bindings/js
-              script: npx napi build --no-const-enum --platform --release -o dist
+              script: |
+                npx napi build --no-const-enum --platform --release -o dist
+                if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+                npm run build:entrypoints --silent
 
           - task: PowerShell@2
             displayName: Build dynwinrt (arm64)
             inputs:
               targetType: inline
               workingDirectory: bindings/js
-              script: npx napi build --no-const-enum --platform --release --target aarch64-pc-windows-msvc -o dist
+              script: |
+                npx napi build --no-const-enum --platform --release --target aarch64-pc-windows-msvc -o dist
+                if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+                npm run build:entrypoints --silent
 
           # Install tsx for E2E TS runner
           - task: PowerShell@2

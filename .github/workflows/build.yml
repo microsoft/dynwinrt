@@ -80,6 +80,8 @@ jobs:
         run: |
           npm install
           npx napi build --no-const-enum --platform --release -o dist
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run build:entrypoints --silent
           npm install --no-save tsx
       - name: Build Python binding
         run: |
@@ -137,10 +139,16 @@ jobs:
         run: npm install
       - name: Build x64
         working-directory: bindings/js
-        run: npx napi build --no-const-enum --platform --release -o dist
+        run: |
+          npx napi build --no-const-enum --platform --release -o dist
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run build:entrypoints --silent
       - name: Build arm64
         working-directory: bindings/js
-        run: npx napi build --no-const-enum --platform --release --target aarch64-pc-windows-msvc -o dist
+        run: |
+          npx napi build --no-const-enum --platform --release --target aarch64-pc-windows-msvc -o dist
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run build:entrypoints --silent
       - uses: actions/upload-artifact@v4
         with:
           name: dynwinrt
@@ -149,3 +157,7 @@ jobs:
             bindings/js/dist/dynwinrt.win32-arm64-msvc.node
             bindings/js/dist/index.js
             bindings/js/dist/index.d.ts
+            bindings/js/dist/winrt.js
+            bindings/js/dist/winrt.d.ts
+            bindings/js/dist/com.js
+            bindings/js/dist/com.d.ts

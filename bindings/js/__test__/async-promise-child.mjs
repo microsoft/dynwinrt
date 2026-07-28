@@ -7,7 +7,7 @@ import { createRequire } from 'node:module'
 
 const require = createRequire(import.meta.url)
 const { DynWinRtMethodSig, DynWinRtType, DynWinRtValue, WinGuid, roInitialize } = require(
-  process.env.DYNWINRT_TEST_RUNTIME ?? '../dist/index.js',
+  process.env.DYNWINRT_TEST_RUNTIME ?? '../dist/winrt.js',
 )
 
 roInitialize(1)

@@ -12,7 +12,7 @@ import {
   DynWinRtMethodSig,
   WinGuid,
   roInitialize,
-} from '../dist/index.js'
+} from '../dist/winrt.js'
 
 roInitialize(1)
 

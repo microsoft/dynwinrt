@@ -50,6 +50,10 @@ const uri = new Uri('https://example.com/path?q=1');
 console.log(uri.host);                                 // "example.com"
 ```
 
+Classic COM bindings import their runtime API from the separate
+`@microsoft/dynwinrt/com` subpath. It is part of the same npm package; the
+package root remains the WinRT-only API.
+
 Generated bindings project unambiguous public WinRT activation metadata as JavaScript
 constructors, including overloads such as `new Uri(base, relative)`. Existing
 static factory methods remain available. Classes that can only be returned by
@@ -119,7 +123,7 @@ cargo build -p dynwinrt
 cargo test  -p dynwinrt
 
 # JS bindings (napi-rs)
-cd bindings/js && npm install && npx napi build --no-const-enum --platform --release -o dist
+cd bindings/js && npm install && npm run build
 
 # Python bindings (PyO3 + maturin) — experimental, not published to PyPI
 cd bindings/py && maturin develop && pytest
@@ -153,7 +157,7 @@ For each WinRT class the codegen emits a typed wrapper, factory, interface regis
 Generated files import from `'@microsoft/dynwinrt'`. When iterating against a locally-built runtime, rewrite imports to the relative path:
 
 ```bash
-find generated -name "*.js" -exec sed -i "s|from '@microsoft/dynwinrt'|from '../../dist/index.js'|g" {} +
+find generated -name "*.js" -exec sed -i "s|from '@microsoft/dynwinrt'|from '../../dist/winrt.js'|g" {} +
 ```
 
 ## Troubleshooting

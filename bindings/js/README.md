@@ -41,6 +41,20 @@ console.log(uri.host);                                // "example.com"
 console.log(uri.port);                                // 443
 ```
 
+Classic COM uses a separate subpath from the same package, keeping the WinRT
+root API unchanged:
+
+```js
+const { DynCom } = require('@microsoft/dynwinrt/com');
+```
+
+COM interface values returned by activation, `QueryInterface`, or typed
+interface out-parameters own one reference and release it when their
+`DynWinRtValue` is released or collected. `adoptComPointer()` is only for a
+native output that transfers an existing `+1` reference; numeric pointers and
+typed-array pointers are borrowed and cannot be adopted. Win32 handles are not
+COM references and require their own type-specific cleanup function.
+
 Unambiguous public WinRT activation metadata is projected as JavaScript constructors.
 Parameterized and composable activations support idiomatic forms such as
 `new Uri(base, relative)` and `new StackPanel()`. The generated static factory

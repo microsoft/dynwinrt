@@ -10,7 +10,7 @@ export default defineConfig({
     plugins: [externalizeDepsPlugin()],
     build: {
       rollupOptions: {
-        external: ['@microsoft/dynwinrt', /\.node$/]
+        external: [/^@microsoft\/dynwinrt(?:\/com)?$/, /\.node$/]
       }
     }
   },

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
-import { DynCom } from '../../../bindings/js/dist/index.js';
+import { DynCom } from '../../../bindings/js/dist/com.js';
 import { IShellLinkW, IID_IShellLinkW } from '../../e2e_generated/com/shell/IShellLinkW.js';
+import { IPersistFile, IID_IPersistFile } from '../../e2e_generated/com/shell/IPersistFile.js';
 import { SHOW_WINDOW_CMD } from '../../e2e_generated/com/shell/SHOW_WINDOW_CMD.js';
 
 const CLSID_SHELL_LINK = '00021401-0000-0000-c000-000000000046';
@@ -34,5 +35,10 @@ assert.equal(link.getHotkey(), expectedHotkey);
 
 link.setShowCmd(SHOW_WINDOW_CMD.SW_SHOWMAXIMIZED);
 assert.equal(link.getShowCmd(), SHOW_WINDOW_CMD.SW_SHOWMAXIMIZED);
+
+const persist = IPersistFile._fromNative(link._obj.cast(IID_IPersistFile));
+assert.equal(persist.getClassID().toLowerCase(), CLSID_SHELL_LINK);
+persist._obj.release();
+link._obj.release();
 
 console.log('shelllink-buffer ok');

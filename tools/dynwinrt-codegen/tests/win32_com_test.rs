@@ -718,7 +718,7 @@ fn import_name_flag_is_honored_by_com_path() {
     }
 
     let previous = get_import_name();
-    set_import_name("../dist/index.js");
+    set_import_name("../dist/com.js");
 
     let result = std::panic::catch_unwind(|| {
         let com_iface = com_metadata::parse_com_interface(
@@ -738,8 +738,8 @@ fn import_name_flag_is_honored_by_com_path() {
 
     // Custom import must appear on the runtime import line...
     assert!(
-        out.js.contains("from '../dist/index.js'"),
-        "classic-COM .js must honor --import-name (expected `from '../dist/index.js'`):\n{}",
+        out.js.contains("from '../dist/com.js'"),
+        "classic-COM .js must honor --import-name (expected `from '../dist/com.js'`):\n{}",
         out.js
     );
     // ...and the hardcoded default must NOT be present in the generated body.
@@ -761,8 +761,8 @@ fn import_name_flag_is_honored_by_com_path() {
             .expect("codegen must succeed for classic-COM interface")
     };
     assert!(
-        default_out.js.contains("from '@microsoft/dynwinrt'"),
-        "after restoring, default import name must be back to '@microsoft/dynwinrt':\n{}",
+        default_out.js.contains("from '@microsoft/dynwinrt/com'"),
+        "after restoring, default import must use '@microsoft/dynwinrt/com':\n{}",
         default_out.js
     );
 }
@@ -782,7 +782,7 @@ fn import_name_flag_is_honored_by_interop_wrapper() {
     }
 
     let previous = get_import_name();
-    set_import_name("../dist/index.js");
+    set_import_name("../dist/com.js");
 
     let result = std::panic::catch_unwind(|| {
         let com_iface = com_metadata::parse_com_interface(
@@ -800,7 +800,7 @@ fn import_name_flag_is_honored_by_interop_wrapper() {
 
     // The interop .js itself must honor the flag.
     assert!(
-        out.js.contains("from '../dist/index.js'"),
+        out.js.contains("from '../dist/com.js'"),
         "interop .js must honor --import-name:\n{}",
         out.js
     );
@@ -811,7 +811,7 @@ fn import_name_flag_is_honored_by_interop_wrapper() {
     );
 
     assert!(
-        out.dts.contains("from '../dist/index.js'"),
+        out.dts.contains("from '../dist/com.js'"),
         "interop .d.ts must honor --import-name:\n{}",
         out.dts
     );

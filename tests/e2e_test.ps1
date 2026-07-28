@@ -28,6 +28,7 @@ $pyBindingsDir = Join-Path $e2eDir "python_bindings"
 $comBindingsDir = Join-Path $e2eDir "com"
 $comShellDir = Join-Path $comBindingsDir "shell"
 $comInteropDir = Join-Path $comBindingsDir "interop"
+$comWicDir = Join-Path $comBindingsDir "wic"
 $comSmtcDir = Join-Path $comBindingsDir "smtc"
 
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
@@ -119,6 +120,8 @@ if (-not $SkipBuild) {
         if ($LASTEXITCODE -ne 0) { Write-Error "npm install failed"; exit 1 }
         npx napi build --no-const-enum --platform --release -o dist 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0) { Write-Error "napi build failed"; exit 1 }
+        npm run build:entrypoints --silent
+        if ($LASTEXITCODE -ne 0) { Write-Error "runtime entrypoint generation failed"; exit 1 }
         Pop-Location
     }
 } else {
@@ -173,29 +176,46 @@ foreach ($l in @($Lang | Where-Object { $_ -in @("py", "ts") })) {
 
 if ("com" -in $Lang) {
     Write-Host "`n--- Generate (Classic COM) ---" -ForegroundColor Yellow
-    $runtimeImport = "../../../../bindings/js/dist/index.js"
+    $comRuntimeImport = "../../../../bindings/js/dist/com.js"
+    $winrtRuntimeImport = "../../../../bindings/js/dist/winrt.js"
 
     & cargo run -p dynwinrt-codegen --release --quiet -- generate `
         --winmd $win32Winmd `
         --namespace Windows.Win32.UI.Shell `
-        --class-name "ITaskbarList3,IDataTransferManagerInterop,IShellLinkW" `
+        --class-name "ITaskbarList3,IDataTransferManagerInterop,IShellLinkW,IFileOperation,IFileOpenDialog" `
         --output $comShellDir `
-        --import-name $runtimeImport
+        --import-name $comRuntimeImport
     if ($LASTEXITCODE -ne 0) { Write-Error "Classic COM Shell generation failed"; exit 1 }
+
+    & cargo run -p dynwinrt-codegen --release --quiet -- generate `
+        --winmd $win32Winmd `
+        --namespace Windows.Win32.System.Com `
+        --class-name IPersistFile `
+        --output $comShellDir `
+        --import-name $comRuntimeImport
+    if ($LASTEXITCODE -ne 0) { Write-Error "Classic COM persistence generation failed"; exit 1 }
 
     & cargo run -p dynwinrt-codegen --release --quiet -- generate `
         --winmd $win32Winmd `
         --namespace Windows.Win32.System.WinRT `
         --class-name ISystemMediaTransportControlsInterop `
         --output $comInteropDir `
-        --import-name $runtimeImport
+        --import-name $comRuntimeImport
     if ($LASTEXITCODE -ne 0) { Write-Error "Classic COM interop generation failed"; exit 1 }
+
+    & cargo run -p dynwinrt-codegen --release --quiet -- generate `
+        --winmd $win32Winmd `
+        --namespace Windows.Win32.Graphics.Imaging `
+        --class-name IWICImagingFactory `
+        --output $comWicDir `
+        --import-name $comRuntimeImport
+    if ($LASTEXITCODE -ne 0) { Write-Error "Classic COM WIC generation failed"; exit 1 }
 
     & cargo run -p dynwinrt-codegen --release --quiet -- generate `
         --namespace Windows.Media `
         --class-name SystemMediaTransportControls `
         --output $comSmtcDir `
-        --import-name $runtimeImport
+        --import-name $winrtRuntimeImport
     if ($LASTEXITCODE -ne 0) { Write-Error "SMTC WinRT generation failed"; exit 1 }
 }
 
@@ -238,7 +258,7 @@ if ("ts" -in $Lang) {
     & $tsx (Join-Path $runnersDir "ts_runner.ts") `
         --specs $specsFile `
         --generated (Join-Path $e2eDir "ts") `
-        --runtime (Join-Path $root "bindings\js\dist\index.js") `
+        --runtime (Join-Path $root "bindings\js\dist\winrt.js") `
         --output $tsResult
     if ($LASTEXITCODE -ne 0) { $totalFail++ } else { $totalPass++ }
     if (Test-Path $tsResult) { $allResults += (Get-Content $tsResult -Raw | ConvertFrom-Json) }
@@ -251,6 +271,9 @@ if ("com" -in $Lang) {
         "taskbarlist.mjs",
         "electron-hwnd-buffer.mjs",
         "shelllink-buffer.mjs",
+        "file-operation.mjs",
+        "file-open-dialog.mjs",
+        "wic-imaging-factory.mjs",
         "dtm.mjs",
         "smtc.mjs"
     )

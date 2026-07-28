@@ -6,7 +6,7 @@ import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { Worker } from 'node:worker_threads'
 
-const runtime = process.env.DYNWINRT_TEST_RUNTIME ?? fileURLToPath(new URL('../dist/index.js', import.meta.url))
+const runtime = process.env.DYNWINRT_TEST_RUNTIME ?? fileURLToPath(new URL('../dist/winrt.js', import.meta.url))
 createRequire(import.meta.url)(runtime)
 const worker = new Worker(new URL('./env-cleanup-worker.mjs', import.meta.url), {
   workerData: { runtime },
