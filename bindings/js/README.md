@@ -51,9 +51,14 @@ Generated `IReference<T>` values use `T | null` in JavaScript. Native values,
 
 Generated packages export `createProjectedLifetimeScope()`. WinUI/XAML hosts
 can create a scope after Application and Window setup, then dispose it before
-the native window and XAML core are destroyed. Projects that never create a
-scope do not allocate WeakRefs or retain projected values. Direct runtime users
-can release an individual `DynWinRtValue` with `value.release()`.
+the native window and XAML core are destroyed. Active scopes retain projected
+native values strongly for deterministic release; `releaseProjected()` removes
+an individually released wrapper from its scope. Projects that never create a
+scope do not retain projected values. Direct runtime users can release an
+individual `DynWinRtValue` with `value.release()`.
+`projectAs(value, Type)` borrows its input and creates a separately releasable
+interface projection; internal generated `_fromNative()` paths consume native
+return values.
 
 Generated WinUI `IElementFactory` bindings expose `IElementFactory.create()`.
 It creates a synchronous, UI-thread factory backed by JavaScript

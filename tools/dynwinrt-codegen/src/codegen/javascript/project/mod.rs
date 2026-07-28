@@ -47,8 +47,8 @@ use super::method::{
 };
 use super::naming::{capitalize, infer_const_type, to_camel_case};
 use super::signature::{
-    build_args_expr, convert_array_return, convert_return, generate_interface_registration,
-    ref_marker, ts_dynwinrt_type, wrap_arg,
+    build_args_expr, collect_runtime_class_iid_consts, convert_array_return, convert_return,
+    generate_interface_registration, js_argument_kind, ref_marker, ts_dynwinrt_type, wrap_arg,
 };
 use super::structs::{struct_field_getter, struct_field_setter, ts_struct_field_type};
 
@@ -399,6 +399,28 @@ pub fn project_class(
             }
         }
     }
+    let mut argument_iids = Vec::new();
+    for iface in &all_class_ifaces {
+        for method in &iface.methods {
+            for parameter in &method.params {
+                if parameter.direction == ParamDirection::In {
+                    collect_runtime_class_iid_consts(&parameter.typ, &mut argument_iids);
+                }
+            }
+        }
+    }
+    argument_iids.sort();
+    argument_iids.dedup();
+    for (name, iid_expr) in argument_iids {
+        if declared_iids.insert(name.clone()) && !imported_names.contains(&name) {
+            iid_consts.push(ProjectedIidConst {
+                name,
+                rhs_expr: iid_expr,
+                ts_type: "WinGuid".into(),
+                exported: false,
+            });
+        }
+    }
 
     // Interface registrations
     let mut registrations = Vec::new();
@@ -448,18 +470,25 @@ pub fn project_class(
         delegate_param_wraps,
     )));
     let tracker = ref_marker("trackProjectedValue");
-    let tracked_obj = format!("{}(obj, '{}')", tracker, class.name);
-    let wrapped_obj = if let Some(ref iface) = class.default_interface {
+    let owned_obj = if let Some(ref iface) = class.default_interface {
         if iface.iid.is_empty() {
-            tracked_obj
+            format!("{}(obj, '{}')", tracker, class.name)
         } else {
-            format!(
-                "{}({}.cast(IID_{}), '{}')",
-                tracker, tracked_obj, iface.name, class.name
-            )
+            let caster = ref_marker("castProjectedValueOwned");
+            format!("{}(obj, IID_{}, '{}')", caster, iface.name, class.name)
         }
     } else {
-        tracked_obj
+        format!("{}(obj, '{}')", tracker, class.name)
+    };
+    let borrowed_obj = if let Some(ref iface) = class.default_interface {
+        if iface.iid.is_empty() {
+            format!("{}(obj, '{}')", tracker, class.name)
+        } else {
+            let caster = ref_marker("castProjectedValueBorrowed");
+            format!("{}(obj, IID_{}, '{}')", caster, iface.name, class.name)
+        }
+    } else {
+        format!("{}(obj, '{}')", tracker, class.name)
     };
     members.push(ProjectedMember::Method(ProjectedMethod {
         name: "_fromNative".into(),
@@ -470,13 +499,40 @@ pub fn project_class(
             optional: false,
             delegate_wrap: None,
         }],
+        argument_kinds: vec![],
         return_type: class.name.clone(),
         async_kind: AsyncKind::None,
         is_static: true,
         invoke_expr: String::new(),
         sync_return_expr: Some(format!(
             "Object.assign(Object.create({0}.prototype), {{ _obj: {1} }})",
-            class.name, wrapped_obj
+            class.name, owned_obj
+        )),
+        async_convert_v: None,
+        progress_convert: None,
+        is_void: false,
+        array_return_expr: None,
+        delegate_wraps: vec![],
+        js_only: true,
+        overload_of: None,
+    }));
+    members.push(ProjectedMember::Method(ProjectedMethod {
+        name: "_fromNativeBorrowed".into(),
+        doc: None,
+        params: vec![ProjectedParam {
+            name: "obj".into(),
+            ts_type: "DynWinRtValue".into(),
+            optional: false,
+            delegate_wrap: None,
+        }],
+        argument_kinds: vec![],
+        return_type: class.name.clone(),
+        async_kind: AsyncKind::None,
+        is_static: true,
+        invoke_expr: String::new(),
+        sync_return_expr: Some(format!(
+            "Object.assign(Object.create({0}.prototype), {{ _obj: {1} }})",
+            class.name, borrowed_obj
         )),
         async_convert_v: None,
         progress_convert: None,
@@ -499,6 +555,7 @@ pub fn project_class(
                 params: vec![],
             }),
             params: vec![],
+            argument_kinds: vec![],
             return_type: class.name.clone(),
             async_kind: AsyncKind::None,
             is_static: true,
@@ -604,6 +661,7 @@ pub fn project_class(
                     delegate_wrap: None,
                 },
             ],
+            argument_kinds: vec![],
             return_type: class.name.clone(),
             async_kind: AsyncKind::None,
             is_static: true,
@@ -642,6 +700,7 @@ pub fn project_class(
                 optional: true,
                 delegate_wrap: None,
             }],
+            argument_kinds: vec![],
             return_type: class.name.clone(),
             async_kind: AsyncKind::None,
             is_static: true,
@@ -666,7 +725,7 @@ pub fn project_class(
     // Static methods
     for iface in &class.static_interfaces {
         for method in &iface.methods {
-            members.push(project_static_method(
+            let projected = project_static_method(
                 class,
                 iface,
                 method,
@@ -674,7 +733,30 @@ pub fn project_class(
                 &delegate_names,
                 delegate_sigs,
                 delegate_param_wraps,
-            ));
+            );
+            if class.full_name == XAML_APPLICATION && method.name == "Start" {
+                if let ProjectedMember::Method(projected_method) = &projected {
+                    let mut scheduled = projected_method.clone();
+                    scheduled.name = "startScheduled".into();
+                    scheduled.return_type = "Promise<void>".into();
+                    scheduled.async_kind = AsyncKind::None;
+                    scheduled.is_void = false;
+                    let invoke_expr =
+                        scheduled
+                            .invoke_expr
+                            .replacen(".invoke(", ".invokeScheduled(", 1);
+                    scheduled.invoke_expr = invoke_expr.clone();
+                    scheduled.sync_return_expr = Some(invoke_expr);
+                    scheduled.async_convert_v = None;
+                    scheduled.progress_convert = None;
+                    scheduled.array_return_expr = None;
+                    scheduled.overload_of = None;
+                    members.push(projected);
+                    members.push(ProjectedMember::Method(scheduled));
+                    continue;
+                }
+            }
+            members.push(projected);
         }
     }
 
@@ -1030,6 +1112,30 @@ pub fn project_interface(
             exported: true,
         });
     }
+    let mut argument_iids = Vec::new();
+    for method in &iface.methods {
+        for parameter in &method.params {
+            if parameter.direction == ParamDirection::In {
+                collect_runtime_class_iid_consts(&parameter.typ, &mut argument_iids);
+            }
+        }
+    }
+    argument_iids.sort();
+    argument_iids.dedup();
+    let mut declared_iids = iid_consts
+        .iter()
+        .map(|constant| constant.name.clone())
+        .collect::<HashSet<_>>();
+    for (name, iid_expr) in argument_iids {
+        if declared_iids.insert(name.clone()) {
+            iid_consts.push(ProjectedIidConst {
+                name,
+                rhs_expr: iid_expr,
+                ts_type: "WinGuid".into(),
+                exported: false,
+            });
+        }
+    }
 
     // Registration
     let registrations = vec![generate_interface_registration(
@@ -1097,6 +1203,7 @@ pub fn project_interface(
                     delegate_wrap: None,
                 },
             ],
+            argument_kinds: vec![],
             return_type: format!(
                 "{} & {{ releaseCallbacks(): void }}",
                 iface.name,
@@ -1105,7 +1212,7 @@ pub fn project_interface(
             is_static: true,
             invoke_expr: String::new(),
             sync_return_expr: Some(format!(
-                "(() => {{ const elements = new Map(); const implementation = DynWinRtElementFactory.create((args) => {{ const element = getElement((__get_ElementFactoryGetArgs())._fromNative(args)); const nativeElement = _unwrap(element).cast((__load_UIElement()).IID_UIElement); elements.set(nativeElement.asRaw(), element); return nativeElement; }}, (args) => {{ const projectedArgs = (__get_ElementFactoryRecycleArgs())._fromNative(args); const projectedElement = projectedArgs.element; const identity = _unwrap(projectedElement).asRaw(); const element = elements.get(identity) ?? projectedElement; elements.delete(identity); const recycleArgs = Object.create(projectedArgs); Object.defineProperty(recycleArgs, 'element', {{ value: element }}); recycleElement(recycleArgs); }}); const factory = new {0}(implementation.toValue()); Object.defineProperty(factory, 'releaseCallbacks', {{ value: () => implementation.releaseCallbacks() }}); return factory; }})()",
+                "(() => {{ const elements = new Map(); const implementation = DynWinRtElementFactory.create((__load_UIElement()).IID_UIElement, (args) => {{ const element = getElement((__get_ElementFactoryGetArgs())._fromNative(args)); const nativeElement = _unwrap(element); elements.set(nativeElement.identityRaw(), element); return nativeElement; }}, (args) => {{ const projectedArgs = (__get_ElementFactoryRecycleArgs())._fromNative(args); const projectedElement = projectedArgs.element; const identity = _unwrap(projectedElement).identityRaw(); const element = elements.get(identity) ?? projectedElement; elements.delete(identity); const recycleArgs = Object.create(projectedArgs); Object.defineProperty(recycleArgs, 'element', {{ value: element }}); recycleElement(recycleArgs); }}); const factory = new {0}(implementation.toValue()); Object.defineProperty(factory, 'releaseCallbacks', {{ value: () => implementation.releaseCallbacks() }}); return factory; }})()",
                 iface.name,
             )),
             async_convert_v: None,

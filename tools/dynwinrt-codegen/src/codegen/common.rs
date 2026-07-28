@@ -224,6 +224,55 @@ mod tests {
     }
 
     #[test]
+    fn wraps_runtime_class_inputs_with_the_expected_iid() {
+        let geometry = TypeMeta::RuntimeClass {
+            namespace: "Microsoft.UI.Xaml.Media".into(),
+            name: "Geometry".into(),
+            default_interface: Some(Box::new(TypeMeta::Interface {
+                namespace: "Microsoft.UI.Xaml.Media".into(),
+                name: "IGeometry".into(),
+                iid: "dc102dcc-3be2-5414-8599-94b6e76ef39b".into(),
+            })),
+        };
+        let expected_cast = "_unwrap(value).cast(IID_ARG_Microsoft_UI_Xaml_Media_Geometry)";
+
+        assert_eq!(
+            wrap_arg("value", &geometry),
+            format!("(value == null ? DynWinRtValue.nullValue() : {expected_cast})")
+        );
+
+        let vector = TypeMeta::Parameterized {
+            namespace: "Windows.Foundation.Collections".into(),
+            name: "IVector".into(),
+            piid: "913337e9-11a1-4345-a3a2-4e7f956e222d".into(),
+            args: vec![geometry.clone()],
+        };
+        assert!(wrap_arg("values", &vector).contains(&format!(
+            "map(_i => {})",
+            expected_cast.replace("value", "_i")
+        )));
+
+        let array = TypeMeta::Array(Box::new(geometry));
+        assert!(wrap_arg("values", &array).contains(&format!(
+            "map(_i => {})",
+            expected_cast.replace("value", "_i")
+        )));
+    }
+
+    #[test]
+    fn runtime_class_inputs_without_a_default_iid_remain_unwrapped() {
+        let opaque = TypeMeta::RuntimeClass {
+            namespace: "Contoso".into(),
+            name: "Opaque".into(),
+            default_interface: None,
+        };
+        assert_eq!(
+            wrap_arg("value", &opaque),
+            "(value == null ? DynWinRtValue.nullValue() : _unwrap(value))"
+        );
+    }
+
+    #[test]
     fn wraps_javascript_ireference_inputs() {
         let reference = |inner| TypeMeta::Parameterized {
             namespace: "Windows.Foundation".into(),

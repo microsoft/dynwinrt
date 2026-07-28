@@ -27,8 +27,8 @@ use super::method::{
 use super::naming::{is_py_reserved, to_snake_case, to_snake_case_filename};
 use super::shared::reorder_getters_before_setters;
 use super::signature::{
-    py_dynwinrt_type, py_generate_interface_registration, py_interface_iid_expr, py_runtime_symbol,
-    py_wrap_native_value,
+    py_collect_runtime_class_iid_consts, py_dynwinrt_type, py_generate_interface_registration,
+    py_interface_iid_expr, py_runtime_symbol, py_wrap_native_value,
 };
 use super::structs::{py_struct_field_getter, py_struct_field_setter, py_struct_field_type};
 use super::type_helpers::methods_have_async_output;

@@ -35,6 +35,67 @@ fn py_interface_iid(typ: &TypeMeta) -> Option<String> {
     }
 }
 
+pub(crate) fn py_runtime_class_iid_const(typ: &TypeMeta) -> Option<(String, String)> {
+    let TypeMeta::RuntimeClass {
+        namespace,
+        name,
+        default_interface,
+    } = typ
+    else {
+        return None;
+    };
+    let TypeMeta::Interface { iid, .. } = default_interface.as_deref()? else {
+        return None;
+    };
+    if iid.is_empty() {
+        return None;
+    }
+    let qualified = format!("{}_{}", namespace, name)
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    Some((format!("IID_ARG_{}", qualified), iid.clone()))
+}
+
+pub(crate) fn py_collect_runtime_class_iid_consts(
+    typ: &TypeMeta,
+    output: &mut Vec<(String, String)>,
+) {
+    if let Some(value) = py_runtime_class_iid_const(typ) {
+        output.push(value);
+    }
+    match typ {
+        TypeMeta::Parameterized { args, .. } => {
+            for argument in args {
+                py_collect_runtime_class_iid_consts(argument, output);
+            }
+        }
+        TypeMeta::Array(inner)
+        | TypeMeta::AsyncActionWithProgress(inner)
+        | TypeMeta::AsyncOperation(inner) => {
+            py_collect_runtime_class_iid_consts(inner, output);
+        }
+        TypeMeta::AsyncOperationWithProgress(result, progress) => {
+            py_collect_runtime_class_iid_consts(result, output);
+            py_collect_runtime_class_iid_consts(progress, output);
+        }
+        _ => {}
+    }
+}
+
+fn py_runtime_class_wrap(name: &str, typ: &TypeMeta) -> String {
+    let raw = format!("getattr({}, '_obj', {})", name, name);
+    py_runtime_class_iid_const(typ)
+        .map(|(iid, _)| format!("{}.cast({})", raw, iid))
+        .unwrap_or(raw)
+}
+
 pub(crate) fn py_interface_iid_expr(iface: &InterfaceMeta) -> Option<String> {
     if let Some(ref piid) = iface.generic_piid {
         let args = iface
@@ -228,10 +289,8 @@ pub(crate) fn py_wrap_arg(name: &str, typ: &TypeMeta) -> String {
         TypeMeta::F32 => format!("DynWinRTValue.from_f32({})", name),
         TypeMeta::F64 => format!("DynWinRTValue.from_f64({})", name),
         TypeMeta::Guid => format!("DynWinRTValue.from_guid(_dynwinrt_guid({}))", name),
-        TypeMeta::RuntimeClass { .. }
-        | TypeMeta::Object
-        | TypeMeta::Interface { .. }
-        | TypeMeta::Delegate { .. } => {
+        TypeMeta::RuntimeClass { .. } => py_runtime_class_wrap(name, typ),
+        TypeMeta::Object | TypeMeta::Interface { .. } | TypeMeta::Delegate { .. } => {
             format!("getattr({}, '_obj', {})", name, name)
         }
         TypeMeta::Parameterized { .. } => format!("getattr({}, '_obj', {})", name, name),
@@ -293,8 +352,8 @@ pub(crate) fn py_wrap_native_value(name: &str, typ: &TypeMeta) -> String {
         TypeMeta::Struct {
             name: struct_name, ..
         } => format!("_pack_{}({}).to_value()", to_snake_case(struct_name), name),
-        TypeMeta::RuntimeClass { .. }
-        | TypeMeta::Object
+        TypeMeta::RuntimeClass { .. } => py_runtime_class_wrap(name, typ),
+        TypeMeta::Object
         | TypeMeta::Interface { .. }
         | TypeMeta::Parameterized { .. }
         | TypeMeta::Delegate { .. } => format!("getattr({}, '_obj', {})", name, name),
@@ -363,6 +422,7 @@ pub(crate) fn py_type_guard(name: &str, typ: &TypeMeta, known_types: &HashSet<St
             py_type_guard(name, inner, known_types)
         );
     }
+
     if let TypeMeta::Parameterized { args, .. } = typ
         && let Some(kind) = type_kind(typ)
     {
@@ -633,4 +693,39 @@ pub(crate) fn py_generate_interface_registration(iface: &InterfaceMeta, var_name
         ));
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn geometry_type() -> TypeMeta {
+        TypeMeta::RuntimeClass {
+            namespace: "Microsoft.UI.Xaml.Media".into(),
+            name: "Geometry".into(),
+            default_interface: Some(Box::new(TypeMeta::Interface {
+                namespace: "Microsoft.UI.Xaml.Media".into(),
+                name: "IGeometry".into(),
+                iid: "dc102dcc-3be2-5414-8599-94b6e76ef39b".into(),
+            })),
+        }
+    }
+
+    #[test]
+    fn runtime_class_inputs_cast_to_the_expected_interface() {
+        let geometry = geometry_type();
+        assert_eq!(
+            py_wrap_native_value("value", &geometry),
+            "getattr(value, '_obj', value).cast(IID_ARG_Microsoft_UI_Xaml_Media_Geometry)"
+        );
+        let mut constants = Vec::new();
+        py_collect_runtime_class_iid_consts(&TypeMeta::Array(Box::new(geometry)), &mut constants);
+        assert_eq!(
+            constants,
+            vec![(
+                "IID_ARG_Microsoft_UI_Xaml_Media_Geometry".into(),
+                "dc102dcc-3be2-5414-8599-94b6e76ef39b".into(),
+            )]
+        );
+    }
 }

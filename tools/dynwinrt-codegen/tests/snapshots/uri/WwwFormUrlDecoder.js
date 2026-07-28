@@ -9,6 +9,8 @@ const __load_IWwwFormUrlDecoderEntry = () => (__m_IWwwFormUrlDecoderEntry ??= re
 const __get_IWwwFormUrlDecoderEntry = () => __load_IWwwFormUrlDecoderEntry().IWwwFormUrlDecoderEntry;
 let __m_lifetime;
 const __load_lifetime = () => (__m_lifetime ??= require('./lifetime.js'));
+const __get_castProjectedValueBorrowed = () => __load_lifetime().castProjectedValueBorrowed;
+const __get_castProjectedValueOwned = () => __load_lifetime().castProjectedValueOwned;
 const __get_trackProjectedValue = () => __load_lifetime().trackProjectedValue;
 
 const _unwrap = (x) => x?._obj ?? x;
@@ -79,7 +81,10 @@ class WwwFormUrlDecoder {
         throw new TypeError('No matching constructor for WwwFormUrlDecoder.');
     }
     static _fromNative(obj) {
-        return Object.assign(Object.create(WwwFormUrlDecoder.prototype), { _obj: (__get_trackProjectedValue())((__get_trackProjectedValue())(obj, 'WwwFormUrlDecoder').cast(IID_IWwwFormUrlDecoderRuntimeClass), 'WwwFormUrlDecoder') });
+        return Object.assign(Object.create(WwwFormUrlDecoder.prototype), { _obj: (__get_castProjectedValueOwned())(obj, IID_IWwwFormUrlDecoderRuntimeClass, 'WwwFormUrlDecoder') });
+    }
+    static _fromNativeBorrowed(obj) {
+        return Object.assign(Object.create(WwwFormUrlDecoder.prototype), { _obj: (__get_castProjectedValueBorrowed())(obj, IID_IWwwFormUrlDecoderRuntimeClass, 'WwwFormUrlDecoder') });
     }
     static createWwwFormUrlDecoder(query) {
         return WwwFormUrlDecoder._fromNative(_IWwwFormUrlDecoderRuntimeClassFactory.method(6).invoke(WwwFormUrlDecoder.f_IWwwFormUrlDecoderRuntimeClassFactory(), [DynWinRtValue.hstring(query)]));

@@ -153,8 +153,22 @@ pub fn generate_interface(
 
     // IID constant
     if let Some(iid_expr) = py_interface_iid_expr(iface) {
-        out.push_str(&format!("IID_{} = {}\n\n", iface.name, iid_expr));
+        out.push_str(&format!("IID_{} = {}\n", iface.name, iid_expr));
     }
+    let mut argument_iids = Vec::new();
+    for method in &iface.methods {
+        for parameter in &method.params {
+            if parameter.direction == ParamDirection::In {
+                py_collect_runtime_class_iid_consts(&parameter.typ, &mut argument_iids);
+            }
+        }
+    }
+    argument_iids.sort();
+    argument_iids.dedup();
+    for (name, iid) in argument_iids {
+        out.push_str(&format!("{} = WinGUID.parse('{}')\n", name, iid));
+    }
+    out.push('\n');
 
     // Interface registration
     out.push_str(&py_generate_interface_registration(

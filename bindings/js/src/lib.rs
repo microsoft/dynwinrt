@@ -4,13 +4,21 @@
 #![deny(clippy::all)]
 #![allow(clippy::missing_safety_doc)]
 
-use std::sync::{Arc, Mutex, OnceLock};
+use std::{
+  cell::Cell,
+  mem,
+  sync::{Arc, Mutex, OnceLock},
+};
 
 use dynwinrt;
-use napi::bindgen_prelude::BigInt;
+use napi::bindgen_prelude::{BigInt, PromiseRaw};
 use napi::threadsafe_function::ThreadsafeFunctionCallMode;
+use napi::Env;
 use napi_derive::napi;
 use windows::core::{IUnknown, Interface, HSTRING};
+
+mod async_promise;
+mod scheduled_start;
 
 /// Shared MetadataTable — created once, used everywhere.
 static TABLE: std::sync::LazyLock<Arc<dynwinrt::MetadataTable>> =
@@ -27,6 +35,19 @@ struct InitializedWinAppSdk {
 }
 
 static WINAPP_SDK: OnceLock<InitializedWinAppSdk> = OnceLock::new();
+
+thread_local! {
+  static WINUI_DISPATCHER_LOOP_ACTIVE: Cell<bool> = const { Cell::new(false) };
+  static WINUI_DISPATCHER_LOOP_ENTERED: Cell<bool> = const { Cell::new(false) };
+}
+
+fn winui_dispatcher_loop_active() -> bool {
+  WINUI_DISPATCHER_LOOP_ACTIVE.with(Cell::get)
+}
+
+fn winui_dispatcher_loop_exited() -> bool {
+  WINUI_DISPATCHER_LOOP_ENTERED.with(Cell::get) && !winui_dispatcher_loop_active()
+}
 
 /// Add Windows App SDK to the process package graph without changing the calling thread's apartment.
 #[napi]
@@ -93,8 +114,15 @@ pub fn ro_initialize(apartment_type: Option<i32>) {
   let _ = unsafe { RoInitialize(init_type) };
 }
 
+pub(crate) fn set_winui_dispatcher_loop_active(active: bool) {
+  if active {
+    WINUI_DISPATCHER_LOOP_ENTERED.with(|state| state.set(true));
+  }
+  WINUI_DISPATCHER_LOOP_ACTIVE.with(|state| state.set(active));
+}
+
 // ======================================================================
-// Core types — DynWinRTType, DynWinRTMethodSig, DynWinRTMethodHandle, WinGUID
+// Core types — DynWinRTType, DynWinRtMethodSig, DynWinRtMethodHandle, WinGUID
 // ======================================================================
 
 #[napi]
@@ -404,6 +432,23 @@ impl DynWinRTMethodHandle {
     }
   }
 
+  /// Schedule a blocking WinUI Application.Start invocation after the current
+  /// JavaScript callback unwinds.
+  #[napi]
+  pub fn invoke_scheduled<'env>(
+    &self,
+    env: Env,
+    obj: &DynWinRTValue,
+    args: Vec<&DynWinRTValue>,
+  ) -> napi::Result<PromiseRaw<'env, ()>> {
+    scheduled_start::schedule(
+      env,
+      self.0.clone(),
+      obj.0.clone(),
+      args.into_iter().map(|value| value.0.clone()).collect(),
+    )
+  }
+
   /// Like `invoke`, but returns all out-parameters as an array.
   /// Used for methods with multiple out params (e.g. IVector.IndexOf → [u32 index, bool found]).
   #[napi]
@@ -531,6 +576,19 @@ impl DynWinRTMethodHandle {
 pub struct DynWinRTValue(dynwinrt::WinRTValue);
 unsafe impl Send for DynWinRTValue {}
 unsafe impl Sync for DynWinRTValue {}
+
+impl Drop for DynWinRTValue {
+  fn drop(&mut self) {
+    // After Application.Start returns, XAML has already torn down its thread
+    // state. Leaking late projected COM references is safer than releasing
+    // them into a destroyed DXamlCore; normal application teardown must call
+    // release()/releaseProjected() before this process-exit fallback is needed.
+    if winui_dispatcher_loop_exited() {
+      let value = mem::replace(&mut self.0, dynwinrt::WinRTValue::Null);
+      mem::forget(value);
+    }
+  }
+}
 
 #[napi]
 impl DynWinRTValue {
@@ -705,12 +763,12 @@ impl DynWinRTValue {
   }
 
   #[napi]
-  pub async fn to_promise(&self) -> napi::Result<DynWinRTValue> {
-    let v = (&self.0).await.map_err(|e| match e {
-      dynwinrt::Error::Canceled => napi::Error::from_reason("Async operation was canceled"),
-      other => napi::Error::from_reason(format!("Async operation failed: {}", other.message())),
-    })?;
-    Ok(DynWinRTValue(v))
+  pub fn to_promise<'env>(&self, env: Env) -> napi::Result<PromiseRaw<'env, DynWinRTValue>> {
+    let operation = match &self.0 {
+      dynwinrt::WinRTValue::Async(_) => self.0.clone(),
+      _ => return Err(napi::Error::from_reason("toPromise: not an async value")),
+    };
+    async_promise::to_promise(env, operation)
   }
 
   /// Cancel the underlying WinRT async operation (calls `IAsyncInfo::Cancel`).
@@ -864,6 +922,19 @@ impl DynWinRTValue {
     match &self.0 {
       dynwinrt::WinRTValue::Object(o) => o.as_raw() as i64,
       _ => panic!("Cannot get raw pointer from non-object"),
+    }
+  }
+
+  #[napi]
+  pub fn identity_raw(&self) -> napi::Result<i64> {
+    match &self.0 {
+      dynwinrt::WinRTValue::Object(object) => object
+        .cast::<IUnknown>()
+        .map(|identity| identity.as_raw() as i64)
+        .map_err(|error| napi::Error::from_reason(error.message())),
+      _ => Err(napi::Error::from_reason(
+        "Cannot get COM identity from a non-object value",
+      )),
     }
   }
 
@@ -1674,12 +1745,13 @@ impl DynWinRtDelegate {
                     let raw = DynWinRTValue::to_napi_value(raw_env, v)?;
                     argv.push(raw);
                   }
-                  let mut undefined: napi::sys::napi_value = std::ptr::null_mut();
-                  napi::sys::napi_get_undefined(raw_env, &mut undefined);
+                  let mut receiver: napi::sys::napi_value = std::ptr::null_mut();
+                  napi::sys::napi_get_global(raw_env, &mut receiver);
                   let mut result: napi::sys::napi_value = std::ptr::null_mut();
-                  let status = napi::sys::napi_call_function(
+                  let status = napi::sys::napi_make_callback(
                     raw_env,
-                    undefined,
+                    std::ptr::null_mut(),
+                    receiver,
                     fn_val,
                     argv.len(),
                     argv.as_ptr(),
@@ -1697,7 +1769,7 @@ impl DynWinRtDelegate {
                       napi::sys::napi_get_and_clear_last_exception(raw_env, &mut err);
                       napi::sys::napi_fatal_exception(raw_env, err);
                     }
-                    return Err(napi::Error::from_reason("napi_call_function failed"));
+                    return Err(napi::Error::from_reason("napi_make_callback failed"));
                   }
                   Ok(())
                 })();
@@ -1802,6 +1874,7 @@ unsafe fn take_pending_exception_message(env: napi::sys::napi_env) -> Option<Str
 impl DynWinRtElementFactory {
   #[napi(factory)]
   pub fn create(
+    element_iid: &WinGUID,
     #[napi(ts_arg_type = "(args: DynWinRtValue) => DynWinRtValue")]
     get_element: ElementFactoryGetFunction,
     #[napi(ts_arg_type = "(args: DynWinRtValue) => void")]
@@ -1821,6 +1894,7 @@ impl DynWinRtElementFactory {
     unsafe impl Sync for SendableEnv {}
 
     let register_tid = unsafe { GetCurrentThreadId() };
+    let element_iid = element_iid.0;
     let raw_env = Arc::new(SendableEnv(get_element.value().env));
     let callbacks = Arc::new(Mutex::new(ElementFactoryCallbackRefs {
       get_element: Some(Arc::new(get_element.create_ref()?)),
@@ -1859,12 +1933,13 @@ impl DynWinRtElementFactory {
               let function = get_ref.borrow_back(&env)?;
               let function_value = napi::JsValue::raw(&function);
               let argument = DynWinRTValue::to_napi_value(raw_env, js_arg)?;
-              let mut undefined = std::ptr::null_mut();
-              napi::sys::napi_get_undefined(raw_env, &mut undefined);
+              let mut receiver = std::ptr::null_mut();
+              napi::sys::napi_get_global(raw_env, &mut receiver);
               let mut raw_result = std::ptr::null_mut();
-              let status = napi::sys::napi_call_function(
+              let status = napi::sys::napi_make_callback(
                 raw_env,
-                undefined,
+                std::ptr::null_mut(),
+                receiver,
                 function_value,
                 1,
                 &argument,
@@ -1877,11 +1952,10 @@ impl DynWinRtElementFactory {
                   "IElementFactory getElement callback failed: {detail}"
                 )));
               }
-              Ok(
-                <&DynWinRTValue>::from_napi_value(raw_env, raw_result)?
-                  .0
-                  .clone(),
-              )
+              <&DynWinRTValue>::from_napi_value(raw_env, raw_result)?
+                .0
+                .cast(&element_iid)
+                .map_err(|error| napi::Error::from_reason(error.message()))
             })();
             let call_result =
               call_result.map_err(|error| match take_pending_exception_message(raw_env) {
@@ -1936,12 +2010,13 @@ impl DynWinRtElementFactory {
               let function = recycle_ref.borrow_back(&env)?;
               let function_value = napi::JsValue::raw(&function);
               let argument = DynWinRTValue::to_napi_value(raw_env, js_arg)?;
-              let mut undefined = std::ptr::null_mut();
-              napi::sys::napi_get_undefined(raw_env, &mut undefined);
+              let mut receiver = std::ptr::null_mut();
+              napi::sys::napi_get_global(raw_env, &mut receiver);
               let mut raw_result = std::ptr::null_mut();
-              let status = napi::sys::napi_call_function(
+              let status = napi::sys::napi_make_callback(
                 raw_env,
-                undefined,
+                std::ptr::null_mut(),
+                receiver,
                 function_value,
                 1,
                 &argument,

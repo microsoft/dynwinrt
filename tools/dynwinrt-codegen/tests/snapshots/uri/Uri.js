@@ -5,6 +5,8 @@ const __load_WwwFormUrlDecoder = () => (__m_WwwFormUrlDecoder ??= require('./Www
 const __get_WwwFormUrlDecoder = () => __load_WwwFormUrlDecoder().WwwFormUrlDecoder;
 let __m_lifetime;
 const __load_lifetime = () => (__m_lifetime ??= require('./lifetime.js'));
+const __get_castProjectedValueBorrowed = () => __load_lifetime().castProjectedValueBorrowed;
+const __get_castProjectedValueOwned = () => __load_lifetime().castProjectedValueOwned;
 const __get_trackProjectedValue = () => __load_lifetime().trackProjectedValue;
 
 const _unwrap = (x) => x?._obj ?? x;
@@ -15,6 +17,7 @@ const IID_IUriEscapeStatics = WinGuid.parse('c1d432ba-c824-4452-a7fd-512bc3bbe9a
 const IID_IUriRuntimeClassWithAbsoluteCanonicalUri = WinGuid.parse('758d9661-221c-480f-a339-50656673f46f');
 const IID_IStringable = WinGuid.parse('96369f54-8eb6-48f0-abce-c1b211e627c3');
 const IID_Uri = WinGuid.parse('9e365e57-48b2-4160-956f-c7385120bbfc');
+const IID_ARG_Windows_Foundation_Uri = WinGuid.parse('9e365e57-48b2-4160-956f-c7385120bbfc');
 
 let _IUriRuntimeClassCache;
 const _IUriRuntimeClass = new Proxy({}, {
@@ -109,7 +112,10 @@ class Uri {
         throw new TypeError('No matching constructor for Uri.');
     }
     static _fromNative(obj) {
-        return Object.assign(Object.create(Uri.prototype), { _obj: (__get_trackProjectedValue())((__get_trackProjectedValue())(obj, 'Uri').cast(IID_IUriRuntimeClass), 'Uri') });
+        return Object.assign(Object.create(Uri.prototype), { _obj: (__get_castProjectedValueOwned())(obj, IID_IUriRuntimeClass, 'Uri') });
+    }
+    static _fromNativeBorrowed(obj) {
+        return Object.assign(Object.create(Uri.prototype), { _obj: (__get_castProjectedValueBorrowed())(obj, IID_IUriRuntimeClass, 'Uri') });
     }
     static createUri(uri) {
         return Uri._fromNative(_IUriRuntimeClassFactory.method(6).invoke(Uri.f_IUriRuntimeClassFactory(), [DynWinRtValue.hstring(uri)]));
@@ -169,7 +175,7 @@ class Uri {
         return _IUriRuntimeClass.method(20).invoke(this._obj, []).toBool();
     }
     equals(pUri) {
-        return _IUriRuntimeClass.method(21).invoke(this._obj, [(pUri == null ? DynWinRtValue.nullValue() : _unwrap(pUri))]).toBool();
+        return _IUriRuntimeClass.method(21).invoke(this._obj, [(pUri == null ? DynWinRtValue.nullValue() : _unwrap(pUri).cast(IID_ARG_Windows_Foundation_Uri))]).toBool();
     }
     combineUri(relativeUri) {
         return ((v) => v.isNull() ? null : Uri._fromNative(v))(_IUriRuntimeClass.method(22).invoke(this._obj, [DynWinRtValue.hstring(relativeUri)]));

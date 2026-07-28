@@ -69,18 +69,28 @@ const { Application, Button, Window } = require('./generated');
 initWinappsdk(2, 2);
 roInitialize(0); // STA
 
-let app;
-Application.start(() => {
-  app = Application.create(() => {
-    const window = new Window();
-    window.content = new Button();
-    window.activate();
+async function main() {
+  let app;
+  await Application.startScheduled(() => {
+    app = Application.create(() => {
+      const window = new Window();
+      window.content = new Button();
+      window.activate();
+    });
+    app.requestedTheme = 1; // Dark
   });
-  app.requestedTheme = 1; // Dark
-});
+}
+
+main().catch(console.error);
 ```
 
-`Application.start()` runs the WinUI dispatcher loop. In an unpackaged process,
+`Application.startScheduled()` enters the WinUI dispatcher loop after the
+current JavaScript callback unwinds and resolves when the application exits.
+This keeps WinUI async completions and JavaScript Promise checkpoints working
+while XAML owns the thread. `Application.start()` remains available when the
+exact blocking WinRT call is required, but it pauses the Node event loop.
+
+In an unpackaged process,
 set `WINAPPSDK_BOOTSTRAP_DLL_PATH` to the architecture-matched
 `Microsoft.WindowsAppRuntime.Bootstrap.dll` before calling `initWinappsdk()`.
 `Application.create()` resolves the bootstrapped framework resources and

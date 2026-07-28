@@ -72,7 +72,9 @@ fn render_esm(file: &ProjectedFile) -> String {
     out.push('\n');
 
     if !file.classes.is_empty() {
-        out.push_str("import { trackProjectedValue } from './lifetime.js';\n\n");
+        out.push_str(
+            "import { castProjectedValueBorrowed, castProjectedValueOwned, trackProjectedValue } from './lifetime.js';\n\n",
+        );
     }
 
     // IID consts
