@@ -99,17 +99,17 @@ Generate Win32/COM wrappers by pointing the codegen at the Win32 metadata (`Wind
 
 ### Getting `Windows.Win32.winmd`
 
-`Windows.Win32.winmd` is not on a stock Windows machine — it ships in the MIT-licensed NuGet package [`Microsoft.Windows.SDK.Win32Metadata`](https://www.nuget.org/packages/Microsoft.Windows.SDK.Win32Metadata). A `.nupkg` is just a zip with the `.winmd` at its root, so **copy-paste this whole block into PowerShell as-is** — it fetches the latest winmd and generates the `ITaskbarList3` wrappers used just below, into `./generated` (no NuGet client, no version number to pick):
+`Windows.Win32.winmd` is not on a stock Windows machine — it ships in the MIT-licensed NuGet package [`Microsoft.Windows.SDK.Win32Metadata`](https://www.nuget.org/packages/Microsoft.Windows.SDK.Win32Metadata). A `.nupkg` is just a zip with the `.winmd` at its root, so **copy-paste this whole block into PowerShell as-is** — it fetches the latest winmd and generates the whole `Windows.Win32.System.Registry` flat API (every `Reg*` function — the wrappers used in the Flat Win32 example below) into `./generated` (no NuGet client, no version number to pick):
 
 ```powershell
 $pkg = 'microsoft.windows.sdk.win32metadata'
 $ver = (Invoke-RestMethod "https://api.nuget.org/v3-flatcontainer/$pkg/index.json").versions[-1]
 Invoke-WebRequest "https://api.nuget.org/v3-flatcontainer/$pkg/$ver/$pkg.$ver.nupkg" -OutFile "$env:TEMP\win32meta.zip"
 Expand-Archive "$env:TEMP\win32meta.zip" -DestinationPath .\win32meta -Force
-npx dynwinrt-codegen generate --winmd .\win32meta\Windows.Win32.winmd --namespace Windows.Win32.UI.Shell --class-name ITaskbarList3 --output ./generated
+npx dynwinrt-codegen generate --winmd .\win32meta\Windows.Win32.winmd --namespace Windows.Win32.System.Registry --class-name Apis --output ./generated
 ```
 
-Swap `--namespace` / `--class-name` for any other API. Good targets are the things Electron *doesn't* give you: `Windows.Win32.Security.Credentials` / `Apis` (Windows Credential Manager — a replacement for the deprecated `keytar` that `safeStorage` doesn't cover), or `Windows.Win32.System.Registry` / `Apis` (arbitrary registry reads/writes). Reuse the same `.\win32meta\Windows.Win32.winmd` for every run.
+`Apis` is the bundle of a namespace's flat `[DllImport]` exports — one command generates them all (this is the usual case). For a classic-COM interface you name it directly instead, e.g. `--namespace Windows.Win32.UI.Shell --class-name ITaskbarList3` (the Classic COM example below). Swap in any other namespace — for something Electron doesn't give you, try `Windows.Win32.Security.Credentials` / `Apis` (Credential Manager — a replacement for the deprecated `keytar`). Reuse the same `.\win32meta\Windows.Win32.winmd` for every run.
 
 > Win32 and classic-COM generation currently emits JavaScript/TypeScript (`.js` + `.d.ts`).
 
