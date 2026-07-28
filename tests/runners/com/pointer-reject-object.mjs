@@ -2,7 +2,7 @@
 // DynWinRtValue inputs. Borrowing an owned COM object's raw pointer here would
 // make it indistinguishable from an owned raw pointer to adoptComPointer(),
 // which can double-release the original wrapper's COM object.
-import { DynCom, WinGuid } from '../dist/index.js';
+import { DynCom, WinGuid } from '../../../bindings/js/dist/index.js';
 
 // iidPointer() returns a DynWinRtValue — a representative value input.
 const someValue = DynCom.iidPointer(WinGuid.parse('a5caee9b-8708-49d1-8d36-67d25a8da00c'));

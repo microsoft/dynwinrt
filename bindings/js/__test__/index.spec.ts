@@ -8,6 +8,7 @@ import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import {
+  DynCom,
   DynWinRtArray,
   DynWinRtMethodSig,
   DynWinRtType,
@@ -18,6 +19,23 @@ import {
   hasPackageIdentity,
   roInitialize,
 } from '../dist/index.js'
+
+test('DynCom rejects pointers after their TypedArray backing store is detached', (t) => {
+  const bytes = new Uint8Array(16)
+  const pointer = DynCom.pointer(bytes)
+
+  structuredClone(bytes.buffer, { transfer: [bytes.buffer] })
+
+  t.is(bytes.byteLength, 0)
+  const error = t.throws(() => DynCom.asPointerBigint(pointer))
+  t.regex(error.message, /backing ArrayBuffer is detached/)
+})
+
+test('DynCom does not adopt borrowed raw pointer bits as owned COM references', (t) => {
+  const borrowed = DynCom.pointer(0n)
+  const error = t.throws(() => DynCom.adoptComPointer(borrowed))
+  t.regex(error.message, /only owned native outputs may be consumed/)
+})
 
 test('getComputerName', (t) => {
   const name = getComputerName()

@@ -4,10 +4,10 @@
 // Phase 2 E2E: real Node.js proof that the generated natural ITaskbarList3
 // wrapper drives live Windows classic COM (ITaskbarList3) via CoCreateInstance.
 //
-// Run: node bindings/js/e2e/taskbarlist.mjs
+// Run: .\tests\e2e_test.ps1 -SkipBuild -Lang com
 
-import { ITaskbarList3 } from './ITaskbarList3.js';
-import { TBPFLAG } from './TBPFLAG.js';
+import { ITaskbarList3 } from '../../e2e_generated/com/shell/ITaskbarList3.js';
+import { TBPFLAG } from '../../e2e_generated/com/shell/TBPFLAG.js';
 import { acquireHwndBigInt } from './hwnd.mjs';
 
 function fail(msg) {

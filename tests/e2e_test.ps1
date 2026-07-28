@@ -3,25 +3,32 @@
 # Licensed under the MIT License.
 #
 # E2E test orchestrator: build, generate, run language-specific runners, collect results.
-# All test logic lives in runners/py_runner.py and runners/ts_runner.ts.
+# Test logic lives in runners/py_runner.py, runners/ts_runner.ts, and runners/com/*.mjs.
 #
 # Usage:
 #   .\tests\e2e_test.ps1                    # Full (build + generate + test)
 #   .\tests\e2e_test.ps1 -SkipBuild         # Skip build step
 #   .\tests\e2e_test.ps1 -Lang py           # Python only
 #   .\tests\e2e_test.ps1 -Lang ts           # TypeScript only
+#   .\tests\e2e_test.ps1 -Lang com          # Classic COM only
 
 param(
     [switch]$SkipBuild,
-    [string[]]$Lang = @("py", "ts")
+    [ValidateSet("py", "ts", "com")]
+    [string[]]$Lang = @("py", "ts", "com")
 )
 
 $ErrorActionPreference = "Stop"
+$langWasExplicit = $PSBoundParameters.ContainsKey("Lang")
 $root = Split-Path $PSScriptRoot -Parent
 $specsFile = Join-Path $PSScriptRoot "e2e_specs.json"
 $e2eDir = Join-Path $root "tests\e2e_generated"
 $runnersDir = Join-Path $root "tests\runners"
 $pyBindingsDir = Join-Path $e2eDir "python_bindings"
+$comBindingsDir = Join-Path $e2eDir "com"
+$comShellDir = Join-Path $comBindingsDir "shell"
+$comInteropDir = Join-Path $comBindingsDir "interop"
+$comSmtcDir = Join-Path $comBindingsDir "smtc"
 
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
 
@@ -37,10 +44,45 @@ if ("py" -in $Lang -and -not $hasPython) {
     Write-Host "  SKIP Python (not installed)" -ForegroundColor DarkYellow
     $Lang = $Lang | Where-Object { $_ -ne "py" }
 }
-if ("ts" -in $Lang -and -not $hasNode) {
-    Write-Host "  SKIP TypeScript (Node.js not installed)" -ForegroundColor DarkYellow
-    $Lang = $Lang | Where-Object { $_ -ne "ts" }
+if (("ts" -in $Lang -or "com" -in $Lang) -and -not $hasNode) {
+    Write-Host "  SKIP JavaScript E2E (Node.js not installed)" -ForegroundColor DarkYellow
+    $Lang = @($Lang | Where-Object { $_ -notin @("ts", "com") })
 }
+
+function Find-Win32Winmd {
+    if ($env:DYNWINRT_WIN32_WINMD -and (Test-Path $env:DYNWINRT_WIN32_WINMD)) {
+        return (Resolve-Path $env:DYNWINRT_WIN32_WINMD).Path
+    }
+
+    $packageRoot = Join-Path $env:USERPROFILE ".nuget\packages\microsoft.windows.sdk.win32metadata"
+    if (Test-Path $packageRoot) {
+        $candidate = Get-ChildItem $packageRoot -Filter Windows.Win32.winmd -File -Recurse |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+        if ($candidate) { return $candidate.FullName }
+    }
+
+    $legacyPath = "C:\s\win32metadata\Windows.Win32.winmd"
+    if (Test-Path $legacyPath) { return $legacyPath }
+    return $null
+}
+
+$win32Winmd = $null
+if ("com" -in $Lang) {
+    $win32Winmd = Find-Win32Winmd
+    if (-not $win32Winmd) {
+        if ($langWasExplicit -or $env:DYNWINRT_REQUIRE_WIN32_METADATA -eq "1") {
+            Write-Error "Classic COM E2E requires Windows.Win32.winmd. Set DYNWINRT_WIN32_WINMD or install Microsoft.Windows.SDK.Win32Metadata."
+            exit 1
+        }
+        Write-Host "  SKIP Classic COM (Windows.Win32.winmd not found)" -ForegroundColor DarkYellow
+        $Lang = @($Lang | Where-Object { $_ -ne "com" })
+    } else {
+        $env:DYNWINRT_WIN32_WINMD = $win32Winmd
+        Write-Host "  Win32 metadata: $win32Winmd"
+    }
+}
+
 if ($Lang.Count -eq 0) { Write-Error "No languages available"; exit 1 }
 
 # --------------------------------------------------------------------------
@@ -71,7 +113,7 @@ if (-not $SkipBuild) {
         Pop-Location
     }
 
-    if ("ts" -in $Lang) {
+    if ("ts" -in $Lang -or "com" -in $Lang) {
         Push-Location (Join-Path $root "bindings\js")
         npm install --quiet 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0) { Write-Error "npm install failed"; exit 1 }
@@ -123,10 +165,38 @@ function Generate($lang, $outDir) {
     }
 }
 
-foreach ($l in $Lang) {
+foreach ($l in @($Lang | Where-Object { $_ -in @("py", "ts") })) {
     Write-Host "`n--- Generate ($l) ---" -ForegroundColor Yellow
     $outDir = if ($l -eq "py") { $pyBindingsDir } else { Join-Path $e2eDir $l }
     Generate $l $outDir
+}
+
+if ("com" -in $Lang) {
+    Write-Host "`n--- Generate (Classic COM) ---" -ForegroundColor Yellow
+    $runtimeImport = "../../../../bindings/js/dist/index.js"
+
+    & cargo run -p dynwinrt-codegen --release --quiet -- generate `
+        --winmd $win32Winmd `
+        --namespace Windows.Win32.UI.Shell `
+        --class-name "ITaskbarList3,IDataTransferManagerInterop,IShellLinkW" `
+        --output $comShellDir `
+        --import-name $runtimeImport
+    if ($LASTEXITCODE -ne 0) { Write-Error "Classic COM Shell generation failed"; exit 1 }
+
+    & cargo run -p dynwinrt-codegen --release --quiet -- generate `
+        --winmd $win32Winmd `
+        --namespace Windows.Win32.System.WinRT `
+        --class-name ISystemMediaTransportControlsInterop `
+        --output $comInteropDir `
+        --import-name $runtimeImport
+    if ($LASTEXITCODE -ne 0) { Write-Error "Classic COM interop generation failed"; exit 1 }
+
+    & cargo run -p dynwinrt-codegen --release --quiet -- generate `
+        --namespace Windows.Media `
+        --class-name SystemMediaTransportControls `
+        --output $comSmtcDir `
+        --import-name $runtimeImport
+    if ($LASTEXITCODE -ne 0) { Write-Error "SMTC WinRT generation failed"; exit 1 }
 }
 
 # --------------------------------------------------------------------------
@@ -172,6 +242,35 @@ if ("ts" -in $Lang) {
         --output $tsResult
     if ($LASTEXITCODE -ne 0) { $totalFail++ } else { $totalPass++ }
     if (Test-Path $tsResult) { $allResults += (Get-Content $tsResult -Raw | ConvertFrom-Json) }
+}
+
+if ("com" -in $Lang) {
+    Write-Host "`n--- Classic COM E2E ---" -ForegroundColor Yellow
+    $comRunners = @(
+        "pointer-reject-object.mjs",
+        "taskbarlist.mjs",
+        "electron-hwnd-buffer.mjs",
+        "shelllink-buffer.mjs",
+        "dtm.mjs",
+        "smtc.mjs"
+    )
+    $comPassed = 0
+    $comFailed = 0
+    foreach ($runner in $comRunners) {
+        Write-Host "  $runner"
+        & node (Join-Path $runnersDir "com\$runner")
+        if ($LASTEXITCODE -eq 0) {
+            $comPassed++
+        } else {
+            $comFailed++
+        }
+    }
+    if ($comFailed -eq 0) { $totalPass++ } else { $totalFail++ }
+    $allResults += [pscustomobject]@{
+        language = "com"
+        passed = $comPassed
+        total = $comRunners.Count
+    }
 }
 
 # --------------------------------------------------------------------------

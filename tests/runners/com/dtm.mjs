@@ -4,10 +4,10 @@
 // E2E: real Node.js proof that IDataTransferManagerInterop returns a live
 // WinRT object through the HWND interop pattern:
 //   IDataTransferManagerInterop::GetForWindow(HWND, REFIID, void**)
-// Run: node bindings/js/e2e/dtm.mjs
+// Run: .\tests\e2e_test.ps1 -SkipBuild -Lang com
 
-import { DynCom, DynComMethodSig, WinGuid } from '../dist/index.js';
-import { IDataTransferManagerInterop } from './IDataTransferManagerInterop.js';
+import { DynCom, DynComMethodSig, WinGuid } from '../../../bindings/js/dist/index.js';
+import { IDataTransferManagerInterop } from '../../e2e_generated/com/shell/IDataTransferManagerInterop.js';
 import { acquireHwndBigInt } from './hwnd.mjs';
 
 function fail(msg) {

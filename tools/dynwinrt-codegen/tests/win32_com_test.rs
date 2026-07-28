@@ -14,6 +14,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use dynwinrt_codegen::codegen::com;
 use dynwinrt_codegen::codegen::project::{get_import_name, set_import_name};
@@ -31,6 +32,17 @@ fn win32_winmd() -> String {
 
 fn win32_available() -> bool {
     Path::new(&win32_winmd()).exists()
+}
+
+#[test]
+fn required_win32_metadata_is_present() {
+    if std::env::var("DYNWINRT_REQUIRE_WIN32_METADATA").as_deref() == Ok("1") {
+        assert!(
+            win32_available(),
+            "DYNWINRT_REQUIRE_WIN32_METADATA=1 but metadata is missing at {}",
+            win32_winmd()
+        );
+    }
 }
 
 /// Resolve a `Windows.winmd` from the newest installed Windows SDK, matching
@@ -52,9 +64,12 @@ fn parse_itaskbarlist3_iid() {
         eprintln!("Skipping: Win32 winmd not available at {}", &win32_winmd());
         return;
     }
-    let com_iface =
-        com_metadata::parse_com_interface(&win32_winmd(), "Windows.Win32.UI.Shell", "ITaskbarList3")
-            .expect("ITaskbarList3 must exist in Win32 metadata");
+    let com_iface = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.UI.Shell",
+        "ITaskbarList3",
+    )
+    .expect("ITaskbarList3 must exist in Win32 metadata");
     assert_eq!(com_iface.interface.name, "ITaskbarList3");
     assert_eq!(com_iface.interface.namespace, "Windows.Win32.UI.Shell");
     assert_eq!(
@@ -72,9 +87,12 @@ fn parse_itaskbarlist3_vtable_slots() {
         eprintln!("Skipping: Win32 winmd not available");
         return;
     }
-    let com_iface =
-        com_metadata::parse_com_interface(&win32_winmd(), "Windows.Win32.UI.Shell", "ITaskbarList3")
-            .expect("ITaskbarList3 must exist");
+    let com_iface = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.UI.Shell",
+        "ITaskbarList3",
+    )
+    .expect("ITaskbarList3 must exist");
 
     let by_name = |n: &str| -> usize {
         com_iface
@@ -123,9 +141,12 @@ fn itaskbarlist3_is_iunknown_rooted() {
         eprintln!("Skipping: Win32 winmd not available");
         return;
     }
-    let com_iface =
-        com_metadata::parse_com_interface(&win32_winmd(), "Windows.Win32.UI.Shell", "ITaskbarList3")
-            .unwrap();
+    let com_iface = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.UI.Shell",
+        "ITaskbarList3",
+    )
+    .unwrap();
     assert_eq!(com_iface.base_offset, 3);
     assert!(com_iface.is_iunknown_rooted);
     // Base chain should include ITaskbarList2, ITaskbarList (and stop at IUnknown)
@@ -145,9 +166,12 @@ fn itaskbarlist3_clsid_resolution() {
         eprintln!("Skipping: Win32 winmd not available");
         return;
     }
-    let com_iface =
-        com_metadata::parse_com_interface(&win32_winmd(), "Windows.Win32.UI.Shell", "ITaskbarList3")
-            .unwrap();
+    let com_iface = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.UI.Shell",
+        "ITaskbarList3",
+    )
+    .unwrap();
     assert_eq!(
         com_iface.coclass_clsid.as_deref(),
         Some("56fdf344-fd6d-11d0-958a-006097c9a090")
@@ -162,9 +186,12 @@ fn param_type_mapping() {
         eprintln!("Skipping: Win32 winmd not available");
         return;
     }
-    let com_iface =
-        com_metadata::parse_com_interface(&win32_winmd(), "Windows.Win32.UI.Shell", "ITaskbarList3")
-            .unwrap();
+    let com_iface = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.UI.Shell",
+        "ITaskbarList3",
+    )
+    .unwrap();
 
     // Generate wrapper as a text bundle we can inspect for the mapping decisions
     let out = com::generate_com_interface_files(&com_iface, &win32_winmd())
@@ -251,13 +278,21 @@ fn shelllink_scalar_out_pointers_preserve_pointee_types() {
     assert!(matches!(get_icon_location.params[2].typ, TypeMeta::I32));
 
     let output = com::generate_com_interface_files(&interface, &win32_winmd()).unwrap();
-    assert!(output.js.contains(
-        ".addMethod('GetHotkey', new DynComMethodSig().addOut(DynCom.u16Type()))"
-    ));
-    assert!(output.js.contains(
-        ".addMethod('GetShowCmd', new DynComMethodSig().addOut(DynCom.i32Type()))"
-    ));
-    assert!(output.dts.contains("getIconLocation(cch?: number): [string, number];"));
+    assert!(
+        output
+            .js
+            .contains(".addMethod('GetHotkey', new DynComMethodSig().addOut(DynCom.u16Type()))")
+    );
+    assert!(
+        output
+            .js
+            .contains(".addMethod('GetShowCmd', new DynComMethodSig().addOut(DynCom.i32Type()))")
+    );
+    assert!(
+        output
+            .dts
+            .contains("getIconLocation(cch?: number): [string, number];")
+    );
 }
 
 /// 6. Partial generation: generating a single class-name yields ONLY that
@@ -269,9 +304,12 @@ fn partial_generation_only_emits_target_interface() {
         eprintln!("Skipping: Win32 winmd not available");
         return;
     }
-    let com_iface =
-        com_metadata::parse_com_interface(&win32_winmd(), "Windows.Win32.UI.Shell", "ITaskbarList3")
-            .unwrap();
+    let com_iface = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.UI.Shell",
+        "ITaskbarList3",
+    )
+    .unwrap();
     let out = com::generate_com_interface_files(&com_iface, &win32_winmd())
         .expect("codegen must succeed for classic-COM interface");
 
@@ -309,9 +347,12 @@ fn dts_surface_is_natural_and_clean() {
         eprintln!("Skipping: Win32 winmd not available");
         return;
     }
-    let com_iface =
-        com_metadata::parse_com_interface(&win32_winmd(), "Windows.Win32.UI.Shell", "ITaskbarList3")
-            .unwrap();
+    let com_iface = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.UI.Shell",
+        "ITaskbarList3",
+    )
+    .unwrap();
     let out = com::generate_com_interface_files(&com_iface, &win32_winmd())
         .expect("codegen must succeed for classic-COM interface");
     let dts = out.dts.as_str();
@@ -384,9 +425,12 @@ fn js_body_uses_cocreateinstance_and_correct_slots() {
         eprintln!("Skipping: Win32 winmd not available");
         return;
     }
-    let com_iface =
-        com_metadata::parse_com_interface(&win32_winmd(), "Windows.Win32.UI.Shell", "ITaskbarList3")
-            .unwrap();
+    let com_iface = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.UI.Shell",
+        "ITaskbarList3",
+    )
+    .unwrap();
     let out = com::generate_com_interface_files(&com_iface, &win32_winmd())
         .expect("codegen must succeed for classic-COM interface");
     let js = out.js.as_str();
@@ -591,9 +635,12 @@ fn snapshot_itaskbarlist3() {
         eprintln!("Skipping snapshot test: Win32 winmd not available");
         return;
     }
-    let com_iface =
-        com_metadata::parse_com_interface(&win32_winmd(), "Windows.Win32.UI.Shell", "ITaskbarList3")
-            .expect("ITaskbarList3 must exist");
+    let com_iface = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.UI.Shell",
+        "ITaskbarList3",
+    )
+    .expect("ITaskbarList3 must exist");
     let out = com::generate_com_interface_files(&com_iface, &win32_winmd())
         .expect("codegen must succeed for classic-COM interface");
 
@@ -829,4 +876,320 @@ fn u16_input_param_uses_existing_u16_value_ctor_not_u16value() {
         "codegen must not emit non-existent u16Value/i16Value ctor:\n{}",
         out.js
     );
+}
+
+#[test]
+fn native_array_buffers_fail_closed() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+
+    let interface = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.Storage.Imapi",
+        "IDiscRecorder",
+    )
+    .expect("IDiscRecorder must exist");
+    let error = com::generate_com_interface_files(&interface, &win32_winmd())
+        .expect_err("NativeArrayInfo byte buffers must not become scalar in/out storage");
+
+    assert!(
+        error.contains("GetRecorderGUID")
+            && error.contains("pbyUniqueID")
+            && error.contains("caller-sized native buffers are not supported"),
+        "generation must fail with a targeted buffer diagnostic: {error}"
+    );
+}
+
+#[test]
+fn pointer_sized_integers_use_runtime_width() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+
+    let interface = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.System.ClrHosting",
+        "IApartmentCallback",
+    )
+    .expect("IApartmentCallback must exist");
+    let output = com::generate_com_interface_files(&interface, &win32_winmd())
+        .expect("pointer-sized parameters should be supported");
+
+    assert!(
+        output
+            .js
+            .contains(".addIn(DynCom.usizeType()).addIn(DynCom.usizeType())"),
+        "USize parameters must use runtime-width ABI types:\n{}",
+        output.js
+    );
+    assert!(
+        output.js.contains("DynCom.usize(BigInt(pFunc))")
+            && output.js.contains("DynCom.usize(BigInt(pData))"),
+        "USize values must use runtime-width constructors:\n{}",
+        output.js
+    );
+    assert!(
+        !output.js.contains("DynCom.u64Type()"),
+        "pointer-sized parameters must not be fixed to 64 bits:\n{}",
+        output.js
+    );
+}
+
+#[test]
+fn required_parameters_after_string_buffer_count_remain_required() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+
+    let interface = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.UI.Shell",
+        "IExtractImage",
+    )
+    .expect("IExtractImage must exist");
+    let output = com::generate_com_interface_files(&interface, &win32_winmd())
+        .expect("IExtractImage generation should succeed");
+
+    assert!(
+        output
+            .js
+            .contains("getLocation(cch, pdwPriority, prgSize, recClrDepth, pdwFlags)"),
+        "required parameters, including cch before them, must not get defaults:\n{}",
+        output.js
+    );
+    assert!(
+        !output.js.contains("prgSize = 0")
+            && !output.js.contains("dwRecClrDepth = 0")
+            && !output.js.contains("pdwFlags = 0"),
+        "required native arguments must not be silently defaulted:\n{}",
+        output.js
+    );
+    assert!(
+        output.dts.contains(
+            "getLocation(cch: number, pdwPriority: number, prgSize: bigint | Buffer, recClrDepth: number, pdwFlags: number)"
+        ),
+        "declarations must keep the parameters required:\n{}",
+        output.dts
+    );
+}
+
+#[test]
+fn bstr_outputs_are_decoded_and_freed() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+
+    let interface =
+        com_metadata::parse_com_interface(&win32_winmd(), "Windows.Win32.System.Com", "IErrorInfo")
+            .expect("IErrorInfo must exist");
+    let output = com::generate_com_interface_files(&interface, &win32_winmd())
+        .expect("IErrorInfo generation should succeed");
+
+    assert!(
+        output.js.contains("return DynCom.takeBstr(_out);"),
+        "BSTR outputs must be converted through the freeing helper:\n{}",
+        output.js
+    );
+    assert!(
+        output.dts.contains("getDescription(): string;"),
+        "BSTR outputs must project as strings:\n{}",
+        output.dts
+    );
+}
+
+#[test]
+fn unsigned_enum_values_preserve_their_value() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+
+    let enum_type = com_metadata::parse_com_enum(
+        &win32_winmd(),
+        "Windows.Win32.UI.Shell",
+        "FILEOPERATION_FLAGS",
+    )
+    .expect("FILEOPERATION_FLAGS must exist");
+    let value = enum_type
+        .members
+        .iter()
+        .find(|member| member.name == "FOFX_DONTDISPLAYLOCATIONS")
+        .expect("FOFX_DONTDISPLAYLOCATIONS must exist")
+        .value
+        .clone();
+
+    assert!(matches!(enum_type.underlying, TypeMeta::U32));
+    assert_eq!(value, com_metadata::ComEnumValue::Unsigned(2_147_483_648));
+
+    let shared_type = meta::parse_enums(&win32_winmd(), "Windows.Win32.UI.Shell")
+        .into_iter()
+        .find(|typ| {
+            matches!(
+                typ,
+                TypeMeta::Enum { name, .. } if name == "FILEOPERATION_FLAGS"
+            )
+        })
+        .expect("shared enum parser must still find FILEOPERATION_FLAGS");
+    let TypeMeta::Enum {
+        underlying,
+        members,
+        ..
+    } = shared_type
+    else {
+        unreachable!()
+    };
+    assert!(
+        matches!(*underlying, TypeMeta::I32),
+        "the shared WinRT model must remain unchanged"
+    );
+    assert_eq!(
+        members
+            .iter()
+            .find(|member| member.name == "FOFX_DONTDISPLAYLOCATIONS")
+            .unwrap()
+            .value,
+        i32::MIN,
+        "unsigned Win32 values must be corrected only in the COM-local model"
+    );
+}
+
+#[test]
+fn optional_string_buffer_placeholders_do_not_precede_required_parameters() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+
+    let interface =
+        com_metadata::parse_com_interface(&win32_winmd(), "Windows.Win32.UI.Shell", "IShellLinkW")
+            .expect("IShellLinkW must exist");
+    let output = com::generate_com_interface_files(&interface, &win32_winmd())
+        .expect("IShellLinkW generation should succeed");
+
+    assert!(
+        output
+            .dts
+            .contains("getPath(cch: number, pfd: bigint | Buffer, fFlags: number)"),
+        "a required parameter must not follow an optional pfd placeholder:\n{}",
+        output.dts
+    );
+    assert!(
+        !output.js.contains("getPath(cch = 260") && !output.js.contains("pfd = 0, fFlags"),
+        "JavaScript defaults must obey the same trailing-optional rule:\n{}",
+        output.js
+    );
+}
+
+#[test]
+fn namespace_mode_rejects_classic_com_instead_of_using_winrt_slots() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+
+    let output = Command::new(env!("CARGO_BIN_EXE_dynwinrt-codegen"))
+        .args([
+            "generate",
+            "--winmd",
+            &win32_winmd(),
+            "--namespace",
+            "Windows.Win32.UI.Shell",
+            "--dry-run",
+        ])
+        .output()
+        .expect("spawn dynwinrt-codegen");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(!output.status.success(), "namespace mode must fail closed");
+    assert!(
+        stderr.contains("classic-COM namespace projection is not supported")
+            && stderr.contains("--class-name"),
+        "failure must direct callers to the safe class mode:\n{stderr}"
+    );
+}
+
+#[test]
+fn com_only_generation_emits_an_importable_package_shape() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+
+    let output_dir = std::env::temp_dir().join(format!(
+        "dynwinrt-codegen-com-package-{}",
+        std::process::id()
+    ));
+    if output_dir.exists() {
+        fs::remove_dir_all(&output_dir).expect("remove stale COM package test directory");
+    }
+
+    let output = Command::new(env!("CARGO_BIN_EXE_dynwinrt-codegen"))
+        .args([
+            "generate",
+            "--winmd",
+            &win32_winmd(),
+            "--namespace",
+            "Windows.Win32.UI.Shell",
+            "--class-name",
+            "ITaskbarList3",
+            "--output",
+            output_dir.to_str().unwrap(),
+        ])
+        .output()
+        .expect("spawn dynwinrt-codegen");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "COM generation failed:\n{stderr}");
+
+    for name in ["index.js", "index.d.ts", "package.json"] {
+        assert!(
+            output_dir.join(name).is_file(),
+            "COM-only output must include {name}"
+        );
+    }
+    let index = fs::read_to_string(output_dir.join("index.js")).unwrap();
+    assert!(index.contains("ITaskbarList3") && index.contains("TBPFLAG"));
+    let package = fs::read_to_string(output_dir.join("package.json")).unwrap();
+    assert!(package.contains("\"type\": \"module\""));
+    assert!(package.contains("\"./ITaskbarList3\""));
+
+    let incremental = Command::new(env!("CARGO_BIN_EXE_dynwinrt-codegen"))
+        .args([
+            "generate",
+            "--winmd",
+            &win32_winmd(),
+            "--namespace",
+            "Windows.Win32.UI.Shell",
+            "--class-name",
+            "IShellLinkW",
+            "--output",
+            output_dir.to_str().unwrap(),
+        ])
+        .output()
+        .expect("spawn incremental dynwinrt-codegen");
+    let incremental_stderr = String::from_utf8_lossy(&incremental.stderr);
+    assert!(
+        incremental.status.success(),
+        "incremental COM generation failed:\n{incremental_stderr}"
+    );
+    let incremental_index = fs::read_to_string(output_dir.join("index.js")).unwrap();
+    assert!(
+        incremental_index.contains("ITaskbarList3")
+            && incremental_index.contains("IShellLinkW")
+            && incremental_index.contains("TBPFLAG")
+            && incremental_index.contains("SHOW_WINDOW_CMD"),
+        "incremental generation must preserve earlier exports:\n{incremental_index}"
+    );
+    let incremental_package = fs::read_to_string(output_dir.join("package.json")).unwrap();
+    assert!(
+        incremental_package.contains("\"./ITaskbarList3\"")
+            && incremental_package.contains("\"./IShellLinkW\""),
+        "incremental generation must preserve earlier package subpaths:\n{incremental_package}"
+    );
+
+    fs::remove_dir_all(&output_dir).expect("remove COM package test directory");
 }

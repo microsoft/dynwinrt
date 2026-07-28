@@ -14,17 +14,25 @@ pub enum ParamDirection {
     InOut,
     OutFill,
     OutStringBuffer { count_param_index: usize },
+    UnsupportedNativeArray { count_param_index: Option<usize> },
 }
 
 impl ParamDirection {
     pub fn is_input(&self) -> bool {
-        matches!(self, Self::In | Self::InOut)
+        matches!(
+            self,
+            Self::In | Self::InOut | Self::UnsupportedNativeArray { .. }
+        )
     }
 
     pub fn is_output(&self) -> bool {
         matches!(
             self,
-            Self::Out | Self::InOut | Self::OutFill | Self::OutStringBuffer { .. }
+            Self::Out
+                | Self::InOut
+                | Self::OutFill
+                | Self::OutStringBuffer { .. }
+                | Self::UnsupportedNativeArray { .. }
         )
     }
 }
@@ -73,7 +81,28 @@ pub struct ComInterfaceMeta {
     pub coclass_clsid: Option<String>,
     pub coclass_name: Option<String>,
     pub own_methods_start: usize,
-    pub referenced_enums: Vec<TypeMeta>,
+    pub referenced_enums: Vec<ComEnumMeta>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ComEnumValue {
+    Signed(i64),
+    Unsigned(u64),
+}
+
+#[derive(Debug, Clone)]
+pub struct ComEnumMember {
+    pub name: String,
+    pub value: ComEnumValue,
+}
+
+#[derive(Debug, Clone)]
+pub struct ComEnumMeta {
+    pub namespace: String,
+    pub name: String,
+    pub underlying: TypeMeta,
+    pub members: Vec<ComEnumMember>,
+    pub is_flags: bool,
 }
 
 pub fn parse_com_interface(
@@ -83,6 +112,34 @@ pub fn parse_com_interface(
 ) -> Option<ComInterfaceMeta> {
     let index = crate::meta::load_index(winmd_paths)?;
     parse_com_interface_from_index(&index, namespace, name)
+}
+
+pub fn parse_com_enum(winmd_paths: &str, namespace: &str, name: &str) -> Option<ComEnumMeta> {
+    let index = crate::meta::load_index(winmd_paths)?;
+    let def = index.get(namespace, name).next()?;
+    parse_com_enum_def(&def)
+}
+
+pub fn first_classic_com_interface_in_namespace(
+    winmd_paths: &str,
+    namespace: &str,
+) -> Option<String> {
+    let index = crate::meta::load_index(winmd_paths)?;
+    let names = index
+        .all()
+        .filter(|def| {
+            def.namespace() == namespace
+                && def
+                    .flags()
+                    .contains(windows_metadata::TypeAttributes::Interface)
+        })
+        .map(|def| def.name().to_string())
+        .collect::<Vec<_>>();
+    names.into_iter().find(|name| {
+        parse_com_interface_from_index(&index, namespace, name).is_some_and(|interface| {
+            interface.is_iunknown_rooted || interface.interface.name.ends_with("Interop")
+        })
+    })
 }
 
 fn parse_com_interface_from_index(
@@ -171,7 +228,7 @@ fn parse_com_interface_from_index(
         deprecated: None,
     };
     let (coclass_name, coclass_clsid) = find_coclass(index, namespace, name);
-    let referenced_enums = collect_referenced_enums(&interface);
+    let referenced_enums = collect_referenced_enums(index, &interface);
 
     Some(ComInterfaceMeta {
         interface,
@@ -216,10 +273,16 @@ fn parse_methods(
                 .zip(signature.types.iter())
                 .enumerate()
             {
-                let direction = classify_direction(
+                let mut direction = classify_direction(
                     param.flags(),
                     matches!(typ, windows_metadata::Type::Array(_)),
                 );
+                let mapped_type = map_parameter_type(typ, &direction, index);
+                if let Some(count_param_index) = native_array_count_param(&param) {
+                    if direction.is_output() && !is_string_buffer(&mapped_type) {
+                        direction = ParamDirection::UnsupportedNativeArray { count_param_index };
+                    }
+                }
                 let free_with =
                     param
                         .find_attribute("FreeWithAttribute")
@@ -240,7 +303,7 @@ fn parse_methods(
                 }
                 params.push(ParamMeta {
                     name: param.name().to_string(),
-                    typ: map_parameter_type(typ, &direction, index),
+                    typ: mapped_type,
                     direction,
                 });
             }
@@ -260,13 +323,25 @@ fn parse_methods(
 }
 
 fn known_free_with(typ: &windows_metadata::Type, direction: &ParamDirection) -> Option<String> {
-    // Windows.Win32.winmd omits FreeWith on IShellLink::GetIDList.
     let (windows_metadata::Type::PtrMut(inner, depth)
     | windows_metadata::Type::PtrConst(inner, depth)) = typ
     else {
         return None;
     };
-    if !matches!(direction, ParamDirection::Out | ParamDirection::InOut) || *depth < 2 {
+    if !matches!(direction, ParamDirection::Out | ParamDirection::InOut) {
+        return None;
+    }
+    if *depth == 1
+        && matches!(
+            inner.as_ref(),
+            windows_metadata::Type::Name(name)
+                if name.namespace == "Windows.Win32.Foundation" && name.name == "BSTR"
+        )
+    {
+        return Some("SysFreeString".into());
+    }
+    // Windows.Win32.winmd omits FreeWith on IShellLink::GetIDList.
+    if *depth < 2 {
         return None;
     }
     match inner.as_ref() {
@@ -289,7 +364,7 @@ fn map_parameter_type(
     match typ {
         Type::PtrMut(inner, depth) | Type::PtrConst(inner, depth) => {
             if matches!(direction, ParamDirection::Out | ParamDirection::InOut) && *depth == 1 {
-                crate::meta::map_winmd_type_with_generics(inner, index, &[])
+                map_com_type(inner, index)
             } else {
                 TypeMeta::Object
             }
@@ -297,14 +372,10 @@ fn map_parameter_type(
         Type::ConstRef(inner)
             if matches!(direction, ParamDirection::Out | ParamDirection::InOut) =>
         {
-            crate::meta::map_winmd_type_with_generics(inner, index, &[])
+            map_com_type(inner, index)
         }
-        Type::ConstRef(_) | Type::ISize | Type::USize => match typ {
-            Type::ISize => TypeMeta::I64,
-            Type::USize => TypeMeta::U64,
-            _ => TypeMeta::Object,
-        },
-        _ => crate::meta::map_winmd_type_with_generics(typ, index, &[]),
+        Type::ConstRef(_) => TypeMeta::Object,
+        _ => map_com_type(typ, index),
     }
 }
 
@@ -313,10 +384,139 @@ fn map_return_type(typ: &windows_metadata::Type, index: &reader::Index) -> TypeM
 
     match typ {
         Type::PtrMut(_, _) | Type::PtrConst(_, _) | Type::ConstRef(_) => TypeMeta::Object,
-        Type::ISize => TypeMeta::I64,
-        Type::USize => TypeMeta::U64,
+        _ => map_com_type(typ, index),
+    }
+}
+
+fn map_com_type(typ: &windows_metadata::Type, index: &reader::Index) -> TypeMeta {
+    match typ {
+        windows_metadata::Type::ISize => native_isize_type(),
+        windows_metadata::Type::USize => native_usize_type(),
+        windows_metadata::Type::Name(name) => index
+            .get(&name.namespace, &name.name)
+            .next()
+            .and_then(|def| parse_com_enum_def(&def))
+            .map(|enum_meta| enum_meta.as_type_meta())
+            .unwrap_or_else(|| crate::meta::map_winmd_type_with_generics(typ, index, &[])),
         _ => crate::meta::map_winmd_type_with_generics(typ, index, &[]),
     }
+}
+
+impl ComEnumMeta {
+    fn as_type_meta(&self) -> TypeMeta {
+        TypeMeta::Enum {
+            namespace: self.namespace.clone(),
+            name: self.name.clone(),
+            underlying: Box::new(self.underlying.clone()),
+            members: Vec::new(),
+            is_flags: self.is_flags,
+            doc: None,
+            deprecated: None,
+        }
+    }
+}
+
+fn parse_com_enum_def(def: &reader::TypeDef) -> Option<ComEnumMeta> {
+    let mut fields = def.fields();
+    let underlying = fields
+        .find(|field| field.name() == "value__")
+        .and_then(|field| map_com_enum_underlying(&field.ty()))?;
+    let members = def
+        .fields()
+        .filter(|field| field.name() != "value__")
+        .filter_map(|field| {
+            let value = match field.constant()?.value() {
+                windows_metadata::Value::I8(value) => ComEnumValue::Signed(i64::from(value)),
+                windows_metadata::Value::U8(value) => ComEnumValue::Unsigned(u64::from(value)),
+                windows_metadata::Value::I16(value) => ComEnumValue::Signed(i64::from(value)),
+                windows_metadata::Value::U16(value) => ComEnumValue::Unsigned(u64::from(value)),
+                windows_metadata::Value::I32(value) => ComEnumValue::Signed(i64::from(value)),
+                windows_metadata::Value::U32(value) => ComEnumValue::Unsigned(u64::from(value)),
+                windows_metadata::Value::I64(value) => ComEnumValue::Signed(value),
+                windows_metadata::Value::U64(value) => ComEnumValue::Unsigned(value),
+                _ => return None,
+            };
+            Some(ComEnumMember {
+                name: field.name().to_string(),
+                value,
+            })
+        })
+        .collect();
+    Some(ComEnumMeta {
+        namespace: def.namespace().to_string(),
+        name: def.name().to_string(),
+        underlying,
+        members,
+        is_flags: def.has_attribute("FlagsAttribute"),
+    })
+}
+
+fn map_com_enum_underlying(typ: &windows_metadata::Type) -> Option<TypeMeta> {
+    match typ {
+        windows_metadata::Type::I8 => Some(TypeMeta::I8),
+        windows_metadata::Type::U8 => Some(TypeMeta::U8),
+        windows_metadata::Type::I16 => Some(TypeMeta::I16),
+        windows_metadata::Type::U16 => Some(TypeMeta::U16),
+        windows_metadata::Type::I32 => Some(TypeMeta::I32),
+        windows_metadata::Type::U32 => Some(TypeMeta::U32),
+        windows_metadata::Type::I64 => Some(TypeMeta::I64),
+        windows_metadata::Type::U64 => Some(TypeMeta::U64),
+        _ => None,
+    }
+}
+
+pub fn native_isize_type() -> TypeMeta {
+    TypeMeta::Struct {
+        namespace: "System".into(),
+        name: "IntPtr".into(),
+        fields: Vec::new(),
+    }
+}
+
+pub fn native_usize_type() -> TypeMeta {
+    TypeMeta::Struct {
+        namespace: "System".into(),
+        name: "UIntPtr".into(),
+        fields: Vec::new(),
+    }
+}
+
+pub fn is_native_isize(typ: &TypeMeta) -> bool {
+    matches!(
+        typ,
+        TypeMeta::Struct {
+            namespace,
+            name,
+            ..
+        } if namespace == "System" && name == "IntPtr"
+    )
+}
+
+pub fn is_native_usize(typ: &TypeMeta) -> bool {
+    matches!(
+        typ,
+        TypeMeta::Struct {
+            namespace,
+            name,
+            ..
+        } if namespace == "System" && name == "UIntPtr"
+    )
+}
+
+fn native_array_count_param(param: &reader::MethodParam) -> Option<Option<usize>> {
+    let attribute = param.find_attribute("NativeArrayInfoAttribute")?;
+    let count = attribute
+        .value()
+        .into_iter()
+        .find(|(name, _)| name == "CountParamIndex")
+        .and_then(|(_, value)| match value {
+            windows_metadata::Value::I16(value) if value >= 0 => Some(value as usize),
+            windows_metadata::Value::U16(value) => Some(value as usize),
+            windows_metadata::Value::I32(value) if value >= 0 => Some(value as usize),
+            windows_metadata::Value::U32(value) => usize::try_from(value).ok(),
+            _ => None,
+        });
+    Some(count)
 }
 
 fn classify_direction(flags: windows_metadata::ParamAttributes, is_array: bool) -> ParamDirection {
@@ -364,7 +564,7 @@ fn find_coclass(
     (None, None)
 }
 
-fn collect_referenced_enums(interface: &InterfaceMeta) -> Vec<TypeMeta> {
+fn collect_referenced_enums(index: &reader::Index, interface: &InterfaceMeta) -> Vec<ComEnumMeta> {
     let mut names = HashSet::new();
     let mut result = Vec::new();
     for method in &interface.methods {
@@ -374,9 +574,18 @@ fn collect_referenced_enums(interface: &InterfaceMeta) -> Vec<TypeMeta> {
             .map(|param| &param.typ)
             .chain(method.return_type.iter())
         {
-            if let TypeMeta::Enum { name, .. } = typ {
-                if names.insert(name.clone()) {
-                    result.push(typ.clone());
+            if let TypeMeta::Enum {
+                namespace, name, ..
+            } = typ
+            {
+                let full_name = format!("{namespace}.{name}");
+                if names.insert(full_name)
+                    && let Some(enum_meta) = index
+                        .get(namespace, name)
+                        .next()
+                        .and_then(|def| parse_com_enum_def(&def))
+                {
+                    result.push(enum_meta);
                 }
             }
         }
@@ -572,5 +781,17 @@ mod tests {
             known_free_with(&typ, &ParamDirection::Out).as_deref(),
             Some("CoTaskMemFree")
         );
+    }
+
+    #[test]
+    fn bstr_array_does_not_claim_scalar_sysfree_ownership() {
+        let typ = windows_metadata::Type::PtrMut(
+            Box::new(windows_metadata::Type::named(
+                "Windows.Win32.Foundation",
+                "BSTR",
+            )),
+            2,
+        );
+        assert_eq!(known_free_with(&typ, &ParamDirection::Out), None);
     }
 }

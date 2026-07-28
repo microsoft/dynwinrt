@@ -6,8 +6,8 @@
 // bits out of that Buffer and pass the numeric handle value, not the Buffer
 // itself, because DynCom.pointer(Buffer) passes the Buffer's own address.
 
-import { ITaskbarList3 } from './ITaskbarList3.js';
-import { TBPFLAG } from './TBPFLAG.js';
+import { ITaskbarList3 } from '../../e2e_generated/com/shell/ITaskbarList3.js';
+import { TBPFLAG } from '../../e2e_generated/com/shell/TBPFLAG.js';
 import { acquireHwndBigInt } from './hwnd.mjs';
 
 function fail(msg) {

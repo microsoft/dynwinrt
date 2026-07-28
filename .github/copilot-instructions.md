@@ -53,9 +53,9 @@ The E2E test framework validates the full pipeline: reading .winmd metadata → 
    - `instantiate`: how to create an instance (`activate`, `static_factory`, or `none`)
    - `checks`: array of assertions (`property_equals`, `property_exists`, `method_equals`, `method_result_contains`, `static_equals`, `static_not_null`)
 
-2. **Runners** (`tests/runners/py_runner.py`, `tests/runners/ts_runner.ts`) read the specs and execute them, outputting `results.json`.
+2. **Runners** (`tests/runners/py_runner.py`, `tests/runners/ts_runner.ts`, and `tests/runners/com/*.mjs`) execute generated WinRT and Classic COM bindings.
 
-3. **Orchestrator** (`tests/e2e_test.ps1`) handles build, code generation, and runner invocation.
+3. **Orchestrator** (`tests/e2e_test.ps1`) handles build, temporary code generation, and runner invocation. Use `-Lang com` for the Classic COM suite; it requires `DYNWINRT_WIN32_WINMD` or an installed `Microsoft.Windows.SDK.Win32Metadata` package.
 
 4. **Adding new test cases**: Add entries to `e2e_specs.json`:
 ```json

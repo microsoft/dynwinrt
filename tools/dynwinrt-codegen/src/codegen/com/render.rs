@@ -20,7 +20,9 @@
 //!   on failure via the runtime).
 //! - Per-enum sibling files for each enum referenced by any method parameter.
 
-use crate::com_metadata::{ComInterfaceMeta, MethodMeta, ParamDirection, ParamMeta};
+use crate::com_metadata::{
+    ComEnumMeta, ComEnumValue, ComInterfaceMeta, MethodMeta, ParamDirection, ParamMeta,
+};
 use crate::types::TypeMeta;
 
 #[cfg(test)]
@@ -30,10 +32,10 @@ use super::projection::method_is_interop_shape;
 use super::projection::{InteropInfo, InteropMethod, detect_interop};
 use super::type_mapping::{
     HandleAliasKind, MethodResult, StringEncoding, collect_handle_aliases, dts_params_for_method,
-    dts_return_type, enum_import_names, has_string_buffer_method, is_cotaskmem_owned, is_hresult,
-    is_optional_find_data_out_after_string_count, method_results, string_buffer_pattern,
-    ts_type_expr_dts, ts_type_expr_js, unwrap_return_js, uses_winrt_bridge_value, validate_com_abi,
-    wrap_arg_js,
+    dts_return_type, enum_import_names, has_string_buffer_method, is_bstr, is_cotaskmem_owned,
+    is_hresult, is_optional_find_data_out_after_string_count, is_sys_free_string_owned,
+    method_results, string_buffer_param_is_optional, string_buffer_pattern, ts_type_expr_dts,
+    ts_type_expr_js, unwrap_return_js, uses_winrt_bridge_value, validate_com_abi, wrap_arg_js,
 };
 #[cfg(test)]
 use super::type_mapping::{handle_alias_kind, handle_type_name};
@@ -81,11 +83,9 @@ pub fn generate_com_interface_files(
     // Per-enum sibling files (referenced by parameter types).
     let mut extra_files: Vec<(String, String)> = Vec::new();
     for en in &meta.referenced_enums {
-        if let TypeMeta::Enum { name, .. } = en {
-            let (enum_js, enum_dts) = render_enum_files(en);
-            extra_files.push((format!("{}.js", name), enum_js));
-            extra_files.push((format!("{}.d.ts", name), enum_dts));
-        }
+        let (enum_js, enum_dts) = render_enum_files(en);
+        extra_files.push((format!("{}.js", en.name), enum_js));
+        extra_files.push((format!("{}.d.ts", en.name), enum_dts));
     }
 
     extra_files.sort_by(|a, b| a.0.cmp(&b.0));
@@ -254,7 +254,9 @@ fn unwrap_method_result_js(
     result: MethodResult<'_>,
     expression: &str,
 ) -> String {
-    if is_cotaskmem_owned(method, result)
+    if is_sys_free_string_owned(method, result) {
+        format!("DynCom.takeBstr({expression})")
+    } else if is_cotaskmem_owned(method, result)
         && !matches!(
             result.typ,
             TypeMeta::Struct { namespace, name, .. }
@@ -274,7 +276,9 @@ fn validate_untyped_outputs(meta: &ComInterfaceMeta) -> Result<(), String> {
             let is_untyped =
                 param.direction == ParamDirection::Out && param.typ == TypeMeta::Object;
             let is_owned = method.owned_outputs.iter().any(|owned| {
-                owned.param_index == param_index && owned.free_with.contains("CoTaskMemFree")
+                owned.param_index == param_index
+                    && (owned.free_with.contains("CoTaskMemFree")
+                        || (owned.free_with.contains("SysFreeString") && is_bstr(&param.typ)))
             });
             if is_untyped && !is_owned && method_is_interop_shape(method).is_none() {
                 return Err(format!(
@@ -376,10 +380,10 @@ fn emit_method_js(out: &mut String, m: &MethodMeta, iface_var: &str) {
         .map(|(surface_i, (idx, p))| {
             let name = js_param_name(&p.name, surface_i);
             if let Some((_, count_idx, _)) = string_buffer_pattern(m) {
-                if *idx == count_idx {
+                if *idx == count_idx && string_buffer_param_is_optional(m, *idx) {
                     return format!("{name} = 260");
                 }
-                if *idx > count_idx {
+                if *idx > count_idx && string_buffer_param_is_optional(m, *idx) {
                     return format!("{name} = 0");
                 }
             }
@@ -755,10 +759,9 @@ fn has_dynamic_iid_method(meta: &ComInterfaceMeta) -> bool {
 
 fn has_owned_pointer_output(meta: &ComInterfaceMeta) -> bool {
     meta.interface.methods.iter().any(|method| {
-        method
-            .owned_outputs
-            .iter()
-            .any(|owned| owned.free_with.contains("CoTaskMemFree"))
+        method.owned_outputs.iter().any(|owned| {
+            owned.free_with.contains("CoTaskMemFree") || owned.free_with.contains("SysFreeString")
+        })
     })
 }
 
@@ -766,12 +769,8 @@ fn has_owned_pointer_output(meta: &ComInterfaceMeta) -> bool {
 // Enum sibling files
 // ---------------------------------------------------------------------------
 
-fn render_enum_files(en: &TypeMeta) -> (String, String) {
-    let (name, members) = match en {
-        TypeMeta::Enum { name, members, .. } => (name.as_str(), members),
-        _ => unreachable!(),
-    };
-
+fn render_enum_files(en: &ComEnumMeta) -> (String, String) {
+    let name = en.name.as_str();
     // .js: a frozen object.
     let mut js = String::new();
     js.push_str("// Generated by dynwinrt-codegen — do not edit\n");
@@ -779,8 +778,12 @@ fn render_enum_files(en: &TypeMeta) -> (String, String) {
         "export const {name} = Object.freeze({{\n",
         name = name
     ));
-    for m in members {
-        js.push_str(&format!("    {}: {},\n", m.name, m.value));
+    for member in &en.members {
+        js.push_str(&format!(
+            "    {}: {},\n",
+            member.name,
+            render_enum_value(&member.value, &en.underlying)
+        ));
     }
     js.push_str("});\n");
 
@@ -795,12 +798,28 @@ fn render_enum_files(en: &TypeMeta) -> (String, String) {
         name = name
     ));
     dts.push_str(&format!("export declare const {name}: {{\n", name = name));
-    for m in members {
-        dts.push_str(&format!("    readonly {}: {};\n", m.name, m.value));
+    for member in &en.members {
+        dts.push_str(&format!(
+            "    readonly {}: {};\n",
+            member.name,
+            render_enum_value(&member.value, &en.underlying)
+        ));
     }
     dts.push_str("};\n");
 
     (js, dts)
+}
+
+fn render_enum_value(value: &ComEnumValue, underlying: &TypeMeta) -> String {
+    let suffix = if matches!(underlying, TypeMeta::I64 | TypeMeta::U64) {
+        "n"
+    } else {
+        ""
+    };
+    match value {
+        ComEnumValue::Signed(value) => format!("{value}{suffix}"),
+        ComEnumValue::Unsigned(value) => format!("{value}{suffix}"),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1682,7 +1701,13 @@ mod tests {
             ..Default::default()
         };
         let mut com = plain_iface_with_method(method);
-        com.referenced_enums.push(kind);
+        com.referenced_enums.push(ComEnumMeta {
+            namespace: "Windows.Win32.Example".into(),
+            name: "THING_KIND".into(),
+            underlying: TypeMeta::I32,
+            members: Vec::new(),
+            is_flags: false,
+        });
 
         let output = generate_com_interface_files(&com, "").unwrap();
         assert!(
@@ -1696,6 +1721,37 @@ mod tests {
                 .iter()
                 .any(|(name, _)| name == "THING_KIND.d.ts")
         );
+    }
+
+    #[test]
+    fn unsigned_enum_literals_preserve_u32_and_u64_values() {
+        let u32_enum = ComEnumMeta {
+            namespace: "Windows.Win32.Example".into(),
+            name: "U32_FLAGS".into(),
+            underlying: TypeMeta::U32,
+            members: vec![crate::com_metadata::ComEnumMember {
+                name: "HIGH_BIT".into(),
+                value: ComEnumValue::Unsigned(2_147_483_648),
+            }],
+            is_flags: true,
+        };
+        let u64_enum = ComEnumMeta {
+            namespace: "Windows.Win32.Example".into(),
+            name: "U64_FLAGS".into(),
+            underlying: TypeMeta::U64,
+            members: vec![crate::com_metadata::ComEnumMember {
+                name: "HIGH_BIT".into(),
+                value: ComEnumValue::Unsigned(9_223_372_036_854_775_808),
+            }],
+            is_flags: true,
+        };
+
+        let (u32_js, u32_dts) = render_enum_files(&u32_enum);
+        assert!(u32_js.contains("HIGH_BIT: 2147483648"));
+        assert!(u32_dts.contains("readonly HIGH_BIT: 2147483648;"));
+        let (u64_js, u64_dts) = render_enum_files(&u64_enum);
+        assert!(u64_js.contains("HIGH_BIT: 9223372036854775808n"));
+        assert!(u64_dts.contains("readonly HIGH_BIT: 9223372036854775808n;"));
     }
 
     #[test]
@@ -1836,6 +1892,28 @@ mod tests {
 
         assert!(js.contains("return DynCom.takeCoTaskMemWideString(_out);"));
         assert!(dts.contains("getDisplayName(): string;"));
+    }
+
+    #[test]
+    fn untyped_sysfree_output_fails_closed() {
+        let method = MethodMeta {
+            name: "GetAllFileTypes".into(),
+            vtable_index: 4,
+            params: vec![ParamMeta {
+                name: "types".into(),
+                typ: TypeMeta::Object,
+                direction: ParamDirection::Out,
+            }],
+            return_type: Some(make_hresult()),
+            owned_outputs: vec![crate::com_metadata::OwnedOutput {
+                param_index: 0,
+                free_with: "SysFreeString".into(),
+            }],
+            ..Default::default()
+        };
+        let error = generate_com_interface_files(&plain_iface_with_method(method), "")
+            .expect_err("BSTR**-style untyped outputs must fail closed");
+        assert!(error.contains("untyped pointer output has no ownership projection"));
     }
 
     #[test]

@@ -11,7 +11,7 @@
 // napi `createTestHwnd()` export, which creates a hidden `WS_POPUP`
 // window in the Node process using the pre-registered `STATIC` class.
 
-import { DynCom, roInitialize } from '../dist/index.js';
+import { DynCom, roInitialize } from '../../../bindings/js/dist/index.js';
 
 roInitialize(1);
 

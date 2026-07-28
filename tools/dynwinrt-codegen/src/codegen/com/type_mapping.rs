@@ -3,7 +3,9 @@
 
 use std::collections::BTreeMap;
 
-use crate::com_metadata::{ComInterfaceMeta, MethodMeta, ParamDirection, ParamMeta};
+use crate::com_metadata::{
+    ComInterfaceMeta, MethodMeta, ParamDirection, ParamMeta, is_native_isize, is_native_usize,
+};
 use crate::types::TypeMeta;
 
 use super::naming::js_param_name;
@@ -23,9 +25,20 @@ pub(super) enum HandleAliasKind {
 pub(super) fn validate_com_abi(meta: &ComInterfaceMeta) -> Result<(), String> {
     for method in &meta.interface.methods {
         for param in &method.params {
+            if let ParamDirection::UnsupportedNativeArray { count_param_index } = param.direction {
+                let count = count_param_index
+                    .map(|index| format!("parameter index {index}"))
+                    .unwrap_or_else(|| "metadata-defined size".into());
+                return Err(format!(
+                    "{}.{}: caller-sized native buffers are not supported (`{}` uses {count})",
+                    meta.interface.name, method.name, param.name
+                ));
+            }
             if matches!(param.typ, TypeMeta::Struct { .. })
                 && !is_win32_bool(&param.typ)
                 && !is_hresult(&param.typ)
+                && !is_native_isize(&param.typ)
+                && !is_native_usize(&param.typ)
                 && handle_type_name(&param.typ).is_none()
             {
                 return Err(format!(
@@ -63,7 +76,9 @@ pub(super) fn validate_com_abi(meta: &ComInterfaceMeta) -> Result<(), String> {
 }
 
 fn supports_in_out(t: &TypeMeta) -> bool {
-    is_win32_bool(t)
+    is_native_isize(t)
+        || is_native_usize(t)
+        || is_win32_bool(t)
         || is_hresult(t)
         || handle_type_name(t).is_some()
         || matches!(
@@ -89,6 +104,12 @@ fn supports_direct_return(t: &TypeMeta) -> bool {
 }
 
 pub(super) fn unwrap_return_js(t: &TypeMeta, expr: &str) -> String {
+    if is_native_isize(t) {
+        return format!("DynCom.toIsizeBigint({expr})");
+    }
+    if is_native_usize(t) {
+        return format!("DynCom.toUsizeBigint({expr})");
+    }
     match string_buffer_encoding(t) {
         Some(StringEncoding::Wide) => {
             return format!("DynCom.takeCoTaskMemWideString({expr})");
@@ -184,7 +205,7 @@ pub(super) fn dts_return_type(m: &MethodMeta) -> String {
 }
 
 fn ts_result_type(method: &MethodMeta, result: MethodResult<'_>) -> String {
-    if string_buffer_encoding(result.typ).is_some() {
+    if is_sys_free_string_owned(method, result) || string_buffer_encoding(result.typ).is_some() {
         "string".into()
     } else if is_cotaskmem_owned(method, result) {
         "DynWinRtValue".into()
@@ -203,6 +224,16 @@ pub(super) fn is_cotaskmem_owned(method: &MethodMeta, result: MethodResult<'_>) 
         .any(|owned| owned.param_index == param_index && owned.free_with.contains("CoTaskMemFree"))
 }
 
+pub(super) fn is_sys_free_string_owned(method: &MethodMeta, result: MethodResult<'_>) -> bool {
+    let Some(param_index) = result.param_index else {
+        return false;
+    };
+    is_bstr(result.typ)
+        && method.owned_outputs.iter().any(|owned| {
+            owned.param_index == param_index && owned.free_with.contains("SysFreeString")
+        })
+}
+
 pub(super) fn dts_params_for_method(m: &MethodMeta) -> Vec<String> {
     let string_buffer = string_buffer_pattern(m);
     m.params
@@ -213,7 +244,7 @@ pub(super) fn dts_params_for_method(m: &MethodMeta) -> Vec<String> {
         .map(|(surface_index, (param_index, param))| {
             let mut name = js_param_name(&param.name, surface_index);
             if let Some((_, count_index, _)) = string_buffer {
-                if param_index >= count_index {
+                if param_index >= count_index && string_buffer_param_is_optional(m, param_index) {
                     name.push('?');
                 }
             }
@@ -240,10 +271,7 @@ pub(super) fn collect_handle_aliases(meta: &ComInterfaceMeta) -> Vec<(String, Ha
 pub(super) fn enum_import_names(meta: &ComInterfaceMeta) -> Vec<String> {
     meta.referenced_enums
         .iter()
-        .filter_map(|typ| match typ {
-            TypeMeta::Enum { name, .. } => Some(name.clone()),
-            _ => None,
-        })
+        .map(|enum_meta| enum_meta.name.clone())
         .collect()
 }
 
@@ -289,6 +317,27 @@ pub(super) fn string_buffer_pattern(method: &MethodMeta) -> Option<(usize, usize
     None
 }
 
+pub(super) fn string_buffer_param_is_optional(method: &MethodMeta, param_index: usize) -> bool {
+    let Some((_, count_index, _)) = string_buffer_pattern(method) else {
+        return false;
+    };
+    let Some(param) = method.params.get(param_index) else {
+        return false;
+    };
+    let is_optional_shape = param_index == count_index
+        || (param_index > count_index && is_optional_find_data_out_after_string_count(param));
+    if !is_optional_shape {
+        return false;
+    }
+    method
+        .params
+        .iter()
+        .enumerate()
+        .skip(param_index + 1)
+        .filter(|(_, param)| param.direction.is_input())
+        .all(|(_, param)| is_optional_find_data_out_after_string_count(param))
+}
+
 fn string_buffer_encoding(t: &TypeMeta) -> Option<StringEncoding> {
     match t {
         TypeMeta::Struct {
@@ -306,7 +355,7 @@ fn string_buffer_encoding(t: &TypeMeta) -> Option<StringEncoding> {
 }
 
 pub(super) fn is_optional_find_data_out_after_string_count(param: &ParamMeta) -> bool {
-    if param.direction != ParamDirection::Out {
+    if !matches!(param.direction, ParamDirection::In | ParamDirection::Out) {
         return false;
     }
     let name = param.name.to_ascii_lowercase();
@@ -320,6 +369,9 @@ pub(super) fn is_optional_find_data_out_after_string_count(param: &ParamMeta) ->
 }
 
 pub(super) fn ts_type_expr_dts(t: &TypeMeta) -> String {
+    if is_native_isize(t) || is_native_usize(t) {
+        return "bigint".into();
+    }
     if is_win32_bool(t) {
         return "boolean".into();
     }
@@ -350,6 +402,12 @@ pub(super) fn ts_type_expr_dts(t: &TypeMeta) -> String {
 }
 
 pub(super) fn ts_type_expr_js(t: &TypeMeta) -> String {
+    if is_native_isize(t) {
+        return "DynCom.isizeType()".into();
+    }
+    if is_native_usize(t) {
+        return "DynCom.usizeType()".into();
+    }
     if is_win32_bool(t) || is_hresult(t) {
         return "DynCom.i32Type()".into();
     }
@@ -381,6 +439,12 @@ pub(super) fn ts_type_expr_js(t: &TypeMeta) -> String {
 }
 
 pub(super) fn wrap_arg_js(t: &TypeMeta, var: &str) -> String {
+    if is_native_isize(t) {
+        return format!("DynCom.isize(BigInt({var}))");
+    }
+    if is_native_usize(t) {
+        return format!("DynCom.usize(BigInt({var}))");
+    }
     if is_win32_bool(t) {
         return format!("DynCom.i32({var} ? 1 : 0)");
     }
@@ -501,5 +565,13 @@ pub(super) fn is_win32_bool(t: &TypeMeta) -> bool {
         t,
         TypeMeta::Struct { namespace, name, .. }
             if namespace == "Windows.Win32.Foundation" && name == "BOOL"
+    )
+}
+
+pub(super) fn is_bstr(t: &TypeMeta) -> bool {
+    matches!(
+        t,
+        TypeMeta::Struct { namespace, name, .. }
+            if namespace == "Windows.Win32.Foundation" && name == "BSTR"
     )
 }

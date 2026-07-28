@@ -17,10 +17,31 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: i686-pc-windows-msvc
+      - uses: NuGet/setup-nuget@v2
+      - name: Install Win32 metadata
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'win32metadata'
+          nuget install Microsoft.Windows.SDK.Win32Metadata `
+            -Version 69.0.7-preview `
+            -OutputDirectory $root `
+            -DirectDownload `
+            -NonInteractive
+          $winmd = Get-ChildItem $root -Filter Windows.Win32.winmd -File -Recurse |
+            Select-Object -First 1
+          if (-not $winmd) {
+            throw 'Microsoft.Windows.SDK.Win32Metadata did not contain Windows.Win32.winmd'
+          }
+          "DYNWINRT_WIN32_WINMD=$($winmd.FullName)" >> $env:GITHUB_ENV
+          "DYNWINRT_REQUIRE_WIN32_METADATA=1" >> $env:GITHUB_ENV
       - name: Test core library
         run: cargo test -p dynwinrt
       - name: Test dynwinrt-codegen
         run: cargo test -p dynwinrt-codegen
+      - name: Check x86 Classic COM runtime
+        run: cargo check -p jswinrt_rs --target i686-pc-windows-msvc
 
   # E2E tests: winmd → generate → call real WinRT APIs
   e2e:
@@ -35,6 +56,23 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - uses: NuGet/setup-nuget@v2
+      - name: Install Win32 metadata
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'win32metadata'
+          nuget install Microsoft.Windows.SDK.Win32Metadata `
+            -Version 69.0.7-preview `
+            -OutputDirectory $root `
+            -DirectDownload `
+            -NonInteractive
+          $winmd = Get-ChildItem $root -Filter Windows.Win32.winmd -File -Recurse |
+            Select-Object -First 1
+          if (-not $winmd) {
+            throw 'Microsoft.Windows.SDK.Win32Metadata did not contain Windows.Win32.winmd'
+          }
+          "DYNWINRT_WIN32_WINMD=$($winmd.FullName)" >> $env:GITHUB_ENV
+          "DYNWINRT_REQUIRE_WIN32_METADATA=1" >> $env:GITHUB_ENV
       - name: Build dynwinrt-codegen
         run: cargo build -p dynwinrt-codegen --release
       - name: Build JS binding

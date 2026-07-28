@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
-import { DynCom } from '../dist/index.js';
-import { IShellLinkW, IID_IShellLinkW } from './IShellLinkW.js';
-import { SHOW_WINDOW_CMD } from './SHOW_WINDOW_CMD.js';
+import { DynCom } from '../../../bindings/js/dist/index.js';
+import { IShellLinkW, IID_IShellLinkW } from '../../e2e_generated/com/shell/IShellLinkW.js';
+import { SHOW_WINDOW_CMD } from '../../e2e_generated/com/shell/SHOW_WINDOW_CMD.js';
 
 const CLSID_SHELL_LINK = '00021401-0000-0000-c000-000000000046';
 DynCom.initialize(1);
@@ -16,7 +16,7 @@ const link = IShellLinkW._fromNative(
 
 const expectedPath = 'C:\\Windows\\explorer.exe';
 link.setPath(wide(expectedPath));
-assert.equal(link.getPath(260, 0).toLowerCase(), expectedPath.toLowerCase());
+assert.equal(link.getPath(260, 0n, 0).toLowerCase(), expectedPath.toLowerCase());
 const pidl = link.getIDList();
 assert.equal(pidl.isNull(), false);
 pidl.release();
