@@ -99,17 +99,17 @@ Generate Win32/COM wrappers by pointing the codegen at the Win32 metadata (`Wind
 
 ### Getting `Windows.Win32.winmd`
 
-`Windows.Win32.winmd` is not on a stock Windows machine — it ships in the MIT-licensed NuGet package [`Microsoft.Windows.SDK.Win32Metadata`](https://www.nuget.org/packages/Microsoft.Windows.SDK.Win32Metadata). A `.nupkg` is just a zip with the `.winmd` at its root, so **copy-paste this whole block into PowerShell as-is** — it fetches the latest winmd and generates the whole `Windows.Win32.System.Registry` flat API (every `Reg*` function — the wrappers used in the Flat Win32 example below) into `./generated` (no NuGet client, no version number to pick):
+`Windows.Win32.winmd` is not on a stock Windows machine — it ships in the MIT-licensed NuGet package [`Microsoft.Windows.SDK.Win32Metadata`](https://www.nuget.org/packages/Microsoft.Windows.SDK.Win32Metadata). A `.nupkg` is just a zip with the `.winmd` at its root, so **copy-paste this whole block into PowerShell as-is** — it fetches the latest winmd and generates the `ITaskbarList3` classic-COM wrapper (used in the first example below) into `./generated` (no NuGet client, no version number to pick):
 
 ```powershell
 $pkg = 'microsoft.windows.sdk.win32metadata'
 $ver = (Invoke-RestMethod "https://api.nuget.org/v3-flatcontainer/$pkg/index.json").versions[-1]
 Invoke-WebRequest "https://api.nuget.org/v3-flatcontainer/$pkg/$ver/$pkg.$ver.nupkg" -OutFile "$env:TEMP\win32meta.zip"
 Expand-Archive "$env:TEMP\win32meta.zip" -DestinationPath .\win32meta -Force
-npx dynwinrt-codegen generate --winmd .\win32meta\Windows.Win32.winmd --namespace Windows.Win32.System.Registry --class-name Apis --output ./generated
+npx dynwinrt-codegen generate --winmd .\win32meta\Windows.Win32.winmd --namespace Windows.Win32.UI.Shell --class-name ITaskbarList3 --output ./generated
 ```
 
-`Apis` is the bundle of a namespace's flat `[DllImport]` exports — one command generates them all (this is the usual case). For a classic-COM interface you name it directly instead, e.g. `--namespace Windows.Win32.UI.Shell --class-name ITaskbarList3` (the Classic COM example below). Swap in any other namespace — for something Electron doesn't give you, try `Windows.Win32.Security.Credentials` / `Apis` (Credential Manager — a replacement for the deprecated `keytar`). Reuse the same `.\win32meta\Windows.Win32.winmd` for every run.
+`--class-name` names what to generate — either a specific classic-COM/WinRT interface like `ITaskbarList3` (above), or `Apis`, the synthetic bundle of a whole namespace's flat `[DllImport]` exports (shown in the Flat Win32 example below). Dependencies are pulled in automatically. Swap in any other namespace — for something Electron doesn't give you, try `Windows.Win32.Security.Credentials` / `Apis` (Credential Manager — a replacement for the deprecated `keytar`). Reuse the same `.\win32meta\Windows.Win32.winmd` for every run.
 
 > Win32 and classic-COM generation currently emits JavaScript/TypeScript (`.js` + `.d.ts`).
 
@@ -144,9 +144,15 @@ const dtm = interop.getForWindow(hwnd); // → DynWinRtValue bridge to DataTrans
 interop.showShareUIForWindow(hwnd);
 ```
 
-Interop interfaces are the Windows pattern for features that require an `HWND` but operate on WinRT objects. `create()` activates the WinRT factory and QIs to the interop interface; `getForWindow(hwnd)` adopts the returned COM pointer and hands it back as a `DynWinRtValue` bridge — with no `riid`/`void**` in the signature.
+Where `ITaskbarList3` above is a *pure* classic-COM object — every call stays on its own vtable — an **interop** interface is a one-way bridge from Win32 windowing into WinRT: you hand it an `HWND` and `getForWindow(hwnd)` hands back a live **WinRT** object (here a `DataTransferManager`) that you then drive with the rest of your generated WinRT bindings. `create()` activates the WinRT factory and QIs to the interop interface; the returned COM pointer is adopted and surfaced as a `DynWinRtValue` bridge — with no `riid`/`void**` in the signature.
 
 ### Flat Win32 exports: call `[DllImport]` APIs
+
+Flat exports live in a namespace's synthetic `Apis` bundle. Generate a whole namespace at once — here every `Reg*` function — with `--class-name Apis` (reusing the winmd fetched above):
+
+```powershell
+npx dynwinrt-codegen generate --winmd .\win32meta\Windows.Win32.winmd --namespace Windows.Win32.System.Registry --class-name Apis --output ./generated
+```
 
 ```js
 import { regOpenKeyExW, regCloseKey } from './generated/Apis.js';
