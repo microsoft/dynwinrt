@@ -148,27 +148,23 @@ Interop interfaces are the Windows pattern for features that require an `HWND` b
 
 ### Flat Win32 exports: call `[DllImport]` APIs
 
+Give an Electron window the Windows 11 dark title bar — no native addon:
+
 ```js
-import { regOpenKeyExW, regCloseKey } from './generated/Apis.js';
-import { REG_SAM_FLAGS } from './generated/REG_SAM_FLAGS.js';
+import { dwmSetWindowAttribute } from './generated/Apis.js';
 
-const HKEY_LOCAL_MACHINE = 0x80000002n;
+// Electron hands you the native window handle as a Buffer — read the HWND value.
+const hwnd = mainWindow.getNativeWindowHandle().readBigUInt64LE(0);
 
-const open = regOpenKeyExW(
-  HKEY_LOCAL_MACHINE,
-  'SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion', // note: doubled backslashes in JS
-  0,
-  REG_SAM_FLAGS.KEY_READ,
-);
-if (open.status !== 0) throw new Error(`RegOpenKeyExW failed: LSTATUS=${open.status}`);
-try {
-  console.log(`hKey = 0x${open.phkResult.toString(16)}`);
-} finally {
-  regCloseKey(open.phkResult);
-}
+// DWMWA_USE_IMMERSIVE_DARK_MODE = 20. Attribute values are passed as a
+// pointer-sized Buffer — here a 4-byte BOOL set to TRUE.
+const enable = Buffer.alloc(4);
+enable.writeInt32LE(1, 0);
+const { status } = dwmSetWindowAttribute(hwnd, 20, enable, enable.length);
+if (status !== 0) throw new Error(`DwmSetWindowAttribute failed: 0x${(status >>> 0).toString(16)}`);
 ```
 
-`[out]` parameters become return fields (`{ status, phkResult }`), caller-allocated buffers and in/out sizes are handled for you, `LPCWSTR` ↔ `string`, and the Win32 `LSTATUS`/error is surfaced. Handles (`HKEY`, `HANDLE`) project as `bigint`.
+Flat exports return an object with `status` (the Win32/`HRESULT` result) plus a field for each `[out]`/in-out parameter — e.g. `regOpenKeyExW(...)` returns `{ status, phkResult }`. Caller-allocated buffers and in/out sizes are handled for you, `LPCWSTR` ↔ `string`, and handles (`HWND`, `HKEY`, `HANDLE`) project as `bigint | number`.
 
 ## Repository layout
 
