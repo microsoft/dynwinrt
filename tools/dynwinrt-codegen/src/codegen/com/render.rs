@@ -32,8 +32,8 @@ use super::type_mapping::{
     HandleAliasKind, MethodResult, StringEncoding, collect_handle_aliases, dts_params_for_method,
     dts_return_type, enum_import_names, has_string_buffer_method, is_cotaskmem_owned, is_hresult,
     is_optional_find_data_out_after_string_count, method_results, string_buffer_pattern,
-    ts_type_expr_dts, ts_type_expr_js, unwrap_return_js, uses_winrt_bridge_value, validate_com_abi,
-    wrap_arg_js,
+    ts_type_expr_dts, ts_type_expr_js, unwrap_return_js, uses_handle_value_input,
+    uses_winrt_bridge_value, validate_com_abi, wrap_arg_js,
 };
 #[cfg(test)]
 use super::type_mapping::{handle_alias_kind, handle_type_name};
@@ -101,6 +101,23 @@ pub fn generate_com_interface_files(
 // .js rendering
 // ---------------------------------------------------------------------------
 
+/// Inline JS helper: normalize a handle argument to a bigint/number pointer
+/// value. Accepts a bigint/number (pass-through) or an Electron/Node
+/// `Buffer`/`Uint8Array` of pointer bits (e.g. `getNativeWindowHandle()`),
+/// reading its little-endian bytes as the handle VALUE (not the buffer address).
+const HANDLE_ARG_HELPER: &str = "\
+function _handleArg(h) {
+    if (typeof h === 'bigint' || typeof h === 'number') return h;
+    if (h instanceof Uint8Array) {
+        const _dv = new DataView(h.buffer, h.byteOffset, h.byteLength);
+        if (h.byteLength >= 8) return _dv.getBigUint64(0, true);
+        if (h.byteLength >= 4) return BigInt(_dv.getUint32(0, true));
+        throw new TypeError('handle Buffer must be at least 4 bytes');
+    }
+    throw new TypeError(`handle must be a bigint, number, or Buffer, got ${typeof h}`);
+}
+";
+
 fn render_js(meta: &ComInterfaceMeta, interop: Option<&InteropInfo>) -> String {
     let iface = &meta.interface;
     let iid = &iface.iid;
@@ -136,6 +153,11 @@ fn render_js(meta: &ComInterfaceMeta, interop: Option<&InteropInfo>) -> String {
         );
         out.push_str("    return buffer.subarray(0, end).toString('utf16le');\n");
         out.push_str("}\n\n");
+    }
+
+    if uses_handle_value_input(meta) {
+        out.push_str(HANDLE_ARG_HELPER);
+        out.push('\n');
     }
 
     out.push_str(&format!(
@@ -626,7 +648,7 @@ fn render_dts(meta: &ComInterfaceMeta, interop: Option<&InteropInfo>) -> String 
     for (h, kind) in &handle_aliases {
         match kind {
             HandleAliasKind::HandleValue => out.push_str(&format!(
-                "/** Opaque Win32 handle. Pass either a raw pointer value as a `bigint` (safe for full 64-bit handle values) or a `number` (only for handles that fit in a JS safe integer, e.g. HWND with small window IDs). Do NOT pass a `Buffer` — `DynCom.pointer(Buffer)` uses the buffer's own address, not the bytes it contains; for an Electron `getNativeWindowHandle()` Buffer, read the handle value first (for example, `buf.readBigUInt64LE(0)`). */\nexport type {h} = bigint | number;\n"
+                "/** Opaque Win32 handle. Pass a raw pointer value as a `bigint` (full 64-bit) or `number` (safe integer), or an Electron/Node `Buffer`/`Uint8Array` of the handle's pointer bits — e.g. `BrowserWindow.getNativeWindowHandle()` — which is read as the handle VALUE. */\nexport type {h} = bigint | number | Buffer | Uint8Array;\n"
             )),
             HandleAliasKind::StringPointer => out.push_str(&format!(
                 "/** Win32 NUL-terminated string pointer. Pass a `Buffer` holding the string bytes (including the NUL terminator), or pass a raw pointer as `bigint`. */\nexport type {h} = bigint | Buffer;\n"
@@ -1625,12 +1647,12 @@ mod tests {
         };
         let com = plain_iface_with_method(method);
         let dts = render_dts(&com, None);
-        assert!(dts.contains("export type HWND = bigint | number;"));
+        assert!(dts.contains("export type HWND = bigint | number | Buffer | Uint8Array;"));
         assert!(dts.contains("getWindow(): HWND;"));
     }
 
     #[test]
-    fn handle_value_typedef_rejects_buffer_but_string_pointer_keeps_buffer() {
+    fn handle_value_arg_accepts_buffer_and_string_pointer_keeps_buffer() {
         let hwnd = TypeMeta::Struct {
             namespace: "Windows.Win32.Foundation".into(),
             name: "HWND".into(),
@@ -1656,13 +1678,31 @@ mod tests {
             return_type: Some(make_hresult()),
             ..Default::default()
         };
-        let dts = render_dts(&plain_iface_with_method(method), None);
+        let iface = plain_iface_with_method(method);
+        let dts = render_dts(&iface, None);
+        let js = render_js(&iface, None);
 
-        assert!(dts.contains("export type HWND = bigint | number;"));
-        assert!(dts.contains("Do NOT pass a `Buffer`"));
+        // Handle-value typedef now ACCEPTS an Electron/Node Buffer (read as the
+        // handle VALUE, not the buffer address); string pointers keep Buffer
+        // with address semantics.
+        assert!(dts.contains("export type HWND = bigint | number | Buffer | Uint8Array;"));
+        assert!(!dts.contains("Do NOT pass a `Buffer`"));
+        assert!(dts.contains("read as the handle VALUE"));
         assert!(dts.contains("export type PWSTR = bigint | Buffer;"));
         assert!(dts.contains("Pass a `Buffer` holding the string bytes"));
         assert!(dts.contains("setOverlayIcon(hwnd: HWND, description: PWSTR): void;"));
+
+        // The handle arg is unwrapped via `_handleArg(...)`, and the helper is
+        // emitted; the string-pointer arg is NOT unwrapped that way.
+        assert!(
+            js.contains("DynCom.pointer(_handleArg(hwnd))"),
+            "handle arg must be unwrapped via _handleArg:\n{js}"
+        );
+        assert!(
+            js.contains("function _handleArg("),
+            "the _handleArg helper must be emitted:\n{js}"
+        );
+        assert!(!js.contains("_handleArg(description)"));
     }
 
     #[test]

@@ -237,6 +237,20 @@ pub(super) fn collect_handle_aliases(meta: &ComInterfaceMeta) -> Vec<(String, Ha
     aliases.into_iter().collect()
 }
 
+/// True if any `[in]` parameter projects as a handle VALUE (HWND/HANDLE/HKEY…),
+/// i.e. an arg wrapped via `_handleArg(...)`. String-pointer handles excluded.
+pub(super) fn uses_handle_value_input(meta: &ComInterfaceMeta) -> bool {
+    meta.interface.methods.iter().any(|method| {
+        method.params.iter().any(|param| {
+            matches!(param.direction, ParamDirection::In)
+                && matches!(
+                    handle_alias(&param.typ),
+                    Some((_, HandleAliasKind::HandleValue))
+                )
+        })
+    })
+}
+
 pub(super) fn enum_import_names(meta: &ComInterfaceMeta) -> Vec<String> {
     meta.referenced_enums
         .iter()
@@ -387,8 +401,11 @@ pub(super) fn wrap_arg_js(t: &TypeMeta, var: &str) -> String {
     if is_hresult(t) {
         return format!("DynCom.i32({var})");
     }
-    if handle_type_name(t).is_some() {
-        return format!("DynCom.pointer({var})");
+    if let Some((_, kind)) = handle_alias(t) {
+        return match kind {
+            HandleAliasKind::HandleValue => format!("DynCom.pointer(_handleArg({var}))"),
+            HandleAliasKind::StringPointer => format!("DynCom.pointer({var})"),
+        };
     }
     if let TypeMeta::Interface { iid, .. } = t {
         if !iid.is_empty() {
@@ -503,3 +520,5 @@ pub(super) fn is_win32_bool(t: &TypeMeta) -> bool {
             if namespace == "Windows.Win32.Foundation" && name == "BOOL"
     )
 }
+
+

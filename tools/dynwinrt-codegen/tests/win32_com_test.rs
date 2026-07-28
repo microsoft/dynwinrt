@@ -173,11 +173,17 @@ fn param_type_mapping() {
     let dts = out.dts.as_str();
     let js = out.js.as_str();
 
-    // HWND is a handle value type → bigint | number surface (never Buffer).
+    // HWND is a handle value type → accepts bigint | number, or an Electron/Node
+    // Buffer (read as the handle VALUE). Its arg is unwrapped via `_handleArg`.
     assert!(
-        dts.contains("export type HWND = bigint | number;"),
-        "HWND should be projected as `bigint | number` in .d.ts, got:\n{}",
+        dts.contains("export type HWND = bigint | number | Buffer | Uint8Array;"),
+        "HWND should be projected as `bigint | number | Buffer | Uint8Array` in .d.ts, got:\n{}",
         dts
+    );
+    assert!(
+        js.contains("_handleArg(hwnd)") && js.contains("function _handleArg("),
+        "HWND arg must be unwrapped via the _handleArg helper in .js, got:\n{}",
+        js
     );
 
     // ULONGLONG (U64) → bigint

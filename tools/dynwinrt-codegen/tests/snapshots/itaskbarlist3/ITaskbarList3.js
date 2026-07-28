@@ -2,6 +2,17 @@
 import { DynCom, DynComMethodSig, WinGuid } from '@microsoft/dynwinrt';
 import { TBPFLAG } from './TBPFLAG.js';
 
+function _handleArg(h) {
+    if (typeof h === 'bigint' || typeof h === 'number') return h;
+    if (h instanceof Uint8Array) {
+        const _dv = new DataView(h.buffer, h.byteOffset, h.byteLength);
+        if (h.byteLength >= 8) return _dv.getBigUint64(0, true);
+        if (h.byteLength >= 4) return BigInt(_dv.getUint32(0, true));
+        throw new TypeError('handle Buffer must be at least 4 bytes');
+    }
+    throw new TypeError(`handle must be a bigint, number, or Buffer, got ${typeof h}`);
+}
+
 export const IID_ITaskbarList3 = WinGuid.parse('ea1afb91-9e28-4b86-90e9-9e9f8a5eefaf');
 
 let _ITaskbarList3Cache;
@@ -44,54 +55,54 @@ export class ITaskbarList3 {
         _ITaskbarList3.method(3).invoke(this._obj, []);
     }
     addTab(hwnd) {
-        _ITaskbarList3.method(4).invoke(this._obj, [DynCom.pointer(hwnd)]);
+        _ITaskbarList3.method(4).invoke(this._obj, [DynCom.pointer(_handleArg(hwnd))]);
     }
     deleteTab(hwnd) {
-        _ITaskbarList3.method(5).invoke(this._obj, [DynCom.pointer(hwnd)]);
+        _ITaskbarList3.method(5).invoke(this._obj, [DynCom.pointer(_handleArg(hwnd))]);
     }
     activateTab(hwnd) {
-        _ITaskbarList3.method(6).invoke(this._obj, [DynCom.pointer(hwnd)]);
+        _ITaskbarList3.method(6).invoke(this._obj, [DynCom.pointer(_handleArg(hwnd))]);
     }
     setActiveAlt(hwnd) {
-        _ITaskbarList3.method(7).invoke(this._obj, [DynCom.pointer(hwnd)]);
+        _ITaskbarList3.method(7).invoke(this._obj, [DynCom.pointer(_handleArg(hwnd))]);
     }
     markFullscreenWindow(hwnd, fFullscreen) {
-        _ITaskbarList3.method(8).invoke(this._obj, [DynCom.pointer(hwnd), DynCom.i32(fFullscreen ? 1 : 0)]);
+        _ITaskbarList3.method(8).invoke(this._obj, [DynCom.pointer(_handleArg(hwnd)), DynCom.i32(fFullscreen ? 1 : 0)]);
     }
     setProgressValue(hwnd, ullCompleted, ullTotal) {
-        _ITaskbarList3.method(9).invoke(this._obj, [DynCom.pointer(hwnd), DynCom.u64(BigInt(ullCompleted)), DynCom.u64(BigInt(ullTotal))]);
+        _ITaskbarList3.method(9).invoke(this._obj, [DynCom.pointer(_handleArg(hwnd)), DynCom.u64(BigInt(ullCompleted)), DynCom.u64(BigInt(ullTotal))]);
     }
     setProgressState(hwnd, tbpFlags) {
-        _ITaskbarList3.method(10).invoke(this._obj, [DynCom.pointer(hwnd), DynCom.i32(tbpFlags)]);
+        _ITaskbarList3.method(10).invoke(this._obj, [DynCom.pointer(_handleArg(hwnd)), DynCom.i32(tbpFlags)]);
     }
     registerTab(tab, mDI) {
-        _ITaskbarList3.method(11).invoke(this._obj, [DynCom.pointer(tab), DynCom.pointer(mDI)]);
+        _ITaskbarList3.method(11).invoke(this._obj, [DynCom.pointer(_handleArg(tab)), DynCom.pointer(_handleArg(mDI))]);
     }
     unregisterTab(tab) {
-        _ITaskbarList3.method(12).invoke(this._obj, [DynCom.pointer(tab)]);
+        _ITaskbarList3.method(12).invoke(this._obj, [DynCom.pointer(_handleArg(tab))]);
     }
     setTabOrder(tab, insertBefore) {
-        _ITaskbarList3.method(13).invoke(this._obj, [DynCom.pointer(tab), DynCom.pointer(insertBefore)]);
+        _ITaskbarList3.method(13).invoke(this._obj, [DynCom.pointer(_handleArg(tab)), DynCom.pointer(_handleArg(insertBefore))]);
     }
     setTabActive(tab, mDI, reserved) {
-        _ITaskbarList3.method(14).invoke(this._obj, [DynCom.pointer(tab), DynCom.pointer(mDI), DynCom.u32(reserved)]);
+        _ITaskbarList3.method(14).invoke(this._obj, [DynCom.pointer(_handleArg(tab)), DynCom.pointer(_handleArg(mDI)), DynCom.u32(reserved)]);
     }
     thumbBarAddButtons(hwnd, cButtons, pButton) {
-        _ITaskbarList3.method(15).invoke(this._obj, [DynCom.pointer(hwnd), DynCom.u32(cButtons), DynCom.pointer(pButton)]);
+        _ITaskbarList3.method(15).invoke(this._obj, [DynCom.pointer(_handleArg(hwnd)), DynCom.u32(cButtons), DynCom.pointer(pButton)]);
     }
     thumbBarUpdateButtons(hwnd, cButtons, pButton) {
-        _ITaskbarList3.method(16).invoke(this._obj, [DynCom.pointer(hwnd), DynCom.u32(cButtons), DynCom.pointer(pButton)]);
+        _ITaskbarList3.method(16).invoke(this._obj, [DynCom.pointer(_handleArg(hwnd)), DynCom.u32(cButtons), DynCom.pointer(pButton)]);
     }
     thumbBarSetImageList(hwnd, himl) {
-        _ITaskbarList3.method(17).invoke(this._obj, [DynCom.pointer(hwnd), DynCom.pointer(himl)]);
+        _ITaskbarList3.method(17).invoke(this._obj, [DynCom.pointer(_handleArg(hwnd)), DynCom.pointer(_handleArg(himl))]);
     }
     setOverlayIcon(hwnd, hIcon, description) {
-        _ITaskbarList3.method(18).invoke(this._obj, [DynCom.pointer(hwnd), DynCom.pointer(hIcon), DynCom.pointer(description)]);
+        _ITaskbarList3.method(18).invoke(this._obj, [DynCom.pointer(_handleArg(hwnd)), DynCom.pointer(_handleArg(hIcon)), DynCom.pointer(description)]);
     }
     setThumbnailTooltip(hwnd, tip) {
-        _ITaskbarList3.method(19).invoke(this._obj, [DynCom.pointer(hwnd), DynCom.pointer(tip)]);
+        _ITaskbarList3.method(19).invoke(this._obj, [DynCom.pointer(_handleArg(hwnd)), DynCom.pointer(tip)]);
     }
     setThumbnailClip(hwnd, prcClip) {
-        _ITaskbarList3.method(20).invoke(this._obj, [DynCom.pointer(hwnd), DynCom.pointer(prcClip)]);
+        _ITaskbarList3.method(20).invoke(this._obj, [DynCom.pointer(_handleArg(hwnd)), DynCom.pointer(prcClip)]);
     }
 }
