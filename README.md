@@ -99,17 +99,17 @@ Generate Win32/COM wrappers by pointing the codegen at the Win32 metadata (`Wind
 
 ### Getting `Windows.Win32.winmd`
 
-`Windows.Win32.winmd` is not on a stock Windows machine — it ships in the MIT-licensed NuGet package [`Microsoft.Windows.SDK.Win32Metadata`](https://www.nuget.org/packages/Microsoft.Windows.SDK.Win32Metadata). A `.nupkg` is just a zip with the `.winmd` at its root, so **copy-paste this whole block into PowerShell as-is** — it fetches the latest winmd and generates the **DWM window-effects** API (Windows 11 **dark title bar**, **Mica / Acrylic** backdrop, rounded corners) into `./generated` (no NuGet client, no version number to pick):
+`Windows.Win32.winmd` is not on a stock Windows machine — it ships in the MIT-licensed NuGet package [`Microsoft.Windows.SDK.Win32Metadata`](https://www.nuget.org/packages/Microsoft.Windows.SDK.Win32Metadata). A `.nupkg` is just a zip with the `.winmd` at its root, so **copy-paste this whole block into PowerShell as-is** — it fetches the latest winmd and generates the `ITaskbarList3` wrappers used just below, into `./generated` (no NuGet client, no version number to pick):
 
 ```powershell
 $pkg = 'microsoft.windows.sdk.win32metadata'
 $ver = (Invoke-RestMethod "https://api.nuget.org/v3-flatcontainer/$pkg/index.json").versions[-1]
 Invoke-WebRequest "https://api.nuget.org/v3-flatcontainer/$pkg/$ver/$pkg.$ver.nupkg" -OutFile "$env:TEMP\win32meta.zip"
 Expand-Archive "$env:TEMP\win32meta.zip" -DestinationPath .\win32meta -Force
-npx dynwinrt-codegen generate --winmd .\win32meta\Windows.Win32.winmd --namespace Windows.Win32.Graphics.Dwm --class-name Apis --output ./generated
+npx dynwinrt-codegen generate --winmd .\win32meta\Windows.Win32.winmd --namespace Windows.Win32.UI.Shell --class-name ITaskbarList3 --output ./generated
 ```
 
-That gives you `dwmSetWindowAttribute` (the Windows 11 dark title bar / Mica look every Electron app wants — no native addon) against the same `HWND` Electron already hands you via `BrowserWindow.getNativeWindowHandle()`. Swap `--namespace` / `--class-name` for any other API — e.g. `Windows.Win32.UI.Shell` / `ITaskbarList3` (taskbar progress + overlay icons), `Windows.Win32.Security.Credentials` / `Apis` (Credential Manager — a drop-in for the deprecated `keytar`), or `Windows.Win32.System.Registry` / `Apis`. Reuse the same `.\win32meta\Windows.Win32.winmd` for every run.
+Swap `--namespace` / `--class-name` for any other API. Good targets are the things Electron *doesn't* give you: `Windows.Win32.Security.Credentials` / `Apis` (Windows Credential Manager — a replacement for the deprecated `keytar` that `safeStorage` doesn't cover), or `Windows.Win32.System.Registry` / `Apis` (arbitrary registry reads/writes). Reuse the same `.\win32meta\Windows.Win32.winmd` for every run.
 
 > Win32 and classic-COM generation currently emits JavaScript/TypeScript (`.js` + `.d.ts`).
 
@@ -148,23 +148,27 @@ Interop interfaces are the Windows pattern for features that require an `HWND` b
 
 ### Flat Win32 exports: call `[DllImport]` APIs
 
-Give an Electron window the Windows 11 dark title bar — no native addon:
-
 ```js
-import { dwmSetWindowAttribute } from './generated/Apis.js';
+import { regOpenKeyExW, regCloseKey } from './generated/Apis.js';
+import { REG_SAM_FLAGS } from './generated/REG_SAM_FLAGS.js';
 
-// Electron hands you the native window handle as a Buffer — read the HWND value.
-const hwnd = mainWindow.getNativeWindowHandle().readBigUInt64LE(0);
+const HKEY_LOCAL_MACHINE = 0x80000002n;
 
-// DWMWA_USE_IMMERSIVE_DARK_MODE = 20. Attribute values are passed as a
-// pointer-sized Buffer — here a 4-byte BOOL set to TRUE.
-const enable = Buffer.alloc(4);
-enable.writeInt32LE(1, 0);
-const { status } = dwmSetWindowAttribute(hwnd, 20, enable, enable.length);
-if (status !== 0) throw new Error(`DwmSetWindowAttribute failed: 0x${(status >>> 0).toString(16)}`);
+const open = regOpenKeyExW(
+  HKEY_LOCAL_MACHINE,
+  'SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion', // note: doubled backslashes in JS
+  0,
+  REG_SAM_FLAGS.KEY_READ,
+);
+if (open.status !== 0) throw new Error(`RegOpenKeyExW failed: LSTATUS=${open.status}`);
+try {
+  console.log(`hKey = 0x${open.phkResult.toString(16)}`);
+} finally {
+  regCloseKey(open.phkResult);
+}
 ```
 
-Flat exports return an object with `status` (the Win32/`HRESULT` result) plus a field for each `[out]`/in-out parameter — e.g. `regOpenKeyExW(...)` returns `{ status, phkResult }`. Caller-allocated buffers and in/out sizes are handled for you, `LPCWSTR` ↔ `string`, and handles (`HWND`, `HKEY`, `HANDLE`) project as `bigint | number`.
+`[out]` parameters become return fields (`{ status, phkResult }`), caller-allocated buffers and in/out sizes are handled for you, `LPCWSTR` ↔ `string`, and the Win32 `LSTATUS`/error is surfaced. Handles (`HKEY`, `HANDLE`) project as `bigint | number`.
 
 ## Repository layout
 
