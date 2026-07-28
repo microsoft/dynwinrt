@@ -116,18 +116,23 @@ npx dynwinrt-codegen generate --winmd .\win32meta\Windows.Win32.winmd --namespac
 ### Classic COM: `CoCreateInstance` + vtable interfaces
 
 ```js
+// main.js (Electron main process)
+import { app, BrowserWindow } from 'electron';
 import { ITaskbarList3 } from './generated/ITaskbarList3.js';
 import { TBPFLAG } from './generated/TBPFLAG.js';
 
-// HWND is generated as `bigint | number`. In Electron, read the handle value
-// out of BrowserWindow.getNativeWindowHandle() (a Buffer) — don't pass the
-// Buffer itself:  const hwnd = win.getNativeWindowHandle().readBigUInt64LE(0);
-const hwnd = 0x0000000000123456n; // your real HWND
+app.whenReady().then(() => {
+  const win = new BrowserWindow({ width: 900, height: 600 });
 
-const taskbar = ITaskbarList3.create(); // CoCreateInstance under the hood
-taskbar.hrInit();
-taskbar.setProgressState(hwnd, TBPFLAG.TBPF_NORMAL);
-taskbar.setProgressValue(hwnd, 40n, 100n); // 40%
+  // Your BrowserWindow's HWND: getNativeWindowHandle() returns a Node Buffer;
+  // read it as a 64-bit little-endian bigint.
+  const hwnd = win.getNativeWindowHandle().readBigUInt64LE(0);
+
+  const taskbar = ITaskbarList3.create(); // CoCreateInstance under the hood
+  taskbar.hrInit();
+  taskbar.setProgressState(hwnd, TBPFLAG.TBPF_NORMAL);
+  taskbar.setProgressValue(hwnd, 40n, 100n); // paint 40% on the taskbar icon
+});
 ```
 
 The generated wrapper exposes natural typed methods while the runtime handles `CoCreateInstance`, interface registration, pointer arguments, `HRESULT` checks, and vtable slot dispatch — no hand-written IIDs, `REFIID`, `void**`, or vtable indices.
@@ -135,13 +140,18 @@ The generated wrapper exposes natural typed methods while the runtime handles `C
 ### WinRT interop bridges: from `HWND` to WinRT objects
 
 ```js
+// main.js (Electron main process)
+import { app, BrowserWindow } from 'electron';
 import { IDataTransferManagerInterop } from './generated/IDataTransferManagerInterop.js';
 
-const hwnd = 0x0000000000123456n; // your real HWND as a bigint (see the Electron note above)
+app.whenReady().then(() => {
+  const win = new BrowserWindow({ width: 900, height: 600 });
+  const hwnd = win.getNativeWindowHandle().readBigUInt64LE(0); // same as above
 
-const interop = IDataTransferManagerInterop.create();
-const dtm = interop.getForWindow(hwnd); // → DynWinRtValue bridge to DataTransferManager
-interop.showShareUIForWindow(hwnd);
+  const interop = IDataTransferManagerInterop.create();
+  const dtm = interop.getForWindow(hwnd); // → DynWinRtValue bridge to DataTransferManager
+  interop.showShareUIForWindow(hwnd);     // pops the Windows Share sheet over your window
+});
 ```
 
 Where `ITaskbarList3` above is a *pure* classic-COM object — every call stays on its own vtable — an **interop** interface is a one-way bridge from Win32 windowing into WinRT: you hand it an `HWND` and `getForWindow(hwnd)` hands back a live **WinRT** object (here a `DataTransferManager`) that you then drive with the rest of your generated WinRT bindings. `create()` activates the WinRT factory and QIs to the interop interface; the returned COM pointer is adopted and surfaced as a `DynWinRtValue` bridge — with no `riid`/`void**` in the signature.
