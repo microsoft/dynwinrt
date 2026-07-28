@@ -9,6 +9,7 @@ use crate::codegen::shared::imports::ireference_inner_type;
 use crate::meta::{InterfaceMeta, MethodMeta, ParamDirection};
 use crate::types::TypeMeta;
 
+use super::ir::JsArgumentKind;
 use super::naming::to_camel_case;
 
 // ======================================================================
@@ -94,20 +95,20 @@ pub(crate) fn ts_dynwinrt_type(typ: &TypeMeta) -> String {
         }
         TypeMeta::Interface { .. } => "DynWinRtType.object()".to_string(),
 
-        // RuntimeClass — runtimeClass(fullName, defaultIID)
+        // RuntimeClass — preserve the full default-interface type signature.
         TypeMeta::RuntimeClass {
             namespace,
             name,
             default_interface,
         } => {
             let full_name = format!("{}.{}", namespace, name);
-            if let Some(default_iid) = default_interface.as_deref().and_then(ts_interface_iid) {
-                format!(
+            match default_interface.as_deref() {
+                Some(default) => format!(
                     "DynWinRtType.runtimeClass('{}', {})",
-                    full_name, default_iid
-                )
-            } else {
-                "DynWinRtType.object()".to_string()
+                    full_name,
+                    ts_dynwinrt_type(default)
+                ),
+                None => "DynWinRtType.object()".to_string(),
             }
         }
 
@@ -210,6 +211,84 @@ pub(crate) fn build_args_expr(in_params: &[&crate::meta::ParamMeta]) -> String {
         .join(", ")
 }
 
+pub(crate) fn js_argument_kind(typ: &TypeMeta) -> Option<JsArgumentKind> {
+    if let Some(inner) = ireference_inner_type(typ) {
+        return js_argument_kind(inner);
+    }
+    match typ {
+        TypeMeta::String | TypeMeta::Guid => Some(JsArgumentKind::String),
+        TypeMeta::Bool => Some(JsArgumentKind::Boolean),
+        TypeMeta::I64 | TypeMeta::U64 => Some(JsArgumentKind::BigInt),
+        TypeMeta::I8
+        | TypeMeta::U8
+        | TypeMeta::I16
+        | TypeMeta::U16
+        | TypeMeta::I32
+        | TypeMeta::U32
+        | TypeMeta::F32
+        | TypeMeta::F64
+        | TypeMeta::Char16
+        | TypeMeta::Enum { .. } => Some(JsArgumentKind::Number),
+        TypeMeta::Array(_) => Some(JsArgumentKind::Array),
+        TypeMeta::Object
+        | TypeMeta::Interface { .. }
+        | TypeMeta::RuntimeClass { .. }
+        | TypeMeta::Delegate { .. }
+        | TypeMeta::Parameterized { .. }
+        | TypeMeta::Struct { .. } => Some(JsArgumentKind::Object),
+        TypeMeta::AsyncAction
+        | TypeMeta::AsyncActionWithProgress(_)
+        | TypeMeta::AsyncOperation(_)
+        | TypeMeta::AsyncOperationWithProgress(_, _) => None,
+    }
+}
+
+pub(crate) fn runtime_class_iid_const(typ: &TypeMeta) -> Option<(String, String)> {
+    let TypeMeta::RuntimeClass {
+        namespace,
+        name,
+        default_interface,
+    } = typ
+    else {
+        return None;
+    };
+    let iid = default_interface.as_deref().and_then(ts_interface_iid)?;
+    let qualified = format!("{}_{}", namespace, name)
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    Some((format!("IID_ARG_{}", qualified), iid))
+}
+
+pub(crate) fn collect_runtime_class_iid_consts(typ: &TypeMeta, output: &mut Vec<(String, String)>) {
+    if let Some(value) = runtime_class_iid_const(typ) {
+        output.push(value);
+    }
+    match typ {
+        TypeMeta::Parameterized { args, .. } => {
+            for argument in args {
+                collect_runtime_class_iid_consts(argument, output);
+            }
+        }
+        TypeMeta::Array(inner)
+        | TypeMeta::AsyncActionWithProgress(inner)
+        | TypeMeta::AsyncOperation(inner) => {
+            collect_runtime_class_iid_consts(inner, output);
+        }
+        TypeMeta::AsyncOperationWithProgress(result, progress) => {
+            collect_runtime_class_iid_consts(result, output);
+            collect_runtime_class_iid_consts(progress, output);
+        }
+        _ => {}
+    }
+}
+
 pub(crate) fn wrap_arg(name: &str, typ: &TypeMeta) -> String {
     if let Some(inner) = ireference_inner_type(typ) {
         let value_type = ts_dynwinrt_type(inner);
@@ -234,10 +313,14 @@ pub(crate) fn wrap_arg(name: &str, typ: &TypeMeta) -> String {
         TypeMeta::F32 => format!("DynWinRtValue.f32({})", name),
         TypeMeta::F64 => format!("DynWinRtValue.f64({})", name),
         TypeMeta::Guid => format!("DynWinRtValue.guid(WinGuid.parse({}))", name),
-        TypeMeta::RuntimeClass { .. }
-        | TypeMeta::Object
-        | TypeMeta::Interface { .. }
-        | TypeMeta::Delegate { .. } => {
+        TypeMeta::RuntimeClass { .. } => {
+            let value = runtime_class_wrap_expr(name, typ);
+            format!(
+                "({0} == null ? DynWinRtValue.nullValue() : {1})",
+                name, value
+            )
+        }
+        TypeMeta::Object | TypeMeta::Interface { .. } | TypeMeta::Delegate { .. } => {
             format!(
                 "({0} == null ? DynWinRtValue.nullValue() : _unwrap({0}))",
                 name
@@ -317,8 +400,9 @@ pub(crate) fn wrap_arg(name: &str, typ: &TypeMeta) -> String {
                     // than an IVector COM object. Required for `T[]` in-params
                     // where T is a runtime class or interface.
                     let elem_type = ts_dynwinrt_type(inner);
+                    let item_wrap = vector_item_wrap_expr("_i", inner);
                     return format!(
-                        "(Array.isArray({name}) ? DynWinRtArray.fromObjectValues({name}.map(_i => _unwrap(_i)), {elem_type}).toValue() : _unwrap({name}))"
+                        "(Array.isArray({name}) ? DynWinRtArray.fromObjectValues({name}.map(_i => {item_wrap}), {elem_type}).toValue() : _unwrap({name}))"
                     );
                 }
             };
@@ -386,6 +470,12 @@ fn is_map_like(piid: &str, name: &str) -> bool {
     piid == PIID_IMAP || piid == PIID_IMAP_VIEW || name == "IMap" || name == "IMapView"
 }
 
+fn runtime_class_wrap_expr(name: &str, typ: &TypeMeta) -> String {
+    runtime_class_iid_const(typ)
+        .map(|(iid, _)| format!("_unwrap({}).cast({})", name, iid))
+        .unwrap_or_else(|| format!("_unwrap({})", name))
+}
+
 /// Generate the JS expression to wrap a single element for createVector/createMap.
 /// For structs, uses pack function; for primitives, wraps as DynWinRtValue; for objects, _unwrap.
 fn vector_item_wrap_expr(var: &str, elem: &TypeMeta) -> String {
@@ -405,6 +495,7 @@ fn vector_item_wrap_expr(var: &str, elem: &TypeMeta) -> String {
         TypeMeta::U64 => format!("DynWinRtValue.u64({})", var),
         TypeMeta::F32 => format!("DynWinRtValue.f32({})", var),
         TypeMeta::F64 => format!("DynWinRtValue.f64({})", var),
+        TypeMeta::RuntimeClass { .. } => runtime_class_wrap_expr(var, elem),
         _ => format!("_unwrap({})", var),
     }
 }

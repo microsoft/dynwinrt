@@ -117,6 +117,10 @@ pub(super) fn project_factory_method(
         delegate_sigs,
         delegate_param_wraps,
     );
+    let mut argument_kinds = in_params
+        .iter()
+        .map(|param| js_argument_kind(&param.typ))
+        .collect::<Vec<_>>();
     let args_expr = build_args_expr(&in_params);
     let out_count = method
         .params
@@ -172,6 +176,7 @@ pub(super) fn project_factory_method(
             optional: true,
             delegate_wrap: None,
         });
+        argument_kinds.push(None);
     }
 
     let mut doc = build_method_doc(method, &in_params);
@@ -197,6 +202,7 @@ pub(super) fn project_factory_method(
         name: js_name,
         doc,
         params: ts_params,
+        argument_kinds,
         return_type,
         async_kind,
         is_static: true,
@@ -270,6 +276,10 @@ pub(super) fn project_static_method(
         delegate_sigs,
         delegate_param_wraps,
     );
+    let mut argument_kinds = in_params
+        .iter()
+        .map(|param| js_argument_kind(&param.typ))
+        .collect::<Vec<_>>();
     let args_expr = build_args_expr(&in_params);
     let invoke = if is_multi_output {
         "invokeAll"
@@ -359,6 +369,7 @@ pub(super) fn project_static_method(
             optional: true,
             delegate_wrap: None,
         });
+        argument_kinds.push(None);
     }
 
     let mut doc = build_method_doc(method, &in_params);
@@ -384,6 +395,7 @@ pub(super) fn project_static_method(
         name: js_name,
         doc,
         params: ts_params,
+        argument_kinds,
         return_type: ts_return,
         async_kind,
         is_static: true,
@@ -570,6 +582,10 @@ pub(super) fn project_instance_method(
         delegate_sigs,
         delegate_param_wraps,
     );
+    let mut argument_kinds = in_params
+        .iter()
+        .map(|param| js_argument_kind(&param.typ))
+        .collect::<Vec<_>>();
     let array_out_elem =
         if has_array_out && (return_type_meta.is_none() || fill_array_uses_retval_count(method)) {
             method.params.iter().find_map(|p| {
@@ -711,6 +727,7 @@ pub(super) fn project_instance_method(
             optional: true,
             delegate_wrap: None,
         });
+        argument_kinds.push(None);
         // Add @param signal doc
         if let Some(ref mut d) = doc {
             d.params.push((
@@ -734,6 +751,7 @@ pub(super) fn project_instance_method(
         name: js_name,
         doc,
         params: ts_params,
+        argument_kinds,
         return_type: ts_return,
         async_kind,
         is_static: false,

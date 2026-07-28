@@ -1051,37 +1051,94 @@ fn write_js_barrel_and_manifest(output_dir: &Path, index_content: &str) -> Resul
 fn write_lifetime_module(output_dir: &Path) -> Result<(), String> {
     let js = "'use strict';\n\
 let activeScope = null;\n\
+const trackedScopes = new WeakMap();\n\
 function trackProjectedValue(value, typeName) {\n\
   activeScope?.track(value, typeName);\n\
   return value;\n\
 }\n\
+function isObjectLike(value) {\n\
+  return value !== null && (typeof value === 'object' || typeof value === 'function');\n\
+}\n\
+function removeTracking(scope, value) {\n\
+  const scopes = trackedScopes.get(value);\n\
+  if (!scopes) return;\n\
+  scopes.delete(scope);\n\
+  if (scopes.size === 0) trackedScopes.delete(value);\n\
+}\n\
+function untrackProjectedValue(value) {\n\
+  const scopes = trackedScopes.get(value);\n\
+  if (!scopes) return;\n\
+  for (const scope of [...scopes]) scope.untrack(value);\n\
+}\n\
+function castProjectedValueOwned(value, iid, typeName) {\n\
+  let projected;\n\
+  try { projected = value.cast(iid); }\n\
+  catch (error) {\n\
+    try { value.release(); } catch {}\n\
+    throw error;\n\
+  }\n\
+  if (projected !== value) {\n\
+    try { value.release(); }\n\
+    catch (error) {\n\
+      try { projected.release(); } catch {}\n\
+      throw error;\n\
+    }\n\
+  }\n\
+  return trackProjectedValue(projected, typeName);\n\
+}\n\
+function castProjectedValueBorrowed(value, iid, typeName) {\n\
+  return trackProjectedValue(value.cast(iid), typeName);\n\
+}\n\
+const castProjectedValue = castProjectedValueOwned;\n\
+function projectAs(value, type) {\n\
+  const source = isObjectLike(value) && '_obj' in value ? value._obj : value;\n\
+  if (!isObjectLike(source)) throw new TypeError('projectAs requires a projected value or wrapper.');\n\
+  if (!isObjectLike(type) || typeof type._fromNativeBorrowed !== 'function') {\n\
+    throw new TypeError('projectAs requires a generated runtime class type.');\n\
+  }\n\
+  const projected = type._fromNativeBorrowed(source);\n\
+  if (!isObjectLike(projected) || !('_obj' in projected)) {\n\
+    throw new TypeError('The generated runtime class returned an invalid projection.');\n\
+  }\n\
+  return projected;\n\
+}\n\
+function releaseProjected(value) {\n\
+  if (!isObjectLike(value) || !('_obj' in value)) {\n\
+    throw new TypeError('releaseProjected requires a generated projected wrapper.');\n\
+  }\n\
+  const projected = value._obj;\n\
+  if (!isObjectLike(projected) || typeof projected.release !== 'function') {\n\
+    throw new TypeError('The projected wrapper does not contain a releasable native value.');\n\
+  }\n\
+  projected.release();\n\
+  untrackProjectedValue(projected);\n\
+}\n\
 function createProjectedLifetimeScope() {\n\
   const previousScope = activeScope;\n\
-  const registry = { values: [], nextSweep: 1024 };\n\
+  const registry = new Map();\n\
   let disposed = false;\n\
   const scope = {\n\
     get disposed() { return disposed; },\n\
     track(value, typeName) {\n\
       if (disposed) throw new Error('Cannot track values in a disposed projection scope.');\n\
-      registry.values.push({ ref: new WeakRef(value), typeName });\n\
-      if (registry.values.length >= registry.nextSweep) {\n\
-        registry.values = registry.values.filter((entry) => entry.ref.deref() !== undefined);\n\
-        registry.nextSweep = Math.max(registry.values.length * 2, 1024);\n\
-      }\n\
+      if (registry.has(value)) return;\n\
+      registry.set(value, typeName);\n\
+      let scopes = trackedScopes.get(value);\n\
+      if (!scopes) trackedScopes.set(value, scopes = new Set());\n\
+      scopes.add(scope);\n\
+    },\n\
+    untrack(value) {\n\
+      registry.delete(value);\n\
+      removeTracking(scope, value);\n\
     },\n\
     dispose() {\n\
       if (disposed) return;\n\
       if (activeScope !== scope) throw new Error('Projection lifetime scopes must be disposed in LIFO order.');\n\
-      const retained = [];\n\
       let firstError;\n\
-      for (const entry of [...registry.values].reverse()) {\n\
-        const value = entry.ref.deref();\n\
-        if (value === undefined) continue;\n\
-        try { value.release(); }\n\
-        catch (error) { firstError ??= error; retained.push(entry); }\n\
+      for (const [value] of [...registry].reverse()) {\n\
+        try { value.release(); scope.untrack(value); }\n\
+        catch (error) { firstError ??= error; }\n\
       }\n\
-      registry.values = retained.reverse();\n\
-      registry.nextSweep = Math.max(registry.values.length * 2, 1024);\n\
       if (firstError !== undefined) throw firstError;\n\
       disposed = true;\n\
       activeScope = previousScope;\n\
@@ -1091,8 +1148,21 @@ function createProjectedLifetimeScope() {\n\
   return scope;\n\
 }\n\
 exports.trackProjectedValue = trackProjectedValue;\n\
+exports.castProjectedValue = castProjectedValue;\n\
+exports.castProjectedValueOwned = castProjectedValueOwned;\n\
+exports.castProjectedValueBorrowed = castProjectedValueBorrowed;\n\
+exports.projectAs = projectAs;\n\
+exports.releaseProjected = releaseProjected;\n\
 exports.createProjectedLifetimeScope = createProjectedLifetimeScope;\n";
     let dts = "export declare function trackProjectedValue<T extends object>(value: T, typeName: string): T;\n\
+export declare function castProjectedValue<T extends object>(value: T, iid: unknown, typeName: string): T;\n\
+export declare function castProjectedValueOwned<T extends object>(value: T, iid: unknown, typeName: string): T;\n\
+export declare function castProjectedValueBorrowed<T extends object>(value: T, iid: unknown, typeName: string): T;\n\
+export interface ProjectedType<T extends object> {\n\
+  readonly prototype: T;\n\
+}\n\
+export declare function projectAs<T extends object>(value: unknown, type: ProjectedType<T>): T;\n\
+export declare function releaseProjected(value: object): void;\n\
 export interface ProjectedLifetimeScope {\n\
   readonly disposed: boolean;\n\
   dispose(): void;\n\
@@ -1196,6 +1266,9 @@ fn collect_public_exports_from_js(content: &str) -> Vec<String> {
         // to their per-type modules. Root barrels should expose user-facing
         // classes, enums, pack/unpack helpers, and interfaces only.
         if name == "trackProjectedValue"
+            || name == "castProjectedValue"
+            || name == "castProjectedValueOwned"
+            || name == "castProjectedValueBorrowed"
             || name.starts_with("__")
             || name.starts_with("IID_")
             || name.ends_with("_PARAM_TYPES")

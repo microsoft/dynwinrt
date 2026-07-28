@@ -409,6 +409,7 @@ pub fn call_method_dynamic<A: ArgumentList + ?Sized>(
                     AbiType::U64 => AbiValue::U64(cif.call(CodePtr(fptr), &ffi_args)),
                     AbiType::F32 => AbiValue::F32(cif.call(CodePtr(fptr), &ffi_args)),
                     AbiType::F64 => AbiValue::F64(cif.call(CodePtr(fptr), &ffi_args)),
+                    AbiType::Guid => AbiValue::Guid(cif.call(CodePtr(fptr), &ffi_args)),
                     AbiType::Ptr => AbiValue::Pointer(cif.call(CodePtr(fptr), &ffi_args)),
                 };
                 Some(typ.from_out_value(&value).map_err(|error| {

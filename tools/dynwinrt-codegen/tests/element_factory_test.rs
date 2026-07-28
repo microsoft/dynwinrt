@@ -74,7 +74,9 @@ fn element_factory_projects_js_callback_constructor() {
 
     assert!(js.contains("DynWinRtElementFactory.create"));
     assert!(js.contains("const elements = new Map()"));
-    assert!(js.contains("cast((__load_UIElement()).IID_UIElement)"));
+    assert!(js.contains("DynWinRtElementFactory.create((__load_UIElement()).IID_UIElement"));
+    assert!(js.contains("nativeElement.identityRaw()"));
+    assert!(!js.contains("nativeElement = _unwrap(element).cast("));
     assert!(js.contains("Object.defineProperty(recycleArgs, 'element'"));
     assert!(js.contains("ElementFactoryGetArgs"));
     assert!(js.contains("ElementFactoryRecycleArgs"));

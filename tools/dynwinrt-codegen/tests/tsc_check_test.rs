@@ -172,7 +172,7 @@ export declare class DynWinRtType {
     addMethod(name: string, sig: DynWinRtMethodSig): DynWinRtType;
     static parameterized(iid: WinGuid, args: DynWinRtType[]): DynWinRtType;
     iid(): WinGuid;
-    static runtimeClass(name: string, iid: WinGuid): DynWinRtType;
+    static runtimeClass(name: string, defaultInterfaceType: DynWinRtType): DynWinRtType;
     static hstring(): DynWinRtType;
     static i32(): DynWinRtType;
     static u32(): DynWinRtType;

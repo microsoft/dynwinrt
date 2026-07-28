@@ -14,6 +14,7 @@ pub enum AbiType {
     U64,
     F32,
     F64,
+    Guid,
     Ptr,
 }
 
@@ -31,6 +32,7 @@ impl AbiType {
             AbiType::U64 => AbiValue::U64(0),
             AbiType::F32 => AbiValue::F32(0.0),
             AbiType::F64 => AbiValue::F64(0.0),
+            AbiType::Guid => AbiValue::Guid(windows_core::GUID::zeroed()),
             AbiType::Ptr => AbiValue::Pointer(std::ptr::null_mut()),
         }
     }
@@ -47,9 +49,28 @@ impl AbiType {
             AbiType::U64 => libffi::middle::Type::u64(),
             AbiType::F32 => libffi::middle::Type::f32(),
             AbiType::F64 => libffi::middle::Type::f64(),
+            AbiType::Guid => guid_libffi_type(),
             AbiType::Ptr => libffi::middle::Type::pointer(),
         }
     }
+}
+
+pub(crate) fn guid_libffi_type() -> libffi::middle::Type {
+    use libffi::middle::Type;
+
+    Type::structure(vec![
+        Type::u32(),
+        Type::u16(),
+        Type::u16(),
+        Type::u8(),
+        Type::u8(),
+        Type::u8(),
+        Type::u8(),
+        Type::u8(),
+        Type::u8(),
+        Type::u8(),
+        Type::u8(),
+    ])
 }
 
 #[derive(Debug)]
@@ -65,6 +86,7 @@ pub enum AbiValue {
     U64(u64),
     F32(f32),
     F64(f64),
+    Guid(windows_core::GUID),
     Pointer(*mut std::ffi::c_void),
 }
 
@@ -82,6 +104,7 @@ impl AbiValue {
             AbiValue::U64(v) => std::ptr::from_ref(v).cast(),
             AbiValue::F32(v) => std::ptr::from_ref(v).cast(),
             AbiValue::F64(v) => std::ptr::from_ref(v).cast(),
+            AbiValue::Guid(v) => std::ptr::from_ref(v).cast(),
             AbiValue::Pointer(p) => std::ptr::from_ref(p).cast(),
         }
     }
@@ -99,6 +122,7 @@ impl AbiValue {
             AbiValue::U64(_) => AbiType::U64,
             AbiValue::F32(_) => AbiType::F32,
             AbiValue::F64(_) => AbiType::F64,
+            AbiValue::Guid(_) => AbiType::Guid,
             AbiValue::Pointer(_) => AbiType::Ptr,
         }
     }

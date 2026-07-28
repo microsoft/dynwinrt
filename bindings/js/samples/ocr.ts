@@ -63,7 +63,7 @@ const iPicker = DynWinRtType.registerInterface("IFileOpenPicker", IID_IFileOpenP
     .addMethod("PickSingleFileAsync",       new DynWinRtMethodSig().addOut(
         DynWinRtType.iAsyncOperation(
             DynWinRtType.runtimeClass("Microsoft.Windows.Storage.Pickers.PickFileResult",
-                IID_IPickFileResult))))
+                DynWinRtType.interface(IID_IPickFileResult)))))
 
 const iPickResult = DynWinRtType.registerInterface("IPickFileResult", IID_IPickFileResult)
     .addMethod("get_File", new DynWinRtMethodSig().addOut(DynWinRtType.hstring()))
@@ -73,7 +73,9 @@ const iStorageFileStatics = DynWinRtType.registerInterface("IStorageFileStatics"
     .addMethod("GetFileFromPathAsync", new DynWinRtMethodSig()
         .addIn(DynWinRtType.hstring())
         .addOut(DynWinRtType.iAsyncOperation(
-            DynWinRtType.runtimeClass("Windows.Storage.StorageFile", IID_IStorageFile))))
+            DynWinRtType.runtimeClass(
+                "Windows.Storage.StorageFile",
+                DynWinRtType.interface(IID_IStorageFile)))))
 
 // IStorageFile: OpenAsync at vtable 6
 const iStorageFile = DynWinRtType.registerInterface("IStorageFile", IID_IStorageFile)
@@ -107,7 +109,9 @@ const iTextRecognizerStatics = DynWinRtType.registerInterface("ITextRecognizerSt
     .addMethod("EnsureReadyAsync", new DynWinRtMethodSig().addOut(DynWinRtType.object()))
     .addMethod("CreateAsync", new DynWinRtMethodSig().addOut(
         DynWinRtType.iAsyncOperation(
-            DynWinRtType.runtimeClass('Microsoft.Windows.AI.Imaging.TextRecognizer', IID_ITextRecognizer))))
+            DynWinRtType.runtimeClass(
+                'Microsoft.Windows.AI.Imaging.TextRecognizer',
+                DynWinRtType.interface(IID_ITextRecognizer)))))
 
 const iImageBufferStatics = DynWinRtType.registerInterface("IImageBufferStatics", IID_IImageBufferStatics)
     .addMethod("CreateForSoftwareBitmap", new DynWinRtMethodSig()
@@ -117,7 +121,9 @@ const iTextRecognizer = DynWinRtType.registerInterface("ITextRecognizer", IID_IT
     .addMethod("RecognizeTextFromImageAsync", new DynWinRtMethodSig()
         .addIn(DynWinRtType.object())
         .addOut(DynWinRtType.iAsyncOperation(
-            DynWinRtType.runtimeClass('Microsoft.Windows.AI.Imaging.RecognizedText', IID_IRecognizedText))))
+            DynWinRtType.runtimeClass(
+                'Microsoft.Windows.AI.Imaging.RecognizedText',
+                DynWinRtType.interface(IID_IRecognizedText)))))
 
 // IRecognizedText: Lines is a ReceiveArray of IRecognizedTextLine objects
 // For simplicity, we use the ToString() on IStringable to get the full text

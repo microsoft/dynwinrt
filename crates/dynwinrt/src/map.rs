@@ -579,6 +579,14 @@ pub fn create_map_from_values(
 ) -> crate::Result<IUnknown> {
     let key_storage = collection_storage(key_type)?;
     let value_storage = collection_storage(value_type)?;
+    if key_storage.is_large_value_type() {
+        return Err(crate::Error::UnsupportedCollectionElement(key_type.kind()));
+    }
+    if value_storage.is_large_value_type() {
+        return Err(crate::Error::UnsupportedCollectionElement(
+            value_type.kind(),
+        ));
+    }
     for (key, value) in entries {
         validate_collection_item(key, key_storage)?;
         validate_collection_item(value, value_storage)?;

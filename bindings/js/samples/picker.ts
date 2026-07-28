@@ -34,7 +34,9 @@ const iPicker = DynWinRtType.registerInterface("IFileOpenPicker", iPickerIid)
         DynWinRtType.iAsyncOperation(
             DynWinRtType.runtimeClass(
                 "Microsoft.Windows.Storage.Pickers.PickFileResult",
-                WinGuid.parse("E6F2E3D6-7BB0-5D81-9E7D-6FD35A1F25AB"),
+                DynWinRtType.interface(
+                    WinGuid.parse("E6F2E3D6-7BB0-5D81-9E7D-6FD35A1F25AB"),
+                ),
             )
         ))) // 13
 

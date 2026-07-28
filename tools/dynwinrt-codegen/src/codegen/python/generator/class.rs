@@ -151,6 +151,23 @@ pub fn generate_class(
             }
         }
     }
+    let mut argument_iids = Vec::new();
+    for iface in &all_class_ifaces {
+        for method in &iface.methods {
+            for parameter in &method.params {
+                if parameter.direction == ParamDirection::In {
+                    py_collect_runtime_class_iid_consts(&parameter.typ, &mut argument_iids);
+                }
+            }
+        }
+    }
+    argument_iids.sort();
+    argument_iids.dedup();
+    for (name, iid) in argument_iids {
+        if declared_iids.insert(name.clone()) {
+            out.push_str(&format!("{} = WinGUID.parse('{}')\n", name, iid));
+        }
+    }
     out.push('\n');
 
     // Interface registrations

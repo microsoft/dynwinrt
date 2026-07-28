@@ -35,7 +35,7 @@ struct DynCompletedHandler {
     vtable: *const DynCompletedHandlerVtbl,
     ref_count: windows_core::imp::RefCount,
     handler_iid: GUID,
-    waker: Arc<Mutex<Waker>>,
+    callback: Arc<dyn Fn() + Send + Sync>,
 }
 
 impl DynCompletedHandler {
@@ -48,12 +48,12 @@ impl DynCompletedHandler {
         invoke: Self::invoke,
     };
 
-    fn create(waker: Arc<Mutex<Waker>>, handler_iid: GUID) -> IUnknown {
+    fn create(callback: Arc<dyn Fn() + Send + Sync>, handler_iid: GUID) -> IUnknown {
         let handler = Box::new(Self {
             vtable: &Self::VTBL,
             ref_count: windows_core::imp::RefCount::new(1),
             handler_iid,
-            waker,
+            callback,
         });
         unsafe { IUnknown::from_raw(Box::into_raw(handler) as *mut std::ffi::c_void) }
     }
@@ -106,9 +106,7 @@ impl DynCompletedHandler {
         _status: AsyncStatus,
     ) -> HRESULT {
         let handler = unsafe { &*(this as *const Self) };
-        if let Ok(waker) = handler.waker.lock() {
-            waker.wake_by_ref();
-        }
+        (handler.callback)();
         HRESULT(0) // S_OK
     }
 }
@@ -238,7 +236,14 @@ impl WinRTAsyncFuture {
             action.SetCompleted(&handler).map_err(Error::WindowsError)?;
         } else {
             // Generic types — use DynCompletedHandler via vtable
-            let handler = DynCompletedHandler::create(shared_waker, self.async_info.handler_iid());
+            let handler = DynCompletedHandler::create(
+                Arc::new(move || {
+                    if let Ok(waker) = shared_waker.lock() {
+                        waker.wake_by_ref();
+                    }
+                }),
+                self.async_info.handler_iid(),
+            );
             let concrete = self.query_concrete()?;
             let (set_completed_index, _) = self.vtable_indices();
             let hr = crate::call::call_winrt_method_1(
@@ -250,6 +255,25 @@ impl WinRTAsyncFuture {
         }
         Ok(())
     }
+}
+
+pub type AsyncCompletedCallback = Box<dyn Fn() + Send + Sync>;
+
+pub fn set_async_completed_handler(
+    value: &WinRTValue,
+    callback: AsyncCompletedCallback,
+) -> Result<()> {
+    let async_info = match value {
+        WinRTValue::Async(info) => info.clone(),
+        other => return Err(Error::ExpectedAsync(other.get_type_kind())),
+    };
+    let future = WinRTAsyncFuture::from_async_info(async_info);
+    let handler = DynCompletedHandler::create(Arc::from(callback), future.async_info.handler_iid());
+    let concrete = future.query_concrete()?;
+    let (set_completed_index, _) = future.vtable_indices();
+    let hr =
+        crate::call::call_winrt_method_1(set_completed_index, concrete.as_raw(), handler.as_raw());
+    hr.ok().map_err(Error::WindowsError)
 }
 
 impl Future for WinRTAsyncFuture {
@@ -463,6 +487,34 @@ mod tests {
         assert!(matches!(completed, WinRTValue::Async(_)));
         assert!(matches!(
             super::get_async_results(&completed)?,
+            WinRTValue::HResult(windows_core::HRESULT(0))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn test_completion_handler_notifies_without_executor_polling() -> Result<()> {
+        let handler = WorkItemHandler::new(|_| Ok(()));
+        let operation = ThreadPool::RunAsync(&handler).map_err(Error::WindowsError)?;
+        let info: IAsyncInfo = operation.cast().map_err(Error::WindowsError)?;
+        let value = WinRTValue::Async(AsyncInfo {
+            info,
+            async_type: MetadataTable::new().async_action(),
+        });
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+
+        super::set_async_completed_handler(
+            &value,
+            Box::new(move || {
+                let _ = sender.send(());
+            }),
+        )?;
+
+        receiver
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("completion handler should fire");
+        assert!(matches!(
+            super::get_async_results(&value)?,
             WinRTValue::HResult(windows_core::HRESULT(0))
         ));
         Ok(())

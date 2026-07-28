@@ -19,6 +19,7 @@ mod array;
 mod com_helpers;
 mod dasync;
 pub mod delegate;
+mod dispatcher_queue;
 pub mod element_factory;
 pub mod map;
 mod meta;
@@ -28,8 +29,10 @@ pub mod vector;
 
 pub use crate::array::ArrayData;
 pub use crate::dasync::{
-    ProgressCallback, WinRTAsyncFuture, create_progress_handler, get_async_results,
+    AsyncCompletedCallback, ProgressCallback, WinRTAsyncFuture, create_progress_handler,
+    get_async_results, set_async_completed_handler,
 };
+pub use crate::dispatcher_queue::{SystemDispatcherQueue, SystemDispatcherQueueHandle};
 pub use crate::element_factory::{
     ElementFactoryGetCallback, ElementFactoryRecycleCallback, create_element_factory,
     create_element_factory_value,
@@ -39,7 +42,7 @@ pub use crate::reference::box_ireference;
 pub use crate::result::{Error, Result};
 pub use crate::roapi::ro_get_activation_factory_2;
 pub use crate::signature::{InterfaceSignature, MethodSignature};
-pub use crate::value::WinRTValue;
+pub use crate::value::{ArrayOfIUnknownData, AsyncInfo, WinRTValue};
 pub use crate::winapp::{WinAppSdkContext, initialize_winappsdk};
 pub use crate::xaml_application::create_xaml_application;
 pub use interfaces::uri_vtable;

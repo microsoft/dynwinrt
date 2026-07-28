@@ -45,6 +45,16 @@ pub enum AsyncKind {
     OperationWithProgress(String, String),
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum JsArgumentKind {
+    String,
+    Number,
+    BigInt,
+    Boolean,
+    Object,
+    Array,
+}
+
 /// A projected member that appears in the class body.
 #[derive(Clone)]
 pub enum ProjectedMember {
@@ -105,6 +115,7 @@ pub struct ProjectedMethod {
     pub name: String,
     pub doc: Option<DocInfo>,
     pub params: Vec<ProjectedParam>,
+    pub argument_kinds: Vec<Option<JsArgumentKind>>,
     pub return_type: String,
     pub async_kind: AsyncKind,
     pub is_static: bool,

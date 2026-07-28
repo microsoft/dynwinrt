@@ -86,7 +86,7 @@ fn composable_factory_returns_public_instance() {
     );
     assert!(js.contains("static _fromNative(obj)"));
     assert!(js.contains("Object.assign(Object.create(Widget.prototype)"));
-    assert!(js.contains("trackProjectedValue"));
+    assert!(js.contains("castProjectedValue"));
     assert!(js.contains("lifetime.js"));
     assert!(js.contains("constructor(...args)"));
     assert!(js.contains("this._obj = Widget.createInstance(null)._obj;"));
@@ -135,7 +135,7 @@ fn composable_factory_returns_public_instance() {
 }
 
 #[test]
-fn class_without_default_interface_tracks_raw_value_once() {
+fn class_without_default_interface_tracks_each_ownership_path_once() {
     let class = ClassMeta {
         name: "Opaque".into(),
         namespace: "Contoso".into(),
@@ -155,9 +155,11 @@ fn class_without_default_interface_tracks_raw_value_once() {
     assert_eq!(
         js.matches("(__get_trackProjectedValue())(obj, 'Opaque')")
             .count(),
-        1,
-        "raw values without a cast must only be tracked once:\n{js}"
+        2,
+        "owned and borrowed raw values must each be tracked once:\n{js}"
     );
+    assert!(js.contains("static _fromNative(obj)"));
+    assert!(js.contains("static _fromNativeBorrowed(obj)"));
 }
 
 #[test]
@@ -277,7 +279,7 @@ fn parameterized_default_interface_uses_computed_iid() {
     let js = render_js::render(&projected);
     let dts = render_dts::render(&projected);
 
-    let expected = "DynWinRtType.parameterized(WinGuid.parse('913337e9-11a1-4345-a3a2-4e7f956e222d'), [DynWinRtType.runtimeClass('Microsoft.UI.Xaml.Controls.RowDefinition', WinGuid.parse('fe870f2f-89ef-5dac-9f33-968d0dc577c3'))]).iid()";
+    let expected = "DynWinRtType.parameterized(WinGuid.parse('913337e9-11a1-4345-a3a2-4e7f956e222d'), [DynWinRtType.runtimeClass('Microsoft.UI.Xaml.Controls.RowDefinition', DynWinRtType.interface(WinGuid.parse('fe870f2f-89ef-5dac-9f33-968d0dc577c3')))]).iid()";
     assert!(js.contains(&format!("const IID_IVector_RowDefinition = {expected};")));
     assert!(js.contains(&format!("const IID_RowDefinitionCollection = {expected};")));
     assert!(js.contains("exports.IID_RowDefinitionCollection = IID_RowDefinitionCollection;"));
@@ -378,6 +380,10 @@ fn winui_application_projects_fluent_bootstrap_helpers() {
     assert!(js.contains("IID_ApplicationInitializationCallback"));
     assert!(js.contains("f81c4e72-7a18-4a30-9126-6f62b6bdac83"));
     assert!(js.contains("DynWinRtValue.createXamlApplication"));
+    assert!(js.contains("static startScheduled(callback)"));
+    assert!(js.contains(".invokeScheduled("));
+    assert!(!js.contains("registerWinuiDispatcherQueue"));
+    assert!(!js.contains("setWinuiDispatcherLoopActive"));
     assert!(js.contains("let _resourcesInitialized = false"));
     assert!(js.contains("getWinappsdkResourcePriPath"));
     assert!(js.contains("hasPackageIdentity"));
@@ -391,6 +397,8 @@ fn winui_application_projects_fluent_bootstrap_helpers() {
     assert!(dts.contains(
         "static createWithMetadataProvider(metadataProvider: XamlControlsXamlMetaDataProvider, onLaunched?: () => void): Application;"
     ));
+    assert!(dts.contains("static startScheduled(callback:"));
+    assert!(dts.contains("): Promise<void>;"));
     assert!(dts.contains("static create(onLaunched?: () => void): Application;"));
     assert!(dts.contains("private constructor();"));
 }

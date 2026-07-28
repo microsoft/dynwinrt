@@ -122,6 +122,68 @@ pub(super) fn inject_unwrap(code: String) -> String {
     }
 }
 
+pub(super) fn emit_delegate_wraps(out: &mut String, method: &ProjectedMethod) {
+    for (param_name, delegate_name) in &method.delegate_wraps {
+        let needs_wrap = method
+            .params
+            .iter()
+            .find(|p| &p.name == param_name)
+            .and_then(|p| p.delegate_wrap.as_ref())
+            .map(|dw| {
+                dw.param_wraps
+                    .iter()
+                    .enumerate()
+                    .any(|(i, wrap)| *wrap != format!("__a{}__", i))
+            })
+            .unwrap_or(false);
+        if needs_wrap {
+            let wrap = method
+                .params
+                .iter()
+                .find(|p| &p.name == param_name)
+                .and_then(|p| p.delegate_wrap.as_ref())
+                .unwrap();
+            let arg_vars: Vec<String> = (0..wrap.param_wraps.len())
+                .map(|i| format!("__a{}__", i))
+                .collect();
+            out.push_str(&format!(
+                "        const _{}_wrapped = ({}) => {}({});\n",
+                param_name,
+                arg_vars.join(", "),
+                param_name,
+                wrap.param_wraps.join(", ")
+            ));
+            out.push_str(&format!(
+                "        const _{}_d = DynWinRtDelegate.create(IID_{}, {}_PARAM_TYPES, _{}_wrapped).toValue();\n",
+                param_name, delegate_name, delegate_name, param_name
+            ));
+        } else {
+            out.push_str(&format!(
+                "        const _{}_d = DynWinRtDelegate.create(IID_{}, {}_PARAM_TYPES, {}).toValue();\n",
+                param_name, delegate_name, delegate_name, param_name
+            ));
+        }
+    }
+}
+
+fn argument_kind_condition(index: usize, kind: JsArgumentKind, matches: bool) -> String {
+    let condition = match kind {
+        JsArgumentKind::String => format!("typeof args[{index}] === 'string'"),
+        JsArgumentKind::Number => format!("typeof args[{index}] === 'number'"),
+        JsArgumentKind::BigInt => format!("typeof args[{index}] === 'bigint'"),
+        JsArgumentKind::Boolean => format!("typeof args[{index}] === 'boolean'"),
+        JsArgumentKind::Object => format!(
+            "(args[{index}] === null || typeof args[{index}] === 'object' || typeof args[{index}] === 'function')"
+        ),
+        JsArgumentKind::Array => format!("Array.isArray(args[{index}])"),
+    };
+    if matches {
+        condition
+    } else {
+        format!("!({condition})")
+    }
+}
+
 /// Generate a JS dispatcher for same-class overloads (from OverloadAttribute).
 /// Emits internal `_methodName__N` implementations and a public dispatcher.
 pub(super) fn render_same_class_overload_js(
@@ -152,6 +214,7 @@ pub(super) fn render_same_class_overload_js(
             "    {}{}{}({}) {{\n",
             static_kw, async_kw, internal_name, params_str
         ));
+        emit_delegate_wraps(out, method);
         match &method.async_kind {
             AsyncKind::None => {
                 if let Some(ref arr_expr) = method.array_return_expr {
@@ -231,13 +294,39 @@ pub(super) fn render_same_class_overload_js(
                 conditions.push(format!("args[{}] !== undefined", diff_idx));
                 conditions.push(format!("!(args[{}] instanceof AbortSignal)", diff_idx));
             } else if required_count == shorter_required {
-                // Same required count, different first-param type
+                // Same required count: use the first argument whose projected
+                // JavaScript kinds differ. This keeps named enums numeric while
+                // runtime classes and object parameters select object overloads.
                 conditions.push(format!("args.length >= {}", required_count));
-                let first_param = &method.params[0].ts_type;
-                if first_param == "string" {
-                    conditions.push("typeof args[0] === 'string'".to_string());
+                let discriminator = method
+                    .params
+                    .iter()
+                    .zip(&shorter.params)
+                    .enumerate()
+                    .find_map(|(param_index, (_current, _previous))| {
+                        let current_kind =
+                            method.argument_kinds.get(param_index).copied().flatten();
+                        let previous_kind =
+                            shorter.argument_kinds.get(param_index).copied().flatten();
+                        if current_kind == previous_kind {
+                            return None;
+                        }
+                        current_kind
+                            .map(|kind| argument_kind_condition(param_index, kind, true))
+                            .or_else(|| {
+                                previous_kind
+                                    .map(|kind| argument_kind_condition(param_index, kind, false))
+                            })
+                    });
+                if let Some(discriminator) = discriminator {
+                    conditions.push(discriminator);
                 } else {
-                    conditions.push("typeof args[0] !== 'string'".to_string());
+                    let first_param = &method.params[0].ts_type;
+                    if first_param == "string" {
+                        conditions.push("typeof args[0] === 'string'".to_string());
+                    } else {
+                        conditions.push("typeof args[0] !== 'string'".to_string());
+                    }
                 }
             }
 
@@ -256,6 +345,137 @@ pub(super) fn render_same_class_overload_js(
     }
 
     out.push_str("    }\n");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn method(
+        param_name: &str,
+        ts_type: &str,
+        invoke_expr: &str,
+        argument_kind: JsArgumentKind,
+    ) -> ProjectedMethod {
+        ProjectedMethod {
+            name: "setPresenter".into(),
+            doc: None,
+            params: vec![ProjectedParam {
+                name: param_name.into(),
+                ts_type: ts_type.into(),
+                optional: false,
+                delegate_wrap: None,
+            }],
+            argument_kinds: vec![Some(argument_kind)],
+            return_type: "void".into(),
+            async_kind: AsyncKind::None,
+            is_static: false,
+            invoke_expr: invoke_expr.into(),
+            sync_return_expr: None,
+            async_convert_v: None,
+            progress_convert: None,
+            is_void: true,
+            array_return_expr: None,
+            delegate_wraps: Vec::new(),
+            js_only: false,
+            overload_of: None,
+        }
+    }
+
+    #[test]
+    fn same_arity_enum_and_runtime_class_dispatch_by_javascript_kind() {
+        let presenter = method(
+            "appWindowPresenter",
+            "AppWindowPresenter",
+            "_IAppWindow.method(25).invoke(this._obj, [(appWindowPresenter == null ? DynWinRtValue.nullValue() : _unwrap(appWindowPresenter))])",
+            JsArgumentKind::Object,
+        );
+        let presenter_kind = method(
+            "appWindowPresenterKind",
+            "AppWindowPresenterKind",
+            "_IAppWindow.method(26).invoke(this._obj, [DynWinRtValue.i32(appWindowPresenterKind)])",
+            JsArgumentKind::Number,
+        );
+        let mut output = String::new();
+
+        render_same_class_overload_js(&mut output, &presenter, &[&presenter_kind]);
+
+        assert!(output.contains("typeof args[0] === 'number'"));
+        assert!(output.contains("return this._setPresenter_2(args[0]);"));
+        assert!(output.contains("return this._setPresenter_1(args[0]);"));
+        assert!(!output.contains("typeof args[0] !== 'string'"));
+    }
+
+    #[test]
+    fn same_arity_runtime_class_branch_accepts_projected_objects() {
+        let presenter_kind = method(
+            "appWindowPresenterKind",
+            "AppWindowPresenterKind",
+            "_IAppWindow.method(26).invoke(this._obj, [DynWinRtValue.i32(appWindowPresenterKind)])",
+            JsArgumentKind::Number,
+        );
+        let presenter = method(
+            "appWindowPresenter",
+            "AppWindowPresenter",
+            "_IAppWindow.method(25).invoke(this._obj, [(appWindowPresenter == null ? DynWinRtValue.nullValue() : _unwrap(appWindowPresenter))])",
+            JsArgumentKind::Object,
+        );
+        let mut output = String::new();
+
+        render_same_class_overload_js(&mut output, &presenter_kind, &[&presenter]);
+
+        assert!(output.contains("typeof args[0] === 'object'"));
+        assert!(output.contains("return this._setPresenter_2(args[0]);"));
+        assert!(output.contains("return this._setPresenter_1(args[0]);"));
+    }
+
+    #[test]
+    fn same_arity_i64_and_number_dispatch_bigint_branch() {
+        let number = method(
+            "value",
+            "number",
+            "_ITest.method(6).invoke(this._obj, [DynWinRtValue.i32(value)])",
+            JsArgumentKind::Number,
+        );
+        let bigint = method(
+            "value",
+            "bigint",
+            "_ITest.method(7).invoke(this._obj, [DynWinRtValue.i64(value)])",
+            JsArgumentKind::BigInt,
+        );
+        let mut output = String::new();
+
+        render_same_class_overload_js(&mut output, &number, &[&bigint]);
+
+        assert!(output.contains("typeof args[0] === 'bigint'"));
+        assert!(!output.contains("typeof args[0] === 'number'"));
+        assert!(output.contains("return this._setPresenter_2(args[0]);"));
+        assert!(output.contains("return this._setPresenter_1(args[0]);"));
+    }
+
+    #[test]
+    fn same_arity_u64_and_number_dispatch_number_branch() {
+        let bigint = method(
+            "value",
+            "bigint",
+            "_ITest.method(6).invoke(this._obj, [DynWinRtValue.u64(value)])",
+            JsArgumentKind::BigInt,
+        );
+        let number = method(
+            "value",
+            "number",
+            "_ITest.method(7).invoke(this._obj, [DynWinRtValue.f64(value)])",
+            JsArgumentKind::Number,
+        );
+        let mut output = String::new();
+
+        render_same_class_overload_js(&mut output, &bigint, &[&number]);
+
+        assert!(output.contains("typeof args[0] === 'number'"));
+        assert!(!output.contains("typeof args[0] === 'bigint'"));
+        assert!(output.contains("return this._setPresenter_2(args[0]);"));
+        assert!(output.contains("return this._setPresenter_1(args[0]);"));
+    }
 }
 /// and required interface overloads based on argument count.
 /// E.g. for `rewriteAsync(text, signal?)` (main) + `rewriteAsync(text, tone, signal?)` (ITextRewriter2),
@@ -341,46 +561,7 @@ pub(super) fn render_overload_dispatcher_js(
 
     // Fall through to original method body
     // Re-render the original method body inline (skip the signature, we already emitted it)
-    for (param_name, delegate_name) in &main_method.delegate_wraps {
-        let needs_wrap = main_method
-            .params
-            .iter()
-            .find(|p| &p.name == param_name)
-            .and_then(|p| p.delegate_wrap.as_ref())
-            .map(|dw| {
-                dw.param_wraps
-                    .iter()
-                    .enumerate()
-                    .any(|(i, w)| *w != format!("__a{}__", i))
-            })
-            .unwrap_or(false);
-        if needs_wrap {
-            let dw = main_method
-                .params
-                .iter()
-                .find(|p| &p.name == param_name)
-                .and_then(|p| p.delegate_wrap.as_ref())
-                .unwrap();
-            let arg_vars: Vec<String> = (0..dw.param_wraps.len())
-                .map(|i| format!("__a{}__", i))
-                .collect();
-            let args_str = arg_vars.join(", ");
-            let wraps_str = dw.param_wraps.join(", ");
-            out.push_str(&format!(
-                "        const _{}_wrapped = ({}) => {}({});\n",
-                param_name, args_str, param_name, wraps_str
-            ));
-            out.push_str(&format!(
-                "        const _{}_d = DynWinRtDelegate.create(IID_{}, {}_PARAM_TYPES, _{}_wrapped).toValue();\n",
-                param_name, delegate_name, delegate_name, param_name
-            ));
-        } else {
-            out.push_str(&format!(
-                "        const _{}_d = DynWinRtDelegate.create(IID_{}, {}_PARAM_TYPES, {}).toValue();\n",
-                param_name, delegate_name, delegate_name, param_name
-            ));
-        }
-    }
+    emit_delegate_wraps(out, main_method);
     match &main_method.async_kind {
         AsyncKind::None => {
             if let Some(ref arr_expr) = main_method.array_return_expr {
