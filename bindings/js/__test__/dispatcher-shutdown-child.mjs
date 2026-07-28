@@ -20,7 +20,10 @@ roInitialize(0)
 
 const staticsIid = WinGuid.parse('5984c710-daf2-43c8-8bb4-a4d3eacfd03f')
 const storageFileIid = WinGuid.parse('fa3f6186-4214-428c-a64c-14c9ac7315ea')
-const storageFileType = DynWinRtType.runtimeClass('Windows.Storage.StorageFile', storageFileIid)
+const storageFileType = DynWinRtType.runtimeClass(
+  'Windows.Storage.StorageFile',
+  DynWinRtType.interface(storageFileIid),
+)
 const staticsType = DynWinRtType.registerInterface('IStorageFileStaticsShutdownAsyncTest', staticsIid).addMethod(
   'GetFileFromPathAsync',
   new DynWinRtMethodSig().addIn(DynWinRtType.hstring()).addOut(DynWinRtType.iAsyncOperation(storageFileType)),

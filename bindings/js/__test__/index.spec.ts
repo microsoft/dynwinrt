@@ -64,7 +64,10 @@ test('resolve WinRT async operations through the Node event loop', async (t) => 
   roInitialize(1)
   const staticsIid = WinGuid.parse('5984c710-daf2-43c8-8bb4-a4d3eacfd03f')
   const storageFileIid = WinGuid.parse('fa3f6186-4214-428c-a64c-14c9ac7315ea')
-  const storageFileType = DynWinRtType.runtimeClass('Windows.Storage.StorageFile', storageFileIid)
+  const storageFileType = DynWinRtType.runtimeClass(
+    'Windows.Storage.StorageFile',
+    DynWinRtType.interface(storageFileIid),
+  )
   const staticsType = DynWinRtType.registerInterface('IStorageFileStaticsAsyncTest', staticsIid).addMethod(
     'GetFileFromPathAsync',
     new DynWinRtMethodSig().addIn(DynWinRtType.hstring()).addOut(DynWinRtType.iAsyncOperation(storageFileType)),
@@ -300,6 +303,22 @@ test('round-trip WinRT value arrays', (t) => {
     array.toValues().map((value) => value.toNumber()),
     [1, 2, 3],
   )
+})
+
+test('create empty vectors for large struct element types', (t) => {
+  const rectType = DynWinRtType.structType('Windows.Graphics.RectInt32', [
+    DynWinRtType.i32(),
+    DynWinRtType.i32(),
+    DynWinRtType.i32(),
+    DynWinRtType.i32(),
+  ])
+  const vector = DynWinRtValue.createVector([], rectType)
+  const vectorIid = DynWinRtType.parameterized(
+    WinGuid.parse('913337e9-11a1-4345-a3a2-4e7f956e222d'),
+    [rectType],
+  ).iid()
+
+  t.notThrows(() => vector.cast(vectorIid))
 })
 
 test('parse GUIDs', (t) => {

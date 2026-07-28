@@ -37,7 +37,7 @@ const _IWwwFormUrlDecoderRuntimeClassFactory = new Proxy({}, {
     get(_target, prop) {
         _IWwwFormUrlDecoderRuntimeClassFactoryCache ??= DynWinRtType.registerInterface(
         "IWwwFormUrlDecoderRuntimeClassFactory", IID_IWwwFormUrlDecoderRuntimeClassFactory)
-        .addMethod("CreateWwwFormUrlDecoder", new DynWinRtMethodSig().addIn(DynWinRtType.hstring()).addOut(DynWinRtType.runtimeClass('Windows.Foundation.WwwFormUrlDecoder', WinGuid.parse('d45a0451-f225-4542-9296-0e1df5d254df'))));
+        .addMethod("CreateWwwFormUrlDecoder", new DynWinRtMethodSig().addIn(DynWinRtType.hstring()).addOut(DynWinRtType.runtimeClass('Windows.Foundation.WwwFormUrlDecoder', DynWinRtType.interface(WinGuid.parse('d45a0451-f225-4542-9296-0e1df5d254df')))));
         const value = _IWwwFormUrlDecoderRuntimeClassFactoryCache[prop];
         return typeof value === 'function' ? value.bind(_IWwwFormUrlDecoderRuntimeClassFactoryCache) : value;
     }

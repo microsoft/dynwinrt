@@ -25,16 +25,6 @@ pub(crate) fn py_runtime_symbol(type_name: &str, symbol_name: &str) -> String {
 // Python type expression
 // ======================================================================
 
-fn py_interface_iid(typ: &TypeMeta) -> Option<String> {
-    match typ {
-        TypeMeta::Interface { iid, .. } if !iid.is_empty() => {
-            Some(format!("WinGUID.parse('{}')", iid))
-        }
-        TypeMeta::Parameterized { .. } => Some(format!("{}.iid()", py_dynwinrt_type(typ))),
-        _ => None,
-    }
-}
-
 pub(crate) fn py_runtime_class_iid_const(typ: &TypeMeta) -> Option<(String, String)> {
     let TypeMeta::RuntimeClass {
         namespace,
@@ -143,13 +133,13 @@ pub(crate) fn py_dynwinrt_type(typ: &TypeMeta) -> String {
             default_interface,
         } => {
             let full_name = format!("{}.{}", namespace, name);
-            if let Some(default_iid) = default_interface.as_deref().and_then(py_interface_iid) {
-                format!(
+            match default_interface.as_deref() {
+                Some(default) => format!(
                     "DynWinRTType.runtime_class('{}', {})",
-                    full_name, default_iid
-                )
-            } else {
-                "DynWinRTType.object()".to_string()
+                    full_name,
+                    py_dynwinrt_type(default)
+                ),
+                None => "DynWinRTType.object()".to_string(),
             }
         }
 

@@ -144,9 +144,9 @@ impl TypeHandle {
             TypeKind::U64 => AbiType::U64,
             TypeKind::F32 => AbiType::F32,
             TypeKind::F64 => AbiType::F64,
+            TypeKind::Guid => AbiType::Guid,
 
             TypeKind::HString
-            | TypeKind::Guid
             | TypeKind::Object
             | TypeKind::Interface(_)
             | TypeKind::Delegate(_)
@@ -381,6 +381,7 @@ impl TypeHandle {
             (TypeKind::U64, AbiValue::U64(v)) => Ok(WinRTValue::U64(*v)),
             (TypeKind::F32, AbiValue::F32(v)) => Ok(WinRTValue::F32(*v)),
             (TypeKind::F64, AbiValue::F64(v)) => Ok(WinRTValue::F64(*v)),
+            (TypeKind::Guid, AbiValue::Guid(v)) => Ok(WinRTValue::Guid(*v)),
 
             (
                 TypeKind::Object

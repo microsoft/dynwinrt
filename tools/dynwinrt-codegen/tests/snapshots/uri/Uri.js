@@ -33,14 +33,14 @@ const _IUriRuntimeClass = new Proxy({}, {
         .addMethod("get_Password", new DynWinRtMethodSig().addOut(DynWinRtType.hstring()))
         .addMethod("get_Path", new DynWinRtMethodSig().addOut(DynWinRtType.hstring()))
         .addMethod("get_Query", new DynWinRtMethodSig().addOut(DynWinRtType.hstring()))
-        .addMethod("get_QueryParsed", new DynWinRtMethodSig().addOut(DynWinRtType.runtimeClass('Windows.Foundation.WwwFormUrlDecoder', WinGuid.parse('d45a0451-f225-4542-9296-0e1df5d254df'))))
+        .addMethod("get_QueryParsed", new DynWinRtMethodSig().addOut(DynWinRtType.runtimeClass('Windows.Foundation.WwwFormUrlDecoder', DynWinRtType.interface(WinGuid.parse('d45a0451-f225-4542-9296-0e1df5d254df')))))
         .addMethod("get_RawUri", new DynWinRtMethodSig().addOut(DynWinRtType.hstring()))
         .addMethod("get_SchemeName", new DynWinRtMethodSig().addOut(DynWinRtType.hstring()))
         .addMethod("get_UserName", new DynWinRtMethodSig().addOut(DynWinRtType.hstring()))
         .addMethod("get_Port", new DynWinRtMethodSig().addOut(DynWinRtType.i32()))
         .addMethod("get_Suspicious", new DynWinRtMethodSig().addOut(DynWinRtType.boolType()))
-        .addMethod("Equals", new DynWinRtMethodSig().addIn(DynWinRtType.runtimeClass('Windows.Foundation.Uri', WinGuid.parse('9e365e57-48b2-4160-956f-c7385120bbfc'))).addOut(DynWinRtType.boolType()))
-        .addMethod("CombineUri", new DynWinRtMethodSig().addIn(DynWinRtType.hstring()).addOut(DynWinRtType.runtimeClass('Windows.Foundation.Uri', WinGuid.parse('9e365e57-48b2-4160-956f-c7385120bbfc'))));
+        .addMethod("Equals", new DynWinRtMethodSig().addIn(DynWinRtType.runtimeClass('Windows.Foundation.Uri', DynWinRtType.interface(WinGuid.parse('9e365e57-48b2-4160-956f-c7385120bbfc')))).addOut(DynWinRtType.boolType()))
+        .addMethod("CombineUri", new DynWinRtMethodSig().addIn(DynWinRtType.hstring()).addOut(DynWinRtType.runtimeClass('Windows.Foundation.Uri', DynWinRtType.interface(WinGuid.parse('9e365e57-48b2-4160-956f-c7385120bbfc')))));
         const value = _IUriRuntimeClassCache[prop];
         return typeof value === 'function' ? value.bind(_IUriRuntimeClassCache) : value;
     }
@@ -51,8 +51,8 @@ const _IUriRuntimeClassFactory = new Proxy({}, {
     get(_target, prop) {
         _IUriRuntimeClassFactoryCache ??= DynWinRtType.registerInterface(
         "IUriRuntimeClassFactory", IID_IUriRuntimeClassFactory)
-        .addMethod("CreateUri", new DynWinRtMethodSig().addIn(DynWinRtType.hstring()).addOut(DynWinRtType.runtimeClass('Windows.Foundation.Uri', WinGuid.parse('9e365e57-48b2-4160-956f-c7385120bbfc'))))
-        .addMethod("CreateWithRelativeUri", new DynWinRtMethodSig().addIn(DynWinRtType.hstring()).addIn(DynWinRtType.hstring()).addOut(DynWinRtType.runtimeClass('Windows.Foundation.Uri', WinGuid.parse('9e365e57-48b2-4160-956f-c7385120bbfc'))));
+        .addMethod("CreateUri", new DynWinRtMethodSig().addIn(DynWinRtType.hstring()).addOut(DynWinRtType.runtimeClass('Windows.Foundation.Uri', DynWinRtType.interface(WinGuid.parse('9e365e57-48b2-4160-956f-c7385120bbfc')))))
+        .addMethod("CreateWithRelativeUri", new DynWinRtMethodSig().addIn(DynWinRtType.hstring()).addIn(DynWinRtType.hstring()).addOut(DynWinRtType.runtimeClass('Windows.Foundation.Uri', DynWinRtType.interface(WinGuid.parse('9e365e57-48b2-4160-956f-c7385120bbfc')))));
         const value = _IUriRuntimeClassFactoryCache[prop];
         return typeof value === 'function' ? value.bind(_IUriRuntimeClassFactoryCache) : value;
     }

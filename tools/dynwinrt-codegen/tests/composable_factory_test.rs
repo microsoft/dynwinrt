@@ -279,7 +279,7 @@ fn parameterized_default_interface_uses_computed_iid() {
     let js = render_js::render(&projected);
     let dts = render_dts::render(&projected);
 
-    let expected = "DynWinRtType.parameterized(WinGuid.parse('913337e9-11a1-4345-a3a2-4e7f956e222d'), [DynWinRtType.runtimeClass('Microsoft.UI.Xaml.Controls.RowDefinition', WinGuid.parse('fe870f2f-89ef-5dac-9f33-968d0dc577c3'))]).iid()";
+    let expected = "DynWinRtType.parameterized(WinGuid.parse('913337e9-11a1-4345-a3a2-4e7f956e222d'), [DynWinRtType.runtimeClass('Microsoft.UI.Xaml.Controls.RowDefinition', DynWinRtType.interface(WinGuid.parse('fe870f2f-89ef-5dac-9f33-968d0dc577c3')))]).iid()";
     assert!(js.contains(&format!("const IID_IVector_RowDefinition = {expected};")));
     assert!(js.contains(&format!("const IID_RowDefinitionCollection = {expected};")));
     assert!(js.contains("exports.IID_RowDefinitionCollection = IID_RowDefinitionCollection;"));

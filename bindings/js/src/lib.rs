@@ -196,8 +196,8 @@ impl DynWinRTType {
   }
 
   #[napi]
-  pub fn runtime_class(name: String, default_iid: &WinGUID) -> Self {
-    DynWinRTType(TABLE.runtime_class(name, default_iid.0))
+  pub fn runtime_class(name: String, default_interface_type: &DynWinRTType) -> Self {
+    DynWinRTType(TABLE.runtime_class(name, &default_interface_type.0))
   }
 
   #[napi]

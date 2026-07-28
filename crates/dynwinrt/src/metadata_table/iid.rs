@@ -54,8 +54,12 @@ impl MetadataTable {
                 format!("delegate({})", format_guid_braced(&iid))
             }
             TypeKind::RuntimeClass(idx) => {
-                let (name, iid) = self.get_runtime_class(idx);
-                format!("rc({};{})", name, format_guid_braced(&iid))
+                let (name, default_interface) = self.get_runtime_class(idx);
+                format!(
+                    "rc({};{})",
+                    name,
+                    self.signature_string_kind(default_interface)
+                )
             }
             TypeKind::Parameterized(idx) => {
                 let (generic_def, args) = self.get_parameterized(idx);
@@ -99,8 +103,8 @@ impl MetadataTable {
         match kind {
             TypeKind::Interface(iid) | TypeKind::Delegate(iid) => Some(iid),
             TypeKind::RuntimeClass(idx) => {
-                let (_, iid) = self.get_runtime_class(idx);
-                Some(iid)
+                let (_, default_interface) = self.get_runtime_class(idx);
+                self.iid_kind(default_interface)
             }
             TypeKind::IAsyncAction => Some(IASYNC_ACTION),
             TypeKind::Parameterized(_)

@@ -105,6 +105,13 @@ impl MetadataTable {
         }
     }
 
+    fn assert_owns_type(&self, typ: &TypeHandle, context: &str) {
+        assert!(
+            std::ptr::eq(self, typ.table.as_ref()),
+            "{context} must use the same MetadataTable"
+        );
+    }
+
     // Primitive types
     pub fn bool_type(self: &Arc<Self>) -> TypeHandle {
         self.make(TypeKind::Bool)
@@ -178,12 +185,45 @@ impl MetadataTable {
     }
 
     // Compound types that allocate indexed storage
-    pub fn runtime_class(self: &Arc<Self>, name: String, default_iid: GUID) -> TypeHandle {
-        if let Some(kind) = self.get_named_type(&name) {
+    pub fn runtime_class(
+        self: &Arc<Self>,
+        name: String,
+        default_interface_type: &TypeHandle,
+    ) -> TypeHandle {
+        self.assert_owns_type(
+            default_interface_type,
+            "runtime class and default interface",
+        );
+        assert!(
+            matches!(
+                default_interface_type.kind,
+                TypeKind::Interface(_) | TypeKind::Parameterized(_)
+            ),
+            "runtime class default interface must be an interface type"
+        );
+
+        let (kind, already_registered) = {
+            let mut names = self.type_names.write().unwrap();
+            if let Some(kind) = names.get(&name).copied() {
+                (kind, true)
+            } else {
+                let kind = self.push_runtime_class(name.clone(), default_interface_type.kind);
+                names.insert(name.clone(), kind);
+                (kind, false)
+            }
+        };
+        if !already_registered {
             return self.make(kind);
         }
-        let kind = self.push_runtime_class(name.clone(), default_iid);
-        self.insert_named_type(&name, kind);
+        let TypeKind::RuntimeClass(idx) = kind else {
+            panic!("named type '{name}' is not a runtime class");
+        };
+        let (_, registered_default) = self.get_runtime_class(idx);
+        assert_eq!(
+            self.signature_string_kind(registered_default),
+            default_interface_type.signature_string(),
+            "runtime class '{name}' was registered with a different default interface"
+        );
         self.make(kind)
     }
 
@@ -192,16 +232,22 @@ impl MetadataTable {
         generic_def: &TypeHandle,
         args: &[TypeHandle],
     ) -> TypeHandle {
+        self.assert_owns_type(generic_def, "parameterized generic definition");
+        for argument in args {
+            self.assert_owns_type(argument, "parameterized type argument");
+        }
         let args_kinds: Vec<TypeKind> = args.iter().map(|a| a.kind).collect();
         self.make(self.push_parameterized(generic_def.kind, args_kinds))
     }
 
     pub fn async_operation(self: &Arc<Self>, result_type: &TypeHandle) -> TypeHandle {
+        self.assert_owns_type(result_type, "async operation result type");
         let idx = self.push_inner_type(result_type.kind);
         self.make(TypeKind::IAsyncOperation(idx))
     }
 
     pub fn async_action_with_progress(self: &Arc<Self>, progress_type: &TypeHandle) -> TypeHandle {
+        self.assert_owns_type(progress_type, "async action progress type");
         let idx = self.push_inner_type(progress_type.kind);
         self.make(TypeKind::IAsyncActionWithProgress(idx))
     }
@@ -211,16 +257,20 @@ impl MetadataTable {
         result_type: &TypeHandle,
         progress_type: &TypeHandle,
     ) -> TypeHandle {
+        self.assert_owns_type(result_type, "async operation result type");
+        self.assert_owns_type(progress_type, "async operation progress type");
         let idx = self.push_inner_type_pair(result_type.kind, progress_type.kind);
         self.make(TypeKind::IAsyncOperationWithProgress(idx))
     }
 
     pub fn out_value(self: &Arc<Self>, inner: &TypeHandle) -> TypeHandle {
+        self.assert_owns_type(inner, "nested out type");
         let idx = self.push_inner_type(inner.kind);
         self.make(TypeKind::OutValue(idx))
     }
 
     pub fn array(self: &Arc<Self>, element_type: &TypeHandle) -> TypeHandle {
+        self.assert_owns_type(element_type, "array element type");
         let idx = self.push_inner_type(element_type.kind);
         self.make(TypeKind::Array(idx))
     }
@@ -244,6 +294,9 @@ impl MetadataTable {
     /// Register a named struct with dedup. If already registered, returns
     /// the existing TypeHandle.
     pub fn struct_type(self: &Arc<Self>, name: &str, fields: &[TypeHandle]) -> TypeHandle {
+        for field in fields {
+            self.assert_owns_type(field, "struct field type");
+        }
         if let Some(kind) = self.get_named_type(name) {
             return self.make(kind);
         }
@@ -313,6 +366,7 @@ impl MetadataTable {
     /// Compute all IIDs needed for an IVector<element_type>.
     pub fn vector_iids(self: &Arc<Self>, element_type: &TypeHandle) -> crate::vector::VectorIids {
         use type_kind::*;
+        self.assert_owns_type(element_type, "vector element type");
         let elem = element_type.kind;
         crate::vector::VectorIids {
             iterable: self.compute_parameterized_iid(&IITERABLE, &[elem]),
@@ -332,6 +386,8 @@ impl MetadataTable {
         value_type: &TypeHandle,
     ) -> crate::map::MapIids {
         use type_kind::*;
+        self.assert_owns_type(key_type, "map key type");
+        self.assert_owns_type(value_type, "map value type");
         let k = key_type.kind;
         let v = value_type.kind;
         // Create a Parameterized TypeKind for IKeyValuePair<K,V> so that
@@ -560,15 +616,159 @@ mod tests {
     #[test]
     fn iid_runtime_class_as_type_arg() {
         let table = MetadataTable::new();
-        let storage_file = table.runtime_class(
-            "Windows.Storage.StorageFile".into(),
-            GUID::from_u128(0xFA3F6186_4214_428C_A64C_14C9AC7315EA),
-        );
+        let storage_file_default =
+            table.interface(GUID::from_u128(0xFA3F6186_4214_428C_A64C_14C9AC7315EA));
+        let storage_file =
+            table.runtime_class("Windows.Storage.StorageFile".into(), &storage_file_default);
         let g = table.generic(IASYNC_OPERATION, 1);
         let ty = table.parameterized(&g, &[storage_file]);
 
         let expected_iid = GUID::from_u128(0x5e52f8ce_aced_5a42_95b4_f674dd84885e);
         assert_eq!(ty.iid().unwrap(), expected_iid);
+    }
+
+    #[test]
+    fn iid_runtime_class_with_parameterized_default_interface() {
+        let table = MetadataTable::new();
+        let device_information_default =
+            table.interface(GUID::from_u128(0xaba0fb95_4398_489d_8e44_e6130927011f));
+        let device_information = table.runtime_class(
+            "Windows.Devices.Enumeration.DeviceInformation".into(),
+            &device_information_default,
+        );
+        let vector_view = table.parameterized(
+            &table.generic(IVECTOR_VIEW, 1),
+            std::slice::from_ref(&device_information),
+        );
+        let collection = table.runtime_class(
+            "Windows.Devices.Enumeration.DeviceInformationCollection".into(),
+            &vector_view,
+        );
+        let operation = table.async_operation(&collection);
+        let expected_signature = "pinterface({9fc2b0bb-e446-44e2-aa61-9cab8f636af2};rc(Windows.Devices.Enumeration.DeviceInformationCollection;pinterface({bbe1fa4c-b0e3-4583-baef-1f1b2e483e56};rc(Windows.Devices.Enumeration.DeviceInformation;{aba0fb95-4398-489d-8e44-e6130927011f}))))";
+        let expected_iid = GUID::from_signature(windows_core::imp::ConstBuffer::from_slice(
+            expected_signature.as_bytes(),
+        ));
+
+        assert_eq!(operation.signature_string(), expected_signature);
+        assert_eq!(operation.iid(), Some(expected_iid));
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "runtime class 'Contoso.Widget' was registered with a different default interface"
+    )]
+    fn runtime_class_rejects_conflicting_default_interfaces() {
+        let table = MetadataTable::new();
+        let first = table.interface(GUID::from_u128(0xaaaaaaaa_aaaa_aaaa_aaaa_aaaaaaaaaaaa));
+        let second = table.interface(GUID::from_u128(0xbbbbbbbb_bbbb_bbbb_bbbb_bbbbbbbbbbbb));
+
+        table.runtime_class("Contoso.Widget".into(), &first);
+        table.runtime_class("Contoso.Widget".into(), &second);
+    }
+
+    #[test]
+    fn runtime_class_registration_is_atomic() {
+        use std::sync::Barrier;
+
+        let table = MetadataTable::new();
+        let first = table.interface(GUID::from_u128(0xaaaaaaaa_aaaa_aaaa_aaaa_aaaaaaaaaaaa));
+        let second = table.interface(GUID::from_u128(0xbbbbbbbb_bbbb_bbbb_bbbb_bbbbbbbbbbbb));
+        let barrier = Arc::new(Barrier::new(3));
+        let register = |default_interface: TypeHandle| {
+            let table = table.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    table.runtime_class("Contoso.ConcurrentWidget".into(), &default_interface)
+                }))
+            })
+        };
+        let first_registration = register(first);
+        let second_registration = register(second);
+
+        barrier.wait();
+        let results = [
+            first_registration.join().unwrap(),
+            second_registration.join().unwrap(),
+        ];
+
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(results.iter().filter(|result| result.is_err()).count(), 1);
+        assert!(table.get_named_type("Contoso.ConcurrentWidget").is_some());
+    }
+
+    #[test]
+    #[should_panic(expected = "parameterized type argument must use the same MetadataTable")]
+    fn parameterized_rejects_foreign_type_handles() {
+        let table = MetadataTable::new();
+        let foreign_table = MetadataTable::new();
+        let generic = table.generic(IVECTOR_VIEW, 1);
+
+        table.parameterized(&generic, &[foreign_table.i32_type()]);
+    }
+
+    #[test]
+    fn dynamic_guid_parameters_use_value_abi() {
+        use std::ffi::c_void;
+        use windows_core::HRESULT;
+
+        const EXPECTED: GUID = GUID::from_u128(0x1a34f5c1_4a5a_46dc_b644_1f4567e7a676);
+
+        #[repr(C)]
+        struct GuidVtable {
+            inspectable: [usize; 6],
+            round_trip: unsafe extern "system" fn(*mut c_void, GUID, u32, *mut GUID) -> HRESULT,
+        }
+
+        #[repr(C)]
+        struct GuidObject {
+            vtable: *const GuidVtable,
+        }
+
+        unsafe extern "system" fn round_trip(
+            _this: *mut c_void,
+            value: GUID,
+            marker: u32,
+            result: *mut GUID,
+        ) -> HRESULT {
+            if value != EXPECTED || marker != 42 || result.is_null() {
+                return HRESULT(0x80070057_u32 as i32);
+            }
+            unsafe { result.write(value) };
+            HRESULT(0)
+        }
+
+        let vtable = GuidVtable {
+            inspectable: [0; 6],
+            round_trip,
+        };
+        let mut object = GuidObject { vtable: &vtable };
+        let table = MetadataTable::new();
+        let interface = table
+            .register_interface(
+                "IGuidRoundTrip",
+                GUID::from_u128(0xd13ed3ce_282c_4fc3_a5c1_9e8cb2207938),
+            )
+            .add_method(
+                "RoundTrip",
+                MethodSignature::new(&table)
+                    .add_in(table.guid_type())
+                    .add_in(table.u32_type())
+                    .add_out(table.guid_type()),
+            );
+
+        let results = interface
+            .method(6)
+            .unwrap()
+            .invoke(
+                (&mut object as *mut GuidObject).cast(),
+                &[WinRTValue::Guid(EXPECTED), WinRTValue::U32(42)],
+            )
+            .unwrap();
+
+        assert!(matches!(results.as_slice(), [WinRTValue::Guid(value)] if *value == EXPECTED));
     }
 
     #[test]

@@ -16,7 +16,7 @@ use crate::value::WinRTValue;
 
 pub(super) struct RuntimeClassData {
     pub(super) name: String,
-    pub(super) default_iid: GUID,
+    pub(super) default_interface: TypeKind,
 }
 
 pub(super) struct ParameterizedData {
@@ -51,10 +51,13 @@ impl MetadataTable {
     // Type arena writes (return TypeKind, not TypeHandle)
     // -----------------------------------------------------------------------
 
-    pub(super) fn push_runtime_class(&self, name: String, default_iid: GUID) -> TypeKind {
+    pub(super) fn push_runtime_class(&self, name: String, default_interface: TypeKind) -> TypeKind {
         let mut rcs = self.runtime_classes.write().unwrap();
         let idx = rcs.len() as u32;
-        rcs.push(RuntimeClassData { name, default_iid });
+        rcs.push(RuntimeClassData {
+            name,
+            default_interface,
+        });
         TypeKind::RuntimeClass(idx)
     }
 
@@ -172,10 +175,10 @@ impl MetadataTable {
         self.inner_type_pairs.read().unwrap()[idx as usize]
     }
 
-    pub(crate) fn get_runtime_class(&self, idx: u32) -> (String, GUID) {
+    pub(crate) fn get_runtime_class(&self, idx: u32) -> (String, TypeKind) {
         let rcs = self.runtime_classes.read().unwrap();
         let rc = &rcs[idx as usize];
-        (rc.name.clone(), rc.default_iid)
+        (rc.name.clone(), rc.default_interface)
     }
 
     pub(crate) fn get_parameterized(&self, idx: u32) -> (TypeKind, Vec<TypeKind>) {

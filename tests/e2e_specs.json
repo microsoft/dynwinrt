@@ -376,6 +376,32 @@
       ]
     },
     {
+      "id": "issue_69_device_information_async_collection",
+      "namespace": "Windows.Devices.Enumeration",
+      "class": "DeviceInformation",
+      "langs": ["ts"],
+      "instantiate": { "kind": "none" },
+      "checks": [
+        {
+          "kind": "device_information_async_collection",
+          "member": "find_all_async"
+        }
+      ]
+    },
+    {
+      "id": "issue_71_bitmap_encoder_async_create",
+      "namespace": "Windows.Graphics.Imaging",
+      "class": "BitmapEncoder",
+      "langs": ["ts"],
+      "instantiate": { "kind": "none" },
+      "checks": [
+        {
+          "kind": "bitmap_encoder_async_create",
+          "member": "create_async"
+        }
+      ]
+    },
+    {
       "id": "python_async_cancellation",
       "namespace": "Windows.System.Threading",
       "class": "ThreadPool",

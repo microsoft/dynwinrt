@@ -120,8 +120,14 @@ function createDelayedHttpOperation(runtime, uri) {
 function startExitTimer(runtime, delayMs, callback) {
   const queueIid = runtime.WinGuid.parse('603e88e4-a338-4ffe-a457-a5cfb9ceb899')
   const timerIid = runtime.WinGuid.parse('5feabb1d-a31c-4727-b1ac-37454649d56a')
-  const queueType = runtime.DynWinRtType.runtimeClass('Windows.System.DispatcherQueue', queueIid)
-  const timerType = runtime.DynWinRtType.runtimeClass('Windows.System.DispatcherQueueTimer', timerIid)
+  const queueType = runtime.DynWinRtType.runtimeClass(
+    'Windows.System.DispatcherQueue',
+    runtime.DynWinRtType.interface(queueIid),
+  )
+  const timerType = runtime.DynWinRtType.runtimeClass(
+    'Windows.System.DispatcherQueueTimer',
+    runtime.DynWinRtType.interface(timerIid),
+  )
   const staticsIid = runtime.WinGuid.parse('a96d83d7-9371-4517-9245-d0824ac12c74')
   const staticsType = runtime.DynWinRtType.registerInterface(
     'IDispatcherQueueStaticsWinuiAsyncTest',
@@ -171,13 +177,17 @@ function scheduleApplicationStart(runtime, callback) {
   const callbackIid = runtime.WinGuid.parse('d8eef1c9-1234-56f1-9963-45dd9c80a661')
   const callbackParam = runtime.DynWinRtType.runtimeClass(
     'Microsoft.UI.Xaml.ApplicationInitializationCallbackParams',
-    runtime.WinGuid.parse('1b1906ea-5b7b-5876-81ab-7c2281ac3d20'),
+    runtime.DynWinRtType.interface(
+      runtime.WinGuid.parse('1b1906ea-5b7b-5876-81ab-7c2281ac3d20'),
+    ),
   )
   const callbackDelegate = runtime.DynWinRtDelegate.create(callbackIid, [callbackParam], callback).toValue()
   const staticsIid = runtime.WinGuid.parse('4e0d09f5-4358-512c-a987-503b52848e95')
   const applicationType = runtime.DynWinRtType.runtimeClass(
     'Microsoft.UI.Xaml.Application',
-    runtime.WinGuid.parse('06a8f4e7-1146-55af-820d-ebd55643b021'),
+    runtime.DynWinRtType.interface(
+      runtime.WinGuid.parse('06a8f4e7-1146-55af-820d-ebd55643b021'),
+    ),
   )
   const staticsType = runtime.DynWinRtType.registerInterface('IApplicationStaticsScheduledTest', staticsIid)
     .addMethod('get_Current', new runtime.DynWinRtMethodSig().addOut(applicationType))

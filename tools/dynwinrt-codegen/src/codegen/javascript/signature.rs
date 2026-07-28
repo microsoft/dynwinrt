@@ -95,20 +95,20 @@ pub(crate) fn ts_dynwinrt_type(typ: &TypeMeta) -> String {
         }
         TypeMeta::Interface { .. } => "DynWinRtType.object()".to_string(),
 
-        // RuntimeClass — runtimeClass(fullName, defaultIID)
+        // RuntimeClass — preserve the full default-interface type signature.
         TypeMeta::RuntimeClass {
             namespace,
             name,
             default_interface,
         } => {
             let full_name = format!("{}.{}", namespace, name);
-            if let Some(default_iid) = default_interface.as_deref().and_then(ts_interface_iid) {
-                format!(
+            match default_interface.as_deref() {
+                Some(default) => format!(
                     "DynWinRtType.runtimeClass('{}', {})",
-                    full_name, default_iid
-                )
-            } else {
-                "DynWinRtType.object()".to_string()
+                    full_name,
+                    ts_dynwinrt_type(default)
+                ),
+                None => "DynWinRtType.object()".to_string(),
             }
         }
 

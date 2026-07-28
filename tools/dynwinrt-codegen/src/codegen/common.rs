@@ -112,6 +112,38 @@ mod tests {
     }
 
     #[test]
+    fn runtime_class_collection_preserves_default_interface_signature() {
+        let device_information = TypeMeta::RuntimeClass {
+            namespace: "Windows.Devices.Enumeration".into(),
+            name: "DeviceInformation".into(),
+            default_interface: Some(Box::new(TypeMeta::Interface {
+                namespace: "Windows.Devices.Enumeration".into(),
+                name: "IDeviceInformation".into(),
+                iid: "aba0fb95-4398-489d-8e44-e6130927011f".into(),
+            })),
+        };
+        let collection = TypeMeta::RuntimeClass {
+            namespace: "Windows.Devices.Enumeration".into(),
+            name: "DeviceInformationCollection".into(),
+            default_interface: Some(Box::new(TypeMeta::Parameterized {
+                namespace: "Windows.Foundation.Collections".into(),
+                name: "IVectorView".into(),
+                piid: "bbe1fa4c-b0e3-4583-baef-1f1b2e483e56".into(),
+                args: vec![device_information],
+            })),
+        };
+
+        assert_eq!(
+            ts_dynwinrt_type(&collection),
+            "DynWinRtType.runtimeClass('Windows.Devices.Enumeration.DeviceInformationCollection', DynWinRtType.parameterized(WinGuid.parse('bbe1fa4c-b0e3-4583-baef-1f1b2e483e56'), [DynWinRtType.runtimeClass('Windows.Devices.Enumeration.DeviceInformation', DynWinRtType.interface(WinGuid.parse('aba0fb95-4398-489d-8e44-e6130927011f')))]))"
+        );
+        assert_eq!(
+            py_dynwinrt_type(&collection),
+            "DynWinRTType.runtime_class('Windows.Devices.Enumeration.DeviceInformationCollection', DynWinRTType.parameterized(WinGUID.parse('bbe1fa4c-b0e3-4583-baef-1f1b2e483e56'), [DynWinRTType.runtime_class('Windows.Devices.Enumeration.DeviceInformation', DynWinRTType.interface(WinGUID.parse('aba0fb95-4398-489d-8e44-e6130927011f')))]))"
+        );
+    }
+
+    #[test]
     fn ts_dynwinrt_type_array() {
         assert_eq!(
             ts_dynwinrt_type(&TypeMeta::Array(Box::new(TypeMeta::I32))),
