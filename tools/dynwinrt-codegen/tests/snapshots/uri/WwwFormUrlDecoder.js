@@ -3,7 +3,7 @@ const { DynWinRtType, DynWinRtMethodSig, DynWinRtValue, DynWinRtArray, DynWinRtD
 let __m_IIterator_IWwwFormUrlDecoderEntry;
 const __load_IIterator_IWwwFormUrlDecoderEntry = () => (__m_IIterator_IWwwFormUrlDecoderEntry ??= require('./IIterator_IWwwFormUrlDecoderEntry.js'));
 const __get_IIterator_IWwwFormUrlDecoderEntry = () => __load_IIterator_IWwwFormUrlDecoderEntry().IIterator_IWwwFormUrlDecoderEntry;
-const { IID_IWwwFormUrlDecoderEntry } = require('./IWwwFormUrlDecoderEntry.js');
+require('./IWwwFormUrlDecoderEntry.js');
 let __m_IWwwFormUrlDecoderEntry;
 const __load_IWwwFormUrlDecoderEntry = () => (__m_IWwwFormUrlDecoderEntry ??= require('./IWwwFormUrlDecoderEntry.js'));
 const __get_IWwwFormUrlDecoderEntry = () => __load_IWwwFormUrlDecoderEntry().IWwwFormUrlDecoderEntry;

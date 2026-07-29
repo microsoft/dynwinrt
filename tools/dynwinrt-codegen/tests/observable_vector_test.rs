@@ -34,6 +34,10 @@ fn observable_vector_projects_mutable_create_helper() {
         "{js}",
     );
     assert!(js.contains("onVectorChanged"));
+    assert!(js.contains(
+        "asVector() {\n        return new ((__load_IVector_Object()).IVector_Object)(this._obj);",
+    ));
+    assert!(dts.contains("asVector(): IVector_Object;"));
     assert!(dts.contains(
         "static create(items: unknown[]): IObservableVector_Object & IVector_Object;",
     ));

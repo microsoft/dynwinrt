@@ -68,7 +68,9 @@ state can be released before the native repeater is destroyed.
 
 `DynWinRtValue.createVector()` objects implement `IObservableVector<T>` in
 addition to `IIterable<T>`, `IVector<T>`, and `IVectorView<T>`. Mutations emit
-the standard `VectorChanged` collection-change notifications.
+the standard `VectorChanged` collection-change notifications. Generated
+`IObservableVector<T>` projections expose `asVector()` for mutating collection
+properties, and codegen emits the paired `IVector<T>` binding automatically.
 
 ## Platform support
 

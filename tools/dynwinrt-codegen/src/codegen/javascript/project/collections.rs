@@ -568,6 +568,34 @@ pub(super) fn project_collection_create(
             is_runtime_package: false,
         });
         members.push(ProjectedMember::Method(ProjectedMethod {
+            name: "asVector".into(),
+            doc: Some(DocInfo {
+                summary: Some(
+                    "Cast this observable collection to its mutable vector interface.".into(),
+                ),
+                deprecated: None,
+                returns: None,
+                params: vec![],
+            }),
+            params: vec![],
+            argument_kinds: vec![],
+            return_type: vector_name.clone(),
+            async_kind: AsyncKind::None,
+            is_static: false,
+            invoke_expr: String::new(),
+            sync_return_expr: Some(format!(
+                "new ((__load_{vector}()).{vector})(this._obj)",
+                vector = vector_name,
+            )),
+            async_convert_v: None,
+            is_void: false,
+            array_return_expr: None,
+            delegate_wraps: vec![],
+            progress_convert: None,
+            js_only: false,
+            overload_of: None,
+        }));
+        members.push(ProjectedMember::Method(ProjectedMethod {
             name: "create".into(),
             doc: Some(DocInfo {
                 summary: Some(

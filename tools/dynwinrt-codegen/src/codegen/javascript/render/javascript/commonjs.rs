@@ -123,7 +123,15 @@ pub(super) fn convert_to_cjs_with_lazy(
         let symbols = &sibling_symbols[module];
         let var_name = sanitize_ident(module);
 
-        let eager: Vec<&String> = symbols.iter().filter(|s| is_eager_symbol(s)).collect();
+        let all_eager: Vec<&String> = symbols
+            .iter()
+            .filter(|symbol| is_eager_symbol(symbol))
+            .collect();
+        let eager: Vec<&String> = all_eager
+            .iter()
+            .copied()
+            .filter(|symbol| transformed_body.contains(symbol.as_str()))
+            .collect();
         let lazy: Vec<&String> = symbols.iter().filter(|s| !is_eager_symbol(s)).collect();
 
         // Eager block first: `const { IID_X, X_PARAM_TYPES } = require('./X.js');`
@@ -137,6 +145,10 @@ pub(super) fn convert_to_cjs_with_lazy(
                 "const {{ {} }} = require('./{}.js');\n",
                 list, module
             ));
+        } else if !all_eager.is_empty() {
+            // Keep the sibling's initialization side effects without reading
+            // an export that may not exist yet during a CommonJS cycle.
+            out.push_str(&format!("require('./{}.js');\n", module));
         }
 
         if !lazy.is_empty() {
@@ -181,6 +193,44 @@ pub(super) fn convert_to_cjs_with_lazy(
     }
 
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::convert_to_cjs_with_lazy;
+    use std::collections::HashSet;
+
+    #[test]
+    fn unused_eager_symbol_keeps_module_initialization_only() {
+        let esm = "\
+import { IXamlType, IID_IXamlType } from './IXamlType.js';\n\
+export function getType(value) {\n\
+  return new __DWRT_REF__IXamlType__(value);\n\
+}\n";
+
+        let cjs = convert_to_cjs_with_lazy(esm, &HashSet::new());
+
+        assert!(!cjs.contains("const { IID_IXamlType }"), "{cjs}");
+        assert!(cjs.contains("require('./IXamlType.js');"), "{cjs}");
+        assert!(cjs.contains("const __get_IXamlType"), "{cjs}");
+        assert!(cjs.contains("new (__get_IXamlType())(value)"), "{cjs}");
+    }
+
+    #[test]
+    fn used_eager_symbol_is_still_destructured() {
+        let esm = "\
+import { IID_IFoo } from './IFoo.js';\n\
+export function cast(value) {\n\
+  return value.cast(IID_IFoo);\n\
+}\n";
+
+        let cjs = convert_to_cjs_with_lazy(esm, &HashSet::new());
+
+        assert!(
+            cjs.contains("const { IID_IFoo } = require('./IFoo.js');"),
+            "{cjs}"
+        );
+    }
 }
 
 /// Parse `import { A, B } from 'source';` (single-line). Returns Some(symbols, source)

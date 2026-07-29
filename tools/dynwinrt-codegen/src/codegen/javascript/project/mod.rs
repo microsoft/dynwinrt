@@ -15,7 +15,9 @@ mod structs;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
-use crate::meta::{ClassMeta, InterfaceMeta, MethodMeta, ParamDirection};
+use crate::meta::{
+    ClassMeta, InterfaceMeta, MethodMeta, PIID_IOBSERVABLE_VECTOR, PIID_IVECTOR, ParamDirection,
+};
 use crate::types::{TypeKind, TypeMeta};
 
 thread_local! {
@@ -62,9 +64,7 @@ use structs::project_struct_helpers;
 // ======================================================================
 // PIIDs of well-known collection interfaces
 // ======================================================================
-const PIID_IVECTOR: &str = "913337e9-11a1-4345-a3a2-4e7f956e222d";
 const PIID_IVECTOR_VIEW: &str = "bbe1fa4c-b0e3-4583-baef-1f1b2e483e56";
-const PIID_IOBSERVABLE_VECTOR: &str = "5917eb53-50b4-4a0d-b309-65862b3f1dbc";
 const PIID_IITERATOR: &str = "6a79e863-4300-459a-9966-cbb660963ee1";
 const PIID_IITERABLE: &str = "faa585ea-6214-4217-afda-7f46de5869b3";
 const PIID_IMAP: &str = "3c2925fe-8519-45c1-aa79-197b6718c1c1";
