@@ -26,11 +26,11 @@ export class IDataTransferManagerInterop {
         return new IDataTransferManagerInterop(_obj);
     }
     getForWindow(appWindow) {
-        const _raw = _IDataTransferManagerInterop.method(3).invoke(this._obj, [DynCom.pointer(appWindow), DynCom.iidPointer(IID_DataTransferManager_default)]);
+        const _raw = _IDataTransferManagerInterop.method(3).invoke(this._obj, [DynCom.pointer(DynCom.handleValue(appWindow)), DynCom.iidPointer(IID_DataTransferManager_default)]);
         const _out = DynCom.adoptComPointer(_raw, IID_DataTransferManager_default);
         return _out;
     }
     showShareUIForWindow(appWindow) {
-        _IDataTransferManagerInterop.method(4).invoke(this._obj, [DynCom.pointer(appWindow)]);
+        _IDataTransferManagerInterop.method(4).invoke(this._obj, [DynCom.pointer(DynCom.handleValue(appWindow))]);
     }
 }

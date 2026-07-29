@@ -75,6 +75,46 @@ test('DynCom does not adopt borrowed raw pointer bits as owned COM references', 
   t.regex(error.message, /only owned native outputs may be consumed/)
 })
 
+test('DynCom distinguishes handle-value bytes from data-pointer storage', (t) => {
+  const width = process.arch === 'ia32' ? 4 : 8
+  const expected = 0x12345678n
+  const handle = Buffer.alloc(width)
+  if (width === 8) {
+    handle.writeBigUInt64LE(expected)
+  } else {
+    handle.writeUInt32LE(Number(expected))
+  }
+
+  t.is(DynCom.handleValue(handle), expected)
+  t.is(DynCom.handleValue(expected), expected)
+  t.throws(() => DynCom.handleValue(Buffer.alloc(width - 1)), {
+    message: /must contain exactly/,
+  })
+  t.throws(() => DynCom.handleValue(Buffer.alloc(width + 1)), {
+    message: /must contain exactly/,
+  })
+  const wrongTypedArray = new Uint16Array(width / 2) as unknown as Uint8Array
+  t.throws(() => DynCom.handleValue(wrongTypedArray), {
+    message: /expected bigint, number, Buffer, or Uint8Array/,
+  })
+  t.throws(() => DynCom.pointer(wrongTypedArray), {
+    message: /expected bigint, number, Buffer, Uint8Array/,
+  })
+
+  const sid = Buffer.alloc(width)
+  sid.set(width === 8 ? [1, 2, 0, 0, 0, 0, 0, 5] : [1, 2, 0, 5])
+  const sidPointer = DynCom.pointer(sid)
+  t.not(DynCom.asPointerBigint(sidPointer), DynCom.handleValue(sid))
+})
+
+test('DynCom rejects a detached handle-value buffer', (t) => {
+  const bytes = new Uint8Array(process.arch === 'ia32' ? 4 : 8)
+  structuredClone(bytes.buffer, { transfer: [bytes.buffer] })
+
+  const error = t.throws(() => DynCom.handleValue(bytes))
+  t.regex(error.message, /detached Buffer/)
+})
+
 test('getComputerName', (t) => {
   const name = getComputerName()
   t.truthy(name)

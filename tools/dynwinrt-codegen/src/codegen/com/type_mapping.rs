@@ -19,6 +19,7 @@ pub(super) enum StringEncoding {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum HandleAliasKind {
     HandleValue,
+    DataPointer,
     StringPointer,
 }
 
@@ -248,7 +249,7 @@ pub(super) fn dts_params_for_method(m: &MethodMeta) -> Vec<String> {
                     name.push('?');
                 }
             }
-            format!("{}: {}", name, ts_type_expr_dts(&param.typ))
+            format!("{}: {}", name, ts_input_type_expr_dts(&param.typ))
         })
         .collect()
 }
@@ -401,6 +402,15 @@ pub(super) fn ts_type_expr_dts(t: &TypeMeta) -> String {
     }
 }
 
+pub(super) fn ts_input_type_expr_dts(t: &TypeMeta) -> String {
+    if accepts_handle_value_buffer(t)
+        || matches!(handle_alias(t), Some((_, HandleAliasKind::DataPointer)))
+    {
+        return format!("{} | Buffer | Uint8Array", handle_type_name(t).unwrap());
+    }
+    ts_type_expr_dts(t)
+}
+
 pub(super) fn ts_type_expr_js(t: &TypeMeta) -> String {
     if is_native_isize(t) {
         return "DynCom.isizeType()".into();
@@ -451,8 +461,16 @@ pub(super) fn wrap_arg_js(t: &TypeMeta, var: &str) -> String {
     if is_hresult(t) {
         return format!("DynCom.i32({var})");
     }
-    if handle_type_name(t).is_some() {
-        return format!("DynCom.pointer({var})");
+    if let Some((_, kind)) = handle_alias(t) {
+        return match kind {
+            HandleAliasKind::HandleValue if accepts_handle_value_buffer(t) => {
+                format!("DynCom.pointer(DynCom.handleValue({var}))")
+            }
+            HandleAliasKind::HandleValue => format!("DynCom.pointer({var})"),
+            HandleAliasKind::DataPointer | HandleAliasKind::StringPointer => {
+                format!("DynCom.pointer({var})")
+            }
+        };
     }
     if let TypeMeta::Interface { iid, .. } = t {
         if !iid.is_empty() {
@@ -514,9 +532,28 @@ fn handle_alias(t: &TypeMeta) -> Option<(String, HandleAliasKind)> {
 fn classify_handle_alias(_namespace: &str, name: &str) -> HandleAliasKind {
     if is_string_pointer_alias_name(name) {
         HandleAliasKind::StringPointer
+    } else if is_data_pointer_alias_name(name) {
+        HandleAliasKind::DataPointer
     } else {
         HandleAliasKind::HandleValue
     }
+}
+
+fn accepts_handle_value_buffer(t: &TypeMeta) -> bool {
+    matches!(
+        handle_alias(t),
+        Some((name, HandleAliasKind::HandleValue)) if name == "HWND"
+    )
+}
+
+fn is_data_pointer_alias_name(name: &str) -> bool {
+    matches!(
+        name,
+        "PSID"
+            | "PSECURITY_DESCRIPTOR"
+            | "MEMORY_MAPPED_VIEW_ADDRESS"
+            | "LPPROC_THREAD_ATTRIBUTE_LIST"
+    )
 }
 
 fn is_string_pointer_alias_name(name: &str) -> bool {

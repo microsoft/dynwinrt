@@ -148,6 +148,64 @@ fn create_test_hwnd() -> napi::Result<BigInt> {
   Ok(BigInt::from(bits as u64))
 }
 
+struct Uint8ArrayInfo {
+  data: *const u8,
+  length: usize,
+}
+
+fn uint8_array_info(
+  env: napi::sys::napi_env,
+  raw: napi::sys::napi_value,
+) -> napi::Result<Option<Uint8ArrayInfo>> {
+  let mut is_typed_array = false;
+  napi::check_status!(
+    unsafe { napi::sys::napi_is_typedarray(env, raw, &mut is_typed_array) },
+    "Failed to inspect TypedArray value"
+  )?;
+  if !is_typed_array {
+    return Ok(None);
+  }
+
+  let mut typed_array_type = 0;
+  let mut length = 0usize;
+  let mut data = std::ptr::null_mut();
+  let mut array_buffer = std::ptr::null_mut();
+  let mut byte_offset = 0usize;
+  napi::check_status!(
+    unsafe {
+      napi::sys::napi_get_typedarray_info(
+        env,
+        raw,
+        &mut typed_array_type,
+        &mut length,
+        &mut data,
+        &mut array_buffer,
+        &mut byte_offset,
+      )
+    },
+    "Failed to inspect TypedArray backing storage"
+  )?;
+  if typed_array_type != napi::sys::TypedarrayType::uint8_array as i32 {
+    return Ok(None);
+  }
+
+  let mut detached = false;
+  napi::check_status!(
+    unsafe { napi::sys::napi_is_detached_arraybuffer(env, array_buffer, &mut detached) },
+    "Failed to inspect TypedArray backing storage"
+  )?;
+  if detached {
+    return Err(napi::Error::from_reason(
+      "Cannot use a detached Buffer/Uint8Array",
+    ));
+  }
+
+  Ok(Some(Uint8ArrayInfo {
+    data: data.cast(),
+    length,
+  }))
+}
+
 fn pointer(value: Unknown) -> napi::Result<DynWinRTValue> {
   use napi::sys;
 
@@ -192,7 +250,8 @@ fn pointer(value: Unknown) -> napi::Result<DynWinRTValue> {
       dynwinrt::WinRTValue::RawPtr(number as usize as *mut std::ffi::c_void),
     ));
   }
-  if let Ok(array) = unsafe { napi::bindgen_prelude::Uint8Array::from_napi_value(env, raw) } {
+  if uint8_array_info(env, raw)?.is_some() {
+    let array = unsafe { napi::bindgen_prelude::Uint8Array::from_napi_value(env, raw) }?;
     let length = array.len();
     let pointer = if length == 0 {
       0
@@ -220,6 +279,62 @@ fn pointer(value: Unknown) -> napi::Result<DynWinRTValue> {
   }
   Err(napi::Error::from_reason(
     "pointer(): expected bigint, number, Buffer, Uint8Array, null, or undefined",
+  ))
+}
+
+fn handle_value(value: Unknown) -> napi::Result<BigInt> {
+  use napi::sys;
+
+  let env = value.value().env;
+  let raw = value.value().value;
+  let mut value_type = sys::ValueType::napi_undefined;
+  unsafe { sys::napi_typeof(env, raw, &mut value_type) };
+  if value_type == sys::ValueType::napi_bigint {
+    let bigint = unsafe { BigInt::from_napi_value(env, raw) }?;
+    let (negative, bits, lossless) = bigint.get_u64();
+    if negative || !lossless || bits as usize as u64 != bits {
+      return Err(napi::Error::from_reason(
+        "handleValue(): bigint must fit in an unsigned pointer",
+      ));
+    }
+    return Ok(BigInt::from(bits));
+  }
+  if value_type == sys::ValueType::napi_number {
+    let mut number = 0.0;
+    unsafe { sys::napi_get_value_double(env, raw, &mut number) };
+    if !number.is_finite()
+      || number < 0.0
+      || number.fract() != 0.0
+      || number > 9_007_199_254_740_991.0
+      || number as u64 as usize as u64 != number as u64
+    {
+      return Err(napi::Error::from_reason(
+        "handleValue(): number must be a non-negative safe integer that fits in a pointer",
+      ));
+    }
+    return Ok(BigInt::from(number as u64));
+  }
+  if let Some(array) = uint8_array_info(env, raw)? {
+    let expected = std::mem::size_of::<usize>();
+    if array.length != expected {
+      return Err(napi::Error::from_reason(format!(
+        "handleValue(): Buffer/Uint8Array must contain exactly {expected} bytes on this target",
+      )));
+    }
+    if array.data.is_null() {
+      return Err(napi::Error::from_reason(
+        "handleValue(): Buffer/Uint8Array backing storage is null",
+      ));
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(array.data, array.length) };
+    #[cfg(target_pointer_width = "64")]
+    let bits = u64::from_le_bytes(bytes.try_into().expect("validated handle byte length"));
+    #[cfg(target_pointer_width = "32")]
+    let bits = u32::from_le_bytes(bytes.try_into().expect("validated handle byte length")) as u64;
+    return Ok(BigInt::from(bits));
+  }
+  Err(napi::Error::from_reason(
+    "handleValue(): expected bigint, number, Buffer, or Uint8Array",
   ))
 }
 
@@ -761,6 +876,13 @@ impl DynCom {
     value: Unknown,
   ) -> napi::Result<DynWinRTValue> {
     self::pointer(value)
+  }
+
+  #[napi]
+  pub fn handle_value(
+    #[napi(ts_arg_type = "bigint | number | Buffer | Uint8Array")] value: Unknown,
+  ) -> napi::Result<BigInt> {
+    self::handle_value(value)
   }
 
   #[napi]

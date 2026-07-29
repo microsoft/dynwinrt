@@ -34,11 +34,11 @@ use super::type_mapping::{
     HandleAliasKind, MethodResult, StringEncoding, collect_handle_aliases, dts_params_for_method,
     dts_return_type, enum_import_names, has_string_buffer_method, is_bstr, is_cotaskmem_owned,
     is_hresult, is_optional_find_data_out_after_string_count, is_sys_free_string_owned,
-    method_results, string_buffer_param_is_optional, string_buffer_pattern, ts_type_expr_dts,
+    method_results, string_buffer_param_is_optional, string_buffer_pattern, ts_input_type_expr_dts,
     ts_type_expr_js, unwrap_return_js, uses_winrt_bridge_value, validate_com_abi, wrap_arg_js,
 };
 #[cfg(test)]
-use super::type_mapping::{handle_alias_kind, handle_type_name};
+use super::type_mapping::{handle_alias_kind, handle_type_name, ts_type_expr_dts};
 
 /// A rendered classic-COM output: primary `.js` + `.d.ts` for the interface,
 /// plus zero or more sibling files (one `.js` + `.d.ts` per referenced enum).
@@ -630,7 +630,10 @@ fn render_dts(meta: &ComInterfaceMeta, interop: Option<&InteropInfo>) -> String 
     for (h, kind) in &handle_aliases {
         match kind {
             HandleAliasKind::HandleValue => out.push_str(&format!(
-                "/** Opaque Win32 handle. Pass either a raw pointer value as a `bigint` (safe for full 64-bit handle values) or a `number` (only for handles that fit in a JS safe integer, e.g. HWND with small window IDs). Do NOT pass a `Buffer` — `DynCom.pointer(Buffer)` uses the buffer's own address, not the bytes it contains; for an Electron `getNativeWindowHandle()` Buffer, read the handle value first (for example, `buf.readBigUInt64LE(0)`). */\nexport type {h} = bigint | number;\n"
+                "/** Opaque Win32 handle value. Pass a raw pointer value as a `bigint` (full pointer width) or `number` (safe integer). */\nexport type {h} = bigint | number;\n"
+            )),
+            HandleAliasKind::DataPointer => out.push_str(&format!(
+                "/** Opaque native data address. Inputs may also use a `Buffer`/`Uint8Array`, whose backing-store address is passed and retained for the call. */\nexport type {h} = bigint | number;\n"
             )),
             HandleAliasKind::StringPointer => out.push_str(&format!(
                 "/** Win32 NUL-terminated string pointer. Pass a `Buffer` holding the string bytes (including the NUL terminator), or pass a raw pointer as `bigint`. */\nexport type {h} = bigint | Buffer;\n"
@@ -677,7 +680,7 @@ fn render_dts(meta: &ComInterfaceMeta, interop: Option<&InteropInfo>) -> String 
                             format!(
                                 "{}: {}",
                                 js_param_name(&p.name, i),
-                                ts_type_expr_dts(&p.typ)
+                                ts_input_type_expr_dts(&p.typ)
                             )
                         })
                         .collect();
@@ -699,7 +702,7 @@ fn render_dts(meta: &ComInterfaceMeta, interop: Option<&InteropInfo>) -> String 
                                 format!(
                                     "{}: {}",
                                     js_param_name(&param.name, index),
-                                    ts_type_expr_dts(&param.typ)
+                                    ts_input_type_expr_dts(&param.typ)
                                 )
                             })
                             .collect::<Vec<_>>();
@@ -729,7 +732,7 @@ fn render_dts(meta: &ComInterfaceMeta, interop: Option<&InteropInfo>) -> String 
                         format!(
                             "{}: {}",
                             js_param_name(&param.name, index),
-                            ts_type_expr_dts(&param.typ)
+                            ts_input_type_expr_dts(&param.typ)
                         )
                     })
                     .collect::<Vec<_>>();
@@ -892,6 +895,15 @@ mod tests {
             handle_alias_kind(&pwstr_struct()),
             Some(HandleAliasKind::StringPointer)
         );
+        let psid = TypeMeta::Struct {
+            namespace: "Windows.Win32.Security".into(),
+            name: "PSID".into(),
+            fields: vec![crate::types::FieldMeta {
+                name: "Value".into(),
+                typ: TypeMeta::Object,
+            }],
+        };
+        assert_eq!(handle_alias_kind(&psid), Some(HandleAliasKind::DataPointer));
     }
 
     #[test]
@@ -1666,7 +1678,7 @@ mod tests {
     }
 
     #[test]
-    fn handle_value_typedef_rejects_buffer_but_string_pointer_keeps_buffer() {
+    fn handle_value_arg_accepts_buffer_and_string_pointer_keeps_buffer() {
         let hwnd = TypeMeta::Struct {
             namespace: "Windows.Win32.Foundation".into(),
             name: "HWND".into(),
@@ -1692,13 +1704,84 @@ mod tests {
             return_type: Some(make_hresult()),
             ..Default::default()
         };
-        let dts = render_dts(&plain_iface_with_method(method), None);
+        let iface = plain_iface_with_method(method);
+        let dts = render_dts(&iface, None);
+        let js = render_js(&iface, None);
 
+        // HWND inputs accept Electron's pointer-width Buffer, but the HWND
+        // output alias remains a numeric handle value.
         assert!(dts.contains("export type HWND = bigint | number;"));
-        assert!(dts.contains("Do NOT pass a `Buffer`"));
         assert!(dts.contains("export type PWSTR = bigint | Buffer;"));
         assert!(dts.contains("Pass a `Buffer` holding the string bytes"));
-        assert!(dts.contains("setOverlayIcon(hwnd: HWND, description: PWSTR): void;"));
+        assert!(dts.contains(
+            "setOverlayIcon(hwnd: HWND | Buffer | Uint8Array, description: PWSTR): void;"
+        ));
+
+        // Handle-value conversion is centralized in the runtime; string
+        // pointers continue to pass their backing-store address.
+        assert!(
+            js.contains("DynCom.pointer(DynCom.handleValue(hwnd))"),
+            "HWND arg must use DynCom.handleValue:\n{js}"
+        );
+        assert!(!js.contains("function _handleArg("));
+        assert!(!js.contains("handleValue(description)"));
+    }
+
+    #[test]
+    fn data_pointer_alias_does_not_read_buffer_contents_as_a_handle() {
+        let psid = TypeMeta::Struct {
+            namespace: "Windows.Win32.Security".into(),
+            name: "PSID".into(),
+            fields: vec![crate::types::FieldMeta {
+                name: "Value".into(),
+                typ: TypeMeta::Object,
+            }],
+        };
+        let method = MethodMeta {
+            name: "AddUserSid".into(),
+            params: vec![ParamMeta {
+                name: "userSid".into(),
+                typ: psid,
+                direction: ParamDirection::In,
+            }],
+            return_type: Some(make_hresult()),
+            ..Default::default()
+        };
+        let iface = plain_iface_with_method(method);
+        let js = render_js(&iface, None);
+        let dts = render_dts(&iface, None);
+
+        assert!(dts.contains("export type PSID = bigint | number;"));
+        assert!(dts.contains("addUserSid(userSid: PSID | Buffer | Uint8Array): void;"));
+        assert!(js.contains("DynCom.pointer(userSid)"));
+        assert!(!js.contains("handleValue(userSid)"));
+    }
+
+    #[test]
+    fn hwnd_in_out_uses_runtime_handle_conversion_without_inline_helper() {
+        let hwnd = TypeMeta::Struct {
+            namespace: "Windows.Win32.Foundation".into(),
+            name: "HWND".into(),
+            fields: vec![crate::types::FieldMeta {
+                name: "Value".into(),
+                typ: TypeMeta::Object,
+            }],
+        };
+        let method = MethodMeta {
+            name: "Create".into(),
+            params: vec![ParamMeta {
+                name: "window".into(),
+                typ: hwnd,
+                direction: ParamDirection::InOut,
+            }],
+            return_type: Some(make_hresult()),
+            ..Default::default()
+        };
+        let iface = plain_iface_with_method(method);
+        let js = render_js(&iface, None);
+
+        assert!(js.contains("DynCom.pointer(DynCom.handleValue(window))"));
+        assert!(!js.contains("function _handleArg("));
     }
 
     #[test]

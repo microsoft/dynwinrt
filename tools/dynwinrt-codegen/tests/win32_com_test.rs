@@ -200,11 +200,19 @@ fn param_type_mapping() {
     let dts = out.dts.as_str();
     let js = out.js.as_str();
 
-    // HWND is a handle value type → bigint | number surface (never Buffer).
+    // HWND inputs accept Electron's pointer-width Buffer through the centralized
+    // runtime conversion, while the HWND value alias remains numeric.
     assert!(
         dts.contains("export type HWND = bigint | number;"),
-        "HWND should be projected as `bigint | number` in .d.ts, got:\n{}",
+        "HWND value aliases should remain numeric in .d.ts, got:\n{}",
         dts
+    );
+    assert!(
+        dts.contains("hwnd: HWND | Buffer | Uint8Array")
+            && js.contains("DynCom.pointer(DynCom.handleValue(hwnd))")
+            && !js.contains("function _handleArg("),
+        "HWND inputs must use centralized DynCom.handleValue in .js, got:\n{}",
+        js
     );
 
     // ULONGLONG (U64) → bigint
@@ -875,6 +883,37 @@ fn u16_input_param_uses_existing_u16_value_ctor_not_u16value() {
         !out.js.contains("u16Value(") && !out.js.contains("i16Value("),
         "codegen must not emit non-existent u16Value/i16Value ctor:\n{}",
         out.js
+    );
+}
+
+#[test]
+fn sid_buffers_keep_data_pointer_address_semantics() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+
+    let interface = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.Storage.FileSystem",
+        "IDiskQuotaControl",
+    )
+    .expect("IDiskQuotaControl must exist");
+    let output = com::generate_com_interface_files(&interface, &win32_winmd())
+        .expect("IDiskQuotaControl generation should succeed");
+
+    assert!(
+        output
+            .dts
+            .contains("addUserSid(pUserSid: PSID | Buffer | Uint8Array"),
+        "PSID input must accept backing storage rather than handle bytes:\n{}",
+        output.dts
+    );
+    assert!(
+        output.js.contains("DynCom.pointer(pUserSid)")
+            && !output.js.contains("handleValue(pUserSid)"),
+        "PSID Buffer must pass its address, not decoded contents:\n{}",
+        output.js
     );
 }
 

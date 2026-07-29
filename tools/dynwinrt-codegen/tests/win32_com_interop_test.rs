@@ -142,7 +142,7 @@ fn interop_dts_hides_riid_and_out_ptr_for_datatransfermanager() {
     // the `getForWindow` return type (asserting a bare `DataTransferManager`
     // substring would be a false positive that matches the class name).
     assert!(
-        dts.contains("getForWindow(appWindow: HWND): DynWinRtValue;"),
+        dts.contains("getForWindow(appWindow: HWND | Buffer | Uint8Array): DynWinRtValue;"),
         ".d.ts getForWindow must return the DynWinRtValue bridge:\n{}",
         dts
     );
@@ -274,7 +274,7 @@ fn interop_return_is_explicit_winrt_bridge_value() {
 
     assert!(
         out.dts
-            .contains("getForWindow(appWindow: HWND): DynWinRtValue;"),
+            .contains("getForWindow(appWindow: HWND | Buffer | Uint8Array): DynWinRtValue;"),
         "interop .d.ts must expose the WinRT bridge value:\n{}",
         out.dts
     );
