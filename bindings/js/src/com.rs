@@ -532,7 +532,7 @@ impl DynComInterface {
 }
 
 #[napi]
-pub struct DynComMethodHandle(dynwinrt::MethodHandle);
+pub struct DynComMethodHandle(dynwinrt::com::MethodHandle);
 
 #[napi]
 impl DynComMethodHandle {

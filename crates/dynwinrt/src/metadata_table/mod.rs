@@ -285,28 +285,7 @@ impl MetadataTable {
         if let Some(kind) = self.get_named_type(name) {
             return self.make(kind);
         }
-        self.create_interface_method_table(iid, 6);
-        let kind = TypeKind::Interface(iid);
-        self.insert_named_type(name, kind);
-        self.make(kind)
-    }
-
-    pub(crate) fn register_com_interface(
-        self: &Arc<Self>,
-        name: &str,
-        iid: GUID,
-        base_slot: usize,
-    ) -> TypeHandle {
-        if let Some(kind) = self.get_named_type(name) {
-            assert_eq!(
-                kind,
-                TypeKind::Interface(iid),
-                "type name {name:?} is already registered with a different type or IID"
-            );
-            self.create_interface_method_table(iid, base_slot);
-            return self.make(kind);
-        }
-        self.create_interface_method_table(iid, base_slot);
+        self.create_interface_method_table(iid);
         let kind = TypeKind::Interface(iid);
         self.insert_named_type(name, kind);
         self.make(kind)

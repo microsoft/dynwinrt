@@ -7,7 +7,7 @@ description: Use when implementing or reviewing Classic COM, Windows.Win32.winmd
 
 Use this skill for changes under:
 
-- `crates/dynwinrt/src/com.rs`, `signature.rs`, or `call.rs`;
+- `crates/dynwinrt/src/com.rs`, `signature.rs`, `native_call.rs`, or `call.rs`;
 - `bindings/js/src/com.rs`;
 - `tools/dynwinrt-codegen/src/com_metadata.rs`;
 - `tools/dynwinrt-codegen/src/codegen/com/`; or
@@ -84,6 +84,43 @@ Unknown or incomplete categories must fail closed.
    `@microsoft/dynwinrt/com`.
 5. Renderers consume validated semantic IR. They must not infer ABI semantics
    from names, JavaScript values, or struct shape.
+
+### Required runtime architecture
+
+```text
+WinRT metadata -> signature.rs (WinRT planner) --------\
+                                                        -> native_call.rs -> call.rs -> native method
+COM metadata   -> com.rs (COM planner and method table) /
+```
+
+Keep these source-level responsibilities distinct:
+
+| Component | Required responsibility |
+|---|---|
+| `signature.rs` | WinRT-only signature facade preserving existing `In`, `Out`, fill-array, HRESULT, and out-value behavior. |
+| `com.rs` | COM-local `Type`, `MethodSignature`, `Interface`, `MethodHandle`, interface roots, method registry, pointer/InOut semantics, and native return conventions. |
+| `native_call.rs` | Private lowering backend for completed signatures: parameter/output indexing, value validation and coercion, array ABI expansion, fast-path selection, libffi CIF preparation, and result coordination. |
+| `call.rs` | Private executor: vtable lookup, stable ABI storage, libffi argument construction and invocation, and decoding raw output slots according to the plan. |
+
+Apply these rules:
+
+- WinRT methods stay in the WinRT `MetadataTable`; COM methods stay in the
+  COM-local registry.
+- Only the WinRT planner may define WinRT signature behavior. Do not add raw
+  pointers, `InOut`, direct native returns, or `void` returns to its public
+  model.
+- Only the COM metadata/projection and planner layers may interpret pointer
+  categories, parameter direction, return convention, and ownership.
+- `native_call.rs` may validate and lower an already-described call, but must
+  not infer metadata semantics, allocator ownership, or language projection.
+- `call.rs` must execute the completed plan without inferring metadata,
+  ownership, or projection contracts from the caller or language-level value.
+- Native methods published through a shared registry must be fully constructed
+  and immutable. Any manual `Send`/`Sync` implementation requires a documented
+  libffi read-only safety argument and compile-time trait tests.
+- Exact identity checks are required for structs. Preserve established
+  ABI-compatible WinRT projection aliases such as Char16/U16 and enum/I32
+  arrays.
 
 ## Projection responsibility
 

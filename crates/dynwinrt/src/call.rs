@@ -7,7 +7,7 @@ use windows_core::{HRESULT, Interface};
 
 use crate::{
     abi::{AbiType, AbiValue},
-    signature::{MethodReturn, Parameter},
+    native_call::{MethodReturn, Parameter},
     value::WinRTValue,
 };
 

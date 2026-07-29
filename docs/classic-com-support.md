@@ -21,6 +21,44 @@ return shapes; the renderer only serializes those decisions. Classic COM work
 must not change existing WinRT metadata, generated output, ownership, runtime
 behavior, or the `@microsoft/dynwinrt` root API.
 
+## Runtime call architecture
+
+WinRT and Classic COM have separate semantic planners. They share only the
+private native-call backend and executor:
+
+```text
+WinRT metadata -> signature.rs (WinRT planner) --------\
+                                                        -> native_call.rs -> call.rs -> native method
+COM metadata   -> com.rs (COM planner and method table) /
+```
+
+| Layer | Responsibility |
+|---|---|
+| `signature.rs` | WinRT-only signature facade. It preserves the existing `In`, `Out`, fill-array, HRESULT, and out-value conventions. It must not expose raw pointers, `InOut`, native direct returns, or other Classic COM semantics. |
+| `com.rs` | Classic COM types, method signatures, interface roots, vtable slot numbering, method registry, and method handles. It owns raw-pointer, `InOut`, direct-return, and `void` call semantics without registering methods in the WinRT `MetadataTable`. |
+| `native_call.rs` | Private lowering backend. It converts a completed WinRT or COM signature into parameter/output slots, validates input values, expands array ABI parameters, chooses a fast path or prepares a libffi CIF, and coordinates result conversion. It does not own metadata, language projection, or public interface registries. |
+| `call.rs` | Private native executor. It reads the vtable function pointer, creates stable ABI storage and libffi arguments, performs the call, and decodes raw output storage according to the completed plan. It must not infer WinRT, Classic COM, ownership, or JavaScript semantics. |
+
+This separation is semantic, not a duplication of the native executor. WinRT
+and Classic COM may both lower primitive and struct layout information through
+the same private backend, but only their respective semantic layers may decide
+what a type, parameter direction, return convention, or ownership contract
+means.
+
+In particular:
+
+- WinRT interface methods remain in the WinRT `MetadataTable` and begin at
+  `IInspectable` slot 6.
+- Classic COM maintains its own interface method table and selects slot 3 or 6
+  from its `IUnknown` or `IInspectable` root.
+- shared native methods are fully built before publication and are immutable
+  during concurrent invocation;
+- exact struct identity is validated before native dispatch, while established
+  WinRT ABI aliases such as Char16/U16 and enum/I32 arrays remain compatible;
+  and
+- language-friendly choices remain a codegen responsibility after the COM
+  planner has validated the native contract.
+
 ## Size of Windows.Win32.winmd
 
 The counts below are exact for

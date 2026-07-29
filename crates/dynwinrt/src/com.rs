@@ -2,7 +2,10 @@
 // Licensed under the MIT License.
 
 use core::ffi::c_void;
-use std::cell::RefCell;
+use std::{
+    cell::RefCell,
+    sync::{Arc, RwLock},
+};
 
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, COINIT_MULTITHREADED, CoCreateInstance,
@@ -11,8 +14,9 @@ use windows::Win32::System::Com::{
 use windows_core::{GUID, IUnknown, Interface as WindowsInterface};
 
 use crate::{
-    MetadataTable, MethodHandle, TypeHandle, WinRTValue, result,
-    signature::{AbiMethodSignature, ParameterType},
+    MetadataTable, TypeHandle, WinRTValue,
+    native_call::{AbiMethodSignature, Method as NativeMethod, ParameterType},
+    result,
 };
 
 const RPC_E_CHANGED_MODE: windows_core::HRESULT = windows_core::HRESULT(0x80010106u32 as i32);
@@ -78,29 +82,94 @@ impl MethodSignature {
     }
 }
 
+#[derive(Debug)]
+struct RegisteredMethod(NativeMethod);
+
+// Safety: a RegisteredMethod is fully built before publication and remains
+// immutable. NativeMethod invokes libffi's CIF only through shared references;
+// ffi_call treats the prepared CIF and its type graph as read-only.
+unsafe impl Send for RegisteredMethod {}
+unsafe impl Sync for RegisteredMethod {}
+
 #[derive(Debug, Clone)]
-pub struct Interface(TypeHandle);
+pub struct Interface {
+    name: String,
+    iid: GUID,
+    base_slot: usize,
+    methods: Arc<RwLock<Vec<(String, Arc<RegisteredMethod>)>>>,
+}
 
 impl Interface {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn iid(&self) -> GUID {
+        self.iid
+    }
+
     pub fn add_method(self, name: &str, signature: MethodSignature) -> Self {
-        self.0
-            .clone()
-            .add_method(name, crate::MethodSignature::from_abi(signature.0));
+        let mut methods = self.methods.write().unwrap();
+        if methods.iter().any(|(existing, _)| existing == name) {
+            drop(methods);
+            return self;
+        }
+        let vtable_index = self.base_slot + methods.len();
+        methods.push((
+            name.to_string(),
+            Arc::new(RegisteredMethod(signature.0.build(vtable_index))),
+        ));
+        drop(methods);
         self
     }
 
     pub fn method(&self, vtable_index: usize) -> Option<MethodHandle> {
-        self.0.method(vtable_index)
+        let local_index = vtable_index.checked_sub(self.base_slot)?;
+        self.methods
+            .read()
+            .unwrap()
+            .get(local_index)
+            .map(|(_, method)| MethodHandle(Arc::clone(method)))
+    }
+}
+
+#[derive(Clone)]
+pub struct MethodHandle(Arc<RegisteredMethod>);
+
+impl std::fmt::Debug for MethodHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MethodHandle").finish_non_exhaustive()
+    }
+}
+
+impl MethodHandle {
+    pub fn invoke(&self, obj: *mut c_void, args: &[WinRTValue]) -> result::Result<Vec<WinRTValue>> {
+        self.0
+            .0
+            .call_dynamic(obj, args)
+            .map_err(result::Error::WindowsError)
+    }
+
+    pub fn call_getter_hstring(&self, obj: *mut c_void) -> result::Result<windows_core::HSTRING> {
+        self.0
+            .0
+            .call_getter_hstring(obj)
+            .map_err(result::Error::WindowsError)
     }
 }
 
 pub fn register_interface(
-    table: &std::sync::Arc<MetadataTable>,
+    _table: &std::sync::Arc<MetadataTable>,
     name: &str,
     iid: GUID,
     base: InterfaceBase,
 ) -> Interface {
-    Interface(table.register_com_interface(name, iid, base.first_method_slot()))
+    Interface {
+        name: name.to_string(),
+        iid,
+        base_slot: base.first_method_slot(),
+        methods: Arc::new(RwLock::new(Vec::new())),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -244,7 +313,7 @@ fn wide_to_string(buffer: &[u16]) -> String {
 mod tests {
     use super::*;
     use crate::{
-        InterfaceSignature, MetadataTable, com_helpers::E_NOINTERFACE, ro_get_activation_factory_2,
+        MetadataTable, com_helpers::E_NOINTERFACE, ro_get_activation_factory_2,
         roapi::query_interface,
     };
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -258,11 +327,19 @@ mod tests {
             },
         },
     };
-    use windows_core::{HSTRING, Interface, w};
+    use windows_core::{HSTRING, w};
 
     #[repr(C)]
     struct FakeComObject {
         vtable: *const *mut c_void,
+    }
+
+    #[test]
+    fn interface_and_method_handle_are_send_and_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+
+        assert_send_sync::<Interface>();
+        assert_send_sync::<MethodHandle>();
     }
 
     unsafe extern "system" fn return_u32(_this: *mut c_void) -> u32 {
@@ -424,41 +501,58 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "already registered with a different type or IID")]
-    fn interface_names_cannot_alias_different_iids() {
+    fn interfaces_with_the_same_name_do_not_alias() {
         let table = MetadataTable::new();
-        register_interface(
+        let first = register_interface(
             &table,
             "Windows.Win32.Example.IThing",
             GUID::from_u128(1),
             InterfaceBase::IUnknown,
         );
-        register_interface(
+        let second = register_interface(
             &table,
             "Windows.Win32.Example.IThing",
             GUID::from_u128(2),
             InterfaceBase::IUnknown,
         );
+
+        assert_eq!(first.name(), second.name());
+        assert_ne!(first.iid(), second.iid());
+        assert!(!Arc::ptr_eq(&first.methods, &second.methods));
     }
 
-    fn shell_link_signature(table: &std::sync::Arc<MetadataTable>) -> InterfaceSignature {
-        let mut iface =
-            InterfaceSignature::define_from_iunknown("IShellLinkW", IID_ISHELL_LINK_W, table);
-        iface
-            .add_method(crate::MethodSignature::new(table)) // 3 GetPath
-            .add_method(crate::MethodSignature::new(table)) // 4 GetIDList
-            .add_method(crate::MethodSignature::new(table)) // 5 SetIDList
-            .add_method(crate::MethodSignature::new(table)) // 6 GetDescription
-            .add_method(crate::MethodSignature::new(table)) // 7 SetDescription
-            .add_method(crate::MethodSignature::new(table)) // 8 GetWorkingDirectory
-            .add_method(crate::MethodSignature::new(table)) // 9 SetWorkingDirectory
-            .add_method(crate::MethodSignature::new(table)) // 10 GetArguments
-            .add_method(crate::MethodSignature::new(table)) // 11 SetArguments
-            .add_method(crate::MethodSignature::new(table).add_out(table.u16_type())) // 12 GetHotkey
-            .add_method(crate::MethodSignature::new(table).add_in(table.u16_type())) // 13 SetHotkey
-            .add_method(crate::MethodSignature::new(table).add_out(table.i32_type())) // 14 GetShowCmd
-            .add_method(crate::MethodSignature::new(table).add_in(table.i32_type())); // 15 SetShowCmd
-        iface
+    fn shell_link_interface(table: &std::sync::Arc<MetadataTable>) -> Interface {
+        register_interface(
+            table,
+            "Windows.Win32.UI.Shell.IShellLinkW",
+            IID_ISHELL_LINK_W,
+            InterfaceBase::IUnknown,
+        )
+        .add_method("GetPath", MethodSignature::new(table))
+        .add_method("GetIDList", MethodSignature::new(table))
+        .add_method("SetIDList", MethodSignature::new(table))
+        .add_method("GetDescription", MethodSignature::new(table))
+        .add_method("SetDescription", MethodSignature::new(table))
+        .add_method("GetWorkingDirectory", MethodSignature::new(table))
+        .add_method("SetWorkingDirectory", MethodSignature::new(table))
+        .add_method("GetArguments", MethodSignature::new(table))
+        .add_method("SetArguments", MethodSignature::new(table))
+        .add_method(
+            "GetHotkey",
+            MethodSignature::new(table).add_out(Type::winrt(table.u16_type())),
+        )
+        .add_method(
+            "SetHotkey",
+            MethodSignature::new(table).add_in(Type::winrt(table.u16_type())),
+        )
+        .add_method(
+            "GetShowCmd",
+            MethodSignature::new(table).add_out(Type::winrt(table.i32_type())),
+        )
+        .add_method(
+            "SetShowCmd",
+            MethodSignature::new(table).add_in(Type::winrt(table.i32_type())),
+        )
     }
 
     fn native_usize_type(table: &std::sync::Arc<MetadataTable>) -> Type {
@@ -504,10 +598,13 @@ mod tests {
     fn shell_link_set_get_show_cmd_round_trips_via_classic_com_vtable() -> result::Result<()> {
         let shell_link = shell_link()?.as_object().unwrap();
         let table = MetadataTable::new();
-        let iface = shell_link_signature(&table);
+        let iface = shell_link_interface(&table);
 
-        iface.methods[15].call_dynamic(shell_link.as_raw(), &[WinRTValue::I32(3)])?;
-        let result = iface.methods[14].call_dynamic(shell_link.as_raw(), &[])?;
+        iface
+            .method(15)
+            .unwrap()
+            .invoke(shell_link.as_raw(), &[WinRTValue::I32(3)])?;
+        let result = iface.method(14).unwrap().invoke(shell_link.as_raw(), &[])?;
 
         assert_eq!(result[0].as_i32().unwrap(), 3);
         Ok(())
@@ -517,10 +614,13 @@ mod tests {
     fn shell_link_set_get_hotkey_round_trips_u16() -> result::Result<()> {
         let shell_link = shell_link()?.as_object().unwrap();
         let table = MetadataTable::new();
-        let iface = shell_link_signature(&table);
+        let iface = shell_link_interface(&table);
 
-        iface.methods[13].call_dynamic(shell_link.as_raw(), &[WinRTValue::U16(0x0141)])?;
-        let result = iface.methods[12].call_dynamic(shell_link.as_raw(), &[])?;
+        iface
+            .method(13)
+            .unwrap()
+            .invoke(shell_link.as_raw(), &[WinRTValue::U16(0x0141)])?;
+        let result = iface.method(12).unwrap().invoke(shell_link.as_raw(), &[])?;
 
         assert_eq!(result[0].as_i32().unwrap() as u16, 0x0141);
         Ok(())
@@ -702,10 +802,13 @@ mod tests {
         let adopted = unsafe { adopt_com_pointer(raw) };
         let adopted = adopted.as_object().expect("adopted value must be Object");
         let table = MetadataTable::new();
-        let iface = shell_link_signature(&table);
+        let iface = shell_link_interface(&table);
 
-        iface.methods[15].call_dynamic(adopted.as_raw(), &[WinRTValue::I32(7)])?;
-        let result = iface.methods[14].call_dynamic(adopted.as_raw(), &[])?;
+        iface
+            .method(15)
+            .unwrap()
+            .invoke(adopted.as_raw(), &[WinRTValue::I32(7)])?;
+        let result = iface.method(14).unwrap().invoke(adopted.as_raw(), &[])?;
 
         assert_eq!(result[0].as_i32().unwrap(), 7);
         Ok(())
