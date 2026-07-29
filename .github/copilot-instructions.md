@@ -95,6 +95,17 @@ These APIs are available on any Windows 10/11 machine without WinAppSDK:
 - **Method invocation** returns a single `WinRTValue` (not a list) in Python binding
 - **Generated code** uses relative imports (`from .module import Class`) — must be in a Python package
 
+### Classic COM implementation rule
+
+For Classic COM, Windows.Win32 metadata, pointer, handle, ownership, or native
+ABI changes, follow
+[`classic-com-abi`](skills/classic-com-abi/SKILL.md). Model native type plus
+parameter contract before language projection, keep COM separate from WinRT,
+and fail closed when layout or ownership is incomplete. JavaScript ergonomics
+belong to the codegen projection layer; the renderer must not infer ABI
+semantics. Classic COM changes must preserve existing WinRT models, generated
+output, runtime behavior, and the `@microsoft/dynwinrt` root API.
+
 ### Code Generator (dynwinrt-codegen)
 - `src/codegen/project.rs` + `src/codegen/projected.rs` — Build the language-neutral `ProjectedFile` IR from parsed metadata
 - `src/codegen/render_js.rs` + `src/codegen/render_dts.rs` — Render IR to `.js` and `.d.ts`

@@ -14,6 +14,13 @@ Both entrypoints use the same native N-API binary and private libffi call
 machinery. Classic COM metadata, generated wrappers, ownership rules, and
 public APIs remain separate from the WinRT projection.
 
+Language ergonomics belong to codegen projection, after native semantics have
+been validated. The runtime executes a faithful ABI plan; the JavaScript
+projection chooses Buffer/string/bigint, naming, hidden ABI parameters, and
+return shapes; the renderer only serializes those decisions. Classic COM work
+must not change existing WinRT metadata, generated output, ownership, runtime
+behavior, or the `@microsoft/dynwinrt` root API.
+
 ## Size of Windows.Win32.winmd
 
 The counts below are exact for
