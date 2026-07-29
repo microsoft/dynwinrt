@@ -52,7 +52,9 @@ console.log(uri.host);                                 // "example.com"
 
 Classic COM bindings import their runtime API from the separate
 `@microsoft/dynwinrt/com` subpath. It is part of the same npm package; the
-package root remains the WinRT-only API.
+package root remains the WinRT-only API. See
+[Classic COM support](docs/classic-com-support.md) for the supported ABI,
+common-interface test matrix, unsupported native types, and ownership rules.
 
 Generated bindings project unambiguous public WinRT activation metadata as JavaScript
 constructors, including overloads such as `new Uri(base, relative)`. Existing
