@@ -26,6 +26,13 @@ pub(super) enum HandleAliasKind {
 pub(super) fn validate_com_abi(meta: &ComInterfaceMeta) -> Result<(), String> {
     for method in &meta.interface.methods {
         for param in &method.params {
+            validate_resolved_interfaces(
+                &param.typ,
+                &format!(
+                    "{}.{} parameter `{}`",
+                    meta.interface.name, method.name, param.name
+                ),
+            )?;
             if let ParamDirection::UnsupportedNativeArray { count_param_index } = param.direction {
                 let count = count_param_index
                     .map(|index| format!("parameter index {index}"))
@@ -65,6 +72,10 @@ pub(super) fn validate_com_abi(meta: &ComInterfaceMeta) -> Result<(), String> {
             .as_ref()
             .filter(|return_type| !is_hresult(return_type))
         {
+            validate_resolved_interfaces(
+                return_type,
+                &format!("{}.{} return value", meta.interface.name, method.name),
+            )?;
             if !supports_direct_return(return_type) {
                 return Err(format!(
                     "{}.{}: unsupported direct native return type {:?}",
@@ -72,8 +83,74 @@ pub(super) fn validate_com_abi(meta: &ComInterfaceMeta) -> Result<(), String> {
                 ));
             }
         }
+        if method.preserve_hresult && !method.return_type.as_ref().is_some_and(is_hresult) {
+            return Err(format!(
+                "{}.{}: semantic HRESULT metadata requires an HRESULT return",
+                meta.interface.name, method.name
+            ));
+        }
     }
     Ok(())
+}
+
+fn validate_resolved_interfaces(t: &TypeMeta, context: &str) -> Result<(), String> {
+    match t {
+        TypeMeta::Interface {
+            namespace,
+            name,
+            iid,
+        } if iid.is_empty() => Err(format!(
+            "{context}: interface `{namespace}.{name}` has no resolvable IID; \
+             pass the metadata that defines it via --ref instead of projecting it as a raw pointer"
+        )),
+        TypeMeta::Parameterized {
+            namespace, name, ..
+        } => Err(format!(
+            "{context}: parameterized interface `{namespace}.{name}` requires a computed closed IID \
+             and managed ownership projection; raw-pointer fallback is not allowed"
+        )),
+        TypeMeta::AsyncAction
+        | TypeMeta::AsyncActionWithProgress(_)
+        | TypeMeta::AsyncOperation(_)
+        | TypeMeta::AsyncOperationWithProgress(_, _) => Err(format!(
+            "{context}: async interface requires a computed closed IID and managed ownership \
+             projection; raw-pointer fallback is not allowed"
+        )),
+        TypeMeta::Delegate {
+            namespace, name, ..
+        } => Err(format!(
+            "{context}: delegate `{namespace}.{name}` requires a managed callback projection; \
+             raw-pointer fallback is not allowed"
+        )),
+        TypeMeta::Array(_) => Err(format!(
+            "{context}: native arrays require an explicit count and element-ownership projection; \
+             raw-pointer fallback is not allowed"
+        )),
+        TypeMeta::RuntimeClass {
+            default_interface: Some(default_interface),
+            ..
+        } => validate_resolved_interfaces(default_interface, context),
+        TypeMeta::RuntimeClass {
+            namespace,
+            name,
+            default_interface: None,
+        } => Err(format!(
+            "{context}: runtime class `{namespace}.{name}` has no resolvable default interface; \
+             pass the metadata that defines it via --ref"
+        )),
+        _ => Ok(()),
+    }
+}
+
+fn managed_interface_iid(t: &TypeMeta) -> Option<&str> {
+    match t {
+        TypeMeta::Interface { iid, .. } if !iid.is_empty() => Some(iid),
+        TypeMeta::RuntimeClass {
+            default_interface: Some(default_interface),
+            ..
+        } => managed_interface_iid(default_interface),
+        _ => None,
+    }
 }
 
 fn supports_in_out(t: &TypeMeta) -> bool {
@@ -111,6 +188,12 @@ pub(super) fn unwrap_return_js(t: &TypeMeta, expr: &str) -> String {
     if is_native_usize(t) {
         return format!("DynCom.toUsizeBigint({expr})");
     }
+    if is_hresult(t) {
+        return format!("DynCom.toNumber({expr})");
+    }
+    if managed_interface_iid(t).is_some() {
+        return expr.to_string();
+    }
     match string_buffer_encoding(t) {
         Some(StringEncoding::Wide) => {
             return format!("DynCom.takeCoTaskMemWideString({expr})");
@@ -141,7 +224,6 @@ pub(super) fn unwrap_return_js(t: &TypeMeta, expr: &str) -> String {
         TypeMeta::Guid => format!("DynCom.toGuidString({expr})"),
         TypeMeta::Enum { underlying, .. } => unwrap_return_js(underlying, expr),
         TypeMeta::String => format!("{expr}.toString()"),
-        TypeMeta::Interface { iid, .. } if !iid.is_empty() => expr.to_string(),
         _ => expr.to_string(),
     }
 }
@@ -154,7 +236,11 @@ pub(super) struct MethodResult<'a> {
 
 pub(super) fn method_results(m: &MethodMeta) -> Vec<MethodResult<'_>> {
     let mut result = Vec::new();
-    if let Some(typ) = m.return_type.as_ref().filter(|typ| !is_hresult(typ)) {
+    if let Some(typ) = m
+        .return_type
+        .as_ref()
+        .filter(|typ| !is_hresult(typ) || m.preserve_hresult)
+    {
         result.push(MethodResult {
             typ,
             param_index: None,
@@ -284,10 +370,8 @@ pub(super) fn uses_winrt_bridge_value(meta: &ComInterfaceMeta) -> bool {
             .map(|param| &param.typ)
             .chain(method.return_type.iter())
         {
-            if let TypeMeta::Interface { iid, .. } = typ {
-                if !iid.is_empty() {
-                    return true;
-                }
+            if managed_interface_iid(typ).is_some() {
+                return true;
             }
         }
     }
@@ -382,6 +466,9 @@ pub(super) fn ts_type_expr_dts(t: &TypeMeta) -> String {
     if let Some(handle) = handle_type_name(t) {
         return handle;
     }
+    if managed_interface_iid(t).is_some() {
+        return "DynWinRtValue".into();
+    }
     match t {
         TypeMeta::Bool => "boolean".into(),
         TypeMeta::I8
@@ -396,7 +483,6 @@ pub(super) fn ts_type_expr_dts(t: &TypeMeta) -> String {
         TypeMeta::I64 | TypeMeta::U64 => "bigint".into(),
         TypeMeta::String => "string".into(),
         TypeMeta::Guid => "string".into(),
-        TypeMeta::Interface { iid, .. } if !iid.is_empty() => "DynWinRtValue".into(),
         TypeMeta::Enum { name, .. } | TypeMeta::Struct { name, .. } => name.clone(),
         _ => "bigint | Buffer".into(),
     }
@@ -424,10 +510,8 @@ pub(super) fn ts_type_expr_js(t: &TypeMeta) -> String {
     if handle_type_name(t).is_some() {
         return "DynCom.pointerType()".into();
     }
-    if let TypeMeta::Interface { iid, .. } = t {
-        if !iid.is_empty() {
-            return format!("DynCom.interfaceType(WinGuid.parse('{iid}'))");
-        }
+    if let Some(iid) = managed_interface_iid(t) {
+        return format!("DynCom.interfaceType(WinGuid.parse('{iid}'))");
     }
     match t {
         TypeMeta::Bool => "DynCom.boolType()".into(),
@@ -442,6 +526,7 @@ pub(super) fn ts_type_expr_js(t: &TypeMeta) -> String {
         TypeMeta::F32 => "DynCom.f32Type()".into(),
         TypeMeta::F64 => "DynCom.f64Type()".into(),
         TypeMeta::Char16 => "DynCom.char16Type()".into(),
+        TypeMeta::String => "DynCom.hstringType()".into(),
         TypeMeta::Guid => "DynCom.guidType()".into(),
         TypeMeta::Enum { underlying, .. } => ts_type_expr_js(underlying),
         _ => "DynCom.pointerType()".into(),
@@ -472,10 +557,8 @@ pub(super) fn wrap_arg_js(t: &TypeMeta, var: &str) -> String {
             }
         };
     }
-    if let TypeMeta::Interface { iid, .. } = t {
-        if !iid.is_empty() {
-            return var.to_string();
-        }
+    if managed_interface_iid(t).is_some() {
+        return var.to_string();
     }
     match t {
         TypeMeta::Bool => format!("DynCom.boolValue({var})"),
@@ -490,6 +573,7 @@ pub(super) fn wrap_arg_js(t: &TypeMeta, var: &str) -> String {
         TypeMeta::F32 => format!("DynCom.f32({var})"),
         TypeMeta::F64 => format!("DynCom.f64({var})"),
         TypeMeta::Char16 => format!("DynCom.char16({var})"),
+        TypeMeta::String => format!("DynCom.hstring({var})"),
         TypeMeta::Guid => format!("DynCom.guid(WinGuid.parse({var}))"),
         TypeMeta::Enum { underlying, .. } => wrap_arg_js(underlying, var),
         _ => format!("DynCom.pointer({var})"),

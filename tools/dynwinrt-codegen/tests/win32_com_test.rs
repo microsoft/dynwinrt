@@ -1153,6 +1153,187 @@ fn namespace_mode_rejects_classic_com_instead_of_using_winrt_slots() {
 }
 
 #[test]
+fn correlation_vector_hstring_output_is_owned_and_projected_as_string() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+
+    let interface = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.System.WinRT",
+        "ICorrelationVectorSource",
+    )
+    .expect("ICorrelationVectorSource must exist");
+    let method = interface
+        .interface
+        .methods
+        .iter()
+        .find(|method| method.name == "get_CorrelationVector")
+        .expect("get_CorrelationVector must exist");
+
+    assert!(matches!(method.params[0].typ, TypeMeta::String));
+    let output = com::generate_com_interface_files(&interface, &win32_winmd())
+        .expect("HSTRING output generation must succeed");
+    assert!(output.js.contains(".addOut(DynCom.hstringType())"));
+    assert!(output.js.contains("return _out.toString();"));
+    assert!(output.dts.contains("get_CorrelationVector(): string;"));
+}
+
+#[test]
+fn unresolved_external_interface_fails_until_reference_metadata_is_loaded() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+
+    let unresolved = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.System.WinRT.Composition",
+        "ICompositorInterop",
+    )
+    .expect("ICompositorInterop must exist");
+    let error = com::generate_com_interface_files(&unresolved, &win32_winmd())
+        .expect_err("missing Windows metadata must fail closed");
+    assert!(error.contains("ICompositionSurface"));
+    assert!(error.contains("--ref"));
+
+    let Some(windows_winmd) = discovered_windows_winmd() else {
+        eprintln!("Skipping resolved-reference half: Windows.winmd not available");
+        return;
+    };
+    let metadata = format!("{};{}", win32_winmd(), windows_winmd);
+    let resolved = com_metadata::parse_com_interface(
+        &metadata,
+        "Windows.Win32.System.WinRT.Composition",
+        "ICompositorInterop",
+    )
+    .expect("ICompositorInterop must resolve with Windows.winmd");
+    let output = com::generate_com_interface_files(&resolved, &metadata)
+        .expect("resolved external interface generation must succeed");
+
+    let create_graphics_device = resolved
+        .interface
+        .methods
+        .iter()
+        .find(|method| method.name == "CreateGraphicsDevice")
+        .expect("CreateGraphicsDevice must exist");
+    let TypeMeta::RuntimeClass {
+        default_interface: Some(default_interface),
+        ..
+    } = &create_graphics_device.params[1].typ
+    else {
+        panic!("CreateGraphicsDevice must return a resolved runtime class");
+    };
+    let TypeMeta::Interface { iid, .. } = default_interface.as_ref() else {
+        panic!("runtime class default must resolve to an interface");
+    };
+    assert!(!iid.is_empty());
+    assert!(output.js.contains(&format!(
+        ".addOut(DynCom.interfaceType(WinGuid.parse('{iid}')))"
+    )));
+    assert!(output.dts.contains("DynWinRtValue"));
+}
+
+#[test]
+fn semantic_hresult_metadata_preserves_is_dirty_only() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+
+    let mut interface = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.System.Com",
+        "IPersistFile",
+    )
+    .expect("IPersistFile must exist");
+    let is_dirty = interface
+        .interface
+        .methods
+        .iter()
+        .find(|method| method.name == "IsDirty")
+        .expect("IsDirty must exist");
+    let load = interface
+        .interface
+        .methods
+        .iter()
+        .find(|method| method.name == "Load")
+        .expect("Load must exist");
+
+    assert!(is_dirty.preserve_hresult);
+    assert!(!load.preserve_hresult);
+
+    interface
+        .interface
+        .methods
+        .retain(|method| method.name == "IsDirty");
+    let output = com::generate_com_interface_files(&interface, &win32_winmd())
+        .expect("semantic HRESULT generation must succeed");
+    assert!(output.js.contains(".preserveHresult()"));
+    assert!(output.js.contains("return DynCom.toNumber(_out);"));
+    assert!(output.dts.contains("isDirty(): number;"));
+}
+
+#[test]
+fn metadata_delegate_parameter_fails_closed_as_a_delegate() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+
+    let interface = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.Graphics.Direct2D",
+        "ID2D1Factory1",
+    )
+    .expect("ID2D1Factory1 must exist");
+    let register = interface
+        .interface
+        .methods
+        .iter()
+        .find(|method| method.name == "RegisterEffectFromStream")
+        .expect("RegisterEffectFromStream must exist");
+    assert!(register.params.iter().any(|param| {
+        matches!(
+            &param.typ,
+            TypeMeta::Delegate { name, .. } if name == "PD2D1_EFFECT_FACTORY"
+        )
+    }));
+
+    let error = com::generate_com_interface_files(&interface, &win32_winmd())
+        .expect_err("delegate parameters require a managed callback projection");
+    assert!(error.contains("PD2D1_EFFECT_FACTORY"));
+    assert!(error.contains("managed callback projection"));
+}
+
+#[test]
+fn by_value_guid_is_not_treated_as_a_dynamic_iid_pointer() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+
+    let interface = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.System.WinRT.Display",
+        "IDisplayDeviceInterop",
+    )
+    .expect("IDisplayDeviceInterop must exist");
+    let open = interface
+        .interface
+        .methods
+        .iter()
+        .find(|method| method.name == "OpenSharedHandle")
+        .expect("OpenSharedHandle must exist");
+    assert!(matches!(open.params[1].typ, TypeMeta::Guid));
+
+    let error = com::generate_com_interface_files(&interface, &win32_winmd())
+        .expect_err("by-value GUID plus void** must not be treated as REFIID interop");
+    assert!(error.contains("untyped pointer output has no ownership projection"));
+}
+
+#[test]
 fn com_only_generation_emits_an_importable_package_shape() {
     if !win32_available() {
         eprintln!("Skipping: Win32 winmd not available");

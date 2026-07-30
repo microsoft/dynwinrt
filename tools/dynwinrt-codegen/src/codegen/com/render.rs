@@ -348,6 +348,9 @@ fn build_method_sig_js(m: &MethodMeta) -> String {
     }
     match &m.return_type {
         None => parts.push(".returnsVoid()".to_string()),
+        Some(rt) if is_hresult(rt) && m.preserve_hresult => {
+            parts.push(".preserveHresult()".to_string());
+        }
         Some(rt) if !is_hresult(rt) => {
             parts.push(format!(".returns({})", ts_type_expr_js(rt)));
         }
@@ -1082,8 +1085,7 @@ mod tests {
     }
 
     #[test]
-    fn interop_shape_accepts_guid_typed_trailing_in() {
-        // Some winmds project REFIID as TypeMeta::Guid rather than Object.
+    fn interop_shape_rejects_guid_passed_by_value() {
         let m = MethodMeta {
             name: "GetSomething".into(),
             vtable_index: 3,
@@ -1094,8 +1096,7 @@ mod tests {
                     direction: ParamDirection::In,
                 },
                 ParamMeta {
-                    // Deliberately NOT named "riid" — the type alone is sufficient.
-                    name: "interfaceId".into(),
+                    name: "riid".into(),
                     typ: TypeMeta::Guid,
                     direction: ParamDirection::In,
                 },
@@ -1108,10 +1109,10 @@ mod tests {
             return_type: Some(make_hresult()),
             ..Default::default()
         };
-        let natural = method_is_interop_shape(&m)
-            .expect("System.Guid-typed trailing in-param must be recognised as interop");
-        assert_eq!(natural.len(), 1);
-        assert_eq!(natural[0].name, "target");
+        assert!(
+            method_is_interop_shape(&m).is_none(),
+            "a by-value GUID must not be passed as a REFIID pointer"
+        );
     }
 
     /// FIX 3 REGRESSION: a method returning HRESULT with an [out] Object and a
@@ -2132,5 +2133,237 @@ mod tests {
                 .dts
                 .contains("bindToHandler(pbc: bigint | Buffer, iid: string): DynWinRtValue;")
         );
+    }
+
+    #[test]
+    fn hstring_output_uses_owned_hstring_projection() {
+        let method = MethodMeta {
+            name: "get_CorrelationVector".into(),
+            vtable_index: 3,
+            params: vec![ParamMeta {
+                name: "cv".into(),
+                typ: TypeMeta::String,
+                direction: ParamDirection::Out,
+            }],
+            return_type: Some(make_hresult()),
+            ..Default::default()
+        };
+
+        let output = generate_com_interface_files(&plain_iface_with_method(method), "").unwrap();
+
+        assert!(output.js.contains(".addOut(DynCom.hstringType())"));
+        assert!(output.js.contains("return _out.toString();"));
+        assert!(output.dts.contains("get_CorrelationVector(): string;"));
+    }
+
+    #[test]
+    fn unresolved_interface_iid_fails_closed() {
+        let method = MethodMeta {
+            name: "CreateSurface".into(),
+            vtable_index: 3,
+            params: vec![ParamMeta {
+                name: "result".into(),
+                typ: TypeMeta::Interface {
+                    namespace: "Windows.UI.Composition".into(),
+                    name: "ICompositionSurface".into(),
+                    iid: String::new(),
+                },
+                direction: ParamDirection::Out,
+            }],
+            return_type: Some(make_hresult()),
+            ..Default::default()
+        };
+
+        let error = generate_com_interface_files(&plain_iface_with_method(method), "")
+            .expect_err("an unresolved interface must not degrade to a raw pointer");
+
+        assert!(error.contains("ICompositionSurface"));
+        assert!(error.contains("no resolvable IID"));
+        assert!(error.contains("--ref"));
+    }
+
+    #[test]
+    fn parameterized_interface_fails_closed_even_with_a_piid() {
+        let method = MethodMeta {
+            name: "GetItems".into(),
+            vtable_index: 3,
+            params: vec![ParamMeta {
+                name: "result".into(),
+                typ: TypeMeta::Parameterized {
+                    namespace: "Windows.Foundation.Collections".into(),
+                    name: "IVectorView`1".into(),
+                    piid: "bbe1fa4c-b0e3-4583-baef-1f1b2e483e56".into(),
+                    args: vec![TypeMeta::String],
+                },
+                direction: ParamDirection::Out,
+            }],
+            return_type: Some(make_hresult()),
+            ..Default::default()
+        };
+
+        let error = generate_com_interface_files(&plain_iface_with_method(method), "")
+            .expect_err("a PIID alone is not a closed interface IID");
+
+        assert!(error.contains("computed closed IID"));
+        assert!(error.contains("raw-pointer fallback is not allowed"));
+    }
+
+    #[test]
+    fn async_interface_fails_closed_without_a_closed_iid() {
+        let method = MethodMeta {
+            name: "OpenAsync".into(),
+            vtable_index: 3,
+            params: vec![ParamMeta {
+                name: "result".into(),
+                typ: TypeMeta::AsyncOperation(Box::new(TypeMeta::String)),
+                direction: ParamDirection::Out,
+            }],
+            return_type: Some(make_hresult()),
+            ..Default::default()
+        };
+
+        let error = generate_com_interface_files(&plain_iface_with_method(method), "")
+            .expect_err("async interfaces must not degrade to raw pointers");
+
+        assert!(error.contains("async interface requires a computed closed IID"));
+        assert!(error.contains("raw-pointer fallback is not allowed"));
+    }
+
+    #[test]
+    fn native_array_fails_closed_without_count_and_ownership() {
+        let method = MethodMeta {
+            name: "GetItems".into(),
+            vtable_index: 3,
+            params: vec![ParamMeta {
+                name: "result".into(),
+                typ: TypeMeta::Array(Box::new(TypeMeta::Interface {
+                    namespace: "Contoso".into(),
+                    name: "IItem".into(),
+                    iid: "11111111-2222-3333-4444-555555555555".into(),
+                })),
+                direction: ParamDirection::Out,
+            }],
+            return_type: Some(make_hresult()),
+            ..Default::default()
+        };
+
+        let error = generate_com_interface_files(&plain_iface_with_method(method), "")
+            .expect_err("native arrays must not degrade to raw pointers");
+
+        assert!(error.contains("explicit count and element-ownership projection"));
+        assert!(error.contains("raw-pointer fallback is not allowed"));
+    }
+
+    #[test]
+    fn delegate_fails_closed_without_a_callback_projection() {
+        let method = MethodMeta {
+            name: "SetHandler".into(),
+            vtable_index: 3,
+            params: vec![ParamMeta {
+                name: "handler".into(),
+                typ: TypeMeta::Delegate {
+                    namespace: "Contoso".into(),
+                    name: "Handler".into(),
+                    iid: "11111111-2222-3333-4444-555555555555".into(),
+                },
+                direction: ParamDirection::In,
+            }],
+            return_type: Some(make_hresult()),
+            ..Default::default()
+        };
+
+        let error = generate_com_interface_files(&plain_iface_with_method(method), "")
+            .expect_err("delegates require an explicit managed projection");
+
+        assert!(error.contains("managed callback projection"));
+        assert!(error.contains("raw-pointer fallback is not allowed"));
+    }
+
+    #[test]
+    fn runtime_class_uses_its_resolved_default_interface() {
+        let method = MethodMeta {
+            name: "CreateDevice".into(),
+            vtable_index: 3,
+            params: vec![ParamMeta {
+                name: "result".into(),
+                typ: TypeMeta::RuntimeClass {
+                    namespace: "Windows.UI.Composition".into(),
+                    name: "CompositionGraphicsDevice".into(),
+                    default_interface: Some(Box::new(TypeMeta::Interface {
+                        namespace: "Windows.UI.Composition".into(),
+                        name: "ICompositionGraphicsDevice".into(),
+                        iid: "a329b321-0d69-4b89-9951-28de94dc998d".into(),
+                    })),
+                },
+                direction: ParamDirection::Out,
+            }],
+            return_type: Some(make_hresult()),
+            ..Default::default()
+        };
+
+        let output = generate_com_interface_files(&plain_iface_with_method(method), "").unwrap();
+
+        assert!(output.js.contains(
+            ".addOut(DynCom.interfaceType(WinGuid.parse('a329b321-0d69-4b89-9951-28de94dc998d')))"
+        ));
+        assert!(output.js.contains("return _out;"));
+        assert!(output.dts.contains("createDevice(): DynWinRtValue;"));
+    }
+
+    #[test]
+    fn runtime_class_without_a_default_interface_fails_closed() {
+        let method = MethodMeta {
+            name: "CreateDevice".into(),
+            vtable_index: 3,
+            params: vec![ParamMeta {
+                name: "result".into(),
+                typ: TypeMeta::RuntimeClass {
+                    namespace: "Windows.UI.Composition".into(),
+                    name: "CompositionGraphicsDevice".into(),
+                    default_interface: None,
+                },
+                direction: ParamDirection::Out,
+            }],
+            return_type: Some(make_hresult()),
+            ..Default::default()
+        };
+
+        let error = generate_com_interface_files(&plain_iface_with_method(method), "")
+            .expect_err("runtime classes require a resolved default interface");
+
+        assert!(error.contains("no resolvable default interface"));
+        assert!(error.contains("--ref"));
+    }
+
+    #[test]
+    fn semantic_hresult_is_preserved_as_a_number() {
+        let method = MethodMeta {
+            name: "IsDirty".into(),
+            vtable_index: 4,
+            return_type: Some(make_hresult()),
+            preserve_hresult: true,
+            ..Default::default()
+        };
+
+        let output = generate_com_interface_files(&plain_iface_with_method(method), "").unwrap();
+
+        assert!(output.js.contains(".preserveHresult()"));
+        assert!(output.js.contains("return DynCom.toNumber(_out);"));
+        assert!(output.dts.contains("isDirty(): number;"));
+    }
+
+    #[test]
+    fn ordinary_hresult_remains_throw_or_void() {
+        let method = MethodMeta {
+            name: "Load".into(),
+            vtable_index: 5,
+            return_type: Some(make_hresult()),
+            ..Default::default()
+        };
+
+        let output = generate_com_interface_files(&plain_iface_with_method(method), "").unwrap();
+
+        assert!(!output.js.contains(".preserveHresult()"));
+        assert!(output.dts.contains("load(): void;"));
     }
 }

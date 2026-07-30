@@ -392,6 +392,11 @@ pub fn call_method_dynamic<A: ArgumentList + ?Sized>(
                 hr.ok()?;
                 None
             }
+            MethodReturn::SemanticHResult => {
+                let hr: windows_core::HRESULT = cif.call(CodePtr(fptr), &ffi_args);
+                hr.ok()?;
+                Some(WinRTValue::HResult(hr))
+            }
             MethodReturn::Void => {
                 cif.call::<()>(CodePtr(fptr), &ffi_args);
                 None

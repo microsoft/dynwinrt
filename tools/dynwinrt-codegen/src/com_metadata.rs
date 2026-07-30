@@ -50,6 +50,7 @@ pub struct MethodMeta {
     pub vtable_index: usize,
     pub params: Vec<ParamMeta>,
     pub return_type: Option<TypeMeta>,
+    pub preserve_hresult: bool,
     pub doc: Option<String>,
     pub owned_outputs: Vec<OwnedOutput>,
 }
@@ -310,11 +311,13 @@ fn parse_methods(
             mark_caller_owned_string_buffers(&mut params);
             let return_type = (signature.return_type != windows_metadata::Type::Void)
                 .then(|| map_return_type(&signature.return_type, index));
+            let preserve_hresult = method.has_attribute("CanReturnMultipleSuccessValuesAttribute");
             MethodMeta {
                 name,
                 vtable_index: base_offset + index_in_interface,
                 params,
                 return_type,
+                preserve_hresult,
                 doc: None,
                 owned_outputs,
             }
@@ -392,14 +395,43 @@ fn map_com_type(typ: &windows_metadata::Type, index: &reader::Index) -> TypeMeta
     match typ {
         windows_metadata::Type::ISize => native_isize_type(),
         windows_metadata::Type::USize => native_usize_type(),
-        windows_metadata::Type::Name(name) => index
-            .get(&name.namespace, &name.name)
-            .next()
-            .and_then(|def| parse_com_enum_def(&def))
-            .map(|enum_meta| enum_meta.as_type_meta())
-            .unwrap_or_else(|| crate::meta::map_winmd_type_with_generics(typ, index, &[])),
+        windows_metadata::Type::Name(name)
+            if is_canonical_hstring_name(&name.namespace, &name.name) =>
+        {
+            TypeMeta::String
+        }
+        windows_metadata::Type::Name(name) => {
+            if let Some(def) = index.get(&name.namespace, &name.name).next() {
+                if let Some(enum_meta) = parse_com_enum_def(&def) {
+                    return enum_meta.as_type_meta();
+                }
+                if let Some(delegate) = parse_com_delegate_def(&def) {
+                    return delegate;
+                }
+            }
+            crate::meta::map_winmd_type_with_generics(typ, index, &[])
+        }
         _ => crate::meta::map_winmd_type_with_generics(typ, index, &[]),
     }
+}
+
+fn is_canonical_hstring_name(namespace: &str, name: &str) -> bool {
+    namespace == "Windows.Win32.System.WinRT" && name == "HSTRING"
+}
+
+fn parse_com_delegate_def(def: &reader::TypeDef) -> Option<TypeMeta> {
+    let extends = def.extends()?;
+    if !matches!(
+        (extends.namespace(), extends.name()),
+        ("System", "Delegate") | ("System", "MulticastDelegate")
+    ) {
+        return None;
+    }
+    Some(TypeMeta::Delegate {
+        namespace: def.namespace().to_string(),
+        name: def.name().to_string(),
+        iid: crate::meta::extract_iid(def),
+    })
 }
 
 impl ComEnumMeta {
@@ -730,6 +762,15 @@ mod tests {
             classify_direction(ParamAttributes::In | ParamAttributes::Out, false),
             ParamDirection::InOut
         );
+    }
+
+    #[test]
+    fn hstring_mapping_requires_the_canonical_namespace() {
+        assert!(is_canonical_hstring_name(
+            "Windows.Win32.System.WinRT",
+            "HSTRING"
+        ));
+        assert!(!is_canonical_hstring_name("Contoso.Interop", "HSTRING"));
     }
 
     #[test]

@@ -507,6 +507,11 @@ impl DynComMethodSig {
   pub fn returns_void(&self) -> Self {
     Self(self.0.clone().returns_void())
   }
+
+  #[napi]
+  pub fn preserve_hresult(&self) -> Self {
+    Self(self.0.clone().preserve_hresult())
+  }
 }
 
 #[napi]
@@ -732,6 +737,13 @@ impl DynCom {
   #[napi]
   pub fn hstring_type() -> DynComType {
     DynComType(dynwinrt::com::Type::winrt(TABLE.hstring()))
+  }
+
+  #[napi]
+  pub fn hstring(value: String) -> DynWinRTValue {
+    DynWinRTValue::new(dynwinrt::WinRTValue::HString(windows::core::HSTRING::from(
+      value,
+    )))
   }
 
   #[napi]

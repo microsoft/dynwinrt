@@ -44,14 +44,8 @@ pub(super) fn method_is_interop_shape(m: &MethodMeta) -> Option<Vec<ParamMeta>> 
         return None;
     }
     let riid = &m.params[last_idx - 1];
-    let is_riid = match &riid.typ {
-        TypeMeta::Guid => true,
-        TypeMeta::Object => {
-            let name = riid.name.to_ascii_lowercase();
-            name == "riid" || name == "iid"
-        }
-        _ => false,
-    };
+    let is_riid = matches!(riid.typ, TypeMeta::Object)
+        && matches!(riid.name.to_ascii_lowercase().as_str(), "riid" | "iid");
     is_riid.then(|| m.params[..last_idx - 1].to_vec())
 }
 

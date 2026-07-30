@@ -111,6 +111,8 @@ Apply these rules:
   model.
 - Only the COM metadata/projection and planner layers may interpret pointer
   categories, parameter direction, return convention, and ownership.
+- A by-value GUID is not REFIID. Dynamic-IID output adoption requires
+  pointer-shaped metadata plus an explicit `iid`/`riid` semantic parameter.
 - `native_call.rs` may validate and lower an already-described call, but must
   not infer metadata semantics, allocator ownership, or language projection.
 - `call.rs` must execute the completed plan without inferring metadata,
@@ -195,6 +197,8 @@ Examples:
 - `adoptComPointer()` accepts only a native output known to transfer `+1`.
 - Numeric and Buffer-backed pointers are borrowed and cannot be adopted.
 - Pair BSTR with `SysFreeString`.
+- Pair HSTRING ownership with `WindowsDeleteString`; never project HSTRING as a
+  numeric pointer.
 - Pair CoTaskMem allocations with `CoTaskMemFree`.
 - Win32 handles are not COM references; cleanup is resource-specific.
 - Unknown allocator or ownership contracts fail closed.
@@ -208,9 +212,13 @@ Before supporting an interface:
 3. Inspect every method, not only the method intended for a sample.
 4. Record `NativeArrayInfo`, `FreeWith`, `Const`, parameter direction, and
    pointer depth.
-5. Check Microsoft API documentation for ownership that metadata does not
+5. Record `CanReturnMultipleSuccessValuesAttribute` before deciding whether an
+   HRESULT is throw-or-void or a semantic result.
+6. Resolve every referenced interface IID from the loaded metadata. Require
+   callers to provide external definitions through `--ref`.
+7. Check Microsoft API documentation for ownership that metadata does not
    encode.
-6. Generate with `--dry-run` and verify unsupported methods stop the whole
+8. Generate with `--dry-run` and verify unsupported methods stop the whole
    unsafe interface projection.
 
 Do not claim general interface support when only a manually described runtime
@@ -228,6 +236,11 @@ Reject generation when any required fact is unknown, including:
 - VARIANT, PROPVARIANT, SAFEARRAY, FORMATETC, or STGMEDIUM without dedicated
   models;
 - unsupported direct native returns; or
+- interface parameters whose IID or PIID cannot be resolved from loaded
+  metadata;
+- parameterized or async interfaces without a computed closed IID;
+- delegates without a managed callback projection;
+- native arrays without explicit count and element-ownership contracts;
 - incomplete inherited vtable layout.
 
 An error during generation is safer than plausible generated code with the

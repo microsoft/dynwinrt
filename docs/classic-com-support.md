@@ -267,8 +267,10 @@ Required support:
 `IPersistFile::IsDirty` use `S_OK` versus `S_FALSE` as their actual result.
 Discarding every successful HRESULT loses information.
 
-The projection needs an explicit PreserveSig/semantic-HRESULT classification
-instead of globally treating every non-negative HRESULT as `void`.
+Windows.Win32 metadata marks these methods with
+`CanReturnMultipleSuccessValuesAttribute`. The COM projection preserves the
+numeric successful HRESULT for marked methods while still throwing failed
+HRESULTs. Unmarked HRESULT methods retain the normal throw-or-`void` behavior.
 
 ### 9. Apartment affinity and marshaling
 
@@ -315,7 +317,7 @@ not be described as solving every problem in the map above.
 |---|---|
 | WinRT/Classic COM separation | Separate COM metadata/codegen path and `@microsoft/dynwinrt/com` public entrypoint. The WinRT generator and root runtime API remain unchanged. |
 | Interface root and vtable layout | Distinguishes `IUnknown` slot 3 from `IInspectable` slot 6 and walks inherited Classic COM interfaces before assigning slots. |
-| Method return conventions | Supports normal HRESULT methods plus native direct scalar, direct pointer at the runtime layer, and direct `void` returns. |
+| Method return conventions | Supports normal HRESULT methods, semantic HRESULT values marked with `CanReturnMultipleSuccessValuesAttribute`, native direct scalar, direct pointer at the runtime layer, and direct `void` returns. |
 | Basic parameter direction | Supports input, output, and scalar in/out parameters without reducing in/out to out-only. |
 | Primitive ABI types | Signed/unsigned integers, floats, BOOL, HRESULT, GUID, enums, and `char16`. |
 | Pointer-sized values | `ISize`/`USize` select the correct x86/x64 ABI width and JavaScript uses `bigint`. |
@@ -325,6 +327,9 @@ not be described as solving every problem in the map above.
 | Ownership provenance | Borrowed numeric/TypedArray pointers cannot be re-adopted as a second COM owner. Native owned outputs are consumed once. |
 | Backing-storage lifetime | Buffer/TypedArray owners are retained and detached ArrayBuffers are rejected before native use. |
 | Common string ownership | Scalar BSTR output uses `SysFreeString`; supported `PWSTR`/`PSTR` allocations use `CoTaskMemFree`. |
+| HSTRING ownership | Classic COM methods that explicitly use HSTRING project strings through owning HSTRING values; outputs release with `WindowsDeleteString`. |
+| External interface metadata | Interface parameters require a resolvable IID. Missing referenced metadata fails generation with a `--ref` diagnostic instead of degrading an owned interface to a raw pointer. |
+| WinRT runtime-class references | A resolved runtime class lowers through its default interface IID and remains a managed COM value. Missing defaults fail closed. |
 | Common interop pattern | Supports HWND + REFIID + `void**` bridges and adopts the returned interface reference. |
 | Explicit COM initialization | Activation no longer silently chooses MTA; callers select STA or MTA with `DynCom.initialize()`. |
 | Fail-closed generation | Unsupported structs, arrays, pointer outputs, ownership, and in/out shapes stop generation with a targeted error. |
@@ -351,7 +356,6 @@ not be described as solving every problem in the map above.
 - SAFEARRAY;
 - FORMATETC and STGMEDIUM;
 - arbitrary COM event/callback sink generation;
-- semantic `S_OK`/`S_FALSE` HRESULT projection;
 - cross-thread/apartment marshaling; and
 - the general flat-Win32 DLL-export and handle-cleanup layer.
 
@@ -361,6 +365,7 @@ not be described as solving every problem in the map above.
 |---|---|---|
 | `IUnknown` and `IInspectable` roots | Supported | User methods begin at vtable slot 3 or 6 respectively. Full inherited Classic COM slot numbering is preserved. |
 | `HRESULT` methods | Supported | Failed HRESULTs become errors. |
+| Semantic `HRESULT` methods | Supported | `CanReturnMultipleSuccessValuesAttribute` preserves successful values such as `S_OK` and `S_FALSE`; failed values still become errors. |
 | Native `void` returns | Supported | Used by interfaces such as `IMalloc`. |
 | Direct scalar returns | Supported | Includes signed/unsigned integers, floating point values, and enums. |
 | Direct pointer returns | Runtime supported; codegen partial | The runtime can describe a pointer return explicitly. Metadata codegen currently fails closed for interfaces such as `IMalloc` because it does not preserve the raw-pointer return kind. |
@@ -375,12 +380,20 @@ not be described as solving every problem in the map above.
 | Caller-owned UTF-16 output buffers | Supported for recognized shapes | The generator allocates and decodes the buffer when metadata identifies the count parameter. |
 | Callee-allocated `PWSTR` / `PSTR` outputs | Supported | Generated code decodes and frees `CoTaskMem` storage. |
 | Scalar `[out] BSTR*` | Supported | Generated code converts the BSTR and releases it with `SysFreeString`. |
+| HSTRING inputs and scalar outputs | Supported | JavaScript strings are converted to owning HSTRING values; returned HSTRING values are decoded and released automatically. |
+| Referenced interface types | Supported when IID metadata is loaded | Missing external definitions fail closed and direct callers to pass the defining winmd with `--ref`. |
+| Dynamic-IID `void**` outputs | Supported for explicit REFIID shapes | The IID argument must be a pointer-shaped `iid`/`riid` parameter. A GUID passed by value is not REFIID and cannot trigger interface adoption. |
 | Explicit apartment initialization | Supported | `DynCom.initialize()` never silently chooses an apartment for the caller. |
 
 The runtime can manually describe some ABI shapes that the generator rejects.
 For example, a carefully defined native struct can be called from Rust, but the
 generator does not emit a struct until its native layout is known to be
 correct.
+
+Parameterized and async interfaces, delegates, and native arrays remain
+fail-closed until the COM projection can compute their complete IID, callback,
+count, and element-ownership contracts. They must never fall back to
+`bigint | Buffer`.
 
 ## Unsupported types and shapes
 

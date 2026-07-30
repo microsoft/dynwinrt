@@ -80,6 +80,10 @@ impl MethodSignature {
     pub fn returns_void(self) -> Self {
         Self(self.0.returns_void())
     }
+
+    pub fn preserve_hresult(self) -> Self {
+        Self(self.0.preserve_hresult())
+    }
 }
 
 #[derive(Debug)]
@@ -346,6 +350,24 @@ mod tests {
         u32::MAX
     }
 
+    unsafe extern "system" fn return_s_false(_this: *mut c_void) -> windows_core::HRESULT {
+        windows_core::HRESULT(1)
+    }
+
+    unsafe extern "system" fn return_failure(_this: *mut c_void) -> windows_core::HRESULT {
+        windows_core::HRESULT(0x80004005u32 as i32)
+    }
+
+    unsafe extern "system" fn return_hstring(
+        _this: *mut c_void,
+        value: *mut *mut c_void,
+    ) -> windows_core::HRESULT {
+        unsafe {
+            *value = std::mem::transmute(HSTRING::from("dynwinrt HSTRING"));
+        }
+        windows_core::HRESULT(0)
+    }
+
     static VOID_CALLS: AtomicU32 = AtomicU32::new(0);
 
     unsafe extern "system" fn return_void(_this: *mut c_void) {
@@ -420,6 +442,68 @@ mod tests {
 
         assert!(values.is_empty());
         assert_eq!(VOID_CALLS.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn semantic_hresult_preserves_success_codes_and_throws_failures() {
+        let table = MetadataTable::new();
+        let signature = MethodSignature::new(&table).preserve_hresult();
+        let success_vtable = [return_s_false as *mut c_void];
+        let mut success = FakeComObject {
+            vtable: success_vtable.as_ptr(),
+        };
+
+        let result = call_method(
+            0,
+            (&mut success as *mut FakeComObject).cast(),
+            signature.clone(),
+            &[],
+        )
+        .unwrap();
+        assert!(matches!(
+            result.as_slice(),
+            [WinRTValue::HResult(value)] if value.0 == 1
+        ));
+
+        let failure_vtable = [return_failure as *mut c_void];
+        let mut failure = FakeComObject {
+            vtable: failure_vtable.as_ptr(),
+        };
+        let error = call_method(
+            0,
+            (&mut failure as *mut FakeComObject).cast(),
+            signature,
+            &[],
+        )
+        .unwrap_err();
+        match error {
+            result::Error::WindowsError(error) => {
+                assert_eq!(error.code(), windows_core::HRESULT(0x80004005u32 as i32));
+            }
+            other => panic!("expected Windows error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classic_com_hstring_output_is_owned_and_decoded() {
+        let table = MetadataTable::new();
+        let vtable = [return_hstring as *mut c_void];
+        let mut object = FakeComObject {
+            vtable: vtable.as_ptr(),
+        };
+
+        let result = call_method(
+            0,
+            (&mut object as *mut FakeComObject).cast(),
+            MethodSignature::new(&table).add_out(Type::winrt(table.hstring())),
+            &[],
+        )
+        .unwrap();
+
+        assert!(matches!(
+            result.as_slice(),
+            [WinRTValue::HString(value)] if value == "dynwinrt HSTRING"
+        ));
     }
 
     #[test]
@@ -649,6 +733,11 @@ mod tests {
     #[test]
     fn shell_link_query_interface_returns_owned_ipersistfile() -> result::Result<()> {
         let shell_link = shell_link()?;
+        let shell_link_object = shell_link
+            .as_object()
+            .expect("IShellLinkW must be non-null");
+        let description = wide_null("semantic HRESULT");
+        call_method_1_ptr(7, shell_link_object.as_raw(), description.as_ptr().cast())?;
         let persist = shell_link.cast(&IPersistFile::IID)?;
         let persist = persist.as_object().expect("IPersistFile must be non-null");
         let table = MetadataTable::new();
@@ -662,6 +751,16 @@ mod tests {
         assert!(matches!(
             result.as_slice(),
             [WinRTValue::Guid(clsid)] if *clsid == CLSID_SHELL_LINK
+        ));
+        let dirty = call_method(
+            4,
+            persist.as_raw(),
+            MethodSignature::new(&table).preserve_hresult(),
+            &[],
+        )?;
+        assert!(matches!(
+            dirty.as_slice(),
+            [WinRTValue::HResult(value)] if value.0 == 0
         ));
         Ok(())
     }

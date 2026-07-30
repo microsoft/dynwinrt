@@ -19,7 +19,7 @@ import {
   roInitialize,
 } from '../dist/winrt.js'
 import * as winrtRuntime from '../dist/winrt.js'
-import { DynCom } from '../dist/com.js'
+import { DynCom, DynComMethodSig } from '../dist/com.js'
 
 test('Classic COM is isolated from the WinRT root entrypoint', (t) => {
   t.false(Object.prototype.hasOwnProperty.call(winrtRuntime, 'DynCom'))
@@ -73,6 +73,12 @@ test('DynCom does not adopt borrowed raw pointer bits as owned COM references', 
   const borrowed = DynCom.pointer(0n)
   const error = t.throws(() => DynCom.adoptComPointer(borrowed))
   t.regex(error.message, /only owned native outputs may be consumed/)
+})
+
+test('DynCom exposes HSTRING and semantic HRESULT primitives', (t) => {
+  t.is(DynCom.hstring('dynwinrt').toString(), 'dynwinrt')
+  t.truthy(DynCom.hstringType())
+  t.truthy(new DynComMethodSig().preserveHresult())
 })
 
 test('DynCom distinguishes handle-value bytes from data-pointer storage', (t) => {

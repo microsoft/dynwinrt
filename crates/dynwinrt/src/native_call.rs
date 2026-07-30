@@ -218,6 +218,7 @@ pub(crate) struct AbiMethodSignature {
 #[derive(Debug, Clone)]
 pub(crate) enum MethodReturn {
     HResult,
+    SemanticHResult,
     Void,
     Value(ParameterType),
 }
@@ -225,7 +226,7 @@ pub(crate) enum MethodReturn {
 impl MethodReturn {
     fn libffi_type(&self) -> libffi::middle::Type {
         match self {
-            Self::HResult => libffi::middle::Type::i32(),
+            Self::HResult | Self::SemanticHResult => libffi::middle::Type::i32(),
             Self::Void => libffi::middle::Type::void(),
             Self::Value(typ) => typ.libffi_type(),
         }
@@ -308,6 +309,11 @@ impl AbiMethodSignature {
 
     pub(crate) fn returns_void(mut self) -> Self {
         self.return_kind = MethodReturn::Void;
+        self
+    }
+
+    pub(crate) fn preserve_hresult(mut self) -> Self {
+        self.return_kind = MethodReturn::SemanticHResult;
         self
     }
 
