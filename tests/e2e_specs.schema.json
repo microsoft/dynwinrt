@@ -86,7 +86,9 @@
              "static_bytes_input",
              "static_sequence_input",
              "closable_context",
-             "method_then_property_equals"
+             "method_then_property_equals",
+             "device_information_async_collection",
+             "bitmap_encoder_async_create"
            ]
          },
          "member": { "type": "string", "description": "Property or method name (snake_case)" },

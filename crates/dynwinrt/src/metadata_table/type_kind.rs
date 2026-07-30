@@ -137,19 +137,7 @@ impl TypeKind {
             TypeKind::U64 => Some(Type::u64()),
             TypeKind::F32 => Some(Type::f32()),
             TypeKind::F64 => Some(Type::f64()),
-            TypeKind::Guid => Some(Type::structure(vec![
-                Type::u32(),
-                Type::u16(),
-                Type::u16(),
-                Type::u8(),
-                Type::u8(),
-                Type::u8(),
-                Type::u8(),
-                Type::u8(),
-                Type::u8(),
-                Type::u8(),
-                Type::u8(),
-            ])),
+            TypeKind::Guid => Some(crate::abi::guid_libffi_type()),
             _ => None,
         }
     }

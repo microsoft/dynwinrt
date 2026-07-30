@@ -99,6 +99,24 @@ extends:
             env:
               SYSTEM_ACCESSTOKEN: $(System.AccessToken)
 
+          - task: PowerShell@2
+            displayName: Install Win32 metadata
+            inputs:
+              targetType: inline
+              script: |
+                $root = Join-Path "$(Agent.TempDirectory)" "win32metadata"
+                nuget install Microsoft.Windows.SDK.Win32Metadata `
+                  -Version 69.0.7-preview `
+                  -OutputDirectory $root `
+                  -DirectDownload `
+                  -NonInteractive
+                if ($LASTEXITCODE -ne 0) { Write-Error "Win32 metadata install failed"; exit 1 }
+                $winmd = Get-ChildItem $root -Filter Windows.Win32.winmd -File -Recurse |
+                  Select-Object -First 1
+                if (-not $winmd) { Write-Error "Windows.Win32.winmd not found"; exit 1 }
+                Write-Host "##vso[task.setvariable variable=DYNWINRT_WIN32_WINMD]$($winmd.FullName)"
+                Write-Host "##vso[task.setvariable variable=DYNWINRT_REQUIRE_WIN32_METADATA]1"
+
           # Core library tests
           - task: PowerShell@2
             displayName: Test core library
@@ -156,14 +174,20 @@ extends:
             inputs:
               targetType: inline
               workingDirectory: bindings/js
-              script: npx napi build --no-const-enum --platform --release -o dist
+              script: |
+                npx napi build --no-const-enum --platform --release -o dist
+                if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+                npm run build:entrypoints --silent
 
           - task: PowerShell@2
             displayName: Build dynwinrt (arm64)
             inputs:
               targetType: inline
               workingDirectory: bindings/js
-              script: npx napi build --no-const-enum --platform --release --target aarch64-pc-windows-msvc -o dist
+              script: |
+                npx napi build --no-const-enum --platform --release --target aarch64-pc-windows-msvc -o dist
+                if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+                npm run build:entrypoints --silent
 
           # Install tsx for E2E TS runner
           - task: PowerShell@2
@@ -219,9 +243,9 @@ extends:
                 .\bindings\py\.venv\Scripts\python.exe -m mypy.stubtest dynwinrt_py --allowlist bindings\py\stubtest_allowlist.txt --ignore-disjoint-bases
                 if ($LASTEXITCODE -ne 0) { Write-Error "Python runtime stub validation failed"; exit 1 }
 
-          # E2E tests: winmd → generate → type-check → call real WinRT APIs
+          # E2E tests: winmd → generate → type-check → call real WinRT and COM APIs
           - task: PowerShell@2
-            displayName: Run E2E tests (40 tests)
+            displayName: Run E2E tests
             inputs:
               targetType: inline
               script: |

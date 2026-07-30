@@ -2,7 +2,10 @@
 // Licensed under the MIT License.
 
 use core::ffi::c_void;
-use std::cell::RefCell;
+use std::{
+    cell::RefCell,
+    sync::{Arc, RwLock},
+};
 
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, COINIT_MULTITHREADED, CoCreateInstance,
@@ -11,8 +14,9 @@ use windows::Win32::System::Com::{
 use windows_core::{GUID, IUnknown, Interface as WindowsInterface};
 
 use crate::{
-    MetadataTable, MethodHandle, TypeHandle, WinRTValue, result,
-    signature::{AbiMethodSignature, ParameterType},
+    MetadataTable, TypeHandle, WinRTValue,
+    native_call::{AbiMethodSignature, Method as NativeMethod, ParameterType},
+    result,
 };
 
 const RPC_E_CHANGED_MODE: windows_core::HRESULT = windows_core::HRESULT(0x80010106u32 as i32);
@@ -76,31 +80,100 @@ impl MethodSignature {
     pub fn returns_void(self) -> Self {
         Self(self.0.returns_void())
     }
+
+    pub fn preserve_hresult(self) -> Self {
+        Self(self.0.preserve_hresult())
+    }
 }
 
+#[derive(Debug)]
+struct RegisteredMethod(NativeMethod);
+
+// Safety: a RegisteredMethod is fully built before publication and remains
+// immutable. NativeMethod invokes libffi's CIF only through shared references;
+// ffi_call treats the prepared CIF and its type graph as read-only.
+unsafe impl Send for RegisteredMethod {}
+unsafe impl Sync for RegisteredMethod {}
+
 #[derive(Debug, Clone)]
-pub struct Interface(TypeHandle);
+pub struct Interface {
+    name: String,
+    iid: GUID,
+    base_slot: usize,
+    methods: Arc<RwLock<Vec<(String, Arc<RegisteredMethod>)>>>,
+}
 
 impl Interface {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn iid(&self) -> GUID {
+        self.iid
+    }
+
     pub fn add_method(self, name: &str, signature: MethodSignature) -> Self {
-        self.0
-            .clone()
-            .add_method(name, crate::MethodSignature::from_abi(signature.0));
+        let mut methods = self.methods.write().unwrap();
+        if methods.iter().any(|(existing, _)| existing == name) {
+            drop(methods);
+            return self;
+        }
+        let vtable_index = self.base_slot + methods.len();
+        methods.push((
+            name.to_string(),
+            Arc::new(RegisteredMethod(signature.0.build(vtable_index))),
+        ));
+        drop(methods);
         self
     }
 
     pub fn method(&self, vtable_index: usize) -> Option<MethodHandle> {
-        self.0.method(vtable_index)
+        let local_index = vtable_index.checked_sub(self.base_slot)?;
+        self.methods
+            .read()
+            .unwrap()
+            .get(local_index)
+            .map(|(_, method)| MethodHandle(Arc::clone(method)))
+    }
+}
+
+#[derive(Clone)]
+pub struct MethodHandle(Arc<RegisteredMethod>);
+
+impl std::fmt::Debug for MethodHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MethodHandle").finish_non_exhaustive()
+    }
+}
+
+impl MethodHandle {
+    pub fn invoke(&self, obj: *mut c_void, args: &[WinRTValue]) -> result::Result<Vec<WinRTValue>> {
+        self.0
+            .0
+            .call_dynamic(obj, args)
+            .map_err(result::Error::WindowsError)
+    }
+
+    pub fn call_getter_hstring(&self, obj: *mut c_void) -> result::Result<windows_core::HSTRING> {
+        self.0
+            .0
+            .call_getter_hstring(obj)
+            .map_err(result::Error::WindowsError)
     }
 }
 
 pub fn register_interface(
-    table: &std::sync::Arc<MetadataTable>,
+    _table: &std::sync::Arc<MetadataTable>,
     name: &str,
     iid: GUID,
     base: InterfaceBase,
 ) -> Interface {
-    Interface(table.register_com_interface(name, iid, base.first_method_slot()))
+    Interface {
+        name: name.to_string(),
+        iid,
+        base_slot: base.first_method_slot(),
+        methods: Arc::new(RwLock::new(Vec::new())),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -244,28 +317,55 @@ fn wide_to_string(buffer: &[u16]) -> String {
 mod tests {
     use super::*;
     use crate::{
-        InterfaceSignature, MetadataTable, com_helpers::E_NOINTERFACE, ro_get_activation_factory_2,
+        MetadataTable, com_helpers::E_NOINTERFACE, ro_get_activation_factory_2,
         roapi::query_interface,
     };
     use std::sync::atomic::{AtomicU32, Ordering};
     use windows::{
         ApplicationModel::DataTransfer::DataTransferManager,
         Win32::{
-            UI::Shell::IDataTransferManagerInterop,
+            System::Com::{CoGetMalloc, IMalloc, IPersistFile, IStream},
+            UI::Shell::{IDataTransferManagerInterop, SHCreateMemStream},
             UI::WindowsAndMessaging::{
                 CreateWindowExW, DestroyWindow, WINDOW_EX_STYLE, WS_OVERLAPPED,
             },
         },
     };
-    use windows_core::{HSTRING, Interface, w};
+    use windows_core::{HSTRING, w};
 
     #[repr(C)]
     struct FakeComObject {
         vtable: *const *mut c_void,
     }
 
+    #[test]
+    fn interface_and_method_handle_are_send_and_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+
+        assert_send_sync::<Interface>();
+        assert_send_sync::<MethodHandle>();
+    }
+
     unsafe extern "system" fn return_u32(_this: *mut c_void) -> u32 {
         u32::MAX
+    }
+
+    unsafe extern "system" fn return_s_false(_this: *mut c_void) -> windows_core::HRESULT {
+        windows_core::HRESULT(1)
+    }
+
+    unsafe extern "system" fn return_failure(_this: *mut c_void) -> windows_core::HRESULT {
+        windows_core::HRESULT(0x80004005u32 as i32)
+    }
+
+    unsafe extern "system" fn return_hstring(
+        _this: *mut c_void,
+        value: *mut *mut c_void,
+    ) -> windows_core::HRESULT {
+        unsafe {
+            *value = std::mem::transmute(HSTRING::from("dynwinrt HSTRING"));
+        }
+        windows_core::HRESULT(0)
     }
 
     static VOID_CALLS: AtomicU32 = AtomicU32::new(0);
@@ -342,6 +442,68 @@ mod tests {
 
         assert!(values.is_empty());
         assert_eq!(VOID_CALLS.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn semantic_hresult_preserves_success_codes_and_throws_failures() {
+        let table = MetadataTable::new();
+        let signature = MethodSignature::new(&table).preserve_hresult();
+        let success_vtable = [return_s_false as *mut c_void];
+        let mut success = FakeComObject {
+            vtable: success_vtable.as_ptr(),
+        };
+
+        let result = call_method(
+            0,
+            (&mut success as *mut FakeComObject).cast(),
+            signature.clone(),
+            &[],
+        )
+        .unwrap();
+        assert!(matches!(
+            result.as_slice(),
+            [WinRTValue::HResult(value)] if value.0 == 1
+        ));
+
+        let failure_vtable = [return_failure as *mut c_void];
+        let mut failure = FakeComObject {
+            vtable: failure_vtable.as_ptr(),
+        };
+        let error = call_method(
+            0,
+            (&mut failure as *mut FakeComObject).cast(),
+            signature,
+            &[],
+        )
+        .unwrap_err();
+        match error {
+            result::Error::WindowsError(error) => {
+                assert_eq!(error.code(), windows_core::HRESULT(0x80004005u32 as i32));
+            }
+            other => panic!("expected Windows error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classic_com_hstring_output_is_owned_and_decoded() {
+        let table = MetadataTable::new();
+        let vtable = [return_hstring as *mut c_void];
+        let mut object = FakeComObject {
+            vtable: vtable.as_ptr(),
+        };
+
+        let result = call_method(
+            0,
+            (&mut object as *mut FakeComObject).cast(),
+            MethodSignature::new(&table).add_out(Type::winrt(table.hstring())),
+            &[],
+        )
+        .unwrap();
+
+        assert!(matches!(
+            result.as_slice(),
+            [WinRTValue::HString(value)] if value == "dynwinrt HSTRING"
+        ));
     }
 
     #[test]
@@ -423,51 +585,110 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "already registered with a different type or IID")]
-    fn interface_names_cannot_alias_different_iids() {
+    fn interfaces_with_the_same_name_do_not_alias() {
         let table = MetadataTable::new();
-        register_interface(
+        let first = register_interface(
             &table,
             "Windows.Win32.Example.IThing",
             GUID::from_u128(1),
             InterfaceBase::IUnknown,
         );
-        register_interface(
+        let second = register_interface(
             &table,
             "Windows.Win32.Example.IThing",
             GUID::from_u128(2),
             InterfaceBase::IUnknown,
         );
+
+        assert_eq!(first.name(), second.name());
+        assert_ne!(first.iid(), second.iid());
+        assert!(!Arc::ptr_eq(&first.methods, &second.methods));
     }
 
-    fn shell_link_signature(table: &std::sync::Arc<MetadataTable>) -> InterfaceSignature {
-        let mut iface =
-            InterfaceSignature::define_from_iunknown("IShellLinkW", IID_ISHELL_LINK_W, table);
-        iface
-            .add_method(crate::MethodSignature::new(table)) // 3 GetPath
-            .add_method(crate::MethodSignature::new(table)) // 4 GetIDList
-            .add_method(crate::MethodSignature::new(table)) // 5 SetIDList
-            .add_method(crate::MethodSignature::new(table)) // 6 GetDescription
-            .add_method(crate::MethodSignature::new(table)) // 7 SetDescription
-            .add_method(crate::MethodSignature::new(table)) // 8 GetWorkingDirectory
-            .add_method(crate::MethodSignature::new(table)) // 9 SetWorkingDirectory
-            .add_method(crate::MethodSignature::new(table)) // 10 GetArguments
-            .add_method(crate::MethodSignature::new(table)) // 11 SetArguments
-            .add_method(crate::MethodSignature::new(table).add_out(table.u16_type())) // 12 GetHotkey
-            .add_method(crate::MethodSignature::new(table).add_in(table.u16_type())) // 13 SetHotkey
-            .add_method(crate::MethodSignature::new(table).add_out(table.i32_type())) // 14 GetShowCmd
-            .add_method(crate::MethodSignature::new(table).add_in(table.i32_type())); // 15 SetShowCmd
-        iface
+    fn shell_link_interface(table: &std::sync::Arc<MetadataTable>) -> Interface {
+        register_interface(
+            table,
+            "Windows.Win32.UI.Shell.IShellLinkW",
+            IID_ISHELL_LINK_W,
+            InterfaceBase::IUnknown,
+        )
+        .add_method("GetPath", MethodSignature::new(table))
+        .add_method("GetIDList", MethodSignature::new(table))
+        .add_method("SetIDList", MethodSignature::new(table))
+        .add_method("GetDescription", MethodSignature::new(table))
+        .add_method("SetDescription", MethodSignature::new(table))
+        .add_method("GetWorkingDirectory", MethodSignature::new(table))
+        .add_method("SetWorkingDirectory", MethodSignature::new(table))
+        .add_method("GetArguments", MethodSignature::new(table))
+        .add_method("SetArguments", MethodSignature::new(table))
+        .add_method(
+            "GetHotkey",
+            MethodSignature::new(table).add_out(Type::winrt(table.u16_type())),
+        )
+        .add_method(
+            "SetHotkey",
+            MethodSignature::new(table).add_in(Type::winrt(table.u16_type())),
+        )
+        .add_method(
+            "GetShowCmd",
+            MethodSignature::new(table).add_out(Type::winrt(table.i32_type())),
+        )
+        .add_method(
+            "SetShowCmd",
+            MethodSignature::new(table).add_in(Type::winrt(table.i32_type())),
+        )
+    }
+
+    fn native_usize_type(table: &std::sync::Arc<MetadataTable>) -> Type {
+        #[cfg(target_pointer_width = "64")]
+        {
+            Type::winrt(table.u64_type())
+        }
+        #[cfg(target_pointer_width = "32")]
+        {
+            Type::winrt(table.u32_type())
+        }
+    }
+
+    fn native_usize_value(value: usize) -> WinRTValue {
+        #[cfg(target_pointer_width = "64")]
+        {
+            WinRTValue::U64(value as u64)
+        }
+        #[cfg(target_pointer_width = "32")]
+        {
+            WinRTValue::U32(value as u32)
+        }
+    }
+
+    fn read_native_usize(value: &WinRTValue) -> usize {
+        #[cfg(target_pointer_width = "64")]
+        {
+            match value {
+                WinRTValue::U64(value) => *value as usize,
+                value => panic!("expected native u64, got {value:?}"),
+            }
+        }
+        #[cfg(target_pointer_width = "32")]
+        {
+            match value {
+                WinRTValue::U32(value) => *value as usize,
+                value => panic!("expected native u32, got {value:?}"),
+            }
+        }
     }
 
     #[test]
     fn shell_link_set_get_show_cmd_round_trips_via_classic_com_vtable() -> result::Result<()> {
         let shell_link = shell_link()?.as_object().unwrap();
         let table = MetadataTable::new();
-        let iface = shell_link_signature(&table);
+        let iface = shell_link_interface(&table);
 
-        iface.methods[15].call_dynamic(shell_link.as_raw(), &[WinRTValue::I32(3)])?;
-        let result = iface.methods[14].call_dynamic(shell_link.as_raw(), &[])?;
+        iface
+            .method(15)
+            .unwrap()
+            .invoke(shell_link.as_raw(), &[WinRTValue::I32(3)])?;
+        let result = iface.method(14).unwrap().invoke(shell_link.as_raw(), &[])?;
 
         assert_eq!(result[0].as_i32().unwrap(), 3);
         Ok(())
@@ -477,10 +698,13 @@ mod tests {
     fn shell_link_set_get_hotkey_round_trips_u16() -> result::Result<()> {
         let shell_link = shell_link()?.as_object().unwrap();
         let table = MetadataTable::new();
-        let iface = shell_link_signature(&table);
+        let iface = shell_link_interface(&table);
 
-        iface.methods[13].call_dynamic(shell_link.as_raw(), &[WinRTValue::U16(0x0141)])?;
-        let result = iface.methods[12].call_dynamic(shell_link.as_raw(), &[])?;
+        iface
+            .method(13)
+            .unwrap()
+            .invoke(shell_link.as_raw(), &[WinRTValue::U16(0x0141)])?;
+        let result = iface.method(12).unwrap().invoke(shell_link.as_raw(), &[])?;
 
         assert_eq!(result[0].as_i32().unwrap() as u16, 0x0141);
         Ok(())
@@ -507,6 +731,165 @@ mod tests {
     }
 
     #[test]
+    fn shell_link_query_interface_returns_owned_ipersistfile() -> result::Result<()> {
+        let shell_link = shell_link()?;
+        let shell_link_object = shell_link
+            .as_object()
+            .expect("IShellLinkW must be non-null");
+        let description = wide_null("semantic HRESULT");
+        call_method_1_ptr(7, shell_link_object.as_raw(), description.as_ptr().cast())?;
+        let persist = shell_link.cast(&IPersistFile::IID)?;
+        let persist = persist.as_object().expect("IPersistFile must be non-null");
+        let table = MetadataTable::new();
+        let result = call_method(
+            3,
+            persist.as_raw(),
+            MethodSignature::new(&table).add_out(Type::winrt(table.guid_type())),
+            &[],
+        )?;
+
+        assert!(matches!(
+            result.as_slice(),
+            [WinRTValue::Guid(clsid)] if *clsid == CLSID_SHELL_LINK
+        ));
+        let dirty = call_method(
+            4,
+            persist.as_raw(),
+            MethodSignature::new(&table).preserve_hresult(),
+            &[],
+        )?;
+        assert!(matches!(
+            dirty.as_slice(),
+            [WinRTValue::HResult(value)] if value.0 == 0
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn malloc_exercises_pointer_sized_and_non_hresult_abi() -> result::Result<()> {
+        initialize_apartment(ApartmentType::MultiThreaded)?;
+        let allocator = unsafe { CoGetMalloc(1) }.map_err(result::Error::WindowsError)?;
+        let table = MetadataTable::new();
+        let requested = 64usize;
+        let allocated = call_method(
+            3,
+            allocator.as_raw(),
+            MethodSignature::new(&table)
+                .add_in(native_usize_type(&table))
+                .returns(Type::pointer()),
+            &[native_usize_value(requested)],
+        )?;
+        let WinRTValue::RawPtr(ptr) = allocated[0] else {
+            panic!("IMalloc::Alloc must return a native pointer");
+        };
+        assert!(!ptr.is_null());
+
+        struct AllocationGuard {
+            allocator: IMalloc,
+            ptr: *mut c_void,
+        }
+        impl Drop for AllocationGuard {
+            fn drop(&mut self) {
+                if !self.ptr.is_null() {
+                    unsafe { self.allocator.Free(Some(self.ptr)) };
+                }
+            }
+        }
+        let mut allocation = AllocationGuard {
+            allocator: allocator.clone(),
+            ptr,
+        };
+
+        let size = call_method(
+            6,
+            allocator.as_raw(),
+            MethodSignature::new(&table)
+                .add_in(Type::pointer())
+                .returns(native_usize_type(&table)),
+            &[WinRTValue::RawPtr(ptr)],
+        )?;
+        assert!(read_native_usize(&size[0]) >= requested);
+
+        let owned = call_method(
+            7,
+            allocator.as_raw(),
+            MethodSignature::new(&table)
+                .add_in(Type::pointer())
+                .returns(Type::winrt(table.i32_type())),
+            &[WinRTValue::RawPtr(ptr)],
+        )?;
+        assert!(matches!(owned.as_slice(), [WinRTValue::I32(value)] if *value != 0));
+
+        let freed = call_method(
+            5,
+            allocator.as_raw(),
+            MethodSignature::new(&table)
+                .add_in(Type::pointer())
+                .returns_void(),
+            &[WinRTValue::RawPtr(ptr)],
+        )?;
+        allocation.ptr = std::ptr::null_mut();
+        assert!(freed.is_empty());
+
+        let minimized = call_method(
+            8,
+            allocator.as_raw(),
+            MethodSignature::new(&table).returns_void(),
+            &[],
+        )?;
+        assert!(minimized.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn memory_stream_exercises_counted_buffers_seek_and_interface_out() -> result::Result<()> {
+        initialize_apartment(ApartmentType::MultiThreaded)?;
+        let expected = b"dynwinrt";
+        let stream = unsafe { SHCreateMemStream(Some(expected)) }
+            .expect("SHCreateMemStream must return an IStream");
+        let table = MetadataTable::new();
+        let mut buffer = vec![0u8; expected.len()];
+
+        let read = call_method(
+            3,
+            stream.as_raw(),
+            MethodSignature::new(&table)
+                .add_in(Type::pointer())
+                .add_in(Type::winrt(table.u32_type()))
+                .add_out(Type::winrt(table.u32_type())),
+            &[
+                WinRTValue::RawPtr(buffer.as_mut_ptr().cast()),
+                WinRTValue::U32(buffer.len() as u32),
+            ],
+        )?;
+        assert!(
+            matches!(read.as_slice(), [WinRTValue::U32(count)] if *count == expected.len() as u32)
+        );
+        assert_eq!(buffer, expected);
+
+        let position = call_method(
+            5,
+            stream.as_raw(),
+            MethodSignature::new(&table)
+                .add_in(Type::winrt(table.i64_type()))
+                .add_in(Type::winrt(table.u32_type()))
+                .add_out(Type::winrt(table.u64_type())),
+            &[WinRTValue::I64(0), WinRTValue::U32(0)],
+        )?;
+        assert!(matches!(position.as_slice(), [WinRTValue::U64(0)]));
+
+        let cloned = call_method(
+            13,
+            stream.as_raw(),
+            MethodSignature::new(&table).add_out(Type::winrt(table.object())),
+            &[],
+        )?;
+        let clone = cloned[0].as_object().expect("IStream::Clone returned null");
+        let _: IStream = clone.cast().map_err(result::Error::WindowsError)?;
+        Ok(())
+    }
+
+    #[test]
     fn adopt_com_pointer_accepts_addref_owned_pointer() -> result::Result<()> {
         let shell_link = shell_link()?.as_object().unwrap();
         let shell_link_raw = shell_link.as_raw();
@@ -518,10 +901,13 @@ mod tests {
         let adopted = unsafe { adopt_com_pointer(raw) };
         let adopted = adopted.as_object().expect("adopted value must be Object");
         let table = MetadataTable::new();
-        let iface = shell_link_signature(&table);
+        let iface = shell_link_interface(&table);
 
-        iface.methods[15].call_dynamic(adopted.as_raw(), &[WinRTValue::I32(7)])?;
-        let result = iface.methods[14].call_dynamic(adopted.as_raw(), &[])?;
+        iface
+            .method(15)
+            .unwrap()
+            .invoke(adopted.as_raw(), &[WinRTValue::I32(7)])?;
+        let result = iface.method(14).unwrap().invoke(adopted.as_raw(), &[])?;
 
         assert_eq!(result[0].as_i32().unwrap(), 7);
         Ok(())

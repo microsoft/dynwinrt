@@ -8,6 +8,10 @@ use windows_metadata::{HasAttributes, reader};
 
 use crate::types::{EnumMember, TypeKind, TypeMeta, TypeRef};
 
+pub const WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE: &str = "Windows.Foundation.Collections";
+pub const PIID_IVECTOR: &str = "913337e9-11a1-4345-a3a2-4e7f956e222d";
+pub const PIID_IOBSERVABLE_VECTOR: &str = "5917eb53-50b4-4a0d-b309-65862b3f1dbc";
+
 /// Direction of a method parameter at the ABI level.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ParamDirection {
@@ -619,6 +623,18 @@ fn collect_all_refs_from_interfaces(
 ) {
     for i in interfaces {
         collect_all_refs_from_methods(&i.methods, known, named_out, param_out);
+        if i.generic_piid.as_deref() == Some(PIID_IOBSERVABLE_VECTOR) && i.generic_args.len() == 1 {
+            let vector = TypeMeta::Parameterized {
+                namespace: WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE.into(),
+                name: "IVector".into(),
+                piid: PIID_IVECTOR.into(),
+                args: i.generic_args.clone(),
+            };
+            let concrete_name = make_parameterized_name("IVector", &i.generic_args);
+            if !known.contains(&concrete_name) {
+                param_out.push(vector);
+            }
+        }
     }
 }
 
@@ -1352,7 +1368,7 @@ fn resolve_named_flat_type(
     }
     // Enum: extends System.Enum.
     if ext.namespace() == "System" && ext.name() == "Enum" {
-        let en = parse_enum_def(&def);
+        let en = parse_flat_enum_def(&def);
         if let TypeMeta::Enum {
             underlying,
             members,
@@ -1429,6 +1445,53 @@ fn resolve_named_flat_type(
 
 fn is_hresult_named(ns: &str, name: &str) -> bool {
     ns == "Windows.Win32.Foundation" && name == "HRESULT"
+}
+
+fn parse_flat_enum_def(def: &reader::TypeDef) -> TypeMeta {
+    let mut members = Vec::new();
+    let mut underlying = TypeMeta::I32;
+    for field in def.fields() {
+        let name = field.name().to_string();
+        if name == "value__" {
+            underlying = flat_enum_underlying_type(&field.ty());
+            continue;
+        }
+        if let Some(constant) = field.constant() {
+            let value = match constant.value() {
+                windows_metadata::Value::I32(value) => value,
+                windows_metadata::Value::U32(value) => value as i32,
+                _ => 0,
+            };
+            members.push(EnumMember {
+                name,
+                value,
+                doc: None,
+            });
+        }
+    }
+    TypeMeta::Enum {
+        namespace: def.namespace().to_string(),
+        name: def.name().to_string(),
+        underlying: Box::new(underlying),
+        members,
+        is_flags: def.has_attribute("FlagsAttribute"),
+        doc: None,
+        deprecated: None,
+    }
+}
+
+fn flat_enum_underlying_type(ty: &windows_metadata::Type) -> TypeMeta {
+    match ty {
+        windows_metadata::Type::I8 => TypeMeta::I8,
+        windows_metadata::Type::U8 => TypeMeta::U8,
+        windows_metadata::Type::I16 => TypeMeta::I16,
+        windows_metadata::Type::U16 => TypeMeta::U16,
+        windows_metadata::Type::I32 => TypeMeta::I32,
+        windows_metadata::Type::U32 => TypeMeta::U32,
+        windows_metadata::Type::I64 => TypeMeta::I64,
+        windows_metadata::Type::U64 => TypeMeta::U64,
+        _ => TypeMeta::I32,
+    }
 }
 
 fn parse_interface_type(
@@ -1757,11 +1820,9 @@ fn find_default_interface_type(def: &reader::TypeDef, index: &reader::Index) -> 
 
 fn parse_enum_def(def: &reader::TypeDef) -> TypeMeta {
     let mut members = Vec::new();
-    let mut underlying = TypeMeta::I32;
     for field in def.fields() {
         let name = field.name().to_string();
         if name == "value__" {
-            underlying = enum_underlying_type(&field.ty());
             continue; // Skip the underlying value field
         }
         // Enum fields have constant values
@@ -1781,25 +1842,11 @@ fn parse_enum_def(def: &reader::TypeDef) -> TypeMeta {
     TypeMeta::Enum {
         namespace: def.namespace().to_string(),
         name: def.name().to_string(),
-        underlying: Box::new(underlying),
+        underlying: Box::new(TypeMeta::I32),
         members,
         is_flags: def.has_attribute("FlagsAttribute"),
         doc: None,
         deprecated: None,
-    }
-}
-
-fn enum_underlying_type(ty: &windows_metadata::Type) -> TypeMeta {
-    match ty {
-        windows_metadata::Type::I8 => TypeMeta::I8,
-        windows_metadata::Type::U8 => TypeMeta::U8,
-        windows_metadata::Type::I16 => TypeMeta::I16,
-        windows_metadata::Type::U16 => TypeMeta::U16,
-        windows_metadata::Type::I32 => TypeMeta::I32,
-        windows_metadata::Type::U32 => TypeMeta::U32,
-        windows_metadata::Type::I64 => TypeMeta::I64,
-        windows_metadata::Type::U64 => TypeMeta::U64,
-        _ => TypeMeta::I32,
     }
 }
 
@@ -2330,6 +2377,9 @@ mod tests {
 
 #[cfg(test)]
 mod iface_tests {
+    use std::collections::HashSet;
+
+    use crate::types::TypeMeta;
     use windows_metadata::reader;
     const WINDOWS_WINMD: &str =
         r"C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd";
@@ -2399,5 +2449,68 @@ mod iface_tests {
                 name
             );
         }
+    }
+
+    #[test]
+    fn observable_vector_discovers_mutable_vector_dependency() {
+        let interface = super::InterfaceMeta {
+            name: "IObservableVector_ICommandBarElement".into(),
+            namespace: "Windows.Foundation.Collections".into(),
+            generic_piid: Some(super::PIID_IOBSERVABLE_VECTOR.into()),
+            generic_args: vec![TypeMeta::Interface {
+                namespace: "Microsoft.UI.Xaml.Controls".into(),
+                name: "ICommandBarElement".into(),
+                iid: "f8eb20b4-373e-5327-9942-66a1ea21f5f9".into(),
+            }],
+            ..Default::default()
+        };
+        let mut named = Vec::new();
+        let mut parameterized = Vec::new();
+
+        super::collect_all_refs_from_interfaces(
+            &[interface],
+            &HashSet::new(),
+            &mut named,
+            &mut parameterized,
+        );
+
+        assert!(named.is_empty());
+        assert_eq!(parameterized.len(), 1);
+        assert!(matches!(
+            &parameterized[0],
+            TypeMeta::Parameterized {
+                namespace,
+                name,
+                piid,
+                args,
+            } if namespace == super::WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE
+                && name == "IVector"
+                && piid == super::PIID_IVECTOR
+                && args == &vec![TypeMeta::Interface {
+                    namespace: "Microsoft.UI.Xaml.Controls".into(),
+                    name: "ICommandBarElement".into(),
+                    iid: "f8eb20b4-373e-5327-9942-66a1ea21f5f9".into(),
+                }]
+        ));
+    }
+
+    #[test]
+    fn observable_vector_dependency_is_resolved_for_emission() {
+        let observable = super::InterfaceMeta {
+            name: "IObservableVector_String".into(),
+            namespace: "Windows.Foundation.Collections".into(),
+            generic_piid: Some(super::PIID_IOBSERVABLE_VECTOR.into()),
+            generic_args: vec![TypeMeta::String],
+            ..Default::default()
+        };
+
+        let dependencies = super::resolve_dependencies(WINDOWS_WINMD, &[], &[observable], &[]);
+
+        assert!(
+            dependencies
+                .interfaces
+                .iter()
+                .any(|interface| interface.name == "IVector_String")
+        );
     }
 }

@@ -50,6 +50,12 @@ const uri = new Uri('https://example.com/path?q=1');
 console.log(uri.host);                                 // "example.com"
 ```
 
+Classic COM bindings import their runtime API from the separate
+`@microsoft/dynwinrt/com` subpath. It is part of the same npm package; the
+package root remains the WinRT-only API. See
+[Classic COM support](docs/classic-com-support.md) for the supported ABI,
+common-interface test matrix, unsupported native types, and ownership rules.
+
 Generated bindings project unambiguous public WinRT activation metadata as JavaScript
 constructors, including overloads such as `new Uri(base, relative)`. Existing
 static factory methods remain available. Classes that can only be returned by
@@ -69,18 +75,28 @@ const { Application, Button, Window } = require('./generated');
 initWinappsdk(2, 2);
 roInitialize(0); // STA
 
-let app;
-Application.start(() => {
-  app = Application.create(() => {
-    const window = new Window();
-    window.content = new Button();
-    window.activate();
+async function main() {
+  let app;
+  await Application.startScheduled(() => {
+    app = Application.create(() => {
+      const window = new Window();
+      window.content = new Button();
+      window.activate();
+    });
+    app.requestedTheme = 1; // Dark
   });
-  app.requestedTheme = 1; // Dark
-});
+}
+
+main().catch(console.error);
 ```
 
-`Application.start()` runs the WinUI dispatcher loop. In an unpackaged process,
+`Application.startScheduled()` enters the WinUI dispatcher loop after the
+current JavaScript callback unwinds and resolves when the application exits.
+This keeps WinUI async completions and JavaScript Promise checkpoints working
+while XAML owns the thread. `Application.start()` remains available when the
+exact blocking WinRT call is required, but it pauses the Node event loop.
+
+In an unpackaged process,
 set `WINAPPSDK_BOOTSTRAP_DLL_PATH` to the architecture-matched
 `Microsoft.WindowsAppRuntime.Bootstrap.dll` before calling `initWinappsdk()`.
 `Application.create()` resolves the bootstrapped framework resources and
@@ -109,7 +125,7 @@ cargo build -p dynwinrt
 cargo test  -p dynwinrt
 
 # JS bindings (napi-rs)
-cd bindings/js && npm install && npx napi build --no-const-enum --platform --release -o dist
+cd bindings/js && npm install && npm run build
 
 # Python bindings (PyO3 + maturin) — experimental, not published to PyPI
 cd bindings/py && maturin develop && pytest
@@ -143,7 +159,7 @@ For each WinRT class the codegen emits a typed wrapper, factory, interface regis
 Generated files import from `'@microsoft/dynwinrt'`. When iterating against a locally-built runtime, rewrite imports to the relative path:
 
 ```bash
-find generated -name "*.js" -exec sed -i "s|from '@microsoft/dynwinrt'|from '../../dist/index.js'|g" {} +
+find generated -name "*.js" -exec sed -i "s|from '@microsoft/dynwinrt'|from '../../dist/winrt.js'|g" {} +
 ```
 
 ## Troubleshooting

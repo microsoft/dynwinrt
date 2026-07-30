@@ -3,9 +3,18 @@
 
 //! Classic-COM metadata projection and JavaScript generation.
 
-mod naming;
-mod projection;
-mod render;
-mod type_mapping;
+mod ir;
+mod javascript;
+mod project;
 
-pub use render::{ComGeneratedOutput, generate_com_interface_files};
+use crate::com_metadata::ComInterfaceMeta;
+
+pub use javascript::render::ComGeneratedOutput;
+
+pub fn generate_com_interface_files(
+    meta: &ComInterfaceMeta,
+    winmd_paths: &str,
+) -> Result<ComGeneratedOutput, String> {
+    let projected = project::project_com_interface(meta, winmd_paths)?;
+    Ok(javascript::render::render_com_interface(&projected))
+}

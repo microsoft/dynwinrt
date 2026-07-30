@@ -8,12 +8,14 @@
  * and executes checks against real WinRT APIs.
  *
  * Usage:
- *   npx tsx tests/runners/ts_runner.ts --specs tests/e2e_specs.json --generated tests/e2e_generated/ts --runtime bindings/js/dist/index.js [--output results.json]
+ *   npx tsx tests/runners/ts_runner.ts --specs tests/e2e_specs.json --generated tests/e2e_generated/ts --runtime bindings/js/dist/winrt.js [--output results.json]
  */
 
 import { strict as assert } from 'node:assert';
+import { spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 interface Instantiate {
   kind: 'activate' | 'static_factory' | 'none';
@@ -85,6 +87,7 @@ async function runSpec(
   spec: Spec,
   generatedDir: string,
   runtime: any,
+  runtimePath: string,
 ): Promise<SpecResult> {
   const specId = spec.id || `${spec.namespace}.${spec.class}`;
   const result: SpecResult = {
@@ -127,7 +130,7 @@ async function runSpec(
     // Run checks
     for (const check of spec.checks) {
       if (!(check.langs || ['py', 'ts']).includes('ts')) continue;
-      const cr = await runCheck(check, cls, spec.class, obj, generatedDir, runtime);
+      const cr = await runCheck(check, cls, spec.class, obj, generatedDir, runtime, runtimePath);
       result.checks.push(cr);
       if (!cr.pass) result.pass = false;
     }
@@ -153,6 +156,41 @@ async function importClass(generatedDir: string, className: string): Promise<any
   throw new Error(`Class ${className} not found in: ${candidates.join(', ')}`);
 }
 
+async function runIssueRegression(
+  name: string,
+  generatedDir: string,
+  runtimePath: string,
+): Promise<{ code: number | null; stdout: string; stderr: string; timedOut: boolean }> {
+  const childPath = fileURLToPath(new URL('./ts_issue_regression_child.mjs', import.meta.url));
+  const child = spawn(process.execPath, [childPath, name, generatedDir, runtimePath], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
+  });
+  let stdout = '';
+  let stderr = '';
+  let timedOut = false;
+  child.stdout.setEncoding('utf8');
+  child.stderr.setEncoding('utf8');
+  child.stdout.on('data', chunk => { stdout += chunk; });
+  child.stderr.on('data', chunk => { stderr += chunk; });
+
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    child.kill();
+  }, 30_000);
+
+  return new Promise((resolve, reject) => {
+    child.once('error', error => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+    child.once('close', code => {
+      clearTimeout(timeout);
+      resolve({ code, stdout, stderr, timedOut });
+    });
+  });
+}
+
 async function runCheck(
   check: Check,
   cls: any,
@@ -160,6 +198,7 @@ async function runCheck(
   obj: any,
   generatedDir: string,
   runtime: any,
+  runtimePath: string,
 ): Promise<CheckResult> {
   const kind = check.kind;
   const member = check.member ? toCamelCase(check.member) : '';
@@ -495,6 +534,18 @@ async function runCheck(
         }
       }
       if (chainOk) cr.pass = true;
+    } else if (
+      kind === 'device_information_async_collection'
+      || kind === 'bitmap_encoder_async_create'
+    ) {
+      const child = await runIssueRegression(kind, generatedDir, runtimePath);
+      if (child.timedOut) {
+        cr.error = `${kind} child timed out`;
+      } else if (child.code !== 0) {
+        cr.error = `${kind} child exited with ${child.code}: ${child.stderr || child.stdout}`;
+      } else {
+        cr.pass = true;
+      }
     } else {
       cr.error = `unknown check kind: ${kind}`;
     }
@@ -550,7 +601,7 @@ async function main() {
   let failed = 0;
 
   for (const spec of specs) {
-    const r = await runSpec(spec, generatedDir, runtime);
+    const r = await runSpec(spec, generatedDir, runtime, absRuntime);
     results.push(r);
     if (r.pass) {
       passed++;

@@ -41,6 +41,20 @@ console.log(uri.host);                                // "example.com"
 console.log(uri.port);                                // 443
 ```
 
+Classic COM uses a separate subpath from the same package, keeping the WinRT
+root API unchanged:
+
+```js
+const { DynCom } = require('@microsoft/dynwinrt/com');
+```
+
+COM interface values returned by activation, `QueryInterface`, or typed
+interface out-parameters own one reference and release it when their
+`DynWinRtValue` is released or collected. `adoptComPointer()` is only for a
+native output that transfers an existing `+1` reference; numeric pointers and
+typed-array pointers are borrowed and cannot be adopted. Win32 handles are not
+COM references and require their own type-specific cleanup function.
+
 Unambiguous public WinRT activation metadata is projected as JavaScript constructors.
 Parameterized and composable activations support idiomatic forms such as
 `new Uri(base, relative)` and `new StackPanel()`. The generated static factory
@@ -51,9 +65,14 @@ Generated `IReference<T>` values use `T | null` in JavaScript. Native values,
 
 Generated packages export `createProjectedLifetimeScope()`. WinUI/XAML hosts
 can create a scope after Application and Window setup, then dispose it before
-the native window and XAML core are destroyed. Projects that never create a
-scope do not allocate WeakRefs or retain projected values. Direct runtime users
-can release an individual `DynWinRtValue` with `value.release()`.
+the native window and XAML core are destroyed. Active scopes retain projected
+native values strongly for deterministic release; `releaseProjected()` removes
+an individually released wrapper from its scope. Projects that never create a
+scope do not retain projected values. Direct runtime users can release an
+individual `DynWinRtValue` with `value.release()`.
+`projectAs(value, Type)` borrows its input and creates a separately releasable
+interface projection; internal generated `_fromNative()` paths consume native
+return values.
 
 Generated WinUI `IElementFactory` bindings expose `IElementFactory.create()`.
 It creates a synchronous, UI-thread factory backed by JavaScript
@@ -63,7 +82,9 @@ state can be released before the native repeater is destroyed.
 
 `DynWinRtValue.createVector()` objects implement `IObservableVector<T>` in
 addition to `IIterable<T>`, `IVector<T>`, and `IVectorView<T>`. Mutations emit
-the standard `VectorChanged` collection-change notifications.
+the standard `VectorChanged` collection-change notifications. Generated
+`IObservableVector<T>` projections expose `asVector()` for mutating collection
+properties, and codegen emits the paired `IVector<T>` binding automatically.
 
 ## Platform support
 

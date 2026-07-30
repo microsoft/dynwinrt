@@ -95,6 +95,14 @@ fn snapshot_uri_class() {
         generated.insert(format!("{}.js", class.name), js);
         generated.insert(format!("{}.d.ts", class.name), dts);
     }
+    let uri_js = generated.get("Uri.js").expect("generated Uri.js");
+    assert!(uri_js.contains(
+        "const IID_ARG_Windows_Foundation_Uri = WinGuid.parse('9e365e57-48b2-4160-956f-c7385120bbfc');"
+    ));
+    assert!(uri_js.contains("_unwrap(pUri).cast(IID_ARG_Windows_Foundation_Uri)"));
+    assert!(
+        !uri_js.contains("_unwrap(pUri).cast(DynWinRtType.runtimeClass('Windows.Foundation.Uri'")
+    );
 
     // Compare against snapshots
     let snapshot_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots/uri");
@@ -670,5 +678,87 @@ fn ts_async_methods_emit_abort_signal_scaffolding() {
     assert!(
         uri_code.contains("get [Symbol.toStringTag]() { return 'Uri'; }"),
         "Expected [Symbol.toStringTag] = 'Uri' in Uri.js"
+    );
+}
+
+#[test]
+fn data_package_view_projects_text_async_overloads_and_hstring_results() {
+    let classes = match meta::parse_class(
+        WINDOWS_WINMD,
+        "Windows.ApplicationModel.DataTransfer",
+        "DataPackageView",
+    ) {
+        Some(class) => vec![class],
+        None => {
+            eprintln!("Skipping: Windows.winmd not found");
+            return;
+        }
+    };
+    let deps = meta::resolve_dependencies(WINDOWS_WINMD, &classes, &[], &[]);
+    let mut all_classes = classes;
+    all_classes.extend(deps.classes);
+    let interfaces = deps.interfaces;
+    let enums = deps.enums;
+    let mut known = HashSet::new();
+    for class in &all_classes {
+        known.insert(class.name.clone());
+    }
+    for interface in &interfaces {
+        known.insert(interface.name.clone());
+    }
+    for enum_type in &enums {
+        if let TypeMeta::Enum { name, .. } = enum_type {
+            known.insert(name.clone());
+        }
+    }
+    let delegates: HashSet<String> = interfaces
+        .iter()
+        .filter(|interface| {
+            interface
+                .methods
+                .iter()
+                .any(|method| method.name == ".ctor")
+                && interface
+                    .methods
+                    .iter()
+                    .any(|method| method.name == "Invoke")
+        })
+        .map(|interface| interface.name.clone())
+        .collect();
+    let shared = HashSet::new();
+    let (delegate_sigs, delegate_sig_refs, delegate_param_wraps) =
+        project::build_delegate_signatures(&interfaces, &delegates, &known);
+    let class = all_classes
+        .iter()
+        .find(|class| class.name == "DataPackageView")
+        .expect("DataPackageView class");
+    let projected = project::project_class(
+        class,
+        &known,
+        &delegates,
+        &shared,
+        &delegate_sigs,
+        &delegate_sig_refs,
+        &delegate_param_wraps,
+    );
+    let code = render_js::render(&projected);
+    let declarations = render_dts::render(&projected);
+
+    assert!(code.contains(
+        ".addMethod(\"GetTextAsync\", new DynWinRtMethodSig().addOut(DynWinRtType.iAsyncOperation(DynWinRtType.hstring())))"
+    ));
+    assert!(code.contains(
+        ".addMethod(\"GetCustomTextAsync\", new DynWinRtMethodSig().addIn(DynWinRtType.hstring()).addOut(DynWinRtType.iAsyncOperation(DynWinRtType.hstring())))"
+    ));
+    assert!(code.contains("async _getTextAsync_1(signal)"));
+    assert!(code.contains("async _getTextAsync_2(formatId, signal)"));
+    assert!(code.matches("return _v.toString();").count() >= 2);
+    assert!(code.contains(
+        "if (args.length >= 1 && args[0] !== undefined && !(args[0] instanceof AbortSignal))"
+    ));
+    assert!(declarations.contains("getTextAsync(signal?: AbortSignal): Promise<string>;"));
+    assert!(
+        declarations
+            .contains("getTextAsync(formatId: string, signal?: AbortSignal): Promise<string>;")
     );
 }

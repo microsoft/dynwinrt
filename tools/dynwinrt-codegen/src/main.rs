@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
@@ -273,18 +273,11 @@ fn run() -> Result<(), String> {
                     .collect();
 
                 // First: partition into WinRT classes, classic-COM interfaces,
-                // and flat-Win32 [DllImport] Apis classes.
+                // and flat-Win32 [DllImport] modules.
                 let mut classes = Vec::new();
                 let mut com_interfaces: Vec<com_metadata::ComInterfaceMeta> = Vec::new();
                 let mut flat_apis: Vec<meta::FlatApisMeta> = Vec::new();
                 for cls in &class_names {
-                    // Flat-Win32 [DllImport] discovery: an `Apis`-shaped class
-                    // whose methods carry DllImport module refs. If ANY method
-                    // qualifies, treat the whole class as a flat-exports module.
-                    // This runs BEFORE parse_com_interface because Win32 `Apis`
-                    // classes appear as classes (not interfaces) in metadata,
-                    // but this ordering guarantees we never fall through to
-                    // parse_class for a genuine flat-Apis class.
                     if let Some(apis) = meta::parse_flat_apis(&winmd, ns, cls) {
                         flat_apis.push(apis);
                         continue;
@@ -327,18 +320,15 @@ fn run() -> Result<(), String> {
                     }
                 }
 
-                // Fail loud: flat-Win32 [DllImport] and classic-COM codegen
-                // only emit `.js` + `.d.ts` today. If the user asked for a
-                // different language (e.g. `--lang py`) but any of the
-                // requested `--class-name` inputs resolved to a flat-Apis or
-                // classic-COM interface, silently writing JS files into a
-                // Python output directory would produce the wrong artifact
-                // types with no diagnostic. Reject the combination up front.
+                // Flat-Win32 and classic-COM codegen only emit JavaScript and
+                // declarations today.
                 if lang != "js" && (!flat_apis.is_empty() || !com_interfaces.is_empty()) {
                     let mut offenders: Vec<String> = Vec::new();
                     for apis in &flat_apis {
-                        offenders.push(format!("{}.{} (flat-Win32 [DllImport])",
-                            apis.namespace, apis.class_name));
+                        offenders.push(format!(
+                            "{}.{} (flat-Win32 [DllImport])",
+                            apis.namespace, apis.class_name
+                        ));
                     }
                     for ci in &com_interfaces {
                         offenders.push(format!(
@@ -348,7 +338,7 @@ fn run() -> Result<(), String> {
                     }
                     return Err(format!(
                         "`--lang {}` is not supported for flat-Win32 [DllImport] modules or \
-                         classic-COM interfaces (both emit only `.js` + `.d.ts` today). \
+                         classic-COM interfaces (they emit only `.js` + `.d.ts` today). \
                          Offending inputs: {}. Re-run with `--lang js`, or split the \
                          invocation so the WinRT classes are generated with `--lang {}` and \
                          the flat/COM classes with `--lang js`.",
@@ -358,25 +348,19 @@ fn run() -> Result<(), String> {
                     ));
                 }
 
-                // Emit flat-Win32 [DllImport] Apis modules (standalone; no
-                // WinRT index/barrel wiring — flat exports are a separate
-                // surface area).
                 if !flat_apis.is_empty() {
                     for apis in &flat_apis {
                         let out = flat::generate_flat_apis_files(apis);
                         let js_name = format!("{}.js", apis.class_name);
                         let dts_name = format!("{}.d.ts", apis.class_name);
                         if !dry_run {
-                            fs::write(output_dir.join(&js_name), &out.js).map_err(|e| {
-                                format!("Failed to write {}: {}", js_name, e)
-                            })?;
-                            fs::write(output_dir.join(&dts_name), &out.dts).map_err(|e| {
-                                format!("Failed to write {}: {}", dts_name, e)
-                            })?;
+                            fs::write(output_dir.join(&js_name), &out.js)
+                                .map_err(|e| format!("Failed to write {}: {}", js_name, e))?;
+                            fs::write(output_dir.join(&dts_name), &out.dts)
+                                .map_err(|e| format!("Failed to write {}: {}", dts_name, e))?;
                             for (name, content) in &out.extra_files {
-                                fs::write(output_dir.join(name), content).map_err(|e| {
-                                    format!("Failed to write {}: {}", name, e)
-                                })?;
+                                fs::write(output_dir.join(name), content)
+                                    .map_err(|e| format!("Failed to write {}: {}", name, e))?;
                             }
                             println!(
                                 "Generated flat-Win32 {}.{} ({} methods, {} extra files)",
@@ -397,7 +381,16 @@ fn run() -> Result<(), String> {
                     }
                 }
 
-                // Emit classic-COM interfaces (standalone; not wired into WinRT index/barrel).
+                if !com_interfaces.is_empty() && !classes.is_empty() {
+                    return Err(
+                        "Classic-COM and WinRT class generation cannot share one output package yet. \
+                         Run separate `generate` commands with separate output directories."
+                            .into(),
+                    );
+                }
+
+                // Emit classic-COM interfaces. Mixed WinRT/COM packages were
+                // rejected above; COM-only output is finalized below.
                 if !com_interfaces.is_empty() {
                     for com_iface in &com_interfaces {
                         let out =
@@ -431,6 +424,9 @@ fn run() -> Result<(), String> {
                     // If we only had classic-COM interfaces requested, return early —
                     // no WinRT index/barrel work to do.
                     if classes.is_empty() {
+                        if !dry_run {
+                            write_com_js_barrel_and_manifest(output_dir)?;
+                        }
                         return Ok(());
                     }
                 }
@@ -574,6 +570,16 @@ fn run() -> Result<(), String> {
                 let mut total_enums = 0usize;
 
                 for ns in &namespaces {
+                    if let Some(interface) =
+                        com_metadata::first_classic_com_interface_in_namespace(&winmd, ns)
+                    {
+                        return Err(format!(
+                            "classic-COM namespace projection is not supported because `{ns}` \
+                             contains `{interface}`. Use `--class-name {interface}` (or a \
+                             comma-separated class list) so each interface is validated by the \
+                             Classic-COM ABI pipeline."
+                        ));
+                    }
                     let mut classes = meta::parse_namespace(&winmd, ns);
                     let mut interfaces = meta::parse_interfaces(&winmd, ns);
                     let mut enums = meta::parse_enums(&winmd, ns);
@@ -1056,6 +1062,7 @@ fn write_js_barrel_and_manifest(output_dir: &Path, index_content: &str) -> Resul
     if stale.exists() {
         let _ = fs::remove_file(&stale);
     }
+
     // Remove the previous opt-in getter barrel name if it exists from older
     // generated output. `index.js` is now the getter barrel and
     // `index.proxy.js` is the explicit compatibility path.
@@ -1105,40 +1112,175 @@ fn write_js_barrel_and_manifest(output_dir: &Path, index_content: &str) -> Resul
     Ok(())
 }
 
+fn write_com_js_barrel_and_manifest(output_dir: &Path) -> Result<(), String> {
+    let mut modules: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let entries = fs::read_dir(output_dir).map_err(|error| {
+        format!(
+            "Failed to read COM output directory {}: {error}",
+            output_dir.display()
+        )
+    })?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let Some(module) = file_name.strip_suffix(".js") else {
+            continue;
+        };
+        if module == "index" {
+            continue;
+        }
+        let content = fs::read_to_string(&path)
+            .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
+        let exports = collect_com_esm_exports(&content);
+        if !exports.is_empty() {
+            modules.insert(module.to_string(), exports);
+        }
+    }
+
+    let mut index = String::from("// Generated by dynwinrt-codegen - do not edit\n");
+    for (module, exports) in &modules {
+        index.push_str(&format!(
+            "export {{ {} }} from './{module}.js';\n",
+            exports.iter().cloned().collect::<Vec<_>>().join(", ")
+        ));
+    }
+    fs::write(output_dir.join("index.js"), &index)
+        .map_err(|error| format!("Failed to write COM index.js: {error}"))?;
+    fs::write(output_dir.join("index.d.ts"), &index)
+        .map_err(|error| format!("Failed to write COM index.d.ts: {error}"))?;
+
+    let mut package = String::from(
+        "{\n  \"name\": \"@winapp/bindings\",\n  \"type\": \"module\",\n  \
+         \"sideEffects\": false,\n  \"main\": \"./index.js\",\n  \
+         \"types\": \"./index.d.ts\",\n  \"exports\": {\n    \".\": {\n      \
+         \"types\": \"./index.d.ts\",\n      \"import\": \"./index.js\",\n      \
+         \"default\": \"./index.js\"\n    }",
+    );
+    for module in modules.keys() {
+        package.push_str(&format!(
+            ",\n    \"./{module}\": {{\n      \"types\": \"./{module}.d.ts\",\n      \
+             \"import\": \"./{module}.js\",\n      \"default\": \"./{module}.js\"\n    }}"
+        ));
+    }
+    package.push_str("\n  }\n}\n");
+    fs::write(output_dir.join("package.json"), package)
+        .map_err(|error| format!("Failed to write COM package.json: {error}"))?;
+    Ok(())
+}
+
+fn collect_com_esm_exports(content: &str) -> BTreeSet<String> {
+    const PREFIXES: &[&str] = &["export const ", "export class ", "export function "];
+    content
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim_start();
+            let rest = PREFIXES
+                .iter()
+                .find_map(|prefix| line.strip_prefix(prefix))?;
+            let name = rest
+                .chars()
+                .take_while(|character| {
+                    character.is_ascii_alphanumeric() || *character == '_' || *character == '$'
+                })
+                .collect::<String>();
+            (!name.is_empty()).then_some(name)
+        })
+        .collect()
+}
+
 fn write_lifetime_module(output_dir: &Path) -> Result<(), String> {
     let js = "'use strict';\n\
 let activeScope = null;\n\
+const trackedScopes = new WeakMap();\n\
 function trackProjectedValue(value, typeName) {\n\
   activeScope?.track(value, typeName);\n\
   return value;\n\
 }\n\
+function isObjectLike(value) {\n\
+  return value !== null && (typeof value === 'object' || typeof value === 'function');\n\
+}\n\
+function removeTracking(scope, value) {\n\
+  const scopes = trackedScopes.get(value);\n\
+  if (!scopes) return;\n\
+  scopes.delete(scope);\n\
+  if (scopes.size === 0) trackedScopes.delete(value);\n\
+}\n\
+function untrackProjectedValue(value) {\n\
+  const scopes = trackedScopes.get(value);\n\
+  if (!scopes) return;\n\
+  for (const scope of [...scopes]) scope.untrack(value);\n\
+}\n\
+function castProjectedValueOwned(value, iid, typeName) {\n\
+  let projected;\n\
+  try { projected = value.cast(iid); }\n\
+  catch (error) {\n\
+    try { value.release(); } catch {}\n\
+    throw error;\n\
+  }\n\
+  if (projected !== value) {\n\
+    try { value.release(); }\n\
+    catch (error) {\n\
+      try { projected.release(); } catch {}\n\
+      throw error;\n\
+    }\n\
+  }\n\
+  return trackProjectedValue(projected, typeName);\n\
+}\n\
+function castProjectedValueBorrowed(value, iid, typeName) {\n\
+  return trackProjectedValue(value.cast(iid), typeName);\n\
+}\n\
+const castProjectedValue = castProjectedValueOwned;\n\
+function projectAs(value, type) {\n\
+  const source = isObjectLike(value) && '_obj' in value ? value._obj : value;\n\
+  if (!isObjectLike(source)) throw new TypeError('projectAs requires a projected value or wrapper.');\n\
+  if (!isObjectLike(type) || typeof type._fromNativeBorrowed !== 'function') {\n\
+    throw new TypeError('projectAs requires a generated runtime class type.');\n\
+  }\n\
+  const projected = type._fromNativeBorrowed(source);\n\
+  if (!isObjectLike(projected) || !('_obj' in projected)) {\n\
+    throw new TypeError('The generated runtime class returned an invalid projection.');\n\
+  }\n\
+  return projected;\n\
+}\n\
+function releaseProjected(value) {\n\
+  if (!isObjectLike(value) || !('_obj' in value)) {\n\
+    throw new TypeError('releaseProjected requires a generated projected wrapper.');\n\
+  }\n\
+  const projected = value._obj;\n\
+  if (!isObjectLike(projected) || typeof projected.release !== 'function') {\n\
+    throw new TypeError('The projected wrapper does not contain a releasable native value.');\n\
+  }\n\
+  projected.release();\n\
+  untrackProjectedValue(projected);\n\
+}\n\
 function createProjectedLifetimeScope() {\n\
   const previousScope = activeScope;\n\
-  const registry = { values: [], nextSweep: 1024 };\n\
+  const registry = new Map();\n\
   let disposed = false;\n\
   const scope = {\n\
     get disposed() { return disposed; },\n\
     track(value, typeName) {\n\
       if (disposed) throw new Error('Cannot track values in a disposed projection scope.');\n\
-      registry.values.push({ ref: new WeakRef(value), typeName });\n\
-      if (registry.values.length >= registry.nextSweep) {\n\
-        registry.values = registry.values.filter((entry) => entry.ref.deref() !== undefined);\n\
-        registry.nextSweep = Math.max(registry.values.length * 2, 1024);\n\
-      }\n\
+      if (registry.has(value)) return;\n\
+      registry.set(value, typeName);\n\
+      let scopes = trackedScopes.get(value);\n\
+      if (!scopes) trackedScopes.set(value, scopes = new Set());\n\
+      scopes.add(scope);\n\
+    },\n\
+    untrack(value) {\n\
+      registry.delete(value);\n\
+      removeTracking(scope, value);\n\
     },\n\
     dispose() {\n\
       if (disposed) return;\n\
       if (activeScope !== scope) throw new Error('Projection lifetime scopes must be disposed in LIFO order.');\n\
-      const retained = [];\n\
       let firstError;\n\
-      for (const entry of [...registry.values].reverse()) {\n\
-        const value = entry.ref.deref();\n\
-        if (value === undefined) continue;\n\
-        try { value.release(); }\n\
-        catch (error) { firstError ??= error; retained.push(entry); }\n\
+      for (const [value] of [...registry].reverse()) {\n\
+        try { value.release(); scope.untrack(value); }\n\
+        catch (error) { firstError ??= error; }\n\
       }\n\
-      registry.values = retained.reverse();\n\
-      registry.nextSweep = Math.max(registry.values.length * 2, 1024);\n\
       if (firstError !== undefined) throw firstError;\n\
       disposed = true;\n\
       activeScope = previousScope;\n\
@@ -1148,8 +1290,21 @@ function createProjectedLifetimeScope() {\n\
   return scope;\n\
 }\n\
 exports.trackProjectedValue = trackProjectedValue;\n\
+exports.castProjectedValue = castProjectedValue;\n\
+exports.castProjectedValueOwned = castProjectedValueOwned;\n\
+exports.castProjectedValueBorrowed = castProjectedValueBorrowed;\n\
+exports.projectAs = projectAs;\n\
+exports.releaseProjected = releaseProjected;\n\
 exports.createProjectedLifetimeScope = createProjectedLifetimeScope;\n";
     let dts = "export declare function trackProjectedValue<T extends object>(value: T, typeName: string): T;\n\
+export declare function castProjectedValue<T extends object>(value: T, iid: unknown, typeName: string): T;\n\
+export declare function castProjectedValueOwned<T extends object>(value: T, iid: unknown, typeName: string): T;\n\
+export declare function castProjectedValueBorrowed<T extends object>(value: T, iid: unknown, typeName: string): T;\n\
+export interface ProjectedType<T extends object> {\n\
+  readonly prototype: T;\n\
+}\n\
+export declare function projectAs<T extends object>(value: unknown, type: ProjectedType<T>): T;\n\
+export declare function releaseProjected(value: object): void;\n\
 export interface ProjectedLifetimeScope {\n\
   readonly disposed: boolean;\n\
   dispose(): void;\n\
@@ -1253,6 +1408,9 @@ fn collect_public_exports_from_js(content: &str) -> Vec<String> {
         // to their per-type modules. Root barrels should expose user-facing
         // classes, enums, pack/unpack helpers, and interfaces only.
         if name == "trackProjectedValue"
+            || name == "castProjectedValue"
+            || name == "castProjectedValueOwned"
+            || name == "castProjectedValueBorrowed"
             || name.starts_with("__")
             || name.starts_with("IID_")
             || name.ends_with("_PARAM_TYPES")

@@ -3,25 +3,36 @@
 # Licensed under the MIT License.
 #
 # E2E test orchestrator: build, generate, run language-specific runners, collect results.
-# All test logic lives in runners/py_runner.py and runners/ts_runner.ts.
+# Test logic lives in runners/py_runner.py, runners/ts_runner.ts,
+# runners/com/*.mjs, and runners/flat/*.mjs.
 #
 # Usage:
 #   .\tests\e2e_test.ps1                    # Full (build + generate + test)
 #   .\tests\e2e_test.ps1 -SkipBuild         # Skip build step
 #   .\tests\e2e_test.ps1 -Lang py           # Python only
 #   .\tests\e2e_test.ps1 -Lang ts           # TypeScript only
+#   .\tests\e2e_test.ps1 -Lang com          # Classic COM only
+#   .\tests\e2e_test.ps1 -Lang flat         # Flat Win32 only
 
 param(
     [switch]$SkipBuild,
-    [string[]]$Lang = @("py", "ts")
+    [ValidateSet("py", "ts", "com", "flat")]
+    [string[]]$Lang = @("py", "ts", "com", "flat")
 )
 
 $ErrorActionPreference = "Stop"
+$langWasExplicit = $PSBoundParameters.ContainsKey("Lang")
 $root = Split-Path $PSScriptRoot -Parent
 $specsFile = Join-Path $PSScriptRoot "e2e_specs.json"
 $e2eDir = Join-Path $root "tests\e2e_generated"
 $runnersDir = Join-Path $root "tests\runners"
 $pyBindingsDir = Join-Path $e2eDir "python_bindings"
+$comBindingsDir = Join-Path $e2eDir "com"
+$comShellDir = Join-Path $comBindingsDir "shell"
+$comInteropDir = Join-Path $comBindingsDir "interop"
+$comWicDir = Join-Path $comBindingsDir "wic"
+$comSmtcDir = Join-Path $comBindingsDir "smtc"
+$flatBindingsDir = Join-Path $e2eDir "flat"
 
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
 
@@ -37,10 +48,45 @@ if ("py" -in $Lang -and -not $hasPython) {
     Write-Host "  SKIP Python (not installed)" -ForegroundColor DarkYellow
     $Lang = $Lang | Where-Object { $_ -ne "py" }
 }
-if ("ts" -in $Lang -and -not $hasNode) {
-    Write-Host "  SKIP TypeScript (Node.js not installed)" -ForegroundColor DarkYellow
-    $Lang = $Lang | Where-Object { $_ -ne "ts" }
+if (("ts" -in $Lang -or "com" -in $Lang -or "flat" -in $Lang) -and -not $hasNode) {
+    Write-Host "  SKIP JavaScript E2E (Node.js not installed)" -ForegroundColor DarkYellow
+    $Lang = @($Lang | Where-Object { $_ -notin @("ts", "com", "flat") })
 }
+
+function Find-Win32Winmd {
+    if ($env:DYNWINRT_WIN32_WINMD -and (Test-Path $env:DYNWINRT_WIN32_WINMD)) {
+        return (Resolve-Path $env:DYNWINRT_WIN32_WINMD).Path
+    }
+
+    $packageRoot = Join-Path $env:USERPROFILE ".nuget\packages\microsoft.windows.sdk.win32metadata"
+    if (Test-Path $packageRoot) {
+        $candidate = Get-ChildItem $packageRoot -Filter Windows.Win32.winmd -File -Recurse |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+        if ($candidate) { return $candidate.FullName }
+    }
+
+    $legacyPath = "C:\s\win32metadata\Windows.Win32.winmd"
+    if (Test-Path $legacyPath) { return $legacyPath }
+    return $null
+}
+
+$win32Winmd = $null
+if ("com" -in $Lang -or "flat" -in $Lang) {
+    $win32Winmd = Find-Win32Winmd
+    if (-not $win32Winmd) {
+        if ($langWasExplicit -or $env:DYNWINRT_REQUIRE_WIN32_METADATA -eq "1") {
+            Write-Error "Classic COM and flat Win32 E2E require Windows.Win32.winmd. Set DYNWINRT_WIN32_WINMD or install Microsoft.Windows.SDK.Win32Metadata."
+            exit 1
+        }
+        Write-Host "  SKIP Classic COM and flat Win32 (Windows.Win32.winmd not found)" -ForegroundColor DarkYellow
+        $Lang = @($Lang | Where-Object { $_ -notin @("com", "flat") })
+    } else {
+        $env:DYNWINRT_WIN32_WINMD = $win32Winmd
+        Write-Host "  Win32 metadata: $win32Winmd"
+    }
+}
+
 if ($Lang.Count -eq 0) { Write-Error "No languages available"; exit 1 }
 
 # --------------------------------------------------------------------------
@@ -71,12 +117,14 @@ if (-not $SkipBuild) {
         Pop-Location
     }
 
-    if ("ts" -in $Lang) {
+    if ("ts" -in $Lang -or "com" -in $Lang -or "flat" -in $Lang) {
         Push-Location (Join-Path $root "bindings\js")
         npm install --quiet 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0) { Write-Error "npm install failed"; exit 1 }
         npx napi build --no-const-enum --platform --release -o dist 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0) { Write-Error "napi build failed"; exit 1 }
+        npm run build:entrypoints --silent
+        if ($LASTEXITCODE -ne 0) { Write-Error "runtime entrypoint generation failed"; exit 1 }
         Pop-Location
     }
 } else {
@@ -123,10 +171,79 @@ function Generate($lang, $outDir) {
     }
 }
 
-foreach ($l in $Lang) {
+foreach ($l in @($Lang | Where-Object { $_ -in @("py", "ts") })) {
     Write-Host "`n--- Generate ($l) ---" -ForegroundColor Yellow
     $outDir = if ($l -eq "py") { $pyBindingsDir } else { Join-Path $e2eDir $l }
     Generate $l $outDir
+}
+
+if ("com" -in $Lang) {
+    Write-Host "`n--- Generate (Classic COM) ---" -ForegroundColor Yellow
+    $comRuntimeImport = "../../../../bindings/js/dist/com.js"
+    $winrtRuntimeImport = "../../../../bindings/js/dist/winrt.js"
+
+    & cargo run -p dynwinrt-codegen --release --quiet -- generate `
+        --winmd $win32Winmd `
+        --namespace Windows.Win32.UI.Shell `
+        --class-name "ITaskbarList3,IDataTransferManagerInterop,IShellLinkW,IFileOperation,IFileOpenDialog" `
+        --output $comShellDir `
+        --import-name $comRuntimeImport
+    if ($LASTEXITCODE -ne 0) { Write-Error "Classic COM Shell generation failed"; exit 1 }
+
+    & cargo run -p dynwinrt-codegen --release --quiet -- generate `
+        --winmd $win32Winmd `
+        --namespace Windows.Win32.System.Com `
+        --class-name IPersistFile `
+        --output $comShellDir `
+        --import-name $comRuntimeImport
+    if ($LASTEXITCODE -ne 0) { Write-Error "Classic COM persistence generation failed"; exit 1 }
+
+    & cargo run -p dynwinrt-codegen --release --quiet -- generate `
+        --winmd $win32Winmd `
+        --namespace Windows.Win32.System.WinRT `
+        --class-name ISystemMediaTransportControlsInterop `
+        --output $comInteropDir `
+        --import-name $comRuntimeImport
+    if ($LASTEXITCODE -ne 0) { Write-Error "Classic COM interop generation failed"; exit 1 }
+
+    & cargo run -p dynwinrt-codegen --release --quiet -- generate `
+        --winmd $win32Winmd `
+        --namespace Windows.Win32.Graphics.Imaging `
+        --class-name IWICImagingFactory `
+        --output $comWicDir `
+        --import-name $comRuntimeImport
+    if ($LASTEXITCODE -ne 0) { Write-Error "Classic COM WIC generation failed"; exit 1 }
+
+    & cargo run -p dynwinrt-codegen --release --quiet -- generate `
+        --namespace Windows.Media `
+        --class-name SystemMediaTransportControls `
+        --output $comSmtcDir `
+        --import-name $winrtRuntimeImport
+    if ($LASTEXITCODE -ne 0) { Write-Error "SMTC WinRT generation failed"; exit 1 }
+}
+
+if ("flat" -in $Lang) {
+    Write-Host "`n--- Generate (flat Win32) ---" -ForegroundColor Yellow
+    $flatRuntimeImport = "../../../../bindings/js/dist/winrt.js"
+    $flatTargets = @(
+        @{ Namespace = "Windows.Win32.System.Registry"; Output = "registry" },
+        @{ Namespace = "Windows.Win32.System.LibraryLoader"; Output = "library-loader" },
+        @{ Namespace = "Windows.Win32.System.SystemInformation"; Output = "system-information" },
+        @{ Namespace = "Windows.Win32.Graphics.Direct2D"; Output = "direct2d" }
+    )
+    foreach ($target in $flatTargets) {
+        $flatOutput = Join-Path $flatBindingsDir $target.Output
+        & cargo run -p dynwinrt-codegen --release --quiet -- generate `
+            --winmd $win32Winmd `
+            --namespace $target.Namespace `
+            --class-name Apis `
+            --output $flatOutput `
+            --import-name $flatRuntimeImport
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "Flat Win32 generation failed: $($target.Namespace)"
+            exit 1
+        }
+    }
 }
 
 # --------------------------------------------------------------------------
@@ -168,10 +285,64 @@ if ("ts" -in $Lang) {
     & $tsx (Join-Path $runnersDir "ts_runner.ts") `
         --specs $specsFile `
         --generated (Join-Path $e2eDir "ts") `
-        --runtime (Join-Path $root "bindings\js\dist\index.js") `
+        --runtime (Join-Path $root "bindings\js\dist\winrt.js") `
         --output $tsResult
     if ($LASTEXITCODE -ne 0) { $totalFail++ } else { $totalPass++ }
     if (Test-Path $tsResult) { $allResults += (Get-Content $tsResult -Raw | ConvertFrom-Json) }
+}
+
+if ("com" -in $Lang) {
+    Write-Host "`n--- Classic COM E2E ---" -ForegroundColor Yellow
+    $comRunners = @(
+        "pointer-reject-object.mjs",
+        "taskbarlist.mjs",
+        "electron-hwnd-buffer.mjs",
+        "shelllink-buffer.mjs",
+        "file-operation.mjs",
+        "file-open-dialog.mjs",
+        "wic-imaging-factory.mjs",
+        "dtm.mjs",
+        "smtc.mjs"
+    )
+    $comPassed = 0
+    $comFailed = 0
+    foreach ($runner in $comRunners) {
+        Write-Host "  $runner"
+        & node (Join-Path $runnersDir "com\$runner")
+        if ($LASTEXITCODE -eq 0) {
+            $comPassed++
+        } else {
+            $comFailed++
+        }
+    }
+    if ($comFailed -eq 0) { $totalPass++ } else { $totalFail++ }
+    $allResults += [pscustomobject]@{
+        language = "com"
+        passed = $comPassed
+        total = $comRunners.Count
+    }
+}
+
+if ("flat" -in $Lang) {
+    Write-Host "`n--- Flat Win32 E2E ---" -ForegroundColor Yellow
+    $flatRunners = @("registry.mjs", "returns.mjs")
+    $flatPassed = 0
+    $flatFailed = 0
+    foreach ($runner in $flatRunners) {
+        Write-Host "  $runner"
+        & node (Join-Path $runnersDir "flat\$runner")
+        if ($LASTEXITCODE -eq 0) {
+            $flatPassed++
+        } else {
+            $flatFailed++
+        }
+    }
+    if ($flatFailed -eq 0) { $totalPass++ } else { $totalFail++ }
+    $allResults += [pscustomobject]@{
+        language = "flat"
+        passed = $flatPassed
+        total = $flatRunners.Count
+    }
 }
 
 # --------------------------------------------------------------------------

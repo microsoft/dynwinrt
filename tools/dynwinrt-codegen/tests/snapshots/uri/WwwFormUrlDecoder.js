@@ -3,12 +3,14 @@ const { DynWinRtType, DynWinRtMethodSig, DynWinRtValue, DynWinRtArray, DynWinRtD
 let __m_IIterator_IWwwFormUrlDecoderEntry;
 const __load_IIterator_IWwwFormUrlDecoderEntry = () => (__m_IIterator_IWwwFormUrlDecoderEntry ??= require('./IIterator_IWwwFormUrlDecoderEntry.js'));
 const __get_IIterator_IWwwFormUrlDecoderEntry = () => __load_IIterator_IWwwFormUrlDecoderEntry().IIterator_IWwwFormUrlDecoderEntry;
-const { IID_IWwwFormUrlDecoderEntry } = require('./IWwwFormUrlDecoderEntry.js');
+require('./IWwwFormUrlDecoderEntry.js');
 let __m_IWwwFormUrlDecoderEntry;
 const __load_IWwwFormUrlDecoderEntry = () => (__m_IWwwFormUrlDecoderEntry ??= require('./IWwwFormUrlDecoderEntry.js'));
 const __get_IWwwFormUrlDecoderEntry = () => __load_IWwwFormUrlDecoderEntry().IWwwFormUrlDecoderEntry;
 let __m_lifetime;
 const __load_lifetime = () => (__m_lifetime ??= require('./lifetime.js'));
+const __get_castProjectedValueBorrowed = () => __load_lifetime().castProjectedValueBorrowed;
+const __get_castProjectedValueOwned = () => __load_lifetime().castProjectedValueOwned;
 const __get_trackProjectedValue = () => __load_lifetime().trackProjectedValue;
 
 const _unwrap = (x) => x?._obj ?? x;
@@ -35,7 +37,7 @@ const _IWwwFormUrlDecoderRuntimeClassFactory = new Proxy({}, {
     get(_target, prop) {
         _IWwwFormUrlDecoderRuntimeClassFactoryCache ??= DynWinRtType.registerInterface(
         "IWwwFormUrlDecoderRuntimeClassFactory", IID_IWwwFormUrlDecoderRuntimeClassFactory)
-        .addMethod("CreateWwwFormUrlDecoder", new DynWinRtMethodSig().addIn(DynWinRtType.hstring()).addOut(DynWinRtType.runtimeClass('Windows.Foundation.WwwFormUrlDecoder', WinGuid.parse('d45a0451-f225-4542-9296-0e1df5d254df'))));
+        .addMethod("CreateWwwFormUrlDecoder", new DynWinRtMethodSig().addIn(DynWinRtType.hstring()).addOut(DynWinRtType.runtimeClass('Windows.Foundation.WwwFormUrlDecoder', DynWinRtType.interface(WinGuid.parse('d45a0451-f225-4542-9296-0e1df5d254df')))));
         const value = _IWwwFormUrlDecoderRuntimeClassFactoryCache[prop];
         return typeof value === 'function' ? value.bind(_IWwwFormUrlDecoderRuntimeClassFactoryCache) : value;
     }
@@ -79,7 +81,10 @@ class WwwFormUrlDecoder {
         throw new TypeError('No matching constructor for WwwFormUrlDecoder.');
     }
     static _fromNative(obj) {
-        return Object.assign(Object.create(WwwFormUrlDecoder.prototype), { _obj: (__get_trackProjectedValue())((__get_trackProjectedValue())(obj, 'WwwFormUrlDecoder').cast(IID_IWwwFormUrlDecoderRuntimeClass), 'WwwFormUrlDecoder') });
+        return Object.assign(Object.create(WwwFormUrlDecoder.prototype), { _obj: (__get_castProjectedValueOwned())(obj, IID_IWwwFormUrlDecoderRuntimeClass, 'WwwFormUrlDecoder') });
+    }
+    static _fromNativeBorrowed(obj) {
+        return Object.assign(Object.create(WwwFormUrlDecoder.prototype), { _obj: (__get_castProjectedValueBorrowed())(obj, IID_IWwwFormUrlDecoderRuntimeClass, 'WwwFormUrlDecoder') });
     }
     static createWwwFormUrlDecoder(query) {
         return WwwFormUrlDecoder._fromNative(_IWwwFormUrlDecoderRuntimeClassFactory.method(6).invoke(WwwFormUrlDecoder.f_IWwwFormUrlDecoderRuntimeClassFactory(), [DynWinRtValue.hstring(query)]));

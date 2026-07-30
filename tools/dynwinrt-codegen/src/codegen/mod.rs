@@ -4,9 +4,11 @@
 pub mod com;
 pub mod common;
 pub mod flat;
-pub mod javascript;
-pub mod python;
-pub(crate) mod shared;
+pub mod winrt;
+
+// Preserve the existing public module paths while callers migrate to
+// `codegen::winrt::{javascript, python}`.
+pub use winrt::{javascript, python};
 
 // Preserve the existing public API while the implementations live under
 // language-specific modules.

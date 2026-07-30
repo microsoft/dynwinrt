@@ -16,7 +16,7 @@ use crate::value::WinRTValue;
 
 pub(super) struct RuntimeClassData {
     pub(super) name: String,
-    pub(super) default_iid: GUID,
+    pub(super) default_interface: TypeKind,
 }
 
 pub(super) struct ParameterizedData {
@@ -40,7 +40,6 @@ pub(super) struct EnumData {
 pub(super) struct InterfaceMethodTable {
     pub(super) method_names: Vec<String>,
     pub(super) method_indices: Vec<u32>,
-    pub(super) base_slot: usize,
 }
 
 // ===========================================================================
@@ -52,10 +51,13 @@ impl MetadataTable {
     // Type arena writes (return TypeKind, not TypeHandle)
     // -----------------------------------------------------------------------
 
-    pub(super) fn push_runtime_class(&self, name: String, default_iid: GUID) -> TypeKind {
+    pub(super) fn push_runtime_class(&self, name: String, default_interface: TypeKind) -> TypeKind {
         let mut rcs = self.runtime_classes.write().unwrap();
         let idx = rcs.len() as u32;
-        rcs.push(RuntimeClassData { name, default_iid });
+        rcs.push(RuntimeClassData {
+            name,
+            default_interface,
+        });
         TypeKind::RuntimeClass(idx)
     }
 
@@ -114,29 +116,15 @@ impl MetadataTable {
     // -----------------------------------------------------------------------
 
     /// Create an interface method table. Called only when dedup already checked by caller.
-    /// If a method table for this IID already exists, its base MUST match;
-    /// otherwise subsequent method registrations for the
-    /// IID would compute wrong vtable indices for one of the callers.
-    pub(super) fn create_interface_method_table(&self, iid: GUID, base_slot: usize) {
-        assert!(matches!(base_slot, 3 | 6));
-        let mut tables = self.interface_methods.write().unwrap();
-        match tables.entry(iid) {
-            std::collections::hash_map::Entry::Occupied(existing) => {
-                let existing_base = existing.get().base_slot;
-                assert_eq!(
-                    existing_base, base_slot,
-                    "interface IID {iid:?} registered twice with conflicting bases \
-                     (existing={existing_base}, new={base_slot})"
-                );
-            }
-            std::collections::hash_map::Entry::Vacant(v) => {
-                v.insert(InterfaceMethodTable {
-                    method_names: Vec::new(),
-                    method_indices: Vec::new(),
-                    base_slot,
-                });
-            }
-        }
+    pub(super) fn create_interface_method_table(&self, iid: GUID) {
+        self.interface_methods
+            .write()
+            .unwrap()
+            .entry(iid)
+            .or_insert_with(|| InterfaceMethodTable {
+                method_names: Vec::new(),
+                method_indices: Vec::new(),
+            });
     }
 
     /// Add a method to an interface's method table. Returns the vtable index.
@@ -149,10 +137,10 @@ impl MetadataTable {
 
         // Dedup: if method name already registered, return existing vtable index
         if let Some(pos) = table.method_names.iter().position(|n| n == name) {
-            return (table.base_slot + pos) as u32;
+            return (6 + pos) as u32;
         }
 
-        let vtable_index = table.base_slot + table.method_indices.len();
+        let vtable_index = 6 + table.method_indices.len();
         let method = sig.build(vtable_index);
         let arena_index = self.methods.push(method);
         table.method_names.push(name.to_string());
@@ -187,10 +175,10 @@ impl MetadataTable {
         self.inner_type_pairs.read().unwrap()[idx as usize]
     }
 
-    pub(crate) fn get_runtime_class(&self, idx: u32) -> (String, GUID) {
+    pub(crate) fn get_runtime_class(&self, idx: u32) -> (String, TypeKind) {
         let rcs = self.runtime_classes.read().unwrap();
         let rc = &rcs[idx as usize];
-        (rc.name.clone(), rc.default_iid)
+        (rc.name.clone(), rc.default_interface)
     }
 
     pub(crate) fn get_parameterized(&self, idx: u32) -> (TypeKind, Vec<TypeKind>) {
@@ -249,12 +237,12 @@ impl MetadataTable {
         iid: &GUID,
         vtable_index: usize,
     ) -> Option<u32> {
-        let iface_methods = self.interface_methods.read().unwrap();
-        let table = iface_methods.get(iid)?;
-        if vtable_index < table.base_slot {
+        if vtable_index < 6 {
             return None;
         }
-        let local_index = vtable_index - table.base_slot;
+        let local_index = vtable_index - 6;
+        let iface_methods = self.interface_methods.read().unwrap();
+        let table = iface_methods.get(iid)?;
         table.method_indices.get(local_index).copied()
     }
 

@@ -33,7 +33,7 @@ cargo test -p dynwinrt
 cargo test -p dynwinrt-codegen
 
 # Build JS bindings
-cd bindings/js && npm install && npx napi build --no-const-enum --platform --release -o dist
+cd bindings/js && npm install && npm run build
 
 # Build Python bindings
 cd bindings/py && maturin develop
@@ -195,4 +195,3 @@ The library uses `windows-core::IUnknown` smart pointers which automatically han
 ### Parameterized IID Computation
 
 Generic interfaces (IVector\<T\>, IMap\<K,V\>, IAsyncOperation\<T\>) have IIDs computed at runtime using the WinRT parameterized interface algorithm (SHA-1 hash of the PIID + type argument signatures). This is implemented in `metadata_table/iid.rs`.
-

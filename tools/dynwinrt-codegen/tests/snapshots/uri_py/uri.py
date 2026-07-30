@@ -55,6 +55,7 @@ IID_IUriRuntimeClassFactory = WinGUID.parse('44a9796f-723e-4fdf-a218-033e75b0c08
 IID_IUriEscapeStatics = WinGUID.parse('c1d432ba-c824-4452-a7fd-512bc3bbe9a1')
 IID_IUriRuntimeClassWithAbsoluteCanonicalUri = WinGUID.parse('758d9661-221c-480f-a339-50656673f46f')
 IID_IStringable = WinGUID.parse('96369f54-8eb6-48f0-abce-c1b211e627c3')
+IID_ARG_Windows_Foundation_Uri = WinGUID.parse('9e365e57-48b2-4160-956f-c7385120bbfc')
 
 _IUriRuntimeClass = DynWinRTType.register_interface(
     "IUriRuntimeClass", IID_IUriRuntimeClass) \
@@ -67,19 +68,19 @@ _IUriRuntimeClass = DynWinRTType.register_interface(
     .add_method("get_Password", DynWinRTMethodSig().add_out(DynWinRTType.hstring())) \
     .add_method("get_Path", DynWinRTMethodSig().add_out(DynWinRTType.hstring())) \
     .add_method("get_Query", DynWinRTMethodSig().add_out(DynWinRTType.hstring())) \
-    .add_method("get_QueryParsed", DynWinRTMethodSig().add_out(DynWinRTType.runtime_class('Windows.Foundation.WwwFormUrlDecoder', WinGUID.parse('d45a0451-f225-4542-9296-0e1df5d254df')))) \
+    .add_method("get_QueryParsed", DynWinRTMethodSig().add_out(DynWinRTType.runtime_class('Windows.Foundation.WwwFormUrlDecoder', DynWinRTType.interface(WinGUID.parse('d45a0451-f225-4542-9296-0e1df5d254df'))))) \
     .add_method("get_RawUri", DynWinRTMethodSig().add_out(DynWinRTType.hstring())) \
     .add_method("get_SchemeName", DynWinRTMethodSig().add_out(DynWinRTType.hstring())) \
     .add_method("get_UserName", DynWinRTMethodSig().add_out(DynWinRTType.hstring())) \
     .add_method("get_Port", DynWinRTMethodSig().add_out(DynWinRTType.i32_type())) \
     .add_method("get_Suspicious", DynWinRTMethodSig().add_out(DynWinRTType.bool_type())) \
-    .add_method("Equals", DynWinRTMethodSig().add_in(DynWinRTType.runtime_class('Windows.Foundation.Uri', WinGUID.parse('9e365e57-48b2-4160-956f-c7385120bbfc'))).add_out(DynWinRTType.bool_type())) \
-    .add_method("CombineUri", DynWinRTMethodSig().add_in(DynWinRTType.hstring()).add_out(DynWinRTType.runtime_class('Windows.Foundation.Uri', WinGUID.parse('9e365e57-48b2-4160-956f-c7385120bbfc'))))
+    .add_method("Equals", DynWinRTMethodSig().add_in(DynWinRTType.runtime_class('Windows.Foundation.Uri', DynWinRTType.interface(WinGUID.parse('9e365e57-48b2-4160-956f-c7385120bbfc')))).add_out(DynWinRTType.bool_type())) \
+    .add_method("CombineUri", DynWinRTMethodSig().add_in(DynWinRTType.hstring()).add_out(DynWinRTType.runtime_class('Windows.Foundation.Uri', DynWinRTType.interface(WinGUID.parse('9e365e57-48b2-4160-956f-c7385120bbfc')))))
 
 _IUriRuntimeClassFactory = DynWinRTType.register_interface(
     "IUriRuntimeClassFactory", IID_IUriRuntimeClassFactory) \
-    .add_method("CreateUri", DynWinRTMethodSig().add_in(DynWinRTType.hstring()).add_out(DynWinRTType.runtime_class('Windows.Foundation.Uri', WinGUID.parse('9e365e57-48b2-4160-956f-c7385120bbfc')))) \
-    .add_method("CreateWithRelativeUri", DynWinRTMethodSig().add_in(DynWinRTType.hstring()).add_in(DynWinRTType.hstring()).add_out(DynWinRTType.runtime_class('Windows.Foundation.Uri', WinGUID.parse('9e365e57-48b2-4160-956f-c7385120bbfc'))))
+    .add_method("CreateUri", DynWinRTMethodSig().add_in(DynWinRTType.hstring()).add_out(DynWinRTType.runtime_class('Windows.Foundation.Uri', DynWinRTType.interface(WinGUID.parse('9e365e57-48b2-4160-956f-c7385120bbfc'))))) \
+    .add_method("CreateWithRelativeUri", DynWinRTMethodSig().add_in(DynWinRTType.hstring()).add_in(DynWinRTType.hstring()).add_out(DynWinRTType.runtime_class('Windows.Foundation.Uri', DynWinRTType.interface(WinGUID.parse('9e365e57-48b2-4160-956f-c7385120bbfc')))))
 
 _IUriEscapeStatics = DynWinRTType.register_interface(
     "IUriEscapeStatics", IID_IUriEscapeStatics) \
@@ -214,7 +215,7 @@ class Uri:
         return _IUriRuntimeClass.method(20).invoke(self._obj, []).to_bool()
 
     def equals(self, p_uri: 'Uri') -> bool:
-        return _IUriRuntimeClass.method(21).invoke(self._obj, [getattr(p_uri, '_obj', p_uri)]).to_bool()
+        return _IUriRuntimeClass.method(21).invoke(self._obj, [getattr(p_uri, '_obj', p_uri).cast(IID_ARG_Windows_Foundation_Uri)]).to_bool()
 
     def combine_uri(self, relative_uri: str) -> 'Uri':
         return _dynwinrt_symbol('uri', 'Uri')._from_native(_IUriRuntimeClass.method(22).invoke(self._obj, [DynWinRTValue.from_hstring(relative_uri)]))

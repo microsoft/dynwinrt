@@ -63,7 +63,7 @@ _IWwwFormUrlDecoderRuntimeClass = DynWinRTType.register_interface(
 
 _IWwwFormUrlDecoderRuntimeClassFactory = DynWinRTType.register_interface(
     "IWwwFormUrlDecoderRuntimeClassFactory", IID_IWwwFormUrlDecoderRuntimeClassFactory) \
-    .add_method("CreateWwwFormUrlDecoder", DynWinRTMethodSig().add_in(DynWinRTType.hstring()).add_out(DynWinRTType.runtime_class('Windows.Foundation.WwwFormUrlDecoder', WinGUID.parse('d45a0451-f225-4542-9296-0e1df5d254df'))))
+    .add_method("CreateWwwFormUrlDecoder", DynWinRTMethodSig().add_in(DynWinRTType.hstring()).add_out(DynWinRTType.runtime_class('Windows.Foundation.WwwFormUrlDecoder', DynWinRTType.interface(WinGUID.parse('d45a0451-f225-4542-9296-0e1df5d254df')))))
 
 _IVectorView_IWwwFormUrlDecoderEntry = DynWinRTType.register_interface(
     "IVectorView_IWwwFormUrlDecoderEntry", IID_IVectorView_IWwwFormUrlDecoderEntry) \

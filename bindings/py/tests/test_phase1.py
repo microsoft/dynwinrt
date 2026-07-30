@@ -130,7 +130,7 @@ def _missing_storage_file_operation(path: str):
     statics_iid = WinGUID.parse(IID_ISTORAGE_FILE_STATICS)
     storage_file_type = DynWinRTType.runtime_class(
         "Windows.Storage.StorageFile",
-        WinGUID.parse(IID_ISTORAGE_FILE),
+        DynWinRTType.interface(WinGUID.parse(IID_ISTORAGE_FILE)),
     )
     statics = DynWinRTType.register_interface(
         "IStorageFileStaticsErrorMapping",

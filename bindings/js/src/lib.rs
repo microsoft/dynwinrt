@@ -4,17 +4,23 @@
 #![deny(clippy::all)]
 #![allow(clippy::missing_safety_doc)]
 
-use std::sync::{Arc, Mutex, OnceLock};
+use std::{
+  cell::Cell,
+  mem,
+  sync::{Arc, Mutex, OnceLock},
+};
 
 use dynwinrt;
-use napi::bindgen_prelude::{BigInt, Either};
+use napi::Env;
+use napi::bindgen_prelude::{BigInt, Either, PromiseRaw};
 use napi::threadsafe_function::ThreadsafeFunctionCallMode;
-use napi::JsValue;
 use napi_derive::napi;
-use windows::core::{IUnknown, Interface, HSTRING};
+use windows::core::{HSTRING, IUnknown, Interface};
 
 mod com;
 pub use com::{DynCom, DynComInterface, DynComMethodHandle, DynComMethodSig, DynComType};
+mod async_promise;
+mod scheduled_start;
 
 /// Shared MetadataTable — created once, used everywhere.
 static TABLE: std::sync::LazyLock<Arc<dynwinrt::MetadataTable>> =
@@ -31,6 +37,19 @@ struct InitializedWinAppSdk {
 }
 
 static WINAPP_SDK: OnceLock<InitializedWinAppSdk> = OnceLock::new();
+
+thread_local! {
+  static WINUI_DISPATCHER_LOOP_ACTIVE: Cell<bool> = const { Cell::new(false) };
+  static WINUI_DISPATCHER_LOOP_ENTERED: Cell<bool> = const { Cell::new(false) };
+}
+
+fn winui_dispatcher_loop_active() -> bool {
+  WINUI_DISPATCHER_LOOP_ACTIVE.with(Cell::get)
+}
+
+fn winui_dispatcher_loop_exited() -> bool {
+  WINUI_DISPATCHER_LOOP_ENTERED.with(Cell::get) && !winui_dispatcher_loop_active()
+}
 
 /// Add Windows App SDK to the process package graph without changing the calling thread's apartment.
 #[napi]
@@ -86,7 +105,7 @@ pub fn get_winappsdk_resource_pri_path() -> napi::Result<String> {
 #[napi]
 pub fn ro_initialize(apartment_type: Option<i32>) {
   use windows::Win32::System::WinRT::{
-    RoInitialize, RO_INIT_MULTITHREADED, RO_INIT_SINGLETHREADED,
+    RO_INIT_MULTITHREADED, RO_INIT_SINGLETHREADED, RoInitialize,
   };
   let init_type = match apartment_type.unwrap_or(1) {
     0 => RO_INIT_SINGLETHREADED,
@@ -97,8 +116,15 @@ pub fn ro_initialize(apartment_type: Option<i32>) {
   let _ = unsafe { RoInitialize(init_type) };
 }
 
+pub(crate) fn set_winui_dispatcher_loop_active(active: bool) {
+  if active {
+    WINUI_DISPATCHER_LOOP_ENTERED.with(|state| state.set(true));
+  }
+  WINUI_DISPATCHER_LOOP_ACTIVE.with(|state| state.set(active));
+}
+
 // ======================================================================
-// Core types — DynWinRTType, DynWinRTMethodSig, DynWinRTMethodHandle, WinGUID
+// Core types — DynWinRTType, DynWinRtMethodSig, DynWinRtMethodHandle, WinGUID
 // ======================================================================
 
 #[napi]
@@ -172,8 +198,8 @@ impl DynWinRTType {
   }
 
   #[napi]
-  pub fn runtime_class(name: String, default_iid: &WinGUID) -> Self {
-    DynWinRTType(TABLE.runtime_class(name, default_iid.0))
+  pub fn runtime_class(name: String, default_interface_type: &DynWinRTType) -> Self {
+    DynWinRTType(TABLE.runtime_class(name, &default_interface_type.0))
   }
 
   #[napi]
@@ -391,7 +417,7 @@ impl DynWinRTMethodHandle {
       _ => {
         return Err(napi::Error::from_reason(
           "invoke() requires an Object value",
-        ))
+        ));
       }
     };
     let wrt_args: Vec<dynwinrt::WinRTValue> = args.iter().map(|a| a.0.clone()).collect();
@@ -408,6 +434,23 @@ impl DynWinRTMethodHandle {
     }
   }
 
+  /// Schedule a blocking WinUI Application.Start invocation after the current
+  /// JavaScript callback unwinds.
+  #[napi]
+  pub fn invoke_scheduled<'env>(
+    &self,
+    env: Env,
+    obj: &DynWinRTValue,
+    args: Vec<&DynWinRTValue>,
+  ) -> napi::Result<PromiseRaw<'env, ()>> {
+    scheduled_start::schedule(
+      env,
+      self.0.clone(),
+      obj.0.clone(),
+      args.into_iter().map(|value| value.0.clone()).collect(),
+    )
+  }
+
   /// Like `invoke`, but returns all out-parameters as an array.
   /// Used for methods with multiple out params (e.g. IVector.IndexOf → [u32 index, bool found]).
   #[napi]
@@ -421,7 +464,7 @@ impl DynWinRTMethodHandle {
       _ => {
         return Err(napi::Error::from_reason(
           "invoke_all() requires an Object value",
-        ))
+        ));
       }
     };
     let wrt_args: Vec<dynwinrt::WinRTValue> = args.iter().map(|a| a.0.clone()).collect();
@@ -532,17 +575,47 @@ impl DynWinRTMethodHandle {
 // ======================================================================
 
 #[napi]
-pub struct DynWinRTValue(dynwinrt::WinRTValue, Option<com::NativePointerOwner>);
+pub struct DynWinRTValue(
+  dynwinrt::WinRTValue,
+  Option<com::NativePointerOwner>,
+  com::PointerProvenance,
+);
 unsafe impl Send for DynWinRTValue {}
 unsafe impl Sync for DynWinRTValue {}
 
 impl DynWinRTValue {
   fn new(value: dynwinrt::WinRTValue) -> Self {
-    Self(value, None)
+    Self(value, None, com::PointerProvenance::None)
   }
 
   fn with_pointer_owner(value: dynwinrt::WinRTValue, owner: com::NativePointerOwner) -> Self {
-    Self(value, Some(owner))
+    Self(value, Some(owner), com::PointerProvenance::Borrowed)
+  }
+
+  fn with_borrowed_pointer(value: dynwinrt::WinRTValue) -> Self {
+    Self(value, None, com::PointerProvenance::Borrowed)
+  }
+
+  fn from_com_result(value: dynwinrt::WinRTValue) -> Self {
+    let provenance = if matches!(value, dynwinrt::WinRTValue::RawPtr(_)) {
+      com::PointerProvenance::NativeOutput
+    } else {
+      com::PointerProvenance::None
+    };
+    Self(value, None, provenance)
+  }
+}
+
+impl Drop for DynWinRTValue {
+  fn drop(&mut self) {
+    // After Application.Start returns, XAML has already torn down its thread
+    // state. Leaking late projected COM references is safer than releasing
+    // them into a destroyed DXamlCore; normal application teardown must call
+    // release()/releaseProjected() before this process-exit fallback is needed.
+    if winui_dispatcher_loop_exited() {
+      let value = mem::replace(&mut self.0, dynwinrt::WinRTValue::Null);
+      mem::forget(value);
+    }
   }
 }
 
@@ -552,6 +625,7 @@ impl DynWinRTValue {
   pub fn release(&mut self) {
     self.0 = dynwinrt::WinRTValue::Null;
     self.1 = None;
+    self.2 = com::PointerProvenance::None;
   }
 
   #[napi]
@@ -586,18 +660,8 @@ impl DynWinRTValue {
       })
   }
 
-  /// Wrap a pointer/handle (BigInt, number, Buffer, Uint8Array, or null) as a
-  /// `WinRTValue::RawPtr` for classic-COM and flat-Win32 (`flatInvoke`) calls
-  /// with `void*` / HWND / PWSTR / handle / function-pointer parameters.
-  ///
-  /// Accepts:
-  ///   - BigInt: interpreted as a raw pointer value (u64 on x64).
-  ///   - number: a non-negative safe integer, interpreted as a raw pointer
-  ///     value (use a BigInt for pointers above `Number.MAX_SAFE_INTEGER`).
-  ///   - Buffer: uses the buffer's byte-pointer directly (does not clone).
-  ///     Caller keeps the Buffer alive for the duration of the COM call.
-  ///   - Uint8Array: same as Buffer — uses the view's data pointer directly.
-  ///   - null/undefined: null pointer.
+  /// Wrap raw pointer bits or Buffer/Uint8Array backing storage for a flat
+  /// Win32 call. The pointer owner is retained and revalidated before use.
   #[napi]
   pub fn pointer(
     #[napi(
@@ -605,155 +669,18 @@ impl DynWinRTValue {
     )]
     value: napi::bindgen_prelude::Unknown,
   ) -> napi::Result<DynWinRTValue> {
-    use napi::bindgen_prelude::FromNapiValue;
-    use napi::sys;
-
-    let raw_env = value.value().env;
-    let raw_val = value.value().value;
-
-    // Fast path 1: null / undefined → null pointer
-    let mut val_type = sys::ValueType::napi_undefined;
-    unsafe { sys::napi_typeof(raw_env, raw_val, &mut val_type) };
-    if val_type == sys::ValueType::napi_null || val_type == sys::ValueType::napi_undefined {
-      return Ok(DynWinRTValue::new(dynwinrt::WinRTValue::RawPtr(
-        std::ptr::null_mut(),
-      )));
-    }
-
-    // Fast path 2: BigInt → parse as u64 pointer bits.
-    //
-    // BigInt::get_u64() returns (sign_bit, magnitude, lossless). The tuple
-    // silently swallows negative values (sign=true is dropped) and values
-    // that don't fit in u64 (lossless=false → magnitude wraps). Validate
-    // both so that DynWinRtValue.pointer(-1n) or a >2^64 bigint produce a
-    // clean error instead of a fabricated pointer.
-    if val_type == sys::ValueType::napi_bigint {
-      let bi = unsafe { napi::bindgen_prelude::BigInt::from_napi_value(raw_env, raw_val) }?;
-      let (sign_bit, n, lossless) = bi.get_u64();
-      if sign_bit {
-        return Err(napi::Error::from_reason(
-          "pointer(): bigint must be non-negative (pointer values are unsigned)",
-        ));
-      }
-      if !lossless {
-        return Err(napi::Error::from_reason(
-          "pointer(): bigint exceeds u64 range; pointer values must fit in u64",
-        ));
-      }
-      if (n as usize as u64) != n {
-        return Err(napi::Error::from_reason(
-          "pointer(): bigint exceeds usize range on this platform",
-        ));
-      }
-      return Ok(DynWinRTValue::new(dynwinrt::WinRTValue::RawPtr(
-        n as usize as *mut std::ffi::c_void,
-      )));
-    }
-
-    // Fast path 3: Number → cast to usize (handy for HWNDs that fit in a
-    // JS number; the caller can also pass BigInt for safety).
-    //
-    // A float→int cast in Rust saturates and silently accepts NaN, negative,
-    // fractional, and >2^53 values — any of which could produce a bogus
-    // pointer. Validate that the value is a finite, non-negative safe
-    // integer that fits in usize, and require BigInt otherwise.
-    if val_type == sys::ValueType::napi_number {
-      let mut d: f64 = 0.0;
-      unsafe { sys::napi_get_value_double(raw_env, raw_val, &mut d) };
-      if !d.is_finite() {
-        return Err(napi::Error::from_reason(
-          "pointer(): number must be finite (got NaN or Infinity); use bigint for arbitrary pointer values",
-        ));
-      }
-      if d < 0.0 {
-        return Err(napi::Error::from_reason(
-          "pointer(): number must be non-negative; use bigint for arbitrary pointer values",
-        ));
-      }
-      if d.fract() != 0.0 {
-        return Err(napi::Error::from_reason(
-          "pointer(): number must be an integer; use bigint for arbitrary pointer values",
-        ));
-      }
-      // JS Number can only faithfully represent integers up to 2^53 - 1.
-      const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0; // (1 << 53) - 1
-      if d > MAX_SAFE_INTEGER {
-        return Err(napi::Error::from_reason(
-          "pointer(): number exceeds Number.MAX_SAFE_INTEGER; use bigint for arbitrary pointer values",
-        ));
-      }
-      let bits = d as u64;
-      if (bits as usize as u64) != bits {
-        return Err(napi::Error::from_reason(
-          "pointer(): number exceeds usize range on this platform; use bigint",
-        ));
-      }
-      return Ok(DynWinRTValue::new(dynwinrt::WinRTValue::RawPtr(
-        bits as usize as *mut std::ffi::c_void,
-      )));
-    }
-
-    // Fast path 4: Buffer / Uint8Array → base data pointer.
-    if let Ok(buf) = unsafe { napi::bindgen_prelude::Buffer::from_napi_value(raw_env, raw_val) } {
-      let slice: &[u8] = buf.as_ref();
-      return Ok(DynWinRTValue::new(dynwinrt::WinRTValue::RawPtr(
-        slice.as_ptr() as *mut std::ffi::c_void
-      )));
-    }
-
-    // Fast path 4b: plain Uint8Array (NOT a Node.js Buffer subclass) →
-    // base data pointer. Buffer::from_napi_value above rejects raw
-    // Uint8Array views even though the TS surface (`ts_arg_type`) advertises
-    // Uint8Array. Handle it explicitly with the same semantics as Buffer.
-    if let Ok(arr) = unsafe { napi::bindgen_prelude::Uint8Array::from_napi_value(raw_env, raw_val) }
-    {
-      let slice: &[u8] = arr.as_ref();
-      return Ok(DynWinRTValue::new(dynwinrt::WinRTValue::RawPtr(
-        slice.as_ptr() as *mut std::ffi::c_void
-      )));
-    }
-
-    // Fast path 5: existing DynWinRtValue → reject. Borrowing an Object's raw
-    // COM pointer here makes it indistinguishable from an owned raw pointer to
-    // adoptComPointer(), which can double-release the original wrapper's COM
-    // object. Callers that already have raw pointer bits should pass those bits.
-    if let Ok(v) = unsafe { <&DynWinRTValue>::from_napi_value(raw_env, raw_val) } {
-      let kind = v.0.get_type_kind();
-      return Err(napi::Error::from_reason(format!(
-        "pointer(): DynWinRtValue inputs are not accepted (got {:?}); pass raw pointer bits, Buffer/Uint8Array, or null instead",
-        kind
-      )));
-    }
-
-    Err(napi::Error::from_reason(
-      "pointer(): expected bigint, number, Buffer, Uint8Array, null, or undefined",
-    ))
+    com::pointer(value)
   }
 
-  /// Get the underlying pointer of an Object/RawPtr value as a BigInt.
-  /// Useful for turning a `flatInvoke` pointer result (e.g. HWND from
-  /// `GetConsoleWindow`) into a bigint you can then feed into other calls.
   #[napi]
   pub fn as_pointer_bigint(&self) -> napi::Result<BigInt> {
-    let bits: usize = match &self.0 {
-      dynwinrt::WinRTValue::Object(o) => o.as_raw() as usize,
-      dynwinrt::WinRTValue::RawPtr(p) => *p as usize,
-      dynwinrt::WinRTValue::Null => 0,
-      _ => {
-        return Err(napi::Error::from_reason(format!(
-          "asPointerBigint: not a pointer/object value ({:?})",
-          self.0.get_type_kind()
-        )));
-      }
-    };
-    Ok(BigInt::from(bits as u64))
+    com::as_pointer_bigint(self)
   }
 
-  /// Decode an I64 value as a JS BigInt without truncating through Number.
   #[napi(js_name = "toI64BigInt")]
   pub fn to_i64_bigint(&self) -> napi::Result<BigInt> {
     match &self.0 {
-      dynwinrt::WinRTValue::I64(v) => Ok(BigInt::from(*v)),
+      dynwinrt::WinRTValue::I64(value) => Ok(BigInt::from(*value)),
       _ => Err(napi::Error::from_reason(format!(
         "toI64BigInt: not an I64 value ({:?})",
         self.0.get_type_kind()
@@ -761,11 +688,10 @@ impl DynWinRTValue {
     }
   }
 
-  /// Decode a U64 value as a JS BigInt without truncating through Number.
   #[napi(js_name = "toU64BigInt")]
   pub fn to_u64_bigint(&self) -> napi::Result<BigInt> {
     match &self.0 {
-      dynwinrt::WinRTValue::U64(v) => Ok(BigInt::from(*v)),
+      dynwinrt::WinRTValue::U64(value) => Ok(BigInt::from(*value)),
       _ => Err(napi::Error::from_reason(format!(
         "toU64BigInt: not a U64 value ({:?})",
         self.0.get_type_kind()
@@ -773,91 +699,8 @@ impl DynWinRTValue {
     }
   }
 
-  /// Invoke a flat Win32 export via `LoadLibraryW` + `GetProcAddress` + libffi.
-  /// `retKind` selects the return marshalling:
-  /// `'Void' | 'I32' | 'U32' | 'I64' | 'U64' | 'F32' | 'F64' | 'Ptr'`.
-  ///
-  /// `args` may contain: `DynWinRtValue.i32(...)`, `DynWinRtValue.u32(...)`,
-  /// `DynWinRtValue.i64(...)`, `DynWinRtValue.u64(...)`,
-  /// `DynWinRtValue.f32(...)`, `DynWinRtValue.f64(...)`, or
-  /// `DynWinRtValue.pointer(...)`. Other kinds cause a runtime error.
-  ///
-  /// ## ABI / signature safety (IMPORTANT)
-  ///
-  /// This performs a raw libffi call using ONLY the `retKind` and the runtime
-  /// kinds of the `args` you pass — it has no knowledge of the target export's
-  /// real signature. Passing the wrong argument COUNT, the wrong argument ABI
-  /// kinds, or the wrong `retKind` for the actual export produces an ABI
-  /// mismatch that libffi cannot detect: it can read/write the wrong registers
-  /// or stack slots, crash the Node process, or corrupt memory. There is no
-  /// safety net here.
-  ///
-  /// Prefer the generated `dynwinrt-codegen --lang js` wrappers, which encode
-  /// the exact parameter/return ABI taken from the winmd for each export. Only
-  /// call `flatInvoke` directly if you have independently verified the target's
-  /// signature and are marshalling every argument and the return to match it.
-  ///
-  /// ## DLL loading (SECURITY)
-  ///
-  /// This ultimately calls `LoadLibraryW`, which uses the default DLL
-  /// search order. That means an untrusted DLL name (or a bare short
-  /// name where a same-named DLL exists in the process's working
-  /// directory / PATH earlier than the intended system location) can
-  /// silently resolve to an attacker-controlled binary — the classic
-  /// "DLL preloading / hijacking" attack. Pass DLLs that are either:
-  ///
-  ///   - Well-known system DLLs whose search-order first hit is under
-  ///     `System32` (e.g. `'kernel32.dll'`, `'user32.dll'`,
-  ///     `'ADVAPI32.dll'`) — safe on standard Windows installs
-  ///     provided the app itself has not tampered with the search path.
-  ///   - Or a fully qualified absolute path (`C:\\Path\\To\\my.dll`)
-  ///     that you control and have integrity-checked.
-  ///
-  /// Do NOT accept the DLL name from untrusted input. The generated
-  /// `--lang js` wrappers emitted by `dynwinrt-codegen` always pass a
-  /// hard-coded DLL name matched to a specific export in the winmd.
-  ///
-  /// ## Buffer lifetimes (IMPORTANT)
-  ///
-  /// `DynWinRtValue.pointer(Buffer | Uint8Array)` intentionally stores
-  /// only the raw pointer bits (`slice.as_ptr()`) — it does NOT retain
-  /// the underlying JS Buffer/typed array, so the array is eligible for
-  /// GC the moment the last JS reference to it drops. If you inline a
-  /// buffer allocation into the argument list, e.g.
-  /// `pointer(Buffer.alloc(32))` or `pointer(_wideStringBuffer(x))`,
-  /// the temporary buffer becomes unreachable the moment `pointer(...)`
-  /// returns, and can be reclaimed BEFORE `flatInvoke` reaches the
-  /// native call — passing a dangling pointer to the Win32 export.
-  ///
-  /// Always keep the original buffer alive in a named local until
-  /// `flatInvoke` returns:
-  ///
-  /// ```js
-  /// // BAD — temporary buffer may be GC'd before flatInvoke runs.
-  /// DynWinRtValue.flatInvoke(dll, entry, 'I32',
-  ///     [DynWinRtValue.pointer(Buffer.alloc(32))]);
-  ///
-  /// // GOOD — buf remains reachable through the function's scope.
-  /// const buf = Buffer.alloc(32);
-  /// DynWinRtValue.flatInvoke(dll, entry, 'I32',
-  ///     [DynWinRtValue.pointer(buf)]);
-  /// ```
-  ///
-  /// The codegen output emitted by `dynwinrt-codegen --lang js` follows
-  /// this rule: every wide/narrow string wrapper and every out-slot
-  /// `Buffer.alloc` is hoisted to a named `const` before the
-  /// `flatInvoke` call. Hand-written callers must do the same.
-  ///
-  /// ## DLL residency and `'Ptr'` returns
-  ///
-  /// Each distinct DLL is loaded once with `LoadLibraryW` and cached for
-  /// the lifetime of the process; it is intentionally never `FreeLibrary`'d
-  /// (see `flat_call::flat_invoke`). A `retKind: 'Ptr'` result (a raw
-  /// pointer / function pointer / handle) that points INTO a loaded module
-  /// therefore stays valid after the call returns, because the module is
-  /// never unloaded. `LoadLibraryW` uses the default DLL search order, so
-  /// pass a trusted or fully qualified DLL path to avoid DLL
-  /// preloading/hijacking risks.
+  /// Invoke a flat Win32 export. The caller must ensure the metadata-derived
+  /// return kind and arguments exactly match the native ABI.
   #[napi]
   pub fn flat_invoke(
     dll: String,
@@ -876,21 +719,24 @@ impl DynWinRTValue {
       "ptr" | "pointer" => dynwinrt::flat_call::FlatReturnKind::Ptr,
       other => {
         return Err(napi::Error::from_reason(format!(
-          "flatInvoke: unsupported return kind '{}' (expected 'Void', 'I32', 'U32', 'I64', 'U64', 'F32', 'F64', or 'Ptr')",
-          other
+          "flatInvoke: unsupported return kind '{other}'"
         )));
       }
     };
-    let wrt_args: Vec<dynwinrt::WinRTValue> = args.iter().map(|a| a.0.clone()).collect();
-    let result = unsafe { dynwinrt::flat_call::flat_invoke(&dll, &entry, ret, &wrt_args) }
-      .map_err(|e| {
-        napi::Error::from_reason(format!("flatInvoke({}!{}): {}", dll, entry, e.message()))
+    for arg in &args {
+      com::validate_pointer_owner(arg)?;
+    }
+    let args = args.iter().map(|arg| arg.0.clone()).collect::<Vec<_>>();
+    let result = unsafe { dynwinrt::flat_call::flat_invoke(&dll, &entry, ret, &args) }
+      .map_err(|error| {
+        napi::Error::from_reason(format!(
+          "flatInvoke({dll}!{entry}): {}",
+          error.message()
+        ))
       })?;
     Ok(DynWinRTValue::new(result))
   }
 
-  /// Return `GetLastError()` as a u32. Companion to `flatInvoke` for functions
-  /// that use the SetLastError model (e.g. `GetModuleHandleW`).
   #[napi]
   pub fn flat_last_error() -> u32 {
     dynwinrt::flat_call::get_last_error()
@@ -932,14 +778,9 @@ impl DynWinRTValue {
   pub fn u64(
     #[napi(ts_arg_type = "number | bigint")] value: Either<BigInt, f64>,
   ) -> napi::Result<DynWinRTValue> {
-    // Accept either a JS `bigint` (full unsigned-64 range) or a plain `number`
-    // (the common case — WinRT/collection codegen passes numeric sizes/positions
-    // without a BigInt wrapper). The bigint path is lossless; the number path is
-    // validated as a non-negative safe integer so an out-of-range or fractional
-    // number is rejected rather than silently rounded/truncated into a wrong u64.
-    let v: u64 = match value {
-      Either::A(bi) => {
-        let (negative, value, lossless) = bi.get_u64();
+    let value = match value {
+      Either::A(value) => {
+        let (negative, value, lossless) = value.get_u64();
         if negative || !lossless {
           return Err(napi::Error::from_reason(
             "DynWinRtValue.u64(): value must fit in an unsigned 64-bit integer",
@@ -947,16 +788,20 @@ impl DynWinRTValue {
         }
         value
       }
-      Either::B(n) => {
-        if !n.is_finite() || n < 0.0 || n.fract() != 0.0 || n > 9_007_199_254_740_991.0 {
+      Either::B(value) => {
+        if !value.is_finite()
+          || value < 0.0
+          || value.fract() != 0.0
+          || value > 9_007_199_254_740_991.0
+        {
           return Err(napi::Error::from_reason(
-            "DynWinRtValue.u64(): number must be a non-negative safe integer (use a bigint for values above 2^53-1)",
+            "DynWinRtValue.u64(): number must be a non-negative safe integer",
           ));
         }
-        n as u64
+        value as u64
       }
     };
-    Ok(DynWinRTValue::new(dynwinrt::WinRTValue::U64(v)))
+    Ok(DynWinRTValue::new(dynwinrt::WinRTValue::U64(value)))
   }
   #[napi]
   pub fn f32(value: f64) -> DynWinRTValue {
@@ -1056,12 +901,12 @@ impl DynWinRTValue {
   }
 
   #[napi]
-  pub async fn to_promise(&self) -> napi::Result<DynWinRTValue> {
-    let v = (&self.0).await.map_err(|e| match e {
-      dynwinrt::Error::Canceled => napi::Error::from_reason("Async operation was canceled"),
-      other => napi::Error::from_reason(format!("Async operation failed: {}", other.message())),
-    })?;
-    Ok(DynWinRTValue::new(v))
+  pub fn to_promise<'env>(&self, env: Env) -> napi::Result<PromiseRaw<'env, DynWinRTValue>> {
+    let operation = match &self.0 {
+      dynwinrt::WinRTValue::Async(_) => self.0.clone(),
+      _ => return Err(napi::Error::from_reason("toPromise: not an async value")),
+    };
+    async_promise::to_promise(env, operation)
   }
 
   /// Cancel the underlying WinRT async operation (calls `IAsyncInfo::Cancel`).
@@ -1218,6 +1063,19 @@ impl DynWinRTValue {
     match &self.0 {
       dynwinrt::WinRTValue::Object(o) => o.as_raw() as i64,
       _ => panic!("Cannot get raw pointer from non-object"),
+    }
+  }
+
+  #[napi]
+  pub fn identity_raw(&self) -> napi::Result<i64> {
+    match &self.0 {
+      dynwinrt::WinRTValue::Object(object) => object
+        .cast::<IUnknown>()
+        .map(|identity| identity.as_raw() as i64)
+        .map_err(|error| napi::Error::from_reason(error.message())),
+      _ => Err(napi::Error::from_reason(
+        "Cannot get COM identity from a non-object value",
+      )),
     }
   }
 
@@ -1740,8 +1598,8 @@ pub fn has_package_identity() -> bool {
 pub fn get_computer_name() -> napi::Result<String> {
   #[cfg(target_os = "windows")]
   {
-    use windows::core::PWSTR;
     use windows::Win32::System::WindowsProgramming::GetComputerNameW;
+    use windows::core::PWSTR;
 
     let mut buffer = [0u16; 256];
     let mut size = buffer.len() as u32;
@@ -1944,8 +1802,8 @@ impl DynWinRtDelegate {
     #[napi(ts_arg_type = "(...args: DynWinRTValue[]) => void")]
     callback: napi::bindgen_prelude::Function<'static, Vec<DynWinRTValue>, ()>,
   ) -> napi::Result<DynWinRtDelegate> {
-    use napi::bindgen_prelude::ToNapiValue;
     use napi::JsValue;
+    use napi::bindgen_prelude::ToNapiValue;
     use windows::Win32::System::Threading::GetCurrentThreadId;
 
     // Track the thread we were registered on. WinRT delegate callbacks that
@@ -2029,12 +1887,13 @@ impl DynWinRtDelegate {
                     let raw = DynWinRTValue::to_napi_value(raw_env, v)?;
                     argv.push(raw);
                   }
-                  let mut undefined: napi::sys::napi_value = std::ptr::null_mut();
-                  napi::sys::napi_get_undefined(raw_env, &mut undefined);
+                  let mut receiver: napi::sys::napi_value = std::ptr::null_mut();
+                  napi::sys::napi_get_global(raw_env, &mut receiver);
                   let mut result: napi::sys::napi_value = std::ptr::null_mut();
-                  let status = napi::sys::napi_call_function(
+                  let status = napi::sys::napi_make_callback(
                     raw_env,
-                    undefined,
+                    std::ptr::null_mut(),
+                    receiver,
                     fn_val,
                     argv.len(),
                     argv.as_ptr(),
@@ -2052,7 +1911,7 @@ impl DynWinRtDelegate {
                       napi::sys::napi_get_and_clear_last_exception(raw_env, &mut err);
                       napi::sys::napi_fatal_exception(raw_env, err);
                     }
-                    return Err(napi::Error::from_reason("napi_call_function failed"));
+                    return Err(napi::Error::from_reason("napi_make_callback failed"));
                   }
                   Ok(())
                 })();
@@ -2157,13 +2016,14 @@ unsafe fn take_pending_exception_message(env: napi::sys::napi_env) -> Option<Str
 impl DynWinRtElementFactory {
   #[napi(factory)]
   pub fn create(
+    element_iid: &WinGUID,
     #[napi(ts_arg_type = "(args: DynWinRtValue) => DynWinRtValue")]
     get_element: ElementFactoryGetFunction,
     #[napi(ts_arg_type = "(args: DynWinRtValue) => void")]
     recycle_element: ElementFactoryRecycleFunction,
   ) -> napi::Result<DynWinRtElementFactory> {
-    use napi::bindgen_prelude::{FromNapiValue, ToNapiValue};
     use napi::JsValue;
+    use napi::bindgen_prelude::{FromNapiValue, ToNapiValue};
     use windows::Win32::System::Threading::GetCurrentThreadId;
 
     const E_FAIL: windows::core::HRESULT = windows::core::HRESULT(0x80004005u32 as i32);
@@ -2176,6 +2036,7 @@ impl DynWinRtElementFactory {
     unsafe impl Sync for SendableEnv {}
 
     let register_tid = unsafe { GetCurrentThreadId() };
+    let element_iid = element_iid.0;
     let raw_env = Arc::new(SendableEnv(get_element.value().env));
     let callbacks = Arc::new(Mutex::new(ElementFactoryCallbackRefs {
       get_element: Some(Arc::new(get_element.create_ref()?)),
@@ -2214,12 +2075,13 @@ impl DynWinRtElementFactory {
               let function = get_ref.borrow_back(&env)?;
               let function_value = napi::JsValue::raw(&function);
               let argument = DynWinRTValue::to_napi_value(raw_env, js_arg)?;
-              let mut undefined = std::ptr::null_mut();
-              napi::sys::napi_get_undefined(raw_env, &mut undefined);
+              let mut receiver = std::ptr::null_mut();
+              napi::sys::napi_get_global(raw_env, &mut receiver);
               let mut raw_result = std::ptr::null_mut();
-              let status = napi::sys::napi_call_function(
+              let status = napi::sys::napi_make_callback(
                 raw_env,
-                undefined,
+                std::ptr::null_mut(),
+                receiver,
                 function_value,
                 1,
                 &argument,
@@ -2232,11 +2094,10 @@ impl DynWinRtElementFactory {
                   "IElementFactory getElement callback failed: {detail}"
                 )));
               }
-              Ok(
-                <&DynWinRTValue>::from_napi_value(raw_env, raw_result)?
-                  .0
-                  .clone(),
-              )
+              <&DynWinRTValue>::from_napi_value(raw_env, raw_result)?
+                .0
+                .cast(&element_iid)
+                .map_err(|error| napi::Error::from_reason(error.message()))
             })();
             let call_result =
               call_result.map_err(|error| match take_pending_exception_message(raw_env) {
@@ -2291,12 +2152,13 @@ impl DynWinRtElementFactory {
               let function = recycle_ref.borrow_back(&env)?;
               let function_value = napi::JsValue::raw(&function);
               let argument = DynWinRTValue::to_napi_value(raw_env, js_arg)?;
-              let mut undefined = std::ptr::null_mut();
-              napi::sys::napi_get_undefined(raw_env, &mut undefined);
+              let mut receiver = std::ptr::null_mut();
+              napi::sys::napi_get_global(raw_env, &mut receiver);
               let mut raw_result = std::ptr::null_mut();
-              let status = napi::sys::napi_call_function(
+              let status = napi::sys::napi_make_callback(
                 raw_env,
-                undefined,
+                std::ptr::null_mut(),
+                receiver,
                 function_value,
                 1,
                 &argument,

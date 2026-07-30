@@ -13,7 +13,7 @@ import {
   DynWinRtValue, DynWinRtType, DynWinRtMethodSig, DynWinRtStruct,
   WinGuid, roInitialize, RustStaticBench,
   rawGetString, rawGetI32,
-} from '../dist/index.js'
+} from '../dist/winrt.js'
 import { createRequire } from 'node:module'
 
 const require = createRequire(import.meta.url)

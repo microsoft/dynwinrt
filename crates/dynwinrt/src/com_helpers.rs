@@ -28,6 +28,7 @@ pub(crate) struct IInspectableVtbl {
 
 pub(crate) const E_BOUNDS: HRESULT = HRESULT(0x8000000Bu32 as i32);
 pub(crate) const E_NOINTERFACE: HRESULT = HRESULT(0x80004002u32 as i32);
+pub(crate) const E_NOTIMPL: HRESULT = HRESULT(0x80004001u32 as i32);
 pub(crate) const E_FAIL: HRESULT = HRESULT(0x80004005u32 as i32);
 pub(crate) const E_POINTER: HRESULT = HRESULT(0x80004003u32 as i32);
 pub(crate) const S_OK: HRESULT = HRESULT(0);

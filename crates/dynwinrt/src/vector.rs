@@ -16,7 +16,8 @@ use std::sync::{
 use windows_core::{GUID, HRESULT, HSTRING, IUnknown, Interface};
 
 use crate::com_helpers::{
-    E_BOUNDS, E_FAIL, IInspectableVtbl, S_OK, com_to_usize, com_usize_addref_out, com_usize_release,
+    E_BOUNDS, E_FAIL, E_NOTIMPL, IInspectableVtbl, S_OK, com_to_usize, com_usize_addref_out,
+    com_usize_release,
 };
 #[allow(unused_imports)]
 use crate::com_helpers::{dual_vtable_com, inspectable_stubs, lock_or, single_vtable_com};
@@ -177,6 +178,12 @@ pub(crate) struct CollectionStorage {
     pub(crate) elem_size: usize,
 }
 
+impl CollectionStorage {
+    pub(crate) fn is_large_value_type(self) -> bool {
+        self.is_value_type && self.elem_size > std::mem::size_of::<usize>()
+    }
+}
+
 pub(crate) fn collection_storage(
     element_type: &crate::TypeHandle,
 ) -> crate::Result<CollectionStorage> {
@@ -184,9 +191,7 @@ pub(crate) fn collection_storage(
 
     let kind = element_type.kind();
     let elem_size = element_type.size_of();
-    if matches!(kind, TypeKind::F32 | TypeKind::F64 | TypeKind::Guid)
-        || (matches!(kind, TypeKind::Struct(_)) && elem_size > std::mem::size_of::<usize>())
-    {
+    if matches!(kind, TypeKind::F32 | TypeKind::F64 | TypeKind::Guid) {
         return Err(crate::Error::UnsupportedCollectionElement(kind));
     }
     Ok(CollectionStorage {
@@ -553,6 +558,12 @@ impl SingleThreadedVector {
         found: *mut bool,
     ) -> HRESULT {
         let me = Self::from_vector_ptr(this);
+        // Large structs use a wider by-value ABI on ARM64, so the arguments
+        // following `value` do not match this pointer-sized vtable thunk.
+        // Only inspect `this` before returning.
+        if me.storage.is_large_value_type() {
+            return E_NOTIMPL;
+        }
         let items = lock_or!(me.items, E_FAIL);
         let needle = value as usize;
         for (i, &item) in items.iter().enumerate() {
@@ -574,6 +585,9 @@ impl SingleThreadedVector {
             if (index as usize) >= items.len() {
                 return E_BOUNDS;
             }
+            if me.storage.is_large_value_type() {
+                return E_NOTIMPL;
+            }
             let old = items[index as usize];
             items[index as usize] = store_abi_item(me.storage, value);
             release_stored_item(me.storage, old);
@@ -591,6 +605,9 @@ impl SingleThreadedVector {
             let mut items = lock_or!(me.items, E_FAIL);
             if (index as usize) > items.len() {
                 return E_BOUNDS;
+            }
+            if me.storage.is_large_value_type() {
+                return E_NOTIMPL;
             }
             let val = store_abi_item(me.storage, value);
             items.insert(index as usize, val);
@@ -613,6 +630,9 @@ impl SingleThreadedVector {
 
     unsafe extern "system" fn append(this: *mut c_void, value: *mut c_void) -> HRESULT {
         let me = Self::from_vector_ptr(this);
+        if me.storage.is_large_value_type() {
+            return E_NOTIMPL;
+        }
         let val = store_abi_item(me.storage, value);
         let index = {
             let mut items = lock_or!(me.items, E_FAIL);
@@ -679,6 +699,9 @@ impl SingleThreadedVector {
         values: *const *mut c_void,
     ) -> HRESULT {
         let me = Self::from_vector_ptr(this);
+        if count > 0 && me.storage.is_large_value_type() {
+            return E_NOTIMPL;
+        }
         let old_items: Vec<usize> = lock_or!(me.items, E_FAIL).drain(..).collect();
         for raw in old_items {
             release_stored_item(me.storage, raw);
@@ -724,6 +747,9 @@ impl SingleThreadedVector {
         found: *mut bool,
     ) -> HRESULT {
         let me = Self::from_view_ptr(this);
+        if me.storage.is_large_value_type() {
+            return E_NOTIMPL;
+        }
         let items = lock_or!(me.items, E_FAIL);
         let needle = value as usize;
         for (i, &item) in items.iter().enumerate() {
@@ -880,6 +906,9 @@ impl SingleThreadedVectorView {
         found: *mut bool,
     ) -> HRESULT {
         let me = Self::from_view_ptr(this);
+        if me.storage.is_large_value_type() {
+            return E_NOTIMPL;
+        }
         let needle = value as usize;
         for (i, &item) in me.items.iter().enumerate() {
             if stored_items_equal(me.storage, item, needle) {
@@ -1051,6 +1080,11 @@ pub fn create_vector_from_values(
     iids: VectorIids,
 ) -> crate::Result<IUnknown> {
     let storage = collection_storage(element_type)?;
+    if !items.is_empty() && storage.is_large_value_type() {
+        return Err(crate::Error::UnsupportedCollectionElement(
+            element_type.kind(),
+        ));
+    }
     for item in items {
         validate_collection_item(item, storage)?;
     }
@@ -1531,6 +1565,125 @@ mod tests {
         assert!(matches!(
             result,
             Err(crate::Error::InvalidCollectionValue("HSTRING"))
+        ));
+    }
+
+    #[test]
+    fn test_empty_large_struct_vector_is_supported_but_not_mutable() {
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct RectInt32Abi {
+            x: i32,
+            y: i32,
+            width: i32,
+            height: i32,
+        }
+
+        let table = MetadataTable::new();
+        let rect = table.struct_type(
+            "Windows.Graphics.RectInt32",
+            &[
+                table.i32_type(),
+                table.i32_type(),
+                table.i32_type(),
+                table.i32_type(),
+            ],
+        );
+        let iids = table.vector_iids(&rect);
+        let vector = create_vector_from_values(&[], &rect, iids.clone()).unwrap();
+        let mut vector_ptr = std::ptr::null_mut();
+        unsafe { vector.query(&iids.vector, &mut vector_ptr) }
+            .ok()
+            .unwrap();
+        let vtable = unsafe { *(vector_ptr as *const *const VectorVtbl) };
+        let mut size = u32::MAX;
+
+        assert_eq!(unsafe { ((*vtable).get_size)(vector_ptr, &mut size) }, S_OK);
+        assert_eq!(size, 0);
+        assert_eq!(
+            unsafe { ((*vtable).append)(vector_ptr, std::ptr::null_mut()) },
+            E_NOTIMPL
+        );
+
+        let rect = RectInt32Abi {
+            x: 1,
+            y: 2,
+            width: 3,
+            height: 4,
+        };
+        let vector_index_of: unsafe extern "system" fn(
+            *mut c_void,
+            RectInt32Abi,
+            *mut u32,
+            *mut bool,
+        ) -> HRESULT = unsafe { std::mem::transmute((*vtable).index_of) };
+        let mut index = u32::MAX;
+        let mut found = true;
+        assert_eq!(
+            unsafe { vector_index_of(vector_ptr, rect, &mut index, &mut found) },
+            E_NOTIMPL
+        );
+        assert_eq!(index, u32::MAX);
+        assert!(found);
+
+        let mut live_view_ptr = std::ptr::null_mut();
+        unsafe { vector.query(&iids.vector_view, &mut live_view_ptr) }
+            .ok()
+            .unwrap();
+        let live_view_vtable = unsafe { *(live_view_ptr as *const *const VectorViewVtbl) };
+        let live_view_index_of: unsafe extern "system" fn(
+            *mut c_void,
+            RectInt32Abi,
+            *mut u32,
+            *mut bool,
+        ) -> HRESULT = unsafe { std::mem::transmute((*live_view_vtable).index_of) };
+        assert_eq!(
+            unsafe { live_view_index_of(live_view_ptr, rect, &mut index, &mut found) },
+            E_NOTIMPL
+        );
+
+        let mut snapshot_view_ptr = std::ptr::null_mut();
+        assert_eq!(
+            unsafe { ((*vtable).get_view)(vector_ptr, &mut snapshot_view_ptr) },
+            S_OK
+        );
+        let snapshot_view_vtable = unsafe { *(snapshot_view_ptr as *const *const VectorViewVtbl) };
+        let snapshot_view_index_of: unsafe extern "system" fn(
+            *mut c_void,
+            RectInt32Abi,
+            *mut u32,
+            *mut bool,
+        ) -> HRESULT = unsafe { std::mem::transmute((*snapshot_view_vtable).index_of) };
+        assert_eq!(
+            unsafe { snapshot_view_index_of(snapshot_view_ptr, rect, &mut index, &mut found) },
+            E_NOTIMPL
+        );
+
+        drop(unsafe { IUnknown::from_raw(snapshot_view_ptr) });
+        drop(unsafe { IUnknown::from_raw(live_view_ptr) });
+        drop(unsafe { IUnknown::from_raw(vector_ptr) });
+    }
+
+    #[test]
+    fn test_nonempty_large_struct_vector_remains_unsupported() {
+        let table = MetadataTable::new();
+        let rect = table.struct_type(
+            "Windows.Graphics.RectInt32",
+            &[
+                table.i32_type(),
+                table.i32_type(),
+                table.i32_type(),
+                table.i32_type(),
+            ],
+        );
+        let iids = table.vector_iids(&rect);
+        let item = crate::WinRTValue::Struct(rect.default_value());
+
+        assert!(matches!(
+            create_vector_from_values(&[item], &rect, iids),
+            Err(crate::Error::UnsupportedCollectionElement(
+                crate::TypeKind::Struct(_)
+            ))
         ));
     }
 

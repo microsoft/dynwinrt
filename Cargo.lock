@@ -570,7 +570,6 @@ dependencies = [
  "napi-sys 3.2.1",
  "nohash-hasher",
  "rustc-hash",
- "tokio",
 ]
 
 [[package]]

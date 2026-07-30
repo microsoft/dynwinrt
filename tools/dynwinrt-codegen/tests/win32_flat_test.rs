@@ -411,6 +411,11 @@ fn snapshot_registry_apis() {
     generated.push(("Apis.js".into(), out.js.clone()));
     generated.push(("Apis.d.ts".into(), out.dts.clone()));
     for (name, content) in &out.extra_files {
+        // WIN32_ERROR has thousands of SDK-version-specific members. Its ABI,
+        // status projection, and enum rendering are covered by focused tests.
+        if name.starts_with("WIN32_ERROR.") {
+            continue;
+        }
         generated.push((name.clone(), content.clone()));
     }
 
