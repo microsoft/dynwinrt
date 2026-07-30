@@ -284,18 +284,21 @@ fn parse_methods(
                         direction = ParamDirection::UnsupportedNativeArray { count_param_index };
                     }
                 }
-                let free_with =
-                    param
-                        .find_attribute("FreeWithAttribute")
-                        .and_then(|attribute| {
-                            attribute.value().into_iter().next().and_then(
-                                |(_, value)| match value {
-                                    windows_metadata::Value::Utf8(value) => Some(value),
-                                    _ => None,
-                                },
-                            )
-                        })
-                        .or_else(|| known_free_with(typ, &direction));
+                let free_with = param
+                    .find_attribute("FreeWithAttribute")
+                    .and_then(|attribute| {
+                        attribute
+                            .value()
+                            .into_iter()
+                            .next()
+                            .and_then(|(_, value)| match value {
+                                windows_metadata::Value::Utf8(value) => Some(value),
+                                _ => None,
+                            })
+                    })
+                    .or_else(|| {
+                        known_free_with(def.namespace(), def.name(), method.name(), typ, &direction)
+                    });
                 if let Some(free_with) = free_with {
                     owned_outputs.push(OwnedOutput {
                         param_index,
@@ -311,7 +314,8 @@ fn parse_methods(
             mark_caller_owned_string_buffers(&mut params);
             let return_type = (signature.return_type != windows_metadata::Type::Void)
                 .then(|| map_return_type(&signature.return_type, index));
-            let preserve_hresult = method.has_attribute("CanReturnMultipleSuccessValuesAttribute");
+            let preserve_hresult = method.has_attribute("CanReturnMultipleSuccessValuesAttribute")
+                || is_known_semantic_hresult(def.namespace(), def.name(), method.name());
             MethodMeta {
                 name,
                 vtable_index: base_offset + index_in_interface,
@@ -325,7 +329,13 @@ fn parse_methods(
         .collect()
 }
 
-fn known_free_with(typ: &windows_metadata::Type, direction: &ParamDirection) -> Option<String> {
+fn known_free_with(
+    interface_namespace: &str,
+    interface_name: &str,
+    method_name: &str,
+    typ: &windows_metadata::Type,
+    direction: &ParamDirection,
+) -> Option<String> {
     let (windows_metadata::Type::PtrMut(inner, depth)
     | windows_metadata::Type::PtrConst(inner, depth)) = typ
     else {
@@ -343,6 +353,22 @@ fn known_free_with(typ: &windows_metadata::Type, direction: &ParamDirection) -> 
     {
         return Some("SysFreeString".into());
     }
+    let is_known_cotaskmem_wide_string = matches!(
+        (interface_namespace, interface_name, method_name),
+        ("Windows.Win32.UI.Shell", "IShellItem", "GetDisplayName")
+            | ("Windows.Win32.UI.Shell", "IFileDialog", "GetFileName")
+            | ("Windows.Win32.System.Com", "IPersistFile", "GetCurFile")
+    );
+    if *depth == 1
+        && is_known_cotaskmem_wide_string
+        && matches!(
+            inner.as_ref(),
+            windows_metadata::Type::Name(name)
+                if name.namespace == "Windows.Win32.Foundation" && name.name == "PWSTR"
+        )
+    {
+        return Some("CoTaskMemFree".into());
+    }
     // Windows.Win32.winmd omits FreeWith on IShellLink::GetIDList.
     if *depth < 2 {
         return None;
@@ -355,6 +381,17 @@ fn known_free_with(typ: &windows_metadata::Type, direction: &ParamDirection) -> 
         }
         _ => None,
     }
+}
+
+fn is_known_semantic_hresult(
+    interface_namespace: &str,
+    interface_name: &str,
+    method_name: &str,
+) -> bool {
+    matches!(
+        (interface_namespace, interface_name, method_name),
+        ("Windows.Win32.System.Com", "IPersistFile", "GetCurFile")
+    )
 }
 
 fn map_parameter_type(
@@ -819,7 +856,7 @@ mod tests {
             2,
         );
         assert_eq!(
-            known_free_with(&typ, &ParamDirection::Out).as_deref(),
+            known_free_with("", "", "", &typ, &ParamDirection::Out).as_deref(),
             Some("CoTaskMemFree")
         );
     }
@@ -833,6 +870,61 @@ mod tests {
             )),
             2,
         );
-        assert_eq!(known_free_with(&typ, &ParamDirection::Out), None);
+        assert_eq!(
+            known_free_with("", "", "", &typ, &ParamDirection::Out),
+            None
+        );
+    }
+
+    #[test]
+    fn documented_shell_wide_string_outputs_use_cotaskmem() {
+        let typ = windows_metadata::Type::PtrMut(
+            Box::new(windows_metadata::Type::named(
+                "Windows.Win32.Foundation",
+                "PWSTR",
+            )),
+            1,
+        );
+        for (interface, method) in [
+            ("IShellItem", "GetDisplayName"),
+            ("IFileDialog", "GetFileName"),
+        ] {
+            assert_eq!(
+                known_free_with(
+                    "Windows.Win32.UI.Shell",
+                    interface,
+                    method,
+                    &typ,
+                    &ParamDirection::Out
+                )
+                .as_deref(),
+                Some("CoTaskMemFree")
+            );
+        }
+        assert_eq!(
+            known_free_with(
+                "Windows.Win32.System.Com",
+                "IPersistFile",
+                "GetCurFile",
+                &typ,
+                &ParamDirection::Out
+            )
+            .as_deref(),
+            Some("CoTaskMemFree")
+        );
+    }
+
+    #[test]
+    fn documented_get_cur_file_hresult_is_semantic() {
+        assert!(is_known_semantic_hresult(
+            "Windows.Win32.System.Com",
+            "IPersistFile",
+            "GetCurFile"
+        ));
+        assert!(!is_known_semantic_hresult(
+            "Windows.Win32.System.Com",
+            "IPersistFile",
+            "Load"
+        ));
     }
 }

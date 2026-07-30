@@ -1236,7 +1236,7 @@ fn unresolved_external_interface_fails_until_reference_metadata_is_loaded() {
 }
 
 #[test]
-fn semantic_hresult_metadata_preserves_is_dirty_only() {
+fn semantic_hresult_preserves_metadata_and_documented_contracts() {
     if !win32_available() {
         eprintln!("Skipping: Win32 winmd not available");
         return;
@@ -1260,10 +1260,18 @@ fn semantic_hresult_metadata_preserves_is_dirty_only() {
         .iter()
         .find(|method| method.name == "Load")
         .expect("Load must exist");
+    let get_cur_file = interface
+        .interface
+        .methods
+        .iter()
+        .find(|method| method.name == "GetCurFile")
+        .expect("GetCurFile must exist");
 
     assert!(is_dirty.preserve_hresult);
+    assert!(get_cur_file.preserve_hresult);
     assert!(!load.preserve_hresult);
 
+    let mut get_cur_file_interface = interface.clone();
     interface
         .interface
         .methods
@@ -1273,6 +1281,45 @@ fn semantic_hresult_metadata_preserves_is_dirty_only() {
     assert!(output.js.contains(".preserveHresult()"));
     assert!(output.js.contains("return DynCom.toNumber(_out);"));
     assert!(output.dts.contains("isDirty(): number;"));
+
+    get_cur_file_interface
+        .interface
+        .methods
+        .retain(|method| method.name == "GetCurFile");
+    let output = com::generate_com_interface_files(&get_cur_file_interface, &win32_winmd())
+        .expect("GetCurFile semantic HRESULT generation must succeed");
+    assert!(output.js.contains(".preserveHresult()"));
+    assert!(output.js.contains(".invokeAll("));
+    assert!(output.js.contains("DynCom.toNumber(_r[0])"));
+    assert!(output.js.contains("DynCom.takeCoTaskMemWideString(_r[1])"));
+    assert!(output.dts.contains("getCurFile(): [number, string];"));
+}
+
+#[test]
+fn scalar_typedef_uses_its_underlying_abi_not_pointer_abi() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+
+    let interface = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.UI.Shell",
+        "IPreviewHandlerVisuals",
+    )
+    .expect("IPreviewHandlerVisuals must exist");
+    let output = com::generate_com_interface_files(&interface, &win32_winmd())
+        .expect("COLORREF scalar typedef must generate");
+
+    assert!(output.dts.contains("export type COLORREF = number;"));
+    assert!(
+        output
+            .dts
+            .contains("setBackgroundColor(color: COLORREF): void;")
+    );
+    assert!(output.js.contains(".addIn(DynCom.u32Type())"));
+    assert!(output.js.contains("DynCom.u32(color)"));
+    assert!(!output.js.contains("DynCom.pointer(color)"));
 }
 
 #[test]

@@ -10,13 +10,13 @@ pub use super::python::naming::to_snake_case_filename;
 
 #[cfg(test)]
 mod tests {
-    use crate::codegen::javascript::naming::*;
-    use crate::codegen::javascript::signature::*;
-    use crate::codegen::javascript::structs::*;
-    use crate::codegen::python::naming::*;
-    use crate::codegen::python::signature::*;
-    use crate::codegen::python::structs::*;
-    use crate::codegen::shared::imports::*;
+    use crate::codegen::winrt::javascript::naming::*;
+    use crate::codegen::winrt::javascript::signature::*;
+    use crate::codegen::winrt::javascript::structs::*;
+    use crate::codegen::winrt::python::naming::*;
+    use crate::codegen::winrt::python::signature::*;
+    use crate::codegen::winrt::python::structs::*;
+    use crate::codegen::winrt::shared::imports::*;
     use crate::meta::{MethodMeta, ParamDirection, ParamMeta};
     use crate::types::TypeMeta;
     use std::collections::HashSet;

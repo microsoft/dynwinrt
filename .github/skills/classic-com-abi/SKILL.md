@@ -124,6 +124,34 @@ Apply these rules:
   ABI-compatible WinRT projection aliases such as Char16/U16 and enum/I32
   arrays.
 
+### Required codegen architecture
+
+```text
+ComInterfaceMeta
+  -> codegen/com/project
+  -> validated ComType / ProjectedComMethod
+  -> codegen/com/javascript renderer
+```
+
+- Keep WinRT generators under `codegen/winrt`; do not import COM semantic IR
+  into them.
+- Convert shared `TypeMeta` values to the closed COM-local `ComType` set before
+  rendering.
+- Encode parameter direction, native return convention, result ordering,
+  ownership, cleanup, string-buffer relationships, activation, and
+  dynamic-IID behavior in `ProjectedComMethod`.
+- Production renderers may consume only projected COM IR. They must not import
+  `TypeMeta`, `MethodMeta`, `ParamMeta`, metadata attributes, or infer
+  ownership.
+- Every renderer match over `ComType` must be exhaustive. Never use a wildcard
+  branch that emits `pointerType`, `Buffer`, bigint, or a raw value.
+- Transparent scalar typedefs preserve their underlying scalar ABI. A
+  one-field Win32 struct is not automatically a handle.
+- Pointer aliases require explicit `HandleValue`, `DataPointer`, or
+  `StringPointer` classification. Unknown aliases fail closed.
+- Cleanup identifiers must match a single known allocator exactly. Do not use
+  substring matching.
+
 ## Projection responsibility
 
 Keep these responsibilities separate:

@@ -59,6 +59,49 @@ In particular:
 - language-friendly choices remain a codegen responsibility after the COM
   planner has validated the native contract.
 
+## Code generation architecture
+
+Code generation is organized by semantic domain before target language:
+
+```text
+codegen/
+├── winrt/
+│   ├── shared/
+│   ├── javascript/
+│   └── python/
+└── com/
+    ├── ir.rs
+    ├── project/
+    │   ├── types.rs
+    │   └── interop.rs
+    └── javascript/
+        ├── types.rs
+        └── render.rs
+```
+
+The Classic COM flow is:
+
+```text
+ComInterfaceMeta
+  -> COM type projection
+  -> validated ComType / ProjectedComMethod
+  -> JavaScript and declaration renderer
+```
+
+`ComType` is a closed set of supported ABI semantics: primitives, transparent
+scalar typedefs, pointer-sized scalars, BOOL/HRESULT, GUID, HSTRING, enums,
+explicitly classified handle/data/string pointers, BSTR, raw input pointers,
+and managed interfaces with resolved IIDs. Parameter direction, return
+convention, result ownership, cleanup, string-buffer relationships,
+activation, and dynamic-IID behavior are encoded in the projected IR.
+
+Arrays, parameterized and async interfaces, delegates, unknown layouts,
+unclassified pointer typedefs, unresolved IIDs, unknown allocators, and
+unsupported ownership transfers fail during projection. The renderer cannot
+see `TypeMeta` or metadata attributes and has no default pointer/Buffer
+fallback; it only serializes the validated projected IR with exhaustive type
+matches.
+
 ## Size of Windows.Win32.winmd
 
 The counts below are exact for
@@ -270,7 +313,9 @@ Discarding every successful HRESULT loses information.
 Windows.Win32 metadata marks these methods with
 `CanReturnMultipleSuccessValuesAttribute`. The COM projection preserves the
 numeric successful HRESULT for marked methods while still throwing failed
-HRESULTs. Unmarked HRESULT methods retain the normal throw-or-`void` behavior.
+HRESULTs. Exact documented exceptions such as `IPersistFile::GetCurFile`,
+whose metadata omits the marker, are classified explicitly. Other unmarked
+HRESULT methods retain the normal throw-or-`void` behavior.
 
 ### 9. Apartment affinity and marshaling
 
@@ -417,7 +462,7 @@ of every type in the 24 MB metadata file.
 | Arbitrary unions, bitfields, and nested pointer-rich structs | `D3D11_COUNTER_INFO`, `STATSTG`, `STRRET`, `POINTL`, `BIND_OPTS`, audio/media formats | The current generator has no general native C layout engine. | Win32 winmd + codegen diagnostics |
 | Writable caller-sized native arrays | `IDispatch::GetIDsOfNames`, counted byte/element output buffers | A scalar pointee is not sufficient storage. These are rejected unless a supported string-buffer projection applies. | Win32 winmd `NativeArrayInfo` + codegen diagnostic |
 | `BSTR**` arrays and BSTR in/out arrays | Automation collection APIs | Each element has independent allocation and release semantics. | Win32 winmd signature + ownership analysis |
-| Caller-owned ANSI output buffers | `PSTR` output-buffer APIs | Safe sizing and decoding are not yet projected. | Win32 winmd signature + renderer limitation |
+| Caller-owned ANSI output buffers | `PSTR` output-buffer APIs | Safe sizing and decoding are not yet projected. | Win32 winmd signature + projection limitation |
 | Untyped output pointers without allocator/ownership | `IDXGIFactory::GetPrivateData`, `IAudioClient::IsFormatSupported` | The runtime cannot infer whether the result is borrowed, COM-owned, `CoTaskMem`, or another allocator. | Win32 winmd + codegen diagnostics |
 | Interface `[in, out]` ownership | `IWbemServices::OpenNamespace` | Replacing an existing interface pointer requires explicit release/AddRef transfer semantics. | Win32 winmd + codegen diagnostic |
 | Arbitrary COM sink/interface implementation | Connection points and event sinks | `Advise` requires implementing a caller-defined COM interface, not only invoking one. | Runtime/public-API boundary |
