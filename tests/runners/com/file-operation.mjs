@@ -3,8 +3,8 @@
 
 import assert from 'node:assert/strict';
 import { DynCom } from '../../../bindings/js/dist/com.js';
-import { FILEOPERATION_FLAGS } from '../../e2e_generated/com/shell/FILEOPERATION_FLAGS.js';
-import { IFileOperation } from '../../e2e_generated/com/shell/IFileOperation.js';
+import { FILEOPERATION_FLAGS } from '../../e2e_generated/com/shell/com/FILEOPERATION_FLAGS.js';
+import { IFileOperation } from '../../e2e_generated/com/shell/com/IFileOperation.js';
 
 DynCom.initialize(1);
 

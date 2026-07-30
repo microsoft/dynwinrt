@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { DynCom } from '../../../bindings/js/dist/com.js';
-import { IShellLinkW, IID_IShellLinkW } from '../../e2e_generated/com/shell/IShellLinkW.js';
-import { IPersistFile, IID_IPersistFile } from '../../e2e_generated/com/shell/IPersistFile.js';
-import { SHOW_WINDOW_CMD } from '../../e2e_generated/com/shell/SHOW_WINDOW_CMD.js';
+import { IShellLinkW, IID_IShellLinkW } from '../../e2e_generated/com/shell/com/IShellLinkW.js';
+import { IPersistFile, IID_IPersistFile } from '../../e2e_generated/com/shell/com/IPersistFile.js';
+import { SHOW_WINDOW_CMD } from '../../e2e_generated/com/shell/com/SHOW_WINDOW_CMD.js';
 
 const CLSID_SHELL_LINK = '00021401-0000-0000-c000-000000000046';
 DynCom.initialize(1);

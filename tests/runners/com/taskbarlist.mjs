@@ -6,8 +6,8 @@
 //
 // Run: .\tests\e2e_test.ps1 -SkipBuild -Lang com
 
-import { ITaskbarList3 } from '../../e2e_generated/com/shell/ITaskbarList3.js';
-import { TBPFLAG } from '../../e2e_generated/com/shell/TBPFLAG.js';
+import { ITaskbarList3 } from '../../e2e_generated/com/shell/com/ITaskbarList3.js';
+import { TBPFLAG } from '../../e2e_generated/com/shell/com/TBPFLAG.js';
 import { acquireHwndBigInt } from './hwnd.mjs';
 
 function fail(msg) {

@@ -176,7 +176,7 @@ foreach ($l in @($Lang | Where-Object { $_ -in @("py", "ts") })) {
 
 if ("com" -in $Lang) {
     Write-Host "`n--- Generate (Classic COM) ---" -ForegroundColor Yellow
-    $comRuntimeImport = "../../../../bindings/js/dist/com.js"
+    $comRuntimeImport = "../../../../../bindings/js/dist/com.js"
     $winrtRuntimeImport = "../../../../bindings/js/dist/winrt.js"
 
     & cargo run -p dynwinrt-codegen --release --quiet -- generate `

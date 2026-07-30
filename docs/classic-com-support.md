@@ -378,7 +378,47 @@ not be described as solving every problem in the map above.
 | Common interop pattern | Supports HWND + REFIID + `void**` bridges and adopts the returned interface reference. |
 | Explicit COM initialization | Activation no longer silently chooses MTA; callers select STA or MTA with `DynCom.initialize()`. |
 | Fail-closed generation | Unsupported structs, arrays, pointer outputs, ownership, and in/out shapes stop generation with a targeted error. |
-| Consumable output | COM-only generation emits index declarations and package exports and preserves them across incremental generation. |
+| Consumable output | Classic COM files live under `com/`, with `./com` and `./com/*` package exports. Mixed and incremental generation preserve the WinRT-only root barrel; COM-only output retains its legacy root entrypoint. |
+
+### Generated package layout
+
+When WinRT and Classic COM are generated together, WinRT remains at the package
+root and Classic COM uses an ESM-only subpackage:
+
+```text
+bindings/
+├── index.js
+├── index.mjs
+├── index.d.ts
+├── Uri.js
+├── com/
+│   ├── package.json
+│   ├── index.js
+│   ├── index.d.ts
+│   └── ITaskbarList3.js
+└── package.json
+```
+
+The root index never re-exports COM symbols. Generate types from different
+namespaces in one invocation by using fully qualified names:
+
+```powershell
+dynwinrt-codegen generate `
+  --winmd "C:\path\to\Windows.winmd;C:\path\to\Windows.Win32.winmd" `
+  --class-name Windows.Foundation.Uri,Windows.Win32.UI.Shell.ITaskbarList3 `
+  --output .\.winapp\bindings
+```
+
+Separate WinRT and COM invocations may target the same output directory in
+either order. The generated package manifest is rebuilt from both domains
+without adding COM exports to the WinRT root. Legacy COM-only output is
+relocated automatically when it is reused with the new generator.
+
+winappCli project aliases use `#winapp/bindings/com` for the COM barrel and
+`#winapp/bindings/com/InterfaceName` for deep imports. Existing source that
+used `#winapp/bindings/InterfaceName` for COM should switch to the `com/`
+path. Standalone COM-only packages continue to expose their legacy
+package-name deep imports.
 
 ### Partially implemented
 
@@ -631,7 +671,7 @@ Additional regression tests cover:
 - unsupported native arrays and native struct layouts;
 - required parameter preservation;
 - unsigned enum values;
-- COM-only package generation; and
+- mixed, COM-only, and order-independent incremental package generation; and
 - separation of `@microsoft/dynwinrt` from `@microsoft/dynwinrt/com`.
 
 Run the live Classic COM suite with:

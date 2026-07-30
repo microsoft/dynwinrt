@@ -3,7 +3,7 @@
 
 import assert from 'node:assert/strict';
 import { DynCom } from '../../../bindings/js/dist/com.js';
-import { IFileOpenDialog } from '../../e2e_generated/com/shell/IFileOpenDialog.js';
+import { IFileOpenDialog } from '../../e2e_generated/com/shell/com/IFileOpenDialog.js';
 
 DynCom.initialize(0);
 
