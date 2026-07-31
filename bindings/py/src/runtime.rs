@@ -414,6 +414,63 @@ impl DynWinRTMethodHandle {
         }
     }
 
+    /// Invoke a blocking method on the current native thread while releasing
+    /// the Python GIL. WinRT callbacks can reacquire it through Python::attach.
+    fn invoke_detached(
+        &self,
+        py: Python<'_>,
+        obj: &DynWinRTValue,
+        args: Vec<DynWinRTValue>,
+    ) -> PyResult<DynWinRTValue> {
+        struct SameThreadCall {
+            method: dynwinrt::MethodHandle,
+            object: IUnknown,
+            args: Vec<dynwinrt::WinRTValue>,
+        }
+        struct SameThreadResult(dynwinrt::Result<Vec<dynwinrt::WinRTValue>>);
+
+        impl SameThreadCall {
+            fn run(self) -> SameThreadResult {
+                SameThreadResult(self.method.invoke(self.object.as_raw(), &self.args))
+            }
+        }
+
+        // PyO3's stable Ungil approximation requires Send, but Python::detach
+        // executes this closure synchronously on the current OS thread. These
+        // wrappers never cross an apartment or thread; they only cross the GIL
+        // boundary and return before this method continues.
+        unsafe impl Send for SameThreadCall {}
+        unsafe impl Send for SameThreadResult {}
+
+        let object = match &obj.0 {
+            dynwinrt::WinRTValue::Object(object) => object.clone(),
+            _ => {
+                return Err(PyRuntimeError::new_err(
+                    "invoke_detached() requires an Object value",
+                ));
+            }
+        };
+        let call = SameThreadCall {
+            method: self.0.clone(),
+            object,
+            args: args.into_iter().map(|arg| arg.0).collect(),
+        };
+        let results = py
+            .detach(move || call.run())
+            .0
+            .map_err(map_dynwinrt_error)?;
+        if results.is_empty() {
+            Ok(DynWinRTValue(dynwinrt::WinRTValue::I32(0)))
+        } else {
+            Ok(DynWinRTValue(
+                results
+                    .into_iter()
+                    .next()
+                    .expect("non-empty result was checked"),
+            ))
+        }
+    }
+
     /// Like `invoke`, but returns all out-parameters as a list.
     /// Used for methods with multiple out params (e.g. IVector.IndexOf → [index, found]).
     fn invoke_all(

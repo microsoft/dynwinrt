@@ -32,6 +32,12 @@ pub enum WinUiAbiType {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WinUiCallBehavior {
+    Default,
+    BlockingReentrant,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WinUiBootstrapSpec {
     pub application: WinUiClassRef,
     pub metadata_provider: WinUiClassRef,
@@ -66,6 +72,15 @@ pub const APPLICATION_BOOTSTRAP: WinUiBootstrapSpec = WinUiBootstrapSpec {
 
 pub fn is_application(class: &ClassMeta) -> bool {
     class.full_name == APPLICATION_BOOTSTRAP.application.full_name()
+}
+
+pub fn call_behavior(interface_name: &str, method_name: &str) -> WinUiCallBehavior {
+    match (interface_name, method_name) {
+        ("IApplicationStatics", "Start")
+        | ("IDispatcherQueue3", "RunEventLoop")
+        | ("IDispatcherQueue3", "RunEventLoopWithOptions") => WinUiCallBehavior::BlockingReentrant,
+        _ => WinUiCallBehavior::Default,
+    }
 }
 
 pub fn resolve_application_bootstrap(
@@ -166,6 +181,22 @@ mod tests {
             !resolve_application_bootstrap(&application, &known)
                 .expect("bootstrap should resolve")
                 .supports_unpackaged_resources
+        );
+    }
+
+    #[test]
+    fn marks_only_blocking_reentrant_host_calls() {
+        assert_eq!(
+            call_behavior("IApplicationStatics", "Start"),
+            WinUiCallBehavior::BlockingReentrant
+        );
+        assert_eq!(
+            call_behavior("IDispatcherQueue3", "RunEventLoop"),
+            WinUiCallBehavior::BlockingReentrant
+        );
+        assert_eq!(
+            call_behavior("IApplicationStatics", "get_Current"),
+            WinUiCallBehavior::Default
         );
     }
 }

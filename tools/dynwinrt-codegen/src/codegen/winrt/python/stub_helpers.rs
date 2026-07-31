@@ -137,6 +137,7 @@ pub(super) fn emit_method_stub(
     delegate_type_names: &HashSet<String>,
     indent_spaces: usize,
     event_has_remove: bool,
+    property_has_getter: bool,
 ) -> String {
     emit_method_stub_named(
         method,
@@ -145,6 +146,7 @@ pub(super) fn emit_method_stub(
         indent_spaces,
         None,
         event_has_remove,
+        property_has_getter,
     )
 }
 
@@ -155,6 +157,7 @@ pub(super) fn emit_method_stub_named(
     indent_spaces: usize,
     name_override: Option<&str>,
     event_has_remove: bool,
+    property_has_getter: bool,
 ) -> String {
     let indent = " ".repeat(indent_spaces);
     let in_params = get_in_params(method);
@@ -214,7 +217,7 @@ pub(super) fn emit_method_stub_named(
         } else {
             py_return_type_safe(return_type, known_types)
         };
-        out.push_str(&format!("{indent}@property\n"));
+        out.push_str(&format!("{indent}@builtins.property\n"));
         out.push_str(&format!(
             "{indent}def {}(self) -> {}: ...\n",
             prop_name, py_return
@@ -232,11 +235,18 @@ pub(super) fn emit_method_stub_named(
                 .map(|p| py_param_type_safe(&p.typ, known_types))
                 .unwrap_or_else(|| "object".to_string())
         };
-        out.push_str(&format!("{indent}@{}.setter\n", prop_name));
-        out.push_str(&format!(
-            "{indent}def {}(self, value: {}) -> None: ...\n",
-            prop_name, param_type
-        ));
+        if property_has_getter {
+            out.push_str(&format!("{indent}@{}.setter\n", prop_name));
+            out.push_str(&format!(
+                "{indent}def {}(self, value: {}) -> None: ...\n",
+                prop_name, param_type
+            ));
+        } else {
+            out.push_str(&format!(
+                "{indent}def set_{}(self, value: {}) -> None: ...\n",
+                prop_name, param_type
+            ));
+        }
     } else {
         let py_params = py_param_list(&in_params, known_types, delegate_type_names);
         let py_return = py_method_return_type(method, known_types, delegate_type_names);
@@ -346,7 +356,14 @@ mod tests {
 
     #[test]
     fn paired_event_stubs_preserve_token_api_and_add_helpers() {
-        let code = emit_method_stub(&event_add(), &HashSet::new(), &HashSet::new(), 4, true);
+        let code = emit_method_stub(
+            &event_add(),
+            &HashSet::new(),
+            &HashSet::new(),
+            4,
+            true,
+            true,
+        );
         assert!(code.contains("def on_changed("));
         assert!(code.contains("-> 'DynWinRTValue': ..."));
         assert!(code.contains("def subscribe_changed("));
@@ -355,7 +372,14 @@ mod tests {
 
     #[test]
     fn add_only_event_stub_does_not_advertise_unavailable_helpers() {
-        let code = emit_method_stub(&event_add(), &HashSet::new(), &HashSet::new(), 4, false);
+        let code = emit_method_stub(
+            &event_add(),
+            &HashSet::new(),
+            &HashSet::new(),
+            4,
+            false,
+            true,
+        );
         assert!(code.contains("def on_changed("));
         assert!(!code.contains("subscribe_changed"));
         assert!(!code.contains("once_changed"));

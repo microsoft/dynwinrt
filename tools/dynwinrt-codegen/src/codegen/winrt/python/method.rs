@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use crate::meta::{ClassMeta, InterfaceMeta, MethodMeta};
 use crate::types::TypeMeta;
 
+use crate::codegen::winrt::extensions::winui::{self, WinUiCallBehavior};
 use crate::codegen::winrt::shared::imports::{
     fill_array_output_index, fill_array_uses_retval_count, get_in_params,
 };
@@ -133,6 +134,10 @@ fn method_call_expr(
 ) -> String {
     let invoke = if py_method_abi_output_count(method) > 1 {
         "invoke_all"
+    } else if winui::call_behavior(iface_var.trim_start_matches('_'), &method.name)
+        == WinUiCallBehavior::BlockingReentrant
+    {
+        "invoke_detached"
     } else {
         "invoke"
     };
@@ -368,6 +373,13 @@ pub(crate) fn generate_iface_instance_method(
     known_types: &HashSet<String>,
     delegate_type_names: &HashSet<String>,
 ) -> String {
+    let property_has_getter = !method.is_property_setter
+        || method.name.strip_prefix("put_").is_some_and(|suffix| {
+            iface
+                .methods
+                .iter()
+                .any(|candidate| candidate.name == format!("get_{suffix}"))
+        });
     generate_method_body(
         iface_var,
         "self._obj",
@@ -376,6 +388,7 @@ pub(crate) fn generate_iface_instance_method(
         delegate_type_names,
         None,
         Some(&iface.methods),
+        property_has_getter,
     )
 }
 
@@ -384,6 +397,7 @@ pub(crate) struct InstanceOverload<'a> {
     pub(crate) obj_expr: String,
     pub(crate) method: &'a MethodMeta,
     pub(crate) sibling_methods: Option<&'a [MethodMeta]>,
+    pub(crate) property_has_getter: bool,
 }
 
 pub(crate) fn generate_instance_method_group(
@@ -401,6 +415,7 @@ pub(crate) fn generate_instance_method_group(
             delegate_type_names,
             None,
             overload.sibling_methods,
+            overload.property_has_getter,
         );
     }
 
@@ -419,6 +434,7 @@ pub(crate) fn generate_instance_method_group(
             delegate_type_names,
             Some(&private_name),
             overload.sibling_methods,
+            overload.property_has_getter,
         ));
         out.push('\n');
         private_names.push(private_name);
@@ -589,6 +605,7 @@ pub(crate) fn generate_method_body(
     delegate_type_names: &HashSet<String>,
     name_override: Option<&str>,
     sibling_methods: Option<&[MethodMeta]>,
+    property_has_getter: bool,
 ) -> String {
     let in_params = get_in_params(method);
     let return_type = method.return_type.as_ref();
@@ -602,13 +619,7 @@ pub(crate) fn generate_method_body(
         let suffix = method.name.strip_prefix("add_").unwrap_or(&method.name);
         let event_name = to_snake_case(suffix);
         let delegate_typ = in_params.first().map(|p| &p.typ);
-        let delegate_name = delegate_typ.and_then(|typ| match typ {
-            TypeMeta::Parameterized { name, args, .. } => {
-                Some(crate::meta::make_parameterized_name(name, args))
-            }
-            TypeMeta::Delegate { name, .. } => Some(name.clone()),
-            _ => None,
-        });
+        let delegate_name = delegate_typ.and_then(|typ| delegate_name(typ, delegate_type_names));
         // Find matching remove_<Suffix> in the same interface to know its vtable index.
         let remove_target = format!("remove_{}", suffix);
         let remove_idx = sibling_methods.and_then(|methods| {
@@ -723,7 +734,7 @@ pub(crate) fn generate_method_body(
         } else {
             py_return_type_safe(return_type, known_types)
         };
-        out.push_str("    @property\n");
+        out.push_str("    @_property\n");
         out.push_str(&format!("    def {}(self) -> {}:\n", prop_name, py_return));
         out.push_str(&method_pydoc(method, &in_params));
         let call_expr = method_call_expr(iface_var, method, obj_expr, "");
@@ -757,11 +768,18 @@ pub(crate) fn generate_method_body(
                 }
             })
             .unwrap_or_else(|| "object".to_string());
-        out.push_str(&format!("    @{}.setter\n", prop_name));
-        out.push_str(&format!(
-            "    def {}(self, value: {}):\n",
-            prop_name, param_type
-        ));
+        if property_has_getter {
+            out.push_str(&format!("    @{}.setter\n", prop_name));
+            out.push_str(&format!(
+                "    def {}(self, value: {}):\n",
+                prop_name, param_type
+            ));
+        } else {
+            out.push_str(&format!(
+                "    def set_{}(self, value: {}):\n",
+                prop_name, param_type
+            ));
+        }
         out.push_str(&method_pydoc(method, &in_params));
         let arg = in_params
             .first()
@@ -864,6 +882,7 @@ mod tests {
             &HashSet::new(),
             None,
             None,
+            true,
         );
 
         assert!(code.contains("def load_async(self) -> WinRTAsync[int]:"));
@@ -898,6 +917,7 @@ mod tests {
             &HashSet::new(),
             None,
             None,
+            true,
         );
 
         assert!(code.contains(
@@ -939,12 +959,14 @@ mod tests {
                 obj_expr: "self._obj".into(),
                 method: &first,
                 sibling_methods: None,
+                property_has_getter: true,
             },
             InstanceOverload {
                 iface_var: "_IReader".into(),
                 obj_expr: "self._obj".into(),
                 method: &second,
                 sibling_methods: None,
+                property_has_getter: true,
             },
         ];
 
@@ -990,12 +1012,14 @@ mod tests {
                 obj_expr: "self._obj".into(),
                 method: &callback,
                 sibling_methods: None,
+                property_has_getter: true,
             },
             InstanceOverload {
                 iface_var: "_IRunner".into(),
                 obj_expr: "self._obj".into(),
                 method: &text,
                 sibling_methods: None,
+                property_has_getter: true,
             },
         ];
 
@@ -1058,6 +1082,7 @@ mod tests {
             &HashSet::from(["TypedEventHandler_Widget_Object".into()]),
             None,
             Some(&siblings),
+            true,
         );
 
         assert!(code.contains("def on_changed(self, callback:"));
@@ -1070,6 +1095,40 @@ mod tests {
         assert!(code.contains("if not _state[0]:"));
         assert!(code.contains("_state[0] = False"));
         assert!(code.contains("if not _state[0]:\n            _unsubscribe()"));
+    }
+
+    #[test]
+    fn fixed_event_delegate_uses_generated_iid_and_parameter_types() {
+        let add = MethodMeta {
+            name: "add_Click".into(),
+            raw_name: "add_Click".into(),
+            vtable_index: 6,
+            params: vec![ParamMeta {
+                name: "handler".into(),
+                typ: TypeMeta::Interface {
+                    namespace: "Contoso".into(),
+                    name: "RoutedEventHandler".into(),
+                    iid: "11111111-1111-1111-1111-111111111111".into(),
+                },
+                direction: crate::meta::ParamDirection::In,
+            }],
+            is_event_add: true,
+            ..Default::default()
+        };
+        let code = generate_method_body(
+            "_IButton",
+            "self._obj",
+            &add,
+            &HashSet::new(),
+            &HashSet::from(["RoutedEventHandler".into()]),
+            None,
+            Some(std::slice::from_ref(&add)),
+            true,
+        );
+
+        assert!(code.contains("'routed_event_handler', 'IID_RoutedEventHandler'"));
+        assert!(code.contains("'routed_event_handler', 'RoutedEventHandler_PARAM_TYPES'"));
+        assert!(!code.contains("DynWinRTType.object().iid()"));
     }
 
     #[test]

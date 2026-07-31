@@ -253,20 +253,19 @@ pub fn generate_class(
         collection_uses_default,
     ));
 
-    // Lazy-cached factory/static interface accessors
+    // Resolve activation factories per call. Keeping COM factories in Python
+    // class variables lets them outlive the thread's RoApartment and can crash
+    // during interpreter shutdown when WinUI releases them after RoUninitialize.
     let mut declared: HashSet<String> = HashSet::new();
     for iface in &class.factory_interfaces {
         let key = format!("f_{}", iface.name);
         if !iface.iid.is_empty() && declared.insert(key.clone()) {
-            out.push_str(&format!("    _{} = None\n", key));
-            out.push('\n');
-            out.push_str("    @classmethod\n");
-            out.push_str(&format!("    def _get_{}(cls):\n", key));
+            out.push_str("    @staticmethod\n");
+            out.push_str(&format!("    def _get_{}():\n", key));
             out.push_str(&format!(
-                "        if cls._{k} is None:\n\
-                 \x20           cls._{k} = DynWinRTValue.activation_factory('{full}').cast(IID_{iface})\n\
-                 \x20       return cls._{k}\n",
-                k = key, iface = iface.name, full = class.full_name
+                "        return DynWinRTValue.activation_factory('{full}').cast(IID_{iface})\n",
+                iface = iface.name,
+                full = class.full_name,
             ));
             out.push('\n');
         }
@@ -274,15 +273,12 @@ pub fn generate_class(
     for iface in &class.static_interfaces {
         let key = format!("s_{}", iface.name);
         if !iface.iid.is_empty() && declared.insert(key.clone()) {
-            out.push_str(&format!("    _{} = None\n", key));
-            out.push('\n');
-            out.push_str("    @classmethod\n");
-            out.push_str(&format!("    def _get_{}(cls):\n", key));
+            out.push_str("    @staticmethod\n");
+            out.push_str(&format!("    def _get_{}():\n", key));
             out.push_str(&format!(
-                "        if cls._{k} is None:\n\
-                 \x20           cls._{k} = DynWinRTValue.activation_factory('{full}').cast(IID_{iface})\n\
-                 \x20       return cls._{k}\n",
-                k = key, iface = iface.name, full = class.full_name
+                "        return DynWinRTValue.activation_factory('{full}').cast(IID_{iface})\n",
+                iface = iface.name,
+                full = class.full_name,
             ));
             out.push('\n');
         }
@@ -498,41 +494,61 @@ pub fn generate_class(
             .iter()
             .flat_map(|iface| iface.methods.iter()),
     );
-    for iface in instance_ifaces {
-        let obj_expr = if collection_iface.is_some_and(|collection| collection.name == iface.name) {
-            collection_obj_expr
-        } else if class
-            .default_interface
-            .as_ref()
-            .is_some_and(|default_iface| default_iface.name == iface.name)
-        {
-            "self._obj"
-        } else {
-            ""
-        };
-        let obj_expr = if obj_expr.is_empty() {
-            format!("self._obj.cast(IID_{})", iface.name)
-        } else {
-            obj_expr.to_string()
-        };
-        for method in reorder_getters_before_setters(&iface.methods) {
-            let key = crate::codegen::winrt::python::overloads::method_group_key(
-                method,
-                &instance_method_names,
-            );
-            let overload = InstanceOverload {
-                iface_var: format!("_{}", iface.name),
-                obj_expr: obj_expr.clone(),
-                method,
-                sibling_methods: Some(iface.methods.as_slice()),
-            };
-            if let Some((_, group)) = method_groups
-                .iter_mut()
-                .find(|(group_key, _)| group_key == &key)
-            {
-                group.push(overload);
+    let property_getters = instance_ifaces
+        .iter()
+        .flat_map(|iface| iface.methods.iter())
+        .filter(|method| method.is_property_getter)
+        .filter_map(|method| method.name.strip_prefix("get_"))
+        .map(str::to_string)
+        .collect::<HashSet<_>>();
+    // Python evaluates decorators while building the class. Emit every getter
+    // before any cross-interface setter that references it.
+    for setter_phase in [false, true] {
+        for iface in &instance_ifaces {
+            let obj_expr =
+                if collection_iface.is_some_and(|collection| collection.name == iface.name) {
+                    collection_obj_expr
+                } else if class
+                    .default_interface
+                    .as_ref()
+                    .is_some_and(|default_iface| default_iface.name == iface.name)
+                {
+                    "self._obj"
+                } else {
+                    ""
+                };
+            let obj_expr = if obj_expr.is_empty() {
+                format!("self._obj.cast(IID_{})", iface.name)
             } else {
-                method_groups.push((key, vec![overload]));
+                obj_expr.to_string()
+            };
+            for method in reorder_getters_before_setters(&iface.methods)
+                .into_iter()
+                .filter(|method| method.is_property_setter == setter_phase)
+            {
+                let key = crate::codegen::winrt::python::overloads::method_group_key(
+                    method,
+                    &instance_method_names,
+                );
+                let overload = InstanceOverload {
+                    iface_var: format!("_{}", iface.name),
+                    obj_expr: obj_expr.clone(),
+                    method,
+                    sibling_methods: Some(iface.methods.as_slice()),
+                    property_has_getter: !method.is_property_setter
+                        || method
+                            .name
+                            .strip_prefix("put_")
+                            .is_some_and(|suffix| property_getters.contains(suffix)),
+                };
+                if let Some((_, group)) = method_groups
+                    .iter_mut()
+                    .find(|(group_key, _)| group_key == &key)
+                {
+                    group.push(overload);
+                } else {
+                    method_groups.push((key, vec![overload]));
+                }
             }
         }
     }

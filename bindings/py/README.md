@@ -98,7 +98,22 @@ provider and controls resources, codegen also emits
 The latter installs `XamlControlsResources` and configures unpackaged resource
 resolution when the required metadata is available.
 
-This is a bootstrap slice, not general WinUI support. A real Python WinUI E2E,
-DispatcherQueue/GIL integration, arbitrary composition/aggregation, custom
-controls, and x64/ARM64 UI validation remain tracked in
+This is a bootstrap slice, not general WinUI support. Arbitrary
+composition/aggregation, custom controls, and ARM64 UI validation remain tracked in
 [`PYTHON_CHECKLIST.md`](../../PYTHON_CHECKLIST.md).
+
+Generated `Application.start()` and `DispatcherQueue.run_event_loop()` calls
+remain on the caller's native thread but release the Python GIL while WinUI
+pumps messages. WinRT callbacks reacquire the GIL, and worker-thread asyncio
+code can use `DispatcherQueue.try_enqueue()` to return to the UI thread.
+
+The live x64 smoke test accepts explicit WinAppSDK metadata and bootstrap
+inputs:
+
+```powershell
+.\tests\python_winui_e2e.ps1 `
+  -WinuiWinmd <Microsoft.UI.Xaml.winmd> `
+  -RefList <winmd-reference-list.txt> `
+  -BootstrapDll <Microsoft.WindowsAppRuntime.Bootstrap.dll> `
+  -Major 2 -Minor 3
+```
