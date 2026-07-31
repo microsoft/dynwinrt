@@ -114,6 +114,10 @@ fn composable_factory_returns_public_instance() {
             && py.contains("return Widget._from_native(_results[1])"),
         "Python composable factory must select the final public-instance output:\n{py}"
     );
+    assert!(!py.contains("_f_IWidgetFactory = None"));
+    assert!(py.contains(
+        "return DynWinRTValue.activation_factory('Contoso.Widget').cast(IID_IWidgetFactory)"
+    ));
     assert!(
         py.contains(
             "self._set_native(type(self).create_instance(DynWinRTValue.null_value())._obj)"
@@ -485,6 +489,10 @@ fn winui_application_projects_fluent_bootstrap_helpers() {
     );
     assert!(py.contains("def create_with_metadata_provider("));
     assert!(py.contains("def create(on_launched: Callable[[], object] | None = None)"));
+    assert!(
+        py.contains(".invoke_detached(Application._get_s_IApplicationStatics()"),
+        "Python Application.Start must release the GIL:\n{py}"
+    );
     assert!(py.contains("_app = Application.get_current()"));
     assert!(!py.contains("_app = Application.current"));
     assert!(py.contains("[DynWinRTType.object()], lambda _args: on_launched()).to_value()"));

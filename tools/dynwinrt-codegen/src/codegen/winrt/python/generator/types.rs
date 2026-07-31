@@ -294,6 +294,13 @@ pub fn generate_interface(
                 obj_expr: "self._obj".to_string(),
                 method,
                 sibling_methods: Some(iface.methods.as_slice()),
+                property_has_getter: !method.is_property_setter
+                    || method.name.strip_prefix("put_").is_some_and(|suffix| {
+                        iface
+                            .methods
+                            .iter()
+                            .any(|candidate| candidate.name == format!("get_{suffix}"))
+                    }),
             })
             .collect::<Vec<_>>();
         out.push_str(&generate_instance_method_group(

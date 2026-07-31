@@ -228,6 +228,28 @@ def test_uri_dynamic_invocation():
     assert uri2 is not None
 
 
+def test_invoke_detached_uses_the_normal_marshalling_path():
+    ro_initialize(1)
+    factory_iid = WinGUID.parse("44a9796f-723e-4fdf-a218-033e75b0c084")
+    factory_type = DynWinRTType.register_interface(
+        "IUriRuntimeClassFactoryDetachedTest", factory_iid
+    ).add_method(
+        "CreateUri",
+        DynWinRTMethodSig()
+        .add_in(DynWinRTType.hstring())
+        .add_out(DynWinRTType.object()),
+    )
+    factory = DynWinRTValue.activation_factory("Windows.Foundation.Uri").cast(
+        factory_iid
+    )
+
+    result = factory_type.method(6).invoke_detached(
+        factory, [DynWinRTValue.from_hstring("https://example.com/detached")]
+    )
+
+    assert not result.is_null()
+
+
 def test_uri_get_query_parsed():
     """Test get_obj fast-path via QueryParsed."""
     ro_initialize(1)

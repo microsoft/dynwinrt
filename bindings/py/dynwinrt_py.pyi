@@ -140,6 +140,9 @@ class DynWinRTMethodHandle:
     def invoke(
         self, obj: DynWinRTValue, args: Sequence[DynWinRTValue]
     ) -> DynWinRTValue: ...
+    def invoke_detached(
+        self, obj: DynWinRTValue, args: Sequence[DynWinRTValue]
+    ) -> DynWinRTValue: ...
     def invoke_all(
         self, obj: DynWinRTValue, args: Sequence[DynWinRTValue]
     ) -> List[DynWinRTValue]: ...

@@ -134,10 +134,14 @@ of a dynamic projection.
 - [x] Add Python-specific implicit XAML metadata provider generation.
 - [x] Generate the specialized `Application.create_with_metadata_provider()`
       and Fluent-resource bootstrap helpers with matching `.pyi` declarations.
-- [ ] Run `Application.start`, `Application`, `Window`, and all controls on an
-      STA.
+- [x] Run `Application.start`, `Application`, `Window`, `Grid`, `Button`, and
+      `TextBlock` on an STA in a live x64 WinUI E2E.
+- [x] Validate worker-thread and `asyncio` scheduling while the WinUI
+      DispatcherQueue owns the UI thread, including a WinRT async completion
+      and `try_enqueue` back to the UI thread.
 - [ ] Load Fluent Light, Dark, and High Contrast resources.
-- [ ] Add a real Python WinUI application E2E on x64 and ARM64.
+- [x] Add a real Python WinUI application E2E on x64.
+- [ ] Add Python WinUI application E2E coverage on ARM64.
 
 ## Later
 
@@ -176,3 +180,8 @@ of a dynamic projection.
 24. [x] Add an experimental, typed WinUI `Application` bootstrap path backed
         by a shared `codegen/winrt/extensions/winui` spec consumed by both
         JavaScript and Python projection.
+25. [x] Run a real unpackaged x64 Python WinUI app with Fluent resources,
+        Window/Grid/Button/TextBlock, automation-driven Click, and clean
+        apartment shutdown.
+26. [x] Release the GIL around blocking WinUI host calls and verify asyncio
+        worker progress, WinRT async completion, and DispatcherQueue UI dispatch.
