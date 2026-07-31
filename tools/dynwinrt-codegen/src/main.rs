@@ -701,6 +701,7 @@ fn generate_for_types(
     all_classes.extend(deps.classes);
     all_interfaces.extend(deps.interfaces);
     all_enums.extend(deps.enums);
+    validate_unique_class_output_names(&all_classes)?;
 
     // Newly-merged dependency types haven't been doc-annotated yet. Apply doc table
     // uniformly so dependency classes/interfaces/enums carry the same XML docs as
@@ -820,6 +821,26 @@ fn generate_for_types(
     }
 
     Ok((all_classes.len(), all_interfaces.len(), all_enums.len()))
+}
+
+fn validate_unique_class_output_names(classes: &[meta::ClassMeta]) -> Result<(), String> {
+    let mut full_name_by_short_name: HashMap<&str, &str> = HashMap::new();
+    for class in classes {
+        match full_name_by_short_name.get(class.name.as_str()) {
+            Some(existing) if *existing != class.full_name => {
+                return Err(format!(
+                    "Cannot generate `{}` and `{}` in one output directory because both use \
+                     the short class name `{}`. Generate them separately or select only one type.",
+                    existing, class.full_name, class.name
+                ));
+            }
+            Some(_) => {}
+            None => {
+                full_name_by_short_name.insert(&class.name, &class.full_name);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn generate_js_files(
@@ -1839,4 +1860,46 @@ fn find_windows_sdk_winmd() -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn distinct_classes_with_the_same_short_name_are_rejected() {
+        let classes = vec![
+            meta::ClassMeta {
+                name: "ResourceManager".into(),
+                namespace: "Contoso".into(),
+                full_name: "Contoso.ResourceManager".into(),
+                ..Default::default()
+            },
+            meta::ClassMeta {
+                name: "ResourceManager".into(),
+                namespace: "Microsoft.Windows.ApplicationModel.Resources".into(),
+                full_name: "Microsoft.Windows.ApplicationModel.Resources.ResourceManager".into(),
+                ..Default::default()
+            },
+        ];
+
+        let error = validate_unique_class_output_names(&classes)
+            .expect_err("same-name classes must not overwrite each other");
+        assert!(error.contains("Contoso.ResourceManager"));
+        assert!(error.contains("Microsoft.Windows.ApplicationModel.Resources.ResourceManager"));
+        assert!(error.contains("short class name `ResourceManager`"));
+    }
+
+    #[test]
+    fn duplicate_metadata_for_the_same_class_is_allowed() {
+        let class = meta::ClassMeta {
+            name: "Application".into(),
+            namespace: "Microsoft.UI.Xaml".into(),
+            full_name: "Microsoft.UI.Xaml.Application".into(),
+            ..Default::default()
+        };
+
+        validate_unique_class_output_names(&[class.clone(), class])
+            .expect("identical metadata does not create an ambiguous output");
+    }
 }
