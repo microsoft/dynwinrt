@@ -173,4 +173,6 @@ of a dynamic projection.
 22. [x] Add typed event arguments while preserving token subscriptions and adding
         idempotent unsubscribe helpers.
 23. [x] Project public composable constructors and reject protected composition.
-24. [x] Add an experimental, typed WinUI `Application` bootstrap path.
+24. [x] Add an experimental, typed WinUI `Application` bootstrap path backed
+        by a shared `codegen/winrt/extensions/winui` spec consumed by both
+        JavaScript and Python projection.

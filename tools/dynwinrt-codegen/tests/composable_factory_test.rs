@@ -421,8 +421,11 @@ fn winui_application_projects_fluent_bootstrap_helpers() {
         "Application".into(),
         "ApplicationInitializationCallback".into(),
         "XamlControlsXamlMetaDataProvider".into(),
+        "Microsoft.UI.Xaml.XamlTypeInfo.XamlControlsXamlMetaDataProvider".into(),
         "XamlControlsResources".into(),
+        "Microsoft.UI.Xaml.Controls.XamlControlsResources".into(),
         "ResourceManager".into(),
+        "Microsoft.Windows.ApplicationModel.Resources.ResourceManager".into(),
     ]);
     let delegate_names = HashSet::from(["ApplicationInitializationCallback".into()]);
     let delegate_sigs = HashMap::from([(
@@ -492,4 +495,38 @@ fn winui_application_projects_fluent_bootstrap_helpers() {
     assert!(pyi.contains(
         "def create(on_launched: Callable[[], object] | None = ...) -> 'Application': ..."
     ));
+}
+
+#[test]
+fn winui_application_without_extension_dependencies_has_no_bootstrap_helpers() {
+    let application = ClassMeta {
+        name: "Application".into(),
+        namespace: "Microsoft.UI.Xaml".into(),
+        full_name: "Microsoft.UI.Xaml.Application".into(),
+        ..Default::default()
+    };
+    let known_types = HashSet::from(["Application".into()]);
+    let projected = project::project_class(
+        &application,
+        &known_types,
+        &HashSet::new(),
+        &HashSet::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+    );
+    let js = render_js::render(&projected);
+    let dts = render_dts::render(&projected);
+    let py = python::generate_class(&application, &known_types, &HashSet::new(), &HashSet::new());
+    let pyi = python_stub::generate_class_stub(
+        &application,
+        &known_types,
+        &HashSet::new(),
+        &HashSet::new(),
+    );
+
+    assert!(!js.contains("createWithMetadataProvider"));
+    assert!(!dts.contains("createWithMetadataProvider"));
+    assert!(!py.contains("create_with_metadata_provider"));
+    assert!(!pyi.contains("create_with_metadata_provider"));
 }

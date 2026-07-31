@@ -11,6 +11,7 @@ use std::collections::HashSet;
 use crate::meta::{ClassMeta, InterfaceMeta, MethodMeta};
 use crate::types::{TypeKind, TypeMeta};
 
+use crate::codegen::winrt::extensions::winui;
 use crate::codegen::winrt::shared::imports::{
     collect_iface_type_imports, collect_type_imports, collect_used_generics_from_class,
     collect_used_generics_from_methods,
@@ -254,16 +255,10 @@ pub fn generate_class_stub(
     delegate_type_names: &HashSet<String>,
     shared_iids: &HashSet<String>,
 ) -> String {
-    const XAML_APPLICATION: &str = "Microsoft.UI.Xaml.Application";
-    const XAML_METADATA_PROVIDER: &str = "XamlControlsXamlMetaDataProvider";
-    const XAML_CONTROLS_RESOURCES: &str = "XamlControlsResources";
-
     let used_structs = collect_used_structs_from_class(class);
     let collection_iface = class_interface(class);
     let collection_kind = collection_iface.and_then(interface_kind);
-    let has_xaml_fluent_bootstrap = class.full_name == XAML_APPLICATION
-        && known_types.contains(XAML_METADATA_PROVIDER)
-        && known_types.contains(XAML_CONTROLS_RESOURCES);
+    let winui_bootstrap = winui::resolve_application_bootstrap(class, known_types);
     let has_events = class.all_interfaces().any(|iface| {
         iface
             .methods
@@ -282,7 +277,7 @@ pub fn generate_class_stub(
     ) {
         out.push_str(ASYNC_IMPORT_LINE);
     }
-    if has_events || has_xaml_fluent_bootstrap {
+    if has_events || winui_bootstrap.is_some() {
         out.push_str("from typing import Callable\n");
     }
     if !class.required_interfaces.is_empty() {
@@ -351,11 +346,12 @@ pub fn generate_class_stub(
             imported_names.insert(format!("IID_{}", req_iface.name));
         }
     }
-    if has_xaml_fluent_bootstrap {
+    if let Some(bootstrap) = winui_bootstrap {
+        let metadata_provider = bootstrap.spec.metadata_provider;
         out.push_str(&format!(
             "from .{} import {}  # noqa: F401\n",
-            to_snake_case_filename(XAML_METADATA_PROVIDER),
-            XAML_METADATA_PROVIDER
+            to_snake_case_filename(metadata_provider.name),
+            metadata_provider.name,
         ));
     }
     out.push('\n');
@@ -465,12 +461,13 @@ pub fn generate_class_stub(
         out.push_str(&format!("    def create() -> '{}': ...\n", class.name));
     }
 
-    if has_xaml_fluent_bootstrap {
+    if let Some(bootstrap) = winui_bootstrap {
+        let metadata_provider = bootstrap.spec.metadata_provider.name;
         out.push('\n');
         out.push_str("    @staticmethod\n");
         out.push_str(&format!(
-            "    def create_with_metadata_provider(metadata_provider: '{}', on_launched: Callable[[], object] | None = ...) -> '{}': ...\n",
-            XAML_METADATA_PROVIDER, class.name
+            "    def create_with_metadata_provider(metadata_provider: '{metadata_provider}', on_launched: Callable[[], object] | None = ...) -> '{}': ...\n",
+            class.name,
         ));
         out.push_str("    @staticmethod\n");
         out.push_str(&format!(

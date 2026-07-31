@@ -5,6 +5,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+use crate::codegen::winrt::extensions::winui;
 use crate::meta::{ConstructorKind, ConstructorMeta, InterfaceMeta, MethodMeta, ParamMeta};
 use crate::types::TypeMeta;
 
@@ -38,7 +39,7 @@ pub(super) fn project_constructor(
     delegate_sigs: &HashMap<String, String>,
     delegate_param_wraps: &HashMap<String, Vec<String>>,
 ) -> ProjectedConstructor {
-    if class.full_name == XAML_APPLICATION {
+    if winui::is_application(class) {
         return inaccessible_constructor(class);
     }
 

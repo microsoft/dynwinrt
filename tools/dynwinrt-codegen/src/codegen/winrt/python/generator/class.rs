@@ -6,10 +6,21 @@
 use super::imports::{emit_type_checking_imports, format_py_type_import};
 use super::structs::generate_struct_helpers;
 use super::*;
+use crate::codegen::winrt::extensions::winui::{self, WinUiAbiType};
 use crate::codegen::winrt::python::collections::{
     CollectionKind, class_interface, interface_kind, map_iterable_name, runtime_mixin,
 };
 use crate::meta::{ConstructorKind, ParamMeta};
+
+fn project_winui_abi_types(types: &[WinUiAbiType]) -> String {
+    types
+        .iter()
+        .map(|typ| match typ {
+            WinUiAbiType::Object => "DynWinRTType.object()",
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
 
 /// Generate a Python file for a single RuntimeClass.
 pub fn generate_class(
@@ -21,6 +32,7 @@ pub fn generate_class(
     let used_structs = collect_used_structs_from_class(class);
     let collection_iface = class_interface(class);
     let collection_kind = collection_iface.and_then(interface_kind);
+    let winui_bootstrap = winui::resolve_application_bootstrap(class, known_types);
     let collection_uses_default = collection_iface.is_some_and(|collection_iface| {
         class
             .default_interface
@@ -382,30 +394,21 @@ pub fn generate_class(
         }
     }
 
-    // WinUI XAML Application fluent bootstrap. When we're generating
-    // Microsoft.UI.Xaml.Application and the sibling XAML types are also in
-    // scope, expose `create_with_metadata_provider(...)` and `create(...)`
-    // helpers that mirror the JS side.
-    const XAML_APPLICATION: &str = "Microsoft.UI.Xaml.Application";
-    const XAML_METADATA_PROVIDER: &str = "XamlControlsXamlMetaDataProvider";
-    const XAML_CONTROLS_RESOURCES: &str = "XamlControlsResources";
-    const MRT_RESOURCE_MANAGER: &str = "ResourceManager";
-    const XAML_LAUNCHED_CALLBACK_IID: &str = "f81c4e72-7a18-4a30-9126-6f62b6bdac83";
-    let has_xaml_fluent_bootstrap = class.full_name == XAML_APPLICATION
-        && known_types.contains(XAML_METADATA_PROVIDER)
-        && known_types.contains(XAML_CONTROLS_RESOURCES);
-    let supports_unpackaged_xaml =
-        has_xaml_fluent_bootstrap && known_types.contains(MRT_RESOURCE_MANAGER);
-    if has_xaml_fluent_bootstrap {
-        let metadata_module = to_snake_case_filename(XAML_METADATA_PROVIDER);
-        let resources_module = to_snake_case_filename(XAML_CONTROLS_RESOURCES);
-        let resource_manager_module = to_snake_case_filename(MRT_RESOURCE_MANAGER);
+    if let Some(bootstrap) = winui_bootstrap {
+        let spec = bootstrap.spec;
+        let metadata_provider = spec.metadata_provider.name;
+        let controls_resources = spec.controls_resources.name;
+        let resource_manager = spec.resource_manager.name;
+        let callback_types = project_winui_abi_types(spec.launched_callback_params);
+        let metadata_module = to_snake_case_filename(metadata_provider);
+        let resources_module = to_snake_case_filename(controls_resources);
+        let resource_manager_module = to_snake_case_filename(resource_manager);
 
         out.push('\n');
         out.push_str("    @staticmethod\n");
         out.push_str(&format!(
-            "    def create_with_metadata_provider(metadata_provider: '{XAML_METADATA_PROVIDER}', on_launched: Callable[[], object] | None = None) -> '{}':\n",
-            class.name
+            "    def create_with_metadata_provider(metadata_provider: '{metadata_provider}', on_launched: Callable[[], object] | None = None) -> '{}':\n",
+            class.name,
         ));
         out.push_str(
             "        \"\"\"Compose a WinUI `Application` that exposes the supplied XAML metadata provider.\n\
@@ -416,7 +419,8 @@ pub fn generate_class(
         out.push_str("        _launched = None\n");
         out.push_str("        if on_launched is not None:\n");
         out.push_str(&format!(
-            "            _launched = DynWinRtDelegate.create(WinGUID.parse('{XAML_LAUNCHED_CALLBACK_IID}'), [DynWinRTType.object()], lambda _args: on_launched()).to_value()\n",
+            "            _launched = DynWinRtDelegate.create(WinGUID.parse('{callback_iid}'), [{callback_types}], lambda _args: on_launched()).to_value()\n",
+            callback_iid = spec.launched_callback_iid,
         ));
         out.push_str(&format!(
             "        return {}._from_native(DynWinRTValue.create_xaml_application(getattr(metadata_provider, '_obj', metadata_provider), _launched))\n",
@@ -434,7 +438,7 @@ pub fn generate_class(
              and optionally configure unpackaged resource resolution before running `on_launched`.\"\"\"\n",
         );
         out.push_str(&format!(
-            "        _provider = _dynwinrt_symbol('{metadata_module}', '{XAML_METADATA_PROVIDER}').create()\n",
+            "        _provider = _dynwinrt_symbol('{metadata_module}', '{metadata_provider}').create()\n",
         ));
         out.push_str("        _resources_initialized = [False]\n");
         out.push_str("        def _on_launched_wrapped(_args):\n");
@@ -448,25 +452,26 @@ pub fn generate_class(
         );
         out.push_str("            if not _resources_initialized[0]:\n");
         out.push_str(&format!(
-            "                _app.resources.merged_dictionaries.append(_dynwinrt_symbol('{resources_module}', '{XAML_CONTROLS_RESOURCES}').create())\n",
+            "                _app.resources.merged_dictionaries.append(_dynwinrt_symbol('{resources_module}', '{controls_resources}').create())\n",
         ));
         out.push_str("                _resources_initialized[0] = True\n");
         out.push_str("            if on_launched is not None:\n");
         out.push_str("                on_launched()\n");
         out.push_str(&format!(
-            "        _launched = DynWinRtDelegate.create(WinGUID.parse('{XAML_LAUNCHED_CALLBACK_IID}'), [DynWinRTType.object()], _on_launched_wrapped).to_value()\n",
+            "        _launched = DynWinRtDelegate.create(WinGUID.parse('{callback_iid}'), [{callback_types}], _on_launched_wrapped).to_value()\n",
+            callback_iid = spec.launched_callback_iid,
         ));
         out.push_str(&format!(
             "        _app = {}._from_native(DynWinRTValue.create_xaml_application(getattr(_provider, '_obj', _provider), _launched))\n",
             class.name
         ));
-        if supports_unpackaged_xaml {
+        if bootstrap.supports_unpackaged_resources {
             out.push_str(
                 "        from dynwinrt_py import has_package_identity, get_winappsdk_resource_pri_path\n",
             );
             out.push_str("        if not has_package_identity():\n");
             out.push_str(&format!(
-                "            _resource_manager = _dynwinrt_symbol('{resource_manager_module}', '{MRT_RESOURCE_MANAGER}').create_instance(get_winappsdk_resource_pri_path())\n",
+                "            _resource_manager = _dynwinrt_symbol('{resource_manager_module}', '{resource_manager}').create_instance(get_winappsdk_resource_pri_path())\n",
             ));
             out.push_str("            def _on_resource_manager_requested(_sender, args):\n");
             out.push_str("                if args is None:\n");
