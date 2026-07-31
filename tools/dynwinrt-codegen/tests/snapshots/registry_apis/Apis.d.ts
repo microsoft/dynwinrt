@@ -11,12 +11,10 @@ import { REG_SAVE_FORMAT } from './REG_SAVE_FORMAT.js';
 import { REG_VALUE_TYPE } from './REG_VALUE_TYPE.js';
 import { WIN32_ERROR } from './WIN32_ERROR.js';
 
-/** Opaque Win32 handle. Pass either a raw pointer value as a `bigint` (safe for full 64-bit handle values) or a `number` (only for handles that fit in a JS safe integer, e.g. HWND with small window IDs). Do NOT pass a `Buffer` — `DynWinRtValue.pointer(Buffer)` uses the buffer's own address, not the bytes it contains, so a Buffer of pointer bits would be misinterpreted as a pointer TO a `HANDLE`. */
+/** Opaque Win32 handle. Pass either a raw pointer value as a `bigint` (safe for full 64-bit handle values) or a `number` (only for handles that fit in a JS safe integer, e.g. HWND with small window IDs). Do NOT pass a `Buffer` — `DynWin32.pointer(Buffer)` uses the buffer's own address, not the bytes it contains, so a Buffer of pointer bits would be misinterpreted as a pointer TO a `HANDLE`. */
 export type HANDLE = bigint | number;
-/** Opaque Win32 handle. Pass either a raw pointer value as a `bigint` (safe for full 64-bit handle values) or a `number` (only for handles that fit in a JS safe integer, e.g. HWND with small window IDs). Do NOT pass a `Buffer` — `DynWinRtValue.pointer(Buffer)` uses the buffer's own address, not the bytes it contains, so a Buffer of pointer bits would be misinterpreted as a pointer TO a `HKEY`. */
+/** Opaque Win32 handle. Pass either a raw pointer value as a `bigint` (safe for full 64-bit handle values) or a `number` (only for handles that fit in a JS safe integer, e.g. HWND with small window IDs). Do NOT pass a `Buffer` — `DynWin32.pointer(Buffer)` uses the buffer's own address, not the bytes it contains, so a Buffer of pointer bits would be misinterpreted as a pointer TO a `HKEY`. */
 export type HKEY = bigint | number;
-/** Opaque Win32 handle. Pass either a raw pointer value as a `bigint` (safe for full 64-bit handle values) or a `number` (only for handles that fit in a JS safe integer, e.g. HWND with small window IDs). Do NOT pass a `Buffer` — `DynWinRtValue.pointer(Buffer)` uses the buffer's own address, not the bytes it contains, so a Buffer of pointer bits would be misinterpreted as a pointer TO a `PSECURITY_DESCRIPTOR`. */
-export type PSECURITY_DESCRIPTOR = bigint | number;
 
 /** GetRegistryValueWithFallbackW — api-ms-win-core-state-helpers-l1-1-0.dll export. */
 export declare function getRegistryValueWithFallbackW(hkeyPrimary: HKEY, primarySubKey: string | null, hkeyFallback: HKEY, fallbackSubKey: string | null, value: string | null, flags: number, data: bigint | Buffer | Uint8Array | null, dataIn: number): { readonly status: number; readonly pdwType: number; readonly pcbDataOut: number };
@@ -25,10 +23,10 @@ export declare function getRegistryValueWithFallbackW(hkeyPrimary: HKEY, primary
 export declare function regCloseKey(hKey: HKEY): { readonly status: number };
 
 /** RegConnectRegistryA — ADVAPI32.dll export. */
-export declare function regConnectRegistryA(machineName: string | null, hKey: HKEY): { readonly status: number; readonly phkResult: bigint };
+export declare function regConnectRegistryA(machineName: bigint | Buffer | Uint8Array | null, hKey: HKEY): { readonly status: number; readonly phkResult: bigint };
 
 /** RegConnectRegistryExA — ADVAPI32.dll export. */
-export declare function regConnectRegistryExA(machineName: string | null, hKey: HKEY, flags: number): { readonly status: number; readonly phkResult: bigint };
+export declare function regConnectRegistryExA(machineName: bigint | Buffer | Uint8Array | null, hKey: HKEY, flags: number): { readonly status: number; readonly phkResult: bigint };
 
 /** RegConnectRegistryExW — ADVAPI32.dll export. */
 export declare function regConnectRegistryExW(machineName: string | null, hKey: HKEY, flags: number): { readonly status: number; readonly phkResult: bigint };
@@ -37,22 +35,22 @@ export declare function regConnectRegistryExW(machineName: string | null, hKey: 
 export declare function regConnectRegistryW(machineName: string | null, hKey: HKEY): { readonly status: number; readonly phkResult: bigint };
 
 /** RegCopyTreeA — ADVAPI32.dll export. */
-export declare function regCopyTreeA(hKeySrc: HKEY, subKey: string | null, hKeyDest: HKEY): { readonly status: number };
+export declare function regCopyTreeA(hKeySrc: HKEY, subKey: bigint | Buffer | Uint8Array | null, hKeyDest: HKEY): { readonly status: number };
 
 /** RegCopyTreeW — ADVAPI32.dll export. */
 export declare function regCopyTreeW(hKeySrc: HKEY, subKey: string | null, hKeyDest: HKEY): { readonly status: number };
 
 /** RegCreateKeyA — ADVAPI32.dll export. */
-export declare function regCreateKeyA(hKey: HKEY, subKey: string | null): { readonly status: number; readonly phkResult: bigint };
+export declare function regCreateKeyA(hKey: HKEY, subKey: bigint | Buffer | Uint8Array | null): { readonly status: number; readonly phkResult: bigint };
 
 /** RegCreateKeyExA — ADVAPI32.dll export. */
-export declare function regCreateKeyExA(hKey: HKEY, subKey: string | null, reserved: number, class_: string | null, options: REG_OPEN_CREATE_OPTIONS, samDesired: REG_SAM_FLAGS, securityAttributes: bigint | Buffer | Uint8Array | null): { readonly status: number; readonly phkResult: bigint; readonly lpdwDisposition: REG_CREATE_KEY_DISPOSITION };
+export declare function regCreateKeyExA(hKey: HKEY, subKey: bigint | Buffer | Uint8Array | null, reserved: number, class_: bigint | Buffer | Uint8Array | null, options: REG_OPEN_CREATE_OPTIONS, samDesired: REG_SAM_FLAGS, securityAttributes: bigint | Buffer | Uint8Array | null): { readonly status: number; readonly phkResult: bigint; readonly lpdwDisposition: REG_CREATE_KEY_DISPOSITION };
 
 /** RegCreateKeyExW — ADVAPI32.dll export. */
 export declare function regCreateKeyExW(hKey: HKEY, subKey: string | null, reserved: number, class_: string | null, options: REG_OPEN_CREATE_OPTIONS, samDesired: REG_SAM_FLAGS, securityAttributes: bigint | Buffer | Uint8Array | null): { readonly status: number; readonly phkResult: bigint; readonly lpdwDisposition: REG_CREATE_KEY_DISPOSITION };
 
 /** RegCreateKeyTransactedA — ADVAPI32.dll export. */
-export declare function regCreateKeyTransactedA(hKey: HKEY, subKey: string | null, reserved: number, class_: string | null, options: REG_OPEN_CREATE_OPTIONS, samDesired: REG_SAM_FLAGS, securityAttributes: bigint | Buffer | Uint8Array | null, hTransaction: HANDLE, pExtendedParemeter: bigint | Buffer | Uint8Array | null): { readonly status: number; readonly phkResult: bigint; readonly lpdwDisposition: REG_CREATE_KEY_DISPOSITION };
+export declare function regCreateKeyTransactedA(hKey: HKEY, subKey: bigint | Buffer | Uint8Array | null, reserved: number, class_: bigint | Buffer | Uint8Array | null, options: REG_OPEN_CREATE_OPTIONS, samDesired: REG_SAM_FLAGS, securityAttributes: bigint | Buffer | Uint8Array | null, hTransaction: HANDLE, pExtendedParemeter: bigint | Buffer | Uint8Array | null): { readonly status: number; readonly phkResult: bigint; readonly lpdwDisposition: REG_CREATE_KEY_DISPOSITION };
 
 /** RegCreateKeyTransactedW — ADVAPI32.dll export. */
 export declare function regCreateKeyTransactedW(hKey: HKEY, subKey: string | null, reserved: number, class_: string | null, options: REG_OPEN_CREATE_OPTIONS, samDesired: REG_SAM_FLAGS, securityAttributes: bigint | Buffer | Uint8Array | null, hTransaction: HANDLE, pExtendedParemeter: bigint | Buffer | Uint8Array | null): { readonly status: number; readonly phkResult: bigint; readonly lpdwDisposition: REG_CREATE_KEY_DISPOSITION };
@@ -61,22 +59,22 @@ export declare function regCreateKeyTransactedW(hKey: HKEY, subKey: string | nul
 export declare function regCreateKeyW(hKey: HKEY, subKey: string | null): { readonly status: number; readonly phkResult: bigint };
 
 /** RegDeleteKeyA — ADVAPI32.dll export. */
-export declare function regDeleteKeyA(hKey: HKEY, subKey: string | null): { readonly status: number };
+export declare function regDeleteKeyA(hKey: HKEY, subKey: bigint | Buffer | Uint8Array | null): { readonly status: number };
 
 /** RegDeleteKeyExA — ADVAPI32.dll export. */
-export declare function regDeleteKeyExA(hKey: HKEY, subKey: string | null, samDesired: number, reserved: number): { readonly status: number };
+export declare function regDeleteKeyExA(hKey: HKEY, subKey: bigint | Buffer | Uint8Array | null, samDesired: number, reserved: number): { readonly status: number };
 
 /** RegDeleteKeyExW — ADVAPI32.dll export. */
 export declare function regDeleteKeyExW(hKey: HKEY, subKey: string | null, samDesired: number, reserved: number): { readonly status: number };
 
 /** RegDeleteKeyTransactedA — ADVAPI32.dll export. */
-export declare function regDeleteKeyTransactedA(hKey: HKEY, subKey: string | null, samDesired: number, reserved: number, hTransaction: HANDLE, pExtendedParameter: bigint | Buffer | Uint8Array | null): { readonly status: number };
+export declare function regDeleteKeyTransactedA(hKey: HKEY, subKey: bigint | Buffer | Uint8Array | null, samDesired: number, reserved: number, hTransaction: HANDLE, pExtendedParameter: bigint | Buffer | Uint8Array | null): { readonly status: number };
 
 /** RegDeleteKeyTransactedW — ADVAPI32.dll export. */
 export declare function regDeleteKeyTransactedW(hKey: HKEY, subKey: string | null, samDesired: number, reserved: number, hTransaction: HANDLE, pExtendedParameter: bigint | Buffer | Uint8Array | null): { readonly status: number };
 
 /** RegDeleteKeyValueA — ADVAPI32.dll export. */
-export declare function regDeleteKeyValueA(hKey: HKEY, subKey: string | null, valueName: string | null): { readonly status: number };
+export declare function regDeleteKeyValueA(hKey: HKEY, subKey: bigint | Buffer | Uint8Array | null, valueName: bigint | Buffer | Uint8Array | null): { readonly status: number };
 
 /** RegDeleteKeyValueW — ADVAPI32.dll export. */
 export declare function regDeleteKeyValueW(hKey: HKEY, subKey: string | null, valueName: string | null): { readonly status: number };
@@ -85,13 +83,13 @@ export declare function regDeleteKeyValueW(hKey: HKEY, subKey: string | null, va
 export declare function regDeleteKeyW(hKey: HKEY, subKey: string | null): { readonly status: number };
 
 /** RegDeleteTreeA — ADVAPI32.dll export. */
-export declare function regDeleteTreeA(hKey: HKEY, subKey: string | null): { readonly status: number };
+export declare function regDeleteTreeA(hKey: HKEY, subKey: bigint | Buffer | Uint8Array | null): { readonly status: number };
 
 /** RegDeleteTreeW — ADVAPI32.dll export. */
 export declare function regDeleteTreeW(hKey: HKEY, subKey: string | null): { readonly status: number };
 
 /** RegDeleteValueA — ADVAPI32.dll export. */
-export declare function regDeleteValueA(hKey: HKEY, valueName: string | null): { readonly status: number };
+export declare function regDeleteValueA(hKey: HKEY, valueName: bigint | Buffer | Uint8Array | null): { readonly status: number };
 
 /** RegDeleteValueW — ADVAPI32.dll export. */
 export declare function regDeleteValueW(hKey: HKEY, valueName: string | null): { readonly status: number };
@@ -111,12 +109,6 @@ export declare function regEnableReflectionKey(hBase: HKEY): { readonly status: 
 /** RegEnumKeyA — ADVAPI32.dll export. */
 export declare function regEnumKeyA(hKey: HKEY, index: number, name: bigint | Buffer | Uint8Array | null, cchName: number): { readonly status: number };
 
-/** RegEnumKeyExA — ADVAPI32.dll export. */
-export declare function regEnumKeyExA(hKey: HKEY, index: number, name: bigint | Buffer | Uint8Array | null, lpcchName: number, reserved: bigint | Buffer | Uint8Array | null, class_: bigint | Buffer | Uint8Array | null, lpcchClass: number, lpftLastWriteTime: bigint | Buffer | Uint8Array | null): { readonly status: number; readonly lpcchName: number; readonly lpcchClass: number };
-
-/** RegEnumKeyExW — ADVAPI32.dll export. */
-export declare function regEnumKeyExW(hKey: HKEY, index: number, name: bigint | Buffer | Uint8Array | null, lpcchName: number, reserved: bigint | Buffer | Uint8Array | null, class_: bigint | Buffer | Uint8Array | null, lpcchClass: number, lpftLastWriteTime: bigint | Buffer | Uint8Array | null): { readonly status: number; readonly lpcchName: number; readonly lpcchClass: number };
-
 /** RegEnumKeyW — ADVAPI32.dll export. */
 export declare function regEnumKeyW(hKey: HKEY, index: number, name: bigint | Buffer | Uint8Array | null, cchName: number): { readonly status: number };
 
@@ -130,28 +122,28 @@ export declare function regEnumValueW(hKey: HKEY, index: number, valueName: bigi
 export declare function regFlushKey(hKey: HKEY): { readonly status: number };
 
 /** RegGetKeySecurity — ADVAPI32.dll export. */
-export declare function regGetKeySecurity(hKey: HKEY, securityInformation: OBJECT_SECURITY_INFORMATION, pSecurityDescriptor: PSECURITY_DESCRIPTOR, lpcbSecurityDescriptor: number): { readonly status: number; readonly lpcbSecurityDescriptor: number };
+export declare function regGetKeySecurity(hKey: HKEY, securityInformation: OBJECT_SECURITY_INFORMATION, pSecurityDescriptor: bigint | Buffer | Uint8Array | null, lpcbSecurityDescriptor: number): { readonly status: number; readonly lpcbSecurityDescriptor: number };
 
 /** RegGetValueA — ADVAPI32.dll export. */
-export declare function regGetValueA(hkey: HKEY, subKey: string | null, value: string | null, flags: REG_ROUTINE_FLAGS, data: bigint | Buffer | Uint8Array | null, pcbData: number): { readonly status: number; readonly pdwType: REG_VALUE_TYPE; readonly pcbData: number };
+export declare function regGetValueA(hkey: HKEY, subKey: bigint | Buffer | Uint8Array | null, value: bigint | Buffer | Uint8Array | null, flags: REG_ROUTINE_FLAGS, data: bigint | Buffer | Uint8Array | null, pcbData: number): { readonly status: number; readonly pdwType: REG_VALUE_TYPE; readonly pcbData: number };
 
 /** RegGetValueW — ADVAPI32.dll export. */
 export declare function regGetValueW(hkey: HKEY, subKey: string | null, value: string | null, flags: REG_ROUTINE_FLAGS, data: bigint | Buffer | Uint8Array | null, pcbData: number): { readonly status: number; readonly pdwType: REG_VALUE_TYPE; readonly pcbData: number };
 
 /** RegLoadAppKeyA — ADVAPI32.dll export. */
-export declare function regLoadAppKeyA(file: string | null, samDesired: number, options: number, reserved: number): { readonly status: number; readonly phkResult: bigint };
+export declare function regLoadAppKeyA(file: bigint | Buffer | Uint8Array | null, samDesired: number, options: number, reserved: number): { readonly status: number; readonly phkResult: bigint };
 
 /** RegLoadAppKeyW — ADVAPI32.dll export. */
 export declare function regLoadAppKeyW(file: string | null, samDesired: number, options: number, reserved: number): { readonly status: number; readonly phkResult: bigint };
 
 /** RegLoadKeyA — ADVAPI32.dll export. */
-export declare function regLoadKeyA(hKey: HKEY, subKey: string | null, file: string | null): { readonly status: number };
+export declare function regLoadKeyA(hKey: HKEY, subKey: bigint | Buffer | Uint8Array | null, file: bigint | Buffer | Uint8Array | null): { readonly status: number };
 
 /** RegLoadKeyW — ADVAPI32.dll export. */
 export declare function regLoadKeyW(hKey: HKEY, subKey: string | null, file: string | null): { readonly status: number };
 
 /** RegLoadMUIStringA — ADVAPI32.dll export. */
-export declare function regLoadMUIStringA(hKey: HKEY, value: string | null, outBuf: bigint | Buffer | Uint8Array | null, outBuf_2: number, flags: number, directory: string | null): { readonly status: number; readonly pcbData: number };
+export declare function regLoadMUIStringA(hKey: HKEY, value: bigint | Buffer | Uint8Array | null, outBuf: bigint | Buffer | Uint8Array | null, outBuf_2: number, flags: number, directory: bigint | Buffer | Uint8Array | null): { readonly status: number; readonly pcbData: number };
 
 /** RegLoadMUIStringW — ADVAPI32.dll export. */
 export declare function regLoadMUIStringW(hKey: HKEY, value: string | null, outBuf: bigint | Buffer | Uint8Array | null, outBuf_2: number, flags: number, directory: string | null): { readonly status: number; readonly pcbData: number };
@@ -163,16 +155,16 @@ export declare function regNotifyChangeKeyValue(hKey: HKEY, bWatchSubtree: boole
 export declare function regOpenCurrentUser(samDesired: number): { readonly status: number; readonly phkResult: bigint };
 
 /** RegOpenKeyA — ADVAPI32.dll export. */
-export declare function regOpenKeyA(hKey: HKEY, subKey: string | null): { readonly status: number; readonly phkResult: bigint };
+export declare function regOpenKeyA(hKey: HKEY, subKey: bigint | Buffer | Uint8Array | null): { readonly status: number; readonly phkResult: bigint };
 
 /** RegOpenKeyExA — ADVAPI32.dll export. */
-export declare function regOpenKeyExA(hKey: HKEY, subKey: string | null, ulOptions: number, samDesired: REG_SAM_FLAGS): { readonly status: number; readonly phkResult: bigint };
+export declare function regOpenKeyExA(hKey: HKEY, subKey: bigint | Buffer | Uint8Array | null, ulOptions: number, samDesired: REG_SAM_FLAGS): { readonly status: number; readonly phkResult: bigint };
 
 /** RegOpenKeyExW — ADVAPI32.dll export. */
 export declare function regOpenKeyExW(hKey: HKEY, subKey: string | null, ulOptions: number, samDesired: REG_SAM_FLAGS): { readonly status: number; readonly phkResult: bigint };
 
 /** RegOpenKeyTransactedA — ADVAPI32.dll export. */
-export declare function regOpenKeyTransactedA(hKey: HKEY, subKey: string | null, ulOptions: number, samDesired: REG_SAM_FLAGS, hTransaction: HANDLE, pExtendedParemeter: bigint | Buffer | Uint8Array | null): { readonly status: number; readonly phkResult: bigint };
+export declare function regOpenKeyTransactedA(hKey: HKEY, subKey: bigint | Buffer | Uint8Array | null, ulOptions: number, samDesired: REG_SAM_FLAGS, hTransaction: HANDLE, pExtendedParemeter: bigint | Buffer | Uint8Array | null): { readonly status: number; readonly phkResult: bigint };
 
 /** RegOpenKeyTransactedW — ADVAPI32.dll export. */
 export declare function regOpenKeyTransactedW(hKey: HKEY, subKey: string | null, ulOptions: number, samDesired: REG_SAM_FLAGS, hTransaction: HANDLE, pExtendedParemeter: bigint | Buffer | Uint8Array | null): { readonly status: number; readonly phkResult: bigint };
@@ -186,26 +178,14 @@ export declare function regOpenUserClassesRoot(hToken: HANDLE, options: number, 
 /** RegOverridePredefKey — ADVAPI32.dll export. */
 export declare function regOverridePredefKey(hKey: HKEY, hNewHKey: HKEY): { readonly status: number };
 
-/** RegQueryInfoKeyA — ADVAPI32.dll export. */
-export declare function regQueryInfoKeyA(hKey: HKEY, class_: bigint | Buffer | Uint8Array | null, lpcchClass: number, reserved: bigint | Buffer | Uint8Array | null, lpftLastWriteTime: bigint | Buffer | Uint8Array | null): { readonly status: number; readonly lpcchClass: number; readonly lpcSubKeys: number; readonly lpcbMaxSubKeyLen: number; readonly lpcbMaxClassLen: number; readonly lpcValues: number; readonly lpcbMaxValueNameLen: number; readonly lpcbMaxValueLen: number; readonly lpcbSecurityDescriptor: number };
-
-/** RegQueryInfoKeyW — ADVAPI32.dll export. */
-export declare function regQueryInfoKeyW(hKey: HKEY, class_: bigint | Buffer | Uint8Array | null, lpcchClass: number, reserved: bigint | Buffer | Uint8Array | null, lpftLastWriteTime: bigint | Buffer | Uint8Array | null): { readonly status: number; readonly lpcchClass: number; readonly lpcSubKeys: number; readonly lpcbMaxSubKeyLen: number; readonly lpcbMaxClassLen: number; readonly lpcValues: number; readonly lpcbMaxValueNameLen: number; readonly lpcbMaxValueLen: number; readonly lpcbSecurityDescriptor: number };
-
-/** RegQueryMultipleValuesA — ADVAPI32.dll export. */
-export declare function regQueryMultipleValuesA(hKey: HKEY, val_list: bigint | Buffer | Uint8Array | null, num_vals: number, valueBuf: bigint | Buffer | Uint8Array | null, ldwTotsize: number): { readonly status: number; readonly ldwTotsize: number };
-
-/** RegQueryMultipleValuesW — ADVAPI32.dll export. */
-export declare function regQueryMultipleValuesW(hKey: HKEY, val_list: bigint | Buffer | Uint8Array | null, num_vals: number, valueBuf: bigint | Buffer | Uint8Array | null, ldwTotsize: number): { readonly status: number; readonly ldwTotsize: number };
-
 /** RegQueryReflectionKey — ADVAPI32.dll export. */
 export declare function regQueryReflectionKey(hBase: HKEY): { readonly status: number; readonly bIsReflectionDisabled: boolean };
 
 /** RegQueryValueA — ADVAPI32.dll export. */
-export declare function regQueryValueA(hKey: HKEY, subKey: string | null, data: bigint | Buffer | Uint8Array | null, lpcbData: number): { readonly status: number; readonly lpcbData: number };
+export declare function regQueryValueA(hKey: HKEY, subKey: bigint | Buffer | Uint8Array | null, data: bigint | Buffer | Uint8Array | null, lpcbData: number): { readonly status: number; readonly lpcbData: number };
 
 /** RegQueryValueExA — ADVAPI32.dll export. */
-export declare function regQueryValueExA(hKey: HKEY, valueName: string | null, reserved: bigint | Buffer | Uint8Array | null, data: bigint | Buffer | Uint8Array | null, lpcbData: number): { readonly status: number; readonly type: REG_VALUE_TYPE; readonly lpcbData: number };
+export declare function regQueryValueExA(hKey: HKEY, valueName: bigint | Buffer | Uint8Array | null, reserved: bigint | Buffer | Uint8Array | null, data: bigint | Buffer | Uint8Array | null, lpcbData: number): { readonly status: number; readonly type: REG_VALUE_TYPE; readonly lpcbData: number };
 
 /** RegQueryValueExW — ADVAPI32.dll export. */
 export declare function regQueryValueExW(hKey: HKEY, valueName: string | null, reserved: bigint | Buffer | Uint8Array | null, data: bigint | Buffer | Uint8Array | null, lpcbData: number): { readonly status: number; readonly type: REG_VALUE_TYPE; readonly lpcbData: number };
@@ -217,22 +197,22 @@ export declare function regQueryValueW(hKey: HKEY, subKey: string | null, data: 
 export declare function regRenameKey(hKey: HKEY, subKeyName: string | null, newKeyName: string | null): { readonly status: number };
 
 /** RegReplaceKeyA — ADVAPI32.dll export. */
-export declare function regReplaceKeyA(hKey: HKEY, subKey: string | null, newFile: string | null, oldFile: string | null): { readonly status: number };
+export declare function regReplaceKeyA(hKey: HKEY, subKey: bigint | Buffer | Uint8Array | null, newFile: bigint | Buffer | Uint8Array | null, oldFile: bigint | Buffer | Uint8Array | null): { readonly status: number };
 
 /** RegReplaceKeyW — ADVAPI32.dll export. */
 export declare function regReplaceKeyW(hKey: HKEY, subKey: string | null, newFile: string | null, oldFile: string | null): { readonly status: number };
 
 /** RegRestoreKeyA — ADVAPI32.dll export. */
-export declare function regRestoreKeyA(hKey: HKEY, file: string | null, flags: number): { readonly status: number };
+export declare function regRestoreKeyA(hKey: HKEY, file: bigint | Buffer | Uint8Array | null, flags: number): { readonly status: number };
 
 /** RegRestoreKeyW — ADVAPI32.dll export. */
 export declare function regRestoreKeyW(hKey: HKEY, file: string | null, flags: number): { readonly status: number };
 
 /** RegSaveKeyA — ADVAPI32.dll export. */
-export declare function regSaveKeyA(hKey: HKEY, file: string | null, securityAttributes: bigint | Buffer | Uint8Array | null): { readonly status: number };
+export declare function regSaveKeyA(hKey: HKEY, file: bigint | Buffer | Uint8Array | null, securityAttributes: bigint | Buffer | Uint8Array | null): { readonly status: number };
 
 /** RegSaveKeyExA — ADVAPI32.dll export. */
-export declare function regSaveKeyExA(hKey: HKEY, file: string | null, securityAttributes: bigint | Buffer | Uint8Array | null, flags: REG_SAVE_FORMAT): { readonly status: number };
+export declare function regSaveKeyExA(hKey: HKEY, file: bigint | Buffer | Uint8Array | null, securityAttributes: bigint | Buffer | Uint8Array | null, flags: REG_SAVE_FORMAT): { readonly status: number };
 
 /** RegSaveKeyExW — ADVAPI32.dll export. */
 export declare function regSaveKeyExW(hKey: HKEY, file: string | null, securityAttributes: bigint | Buffer | Uint8Array | null, flags: REG_SAVE_FORMAT): { readonly status: number };
@@ -241,28 +221,28 @@ export declare function regSaveKeyExW(hKey: HKEY, file: string | null, securityA
 export declare function regSaveKeyW(hKey: HKEY, file: string | null, securityAttributes: bigint | Buffer | Uint8Array | null): { readonly status: number };
 
 /** RegSetKeySecurity — ADVAPI32.dll export. */
-export declare function regSetKeySecurity(hKey: HKEY, securityInformation: OBJECT_SECURITY_INFORMATION, pSecurityDescriptor: PSECURITY_DESCRIPTOR): { readonly status: number };
+export declare function regSetKeySecurity(hKey: HKEY, securityInformation: OBJECT_SECURITY_INFORMATION, pSecurityDescriptor: bigint | Buffer | Uint8Array | null): { readonly status: number };
 
 /** RegSetKeyValueA — ADVAPI32.dll export. */
-export declare function regSetKeyValueA(hKey: HKEY, subKey: string | null, valueName: string | null, type: number, data: bigint | Buffer | Uint8Array | null, data_2: number): { readonly status: number };
+export declare function regSetKeyValueA(hKey: HKEY, subKey: bigint | Buffer | Uint8Array | null, valueName: bigint | Buffer | Uint8Array | null, type: number, data: bigint | Buffer | Uint8Array | null, data_2: number): { readonly status: number };
 
 /** RegSetKeyValueW — ADVAPI32.dll export. */
 export declare function regSetKeyValueW(hKey: HKEY, subKey: string | null, valueName: string | null, type: number, data: bigint | Buffer | Uint8Array | null, data_2: number): { readonly status: number };
 
 /** RegSetValueA — ADVAPI32.dll export. */
-export declare function regSetValueA(hKey: HKEY, subKey: string | null, type: REG_VALUE_TYPE, data: string | null, data_2: number): { readonly status: number };
+export declare function regSetValueA(hKey: HKEY, subKey: bigint | Buffer | Uint8Array | null, type: REG_VALUE_TYPE, data: bigint | Buffer | Uint8Array | null, data_2: number): { readonly status: number };
 
 /** RegSetValueExA — ADVAPI32.dll export. */
-export declare function regSetValueExA(hKey: HKEY, valueName: string | null, reserved: number, type: REG_VALUE_TYPE, data: bigint | Buffer | Uint8Array | null, data_2: number): { readonly status: number };
+export declare function regSetValueExA(hKey: HKEY, valueName: bigint | Buffer | Uint8Array | null, reserved: number, type: REG_VALUE_TYPE, data: bigint | Buffer | Uint8Array | null, data_2: number): { readonly status: number };
 
 /** RegSetValueExW — ADVAPI32.dll export. */
 export declare function regSetValueExW(hKey: HKEY, valueName: string | null, reserved: number, type: REG_VALUE_TYPE, data: bigint | Buffer | Uint8Array | null, data_2: number): { readonly status: number };
 
 /** RegSetValueW — ADVAPI32.dll export. */
-export declare function regSetValueW(hKey: HKEY, subKey: string | null, type: REG_VALUE_TYPE, data: string | null, data_2: number): { readonly status: number };
+export declare function regSetValueW(hKey: HKEY, subKey: string | null, type: REG_VALUE_TYPE, data: bigint | Buffer | Uint8Array | null, data_2: number): { readonly status: number };
 
 /** RegUnLoadKeyA — ADVAPI32.dll export. */
-export declare function regUnLoadKeyA(hKey: HKEY, subKey: string | null): { readonly status: number };
+export declare function regUnLoadKeyA(hKey: HKEY, subKey: bigint | Buffer | Uint8Array | null): { readonly status: number };
 
 /** RegUnLoadKeyW — ADVAPI32.dll export. */
 export declare function regUnLoadKeyW(hKey: HKEY, subKey: string | null): { readonly status: number };
@@ -299,8 +279,6 @@ export declare const Apis: {
     regDisableReflectionKey: typeof regDisableReflectionKey;
     regEnableReflectionKey: typeof regEnableReflectionKey;
     regEnumKeyA: typeof regEnumKeyA;
-    regEnumKeyExA: typeof regEnumKeyExA;
-    regEnumKeyExW: typeof regEnumKeyExW;
     regEnumKeyW: typeof regEnumKeyW;
     regEnumValueA: typeof regEnumValueA;
     regEnumValueW: typeof regEnumValueW;
@@ -324,10 +302,6 @@ export declare const Apis: {
     regOpenKeyW: typeof regOpenKeyW;
     regOpenUserClassesRoot: typeof regOpenUserClassesRoot;
     regOverridePredefKey: typeof regOverridePredefKey;
-    regQueryInfoKeyA: typeof regQueryInfoKeyA;
-    regQueryInfoKeyW: typeof regQueryInfoKeyW;
-    regQueryMultipleValuesA: typeof regQueryMultipleValuesA;
-    regQueryMultipleValuesW: typeof regQueryMultipleValuesW;
     regQueryReflectionKey: typeof regQueryReflectionKey;
     regQueryValueA: typeof regQueryValueA;
     regQueryValueExA: typeof regQueryValueExA;

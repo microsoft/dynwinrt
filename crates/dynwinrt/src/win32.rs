@@ -2,12 +2,21 @@
 // Licensed under the MIT License.
 
 use core::ffi::c_void;
+#[cfg(all(windows, target_pointer_width = "64"))]
 use std::ffi::CString;
 
+#[cfg(all(windows, target_pointer_width = "64"))]
 use libffi::middle::{Arg, Cif, CodePtr, Type};
-use windows::Win32::Foundation::{GetLastError, HMODULE};
-use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
-use windows_core::{HRESULT, HSTRING, PCSTR};
+use windows::Win32::Foundation::GetLastError;
+#[cfg(all(windows, target_pointer_width = "64"))]
+use windows::Win32::Foundation::HMODULE;
+#[cfg(all(windows, target_pointer_width = "64"))]
+use windows::Win32::System::LibraryLoader::{
+    GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
+};
+use windows_core::HRESULT;
+#[cfg(all(windows, target_pointer_width = "64"))]
+use windows_core::{HSTRING, PCSTR};
 
 use crate::{
     result::{Error, Result},
@@ -17,9 +26,12 @@ use crate::{
 /// Wraps an `HMODULE` so it can live in a process-lifetime `static` cache across
 /// threads. Safe because an `HMODULE` is an opaque handle and `GetProcAddress`
 /// is thread-safe; the module is intentionally never unloaded.
+#[cfg(all(windows, target_pointer_width = "64"))]
 struct CachedModule(HMODULE);
+#[cfg(all(windows, target_pointer_width = "64"))]
 unsafe impl Send for CachedModule {}
 
+#[cfg(all(windows, target_pointer_width = "64"))]
 fn module_cache() -> &'static std::sync::Mutex<std::collections::HashMap<String, CachedModule>> {
     static CACHE: std::sync::OnceLock<
         std::sync::Mutex<std::collections::HashMap<String, CachedModule>>,
@@ -34,10 +46,11 @@ fn module_cache() -> &'static std::sync::Mutex<std::collections::HashMap<String,
 /// Holding a single reference for the life of the process matches how .NET
 /// `[DllImport]` behaves and also avoids repeated load/unload overhead.
 ///
-/// `LoadLibraryW` uses the default DLL search order, so pass a trusted or fully
-/// qualified DLL path to avoid DLL preloading/hijacking risks.
+/// Flat metadata imports are restricted to bare system DLL names and loaded
+/// exclusively from System32 to prevent DLL preloading.
+#[cfg(all(windows, target_pointer_width = "64"))]
 fn get_cached_module(dll: &str) -> Result<HMODULE> {
-    if dll.encode_utf16().any(|unit| unit == 0) {
+    if !is_bare_system_module_name(dll) {
         return Err(invalid_arg_error());
     }
     // Windows DLL resolution is case-insensitive, so normalize the cache key:
@@ -57,7 +70,8 @@ fn get_cached_module(dll: &str) -> Result<HMODULE> {
     // DLL's DllMain, which can re-enter flat_invoke -> get_cached_module; holding
     // the (non-reentrant) cache mutex across it would risk a deadlock and would
     // serialize all flat calls during a load.
-    let module = unsafe { LoadLibraryW(&HSTRING::from(dll)) }.map_err(Error::WindowsError)?;
+    let module = unsafe { LoadLibraryExW(&HSTRING::from(dll), None, LOAD_LIBRARY_SEARCH_SYSTEM32) }
+        .map_err(Error::WindowsError)?;
     // Re-acquire and insert. If another thread loaded the same DLL concurrently,
     // keep the first entry; both HMODULEs refer to the same module and the extra
     // reference is intentionally never released (process-lifetime residency).
@@ -65,6 +79,20 @@ fn get_cached_module(dll: &str) -> Result<HMODULE> {
     Ok(cache.entry(key).or_insert(CachedModule(module)).0)
 }
 
+#[cfg(all(windows, target_pointer_width = "64"))]
+fn is_bare_system_module_name(dll: &str) -> bool {
+    let lower = dll.to_ascii_lowercase();
+    !dll.is_empty()
+        && (lower.ends_with(".dll") || lower.ends_with(".drv"))
+        && !dll.encode_utf16().any(|unit| unit == 0)
+        && !dll
+            .chars()
+            .any(|character| matches!(character, '/' | '\\' | ':'))
+        && dll != "."
+        && dll != ".."
+}
+
+#[cfg(all(windows, target_pointer_width = "64"))]
 fn proc_address(module: HMODULE, dll: &str, entry: &str) -> Result<*mut c_void> {
     let proc_name = CString::new(entry).map_err(|_| invalid_arg_error())?;
     let proc = unsafe { GetProcAddress(module, PCSTR::from_raw(proc_name.as_ptr().cast())) };
@@ -106,6 +134,10 @@ pub fn get_last_error() -> u32 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FlatReturnKind {
     Void,
+    I8,
+    U8,
+    I16,
+    U16,
     I32,
     U32,
     I64,
@@ -113,6 +145,11 @@ pub enum FlatReturnKind {
     F32,
     F64,
     Ptr,
+}
+
+pub struct FlatCallResult {
+    pub value: WinRTValue,
+    pub last_error: Option<u32>,
 }
 
 /// Invokes a flat Win32 export through libffi.
@@ -133,9 +170,19 @@ pub unsafe fn flat_invoke(
     ret: FlatReturnKind,
     args: &[WinRTValue],
 ) -> Result<WinRTValue> {
+    Ok(unsafe { flat_invoke_with_options(dll, entry, ret, args, false) }?.value)
+}
+
+pub unsafe fn flat_invoke_with_options(
+    dll: &str,
+    entry: &str,
+    ret: FlatReturnKind,
+    args: &[WinRTValue],
+    capture_last_error: bool,
+) -> Result<FlatCallResult> {
     #[cfg(not(all(windows, target_pointer_width = "64")))]
     {
-        let _ = (dll, entry, ret, args);
+        let _ = (dll, entry, ret, args, capture_last_error);
         return Err(unsupported_platform_error());
     }
 
@@ -153,12 +200,19 @@ pub unsafe fn flat_invoke(
 
         // On x64 Windows there is a single native calling convention, so libffi's
         // default ABI is correct for Winapi/stdcall and cdecl flat exports.
-        unsafe { call_and_convert(&cif, proc, &ffi_args, ret) }
+        let value = unsafe { call_and_convert(&cif, proc, &ffi_args, ret) }?;
+        let last_error = capture_last_error.then(get_last_error);
+        Ok(FlatCallResult { value, last_error })
     }
 }
 
+#[cfg(all(windows, target_pointer_width = "64"))]
 fn flat_arg_type(value: &WinRTValue) -> Result<Type> {
     match value {
+        WinRTValue::I8(_) => Ok(Type::i8()),
+        WinRTValue::U8(_) => Ok(Type::u8()),
+        WinRTValue::I16(_) => Ok(Type::i16()),
+        WinRTValue::U16(_) => Ok(Type::u16()),
         WinRTValue::RawPtr(_) => Ok(Type::pointer()),
         WinRTValue::I32(_) => Ok(Type::i32()),
         WinRTValue::U32(_) => Ok(Type::u32()),
@@ -170,9 +224,14 @@ fn flat_arg_type(value: &WinRTValue) -> Result<Type> {
     }
 }
 
+#[cfg(all(windows, target_pointer_width = "64"))]
 fn flat_arg(value: &WinRTValue) -> Result<Arg<'_>> {
     match value {
-        WinRTValue::I32(_)
+        WinRTValue::I8(_)
+        | WinRTValue::U8(_)
+        | WinRTValue::I16(_)
+        | WinRTValue::U16(_)
+        | WinRTValue::I32(_)
         | WinRTValue::U32(_)
         | WinRTValue::I64(_)
         | WinRTValue::U64(_)
@@ -183,9 +242,14 @@ fn flat_arg(value: &WinRTValue) -> Result<Arg<'_>> {
     }
 }
 
+#[cfg(all(windows, target_pointer_width = "64"))]
 fn flat_return_type(kind: FlatReturnKind) -> Result<Type> {
     match kind {
         FlatReturnKind::Void => Ok(Type::void()),
+        FlatReturnKind::I8 => Ok(Type::i8()),
+        FlatReturnKind::U8 => Ok(Type::u8()),
+        FlatReturnKind::I16 => Ok(Type::i16()),
+        FlatReturnKind::U16 => Ok(Type::u16()),
         FlatReturnKind::I32 => Ok(Type::i32()),
         FlatReturnKind::U32 => Ok(Type::u32()),
         FlatReturnKind::I64 => Ok(Type::i64()),
@@ -196,6 +260,7 @@ fn flat_return_type(kind: FlatReturnKind) -> Result<Type> {
     }
 }
 
+#[cfg(all(windows, target_pointer_width = "64"))]
 unsafe fn call_and_convert(
     cif: &Cif,
     proc: *mut c_void,
@@ -207,6 +272,10 @@ unsafe fn call_and_convert(
             let _: () = unsafe { cif.call(CodePtr(proc), args) };
             Ok(WinRTValue::Null)
         }
+        FlatReturnKind::I8 => Ok(WinRTValue::I8(unsafe { cif.call(CodePtr(proc), args) })),
+        FlatReturnKind::U8 => Ok(WinRTValue::U8(unsafe { cif.call(CodePtr(proc), args) })),
+        FlatReturnKind::I16 => Ok(WinRTValue::I16(unsafe { cif.call(CodePtr(proc), args) })),
+        FlatReturnKind::U16 => Ok(WinRTValue::U16(unsafe { cif.call(CodePtr(proc), args) })),
         FlatReturnKind::I32 => Ok(WinRTValue::I32(unsafe { cif.call(CodePtr(proc), args) })),
         FlatReturnKind::U32 => Ok(WinRTValue::U32(unsafe { cif.call(CodePtr(proc), args) })),
         FlatReturnKind::I64 => Ok(WinRTValue::I64(unsafe { cif.call(CodePtr(proc), args) })),
@@ -225,6 +294,7 @@ fn invalid_arg_error() -> Error {
     )))
 }
 
+#[cfg(all(windows, target_pointer_width = "64"))]
 fn proc_not_found_error(dll: &str, entry: &str) -> Error {
     Error::WindowsError(windows_core::Error::new(
         HRESULT(0x8007007Fu32 as i32),
@@ -277,6 +347,14 @@ mod tests {
         0x1_0000_0001
     }
 
+    extern "C" fn test_returns_i16() -> i16 {
+        i16::MIN
+    }
+
+    extern "C" fn test_echo_i8(value: i8) -> i8 {
+        value
+    }
+
     static VOID_CALLED: AtomicU32 = AtomicU32::new(0);
 
     extern "C" fn test_returns_void(value: u32) {
@@ -301,17 +379,29 @@ mod tests {
 
     #[test]
     fn flat_call_invokes_test_u64_return_without_truncation() -> Result<()> {
-        let result = unsafe {
-            invoke_proc(
-                test_returns_u64 as *mut c_void,
-                FlatReturnKind::U64,
-                &[],
-            )
-        }?;
+        let result =
+            unsafe { invoke_proc(test_returns_u64 as *mut c_void, FlatReturnKind::U64, &[]) }?;
         let WinRTValue::U64(v) = result else {
             panic!("expected U64 return");
         };
         assert_eq!(v, 0x1_0000_0001);
+        Ok(())
+    }
+
+    #[test]
+    fn flat_call_preserves_narrow_integer_args_and_returns() -> Result<()> {
+        let returned =
+            unsafe { invoke_proc(test_returns_i16 as *mut c_void, FlatReturnKind::I16, &[]) }?;
+        assert!(matches!(returned, WinRTValue::I16(i16::MIN)));
+
+        let echoed = unsafe {
+            invoke_proc(
+                test_echo_i8 as *mut c_void,
+                FlatReturnKind::I8,
+                &[WinRTValue::I8(-7)],
+            )
+        }?;
+        assert!(matches!(echoed, WinRTValue::I8(-7)));
         Ok(())
     }
 
@@ -417,17 +507,25 @@ mod tests {
         // one reference), not a duplicate. Pre-fix (raw-string key) the second
         // case variant added a new entry.
         let _ = get_cached_module("gdi32.dll").unwrap();
-        let before = module_cache().lock().unwrap_or_else(|e| e.into_inner()).len();
+        let before = module_cache()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len();
         let _ = get_cached_module("GDI32.DLL").unwrap();
-        let after = module_cache().lock().unwrap_or_else(|e| e.into_inner()).len();
+        let after = module_cache()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len();
         assert_eq!(
             before, after,
             "a case-variant DLL name must reuse the same cache entry, not add a new one"
         );
-        assert!(module_cache()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .contains_key("gdi32.dll"));
+        assert!(
+            module_cache()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains_key("gdi32.dll")
+        );
     }
 
     #[test]
@@ -491,6 +589,28 @@ mod tests {
     }
 
     #[test]
+    fn flat_call_rejects_dll_paths_outside_system32_policy() {
+        let result = invoke(
+            r"C:\Windows\System32\kernel32.dll",
+            "GetCurrentProcessId",
+            FlatReturnKind::U32,
+            &[],
+        );
+        let Err(Error::WindowsError(error)) = result else {
+            panic!("expected invalid argument for a DLL path");
+        };
+        assert_eq!(error.code(), HRESULT(0x80070057u32 as i32));
+    }
+
+    #[test]
+    fn system_module_policy_accepts_dll_and_driver_names_only() {
+        assert!(is_bare_system_module_name("kernel32.dll"));
+        assert!(is_bare_system_module_name("winspool.drv"));
+        assert!(!is_bare_system_module_name("FORCEINLINE"));
+        assert!(!is_bare_system_module_name("kernel32.exe"));
+    }
+
+    #[test]
     fn flat_call_nonexistent_export_returns_error() {
         let result = invoke(
             "kernel32.dll",
@@ -524,6 +644,18 @@ mod tests {
         };
         assert!(module.is_null());
         assert_eq!(get_last_error(), 126);
+
+        unsafe { SetLastError(WIN32_ERROR(0)) };
+        let captured = unsafe {
+            flat_invoke_with_options(
+                "kernel32.dll",
+                "GetModuleHandleW",
+                FlatReturnKind::Ptr,
+                &[bogus_module.as_winrt_value()],
+                true,
+            )
+        }?;
+        assert_eq!(captured.last_error, Some(126));
         Ok(())
     }
 
@@ -685,11 +817,11 @@ mod tests {
     /// and the out HKEY slot stays null.
     #[test]
     fn flat_call_reg_open_key_missing_returns_file_not_found() -> Result<()> {
-        let (status, hkey) = reg_open_key(
-            HKEY_LOCAL_MACHINE,
-            r"SOFTWARE\DynWinrt\NoSuchKey\Nope",
-        )?;
-        assert_eq!(status, ERROR_FILE_NOT_FOUND, "expected ERROR_FILE_NOT_FOUND");
+        let (status, hkey) = reg_open_key(HKEY_LOCAL_MACHINE, r"SOFTWARE\DynWinrt\NoSuchKey\Nope")?;
+        assert_eq!(
+            status, ERROR_FILE_NOT_FOUND,
+            "expected ERROR_FILE_NOT_FOUND"
+        );
         assert_eq!(hkey, 0, "out HKEY should stay null on failure");
         Ok(())
     }

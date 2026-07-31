@@ -6,7 +6,7 @@
 //! Covers:
 //! - Metadata discovery of `Apis`-class static DllImport methods (dll, entry
 //!   point, params with direction, return type).
-//! - Natural JS/DTS wrapper emission via `codegen::flat::generate_flat_apis_files`.
+//! - Natural JS/DTS wrapper emission via `codegen::win32::generate_flat_apis_files`.
 //! - Corner cases: out-param projection, void/no-arg exports, partial generation,
 //!   and non-regression of the classic-COM / WinRT paths.
 
@@ -15,10 +15,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use dynwinrt_codegen::codegen::com;
-use dynwinrt_codegen::codegen::flat;
+use dynwinrt_codegen::codegen::win32 as flat;
 use dynwinrt_codegen::com_metadata;
 use dynwinrt_codegen::meta;
-use dynwinrt_codegen::meta::{FlatAbiType, FlatDirection};
+use dynwinrt_codegen::meta::{FlatAbiType, FlatBufferSize, FlatDirection};
 use dynwinrt_codegen::types::TypeMeta;
 
 /// Path to `Windows.Win32.winmd`. Overridable via the `DYNWINRT_WIN32_WINMD`
@@ -188,7 +188,7 @@ fn parse_unsigned_win32_enum_preserves_u32_backing_and_codegen_coerces_high_bit(
 
     let out = flat::generate_flat_apis_files(&apis);
     assert!(
-        out.js.contains("DynWinRtValue.u32((securityInformation) >>> 0)"),
+        out.js.contains("DynWin32.u32((securityInformation) >>> 0)"),
         "unsigned high-bit enum args must coerce through >>> 0 before napi u32 conversion:\n{}",
         out.js
     );
@@ -207,7 +207,7 @@ fn parse_get_proc_address_return_is_pointer() {
         .iter()
         .find(|m| m.name == "GetProcAddress")
         .expect("GetProcAddress must be discovered");
-    assert_eq!(m.return_type, FlatAbiType::Ptr);
+    assert_eq!(m.return_type, FlatAbiType::FunctionPointer);
     let out = flat::generate_flat_apis_files(&synth_apis(vec![m.clone()]));
     assert!(
         out.js.contains("'GetProcAddress', 'Ptr'"),
@@ -215,10 +215,334 @@ fn parse_get_proc_address_return_is_pointer() {
         out.js
     );
     assert!(
-        out.js.contains("_ret.asPointerBigint()"),
+        out.js.contains("DynWin32.toPointerBigint(_ret)"),
         "GetProcAddress must decode pointer returns as BigInt:\n{}",
         out.js
     );
+}
+
+#[test]
+fn real_narrow_returns_and_signed_i64_inputs_use_exact_runtime_types() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+    let keyboard = meta::parse_flat_apis(
+        &win32_winmd(),
+        "Windows.Win32.UI.Input.KeyboardAndMouse",
+        "Apis",
+    )
+    .expect("KeyboardAndMouse Apis should parse");
+    let key_state = keyboard
+        .methods
+        .iter()
+        .find(|method| method.name == "GetAsyncKeyState")
+        .expect("GetAsyncKeyState should parse");
+    assert_eq!(key_state.return_type, FlatAbiType::I16);
+    let generated = flat::generate_flat_apis_files(&synth_apis(vec![key_state.clone()]));
+    assert!(
+        generated
+            .js
+            .contains("DynWin32.invoke('USER32.dll', 'GetAsyncKeyState', 'I16'")
+    );
+
+    let file_system =
+        meta::parse_flat_apis(&win32_winmd(), "Windows.Win32.Storage.FileSystem", "Apis")
+            .expect("FileSystem Apis should parse");
+    let set_pointer = file_system
+        .methods
+        .iter()
+        .find(|method| method.name == "SetFilePointerEx")
+        .expect("SetFilePointerEx should parse");
+    let generated = flat::generate_flat_apis_files(&synth_apis(vec![set_pointer.clone()]));
+    assert!(generated.js.contains("DynWin32.i64("));
+}
+
+#[test]
+fn pointer_depth_is_preserved_for_double_pointer_outputs() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+    let apis = meta::parse_flat_apis(
+        &win32_winmd(),
+        "Windows.Win32.System.Com.StructuredStorage",
+        "Apis",
+    )
+    .expect("StructuredStorage Apis should parse");
+    let method = apis
+        .methods
+        .iter()
+        .find(|method| method.name == "PropVariantToUInt32VectorAlloc")
+        .expect("PropVariantToUInt32VectorAlloc should parse");
+    let output = method
+        .params
+        .iter()
+        .find(|param| param.name == "pprgn")
+        .expect("pprgn should exist");
+    assert!(matches!(
+        output.abi,
+        FlatAbiType::PtrTo(ref outer)
+            if matches!(outer.as_ref(), FlatAbiType::PtrTo(_))
+    ));
+
+    let generated = flat::generate_flat_apis_files(&synth_apis(vec![method.clone()]));
+    assert!(
+        !generated.js.contains("propVariantToUInt32VectorAlloc")
+            && !generated.dts.contains("propVariantToUInt32VectorAlloc"),
+        "unowned double-pointer outputs must fail closed"
+    );
+}
+
+#[test]
+fn counted_native_arrays_remain_caller_owned_buffers() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+    let apis = meta::parse_flat_apis(&win32_winmd(), "Windows.Win32.System.Threading", "Apis")
+        .expect("Threading Apis should parse");
+    let method = apis
+        .methods
+        .iter()
+        .find(|method| method.name == "GetProcessGroupAffinity")
+        .expect("GetProcessGroupAffinity should parse");
+    let groups = method
+        .params
+        .iter()
+        .find(|param| param.name == "GroupArray")
+        .expect("GroupArray should exist");
+    assert!(matches!(
+        groups.abi,
+        FlatAbiType::NativeArray {
+            size: FlatBufferSize::ElementCountParam(_),
+            ..
+        }
+    ));
+
+    let generated = flat::generate_flat_apis_files(&synth_apis(vec![method.clone()]));
+    assert!(
+        generated
+            .dts
+            .contains("groupArray: bigint | Buffer | Uint8Array | null")
+    );
+    assert!(!generated.js.contains("_groupArraySlot"));
+    assert!(
+        generated
+            .js
+            .contains("groupArray buffer is smaller than the native size contract")
+    );
+    assert!(generated.js.contains("Number(groupCount) * 2"));
+}
+
+#[test]
+fn architecture_overloads_and_variadic_exports_fail_closed() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+    let search = meta::parse_flat_apis(&win32_winmd(), "Windows.Win32.System.Search", "Apis")
+        .expect("Search Apis should parse");
+    assert!(
+        search
+            .methods
+            .iter()
+            .filter(|method| method.name == "SQLGetData")
+            .count()
+            <= 1,
+        "architecture overloads must never emit duplicate JS declarations"
+    );
+
+    let shell = meta::parse_flat_apis(&win32_winmd(), "Windows.Win32.UI.Shell", "Apis")
+        .expect("Shell Apis should parse");
+    assert!(
+        shell
+            .methods
+            .iter()
+            .all(|method| method.name != "wnsprintfW"),
+        "variadic exports must be omitted until variadic ABI support exists"
+    );
+}
+
+#[test]
+fn character_buffers_enum_returns_and_module_scopes_match_runtime_policy() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+    let console = meta::parse_flat_apis(&win32_winmd(), "Windows.Win32.System.Console", "Apis")
+        .expect("Console Apis should parse");
+    let wide = console
+        .methods
+        .iter()
+        .find(|method| method.name == "WriteConsoleW")
+        .expect("WriteConsoleW should parse");
+    let wide_buffer = wide
+        .params
+        .iter()
+        .find(|param| param.name == "lpBuffer")
+        .expect("WriteConsoleW lpBuffer should exist");
+    assert!(matches!(
+        wide_buffer.abi,
+        FlatAbiType::NativeArray {
+            ref element,
+            ..
+        } if matches!(element.as_ref(), FlatAbiType::Char16)
+    ));
+    let generated = flat::generate_flat_apis_files(&synth_apis(vec![wide.clone()]));
+    assert!(generated.js.contains("* 2;"));
+
+    let ansi = console
+        .methods
+        .iter()
+        .find(|method| method.name == "WriteConsoleA")
+        .expect("WriteConsoleA should parse");
+    let ansi_buffer = ansi
+        .params
+        .iter()
+        .find(|param| param.name == "lpBuffer")
+        .expect("WriteConsoleA lpBuffer should exist");
+    assert!(matches!(
+        ansi_buffer.abi,
+        FlatAbiType::NativeArray {
+            ref element,
+            ..
+        } if matches!(element.as_ref(), FlatAbiType::U8)
+    ));
+    let generated = flat::generate_flat_apis_files(&synth_apis(vec![ansi.clone()]));
+    assert!(generated.js.contains("* 1;"));
+
+    let threading = meta::parse_flat_apis(&win32_winmd(), "Windows.Win32.System.Threading", "Apis")
+        .expect("Threading Apis should parse");
+    assert!(
+        threading
+            .methods
+            .iter()
+            .all(|method| method.name != "GetCurrentProcessToken")
+    );
+    let wait = threading
+        .methods
+        .iter()
+        .find(|method| method.name == "WaitForSingleObject")
+        .expect("WaitForSingleObject should parse");
+    let generated = flat::generate_flat_apis_files(&synth_apis(vec![wait.clone()]));
+    assert!(
+        generated
+            .js
+            .contains("result: (DynWin32.toNumber(_ret) | 0)")
+    );
+
+    let image_machine = threading
+        .referenced_enums
+        .iter()
+        .find(|typ| {
+            matches!(
+                typ,
+                TypeMeta::Enum { name, .. } if name == "IMAGE_FILE_MACHINE"
+            )
+        })
+        .expect("IMAGE_FILE_MACHINE should be collected");
+    let TypeMeta::Enum { members, .. } = image_machine else {
+        unreachable!()
+    };
+    assert_eq!(
+        members
+            .iter()
+            .find(|member| member.name == "IMAGE_FILE_MACHINE_AMD64")
+            .expect("AMD64 should exist")
+            .value,
+        34404
+    );
+    assert_eq!(
+        members
+            .iter()
+            .find(|member| member.name == "IMAGE_FILE_MACHINE_ARM64")
+            .expect("ARM64 should exist")
+            .value,
+        43620
+    );
+}
+
+#[test]
+fn last_error_and_ansi_contracts_are_preserved() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+    let file_system =
+        meta::parse_flat_apis(&win32_winmd(), "Windows.Win32.Storage.FileSystem", "Apis")
+            .expect("FileSystem Apis should parse");
+    let create_file = file_system
+        .methods
+        .iter()
+        .find(|method| method.name == "CreateFileW")
+        .expect("CreateFileW should parse");
+    assert!(create_file.supports_last_error);
+    let generated = flat::generate_flat_apis_files(&synth_apis(vec![create_file.clone()]));
+    assert!(generated.js.contains("lastError: _call.lastError"));
+    assert!(generated.dts.contains("readonly lastError: number"));
+
+    let registry =
+        meta::parse_flat_apis(&win32_winmd(), REGISTRY_NS, "Apis").expect("Registry should parse");
+    let ansi = registry
+        .methods
+        .iter()
+        .find(|method| method.name == "RegOpenKeyExA")
+        .expect("RegOpenKeyExA should parse");
+    let generated = flat::generate_flat_apis_files(&synth_apis(vec![ansi.clone()]));
+    assert!(
+        generated
+            .dts
+            .contains("subKey: bigint | Buffer | Uint8Array | null")
+    );
+    assert!(!generated.js.contains("_narrowStringBuffer"));
+
+    let windows = meta::parse_flat_apis(
+        &win32_winmd(),
+        "Windows.Win32.UI.WindowsAndMessaging",
+        "Apis",
+    )
+    .expect("WindowsAndMessaging Apis should parse");
+    let char_next = windows
+        .methods
+        .iter()
+        .find(|method| method.name == "CharNextW")
+        .expect("CharNextW should parse");
+    let generated = flat::generate_flat_apis_files(&synth_apis(vec![char_next.clone()]));
+    assert!(
+        !generated.js.contains("charNextW"),
+        "pointer into a synthesized input string must not escape without an owner"
+    );
+}
+
+#[test]
+fn data_pointers_and_scalar_typedefs_are_not_inferred_as_handles() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+    let authorization = meta::parse_flat_apis(&win32_winmd(), "Windows.Win32.Security", "Apis")
+        .expect("Authorization Apis should parse");
+    let is_valid_sid = authorization
+        .methods
+        .iter()
+        .find(|method| method.name == "IsValidSid")
+        .expect("IsValidSid should parse");
+    let sid = is_valid_sid
+        .params
+        .iter()
+        .find(|param| param.name == "pSid")
+        .expect("pSid should exist");
+    assert_eq!(sid.abi, FlatAbiType::Ptr);
+
+    let gdi = meta::parse_flat_apis(&win32_winmd(), "Windows.Win32.Graphics.Gdi", "Apis")
+        .expect("GDI Apis should parse");
+    let get_pixel = gdi
+        .methods
+        .iter()
+        .find(|method| method.name == "GetPixel")
+        .expect("GetPixel should parse");
+    assert_eq!(get_pixel.return_type, FlatAbiType::U32);
 }
 
 #[test]
@@ -235,11 +559,13 @@ fn reg_connect_registry_ex_projects_status_like_non_ex_variant() {
             .unwrap_or_else(|| panic!("{name} must be generated"));
         let body = &out.js[idx..out.js[idx..].find("\n}\n").map(|end| idx + end).unwrap()];
         assert!(
-            body.contains("status: _ret.toNumber()"),
+            body.contains("status: DynWin32.toNumber(_ret)")
+                || body.contains("status: (DynWin32.toNumber(_ret) | 0)"),
             "{name} must project LSTATUS/WIN32_ERROR-family return as status:\n{body}"
         );
         assert!(
-            !body.contains("result: _ret.toNumber()"),
+            !body.contains("result: DynWin32.toNumber(_ret)")
+                && !body.contains("result: (DynWin32.toNumber(_ret) | 0)"),
             "{name} must not project status-code return as result:\n{body}"
         );
     }
@@ -249,7 +575,9 @@ fn reg_connect_registry_ex_projects_status_like_non_ex_variant() {
         FlatAbiType::I32,
     )]));
     assert!(
-        numeric.js.contains("return { result: _ret.toNumber() };"),
+        numeric
+            .js
+            .contains("return { result: DynWin32.toNumber(_ret) };"),
         "plain I32 value returns must still project as result:\n{}",
         numeric.js
     );
@@ -271,7 +599,7 @@ fn opaque_pointer_param_dts_accepts_uint8array() {
         return;
     }
     // Regression: opaque pointer params (e.g. Registry `data`) must accept
-    // Uint8Array in the .d.ts. The runtime `DynWinRtValue.pointer()` accepts a
+    // Uint8Array in the .d.ts. The runtime `DynWin32.pointer()` accepts a
     // Uint8Array, so typing only `bigint | Buffer` makes a valid Uint8Array
     // argument a spurious TypeScript error.
     let out = generate_registry_apis();
@@ -288,8 +616,8 @@ fn opaque_pointer_param_dts_accepts_uint8array() {
 }
 
 /// 3. Emit a NATURAL wrapper whose `.js` calls
-///    `DynWinRtValue.flatInvoke('advapi32.dll', 'RegOpenKeyExW', 'I32', [...])`
-///    and whose `.d.ts` types params naturally — no raw `flatInvoke` string
+///    `DynWin32.invoke('advapi32.dll', 'RegOpenKeyExW', 'I32', [...])`
+///    and whose `.d.ts` types params naturally — no raw invocation string
 ///    leaked at the typed surface.
 #[test]
 fn emit_natural_registry_wrapper() {
@@ -302,8 +630,8 @@ fn emit_natural_registry_wrapper() {
     // The generated .js must call flatInvoke against advapi32 for each fn.
     let js = &out.js;
     assert!(
-        js.contains("flatInvoke"),
-        ".js must invoke DynWinRtValue.flatInvoke: {}",
+        js.contains("DynWin32.invoke"),
+        ".js must invoke DynWin32.invoke: {}",
         js
     );
     assert!(
@@ -541,9 +869,12 @@ fn com_interface_generation_still_works() {
         eprintln!("Skipping: Win32 winmd not available");
         return;
     }
-    let com_iface =
-        com_metadata::parse_com_interface(&win32_winmd(), "Windows.Win32.UI.Shell", "ITaskbarList3")
-            .expect("ITaskbarList3 must exist");
+    let com_iface = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.UI.Shell",
+        "ITaskbarList3",
+    )
+    .expect("ITaskbarList3 must exist");
     let out = com::generate_com_interface_files(&com_iface, &win32_winmd())
         .expect("COM codegen must succeed");
     assert!(out.js.contains("class ITaskbarList3"));
@@ -560,7 +891,9 @@ fn winrt_generation_still_works() {
         return;
     }
     if com_metadata::discover_newest_windows_winmd().is_none() {
-        eprintln!("Skipping: Windows SDK Windows.winmd not available (needed to generate Windows.Foundation.Uri)");
+        eprintln!(
+            "Skipping: Windows SDK Windows.winmd not available (needed to generate Windows.Foundation.Uri)"
+        );
         return;
     }
     // Use a unique per-process directory under the OS temp dir to avoid
@@ -656,6 +989,7 @@ fn synth_method(name: &str, ret: FlatAbiType) -> FlatMethodMeta {
             direction: FlatDirection::In,
         }],
         return_is_status: false,
+        supports_last_error: false,
     }
 }
 
@@ -720,23 +1054,23 @@ fn flat_emits_i64_u64_returns_with_bigint_decoders() {
     assert!(out.js.contains("export function goodStatus"));
     assert!(
         out.js
-            .contains("flatInvoke('FAKE.dll', 'GetTickCount64', 'U64'"),
+            .contains("DynWin32.invoke('FAKE.dll', 'GetTickCount64', 'U64'"),
         ".js must invoke U64 returns with retKind U64:\n{}",
         out.js
     );
     assert!(
-        out.js.contains("_ret.toU64BigInt()"),
+        out.js.contains("DynWin32.toU64Bigint(_ret)"),
         ".js must decode U64 returns with toU64BigInt():\n{}",
         out.js
     );
     assert!(
         out.js
-            .contains("flatInvoke('FAKE.dll', 'GetLargeCounter', 'I64'"),
+            .contains("DynWin32.invoke('FAKE.dll', 'GetLargeCounter', 'I64'"),
         ".js must invoke I64 returns with retKind I64:\n{}",
         out.js
     );
     assert!(
-        out.js.contains("_ret.toI64BigInt()"),
+        out.js.contains("DynWin32.toI64Bigint(_ret)"),
         ".js must decode I64 returns with toI64BigInt():\n{}",
         out.js
     );
@@ -763,17 +1097,19 @@ fn flat_emits_float_returns_with_number_decoder() {
     let out = flat::generate_flat_apis_files(&apis);
     assert!(out.js.contains("export function ok"));
     assert!(
-        out.js.contains("flatInvoke('FAKE.dll', 'FloatFn', 'F32'"),
+        out.js
+            .contains("DynWin32.invoke('FAKE.dll', 'FloatFn', 'F32'"),
         ".js must invoke F32 returns with retKind F32:\n{}",
         out.js
     );
     assert!(
-        out.js.contains("flatInvoke('FAKE.dll', 'DoubleFn', 'F64'"),
+        out.js
+            .contains("DynWin32.invoke('FAKE.dll', 'DoubleFn', 'F64'"),
         ".js must invoke F64 returns with retKind F64:\n{}",
         out.js
     );
     assert!(
-        out.js.matches("_ret.toF64()").count() >= 2,
+        out.js.matches("DynWin32.toF64(_ret)").count() >= 2,
         ".js must decode F32/F64 returns with toF64():\n{}",
         out.js
     );
@@ -798,7 +1134,7 @@ fn flat_bool_return_decodes_boolean_not_number() {
     let out = flat::generate_flat_apis_files(&apis);
     assert!(
         out.js
-            .contains("return { result: (_ret.toNumber() !== 0) };"),
+            .contains("return { result: (DynWin32.toNumber(_ret) !== 0) };"),
         ".js must decode BOOL returns to boolean:\n{}",
         out.js
     );
@@ -813,7 +1149,9 @@ fn flat_bool_return_decodes_boolean_not_number() {
     );
     assert!(
         out.js.contains("export function returnsI32")
-            && out.js.contains("return { result: _ret.toNumber() };"),
+            && out
+                .js
+                .contains("return { result: DynWin32.toNumber(_ret) };"),
         "non-bool I32 returns must remain numeric:\n{}",
         out.js
     );
@@ -832,6 +1170,7 @@ fn flat_bool32_out_slot_decodes_boolean_not_number() {
             direction: FlatDirection::Out,
         }],
         return_is_status: false,
+        supports_last_error: false,
     };
     let out = flat::generate_flat_apis_files(&synth_apis(vec![m]));
     assert!(
@@ -877,6 +1216,7 @@ fn flat_skips_bare_unknown_param_but_keeps_opaque_pointer_param() {
             direction: FlatDirection::In,
         }],
         return_is_status: false,
+        supports_last_error: false,
     };
     let struct_pointer = FlatMethodMeta {
         name: "StructPointer".into(),
@@ -889,6 +1229,7 @@ fn flat_skips_bare_unknown_param_but_keeps_opaque_pointer_param() {
             direction: FlatDirection::In,
         }],
         return_is_status: false,
+        supports_last_error: false,
     };
 
     let out = flat::generate_flat_apis_files(&synth_apis(vec![by_value_struct, struct_pointer]));
@@ -900,7 +1241,7 @@ fn flat_skips_bare_unknown_param_but_keeps_opaque_pointer_param() {
     );
     assert!(
         out.js.contains("export function structPointer(buffer)")
-            && out.js.contains("DynWinRtValue.pointer(buffer)"),
+            && out.js.contains("DynWin32.pointer(buffer)"),
         "PtrTo(Unknown) struct pointer params remain valid opaque pointer inputs:\n{}",
         out.js
     );
@@ -927,17 +1268,20 @@ fn flat_emits_void_return_without_result_field() {
                 direction: FlatDirection::Out,
             }],
             return_is_status: false,
+            supports_last_error: false,
         },
     ]);
     let out = flat::generate_flat_apis_files(&apis);
     assert!(
-        out.js.contains("flatInvoke('FAKE.dll', 'NoOuts', 'Void'")
+        out.js
+            .contains("DynWin32.invoke('FAKE.dll', 'NoOuts', 'Void'")
             && out.js.contains("return undefined;"),
         "void/no-out export must use Void retKind and return undefined:\n{}",
         out.js
     );
     assert!(
-        out.js.contains("flatInvoke('FAKE.dll', 'WithOut', 'Void'")
+        out.js
+            .contains("DynWin32.invoke('FAKE.dll', 'WithOut', 'Void'")
             && out.js.contains("value: _valueSlot.readUInt32LE(0)"),
         "void/out export must omit result and project out params:\n{}",
         out.js
@@ -999,26 +1343,27 @@ fn flat_float_params_use_typed_wrappers_not_pointer() {
             },
         ],
         return_is_status: false,
+        supports_last_error: false,
     };
     let out = flat::generate_flat_apis_files(&synth_apis(vec![m]));
     assert!(
-        out.js.contains("DynWinRtValue.f32(amount)"),
+        out.js.contains("DynWin32.f32(amount)"),
         ".js must wrap F32 param with typed f32():\n{}",
         out.js
     );
     assert!(
-        out.js.contains("DynWinRtValue.f64(precise)"),
+        out.js.contains("DynWin32.f64(precise)"),
         ".js must wrap F64 param with typed f64():\n{}",
         out.js
     );
     // And crucially, must NOT be `pointer(<float>)`.
     assert!(
-        !out.js.contains("DynWinRtValue.pointer(amount)"),
+        !out.js.contains("DynWin32.pointer(amount)"),
         ".js must NOT pointer-wrap F32 (silent mis-marshal):\n{}",
         out.js
     );
     assert!(
-        !out.js.contains("DynWinRtValue.pointer(precise)"),
+        !out.js.contains("DynWin32.pointer(precise)"),
         ".js must NOT pointer-wrap F64 (silent mis-marshal):\n{}",
         out.js
     );
@@ -1054,6 +1399,7 @@ fn flat_unsigned_enum_high_bit_args_cross_u32_boundary_as_unsigned() {
             },
         ],
         return_is_status: false,
+        supports_last_error: false,
     };
     let apis = FlatApisMeta {
         namespace: "Fake.Ns".into(),
@@ -1084,7 +1430,7 @@ fn flat_unsigned_enum_high_bit_args_cross_u32_boundary_as_unsigned() {
         out.extra_files
     );
     assert!(
-        out.js.contains("DynWinRtValue.u32((flags) >>> 0)"),
+        out.js.contains("DynWin32.u32((flags) >>> 0)"),
         "unsigned enum input args must coerce signed high-bit constants before napi u32 conversion:\n{}",
         out.js
     );
@@ -1095,8 +1441,10 @@ fn flat_unsigned_enum_high_bit_args_cross_u32_boundary_as_unsigned() {
         out.js
     );
     assert!(
-        out.js.contains("result: _ret.toNumber()")
-            && out.js.contains("inoutFlags: (_inoutFlagsSlot.readUInt32LE(0) | 0)"),
+        out.js.contains("result: (DynWin32.toNumber(_ret) | 0)")
+            && out
+                .js
+                .contains("inoutFlags: (_inoutFlagsSlot.readUInt32LE(0) | 0)"),
         "unsigned enum returns/out slots should stay signed to match emitted constants:\n{}",
         out.js
     );
@@ -1106,16 +1454,8 @@ fn flat_unsigned_enum_high_bit_args_cross_u32_boundary_as_unsigned() {
 /// `.js` actually produces at runtime. Any `retKind === "Ptr"` (see
 /// `flat_ret_kind_literal` — `Ptr`, `PtrTo(_)`, `PWStr`, `PStr`,
 /// `Handle{..}`) is unconditionally converted through
-/// `_ret.asPointerBigint()`, which returns a plain `bigint` (`0n` for
-/// null). Typing the `.d.ts` `result` as `bigint | Buffer | null` /
-/// `string | null` / a HANDLE alias (as `dts_type_of` does for input
-/// params) would misdescribe the runtime and force callers into
-/// wrong-branch narrowing (checking for `Buffer`/`null` values that
-/// never appear).
 #[test]
-fn flat_dts_return_types_match_js_runtime() {
-    // Cover every pointer-like return kind that `flat_ret_kind_literal`
-    // routes to "Ptr". All should surface as `bigint` in the .d.ts.
+fn flat_pointer_returns_require_known_lifetime_semantics() {
     let apis = synth_apis(vec![
         synth_method("ReturnsRawPtr", FlatAbiType::Ptr),
         synth_method(
@@ -1124,6 +1464,7 @@ fn flat_dts_return_types_match_js_runtime() {
         ),
         synth_method("ReturnsPWStr", FlatAbiType::PWStr),
         synth_method("ReturnsPStr", FlatAbiType::PStr),
+        synth_method("ReturnsFunctionPointer", FlatAbiType::FunctionPointer),
         synth_method(
             "ReturnsHandle",
             FlatAbiType::Handle {
@@ -1135,14 +1476,18 @@ fn flat_dts_return_types_match_js_runtime() {
         synth_method("ReturnsI32", FlatAbiType::I32),
     ]);
     let out = flat::generate_flat_apis_files(&apis);
-    // Pointer-family returns all show `result: bigint`.
-    for camel in &[
+    for rejected in [
         "returnsRawPtr",
         "returnsPtrToU32",
         "returnsPWStr",
         "returnsPStr",
-        "returnsHandle",
     ] {
+        assert!(
+            !out.dts.contains(rejected) && !out.js.contains(rejected),
+            "ownerless pointer return must fail closed: {rejected}"
+        );
+    }
+    for camel in ["returnsHandle", "returnsFunctionPointer"] {
         let needle = format!("function {camel}(");
         let idx = out
             .dts
@@ -1157,7 +1502,7 @@ fn flat_dts_return_types_match_js_runtime() {
         );
         assert!(
             !sig.contains("Buffer") && !sig.contains("string"),
-            ".d.ts for {camel} must NOT surface Buffer/string return (input-only shape), got: {sig}",
+            ".d.ts for {camel} must not surface input-only pointer shapes: {sig}",
         );
     }
     // Non-pointer sanity check.
@@ -1169,8 +1514,8 @@ fn flat_dts_return_types_match_js_runtime() {
     );
     // And the same signals in the .js confirm the contract we're describing.
     assert!(
-        out.js.contains("asPointerBigint()"),
-        ".js must convert pointer returns via asPointerBigint():\n{}",
+        out.js.contains("DynWin32.toPointerBigint(_ret)"),
+        ".js must convert supported pointer-valued returns to bigint:\n{}",
         out.js
     );
 }
@@ -1191,6 +1536,7 @@ fn flat_filters_referenced_enums_to_kept_methods_only() {
             direction: FlatDirection::In,
         }],
         return_is_status: false,
+        supports_last_error: false,
     };
     let skipped_one = FlatMethodMeta {
         name: "SkippedOne".into(),
@@ -1203,6 +1549,7 @@ fn flat_filters_referenced_enums_to_kept_methods_only() {
             direction: FlatDirection::In,
         }],
         return_is_status: false,
+        supports_last_error: false,
     };
     let skipped_two = FlatMethodMeta {
         name: "SkippedTwo".into(),
@@ -1215,6 +1562,7 @@ fn flat_filters_referenced_enums_to_kept_methods_only() {
             direction: FlatDirection::In,
         }],
         return_is_status: false,
+        supports_last_error: false,
     };
     let apis = FlatApisMeta {
         namespace: "Fake.Ns".into(),
@@ -1229,7 +1577,11 @@ fn flat_filters_referenced_enums_to_kept_methods_only() {
 
     let out = std::panic::catch_unwind(|| flat::generate_flat_apis_files(&apis))
         .expect("skipped-only enum simple-name collisions must not abort generation");
-    let extra_names: Vec<&str> = out.extra_files.iter().map(|(name, _)| name.as_str()).collect();
+    let extra_names: Vec<&str> = out
+        .extra_files
+        .iter()
+        .map(|(name, _)| name.as_str())
+        .collect();
     assert_eq!(
         extra_names,
         vec!["KeptStatus.d.ts", "KeptStatus.js"],
@@ -1237,6 +1589,59 @@ fn flat_filters_referenced_enums_to_kept_methods_only() {
     );
     assert!(out.js.contains("export function kept"));
     assert!(!out.js.contains("skippedOne") && !out.js.contains("skippedTwo"));
+}
+
+#[test]
+fn flat_cli_emits_isolated_incremental_namespace_packages() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+    let out_dir = std::env::temp_dir().join(format!(
+        "dynwinrt_codegen_flat_package_{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&out_dir);
+
+    for namespace in [REGISTRY_NS, "Windows.Win32.System.LibraryLoader"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_dynwinrt-codegen"))
+            .args([
+                "generate",
+                "--winmd",
+                &win32_winmd(),
+                "--namespace",
+                namespace,
+                "--class-name",
+                "Apis",
+                "--output",
+            ])
+            .arg(&out_dir)
+            .output()
+            .expect("run flat codegen");
+        assert!(
+            output.status.success(),
+            "flat generation failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    for namespace in [REGISTRY_NS, "Windows.Win32.System.LibraryLoader"] {
+        let namespace_dir = out_dir.join("win32").join(namespace);
+        assert!(namespace_dir.join("Apis.js").is_file());
+        assert!(namespace_dir.join("Apis.d.ts").is_file());
+        assert!(namespace_dir.join("index.js").is_file());
+        assert!(namespace_dir.join("package.json").is_file());
+    }
+    let registry_js =
+        fs::read_to_string(out_dir.join("win32").join(REGISTRY_NS).join("Apis.js")).unwrap();
+    assert!(registry_js.contains("from '@microsoft/dynwinrt/win32'"));
+    let package = fs::read_to_string(out_dir.join("package.json")).unwrap();
+    assert!(package.contains("\"dynwinrtDomain\": \"win32\""));
+    assert!(package.contains("\"./win32/Windows.Win32.System.Registry\""));
+    assert!(package.contains("\"./win32/Windows.Win32.System.LibraryLoader\""));
+    assert!(!out_dir.join("Apis.js").exists());
+
+    fs::remove_dir_all(out_dir).unwrap();
 }
 
 /// The CLI must fail loud when `--lang py` (or any non-`js` language) is
@@ -1332,6 +1737,7 @@ fn flat_fails_loud_on_simple_name_enum_collision() {
                 },
             ],
             return_is_status: false,
+            supports_last_error: false,
         }],
         referenced_enums: vec![
             synth_enum_meta("Fake.NsA", "Status", "AVariant"),

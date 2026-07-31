@@ -27,18 +27,24 @@ const comExports = new Set([
   'WinGuid',
   'WinGUID',
 ])
+const win32Exports = new Set(['DynWin32', 'DynWin32CallResult', 'DynWin32Value'])
 
 writeFacade(
   'winrt',
-  nativeExports.filter((name) => !name.startsWith('DynCom')),
+  nativeExports.filter((name) => !name.startsWith('DynCom') && !name.startsWith('DynWin32')),
 )
 writeFacade(
   'com',
   nativeExports.filter((name) => comExports.has(name)),
 )
+writeFacade(
+  'win32',
+  nativeExports.filter((name) => win32Exports.has(name)),
+)
 
 function writeFacade(name, exports) {
-  const missing = name === 'com' ? [...comExports].filter((value) => !exports.includes(value)) : []
+  const required = name === 'com' ? comExports : name === 'win32' ? win32Exports : new Set()
+  const missing = [...required].filter((value) => !exports.includes(value))
   if (missing.length > 0) {
     throw new Error(`Missing required ${name} exports: ${missing.join(', ')}`)
   }

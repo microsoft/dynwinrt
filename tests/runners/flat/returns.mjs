@@ -32,12 +32,16 @@ function requireFixture(path, namespace) {
 }
 
 const libraryLoaderPath = requireFixture(
-    '../../e2e_generated/flat/library-loader/Apis.js',
+    '../../e2e_generated/flat/library-loader/win32/Windows.Win32.System.LibraryLoader/Apis.js',
     'Windows.Win32.System.LibraryLoader',
 );
 const systemInformationPath = requireFixture(
-    '../../e2e_generated/flat/system-information/Apis.js',
+    '../../e2e_generated/flat/system-information/win32/Windows.Win32.System.SystemInformation/Apis.js',
     'Windows.Win32.System.SystemInformation',
+);
+const threadingPath = requireFixture(
+    '../../e2e_generated/flat/threading/win32/Windows.Win32.System.Threading/Apis.js',
+    'Windows.Win32.System.Threading',
 );
 
 const {
@@ -45,16 +49,12 @@ const {
     getProcAddress,
 } = await import(pathToFileURL(libraryLoaderPath).href);
 const {
-    getNativeSystemInfo,
     getTickCount64,
 } = await import(pathToFileURL(systemInformationPath).href);
+const { sleep } = await import(pathToFileURL(threadingPath).href);
 
 function pass(msg) {
     console.log(`[e2e] PASS: ${msg}`);
-}
-
-function isPowerOfTwo(value) {
-    return value > 0 && (value & (value - 1)) === 0;
 }
 
 // F4: FARPROC/function-pointer returns must be BigInt pointer values, not
@@ -63,7 +63,13 @@ const k32 = getModuleHandleW('KERNEL32.dll').result;
 assert.equal(typeof k32, 'bigint');
 assert.notEqual(k32, 0n, 'KERNEL32.dll should already be loaded');
 
-const proc = getProcAddress(k32, 'GetProcAddress').result;
+const missingModule = getModuleHandleW('dynwinrt-module-that-does-not-exist.dll');
+assert.equal(missingModule.result, 0n);
+assert.equal(missingModule.lastError, 126);
+pass(`GetModuleHandleW captured LastError=${missingModule.lastError} atomically`);
+
+const procName = Buffer.from('GetProcAddress\0', 'ascii');
+const proc = getProcAddress(k32, procName).result;
 assert.equal(typeof proc, 'bigint');
 assert.notEqual(proc, 0n, 'GetProcAddress export should resolve');
 assert(proc > 0xffffffffn, 'x64 function pointer should not be EAX-truncated');
@@ -78,21 +84,15 @@ assert(firstTick > 0n);
 assert(secondTick >= firstTick);
 pass(`GetTickCount64 returned monotonic BigInts ${firstTick} -> ${secondTick}`);
 
-// Void return + caller-owned opaque struct pointer: the wrapper should return
-// undefined while mutating the caller's SYSTEM_INFO buffer.
-const systemInfo = Buffer.alloc(48);
-const voidRet = getNativeSystemInfo(systemInfo);
+// Void return with a scalar input.
+const voidRet = sleep(0);
 assert.equal(voidRet, undefined);
-const pageSize = systemInfo.readUInt32LE(4);
-const processors = systemInfo.readUInt32LE(32);
-assert(pageSize >= 4096 && isPowerOfTwo(pageSize), `unexpected page size ${pageSize}`);
-assert(processors > 0, `unexpected processor count ${processors}`);
-pass(`GetNativeSystemInfo returned undefined and filled pageSize=${pageSize}, processors=${processors}`);
+pass('Sleep(0) returned undefined');
 
 // Optional F32 return + F32 arg: Direct2D is present on normal Windows 10/11,
-// but keep this resilient because the Rust flat_call unit is the authoritative
+// but keep this resilient because the Rust Win32 runtime unit is the authoritative
 // float ABI proof.
-const direct2DPath = fixture('../../e2e_generated/flat/direct2d/Apis.js');
+const direct2DPath = fixture('../../e2e_generated/flat/direct2d/win32/Windows.Win32.Graphics.Direct2D/Apis.js');
 let floatLiveCheckSkipped = undefined;
 if (!existsSync(direct2DPath)) {
     floatLiveCheckSkipped = 'Direct2D fixture not generated';

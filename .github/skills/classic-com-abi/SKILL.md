@@ -9,9 +9,13 @@ Use this skill for changes under:
 
 - `crates/dynwinrt/src/com.rs`, `signature.rs`, `native_call.rs`, or `call.rs`;
 - `bindings/js/src/com.rs`;
+- `crates/dynwinrt/src/win32.rs`;
+- `bindings/js/src/win32.rs`;
 - `tools/dynwinrt-codegen/src/com_metadata.rs`;
 - `tools/dynwinrt-codegen/src/codegen/com/`; or
-- Classic COM runners in `tests/runners/com/`.
+- `tools/dynwinrt-codegen/src/codegen/win32/`;
+- Classic COM runners in `tests/runners/com/`; or
+- flat Win32 runners in `tests/runners/flat/`.
 
 Read [`docs/classic-com-support.md`](../../../docs/classic-com-support.md)
 before changing supported types or claiming support for an interface.
@@ -31,6 +35,20 @@ Windows.Win32.winmd facts
 
 `Buffer`, `bigint`, `string`, and generated wrappers are projection choices.
 They must not determine native semantics.
+
+Flat Win32 is a third semantic frontend:
+
+```text
+Windows.Win32.winmd [DllImport]
+  -> flat-local metadata and validated ABI plan
+  -> flat JavaScript projection
+  -> @microsoft/dynwinrt/win32
+  -> System32 DLL export
+```
+
+Keep it out of `DynWinRt*`, the npm root, and `DynCom*`. Preserve P/Invoke
+calling convention, architecture, pointer depth, native-array size
+relationships, `SupportsLastError`, and return lifetime before rendering.
 
 ## Required semantic model
 

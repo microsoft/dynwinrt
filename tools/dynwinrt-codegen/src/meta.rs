@@ -1005,6 +1005,12 @@ pub enum FlatAbiType {
     /// slots we can project (e.g. `PtrMut(HKEY)` → out HKEY value;
     /// `PtrMut(U32)` [InOut] → in-out DWORD).
     PtrTo(Box<FlatAbiType>),
+    /// Pointer with an explicit element-count or byte-count contract. The
+    /// caller owns the storage and the count parameter remains visible.
+    NativeArray {
+        element: Box<FlatAbiType>,
+        size: FlatBufferSize,
+    },
     /// PWSTR / PCWSTR / LPCWSTR: pointer to a UTF-16 string. The flat
     /// emitter models these as *read-only* string inputs: the wrapper
     /// builds a NUL-terminated UTF-16 `Buffer` on demand from a
@@ -1016,15 +1022,15 @@ pub enum FlatAbiType {
     /// `flat.rs` and is currently marshalled via ``pointer(<user buf>)``
     /// rather than via the string-input path).
     PWStr,
-    /// PSTR / PCSTR / LPCSTR: pointer to an 8-bit / ANSI / UTF-8 string.
-    /// Same read-only string-input projection as `PWStr` above; the
-    /// mutable `PSTR` output form flows through the `Buffer` marshalling
-    /// path in `flat.rs`.
+    /// PSTR / PCSTR / LPCSTR: pointer to native code-page bytes. Callers pass
+    /// encoded bytes explicitly; codegen must not assume UTF-8.
     PStr,
+    /// Native callback or exported function address such as FARPROC.
+    FunctionPointer,
     /// A Win32 opaque handle struct (single `Value` field with a pointer
     /// or integer shape). Natural surface is `bigint | number` — see the
-    /// handle typedef doc in `codegen/flat.rs`. `Buffer` is intentionally
-    /// NOT a valid input shape because `DynWinRtValue.pointer(Buffer)`
+    /// handle typedef doc in `codegen/win32`. `Buffer` is intentionally
+    /// NOT a valid input shape because `DynWin32.pointer(Buffer)`
     /// uses the buffer's own base address rather than the pointer bits
     /// contained in it, which would be misinterpreted as a pointer to
     /// the handle (an address-of-address) instead of the handle itself.
@@ -1047,6 +1053,14 @@ pub enum FlatAbiType {
     /// by-value ABI marshalling for it — see `unsupported_param_reason` /
     /// `unsupported_return_reason`). Only `PtrTo(Unknown)` survives, as an opaque
     /// pointer param where the caller supplies a `Buffer|bigint`.
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FlatBufferSize {
+    ElementCountParam(usize),
+    ByteCountParam(usize),
+    Constant(usize),
     Unknown,
 }
 
@@ -1073,6 +1087,8 @@ pub struct FlatMethodMeta {
     /// `MulDiv -> i32`) — those are real integer values and must be
     /// projected as `.result` rather than mis-labelled as status codes.
     pub return_is_status: bool,
+    /// Whether the P/Invoke metadata requires atomic GetLastError capture.
+    pub supports_last_error: bool,
 }
 
 /// A container class whose static methods are all `[DllImport]` exports —
@@ -1158,10 +1174,8 @@ fn parse_flat_apis_from_index(
 ) -> Option<FlatApisMeta> {
     let def = index.get(namespace, class_name).next()?;
 
-    // Determine target platform-pointer size. The Win32 winmd's PtrMut carries
-    // an explicit size for fixed-size pointers, but its `usize` is only ever 1
-    // for `void*`-shaped values. We always compile on 64-bit here so pointer
-    // width = 8 bytes.
+    // The published runtime targets x64 and ARM64. Architecture-specific
+    // signatures are filtered below so one generated package is valid on both.
 
     let mut methods: Vec<FlatMethodMeta> = Vec::new();
     let mut referenced_enums: Vec<TypeMeta> = Vec::new();
@@ -1178,14 +1192,46 @@ fn parse_flat_apis_from_index(
             // constructor stubs; we intentionally ignore those.)
             continue;
         };
+        let sig = m.signature(&[]);
+        if sig
+            .flags
+            .contains(windows_metadata::MethodCallAttributes::VARARG)
+        {
+            eprintln!(
+                "warning: skipping {}.{}.{} — variadic flat exports are unsupported",
+                namespace,
+                class_name,
+                m.name()
+            );
+            continue;
+        }
+        if !supports_all_runtime_architectures(&m) {
+            eprintln!(
+                "warning: skipping {}.{}.{} — export is not available on both x64 and ARM64",
+                namespace,
+                class_name,
+                m.name()
+            );
+            continue;
+        }
+        let pinvoke_flags = imap.flags();
         // Skip .ctor (unlikely on Apis, but future-proof).
         if m.name() == ".ctor" || m.name() == ".cctor" {
             continue;
         }
         let dll = imap.import_scope().name().to_string();
+        if !is_supported_system_module_name(&dll) {
+            eprintln!(
+                "warning: skipping {}.{}.{} — unsupported system module `{}`",
+                namespace,
+                class_name,
+                m.name(),
+                dll
+            );
+            continue;
+        }
         let entry_point = imap.import_name().to_string();
 
-        let sig = m.signature(&[]);
         let return_type = map_flat_type(&sig.return_type, index, &mut |e| {
             collect_enum(e, &mut seen_enum_keys, &mut referenced_enums)
         });
@@ -1220,9 +1266,22 @@ fn parse_flat_apis_from_index(
         let mut params: Vec<FlatParamMeta> = Vec::with_capacity(param_defs.len());
         for (i, pd) in param_defs.iter().enumerate() {
             let ty = &sig.types[i];
-            let abi = map_flat_type(ty, index, &mut |e| {
+            let mut abi = map_flat_type(ty, index, &mut |e| {
                 collect_enum(e, &mut seen_enum_keys, &mut referenced_enums)
             });
+            if let Some(size) = flat_buffer_size(pd) {
+                let element = match abi {
+                    FlatAbiType::PtrTo(element) => *element,
+                    FlatAbiType::Ptr => FlatAbiType::U8,
+                    FlatAbiType::PWStr => FlatAbiType::Char16,
+                    FlatAbiType::PStr => FlatAbiType::U8,
+                    other => other,
+                };
+                abi = FlatAbiType::NativeArray {
+                    element: Box::new(element),
+                    size,
+                };
+            }
             let flags = pd.flags();
             let is_in = flags.contains(windows_metadata::ParamAttributes::In);
             let is_out = flags.contains(windows_metadata::ParamAttributes::Out);
@@ -1245,6 +1304,8 @@ fn parse_flat_apis_from_index(
             return_type,
             params,
             return_is_status,
+            supports_last_error: pinvoke_flags
+                .contains(windows_metadata::PInvokeAttributes::SupportsLastError),
         });
     }
 
@@ -1254,6 +1315,18 @@ fn parse_flat_apis_from_index(
     // Stable order: winmd row order is arbitrary. Sort by name so snapshots
     // are deterministic across metadata rewrites.
     methods.sort_by(|a, b| a.name.cmp(&b.name));
+    let duplicate_names: HashSet<String> = methods
+        .windows(2)
+        .filter(|pair| pair[0].name == pair[1].name)
+        .map(|pair| pair[0].name.clone())
+        .collect();
+    for name in &duplicate_names {
+        eprintln!(
+            "warning: skipping {}.{}.{} — unresolved architecture overload collision",
+            namespace, class_name, name
+        );
+    }
+    methods.retain(|method| !duplicate_names.contains(&method.name));
     referenced_enums.sort_by(|a, b| match (a, b) {
         (TypeMeta::Enum { name: an, .. }, TypeMeta::Enum { name: bn, .. }) => an.cmp(bn),
         _ => std::cmp::Ordering::Equal,
@@ -1265,6 +1338,66 @@ fn parse_flat_apis_from_index(
         methods,
         referenced_enums,
     })
+}
+
+fn supports_all_runtime_architectures(method: &reader::MethodDef) -> bool {
+    const X64: i32 = 0x2;
+    const ARM64: i32 = 0x4;
+
+    let Some(attribute) = method.find_attribute("SupportedArchitectureAttribute") else {
+        return true;
+    };
+    let bits = match attribute.value().first() {
+        Some((_, windows_metadata::Value::I32(value))) => *value,
+        Some((_, windows_metadata::Value::U32(value))) => *value as i32,
+        Some((_, windows_metadata::Value::AttributeEnum(_, value))) => *value,
+        _ => return false,
+    };
+    bits == 0 || bits & (X64 | ARM64) == (X64 | ARM64)
+}
+
+fn is_supported_system_module_name(module: &str) -> bool {
+    let lower = module.to_ascii_lowercase();
+    !module.is_empty()
+        && (lower.ends_with(".dll") || lower.ends_with(".drv"))
+        && !module
+            .chars()
+            .any(|character| matches!(character, '/' | '\\' | ':'))
+}
+
+fn flat_buffer_size(param: &reader::MethodParam) -> Option<FlatBufferSize> {
+    if let Some(attribute) = param.find_attribute("NativeArrayInfoAttribute") {
+        let values = attribute.value();
+        if let Some(index) = attribute_index(&values, "CountParamIndex") {
+            return Some(FlatBufferSize::ElementCountParam(index));
+        }
+        if let Some(count) = attribute_index(&values, "CountConst") {
+            return Some(FlatBufferSize::Constant(count));
+        }
+        return Some(FlatBufferSize::Unknown);
+    }
+    if let Some(attribute) = param.find_attribute("MemorySizeAttribute") {
+        let values = attribute.value();
+        return Some(
+            attribute_index(&values, "BytesParamIndex")
+                .map(FlatBufferSize::ByteCountParam)
+                .unwrap_or(FlatBufferSize::Unknown),
+        );
+    }
+    None
+}
+
+fn attribute_index(values: &[(String, windows_metadata::Value)], name: &str) -> Option<usize> {
+    values
+        .iter()
+        .find(|(candidate, _)| candidate == name)
+        .and_then(|(_, value)| match value {
+            windows_metadata::Value::I16(value) if *value >= 0 => Some(*value as usize),
+            windows_metadata::Value::U16(value) => Some(*value as usize),
+            windows_metadata::Value::I32(value) if *value >= 0 => Some(*value as usize),
+            windows_metadata::Value::U32(value) => usize::try_from(*value).ok(),
+            _ => None,
+        })
 }
 
 fn collect_enum(en: TypeMeta, seen: &mut HashSet<(String, String)>, sink: &mut Vec<TypeMeta>) {
@@ -1302,16 +1435,8 @@ fn map_flat_type(
         Type::U64 => FlatAbiType::U64,
         Type::F32 => FlatAbiType::F32,
         Type::F64 => FlatAbiType::F64,
-        Type::PtrMut(inner, _) | Type::PtrConst(inner, _) => {
-            // A pointer to `Void` is opaque; any other pointer keeps the
-            // pointee so out-params can be projected.
-            match inner.as_ref() {
-                Type::Void => FlatAbiType::Ptr,
-                _ => {
-                    let pointee = map_flat_type(inner, index, enum_sink);
-                    FlatAbiType::PtrTo(Box::new(pointee))
-                }
-            }
+        Type::PtrMut(inner, depth) | Type::PtrConst(inner, depth) => {
+            map_flat_pointer(inner, *depth, index, enum_sink)
         }
         Type::Name(tn) => resolve_named_flat_type(&tn.namespace, &tn.name, index, enum_sink),
         // Anything else (Array, ConstRef, generics, …) is not a valid flat
@@ -1342,7 +1467,7 @@ fn resolve_named_flat_type(
             "BSTR" => return FlatAbiType::Unknown,
             "BOOL" => return FlatAbiType::Bool32,
             "BOOLEAN" => return FlatAbiType::U8,
-            "FARPROC" | "PROC" | "NEARPROC" => return FlatAbiType::Ptr,
+            "FARPROC" | "PROC" | "NEARPROC" => return FlatAbiType::FunctionPointer,
             "HRESULT" => return FlatAbiType::I32,
             "NTSTATUS" => return FlatAbiType::I32,
             // LSTATUS is a plain Int32 typedef in the win32 metadata, but
@@ -1357,6 +1482,15 @@ fn resolve_named_flat_type(
             _ => {}
         }
     }
+    if is_flat_data_pointer_alias(name) {
+        return FlatAbiType::Ptr;
+    }
+    if is_flat_handle_alias(name) {
+        return FlatAbiType::Handle {
+            namespace: namespace.to_string(),
+            name: name.to_string(),
+        };
+    }
     let Some(def) = index.get(namespace, name).next() else {
         return FlatAbiType::Unknown;
     };
@@ -1364,7 +1498,7 @@ fn resolve_named_flat_type(
         return FlatAbiType::Unknown;
     };
     if ext.namespace() == "System" && matches!(ext.name(), "Delegate" | "MulticastDelegate") {
-        return FlatAbiType::Ptr;
+        return FlatAbiType::FunctionPointer;
     }
     // Enum: extends System.Enum.
     if ext.namespace() == "System" && ext.name() == "Enum" {
@@ -1399,6 +1533,9 @@ fn resolve_named_flat_type(
     // Struct: extends System.ValueType. Handle-like typedefs are single-field
     // wrappers named `{ Value: T }` — we treat these as opaque handles.
     if ext.namespace() == "System" && ext.name() == "ValueType" {
+        if !def.has_attribute("NativeTypedefAttribute") {
+            return FlatAbiType::Unknown;
+        }
         let fields: Vec<(String, windows_metadata::Type)> = def
             .fields()
             .map(|f| (f.name().to_string(), f.ty()))
@@ -1407,29 +1544,16 @@ fn resolve_named_flat_type(
             match &fields[0].1 {
                 windows_metadata::Type::PtrMut(inner, _)
                 | windows_metadata::Type::PtrConst(inner, _) => {
-                    // Pointer typedef (HANDLE-like). If the pointee is Char/U8
-                    // this is a string handle — project as PWStr/PStr; else
-                    // treat as an opaque handle for natural marshalling.
+                    // Pointer typedefs are not handles unless explicitly
+                    // classified above.
                     return match inner.as_ref() {
                         windows_metadata::Type::Char => FlatAbiType::PWStr,
                         windows_metadata::Type::U8 => FlatAbiType::PStr,
-                        _ => FlatAbiType::Handle {
-                            namespace: namespace.to_string(),
-                            name: name.to_string(),
-                        },
+                        _ => FlatAbiType::Unknown,
                     };
                 }
                 windows_metadata::Type::I32 => {
-                    // `{ Value: I32 }` typedefs are integer handles (BOOL is
-                    // handled by name above; other examples: HRESULT.). Treat
-                    // as `i32` at the ABI to avoid surfacing them as pointer.
-                    if is_hresult_named(namespace, name) {
-                        return FlatAbiType::I32;
-                    }
-                    return FlatAbiType::Handle {
-                        namespace: namespace.to_string(),
-                        name: name.to_string(),
-                    };
+                    return FlatAbiType::I32;
                 }
                 windows_metadata::Type::U32 => {
                     return FlatAbiType::U32;
@@ -1443,8 +1567,79 @@ fn resolve_named_flat_type(
     FlatAbiType::Unknown
 }
 
-fn is_hresult_named(ns: &str, name: &str) -> bool {
-    ns == "Windows.Win32.Foundation" && name == "HRESULT"
+fn is_flat_data_pointer_alias(name: &str) -> bool {
+    matches!(
+        name,
+        "PSID"
+            | "PSECURITY_DESCRIPTOR"
+            | "MEMORY_MAPPED_VIEW_ADDRESS"
+            | "LPPROC_THREAD_ATTRIBUTE_LIST"
+            | "PVOID"
+            | "PCVOID"
+            | "LPVOID"
+            | "LPCVOID"
+    )
+}
+
+fn is_flat_handle_alias(name: &str) -> bool {
+    matches!(
+        name,
+        "HANDLE"
+            | "HWND"
+            | "HACCEL"
+            | "HBITMAP"
+            | "HBRUSH"
+            | "HCURSOR"
+            | "HDC"
+            | "HDESK"
+            | "HDWP"
+            | "HENHMETAFILE"
+            | "HFILE"
+            | "HFONT"
+            | "HGDIOBJ"
+            | "HGLOBAL"
+            | "HHOOK"
+            | "HICON"
+            | "HIMAGELIST"
+            | "HINSTANCE"
+            | "HKEY"
+            | "HKL"
+            | "HLOCAL"
+            | "HMENU"
+            | "HMETAFILE"
+            | "HMODULE"
+            | "HMONITOR"
+            | "HPALETTE"
+            | "HPEN"
+            | "HRAWINPUT"
+            | "HRGN"
+            | "HRSRC"
+            | "HTHEME"
+            | "HWINSTA"
+            | "SC_HANDLE"
+            | "SERVICE_STATUS_HANDLE"
+            | "DPI_AWARENESS_CONTEXT"
+    )
+}
+
+fn map_flat_pointer(
+    inner: &windows_metadata::Type,
+    depth: usize,
+    index: &reader::Index,
+    enum_sink: &mut dyn FnMut(TypeMeta),
+) -> FlatAbiType {
+    if depth == 0 {
+        return FlatAbiType::Unknown;
+    }
+    let mut mapped = if matches!(inner, windows_metadata::Type::Void) {
+        FlatAbiType::Ptr
+    } else {
+        FlatAbiType::PtrTo(Box::new(map_flat_type(inner, index, enum_sink)))
+    };
+    for _ in 1..depth {
+        mapped = FlatAbiType::PtrTo(Box::new(mapped));
+    }
+    mapped
 }
 
 fn parse_flat_enum_def(def: &reader::TypeDef) -> TypeMeta {
@@ -1458,6 +1653,10 @@ fn parse_flat_enum_def(def: &reader::TypeDef) -> TypeMeta {
         }
         if let Some(constant) = field.constant() {
             let value = match constant.value() {
+                windows_metadata::Value::I8(value) => value as i32,
+                windows_metadata::Value::U8(value) => value as i32,
+                windows_metadata::Value::I16(value) => value as i32,
+                windows_metadata::Value::U16(value) => value as i32,
                 windows_metadata::Value::I32(value) => value,
                 windows_metadata::Value::U32(value) => value as i32,
                 _ => 0,

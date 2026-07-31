@@ -55,6 +55,16 @@ native output that transfers an existing `+1` reference; numeric pointers and
 typed-array pointers are borrowed and cannot be adopted. Win32 handles are not
 COM references and require their own type-specific cleanup function.
 
+Flat Win32 DLL exports use a third entrypoint:
+
+```js
+const { DynWin32 } = require('@microsoft/dynwinrt/win32');
+```
+
+Use generated flat Win32 wrappers rather than calling `DynWin32.invoke`
+directly. Generated wrappers encode the validated native signature and capture
+`GetLastError` when required.
+
 Unambiguous public WinRT activation metadata is projected as JavaScript constructors.
 Parameterized and composable activations support idiomatic forms such as
 `new Uri(base, relative)` and `new StackPanel()`. The generated static factory

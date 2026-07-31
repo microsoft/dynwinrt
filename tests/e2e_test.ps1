@@ -224,11 +224,12 @@ if ("com" -in $Lang) {
 
 if ("flat" -in $Lang) {
     Write-Host "`n--- Generate (flat Win32) ---" -ForegroundColor Yellow
-    $flatRuntimeImport = "../../../../bindings/js/dist/winrt.js"
+    $flatRuntimeImport = "../../../../../../bindings/js/dist/win32.js"
     $flatTargets = @(
         @{ Namespace = "Windows.Win32.System.Registry"; Output = "registry" },
         @{ Namespace = "Windows.Win32.System.LibraryLoader"; Output = "library-loader" },
         @{ Namespace = "Windows.Win32.System.SystemInformation"; Output = "system-information" },
+        @{ Namespace = "Windows.Win32.System.Threading"; Output = "threading" },
         @{ Namespace = "Windows.Win32.Graphics.Direct2D"; Output = "direct2d" }
     )
     foreach ($target in $flatTargets) {

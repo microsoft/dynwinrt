@@ -8,11 +8,11 @@ use std::path::Path;
 use clap::{Parser, Subcommand};
 
 use dynwinrt_codegen::codegen::com;
-use dynwinrt_codegen::codegen::flat;
 use dynwinrt_codegen::codegen::package;
 use dynwinrt_codegen::codegen::python;
 use dynwinrt_codegen::codegen::typescript;
 use dynwinrt_codegen::codegen::winrt::extensions::winui;
+use dynwinrt_codegen::codegen::win32;
 use dynwinrt_codegen::codegen::{project, render_dts, render_js};
 use dynwinrt_codegen::com_metadata;
 use dynwinrt_codegen::meta;
@@ -372,20 +372,42 @@ fn run() -> Result<(), String> {
                     ));
                 }
 
+                if !flat_apis.is_empty() && (!classes.is_empty() || !com_interfaces.is_empty()) {
+                    return Err("Flat Win32 generation uses a dedicated output package. \
+                         Generate WinRT or Classic COM bindings in a separate invocation."
+                        .into());
+                }
+
                 if !flat_apis.is_empty() {
+                    ensure_flat_output_package(output_dir)?;
                     for apis in &flat_apis {
-                        let out = flat::generate_flat_apis_files(apis);
+                        let runtime_import = if import_name == "@microsoft/dynwinrt" {
+                            "@microsoft/dynwinrt/win32"
+                        } else {
+                            &import_name
+                        };
+                        let out = win32::generate_flat_apis_files_with_import(apis, runtime_import);
+                        let flat_output_dir = output_dir.join("win32").join(&apis.namespace);
+                        if !dry_run {
+                            fs::create_dir_all(&flat_output_dir).map_err(|error| {
+                                format!(
+                                    "Failed to create flat Win32 output directory {}: {error}",
+                                    flat_output_dir.display()
+                                )
+                            })?;
+                        }
                         let js_name = format!("{}.js", apis.class_name);
                         let dts_name = format!("{}.d.ts", apis.class_name);
                         if !dry_run {
-                            fs::write(output_dir.join(&js_name), &out.js)
+                            fs::write(flat_output_dir.join(&js_name), &out.js)
                                 .map_err(|e| format!("Failed to write {}: {}", js_name, e))?;
-                            fs::write(output_dir.join(&dts_name), &out.dts)
+                            fs::write(flat_output_dir.join(&dts_name), &out.dts)
                                 .map_err(|e| format!("Failed to write {}: {}", dts_name, e))?;
                             for (name, content) in &out.extra_files {
-                                fs::write(output_dir.join(name), content)
+                                fs::write(flat_output_dir.join(name), content)
                                     .map_err(|e| format!("Failed to write {}: {}", name, e))?;
                             }
+                            write_flat_namespace_package(&flat_output_dir)?;
                             println!(
                                 "Generated flat-Win32 {}.{} ({} methods, {} extra files)",
                                 apis.namespace,
@@ -401,6 +423,9 @@ fn run() -> Result<(), String> {
                         }
                     }
                     if classes.is_empty() && com_interfaces.is_empty() {
+                        if !dry_run {
+                            write_flat_root_manifest(output_dir)?;
+                        }
                         return Ok(());
                     }
                 }
@@ -1130,6 +1155,92 @@ fn write_js_barrel_and_manifest(output_dir: &Path, index_content: &str) -> Resul
     Ok(())
 }
 
+fn ensure_flat_output_package(output_dir: &Path) -> Result<(), String> {
+    let package_path = output_dir.join("package.json");
+    if !package_path.is_file() {
+        return Ok(());
+    }
+    let package = fs::read_to_string(&package_path)
+        .map_err(|error| format!("Failed to read {}: {error}", package_path.display()))?;
+    if !package.contains("\"dynwinrtDomain\": \"win32\"") {
+        return Err(format!(
+            "Flat Win32 bindings cannot share {} with another generated package",
+            output_dir.display()
+        ));
+    }
+    Ok(())
+}
+
+fn write_flat_namespace_package(output_dir: &Path) -> Result<(), String> {
+    let mut modules = BTreeSet::new();
+    for entry in fs::read_dir(output_dir)
+        .map_err(|error| format!("Failed to read {}: {error}", output_dir.display()))?
+        .flatten()
+    {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let Some(module) = name.strip_suffix(".js") else {
+            continue;
+        };
+        if module != "index" {
+            modules.insert(module.to_string());
+        }
+    }
+
+    let mut index = String::from("// Generated by dynwinrt-codegen - do not edit\n");
+    for module in modules {
+        index.push_str(&format!("export * from './{module}.js';\n"));
+    }
+    fs::write(output_dir.join("index.js"), &index)
+        .map_err(|error| format!("Failed to write flat Win32 index.js: {error}"))?;
+    fs::write(output_dir.join("index.d.ts"), &index)
+        .map_err(|error| format!("Failed to write flat Win32 index.d.ts: {error}"))?;
+    fs::write(
+        output_dir.join("package.json"),
+        "{\n  \"type\": \"module\",\n  \"sideEffects\": false\n}\n",
+    )
+    .map_err(|error| format!("Failed to write flat Win32 package.json: {error}"))
+}
+
+fn write_flat_root_manifest(output_dir: &Path) -> Result<(), String> {
+    let flat_root = output_dir.join("win32");
+    let mut namespaces = BTreeSet::new();
+    for entry in fs::read_dir(&flat_root)
+        .map_err(|error| format!("Failed to read {}: {error}", flat_root.display()))?
+        .flatten()
+    {
+        if entry.path().join("index.js").is_file() {
+            namespaces.insert(entry.file_name().to_string_lossy().to_string());
+        }
+    }
+
+    let mut package = String::from(
+        "{\n  \"name\": \"@winapp/bindings\",\n  \"type\": \"module\",\n  \
+         \"sideEffects\": false,\n  \"dynwinrtDomain\": \"win32\",\n  \"exports\": {",
+    );
+    for (index, namespace) in namespaces.iter().enumerate() {
+        if index > 0 {
+            package.push(',');
+        }
+        package.push_str(&format!(
+            "\n    \"./win32/{namespace}\": {{\n      \
+             \"types\": \"./win32/{namespace}/index.d.ts\",\n      \
+             \"import\": \"./win32/{namespace}/index.js\"\n    }}"
+        ));
+        package.push_str(&format!(
+            ",\n    \"./win32/{namespace}/*\": {{\n      \
+             \"types\": \"./win32/{namespace}/*.d.ts\",\n      \
+             \"import\": \"./win32/{namespace}/*.js\"\n    }}"
+        ));
+    }
+    package.push_str("\n  }\n}\n");
+    let package_path = output_dir.join("package.json");
+    fs::write(&package_path, package)
+        .map_err(|error| format!("Failed to write {}: {error}", package_path.display()))
+}
+
 fn write_com_js_barrel(com_output_dir: &Path) -> Result<(), String> {
     let mut modules: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let entries = fs::read_dir(com_output_dir).map_err(|error| {
@@ -1831,6 +1942,7 @@ fn print_capabilities() {
         "generate",
         "lang.js",
         "lang.py",
+        "domain.win32",
         "input.winmd",
         "input.ref",
         "input.winmd-list",

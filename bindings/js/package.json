@@ -17,12 +17,21 @@
       "require": "./dist/com.js",
       "default": "./dist/com.js"
     },
+    "./win32": {
+      "types": "./dist/win32.d.ts",
+      "import": "./dist/win32.js",
+      "require": "./dist/win32.js",
+      "default": "./dist/win32.js"
+    },
     "./package.json": "./package.json"
   },
   "typesVersions": {
     "*": {
       "com": [
         "dist/com.d.ts"
+      ],
+      "win32": [
+        "dist/win32.d.ts"
       ]
     }
   },

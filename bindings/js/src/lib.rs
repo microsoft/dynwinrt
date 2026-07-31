@@ -19,6 +19,8 @@ use windows::core::{HSTRING, IUnknown, Interface};
 
 mod com;
 pub use com::{DynCom, DynComInterface, DynComMethodHandle, DynComMethodSig, DynComType};
+mod win32;
+pub use win32::{DynWin32, DynWin32CallResult, DynWin32Value};
 mod async_promise;
 mod scheduled_start;
 
@@ -658,88 +660,6 @@ impl DynWinRTValue {
       .map_err(|e| {
         napi::Error::from_reason(format!("createXamlApplication failed: {}", e.message()))
       })
-  }
-
-  /// Wrap raw pointer bits or Buffer/Uint8Array backing storage for a flat
-  /// Win32 call. The pointer owner is retained and revalidated before use.
-  #[napi]
-  pub fn pointer(
-    #[napi(
-      ts_arg_type = "bigint | number | Buffer | Uint8Array | null | undefined"
-    )]
-    value: napi::bindgen_prelude::Unknown,
-  ) -> napi::Result<DynWinRTValue> {
-    com::pointer(value)
-  }
-
-  #[napi]
-  pub fn as_pointer_bigint(&self) -> napi::Result<BigInt> {
-    com::as_pointer_bigint(self)
-  }
-
-  #[napi(js_name = "toI64BigInt")]
-  pub fn to_i64_bigint(&self) -> napi::Result<BigInt> {
-    match &self.0 {
-      dynwinrt::WinRTValue::I64(value) => Ok(BigInt::from(*value)),
-      _ => Err(napi::Error::from_reason(format!(
-        "toI64BigInt: not an I64 value ({:?})",
-        self.0.get_type_kind()
-      ))),
-    }
-  }
-
-  #[napi(js_name = "toU64BigInt")]
-  pub fn to_u64_bigint(&self) -> napi::Result<BigInt> {
-    match &self.0 {
-      dynwinrt::WinRTValue::U64(value) => Ok(BigInt::from(*value)),
-      _ => Err(napi::Error::from_reason(format!(
-        "toU64BigInt: not a U64 value ({:?})",
-        self.0.get_type_kind()
-      ))),
-    }
-  }
-
-  /// Invoke a flat Win32 export. The caller must ensure the metadata-derived
-  /// return kind and arguments exactly match the native ABI.
-  #[napi]
-  pub fn flat_invoke(
-    dll: String,
-    entry: String,
-    ret_kind: String,
-    args: Vec<&DynWinRTValue>,
-  ) -> napi::Result<DynWinRTValue> {
-    let ret = match ret_kind.to_ascii_lowercase().as_str() {
-      "void" => dynwinrt::flat_call::FlatReturnKind::Void,
-      "i32" => dynwinrt::flat_call::FlatReturnKind::I32,
-      "u32" => dynwinrt::flat_call::FlatReturnKind::U32,
-      "i64" => dynwinrt::flat_call::FlatReturnKind::I64,
-      "u64" => dynwinrt::flat_call::FlatReturnKind::U64,
-      "f32" => dynwinrt::flat_call::FlatReturnKind::F32,
-      "f64" => dynwinrt::flat_call::FlatReturnKind::F64,
-      "ptr" | "pointer" => dynwinrt::flat_call::FlatReturnKind::Ptr,
-      other => {
-        return Err(napi::Error::from_reason(format!(
-          "flatInvoke: unsupported return kind '{other}'"
-        )));
-      }
-    };
-    for arg in &args {
-      com::validate_pointer_owner(arg)?;
-    }
-    let args = args.iter().map(|arg| arg.0.clone()).collect::<Vec<_>>();
-    let result = unsafe { dynwinrt::flat_call::flat_invoke(&dll, &entry, ret, &args) }
-      .map_err(|error| {
-        napi::Error::from_reason(format!(
-          "flatInvoke({dll}!{entry}): {}",
-          error.message()
-        ))
-      })?;
-    Ok(DynWinRTValue::new(result))
-  }
-
-  #[napi]
-  pub fn flat_last_error() -> u32 {
-    dynwinrt::flat_call::get_last_error()
   }
 
   #[napi]

@@ -27,7 +27,7 @@ import { dirname, resolve } from 'node:path';
 const __dirname_flat = dirname(fileURLToPath(import.meta.url));
 const FLAT_FIXTURE = resolve(
     __dirname_flat,
-    '../../e2e_generated/flat/registry/Apis.js'
+    '../../e2e_generated/flat/registry/win32/Windows.Win32.System.Registry/Apis.js'
 );
 if (!existsSync(FLAT_FIXTURE)) {
     console.error(`[e2e] FAIL: flat_registry fixture not found: ${FLAT_FIXTURE}`);
@@ -37,7 +37,7 @@ if (!existsSync(FLAT_FIXTURE)) {
     console.error(`    --namespace Windows.Win32.System.Registry \\`);
     console.error(`    --class-name Apis \\`);
     console.error(`    --output tests/e2e_generated/flat/registry \\`);
-    console.error(`    --import-name ../../../../bindings/js/dist/winrt.js`);
+    console.error(`    --import-name ../../../../../../bindings/js/dist/win32.js`);
     process.exit(1);
 }
 
@@ -45,7 +45,7 @@ const {
     regOpenKeyExW,
     regQueryValueExW,
     regCloseKey,
-} = await import('../../e2e_generated/flat/registry/Apis.js');
+} = await import('../../e2e_generated/flat/registry/win32/Windows.Win32.System.Registry/Apis.js');
 
 // Predefined HKEY hive constants. These are stable Win32 pseudo-handles that
 // live in the same address slot on x86/x64 and are safe to pass as bigints.

@@ -20,6 +20,7 @@ import {
 } from '../dist/winrt.js'
 import * as winrtRuntime from '../dist/winrt.js'
 import { DynCom, DynComMethodSig } from '../dist/com.js'
+import { DynWin32 } from '../dist/win32.js'
 
 test('Classic COM is isolated from the WinRT root entrypoint', (t) => {
   t.false(Object.prototype.hasOwnProperty.call(winrtRuntime, 'DynCom'))
@@ -56,6 +57,55 @@ test('Classic COM is isolated from the WinRT root entrypoint', (t) => {
   })
   t.is(esm.status, 0, esm.stderr)
   t.regex(esm.stdout, /runtime-entrypoints-ok/)
+})
+
+test('flat Win32 is isolated from the WinRT root entrypoint', (t) => {
+  t.false(Object.prototype.hasOwnProperty.call(winrtRuntime, 'DynWin32'))
+  t.truthy(DynWin32)
+
+  const assertion =
+    "const assert = require('node:assert/strict');" +
+    "const winrt = require('@microsoft/dynwinrt');" +
+    "const win32 = require('@microsoft/dynwinrt/win32');" +
+    "assert.equal(Object.prototype.hasOwnProperty.call(winrt, 'DynWin32'), false);" +
+    "assert.equal(typeof win32.DynWin32, 'function');" +
+    "console.log('win32-entrypoint-ok')"
+  const cjs = spawnSync(process.execPath, ['--eval', assertion], {
+    cwd: resolve(process.cwd()),
+    encoding: 'utf8',
+    windowsHide: true,
+  })
+  t.is(cjs.status, 0, cjs.stderr)
+  t.regex(cjs.stdout, /win32-entrypoint-ok/)
+})
+
+test('DynWin32 validates scalar widths and retained pointer storage', (t) => {
+  t.notThrows(() => DynWin32.i64(-(2n ** 63n)))
+  t.notThrows(() => DynWin32.i64(Number.MAX_SAFE_INTEGER))
+  t.throws(() => DynWin32.i64(2n ** 63n), { message: /signed 64-bit/ })
+  t.throws(() => DynWin32.i64(1.5), { message: /safe integer/ })
+  t.throws(() => DynWin32.i8(128), { message: /range/ })
+  t.throws(() => DynWin32.i8(4_294_967_297), { message: /range/ })
+  t.throws(() => DynWin32.i32(4_294_967_296), { message: /range/ })
+  t.throws(() => DynWin32.u32(-1), { message: /range/ })
+  t.throws(() => DynWin32.u16(1.5), { message: /integer/ })
+  t.is(DynWin32.toPointerBigint(DynWin32.handle(-1n)), (2n ** 64n) - 1n)
+  t.is(DynWin32.toPointerBigint(DynWin32.handle(-2)), (2n ** 64n) - 2n)
+
+  const bytes = new Uint8Array(8)
+  const pointer = DynWin32.pointer(bytes)
+  structuredClone(bytes.buffer, { transfer: [bytes.buffer] })
+  const error = t.throws(() => DynWin32.toPointerBigint(pointer))
+  t.regex(error.message, /backing ArrayBuffer is detached/)
+})
+
+test('DynWinRtValue accepts lossless UInt64 bigint inputs', (t) => {
+  const max = (2n ** 64n) - 1n
+  t.is(DynCom.toU64Bigint(DynWinRtValue.u64(max)), max)
+  t.throws(() => DynWinRtValue.u64(-1n), { message: /unsigned 64-bit/ })
+  t.throws(() => DynWinRtValue.u64(Number.MAX_SAFE_INTEGER + 1), {
+    message: /safe integer/,
+  })
 })
 
 test('DynCom rejects pointers after their TypedArray backing store is detached', (t) => {

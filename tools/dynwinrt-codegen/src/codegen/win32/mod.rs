@@ -5,7 +5,7 @@
 //!
 //! Reads a `FlatApisMeta` (a container of DllImport static methods on an
 //! `Apis` class in `Windows.Win32.winmd`) and emits a natural JS/DTS wrapper
-//! that calls into `DynWinRtValue.flatInvoke` under the hood.
+//! that calls into the dedicated `DynWin32` runtime under the hood.
 //!
 //! ## Emission model
 //!
@@ -28,7 +28,9 @@
 
 use std::collections::{BTreeSet, HashSet};
 
-use crate::meta::{FlatAbiType, FlatApisMeta, FlatDirection, FlatMethodMeta, FlatParamMeta};
+use crate::meta::{
+    FlatAbiType, FlatApisMeta, FlatBufferSize, FlatDirection, FlatMethodMeta, FlatParamMeta,
+};
 use crate::types::TypeMeta;
 
 /// Rendered flat-Apis output: primary `.js` + `.d.ts` for the class, plus
@@ -46,8 +48,15 @@ pub struct FlatGeneratedOutput {
 // ---------------------------------------------------------------------------
 
 pub fn generate_flat_apis_files(meta: &FlatApisMeta) -> FlatGeneratedOutput {
+    generate_flat_apis_files_with_import(meta, "@microsoft/dynwinrt/win32")
+}
+
+pub fn generate_flat_apis_files_with_import(
+    meta: &FlatApisMeta,
+    runtime_import: &str,
+) -> FlatGeneratedOutput {
     // Fail-loud filter: methods whose return type isn't representable by the
-    // current `flatInvoke` ABI MUST be skipped rather than silently emitted as
+    // current flat-call ABI MUST be skipped rather than silently emitted as
     // a truncating I32 read. Print a per-skip warning so the operator sees
     // what was omitted and why.
     let (kept, skipped) = partition_supported_methods(&meta.methods);
@@ -75,7 +84,7 @@ pub fn generate_flat_apis_files(meta: &FlatApisMeta) -> FlatGeneratedOutput {
         ..meta.clone()
     };
 
-    let js = render_js(&filtered_meta);
+    let js = render_js(&filtered_meta, runtime_import);
     let dts = render_dts(&filtered_meta);
 
     // Sibling files: one per referenced enum.
@@ -91,7 +100,10 @@ pub fn generate_flat_apis_files(meta: &FlatApisMeta) -> FlatGeneratedOutput {
     let mut by_simple_name: std::collections::BTreeMap<&str, Vec<&str>> =
         std::collections::BTreeMap::new();
     for en in &filtered_meta.referenced_enums {
-        if let TypeMeta::Enum { namespace, name, .. } = en {
+        if let TypeMeta::Enum {
+            namespace, name, ..
+        } = en
+        {
             by_simple_name.entry(name).or_default().push(namespace);
         }
     }
@@ -138,13 +150,84 @@ fn partition_supported_methods(
             skipped.push((m.name.clone(), reason));
             continue;
         }
-        if let Some(reason) = m.params.iter().find_map(|p| unsupported_param_reason(&p.abi)) {
+        if let Some(reason) = m
+            .params
+            .iter()
+            .find_map(|p| unsupported_param_reason(&p.abi))
+        {
+            skipped.push((m.name.clone(), reason));
+            continue;
+        }
+        if let Some(reason) = unsupported_method_reason(m) {
             skipped.push((m.name.clone(), reason));
             continue;
         }
         kept.push(m.clone());
     }
     (kept, skipped)
+}
+
+fn unsupported_method_reason(method: &FlatMethodMeta) -> Option<&'static str> {
+    for param in &method.params {
+        if matches!(param.direction, FlatDirection::Out | FlatDirection::InOut)
+            && match &param.abi {
+                FlatAbiType::Ptr => true,
+                FlatAbiType::PtrTo(inner) => !is_small_scalarish(inner),
+                FlatAbiType::PWStr | FlatAbiType::PStr => true,
+                _ => false,
+            }
+        {
+            return Some(
+                "writable pointer has no modeled scalar storage, size relationship, or ownership",
+            );
+        }
+        let FlatAbiType::NativeArray { element, size } = &param.abi else {
+            continue;
+        };
+        match size {
+            FlatBufferSize::Unknown => {
+                return Some("native array has no usable size contract");
+            }
+            FlatBufferSize::ElementCountParam(index) | FlatBufferSize::ByteCountParam(index) => {
+                let Some(count_param) = method.params.get(*index) else {
+                    return Some("native array references a missing count parameter");
+                };
+                if matches!(classify(count_param), ParamSurface::OutScalar) {
+                    return Some("native array capacity is produced only after the call");
+                }
+            }
+            FlatBufferSize::Constant(_) => {}
+        }
+        if !matches!(size, FlatBufferSize::ByteCountParam(_))
+            && flat_element_size(element).is_none()
+        {
+            return Some("native array element size is not modeled");
+        }
+    }
+    None
+}
+
+fn flat_element_size(typ: &FlatAbiType) -> Option<usize> {
+    match typ {
+        FlatAbiType::I8 | FlatAbiType::U8 => Some(1),
+        FlatAbiType::I16 | FlatAbiType::U16 | FlatAbiType::Char16 => Some(2),
+        FlatAbiType::I32
+        | FlatAbiType::U32
+        | FlatAbiType::F32
+        | FlatAbiType::Bool
+        | FlatAbiType::Bool32 => Some(4),
+        FlatAbiType::I64
+        | FlatAbiType::U64
+        | FlatAbiType::F64
+        | FlatAbiType::Ptr
+        | FlatAbiType::PtrTo(_)
+        | FlatAbiType::Handle { .. }
+        | FlatAbiType::FunctionPointer
+        | FlatAbiType::PWStr
+        | FlatAbiType::PStr => Some(8),
+        FlatAbiType::Enum { underlying, .. } => flat_element_size(underlying),
+        FlatAbiType::NativeArray { .. } | FlatAbiType::Void | FlatAbiType::Unknown => None,
+    }
 }
 
 fn referenced_enum_keys_for_methods(methods: &[FlatMethodMeta]) -> HashSet<(String, String)> {
@@ -197,7 +280,7 @@ fn enum_underlying_unrepresentable(t: &FlatAbiType) -> bool {
 }
 
 /// Returns `Some(reason)` if the given return type has no faithful mapping
-/// to the current `flatInvoke` return-kind ABI. `None` means the type is
+/// to the current flat-call return-kind ABI. `None` means the type is
 /// representable and the method can be emitted.
 fn unsupported_return_reason(t: &FlatAbiType) -> Option<&'static str> {
     if enum_underlying_unrepresentable(t) {
@@ -207,8 +290,15 @@ fn unsupported_return_reason(t: &FlatAbiType) -> Option<&'static str> {
         );
     }
     match t {
-        FlatAbiType::Unknown => Some(
-            "return type could not be classified; refusing to emit an ABI-unsafe I32 fallback",
+        FlatAbiType::Unknown => {
+            Some("return type could not be classified; refusing to emit an ABI-unsafe I32 fallback")
+        }
+        FlatAbiType::Ptr
+        | FlatAbiType::PtrTo(_)
+        | FlatAbiType::NativeArray { .. }
+        | FlatAbiType::PWStr
+        | FlatAbiType::PStr => Some(
+            "returned pointer ownership/lifetime is not modeled; refusing to emit an ownerless pointer",
         ),
         _ => None,
     }
@@ -232,6 +322,32 @@ fn unsupported_param_reason(t: &FlatAbiType) -> Option<&'static str> {
              refusing to emit a wrapper that would pass a pointer where the callee \
              expects an inline value",
         ),
+        FlatAbiType::NativeArray { element, .. } => match element.as_ref() {
+            FlatAbiType::Unknown
+            | FlatAbiType::Ptr
+            | FlatAbiType::PtrTo(_)
+            | FlatAbiType::I8
+            | FlatAbiType::U8
+            | FlatAbiType::I16
+            | FlatAbiType::U16
+            | FlatAbiType::I32
+            | FlatAbiType::U32
+            | FlatAbiType::I64
+            | FlatAbiType::U64
+            | FlatAbiType::F32
+            | FlatAbiType::F64
+            | FlatAbiType::Char16
+            | FlatAbiType::Bool
+            | FlatAbiType::Bool32
+            | FlatAbiType::Handle { .. }
+            | FlatAbiType::Enum { .. }
+            | FlatAbiType::FunctionPointer
+            | FlatAbiType::PWStr
+            | FlatAbiType::PStr => None,
+            FlatAbiType::Void | FlatAbiType::NativeArray { .. } => {
+                Some("nested or void native arrays are unsupported")
+            }
+        },
         _ => None,
     }
 }
@@ -258,6 +374,7 @@ enum ParamSurface {
 
 fn classify(p: &FlatParamMeta) -> ParamSurface {
     match &p.abi {
+        FlatAbiType::NativeArray { .. } | FlatAbiType::PStr => ParamSurface::OpaquePointer,
         FlatAbiType::PtrTo(inner) => {
             let is_projectable = is_small_scalarish(inner);
             match (p.direction, is_projectable) {
@@ -276,9 +393,7 @@ fn classify(p: &FlatParamMeta) -> ParamSurface {
         // freshly-allocated internal buffer). Route them through
         // `OpaquePointer` so the caller supplies a Buffer they own,
         // matching the actual Win32 usage pattern.
-        FlatAbiType::PWStr | FlatAbiType::PStr
-            if matches!(p.direction, FlatDirection::Out | FlatDirection::InOut) =>
-        {
+        FlatAbiType::PWStr if matches!(p.direction, FlatDirection::Out | FlatDirection::InOut) => {
             ParamSurface::OpaquePointer
         }
         _ => ParamSurface::Input,
@@ -321,31 +436,35 @@ fn is_status_return(m: &FlatMethodMeta) -> bool {
 }
 
 fn flat_ret_kind_literal(t: &FlatAbiType) -> &'static str {
-    // Map return type to the string literal passed to DynWinRtValue.flatInvoke.
+    // Map return type to the string literal passed to DynWin32.invoke.
     match t {
-        FlatAbiType::I32
-        | FlatAbiType::I16
-        | FlatAbiType::I8
-        | FlatAbiType::Bool
-        | FlatAbiType::Bool32 => "I32",
-        FlatAbiType::U32 | FlatAbiType::U16 | FlatAbiType::U8 | FlatAbiType::Char16 => "U32",
+        FlatAbiType::I8 => "I8",
+        FlatAbiType::U8 => "U8",
+        FlatAbiType::I16 => "I16",
+        FlatAbiType::U16 | FlatAbiType::Char16 => "U16",
+        FlatAbiType::I32 | FlatAbiType::Bool | FlatAbiType::Bool32 => "I32",
+        FlatAbiType::U32 => "U32",
         FlatAbiType::I64 => "I64",
         FlatAbiType::U64 => "U64",
         FlatAbiType::Enum { underlying, .. } => match **underlying {
             FlatAbiType::I32 => "I32",
-            FlatAbiType::I8 => "I32",
-            FlatAbiType::I16 => "I32",
-            _ => "U32",
+            FlatAbiType::I8 => "I8",
+            FlatAbiType::U8 => "U8",
+            FlatAbiType::I16 => "I16",
+            FlatAbiType::U16 => "U16",
+            FlatAbiType::U32 => "U32",
+            _ => unreachable!("unsupported enum backing was filtered"),
         },
         FlatAbiType::Void => "Void",
         FlatAbiType::Ptr
         | FlatAbiType::PtrTo(_)
         | FlatAbiType::PWStr
         | FlatAbiType::PStr
-        | FlatAbiType::Handle { .. } => "Ptr",
+        | FlatAbiType::Handle { .. }
+        | FlatAbiType::FunctionPointer => "Ptr",
         FlatAbiType::F32 => "F32",
         FlatAbiType::F64 => "F64",
-        FlatAbiType::Unknown => {
+        FlatAbiType::NativeArray { .. } | FlatAbiType::Unknown => {
             debug_assert!(
                 false,
                 "flat_ret_kind_literal: Unknown return should have been filtered upstream"
@@ -357,13 +476,20 @@ fn flat_ret_kind_literal(t: &FlatAbiType) -> &'static str {
 
 fn flat_ret_decode_expr(t: &FlatAbiType, ret_kind: &str) -> String {
     match (t, ret_kind) {
-        (FlatAbiType::Bool | FlatAbiType::Bool32, _) => "(_ret.toNumber() !== 0)".to_string(),
-        (_, "Ptr") => "_ret.asPointerBigint()".to_string(),
-        (_, "I64") => "_ret.toI64BigInt()".to_string(),
-        (_, "U64") => "_ret.toU64BigInt()".to_string(),
-        (_, "F32" | "F64") => "_ret.toF64()".to_string(),
+        (FlatAbiType::Enum { underlying, .. }, _)
+            if matches!(underlying.as_ref(), FlatAbiType::U32) =>
+        {
+            "(DynWin32.toNumber(_ret) | 0)".to_string()
+        }
+        (FlatAbiType::Bool | FlatAbiType::Bool32, _) => {
+            "(DynWin32.toNumber(_ret) !== 0)".to_string()
+        }
+        (_, "Ptr") => "DynWin32.toPointerBigint(_ret)".to_string(),
+        (_, "I64") => "DynWin32.toI64Bigint(_ret)".to_string(),
+        (_, "U64") => "DynWin32.toU64Bigint(_ret)".to_string(),
+        (_, "F32" | "F64") => "DynWin32.toF64(_ret)".to_string(),
         (_, "Void") => "undefined".to_string(),
-        _ => "_ret.toNumber()".to_string(),
+        _ => "DynWin32.toNumber(_ret)".to_string(),
     }
 }
 
@@ -422,12 +548,14 @@ fn js_param_name(raw: &str, idx: usize) -> String {
     }
     // Reserved-word guard.
     match out.as_str() {
-        "class" | "return" | "function" | "default" | "this" | "new" | "delete" | "let" | "const"
-        | "var" | "if" | "else" | "for" | "while" | "do" | "switch" | "case" | "break"
-        | "continue" | "true" | "false" | "null" | "undefined" | "in" | "of" | "typeof"
-        | "instanceof" | "throw" | "try" | "catch" | "finally" | "yield" | "async" | "await"
-        | "with" | "void" | "public" | "private" | "protected" | "package" | "static" | "import"
-        | "export" | "extends" | "super" | "arguments" | "status" | "result" => format!("{}_", out),
+        "class" | "return" | "function" | "default" | "this" | "new" | "delete" | "let"
+        | "const" | "var" | "if" | "else" | "for" | "while" | "do" | "switch" | "case"
+        | "break" | "continue" | "true" | "false" | "null" | "undefined" | "in" | "of"
+        | "typeof" | "instanceof" | "throw" | "try" | "catch" | "finally" | "yield" | "async"
+        | "await" | "with" | "void" | "public" | "private" | "protected" | "package" | "static"
+        | "import" | "export" | "extends" | "super" | "arguments" | "status" | "result" => {
+            format!("{}_", out)
+        }
         _ => out,
     }
 }
@@ -495,17 +623,20 @@ fn dts_type_of(t: &FlatAbiType) -> String {
         | FlatAbiType::Char16 => "number".into(),
         FlatAbiType::I64 | FlatAbiType::U64 => "bigint".into(),
         FlatAbiType::F32 | FlatAbiType::F64 => "number".into(),
-        FlatAbiType::PWStr | FlatAbiType::PStr => "string | null".into(),
+        FlatAbiType::PWStr => "string | null".into(),
+        FlatAbiType::PStr | FlatAbiType::NativeArray { .. } => {
+            "bigint | Buffer | Uint8Array | null".into()
+        }
         FlatAbiType::Handle { name, .. } => name.clone(),
         FlatAbiType::Enum { name, .. } => name.clone(),
-        FlatAbiType::Ptr => "bigint | Buffer | null".into(),
-        FlatAbiType::PtrTo(_) => "bigint | Buffer | null".into(),
+        FlatAbiType::Ptr | FlatAbiType::PtrTo(_) => "bigint | Buffer | Uint8Array | null".into(),
+        FlatAbiType::FunctionPointer => "bigint".into(),
         // Opaque type we couldn't classify from metadata. At runtime it is
-        // marshalled as `DynWinRtValue.pointer(var)` (the same shape as
+        // marshalled as `DynWin32.pointer(var)` (the same shape as
         // `Ptr`), so the .d.ts input type must match the runtime contract:
         // a pointer-like BigInt/Buffer, not a permissive `unknown`. Using
         // `unknown` here silently accepts arbitrary JS values that would
-        // then crash inside `DynWinRtValue.pointer(...)` with a type error.
+        // then fail inside `DynWin32.pointer(...)` with a type error.
         FlatAbiType::Unknown => "bigint | Buffer | null".into(),
     }
 }
@@ -513,7 +644,7 @@ fn dts_type_of(t: &FlatAbiType) -> String {
 /// Return-position type for the flat wrapper.
 ///
 /// Distinct from [`dts_type_of`] because the runtime read side
-/// (`render_method_js` around `_ret.asPointerBigint()` / `_ret.toNumber()`)
+/// (`render_method_js` around `DynWin32.toPointerBigint` / `toNumber`)
 /// produces different JS values than the input-side types [`dts_type_of`]
 /// accepts. Concretely: any `retKind === "Ptr"` (per
 /// [`flat_ret_kind_literal`] — `Ptr`, `PtrTo(_)`, `PWStr`, `PStr`,
@@ -522,7 +653,7 @@ fn dts_type_of(t: &FlatAbiType) -> String {
 /// `result` as `bigint | Buffer | null` or `string | null` (as
 /// [`dts_type_of`] does for input params) would misdescribe the runtime.
 /// All other kinds match [`dts_type_of`]: booleans → `boolean`, small
-/// integers → `number` (from `_ret.toNumber()`), enums → their alias.
+/// integers → `number`, enums → their alias.
 fn dts_return_type_of(t: &FlatAbiType) -> String {
     match t {
         FlatAbiType::Void => "void".into(),
@@ -530,7 +661,9 @@ fn dts_return_type_of(t: &FlatAbiType) -> String {
         | FlatAbiType::PtrTo(_)
         | FlatAbiType::PWStr
         | FlatAbiType::PStr
-        | FlatAbiType::Handle { .. } => "bigint".into(),
+        | FlatAbiType::Handle { .. }
+        | FlatAbiType::FunctionPointer => "bigint".into(),
+        FlatAbiType::NativeArray { .. } => unreachable!("native array returns are filtered"),
         _ => dts_type_of(t),
     }
 }
@@ -539,7 +672,7 @@ fn dts_return_type_of(t: &FlatAbiType) -> String {
 // .js rendering
 // ---------------------------------------------------------------------------
 
-fn render_js(meta: &FlatApisMeta) -> String {
+fn render_js(meta: &FlatApisMeta, runtime_import: &str) -> String {
     let mut out = String::new();
     out.push_str("// Generated by dynwinrt-codegen — do not edit\n");
     out.push_str("// Flat-Win32 [DllImport] wrappers for ");
@@ -548,15 +681,11 @@ fn render_js(meta: &FlatApisMeta) -> String {
     out.push_str(&meta.class_name);
     out.push_str("\n");
     out.push_str("//\n// Each exported function is a natural JS wrapper around\n");
-    out.push_str("// DynWinRtValue.flatInvoke(dll, entry, retKind, args). Pointer-to-scalar\n");
+    out.push_str("// DynWin32.invoke(dll, entry, retKind, args). Pointer-to-scalar\n");
     out.push_str("// [out]/[in,out] params are projected as return-object fields; opaque\n");
     out.push_str("// pointer params (Buffer|bigint|null) stay in the argument list.\n\n");
-    // Honor `--import-name`: the CLI stores the runtime package name (or a
-    // relative path when generating against a local build) in a process-wide
-    // slot managed by javascript::project. Falls back to '@microsoft/dynwinrt'.
-    let runtime_import = crate::codegen::javascript::project::get_import_name();
     out.push_str(&format!(
-        "import {{ DynWinRtValue }} from '{runtime_import}';\n\n"
+        "import {{ DynWin32 }} from '{runtime_import}';\n\n"
     ));
 
     // A small runtime helper for wide- and narrow-string marshalling.
@@ -569,7 +698,6 @@ fn render_js(meta: &FlatApisMeta) -> String {
     }
 
     out.push_str(WIDE_STRING_HELPER);
-    out.push_str(NARROW_STRING_HELPER);
     // The handle-slot helper is only needed when a method writes a `bigint |
     // number` handle into an in/out 64-bit slot; emit it only if referenced.
     if methods_js.contains("_handleU64(") {
@@ -620,46 +748,21 @@ function _wideStringBuffer(str) {
 }
 ";
 
-const NARROW_STRING_HELPER: &str = "\
-// Build a NUL-terminated UTF-8 Buffer for LPCSTR/PSTR args. Distinct from
-// the wide-string helper because ANSI/UTF-8 Win32 A-suffixed exports
-// (e.g. `RegOpenKeyExA`) take a single-byte `char*`, not `wchar_t*` —
-// writing UTF-16LE bytes into them corrupts parameters and can smash the
-// callee's stack. On modern Windows (10 1903+) with the app manifested
-// for UTF-8 ACP, or on OS versions that natively accept UTF-8 for A-APIs,
-// this is the correct encoding. This typed wrapper always UTF-8-encodes the
-// string; a caller needing a different/legacy ANSI code page must bypass the
-// generated wrapper and call `DynWinRtValue.flatInvoke` directly with a
-// pre-encoded Buffer (this helper only accepts a JS string).
-// Rejects embedded U+0000 for the same truncation-safety reason as the
-// wide-string helper.
-function _narrowStringBuffer(str) {
-    if (str === null || str === undefined) return null;
-    if (typeof str !== 'string') {
-        throw new TypeError(`expected string, got ${typeof str}`);
-    }
-    if (str.indexOf('\\u0000') !== -1) {
-        throw new RangeError('string contains embedded NUL (U+0000)');
-    }
-    const byteLen = Buffer.byteLength(str, 'utf8');
-    const buf = Buffer.alloc(byteLen + 1);
-    buf.write(str, 'utf8');
-    return buf;
-}
-";
-
 const HANDLE_SLOT_HELPER: &str = "\
-// Coerce a handle (bigint | number) to a BigInt for a 64-bit in/out slot.
-// A bigint carries full 64-bit handle bits; a number must be a non-negative
-// safe integer (a number above 2^53-1 has already lost bits, so it is
-// rejected rather than silently writing a wrong handle).
+// Coerce a handle (bigint | number) to unsigned pointer bits for a 64-bit
+// in/out slot. Signed pseudo-handles are preserved through two's complement.
 function _handleU64(x) {
-    if (typeof x === 'bigint') return x;
-    if (typeof x === 'number') {
-        if (!Number.isSafeInteger(x) || x < 0) {
-            throw new RangeError('handle number must be a non-negative safe integer (use a bigint for a full 64-bit handle)');
+    if (typeof x === 'bigint') {
+        if (x < -(1n << 63n) || x > ((1n << 64n) - 1n)) {
+            throw new RangeError('handle bigint must fit in a signed or unsigned 64-bit value');
         }
-        return BigInt(x);
+        return BigInt.asUintN(64, x);
+    }
+    if (typeof x === 'number') {
+        if (!Number.isSafeInteger(x)) {
+            throw new RangeError('handle number must be a safe integer (use a bigint for a full 64-bit handle)');
+        }
+        return BigInt.asUintN(64, BigInt(x));
     }
     throw new TypeError(`expected a bigint or number handle, got ${typeof x}`);
 }
@@ -719,6 +822,33 @@ fn render_method_js(out: &mut String, m: &FlatMethodMeta) {
         param_names.join(", ")
     ));
 
+    for (i, param) in m.params.iter().enumerate() {
+        let FlatAbiType::NativeArray { element, size } = &param.abi else {
+            continue;
+        };
+        let jname = &jnames[i];
+        let (count_expr, multiplier) = match size {
+            FlatBufferSize::ElementCountParam(index) => {
+                (jnames[*index].clone(), flat_element_size(element).unwrap())
+            }
+            FlatBufferSize::ByteCountParam(index) => (jnames[*index].clone(), 1),
+            FlatBufferSize::Constant(count) => {
+                (count.to_string(), flat_element_size(element).unwrap())
+            }
+            FlatBufferSize::Unknown => unreachable!("unsupported array was filtered"),
+        };
+        let required = format!("_{jname}RequiredBytes");
+        out.push_str(&format!(
+            "    const {required} = Number({count_expr}) * {multiplier};\n\
+             \x20   if (!Number.isSafeInteger({required}) || {required} < 0) {{\n\
+             \x20       throw new RangeError('{jname} size is not a non-negative safe integer');\n\
+             \x20   }}\n\
+             \x20   if ({jname} != null && ArrayBuffer.isView({jname}) && {jname}.byteLength < {required}) {{\n\
+             \x20       throw new RangeError('{jname} buffer is smaller than the native size contract');\n\
+             \x20   }}\n"
+        ));
+    }
+
     // Emit slot allocations for OutScalar / InOutScalar params.
     for (i, s) in &classified {
         let p = &m.params[*i];
@@ -741,19 +871,8 @@ fn render_method_js(out: &mut String, m: &FlatMethodMeta) {
         }
     }
 
-    // Emit keep-alive locals for wide/narrow string buffers so the
-    // freshly-allocated Buffer stays reachable from a JS local through
-    // the flatInvoke call. `DynWinRtValue.pointer(Buffer)` extracts the
-    // Buffer's `as_ptr()` but does NOT retain the Buffer itself, so the
-    // temporary `_wideStringBuffer(x)` / `_narrowStringBuffer(x)` value
-    // would become unreachable the moment `pointer(...)` returned and
-    // could be reclaimed by GC before the callee runs — passing a
-    // dangling pointer to the flat Win32 export. A named `const` in the
-    // function's stack frame keeps the Buffer alive across the invoke
-    // call (JS engines must consider identifiers reachable through
-    // the enclosing scope until they leave scope), which is the same
-    // pattern used for the out/in-out `_*Slot` Buffers above.
-    let mut string_keepalive: Vec<(usize, String, &'static str)> = Vec::new();
+    // Keep synthesized UTF-16 buffers reachable through the native call.
+    let mut string_keepalive: Vec<(usize, String)> = Vec::new();
     for (i, s) in &classified {
         if *s != ParamSurface::Input {
             continue;
@@ -766,20 +885,13 @@ fn render_method_js(out: &mut String, m: &FlatMethodMeta) {
                 out.push_str(&format!(
                     "    const {local} = _wideStringBuffer({jname});\n"
                 ));
-                string_keepalive.push((*i, local, "wide"));
-            }
-            FlatAbiType::PStr => {
-                let local = format!("_{jname}Buf");
-                out.push_str(&format!(
-                    "    const {local} = _narrowStringBuffer({jname});\n"
-                ));
-                string_keepalive.push((*i, local, "narrow"));
+                string_keepalive.push((*i, local));
             }
             _ => {}
         }
     }
 
-    // Build the flatInvoke args array.
+    // Build the native-call args array.
     let mut arg_exprs: Vec<String> = Vec::with_capacity(m.params.len());
     for (i, s) in &classified {
         let p = &m.params[*i];
@@ -787,7 +899,7 @@ fn render_method_js(out: &mut String, m: &FlatMethodMeta) {
         let expr = match s {
             ParamSurface::OutScalar | ParamSurface::InOutScalar => {
                 let slot = format!("_{jname}Slot");
-                format!("DynWinRtValue.pointer({slot})")
+                format!("DynWin32.pointer({slot})")
             }
             ParamSurface::OpaquePointer => {
                 // Caller-supplied Buffer / bigint / null — pass through
@@ -795,14 +907,14 @@ fn render_method_js(out: &mut String, m: &FlatMethodMeta) {
                 // apply the string-input transformation (`_wideStringBuffer`
                 // et al.) to a PWStr/PStr param that the caller wants to
                 // treat as a raw byte buffer.
-                format!("DynWinRtValue.pointer({jname})")
+                format!("DynWin32.pointer({jname})")
             }
             ParamSurface::Input => {
                 // If this is a string param with a keep-alive local,
                 // pass the local directly to pointer() — do NOT recreate
                 // a fresh temp Buffer inline.
-                if let Some((_, local, _)) = string_keepalive.iter().find(|(idx, _, _)| idx == i) {
-                    format!("DynWinRtValue.pointer({local})")
+                if let Some((_, local)) = string_keepalive.iter().find(|(idx, _)| idx == i) {
+                    format!("DynWin32.pointer({local})")
                 } else {
                     wrap_arg_js(&p.abi, jname)
                 }
@@ -813,8 +925,9 @@ fn render_method_js(out: &mut String, m: &FlatMethodMeta) {
 
     let args_line = arg_exprs.join(", ");
     out.push_str(&format!(
-        "    const _ret = DynWinRtValue.flatInvoke('{}', '{}', '{}', [{}]);\n",
-        m.dll, m.entry_point, ret_kind, args_line,
+        "    const _call = DynWin32.invoke('{}', '{}', '{}', [{}], {});\n\
+         \x20   const _ret = _call.value;\n",
+        m.dll, m.entry_point, ret_kind, args_line, m.supports_last_error,
     ));
     let ret_val = flat_ret_decode_expr(&m.return_type, ret_kind);
 
@@ -825,11 +938,23 @@ fn render_method_js(out: &mut String, m: &FlatMethodMeta) {
     if !has_projected_out {
         // Simple return: status/return value.
         if matches!(m.return_type, FlatAbiType::Void) {
-            out.push_str("    return undefined;\n");
+            if m.supports_last_error {
+                out.push_str("    return { lastError: _call.lastError };\n");
+            } else {
+                out.push_str("    return undefined;\n");
+            }
         } else if is_status_return(m) {
-            out.push_str(&format!("    return {{ status: {ret_val} }};\n"));
+            out.push_str(&format!("    return {{ status: {ret_val}"));
+            if m.supports_last_error {
+                out.push_str(", lastError: _call.lastError");
+            }
+            out.push_str(" };\n");
         } else {
-            out.push_str(&format!("    return {{ result: {ret_val} }};\n"));
+            out.push_str(&format!("    return {{ result: {ret_val}"));
+            if m.supports_last_error {
+                out.push_str(", lastError: _call.lastError");
+            }
+            out.push_str(" };\n");
         }
     } else {
         // Build result object.
@@ -838,6 +963,9 @@ fn render_method_js(out: &mut String, m: &FlatMethodMeta) {
             out.push_str(&format!("        status: {ret_val},\n"));
         } else if !matches!(m.return_type, FlatAbiType::Void) {
             out.push_str(&format!("        result: {ret_val},\n"));
+        }
+        if m.supports_last_error {
+            out.push_str("        lastError: _call.lastError,\n");
         }
         for (i, s) in &classified {
             if !matches!(s, ParamSurface::OutScalar | ParamSurface::InOutScalar) {
@@ -880,10 +1008,7 @@ impl WriteExpr {
 /// literal placeholder `{slot}` to substitute with the slot variable name.
 fn scalar_slot_alloc_and_read(t: &FlatAbiType) -> (String, String) {
     match t {
-        FlatAbiType::I8 => (
-            "Buffer.alloc(1)".into(),
-            "{slot}.readInt8(0)".into(),
-        ),
+        FlatAbiType::I8 => ("Buffer.alloc(1)".into(), "{slot}.readInt8(0)".into()),
         FlatAbiType::U8 => ("Buffer.alloc(1)".into(), "{slot}.readUInt8(0)".into()),
         FlatAbiType::I16 => ("Buffer.alloc(2)".into(), "{slot}.readInt16LE(0)".into()),
         FlatAbiType::U16 | FlatAbiType::Char16 => {
@@ -893,9 +1018,7 @@ fn scalar_slot_alloc_and_read(t: &FlatAbiType) -> (String, String) {
             "Buffer.alloc(4)".into(),
             "({slot}.readInt32LE(0) !== 0)".into(),
         ),
-        FlatAbiType::I32 => {
-            ("Buffer.alloc(4)".into(), "{slot}.readInt32LE(0)".into())
-        }
+        FlatAbiType::I32 => ("Buffer.alloc(4)".into(), "{slot}.readInt32LE(0)".into()),
         FlatAbiType::U32 => ("Buffer.alloc(4)".into(), "{slot}.readUInt32LE(0)".into()),
         FlatAbiType::I64 => ("Buffer.alloc(8)".into(), "{slot}.readBigInt64LE(0)".into()),
         FlatAbiType::U64 | FlatAbiType::Handle { .. } => (
@@ -933,27 +1056,25 @@ fn scalar_slot_write(t: &FlatAbiType, value_var: &str) -> WriteExpr {
             WriteExpr::new(&format!("{{slot}}.writeInt32LE({value_var}, 0)"))
         }
         FlatAbiType::U32 => WriteExpr::new(&format!("{{slot}}.writeUInt32LE({value_var}, 0)")),
-        FlatAbiType::I64 => WriteExpr::new(&format!(
-            "{{slot}}.writeBigInt64LE(BigInt({value_var}), 0)"
-        )),
+        FlatAbiType::I64 => {
+            WriteExpr::new(&format!("{{slot}}.writeBigInt64LE(BigInt({value_var}), 0)"))
+        }
         FlatAbiType::U64 => WriteExpr::new(&format!(
             "{{slot}}.writeBigUInt64LE(BigInt({value_var}), 0)"
         )),
         // Handle in-out slots accept both bigint and number (Buffer is
         // intentionally NOT a valid Handle input — see the handle typedef
-        // in the .d.ts — because `DynWinRtValue.pointer(Buffer)` uses the
+        // in the .d.ts — because `DynWin32.pointer(Buffer)` uses the
         // buffer's own address, not the bytes it contains). Route through
-        // `_handleU64`, which carries a bigint losslessly and rejects a
-        // number that is not a non-negative safe integer (a number above
-        // 2^53-1 has already lost bits, so `BigInt(x)` would write a wrong
-        // handle silently).
+        // `_handleU64`, which preserves signed pseudo-handles and rejects a
+        // number that is not a safe integer.
         FlatAbiType::Handle { .. } => WriteExpr::new(&format!(
             "{{slot}}.writeBigUInt64LE(_handleU64({value_var}), 0)"
         )),
         FlatAbiType::Enum { underlying, .. } => match **underlying {
-            FlatAbiType::U32 => WriteExpr::new(&format!(
-                "{{slot}}.writeUInt32LE(({value_var}) >>> 0, 0)"
-            )),
+            FlatAbiType::U32 => {
+                WriteExpr::new(&format!("{{slot}}.writeUInt32LE(({value_var}) >>> 0, 0)"))
+            }
             _ => scalar_slot_write(underlying, value_var),
         },
         _ => WriteExpr::new(&format!("{{slot}}.writeUInt32LE({value_var}, 0)")),
@@ -962,29 +1083,26 @@ fn scalar_slot_write(t: &FlatAbiType, value_var: &str) -> WriteExpr {
 
 fn wrap_arg_js(t: &FlatAbiType, var: &str) -> String {
     match t {
-        FlatAbiType::Bool => format!("DynWinRtValue.i32({var} ? 1 : 0)"),
-        FlatAbiType::Bool32 => format!("DynWinRtValue.i32({var} ? 1 : 0)"),
-        FlatAbiType::I8 => format!("DynWinRtValue.i32({var})"),
-        FlatAbiType::U8 => format!("DynWinRtValue.u32({var})"),
-        FlatAbiType::I16 => format!("DynWinRtValue.i32({var})"),
-        FlatAbiType::U16 | FlatAbiType::Char16 => format!("DynWinRtValue.u32({var})"),
-        FlatAbiType::I32 => format!("DynWinRtValue.i32({var})"),
-        FlatAbiType::U32 => format!("DynWinRtValue.u32({var})"),
-        FlatAbiType::I64 => format!("DynWinRtValue.i64(BigInt({var}))"),
-        FlatAbiType::U64 => format!("DynWinRtValue.u64(BigInt({var}))"),
+        FlatAbiType::Bool | FlatAbiType::Bool32 => format!("DynWin32.i32({var} ? 1 : 0)"),
+        FlatAbiType::I8 => format!("DynWin32.i8({var})"),
+        FlatAbiType::U8 => format!("DynWin32.u8({var})"),
+        FlatAbiType::I16 => format!("DynWin32.i16({var})"),
+        FlatAbiType::U16 | FlatAbiType::Char16 => format!("DynWin32.u16({var})"),
+        FlatAbiType::I32 => format!("DynWin32.i32({var})"),
+        FlatAbiType::U32 => format!("DynWin32.u32({var})"),
+        FlatAbiType::I64 => format!("DynWin32.i64({var})"),
+        FlatAbiType::U64 => format!("DynWin32.u64({var})"),
         // Emit correctly-typed float wrappers so the value round-trips as
         // an IEEE-754 float, not a mis-marshalled pointer. If the Rust
         // `flat_invoke` path doesn't yet accept F32/F64 args, this will
         // throw a clear "unsupported arg kind" — fail loud, not silently
         // wrong. Never emit `pointer(<float>)` here.
-        FlatAbiType::F32 => format!("DynWinRtValue.f32({var})"),
-        FlatAbiType::F64 => format!("DynWinRtValue.f64({var})"),
+        FlatAbiType::F32 => format!("DynWin32.f32({var})"),
+        FlatAbiType::F64 => format!("DynWin32.f64({var})"),
         FlatAbiType::PWStr => {
-            format!("DynWinRtValue.pointer(_wideStringBuffer({var}))")
+            format!("DynWin32.pointer(_wideStringBuffer({var}))")
         }
-        FlatAbiType::PStr => {
-            format!("DynWinRtValue.pointer(_narrowStringBuffer({var}))")
-        }
+        FlatAbiType::PStr => format!("DynWin32.pointer({var})"),
         // Handles: type is `bigint | number` (see the handle typedef in
         // the .d.ts). Pass the value straight through to `pointer`, which
         // accepts `bigint | number`: a bigint carries full 64-bit handle
@@ -993,14 +1111,17 @@ fn wrap_arg_js(t: &FlatAbiType, var: &str) -> String {
         // in `BigInt(x)` — for a number above Number.MAX_SAFE_INTEGER the
         // bits are already lost before BigInt sees them, and wrapping also
         // bypasses `pointer`'s safe-integer validation.
-        FlatAbiType::Handle { .. } => format!("DynWinRtValue.pointer({var})"),
-        FlatAbiType::Ptr | FlatAbiType::PtrTo(_) => format!("DynWinRtValue.pointer({var})"),
+        FlatAbiType::Handle { .. } => format!("DynWin32.handle({var})"),
+        FlatAbiType::FunctionPointer => format!("DynWin32.pointer({var})"),
+        FlatAbiType::Ptr | FlatAbiType::PtrTo(_) | FlatAbiType::NativeArray { .. } => {
+            format!("DynWin32.pointer({var})")
+        }
         FlatAbiType::Enum { underlying, .. } => match **underlying {
-            FlatAbiType::U32 => format!("DynWinRtValue.u32(({var}) >>> 0)"),
+            FlatAbiType::U32 => format!("DynWin32.u32(({var}) >>> 0)"),
             _ => wrap_arg_js(underlying, var),
         },
         FlatAbiType::Void | FlatAbiType::Unknown => {
-            format!("DynWinRtValue.pointer({var})")
+            format!("DynWin32.pointer({var})")
         }
     }
 }
@@ -1013,6 +1134,10 @@ fn describe_abi(t: &FlatAbiType) -> String {
         FlatAbiType::Enum { name, .. } => format!("{name} enum"),
         FlatAbiType::Ptr => "opaque pointer".into(),
         FlatAbiType::PtrTo(inner) => format!("pointer to {}", describe_abi(inner)),
+        FlatAbiType::NativeArray { element, size } => {
+            format!("caller-owned {size:?} buffer of {}", describe_abi(element))
+        }
+        FlatAbiType::FunctionPointer => "native function pointer".into(),
         other => format!("{other:?}"),
     }
 }
@@ -1029,11 +1154,23 @@ fn describe_return_shape(
         .collect();
     if outs.is_empty() {
         if matches!(m.return_type, FlatAbiType::Void) {
-            "undefined".into()
+            if m.supports_last_error {
+                "{ lastError: number }".into()
+            } else {
+                "undefined".into()
+            }
         } else if is_status_return(m) {
-            "{ status: number }".into()
+            if m.supports_last_error {
+                "{ status: number, lastError: number }".into()
+            } else {
+                "{ status: number }".into()
+            }
         } else {
-            "{ result: <return> }".into()
+            if m.supports_last_error {
+                "{ result: <return>, lastError: number }".into()
+            } else {
+                "{ result: <return> }".into()
+            }
         }
     } else {
         let mut parts: Vec<String> = Vec::new();
@@ -1041,6 +1178,9 @@ fn describe_return_shape(
             parts.push("status: number".into());
         } else if !matches!(m.return_type, FlatAbiType::Void) {
             parts.push("result: <return>".into());
+        }
+        if m.supports_last_error {
+            parts.push("lastError: number".into());
         }
         // Use the SANITIZED JS identifiers (jnames) — not raw winmd param
         // names — because the emitter uses these same identifiers as the
@@ -1085,7 +1225,7 @@ fn render_dts(meta: &FlatApisMeta) -> String {
     let handle_aliases = collect_handle_aliases(meta);
     for h in &handle_aliases {
         out.push_str(&format!(
-            "/** Opaque Win32 handle. Pass either a raw pointer value as a `bigint` (safe for full 64-bit handle values) or a `number` (only for handles that fit in a JS safe integer, e.g. HWND with small window IDs). Do NOT pass a `Buffer` — `DynWinRtValue.pointer(Buffer)` uses the buffer's own address, not the bytes it contains, so a Buffer of pointer bits would be misinterpreted as a pointer TO a `{h}`. */\nexport type {h} = bigint | number;\n"
+            "/** Opaque Win32 handle. Pass either a raw pointer value as a `bigint` (safe for full 64-bit handle values) or a `number` (only for handles that fit in a JS safe integer, e.g. HWND with small window IDs). Do NOT pass a `Buffer` — `DynWin32.pointer(Buffer)` uses the buffer's own address, not the bytes it contains, so a Buffer of pointer bits would be misinterpreted as a pointer TO a `{h}`. */\nexport type {h} = bigint | number;\n"
         ));
     }
     if !handle_aliases.is_empty() {
@@ -1144,13 +1284,28 @@ fn render_method_dts(out: &mut String, m: &FlatMethodMeta) {
 
     let ret_ty = if out_indices.is_empty() {
         if matches!(m.return_type, FlatAbiType::Void) {
-            "void".to_string()
+            if m.supports_last_error {
+                "{ readonly lastError: number }".to_string()
+            } else {
+                "void".to_string()
+            }
         } else if is_status_return(m) {
-            "{ readonly status: number }".to_string()
+            let last_error = if m.supports_last_error {
+                "; readonly lastError: number"
+            } else {
+                ""
+            };
+            format!("{{ readonly status: number{last_error} }}")
         } else {
+            let last_error = if m.supports_last_error {
+                "; readonly lastError: number"
+            } else {
+                ""
+            };
             format!(
-                "{{ readonly result: {} }}",
-                dts_return_type_of(&m.return_type)
+                "{{ readonly result: {}{} }}",
+                dts_return_type_of(&m.return_type),
+                last_error
             )
         }
     } else {
@@ -1162,6 +1317,9 @@ fn render_method_dts(out: &mut String, m: &FlatMethodMeta) {
                 "readonly result: {}",
                 dts_return_type_of(&m.return_type)
             ));
+        }
+        if m.supports_last_error {
+            fields.push("readonly lastError: number".into());
         }
         for i in &out_indices {
             let p = &m.params[*i];
@@ -1203,6 +1361,7 @@ fn walk_abi_for_handles(t: &FlatAbiType, set: &mut BTreeSet<String>) {
             set.insert(name.clone());
         }
         FlatAbiType::PtrTo(inner) => walk_abi_for_handles(inner, set),
+        FlatAbiType::NativeArray { element, .. } => walk_abi_for_handles(element, set),
         FlatAbiType::Enum { .. }
         | FlatAbiType::Bool
         | FlatAbiType::Bool32
@@ -1219,6 +1378,7 @@ fn walk_abi_for_handles(t: &FlatAbiType, set: &mut BTreeSet<String>) {
         | FlatAbiType::Char16
         | FlatAbiType::PWStr
         | FlatAbiType::PStr
+        | FlatAbiType::FunctionPointer
         | FlatAbiType::Ptr
         | FlatAbiType::Void
         | FlatAbiType::Unknown => {}
@@ -1322,7 +1482,7 @@ mod tests {
             },
             "hKey",
         );
-        assert_eq!(arg, "DynWinRtValue.pointer(hKey)");
+        assert_eq!(arg, "DynWin32.handle(hKey)");
         assert!(
             !arg.contains("BigInt("),
             "handle arg must not wrap in BigInt(): {arg}"
@@ -1387,6 +1547,7 @@ mod tests {
                 return_type,
                 params: vec![],
                 return_is_status,
+                supports_last_error: false,
             }
         }
         assert!(is_status_return(&method(FlatAbiType::I32, true)));
@@ -1429,6 +1590,7 @@ mod tests {
                 },
             ],
             return_is_status: false,
+            supports_last_error: false,
         };
         let apis = FlatApisMeta {
             namespace: "Test".into(),
@@ -1438,7 +1600,10 @@ mod tests {
         };
         let out = generate_flat_apis_files(&apis);
         assert!(out.js.contains("export function mulDiv"));
-        assert!(out.js.contains("flatInvoke('kernel32.dll', 'MulDiv', 'I32'"));
+        assert!(
+            out.js
+                .contains("DynWin32.invoke('kernel32.dll', 'MulDiv', 'I32'")
+        );
         assert!(out.dts.contains("mulDiv"));
     }
 }

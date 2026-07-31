@@ -56,6 +56,13 @@ package root remains the WinRT-only API. See
 [Classic COM support](docs/classic-com-support.md) for the supported ABI,
 common-interface test matrix, unsupported native types, and ownership rules.
 
+Flat Win32 bindings use the separate `@microsoft/dynwinrt/win32` runtime
+entrypoint and are generated into namespace-specific modules. Generation is
+fail-closed for native shapes whose pointer depth, size, architecture, calling
+convention, lifetime, or ownership is not modeled. See
+[Flat Win32 support](docs/flat-win32-support.md) for the supported subset and
+limitations.
+
 Generated bindings project unambiguous public WinRT activation metadata as JavaScript
 constructors, including overloads such as `new Uri(base, relative)`. Existing
 static factory methods remain available. Classes that can only be returned by

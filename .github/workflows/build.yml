@@ -161,3 +161,5 @@ jobs:
             bindings/js/dist/winrt.d.ts
             bindings/js/dist/com.js
             bindings/js/dist/com.d.ts
+            bindings/js/dist/win32.js
+            bindings/js/dist/win32.d.ts
