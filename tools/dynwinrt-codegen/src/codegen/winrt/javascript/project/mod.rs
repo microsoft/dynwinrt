@@ -15,6 +15,7 @@ mod structs;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
+use crate::codegen::winrt::extensions::winui::{self, WinUiAbiType};
 use crate::meta::{
     ClassMeta, InterfaceMeta, MethodMeta, PIID_IOBSERVABLE_VECTOR, PIID_IVECTOR, ParamDirection,
 };
@@ -71,11 +72,16 @@ const PIID_IMAP: &str = "3c2925fe-8519-45c1-aa79-197b6718c1c1";
 const PIID_IMAP_VIEW: &str = "e480ce40-a338-4ada-adcf-272272e48cb9";
 const ICLOSABLE_IID: &str = "30d5a829-7fa4-4026-83bb-d75bae4ea99e";
 const ISTRINGABLE_IID: &str = "96369f54-8eb6-48f0-abce-c1b211e627c3";
-const XAML_APPLICATION: &str = "Microsoft.UI.Xaml.Application";
-const XAML_METADATA_PROVIDER: &str = "XamlControlsXamlMetaDataProvider";
-const XAML_CONTROLS_RESOURCES: &str = "XamlControlsResources";
-const MRT_RESOURCE_MANAGER: &str = "ResourceManager";
-const XAML_LAUNCHED_CALLBACK_IID: &str = "f81c4e72-7a18-4a30-9126-6f62b6bdac83";
+
+fn project_winui_abi_types(types: &[WinUiAbiType]) -> String {
+    types
+        .iter()
+        .map(|typ| match typ {
+            WinUiAbiType::Object => "DynWinRtType.object()",
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
 
 fn interface_iid_rhs(iface: &InterfaceMeta) -> Option<String> {
     if let Some(ref piid) = iface.generic_piid {
@@ -177,11 +183,9 @@ pub fn project_class(
     delegate_param_wraps: &HashMap<String, Vec<String>>,
 ) -> ProjectedFile {
     let used_structs = collect_used_structs_from_class(class);
-    let has_xaml_fluent_bootstrap = class.full_name == XAML_APPLICATION
-        && known_types.contains(XAML_METADATA_PROVIDER)
-        && known_types.contains(XAML_CONTROLS_RESOURCES);
+    let winui_bootstrap = winui::resolve_application_bootstrap(class, known_types);
     let supports_unpackaged_xaml =
-        has_xaml_fluent_bootstrap && known_types.contains(MRT_RESOURCE_MANAGER);
+        winui_bootstrap.is_some_and(|bootstrap| bootstrap.supports_unpackaged_resources);
 
     // Collect delegate names only from interfaces of THIS class (not the entire batch)
     // for delegate imports; but also include global delegate_type_names for type filtering
@@ -295,10 +299,11 @@ pub fn project_class(
         }
     }
 
-    if has_xaml_fluent_bootstrap {
-        let mut names = vec![XAML_METADATA_PROVIDER, XAML_CONTROLS_RESOURCES];
-        if supports_unpackaged_xaml {
-            names.push(MRT_RESOURCE_MANAGER);
+    if let Some(bootstrap) = winui_bootstrap {
+        let spec = bootstrap.spec;
+        let mut names = vec![spec.metadata_provider.name, spec.controls_resources.name];
+        if bootstrap.supports_unpackaged_resources {
+            names.push(spec.resource_manager.name);
         }
         for name in names {
             if imported_names.insert(name.into()) {
@@ -623,11 +628,13 @@ pub fn project_class(
         }
     }
 
-    if has_xaml_fluent_bootstrap {
-        let unpackaged_resource_setup = if supports_unpackaged_xaml {
+    if let Some(bootstrap) = winui_bootstrap {
+        let spec = bootstrap.spec;
+        let launched_callback_types = project_winui_abi_types(spec.launched_callback_params);
+        let unpackaged_resource_setup = if bootstrap.supports_unpackaged_resources {
             format!(
                 "if (!hasPackageIdentity()) {{ const _resourceManager = (__get_{resource_manager}()).createInstance(getWinappsdkResourcePriPath()); _app.onResourceManagerRequested((_sender, args) => {{ if (args === null) throw new Error('WinUI ResourceManagerRequested did not supply event arguments'); args.customResourceManager = _resourceManager; }}); }}",
-                resource_manager = MRT_RESOURCE_MANAGER,
+                resource_manager = spec.resource_manager.name,
             )
         } else {
             String::new()
@@ -650,7 +657,7 @@ pub fn project_class(
             params: vec![
                 ProjectedParam {
                     name: "metadataProvider".into(),
-                    ts_type: XAML_METADATA_PROVIDER.into(),
+                    ts_type: spec.metadata_provider.name.into(),
                     optional: false,
                     delegate_wrap: None,
                 },
@@ -667,8 +674,9 @@ pub fn project_class(
             is_static: true,
             invoke_expr: String::new(),
             sync_return_expr: Some(format!(
-                "(() => {{ const _launched = onLaunched == null ? null : DynWinRtDelegate.create(WinGuid.parse('{callback_iid}'), [DynWinRtType.object()], onLaunched).toValue(); return {class_name}._fromNative(DynWinRtValue.createXamlApplication(_unwrap(metadataProvider), _launched)); }})()",
-                callback_iid = XAML_LAUNCHED_CALLBACK_IID,
+                "(() => {{ const _launched = onLaunched == null ? null : DynWinRtDelegate.create(WinGuid.parse('{callback_iid}'), [{callback_types}], onLaunched).toValue(); return {class_name}._fromNative(DynWinRtValue.createXamlApplication(_unwrap(metadataProvider), _launched)); }})()",
+                callback_iid = spec.launched_callback_iid,
+                callback_types = launched_callback_types,
                 class_name = class.name,
             )),
             async_convert_v: None,
@@ -706,10 +714,11 @@ pub fn project_class(
             is_static: true,
             invoke_expr: String::new(),
             sync_return_expr: Some(format!(
-                "(() => {{ const _provider = (__get_{provider}()).create(); let _resourcesInitialized = false; const _launched = DynWinRtDelegate.create(WinGuid.parse('{callback_iid}'), [DynWinRtType.object()], () => {{ const _app = {class_name}.current; if (_app === null) throw new Error('WinUI Application.Current is unavailable during OnLaunched'); if (!_resourcesInitialized) {{ _app.resources.mergedDictionaries.append((__get_{resources}()).create()); _resourcesInitialized = true; }} onLaunched?.(); }}); const _app = {class_name}._fromNative(DynWinRtValue.createXamlApplication(_unwrap(_provider), _launched.toValue())); {unpackaged_resource_setup} return _app; }})()",
-                callback_iid = XAML_LAUNCHED_CALLBACK_IID,
-                provider = XAML_METADATA_PROVIDER,
-                resources = XAML_CONTROLS_RESOURCES,
+                "(() => {{ const _provider = (__get_{provider}()).create(); let _resourcesInitialized = false; const _launched = DynWinRtDelegate.create(WinGuid.parse('{callback_iid}'), [{callback_types}], () => {{ const _app = {class_name}.current; if (_app === null) throw new Error('WinUI Application.Current is unavailable during OnLaunched'); if (!_resourcesInitialized) {{ _app.resources.mergedDictionaries.append((__get_{resources}()).create()); _resourcesInitialized = true; }} onLaunched?.(); }}); const _app = {class_name}._fromNative(DynWinRtValue.createXamlApplication(_unwrap(_provider), _launched.toValue())); {unpackaged_resource_setup} return _app; }})()",
+                callback_iid = spec.launched_callback_iid,
+                callback_types = launched_callback_types,
+                provider = spec.metadata_provider.name,
+                resources = spec.controls_resources.name,
                 class_name = class.name,
             )),
             async_convert_v: None,
@@ -734,7 +743,7 @@ pub fn project_class(
                 delegate_sigs,
                 delegate_param_wraps,
             );
-            if class.full_name == XAML_APPLICATION && method.name == "Start" {
+            if winui::is_application(class) && method.name == "Start" {
                 if let ProjectedMember::Method(projected_method) = &projected {
                     let mut scheduled = projected_method.clone();
                     scheduled.name = "startScheduled".into();

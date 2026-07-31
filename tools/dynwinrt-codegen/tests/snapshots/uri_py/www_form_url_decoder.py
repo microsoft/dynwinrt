@@ -27,7 +27,7 @@ def _dynwinrt_symbol(module, name):
 def _dynwinrt_wrap_values(module, name, values):
     wrapper = _dynwinrt_symbol(module, name)
     wrap = getattr(wrapper, '_from_native', wrapper)
-    return [wrap(value) for value in values]
+    return [None if value.is_null() else wrap(value) for value in values]
 
 
 def _dynwinrt_enum(module, name, value):
@@ -94,7 +94,7 @@ class WwwFormUrlDecoder(_WinRTSequenceMixin):
             return
         _bound = _dynwinrt_bind_overload(('query',), args, kwargs)
         if _bound is not None and isinstance(_bound[0], str):
-            self._set_native(type(self).create_www_form_url_decoder(*_bound)._obj)
+            self._set_native(type(self).create_www_form_url_decoder(_bound[0])._obj)
             return
         raise TypeError("No matching constructor for WwwFormUrlDecoder")
 
@@ -116,21 +116,21 @@ class WwwFormUrlDecoder(_WinRTSequenceMixin):
 
     @property
     def size(self) -> int:
-        return _IVectorView_IWwwFormUrlDecoderEntry.method(7).invoke(self._collection_obj, []).to_number()
+        return _IVectorView_IWwwFormUrlDecoderEntry.method(7).invoke(self._collection_obj, []).to_u32()
 
-    def get_at(self, index: int) -> 'IWwwFormUrlDecoderEntry':
-        return _dynwinrt_symbol('i_www_form_url_decoder_entry', 'IWwwFormUrlDecoderEntry')(_IVectorView_IWwwFormUrlDecoderEntry.method(6).invoke(self._collection_obj, [DynWinRTValue.from_u32(index)]))
+    def get_at(self, index: int) -> IWwwFormUrlDecoderEntry | None:
+        return (lambda value: None if value.is_null() else _dynwinrt_symbol('i_www_form_url_decoder_entry', 'IWwwFormUrlDecoderEntry')(value))(_IVectorView_IWwwFormUrlDecoderEntry.method(6).invoke(self._collection_obj, [DynWinRTValue.from_u32(index)]))
 
     def index_of(self, value: 'IWwwFormUrlDecoderEntry') -> tuple[int, bool]:
         _results = _IVectorView_IWwwFormUrlDecoderEntry.method(8).invoke_all(self._collection_obj, [getattr(value, '_obj', value)])
-        return (_results[0].to_number(), _results[1].to_bool())
+        return (_results[0].to_u32(), _results[1].to_bool())
 
-    def get_many(self, start_index: int, items: DynWinRTArray | Sequence['IWwwFormUrlDecoderEntry']) -> list['IWwwFormUrlDecoderEntry']:
+    def get_many(self, start_index: int, items: DynWinRTArray | Sequence['IWwwFormUrlDecoderEntry']) -> list[IWwwFormUrlDecoderEntry | None]:
         _results = _IVectorView_IWwwFormUrlDecoderEntry.method(9).invoke_all(self._collection_obj, [DynWinRTValue.from_u32(start_index), _dynwinrt_array(items, lambda item: getattr(item, '_obj', item), DynWinRTType.interface(WinGUID.parse('125e7431-f678-4e8e-b670-20a9b06c512d')), False)])
         return _dynwinrt_wrap_values('i_www_form_url_decoder_entry', 'IWwwFormUrlDecoderEntry', _results[0].as_array().to_values())[:_results[1].to_number()]
 
-    def first(self) -> Iterator['IWwwFormUrlDecoderEntry']:
-        return _dynwinrt_symbol('i_iterator_i_www_form_url_decoder_entry', 'IIterator_IWwwFormUrlDecoderEntry')(_IIterable_IWwwFormUrlDecoderEntry.method(6).invoke(self._obj.cast(IID_IIterable_IWwwFormUrlDecoderEntry), []))
+    def first(self) -> Iterator[IWwwFormUrlDecoderEntry | None] | None:
+        return (lambda value: None if value.is_null() else _dynwinrt_symbol('i_iterator_i_www_form_url_decoder_entry', 'IIterator_IWwwFormUrlDecoderEntry')(value))(_IIterable_IWwwFormUrlDecoderEntry.method(6).invoke(self._obj.cast(IID_IIterable_IWwwFormUrlDecoderEntry), []))
 
     def as_interface(self, interface_class):
         return interface_class.from_value(self._obj)
@@ -146,16 +146,16 @@ class IVectorView_IWwwFormUrlDecoderEntry(_WinRTSequenceMixin):
 
     @property
     def size(self) -> int:
-        return _IVectorView_IWwwFormUrlDecoderEntry.method(7).invoke(self._obj, []).to_number()
+        return _IVectorView_IWwwFormUrlDecoderEntry.method(7).invoke(self._obj, []).to_u32()
 
-    def get_at(self, index: int) -> 'IWwwFormUrlDecoderEntry':
-        return _dynwinrt_symbol('i_www_form_url_decoder_entry', 'IWwwFormUrlDecoderEntry')(_IVectorView_IWwwFormUrlDecoderEntry.method(6).invoke(self._obj, [DynWinRTValue.from_u32(index)]))
+    def get_at(self, index: int) -> IWwwFormUrlDecoderEntry | None:
+        return (lambda value: None if value.is_null() else _dynwinrt_symbol('i_www_form_url_decoder_entry', 'IWwwFormUrlDecoderEntry')(value))(_IVectorView_IWwwFormUrlDecoderEntry.method(6).invoke(self._obj, [DynWinRTValue.from_u32(index)]))
 
     def index_of(self, value: 'IWwwFormUrlDecoderEntry') -> tuple[int, bool]:
         _results = _IVectorView_IWwwFormUrlDecoderEntry.method(8).invoke_all(self._obj, [getattr(value, '_obj', value)])
-        return (_results[0].to_number(), _results[1].to_bool())
+        return (_results[0].to_u32(), _results[1].to_bool())
 
-    def get_many(self, start_index: int, items: DynWinRTArray | Sequence['IWwwFormUrlDecoderEntry']) -> list['IWwwFormUrlDecoderEntry']:
+    def get_many(self, start_index: int, items: DynWinRTArray | Sequence['IWwwFormUrlDecoderEntry']) -> list[IWwwFormUrlDecoderEntry | None]:
         _results = _IVectorView_IWwwFormUrlDecoderEntry.method(9).invoke_all(self._obj, [DynWinRTValue.from_u32(start_index), _dynwinrt_array(items, lambda item: getattr(item, '_obj', item), DynWinRTType.interface(WinGUID.parse('125e7431-f678-4e8e-b670-20a9b06c512d')), False)])
         return _dynwinrt_wrap_values('i_www_form_url_decoder_entry', 'IWwwFormUrlDecoderEntry', _results[0].as_array().to_values())[:_results[1].to_number()]
 
@@ -168,5 +168,5 @@ class IIterable_IWwwFormUrlDecoderEntry(_WinRTIterableMixin):
     def from_value(obj: DynWinRTValue) -> 'IIterable_IWwwFormUrlDecoderEntry':
         return IIterable_IWwwFormUrlDecoderEntry(obj.cast(IID_IIterable_IWwwFormUrlDecoderEntry))
 
-    def first(self) -> Iterator['IWwwFormUrlDecoderEntry']:
-        return _dynwinrt_symbol('i_iterator_i_www_form_url_decoder_entry', 'IIterator_IWwwFormUrlDecoderEntry')(_IIterable_IWwwFormUrlDecoderEntry.method(6).invoke(self._obj, []))
+    def first(self) -> Iterator[IWwwFormUrlDecoderEntry | None] | None:
+        return (lambda value: None if value.is_null() else _dynwinrt_symbol('i_iterator_i_www_form_url_decoder_entry', 'IIterator_IWwwFormUrlDecoderEntry')(value))(_IIterable_IWwwFormUrlDecoderEntry.method(6).invoke(self._obj, []))

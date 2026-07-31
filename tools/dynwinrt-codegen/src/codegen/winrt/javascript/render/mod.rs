@@ -3,4 +3,3 @@
 
 pub mod declarations;
 pub mod javascript;
-pub mod package_json;

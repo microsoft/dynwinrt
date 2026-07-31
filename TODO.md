@@ -78,7 +78,12 @@ _None currently. Reserved for issues that make v0.1 unshippable (crash on happy 
 
 - [ ] **`package.json` engines vs README floor**. `bindings/js/package.json:34-36` advertises Node 12+ ranges, README says Node ≥16. Align to whichever floor CI actually tests. (Currently CI runs Node 24.)
 
-- [ ] **Python binding parity**. Python side missing `callVoid`, collection wrappers, struct access, delegate ergonomics — anything added to JS after the Python cutover.
+- [ ] **Python binding follow-ups**. The runtime and codegen now cover async,
+  collections, structs, typed delegates/events, nullable references, and an
+  experimental WinUI Application bootstrap. Remaining work is tracked in
+  `PYTHON_CHECKLIST.md`, especially generated package layout, CPython/architecture
+  coverage, DispatcherQueue/GIL integration, general XAML aggregation, object
+  identity, and delegates with more than two ABI parameters.
 
 - [ ] **Troubleshooting docs in READMEs**. Common failure modes not covered end-to-end: `WINAPPSDK_BOOTSTRAP_DLL_PATH` not set, mismatched apartment, missing capability. Root `README.md` has a small table; grow it based on the last three GitHub issues that repeated.
 

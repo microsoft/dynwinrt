@@ -311,6 +311,8 @@ impl DynWinRTAsyncWithProgress {
             }
         };
         if !info.is_started().map_err(map_dynwinrt_error)? {
+            // Fast operations may already be terminal by the time Python
+            // registers progress. No future progress can be delivered.
             return Ok(());
         }
         let progress_type = info.progress_type().ok_or_else(|| {
@@ -356,6 +358,8 @@ impl DynWinRTAsyncWithProgress {
                 if is_started {
                     Err(map_dynwinrt_error_with_context(error, "SetProgress failed"))
                 } else {
+                    // Completion raced with put_Progress; there is no handler
+                    // left to install and no future progress to deliver.
                     Ok(())
                 }
             }

@@ -12,8 +12,8 @@ use crate::types::{TypeKind, TypeMeta};
 use super::naming::{to_snake_case, to_snake_case_filename};
 use super::native_types::{FoundationType, foundation_type};
 use super::type_helpers::{
-    py_factory_return_type, py_method_return_type, py_param_list, py_param_type_safe,
-    py_return_type_safe,
+    py_delegate_callable_type, py_factory_return_type, py_method_return_type, py_param_list,
+    py_param_type_safe, py_return_type_safe,
 };
 
 pub(super) fn format_py_type_import(name: &str, kind: TypeKind) -> String {
@@ -136,6 +136,7 @@ pub(super) fn emit_method_stub(
     known_types: &HashSet<String>,
     delegate_type_names: &HashSet<String>,
     indent_spaces: usize,
+    event_has_remove: bool,
 ) -> String {
     emit_method_stub_named(
         method,
@@ -143,6 +144,7 @@ pub(super) fn emit_method_stub(
         delegate_type_names,
         indent_spaces,
         None,
+        event_has_remove,
     )
 }
 
@@ -152,6 +154,7 @@ pub(super) fn emit_method_stub_named(
     delegate_type_names: &HashSet<String>,
     indent_spaces: usize,
     name_override: Option<&str>,
+    event_has_remove: bool,
 ) -> String {
     let indent = " ".repeat(indent_spaces);
     let in_params = get_in_params(method);
@@ -172,11 +175,27 @@ pub(super) fn emit_method_stub_named(
 
     // Events
     if method.is_event_add {
-        let event_name = to_snake_case(method.name.strip_prefix("add_").unwrap_or(&method.name));
+        let suffix = method.name.strip_prefix("add_").unwrap_or(&method.name);
+        let event_name = to_snake_case(suffix);
+        // Build a typed callback signature matching the runtime .py side.
+        let delegate_typ = in_params.first().map(|p| &p.typ);
+        let callback_sig = delegate_typ
+            .map(|typ| py_delegate_callable_type(typ, known_types))
+            .unwrap_or_else(|| "Callable[..., object]".to_string());
         out.push_str(&format!(
-            "{indent}def on_{}(self, callback: Callable[..., object]) -> 'DynWinRTValue': ...\n",
-            event_name
+            "{indent}def on_{}(self, callback: {}) -> 'DynWinRTValue': ...\n",
+            event_name, callback_sig
         ));
+        if event_has_remove {
+            out.push_str(&format!(
+                "{indent}def subscribe_{}(self, callback: {}) -> Callable[[], None]: ...\n",
+                event_name, callback_sig
+            ));
+            out.push_str(&format!(
+                "{indent}def once_{}(self, callback: {}) -> Callable[[], None]: ...\n",
+                event_name, callback_sig
+            ));
+        }
         return out;
     }
     if method.is_event_remove {
@@ -191,7 +210,7 @@ pub(super) fn emit_method_stub_named(
     if method.is_property_getter && in_params.is_empty() {
         let prop_name = to_snake_case(method.name.strip_prefix("get_").unwrap_or(&method.name));
         let py_return = if is_delegate_type(return_type) {
-            "'DynWinRTValue'".to_string()
+            "DynWinRTValue | None".to_string()
         } else {
             py_return_type_safe(return_type, known_types)
         };
@@ -299,4 +318,46 @@ pub(super) fn emit_static_method_stub_named(
         ));
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::meta::{ParamDirection, ParamMeta};
+
+    fn event_add() -> MethodMeta {
+        MethodMeta {
+            name: "add_Changed".into(),
+            raw_name: "add_Changed".into(),
+            params: vec![ParamMeta {
+                name: "handler".into(),
+                typ: TypeMeta::Parameterized {
+                    namespace: "Windows.Foundation".into(),
+                    name: "EventHandler`1".into(),
+                    piid: "11111111-1111-1111-1111-111111111111".into(),
+                    args: vec![TypeMeta::Object],
+                },
+                direction: ParamDirection::In,
+            }],
+            is_event_add: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn paired_event_stubs_preserve_token_api_and_add_helpers() {
+        let code = emit_method_stub(&event_add(), &HashSet::new(), &HashSet::new(), 4, true);
+        assert!(code.contains("def on_changed("));
+        assert!(code.contains("-> 'DynWinRTValue': ..."));
+        assert!(code.contains("def subscribe_changed("));
+        assert!(code.contains("def once_changed("));
+    }
+
+    #[test]
+    fn add_only_event_stub_does_not_advertise_unavailable_helpers() {
+        let code = emit_method_stub(&event_add(), &HashSet::new(), &HashSet::new(), 4, false);
+        assert!(code.contains("def on_changed("));
+        assert!(!code.contains("subscribe_changed"));
+        assert!(!code.contains("once_changed"));
+    }
 }

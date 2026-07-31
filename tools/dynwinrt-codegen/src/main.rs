@@ -9,9 +9,10 @@ use clap::{Parser, Subcommand};
 
 use dynwinrt_codegen::codegen::com;
 use dynwinrt_codegen::codegen::flat;
+use dynwinrt_codegen::codegen::package;
 use dynwinrt_codegen::codegen::python;
-use dynwinrt_codegen::codegen::render_package_json;
 use dynwinrt_codegen::codegen::typescript;
+use dynwinrt_codegen::codegen::winrt::extensions::winui;
 use dynwinrt_codegen::codegen::{project, render_dts, render_js};
 use dynwinrt_codegen::com_metadata;
 use dynwinrt_codegen::meta;
@@ -82,8 +83,9 @@ enum Commands {
         #[arg(long, value_name = "NS")]
         namespace: Option<String>,
 
-        /// Generate bindings for specific class(es), comma-separated (requires --namespace).
-        /// E.g. --class-name Uri or --class-name StorageFile,StorageFolder
+        /// Generate bindings for specific class(es), comma-separated.
+        /// Names may be qualified, or unqualified when --namespace is supplied.
+        /// E.g. --class-name Uri or --class-name Windows.Foundation.Uri
         #[arg(long, name = "class", value_name = "NAME")]
         class_name: Option<String>,
 
@@ -131,6 +133,33 @@ fn main() {
         eprintln!("error: {}", e);
         std::process::exit(1);
     }
+}
+
+fn parse_class_requests(
+    class_names: &str,
+    default_namespace: Option<&str>,
+) -> Result<Vec<(String, String)>, String> {
+    class_names
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(|name| {
+            if let Some((namespace, class_name)) = name.rsplit_once('.') {
+                if namespace.is_empty() || class_name.is_empty() {
+                    return Err(format!("Invalid qualified class name: {name}"));
+                }
+                return Ok((namespace.to_string(), class_name.to_string()));
+            }
+
+            let namespace = default_namespace.ok_or_else(|| {
+                format!(
+                    "--namespace is required for unqualified class name `{name}`; \
+                     alternatively pass its fully qualified metadata name"
+                )
+            })?;
+            Ok((namespace.to_string(), name.to_string()))
+        })
+        .collect()
 }
 
 fn run() -> Result<(), String> {
@@ -259,25 +288,20 @@ fn run() -> Result<(), String> {
                 fs::create_dir_all(output_dir).map_err(|e| {
                     format!("Failed to create output directory '{}': {}", output, e)
                 })?;
+                if lang == "js" {
+                    migrate_legacy_com_only_package(output_dir)?;
+                }
             }
 
             if let Some(ref cls_arg) = class_name {
-                // Class mode: supports comma-separated list (e.g. "StorageFile,StorageFolder")
-                let ns = namespace
-                    .as_deref()
-                    .ok_or("--namespace is required when --class-name is specified")?;
-                let class_names: Vec<&str> = cls_arg
-                    .split(',')
-                    .map(|s| s.trim())
-                    .filter(|s| !s.is_empty())
-                    .collect();
+                let class_requests = parse_class_requests(cls_arg, namespace.as_deref())?;
 
                 // First: partition into WinRT classes, classic-COM interfaces,
                 // and flat-Win32 [DllImport] modules.
                 let mut classes = Vec::new();
                 let mut com_interfaces: Vec<com_metadata::ComInterfaceMeta> = Vec::new();
                 let mut flat_apis: Vec<meta::FlatApisMeta> = Vec::new();
-                for cls in &class_names {
+                for (ns, cls) in &class_requests {
                     if let Some(apis) = meta::parse_flat_apis(&winmd, ns, cls) {
                         flat_apis.push(apis);
                         continue;
@@ -381,17 +405,19 @@ fn run() -> Result<(), String> {
                     }
                 }
 
-                if !com_interfaces.is_empty() && !classes.is_empty() {
-                    return Err(
-                        "Classic-COM and WinRT class generation cannot share one output package yet. \
-                         Run separate `generate` commands with separate output directories."
-                            .into(),
-                    );
-                }
-
-                // Emit classic-COM interfaces. Mixed WinRT/COM packages were
-                // rejected above; COM-only output is finalized below.
+                // Classic COM occupies its own ESM subpackage so its symbols
+                // cannot collide with or leak into the WinRT root barrel.
                 if !com_interfaces.is_empty() {
+                    let com_output_dir = output_dir.join("com");
+                    if !dry_run {
+                        fs::create_dir_all(&com_output_dir).map_err(|e| {
+                            format!(
+                                "Failed to create COM output directory '{}': {}",
+                                com_output_dir.display(),
+                                e
+                            )
+                        })?;
+                    }
                     for com_iface in &com_interfaces {
                         let out =
                             com::generate_com_interface_files(com_iface, &winmd).map_err(|e| {
@@ -403,12 +429,12 @@ fn run() -> Result<(), String> {
                         let js_name = format!("{}.js", com_iface.interface.name);
                         let dts_name = format!("{}.d.ts", com_iface.interface.name);
                         if !dry_run {
-                            fs::write(output_dir.join(&js_name), &out.js)
+                            fs::write(com_output_dir.join(&js_name), &out.js)
                                 .map_err(|e| format!("Failed to write {}: {}", js_name, e))?;
-                            fs::write(output_dir.join(&dts_name), &out.dts)
+                            fs::write(com_output_dir.join(&dts_name), &out.dts)
                                 .map_err(|e| format!("Failed to write {}: {}", dts_name, e))?;
                             for (name, content) in &out.extra_files {
-                                fs::write(output_dir.join(name), content)
+                                fs::write(com_output_dir.join(name), content)
                                     .map_err(|e| format!("Failed to write {}: {}", name, e))?;
                             }
                             println!(
@@ -421,17 +447,19 @@ fn run() -> Result<(), String> {
                             println!("[dry-run] Would generate {}", com_iface.interface.name);
                         }
                     }
-                    // If we only had classic-COM interfaces requested, return early —
-                    // no WinRT index/barrel work to do.
+                    if !dry_run {
+                        write_com_js_barrel(&com_output_dir)?;
+                    }
+
                     if classes.is_empty() {
                         if !dry_run {
-                            write_com_js_barrel_and_manifest(output_dir)?;
+                            finalize_com_generation(output_dir)?;
                         }
                         return Ok(());
                     }
                 }
 
-                add_implicit_js_types(&winmd, &lang, &mut classes);
+                winui::add_implicit_classes(&winmd, &mut classes);
                 generate_for_types(
                     &winmd,
                     output_dir,
@@ -583,7 +611,7 @@ fn run() -> Result<(), String> {
                     let mut classes = meta::parse_namespace(&winmd, ns);
                     let mut interfaces = meta::parse_interfaces(&winmd, ns);
                     let mut enums = meta::parse_enums(&winmd, ns);
-                    add_implicit_js_types(&winmd, &lang, &mut classes);
+                    winui::add_implicit_classes(&winmd, &mut classes);
                     for c in classes.iter_mut() {
                         doc_table.apply_to_class(c);
                     }
@@ -694,32 +722,6 @@ fn run() -> Result<(), String> {
     Ok(())
 }
 
-fn add_implicit_js_types(winmd: &str, lang: &str, classes: &mut Vec<meta::ClassMeta>) {
-    if lang != "js"
-        || !classes
-            .iter()
-            .any(|class| class.full_name == "Microsoft.UI.Xaml.Application")
-    {
-        return;
-    }
-
-    for (namespace, name) in [
-        (
-            "Microsoft.UI.Xaml.XamlTypeInfo",
-            "XamlControlsXamlMetaDataProvider",
-        ),
-        ("Microsoft.UI.Xaml.Controls", "XamlControlsResources"),
-    ] {
-        let full_name = format!("{}.{}", namespace, name);
-        if classes.iter().any(|class| class.full_name == full_name) {
-            continue;
-        }
-        if let Some(class) = meta::parse_class(winmd, namespace, name) {
-            classes.push(class);
-        }
-    }
-}
-
 /// Generate files for a set of types plus their transitive dependencies.
 /// When `dry_run` is true, all parsing/resolution runs but no files are written.
 fn generate_for_types(
@@ -740,6 +742,7 @@ fn generate_for_types(
     all_classes.extend(deps.classes);
     all_interfaces.extend(deps.interfaces);
     all_enums.extend(deps.enums);
+    validate_unique_class_output_names(&all_classes)?;
 
     // Newly-merged dependency types haven't been doc-annotated yet. Apply doc table
     // uniformly so dependency classes/interfaces/enums carry the same XML docs as
@@ -771,14 +774,20 @@ fn generate_for_types(
     let mut known_types: HashSet<String> = HashSet::new();
     for c in &all_classes {
         known_types.insert(c.name.clone());
+        known_types.insert(c.full_name.clone());
     }
     for i in &emittable_interfaces {
         known_types.insert(i.name.clone());
+        known_types.insert(format!("{}.{}", i.namespace, i.name));
     }
     for e in &all_enums {
-        if let TypeMeta::Enum { name, .. } = e {
+        if let TypeMeta::Enum {
+            namespace, name, ..
+        } = e
+        {
             if !class_names_all.contains(name) {
                 known_types.insert(name.clone());
+                known_types.insert(format!("{namespace}.{name}"));
             }
         }
     }
@@ -853,6 +862,26 @@ fn generate_for_types(
     }
 
     Ok((all_classes.len(), all_interfaces.len(), all_enums.len()))
+}
+
+fn validate_unique_class_output_names(classes: &[meta::ClassMeta]) -> Result<(), String> {
+    let mut full_name_by_short_name: HashMap<&str, &str> = HashMap::new();
+    for class in classes {
+        match full_name_by_short_name.get(class.name.as_str()) {
+            Some(existing) if *existing != class.full_name => {
+                return Err(format!(
+                    "Cannot generate `{}` and `{}` in one output directory because both use \
+                     the short class name `{}`. Generate them separately or select only one type.",
+                    existing, class.full_name, class.name
+                ));
+            }
+            Some(_) => {}
+            None => {
+                full_name_by_short_name.insert(&class.name, &class.full_name);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn generate_js_files(
@@ -1053,7 +1082,6 @@ fn write_js_barrel_and_manifest(output_dir: &Path, index_content: &str) -> Resul
     let mjs_path = output_dir.join("index.mjs");
     let proxy_path = output_dir.join("index.proxy.js");
     let dts_path = output_dir.join("index.d.ts");
-    let pkg_json_path = output_dir.join("package.json");
     let _ = index_content;
     write_lifetime_module(output_dir)?;
 
@@ -1096,28 +1124,18 @@ fn write_js_barrel_and_manifest(output_dir: &Path, index_content: &str) -> Resul
     fs::write(&dts_path, &index_content)
         .map_err(|e| format!("Failed to write {}: {}", dts_path.display(), e))?;
 
-    // Now scan the directory for the concrete `.js` files that landed on
-    // disk — that's the authoritative subpath list for the manifest. We
-    // exclude the barrel entries themselves; everything else is a
-    // consumer-facing subpath.
-    let subpath_names = collect_subpath_names_from_dir(output_dir);
-    let pkg_json_content =
-        render_package_json::render_package_json(&render_package_json::PackageManifestInput {
-            subpath_names: &subpath_names,
-        });
-    fs::write(&pkg_json_path, &pkg_json_content)
-        .map_err(|e| format!("Failed to write {}: {}", pkg_json_path.display(), e))?;
+    write_bindings_manifest(output_dir)?;
 
     println!("Generated {}", js_path.display());
     Ok(())
 }
 
-fn write_com_js_barrel_and_manifest(output_dir: &Path) -> Result<(), String> {
+fn write_com_js_barrel(com_output_dir: &Path) -> Result<(), String> {
     let mut modules: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    let entries = fs::read_dir(output_dir).map_err(|error| {
+    let entries = fs::read_dir(com_output_dir).map_err(|error| {
         format!(
             "Failed to read COM output directory {}: {error}",
-            output_dir.display()
+            com_output_dir.display()
         )
     })?;
     for entry in entries.flatten() {
@@ -1146,28 +1164,165 @@ fn write_com_js_barrel_and_manifest(output_dir: &Path) -> Result<(), String> {
             exports.iter().cloned().collect::<Vec<_>>().join(", ")
         ));
     }
-    fs::write(output_dir.join("index.js"), &index)
+    fs::write(com_output_dir.join("index.js"), &index)
         .map_err(|error| format!("Failed to write COM index.js: {error}"))?;
-    fs::write(output_dir.join("index.d.ts"), &index)
+    fs::write(com_output_dir.join("index.d.ts"), &index)
         .map_err(|error| format!("Failed to write COM index.d.ts: {error}"))?;
 
-    let mut package = String::from(
-        "{\n  \"name\": \"@winapp/bindings\",\n  \"type\": \"module\",\n  \
-         \"sideEffects\": false,\n  \"main\": \"./index.js\",\n  \
-         \"types\": \"./index.d.ts\",\n  \"exports\": {\n    \".\": {\n      \
-         \"types\": \"./index.d.ts\",\n      \"import\": \"./index.js\",\n      \
-         \"default\": \"./index.js\"\n    }",
-    );
-    for module in modules.keys() {
-        package.push_str(&format!(
-            ",\n    \"./{module}\": {{\n      \"types\": \"./{module}.d.ts\",\n      \
-             \"import\": \"./{module}.js\",\n      \"default\": \"./{module}.js\"\n    }}"
-        ));
-    }
-    package.push_str("\n  }\n}\n");
-    fs::write(output_dir.join("package.json"), package)
-        .map_err(|error| format!("Failed to write COM package.json: {error}"))?;
+    let package = "{\n  \"type\": \"module\",\n  \"sideEffects\": false\n}\n";
+    fs::write(com_output_dir.join("package.json"), package)
+        .map_err(|error| format!("Failed to write COM package boundary: {error}"))?;
     Ok(())
+}
+
+fn finalize_com_generation(output_dir: &Path) -> Result<(), String> {
+    if !has_winrt_root(output_dir) {
+        write_com_root_compatibility_barrels(output_dir)?;
+    }
+    write_bindings_manifest(output_dir)
+}
+
+fn write_com_root_compatibility_barrels(output_dir: &Path) -> Result<(), String> {
+    let com_index_path = output_dir.join("com").join("index.js");
+    let com_index = fs::read_to_string(&com_index_path)
+        .map_err(|error| format!("Failed to read {}: {error}", com_index_path.display()))?;
+    let root_index = com_index.replace("from './", "from './com/");
+    fs::write(output_dir.join("index.js"), &root_index)
+        .map_err(|error| format!("Failed to write COM compatibility index.js: {error}"))?;
+    fs::write(output_dir.join("index.d.ts"), root_index)
+        .map_err(|error| format!("Failed to write COM compatibility index.d.ts: {error}"))?;
+    Ok(())
+}
+
+fn migrate_legacy_com_only_package(output_dir: &Path) -> Result<(), String> {
+    if has_winrt_root(output_dir) {
+        return Ok(());
+    }
+
+    let package_path = output_dir.join("package.json");
+    let index_path = output_dir.join("index.js");
+    if !package_path.is_file() || !index_path.is_file() {
+        return Ok(());
+    }
+    let package = fs::read_to_string(&package_path)
+        .map_err(|error| format!("Failed to read {}: {error}", package_path.display()))?;
+    let index = fs::read_to_string(&index_path)
+        .map_err(|error| format!("Failed to read {}: {error}", index_path.display()))?;
+    if !package.contains("\"name\": \"@winapp/bindings\"")
+        || !package.contains("\"type\": \"module\"")
+        || !index.starts_with("// Generated by dynwinrt-codegen - do not edit\n")
+    {
+        return Ok(());
+    }
+
+    let modules = collect_com_index_modules(&index);
+    if modules.is_empty() {
+        return Ok(());
+    }
+
+    let com_output_dir = output_dir.join("com");
+    fs::create_dir_all(&com_output_dir).map_err(|error| {
+        format!(
+            "Failed to create COM output directory '{}': {error}",
+            com_output_dir.display()
+        )
+    })?;
+    for module in modules {
+        for suffix in [".js", ".d.ts"] {
+            move_legacy_com_file(
+                &output_dir.join(format!("{module}{suffix}")),
+                &com_output_dir.join(format!("{module}{suffix}")),
+            )?;
+        }
+    }
+
+    for path in [
+        output_dir.join("index.js"),
+        output_dir.join("index.d.ts"),
+        package_path,
+    ] {
+        if path.exists() {
+            fs::remove_file(&path)
+                .map_err(|error| format!("Failed to remove {}: {error}", path.display()))?;
+        }
+    }
+    write_com_js_barrel(&com_output_dir)?;
+    finalize_com_generation(output_dir)
+}
+
+fn collect_com_index_modules(index: &str) -> BTreeSet<String> {
+    index
+        .lines()
+        .filter_map(|line| {
+            let (_, module) = line.split_once(" from './")?;
+            let module = module.strip_suffix(".js';")?;
+            (!module.is_empty() && !module.contains(['/', '\\'])).then(|| module.to_string())
+        })
+        .collect()
+}
+
+fn move_legacy_com_file(source: &Path, destination: &Path) -> Result<(), String> {
+    if !source.exists() {
+        return Ok(());
+    }
+    if destination.exists() {
+        let source_content = fs::read(source)
+            .map_err(|error| format!("Failed to read {}: {error}", source.display()))?;
+        let destination_content = fs::read(destination)
+            .map_err(|error| format!("Failed to read {}: {error}", destination.display()))?;
+        if source_content != destination_content {
+            return Err(format!(
+                "Cannot migrate legacy COM file {} because {} already exists with different content",
+                source.display(),
+                destination.display()
+            ));
+        }
+        fs::remove_file(source)
+            .map_err(|error| format!("Failed to remove {}: {error}", source.display()))?;
+        return Ok(());
+    }
+
+    fs::rename(source, destination).map_err(|error| {
+        format!(
+            "Failed to migrate legacy COM file {} to {}: {error}",
+            source.display(),
+            destination.display()
+        )
+    })
+}
+
+fn has_winrt_root(output_dir: &Path) -> bool {
+    ["index.mjs", "index.proxy.js", "lifetime.js"]
+        .iter()
+        .any(|name| output_dir.join(name).is_file())
+}
+
+fn write_bindings_manifest(output_dir: &Path) -> Result<(), String> {
+    let has_winrt_root = has_winrt_root(output_dir);
+    let winrt_subpath_names = if has_winrt_root {
+        collect_subpath_names_from_dir(output_dir)
+    } else {
+        BTreeSet::new()
+    };
+    let com_subpath_names = collect_com_subpath_names(&output_dir.join("com"))?;
+    let content = package::render_bindings_package_json(&package::BindingsPackageManifestInput {
+        has_winrt_root,
+        winrt_subpath_names: &winrt_subpath_names,
+        com_subpath_names: &com_subpath_names,
+    });
+    let path = output_dir.join("package.json");
+    fs::write(&path, content)
+        .map_err(|error| format!("Failed to write {}: {error}", path.display()))
+}
+
+fn collect_com_subpath_names(com_output_dir: &Path) -> Result<BTreeSet<String>, String> {
+    let index_path = com_output_dir.join("index.js");
+    if !index_path.is_file() {
+        return Ok(BTreeSet::new());
+    }
+    let index = fs::read_to_string(&index_path)
+        .map_err(|error| format!("Failed to read {}: {error}", index_path.display()))?;
+    Ok(collect_com_index_modules(&index))
 }
 
 fn collect_com_esm_exports(content: &str) -> BTreeSet<String> {
@@ -1746,4 +1901,46 @@ fn find_windows_sdk_winmd() -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn distinct_classes_with_the_same_short_name_are_rejected() {
+        let classes = vec![
+            meta::ClassMeta {
+                name: "ResourceManager".into(),
+                namespace: "Contoso".into(),
+                full_name: "Contoso.ResourceManager".into(),
+                ..Default::default()
+            },
+            meta::ClassMeta {
+                name: "ResourceManager".into(),
+                namespace: "Microsoft.Windows.ApplicationModel.Resources".into(),
+                full_name: "Microsoft.Windows.ApplicationModel.Resources.ResourceManager".into(),
+                ..Default::default()
+            },
+        ];
+
+        let error = validate_unique_class_output_names(&classes)
+            .expect_err("same-name classes must not overwrite each other");
+        assert!(error.contains("Contoso.ResourceManager"));
+        assert!(error.contains("Microsoft.Windows.ApplicationModel.Resources.ResourceManager"));
+        assert!(error.contains("short class name `ResourceManager`"));
+    }
+
+    #[test]
+    fn duplicate_metadata_for_the_same_class_is_allowed() {
+        let class = meta::ClassMeta {
+            name: "Application".into(),
+            namespace: "Microsoft.UI.Xaml".into(),
+            full_name: "Microsoft.UI.Xaml.Application".into(),
+            ..Default::default()
+        };
+
+        validate_unique_class_output_names(&[class.clone(), class])
+            .expect("identical metadata does not create an ambiguous output");
+    }
 }

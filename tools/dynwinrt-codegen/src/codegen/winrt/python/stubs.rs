@@ -11,6 +11,7 @@ use std::collections::HashSet;
 use crate::meta::{ClassMeta, InterfaceMeta, MethodMeta};
 use crate::types::{TypeKind, TypeMeta};
 
+use crate::codegen::winrt::extensions::winui;
 use crate::codegen::winrt::shared::imports::{
     collect_iface_type_imports, collect_type_imports, collect_used_generics_from_class,
     collect_used_generics_from_methods,
@@ -204,7 +205,7 @@ pub fn generate_interface_stub(
     if let Some(ref piid) = iface.generic_piid {
         if piid == "913337e9-11a1-4345-a3a2-4e7f956e222d" && iface.generic_args.len() == 1 {
             let element =
-                super::type_helpers::py_return_type_safe(Some(&iface.generic_args[0]), known_types);
+                super::type_helpers::py_param_type_safe(&iface.generic_args[0], known_types);
             out.push('\n');
             out.push_str("    @staticmethod\n");
             out.push_str(&format!(
@@ -212,10 +213,9 @@ pub fn generate_interface_stub(
                 element, iface.name
             ));
         } else if piid == "3c2925fe-8519-45c1-aa79-197b6718c1c1" && iface.generic_args.len() == 2 {
-            let key =
-                super::type_helpers::py_return_type_safe(Some(&iface.generic_args[0]), known_types);
+            let key = super::type_helpers::py_param_type_safe(&iface.generic_args[0], known_types);
             let value =
-                super::type_helpers::py_return_type_safe(Some(&iface.generic_args[1]), known_types);
+                super::type_helpers::py_param_type_safe(&iface.generic_args[1], known_types);
             out.push('\n');
             out.push_str("    @staticmethod\n");
             out.push_str(&format!(
@@ -227,12 +227,21 @@ pub fn generate_interface_stub(
 
     for methods in super::overloads::grouped_methods(reorder_getters_before_setters(&iface.methods))
     {
+        let event_has_remove = methods.first().is_some_and(|method| {
+            method.name.strip_prefix("add_").is_some_and(|suffix| {
+                iface
+                    .methods
+                    .iter()
+                    .any(|candidate| candidate.name == format!("remove_{suffix}"))
+            })
+        });
         out.push('\n');
         out.push_str(&emit_instance_stub_group(
             &methods,
             known_types,
             &delegate_names,
             4,
+            event_has_remove,
         ));
     }
 
@@ -249,6 +258,7 @@ pub fn generate_class_stub(
     let used_structs = collect_used_structs_from_class(class);
     let collection_iface = class_interface(class);
     let collection_kind = collection_iface.and_then(interface_kind);
+    let winui_bootstrap = winui::resolve_application_bootstrap(class, known_types);
     let has_events = class.all_interfaces().any(|iface| {
         iface
             .methods
@@ -267,7 +277,7 @@ pub fn generate_class_stub(
     ) {
         out.push_str(ASYNC_IMPORT_LINE);
     }
-    if has_events {
+    if has_events || winui_bootstrap.is_some() {
         out.push_str("from typing import Callable\n");
     }
     if !class.required_interfaces.is_empty() {
@@ -335,6 +345,14 @@ pub fn generate_class_stub(
             imported_names.insert(req_iface.name.clone());
             imported_names.insert(format!("IID_{}", req_iface.name));
         }
+    }
+    if let Some(bootstrap) = winui_bootstrap {
+        let metadata_provider = bootstrap.spec.metadata_provider;
+        out.push_str(&format!(
+            "from .{} import {}  # noqa: F401\n",
+            to_snake_case_filename(metadata_provider.name),
+            metadata_provider.name,
+        ));
     }
     out.push('\n');
     if !class.required_interfaces.is_empty() {
@@ -423,20 +441,78 @@ pub fn generate_class_stub(
         ));
     }
 
-    let instance_methods = class
+    let has_explicit_create_factory = class.factory_interfaces.iter().any(|iface| {
+        iface
+            .methods
+            .iter()
+            .any(|method| to_snake_case(&method.name) == "create")
+    });
+    let has_create_instance_alias = !class.has_default_constructor
+        && !has_explicit_create_factory
+        && class.factory_interfaces.iter().any(|iface| {
+            iface.methods.iter().any(|method| {
+                method.name == "CreateInstance"
+                    && crate::codegen::winrt::shared::imports::get_in_params(method).is_empty()
+            })
+        });
+    if has_create_instance_alias {
+        out.push('\n');
+        out.push_str("    @staticmethod\n");
+        out.push_str(&format!("    def create() -> '{}': ...\n", class.name));
+    }
+
+    if let Some(bootstrap) = winui_bootstrap {
+        let metadata_provider = bootstrap.spec.metadata_provider.name;
+        out.push('\n');
+        out.push_str("    @staticmethod\n");
+        out.push_str(&format!(
+            "    def create_with_metadata_provider(metadata_provider: '{metadata_provider}', on_launched: Callable[[], object] | None = ...) -> '{}': ...\n",
+            class.name,
+        ));
+        out.push_str("    @staticmethod\n");
+        out.push_str(&format!(
+            "    def create(on_launched: Callable[[], object] | None = ...) -> '{}': ...\n",
+            class.name
+        ));
+    }
+
+    let instance_ifaces = class
         .default_interface
         .iter()
         .chain(class.required_interfaces.iter())
         .filter(|iface| iface.iid != "30d5a829-7fa4-4026-83bb-d75bae4ea99e")
+        .collect::<Vec<_>>();
+    let paired_events = instance_ifaces
+        .iter()
+        .flat_map(|iface| {
+            iface.methods.iter().filter_map(|method| {
+                let suffix = method.name.strip_prefix("add_")?;
+                iface
+                    .methods
+                    .iter()
+                    .any(|candidate| candidate.name == format!("remove_{suffix}"))
+                    .then_some(suffix.to_string())
+            })
+        })
+        .collect::<HashSet<_>>();
+    let instance_methods = instance_ifaces
+        .iter()
         .flat_map(|iface| reorder_getters_before_setters(&iface.methods))
         .collect::<Vec<_>>();
     for methods in super::overloads::grouped_methods(instance_methods) {
+        let event_has_remove = methods.first().is_some_and(|method| {
+            method
+                .name
+                .strip_prefix("add_")
+                .is_some_and(|suffix| paired_events.contains(suffix))
+        });
         out.push('\n');
         out.push_str(&emit_instance_stub_group(
             &methods,
             known_types,
             &delegate_names,
             4,
+            event_has_remove,
         ));
     }
     // IClosable -> close()
@@ -505,12 +581,21 @@ pub fn generate_class_stub(
         for methods in
             super::overloads::grouped_methods(reorder_getters_before_setters(&req_iface.methods))
         {
+            let event_has_remove = methods.first().is_some_and(|method| {
+                method.name.strip_prefix("add_").is_some_and(|suffix| {
+                    req_iface
+                        .methods
+                        .iter()
+                        .any(|candidate| candidate.name == format!("remove_{suffix}"))
+                })
+            });
             out.push('\n');
             out.push_str(&emit_instance_stub_group(
                 &methods,
                 known_types,
                 &delegate_names,
                 4,
+                event_has_remove,
             ));
         }
     }
@@ -590,34 +675,132 @@ fn emit_constructor_stubs(
     known_types: &HashSet<String>,
     delegate_type_names: &HashSet<String>,
 ) -> String {
-    let factory_methods = class
-        .factory_interfaces
-        .iter()
-        .flat_map(|iface| iface.methods.iter())
-        .collect::<Vec<_>>();
-    let count = usize::from(class.has_default_constructor) + factory_methods.len();
-    if count == 0 {
+    // Collect (public_params_only, ...) for each accessible constructor.
+    // Composable factories: strip trailing outer + skip ProtectedComposition.
+    let mut overloads: Vec<Vec<&crate::meta::ParamMeta>> = Vec::new();
+
+    // Deduplicate by param-type signature.
+    fn push_unique<'a>(
+        overloads: &mut Vec<Vec<&'a crate::meta::ParamMeta>>,
+        params: Vec<&'a crate::meta::ParamMeta>,
+    ) {
+        if overloads.iter().any(|existing| {
+            existing.len() == params.len()
+                && existing
+                    .iter()
+                    .zip(&params)
+                    .all(|(left, right)| left.name == right.name && left.typ == right.typ)
+        }) {
+            return;
+        }
+        overloads.push(params);
+    }
+
+    let mut handled_any = false;
+    for constructor in &class.constructors {
+        handled_any = true;
+        match constructor.kind {
+            crate::meta::ConstructorKind::DefaultActivation => {
+                push_unique(&mut overloads, Vec::new());
+            }
+            crate::meta::ConstructorKind::FactoryActivation => {
+                let Some(factory_ref) = constructor.factory_interface.as_ref() else {
+                    continue;
+                };
+                let Some(factory) = class.factory_interfaces.iter().find(|iface| {
+                    iface.namespace == factory_ref.namespace && iface.name == factory_ref.name
+                }) else {
+                    continue;
+                };
+                for method in &factory.methods {
+                    if !matches!(
+                        method.return_type.as_ref(),
+                        Some(TypeMeta::RuntimeClass { namespace, name, .. })
+                            if namespace == &class.namespace && name == &class.name
+                    ) {
+                        continue;
+                    }
+                    let in_params = crate::codegen::winrt::shared::imports::get_in_params(method);
+                    push_unique(&mut overloads, in_params);
+                }
+            }
+            crate::meta::ConstructorKind::PublicComposition => {
+                let Some(factory_ref) = constructor.factory_interface.as_ref() else {
+                    continue;
+                };
+                let Some(factory) = class.factory_interfaces.iter().find(|iface| {
+                    iface.namespace == factory_ref.namespace && iface.name == factory_ref.name
+                }) else {
+                    continue;
+                };
+                for method in &factory.methods {
+                    if !matches!(
+                        method.return_type.as_ref(),
+                        Some(TypeMeta::RuntimeClass { namespace, name, .. })
+                            if namespace == &class.namespace && name == &class.name
+                    ) {
+                        continue;
+                    }
+                    let in_params = crate::codegen::winrt::shared::imports::get_in_params(method);
+                    if let Some(outer) = in_params.last() {
+                        let outer_name = outer.name.to_ascii_lowercase();
+                        let is_outer_name = outer_name == "outer"
+                            || outer_name == "base"
+                            || outer_name == "baseinterface"
+                            || outer_name == "outerinterface";
+                        let has_inner_output = method.params.iter().any(|p| {
+                            p.direction == crate::meta::ParamDirection::Out
+                                && matches!(p.typ, TypeMeta::Object)
+                                && p.name.to_ascii_lowercase().contains("inner")
+                        });
+                        if is_outer_name
+                            && matches!(outer.typ, TypeMeta::Object)
+                            && has_inner_output
+                        {
+                            let public: Vec<_> = in_params[..in_params.len() - 1].to_vec();
+                            push_unique(&mut overloads, public);
+                            continue;
+                        }
+                    }
+                    push_unique(&mut overloads, in_params);
+                }
+            }
+            crate::meta::ConstructorKind::ProtectedComposition => {}
+        }
+    }
+
+    // Legacy fallback: no constructors metadata → treat every factory method as
+    // an activation candidate (matches the runtime .py fallback path).
+    if !handled_any {
+        if class.has_default_constructor {
+            push_unique(&mut overloads, Vec::new());
+        }
+        for iface in &class.factory_interfaces {
+            for method in &iface.methods {
+                let in_params = crate::codegen::winrt::shared::imports::get_in_params(method);
+                push_unique(&mut overloads, in_params);
+            }
+        }
+    }
+
+    if overloads.is_empty() {
         return "    def __init__(self, obj: DynWinRTValue) -> None: ...\n".to_string();
     }
 
     let mut out = String::new();
-    if class.has_default_constructor {
+    let count = overloads.len();
+    for params in &overloads {
         if count > 1 {
             out.push_str("    @overload\n");
         }
-        out.push_str("    def __init__(self) -> None: ...\n");
-    }
-    for method in factory_methods {
-        if count > 1 {
-            out.push_str("    @overload\n");
-        }
-        let in_params = crate::codegen::winrt::shared::imports::get_in_params(method);
-        let params =
-            super::type_helpers::py_param_list(&in_params, known_types, delegate_type_names);
-        if params.is_empty() {
+        let param_str =
+            super::type_helpers::py_param_list(params, known_types, delegate_type_names);
+        if param_str.is_empty() {
             out.push_str("    def __init__(self) -> None: ...\n");
         } else {
-            out.push_str(&format!("    def __init__(self, {params}) -> None: ...\n"));
+            out.push_str(&format!(
+                "    def __init__(self, {param_str}) -> None: ...\n"
+            ));
         }
     }
     out
@@ -628,9 +811,16 @@ fn emit_instance_stub_group(
     known_types: &HashSet<String>,
     delegate_type_names: &HashSet<String>,
     indent_spaces: usize,
+    event_has_remove: bool,
 ) -> String {
     if methods.len() == 1 {
-        return emit_method_stub(methods[0], known_types, delegate_type_names, indent_spaces);
+        return emit_method_stub(
+            methods[0],
+            known_types,
+            delegate_type_names,
+            indent_spaces,
+            event_has_remove,
+        );
     }
     let names = super::overloads::method_names(methods.iter().copied());
     let public_name = super::overloads::method_group_key(methods[0], &names);
@@ -646,6 +836,7 @@ fn emit_instance_stub_group(
                     delegate_type_names,
                     indent_spaces,
                     Some(&public_name),
+                    event_has_remove,
                 )
             )
         })

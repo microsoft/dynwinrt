@@ -6,7 +6,7 @@ import { DynCom } from '../../../bindings/js/dist/com.js';
 import {
   IID_IWICImagingFactory,
   IWICImagingFactory,
-} from '../../e2e_generated/com/wic/IWICImagingFactory.js';
+} from '../../e2e_generated/com/wic/com/IWICImagingFactory.js';
 
 const CLSID_WIC_IMAGING_FACTORY = 'cacaf262-9370-4615-a13b-9f5539da4c0a';
 

@@ -53,6 +53,62 @@ fn discovered_windows_winmd() -> Option<String> {
     com_metadata::discover_newest_windows_winmd()
 }
 
+fn run_codegen_command(
+    metadata: &str,
+    namespace: Option<&str>,
+    class_names: &str,
+    output_dir: &Path,
+) {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_dynwinrt-codegen"));
+    command
+        .arg("generate")
+        .arg("--winmd")
+        .arg(metadata)
+        .arg("--class-name")
+        .arg(class_names)
+        .arg("--output")
+        .arg(output_dir);
+    if let Some(namespace) = namespace {
+        command.arg("--namespace").arg(namespace);
+    }
+
+    let output = command.output().expect("spawn dynwinrt-codegen");
+    assert!(
+        output.status.success(),
+        "generation failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn assert_mixed_package_shape(output_dir: &Path) {
+    assert!(output_dir.join("Uri.js").is_file());
+    assert!(output_dir.join("com").join("ITaskbarList3.js").is_file());
+    assert!(output_dir.join("com").join("package.json").is_file());
+
+    let root_index = fs::read_to_string(output_dir.join("index.d.ts")).unwrap();
+    assert!(root_index.contains("Uri"));
+    assert!(!root_index.contains("ITaskbarList3"));
+    assert!(!root_index.contains("TBPFLAG"));
+
+    let com_index = fs::read_to_string(output_dir.join("com").join("index.d.ts")).unwrap();
+    assert!(com_index.contains("ITaskbarList3"));
+    assert!(com_index.contains("TBPFLAG"));
+    assert!(!com_index.contains("Uri"));
+
+    let package = fs::read_to_string(output_dir.join("package.json")).unwrap();
+    assert!(package.contains("\"type\": \"commonjs\""));
+    assert!(package.contains("\"./Uri\""));
+    assert!(package.contains("\"./com\""));
+    assert!(package.contains("\"./com/*\""));
+    assert!(package.contains("\"types\": \"./com/*.d.ts\""));
+    assert!(package.contains("\"import\": \"./com/*.js\""));
+    assert!(!package.contains("\"require\": \"./com/"));
+
+    let com_package = fs::read_to_string(output_dir.join("com").join("package.json")).unwrap();
+    assert!(com_package.contains("\"type\": \"module\""));
+}
+
 // -------------------------------------------------------------------------
 // NORMAL tests
 // -------------------------------------------------------------------------
@@ -1415,14 +1471,32 @@ fn com_only_generation_emits_an_importable_package_shape() {
     for name in ["index.js", "index.d.ts", "package.json"] {
         assert!(
             output_dir.join(name).is_file(),
-            "COM-only output must include {name}"
+            "COM-only compatibility output must include {name}"
         );
     }
+    for name in [
+        "index.js",
+        "index.d.ts",
+        "package.json",
+        "ITaskbarList3.js",
+        "ITaskbarList3.d.ts",
+    ] {
+        assert!(
+            output_dir.join("com").join(name).is_file(),
+            "COM subpackage must include {name}"
+        );
+    }
+    assert!(!output_dir.join("ITaskbarList3.js").exists());
     let index = fs::read_to_string(output_dir.join("index.js")).unwrap();
     assert!(index.contains("ITaskbarList3") && index.contains("TBPFLAG"));
+    assert!(index.contains("from './com/ITaskbarList3.js'"));
+    let com_index = fs::read_to_string(output_dir.join("com").join("index.js")).unwrap();
+    assert!(com_index.contains("from './ITaskbarList3.js'"));
     let package = fs::read_to_string(output_dir.join("package.json")).unwrap();
     assert!(package.contains("\"type\": \"module\""));
     assert!(package.contains("\"./ITaskbarList3\""));
+    assert!(package.contains("\"./com\""));
+    assert!(package.contains("\"./com/*\""));
 
     let incremental = Command::new(env!("CARGO_BIN_EXE_dynwinrt-codegen"))
         .args([
@@ -1443,7 +1517,7 @@ fn com_only_generation_emits_an_importable_package_shape() {
         incremental.status.success(),
         "incremental COM generation failed:\n{incremental_stderr}"
     );
-    let incremental_index = fs::read_to_string(output_dir.join("index.js")).unwrap();
+    let incremental_index = fs::read_to_string(output_dir.join("com").join("index.js")).unwrap();
     assert!(
         incremental_index.contains("ITaskbarList3")
             && incremental_index.contains("IShellLinkW")
@@ -1459,4 +1533,107 @@ fn com_only_generation_emits_an_importable_package_shape() {
     );
 
     fs::remove_dir_all(&output_dir).expect("remove COM package test directory");
+}
+
+#[test]
+fn mixed_generation_supports_one_command_and_both_incremental_orders() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+    let Some(windows_winmd) = discovered_windows_winmd() else {
+        eprintln!("Skipping: Windows.winmd not available");
+        return;
+    };
+    let metadata = format!("{};{}", windows_winmd, win32_winmd());
+    let temp = std::env::temp_dir();
+    let mixed = temp.join(format!(
+        "dynwinrt-codegen-mixed-package-{}",
+        std::process::id()
+    ));
+    let winrt_first = temp.join(format!(
+        "dynwinrt-codegen-mixed-winrt-first-{}",
+        std::process::id()
+    ));
+    let com_first = temp.join(format!(
+        "dynwinrt-codegen-mixed-com-first-{}",
+        std::process::id()
+    ));
+    let legacy_com_first = temp.join(format!(
+        "dynwinrt-codegen-mixed-legacy-com-first-{}",
+        std::process::id()
+    ));
+    for output_dir in [&mixed, &winrt_first, &com_first, &legacy_com_first] {
+        if output_dir.exists() {
+            fs::remove_dir_all(output_dir).expect("remove stale mixed package test directory");
+        }
+    }
+
+    run_codegen_command(
+        &metadata,
+        None,
+        "Windows.Foundation.Uri,Windows.Win32.UI.Shell.ITaskbarList3",
+        &mixed,
+    );
+    assert_mixed_package_shape(&mixed);
+
+    run_codegen_command(&metadata, Some("Windows.Foundation"), "Uri", &winrt_first);
+    run_codegen_command(
+        &metadata,
+        Some("Windows.Win32.UI.Shell"),
+        "ITaskbarList3",
+        &winrt_first,
+    );
+    assert_mixed_package_shape(&winrt_first);
+
+    run_codegen_command(
+        &metadata,
+        Some("Windows.Win32.UI.Shell"),
+        "ITaskbarList3",
+        &com_first,
+    );
+    let com_only_package = fs::read_to_string(com_first.join("package.json")).unwrap();
+    assert!(com_only_package.contains("\"type\": \"module\""));
+    assert!(
+        fs::read_to_string(com_first.join("index.d.ts"))
+            .unwrap()
+            .contains("ITaskbarList3")
+    );
+
+    run_codegen_command(&metadata, Some("Windows.Foundation"), "Uri", &com_first);
+    assert_mixed_package_shape(&com_first);
+
+    run_codegen_command(
+        &metadata,
+        Some("Windows.Win32.UI.Shell"),
+        "ITaskbarList3",
+        &legacy_com_first,
+    );
+    let com_dir = legacy_com_first.join("com");
+    let legacy_index = fs::read_to_string(com_dir.join("index.js")).unwrap();
+    for entry in fs::read_dir(&com_dir).unwrap() {
+        let entry = entry.unwrap();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name != "index.js" && name != "index.d.ts" && name != "package.json" {
+            fs::copy(entry.path(), legacy_com_first.join(name.as_ref())).unwrap();
+        }
+    }
+    fs::write(legacy_com_first.join("index.js"), &legacy_index).unwrap();
+    fs::write(legacy_com_first.join("index.d.ts"), legacy_index).unwrap();
+    fs::remove_dir_all(com_dir).unwrap();
+
+    run_codegen_command(
+        &metadata,
+        Some("Windows.Foundation"),
+        "Uri",
+        &legacy_com_first,
+    );
+    assert_mixed_package_shape(&legacy_com_first);
+    assert!(!legacy_com_first.join("ITaskbarList3.js").exists());
+    assert!(!legacy_com_first.join("TBPFLAG.js").exists());
+
+    for output_dir in [&mixed, &winrt_first, &com_first, &legacy_com_first] {
+        fs::remove_dir_all(output_dir).expect("remove mixed package test directory");
+    }
 }

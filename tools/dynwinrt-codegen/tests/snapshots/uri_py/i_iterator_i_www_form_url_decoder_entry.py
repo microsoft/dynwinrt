@@ -27,7 +27,7 @@ def _dynwinrt_symbol(module, name):
 def _dynwinrt_wrap_values(module, name, values):
     wrapper = _dynwinrt_symbol(module, name)
     wrap = getattr(wrapper, '_from_native', wrapper)
-    return [wrap(value) for value in values]
+    return [None if value.is_null() else wrap(value) for value in values]
 
 
 def _dynwinrt_enum(module, name, value):
@@ -71,8 +71,8 @@ class IIterator_IWwwFormUrlDecoderEntry(_WinRTIteratorMixin):
 
 
     @property
-    def current(self) -> 'IWwwFormUrlDecoderEntry':
-        return _dynwinrt_symbol('i_www_form_url_decoder_entry', 'IWwwFormUrlDecoderEntry')(_IIterator_IWwwFormUrlDecoderEntry.method(6).invoke(self._obj, []))
+    def current(self) -> IWwwFormUrlDecoderEntry | None:
+        return (lambda value: None if value.is_null() else _dynwinrt_symbol('i_www_form_url_decoder_entry', 'IWwwFormUrlDecoderEntry')(value))(_IIterator_IWwwFormUrlDecoderEntry.method(6).invoke(self._obj, []))
 
     @property
     def has_current(self) -> bool:
@@ -81,6 +81,6 @@ class IIterator_IWwwFormUrlDecoderEntry(_WinRTIteratorMixin):
     def move_next(self) -> bool:
         return _IIterator_IWwwFormUrlDecoderEntry.method(8).invoke(self._obj, []).to_bool()
 
-    def get_many(self, items: DynWinRTArray | Sequence['IWwwFormUrlDecoderEntry']) -> list['IWwwFormUrlDecoderEntry']:
+    def get_many(self, items: DynWinRTArray | Sequence['IWwwFormUrlDecoderEntry']) -> list[IWwwFormUrlDecoderEntry | None]:
         _results = _IIterator_IWwwFormUrlDecoderEntry.method(9).invoke_all(self._obj, [_dynwinrt_array(items, lambda item: getattr(item, '_obj', item), DynWinRTType.interface(WinGUID.parse('125e7431-f678-4e8e-b670-20a9b06c512d')), False)])
         return _dynwinrt_wrap_values('i_www_form_url_decoder_entry', 'IWwwFormUrlDecoderEntry', _results[0].as_array().to_values())[:_results[1].to_number()]

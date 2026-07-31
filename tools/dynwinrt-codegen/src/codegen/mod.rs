@@ -4,6 +4,7 @@
 pub mod com;
 pub mod common;
 pub mod flat;
+pub mod package;
 pub mod winrt;
 
 // Preserve the existing public module paths while callers migrate to
@@ -33,7 +34,7 @@ pub mod render_js {
 }
 
 pub mod render_package_json {
-    pub use super::javascript::render::package_json::*;
+    pub use super::package::*;
 }
 
 pub mod typescript {

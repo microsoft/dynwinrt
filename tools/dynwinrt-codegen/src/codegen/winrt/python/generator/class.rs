@@ -6,9 +6,21 @@
 use super::imports::{emit_type_checking_imports, format_py_type_import};
 use super::structs::generate_struct_helpers;
 use super::*;
+use crate::codegen::winrt::extensions::winui::{self, WinUiAbiType};
 use crate::codegen::winrt::python::collections::{
     CollectionKind, class_interface, interface_kind, map_iterable_name, runtime_mixin,
 };
+use crate::meta::{ConstructorKind, ParamMeta};
+
+fn project_winui_abi_types(types: &[WinUiAbiType]) -> String {
+    types
+        .iter()
+        .map(|typ| match typ {
+            WinUiAbiType::Object => "DynWinRTType.object()",
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
 
 /// Generate a Python file for a single RuntimeClass.
 pub fn generate_class(
@@ -20,6 +32,7 @@ pub fn generate_class(
     let used_structs = collect_used_structs_from_class(class);
     let collection_iface = class_interface(class);
     let collection_kind = collection_iface.and_then(interface_kind);
+    let winui_bootstrap = winui::resolve_application_bootstrap(class, known_types);
     let collection_uses_default = collection_iface.is_some_and(|collection_iface| {
         class
             .default_interface
@@ -350,6 +363,129 @@ pub fn generate_class(
         ));
     }
 
+    // Composable factories commonly expose a no-argument `CreateInstance`
+    // method. Add an ergonomic `create()` alias when there is no default
+    // constructor and no explicit `create` factory of any arity.
+    let has_explicit_create_factory = class.factory_interfaces.iter().any(|iface| {
+        iface
+            .methods
+            .iter()
+            .any(|m| to_snake_case(&m.name) == "create")
+    });
+    if !class.has_default_constructor && !has_explicit_create_factory {
+        let create_instance_no_args = class.factory_interfaces.iter().any(|iface| {
+            iface.methods.iter().any(|m| {
+                m.name == "CreateInstance"
+                    && crate::codegen::winrt::shared::imports::get_in_params(m).is_empty()
+            })
+        });
+        if create_instance_no_args {
+            out.push('\n');
+            out.push_str("    @staticmethod\n");
+            out.push_str(&format!("    def create() -> '{}':\n", class.name));
+            out.push_str(&format!(
+                "        \"\"\"Create a new `{}` instance. Alias for `create_instance()`.\"\"\"\n",
+                class.name
+            ));
+            out.push_str(&format!(
+                "        return {}.create_instance()\n",
+                class.name
+            ));
+        }
+    }
+
+    if let Some(bootstrap) = winui_bootstrap {
+        let spec = bootstrap.spec;
+        let metadata_provider = spec.metadata_provider.name;
+        let controls_resources = spec.controls_resources.name;
+        let resource_manager = spec.resource_manager.name;
+        let callback_types = project_winui_abi_types(spec.launched_callback_params);
+        let metadata_module = to_snake_case_filename(metadata_provider);
+        let resources_module = to_snake_case_filename(controls_resources);
+        let resource_manager_module = to_snake_case_filename(resource_manager);
+
+        out.push('\n');
+        out.push_str("    @staticmethod\n");
+        out.push_str(&format!(
+            "    def create_with_metadata_provider(metadata_provider: '{metadata_provider}', on_launched: Callable[[], object] | None = None) -> '{}':\n",
+            class.name,
+        ));
+        out.push_str(
+            "        \"\"\"Compose a WinUI `Application` that exposes the supplied XAML metadata provider.\n\
+             \n\
+             `on_launched` is invoked from `Application.OnLaunched`, when XAML resources\n\
+             and windows can be initialized.\"\"\"\n",
+        );
+        out.push_str("        _launched = None\n");
+        out.push_str("        if on_launched is not None:\n");
+        out.push_str(&format!(
+            "            _launched = DynWinRtDelegate.create(WinGUID.parse('{callback_iid}'), [{callback_types}], lambda _args: on_launched()).to_value()\n",
+            callback_iid = spec.launched_callback_iid,
+        ));
+        out.push_str(&format!(
+            "        return {}._from_native(DynWinRTValue.create_xaml_application(getattr(metadata_provider, '_obj', metadata_provider), _launched))\n",
+            class.name
+        ));
+
+        out.push('\n');
+        out.push_str("    @staticmethod\n");
+        out.push_str(&format!(
+            "    def create(on_launched: Callable[[], object] | None = None) -> '{}':\n",
+            class.name
+        ));
+        out.push_str(
+            "        \"\"\"Compose a WinUI `Application`, install WinUI's default Fluent resources,\n\
+             and optionally configure unpackaged resource resolution before running `on_launched`.\"\"\"\n",
+        );
+        out.push_str(&format!(
+            "        _provider = _dynwinrt_symbol('{metadata_module}', '{metadata_provider}').create()\n",
+        ));
+        out.push_str("        _resources_initialized = [False]\n");
+        out.push_str("        def _on_launched_wrapped(_args):\n");
+        out.push_str(&format!(
+            "            _app = {}.get_current()\n",
+            class.name
+        ));
+        out.push_str("            if _app is None:\n");
+        out.push_str(
+            "                raise RuntimeError('WinUI Application.current is unavailable during on_launched')\n",
+        );
+        out.push_str("            if not _resources_initialized[0]:\n");
+        out.push_str(&format!(
+            "                _app.resources.merged_dictionaries.append(_dynwinrt_symbol('{resources_module}', '{controls_resources}').create())\n",
+        ));
+        out.push_str("                _resources_initialized[0] = True\n");
+        out.push_str("            if on_launched is not None:\n");
+        out.push_str("                on_launched()\n");
+        out.push_str(&format!(
+            "        _launched = DynWinRtDelegate.create(WinGUID.parse('{callback_iid}'), [{callback_types}], _on_launched_wrapped).to_value()\n",
+            callback_iid = spec.launched_callback_iid,
+        ));
+        out.push_str(&format!(
+            "        _app = {}._from_native(DynWinRTValue.create_xaml_application(getattr(_provider, '_obj', _provider), _launched))\n",
+            class.name
+        ));
+        if bootstrap.supports_unpackaged_resources {
+            out.push_str(
+                "        from dynwinrt_py import has_package_identity, get_winappsdk_resource_pri_path\n",
+            );
+            out.push_str("        if not has_package_identity():\n");
+            out.push_str(&format!(
+                "            _resource_manager = _dynwinrt_symbol('{resource_manager_module}', '{resource_manager}').create_instance(get_winappsdk_resource_pri_path())\n",
+            ));
+            out.push_str("            def _on_resource_manager_requested(_sender, args):\n");
+            out.push_str("                if args is None:\n");
+            out.push_str(
+                "                    raise RuntimeError('WinUI ResourceManagerRequested did not supply event arguments')\n",
+            );
+            out.push_str("                args.custom_resource_manager = _resource_manager\n");
+            out.push_str(
+                "            _app.on_resource_manager_requested(_on_resource_manager_requested)\n",
+            );
+        }
+        out.push_str("        return _app\n");
+    }
+
     let mut method_groups: Vec<(String, Vec<InstanceOverload<'_>>)> = Vec::new();
     let instance_ifaces = class
         .default_interface
@@ -388,6 +524,7 @@ pub fn generate_class(
                 iface_var: format!("_{}", iface.name),
                 obj_expr: obj_expr.clone(),
                 method,
+                sibling_methods: Some(iface.methods.as_slice()),
             };
             if let Some((_, group)) = method_groups
                 .iter_mut()
@@ -446,6 +583,24 @@ pub fn generate_class(
         );
         out.push_str("    def __exit__(self, _exc_type, _exc_value, _traceback):\n");
         out.push_str("        self.close()\n        return False\n");
+    }
+
+    // IStringable → __str__ / __repr__ delegates to the runtime IStringable.
+    const ISTRINGABLE_IID: &str = "96369f54-8eb6-48f0-abce-c1b211e627c3";
+    if class.name != "IStringable"
+        && class
+            .required_interfaces
+            .iter()
+            .any(|ri| ri.iid == ISTRINGABLE_IID)
+    {
+        out.push('\n');
+        out.push_str("    def __str__(self) -> str:\n");
+        out.push_str(
+            "        return _IStringable.method(6).invoke(self._obj.cast(IID_IStringable), []).to_string()\n",
+        );
+        out.push('\n');
+        out.push_str("    def __repr__(self) -> str:\n");
+        out.push_str("        return f'{type(self).__name__}({self.__str__()!r})'\n");
     }
 
     // .as_interface() method for accessing non-default interfaces
@@ -519,6 +674,185 @@ fn default_constructor_name(has_create_factory: bool) -> &'static str {
     }
 }
 
+fn split_composable_params<'a>(
+    method: &'a MethodMeta,
+    in_params: &[&'a ParamMeta],
+) -> Option<(usize, Vec<&'a ParamMeta>)> {
+    let outer = *in_params.last()?;
+    let outer_name = outer.name.to_ascii_lowercase();
+    let is_outer_name = outer_name == "outer"
+        || outer_name == "base"
+        || outer_name == "baseinterface"
+        || outer_name == "outerinterface";
+    let has_inner_output = method.params.iter().any(|param| {
+        param.direction == ParamDirection::Out
+            && matches!(param.typ, TypeMeta::Object)
+            && param.name.to_ascii_lowercase().contains("inner")
+    });
+    if !is_outer_name || !matches!(outer.typ, TypeMeta::Object) || !has_inner_output {
+        return None;
+    }
+    Some((
+        in_params.len() - 1,
+        in_params[..in_params.len() - 1].to_vec(),
+    ))
+}
+
+fn method_constructs_class(method: &MethodMeta, class: &ClassMeta) -> bool {
+    matches!(
+        method.return_type.as_ref(),
+        Some(TypeMeta::RuntimeClass { namespace, name, .. })
+            if namespace == &class.namespace && name == &class.name
+    )
+}
+
+/// A constructor candidate for `__init__` dispatch: public params + call expression.
+struct PyCtorCandidate<'a> {
+    /// Only the public (outer-stripped) input params, in call order.
+    public_params: Vec<&'a ParamMeta>,
+    /// Full call expression, e.g. `type(self).create_instance(_bound[0], None)`.
+    call_expr: String,
+}
+
+fn build_ctor_candidates<'a>(
+    class: &'a ClassMeta,
+    factory_names: &HashSet<String>,
+) -> Vec<PyCtorCandidate<'a>> {
+    fn push_unique<'a>(candidates: &mut Vec<PyCtorCandidate<'a>>, candidate: PyCtorCandidate<'a>) {
+        if candidates.iter().any(|existing| {
+            existing.public_params.len() == candidate.public_params.len()
+                && existing
+                    .public_params
+                    .iter()
+                    .zip(&candidate.public_params)
+                    .all(|(left, right)| left.name == right.name && left.typ == right.typ)
+        }) {
+            return;
+        }
+        candidates.push(candidate);
+    }
+
+    let mut candidates: Vec<PyCtorCandidate<'a>> = Vec::new();
+    let has_create_factory = class.factory_interfaces.iter().any(|iface| {
+        iface.methods.iter().any(|m| {
+            let snake = to_snake_case(&m.name);
+            snake == "create" || snake.starts_with("create")
+        })
+    });
+
+    for constructor in &class.constructors {
+        match constructor.kind {
+            ConstructorKind::DefaultActivation => {
+                let ctor_name = default_constructor_name(has_create_factory);
+                push_unique(
+                    &mut candidates,
+                    PyCtorCandidate {
+                        public_params: Vec::new(),
+                        call_expr: format!("type(self).{}()", ctor_name),
+                    },
+                );
+            }
+            ConstructorKind::FactoryActivation => {
+                let Some(factory_ref) = constructor.factory_interface.as_ref() else {
+                    continue;
+                };
+                let Some(factory) = class.factory_interfaces.iter().find(|iface| {
+                    iface.namespace == factory_ref.namespace && iface.name == factory_ref.name
+                }) else {
+                    continue;
+                };
+                for method in &factory.methods {
+                    if !method_constructs_class(method, class) {
+                        continue;
+                    }
+                    let in_params = crate::codegen::winrt::shared::imports::get_in_params(method);
+                    let call_expr =
+                        build_factory_call_expr(class, method, &in_params, None, factory_names);
+                    push_unique(
+                        &mut candidates,
+                        PyCtorCandidate {
+                            public_params: in_params,
+                            call_expr,
+                        },
+                    );
+                }
+            }
+            ConstructorKind::PublicComposition => {
+                let Some(factory_ref) = constructor.factory_interface.as_ref() else {
+                    continue;
+                };
+                let Some(factory) = class.factory_interfaces.iter().find(|iface| {
+                    iface.namespace == factory_ref.namespace && iface.name == factory_ref.name
+                }) else {
+                    continue;
+                };
+                for method in &factory.methods {
+                    if !method_constructs_class(method, class) {
+                        continue;
+                    }
+                    let in_params = crate::codegen::winrt::shared::imports::get_in_params(method);
+                    let Some((outer_index, public_params)) =
+                        split_composable_params(method, &in_params)
+                    else {
+                        continue;
+                    };
+                    let call_expr = build_factory_call_expr(
+                        class,
+                        method,
+                        &in_params,
+                        Some(outer_index),
+                        factory_names,
+                    );
+                    push_unique(
+                        &mut candidates,
+                        PyCtorCandidate {
+                            public_params,
+                            call_expr,
+                        },
+                    );
+                }
+            }
+            ConstructorKind::ProtectedComposition => {}
+        }
+    }
+
+    candidates
+}
+
+/// Build a `type(self).<method>(_bound[0], _bound[1], ..., None_for_outer)` call.
+fn build_factory_call_expr(
+    class: &ClassMeta,
+    method: &MethodMeta,
+    in_params: &[&ParamMeta],
+    outer_index: Option<usize>,
+    factory_names: &HashSet<String>,
+) -> String {
+    let public_name =
+        crate::codegen::winrt::python::overloads::method_group_key(method, factory_names);
+    let overload_count = factory_methods_for_name(class, factory_names, &public_name);
+    let call_name = if overload_count > 1 {
+        format!("_{public_name}_{}", method.vtable_index)
+    } else {
+        to_snake_case(&method.name)
+    };
+    let mut public_idx = 0usize;
+    let args = in_params
+        .iter()
+        .enumerate()
+        .map(|(index, _)| {
+            if outer_index == Some(index) {
+                "DynWinRTValue.null_value()".to_string()
+            } else {
+                let arg = format!("_bound[{public_idx}]");
+                public_idx += 1;
+                arg
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("type(self).{call_name}({args})")
+}
+
 fn generate_python_constructor(
     class: &ClassMeta,
     known_types: &HashSet<String>,
@@ -575,64 +909,115 @@ fn generate_python_constructor(
         .collect::<Vec<_>>();
     let factory_names =
         crate::codegen::winrt::python::overloads::method_names(factory_methods.iter().copied());
-    let has_create_factory = factory_methods.iter().any(|method| {
-        let name = to_snake_case(&method.name);
-        name == "create" || name.starts_with("create")
-    });
-    if class.has_default_constructor {
-        let constructor_name = default_constructor_name(has_create_factory);
-        out.push_str("        _bound = _dynwinrt_bind_overload((), args, kwargs)\n");
-        out.push_str("        if _bound is not None:\n");
-        out.push_str(&format!(
-            "            self._set_native(type(self).{}()._obj)\n            return\n",
-            constructor_name
-        ));
-    }
-    for method in factory_methods {
-        let in_params = crate::codegen::winrt::shared::imports::get_in_params(method);
-        let parameter_names = in_params
-            .iter()
-            .map(|param| format!("'{}'", to_snake_case(&param.name)))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let parameter_names = if parameter_names.is_empty() {
-            "()".to_string()
-        } else {
-            format!("({parameter_names},)")
-        };
-        let public_name =
-            crate::codegen::winrt::python::overloads::method_group_key(method, &factory_names);
-        let overload_count = factory_methods_for_name(class, &factory_names, &public_name);
-        let call_name = if overload_count > 1 {
-            format!("_{public_name}_{}", method.vtable_index)
-        } else {
-            to_snake_case(&method.name)
-        };
-        out.push_str(&format!(
-            "        _bound = _dynwinrt_bind_overload({parameter_names}, args, kwargs)\n"
-        ));
-        let guards = in_params
-            .iter()
-            .enumerate()
-            .map(|(index, param)| {
-                py_method_type_guard(
-                    &format!("_bound[{index}]"),
-                    &param.typ,
-                    known_types,
-                    delegate_type_names,
-                )
-            })
-            .collect::<Vec<_>>();
-        let condition = if guards.is_empty() {
-            "_bound is not None".to_string()
-        } else {
-            format!("_bound is not None and {}", guards.join(" and "))
-        };
-        out.push_str(&format!(
-            "        if {condition}:\n\
-             \x20           self._set_native(type(self).{call_name}(*_bound)._obj)\n\
-             \x20           return\n"
-        ));
+
+    // Prefer the new constructors-metadata-driven path when the class carries
+    // activation/composable attributes. Fall back to the legacy factory-scan
+    // path when meta didn't record constructors (should be rare).
+    let candidates = build_ctor_candidates(class, &factory_names);
+    if !class.constructors.is_empty() {
+        for candidate in &candidates {
+            let parameter_names = candidate
+                .public_params
+                .iter()
+                .map(|param| format!("'{}'", to_snake_case(&param.name)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let parameter_names = if parameter_names.is_empty() {
+                "()".to_string()
+            } else {
+                format!("({parameter_names},)")
+            };
+            out.push_str(&format!(
+                "        _bound = _dynwinrt_bind_overload({parameter_names}, args, kwargs)\n"
+            ));
+            let guards = candidate
+                .public_params
+                .iter()
+                .enumerate()
+                .map(|(index, param)| {
+                    py_method_type_guard(
+                        &format!("_bound[{index}]"),
+                        &param.typ,
+                        known_types,
+                        delegate_type_names,
+                    )
+                })
+                .collect::<Vec<_>>();
+            let condition = if guards.is_empty() {
+                "_bound is not None".to_string()
+            } else {
+                format!("_bound is not None and {}", guards.join(" and "))
+            };
+            out.push_str(&format!(
+                "        if {condition}:\n\
+                 \x20           self._set_native({call}._obj)\n\
+                 \x20           return\n",
+                condition = condition,
+                call = candidate.call_expr,
+            ));
+        }
+    } else {
+        // Legacy fallback (no constructors metadata): treat every factory
+        // method as an activation candidate.
+        let has_create_factory = factory_methods.iter().any(|method| {
+            let name = to_snake_case(&method.name);
+            name == "create" || name.starts_with("create")
+        });
+        if class.has_default_constructor {
+            let constructor_name = default_constructor_name(has_create_factory);
+            out.push_str("        _bound = _dynwinrt_bind_overload((), args, kwargs)\n");
+            out.push_str("        if _bound is not None:\n");
+            out.push_str(&format!(
+                "            self._set_native(type(self).{}()._obj)\n            return\n",
+                constructor_name
+            ));
+        }
+        for method in factory_methods {
+            let in_params = crate::codegen::winrt::shared::imports::get_in_params(method);
+            let parameter_names = in_params
+                .iter()
+                .map(|param| format!("'{}'", to_snake_case(&param.name)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let parameter_names = if parameter_names.is_empty() {
+                "()".to_string()
+            } else {
+                format!("({parameter_names},)")
+            };
+            let public_name =
+                crate::codegen::winrt::python::overloads::method_group_key(method, &factory_names);
+            let overload_count = factory_methods_for_name(class, &factory_names, &public_name);
+            let call_name = if overload_count > 1 {
+                format!("_{public_name}_{}", method.vtable_index)
+            } else {
+                to_snake_case(&method.name)
+            };
+            out.push_str(&format!(
+                "        _bound = _dynwinrt_bind_overload({parameter_names}, args, kwargs)\n"
+            ));
+            let guards = in_params
+                .iter()
+                .enumerate()
+                .map(|(index, param)| {
+                    py_method_type_guard(
+                        &format!("_bound[{index}]"),
+                        &param.typ,
+                        known_types,
+                        delegate_type_names,
+                    )
+                })
+                .collect::<Vec<_>>();
+            let condition = if guards.is_empty() {
+                "_bound is not None".to_string()
+            } else {
+                format!("_bound is not None and {}", guards.join(" and "))
+            };
+            out.push_str(&format!(
+                "        if {condition}:\n\
+                 \x20           self._set_native(type(self).{call_name}(*_bound)._obj)\n\
+                 \x20           return\n"
+            ));
+        }
     }
     out.push_str(&format!(
         "        raise TypeError(\"No matching constructor for {}\")\n\n",

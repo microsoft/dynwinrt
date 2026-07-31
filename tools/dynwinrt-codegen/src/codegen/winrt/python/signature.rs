@@ -508,16 +508,13 @@ pub(crate) fn py_convert_return(
     match return_type {
         Some(TypeMeta::String) => format!("{}.to_string()", expr),
         Some(TypeMeta::Guid) => format!("_dynwinrt_uuid({}.to_guid())", expr),
-        Some(
-            TypeMeta::I8
-            | TypeMeta::U8
-            | TypeMeta::I16
-            | TypeMeta::U16
-            | TypeMeta::I32
-            | TypeMeta::U32,
-        ) => format!("{}.to_number()", expr),
+        Some(TypeMeta::I8 | TypeMeta::U8 | TypeMeta::I16 | TypeMeta::U16 | TypeMeta::I32) => {
+            format!("{}.to_number()", expr)
+        }
+        Some(TypeMeta::U32) => format!("{}.to_u32()", expr),
         Some(TypeMeta::Char16) => format!("chr({}.to_number())", expr),
-        Some(TypeMeta::I64 | TypeMeta::U64) => format!("{}.to_i64()", expr),
+        Some(TypeMeta::I64) => format!("{}.to_i64()", expr),
+        Some(TypeMeta::U64) => format!("{}.to_u64()", expr),
         Some(TypeMeta::F32 | TypeMeta::F64) => format!("{}.to_f64()", expr),
         Some(TypeMeta::Bool) => format!("{}.to_bool()", expr),
         Some(TypeMeta::Enum { name, .. }) if known_types.contains(name) => {
@@ -541,20 +538,46 @@ pub(crate) fn py_convert_return(
             )
         }
         Some(TypeMeta::RuntimeClass { name, .. }) if known_types.contains(name) => {
-            format!("{}._from_native({})", py_runtime_symbol(name, name), expr)
+            let wrapper = py_runtime_symbol(name, name);
+            format!(
+                "(lambda value: None if value.is_null() else {}._from_native(value))({})",
+                wrapper, expr
+            )
         }
         Some(TypeMeta::Struct { name, .. }) if name == "HResult" => format!("{}.to_number()", expr),
         Some(TypeMeta::Struct { name, .. }) => format!("_unpack_{}({})", to_snake_case(name), expr),
-        Some(TypeMeta::Delegate { .. }) => expr.to_string(),
+        Some(TypeMeta::Delegate { .. }) => {
+            format!(
+                "(lambda value: None if value.is_null() else value)({})",
+                expr
+            )
+        }
         Some(TypeMeta::Interface { name, .. }) if known_types.contains(name) => {
-            format!("{}({})", py_runtime_symbol(name, name), expr)
+            let wrapper = py_runtime_symbol(name, name);
+            format!(
+                "(lambda value: None if value.is_null() else {}(value))({})",
+                wrapper, expr
+            )
+        }
+        Some(TypeMeta::Object | TypeMeta::RuntimeClass { .. } | TypeMeta::Interface { .. }) => {
+            format!(
+                "(lambda value: None if value.is_null() else value)({})",
+                expr
+            )
         }
         Some(TypeMeta::Parameterized { name, args, .. }) => {
             let concrete = crate::meta::make_parameterized_name(name, args);
             if known_types.contains(&concrete) {
-                format!("{}({})", py_runtime_symbol(&concrete, &concrete), expr)
+                let wrapper = py_runtime_symbol(&concrete, &concrete);
+                format!(
+                    "(lambda value: None if value.is_null() else {}(value))({})",
+                    wrapper, expr
+                )
             } else {
-                expr.to_string()
+                format!(
+                    "(lambda value: None if value.is_null() else value)({})",
+                    expr
+                )
             }
         }
         Some(TypeMeta::Array(inner)) => {
@@ -657,6 +680,26 @@ pub(crate) fn py_convert_array_return(
                 arr_expr
             )
         }
+        TypeMeta::Parameterized { name, args, .. } => {
+            let concrete = crate::meta::make_parameterized_name(name, args);
+            if known_types.contains(&concrete) {
+                format!(
+                    "_dynwinrt_wrap_values('{}', '{}', {}.to_values())",
+                    to_snake_case_filename(&concrete),
+                    concrete,
+                    arr_expr
+                )
+            } else {
+                format!(
+                    "[None if v.is_null() else v for v in {}.to_values()]",
+                    arr_expr
+                )
+            }
+        }
+        TypeMeta::Object | TypeMeta::Delegate { .. } => format!(
+            "[None if v.is_null() else v for v in {}.to_values()]",
+            arr_expr
+        ),
         _ => format!("{}.to_values()", arr_expr),
     }
 }

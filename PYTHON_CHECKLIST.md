@@ -54,6 +54,10 @@ of a dynamic projection.
 - [x] Add Python E2E for `IVector.IndexOf` and other multiple-out methods.
 - [x] Project `IReference<T>` return positions as `T | None`.
 - [x] Accept `T | None` in `IReference<T>` input positions.
+- [x] Project null reference returns and reference-array elements as `T | None`
+      consistently in runtime code and stubs.
+- [x] Preserve the full `UInt32` / `UInt64` range when converting to Python
+      integers.
 - [x] Make Python stubs part of E2E and run a static type checker.
 - [x] Make `.pyi` generation the default for `--lang py`.
 
@@ -86,6 +90,10 @@ of a dynamic projection.
 - [x] Surface Python callback failures instead of returning unconditional
       success to WinRT.
 - [x] Document callback threads and require explicit event unsubscription.
+- [x] Preserve token-based `on_*` / `off_*` compatibility and provide
+      idempotent `subscribe_*` and reentrancy-safe `once_*` helpers.
+- [x] Convert `TypedEventHandler` / `EventHandler` callback arguments to typed
+      projected Python values.
 - [x] Implement Python collection protocols for iterable, vector, and map
       projections.
 - [x] Accept normal Python sequences, mappings, bytes, UUIDs, datetimes, and
@@ -108,16 +116,24 @@ of a dynamic projection.
 - [ ] Document generated-code version compatibility with `dynwinrt-py`.
 - [ ] Add troubleshooting for metadata, apartment, bootstrap, architecture,
       and wheel compatibility failures.
+- [ ] Add progress-callback tests for worker-thread delivery and operations
+      that complete concurrently with callback registration.
 
 ## WinUI milestone
 
-- [ ] Project public composable constructors in Python codegen.
-- [ ] Hide protected/system-returned constructors.
+- [x] Project public composable `__init__` overloads without requiring the
+      ABI-only `outer` parameter. The low-level factory method remains available
+      for parity and still exposes its raw ABI shape.
+- [x] Keep protected composable constructors out of generated Python
+      `__init__` overloads.
+- [ ] Hide or explicitly mark constructors for all system-returned classes.
 - [ ] Add composition/aggregation support required by XAML runtime classes.
 - [ ] Make Windows App SDK initialization idempotent and version-aware.
 - [ ] Auto-discover or explicitly provision the bootstrap DLL.
-- [ ] Expose the selected framework `resources.pri` path.
-- [ ] Add Python-specific implicit XAML metadata provider generation.
+- [x] Expose the selected framework `resources.pri` path.
+- [x] Add Python-specific implicit XAML metadata provider generation.
+- [x] Generate the specialized `Application.create_with_metadata_provider()`
+      and Fluent-resource bootstrap helpers with matching `.pyi` declarations.
 - [ ] Run `Application.start`, `Application`, `Window`, and all controls on an
       STA.
 - [ ] Load Fluent Light, Dark, and High Contrast resources.
@@ -152,3 +168,11 @@ of a dynamic projection.
 17. [x] Route delegate exceptions through `sys.unraisablehook` and fail WinRT invocation.
 18. [x] Emit `IntFlag`, overload dispatch/stubs, and idiomatic runtime-class constructors.
 19. [x] Balance COM initialization with `RoApartment` and add deterministic `IClosable` cleanup.
+20. [x] Make reference returns null-safe without lying in generated annotations.
+21. [x] Preserve `UInt32` / `UInt64` values across the Python boundary.
+22. [x] Add typed event arguments while preserving token subscriptions and adding
+        idempotent unsubscribe helpers.
+23. [x] Project public composable constructors and reject protected composition.
+24. [x] Add an experimental, typed WinUI `Application` bootstrap path backed
+        by a shared `codegen/winrt/extensions/winui` spec consumed by both
+        JavaScript and Python projection.

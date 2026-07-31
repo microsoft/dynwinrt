@@ -3,6 +3,7 @@
 
 //! Windows Runtime code generation.
 
+pub mod extensions;
 pub mod javascript;
 pub mod python;
 pub(crate) mod shared;

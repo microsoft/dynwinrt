@@ -618,6 +618,14 @@ mod tests {
             "r.to_number()"
         );
         assert_eq!(
+            py_convert_return("r", Some(&TypeMeta::U32), false, &known),
+            "r.to_u32()"
+        );
+        assert_eq!(
+            py_convert_return("r", Some(&TypeMeta::U64), false, &known),
+            "r.to_u64()"
+        );
+        assert_eq!(
             py_convert_return("r", Some(&TypeMeta::Bool), false, &known),
             "r.to_bool()"
         );
@@ -639,7 +647,7 @@ mod tests {
         };
         assert_eq!(
             py_convert_return("r", Some(&rt), false, &known),
-            "_dynwinrt_symbol('uri', 'Uri')._from_native(r)"
+            "(lambda value: None if value.is_null() else _dynwinrt_symbol('uri', 'Uri')._from_native(value))(r)"
         );
         assert_eq!(
             py_convert_array_return("r", &rt, &known),
