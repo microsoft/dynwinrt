@@ -228,8 +228,8 @@ pub fn generate_interface(
     if let Some(ref piid) = iface.generic_piid {
         if piid == "913337e9-11a1-4345-a3a2-4e7f956e222d" && iface.generic_args.len() == 1 {
             let elem_type = py_dynwinrt_type(&iface.generic_args[0]);
-            let elem_annotation = crate::codegen::winrt::python::type_helpers::py_return_type_safe(
-                Some(&iface.generic_args[0]),
+            let elem_annotation = crate::codegen::winrt::python::type_helpers::py_param_type_safe(
+                &iface.generic_args[0],
                 known_types,
             );
             let wrap = py_wrap_native_value("item", &iface.generic_args[0]);
@@ -246,12 +246,12 @@ pub fn generate_interface(
         } else if piid == "3c2925fe-8519-45c1-aa79-197b6718c1c1" && iface.generic_args.len() == 2 {
             let key_type = py_dynwinrt_type(&iface.generic_args[0]);
             let val_type = py_dynwinrt_type(&iface.generic_args[1]);
-            let key_annotation = crate::codegen::winrt::python::type_helpers::py_return_type_safe(
-                Some(&iface.generic_args[0]),
+            let key_annotation = crate::codegen::winrt::python::type_helpers::py_param_type_safe(
+                &iface.generic_args[0],
                 known_types,
             );
-            let val_annotation = crate::codegen::winrt::python::type_helpers::py_return_type_safe(
-                Some(&iface.generic_args[1]),
+            let val_annotation = crate::codegen::winrt::python::type_helpers::py_param_type_safe(
+                &iface.generic_args[1],
                 known_types,
             );
             let wrap_key = py_wrap_native_value("item", &iface.generic_args[0]);
@@ -293,6 +293,7 @@ pub fn generate_interface(
                 iface_var: iface_var.clone(),
                 obj_expr: "self._obj".to_string(),
                 method,
+                sibling_methods: Some(iface.methods.as_slice()),
             })
             .collect::<Vec<_>>();
         out.push_str(&generate_instance_method_group(
@@ -404,5 +405,28 @@ mod tests {
         let code = generate_enum(&value).unwrap();
         assert!(code.contains("from enum import IntFlag"));
         assert!(code.contains("class Options(IntFlag):"));
+    }
+
+    #[test]
+    fn collection_create_inputs_remain_non_nullable() {
+        let iface = InterfaceMeta {
+            name: "IVector_Widget".into(),
+            iid: "913337e9-11a1-4345-a3a2-4e7f956e222d".into(),
+            generic_piid: Some("913337e9-11a1-4345-a3a2-4e7f956e222d".into()),
+            generic_args: vec![TypeMeta::RuntimeClass {
+                namespace: "Contoso".into(),
+                name: "Widget".into(),
+                default_interface: None,
+            }],
+            ..Default::default()
+        };
+        let code = generate_interface(
+            &iface,
+            &HashSet::from(["Widget".into(), "IVector_Widget".into()]),
+            &HashSet::new(),
+        );
+
+        assert!(code.contains("def create(items: Iterable['Widget'])"));
+        assert!(!code.contains("def create(items: Iterable[Widget | None])"));
     }
 }

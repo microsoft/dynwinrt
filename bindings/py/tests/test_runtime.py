@@ -2,6 +2,7 @@
 # Licensed under the MIT License.
 
 import dynwinrt_py
+import pytest
 from dynwinrt_py import DynWinRTType, DynWinRTValue, WinGUID, ro_initialize
 
 
@@ -13,13 +14,21 @@ def test_to_number():
     assert DynWinRTValue.from_u8(200).to_number() == 200
     assert DynWinRTValue.from_i16(-1000).to_number() == -1000
     assert DynWinRTValue.from_u16(5000).to_number() == 5000
-    assert DynWinRTValue.from_u32(99).to_number() == 99
+    assert DynWinRTValue.from_u32(0xFFFFFFFF).to_number() == 0xFFFFFFFF
 
 
 def test_to_i64():
     assert DynWinRTValue.from_i64(9999999999).to_i64() == 9999999999
     assert DynWinRTValue.from_u64(12345).to_i64() == 12345
     assert DynWinRTValue.from_i32(42).to_i64() == 42
+
+
+def test_unsigned_conversions_preserve_full_range():
+    assert DynWinRTValue.from_u32(0xFFFFFFFF).to_u32() == 0xFFFFFFFF
+    assert DynWinRTValue.from_u64(0xFFFFFFFFFFFFFFFF).to_u64() == 0xFFFFFFFFFFFFFFFF
+    assert DynWinRTValue.from_u64(0xFFFFFFFFFFFFFFFF).to_int() == 0xFFFFFFFFFFFFFFFF
+    with pytest.raises(RuntimeError, match="does not fit"):
+        DynWinRTValue.from_u64(0xFFFFFFFFFFFFFFFF).to_i64()
 
 
 def test_to_f64():
@@ -40,4 +49,3 @@ def test_enum_value_in_to_number():
     ev = DynWinRTValue.enum_value(etype, 20)
     assert ev.to_number() == 20
     assert ev.to_string() == "Y"
-

@@ -39,8 +39,8 @@ def check_uri() -> None:
     uri: Uri = Uri("https://example.com")
     relative: Uri = Uri("https://example.com/root/", "child")
     host: str = uri.host
-    combined: Uri = uri.combine_uri("child")
-    _: Tuple[str, Uri, Uri] = (host, relative, combined)
+    combined: Uri | None = uri.combine_uri("child")
+    _: Tuple[str, Uri, Uri | None] = (host, relative, combined)
 
 
 def check_nullable_value(
@@ -56,7 +56,8 @@ def check_nullable_value(
 
 
 def check_string_vector(calendar: Calendar) -> None:
-    languages: Sequence[str] = calendar.languages
+    languages: Sequence[str] | None = calendar.languages
+    assert languages is not None
     first: str = languages[0]
     located: int = languages.index(first)
     many: List[str] = list(languages[:4])

@@ -27,7 +27,7 @@ def _dynwinrt_symbol(module, name):
 def _dynwinrt_wrap_values(module, name, values):
     wrapper = _dynwinrt_symbol(module, name)
     wrap = getattr(wrapper, '_from_native', wrapper)
-    return [wrap(value) for value in values]
+    return [None if value.is_null() else wrap(value) for value in values]
 
 
 def _dynwinrt_enum(module, name, value):
@@ -113,11 +113,11 @@ class Uri:
             return
         _bound = _dynwinrt_bind_overload(('uri',), args, kwargs)
         if _bound is not None and isinstance(_bound[0], str):
-            self._set_native(type(self).create_uri(*_bound)._obj)
+            self._set_native(type(self).create_uri(_bound[0])._obj)
             return
         _bound = _dynwinrt_bind_overload(('base_uri', 'relative_uri',), args, kwargs)
         if _bound is not None and isinstance(_bound[0], str) and isinstance(_bound[1], str):
-            self._set_native(type(self).create_with_relative_uri(*_bound)._obj)
+            self._set_native(type(self).create_with_relative_uri(_bound[0], _bound[1])._obj)
             return
         raise TypeError("No matching constructor for Uri")
 
@@ -191,8 +191,8 @@ class Uri:
         return _IUriRuntimeClass.method(14).invoke(self._obj, []).to_string()
 
     @property
-    def query_parsed(self) -> 'WwwFormUrlDecoder':
-        return _dynwinrt_symbol('www_form_url_decoder', 'WwwFormUrlDecoder')._from_native(_IUriRuntimeClass.method(15).invoke(self._obj, []))
+    def query_parsed(self) -> WwwFormUrlDecoder | None:
+        return (lambda value: None if value.is_null() else _dynwinrt_symbol('www_form_url_decoder', 'WwwFormUrlDecoder')._from_native(value))(_IUriRuntimeClass.method(15).invoke(self._obj, []))
 
     @property
     def raw_uri(self) -> str:
@@ -217,8 +217,8 @@ class Uri:
     def equals(self, p_uri: 'Uri') -> bool:
         return _IUriRuntimeClass.method(21).invoke(self._obj, [getattr(p_uri, '_obj', p_uri).cast(IID_ARG_Windows_Foundation_Uri)]).to_bool()
 
-    def combine_uri(self, relative_uri: str) -> 'Uri':
-        return _dynwinrt_symbol('uri', 'Uri')._from_native(_IUriRuntimeClass.method(22).invoke(self._obj, [DynWinRTValue.from_hstring(relative_uri)]))
+    def combine_uri(self, relative_uri: str) -> Uri | None:
+        return (lambda value: None if value.is_null() else _dynwinrt_symbol('uri', 'Uri')._from_native(value))(_IUriRuntimeClass.method(22).invoke(self._obj, [DynWinRTValue.from_hstring(relative_uri)]))
 
     @property
     def absolute_canonical_uri(self) -> str:
@@ -230,6 +230,12 @@ class Uri:
 
     def to_string(self) -> str:
         return _IStringable.method(6).invoke(self._obj.cast(IID_IStringable), []).to_string()
+
+    def __str__(self) -> str:
+        return _IStringable.method(6).invoke(self._obj.cast(IID_IStringable), []).to_string()
+
+    def __repr__(self) -> str:
+        return f'{type(self).__name__}({self.__str__()!r})'
 
     def as_interface(self, interface_class):
         return interface_class.from_value(self._obj)

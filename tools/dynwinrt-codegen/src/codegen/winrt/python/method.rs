@@ -15,12 +15,50 @@ use super::signature::{
     py_convert_return, py_runtime_symbol, py_type_guard, py_wrap_arg, py_wrap_async,
 };
 use super::type_helpers::{
-    method_pydoc, py_factory_return_type, py_method_abi_output_count, py_method_outputs,
-    py_method_return_type, py_param_list, py_param_type_safe, py_return_type_safe,
+    method_pydoc, py_delegate_callable_type, py_factory_return_type, py_method_abi_output_count,
+    py_method_outputs, py_method_return_type, py_param_list, py_return_type_safe,
 };
 
 fn is_delegate_type(typ: &TypeMeta, delegate_type_names: &HashSet<String>) -> bool {
     delegate_name(typ, delegate_type_names).is_some()
+}
+
+/// Build a Python callback signature + wrapper expression for an event delegate.
+///
+/// Returns `(signature, wrapper)`:
+/// - `signature` is a Python type annotation (e.g., `Callable[['Foo', 'Bar'], object]`).
+/// - `wrapper` is an expression that produces the ABI-facing callable, unwrapping
+///   raw `DynWinRTValue` sender/args back into projected Python objects before
+///   invoking the user's `callback`.
+///
+/// The wrapper falls back to a passthrough (`callback`) for unknown delegate shapes.
+fn build_event_wrapper(typ: Option<&TypeMeta>, known_types: &HashSet<String>) -> (String, String) {
+    match typ {
+        Some(typ @ TypeMeta::Parameterized { name, args, .. })
+            if name.split('`').next() == Some("TypedEventHandler") && args.len() == 2 =>
+        {
+            let sender_conv = py_convert_return("__sender__", Some(&args[0]), false, known_types);
+            let args_conv = py_convert_return("__args__", Some(&args[1]), false, known_types);
+            let sig = py_delegate_callable_type(typ, known_types);
+            let wrapper = format!(
+                "(lambda callback=callback: (lambda __sender__, __args__: callback({}, {})))()",
+                sender_conv, args_conv
+            );
+            (sig, wrapper)
+        }
+        Some(typ @ TypeMeta::Parameterized { name, args, .. })
+            if name.split('`').next() == Some("EventHandler") && args.len() == 1 =>
+        {
+            let args_conv = py_convert_return("__args__", Some(&args[0]), false, known_types);
+            let sig = py_delegate_callable_type(typ, known_types);
+            let wrapper = format!(
+                "(lambda callback=callback: (lambda __sender__, __args__: callback(__sender__, {})))()",
+                args_conv
+            );
+            (sig, wrapper)
+        }
+        _ => ("Callable[..., object]".to_string(), "callback".to_string()),
+    }
 }
 
 fn delegate_name(typ: &TypeMeta, delegate_type_names: &HashSet<String>) -> Option<String> {
@@ -82,7 +120,7 @@ fn convert_method_output(
     delegate_type_names: &HashSet<String>,
 ) -> String {
     if is_delegate_type(typ, delegate_type_names) {
-        return expr.to_string();
+        return format!("(lambda value: None if value.is_null() else value)({expr})");
     }
     py_convert_return(expr, Some(typ), typ.is_async(), known_types)
 }
@@ -324,7 +362,7 @@ fn generate_static_method_invoke_named(
 
 /// Generate an instance method for an interface wrapper class (Python).
 pub(crate) fn generate_iface_instance_method(
-    _iface: &InterfaceMeta,
+    iface: &InterfaceMeta,
     iface_var: &str,
     method: &MethodMeta,
     known_types: &HashSet<String>,
@@ -337,6 +375,7 @@ pub(crate) fn generate_iface_instance_method(
         known_types,
         delegate_type_names,
         None,
+        Some(&iface.methods),
     )
 }
 
@@ -344,6 +383,7 @@ pub(crate) struct InstanceOverload<'a> {
     pub(crate) iface_var: String,
     pub(crate) obj_expr: String,
     pub(crate) method: &'a MethodMeta,
+    pub(crate) sibling_methods: Option<&'a [MethodMeta]>,
 }
 
 pub(crate) fn generate_instance_method_group(
@@ -360,6 +400,7 @@ pub(crate) fn generate_instance_method_group(
             known_types,
             delegate_type_names,
             None,
+            overload.sibling_methods,
         );
     }
 
@@ -377,6 +418,7 @@ pub(crate) fn generate_instance_method_group(
             known_types,
             delegate_type_names,
             Some(&private_name),
+            overload.sibling_methods,
         ));
         out.push('\n');
         private_names.push(private_name);
@@ -546,43 +588,116 @@ pub(crate) fn generate_method_body(
     known_types: &HashSet<String>,
     delegate_type_names: &HashSet<String>,
     name_override: Option<&str>,
+    sibling_methods: Option<&[MethodMeta]>,
 ) -> String {
     let in_params = get_in_params(method);
     let return_type = method.return_type.as_ref();
 
     let mut out = String::new();
 
-    // Event add: create delegate from Python callback
+    // Event add: preserve the established token-returning API. When a
+    // matching remove method is available, also emit subscribe_<event> and
+    // once_<event> helpers that return idempotent unsubscribe callables.
     if method.is_event_add {
-        let event_name = to_snake_case(method.name.strip_prefix("add_").unwrap_or(&method.name));
-        let delegate_name = in_params.first().and_then(|p| match &p.typ {
+        let suffix = method.name.strip_prefix("add_").unwrap_or(&method.name);
+        let event_name = to_snake_case(suffix);
+        let delegate_typ = in_params.first().map(|p| &p.typ);
+        let delegate_name = delegate_typ.and_then(|typ| match typ {
             TypeMeta::Parameterized { name, args, .. } => {
                 Some(crate::meta::make_parameterized_name(name, args))
             }
             TypeMeta::Delegate { name, .. } => Some(name.clone()),
             _ => None,
         });
+        // Find matching remove_<Suffix> in the same interface to know its vtable index.
+        let remove_target = format!("remove_{}", suffix);
+        let remove_idx = sibling_methods.and_then(|methods| {
+            methods
+                .iter()
+                .find(|m| m.name == remove_target)
+                .map(|m| m.vtable_index)
+        });
+
+        // Compute callback wrapper: for TypedEventHandler<S, A> / EventHandler<A>,
+        // wrap raw ABI args back into projected values before invoking the user callback.
+        let (callback_signature, wrapper) = build_event_wrapper(delegate_typ, known_types);
+
         out.push_str(&format!(
-            "    def on_{}(self, callback) -> 'DynWinRTValue':\n",
-            event_name
+            "    def on_{}(self, callback: {}):\n",
+            event_name, callback_signature,
         ));
         out.push_str(&method_pydoc(method, &in_params));
+        // Wrapping expression bound to `_wrapped` before delegate construction.
+        out.push_str(&format!("        _wrapped = {}\n", wrapper));
         if let Some(ref dname) = delegate_name {
             let iid = py_runtime_symbol(dname, &format!("IID_{}", dname));
             let param_types = py_runtime_symbol(dname, &format!("{}_PARAM_TYPES", dname));
             out.push_str(&format!(
-                "        handler = DynWinRtDelegate.create({}, {}, callback)\n",
+                "        _handler = DynWinRtDelegate.create({}, {}, _wrapped)\n",
                 iid, param_types
             ));
         } else {
             out.push_str(
-                "        handler = DynWinRtDelegate.create(DynWinRTType.object().iid(), [DynWinRTType.object(), DynWinRTType.object()], callback)\n"
+                "        _handler = DynWinRtDelegate.create(DynWinRTType.object().iid(), [DynWinRTType.object(), DynWinRTType.object()], _wrapped)\n"
             );
         }
         out.push_str(&format!(
-            "        return {}.method({}).invoke({}, [handler.to_value()])\n",
+            "        return {}.method({}).invoke({}, [_handler.to_value()])\n",
             iface_var, method.vtable_index, obj_expr
         ));
+
+        // subscribe_<event>: ergonomic, idempotent cancellation while keeping
+        // on_<event>/off_<event> source compatibility.
+        if remove_idx.is_some() {
+            out.push('\n');
+            out.push_str(&format!(
+                "    def subscribe_{}(self, callback: {}):\n",
+                event_name, callback_signature,
+            ));
+            out.push_str(&format!(
+                "        _token = self.on_{}(callback)\n",
+                event_name
+            ));
+            out.push_str("        _active = [True]\n");
+            out.push_str("        def _unsubscribe():\n");
+            out.push_str("            if not _active[0]:\n");
+            out.push_str("                return\n");
+            out.push_str("            _active[0] = False\n");
+            out.push_str("            try:\n");
+            out.push_str(&format!(
+                "                self.off_{}(_token)\n",
+                event_name
+            ));
+            out.push_str("            except Exception:\n");
+            out.push_str("                _active[0] = True\n");
+            out.push_str("                raise\n");
+            out.push_str("        return _unsubscribe\n");
+
+            // once_<event>: clear the active flag before callback invocation
+            // so same-thread reentrant delivery cannot invoke it twice.
+            out.push('\n');
+            out.push_str(&format!(
+                "    def once_{}(self, callback: {}):\n",
+                event_name, callback_signature,
+            ));
+            out.push_str("        _state = [True, None]\n");
+            out.push_str("        def _once(*args, **kwargs):\n");
+            out.push_str("            if not _state[0]:\n");
+            out.push_str("                return None\n");
+            out.push_str("            _state[0] = False\n");
+            out.push_str("            _unsub = _state[1]\n");
+            out.push_str("            if _unsub is not None:\n");
+            out.push_str("                _unsub()\n");
+            out.push_str("            return callback(*args, **kwargs)\n");
+            out.push_str(&format!(
+                "        _unsubscribe = self.subscribe_{}(_once)\n",
+                event_name
+            ));
+            out.push_str("        _state[1] = _unsubscribe\n");
+            out.push_str("        if not _state[0]:\n");
+            out.push_str("            _unsubscribe()\n");
+            out.push_str("        return _unsubscribe\n");
+        }
         return out;
     }
     // Event remove
@@ -604,7 +719,7 @@ pub(crate) fn generate_method_body(
         let prop_name = to_snake_case(method.name.strip_prefix("get_").unwrap_or(&method.name));
         let py_return = if return_type.is_some_and(|typ| is_delegate_type(typ, delegate_type_names))
         {
-            "'DynWinRTValue'".to_string()
+            "DynWinRTValue | None".to_string()
         } else {
             py_return_type_safe(return_type, known_types)
         };
@@ -621,17 +736,27 @@ pub(crate) fn generate_method_body(
         );
     } else if method.is_property_setter {
         let prop_name = to_snake_case(method.name.strip_prefix("put_").unwrap_or(&method.name));
-        let param_type = if in_params
+        let param_type = in_params
             .first()
-            .is_some_and(|p| is_delegate_type(&p.typ, delegate_type_names))
-        {
-            "Callable[..., object] | 'DynWinRTValue'".to_string()
-        } else {
-            in_params
-                .first()
-                .map(|p| py_param_type_safe(&p.typ, known_types))
-                .unwrap_or_else(|| "object".to_string())
-        };
+            .map(|p| {
+                if is_delegate_type(&p.typ, delegate_type_names) {
+                    // Reuse py_delegate_param_type via a temporary param_list call.
+                    let params = super::type_helpers::py_param_list(
+                        std::slice::from_ref(p),
+                        known_types,
+                        delegate_type_names,
+                    );
+                    // params is "name: Type" — extract the "Type" part.
+                    params
+                        .splitn(2, ": ")
+                        .nth(1)
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| "Callable[..., object] | 'DynWinRTValue'".to_string())
+                } else {
+                    super::type_helpers::py_param_type_safe(&p.typ, known_types)
+                }
+            })
+            .unwrap_or_else(|| "object".to_string());
         out.push_str(&format!("    @{}.setter\n", prop_name));
         out.push_str(&format!(
             "    def {}(self, value: {}):\n",
@@ -714,10 +839,10 @@ mod tests {
         );
 
         assert!(
-            code.contains("def get_handler() -> 'DynWinRTValue':"),
+            code.contains("def get_handler() -> DynWinRTValue | None:"),
             "{code}"
         );
-        assert!(code.contains("return _IWidgetStatics.method(6).invoke("));
+        assert!(code.contains("None if value.is_null() else value"));
         assert!(!code.contains("_dynwinrt_symbol('handler', 'Handler')"));
     }
 
@@ -738,11 +863,12 @@ mod tests {
             &HashSet::new(),
             &HashSet::new(),
             None,
+            None,
         );
 
         assert!(code.contains("def load_async(self) -> WinRTAsync[int]:"));
         assert!(code.contains("return _DynWinRTAsync("));
-        assert!(code.contains("lambda value: value.to_number()"));
+        assert!(code.contains("lambda value: value.to_u32()"));
         assert!(!code.contains(".wait()"));
     }
 
@@ -771,14 +897,15 @@ mod tests {
             &HashSet::new(),
             &HashSet::new(),
             None,
+            None,
         );
 
         assert!(code.contains(
             "def write_async(self, buffer: 'DynWinRTValue') -> WinRTAsyncWithProgress[int, int]:"
         ));
         assert!(code.contains("return _DynWinRTAsyncWithProgress("));
-        assert!(code.contains("lambda value: value.to_number()"));
-        assert!(code.contains("lambda value: value.to_i64()"));
+        assert!(code.contains("lambda value: value.to_u32()"));
+        assert!(code.contains("lambda value: value.to_u64()"));
         assert!(!code.contains(".wait()"));
     }
 
@@ -811,11 +938,13 @@ mod tests {
                 iface_var: "_IReader".into(),
                 obj_expr: "self._obj".into(),
                 method: &first,
+                sibling_methods: None,
             },
             InstanceOverload {
                 iface_var: "_IReader".into(),
                 obj_expr: "self._obj".into(),
                 method: &second,
+                sibling_methods: None,
             },
         ];
 
@@ -860,11 +989,13 @@ mod tests {
                 iface_var: "_IRunner".into(),
                 obj_expr: "self._obj".into(),
                 method: &callback,
+                sibling_methods: None,
             },
             InstanceOverload {
                 iface_var: "_IRunner".into(),
                 obj_expr: "self._obj".into(),
                 method: &text,
+                sibling_methods: None,
             },
         ];
 
@@ -877,6 +1008,68 @@ mod tests {
         assert!(code.contains("_dynwinrt_delegate(handler,"));
         assert!(code.contains("'work_item_handler', 'IID_WorkItemHandler'"));
         assert!(code.contains("'work_item_handler', 'WorkItemHandler_PARAM_TYPES'"));
+    }
+
+    #[test]
+    fn event_helpers_preserve_tokens_and_are_idempotent() {
+        let handler_type = TypeMeta::Parameterized {
+            namespace: "Windows.Foundation".into(),
+            name: "TypedEventHandler`2".into(),
+            piid: "11111111-1111-1111-1111-111111111111".into(),
+            args: vec![
+                TypeMeta::RuntimeClass {
+                    namespace: "Contoso".into(),
+                    name: "Widget".into(),
+                    default_interface: None,
+                },
+                TypeMeta::Object,
+            ],
+        };
+        let add = MethodMeta {
+            name: "add_Changed".into(),
+            raw_name: "add_Changed".into(),
+            vtable_index: 6,
+            params: vec![ParamMeta {
+                name: "handler".into(),
+                typ: handler_type,
+                direction: crate::meta::ParamDirection::In,
+            }],
+            is_event_add: true,
+            ..Default::default()
+        };
+        let remove = MethodMeta {
+            name: "remove_Changed".into(),
+            raw_name: "remove_Changed".into(),
+            vtable_index: 7,
+            params: vec![ParamMeta {
+                name: "token".into(),
+                typ: TypeMeta::I64,
+                direction: crate::meta::ParamDirection::In,
+            }],
+            is_event_remove: true,
+            ..Default::default()
+        };
+        let siblings = vec![add.clone(), remove];
+        let code = generate_method_body(
+            "_IWidget",
+            "self._obj",
+            &add,
+            &HashSet::from(["Widget".into()]),
+            &HashSet::from(["TypedEventHandler_Widget_Object".into()]),
+            None,
+            Some(&siblings),
+        );
+
+        assert!(code.contains("def on_changed(self, callback:"));
+        assert!(code.contains("return _IWidget.method(6).invoke("));
+        assert!(code.contains("def subscribe_changed(self, callback:"));
+        assert!(code.contains("if not _active[0]:"));
+        assert!(code.contains("self.off_changed(_token)"));
+        assert!(code.contains("except Exception:\n                _active[0] = True"));
+        assert!(code.contains("def once_changed(self, callback:"));
+        assert!(code.contains("if not _state[0]:"));
+        assert!(code.contains("_state[0] = False"));
+        assert!(code.contains("if not _state[0]:\n            _unsubscribe()"));
     }
 
     #[test]

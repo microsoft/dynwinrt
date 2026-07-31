@@ -654,7 +654,7 @@ fn run() -> Result<(), String> {
 }
 
 fn add_implicit_js_types(winmd: &str, lang: &str, classes: &mut Vec<meta::ClassMeta>) {
-    if lang != "js"
+    if !matches!(lang, "js" | "py")
         || !classes
             .iter()
             .any(|class| class.full_name == "Microsoft.UI.Xaml.Application")

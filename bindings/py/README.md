@@ -31,7 +31,8 @@ expects an immediate result must use `await operation` or `operation.wait()`.
 
 `asyncio` task cancellation calls `IAsyncInfo.Cancel()` on the underlying
 WinRT operation. Operations with scalar progress values also expose
-`operation.progress(callback)`.
+`operation.progress(callback)`. Fast operations can finish before registration;
+in that case no future progress exists and registration is a no-op.
 
 For scripts without an event loop, `operation.wait()` remains available as an
 explicit blocking API. It rejects started operations when called from a running
@@ -61,7 +62,8 @@ success. Generated delegate parameters accept normal Python callables. WinRT
 chooses the callback thread, so callbacks must not assume they run on the
 registration thread or an asyncio event-loop thread. Keep each token returned by
 `on_*` and pass it to the matching `off_*` when the subscription is no longer
-needed.
+needed. For callback-style cleanup, `subscribe_*` returns an idempotent
+unsubscribe function. `once_*` subscribes for at most one callback invocation.
 
 WinRT flags enums are projected as `enum.IntFlag`. Overloaded methods share one
 Python name with runtime type/arity dispatch and `typing.overload` declarations.
@@ -87,3 +89,16 @@ each successful call, including `S_FALSE`, must be paired with one
 Generated runtime classes that implement `IClosable` support `with` and an
 idempotent `close()` method. Prefer deterministic cleanup instead of relying on
 Python garbage collection.
+
+## Experimental WinUI bootstrap
+
+When `Microsoft.UI.Xaml.Application` is generated with the WinUI metadata
+provider and controls resources, codegen also emits
+`Application.create_with_metadata_provider(...)` and `Application.create(...)`.
+The latter installs `XamlControlsResources` and configures unpackaged resource
+resolution when the required metadata is available.
+
+This is a bootstrap slice, not general WinUI support. A real Python WinUI E2E,
+DispatcherQueue/GIL integration, arbitrary composition/aggregation, custom
+controls, and x64/ARM64 UI validation remain tracked in
+[`PYTHON_CHECKLIST.md`](../../PYTHON_CHECKLIST.md).

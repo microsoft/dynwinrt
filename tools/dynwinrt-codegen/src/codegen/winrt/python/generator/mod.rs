@@ -63,7 +63,7 @@ def _dynwinrt_symbol(module, name):
 def _dynwinrt_wrap_values(module, name, values):
     wrapper = _dynwinrt_symbol(module, name)
     wrap = getattr(wrapper, '_from_native', wrapper)
-    return [wrap(value) for value in values]
+    return [None if value.is_null() else wrap(value) for value in values]
 
 
 def _dynwinrt_enum(module, name, value):

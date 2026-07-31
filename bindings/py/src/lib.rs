@@ -256,6 +256,10 @@ def _dynwinrt_dispatch_progress(callback, converter, value):
         m.add_function(wrap_pyfunction!(super::runtime::ro_initialize, m)?)?;
         m.add_function(wrap_pyfunction!(super::runtime::ro_uninitialize, m)?)?;
         m.add_function(wrap_pyfunction!(super::runtime::has_package_identity, m)?)?;
+        m.add_function(wrap_pyfunction!(
+            super::runtime::get_winappsdk_resource_pri_path,
+            m
+        )?)?;
         m.add_function(wrap_pyfunction!(super::runtime::get_computer_name, m)?)?;
 
         m.py().run(

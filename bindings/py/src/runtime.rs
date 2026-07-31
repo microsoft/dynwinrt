@@ -19,7 +19,15 @@ static TABLE: std::sync::LazyLock<Arc<dynwinrt::MetadataTable>> =
 // ======================================================================
 
 #[pyclass]
-pub struct WinAppSDKContext(#[allow(dead_code)] dynwinrt::WinAppSdkContext);
+pub struct WinAppSDKContext(pub(crate) dynwinrt::WinAppSdkContext);
+
+#[pymethods]
+impl WinAppSDKContext {
+    /// Return the framework resources.pri path selected by init_winappsdk.
+    fn resource_pri_path(&self) -> PyResult<String> {
+        self.0.resource_pri_path().map_err(map_windows_error)
+    }
+}
 
 #[pyclass(unsendable)]
 pub struct RoApartment {
@@ -525,6 +533,33 @@ impl DynWinRTValue {
             .map_err(map_dynwinrt_error)
     }
 
+    /// Compose a WinUI `Microsoft.UI.Xaml.Application` whose outer object
+    /// exposes the supplied `IXamlMetadataProvider`.
+    ///
+    /// Mirrors JS `DynWinRtValue.createXamlApplication(metadataProvider, launchedCallback)`.
+    #[staticmethod]
+    #[pyo3(signature = (metadata_provider, launched_callback=None))]
+    fn create_xaml_application(
+        metadata_provider: &DynWinRTValue,
+        launched_callback: Option<&DynWinRTValue>,
+    ) -> PyResult<DynWinRTValue> {
+        let provider = metadata_provider.0.as_object().ok_or_else(|| {
+            PyRuntimeError::new_err("create_xaml_application: metadata_provider must be an Object")
+        })?;
+        let callback = launched_callback
+            .map(|value| {
+                value.0.as_object().ok_or_else(|| {
+                    PyRuntimeError::new_err(
+                        "create_xaml_application: launched_callback must be an Object",
+                    )
+                })
+            })
+            .transpose()?;
+        dynwinrt::create_xaml_application(&provider, callback.as_ref())
+            .map(DynWinRTValue)
+            .map_err(map_dynwinrt_error)
+    }
+
     // -- Scalar constructors (full parity with JS) --
 
     #[staticmethod]
@@ -699,12 +734,14 @@ impl DynWinRTValue {
 
         let progress_cb: dynwinrt::ProgressCallback = Box::new(move |val: dynwinrt::WinRTValue| {
             Python::attach(|py| {
-                let py_val = DynWinRTValue(val)
-                    .into_pyobject(py)
-                    .unwrap()
-                    .into_any()
-                    .unbind();
-                let _ = callback.call1(py, (py_val,));
+                let result = (|| -> PyResult<()> {
+                    let py_val = Py::new(py, DynWinRTValue(val))?;
+                    callback.call1(py, (py_val,))?;
+                    Ok(())
+                })();
+                if let Err(error) = result {
+                    error.write_unraisable(py, Some(callback.bind(py)));
+                }
             });
         });
         let handler = dynwinrt::create_progress_handler(handler_iid, progress_type, progress_cb);
@@ -748,17 +785,17 @@ impl DynWinRTValue {
         self.to_string()
     }
 
-    fn to_number(&self) -> PyResult<i32> {
+    fn to_number(&self) -> PyResult<i64> {
         match &self.0 {
             dynwinrt::WinRTValue::Bool(b) => Ok(if *b { 1 } else { 0 }),
-            dynwinrt::WinRTValue::I8(i) => Ok(*i as i32),
-            dynwinrt::WinRTValue::U8(i) => Ok(*i as i32),
-            dynwinrt::WinRTValue::I16(i) => Ok(*i as i32),
-            dynwinrt::WinRTValue::U16(i) => Ok(*i as i32),
-            dynwinrt::WinRTValue::I32(i) => Ok(*i),
-            dynwinrt::WinRTValue::U32(i) => Ok(*i as i32),
-            dynwinrt::WinRTValue::HResult(hr) => Ok(hr.0),
-            dynwinrt::WinRTValue::Enum { value, .. } => Ok(*value),
+            dynwinrt::WinRTValue::I8(i) => Ok(*i as i64),
+            dynwinrt::WinRTValue::U8(i) => Ok(*i as i64),
+            dynwinrt::WinRTValue::I16(i) => Ok(*i as i64),
+            dynwinrt::WinRTValue::U16(i) => Ok(*i as i64),
+            dynwinrt::WinRTValue::I32(i) => Ok(*i as i64),
+            dynwinrt::WinRTValue::U32(i) => Ok(*i as i64),
+            dynwinrt::WinRTValue::HResult(hr) => Ok(hr.0 as i64),
+            dynwinrt::WinRTValue::Enum { value, .. } => Ok(*value as i64),
             _ => Err(PyRuntimeError::new_err(format!(
                 "Cannot convert {:?} to number",
                 self.0.get_type_kind()
@@ -766,18 +803,18 @@ impl DynWinRTValue {
         }
     }
 
-    fn to_int(&self) -> PyResult<i64> {
+    fn to_int(&self) -> PyResult<i128> {
         match &self.0 {
-            dynwinrt::WinRTValue::I32(i) => Ok(*i as i64),
-            dynwinrt::WinRTValue::I64(i) => Ok(*i),
-            dynwinrt::WinRTValue::U32(i) => Ok(*i as i64),
-            dynwinrt::WinRTValue::U64(i) => Ok(*i as i64),
-            dynwinrt::WinRTValue::Bool(b) => Ok(*b as i64),
-            dynwinrt::WinRTValue::I8(i) => Ok(*i as i64),
-            dynwinrt::WinRTValue::U8(i) => Ok(*i as i64),
-            dynwinrt::WinRTValue::I16(i) => Ok(*i as i64),
-            dynwinrt::WinRTValue::U16(i) => Ok(*i as i64),
-            dynwinrt::WinRTValue::Enum { value, .. } => Ok(*value as i64),
+            dynwinrt::WinRTValue::I32(i) => Ok(*i as i128),
+            dynwinrt::WinRTValue::I64(i) => Ok(*i as i128),
+            dynwinrt::WinRTValue::U32(i) => Ok(*i as i128),
+            dynwinrt::WinRTValue::U64(i) => Ok(*i as i128),
+            dynwinrt::WinRTValue::Bool(b) => Ok(*b as i128),
+            dynwinrt::WinRTValue::I8(i) => Ok(*i as i128),
+            dynwinrt::WinRTValue::U8(i) => Ok(*i as i128),
+            dynwinrt::WinRTValue::I16(i) => Ok(*i as i128),
+            dynwinrt::WinRTValue::U16(i) => Ok(*i as i128),
+            dynwinrt::WinRTValue::Enum { value, .. } => Ok(*value as i128),
             _ => Err(PyRuntimeError::new_err("Cannot convert to int")),
         }
     }
@@ -802,8 +839,23 @@ impl DynWinRTValue {
     fn to_i64(&self) -> PyResult<i64> {
         match &self.0 {
             dynwinrt::WinRTValue::I64(i) => Ok(*i),
-            dynwinrt::WinRTValue::U64(i) => Ok(*i as i64),
-            _ => self.to_number().map(|n| n as i64),
+            dynwinrt::WinRTValue::U64(i) => i64::try_from(*i)
+                .map_err(|_| PyRuntimeError::new_err("UInt64 value does not fit in Int64")),
+            _ => self.to_number(),
+        }
+    }
+
+    fn to_u32(&self) -> PyResult<u32> {
+        match &self.0 {
+            dynwinrt::WinRTValue::U32(i) => Ok(*i),
+            _ => Err(PyRuntimeError::new_err("Value is not a UInt32")),
+        }
+    }
+
+    fn to_u64(&self) -> PyResult<u64> {
+        match &self.0 {
+            dynwinrt::WinRTValue::U64(i) => Ok(*i),
+            _ => Err(PyRuntimeError::new_err("Value is not a UInt64")),
         }
     }
 
@@ -1476,6 +1528,16 @@ impl DynWinRtDelegate {
 pub fn has_package_identity() -> bool {
     use windows::ApplicationModel::AppInfo;
     AppInfo::Current().is_ok()
+}
+
+/// Return the framework resources.pri path selected by init_winappsdk.
+/// The Windows App SDK must have been initialized (via `init_winappsdk`)
+/// before calling this function.
+#[pyfunction]
+pub fn get_winappsdk_resource_pri_path() -> PyResult<String> {
+    dynwinrt::WinAppSdkContext {}
+        .resource_pri_path()
+        .map_err(map_windows_error)
 }
 
 #[pyfunction]

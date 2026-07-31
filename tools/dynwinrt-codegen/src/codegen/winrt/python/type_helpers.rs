@@ -55,7 +55,21 @@ fn py_optional_type(typ: String) -> String {
         .strip_prefix('\'')
         .and_then(|value| value.strip_suffix('\''))
         .unwrap_or(&typ);
+    if unquoted.split('|').any(|part| part.trim() == "None") {
+        return unquoted.to_string();
+    }
     format!("{} | None", unquoted)
+}
+
+fn is_nullable_reference_type(typ: &TypeMeta) -> bool {
+    matches!(
+        typ,
+        TypeMeta::Object
+            | TypeMeta::Delegate { .. }
+            | TypeMeta::RuntimeClass { .. }
+            | TypeMeta::Interface { .. }
+            | TypeMeta::Parameterized { .. }
+    )
 }
 
 fn py_param_type(typ: &TypeMeta) -> String {
@@ -128,18 +142,18 @@ pub(crate) fn py_return_type_safe(typ: Option<&TypeMeta>, known: &HashSet<String
         return async_type;
     }
     if let Some(annotation) = typ.and_then(|typ| py_collection_return_type(typ, known)) {
-        return annotation;
+        return py_optional_type(annotation);
     }
 
     match typ {
-        Some(TypeMeta::RuntimeClass { name, .. })
-        | Some(TypeMeta::Enum { name, .. })
-        | Some(TypeMeta::Interface { name, .. })
+        Some(TypeMeta::Enum { name, .. }) if !known.contains(name) => "int".to_string(),
+        Some(TypeMeta::RuntimeClass { name, .. }) | Some(TypeMeta::Interface { name, .. })
             if !known.contains(name) =>
         {
-            "'DynWinRTValue'".to_string()
+            "DynWinRTValue | None".to_string()
         }
         Some(TypeMeta::Array(inner)) => py_array_return_type(inner, known),
+        Some(typ) if is_nullable_reference_type(typ) => py_optional_type(py_return_type(Some(typ))),
         _ => py_return_type(typ),
     }
 }
@@ -238,9 +252,9 @@ fn py_output_type(
     delegate_type_names: &HashSet<String>,
 ) -> String {
     match typ {
-        TypeMeta::Delegate { .. } => "'DynWinRTValue'".to_string(),
+        TypeMeta::Delegate { .. } => "DynWinRTValue | None".to_string(),
         TypeMeta::Interface { name, .. } if delegate_type_names.contains(name) => {
-            "'DynWinRTValue'".to_string()
+            "DynWinRTValue | None".to_string()
         }
         _ => py_return_type_safe(Some(typ), known_types),
     }
@@ -368,7 +382,13 @@ fn py_array_return_type(inner: &TypeMeta, known_types: &HashSet<String>) -> Stri
     if matches!(inner, TypeMeta::U8) {
         "bytes".to_string()
     } else {
-        format!("list[{}]", py_native_element_type(inner, known_types))
+        let element = py_native_element_type(inner, known_types);
+        let element = if is_nullable_reference_type(inner) {
+            py_optional_type(element)
+        } else {
+            element
+        };
+        format!("list[{element}]")
     }
 }
 
@@ -425,7 +445,14 @@ fn py_collection_return_type(typ: &TypeMeta, known_types: &HashSet<String>) -> O
     let abc = super::collections::abc_name(kind)?;
     let types = args
         .iter()
-        .map(|arg| py_native_element_type(arg, known_types))
+        .map(|arg| {
+            let element = py_native_element_type(arg, known_types);
+            if is_nullable_reference_type(arg) {
+                py_optional_type(element)
+            } else {
+                element
+            }
+        })
         .collect::<Vec<_>>();
     Some(format!("{abc}[{}]", types.join(", ")))
 }
@@ -439,15 +466,15 @@ pub(super) fn py_param_list(
         .iter()
         .map(|p| {
             let param_type = match &p.typ {
-                TypeMeta::Delegate { .. } => "Callable[..., object] | 'DynWinRTValue'".to_string(),
+                TypeMeta::Delegate { .. } => py_delegate_param_type(&p.typ, known_types),
                 TypeMeta::Interface { name, .. } if delegate_type_names.contains(name) => {
-                    "Callable[..., object] | 'DynWinRTValue'".to_string()
+                    py_delegate_param_type(&p.typ, known_types)
                 }
                 TypeMeta::Parameterized { name, args, .. }
                     if delegate_type_names
                         .contains(&crate::meta::make_parameterized_name(name, args)) =>
                 {
-                    "Callable[..., object] | 'DynWinRTValue'".to_string()
+                    py_delegate_param_type(&p.typ, known_types)
                 }
                 _ => py_param_type_safe(&p.typ, known_types),
             };
@@ -455,6 +482,33 @@ pub(super) fn py_param_list(
         })
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// Produce a typed Python annotation for a delegate parameter, with
+/// `TypedEventHandler` / `EventHandler` unwrapped. Bespoke non-parametric
+/// delegates fall back to `Callable[..., object]`.
+pub(crate) fn py_delegate_callable_type(typ: &TypeMeta, known_types: &HashSet<String>) -> String {
+    match typ {
+        TypeMeta::Parameterized { name, args, .. }
+            if name.split('`').next() == Some("TypedEventHandler") && args.len() == 2 =>
+        {
+            let sender = py_return_type_safe(Some(&args[0]), known_types);
+            let arg = py_return_type_safe(Some(&args[1]), known_types);
+            format!("Callable[[{}, {}], object]", sender, arg)
+        }
+        TypeMeta::Parameterized { name, args, .. }
+            if name.split('`').next() == Some("EventHandler") && args.len() == 1 =>
+        {
+            let arg = py_return_type_safe(Some(&args[0]), known_types);
+            format!("Callable[[object, {}], object]", arg)
+        }
+        _ => "Callable[..., object]".to_string(),
+    }
+}
+
+fn py_delegate_param_type(typ: &TypeMeta, known_types: &HashSet<String>) -> String {
+    let sig = py_delegate_callable_type(typ, known_types);
+    format!("{sig} | 'DynWinRTValue'")
 }
 
 #[cfg(test)]
@@ -538,7 +592,39 @@ mod tests {
     fn object_arrays_return_typed_runtime_values() {
         assert_eq!(
             py_array_return_type(&TypeMeta::Object, &HashSet::new()),
-            "list['DynWinRTValue']"
+            "list[DynWinRTValue | None]"
+        );
+    }
+
+    #[test]
+    fn reference_returns_are_annotated_as_nullable() {
+        let runtime_class = TypeMeta::RuntimeClass {
+            namespace: "Contoso".into(),
+            name: "Widget".into(),
+            default_interface: None,
+        };
+        let interface = TypeMeta::Interface {
+            namespace: "Contoso".into(),
+            name: "IWidget".into(),
+            iid: "11111111-1111-1111-1111-111111111111".into(),
+        };
+        let known = HashSet::from(["Widget".into(), "IWidget".into()]);
+
+        assert_eq!(
+            py_return_type_safe(Some(&runtime_class), &known),
+            "Widget | None"
+        );
+        assert_eq!(
+            py_return_type_safe(Some(&interface), &known),
+            "IWidget | None"
+        );
+        assert_eq!(
+            py_return_type_safe(Some(&TypeMeta::Object), &known),
+            "DynWinRTValue | None"
+        );
+        assert_eq!(
+            py_array_return_type(&runtime_class, &known),
+            "list[Widget | None]"
         );
     }
 

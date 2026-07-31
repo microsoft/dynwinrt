@@ -114,6 +114,16 @@ fn composable_factory_returns_public_instance() {
             && py.contains("return Widget._from_native(_results[1])"),
         "Python composable factory must select the final public-instance output:\n{py}"
     );
+    assert!(
+        py.contains(
+            "self._set_native(type(self).create_instance(DynWinRTValue.null_value())._obj)"
+        ),
+        "Python composable constructor must pass an explicit null WinRT value for outer:\n{py}"
+    );
+    assert!(
+        pyi.contains("def __init__(self) -> None: ..."),
+        "Python composable constructor stub must hide the ABI-only outer argument:\n{pyi}"
+    );
     assert!(pyi.contains("def create_instance(outer: 'DynWinRTValue') -> 'Widget': ..."));
 
     let mut protected = class.clone();
@@ -132,6 +142,67 @@ fn composable_factory_returns_public_instance() {
     assert!(protected_js.contains("Widget cannot be constructed directly."));
     assert!(protected_dts.contains("private constructor();"));
     assert!(protected_dts.contains("static createInstance(outer: unknown): Widget;"));
+
+    let protected_py = python::generate_class(
+        &protected,
+        &HashSet::from(["Widget".into()]),
+        &HashSet::new(),
+        &HashSet::new(),
+    );
+    let protected_pyi = python_stub::generate_class_stub(
+        &protected,
+        &HashSet::from(["Widget".into()]),
+        &HashSet::new(),
+        &HashSet::new(),
+    );
+    assert!(
+        !protected_py.contains("self._set_native(type(self).create_instance("),
+        "protected composition must not become a public Python constructor:\n{protected_py}"
+    );
+    assert!(
+        protected_py.contains("raise TypeError(\"No matching constructor for Widget\")"),
+        "protected composition must remain non-constructible from Python:\n{protected_py}"
+    );
+    assert!(
+        !protected_pyi.contains("def __init__(self) -> None: ..."),
+        "protected composition must not advertise a public no-arg constructor:\n{protected_pyi}"
+    );
+}
+
+#[test]
+fn python_zero_arg_create_instance_gets_typed_create_alias() {
+    let factory = InterfaceMeta {
+        name: "IWidgetFactory".into(),
+        namespace: "Contoso".into(),
+        iid: "11111111-1111-1111-1111-111111111111".into(),
+        methods: vec![MethodMeta {
+            name: "CreateInstance".into(),
+            raw_name: "CreateInstance".into(),
+            vtable_index: 6,
+            return_type: Some(TypeMeta::RuntimeClass {
+                namespace: "Contoso".into(),
+                name: "Widget".into(),
+                default_interface: None,
+            }),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let class = ClassMeta {
+        name: "Widget".into(),
+        namespace: "Contoso".into(),
+        full_name: "Contoso.Widget".into(),
+        factory_interfaces: vec![factory],
+        ..Default::default()
+    };
+    let known = HashSet::from(["Widget".into()]);
+
+    let py = python::generate_class(&class, &known, &HashSet::new(), &HashSet::new());
+    let pyi = python_stub::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
+
+    assert!(py.contains("def create() -> 'Widget':"));
+    assert!(py.contains("return Widget.create_instance()"));
+    assert!(pyi.contains("def create() -> 'Widget': ..."));
 }
 
 #[test]
@@ -401,4 +472,24 @@ fn winui_application_projects_fluent_bootstrap_helpers() {
     assert!(dts.contains("): Promise<void>;"));
     assert!(dts.contains("static create(onLaunched?: () => void): Application;"));
     assert!(dts.contains("private constructor();"));
+
+    let py = python::generate_class(&application, &known_types, &delegate_names, &HashSet::new());
+    let pyi = python_stub::generate_class_stub(
+        &application,
+        &known_types,
+        &delegate_names,
+        &HashSet::new(),
+    );
+    assert!(py.contains("def create_with_metadata_provider("));
+    assert!(py.contains("def create(on_launched: Callable[[], object] | None = None)"));
+    assert!(py.contains("_app = Application.get_current()"));
+    assert!(!py.contains("_app = Application.current"));
+    assert!(py.contains("[DynWinRTType.object()], lambda _args: on_launched()).to_value()"));
+    assert!(!py.contains("[DynWinRTType.object(), DynWinRTType.object()], lambda _sender, _args"));
+    assert!(pyi.contains(
+        "def create_with_metadata_provider(metadata_provider: 'XamlControlsXamlMetaDataProvider', on_launched: Callable[[], object] | None = ...) -> 'Application': ..."
+    ));
+    assert!(pyi.contains(
+        "def create(on_launched: Callable[[], object] | None = ...) -> 'Application': ..."
+    ));
 }
