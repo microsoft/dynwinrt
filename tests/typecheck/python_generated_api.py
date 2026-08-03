@@ -13,14 +13,14 @@ from dynwinrt_py import (
     DynWinRTValue,
     WinGUID,
 )
-from python_bindings.calendar import Calendar
-from python_bindings.contact_date import ContactDate
-from python_bindings.data_writer import DataWriter
-from python_bindings.i_buffer import IBuffer
-from python_bindings.i_output_stream import IOutputStream
-from python_bindings.i_reference_u_int32 import IReference_UInt32
-from python_bindings.i_www_form_url_decoder_entry import IWwwFormUrlDecoderEntry
-from python_bindings.uri import Uri
+from python_bindings.windows.application_model.contacts import ContactDate
+from python_bindings.windows.foundation import (
+    IReference_UInt32,
+    IWwwFormUrlDecoderEntry,
+    Uri,
+)
+from python_bindings.windows.globalization import Calendar
+from python_bindings.windows.storage.streams import DataWriter, IBuffer, IOutputStream
 
 
 def check_runtime_stubs() -> None:

@@ -38,11 +38,11 @@ of a dynamic projection.
 - [x] Add an import regression for a real cyclic graph such as
       `Windows.Data.Xml.Dom.XmlDocument`.
 - [x] Preserve `Uri` implementation and `.pyi` snapshots.
-- [ ] Organize output by WinRT namespace instead of one flat short-name
+- [x] Organize output by WinRT namespace instead of one flat short-name
       namespace.
-- [ ] Detect and reject namespace/type filename collisions.
-- [ ] Add stage/swap generation and remove stale Python output.
-- [ ] Emit a consumable Python package manifest with an exact runtime
+- [x] Detect and reject namespace/type filename collisions.
+- [x] Add stage/swap generation and remove stale Python output.
+- [x] Emit a consumable Python package manifest with an exact runtime
       dependency.
 
 ## P0: runtime and generated API agreement
@@ -109,7 +109,7 @@ of a dynamic projection.
 
 - [ ] Add a Python configuration surface to winapp CLI or a dedicated Python
       orchestration command.
-- [ ] Generate package names and imports consistently across Windows SDK,
+- [x] Generate package names and imports consistently across Windows SDK,
       Windows App SDK, and custom WinMD namespaces.
 - [ ] Add runnable samples for files, notifications, imaging, async, events,
       collections, and custom WinMD consumption.

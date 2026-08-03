@@ -24,7 +24,7 @@ use super::method::{
     InstanceOverload, StaticOverload, StaticOverloadKind, generate_iface_instance_method,
     generate_instance_method_group, generate_static_method_group, py_method_type_guard,
 };
-use super::naming::{is_py_reserved, to_snake_case, to_snake_case_filename};
+use super::naming::{is_py_reserved, python_module_name, to_snake_case, to_snake_case_filename};
 use super::shared::reorder_getters_before_setters;
 use super::signature::{
     py_collect_runtime_class_iid_consts, py_dynwinrt_type, py_generate_interface_registration,

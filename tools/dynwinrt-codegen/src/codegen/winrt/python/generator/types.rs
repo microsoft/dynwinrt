@@ -146,7 +146,7 @@ pub fn generate_interface(
         .sort_by(|a, b| (&a.namespace, &a.name, &a.kind).cmp(&(&b.namespace, &b.name, &b.kind)));
     for r in &sorted_type_imports {
         if known_types.contains(&r.name) && !delegate_names.contains(&r.name) {
-            type_checking_imports.push(format_py_type_import(&r.name, r.kind));
+            type_checking_imports.push(format_py_type_import(&r.namespace, &r.name, r.kind));
         }
     }
     emit_type_checking_imports(&mut out, type_checking_imports);

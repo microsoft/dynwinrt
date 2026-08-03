@@ -21,7 +21,7 @@ use crate::codegen::winrt::shared::structs::{
 };
 
 use super::collections::{abc_name, class_interface, interface_kind};
-use super::naming::{is_py_reserved, to_snake_case, to_snake_case_filename};
+use super::naming::{is_py_reserved, python_module_name, to_snake_case, to_snake_case_filename};
 use super::shared::reorder_getters_before_setters;
 use super::signature::py_dynwinrt_type;
 use super::stub_helpers::{
@@ -154,7 +154,7 @@ pub fn generate_interface_stub(
         .sort_by(|a, b| (&a.namespace, &a.name, &a.kind).cmp(&(&b.namespace, &b.name, &b.kind)));
     for r in &sorted_type_imports {
         if known_types.contains(&r.name) && !delegate_names.contains(&r.name) {
-            out.push_str(&format_py_type_import(&r.name, r.kind));
+            out.push_str(&format_py_type_import(&r.namespace, &r.name, r.kind));
         }
     }
     out.push('\n');
@@ -339,7 +339,7 @@ pub fn generate_class_stub(
         .sort_by(|a, b| (&a.namespace, &a.name, &a.kind).cmp(&(&b.namespace, &b.name, &b.kind)));
     for r in &sorted_imports {
         if known_types.contains(&r.name) && !delegate_names.contains(&r.name) {
-            out.push_str(&format_py_type_import(&r.name, r.kind));
+            out.push_str(&format_py_type_import(&r.namespace, &r.name, r.kind));
             imported_names.insert(r.name.clone());
             if r.kind == TypeKind::Interface {
                 imported_names.insert(format!("IID_{}", r.name));
@@ -352,7 +352,11 @@ pub fn generate_class_stub(
             && shared_iids.contains(&req_iface.iid)
             && !imported_names.contains(&req_iface.name)
         {
-            out.push_str(&format_py_type_import(&req_iface.name, TypeKind::Interface));
+            out.push_str(&format_py_type_import(
+                &req_iface.namespace,
+                &req_iface.name,
+                TypeKind::Interface,
+            ));
             imported_names.insert(req_iface.name.clone());
             imported_names.insert(format!("IID_{}", req_iface.name));
         }
@@ -361,7 +365,7 @@ pub fn generate_class_stub(
         let metadata_provider = bootstrap.spec.metadata_provider;
         out.push_str(&format!(
             "from .{} import {}  # noqa: F401\n",
-            to_snake_case_filename(metadata_provider.name),
+            python_module_name(metadata_provider.namespace, metadata_provider.name),
             metadata_provider.name,
         ));
     }
@@ -991,7 +995,7 @@ pub fn generate_index_stub(
                 .flat_map(|s| py_struct_export_names(s))
                 .filter(|n| seen.insert(n.clone()))
                 .collect();
-            let module = to_snake_case_filename(&class.name);
+            let module = python_module_name(&class.namespace, &class.name);
             if struct_names.is_empty() {
                 out.push_str(&format!(
                     "from .{} import {} as {}\n",
@@ -1017,7 +1021,7 @@ pub fn generate_index_stub(
         }
         let is_delegate = iface.methods.iter().any(|m| m.name == ".ctor")
             && iface.methods.iter().any(|m| m.name == "Invoke");
-        let module = to_snake_case_filename(&iface.name);
+        let module = python_module_name(&iface.namespace, &iface.name);
         if is_delegate {
             out.push_str(&format!(
                 "from .{module} import IID_{iname}, {iname}_PARAM_TYPES\n",
@@ -1046,9 +1050,12 @@ pub fn generate_index_stub(
         na.cmp(nb)
     });
     for en in sorted_enums {
-        if let TypeMeta::Enum { name, .. } = en {
+        if let TypeMeta::Enum {
+            namespace, name, ..
+        } = en
+        {
             if seen.insert(name.clone()) {
-                let module = to_snake_case_filename(name);
+                let module = python_module_name(namespace, name);
                 out.push_str(&format!("from .{} import {} as {}\n", module, name, name));
             }
         }

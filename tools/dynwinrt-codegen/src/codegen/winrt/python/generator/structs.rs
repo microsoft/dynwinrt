@@ -172,11 +172,17 @@ pub(super) fn py_struct_export_names(s: &TypeMeta) -> Vec<String> {
     match s {
         TypeMeta::Struct { name, .. } => {
             let snake = to_snake_case(name);
-            vec![
+            let mut names = if foundation_type(s).is_none() {
+                vec![name.clone()]
+            } else {
+                Vec::new()
+            };
+            names.extend([
                 format!("{}_TYPE", name),
                 format!("pack_{}", snake),
                 format!("unpack_{}", snake),
-            ]
+            ]);
+            names
         }
         _ => vec![],
     }

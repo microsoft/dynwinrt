@@ -9,15 +9,15 @@ use crate::codegen::winrt::shared::imports::get_in_params;
 use crate::meta::MethodMeta;
 use crate::types::{TypeKind, TypeMeta};
 
-use super::naming::{to_snake_case, to_snake_case_filename};
+use super::naming::{python_module_name, to_snake_case};
 use super::native_types::{FoundationType, foundation_type};
 use super::type_helpers::{
     py_delegate_callable_type, py_factory_return_type, py_method_return_type, py_param_list,
     py_param_type_safe, py_return_type_safe,
 };
 
-pub(super) fn format_py_type_import(name: &str, kind: TypeKind) -> String {
-    let module = to_snake_case_filename(name);
+pub(super) fn format_py_type_import(namespace: &str, name: &str, kind: TypeKind) -> String {
+    let module = python_module_name(namespace, name);
     if kind == TypeKind::Interface {
         format!("from .{module} import IID_{name}, {name}  # noqa: F401\n")
     } else {
@@ -29,11 +29,17 @@ pub(super) fn py_struct_export_names(s: &TypeMeta) -> Vec<String> {
     match s {
         TypeMeta::Struct { name, .. } => {
             let snake = to_snake_case(name);
-            vec![
+            let mut names = if foundation_type(s).is_none() {
+                vec![name.clone()]
+            } else {
+                Vec::new()
+            };
+            names.extend([
                 format!("{}_TYPE", name),
                 format!("pack_{}", snake),
                 format!("unpack_{}", snake),
-            ]
+            ]);
+            names
         }
         _ => vec![],
     }

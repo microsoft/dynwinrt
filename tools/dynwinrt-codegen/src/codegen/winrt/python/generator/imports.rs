@@ -6,8 +6,8 @@
 use super::*;
 
 /// Format a Python import line based on type kind.
-pub(super) fn format_py_type_import(name: &str, kind: TypeKind) -> String {
-    let module = to_snake_case_filename(name);
+pub(super) fn format_py_type_import(namespace: &str, name: &str, kind: TypeKind) -> String {
+    let module = python_module_name(namespace, name);
     if kind == TypeKind::Interface {
         format!("from .{module} import IID_{name}, {name}  # noqa: F401\n")
     } else {

@@ -24,14 +24,31 @@ import threading
 
 def to_snake_case(name: str) -> str:
     """Convert PascalCase/camelCase to snake_case."""
-    s = re.sub(r'([A-Z])', r'_\1', name).lstrip('_').lower()
-    return s
+    value = re.sub(r'(.)([A-Z][a-z]+)', r'\1_\2', name)
+    return re.sub(r'([a-z0-9])([A-Z])', r'\1_\2', value).lstrip('_').lower()
 
 
 def to_camel_case(name: str) -> str:
     """Convert snake_case to camelCase."""
     parts = name.split('_')
     return parts[0] + ''.join(p.capitalize() for p in parts[1:])
+
+
+def namespace_module_name(package_name: str, namespace: str) -> str:
+    segments = '.'.join(to_snake_case(segment) for segment in namespace.split('.'))
+    return f"{package_name}.{segments}"
+
+
+def implementation_module_name(package_name: str, namespace: str, type_name: str) -> str:
+    namespace_part = '__'.join(
+        to_snake_case(segment) for segment in namespace.split('.')
+    )
+    return f"{package_name}.{namespace_part}__{to_snake_case(type_name)}"
+
+
+def generated_type(package_name: str, type_name: str):
+    package = importlib.import_module(package_name)
+    return getattr(package, type_name)
 
 
 def literal_arg(val):
@@ -90,8 +107,7 @@ async def run_spec(spec: dict, generated_dir: str, pkg_name: str) -> dict:
 
     try:
         # Import the generated module as part of the package
-        mod_name = to_snake_case(cls_name)
-        mod = importlib.import_module(f"{pkg_name}.{mod_name}")
+        mod = importlib.import_module(namespace_module_name(pkg_name, ns))
         cls = getattr(mod, cls_name)
 
         # Instantiate
@@ -116,7 +132,7 @@ async def run_spec(spec: dict, generated_dir: str, pkg_name: str) -> dict:
         for check in spec.get('checks', []):
             if 'py' not in check.get('langs', ['py', 'ts']):
                 continue
-            check_result = await run_check(check, cls, obj, generated_dir, pkg_name)
+            check_result = await run_check(check, cls, obj, generated_dir, pkg_name, ns)
             result['checks'].append(check_result)
             if not check_result['pass']:
                 result['pass'] = False
@@ -128,7 +144,14 @@ async def run_spec(spec: dict, generated_dir: str, pkg_name: str) -> dict:
     return result
 
 
-async def run_check(check: dict, cls, obj, generated_dir: str, pkg_name: str) -> dict:
+async def run_check(
+    check: dict,
+    cls,
+    obj,
+    generated_dir: str,
+    pkg_name: str,
+    namespace: str,
+) -> dict:
     """Run a single check. Returns { kind, member, pass, error }."""
     kind = check['kind']
     member = to_snake_case(check['member']) if 'member' in check else ''
@@ -154,8 +177,7 @@ async def run_check(check: dict, cls, obj, generated_dir: str, pkg_name: str) ->
                 args = [literal_arg(a) for a in check['args']]
             elif 'args_factory' in check:
                 af = check['args_factory']
-                af_mod = importlib.import_module(f"{pkg_name}.{to_snake_case(af['class'])}")
-                af_cls = getattr(af_mod, af['class'])
+                af_cls = generated_type(pkg_name, af['class'])
                 af_method = getattr(af_cls, to_snake_case(af['method']))
                 af_args = [literal_arg(a) for a in af.get('args', [])]
                 args = [af_method(*af_args)]
@@ -185,12 +207,7 @@ async def run_check(check: dict, cls, obj, generated_dir: str, pkg_name: str) ->
         elif kind == 'method_then_property_equals':
             target = obj
             if check.get('interface_class'):
-                iface_mod_name = check.get(
-                    'interface_module',
-                    to_snake_case(check['interface_class']),
-                )
-                iface_mod = importlib.import_module(f"{pkg_name}.{iface_mod_name}")
-                iface_cls = getattr(iface_mod, check['interface_class'])
+                iface_cls = generated_type(pkg_name, check['interface_class'])
                 target = obj.as_interface(iface_cls)
 
             method = getattr(target, member)
@@ -243,9 +260,7 @@ async def run_check(check: dict, cls, obj, generated_dir: str, pkg_name: str) ->
                 cr['pass'] = True
 
         elif kind == 'interface_cast':
-            iface_mod_name = to_snake_case(check.get('interface_module', check['interface_class']))
-            iface_mod = importlib.import_module(f"{pkg_name}.{iface_mod_name}")
-            iface_cls = getattr(iface_mod, check['interface_class'])
+            iface_cls = generated_type(pkg_name, check['interface_class'])
             casted = obj.as_interface(iface_cls)
             method_name = to_snake_case(check['method'])
             result_val = getattr(casted, method_name)
@@ -327,15 +342,11 @@ async def run_check(check: dict, cls, obj, generated_dir: str, pkg_name: str) ->
                 cr['error'] = 'setting nullable value to None did not clear it'
                 return cr
 
-            property_value_mod = importlib.import_module(f"{pkg_name}.property_value")
-            property_value_cls = getattr(property_value_mod, 'PropertyValue')
+            property_value_cls = generated_type(pkg_name, 'PropertyValue')
             factory = getattr(property_value_cls, check['factory'])
             boxed = factory(check['compatibility_value'])
 
-            reference_mod = importlib.import_module(
-                f"{pkg_name}.{check['reference_module']}"
-            )
-            reference_cls = getattr(reference_mod, check['reference_class'])
+            reference_cls = generated_type(pkg_name, check['reference_class'])
             reference = reference_cls.from_value(getattr(boxed, '_obj', boxed))
 
             setattr(obj, member, reference)
@@ -349,7 +360,9 @@ async def run_check(check: dict, cls, obj, generated_dir: str, pkg_name: str) ->
                 cr['pass'] = True
 
         elif kind == 'struct_roundtrip':
-            struct_mod = importlib.import_module(f"{pkg_name}.{check['struct_module']}")
+            struct_mod = importlib.import_module(
+                f"{namespace_module_name(pkg_name, namespace)}.{check['struct_module']}"
+            )
             struct_cls = getattr(struct_mod, check['struct_class'])
 
             # Create struct instance with kwargs
@@ -421,8 +434,7 @@ async def run_check(check: dict, cls, obj, generated_dir: str, pkg_name: str) ->
             if hasattr(source, trigger):
                 getattr(source, trigger)()
             else:
-                iface_mod = importlib.import_module(f"{pkg_name}.i_closable")
-                IClosable = getattr(iface_mod, 'IClosable')
+                IClosable = generated_type(pkg_name, 'IClosable')
                 IClosable.from_value(source._obj).close()
 
             if not fired[0]:
@@ -587,8 +599,7 @@ async def run_check(check: dict, cls, obj, generated_dir: str, pkg_name: str) ->
             chain_ok = True
             for step in check['steps']:
                 step_cls_name = step['class']
-                step_mod = importlib.import_module(f"{pkg_name}.{to_snake_case(step_cls_name)}")
-                step_cls = getattr(step_mod, step_cls_name)
+                step_cls = generated_type(pkg_name, step_cls_name)
                 step_method = getattr(step_cls, to_snake_case(step['method']))
 
                 # Build args: literal or refs to saved values
@@ -618,10 +629,13 @@ async def run_check(check: dict, cls, obj, generated_dir: str, pkg_name: str) ->
             write_val = check.get('write_value', 42)
             stream = cls.create() if hasattr(cls, 'create') else cls.create_default()
 
-            writer_mod = importlib.import_module(f"{pkg_name}.data_writer")
-            reader_mod = importlib.import_module(f"{pkg_name}.data_reader")
-            writer_cls = getattr(writer_mod, 'DataWriter')
-            reader_cls = getattr(reader_mod, 'DataReader')
+            writer_cls = generated_type(pkg_name, 'DataWriter')
+            reader_cls = generated_type(pkg_name, 'DataReader')
+            writer_mod = importlib.import_module(
+                implementation_module_name(
+                    pkg_name, 'Windows.Storage.Streams', 'DataWriter'
+                )
+            )
 
             writer = writer_cls.create_data_writer(stream.get_output_stream_at(0))
             writer.write_int32(write_val)
@@ -676,8 +690,7 @@ async def run_check(check: dict, cls, obj, generated_dir: str, pkg_name: str) ->
 
             converted = await _DynWinRTAsync(raw_store, convert_store_result)
 
-            buffer_mod = importlib.import_module(f"{pkg_name}.buffer")
-            buffer_cls = getattr(buffer_mod, 'Buffer')
+            buffer_cls = generated_type(pkg_name, 'Buffer')
             progress_buffer = buffer_cls.create(1024 * 1024)
             progress_buffer.length = progress_buffer.capacity
             progress = []

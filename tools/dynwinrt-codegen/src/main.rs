@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
 
@@ -279,7 +279,17 @@ fn run() -> Result<(), String> {
             // Load built-in docs as fallback (sibling .xml takes priority).
             doc_table.load_builtin_docs();
 
-            let output_dir = Path::new(&output);
+            let final_output_dir = Path::new(&output);
+            let mut python_output = if lang == "py" && !dry_run {
+                Some(PythonOutputTransaction::begin(final_output_dir)?)
+            } else {
+                None
+            };
+            let effective_output_dir = python_output
+                .as_ref()
+                .map(|transaction| transaction.stage_dir().to_path_buf())
+                .unwrap_or_else(|| final_output_dir.to_path_buf());
+            let output_dir = effective_output_dir.as_path();
             if lang == "js" {
                 project::set_import_name(&import_name);
             }
@@ -290,6 +300,9 @@ fn run() -> Result<(), String> {
                 if lang == "js" {
                     migrate_legacy_com_only_package(output_dir)?;
                 }
+            }
+            if lang == "py" && !dry_run && !pyi && class_name.is_some() {
+                remove_all_generated_python_stubs(output_dir)?;
             }
 
             if let Some(ref cls_arg) = class_name {
@@ -437,23 +450,13 @@ fn run() -> Result<(), String> {
                         fn(&str, &[meta::ClassMeta], &[meta::InterfaceMeta], &[TypeMeta]) -> String;
                     type GenerateFn =
                         fn(&[meta::ClassMeta], &[meta::InterfaceMeta], &[TypeMeta]) -> String;
-                    let (index_name, append_fn, generate_fn): (&str, AppendFn, GenerateFn) =
-                        if lang == "py" {
-                            (
-                                "__init__.py",
-                                python::append_to_index,
-                                python::generate_index,
-                            )
-                        } else {
-                            // For JS lang, we use an in-memory `.ts` index then split into .js + .d.ts.
-                            // We pick a sentinel filename `index.js` to detect presence; `.d.ts` is written alongside.
-                            (
-                                "index.js",
-                                typescript::append_to_index,
-                                typescript::generate_index,
-                            )
-                        };
-                    let index_path = output_dir.join(index_name);
+                    let (append_fn, generate_fn): (AppendFn, GenerateFn) = if lang == "py" {
+                        (python::append_to_index, python::generate_index)
+                    } else {
+                        // For JS lang, we use an in-memory `.ts` index then split into .js + .d.ts.
+                        // We pick a sentinel filename `index.js` to detect presence; `.d.ts` is written alongside.
+                        (typescript::append_to_index, typescript::generate_index)
+                    };
                     let deps = meta::resolve_dependencies(&winmd, &classes, &[], &[]);
                     let mut all_classes = [classes.as_slice(), deps.classes.as_slice()].concat();
                     let mut all_interfaces: Vec<_> = deps.interfaces.clone();
@@ -470,31 +473,44 @@ fn run() -> Result<(), String> {
                     // Keep the barrel/index in sync with `generate_js_files` —
                     // interfaces with no IID or that collide with a class name
                     // are not emitted, so must not appear in the barrel either.
-                    let __cls_names: HashSet<String> =
+                    let class_names: HashSet<String> =
                         all_classes.iter().map(|c| c.name.clone()).collect();
-                    all_interfaces.retain(|i| !i.iid.is_empty() && !__cls_names.contains(&i.name));
+                    let class_identities: HashSet<(String, String)> = all_classes
+                        .iter()
+                        .map(|class| (class.namespace.clone(), class.name.clone()))
+                        .collect();
+                    all_interfaces.retain(|interface| {
+                        !interface.iid.is_empty()
+                            && if lang == "py" {
+                                !class_identities.contains(&(
+                                    interface.namespace.clone(),
+                                    interface.name.clone(),
+                                ))
+                            } else {
+                                !class_names.contains(&interface.name)
+                            }
+                    });
                     all_enums.retain(|e| match e {
-                        TypeMeta::Enum { name, .. } => !__cls_names.contains(name),
+                        TypeMeta::Enum {
+                            namespace, name, ..
+                        } => {
+                            if lang == "py" {
+                                !class_identities.contains(&(namespace.clone(), name.clone()))
+                            } else {
+                                !class_names.contains(name)
+                            }
+                        }
                         _ => true,
                     });
                     if lang == "py" {
-                        if index_path.exists() {
-                            let existing = fs::read_to_string(&index_path).map_err(|e| {
-                                format!("Failed to read {}: {}", index_path.display(), e)
-                            })?;
-                            let updated =
-                                append_fn(&existing, &all_classes, &all_interfaces, &all_enums);
-                            fs::write(&index_path, &updated).map_err(|e| {
-                                format!("Failed to write {}: {}", index_path.display(), e)
-                            })?;
-                            println!("Updated {}", index_path.display());
-                        } else {
-                            let new_index = generate_fn(&all_classes, &all_interfaces, &all_enums);
-                            fs::write(&index_path, &new_index).map_err(|e| {
-                                format!("Failed to write {}: {}", index_path.display(), e)
-                            })?;
-                            println!("Generated {}", index_path.display());
-                        }
+                        write_python_package_indexes(
+                            output_dir,
+                            &all_classes,
+                            &all_interfaces,
+                            &all_enums,
+                            pyi,
+                            true,
+                        )?;
                     } else {
                         // JS: index.js + index.d.ts are pure re-exports and identical, so we
                         // round-trip incremental appends by reading back index.d.ts (which
@@ -510,23 +526,11 @@ fn run() -> Result<(), String> {
                         };
                         write_js_barrel_and_manifest(output_dir, &index_content)?;
                     }
-                    if pyi {
-                        let stub_code = dynwinrt_codegen::codegen::python_stub::generate_index_stub(
-                            &all_classes,
-                            &all_interfaces,
-                            &all_enums,
-                        );
-                        let stub_path = output_dir.join("__init__.pyi");
-                        fs::write(&stub_path, &stub_code).map_err(|e| {
-                            format!("Failed to write {}: {}", stub_path.display(), e)
-                        })?;
-                        println!("Generated {}", stub_path.display());
-                        let marker = output_dir.join("py.typed");
-                        fs::write(&marker, "")
-                            .map_err(|e| format!("Failed to write {}: {}", marker.display(), e))?;
-                    }
                 }
             } else {
+                if lang == "py" && !dry_run {
+                    clean_python_generated_output(output_dir)?;
+                }
                 // Determine which namespaces to generate
                 let namespaces = match namespace {
                     Some(ref ns) => vec![ns.clone()],
@@ -593,7 +597,7 @@ fn run() -> Result<(), String> {
                 // Generate index file combining everything
                 if !dry_run
                     && namespaces.len() >= 1
-                    && (total_classes + total_interfaces + total_enums) > 1
+                    && (total_classes + total_interfaces + total_enums) > 0
                 {
                     let mut all_classes = Vec::new();
                     let mut all_interfaces = Vec::new();
@@ -621,39 +625,45 @@ fn run() -> Result<(), String> {
                     for e in all_enums.iter_mut() {
                         doc_table.apply_to_enum(e);
                     }
-                    let __cls_names: HashSet<String> =
+                    let class_names: HashSet<String> =
                         all_classes.iter().map(|c| c.name.clone()).collect();
-                    all_interfaces.retain(|i| !i.iid.is_empty() && !__cls_names.contains(&i.name));
+                    let class_identities: HashSet<(String, String)> = all_classes
+                        .iter()
+                        .map(|class| (class.namespace.clone(), class.name.clone()))
+                        .collect();
+                    all_interfaces.retain(|interface| {
+                        !interface.iid.is_empty()
+                            && if lang == "py" {
+                                !class_identities.contains(&(
+                                    interface.namespace.clone(),
+                                    interface.name.clone(),
+                                ))
+                            } else {
+                                !class_names.contains(&interface.name)
+                            }
+                    });
                     all_enums.retain(|e| match e {
-                        TypeMeta::Enum { name, .. } => !__cls_names.contains(name),
+                        TypeMeta::Enum {
+                            namespace, name, ..
+                        } => {
+                            if lang == "py" {
+                                !class_identities.contains(&(namespace.clone(), name.clone()))
+                            } else {
+                                !class_names.contains(name)
+                            }
+                        }
                         _ => true,
                     });
 
                     if lang == "py" {
-                        let index_code =
-                            python::generate_index(&all_classes, &all_interfaces, &all_enums);
-                        let index_path = output_dir.join("__init__.py");
-                        fs::write(&index_path, &index_code).map_err(|e| {
-                            format!("Failed to write {}: {}", index_path.display(), e)
-                        })?;
-                        println!("Generated {}", index_path.display());
-                        if pyi {
-                            let stub_code =
-                                dynwinrt_codegen::codegen::python_stub::generate_index_stub(
-                                    &all_classes,
-                                    &all_interfaces,
-                                    &all_enums,
-                                );
-                            let stub_path = output_dir.join("__init__.pyi");
-                            fs::write(&stub_path, &stub_code).map_err(|e| {
-                                format!("Failed to write {}: {}", stub_path.display(), e)
-                            })?;
-                            println!("Generated {}", stub_path.display());
-                            let marker = output_dir.join("py.typed");
-                            fs::write(&marker, "").map_err(|e| {
-                                format!("Failed to write {}: {}", marker.display(), e)
-                            })?;
-                        }
+                        write_python_package_indexes(
+                            output_dir,
+                            &all_classes,
+                            &all_interfaces,
+                            &all_enums,
+                            pyi,
+                            false,
+                        )?;
                     } else {
                         let index_code =
                             typescript::generate_index(&all_classes, &all_interfaces, &all_enums);
@@ -675,6 +685,15 @@ fn run() -> Result<(), String> {
                         output_dir.display()
                     );
                 }
+            }
+
+            if lang == "py" && !dry_run {
+                write_python_package_manifest(output_dir, final_output_dir)?;
+                write_python_generated_inventory(output_dir, pyi)?;
+                python_output
+                    .take()
+                    .expect("Python output transaction must exist")
+                    .commit()?;
             }
         }
     }
@@ -701,7 +720,9 @@ fn generate_for_types(
     all_classes.extend(deps.classes);
     all_interfaces.extend(deps.interfaces);
     all_enums.extend(deps.enums);
-    validate_unique_class_output_names(&all_classes)?;
+    if lang != "py" {
+        validate_unique_class_output_names(&all_classes)?;
+    }
 
     // Newly-merged dependency types haven't been doc-annotated yet. Apply doc table
     // uniformly so dependency classes/interfaces/enums carry the same XML docs as
@@ -721,14 +742,30 @@ fn generate_for_types(
     // downstream — `known_types`, the barrel index, generated imports — must
     // agree, or classes will try to `import` sibling files that never landed.
     let class_names_all: HashSet<String> = all_classes.iter().map(|c| c.name.clone()).collect();
+    let class_identities_all: HashSet<(String, String)> = all_classes
+        .iter()
+        .map(|class| (class.namespace.clone(), class.name.clone()))
+        .collect();
     let is_emittable_iface = |i: &meta::InterfaceMeta| -> bool {
-        !i.iid.is_empty() && !class_names_all.contains(&i.name)
+        !i.iid.is_empty()
+            && if lang == "py" {
+                !class_identities_all.contains(&(i.namespace.clone(), i.name.clone()))
+            } else {
+                !class_names_all.contains(&i.name)
+            }
     };
     let emittable_interfaces: Vec<meta::InterfaceMeta> = all_interfaces
         .iter()
         .filter(|i| is_emittable_iface(i))
         .cloned()
         .collect();
+    let python_layout = if lang == "py" {
+        Some(python::install_python_module_layout(
+            python_type_identities(&all_classes, &emittable_interfaces, &all_enums),
+        )?)
+    } else {
+        None
+    };
 
     let mut known_types: HashSet<String> = HashSet::new();
     for c in &all_classes {
@@ -744,7 +781,12 @@ fn generate_for_types(
             namespace, name, ..
         } = e
         {
-            if !class_names_all.contains(name) {
+            let is_class = if lang == "py" {
+                class_identities_all.contains(&(namespace.clone(), name.clone()))
+            } else {
+                class_names_all.contains(name)
+            };
+            if !is_class {
                 known_types.insert(name.clone());
                 known_types.insert(format!("{namespace}.{name}"));
             }
@@ -818,9 +860,43 @@ fn generate_for_types(
                 &delegate_param_wraps,
             )?;
         }
+        drop(python_layout);
     }
 
     Ok((all_classes.len(), all_interfaces.len(), all_enums.len()))
+}
+
+fn python_type_identities(
+    classes: &[meta::ClassMeta],
+    interfaces: &[meta::InterfaceMeta],
+    enums: &[TypeMeta],
+) -> Vec<python::PythonTypeIdentity> {
+    let mut identities = Vec::new();
+    identities.extend(classes.iter().map(|class| python::PythonTypeIdentity {
+        namespace: class.namespace.clone(),
+        name: class.name.clone(),
+    }));
+    identities.extend(
+        interfaces
+            .iter()
+            .map(|interface| python::PythonTypeIdentity {
+                namespace: interface.namespace.clone(),
+                name: interface.name.clone(),
+            }),
+    );
+    identities.extend(enums.iter().filter_map(|typ| {
+        let TypeMeta::Enum {
+            namespace, name, ..
+        } = typ
+        else {
+            return None;
+        };
+        Some(python::PythonTypeIdentity {
+            namespace: namespace.clone(),
+            name: name.clone(),
+        })
+    }));
+    identities
 }
 
 fn validate_unique_class_output_names(classes: &[meta::ClassMeta]) -> Result<(), String> {
@@ -1715,43 +1791,48 @@ fn generate_py_files(
     shared_iids: &HashSet<String>,
     pyi: bool,
 ) -> Result<(), String> {
-    use dynwinrt_codegen::codegen::python::to_snake_case_filename;
     use dynwinrt_codegen::codegen::python_stub;
 
     for iface in shared_interfaces {
         let code = python::generate_interface(iface, known_types, delegate_type_names);
-        let filepath = output_dir.join(format!("{}.py", to_snake_case_filename(&iface.name)));
+        let module = python::python_module_name(&iface.namespace, &iface.name);
+        let filepath = output_dir.join(format!("{module}.py"));
         write_file(&filepath, &code)?;
         println!("Generated shared {}", filepath.display());
         if pyi {
             let stub =
                 python_stub::generate_interface_stub(iface, known_types, delegate_type_names);
-            let p = output_dir.join(format!("{}.pyi", to_snake_case_filename(&iface.name)));
+            let p = output_dir.join(format!("{module}.pyi"));
             write_file(&p, &stub)?;
         }
     }
     for iface in all_interfaces {
         let code = python::generate_interface(iface, known_types, delegate_type_names);
-        let filepath = output_dir.join(format!("{}.py", to_snake_case_filename(&iface.name)));
+        let module = python::python_module_name(&iface.namespace, &iface.name);
+        let filepath = output_dir.join(format!("{module}.py"));
         write_file(&filepath, &code)?;
         println!("Generated {}", filepath.display());
         if pyi {
             let stub =
                 python_stub::generate_interface_stub(iface, known_types, delegate_type_names);
-            let p = output_dir.join(format!("{}.pyi", to_snake_case_filename(&iface.name)));
+            let p = output_dir.join(format!("{module}.pyi"));
             write_file(&p, &stub)?;
         }
     }
     for en in all_enums {
-        if let TypeMeta::Enum { name, .. } = en {
+        if let TypeMeta::Enum {
+            namespace, name, ..
+        } = en
+        {
+            let module = python::python_module_name(namespace, name);
             if let Some(code) = python::generate_enum(en) {
-                let filepath = output_dir.join(format!("{}.py", to_snake_case_filename(name)));
+                let filepath = output_dir.join(format!("{module}.py"));
                 write_file(&filepath, &code)?;
                 println!("Generated {}", filepath.display());
             }
             if pyi {
                 if let Some(stub) = python_stub::generate_enum_stub(en) {
-                    let p = output_dir.join(format!("{}.pyi", to_snake_case_filename(name)));
+                    let p = output_dir.join(format!("{module}.pyi"));
                     write_file(&p, &stub)?;
                 }
             }
@@ -1759,7 +1840,8 @@ fn generate_py_files(
     }
     for class in all_classes {
         let code = python::generate_class(class, known_types, delegate_type_names, shared_iids);
-        let filepath = output_dir.join(format!("{}.py", to_snake_case_filename(&class.name)));
+        let module = python::python_module_name(&class.namespace, &class.name);
+        let filepath = output_dir.join(format!("{module}.py"));
         write_file(&filepath, &code)?;
         println!("Generated {}", filepath.display());
         if pyi {
@@ -1769,7 +1851,7 @@ fn generate_py_files(
                 delegate_type_names,
                 shared_iids,
             );
-            let p = output_dir.join(format!("{}.pyi", to_snake_case_filename(&class.name)));
+            let p = output_dir.join(format!("{module}.pyi"));
             write_file(&p, &stub)?;
         }
     }
@@ -1778,6 +1860,979 @@ fn generate_py_files(
         write_file(&marker, "")?;
     }
     Ok(())
+}
+
+#[derive(Default)]
+struct PythonNamespaceGroup {
+    classes: Vec<meta::ClassMeta>,
+    interfaces: Vec<meta::InterfaceMeta>,
+    enums: Vec<TypeMeta>,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct PythonGeneratedType {
+    kind: String,
+    identity: python::PythonTypeIdentity,
+}
+
+fn write_python_package_indexes(
+    output_dir: &Path,
+    classes: &[meta::ClassMeta],
+    interfaces: &[meta::InterfaceMeta],
+    enums: &[TypeMeta],
+    pyi: bool,
+    append: bool,
+) -> Result<(), String> {
+    use dynwinrt_codegen::codegen::python_stub;
+
+    let current_types = python_generated_types(classes, interfaces, enums);
+    let mut all_types = if append {
+        read_python_type_inventory(output_dir)?
+    } else {
+        Vec::new()
+    };
+    all_types.extend(current_types);
+    let mut seen_types = HashSet::new();
+    all_types.retain(|typ| seen_types.insert(typ.clone()));
+
+    let module_identities = all_types
+        .iter()
+        .filter(|typ| typ.kind != "struct")
+        .map(|typ| typ.identity.clone())
+        .collect::<Vec<_>>();
+    let _layout = python::install_python_module_layout(module_identities.clone())?;
+    validate_python_public_identities(&module_identities)?;
+
+    let mut interface_counts = HashMap::<String, usize>::new();
+    for typ in &all_types {
+        if typ.kind == "interface" {
+            *interface_counts
+                .entry(typ.identity.name.clone())
+                .or_default() += 1;
+        }
+    }
+    if let Some((name, _)) = interface_counts.iter().find(|(_, count)| **count > 1) {
+        return Err(format!(
+            "Python generation cannot safely project multiple interfaces named `{name}`; \
+             their delegate and generic runtime symbols are ambiguous"
+        ));
+    }
+
+    let mut counts = HashMap::<String, usize>::new();
+    for typ in &all_types {
+        *counts.entry(typ.identity.name.clone()).or_default() += 1;
+    }
+    let suppressed_root_names = counts
+        .iter()
+        .filter(|(_, count)| **count > 1)
+        .map(|(name, _)| name.clone())
+        .collect::<HashSet<_>>();
+    let root_classes = classes
+        .iter()
+        .filter(|class| counts[&class.name] == 1)
+        .cloned()
+        .collect::<Vec<_>>();
+    let root_interfaces = interfaces
+        .iter()
+        .filter(|interface| counts[&interface.name] == 1)
+        .cloned()
+        .collect::<Vec<_>>();
+    let root_enums = enums
+        .iter()
+        .filter(|typ| matches!(typ, TypeMeta::Enum { name, .. } if counts[name] == 1))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    let root_index = python::generate_index(&root_classes, &root_interfaces, &root_enums);
+    write_python_index(
+        &output_dir.join("__init__.py"),
+        &root_index,
+        append,
+        &suppressed_root_names,
+    )?;
+    if pyi {
+        let root_stub =
+            python_stub::generate_index_stub(&root_classes, &root_interfaces, &root_enums);
+        write_python_index(
+            &output_dir.join("__init__.pyi"),
+            &root_stub,
+            append,
+            &suppressed_root_names,
+        )?;
+        write_file(&output_dir.join("py.typed"), "")?;
+    }
+
+    let mut groups = BTreeMap::<String, PythonNamespaceGroup>::new();
+    for class in classes {
+        groups
+            .entry(class.namespace.clone())
+            .or_default()
+            .classes
+            .push(class.clone());
+    }
+    for interface in interfaces {
+        groups
+            .entry(interface.namespace.clone())
+            .or_default()
+            .interfaces
+            .push(interface.clone());
+    }
+    for typ in enums {
+        if let TypeMeta::Enum { namespace, .. } = typ {
+            groups
+                .entry(namespace.clone())
+                .or_default()
+                .enums
+                .push(typ.clone());
+        }
+    }
+
+    for (namespace, group) in groups {
+        write_python_namespace_group(output_dir, &namespace, &group, pyi, append)?;
+    }
+    write_python_type_inventory(output_dir, &all_types)?;
+    Ok(())
+}
+
+fn write_python_namespace_group(
+    output_dir: &Path,
+    namespace: &str,
+    group: &PythonNamespaceGroup,
+    pyi: bool,
+    append: bool,
+) -> Result<(), String> {
+    use dynwinrt_codegen::codegen::python_stub;
+
+    let segments = python::python_namespace_segments(namespace);
+    if segments.is_empty() {
+        return Ok(());
+    }
+    let mut package_dir = output_dir.to_path_buf();
+    for segment in &segments {
+        package_dir.push(segment);
+        fs::create_dir_all(&package_dir)
+            .map_err(|e| format!("Failed to create {}: {}", package_dir.display(), e))?;
+        let runtime_init = package_dir.join("__init__.py");
+        if !runtime_init.exists() {
+            write_file(&runtime_init, GENERATED_PYTHON_HEADER)?;
+        }
+        if pyi {
+            let stub_init = package_dir.join("__init__.pyi");
+            if !stub_init.exists() {
+                write_file(&stub_init, GENERATED_PYTHON_HEADER)?;
+            }
+        }
+    }
+
+    let mut runtime_exports = Vec::new();
+    let mut stub_exports = Vec::new();
+    let mut seen = HashSet::new();
+
+    for class in &group.classes {
+        if !seen.insert(class.name.clone()) {
+            continue;
+        }
+        let runtime = python::generate_index(std::slice::from_ref(class), &[], &[]);
+        write_python_facade(
+            &package_dir,
+            &segments,
+            &class.name,
+            &runtime,
+            "py",
+            &mut runtime_exports,
+        )?;
+        if pyi {
+            let stub = python_stub::generate_index_stub(std::slice::from_ref(class), &[], &[]);
+            write_python_facade(
+                &package_dir,
+                &segments,
+                &class.name,
+                &stub,
+                "pyi",
+                &mut stub_exports,
+            )?;
+        }
+    }
+    for interface in &group.interfaces {
+        if !seen.insert(interface.name.clone()) {
+            continue;
+        }
+        let runtime = python::generate_index(&[], std::slice::from_ref(interface), &[]);
+        write_python_facade(
+            &package_dir,
+            &segments,
+            &interface.name,
+            &runtime,
+            "py",
+            &mut runtime_exports,
+        )?;
+        if pyi {
+            let stub = python_stub::generate_index_stub(&[], std::slice::from_ref(interface), &[]);
+            write_python_facade(
+                &package_dir,
+                &segments,
+                &interface.name,
+                &stub,
+                "pyi",
+                &mut stub_exports,
+            )?;
+        }
+    }
+    for typ in &group.enums {
+        let TypeMeta::Enum { name, .. } = typ else {
+            continue;
+        };
+        if !seen.insert(name.clone()) {
+            continue;
+        }
+        let runtime = python::generate_index(&[], &[], std::slice::from_ref(typ));
+        write_python_facade(
+            &package_dir,
+            &segments,
+            name,
+            &runtime,
+            "py",
+            &mut runtime_exports,
+        )?;
+        if pyi {
+            let stub = python_stub::generate_index_stub(&[], &[], std::slice::from_ref(typ));
+            write_python_facade(
+                &package_dir,
+                &segments,
+                name,
+                &stub,
+                "pyi",
+                &mut stub_exports,
+            )?;
+        }
+    }
+
+    let runtime_index = format!("{}{}", GENERATED_PYTHON_HEADER, runtime_exports.join("\n"));
+    let suppressed_root_names = HashSet::new();
+    write_python_index(
+        &package_dir.join("__init__.py"),
+        &runtime_index,
+        append,
+        &suppressed_root_names,
+    )?;
+    if pyi {
+        let stub_index = format!("{}{}", GENERATED_PYTHON_HEADER, stub_exports.join("\n"));
+        write_python_index(
+            &package_dir.join("__init__.pyi"),
+            &stub_index,
+            append,
+            &suppressed_root_names,
+        )?;
+    }
+    Ok(())
+}
+
+fn write_python_facade(
+    package_dir: &Path,
+    namespace_segments: &[String],
+    type_name: &str,
+    implementation_index: &str,
+    extension: &str,
+    package_exports: &mut Vec<String>,
+) -> Result<(), String> {
+    let import_line = implementation_index
+        .lines()
+        .find(|line| line.starts_with("from ."))
+        .ok_or_else(|| format!("Generated index for `{type_name}` has no import"))?;
+    let (source, exports) = import_line
+        .strip_prefix("from .")
+        .and_then(|line| line.split_once(" import "))
+        .ok_or_else(|| format!("Generated index import for `{type_name}` is invalid"))?;
+    let exports = if extension == "pyi" {
+        exports
+            .split(',')
+            .map(|export| {
+                let export = export.trim();
+                if export.contains(" as ") {
+                    export.to_string()
+                } else {
+                    format!("{export} as {export}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    } else {
+        exports.to_string()
+    };
+    let relative_root = ".".repeat(namespace_segments.len() + 1);
+    let facade =
+        format!("{GENERATED_PYTHON_HEADER}from {relative_root}{source} import {exports}\n");
+    let public_module = python::python_public_module_name(type_name);
+    write_file(
+        &package_dir.join(format!("{public_module}.{extension}")),
+        &facade,
+    )?;
+    package_exports.push(format!("from .{public_module} import {exports}"));
+    Ok(())
+}
+
+fn write_python_index(
+    path: &Path,
+    generated: &str,
+    append: bool,
+    suppressed_names: &HashSet<String>,
+) -> Result<(), String> {
+    let content = if append && path.exists() {
+        let existing = fs::read_to_string(path)
+            .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
+        merge_python_indexes(&existing, generated, suppressed_names)
+    } else {
+        merge_python_indexes(GENERATED_PYTHON_HEADER, generated, suppressed_names)
+    };
+    write_file(path, &content)
+}
+
+fn merge_python_indexes(
+    existing: &str,
+    generated: &str,
+    suppressed_names: &HashSet<String>,
+) -> String {
+    let mut imports = BTreeSet::new();
+    for line in existing.lines().chain(generated.lines()) {
+        if line.starts_with("from .") {
+            let (line, comment) = line
+                .split_once("  #")
+                .map_or((line, None), |(line, comment)| (line, Some(comment)));
+            let Some((source, exports)) = line.split_once(" import ") else {
+                continue;
+            };
+            let exports = exports
+                .split(',')
+                .map(str::trim)
+                .filter(|export| {
+                    let symbol = export
+                        .split_once(" as ")
+                        .map_or(*export, |(name, _)| name.trim());
+                    !suppressed_names.contains(symbol)
+                })
+                .collect::<Vec<_>>();
+            if !exports.is_empty() {
+                let mut import = format!("{source} import {}", exports.join(", "));
+                if let Some(comment) = comment {
+                    import.push_str("  #");
+                    import.push_str(comment);
+                }
+                imports.insert(import);
+            }
+        }
+    }
+    let mut merged = GENERATED_PYTHON_HEADER.to_string();
+    for import in imports {
+        merged.push_str(&import);
+        merged.push('\n');
+    }
+    merged
+}
+
+const GENERATED_PYTHON_HEADER: &str = "# Generated by dynwinrt-codegen — do not edit\n";
+
+fn python_generated_types(
+    classes: &[meta::ClassMeta],
+    interfaces: &[meta::InterfaceMeta],
+    enums: &[TypeMeta],
+) -> Vec<PythonGeneratedType> {
+    let mut types = Vec::new();
+    types.extend(classes.iter().map(|class| PythonGeneratedType {
+        kind: "class".into(),
+        identity: python::PythonTypeIdentity {
+            namespace: class.namespace.clone(),
+            name: class.name.clone(),
+        },
+    }));
+    types.extend(interfaces.iter().map(|interface| PythonGeneratedType {
+        kind: "interface".into(),
+        identity: python::PythonTypeIdentity {
+            namespace: interface.namespace.clone(),
+            name: interface.name.clone(),
+        },
+    }));
+    types.extend(enums.iter().filter_map(|typ| {
+        let TypeMeta::Enum {
+            namespace, name, ..
+        } = typ
+        else {
+            return None;
+        };
+        Some(PythonGeneratedType {
+            kind: "enum".into(),
+            identity: python::PythonTypeIdentity {
+                namespace: namespace.clone(),
+                name: name.clone(),
+            },
+        })
+    }));
+    types.extend(
+        python::package_struct_identities(classes, interfaces)
+            .into_iter()
+            .map(|(namespace, name)| PythonGeneratedType {
+                kind: "struct".into(),
+                identity: python::PythonTypeIdentity { namespace, name },
+            }),
+    );
+    types
+}
+
+fn read_python_type_inventory(output_dir: &Path) -> Result<Vec<PythonGeneratedType>, String> {
+    let path = output_dir.join(PYTHON_TYPE_INVENTORY);
+    if !path.is_file() {
+        return Ok(Vec::new());
+    }
+    fs::read_to_string(&path)
+        .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            let mut parts = line.splitn(3, '|');
+            let kind = parts.next().unwrap_or_default();
+            let namespace = parts.next().unwrap_or_default();
+            let name = parts.next().unwrap_or_default();
+            if !matches!(kind, "class" | "interface" | "enum" | "struct")
+                || namespace.is_empty()
+                || name.is_empty()
+            {
+                return Err(format!("Invalid generated type inventory entry `{line}`"));
+            }
+            Ok(PythonGeneratedType {
+                kind: kind.into(),
+                identity: python::PythonTypeIdentity {
+                    namespace: namespace.into(),
+                    name: name.into(),
+                },
+            })
+        })
+        .collect()
+}
+
+fn write_python_type_inventory(
+    output_dir: &Path,
+    types: &[PythonGeneratedType],
+) -> Result<(), String> {
+    let mut lines = types
+        .iter()
+        .map(|typ| {
+            format!(
+                "{}|{}|{}",
+                typ.kind, typ.identity.namespace, typ.identity.name
+            )
+        })
+        .collect::<Vec<_>>();
+    lines.sort();
+    lines.dedup();
+    write_file(
+        &output_dir.join(PYTHON_TYPE_INVENTORY),
+        &format!("{}\n", lines.join("\n")),
+    )
+}
+
+#[cfg(test)]
+fn validate_python_public_paths(
+    classes: &[meta::ClassMeta],
+    interfaces: &[meta::InterfaceMeta],
+    enums: &[TypeMeta],
+) -> Result<(), String> {
+    let identities = python_type_identities(classes, interfaces, enums);
+    validate_python_public_identities(&identities)
+}
+
+fn validate_python_public_identities(
+    identities: &[python::PythonTypeIdentity],
+) -> Result<(), String> {
+    let mut namespace_owners = HashMap::<String, String>::new();
+    let mut namespace_paths = HashSet::new();
+    for identity in identities {
+        let segments = python::python_namespace_segments(&identity.namespace);
+        let normalized = segments.join("/");
+        if let Some(existing) =
+            namespace_owners.insert(normalized.clone(), identity.namespace.clone())
+        {
+            if existing != identity.namespace {
+                return Err(format!(
+                    "Python namespace collision: `{existing}` and `{}` both normalize to `{normalized}`",
+                    identity.namespace
+                ));
+            }
+        }
+        for depth in 1..=segments.len() {
+            namespace_paths.insert(segments[..depth].join("/"));
+        }
+    }
+
+    let mut module_owners = HashMap::<String, python::PythonTypeIdentity>::new();
+    for identity in identities {
+        let mut segments = python::python_namespace_segments(&identity.namespace);
+        segments.push(python::python_public_module_name(&identity.name));
+        let module_path = segments.join("/");
+        if namespace_paths.contains(&module_path) {
+            return Err(format!(
+                "Python package/module collision: `{}.{}` normalizes to package path `{module_path}`",
+                identity.namespace, identity.name
+            ));
+        }
+        if let Some(existing) = module_owners.insert(module_path.clone(), identity.clone()) {
+            if existing != *identity {
+                return Err(format!(
+                    "Python module collision: `{}.{}` and `{}.{}` both normalize to `{module_path}.py`",
+                    existing.namespace, existing.name, identity.namespace, identity.name
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+struct PythonOutputTransaction {
+    final_dir: PathBuf,
+    stage_dir: PathBuf,
+    backup_dir: PathBuf,
+    committed: bool,
+}
+
+impl PythonOutputTransaction {
+    fn begin(final_dir: &Path) -> Result<Self, String> {
+        let parent = final_dir.parent().unwrap_or_else(|| Path::new("."));
+        let leaf = final_dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| format!("Invalid Python output directory '{}'", final_dir.display()))?;
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create {}: {}", parent.display(), e))?;
+
+        let suffix = std::process::id();
+        let stage_dir = parent.join(format!(".{}.dynwinrt-stage-{}", leaf, suffix));
+        let backup_dir = parent.join(format!(".{}.dynwinrt-backup-{}", leaf, suffix));
+        remove_transaction_dir(&stage_dir)?;
+        remove_transaction_dir(&backup_dir)?;
+
+        if final_dir.exists() {
+            if !final_dir.is_dir() {
+                return Err(format!(
+                    "Python output path '{}' is not a directory",
+                    final_dir.display()
+                ));
+            }
+            copy_directory(final_dir, &stage_dir)?;
+        } else {
+            fs::create_dir_all(&stage_dir)
+                .map_err(|e| format!("Failed to create {}: {}", stage_dir.display(), e))?;
+        }
+
+        Ok(Self {
+            final_dir: final_dir.to_path_buf(),
+            stage_dir,
+            backup_dir,
+            committed: false,
+        })
+    }
+
+    fn stage_dir(&self) -> &Path {
+        &self.stage_dir
+    }
+
+    fn commit(mut self) -> Result<(), String> {
+        let had_existing_output = self.final_dir.exists();
+        if had_existing_output {
+            fs::rename(&self.final_dir, &self.backup_dir).map_err(|e| {
+                format!(
+                    "Failed to stage existing output '{}' for replacement: {}",
+                    self.final_dir.display(),
+                    e
+                )
+            })?;
+        }
+
+        if let Err(error) = fs::rename(&self.stage_dir, &self.final_dir) {
+            if had_existing_output {
+                if let Err(rollback_error) = fs::rename(&self.backup_dir, &self.final_dir) {
+                    return Err(format!(
+                        "Failed to replace Python output directory '{}': {}. Rollback also failed: \
+                         {}. The original output remains at '{}'",
+                        self.final_dir.display(),
+                        error,
+                        rollback_error,
+                        self.backup_dir.display()
+                    ));
+                }
+            }
+            return Err(format!(
+                "Failed to replace Python output directory '{}': {}",
+                self.final_dir.display(),
+                error
+            ));
+        }
+
+        self.committed = true;
+        if had_existing_output {
+            fs::remove_dir_all(&self.backup_dir).map_err(|e| {
+                format!(
+                    "Replaced Python output but failed to remove backup '{}': {}",
+                    self.backup_dir.display(),
+                    e
+                )
+            })?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for PythonOutputTransaction {
+    fn drop(&mut self) {
+        if !self.committed && self.stage_dir.exists() {
+            let _ = fs::remove_dir_all(&self.stage_dir);
+        }
+    }
+}
+
+fn remove_transaction_dir(path: &Path) -> Result<(), String> {
+    if path.exists() {
+        fs::remove_dir_all(path)
+            .map_err(|e| format!("Failed to remove stale {}: {}", path.display(), e))?;
+    }
+    Ok(())
+}
+
+fn copy_directory(source: &Path, destination: &Path) -> Result<(), String> {
+    fs::create_dir_all(destination)
+        .map_err(|e| format!("Failed to create {}: {}", destination.display(), e))?;
+    for entry in
+        fs::read_dir(source).map_err(|e| format!("Failed to read {}: {}", source.display(), e))?
+    {
+        let entry =
+            entry.map_err(|e| format!("Failed to read entry in {}: {}", source.display(), e))?;
+        let source_path = entry.path();
+        let destination_path = destination.join(entry.file_name());
+        let file_type = entry
+            .file_type()
+            .map_err(|e| format!("Failed to inspect {}: {}", source_path.display(), e))?;
+        if file_type.is_dir() {
+            copy_directory(&source_path, &destination_path)?;
+        } else if file_type.is_file() {
+            fs::copy(&source_path, &destination_path).map_err(|e| {
+                format!(
+                    "Failed to copy {} to {}: {}",
+                    source_path.display(),
+                    destination_path.display(),
+                    e
+                )
+            })?;
+        } else {
+            return Err(format!(
+                "Unsupported filesystem entry in Python output: {}",
+                source_path.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn write_python_package_manifest(output_dir: &Path, final_output_dir: &Path) -> Result<(), String> {
+    let manifest_path = output_dir.join("pyproject.toml");
+    if manifest_path.exists()
+        && !python_inventory_contains(output_dir, Path::new("pyproject.toml"))?
+    {
+        return Err(format!(
+            "Refusing to overwrite existing non-generated manifest '{}'",
+            final_output_dir.join("pyproject.toml").display()
+        ));
+    }
+    let leaf = final_output_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            format!(
+                "Cannot derive Python package name from '{}'",
+                final_output_dir.display()
+            )
+        })?;
+    let import_name = normalize_python_package_name(leaf);
+    let distribution_name = import_name.replace('_', "-");
+    let version = env!("CARGO_PKG_VERSION");
+    let namespace_packages = collect_python_namespace_packages(output_dir)?;
+    let manifest = package::render_python_pyproject(&package::PythonPackageManifestInput {
+        distribution_name: &distribution_name,
+        import_name: &import_name,
+        package_version: version,
+        runtime_version: version,
+        namespace_packages: &namespace_packages,
+    });
+    write_file(&manifest_path, &manifest)
+}
+
+const PYTHON_GENERATED_INVENTORY: &str = ".dynwinrt-generated-files";
+const PYTHON_TYPE_INVENTORY: &str = ".dynwinrt-generated-types";
+
+fn python_inventory_contains(output_dir: &Path, relative_path: &Path) -> Result<bool, String> {
+    let inventory_path = output_dir.join(PYTHON_GENERATED_INVENTORY);
+    if !inventory_path.is_file() {
+        return Ok(false);
+    }
+    Ok(fs::read_to_string(&inventory_path)
+        .map_err(|e| format!("Failed to read {}: {}", inventory_path.display(), e))?
+        .lines()
+        .map(Path::new)
+        .any(|path| path == relative_path))
+}
+
+fn remove_all_generated_python_stubs(output_dir: &Path) -> Result<(), String> {
+    let inventory_path = output_dir.join(PYTHON_GENERATED_INVENTORY);
+    if inventory_path.is_file() {
+        for relative in fs::read_to_string(&inventory_path)
+            .map_err(|e| format!("Failed to read {}: {}", inventory_path.display(), e))?
+            .lines()
+            .map(PathBuf::from)
+        {
+            if !is_safe_relative_path(&relative) {
+                return Err(format!(
+                    "Invalid path `{}` in {}",
+                    relative.display(),
+                    inventory_path.display()
+                ));
+            }
+            let is_stub = relative
+                .extension()
+                .is_some_and(|extension| extension == "pyi")
+                || relative.file_name().is_some_and(|name| name == "py.typed");
+            let path = output_dir.join(relative);
+            if is_stub && path.is_file() {
+                fs::remove_file(&path)
+                    .map_err(|e| format!("Failed to remove {}: {}", path.display(), e))?;
+            }
+        }
+        return Ok(());
+    }
+
+    fn visit(current: &Path) -> Result<(), String> {
+        for entry in fs::read_dir(current)
+            .map_err(|e| format!("Failed to inspect {}: {}", current.display(), e))?
+        {
+            let entry = entry
+                .map_err(|e| format!("Failed to inspect entry in {}: {}", current.display(), e))?;
+            let path = entry.path();
+            let file_type = entry
+                .file_type()
+                .map_err(|e| format!("Failed to inspect {}: {}", path.display(), e))?;
+            if file_type.is_dir() {
+                visit(&path)?;
+            } else if file_type.is_file()
+                && path.extension().is_some_and(|extension| extension == "pyi")
+            {
+                let generated = fs::read_to_string(&path)
+                    .map_err(|e| format!("Failed to inspect {}: {}", path.display(), e))?
+                    .starts_with("# Generated by dynwinrt-codegen");
+                if generated {
+                    fs::remove_file(&path)
+                        .map_err(|e| format!("Failed to remove {}: {}", path.display(), e))?;
+                }
+            }
+        }
+        Ok(())
+    }
+    visit(output_dir)
+}
+
+fn clean_python_generated_output(output_dir: &Path) -> Result<(), String> {
+    let inventory_path = output_dir.join(PYTHON_GENERATED_INVENTORY);
+    let files = if inventory_path.is_file() {
+        fs::read_to_string(&inventory_path)
+            .map_err(|e| format!("Failed to read {}: {}", inventory_path.display(), e))?
+            .lines()
+            .map(PathBuf::from)
+            .collect::<Vec<_>>()
+    } else {
+        collect_generated_python_files(output_dir, false, false)?
+    };
+
+    let mut parent_dirs = HashSet::new();
+    for relative in files {
+        if !is_safe_relative_path(&relative) {
+            return Err(format!(
+                "Invalid path `{}` in {}",
+                relative.display(),
+                inventory_path.display()
+            ));
+        }
+        let path = output_dir.join(&relative);
+        if path.is_file() {
+            fs::remove_file(&path)
+                .map_err(|e| format!("Failed to remove stale {}: {}", path.display(), e))?;
+        }
+        if let Some(parent) = relative.parent() {
+            if !parent.as_os_str().is_empty() {
+                parent_dirs.insert(parent.to_path_buf());
+            }
+        }
+    }
+    if inventory_path.is_file() {
+        fs::remove_file(&inventory_path)
+            .map_err(|e| format!("Failed to remove {}: {}", inventory_path.display(), e))?;
+    }
+    let type_inventory = output_dir.join(PYTHON_TYPE_INVENTORY);
+    if type_inventory.is_file() {
+        fs::remove_file(&type_inventory)
+            .map_err(|e| format!("Failed to remove {}: {}", type_inventory.display(), e))?;
+    }
+
+    let mut parent_dirs = parent_dirs.into_iter().collect::<Vec<_>>();
+    parent_dirs.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+    for relative in parent_dirs {
+        let path = output_dir.join(relative);
+        if path.is_dir() {
+            match fs::remove_dir(&path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::DirectoryNotEmpty => {}
+                Err(error) => {
+                    return Err(format!(
+                        "Failed to remove stale package directory {}: {}",
+                        path.display(),
+                        error
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn write_python_generated_inventory(output_dir: &Path, pyi: bool) -> Result<(), String> {
+    let files = collect_generated_python_files(output_dir, true, pyi)?;
+    let content = files
+        .iter()
+        .map(|path| path.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("\n");
+    write_file(
+        &output_dir.join(PYTHON_GENERATED_INVENTORY),
+        &format!("{content}\n"),
+    )
+}
+
+fn collect_generated_python_files(
+    output_dir: &Path,
+    include_root_manifest: bool,
+    include_root_marker: bool,
+) -> Result<Vec<PathBuf>, String> {
+    fn visit(
+        root: &Path,
+        current: &Path,
+        include_root_manifest: bool,
+        include_root_marker: bool,
+        files: &mut Vec<PathBuf>,
+    ) -> Result<(), String> {
+        for entry in fs::read_dir(current)
+            .map_err(|e| format!("Failed to inspect {}: {}", current.display(), e))?
+        {
+            let entry = entry
+                .map_err(|e| format!("Failed to inspect entry in {}: {}", current.display(), e))?;
+            let path = entry.path();
+            let file_type = entry
+                .file_type()
+                .map_err(|e| format!("Failed to inspect {}: {}", path.display(), e))?;
+            if file_type.is_dir() {
+                visit(
+                    root,
+                    &path,
+                    include_root_manifest,
+                    include_root_marker,
+                    files,
+                )?;
+                continue;
+            }
+            if !file_type.is_file() || entry.file_name() == PYTHON_GENERATED_INVENTORY {
+                continue;
+            }
+
+            let generated = match entry.file_name().to_str() {
+                Some("py.typed") => include_root_marker && current == root,
+                Some("pyproject.toml") => include_root_manifest && current == root,
+                Some(name) if name.ends_with(".py") || name.ends_with(".pyi") => {
+                    fs::read_to_string(&path)
+                        .map_err(|e| format!("Failed to inspect {}: {}", path.display(), e))?
+                        .starts_with("# Generated by dynwinrt-codegen")
+                }
+                _ => false,
+            };
+            if generated {
+                files.push(path.strip_prefix(root).unwrap().to_path_buf());
+            }
+        }
+        Ok(())
+    }
+
+    let mut files = Vec::new();
+    visit(
+        output_dir,
+        output_dir,
+        include_root_manifest,
+        include_root_marker,
+        &mut files,
+    )?;
+    files.sort();
+    Ok(files)
+}
+
+fn is_safe_relative_path(path: &Path) -> bool {
+    !path.as_os_str().is_empty()
+        && path
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_)))
+}
+
+fn collect_python_namespace_packages(output_dir: &Path) -> Result<Vec<String>, String> {
+    fn visit(root: &Path, current: &Path, packages: &mut Vec<String>) -> Result<(), String> {
+        for entry in fs::read_dir(current)
+            .map_err(|e| format!("Failed to inspect {}: {}", current.display(), e))?
+        {
+            let entry = entry
+                .map_err(|e| format!("Failed to inspect entry in {}: {}", current.display(), e))?;
+            if !entry
+                .file_type()
+                .map_err(|e| format!("Failed to inspect {}: {}", entry.path().display(), e))?
+                .is_dir()
+            {
+                continue;
+            }
+            let path = entry.path();
+            if path.join("__init__.py").is_file() {
+                let relative = path.strip_prefix(root).map_err(|e| {
+                    format!("Failed to normalize package path {}: {}", path.display(), e)
+                })?;
+                packages.push(
+                    relative
+                        .components()
+                        .map(|component| component.as_os_str().to_string_lossy())
+                        .collect::<Vec<_>>()
+                        .join("."),
+                );
+            }
+            visit(root, &path, packages)?;
+        }
+        Ok(())
+    }
+
+    let mut packages = Vec::new();
+    visit(output_dir, output_dir, &mut packages)?;
+    packages.sort();
+    Ok(packages)
+}
+
+fn normalize_python_package_name(name: &str) -> String {
+    let mut normalized = String::with_capacity(name.len());
+    for character in name.chars() {
+        if character.is_ascii_alphanumeric() || character == '_' {
+            normalized.push(character.to_ascii_lowercase());
+        } else {
+            normalized.push('_');
+        }
+    }
+    if normalized.is_empty() || normalized.starts_with(|character: char| character.is_ascii_digit())
+    {
+        normalized.insert(0, '_');
+    }
+    normalized
 }
 
 /// Write content to a file with a descriptive error message on failure.
@@ -1865,6 +2920,16 @@ fn find_windows_sdk_winmd() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn test_directory(name: &str) -> PathBuf {
+        static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
+        std::env::temp_dir().join(format!(
+            "dynwinrt-codegen-{name}-{}-{}",
+            std::process::id(),
+            NEXT_ID.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
 
     #[test]
     fn distinct_classes_with_the_same_short_name_are_rejected() {
@@ -1901,5 +2966,327 @@ mod tests {
 
         validate_unique_class_output_names(&[class.clone(), class])
             .expect("identical metadata does not create an ambiguous output");
+    }
+
+    #[test]
+    fn python_duplicate_short_names_use_namespace_facades() {
+        let output = test_directory("namespace-facades");
+        fs::create_dir_all(&output).unwrap();
+        let classes = vec![
+            meta::ClassMeta {
+                name: "ResourceManager".into(),
+                namespace: "Contoso.Resources".into(),
+                full_name: "Contoso.Resources.ResourceManager".into(),
+                ..Default::default()
+            },
+            meta::ClassMeta {
+                name: "ResourceManager".into(),
+                namespace: "Fabrikam.Resources".into(),
+                full_name: "Fabrikam.Resources.ResourceManager".into(),
+                ..Default::default()
+            },
+        ];
+
+        write_python_package_indexes(&output, &classes, &[], &[], true, false).unwrap();
+
+        let root = fs::read_to_string(output.join("__init__.py")).unwrap();
+        assert!(!root.contains("ResourceManager"));
+        let contoso = fs::read_to_string(
+            output
+                .join("contoso")
+                .join("resources")
+                .join("resource_manager.py"),
+        )
+        .unwrap();
+        assert!(
+            contoso.contains("from ...contoso__resources__resource_manager import ResourceManager")
+        );
+        let fabrikam = fs::read_to_string(
+            output
+                .join("fabrikam")
+                .join("resources")
+                .join("resource_manager.py"),
+        )
+        .unwrap();
+        assert!(
+            fabrikam
+                .contains("from ...fabrikam__resources__resource_manager import ResourceManager")
+        );
+
+        fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
+    fn incremental_python_generation_removes_ambiguous_root_export() {
+        let output = test_directory("incremental-root");
+        fs::create_dir_all(&output).unwrap();
+        let contoso = meta::ClassMeta {
+            name: "ResourceManager".into(),
+            namespace: "Contoso.Resources".into(),
+            full_name: "Contoso.Resources.ResourceManager".into(),
+            ..Default::default()
+        };
+        let fabrikam = meta::ClassMeta {
+            name: "ResourceManager".into(),
+            namespace: "Fabrikam.Resources".into(),
+            full_name: "Fabrikam.Resources.ResourceManager".into(),
+            ..Default::default()
+        };
+
+        write_python_package_indexes(
+            &output,
+            std::slice::from_ref(&contoso),
+            &[],
+            &[],
+            true,
+            true,
+        )
+        .unwrap();
+        assert!(
+            fs::read_to_string(output.join("__init__.py"))
+                .unwrap()
+                .contains("ResourceManager")
+        );
+
+        write_python_package_indexes(
+            &output,
+            std::slice::from_ref(&fabrikam),
+            &[],
+            &[],
+            true,
+            true,
+        )
+        .unwrap();
+        assert!(
+            !fs::read_to_string(output.join("__init__.py"))
+                .unwrap()
+                .contains("ResourceManager")
+        );
+        assert!(
+            output
+                .join("contoso")
+                .join("resources")
+                .join("resource_manager.py")
+                .is_file()
+        );
+        assert!(
+            output
+                .join("fabrikam")
+                .join("resources")
+                .join("resource_manager.py")
+                .is_file()
+        );
+
+        fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
+    fn python_package_module_collisions_are_rejected() {
+        let classes = vec![
+            meta::ClassMeta {
+                name: "Controls".into(),
+                namespace: "Contoso".into(),
+                full_name: "Contoso.Controls".into(),
+                ..Default::default()
+            },
+            meta::ClassMeta {
+                name: "Button".into(),
+                namespace: "Contoso.Controls".into(),
+                full_name: "Contoso.Controls.Button".into(),
+                ..Default::default()
+            },
+        ];
+
+        let error = validate_python_public_paths(&classes, &[], &[])
+            .expect_err("module/package collisions must fail closed");
+        assert!(error.contains("package/module collision"));
+        assert!(error.contains("contoso/controls"));
+    }
+
+    #[test]
+    fn python_output_transaction_commits_complete_tree() {
+        let output = test_directory("transaction-commit");
+        fs::create_dir_all(&output).unwrap();
+        fs::write(output.join("existing.py"), "old").unwrap();
+
+        let transaction = PythonOutputTransaction::begin(&output).unwrap();
+        fs::write(transaction.stage_dir().join("existing.py"), "new").unwrap();
+        fs::write(transaction.stage_dir().join("added.py"), "added").unwrap();
+        transaction.commit().unwrap();
+
+        assert_eq!(
+            fs::read_to_string(output.join("existing.py")).unwrap(),
+            "new"
+        );
+        assert_eq!(
+            fs::read_to_string(output.join("added.py")).unwrap(),
+            "added"
+        );
+        fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
+    fn dropped_python_output_transaction_preserves_existing_output() {
+        let output = test_directory("transaction-drop");
+        fs::create_dir_all(&output).unwrap();
+        fs::write(output.join("existing.py"), "old").unwrap();
+
+        {
+            let transaction = PythonOutputTransaction::begin(&output).unwrap();
+            fs::write(transaction.stage_dir().join("existing.py"), "new").unwrap();
+        }
+
+        assert_eq!(
+            fs::read_to_string(output.join("existing.py")).unwrap(),
+            "old"
+        );
+        fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
+    fn python_package_names_are_normalized() {
+        assert_eq!(normalize_python_package_name("My Bindings"), "my_bindings");
+        assert_eq!(normalize_python_package_name("123"), "_123");
+    }
+
+    #[test]
+    fn stale_cleanup_removes_only_inventory_files() {
+        let output = test_directory("stale-cleanup");
+        fs::create_dir_all(output.join("old_namespace")).unwrap();
+        fs::write(
+            output.join("old.py"),
+            format!("{GENERATED_PYTHON_HEADER}OLD = True\n"),
+        )
+        .unwrap();
+        fs::write(
+            output.join("old_namespace").join("__init__.py"),
+            GENERATED_PYTHON_HEADER,
+        )
+        .unwrap();
+        fs::write(output.join("manual.py"), "MANUAL = True\n").unwrap();
+        fs::write(
+            output.join(PYTHON_GENERATED_INVENTORY),
+            "old.py\nold_namespace\\__init__.py\n",
+        )
+        .unwrap();
+
+        clean_python_generated_output(&output).unwrap();
+
+        assert!(!output.join("old.py").exists());
+        assert!(!output.join("old_namespace").exists());
+        assert!(output.join("manual.py").exists());
+        fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
+    fn manual_python_manifest_is_not_overwritten() {
+        let output = test_directory("manual-manifest");
+        fs::create_dir_all(&output).unwrap();
+        fs::write(
+            output.join("pyproject.toml"),
+            "[project]\nname = \"manual\"\n",
+        )
+        .unwrap();
+
+        let error = write_python_package_manifest(&output, &output)
+            .expect_err("manual manifest must be preserved");
+
+        assert!(error.contains("Refusing to overwrite"));
+        assert!(
+            fs::read_to_string(output.join("pyproject.toml"))
+                .unwrap()
+                .contains("name = \"manual\"")
+        );
+        fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
+    fn no_pyi_cleanup_preserves_manual_stubs() {
+        let output = test_directory("stub-cleanup");
+        fs::create_dir_all(&output).unwrap();
+        fs::write(
+            output.join("generated.pyi"),
+            format!("{GENERATED_PYTHON_HEADER}class Generated: ...\n"),
+        )
+        .unwrap();
+        fs::write(output.join("manual.pyi"), "class Manual: ...\n").unwrap();
+
+        remove_all_generated_python_stubs(&output).unwrap();
+
+        assert!(!output.join("generated.pyi").exists());
+        assert!(output.join("manual.pyi").exists());
+        fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
+    fn namespace_stub_facades_explicitly_reexport_all_symbols() {
+        let output = test_directory("stub-reexports");
+        fs::create_dir_all(&output).unwrap();
+        let interface = meta::InterfaceMeta {
+            name: "IWidget".into(),
+            namespace: "Contoso.Foundation".into(),
+            iid: "00000000-0000-0000-c000-000000000046".into(),
+            ..Default::default()
+        };
+
+        write_python_package_indexes(
+            &output,
+            &[],
+            std::slice::from_ref(&interface),
+            &[],
+            true,
+            false,
+        )
+        .unwrap();
+
+        let facade = fs::read_to_string(
+            output
+                .join("contoso")
+                .join("foundation")
+                .join("i_widget.pyi"),
+        )
+        .unwrap();
+        assert!(facade.contains("IID_IWidget as IID_IWidget"));
+        assert!(facade.contains("IWidget as IWidget"));
+        fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
+    fn root_suppression_preserves_unique_exports_from_same_module() {
+        let existing = format!(
+            "{GENERATED_PYTHON_HEADER}from .contoso__resource_manager import ResourceManager, Point, pack_point  # noqa: F401\n"
+        );
+        let suppressed = HashSet::from(["ResourceManager".to_string()]);
+
+        let merged = merge_python_indexes(&existing, GENERATED_PYTHON_HEADER, &suppressed);
+
+        assert!(!merged.contains("ResourceManager"));
+        assert!(merged.contains("Point, pack_point  # noqa: F401"));
+    }
+
+    #[test]
+    fn generated_inventory_does_not_claim_nested_manual_metadata() {
+        let output = test_directory("manual-metadata");
+        let nested = output.join("manual_package");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(
+            nested.join("pyproject.toml"),
+            "[project]\nname = \"manual\"\n",
+        )
+        .unwrap();
+        fs::write(nested.join("py.typed"), "").unwrap();
+        fs::write(
+            output.join("generated.py"),
+            format!("{GENERATED_PYTHON_HEADER}VALUE = True\n"),
+        )
+        .unwrap();
+
+        write_python_generated_inventory(&output, false).unwrap();
+        let inventory = fs::read_to_string(output.join(PYTHON_GENERATED_INVENTORY)).unwrap();
+
+        assert!(inventory.contains("generated.py"));
+        assert!(!inventory.contains("pyproject.toml"));
+        assert!(!inventory.contains("py.typed"));
+        fs::remove_dir_all(output).unwrap();
     }
 }

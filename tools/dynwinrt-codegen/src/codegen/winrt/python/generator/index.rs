@@ -24,7 +24,7 @@ pub fn generate_index(
                 .flat_map(|s| py_struct_export_names(s))
                 .filter(|n| seen.insert(n.clone()))
                 .collect();
-            let module = to_snake_case_filename(&class.name);
+            let module = python_module_name(&class.namespace, &class.name);
             if struct_names.is_empty() {
                 out.push_str(&format!(
                     "from .{} import {}  # noqa: F401\n",
@@ -48,7 +48,7 @@ pub fn generate_index(
         }
         let is_delegate = iface.methods.iter().any(|m| m.name == ".ctor")
             && iface.methods.iter().any(|m| m.name == "Invoke");
-        let module = to_snake_case_filename(&iface.name);
+        let module = python_module_name(&iface.namespace, &iface.name);
         let struct_names: Vec<_> = collect_used_structs_from_iface(iface)
             .iter()
             .flat_map(|s| py_struct_export_names(s))
@@ -90,9 +90,12 @@ pub fn generate_index(
         name_a.cmp(name_b)
     });
     for en in sorted_enums {
-        if let TypeMeta::Enum { name, .. } = en {
+        if let TypeMeta::Enum {
+            namespace, name, ..
+        } = en
+        {
             if seen.insert(name.clone()) {
-                let module = to_snake_case_filename(name);
+                let module = python_module_name(namespace, name);
                 out.push_str(&format!("from .{} import {}  # noqa: F401\n", module, name));
             }
         }
@@ -145,7 +148,7 @@ pub fn append_to_index(
     let mut sorted_classes: Vec<_> = classes.iter().collect();
     sorted_classes.sort_by(|a, b| a.name.cmp(&b.name));
     for class in sorted_classes {
-        let module = to_snake_case_filename(&class.name);
+        let module = python_module_name(&class.namespace, &class.name);
         if !exported_modules.contains(&module) && seen.insert(class.name.clone()) {
             let struct_names: Vec<_> = collect_used_structs_from_class(class)
                 .iter()
@@ -171,7 +174,7 @@ pub fn append_to_index(
     let mut sorted_ifaces: Vec<_> = interfaces.iter().collect();
     sorted_ifaces.sort_by(|a, b| a.name.cmp(&b.name));
     for iface in sorted_ifaces {
-        let module = to_snake_case_filename(&iface.name);
+        let module = python_module_name(&iface.namespace, &iface.name);
         if exported_modules.contains(&module) || !seen.insert(iface.name.clone()) {
             continue;
         }
@@ -219,8 +222,11 @@ pub fn append_to_index(
         name_a.cmp(name_b)
     });
     for en in sorted_enums {
-        if let TypeMeta::Enum { name, .. } = en {
-            let module = to_snake_case_filename(name);
+        if let TypeMeta::Enum {
+            namespace, name, ..
+        } = en
+        {
+            let module = python_module_name(namespace, name);
             if !exported_modules.contains(&module) && seen.insert(name.clone()) {
                 out.push_str(&format!("from .{} import {}  # noqa: F401\n", module, name));
             }

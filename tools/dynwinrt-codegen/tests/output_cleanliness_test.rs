@@ -193,10 +193,14 @@ fn python_emits_stubs_by_default_and_supports_opt_out() {
         .status()
         .expect("spawn dynwinrt-codegen (Python defaults)");
     assert!(default_status.success());
-    assert!(default_dir.join("uri.py").exists());
-    assert!(default_dir.join("uri.pyi").exists());
+    let default_namespace = default_dir.join("windows").join("foundation");
+    assert!(default_namespace.join("uri.py").exists());
+    assert!(default_namespace.join("uri.pyi").exists());
+    assert!(default_dir.join("windows__foundation__uri.py").exists());
+    assert!(default_dir.join("windows__foundation__uri.pyi").exists());
     assert!(default_dir.join("__init__.pyi").exists());
     assert!(default_dir.join("py.typed").exists());
+    assert!(default_dir.join("pyproject.toml").exists());
 
     let opt_out_status = Command::new(exe)
         .args([
@@ -214,8 +218,11 @@ fn python_emits_stubs_by_default_and_supports_opt_out() {
         .status()
         .expect("spawn dynwinrt-codegen (Python stub opt-out)");
     assert!(opt_out_status.success());
-    assert!(opt_out_dir.join("uri.py").exists());
-    assert!(!opt_out_dir.join("uri.pyi").exists());
+    let opt_out_namespace = opt_out_dir.join("windows").join("foundation");
+    assert!(opt_out_namespace.join("uri.py").exists());
+    assert!(!opt_out_namespace.join("uri.pyi").exists());
+    assert!(opt_out_dir.join("windows__foundation__uri.py").exists());
+    assert!(!opt_out_dir.join("windows__foundation__uri.pyi").exists());
     assert!(!opt_out_dir.join("__init__.pyi").exists());
     assert!(!opt_out_dir.join("py.typed").exists());
 

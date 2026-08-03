@@ -129,7 +129,7 @@ pub fn generate_class(
         .sort_by(|a, b| (&a.namespace, &a.name, &a.kind).cmp(&(&b.namespace, &b.name, &b.kind)));
     for r in &sorted_imports {
         if known_types.contains(&r.name) && !delegate_names.contains(&r.name) {
-            type_checking_imports.push(format_py_type_import(&r.name, r.kind));
+            type_checking_imports.push(format_py_type_import(&r.namespace, &r.name, r.kind));
             imported_names.insert(r.name.clone());
             if r.kind == TypeKind::Interface {
                 imported_names.insert(format!("IID_{}", r.name));
@@ -144,7 +144,11 @@ pub fn generate_class(
             && shared_iids.contains(&req_iface.iid)
             && !imported_names.contains(&req_iface.name)
         {
-            type_checking_imports.push(format_py_type_import(&req_iface.name, TypeKind::Interface));
+            type_checking_imports.push(format_py_type_import(
+                &req_iface.namespace,
+                &req_iface.name,
+                TypeKind::Interface,
+            ));
             imported_names.insert(req_iface.name.clone());
             imported_names.insert(format!("IID_{}", req_iface.name));
         }
@@ -392,13 +396,19 @@ pub fn generate_class(
 
     if let Some(bootstrap) = winui_bootstrap {
         let spec = bootstrap.spec;
-        let metadata_provider = spec.metadata_provider.name;
-        let controls_resources = spec.controls_resources.name;
-        let resource_manager = spec.resource_manager.name;
+        let metadata_provider = spec.metadata_provider;
+        let controls_resources = spec.controls_resources;
+        let resource_manager = spec.resource_manager;
         let callback_types = project_winui_abi_types(spec.launched_callback_params);
-        let metadata_module = to_snake_case_filename(metadata_provider);
-        let resources_module = to_snake_case_filename(controls_resources);
-        let resource_manager_module = to_snake_case_filename(resource_manager);
+        let metadata_module =
+            python_module_name(metadata_provider.namespace, metadata_provider.name);
+        let resources_module =
+            python_module_name(controls_resources.namespace, controls_resources.name);
+        let resource_manager_module =
+            python_module_name(resource_manager.namespace, resource_manager.name);
+        let metadata_provider = metadata_provider.name;
+        let controls_resources = controls_resources.name;
+        let resource_manager = resource_manager.name;
 
         out.push('\n');
         out.push_str("    @staticmethod\n");

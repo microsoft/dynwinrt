@@ -13,8 +13,8 @@ from datetime import timedelta
 from pathlib import Path
 
 
-def load_type(package: str, module: str, name: str):
-    return getattr(importlib.import_module(f"{package}.{module}"), name)
+def load_type(package: str, namespace: str, name: str):
+    return getattr(importlib.import_module(f"{package}.{namespace}"), name)
 
 
 def run(bindings_dir: Path, bootstrap_dll: Path, major: int, minor: int) -> None:
@@ -29,16 +29,18 @@ def run(bindings_dir: Path, bootstrap_dll: Path, major: int, minor: int) -> None
         init_winappsdk,
     )
 
-    Application = load_type(package, "application", "Application")
-    Window = load_type(package, "window", "Window")
-    Grid = load_type(package, "grid", "Grid")
-    Button = load_type(package, "button", "Button")
-    TextBlock = load_type(package, "text_block", "TextBlock")
+    Application = load_type(package, "microsoft.ui.xaml", "Application")
+    Window = load_type(package, "microsoft.ui.xaml", "Window")
+    Grid = load_type(package, "microsoft.ui.xaml.controls", "Grid")
+    Button = load_type(package, "microsoft.ui.xaml.controls", "Button")
+    TextBlock = load_type(package, "microsoft.ui.xaml.controls", "TextBlock")
     ButtonAutomationPeer = load_type(
-        package, "button_automation_peer", "ButtonAutomationPeer"
+        package, "microsoft.ui.xaml.automation.peers", "ButtonAutomationPeer"
     )
-    DispatcherQueue = load_type(package, "dispatcher_queue", "DispatcherQueue")
-    ThreadPool = load_type(package, "thread_pool", "ThreadPool")
+    DispatcherQueue = load_type(
+        package, "microsoft.ui.dispatching", "DispatcherQueue"
+    )
+    ThreadPool = load_type(package, "windows.system.threading", "ThreadPool")
 
     context = init_winappsdk(major, minor)
     resource_pri = Path(get_winappsdk_resource_pri_path())

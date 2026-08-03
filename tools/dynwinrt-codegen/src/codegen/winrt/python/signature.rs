@@ -8,7 +8,7 @@ use std::collections::HashSet;
 use crate::meta::{InterfaceMeta, MethodMeta, ParamDirection};
 use crate::types::TypeMeta;
 
-use super::naming::{to_snake_case, to_snake_case_filename};
+use super::naming::{python_module_name, to_snake_case, to_snake_case_filename};
 use crate::codegen::winrt::python::collections::{CollectionKind, is_mapping_input, type_kind};
 use crate::codegen::winrt::python::native_types::{FoundationType, foundation_type};
 use crate::codegen::winrt::shared::imports::ireference_inner_type;
@@ -17,6 +17,14 @@ pub(crate) fn py_runtime_symbol(type_name: &str, symbol_name: &str) -> String {
     format!(
         "_dynwinrt_symbol('{}', '{}')",
         to_snake_case_filename(type_name),
+        symbol_name
+    )
+}
+
+fn py_runtime_namespaced_symbol(namespace: &str, type_name: &str, symbol_name: &str) -> String {
+    format!(
+        "_dynwinrt_symbol('{}', '{}')",
+        python_module_name(namespace, type_name),
         symbol_name
     )
 }
@@ -450,10 +458,12 @@ pub(crate) fn py_type_guard(name: &str, typ: &TypeMeta, known_types: &HashSet<St
         TypeMeta::String => format!("isinstance({name}, str)"),
         TypeMeta::Guid => format!("isinstance({name}, UUID)"),
         TypeMeta::Enum {
-            name: type_name, ..
+            namespace,
+            name: type_name,
+            ..
         } if known_types.contains(type_name) => format!(
             "isinstance({name}, {})",
-            py_runtime_symbol(type_name, type_name)
+            py_runtime_namespaced_symbol(namespace, type_name, type_name)
         ),
         TypeMeta::Enum { .. } => {
             format!("isinstance({name}, int) and not isinstance({name}, bool)")
@@ -471,13 +481,17 @@ pub(crate) fn py_type_guard(name: &str, typ: &TypeMeta, known_types: &HashSet<St
             name: type_name, ..
         } => format!("isinstance({name}, {type_name})"),
         TypeMeta::RuntimeClass {
-            name: type_name, ..
+            namespace,
+            name: type_name,
+            ..
         }
         | TypeMeta::Interface {
-            name: type_name, ..
+            namespace,
+            name: type_name,
+            ..
         } if known_types.contains(type_name) => format!(
             "isinstance({name}, {})",
-            py_runtime_symbol(type_name, type_name)
+            py_runtime_namespaced_symbol(namespace, type_name, type_name)
         ),
         TypeMeta::Object
         | TypeMeta::Delegate { .. }
@@ -517,10 +531,12 @@ pub(crate) fn py_convert_return(
         Some(TypeMeta::U64) => format!("{}.to_u64()", expr),
         Some(TypeMeta::F32 | TypeMeta::F64) => format!("{}.to_f64()", expr),
         Some(TypeMeta::Bool) => format!("{}.to_bool()", expr),
-        Some(TypeMeta::Enum { name, .. }) if known_types.contains(name) => {
+        Some(TypeMeta::Enum {
+            namespace, name, ..
+        }) if known_types.contains(name) => {
             format!(
                 "_dynwinrt_enum('{}', '{}', {}.to_number())",
-                to_snake_case_filename(name),
+                python_module_name(namespace, name),
                 name,
                 expr
             )
@@ -537,8 +553,10 @@ pub(crate) fn py_convert_return(
                 wrapper, expr
             )
         }
-        Some(TypeMeta::RuntimeClass { name, .. }) if known_types.contains(name) => {
-            let wrapper = py_runtime_symbol(name, name);
+        Some(TypeMeta::RuntimeClass {
+            namespace, name, ..
+        }) if known_types.contains(name) => {
+            let wrapper = py_runtime_namespaced_symbol(namespace, name, name);
             format!(
                 "(lambda value: None if value.is_null() else {}._from_native(value))({})",
                 wrapper, expr
@@ -552,8 +570,10 @@ pub(crate) fn py_convert_return(
                 expr
             )
         }
-        Some(TypeMeta::Interface { name, .. }) if known_types.contains(name) => {
-            let wrapper = py_runtime_symbol(name, name);
+        Some(TypeMeta::Interface {
+            namespace, name, ..
+        }) if known_types.contains(name) => {
+            let wrapper = py_runtime_namespaced_symbol(namespace, name, name);
             format!(
                 "(lambda value: None if value.is_null() else {}(value))({})",
                 wrapper, expr
@@ -640,9 +660,11 @@ pub(crate) fn py_convert_array_return(
         TypeMeta::I16 => format!("{}.to_i16_list()", arr_expr),
         TypeMeta::U16 | TypeMeta::Char16 => format!("{}.to_u16_list()", arr_expr),
         TypeMeta::I32 => format!("{}.to_i32_list()", arr_expr),
-        TypeMeta::Enum { name, .. } if known_types.contains(name) => format!(
+        TypeMeta::Enum {
+            namespace, name, ..
+        } if known_types.contains(name) => format!(
             "[_dynwinrt_enum('{}', '{}', value) for value in {}.to_i32_list()]",
-            to_snake_case_filename(name),
+            python_module_name(namespace, name),
             name,
             arr_expr
         ),
@@ -664,18 +686,22 @@ pub(crate) fn py_convert_array_return(
             to_snake_case(name),
             arr_expr
         ),
-        TypeMeta::RuntimeClass { name, .. } if known_types.contains(name) => {
+        TypeMeta::RuntimeClass {
+            namespace, name, ..
+        } if known_types.contains(name) => {
             format!(
                 "_dynwinrt_wrap_values('{}', '{}', {}.to_values())",
-                to_snake_case_filename(name),
+                python_module_name(namespace, name),
                 name,
                 arr_expr
             )
         }
-        TypeMeta::Interface { name, .. } if known_types.contains(name) => {
+        TypeMeta::Interface {
+            namespace, name, ..
+        } if known_types.contains(name) => {
             format!(
                 "_dynwinrt_wrap_values('{}', '{}', {}.to_values())",
-                to_snake_case_filename(name),
+                python_module_name(namespace, name),
                 name,
                 arr_expr
             )

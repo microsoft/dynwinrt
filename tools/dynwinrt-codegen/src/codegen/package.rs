@@ -16,6 +16,14 @@ pub struct BindingsPackageManifestInput<'a> {
     pub com_subpath_names: &'a BTreeSet<String>,
 }
 
+pub struct PythonPackageManifestInput<'a> {
+    pub distribution_name: &'a str,
+    pub import_name: &'a str,
+    pub package_version: &'a str,
+    pub runtime_version: &'a str,
+    pub namespace_packages: &'a [String],
+}
+
 /// Preserve the existing WinRT-only renderer API and byte-for-byte output.
 pub fn render_package_json(input: &PackageManifestInput<'_>) -> String {
     let com_subpath_names = BTreeSet::new();
@@ -32,6 +40,39 @@ pub fn render_bindings_package_json(input: &BindingsPackageManifestInput<'_>) ->
     } else {
         render_com_only_package(input.com_subpath_names)
     }
+}
+
+pub fn render_python_pyproject(input: &PythonPackageManifestInput<'_>) -> String {
+    let mut packages = vec![format!("\"{}\"", input.import_name)];
+    packages.extend(
+        input
+            .namespace_packages
+            .iter()
+            .map(|namespace| format!("\"{}.{}\"", input.import_name, namespace)),
+    );
+    format!(
+        "[build-system]\n\
+         requires = [\"setuptools>=68\"]\n\
+         build-backend = \"setuptools.build_meta\"\n\
+         \n\
+         [project]\n\
+         name = \"{distribution_name}\"\n\
+         version = \"{package_version}\"\n\
+         requires-python = \">=3.9\"\n\
+         dependencies = [\"dynwinrt-py=={runtime_version}\"]\n\
+         \n\
+         [tool.setuptools]\n\
+         packages = [{packages}]\n\
+         package-dir = {{ \"{import_name}\" = \".\" }}\n\
+         \n\
+         [tool.setuptools.package-data]\n\
+         \"{import_name}\" = [\"py.typed\", \"*.pyi\", \"**/*.pyi\"]\n",
+        distribution_name = input.distribution_name,
+        import_name = input.import_name,
+        packages = packages.join(", "),
+        package_version = input.package_version,
+        runtime_version = input.runtime_version,
+    )
 }
 
 fn render_winrt_package(input: &BindingsPackageManifestInput<'_>) -> String {
@@ -210,5 +251,24 @@ mod tests {
         assert!(out.contains("\"types\": \"./com/ITaskbarList3.d.ts\""));
         assert!(out.contains("\"import\": \"./com/ITaskbarList3.js\""));
         assert!(out.contains("\"./com/*\""));
+    }
+
+    #[test]
+    fn python_manifest_pins_runtime_and_typed_package_data() {
+        let out = render_python_pyproject(&PythonPackageManifestInput {
+            distribution_name: "contoso-winrt",
+            import_name: "contoso_winrt",
+            package_version: "1.2.3",
+            runtime_version: "0.4.5",
+            namespace_packages: &["windows".into(), "windows.foundation".into()],
+        });
+
+        assert!(out.contains("name = \"contoso-winrt\""));
+        assert!(out.contains(
+            "packages = [\"contoso_winrt\", \"contoso_winrt.windows\", \
+             \"contoso_winrt.windows.foundation\"]"
+        ));
+        assert!(out.contains("dependencies = [\"dynwinrt-py==0.4.5\"]"));
+        assert!(out.contains("\"contoso_winrt\" = [\"py.typed\", \"*.pyi\", \"**/*.pyi\"]"));
     }
 }
