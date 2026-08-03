@@ -5,6 +5,17 @@ pub(in crate::codegen::com) fn camel_case(name: &str) -> String {
     if name.is_empty() {
         return String::new();
     }
+    lower_leading_acronym(name)
+}
+
+/// Lowercases a leading run of uppercase ASCII letters the way common
+/// camelCase acronym conventions expect: a whole-string acronym (e.g. `URL`)
+/// lowercases entirely; a single leading capital (e.g. `Set...`) just
+/// lowercases that one letter; and a multi-letter acronym followed by a new
+/// word (e.g. `MDIWindow`, `IOHandle`) lowercases all but the run's last
+/// letter, since that last letter starts the next word (`mdiWindow`,
+/// `ioHandle`).
+fn lower_leading_acronym(name: &str) -> String {
     let chars: Vec<char> = name.chars().collect();
     let mut run = 0usize;
     while run < chars.len() && chars[run].is_ascii_uppercase() {
@@ -43,14 +54,10 @@ pub(super) fn js_param_name(raw: &str, index: usize) -> String {
         raw.to_string()
     };
     let stripped = strip_hungarian(&base);
-    let mut out = String::with_capacity(stripped.len());
-    let mut chars = stripped.chars();
-    if let Some(first) = chars.next() {
-        out.push(first.to_ascii_lowercase());
-    }
-    for c in chars {
-        out.push(c);
-    }
+    // Use the same acronym-run-aware lowering as method names (`camel_case`)
+    // so a Hungarian-prefixed acronym remainder like `hwndMDI` -> `MDI` casts
+    // down to `mdi`, not a naive first-letter-only `mDI`.
+    let out = lower_leading_acronym(stripped);
     match out.as_str() {
         "class" | "return" | "function" | "default" | "this" | "new" | "delete" | "let"
         | "const" | "var" | "if" | "else" | "for" | "while" | "do" | "switch" | "case"
@@ -82,4 +89,22 @@ pub(super) fn strip_hungarian(s: &str) -> &str {
         }
     }
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn js_param_name_lowercases_a_whole_leading_acronym_after_stripping_hungarian() {
+        // Regression test for ITaskbarList3::SetTabActive(HWND hwndTab, HWND
+        // hwndMDI, DWORD dwReserved): the Hungarian-stripped remainder `MDI`
+        // is a whole acronym, so it must lowercase entirely (`mdi`), not just
+        // its first letter (`mDI`).
+        assert_eq!(js_param_name("hwndMDI", 0), "mdi");
+        // A single leading capital still lowercases just that letter.
+        assert_eq!(js_param_name("hwndTab", 0), "tab");
+        // An acronym followed by a new word keeps the word capitalized.
+        assert_eq!(js_param_name("IOHandle", 0), "ioHandle");
+    }
 }

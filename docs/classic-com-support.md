@@ -379,11 +379,27 @@ not be described as solving every problem in the map above.
 | Explicit COM initialization | Activation no longer silently chooses MTA; callers select STA or MTA with `DynCom.initialize()`. |
 | Fail-closed generation | Unsupported structs, arrays, pointer outputs, ownership, and in/out shapes stop generation with a targeted error. |
 | Consumable output | Classic COM files live under `com/`, with `./com` and `./com/*` package exports. Mixed and incremental generation preserve the WinRT-only root barrel; COM-only output retains its legacy root entrypoint. |
+| Explicit vtable registration | Every generated method is registered with `.addMethodAt(vtableIndex, name, signature)`, keyed by its actual metadata-derived vtable slot. Methods are never deduplicated by name, so same-name overloads at different slots both register correctly. |
+| Same-name overload projection | Overloads (e.g. `IDCompositionEffectGroup::SetOpacity`) are grouped once during projection (not by renderer heuristics). A single public JS method dispatches to a private per-slot implementation using only a validated, mutually-distinguishable arity/shape key (`typeof`-based: boolean/number/bigint/string/object); ambiguous groups fail generation closed with a diagnostic naming the interface, method, and reason. The `.d.ts` emits one TypeScript overload signature per branch, contiguously. |
+| Lifecycle ergonomics | Every generated class declares a private constructor (`private constructor(obj: unknown);`) and a public, idempotent `release()` that delegates to the managed native value. Generated `create()` JSDoc reminds callers that `DynCom.initialize()` must run first. |
+| Doc-link rendering | When win32metadata attaches a `DocumentationAttribute` (a `learn.microsoft.com` URL) to a method, the generator renders it as an `@see {@link ...}` comment in both `.js` and `.d.ts`. No raw metadata is imported into the renderer — the URL is threaded through `ProjectedComMethod.doc`, populated once during projection. |
+| Acronym-aware parameter casing | Parameter names are lowered using the same acronym-run-aware rule as method names, so a Hungarian-prefixed trailing acronym like `hwndMDI` projects as `mdi` (not the previous naive `mDI`). |
+| Wide/ANSI string pointer split | `PointerAliasKind::StringPointer` now carries a `StringEncoding` (`Wide`/`Ansi`). Generated wrappers call the semantically distinct `DynCom.wideStringPointer(value)` / `DynCom.ansiStringPointer(value)` constructors instead of one unqualified pointer helper; the renderer never infers encoding — it only renders the encoding decision already made during projection. |
+| Output ownership provenance | Signature expressions for pointer-shaped `[out]` values are chosen from `ProjectedComResult` ownership/conversion facts, not from type names: `DynCom.ownedComPointerType()` for dynamic-IID `+1` COM outputs, `DynCom.coTaskMemPointerType()` for `CoTaskMem` `PWSTR`/`PSTR` outputs, `DynCom.bstrPointerType()` for BSTR outputs, and plain `pointerType()` (never consumable as an owned value) for everything unclassified/borrowed. |
+| Invocation validation | The completed native-call plan validates the exact argument count and ABI-compatible value shape before selecting a direct or libffi path. Native pointers reject scalar/object values, mismatched widths fail before dispatch, and established WinRT JS aliases (`I32` projected as `i8`/`u8`/`char16`) are range-checked and converted to exact ABI storage. |
+| Failure-path cleanup | Each output parameter carries an explicit cleanup plan. If a callee writes an owned value and then returns a failing HRESULT, interface references are released, HSTRING/BSTR values are deleted with their matching APIs, and CoTaskMem outputs are freed on both direct and libffi paths. Unconsumed successful outputs retain the same allocator-specific ownership until converted, adopted, released, or garbage-collected. |
+| Authoritative count-param detection | String-buffer/count relationships are read solely from the metadata's own `NativeArrayInfo(CountParamIndex)`. The previous `pfd`/`finddata` substring/adjacency heuristic has been removed entirely; unsupported writable native arrays fail closed instead of guessing a direction from parameter names. |
+| Atomic multi-interface writes | When a single `generate` invocation projects several COM interfaces, every interface is projected into memory first; files (and the `com/` index/package barrel) are only written once the whole batch has projected successfully. A later interface's projection failure no longer leaves an earlier interface's files partially written to disk. |
+| Coclass projection | GUID-bearing Classic COM coclasses such as `TaskbarList`, `FileOperation`, and `FileOpenDialog` generate as independently constructible JS classes (`new TaskbarList()`). Interface wrappers remain non-publicly constructible and expose an IID descriptor plus `_fromNative` for runtime QueryInterface views. |
+| Interface views | Generated coclasses expose `as(InterfaceClass)`, `tryAs(InterfaceClass)`, and `supports(InterfaceClass)`. These execute real QueryInterface calls; `tryAs` returns `null` only for `E_NOINTERFACE`, while other errors remain visible. |
+| Conservative primary interface | Windows.Win32 coclass TypeDefs do not carry `InterfaceImpl`/`DefaultAttribute` rows. The generator associates only exact metadata naming candidates, constructs the real interface inheritance graph, and selects a primary only when there is one unique most-derived leaf. Multiple unrelated leaves fail closed rather than choosing by numeric suffix. |
+| CommonJS and ESM | COM implementation files use the same CommonJS format as generated WinRT files. `com/index.js` is the CommonJS barrel, while `com/index.mjs` is the ESM facade. Package exports provide explicit `require` and `import` conditions for the COM barrel and deep imports. |
 
 ### Generated package layout
 
 When WinRT and Classic COM are generated together, WinRT remains at the package
-root and Classic COM uses an ESM-only subpackage:
+root and Classic COM uses a domain-specific CommonJS subpackage with an ESM
+facade:
 
 ```text
 bindings/
@@ -394,8 +410,10 @@ bindings/
 ├── com/
 │   ├── package.json
 │   ├── index.js
+│   ├── index.mjs
 │   ├── index.d.ts
-│   └── ITaskbarList3.js
+│   ├── TaskbarList.js
+│   └── ITaskbarList4.js
 └── package.json
 ```
 
@@ -405,8 +423,21 @@ namespaces in one invocation by using fully qualified names:
 ```powershell
 dynwinrt-codegen generate `
   --winmd "C:\path\to\Windows.winmd;C:\path\to\Windows.Win32.winmd" `
-  --class-name Windows.Foundation.Uri,Windows.Win32.UI.Shell.ITaskbarList3 `
+  --class-name Windows.Foundation.Uri,Windows.Win32.UI.Shell.TaskbarList `
   --output .\.winapp\bindings
+```
+
+Generated coclasses follow the WinRT runtime-class convention:
+
+```js
+import { TaskbarList, ITaskbarList3, TBPFLAG } from './bindings/com/index.mjs';
+
+const taskbar = new TaskbarList();
+taskbar.setProgressState(hwnd, TBPFLAG.TBPF_NORMAL);
+
+const v3 = taskbar.as(ITaskbarList3); // real QueryInterface
+v3.release();
+taskbar.release();
 ```
 
 Separate WinRT and COM invocations may target the same output directory in
@@ -500,6 +531,7 @@ of every type in the 24 MB metadata file.
 | `SAFEARRAY` | Automation and Office-style COM APIs | Requires rank, bounds, element type, locking, and element cleanup semantics. | Win32 winmd Automation signatures |
 | `FORMATETC` / `STGMEDIUM` | `IDataObject`, clipboard, drag-and-drop | `STGMEDIUM` is a union of handles and interfaces with type-specific release behavior. | Win32 winmd + codegen diagnostic |
 | Arbitrary unions, bitfields, and nested pointer-rich structs | `D3D11_COUNTER_INFO`, `STATSTG`, `STRRET`, `POINTL`, `BIND_OPTS`, audio/media formats | The current generator has no general native C layout engine. | Win32 winmd + codegen diagnostics |
+| `WIN32_FIND_DATAA`/`WIN32_FIND_DATAW` writable out-params | `IShellLinkW::GetPath` (`pfd`) | Multi-field struct with no recognized native layout; there is no safe way to size or write into it from the caller side. Generation fails closed for the whole interface. The COM E2E suite therefore exercises `IPersistFile` through direct Shell Link activation instead of generating `IShellLinkW`. | Win32 winmd + codegen diagnostic |
 | Writable caller-sized native arrays | `IDispatch::GetIDsOfNames`, counted byte/element output buffers | A scalar pointee is not sufficient storage. These are rejected unless a supported string-buffer projection applies. | Win32 winmd `NativeArrayInfo` + codegen diagnostic |
 | `BSTR**` arrays and BSTR in/out arrays | Automation collection APIs | Each element has independent allocation and release semantics. | Win32 winmd signature + ownership analysis |
 | Caller-owned ANSI output buffers | `PSTR` output-buffer APIs | Safe sizing and decoding are not yet projected. | Win32 winmd signature + projection limitation |
@@ -581,8 +613,8 @@ against the resolved namespace.
 | 22 | `IFileOpenDialog` | 2,536 | 92 | Yes | Generates and live-tested without showing UI |
 | 23 | `IRunningObjectTable` | 2,532 | 50 | Yes | Fail closed: native `FILETIME` layout |
 | 24 | `IAudioClient` | 2,500 | 82 | Yes | Fail closed: format pointer/output ownership |
-| 25 | `IShellLinkW` | 2,128 | 67 | Yes | Generates and live-tested |
-| 26 | `ITaskbarList3` | 1,672 | 87 | Yes | Generates and live-tested |
+| 25 | `IShellLinkW` | 2,128 | 67 | Yes | Fail closed: writable `WIN32_FIND_DATAW` layout |
+| 26 | `ITaskbarList3` / `TaskbarList` | 1,672 | 87 | Yes | Interface and newable coclass generate and are live-tested |
 | 27 | `ICoreWebView2` | 1,608 | 35 | **No** | Defined in WebView2 metadata, not Windows.Win32.winmd |
 | 28 | `IFileSaveDialog` | 1,188 | 96 | Yes | Generates; live test still needed |
 | 29 | `IFileOperation` | 768 | 79 | Yes | Generates and live-tested |
@@ -604,10 +636,10 @@ against the resolved namespace.
   - explicit output ownership (`DXGI`, audio);
   - interface in/out semantics (WMI); and
   - Property System types (`PROPERTYKEY`, `PROPVARIANT`).
-- Seven frequency-survey candidates have generated live coverage:
+- Six frequency-survey candidates have generated live coverage:
   `IPersistFile`, `IWICImagingFactory`, `IFileDialog` through
-  `IFileOpenDialog`, `IFileOpenDialog`, `IShellLinkW`, `ITaskbarList3`, and
-  `IFileOperation`. `IMalloc` and `IStream` add runtime-only live coverage.
+  `FileOpenDialog`, `TaskbarList`, and `FileOperation`. `IShellLinkW`,
+  `IMalloc`, and `IStream` add runtime-only live coverage.
 
 This means the current ten-interface suite provides useful ABI breadth, but it
 does **not** cover every high-frequency interface. In particular,
@@ -624,12 +656,12 @@ hardware, and whether it adds a distinct ABI shape.
 |---|---|---|
 | `IStream` | OLE streams, imaging, shell, serialization | Core live test covers counted buffers, seek, and interface output. |
 | `IMalloc` | COM task allocator | Core live test covers direct pointer, pointer-sized, scalar, and void returns. |
-| `IPersistFile` | Loading and saving persistent COM objects | Core and Node tests query it from `IShellLinkW` and verify `GetClassID`. |
-| `IShellLinkW` | Shortcut creation and inspection | Core and Node tests cover strings, `u16`, enums, and scalar outputs. |
-| `IFileOpenDialog` | Desktop file selection | Node test covers activation and option round-trip without showing UI. |
-| `IFileOperation` | Shell copy/move/delete operations | Node test covers activation, unsigned flags, and state without modifying files. |
+| `IPersistFile` | Loading and saving persistent COM objects | Core tests query it from `IShellLinkW`; Node activates the Shell Link coclass directly as `IPersistFile` and verifies `GetClassID`. |
+| `IShellLinkW` | Shortcut creation and inspection | Core runtime tests cover strings, `u16`, enums, and scalar outputs; metadata codegen fails closed on `WIN32_FIND_DATAW`. |
+| `FileOpenDialog` | Desktop file selection | Node test covers coclass construction and option round-trip without showing UI. |
+| `FileOperation` | Shell copy/move/delete operations | Node test covers coclass construction, unsigned flags, and state without modifying files. |
 | `IWICImagingFactory` | Windows Imaging Component | Node test activates WIC and creates an interface-valued stream. |
-| `ITaskbarList3` | Taskbar progress and window state | Node test covers inherited vtable slots, HWND values, BOOL, enums, and `u64`. |
+| `TaskbarList` / `ITaskbarList3` | Taskbar progress and window state | Node test covers `new`, inherited vtable slots, HWND values, BOOL, enums, `u64`, and `as`/`tryAs`/`supports`. |
 | `IDataTransferManagerInterop` | HWND-to-WinRT data-transfer bridge | Core and Node tests cover `IUnknown`-rooted interop and interface output. |
 | `ISystemMediaTransportControlsInterop` | HWND-to-WinRT media controls | Node test covers `IInspectable`-rooted interop and use of the returned WinRT object. |
 | `IClassFactory` | Low-level COM activation | High-value next test; needs a public `CoGetClassObject` acquisition path. |
@@ -651,16 +683,22 @@ and executed by [`tests/e2e_test.ps1`](../tests/e2e_test.ps1).
 
 | Interface | Test layer | Representative coverage |
 |---|---|---|
-| `IShellLinkW` | Core + Node E2E | Activation, wide strings, hotkeys, show command, and deterministic release. |
-| `IPersistFile` | Core + Node E2E | `QueryInterface`, owned returned reference, and GUID output. |
+| `IShellLinkW` | Core | Manual ABI coverage for activation, wide strings, hotkeys, and show command; codegen intentionally fails closed. |
+| `IPersistFile` | Core + Node E2E | `QueryInterface`/direct IID activation, owned returned reference, GUID output, and deterministic release. |
 | `IMalloc` | Core | Direct pointer return, `usize` return, direct `i32`, direct `void`, allocation cleanup. |
 | `IStream` | Core | Counted byte buffer, `u32` output, `i64` seek, `u64` output, and `IStream**` clone. |
-| `ITaskbarList3` | Node E2E | Inherited slots, HWND, BOOL, enum, and `u64`. |
-| `IFileOperation` | Node E2E | Coclass activation, unsigned flags, and state query. |
-| `IFileOpenDialog` | Node E2E | STA activation and get/set options without user interaction. |
+| `TaskbarList` / `ITaskbarList3` | Node E2E | Coclass construction, inherited slots, runtime QI views, HWND, BOOL, enum, and `u64`. |
+| `FileOperation` | Node E2E | Coclass construction, unsigned flags, and state query. |
+| `FileOpenDialog` | Node E2E | STA coclass construction and get/set options without user interaction. |
 | `IWICImagingFactory` | Node E2E | Explicit CLSID activation and typed interface output. |
 | `IDataTransferManagerInterop` | Core + Node E2E | `IUnknown` base, HWND, REFIID, and WinRT interface output. |
 | `ISystemMediaTransportControlsInterop` | Node E2E | `IInspectable` base and meaningful use of the returned WinRT projection. |
+
+`IShellLinkW` is deliberately excluded from generated E2E coverage because
+`GetPath` contains a writable `WIN32_FIND_DATAW*` without a modeled native
+layout. The core runtime retains manual ABI coverage, while the Node E2E uses
+the same Shell Link coclass through the safely generated `IPersistFile`
+interface.
 
 Additional regression tests cover:
 
@@ -701,6 +739,11 @@ COM interface references and Win32 handles must not be treated the same.
 The JavaScript ownership provenance checks intentionally prevent turning a
 borrowed numeric or TypedArray pointer into a second owner. This avoids two
 wrappers releasing the same COM reference.
+
+Every generated Classic COM class also exposes a public `release()` method
+delegating to the wrapped `DynWinRTValue`'s own `release()`. Calling
+`release()` more than once is safe (the underlying value is cleared to null
+the first time).
 
 ## Test selection guidance
 

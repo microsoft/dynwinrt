@@ -43,10 +43,16 @@ pub(super) enum ComScalarRepr {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum StringEncoding {
+    Wide,
+    Ansi,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum PointerAliasKind {
     HandleValue,
     DataPointer,
-    StringPointer,
+    StringPointer(StringEncoding),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -121,12 +127,6 @@ pub(super) enum ComReturnConvention {
     Direct(ComType),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum StringEncoding {
-    Wide,
-    Ansi,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum ResultConversion {
     Value,
@@ -171,6 +171,49 @@ pub(super) enum ProjectedComMethodKind {
     },
 }
 
+/// The JS runtime `typeof`/shape category a validated value uses at a call
+/// site. Only types with a single, unambiguous JS shape participate in
+/// overload dispatch — anything that can present as more than one shape (or
+/// that overlaps another candidate's shape, e.g. `Buffer` inputs being
+/// `typeof 'object'` just like a projected COM object) is deliberately left
+/// unclassified (`None` from `dispatch_shape`) so overload grouping fails
+/// closed instead of guessing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum DispatchShape {
+    Boolean,
+    Number,
+    BigInt,
+    String,
+    Object,
+}
+
+/// How a single method within an overload group is selected at a call site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum OverloadDispatch {
+    /// This method is the only overload with this argument count; dispatch by
+    /// `arguments.length` alone.
+    Arity,
+    /// Multiple overloads share this argument count; dispatch by inspecting
+    /// the JS shape of the argument at `key_param_index`.
+    ArityAndShape {
+        key_param_index: usize,
+        shape: DispatchShape,
+    },
+}
+
+/// Identifies a method as one branch of a same-name overload set, and how the
+/// public dispatcher routes to it. Built once during projection (see
+/// `project::group_overloads`) — the renderer only *renders* this decision,
+/// it never re-derives it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct OverloadInfo {
+    /// The public JS name shared by every method in the group (e.g. `setOpacity`).
+    pub(super) public_name: String,
+    /// The private per-branch implementation name (e.g. `_setOpacity_7`).
+    pub(super) impl_name: String,
+    pub(super) dispatch: OverloadDispatch,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ProjectedComMethod {
     pub(super) name: String,
@@ -182,6 +225,50 @@ pub(super) struct ProjectedComMethod {
     pub(super) string_buffer: Option<StringBufferPlan>,
     pub(super) kind: ProjectedComMethodKind,
     pub(super) doc: Option<String>,
+    pub(super) overload: Option<OverloadInfo>,
+}
+
+/// Classifies the JS runtime shape a validated `ComType` presents as, for
+/// overload-dispatch purposes. Returns `None` for any type whose JS
+/// representation is ambiguous or overlaps another candidate shape (pointer
+/// types accept `Buffer`/`bigint`/`number` in ways that collide with other
+/// categories), so overload grouping can fail closed rather than guess.
+pub(super) fn dispatch_shape(typ: &ComType) -> Option<DispatchShape> {
+    match typ {
+        ComType::Primitive(ComPrimitive::Bool) | ComType::Win32Bool => Some(DispatchShape::Boolean),
+        ComType::Primitive(
+            ComPrimitive::I8
+            | ComPrimitive::U8
+            | ComPrimitive::I16
+            | ComPrimitive::U16
+            | ComPrimitive::I32
+            | ComPrimitive::U32
+            | ComPrimitive::F32
+            | ComPrimitive::F64
+            | ComPrimitive::Char16,
+        )
+        | ComType::HResult => Some(DispatchShape::Number),
+        ComType::Primitive(ComPrimitive::I64 | ComPrimitive::U64)
+        | ComType::NativeIsize
+        | ComType::NativeUsize => Some(DispatchShape::BigInt),
+        ComType::Guid | ComType::HString => Some(DispatchShape::String),
+        ComType::Enum { underlying, .. } => match underlying {
+            ComEnumUnderlying::I64 | ComEnumUnderlying::U64 => Some(DispatchShape::BigInt),
+            _ => Some(DispatchShape::Number),
+        },
+        ComType::ScalarAlias { underlying, .. } => match underlying {
+            ComScalarRepr::Primitive(ComPrimitive::I64 | ComPrimitive::U64)
+            | ComScalarRepr::NativeIsize
+            | ComScalarRepr::NativeUsize => Some(DispatchShape::BigInt),
+            ComScalarRepr::Primitive(_) => Some(DispatchShape::Number),
+        },
+        ComType::ManagedInterface { .. } => Some(DispatchShape::Object),
+        // Raw/aliased pointers and BSTR accept multiple overlapping JS input
+        // shapes (`bigint`, `number`, `Buffer`, `Uint8Array`, or `string`)
+        // depending on position, so they can collide with any other category
+        // and are never safe overload-dispatch keys.
+        ComType::RawPointer | ComType::PointerAlias { .. } | ComType::Bstr => None,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -226,4 +313,13 @@ pub(super) struct ProjectedComInterface {
     pub(super) methods: Vec<ProjectedComMethod>,
     pub(super) activation: ActivationPlan,
     pub(super) referenced_enums: Vec<ProjectedComEnum>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ProjectedComCoclass {
+    pub(super) name: String,
+    pub(super) namespace: String,
+    pub(super) clsid: String,
+    pub(super) primary_interface: ProjectedComInterface,
+    pub(super) associated_interfaces: Vec<ProjectedComInterface>,
 }

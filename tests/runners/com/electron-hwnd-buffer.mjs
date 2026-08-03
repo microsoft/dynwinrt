@@ -6,7 +6,7 @@
 // contents as the handle value. Other Buffer-backed pointers retain address
 // semantics.
 
-import { ITaskbarList3 } from '../../e2e_generated/com/shell/com/ITaskbarList3.js';
+import { TaskbarList } from '../../e2e_generated/com/shell/com/TaskbarList.js';
 import { TBPFLAG } from '../../e2e_generated/com/shell/com/TBPFLAG.js';
 import { acquireHwndBigInt } from './hwnd.mjs';
 
@@ -31,7 +31,7 @@ if (pointerWidth === 8) {
 console.log('[e2e] step 3: creating ITaskbarList3');
 let taskbar;
 try {
-    taskbar = ITaskbarList3.create();
+    taskbar = new TaskbarList();
     taskbar.hrInit();
 } catch (e) {
     fail(`ITaskbarList3 activation/HrInit threw: ${e && e.message ? e.message : e}`);
@@ -46,5 +46,6 @@ try {
     fail(`Electron HWND Buffer pattern threw: ${e && e.message ? e.message : e}`);
 }
 
+taskbar.release();
 console.log('PASS');
 process.exit(0);

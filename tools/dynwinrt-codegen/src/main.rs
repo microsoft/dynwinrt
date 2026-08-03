@@ -311,6 +311,7 @@ fn run() -> Result<(), String> {
                 // First: partition into WinRT classes and classic-COM interfaces.
                 let mut classes = Vec::new();
                 let mut com_interfaces: Vec<com_metadata::ComInterfaceMeta> = Vec::new();
+                let mut com_coclasses: Vec<com_metadata::ComCoclassMeta> = Vec::new();
                 for (ns, cls) in &class_requests {
                     if let Some(com_iface) = com_metadata::parse_com_interface(&winmd, ns, cls) {
                         // Route through classic-COM path when:
@@ -339,6 +340,10 @@ fn run() -> Result<(), String> {
                             ));
                         }
                     }
+                    if let Some(coclass) = com_metadata::parse_com_coclass(&winmd, ns, cls)? {
+                        com_coclasses.push(coclass);
+                        continue;
+                    }
                     match meta::parse_class(&winmd, ns, cls) {
                         Some(mut c) => {
                             doc_table.apply_to_class(&mut c);
@@ -357,12 +362,18 @@ fn run() -> Result<(), String> {
                 // JS files into a Python output directory would produce the
                 // wrong artifact types with no diagnostic. Reject the
                 // combination up front.
-                if lang != "js" && !com_interfaces.is_empty() {
+                if lang != "js" && (!com_interfaces.is_empty() || !com_coclasses.is_empty()) {
                     let mut offenders: Vec<String> = Vec::new();
                     for ci in &com_interfaces {
                         offenders.push(format!(
                             "{}.{} (classic-COM interface)",
                             ci.interface.namespace, ci.interface.name
+                        ));
+                    }
+                    for coclass in &com_coclasses {
+                        offenders.push(format!(
+                            "{}.{} (classic-COM coclass)",
+                            coclass.namespace, coclass.name
                         ));
                     }
                     return Err(format!(
@@ -379,17 +390,19 @@ fn run() -> Result<(), String> {
 
                 // Classic COM occupies its own ESM subpackage so its symbols
                 // cannot collide with or leak into the WinRT root barrel.
-                if !com_interfaces.is_empty() {
+                if !com_interfaces.is_empty() || !com_coclasses.is_empty() {
                     let com_output_dir = output_dir.join("com");
-                    if !dry_run {
-                        fs::create_dir_all(&com_output_dir).map_err(|e| {
-                            format!(
-                                "Failed to create COM output directory '{}': {}",
-                                com_output_dir.display(),
-                                e
-                            )
-                        })?;
-                    }
+
+                    // Project every requested COM interface into memory FIRST,
+                    // before writing anything. A later interface's projection
+                    // failure (e.g. an unsupported native struct) must not
+                    // leave an earlier interface's files newly written on
+                    // disk — this batch is all-or-nothing. Pre-existing files
+                    // from a prior, separate invocation (incremental
+                    // generation) are untouched either way, since we never
+                    // delete anything here.
+                    let mut generated =
+                        Vec::with_capacity(com_interfaces.len() + com_coclasses.len());
                     for com_iface in &com_interfaces {
                         let out =
                             com::generate_com_interface_files(com_iface, &winmd).map_err(|e| {
@@ -398,25 +411,62 @@ fn run() -> Result<(), String> {
                                     com_iface.interface.name, e
                                 )
                             })?;
-                        let js_name = format!("{}.js", com_iface.interface.name);
-                        let dts_name = format!("{}.d.ts", com_iface.interface.name);
-                        if !dry_run {
-                            fs::write(com_output_dir.join(&js_name), &out.js)
-                                .map_err(|e| format!("Failed to write {}: {}", js_name, e))?;
-                            fs::write(com_output_dir.join(&dts_name), &out.dts)
-                                .map_err(|e| format!("Failed to write {}: {}", dts_name, e))?;
-                            for (name, content) in &out.extra_files {
-                                fs::write(com_output_dir.join(name), content)
-                                    .map_err(|e| format!("Failed to write {}: {}", name, e))?;
+                        generated.push((com_iface.interface.name.clone(), out));
+                    }
+                    for coclass in &com_coclasses {
+                        let out =
+                            com::generate_com_coclass_files(coclass, &winmd).map_err(|e| {
+                                format!(
+                                    "Classic-COM coclass codegen for {} failed: {}",
+                                    coclass.name, e
+                                )
+                            })?;
+                        generated.push((coclass.name.clone(), out));
+                    }
+
+                    let mut planned_files = BTreeMap::new();
+                    for (name, out) in &generated {
+                        let mut files = vec![
+                            (format!("{name}.js"), out.js.clone()),
+                            (format!("{name}.d.ts"), out.dts.clone()),
+                        ];
+                        files.extend(out.extra_files.iter().cloned());
+                        for (file_name, content) in files {
+                            if let Some(existing) = planned_files.get(&file_name)
+                                && existing != &content
+                            {
+                                return Err(format!(
+                                    "Classic-COM generation produced conflicting `{file_name}` outputs; \
+                                     request a single primary interface for each coclass"
+                                ));
                             }
+                            planned_files.insert(file_name, content);
+                        }
+                    }
+
+                    if !dry_run {
+                        fs::create_dir_all(&com_output_dir).map_err(|e| {
+                            format!(
+                                "Failed to create COM output directory '{}': {}",
+                                com_output_dir.display(),
+                                e
+                            )
+                        })?;
+                        for (file_name, content) in &planned_files {
+                            fs::write(com_output_dir.join(file_name), content)
+                                .map_err(|e| format!("Failed to write {}: {}", file_name, e))?;
+                        }
+                    }
+                    for (name, out) in &generated {
+                        if dry_run {
+                            println!("[dry-run] Would generate {}", name);
+                        } else {
                             println!(
                                 "Generated {} ({} .js/.d.ts + {} extras)",
-                                com_iface.interface.name,
+                                name,
                                 2,
                                 out.extra_files.len()
                             );
-                        } else {
-                            println!("[dry-run] Would generate {}", com_iface.interface.name);
                         }
                     }
                     if !dry_run {
@@ -1186,7 +1236,7 @@ fn write_com_js_barrel(com_output_dir: &Path) -> Result<(), String> {
         }
         let content = fs::read_to_string(&path)
             .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
-        let exports = collect_com_esm_exports(&content);
+        let exports = collect_com_cjs_exports(&content);
         if !exports.is_empty() {
             modules.insert(module.to_string(), exports);
         }
@@ -1199,12 +1249,16 @@ fn write_com_js_barrel(com_output_dir: &Path) -> Result<(), String> {
             exports.iter().cloned().collect::<Vec<_>>().join(", ")
         ));
     }
-    fs::write(com_output_dir.join("index.js"), &index)
+    let cjs_index = typescript::esm_index_to_cjs_getter(&index);
+    let esm_index = typescript::esm_index_to_esm(&index);
+    fs::write(com_output_dir.join("index.js"), &cjs_index)
         .map_err(|error| format!("Failed to write COM index.js: {error}"))?;
+    fs::write(com_output_dir.join("index.mjs"), &esm_index)
+        .map_err(|error| format!("Failed to write COM index.mjs: {error}"))?;
     fs::write(com_output_dir.join("index.d.ts"), &index)
         .map_err(|error| format!("Failed to write COM index.d.ts: {error}"))?;
 
-    let package = "{\n  \"type\": \"module\",\n  \"sideEffects\": false\n}\n";
+    let package = "{\n  \"type\": \"commonjs\",\n  \"sideEffects\": false\n}\n";
     fs::write(com_output_dir.join("package.json"), package)
         .map_err(|error| format!("Failed to write COM package boundary: {error}"))?;
     Ok(())
@@ -1218,13 +1272,18 @@ fn finalize_com_generation(output_dir: &Path) -> Result<(), String> {
 }
 
 fn write_com_root_compatibility_barrels(output_dir: &Path) -> Result<(), String> {
-    let com_index_path = output_dir.join("com").join("index.js");
-    let com_index = fs::read_to_string(&com_index_path)
-        .map_err(|error| format!("Failed to read {}: {error}", com_index_path.display()))?;
-    let root_index = com_index.replace("from './", "from './com/");
-    fs::write(output_dir.join("index.js"), &root_index)
+    let com_dir = output_dir.join("com");
+    let com_js_path = com_dir.join("index.js");
+    let com_dts_path = com_dir.join("index.d.ts");
+    let com_js = fs::read_to_string(&com_js_path)
+        .map_err(|error| format!("Failed to read {}: {error}", com_js_path.display()))?;
+    let com_dts = fs::read_to_string(&com_dts_path)
+        .map_err(|error| format!("Failed to read {}: {error}", com_dts_path.display()))?;
+    let root_js = com_js.replace(", './", ", './com/");
+    let root_dts = com_dts.replace("from './", "from './com/");
+    fs::write(output_dir.join("index.js"), &root_js)
         .map_err(|error| format!("Failed to write COM compatibility index.js: {error}"))?;
-    fs::write(output_dir.join("index.d.ts"), root_index)
+    fs::write(output_dir.join("index.d.ts"), root_dts)
         .map_err(|error| format!("Failed to write COM compatibility index.d.ts: {error}"))?;
     Ok(())
 }
@@ -1236,16 +1295,17 @@ fn migrate_legacy_com_only_package(output_dir: &Path) -> Result<(), String> {
 
     let package_path = output_dir.join("package.json");
     let index_path = output_dir.join("index.js");
-    if !package_path.is_file() || !index_path.is_file() {
+    let index_dts_path = output_dir.join("index.d.ts");
+    if !package_path.is_file() || !index_path.is_file() || !index_dts_path.is_file() {
         return Ok(());
     }
     let package = fs::read_to_string(&package_path)
         .map_err(|error| format!("Failed to read {}: {error}", package_path.display()))?;
-    let index = fs::read_to_string(&index_path)
-        .map_err(|error| format!("Failed to read {}: {error}", index_path.display()))?;
+    let index = fs::read_to_string(&index_dts_path)
+        .map_err(|error| format!("Failed to read {}: {error}", index_dts_path.display()))?;
     if !package.contains("\"name\": \"@winapp/bindings\"")
-        || !package.contains("\"type\": \"module\"")
-        || !index.starts_with("// Generated by dynwinrt-codegen - do not edit\n")
+        || !(package.contains("\"type\": \"module\"") || package.contains("\"type\": \"commonjs\""))
+        || !index.starts_with("// Generated by dynwinrt-codegen")
     {
         return Ok(());
     }
@@ -1273,6 +1333,7 @@ fn migrate_legacy_com_only_package(output_dir: &Path) -> Result<(), String> {
 
     for path in [
         output_dir.join("index.js"),
+        output_dir.join("index.mjs"),
         output_dir.join("index.d.ts"),
         package_path,
     ] {
@@ -1351,7 +1412,7 @@ fn write_bindings_manifest(output_dir: &Path) -> Result<(), String> {
 }
 
 fn collect_com_subpath_names(com_output_dir: &Path) -> Result<BTreeSet<String>, String> {
-    let index_path = com_output_dir.join("index.js");
+    let index_path = com_output_dir.join("index.d.ts");
     if !index_path.is_file() {
         return Ok(BTreeSet::new());
     }
@@ -1360,22 +1421,19 @@ fn collect_com_subpath_names(com_output_dir: &Path) -> Result<BTreeSet<String>, 
     Ok(collect_com_index_modules(&index))
 }
 
-fn collect_com_esm_exports(content: &str) -> BTreeSet<String> {
-    const PREFIXES: &[&str] = &["export const ", "export class ", "export function "];
+fn collect_com_cjs_exports(content: &str) -> BTreeSet<String> {
     content
         .lines()
         .filter_map(|line| {
             let line = line.trim_start();
-            let rest = PREFIXES
-                .iter()
-                .find_map(|prefix| line.strip_prefix(prefix))?;
+            let rest = line.strip_prefix("exports.")?;
             let name = rest
                 .chars()
                 .take_while(|character| {
                     character.is_ascii_alphanumeric() || *character == '_' || *character == '$'
                 })
                 .collect::<String>();
-            (!name.is_empty()).then_some(name)
+            (!name.is_empty() && rest[name.len()..].trim_start().starts_with('=')).then_some(name)
         })
         .collect()
 }

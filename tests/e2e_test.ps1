@@ -182,7 +182,7 @@ if ("com" -in $Lang) {
     & cargo run -p dynwinrt-codegen --release --quiet -- generate `
         --winmd $win32Winmd `
         --namespace Windows.Win32.UI.Shell `
-        --class-name "ITaskbarList3,IDataTransferManagerInterop,IShellLinkW,IFileOperation,IFileOpenDialog" `
+        --class-name "TaskbarList,IDataTransferManagerInterop,FileOperation,FileOpenDialog" `
         --output $comShellDir `
         --import-name $comRuntimeImport
     if ($LASTEXITCODE -ne 0) { Write-Error "Classic COM Shell generation failed"; exit 1 }
@@ -268,9 +268,10 @@ if ("com" -in $Lang) {
     Write-Host "`n--- Classic COM E2E ---" -ForegroundColor Yellow
     $comRunners = @(
         "pointer-reject-object.mjs",
+        "module-commonjs.cjs",
         "taskbarlist.mjs",
         "electron-hwnd-buffer.mjs",
-        "shelllink-buffer.mjs",
+        "persist-file.mjs",
         "file-operation.mjs",
         "file-open-dialog.mjs",
         "wic-imaging-factory.mjs",

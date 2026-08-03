@@ -21,6 +21,35 @@ pub(crate) enum ParameterType {
     Pointer,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OutputCleanup {
+    None,
+    ComRelease,
+    HStringDelete,
+    CoTaskMemFree,
+    BstrFree,
+}
+
+impl OutputCleanup {
+    unsafe fn cleanup(self, ptr: *mut std::ffi::c_void) {
+        if ptr.is_null() {
+            return;
+        }
+        match self {
+            Self::None => {}
+            Self::ComRelease => drop(unsafe { windows_core::IUnknown::from_raw(ptr) }),
+            Self::HStringDelete => {
+                let value: windows_core::HSTRING = unsafe { core::mem::transmute(ptr) };
+                drop(value);
+            }
+            Self::CoTaskMemFree => unsafe {
+                windows::Win32::System::Com::CoTaskMemFree(Some(ptr));
+            },
+            Self::BstrFree => drop(unsafe { windows_core::BSTR::from_raw(ptr.cast()) }),
+        }
+    }
+}
+
 impl ParameterType {
     pub(crate) fn winrt(typ: TypeHandle) -> Self {
         Self::WinRT(typ)
@@ -158,6 +187,16 @@ impl ParameterType {
             )),
         }
     }
+
+    fn default_output_cleanup(&self) -> OutputCleanup {
+        match self {
+            Self::WinRT(typ) if typ.kind().is_com_pointer() => OutputCleanup::ComRelease,
+            Self::WinRT(typ) if matches!(typ.kind(), TypeKind::HString) => {
+                OutputCleanup::HStringDelete
+            }
+            Self::WinRT(_) | Self::Pointer => OutputCleanup::None,
+        }
+    }
 }
 
 /// How a parameter is passed at the ABI level.
@@ -174,6 +213,7 @@ pub enum ParamKind {
 #[derive(Debug, Clone)]
 pub struct Parameter {
     pub(crate) typ: ParameterType,
+    pub(crate) output_cleanup: OutputCleanup,
     /// Index in the method result vector for out and FillArray parameters.
     pub value_index: usize,
     /// Index in the caller-provided argument slice. FillArray parameters have
@@ -200,6 +240,10 @@ impl Parameter {
 
     pub fn is_fill_array(&self) -> bool {
         self.kind == ParamKind::OutFillArray
+    }
+
+    pub(crate) unsafe fn cleanup_failed_pointer(&self, ptr: *mut std::ffi::c_void) {
+        unsafe { self.output_cleanup.cleanup(ptr) };
     }
 }
 
@@ -251,6 +295,7 @@ impl AbiMethodSignature {
         self.parameters.push(Parameter {
             kind: ParamKind::In,
             typ,
+            output_cleanup: OutputCleanup::None,
             value_index: input_index,
             input_index: Some(input_index),
         });
@@ -258,9 +303,20 @@ impl AbiMethodSignature {
     }
 
     pub(crate) fn add_out_type(mut self, typ: ParameterType) -> Self {
+        let cleanup = typ.default_output_cleanup();
+        self = self.add_out_type_with_cleanup(typ, cleanup);
+        self
+    }
+
+    pub(crate) fn add_out_type_with_cleanup(
+        mut self,
+        typ: ParameterType,
+        output_cleanup: OutputCleanup,
+    ) -> Self {
         self.parameters.push(Parameter {
             kind: ParamKind::Out,
             typ,
+            output_cleanup,
             value_index: self.out_count,
             input_index: None,
         });
@@ -278,6 +334,7 @@ impl AbiMethodSignature {
         self.parameters.push(Parameter {
             kind: ParamKind::InOut,
             typ,
+            output_cleanup: OutputCleanup::None,
             value_index: self.out_count,
             input_index: Some(input_index),
         });
@@ -291,6 +348,7 @@ impl AbiMethodSignature {
         self.parameters.push(Parameter {
             kind: ParamKind::OutFillArray,
             typ,
+            output_cleanup: OutputCleanup::None,
             value_index: self.out_count,
             input_index: Some(input_index),
         });
@@ -435,6 +493,7 @@ impl AbiMethodSignature {
             info: MethodInfo {
                 index,
                 parameters: self.parameters,
+                input_count: self.input_count,
                 out_count: self.out_count,
                 return_kind: self.return_kind,
             },
@@ -447,6 +506,7 @@ impl AbiMethodSignature {
 pub struct MethodInfo {
     pub index: usize,
     pub parameters: Vec<Parameter>,
+    pub input_count: usize,
     pub out_count: usize,
     pub(crate) return_kind: MethodReturn,
 }
@@ -635,6 +695,97 @@ fn validate_input_struct(expected: &TypeHandle, value: &WinRTValue) -> windows_c
     Ok(())
 }
 
+fn coerce_scalar_input(
+    expected: &TypeHandle,
+    value: &WinRTValue,
+) -> windows_core::Result<Option<WinRTValue>> {
+    let projected_alias = match (expected.kind(), value) {
+        (TypeKind::I8, WinRTValue::I32(value)) => {
+            Some(WinRTValue::I8(i8::try_from(*value).map_err(|_| {
+                invalid_argument("I32 projection value does not fit the expected i8 ABI")
+            })?))
+        }
+        (TypeKind::U8, WinRTValue::I32(value)) => {
+            Some(WinRTValue::U8(u8::try_from(*value).map_err(|_| {
+                invalid_argument("I32 projection value does not fit the expected u8 ABI")
+            })?))
+        }
+        (TypeKind::Char16, WinRTValue::I32(value)) => {
+            Some(WinRTValue::U16(u16::try_from(*value).map_err(|_| {
+                invalid_argument("I32 projection value does not fit the expected char16 ABI")
+            })?))
+        }
+        _ => None,
+    };
+    if projected_alias.is_some() {
+        return Ok(projected_alias);
+    }
+
+    let matches = match expected.kind() {
+        TypeKind::Bool => matches!(value, WinRTValue::Bool(_)),
+        TypeKind::I8 => matches!(value, WinRTValue::I8(_)),
+        TypeKind::U8 => matches!(value, WinRTValue::U8(_)),
+        TypeKind::I16 => matches!(value, WinRTValue::I16(_)),
+        TypeKind::U16 | TypeKind::Char16 => matches!(value, WinRTValue::U16(_)),
+        TypeKind::I32 => matches!(value, WinRTValue::I32(_)),
+        TypeKind::U32 => matches!(value, WinRTValue::U32(_)),
+        TypeKind::I64 => matches!(value, WinRTValue::I64(_)),
+        TypeKind::U64 => matches!(value, WinRTValue::U64(_)),
+        TypeKind::F32 => matches!(value, WinRTValue::F32(_)),
+        TypeKind::F64 => matches!(value, WinRTValue::F64(_)),
+        TypeKind::Guid => matches!(value, WinRTValue::Guid(_)),
+        TypeKind::HString => matches!(value, WinRTValue::HString(_)),
+        TypeKind::HResult => matches!(value, WinRTValue::HResult(_) | WinRTValue::I32(_)),
+        TypeKind::Enum(_) => {
+            matches!(value, WinRTValue::I32(_))
+                || matches!(
+                    value,
+                    WinRTValue::Enum { type_handle, .. } if type_handle == expected
+                )
+        }
+        TypeKind::Struct(_) => {
+            validate_input_struct(expected, value)?;
+            true
+        }
+        TypeKind::Array(_) => {
+            return Err(invalid_argument(
+                "array input reached scalar COM/WinRT validation",
+            ));
+        }
+        kind if kind.is_com_pointer() => {
+            return Err(invalid_argument(
+                "COM object input reached scalar COM/WinRT validation",
+            ));
+        }
+        _ => false,
+    };
+
+    if matches {
+        Ok(None)
+    } else {
+        Err(invalid_argument(&format!(
+            "Argument type mismatch: expected {}, found {:?}",
+            expected.signature_string(),
+            value.get_type_kind()
+        )))
+    }
+}
+
+fn validate_pointer_input(value: &WinRTValue) -> windows_core::Result<()> {
+    if matches!(value, WinRTValue::RawPtr(_) | WinRTValue::Null) {
+        Ok(())
+    } else {
+        Err(invalid_argument(&format!(
+            "Argument type mismatch: expected a native pointer, found {:?}",
+            value.get_type_kind()
+        )))
+    }
+}
+
+fn invalid_argument(message: &str) -> windows_core::Error {
+    windows_core::Error::new(windows_core::HRESULT(0x80070057u32 as i32), message)
+}
+
 fn validate_array_element(
     expected: &TypeHandle,
     value: &WinRTValue,
@@ -718,6 +869,11 @@ impl call::ArgumentList for InvocationArgs<'_> {
 }
 
 impl Method {
+    #[cfg(test)]
+    pub(crate) fn output_cleanup(&self, parameter_index: usize) -> OutputCleanup {
+        self.info.parameters[parameter_index].output_cleanup
+    }
+
     // --- Fast getter paths: zero Vec/WinRTValue allocation ---
 
     /// Getter → i32 (0 in, 1 out). Writes directly to stack i32.
@@ -786,18 +942,28 @@ impl Method {
         obj: *mut std::ffi::c_void,
         args: &[WinRTValue],
     ) -> windows_core::Result<Vec<WinRTValue>> {
+        if args.len() != self.info.input_count {
+            return Err(invalid_argument(&format!(
+                "Argument count mismatch: expected {}, received {}",
+                self.info.input_count,
+                args.len()
+            )));
+        }
+
         let mut args = InvocationArgs::new(args);
         for parameter in self.info.parameters.iter().filter(|p| p.is_input()) {
             let input_index = parameter.input_index.expect("input parameter index");
             let value = args.get_value(input_index);
             let coerced = if let Some(typ) = parameter.typ.as_winrt() {
-                validate_input_struct(typ, value)?;
                 if typ.is_array() {
                     coerce_input_array(typ, value)?
-                } else {
+                } else if expected_object_iid(typ).is_some() {
                     coerce_input_object(typ, value)?
+                } else {
+                    coerce_scalar_input(typ, value)?
                 }
             } else {
+                validate_pointer_input(value)?;
                 None
             };
             if let Some(value) = coerced {
@@ -817,7 +983,13 @@ impl Method {
                 let param = &self.info.parameters[0];
                 let mut out = param.typ.default_value();
                 let hr = call::call_winrt_method_1(self.info.index, obj, out.out_ptr());
-                hr.ok()?;
+                if hr.is_err() {
+                    if let WinRTValue::RawPtr(ptr) = &mut out {
+                        unsafe { param.cleanup_failed_pointer(*ptr) };
+                        *ptr = std::ptr::null_mut();
+                    }
+                    hr.ok()?;
+                }
                 // COM pointer types use RawPtr(null) as buffer to avoid IUnknown::from_raw(null) UB.
                 // After COM writes the pointer, convert via from_out.
                 if let WinRTValue::RawPtr(raw_ptr) = out {
@@ -840,7 +1012,13 @@ impl Method {
                 let mut out = out_param.typ.default_value();
                 let hr =
                     call::call_1in_1out(self.info.index, obj, args.get_value(0), out.out_ptr());
-                hr.ok()?;
+                if hr.is_err() {
+                    if let WinRTValue::RawPtr(ptr) = &mut out {
+                        unsafe { out_param.cleanup_failed_pointer(*ptr) };
+                        *ptr = std::ptr::null_mut();
+                    }
+                    hr.ok()?;
+                }
                 if let WinRTValue::RawPtr(raw_ptr) = out {
                     out = out_param.typ.from_out(raw_ptr).map_err(|e| {
                         windows_core::Error::new(windows_core::HRESULT(-1), &format!("{:?}", e))
@@ -908,7 +1086,13 @@ impl Method {
                         -> windows_core::HRESULT = std::mem::transmute(fptr);
                     method(obj, array_data.len() as u32, buffer.as_ptr(), out.out_ptr())
                 };
-                hr.ok()?;
+                if hr.is_err() {
+                    if let WinRTValue::RawPtr(ptr) = &mut out {
+                        unsafe { out_param.cleanup_failed_pointer(*ptr) };
+                        *ptr = std::ptr::null_mut();
+                    }
+                    hr.ok()?;
+                }
                 if let WinRTValue::RawPtr(raw_ptr) = out {
                     out = out_param.typ.from_out(raw_ptr).map_err(|e| {
                         windows_core::Error::new(windows_core::HRESULT(-1), &format!("{:?}", e))
@@ -1049,6 +1233,15 @@ mod tests {
         windows_core::HRESULT(0)
     }
 
+    unsafe extern "system" fn record_i32(
+        this: *mut std::ffi::c_void,
+        _value: i32,
+    ) -> windows_core::HRESULT {
+        let object = unsafe { &*(this as *const FakeComObject) };
+        object.calls.fetch_add(1, Ordering::Relaxed);
+        windows_core::HRESULT(0)
+    }
+
     fn struct_in_out_method(
         table: &Arc<MetadataTable>,
         expected: TypeHandle,
@@ -1079,6 +1272,96 @@ mod tests {
         assert_eq!(method.info.parameters[1].input_index, Some(1));
         assert_eq!(method.info.parameters[2].value_index, 1);
         assert_eq!(method.info.parameters[2].input_index, None);
+    }
+
+    #[test]
+    fn rejects_incorrect_argument_count_before_native_call() {
+        let table = MetadataTable::new();
+        let method = AbiMethodSignature::new(&table)
+            .add_in_type(ParameterType::winrt(table.i32_type()))
+            .build(0);
+        let vtable = Box::new([record_i32 as *mut std::ffi::c_void]);
+        let mut object = FakeComObject {
+            vtable: vtable.as_ptr(),
+            calls: AtomicU32::new(0),
+        };
+
+        let error = method
+            .call_dynamic((&mut object as *mut FakeComObject).cast(), &[])
+            .unwrap_err();
+
+        assert_eq!(error.code().0, 0x80070057u32 as i32);
+        assert!(error.message().contains("Argument count mismatch"));
+        assert_eq!(object.calls.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn rejects_wrong_native_pointer_value_before_native_call() {
+        let table = MetadataTable::new();
+        let method = AbiMethodSignature::new(&table)
+            .add_in_type(ParameterType::pointer())
+            .build(0);
+        let vtable = Box::new([record_i32 as *mut std::ffi::c_void]);
+        let mut object = FakeComObject {
+            vtable: vtable.as_ptr(),
+            calls: AtomicU32::new(0),
+        };
+
+        let error = method
+            .call_dynamic(
+                (&mut object as *mut FakeComObject).cast(),
+                &[WinRTValue::I32(42)],
+            )
+            .unwrap_err();
+
+        assert_eq!(error.code().0, 0x80070057u32 as i32);
+        assert!(error.message().contains("native pointer"));
+        assert_eq!(object.calls.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn rejects_wrong_in_out_scalar_width_before_native_call() {
+        let table = MetadataTable::new();
+        let method = AbiMethodSignature::new(&table)
+            .add_in_out_type(ParameterType::winrt(table.u64_type()))
+            .build(0);
+        let vtable = Box::new([increment_struct_first_field as *mut std::ffi::c_void]);
+        let mut object = FakeComObject {
+            vtable: vtable.as_ptr(),
+            calls: AtomicU32::new(0),
+        };
+
+        let error = method
+            .call_dynamic(
+                (&mut object as *mut FakeComObject).cast(),
+                &[WinRTValue::I32(42)],
+            )
+            .unwrap_err();
+
+        assert_eq!(error.code().0, 0x80070057u32 as i32);
+        assert!(error.message().contains("Argument type mismatch"));
+        assert_eq!(object.calls.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn coerces_established_winrt_i32_narrow_integer_projections() {
+        let table = MetadataTable::new();
+
+        assert!(matches!(
+            coerce_scalar_input(&table.i8_type(), &WinRTValue::I32(-128)).unwrap(),
+            Some(WinRTValue::I8(-128))
+        ));
+        assert!(matches!(
+            coerce_scalar_input(&table.u8_type(), &WinRTValue::I32(255)).unwrap(),
+            Some(WinRTValue::U8(255))
+        ));
+        assert!(matches!(
+            coerce_scalar_input(&table.char16_type(), &WinRTValue::I32(0xffff)).unwrap(),
+            Some(WinRTValue::U16(0xffff))
+        ));
+        assert!(coerce_scalar_input(&table.i8_type(), &WinRTValue::I32(128)).is_err());
+        assert!(coerce_scalar_input(&table.u8_type(), &WinRTValue::I32(-1)).is_err());
+        assert!(coerce_scalar_input(&table.char16_type(), &WinRTValue::I32(0x1_0000)).is_err());
     }
 
     #[test]

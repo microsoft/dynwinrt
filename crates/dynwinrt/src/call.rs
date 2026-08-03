@@ -211,6 +211,16 @@ fn input_abi_value(value: &WinRTValue) -> windows_core::Result<AbiValue> {
     Ok(value)
 }
 
+fn cleanup_failed_outputs(parameters: &[Parameter], out_values: &mut [AbiValue]) {
+    for parameter in parameters.iter().filter(|parameter| parameter.is_out()) {
+        let Some(AbiValue::Pointer(ptr)) = out_values.get_mut(parameter.value_index) else {
+            continue;
+        };
+        unsafe { parameter.cleanup_failed_pointer(*ptr) };
+        *ptr = std::ptr::null_mut();
+    }
+}
+
 pub fn call_method_dynamic<A: ArgumentList + ?Sized>(
     vtable_index: usize,
     obj: *mut c_void,
@@ -389,12 +399,18 @@ pub fn call_method_dynamic<A: ArgumentList + ?Sized>(
         match return_kind {
             MethodReturn::HResult => {
                 let hr: windows_core::HRESULT = cif.call(CodePtr(fptr), &ffi_args);
-                hr.ok()?;
+                if hr.is_err() {
+                    cleanup_failed_outputs(parameters, &mut out_values);
+                    hr.ok()?;
+                }
                 None
             }
             MethodReturn::SemanticHResult => {
                 let hr: windows_core::HRESULT = cif.call(CodePtr(fptr), &ffi_args);
-                hr.ok()?;
+                if hr.is_err() {
+                    cleanup_failed_outputs(parameters, &mut out_values);
+                    hr.ok()?;
+                }
                 Some(WinRTValue::HResult(hr))
             }
             MethodReturn::Void => {

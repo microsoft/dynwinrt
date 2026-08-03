@@ -6,8 +6,8 @@
 //! These tests drive the implementation of:
 //! - Base-aware vtable slot computation (walks interface_impls chain)
 //! - IUnknown vs IInspectable base offset (3 vs 6)
-//! - Coclass CLSID discovery for `create()` activation
-//! - Natural TS/JS wrapper generation for classic-COM interfaces
+//! - Coclass CLSID discovery and newable coclass wrappers
+//! - Natural TS/JS wrapper generation for classic-COM interfaces and coclasses
 //!
 //! Tests are skipped (with an `eprintln!` note) when the Win32 winmd is not
 //! present at the well-known path.
@@ -43,6 +43,22 @@ fn required_win32_metadata_is_present() {
             win32_winmd()
         );
     }
+}
+
+/// Returns a clone of `iface` with the named method removed.
+///
+/// `IShellLinkW::GetPath` takes a caller-writable `WIN32_FIND_DATAW*` (`pfd`)
+/// that has no safe layout/size projection (see the classic-COM-ABI skill's
+/// fail-closed requirement for unsupported writable native structs), so the
+/// whole interface now fails closed if it is included. Tests that only need
+/// `IShellLinkW`'s *other* members use this helper to exercise them without
+/// tripping that (separately, correctly, regression-tested) failure.
+fn without_method(
+    mut iface: com_metadata::ComInterfaceMeta,
+    name: &str,
+) -> com_metadata::ComInterfaceMeta {
+    iface.interface.methods.retain(|method| method.name != name);
+    iface
 }
 
 /// Resolve a `Windows.winmd` from the newest installed Windows SDK, matching
@@ -103,10 +119,12 @@ fn assert_mixed_package_shape(output_dir: &Path) {
     assert!(package.contains("\"./com/*\""));
     assert!(package.contains("\"types\": \"./com/*.d.ts\""));
     assert!(package.contains("\"import\": \"./com/*.js\""));
-    assert!(!package.contains("\"require\": \"./com/"));
+    assert!(package.contains("\"require\": \"./com/index.js\""));
+    assert!(package.contains("\"require\": \"./com/*.js\""));
 
     let com_package = fs::read_to_string(output_dir.join("com").join("package.json")).unwrap();
-    assert!(com_package.contains("\"type\": \"module\""));
+    assert!(com_package.contains("\"type\": \"commonjs\""));
+    assert!(output_dir.join("com").join("index.mjs").is_file());
 }
 
 // -------------------------------------------------------------------------
@@ -235,6 +253,68 @@ fn itaskbarlist3_clsid_resolution() {
     assert_eq!(com_iface.coclass_name.as_deref(), Some("TaskbarList"));
 }
 
+#[test]
+fn taskbarlist_coclass_selects_unique_most_derived_interface() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+    let coclass =
+        com_metadata::parse_com_coclass(&win32_winmd(), "Windows.Win32.UI.Shell", "TaskbarList")
+            .unwrap()
+            .expect("TaskbarList must be recognized as a COM coclass");
+
+    assert_eq!(coclass.clsid, "56fdf344-fd6d-11d0-958a-006097c9a090");
+    assert_eq!(coclass.primary_interface.interface.name, "ITaskbarList4");
+    assert_eq!(
+        coclass
+            .associated_interfaces
+            .iter()
+            .map(|interface| interface.interface.name.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "ITaskbarList",
+            "ITaskbarList2",
+            "ITaskbarList3",
+            "ITaskbarList4"
+        ]
+    );
+}
+
+#[test]
+fn taskbarlist_coclass_generates_newable_class_and_interface_views() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+    let coclass =
+        com_metadata::parse_com_coclass(&win32_winmd(), "Windows.Win32.UI.Shell", "TaskbarList")
+            .unwrap()
+            .unwrap();
+    let out = com::generate_com_coclass_files(&coclass, &win32_winmd()).unwrap();
+
+    assert!(out.js.contains("class TaskbarList extends ITaskbarList4"));
+    assert!(out.js.contains("exports.TaskbarList = TaskbarList;"));
+    assert!(
+        out.js
+            .contains("super(DynCom.coCreateInstance(CLSID_TaskbarList, IID_ITaskbarList4))")
+    );
+    assert!(out.js.contains("as(InterfaceClass)"));
+    assert!(out.js.contains("DynCom.tryCast"));
+    assert!(out.dts.contains("constructor();"));
+    for interface in [
+        "ITaskbarList.js",
+        "ITaskbarList2.js",
+        "ITaskbarList3.js",
+        "ITaskbarList4.js",
+    ] {
+        assert!(
+            out.extra_files.iter().any(|(name, _)| name == interface),
+            "missing {interface}"
+        );
+    }
+}
+
 /// 5. Param type mapping: HWND → pointer/handle, TBPFLAG → enum, HRESULT → void.
 #[test]
 fn param_type_mapping() {
@@ -340,18 +420,20 @@ fn shelllink_scalar_out_pointers_preserve_pointee_types() {
         .find(|method| method.name == "GetIconLocation")
         .unwrap();
     assert!(matches!(get_icon_location.params[2].typ, TypeMeta::I32));
+    let get_hotkey_vtable = get_hotkey.vtable_index;
+    let get_show_cmd_vtable = get_show_cmd.vtable_index;
 
-    let output = com::generate_com_interface_files(&interface, &win32_winmd()).unwrap();
-    assert!(
-        output
-            .js
-            .contains(".addMethod('GetHotkey', new DynComMethodSig().addOut(DynCom.u16Type()))")
-    );
-    assert!(
-        output
-            .js
-            .contains(".addMethod('GetShowCmd', new DynComMethodSig().addOut(DynCom.i32Type()))")
-    );
+    // `GetPath` is intentionally unsupported (see `without_method`); it is
+    // covered by its own fail-closed regression test below.
+    let interface_without_get_path = without_method(interface, "GetPath");
+    let output =
+        com::generate_com_interface_files(&interface_without_get_path, &win32_winmd()).unwrap();
+    assert!(output.js.contains(&format!(
+        ".addMethodAt({get_hotkey_vtable}, 'GetHotkey', new DynComMethodSig().addOut(DynCom.u16Type()))"
+    )));
+    assert!(output.js.contains(&format!(
+        ".addMethodAt({get_show_cmd_vtable}, 'GetShowCmd', new DynComMethodSig().addOut(DynCom.i32Type()))"
+    )));
     assert!(
         output
             .dts
@@ -481,8 +563,8 @@ fn dts_surface_is_natural_and_clean() {
     }
 }
 
-/// 8. Generated `.js`: activation uses a CoCreateInstance path with CLSID + IID;
-///    methods invoke at the correct base-aware slots.
+/// 8. Generated interface `.js` contains only IID/vtable behavior; activation
+///    is emitted by the separate coclass wrapper.
 #[test]
 fn js_body_uses_cocreateinstance_and_correct_slots() {
     if !win32_available() {
@@ -499,24 +581,15 @@ fn js_body_uses_cocreateinstance_and_correct_slots() {
         .expect("codegen must succeed for classic-COM interface");
     let js = out.js.as_str();
 
-    // CLSID + IID appear in .js
-    assert!(
-        js.contains("56fdf344-fd6d-11d0-958a-006097c9a090"),
-        ".js must embed the CLSID:\n{}",
-        js
-    );
+    // Only the IID appears in the interface wrapper.
+    assert!(!js.contains("56fdf344-fd6d-11d0-958a-006097c9a090"));
     assert!(
         js.contains("ea1afb91-9e28-4b86-90e9-9e9f8a5eefaf"),
         ".js must embed the IID:\n{}",
         js
     );
 
-    // Activation via coCreateInstance
-    assert!(
-        js.contains("coCreateInstance"),
-        ".js must use coCreateInstance for activation:\n{}",
-        js
-    );
+    assert!(!js.contains("coCreateInstance"));
 
     // Classic COM registration is kept out of the WinRT type namespace.
     assert!(
@@ -537,6 +610,93 @@ fn js_body_uses_cocreateinstance_and_correct_slots() {
     // if that's ActivateTab (slot 6). ActivateTab IS at 6, so it's a valid
     // occurrence. Just check the file doesn't say something like `HrInit ... method(6)`.
     // This is covered by the exact per-method assertion above.
+}
+
+/// Requirement 4 (acronym casing): `ITaskbarList3::SetTabActive(HWND hwndTab,
+/// HWND hwndMDI, DWORD dwReserved)` must project `hwndMDI` as `mdi` (the
+/// whole `MDI` acronym lowercased), not the naive first-letter-only `mDI`.
+#[test]
+fn taskbarlist3_settabactive_projects_hwndmdi_as_mdi_not_mdi_mixed_case() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+    let com_iface = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.UI.Shell",
+        "ITaskbarList3",
+    )
+    .unwrap();
+    let out = com::generate_com_interface_files(&com_iface, &win32_winmd())
+        .expect("codegen must succeed for classic-COM interface");
+    let js = out.js.as_str();
+    assert!(
+        js.contains("setTabActive(tab, mdi, reserved)"),
+        ".js must lowercase the whole `MDI` acronym in `hwndMDI` -> `mdi`, not `mDI`:\n{}",
+        js
+    );
+    assert!(
+        !js.contains("mDI"),
+        ".js must not contain the naive-lowering artifact `mDI`:\n{}",
+        js
+    );
+    let dts = out.dts.as_str();
+    assert!(
+        dts.contains("mdi:"),
+        ".d.ts must also project the parameter as `mdi`:\n{}",
+        dts
+    );
+}
+
+/// Lifecycle ergonomics + doc rendering on a generated interface wrapper.
+/// Activation lives on the separately generated coclass; the interface must
+/// expose `release()`, a protected constructor/IID descriptor for generated
+/// coclass inheritance and `as()`, and — since win32metadata attaches a
+/// `DocumentationAttribute` (a `learn.microsoft.com` URL) to most methods —
+/// an `@see` JSDoc comment referencing that URL.
+#[test]
+fn taskbarlist3_generated_output_has_lifecycle_members_and_doc_links() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+    let com_iface = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.UI.Shell",
+        "ITaskbarList3",
+    )
+    .unwrap();
+    let out = com::generate_com_interface_files(&com_iface, &win32_winmd())
+        .expect("codegen must succeed for classic-COM interface");
+    let js = out.js.as_str();
+    let dts = out.dts.as_str();
+
+    assert!(
+        js.contains("release()") && js.contains("this._obj.release();"),
+        ".js must expose release() delegating to the managed native value:\n{}",
+        js
+    );
+    assert!(
+        dts.contains("release(): void;"),
+        ".d.ts must declare release(): void;:\n{}",
+        dts
+    );
+    assert!(
+        dts.contains("protected constructor(obj: unknown);")
+            && dts.contains("static readonly IID:"),
+        ".d.ts must expose only the generated-coclass/interface-view construction surface:\n{}",
+        dts
+    );
+    assert!(
+        js.contains("@see {@link https://learn.microsoft.com/"),
+        ".js must render win32metadata's DocumentationAttribute URL as an @see JSDoc comment:\n{}",
+        js
+    );
+    assert!(
+        dts.contains("@see {@link https://learn.microsoft.com/"),
+        ".d.ts must render win32metadata's DocumentationAttribute URL as an @see JSDoc comment:\n{}",
+        dts
+    );
 }
 
 // -------------------------------------------------------------------------
@@ -685,13 +845,13 @@ fn generation_is_deterministic() {
 // SNAPSHOT test
 // -------------------------------------------------------------------------
 
-/// Snapshot test: lock generated ITaskbarList3 .js + .d.ts against committed files.
+/// Snapshot test: lock generated TaskbarList coclass and interface files.
 ///
 /// To update snapshots after an intentional change:
 ///   cargo run -p dynwinrt-codegen -- generate \
 ///     --winmd C:\s\win32metadata\Windows.Win32.winmd \
 ///     --namespace Windows.Win32.UI.Shell \
-///     --class-name ITaskbarList3 \
+///     --class-name TaskbarList \
 ///     --output tools/dynwinrt-codegen/tests/snapshots/itaskbarlist3
 #[test]
 fn snapshot_itaskbarlist3() {
@@ -699,14 +859,12 @@ fn snapshot_itaskbarlist3() {
         eprintln!("Skipping snapshot test: Win32 winmd not available");
         return;
     }
-    let com_iface = com_metadata::parse_com_interface(
-        &win32_winmd(),
-        "Windows.Win32.UI.Shell",
-        "ITaskbarList3",
-    )
-    .expect("ITaskbarList3 must exist");
-    let out = com::generate_com_interface_files(&com_iface, &win32_winmd())
-        .expect("codegen must succeed for classic-COM interface");
+    let coclass =
+        com_metadata::parse_com_coclass(&win32_winmd(), "Windows.Win32.UI.Shell", "TaskbarList")
+            .unwrap()
+            .expect("TaskbarList must exist");
+    let out = com::generate_com_coclass_files(&coclass, &win32_winmd())
+        .expect("codegen must succeed for TaskbarList");
 
     let snapshot_dir: PathBuf =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots/itaskbarlist3");
@@ -717,8 +875,8 @@ fn snapshot_itaskbarlist3() {
     );
 
     let mut generated: Vec<(String, String)> = Vec::new();
-    generated.push(("ITaskbarList3.js".into(), out.js.clone()));
-    generated.push(("ITaskbarList3.d.ts".into(), out.dts.clone()));
+    generated.push(("TaskbarList.js".into(), out.js.clone()));
+    generated.push(("TaskbarList.d.ts".into(), out.dts.clone()));
     for (name, content) in &out.extra_files {
         generated.push((name.clone(), content.clone()));
     }
@@ -802,8 +960,8 @@ fn import_name_flag_is_honored_by_com_path() {
 
     // Custom import must appear on the runtime import line...
     assert!(
-        out.js.contains("from '../dist/com.js'"),
-        "classic-COM .js must honor --import-name (expected `from '../dist/com.js'`):\n{}",
+        out.js.contains("require('../dist/com.js')"),
+        "classic-COM .js must honor --import-name (expected `require('../dist/com.js')`):\n{}",
         out.js
     );
     // ...and the hardcoded default must NOT be present in the generated body.
@@ -825,7 +983,9 @@ fn import_name_flag_is_honored_by_com_path() {
             .expect("codegen must succeed for classic-COM interface")
     };
     assert!(
-        default_out.js.contains("from '@microsoft/dynwinrt/com'"),
+        default_out
+            .js
+            .contains("require('@microsoft/dynwinrt/com')"),
         "after restoring, default import must use '@microsoft/dynwinrt/com':\n{}",
         default_out.js
     );
@@ -864,7 +1024,7 @@ fn import_name_flag_is_honored_by_interop_wrapper() {
 
     // The interop .js itself must honor the flag.
     assert!(
-        out.js.contains("from '../dist/com.js'"),
+        out.js.contains("require('../dist/com.js')"),
         "interop .js must honor --import-name:\n{}",
         out.js
     );
@@ -901,8 +1061,11 @@ fn shellitem_getdisplayname_is_not_classified_as_caller_owned_string_buffer() {
         .expect("codegen must succeed for IShellItem");
 
     assert!(
-        out.js.contains(".addMethod('GetDisplayName', new DynComMethodSig().addIn(DynCom.i32Type()).addOut(DynCom.pointerType()))"),
-        "PWSTR* callee-allocated output must remain addOut(pointer), not caller-owned buffer:\n{}",
+        out.js.contains(".addOut(DynCom.coTaskMemPointerType())")
+            && out.js.contains(
+                "'GetDisplayName', new DynComMethodSig().addIn(DynCom.i32Type()).addOut(DynCom.coTaskMemPointerType())"
+            ),
+        "PWSTR* callee-allocated output must be registered as an owned CoTaskMem output, not the unclassified pointer type:\n{}",
         out.js
     );
     assert!(
@@ -927,6 +1090,7 @@ fn u16_input_param_uses_existing_u16_value_ctor_not_u16value() {
     let com_iface =
         com_metadata::parse_com_interface(&win32_winmd(), "Windows.Win32.UI.Shell", "IShellLinkW")
             .expect("IShellLinkW must exist");
+    let com_iface = without_method(com_iface, "GetPath");
     let out = com::generate_com_interface_files(&com_iface, &win32_winmd())
         .expect("codegen must succeed for IShellLinkW");
 
@@ -1154,29 +1318,53 @@ fn unsigned_enum_values_preserve_their_value() {
 }
 
 #[test]
-fn optional_string_buffer_placeholders_do_not_precede_required_parameters() {
+fn shelllink_getpath_fails_closed_on_unsupported_find_data_struct() {
     if !win32_available() {
         eprintln!("Skipping: Win32 winmd not available");
         return;
     }
 
+    // `IShellLinkW::GetPath` takes a caller-writable `WIN32_FIND_DATAW* pfd`
+    // (an [in, out] multi-field struct with no NativeArrayInfo count and no
+    // recognized single-field pointer-alias/scalar shape). There is no safe
+    // layout/size projection for it, so generation must fail closed with an
+    // actionable diagnostic instead of silently treating it as an opaque
+    // caller-owned buffer (the removed `pfd`/`finddata` name heuristic).
     let interface =
         com_metadata::parse_com_interface(&win32_winmd(), "Windows.Win32.UI.Shell", "IShellLinkW")
             .expect("IShellLinkW must exist");
+    let error = com::generate_com_interface_files(&interface, &win32_winmd())
+        .expect_err("GetPath's WIN32_FIND_DATAW* must fail closed, not fall back to a heuristic");
+    assert!(
+        error.contains("GetPath") && error.contains("pfd") && error.contains("WIN32_FIND_DATAW"),
+        "diagnostic must name the interface, method, and offending parameter:\n{error}"
+    );
+}
+
+#[test]
+fn shelllink_other_methods_still_generate_when_getpath_is_excluded() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+
+    // Everything else on IShellLinkW (including its OTHER string-buffer
+    // methods, e.g. GetIconLocation) is unaffected by GetPath's fail-closed
+    // struct-layout limitation; a consumer can still generate the interface
+    // by excluding the one unsupported method.
+    let interface =
+        com_metadata::parse_com_interface(&win32_winmd(), "Windows.Win32.UI.Shell", "IShellLinkW")
+            .expect("IShellLinkW must exist");
+    let interface = without_method(interface, "GetPath");
     let output = com::generate_com_interface_files(&interface, &win32_winmd())
-        .expect("IShellLinkW generation should succeed");
+        .expect("IShellLinkW generation should succeed once GetPath is excluded");
 
     assert!(
         output
             .dts
-            .contains("getPath(cch: number, pfd: bigint | Buffer, fFlags: number)"),
-        "a required parameter must not follow an optional pfd placeholder:\n{}",
+            .contains("getIconLocation(cch?: number): [string, number];"),
+        "other string-buffer methods must still project correctly:\n{}",
         output.dts
-    );
-    assert!(
-        !output.js.contains("getPath(cch = 260") && !output.js.contains("pfd = 0, fFlags"),
-        "JavaScript defaults must obey the same trailing-optional rule:\n{}",
-        output.js
     );
 }
 
@@ -1476,6 +1664,7 @@ fn com_only_generation_emits_an_importable_package_shape() {
     }
     for name in [
         "index.js",
+        "index.mjs",
         "index.d.ts",
         "package.json",
         "ITaskbarList3.js",
@@ -1489,14 +1678,18 @@ fn com_only_generation_emits_an_importable_package_shape() {
     assert!(!output_dir.join("ITaskbarList3.js").exists());
     let index = fs::read_to_string(output_dir.join("index.js")).unwrap();
     assert!(index.contains("ITaskbarList3") && index.contains("TBPFLAG"));
-    assert!(index.contains("from './com/ITaskbarList3.js'"));
+    assert!(index.contains("__exportLazy('ITaskbarList3', './com/ITaskbarList3.js')"));
     let com_index = fs::read_to_string(output_dir.join("com").join("index.js")).unwrap();
-    assert!(com_index.contains("from './ITaskbarList3.js'"));
+    assert!(com_index.contains("__exportLazy('ITaskbarList3', './ITaskbarList3.js')"));
+    let com_esm_index = fs::read_to_string(output_dir.join("com").join("index.mjs")).unwrap();
+    assert!(com_esm_index.contains("import * as __m"));
     let package = fs::read_to_string(output_dir.join("package.json")).unwrap();
-    assert!(package.contains("\"type\": \"module\""));
+    assert!(package.contains("\"type\": \"commonjs\""));
     assert!(package.contains("\"./ITaskbarList3\""));
     assert!(package.contains("\"./com\""));
     assert!(package.contains("\"./com/*\""));
+    assert!(package.contains("\"import\": \"./com/index.mjs\""));
+    assert!(package.contains("\"require\": \"./com/index.js\""));
 
     let incremental = Command::new(env!("CARGO_BIN_EXE_dynwinrt-codegen"))
         .args([
@@ -1506,7 +1699,15 @@ fn com_only_generation_emits_an_importable_package_shape() {
             "--namespace",
             "Windows.Win32.UI.Shell",
             "--class-name",
-            "IShellLinkW",
+            // `IShellLinkW` is deliberately NOT used here: its `GetPath`
+            // parameter `pfd` (`WIN32_FIND_DATAW*`) has no safe layout/size
+            // projection and now correctly fails closed (see the
+            // `shelllink_getpath_fails_closed_on_unsupported_find_data_struct`
+            // regression test), which would fail this whole interface's
+            // generation. `IShellItem` exercises the same incremental
+            // multi-interface + referenced-enum path (it references both
+            // `SIGDN` and `SFGAO_FLAGS`) without hitting that limitation.
+            "IShellItem",
             "--output",
             output_dir.to_str().unwrap(),
         ])
@@ -1520,15 +1721,15 @@ fn com_only_generation_emits_an_importable_package_shape() {
     let incremental_index = fs::read_to_string(output_dir.join("com").join("index.js")).unwrap();
     assert!(
         incremental_index.contains("ITaskbarList3")
-            && incremental_index.contains("IShellLinkW")
+            && incremental_index.contains("IShellItem")
             && incremental_index.contains("TBPFLAG")
-            && incremental_index.contains("SHOW_WINDOW_CMD"),
+            && incremental_index.contains("SIGDN"),
         "incremental generation must preserve earlier exports:\n{incremental_index}"
     );
     let incremental_package = fs::read_to_string(output_dir.join("package.json")).unwrap();
     assert!(
         incremental_package.contains("\"./ITaskbarList3\"")
-            && incremental_package.contains("\"./IShellLinkW\""),
+            && incremental_package.contains("\"./IShellItem\""),
         "incremental generation must preserve earlier package subpaths:\n{incremental_package}"
     );
 
@@ -1593,7 +1794,7 @@ fn mixed_generation_supports_one_command_and_both_incremental_orders() {
         &com_first,
     );
     let com_only_package = fs::read_to_string(com_first.join("package.json")).unwrap();
-    assert!(com_only_package.contains("\"type\": \"module\""));
+    assert!(com_only_package.contains("\"type\": \"commonjs\""));
     assert!(
         fs::read_to_string(com_first.join("index.d.ts"))
             .unwrap()
@@ -1611,16 +1812,21 @@ fn mixed_generation_supports_one_command_and_both_incremental_orders() {
     );
     let com_dir = legacy_com_first.join("com");
     let legacy_index = fs::read_to_string(com_dir.join("index.js")).unwrap();
+    let legacy_dts = fs::read_to_string(com_dir.join("index.d.ts")).unwrap();
     for entry in fs::read_dir(&com_dir).unwrap() {
         let entry = entry.unwrap();
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if name != "index.js" && name != "index.d.ts" && name != "package.json" {
+        if name != "index.js"
+            && name != "index.mjs"
+            && name != "index.d.ts"
+            && name != "package.json"
+        {
             fs::copy(entry.path(), legacy_com_first.join(name.as_ref())).unwrap();
         }
     }
     fs::write(legacy_com_first.join("index.js"), &legacy_index).unwrap();
-    fs::write(legacy_com_first.join("index.d.ts"), legacy_index).unwrap();
+    fs::write(legacy_com_first.join("index.d.ts"), legacy_dts).unwrap();
     fs::remove_dir_all(com_dir).unwrap();
 
     run_codegen_command(
@@ -1635,5 +1841,66 @@ fn mixed_generation_supports_one_command_and_both_incremental_orders() {
 
     for output_dir in [&mixed, &winrt_first, &com_first, &legacy_com_first] {
         fs::remove_dir_all(output_dir).expect("remove mixed package test directory");
+    }
+}
+
+/// Requirement 8: multi-interface COM generation must be atomic enough that
+/// a later interface's projection failure doesn't leave an earlier,
+/// successfully-projected interface's files (or the `com/` barrel) newly
+/// written on disk. `ITaskbarList3` projects cleanly; `IShellLinkW` fails
+/// closed (its `GetPath` parameter `pfd` is an unsupported
+/// `WIN32_FIND_DATAW*`). Requesting both in one `--class-name` batch must
+/// fail the whole command AND leave no `com/` output directory at all (since
+/// this is a from-scratch generation into a directory that doesn't exist
+/// yet).
+#[test]
+fn multi_interface_com_generation_does_not_leave_partial_output_on_projection_failure() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+    let output_dir = std::env::temp_dir().join(format!(
+        "dynwinrt-codegen-com-atomic-{}",
+        std::process::id()
+    ));
+    if output_dir.exists() {
+        fs::remove_dir_all(&output_dir).expect("remove stale atomic COM test directory");
+    }
+
+    let output = Command::new(env!("CARGO_BIN_EXE_dynwinrt-codegen"))
+        .args([
+            "generate",
+            "--winmd",
+            &win32_winmd(),
+            "--namespace",
+            "Windows.Win32.UI.Shell",
+            "--class-name",
+            "ITaskbarList3,IShellLinkW",
+            "--output",
+            output_dir.to_str().unwrap(),
+        ])
+        .output()
+        .expect("spawn dynwinrt-codegen");
+
+    assert!(
+        !output.status.success(),
+        "generation must fail overall when any requested interface fails to project"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("IShellLinkW") && stderr.contains("pfd"),
+        "failure must name the offending interface/parameter:\n{stderr}"
+    );
+
+    // No partial `com/` output (nor any of ITaskbarList3's already-projected
+    // files) may have been written as a side effect of the failed batch.
+    assert!(
+        !output_dir.join("com").exists(),
+        "a failed multi-interface COM batch must not leave a partial com/ directory: {:?}",
+        output_dir.join("com")
+    );
+
+    if output_dir.exists() {
+        fs::remove_dir_all(&output_dir).expect("remove atomic COM test directory");
     }
 }

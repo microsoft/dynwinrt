@@ -114,15 +114,16 @@ fn render_com_only_package(com_subpath_names: &BTreeSet<String>) -> String {
     let mut out = String::new();
     out.push_str("{\n");
     out.push_str("  \"name\": \"@winapp/bindings\",\n");
-    out.push_str("  \"type\": \"module\",\n");
+    out.push_str("  \"type\": \"commonjs\",\n");
     out.push_str("  \"sideEffects\": false,\n");
     out.push_str("  \"main\": \"./index.js\",\n");
     out.push_str("  \"types\": \"./index.d.ts\",\n");
     out.push_str("  \"exports\": {\n");
     out.push_str("    \".\": {\n");
-    out.push_str("      \"types\": \"./index.d.ts\",\n");
-    out.push_str("      \"import\": \"./index.js\",\n");
-    out.push_str("      \"default\": \"./index.js\"\n");
+    out.push_str("      \"types\": \"./com/index.d.ts\",\n");
+    out.push_str("      \"import\": \"./com/index.mjs\",\n");
+    out.push_str("      \"require\": \"./com/index.js\",\n");
+    out.push_str("      \"default\": \"./com/index.js\"\n");
     out.push_str("    }");
 
     // Preserve the original COM-only deep-import paths while storing all COM
@@ -132,6 +133,7 @@ fn render_com_only_package(com_subpath_names: &BTreeSet<String>) -> String {
         out.push_str(&format!("    \"./{}\": {{\n", name));
         out.push_str(&format!("      \"types\": \"./com/{}.d.ts\",\n", name));
         out.push_str(&format!("      \"import\": \"./com/{}.js\",\n", name));
+        out.push_str(&format!("      \"require\": \"./com/{}.js\",\n", name));
         out.push_str(&format!("      \"default\": \"./com/{}.js\"\n", name));
         out.push_str("    }");
     }
@@ -150,11 +152,13 @@ fn append_com_exports(out: &mut String, com_subpath_names: &BTreeSet<String>) {
     out.push_str(",\n");
     out.push_str("    \"./com\": {\n");
     out.push_str("      \"types\": \"./com/index.d.ts\",\n");
-    out.push_str("      \"import\": \"./com/index.js\"\n");
+    out.push_str("      \"import\": \"./com/index.mjs\",\n");
+    out.push_str("      \"require\": \"./com/index.js\"\n");
     out.push_str("    },\n");
     out.push_str("    \"./com/*\": {\n");
     out.push_str("      \"types\": \"./com/*.d.ts\",\n");
-    out.push_str("      \"import\": \"./com/*.js\"\n");
+    out.push_str("      \"import\": \"./com/*.js\",\n");
+    out.push_str("      \"require\": \"./com/*.js\"\n");
     out.push_str("    }");
 }
 
@@ -233,7 +237,8 @@ mod tests {
         assert!(out.contains("\"./com/*\""));
         assert!(out.contains("\"types\": \"./com/*.d.ts\""));
         assert!(out.contains("\"import\": \"./com/*.js\""));
-        assert!(!out.contains("\"require\": \"./com/"));
+        assert!(out.contains("\"require\": \"./com/index.js\""));
+        assert!(out.contains("\"require\": \"./com/*.js\""));
     }
 
     #[test]
@@ -246,10 +251,13 @@ mod tests {
             com_subpath_names: &com,
         });
 
-        assert!(out.contains("\"type\": \"module\""));
+        assert!(out.contains("\"type\": \"commonjs\""));
         assert!(out.contains("\"./ITaskbarList3\""));
         assert!(out.contains("\"types\": \"./com/ITaskbarList3.d.ts\""));
         assert!(out.contains("\"import\": \"./com/ITaskbarList3.js\""));
+        assert!(out.contains("\"require\": \"./com/ITaskbarList3.js\""));
+        assert!(out.contains("\"import\": \"./com/index.mjs\""));
+        assert!(out.contains("\"require\": \"./com/index.js\""));
         assert!(out.contains("\"./com/*\""));
     }
 

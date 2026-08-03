@@ -7,7 +7,7 @@
 //! lazy sibling requires. This keeps the projection layer simple (still emits
 //! ESM shapes) while giving consumers fast startup.
 
-mod commonjs;
+pub(crate) mod commonjs;
 mod helpers;
 
 use crate::codegen::winrt::javascript::ir::*;

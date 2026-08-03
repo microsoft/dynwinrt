@@ -4,6 +4,7 @@
 use core::ffi::c_void;
 use std::{
     cell::RefCell,
+    collections::BTreeMap,
     sync::{Arc, RwLock},
 };
 
@@ -15,7 +16,7 @@ use windows_core::{GUID, IUnknown, Interface as WindowsInterface};
 
 use crate::{
     MetadataTable, TypeHandle, WinRTValue,
-    native_call::{AbiMethodSignature, Method as NativeMethod, ParameterType},
+    native_call::{AbiMethodSignature, Method as NativeMethod, OutputCleanup, ParameterType},
     result,
 };
 
@@ -36,58 +37,142 @@ impl InterfaceBase {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PointerOutputKind {
+    None,
+    Unclassified,
+    Com,
+    CoTaskMem,
+    Bstr,
+}
+
 #[derive(Debug, Clone)]
-pub struct Type(ParameterType);
+pub struct Type {
+    abi: ParameterType,
+    pointer_output: PointerOutputKind,
+}
 
 impl Type {
     pub fn winrt(typ: TypeHandle) -> Self {
-        Self(ParameterType::winrt(typ))
+        Self {
+            abi: ParameterType::winrt(typ),
+            pointer_output: PointerOutputKind::None,
+        }
     }
 
     pub fn pointer() -> Self {
-        Self(ParameterType::pointer())
+        Self::pointer_with_output(PointerOutputKind::Unclassified)
+    }
+
+    pub fn owned_com_pointer() -> Self {
+        Self::pointer_with_output(PointerOutputKind::Com)
+    }
+
+    pub fn co_task_mem_pointer() -> Self {
+        Self::pointer_with_output(PointerOutputKind::CoTaskMem)
+    }
+
+    pub fn bstr_pointer() -> Self {
+        Self::pointer_with_output(PointerOutputKind::Bstr)
+    }
+
+    fn pointer_with_output(pointer_output: PointerOutputKind) -> Self {
+        Self {
+            abi: ParameterType::pointer(),
+            pointer_output,
+        }
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct MethodSignature(AbiMethodSignature);
+pub struct MethodSignature {
+    abi: AbiMethodSignature,
+    output_kinds: Vec<PointerOutputKind>,
+    return_kind: Option<PointerOutputKind>,
+}
 
 impl MethodSignature {
     pub fn new(table: &std::sync::Arc<MetadataTable>) -> Self {
-        Self(AbiMethodSignature::new(table))
+        Self {
+            abi: AbiMethodSignature::new(table),
+            output_kinds: Vec::new(),
+            return_kind: None,
+        }
     }
 
-    pub fn add_in(self, typ: Type) -> Self {
-        Self(self.0.add_in_type(typ.0))
+    pub fn add_in(mut self, typ: Type) -> Self {
+        self.abi = self.abi.add_in_type(typ.abi);
+        self
     }
 
-    pub fn add_out(self, typ: Type) -> Self {
-        Self(self.0.add_out_type(typ.0))
+    pub fn add_out(mut self, typ: Type) -> Self {
+        self.output_kinds.push(typ.pointer_output);
+        self.abi = match typ.pointer_output {
+            PointerOutputKind::Com => self
+                .abi
+                .add_out_type_with_cleanup(typ.abi, OutputCleanup::ComRelease),
+            PointerOutputKind::CoTaskMem => self
+                .abi
+                .add_out_type_with_cleanup(typ.abi, OutputCleanup::CoTaskMemFree),
+            PointerOutputKind::Bstr => self
+                .abi
+                .add_out_type_with_cleanup(typ.abi, OutputCleanup::BstrFree),
+            PointerOutputKind::None | PointerOutputKind::Unclassified => {
+                self.abi.add_out_type(typ.abi)
+            }
+        };
+        self
     }
 
-    pub fn add_in_out(self, typ: Type) -> Self {
-        Self(self.0.add_in_out_type(typ.0))
+    pub fn add_in_out(mut self, typ: Type) -> Self {
+        self.output_kinds.push(PointerOutputKind::Unclassified);
+        self.abi = self.abi.add_in_out_type(typ.abi);
+        self
     }
 
-    pub fn add_out_fill(self, typ: Type) -> Self {
-        Self(self.0.add_out_fill_type(typ.0))
+    pub fn add_out_fill(mut self, typ: Type) -> Self {
+        self.output_kinds.push(PointerOutputKind::None);
+        self.abi = self.abi.add_out_fill_type(typ.abi);
+        self
     }
 
-    pub fn returns(self, typ: Type) -> Self {
-        Self(self.0.returns_type(typ.0))
+    pub fn returns(mut self, typ: Type) -> Self {
+        self.return_kind = Some(typ.pointer_output);
+        self.abi = self.abi.returns_type(typ.abi);
+        self
     }
 
-    pub fn returns_void(self) -> Self {
-        Self(self.0.returns_void())
+    pub fn returns_void(mut self) -> Self {
+        self.return_kind = None;
+        self.abi = self.abi.returns_void();
+        self
     }
 
-    pub fn preserve_hresult(self) -> Self {
-        Self(self.0.preserve_hresult())
+    pub fn preserve_hresult(mut self) -> Self {
+        self.return_kind = Some(PointerOutputKind::None);
+        self.abi = self.abi.preserve_hresult();
+        self
+    }
+
+    fn build(self, vtable_index: usize) -> RegisteredMethod {
+        let mut result_kinds =
+            Vec::with_capacity(self.output_kinds.len() + usize::from(self.return_kind.is_some()));
+        if let Some(kind) = self.return_kind {
+            result_kinds.push(kind);
+        }
+        result_kinds.extend(self.output_kinds);
+        RegisteredMethod {
+            native: self.abi.build(vtable_index),
+            result_kinds,
+        }
     }
 }
 
 #[derive(Debug)]
-struct RegisteredMethod(NativeMethod);
+struct RegisteredMethod {
+    native: NativeMethod,
+    result_kinds: Vec<PointerOutputKind>,
+}
 
 // Safety: a RegisteredMethod is fully built before publication and remains
 // immutable. NativeMethod invokes libffi's CIF only through shared references;
@@ -100,7 +185,7 @@ pub struct Interface {
     name: String,
     iid: GUID,
     base_slot: usize,
-    methods: Arc<RwLock<Vec<(String, Arc<RegisteredMethod>)>>>,
+    methods: Arc<RwLock<BTreeMap<usize, (String, Arc<RegisteredMethod>)>>>,
 }
 
 impl Interface {
@@ -113,26 +198,49 @@ impl Interface {
     }
 
     pub fn add_method(self, name: &str, signature: MethodSignature) -> Self {
-        let mut methods = self.methods.write().unwrap();
-        if methods.iter().any(|(existing, _)| existing == name) {
-            drop(methods);
-            return self;
+        let vtable_index = self
+            .methods
+            .read()
+            .unwrap()
+            .last_key_value()
+            .map_or(self.base_slot, |(slot, _)| slot + 1);
+        self.add_method_at(vtable_index, name, signature)
+            .expect("sequential COM method registration must use a free vtable slot")
+    }
+
+    pub fn add_method_at(
+        self,
+        vtable_index: usize,
+        name: &str,
+        signature: MethodSignature,
+    ) -> result::Result<Self> {
+        if vtable_index < self.base_slot {
+            return Err(invalid_argument(format!(
+                "COM method '{name}' uses vtable slot {vtable_index}, before the interface base slot {}",
+                self.base_slot
+            )));
         }
-        let vtable_index = self.base_slot + methods.len();
-        methods.push((
-            name.to_string(),
-            Arc::new(RegisteredMethod(signature.0.build(vtable_index))),
-        ));
+
+        let mut methods = self.methods.write().unwrap();
+        if methods.contains_key(&vtable_index) {
+            return Err(invalid_argument(format!(
+                "COM vtable slot {vtable_index} is already registered on '{}'",
+                self.name
+            )));
+        }
+        methods.insert(
+            vtable_index,
+            (name.to_string(), Arc::new(signature.build(vtable_index))),
+        );
         drop(methods);
-        self
+        Ok(self)
     }
 
     pub fn method(&self, vtable_index: usize) -> Option<MethodHandle> {
-        let local_index = vtable_index.checked_sub(self.base_slot)?;
         self.methods
             .read()
             .unwrap()
-            .get(local_index)
+            .get(&vtable_index)
             .map(|(_, method)| MethodHandle(Arc::clone(method)))
     }
 }
@@ -149,14 +257,33 @@ impl std::fmt::Debug for MethodHandle {
 impl MethodHandle {
     pub fn invoke(&self, obj: *mut c_void, args: &[WinRTValue]) -> result::Result<Vec<WinRTValue>> {
         self.0
-            .0
+            .native
             .call_dynamic(obj, args)
             .map_err(result::Error::WindowsError)
     }
 
+    pub fn invoke_with_output_kinds(
+        &self,
+        obj: *mut c_void,
+        args: &[WinRTValue],
+    ) -> result::Result<Vec<(WinRTValue, PointerOutputKind)>> {
+        let values = self.invoke(obj, args)?;
+        if values.len() != self.0.result_kinds.len() {
+            return Err(invalid_argument(format!(
+                "COM result plan mismatch: native call returned {} value(s), signature describes {}",
+                values.len(),
+                self.0.result_kinds.len()
+            )));
+        }
+        Ok(values
+            .into_iter()
+            .zip(self.0.result_kinds.iter().copied())
+            .collect())
+    }
+
     pub fn call_getter_hstring(&self, obj: *mut c_void) -> result::Result<windows_core::HSTRING> {
         self.0
-            .0
+            .native
             .call_getter_hstring(obj)
             .map_err(result::Error::WindowsError)
     }
@@ -172,8 +299,15 @@ pub fn register_interface(
         name: name.to_string(),
         iid,
         base_slot: base.first_method_slot(),
-        methods: Arc::new(RwLock::new(Vec::new())),
+        methods: Arc::new(RwLock::new(BTreeMap::new())),
     }
+}
+
+fn invalid_argument(message: String) -> result::Error {
+    result::Error::WindowsError(windows_core::Error::new(
+        windows_core::HRESULT(0x80070057u32 as i32),
+        &message,
+    ))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -265,8 +399,8 @@ pub fn call_method(
     args: &[WinRTValue],
 ) -> result::Result<Vec<WinRTValue>> {
     signature
-        .0
         .build(vtable_index)
+        .native
         .call_dynamic(obj, args)
         .map_err(result::Error::WindowsError)
 }
@@ -336,6 +470,65 @@ mod tests {
     #[repr(C)]
     struct FakeComObject {
         vtable: *const *mut c_void,
+    }
+
+    #[repr(C)]
+    struct TrackedComObject {
+        vtable: *const windows_core::IUnknown_Vtbl,
+        releases: AtomicU32,
+    }
+
+    unsafe extern "system" fn tracked_query_interface(
+        _this: *mut c_void,
+        _iid: *const GUID,
+        result: *mut *mut c_void,
+    ) -> windows_core::HRESULT {
+        unsafe { *result = std::ptr::null_mut() };
+        E_NOINTERFACE
+    }
+
+    unsafe extern "system" fn tracked_add_ref(_this: *mut c_void) -> u32 {
+        2
+    }
+
+    unsafe extern "system" fn tracked_release(this: *mut c_void) -> u32 {
+        let object = unsafe { &*(this as *const TrackedComObject) };
+        object.releases.fetch_add(1, Ordering::Relaxed);
+        1
+    }
+
+    static TRACKED_VTABLE: windows_core::IUnknown_Vtbl = windows_core::IUnknown_Vtbl {
+        QueryInterface: tracked_query_interface,
+        AddRef: tracked_add_ref,
+        Release: tracked_release,
+    };
+
+    #[repr(C)]
+    struct FailingOutCall {
+        vtable: *const *mut c_void,
+        output: *mut c_void,
+    }
+
+    unsafe extern "system" fn write_object_then_fail(
+        this: *mut c_void,
+        output: *mut *mut c_void,
+    ) -> windows_core::HRESULT {
+        let call = unsafe { &*(this as *const FailingOutCall) };
+        unsafe { *output = call.output };
+        windows_core::HRESULT(0x80004005u32 as i32)
+    }
+
+    unsafe extern "system" fn write_object_and_i32_then_fail(
+        this: *mut c_void,
+        output: *mut *mut c_void,
+        number: *mut i32,
+    ) -> windows_core::HRESULT {
+        let call = unsafe { &*(this as *const FailingOutCall) };
+        unsafe {
+            *output = call.output;
+            *number = 42;
+        }
+        windows_core::HRESULT(0x80004005u32 as i32)
     }
 
     #[test]
@@ -550,6 +743,86 @@ mod tests {
     }
 
     #[test]
+    fn failing_hresult_releases_written_interface_output_on_direct_path() {
+        let tracked = TrackedComObject {
+            vtable: &TRACKED_VTABLE,
+            releases: AtomicU32::new(0),
+        };
+        let vtable = [write_object_then_fail as *mut c_void];
+        let mut call = FailingOutCall {
+            vtable: vtable.as_ptr(),
+            output: (&tracked as *const TrackedComObject).cast_mut().cast(),
+        };
+        let table = MetadataTable::new();
+
+        let error = call_method(
+            0,
+            (&mut call as *mut FailingOutCall).cast(),
+            MethodSignature::new(&table).add_out(Type::owned_com_pointer()),
+            &[],
+        )
+        .unwrap_err();
+
+        assert!(error.message().contains("80004005"));
+        assert_eq!(tracked.releases.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn failing_hresult_releases_written_interface_output_on_libffi_path() {
+        let tracked = TrackedComObject {
+            vtable: &TRACKED_VTABLE,
+            releases: AtomicU32::new(0),
+        };
+        let vtable = [write_object_and_i32_then_fail as *mut c_void];
+        let mut call = FailingOutCall {
+            vtable: vtable.as_ptr(),
+            output: (&tracked as *const TrackedComObject).cast_mut().cast(),
+        };
+        let table = MetadataTable::new();
+
+        let error = call_method(
+            0,
+            (&mut call as *mut FailingOutCall).cast(),
+            MethodSignature::new(&table)
+                .add_out(Type::owned_com_pointer())
+                .add_out(Type::winrt(table.i32_type())),
+            &[],
+        )
+        .unwrap_err();
+
+        assert!(error.message().contains("80004005"));
+        assert_eq!(tracked.releases.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn semantic_pointer_outputs_lower_exact_failure_cleanup_plans() {
+        let table = MetadataTable::new();
+        let cases = [
+            (
+                Type::owned_com_pointer(),
+                OutputCleanup::ComRelease,
+                PointerOutputKind::Com,
+            ),
+            (
+                Type::co_task_mem_pointer(),
+                OutputCleanup::CoTaskMemFree,
+                PointerOutputKind::CoTaskMem,
+            ),
+            (
+                Type::bstr_pointer(),
+                OutputCleanup::BstrFree,
+                PointerOutputKind::Bstr,
+            ),
+        ];
+
+        for (typ, expected_cleanup, expected_output) in cases {
+            let registered = MethodSignature::new(&table).add_out(typ).build(0);
+            assert_eq!(registered.native.output_cleanup(0), expected_cleanup);
+            assert_eq!(registered.result_kinds, [expected_output]);
+        }
+    }
+
+    #[test]
     fn multi_output_guid_uses_full_sized_storage() {
         let table = MetadataTable::new();
         let signature = MethodSignature::new(&table)
@@ -603,6 +876,80 @@ mod tests {
         assert_eq!(first.name(), second.name());
         assert_ne!(first.iid(), second.iid());
         assert!(!Arc::ptr_eq(&first.methods, &second.methods));
+    }
+
+    #[test]
+    fn duplicate_method_names_preserve_distinct_vtable_slots() {
+        let table = MetadataTable::new();
+        let iface = register_interface(
+            &table,
+            "Windows.Win32.Example.IOverloaded",
+            GUID::from_u128(3),
+            InterfaceBase::IUnknown,
+        )
+        .add_method("SetValue", MethodSignature::new(&table))
+        .add_method("SetValue", MethodSignature::new(&table))
+        .add_method("AfterOverload", MethodSignature::new(&table));
+
+        assert!(iface.method(3).is_some());
+        assert!(iface.method(4).is_some());
+        assert!(iface.method(5).is_some());
+    }
+
+    #[test]
+    fn explicit_method_registration_rejects_duplicate_slots() {
+        let table = MetadataTable::new();
+        let iface = register_interface(
+            &table,
+            "Windows.Win32.Example.IExplicitSlots",
+            GUID::from_u128(4),
+            InterfaceBase::IUnknown,
+        )
+        .add_method_at(7, "First", MethodSignature::new(&table))
+        .unwrap();
+
+        let error = iface
+            .add_method_at(7, "Second", MethodSignature::new(&table))
+            .unwrap_err();
+        assert!(error.message().contains("slot 7"));
+    }
+
+    #[test]
+    fn method_results_preserve_pointer_ownership_kind() {
+        let table = MetadataTable::new();
+        let iface = register_interface(
+            &table,
+            "Windows.Win32.Example.IOwnedOutput",
+            GUID::from_u128(5),
+            InterfaceBase::IUnknown,
+        )
+        .add_method_at(
+            3,
+            "GetOwned",
+            MethodSignature::new(&table).add_out(Type::owned_com_pointer()),
+        )
+        .unwrap();
+        let vtable = [
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            write_native_pointer as *mut c_void,
+        ];
+        let mut object = FakeComObject {
+            vtable: vtable.as_ptr(),
+        };
+
+        let results = iface
+            .method(3)
+            .unwrap()
+            .invoke_with_output_kinds((&mut object as *mut FakeComObject).cast(), &[])
+            .unwrap();
+
+        assert!(matches!(
+            results.as_slice(),
+            [(WinRTValue::RawPtr(ptr), PointerOutputKind::Com)]
+                if *ptr == 0x1234usize as *mut c_void
+        ));
     }
 
     fn shell_link_interface(table: &std::sync::Arc<MetadataTable>) -> Interface {

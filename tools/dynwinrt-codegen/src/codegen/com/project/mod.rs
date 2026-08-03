@@ -4,14 +4,17 @@
 mod interop;
 pub(super) mod types;
 
-use crate::com_metadata::{ComEnumValue, ComInterfaceMeta, MethodMeta, ParamDirection, ParamMeta};
+use crate::com_metadata::{
+    ComCoclassMeta, ComEnumValue, ComInterfaceMeta, MethodMeta, ParamDirection,
+};
 use crate::types::TypeMeta;
 
 use super::ir::{
-    ActivationPlan, ComParamDirection, ComReturnConvention, ComType, ProjectedComEnum,
-    ProjectedComEnumMember, ProjectedComInterface, ProjectedComMethod, ProjectedComMethodKind,
-    ProjectedComParam, ProjectedComResult, ProjectedEnumValue, ResultConversion, ResultSource,
-    StringBufferPlan, StringEncoding, UnsupportedComType,
+    ActivationPlan, ComParamDirection, ComReturnConvention, ComType, OverloadDispatch,
+    OverloadInfo, ProjectedComCoclass, ProjectedComEnum, ProjectedComEnumMember,
+    ProjectedComInterface, ProjectedComMethod, ProjectedComMethodKind, ProjectedComParam,
+    ProjectedComResult, ProjectedEnumValue, ResultConversion, ResultSource, StringBufferPlan,
+    StringEncoding, UnsupportedComType, dispatch_shape,
 };
 use super::javascript::naming::camel_case;
 use interop::resolve_projected_default_iid;
@@ -28,6 +31,7 @@ pub(super) fn project_com_interface(
         .iter()
         .map(|method| project_method(meta, method, interop_target.as_ref()))
         .collect::<Result<Vec<_>, _>>()?;
+    let methods = group_overloads(methods, &meta.interface.name)?;
     let activation = if let Some((class_name, class_namespace, target_iid)) = interop_target {
         ActivationPlan::WinRtFactory {
             class_name,
@@ -77,6 +81,195 @@ pub(super) fn project_com_interface(
         activation,
         referenced_enums,
     })
+}
+
+pub(super) fn project_com_coclass(
+    meta: &ComCoclassMeta,
+    winmd_paths: &str,
+) -> Result<ProjectedComCoclass, String> {
+    let associated_interfaces = meta
+        .associated_interfaces
+        .iter()
+        .map(|interface| project_com_interface(interface, winmd_paths))
+        .collect::<Result<Vec<_>, _>>()?;
+    let primary_interface = associated_interfaces
+        .iter()
+        .find(|interface| interface.iid == meta.primary_interface.interface.iid)
+        .cloned()
+        .ok_or_else(|| {
+            format!(
+                "{}.{} primary interface {} was not projected",
+                meta.namespace, meta.name, meta.primary_interface.interface.name
+            )
+        })?;
+    for method in &primary_interface.methods {
+        let public_name = method
+            .overload
+            .as_ref()
+            .map_or(method.camel_name.as_str(), |overload| {
+                overload.public_name.as_str()
+            });
+        if matches!(public_name, "as" | "tryAs" | "supports") {
+            return Err(format!(
+                "{}.{} primary interface method `{public_name}` conflicts with the coclass interface-view API",
+                meta.namespace, meta.name
+            ));
+        }
+    }
+
+    Ok(ProjectedComCoclass {
+        name: meta.name.clone(),
+        namespace: meta.namespace.clone(),
+        clsid: meta.clsid.clone(),
+        primary_interface,
+        associated_interfaces,
+    })
+}
+
+/// Counts the JS-surfaced ("input" direction) parameters of a method — this
+/// is the argument count a caller actually sees and the value overload
+/// dispatch bucketing keys off of.
+fn input_arity(method: &ProjectedComMethod) -> usize {
+    method
+        .params
+        .iter()
+        .filter(|param| param.direction.is_input())
+        .count()
+}
+
+/// Groups same-name COM methods (real, metadata-driven overloads — e.g.
+/// `IDCompositionEffectGroup::SetOpacity(float)` vs
+/// `SetOpacity(IDCompositionAnimation*)`) into a single public JS method with
+/// a validated runtime dispatcher, per the classic-COM-ABI skill's mandate to
+/// resolve overloads in the projected IR rather than with renderer
+/// heuristics.
+///
+/// Grouping never merges methods by *name* alone: it computes, for every
+/// group with more than one member, whether the members are safely
+/// distinguishable at a call site (same-arity siblings must have one
+/// parameter position with mutually distinct, unambiguous JS dispatch
+/// shapes). If they cannot be safely distinguished, this fails closed with a
+/// diagnostic naming the interface, method, and reason, rather than silently
+/// keeping only the last-declared overload (the pre-existing bug) or
+/// guessing at a heuristic disambiguation.
+fn group_overloads(
+    methods: Vec<ProjectedComMethod>,
+    interface_name: &str,
+) -> Result<Vec<ProjectedComMethod>, String> {
+    // Preserve first-seen order of each public name so `.d.ts`/`.js` render
+    // overload signatures contiguously even if metadata interleaves them with
+    // other members.
+    let mut order: Vec<String> = Vec::new();
+    let mut groups: std::collections::HashMap<String, Vec<usize>> =
+        std::collections::HashMap::new();
+    for (index, method) in methods.iter().enumerate() {
+        groups
+            .entry(method.camel_name.clone())
+            .or_insert_with(|| {
+                order.push(method.camel_name.clone());
+                Vec::new()
+            })
+            .push(index);
+    }
+
+    let mut overloads: Vec<Option<OverloadInfo>> = vec![None; methods.len()];
+    for name in &order {
+        let indices = &groups[name];
+        if indices.len() < 2 {
+            continue;
+        }
+        for &index in indices {
+            let method = &methods[index];
+            if method.kind != ProjectedComMethodKind::Normal {
+                return Err(format!(
+                    "{interface_name}.{name}: cannot project {} overloads sharing the name `{name}` \
+                     because at least one is a synthesized/dynamic-IID method, which is not a \
+                     safely dispatchable JS shape",
+                    indices.len()
+                ));
+            }
+            if method.string_buffer.is_some() {
+                return Err(format!(
+                    "{interface_name}.{name}: cannot project {} overloads sharing the name `{name}` \
+                     because at least one uses a caller-allocated string buffer, which is not a \
+                     safely dispatchable JS shape",
+                    indices.len()
+                ));
+            }
+        }
+
+        let mut arity_buckets: std::collections::BTreeMap<usize, Vec<usize>> =
+            std::collections::BTreeMap::new();
+        for &index in indices {
+            arity_buckets
+                .entry(input_arity(&methods[index]))
+                .or_default()
+                .push(index);
+        }
+
+        for (arity, bucket) in arity_buckets {
+            if bucket.len() == 1 {
+                overloads[bucket[0]] = Some(OverloadInfo {
+                    public_name: name.clone(),
+                    impl_name: format!("_{name}_{}", methods[bucket[0]].vtable_index),
+                    dispatch: OverloadDispatch::Arity,
+                });
+                continue;
+            }
+            let key_param_index = (0..arity).find(|&key_index| {
+                let mut seen = Vec::new();
+                bucket.iter().all(|&index| {
+                    let (_, param) = input_params_of(&methods[index])[key_index];
+                    match dispatch_shape(&param.typ) {
+                        Some(shape) if !seen.contains(&shape) => {
+                            seen.push(shape);
+                            true
+                        }
+                        _ => false,
+                    }
+                })
+            });
+            let Some(key_param_index) = key_param_index else {
+                return Err(format!(
+                    "{interface_name}.{name}: {} overloads share arity {arity} but no parameter \
+                     position has mutually distinguishable JS shapes (arity/type/category); \
+                     overload dispatch cannot be safely generated",
+                    bucket.len()
+                ));
+            };
+            for &index in &bucket {
+                let (_, param) = input_params_of(&methods[index])[key_param_index];
+                let shape =
+                    dispatch_shape(&param.typ).expect("validated distinguishable shape above");
+                overloads[index] = Some(OverloadInfo {
+                    public_name: name.clone(),
+                    impl_name: format!("_{name}_{}", methods[index].vtable_index),
+                    dispatch: OverloadDispatch::ArityAndShape {
+                        key_param_index,
+                        shape,
+                    },
+                });
+            }
+        }
+    }
+
+    Ok(methods
+        .into_iter()
+        .zip(overloads)
+        .map(|(mut method, overload)| {
+            method.overload = overload;
+            method
+        })
+        .collect())
+}
+
+fn input_params_of(method: &ProjectedComMethod) -> Vec<(usize, &ProjectedComParam)> {
+    method
+        .params
+        .iter()
+        .enumerate()
+        .filter(|(_, param)| param.direction.is_input())
+        .collect()
 }
 
 fn project_method(
@@ -184,7 +377,7 @@ fn project_method(
             && matches!(
                 typ,
                 ComType::PointerAlias {
-                    kind: super::ir::PointerAliasKind::StringPointer,
+                    kind: super::ir::PointerAliasKind::StringPointer(_),
                     ..
                 }
             )
@@ -305,6 +498,7 @@ fn project_method(
         string_buffer,
         kind,
         doc: method.doc.clone(),
+        overload: None,
     })
 }
 
@@ -378,7 +572,7 @@ fn validate_owned_outputs(
                     ComType::RawPointer
                         | ComType::PointerAlias {
                             kind: super::ir::PointerAliasKind::DataPointer
-                                | super::ir::PointerAliasKind::StringPointer,
+                                | super::ir::PointerAliasKind::StringPointer(_),
                             ..
                         }
                 )
@@ -505,47 +699,29 @@ fn project_string_buffer(method: &MethodMeta) -> Result<Option<StringBufferPlan>
 }
 
 fn string_buffer_param_is_optional(method: &MethodMeta, param_index: usize) -> bool {
-    let Some((_, count_index)) =
-        method
-            .params
-            .iter()
-            .enumerate()
-            .find_map(|(buffer_index, param)| match param.direction {
-                ParamDirection::OutStringBuffer { count_param_index } => {
-                    Some((buffer_index, count_param_index))
-                }
-                _ => None,
-            })
+    let Some(count_index) = method
+        .params
+        .iter()
+        .find_map(|param| match param.direction {
+            ParamDirection::OutStringBuffer { count_param_index } => Some(count_param_index),
+            _ => None,
+        })
     else {
         return false;
     };
-    let Some(param) = method.params.get(param_index) else {
-        return false;
-    };
-    let optional_shape =
-        param_index == count_index || (param_index > count_index && is_optional_find_data(param));
-    optional_shape
+    // The count parameter is optional (defaultable) only when no other required
+    // input parameter follows it — otherwise a caller could not omit it without
+    // also omitting later required arguments. This authoritative, metadata-driven
+    // count relationship replaces any name-based ("cch..."/"pfd"/find-data) shape
+    // guessing.
+    param_index == count_index
         && method
             .params
             .iter()
             .skip(param_index + 1)
             .filter(|param| param.direction.is_input())
-            .all(is_optional_find_data)
-}
-
-fn is_optional_find_data(param: &ParamMeta) -> bool {
-    if !matches!(param.direction, ParamDirection::In | ParamDirection::Out) {
-        return false;
-    }
-    let name = param.name.to_ascii_lowercase();
-    name == "pfd"
-        || name.contains("finddata")
-        || name.contains("find_data")
-        || matches!(
-            &param.typ,
-            TypeMeta::Struct { name, .. }
-                if name == "WIN32_FIND_DATAW" || name == "WIN32_FIND_DATAA"
-        )
+            .count()
+            == 0
 }
 
 fn pointer_alias_name(typ: &TypeMeta) -> Option<&str> {

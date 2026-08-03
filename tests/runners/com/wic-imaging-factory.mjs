@@ -18,6 +18,6 @@ const factory = IWICImagingFactory._fromNative(
 const stream = factory.createStream();
 assert.equal(stream.isNull(), false);
 stream.release();
-factory._obj.release();
+factory.release();
 
 console.log('wic-imaging-factory ok');

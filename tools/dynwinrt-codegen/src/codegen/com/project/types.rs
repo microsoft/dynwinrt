@@ -5,7 +5,8 @@ use crate::com_metadata::{is_native_isize, is_native_usize};
 use crate::types::TypeMeta;
 
 use super::super::ir::{
-    ComEnumUnderlying, ComPrimitive, ComScalarRepr, ComType, PointerAliasKind, UnsupportedComType,
+    ComEnumUnderlying, ComPrimitive, ComScalarRepr, ComType, PointerAliasKind, StringEncoding,
+    UnsupportedComType,
 };
 
 pub(in crate::codegen::com) fn project_type(typ: &TypeMeta) -> Result<ComType, UnsupportedComType> {
@@ -166,22 +167,14 @@ fn scalar_alias_underlying(name: &str, typ: &TypeMeta) -> Option<ComScalarRepr> 
 fn classify_pointer_alias(name: &str) -> Option<PointerAliasKind> {
     if matches!(
         name,
-        "PWSTR"
-            | "PCWSTR"
-            | "PSTR"
-            | "PCSTR"
-            | "LPWSTR"
-            | "LPCWSTR"
-            | "LPSTR"
-            | "LPCSTR"
-            | "PWCHAR"
-            | "PCWCHAR"
-            | "LPWCH"
-            | "LPCWCH"
-            | "LPCH"
-            | "LPCCH"
+        "PWSTR" | "PCWSTR" | "LPWSTR" | "LPCWSTR" | "PWCHAR" | "PCWCHAR" | "LPWCH" | "LPCWCH"
     ) {
-        Some(PointerAliasKind::StringPointer)
+        Some(PointerAliasKind::StringPointer(StringEncoding::Wide))
+    } else if matches!(
+        name,
+        "PSTR" | "PCSTR" | "LPSTR" | "LPCSTR" | "LPCH" | "LPCCH"
+    ) {
+        Some(PointerAliasKind::StringPointer(StringEncoding::Ansi))
     } else if matches!(
         name,
         "PSID"

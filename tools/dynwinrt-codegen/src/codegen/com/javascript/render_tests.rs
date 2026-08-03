@@ -30,6 +30,56 @@ fn renderer_api_accepts_only_projected_ir() {
 }
 
 #[test]
+fn coclass_renderer_uses_new_and_runtime_query_interface_views() {
+    let primary = ProjectedComInterface {
+        name: "ITest4".into(),
+        namespace: "Tests".into(),
+        iid: "00000000-0000-0000-0000-000000000004".into(),
+        is_iunknown_rooted: true,
+        methods: Vec::new(),
+        activation: ActivationPlan::None,
+        referenced_enums: Vec::new(),
+    };
+    let coclass = ProjectedComCoclass {
+        name: "Test".into(),
+        namespace: "Tests".into(),
+        clsid: "10000000-0000-0000-0000-000000000001".into(),
+        primary_interface: primary.clone(),
+        associated_interfaces: vec![primary],
+    };
+
+    let output = render_com_coclass(&coclass);
+
+    assert!(output.js.contains("class Test extends ITest4"));
+    assert!(
+        output
+            .js
+            .contains("const { ITest4, IID_ITest4 } = require('./ITest4.js');")
+    );
+    assert!(output.js.contains("exports.Test = Test;"));
+    assert!(output.js.contains("constructor()"));
+    assert!(
+        output
+            .js
+            .contains("DynCom.coCreateInstance(CLSID_Test, IID_ITest4)")
+    );
+    assert!(output.js.contains("as(InterfaceClass)"));
+    assert!(output.js.contains("DynCom.tryCast"));
+    assert!(
+        output
+            .dts
+            .contains("export declare class Test extends ITest4")
+    );
+    assert!(output.dts.contains("tryAs<T>"));
+    assert!(
+        output
+            .extra_files
+            .iter()
+            .any(|(name, _)| name == "ITest4.js")
+    );
+}
+
+#[test]
 fn allocator_contract_rejects_trailing_separator_and_whitespace() {
     for free_with in ["CoTaskMemFree:", " CoTaskMemFree", "CoTaskMemFree "] {
         let method = MethodMeta {
@@ -278,7 +328,11 @@ fn handle_alias_kind_distinguishes_handle_values_from_string_pointers() {
     assert_eq!(handle_alias_kind(&hwnd), Some(HandleAliasKind::HandleValue));
     assert_eq!(
         handle_alias_kind(&pwstr_struct()),
-        Some(HandleAliasKind::StringPointer)
+        Some(HandleAliasKind::StringPointer(StringEncoding::Wide))
+    );
+    assert_eq!(
+        handle_alias_kind(&pstr_struct()),
+        Some(HandleAliasKind::StringPointer(StringEncoding::Ansi))
     );
     let psid = TypeMeta::Struct {
         namespace: "Windows.Win32.Security".into(),
@@ -392,7 +446,7 @@ fn hresult_input_projects_as_number_and_i32_value() {
     let js = render_js(&com, None);
     let dts = render_dts(&com, None);
     assert!(
-        js.contains(".addMethod('Close', new DynComMethodSig().addIn(DynCom.i32Type()))"),
+        js.contains(".addMethodAt(4, 'Close', new DynComMethodSig().addIn(DynCom.i32Type()))"),
         ".js must register HRESULT in-param as i32:\n{}",
         js
     );
@@ -416,6 +470,63 @@ fn hresult_input_projects_as_number_and_i32_value() {
         ".d.ts must not expose an undefined HRESULT alias:\n{}",
         dts
     );
+}
+
+#[test]
+fn method_doc_url_renders_as_see_link_in_js_and_dts() {
+    let m = MethodMeta {
+        name: "Close".into(),
+        vtable_index: 4,
+        params: vec![ParamMeta {
+            name: "hr".into(),
+            typ: make_hresult(),
+            direction: ParamDirection::In,
+        }],
+        return_type: Some(make_hresult()),
+        doc: Some(
+            "https://learn.microsoft.com/windows/win32/api/objidl/nf-objidl-ipersist-close".into(),
+        ),
+        ..Default::default()
+    };
+    let com = plain_iface_with_method(m);
+    let js = render_js(&com, None);
+    let dts = render_dts(&com, None);
+    let expected_doc = "/** @see {@link https://learn.microsoft.com/windows/win32/api/objidl/nf-objidl-ipersist-close} */";
+    assert!(
+        js.contains(expected_doc),
+        ".js must render the metadata doc URL as an @see JSDoc comment above the method:\n{}",
+        js
+    );
+    assert!(
+        dts.contains(expected_doc),
+        ".d.ts must render the metadata doc URL as an @see JSDoc comment above the signature:\n{}",
+        dts
+    );
+}
+
+#[test]
+fn method_without_doc_renders_no_see_comment() {
+    let m = MethodMeta {
+        name: "Close".into(),
+        vtable_index: 4,
+        params: vec![ParamMeta {
+            name: "hr".into(),
+            typ: make_hresult(),
+            direction: ParamDirection::In,
+        }],
+        return_type: Some(make_hresult()),
+        doc: None,
+        ..Default::default()
+    };
+    let com = plain_iface_with_method(m);
+    let js = render_js(&com, None);
+    let dts = render_dts(&com, None);
+    assert!(
+        !js.contains("@see"),
+        "renderer must not invent documentation when metadata has none:\n{}",
+        js
+    );
+    assert!(!dts.contains("@see"), "same for .d.ts:\n{}", dts);
 }
 
 // ---- Fix 3 (REFIID-guarded interop heuristic) ----
@@ -863,6 +974,38 @@ fn plain_method_single_out_guid_projects_as_string() {
 }
 
 #[test]
+fn generated_interface_exposes_release_iid_and_protected_constructor() {
+    let m = MethodMeta {
+        name: "Close".into(),
+        vtable_index: 4,
+        params: Vec::new(),
+        return_type: Some(make_hresult()),
+        ..Default::default()
+    };
+    let com = plain_iface_with_method(m);
+    let js = render_js(&com, None);
+    let dts = render_dts(&com, None);
+
+    assert!(
+        js.contains("release()") && js.contains("this._obj.release();"),
+        ".js class must expose a release() method delegating to the managed native value:\n{}",
+        js
+    );
+    assert!(
+        dts.contains("release(): void;"),
+        ".d.ts must declare release(): void;:\n{}",
+        dts
+    );
+    assert!(
+        dts.contains("protected constructor(obj: unknown);")
+            && dts.contains("static readonly IID:"),
+        ".d.ts must make the interface non-publicly constructible while allowing generated coclass subclasses:\n{}",
+        dts
+    );
+    assert!(js.contains("Object.create(IHasOut.prototype)"));
+}
+
+#[test]
 fn plain_method_single_out_enum_projects_as_underlying() {
     // Model: `HRESULT GetKind([out] MyKind* pk)` where MyKind is an I32
     // enum. Underlying-scalar unwrap → `.toNumber()`; .d.ts uses the enum
@@ -1094,20 +1237,23 @@ fn handle_value_arg_accepts_buffer_and_string_pointer_keeps_buffer() {
     // HWND inputs accept Electron's pointer-width Buffer, but the HWND
     // output alias remains a numeric handle value.
     assert!(dts.contains("export type HWND = bigint | number;"));
-    assert!(dts.contains("export type PWSTR = bigint | Buffer;"));
-    assert!(dts.contains("Pass a `Buffer` holding the string bytes"));
+    assert!(dts.contains("export type PWSTR = string | Buffer | Uint8Array | bigint;"));
+    assert!(
+        dts.contains("Pass a JS `string` (encoded automatically via DynCom.wideStringPointer)")
+    );
     assert!(
         dts.contains("setOverlayIcon(hwnd: HWND | Buffer | Uint8Array, description: PWSTR): void;")
     );
 
     // Handle-value conversion is centralized in the runtime; string
-    // pointers continue to pass their backing-store address.
+    // pointers use the encoding-aware wide/ANSI constructors so the runtime
+    // knows how to marshal a JS `string` input.
     assert!(
         js.contains("DynCom.pointer(DynCom.handleValue(hwnd))"),
         "HWND arg must use DynCom.handleValue:\n{js}"
     );
     assert!(!js.contains("function _handleArg("));
-    assert!(!js.contains("handleValue(description)"));
+    assert!(js.contains("DynCom.wideStringPointer(description)"));
 }
 
 #[test]
@@ -1301,6 +1447,17 @@ fn pwstr_struct() -> TypeMeta {
     }
 }
 
+fn pstr_struct() -> TypeMeta {
+    TypeMeta::Struct {
+        namespace: "Windows.Win32.Foundation".into(),
+        name: "PSTR".into(),
+        fields: vec![crate::types::FieldMeta {
+            name: "Value".into(),
+            typ: TypeMeta::Object,
+        }],
+    }
+}
+
 #[test]
 fn out_string_buffer_allocates_decodes_and_returns_string() {
     let m = MethodMeta {
@@ -1332,7 +1489,7 @@ fn out_string_buffer_allocates_decodes_and_returns_string() {
         js
     );
     assert!(
-        js.contains(".addMethod('GetDescription', new DynComMethodSig().addIn(DynCom.pointerType()).addIn(DynCom.i32Type()))"),
+        js.contains(".addMethodAt(6, 'GetDescription', new DynComMethodSig().addIn(DynCom.pointerType()).addIn(DynCom.i32Type()))"),
         ".js must register string buffer as an input pointer:\n{}",
         js
     );

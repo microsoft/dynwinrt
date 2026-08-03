@@ -85,6 +85,15 @@ pub struct ComInterfaceMeta {
     pub referenced_enums: Vec<ComEnumMeta>,
 }
 
+#[derive(Debug, Clone)]
+pub struct ComCoclassMeta {
+    pub name: String,
+    pub namespace: String,
+    pub clsid: String,
+    pub primary_interface: ComInterfaceMeta,
+    pub associated_interfaces: Vec<ComInterfaceMeta>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ComEnumValue {
     Signed(i64),
@@ -113,6 +122,17 @@ pub fn parse_com_interface(
 ) -> Option<ComInterfaceMeta> {
     let index = crate::meta::load_index(winmd_paths)?;
     parse_com_interface_from_index(&index, namespace, name)
+}
+
+pub fn parse_com_coclass(
+    winmd_paths: &str,
+    namespace: &str,
+    name: &str,
+) -> Result<Option<ComCoclassMeta>, String> {
+    let Some(index) = crate::meta::load_index(winmd_paths) else {
+        return Ok(None);
+    };
+    parse_com_coclass_from_index(&index, namespace, name)
 }
 
 pub fn parse_com_enum(winmd_paths: &str, namespace: &str, name: &str) -> Option<ComEnumMeta> {
@@ -243,6 +263,95 @@ fn parse_com_interface_from_index(
     })
 }
 
+fn parse_com_coclass_from_index(
+    index: &reader::Index,
+    namespace: &str,
+    name: &str,
+) -> Result<Option<ComCoclassMeta>, String> {
+    let Some(def) = index.get(namespace, name).next() else {
+        return Ok(None);
+    };
+    if !is_com_coclass(&def) {
+        return Ok(None);
+    }
+    let clsid = crate::meta::extract_iid(&def);
+    if clsid.is_empty() {
+        return Err(format!(
+            "{namespace}.{name} is coclass-shaped but has no CLSID"
+        ));
+    }
+
+    // Windows.Win32.winmd represents coclasses as GUID-bearing ValueType
+    // definitions without InterfaceImpl rows. Associate interfaces using the
+    // metadata naming convention already used for interface activation, then
+    // choose a primary from the real interface inheritance graph. Numeric
+    // suffixes never determine which interface is most derived.
+    let mut associated_interfaces = index
+        .all()
+        .filter(|candidate| {
+            candidate.namespace() == namespace
+                && candidate
+                    .flags()
+                    .contains(windows_metadata::TypeAttributes::Interface)
+                && coclass_name_candidates(candidate.name())
+                    .iter()
+                    .any(|candidate_name| candidate_name == name)
+        })
+        .filter_map(|candidate| {
+            parse_com_interface_from_index(index, namespace, candidate.name())
+                .filter(|interface| interface.is_iunknown_rooted)
+        })
+        .collect::<Vec<_>>();
+    associated_interfaces.sort_by(|left, right| {
+        left.own_methods_start
+            .cmp(&right.own_methods_start)
+            .then_with(|| left.interface.name.cmp(&right.interface.name))
+    });
+    associated_interfaces.dedup_by(|left, right| left.interface.iid == right.interface.iid);
+
+    let primary_interface =
+        select_primary_coclass_interface(namespace, name, &associated_interfaces)?;
+
+    Ok(Some(ComCoclassMeta {
+        name: name.to_string(),
+        namespace: namespace.to_string(),
+        clsid,
+        primary_interface,
+        associated_interfaces,
+    }))
+}
+
+fn select_primary_coclass_interface(
+    namespace: &str,
+    coclass_name: &str,
+    associated_interfaces: &[ComInterfaceMeta],
+) -> Result<ComInterfaceMeta, String> {
+    let leaves = associated_interfaces
+        .iter()
+        .filter(|candidate| {
+            !associated_interfaces.iter().any(|other| {
+                other.interface.iid != candidate.interface.iid
+                    && other.base_chain.contains(&candidate.interface.name)
+            })
+        })
+        .collect::<Vec<_>>();
+    match leaves.as_slice() {
+        [primary] => Ok((*primary).clone()),
+        [] => Err(format!(
+            "{namespace}.{coclass_name} has no safely associated IUnknown-rooted interface"
+        )),
+        multiple => Err(format!(
+            "{namespace}.{coclass_name} has multiple unrelated most-derived interfaces ({}); \
+                 Windows.Win32 metadata does not identify a default interface",
+            multiple
+                .iter()
+                .map(|interface| interface.interface.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
+}
+
 fn parse_methods(
     index: &reader::Index,
     def: &reader::TypeDef,
@@ -279,8 +388,17 @@ fn parse_methods(
                     matches!(typ, windows_metadata::Type::Array(_)),
                 );
                 let mapped_type = map_parameter_type(typ, &direction, index);
+                // Use the metadata's own `NativeArrayInfo(CountParamIndex = ...)` as the sole,
+                // authoritative source for buffer/count relationships. A `[out]` `PWSTR`/`PSTR`
+                // buffer with an authoritative count becomes a caller-owned string buffer; any
+                // other `[out]`/`[out, in]` array-shaped output with a count relationship is an
+                // unsupported native buffer (no name- or adjacency-based guessing).
                 if let Some(count_param_index) = native_array_count_param(&param) {
-                    if direction.is_output() && !is_string_buffer(&mapped_type) {
+                    if direction == ParamDirection::Out && is_string_buffer(&mapped_type) {
+                        if let Some(count_param_index) = count_param_index {
+                            direction = ParamDirection::OutStringBuffer { count_param_index };
+                        }
+                    } else if direction.is_output() {
                         direction = ParamDirection::UnsupportedNativeArray { count_param_index };
                     }
                 }
@@ -311,18 +429,34 @@ fn parse_methods(
                     direction,
                 });
             }
-            mark_caller_owned_string_buffers(&mut params);
             let return_type = (signature.return_type != windows_metadata::Type::Void)
                 .then(|| map_return_type(&signature.return_type, index));
             let preserve_hresult = method.has_attribute("CanReturnMultipleSuccessValuesAttribute")
                 || is_known_semantic_hresult(def.namespace(), def.name(), method.name());
+            // win32metadata does not embed textual doc comments (no sibling
+            // `.xml` file like WinRT's `xml_doc.rs`), but it does attach a
+            // `DocumentationAttribute` with a `learn.microsoft.com` reference
+            // URL to most methods. Surface that as the method's `doc`, so
+            // generated code can at least link back to the canonical docs.
+            let doc = method
+                .find_attribute("DocumentationAttribute")
+                .and_then(|attribute| {
+                    attribute
+                        .value()
+                        .into_iter()
+                        .next()
+                        .and_then(|(_, value)| match value {
+                            windows_metadata::Value::Utf8(value) => Some(value),
+                            _ => None,
+                        })
+                });
             MethodMeta {
                 name,
                 vtable_index: base_offset + index_in_interface,
                 params,
                 return_type,
                 preserve_hresult,
-                doc: None,
+                doc,
                 owned_outputs,
             }
         })
@@ -604,8 +738,23 @@ fn find_coclass(
     namespace: &str,
     interface_name: &str,
 ) -> (Option<String>, Option<String>) {
+    for candidate in coclass_name_candidates(interface_name) {
+        let Some(def) = index.get(namespace, &candidate).next() else {
+            continue;
+        };
+        if is_com_coclass(&def) {
+            let clsid = crate::meta::extract_iid(&def);
+            if !clsid.is_empty() {
+                return (Some(candidate), Some(clsid));
+            }
+        }
+    }
+    (None, None)
+}
+
+fn coclass_name_candidates(interface_name: &str) -> Vec<String> {
     let Some(stripped) = interface_name.strip_prefix('I') else {
-        return (None, None);
+        return Vec::new();
     };
     let mut candidates = vec![stripped.to_string()];
     let without_version = stripped
@@ -614,23 +763,18 @@ fn find_coclass(
     if without_version != stripped {
         candidates.push(without_version);
     }
-    for candidate in candidates {
-        let Some(def) = index.get(namespace, &candidate).next() else {
-            continue;
-        };
-        let is_coclass = matches!(
+    candidates
+}
+
+fn is_com_coclass(def: &reader::TypeDef) -> bool {
+    !def.flags()
+        .contains(windows_metadata::TypeAttributes::Interface)
+        && matches!(
             def.extends()
                 .map(|base| (base.namespace().to_string(), base.name().to_string())),
             Some((namespace, name)) if namespace == "System" && name == "ValueType"
-        );
-        if is_coclass {
-            let clsid = crate::meta::extract_iid(&def);
-            if !clsid.is_empty() {
-                return (Some(candidate), Some(clsid));
-            }
-        }
-    }
-    (None, None)
+        )
+        && !crate::meta::extract_iid(def).is_empty()
 }
 
 fn collect_referenced_enums(index: &reader::Index, interface: &InterfaceMeta) -> Vec<ComEnumMeta> {
@@ -662,63 +806,12 @@ fn collect_referenced_enums(index: &reader::Index, interface: &InterfaceMeta) ->
     result
 }
 
-fn mark_caller_owned_string_buffers(params: &mut [ParamMeta]) {
-    for index in 0..params.len().saturating_sub(1) {
-        if params[index].direction == ParamDirection::Out
-            && is_string_buffer(&params[index].typ)
-            && params[index + 1].direction == ParamDirection::In
-            && is_string_buffer_count(&params[index].typ, &params[index + 1])
-        {
-            params[index].direction = ParamDirection::OutStringBuffer {
-                count_param_index: index + 1,
-            };
-        }
-    }
-    let count_index = params.iter().find_map(|param| match param.direction {
-        ParamDirection::OutStringBuffer { count_param_index } => Some(count_param_index),
-        _ => None,
-    });
-    if let Some(count_index) = count_index {
-        for param in params.iter_mut().skip(count_index + 1) {
-            let name = param.name.to_ascii_lowercase();
-            let is_find_data = name == "pfd"
-                || name.contains("finddata")
-                || matches!(
-                    &param.typ,
-                    TypeMeta::Struct { name, .. }
-                        if name == "WIN32_FIND_DATAW" || name == "WIN32_FIND_DATAA"
-                );
-            if is_find_data
-                && matches!(param.direction, ParamDirection::Out | ParamDirection::InOut)
-            {
-                param.direction = ParamDirection::In;
-                param.typ = TypeMeta::Object;
-            }
-        }
-    }
-}
-
 fn is_string_buffer(typ: &TypeMeta) -> bool {
     matches!(
         typ,
         TypeMeta::Struct { namespace, name, .. }
             if namespace == "Windows.Win32.Foundation" && (name == "PWSTR" || name == "PSTR")
     )
-}
-
-fn is_string_buffer_count(buffer_type: &TypeMeta, param: &ParamMeta) -> bool {
-    let name = param.name.to_ascii_lowercase();
-    let is_wide = matches!(
-        buffer_type,
-        TypeMeta::Struct { namespace, name, .. }
-            if namespace == "Windows.Win32.Foundation" && name == "PWSTR"
-    );
-    matches!(param.typ, TypeMeta::I32 | TypeMeta::U32)
-        && (name.starts_with("cch")
-            || (!is_wide && name.starts_with("cb"))
-            || matches!(name.as_str(), "len" | "length" | "size" | "max" | "count")
-            || name.starts_with("max")
-            || name.starts_with("size"))
 }
 
 pub fn find_runtime_class_default_iid(
@@ -791,6 +884,46 @@ pub fn discover_newest_windows_winmd() -> Option<String> {
 mod tests {
     use super::*;
 
+    fn interface(name: &str, iid: &str, base_chain: &[&str]) -> ComInterfaceMeta {
+        ComInterfaceMeta {
+            interface: InterfaceMeta {
+                name: name.into(),
+                namespace: "Tests".into(),
+                iid: iid.into(),
+                ..Default::default()
+            },
+            base_offset: 3,
+            is_iunknown_rooted: true,
+            base_chain: base_chain.iter().map(|name| (*name).into()).collect(),
+            coclass_clsid: None,
+            coclass_name: None,
+            own_methods_start: 3,
+            referenced_enums: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn coclass_primary_uses_inheritance_leaf_not_numeric_suffix() {
+        let interfaces = vec![
+            interface("IThing9", "1", &["IUnknown"]),
+            interface("IThing", "2", &["IThing9", "IUnknown"]),
+        ];
+
+        let primary = select_primary_coclass_interface("Tests", "Thing", &interfaces).unwrap();
+        assert_eq!(primary.interface.name, "IThing");
+    }
+
+    #[test]
+    fn coclass_primary_rejects_unrelated_leaves() {
+        let interfaces = vec![
+            interface("IThing", "1", &["IUnknown"]),
+            interface("IThing2", "2", &["IUnknown"]),
+        ];
+
+        let error = select_primary_coclass_interface("Tests", "Thing", &interfaces).unwrap_err();
+        assert!(error.contains("multiple unrelated"));
+    }
+
     #[test]
     fn in_out_is_com_only() {
         use windows_metadata::ParamAttributes;
@@ -808,42 +941,6 @@ mod tests {
             "HSTRING"
         ));
         assert!(!is_canonical_hstring_name("Contoso.Interop", "HSTRING"));
-    }
-
-    #[test]
-    fn find_data_after_string_buffer_is_caller_owned_pointer() {
-        let mut params = vec![
-            ParamMeta {
-                name: "pszFile".into(),
-                typ: TypeMeta::Struct {
-                    namespace: "Windows.Win32.Foundation".into(),
-                    name: "PWSTR".into(),
-                    fields: Vec::new(),
-                },
-                direction: ParamDirection::Out,
-            },
-            ParamMeta {
-                name: "cch".into(),
-                typ: TypeMeta::I32,
-                direction: ParamDirection::In,
-            },
-            ParamMeta {
-                name: "pfd".into(),
-                typ: TypeMeta::Object,
-                direction: ParamDirection::InOut,
-            },
-        ];
-
-        mark_caller_owned_string_buffers(&mut params);
-
-        assert_eq!(
-            params[0].direction,
-            ParamDirection::OutStringBuffer {
-                count_param_index: 1
-            }
-        );
-        assert_eq!(params[2].direction, ParamDirection::In);
-        assert!(matches!(params[2].typ, TypeMeta::Object));
     }
 
     #[test]

@@ -4,11 +4,11 @@
 import assert from 'node:assert/strict';
 import { DynCom } from '../../../bindings/js/dist/com.js';
 import { FILEOPERATION_FLAGS } from '../../e2e_generated/com/shell/com/FILEOPERATION_FLAGS.js';
-import { IFileOperation } from '../../e2e_generated/com/shell/com/IFileOperation.js';
+import { FileOperation } from '../../e2e_generated/com/shell/com/FileOperation.js';
 
 DynCom.initialize(1);
 
-const operation = IFileOperation.create();
+const operation = new FileOperation();
 const flags =
   FILEOPERATION_FLAGS.FOF_NO_UI +
   FILEOPERATION_FLAGS.FOFX_DONTDISPLAYLOCATIONS;
@@ -16,6 +16,6 @@ const flags =
 assert.equal(flags, 2147485204);
 operation.setOperationFlags(flags);
 assert.equal(operation.getAnyOperationsAborted(), false);
-operation._obj.release();
+operation.release();
 
 console.log('file-operation ok');

@@ -6,8 +6,11 @@
 //
 // Run: .\tests\e2e_test.ps1 -SkipBuild -Lang com
 
-import { ITaskbarList3 } from '../../e2e_generated/com/shell/com/ITaskbarList3.js';
-import { TBPFLAG } from '../../e2e_generated/com/shell/com/TBPFLAG.js';
+import {
+    ITaskbarList3,
+    TaskbarList,
+    TBPFLAG,
+} from '../../e2e_generated/com/shell/com/index.mjs';
 import { acquireHwndBigInt } from './hwnd.mjs';
 
 function fail(msg) {
@@ -26,13 +29,23 @@ if (hwndBig === 0n) fail('acquireHwndBigInt returned NULL');
 
 console.log('[e2e] step 2: CoCreateInstance(CLSID_TaskbarList, IID_ITaskbarList3)');
 
-let t;
+let taskbar;
 try {
-    t = ITaskbarList3.create();
+    taskbar = new TaskbarList();
 } catch (e) {
-    fail(`ITaskbarList3.create() threw: ${e && e.message ? e.message : e}`);
+    fail(`new TaskbarList() threw: ${e && e.message ? e.message : e}`);
 }
-console.log(`[e2e]   ITaskbarList3 = ${t}`);
+console.log(`[e2e]   TaskbarList = ${taskbar}`);
+
+if (!taskbar.supports(ITaskbarList3)) {
+    fail('TaskbarList.supports(ITaskbarList3) returned false');
+}
+const optionalV3 = taskbar.tryAs(ITaskbarList3);
+if (optionalV3 === null) {
+    fail('TaskbarList.tryAs(ITaskbarList3) returned null');
+}
+optionalV3.release();
+const t = taskbar.as(ITaskbarList3);
 
 console.log('[e2e] step 3: HrInit() (vtable slot 3)');
 try {
@@ -78,5 +91,14 @@ try {
     fail(`MarkFullscreenWindow(hwnd, false) threw: ${e && e.message ? e.message : e}`);
 }
 
+console.log('[e2e] step 8: SetThumbnailTooltip(hwnd, string) — proves PWSTR string projection');
+try {
+    t.setThumbnailTooltip(hwndBig, 'dynwinrt COM E2E');
+} catch (e) {
+    fail(`SetThumbnailTooltip(hwnd, string) threw: ${e && e.message ? e.message : e}`);
+}
+
+t.release();
+taskbar.release();
 console.log('PASS');
 process.exit(0);

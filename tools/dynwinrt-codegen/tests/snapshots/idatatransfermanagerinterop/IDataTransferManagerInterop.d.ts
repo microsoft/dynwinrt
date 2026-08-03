@@ -7,10 +7,17 @@ export type HWND = bigint | number;
 export declare const IID_IDataTransferManagerInterop: unknown;
 
 export declare class IDataTransferManagerInterop {
-    /** Activate the projected WinRT class and QI to the interop. */
+    static readonly IID: typeof IID_IDataTransferManagerInterop;
+    protected constructor(obj: unknown);
+    /** Activate the projected WinRT class and QI to the interop.
+     * `DynCom.initialize()` must be called once (e.g. at process startup) before this is used. */
     static create(): IDataTransferManagerInterop;
     /** Wrap an existing native COM pointer (for QueryInterface bridging). */
     static _fromNative(obj: unknown): IDataTransferManagerInterop;
+    /** Release the underlying native COM reference. Safe to call more than once. */
+    release(): void;
+    /** @see {@link https://learn.microsoft.com/windows/win32/api/shobjidl_core/nf-shobjidl_core-idatatransfermanagerinterop-getforwindow} */
     getForWindow(appWindow: HWND | Buffer | Uint8Array): DynWinRtValue;
+    /** @see {@link https://learn.microsoft.com/windows/win32/api/shobjidl_core/nf-shobjidl_core-idatatransfermanagerinterop-showshareuiforwindow} */
     showShareUIForWindow(appWindow: HWND | Buffer | Uint8Array): void;
 }

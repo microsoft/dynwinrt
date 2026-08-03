@@ -124,6 +124,14 @@ pub(super) fn wrap_arg_js(typ: &ComType, variable: &str) -> String {
         } if name == "HWND" => {
             format!("DynCom.pointer(DynCom.handleValue({variable}))")
         }
+        ComType::PointerAlias {
+            kind: PointerAliasKind::StringPointer(StringEncoding::Wide),
+            ..
+        } => format!("DynCom.wideStringPointer({variable})"),
+        ComType::PointerAlias {
+            kind: PointerAliasKind::StringPointer(StringEncoding::Ansi),
+            ..
+        } => format!("DynCom.ansiStringPointer({variable})"),
         ComType::PointerAlias { .. } => format!("DynCom.pointer({variable})"),
         ComType::ManagedInterface { .. } => variable.to_string(),
     }

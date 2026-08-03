@@ -11,11 +11,11 @@ use std::{
 };
 
 use dynwinrt;
-use napi::Env;
 use napi::bindgen_prelude::{BigInt, PromiseRaw};
 use napi::threadsafe_function::ThreadsafeFunctionCallMode;
+use napi::Env;
 use napi_derive::napi;
-use windows::core::{HSTRING, IUnknown, Interface};
+use windows::core::{IUnknown, Interface, HSTRING};
 
 mod com;
 pub use com::{DynCom, DynComInterface, DynComMethodHandle, DynComMethodSig, DynComType};
@@ -105,7 +105,7 @@ pub fn get_winappsdk_resource_pri_path() -> napi::Result<String> {
 #[napi]
 pub fn ro_initialize(apartment_type: Option<i32>) {
   use windows::Win32::System::WinRT::{
-    RO_INIT_MULTITHREADED, RO_INIT_SINGLETHREADED, RoInitialize,
+    RoInitialize, RO_INIT_MULTITHREADED, RO_INIT_SINGLETHREADED,
   };
   let init_type = match apartment_type.unwrap_or(1) {
     0 => RO_INIT_SINGLETHREADED,
@@ -596,18 +596,57 @@ impl DynWinRTValue {
     Self(value, None, com::PointerProvenance::Borrowed)
   }
 
-  fn from_com_result(value: dynwinrt::WinRTValue) -> Self {
+  fn from_com_result(
+    value: dynwinrt::WinRTValue,
+    output_kind: dynwinrt::com::PointerOutputKind,
+  ) -> Self {
     let provenance = if matches!(value, dynwinrt::WinRTValue::RawPtr(_)) {
-      com::PointerProvenance::NativeOutput
+      match output_kind {
+        dynwinrt::com::PointerOutputKind::None | dynwinrt::com::PointerOutputKind::Unclassified => {
+          com::PointerProvenance::UnclassifiedOutput
+        }
+        dynwinrt::com::PointerOutputKind::Com => com::PointerProvenance::ComOutput,
+        dynwinrt::com::PointerOutputKind::CoTaskMem => com::PointerProvenance::CoTaskMemOutput,
+        dynwinrt::com::PointerOutputKind::Bstr => com::PointerProvenance::BstrOutput,
+      }
     } else {
       com::PointerProvenance::None
     };
     Self(value, None, provenance)
   }
+
+  fn release_native_pointer_output(&mut self) {
+    let ptr = match &self.0 {
+      dynwinrt::WinRTValue::RawPtr(ptr) => *ptr,
+      _ => return,
+    };
+    let provenance = self.2;
+    self.0 = dynwinrt::WinRTValue::Null;
+    self.2 = com::PointerProvenance::None;
+    if ptr.is_null() {
+      return;
+    }
+    match provenance {
+      com::PointerProvenance::ComOutput => {
+        drop(unsafe { IUnknown::from_raw(ptr) });
+      }
+      com::PointerProvenance::CoTaskMemOutput => unsafe {
+        windows::Win32::System::Com::CoTaskMemFree(Some(ptr));
+      },
+      com::PointerProvenance::BstrOutput => {
+        drop(unsafe { windows::core::BSTR::from_raw(ptr.cast()) });
+      }
+      com::PointerProvenance::None
+      | com::PointerProvenance::Borrowed
+      | com::PointerProvenance::UnclassifiedOutput => {}
+    }
+  }
 }
 
 impl Drop for DynWinRTValue {
   fn drop(&mut self) {
+    self.release_native_pointer_output();
+
     // After Application.Start returns, XAML has already torn down its thread
     // state. Leaking late projected COM references is safer than releasing
     // them into a destroyed DXamlCore; normal application teardown must call
@@ -623,6 +662,7 @@ impl Drop for DynWinRTValue {
 impl DynWinRTValue {
   #[napi]
   pub fn release(&mut self) {
+    self.release_native_pointer_output();
     self.0 = dynwinrt::WinRTValue::Null;
     self.1 = None;
     self.2 = com::PointerProvenance::None;
@@ -1491,8 +1531,8 @@ pub fn has_package_identity() -> bool {
 pub fn get_computer_name() -> napi::Result<String> {
   #[cfg(target_os = "windows")]
   {
-    use windows::Win32::System::WindowsProgramming::GetComputerNameW;
     use windows::core::PWSTR;
+    use windows::Win32::System::WindowsProgramming::GetComputerNameW;
 
     let mut buffer = [0u16; 256];
     let mut size = buffer.len() as u32;
@@ -1695,8 +1735,8 @@ impl DynWinRtDelegate {
     #[napi(ts_arg_type = "(...args: DynWinRTValue[]) => void")]
     callback: napi::bindgen_prelude::Function<'static, Vec<DynWinRTValue>, ()>,
   ) -> napi::Result<DynWinRtDelegate> {
-    use napi::JsValue;
     use napi::bindgen_prelude::ToNapiValue;
+    use napi::JsValue;
     use windows::Win32::System::Threading::GetCurrentThreadId;
 
     // Track the thread we were registered on. WinRT delegate callbacks that
@@ -1915,8 +1955,8 @@ impl DynWinRtElementFactory {
     #[napi(ts_arg_type = "(args: DynWinRtValue) => void")]
     recycle_element: ElementFactoryRecycleFunction,
   ) -> napi::Result<DynWinRtElementFactory> {
-    use napi::JsValue;
     use napi::bindgen_prelude::{FromNapiValue, ToNapiValue};
+    use napi::JsValue;
     use windows::Win32::System::Threading::GetCurrentThreadId;
 
     const E_FAIL: windows::core::HRESULT = windows::core::HRESULT(0x80004005u32 as i32);

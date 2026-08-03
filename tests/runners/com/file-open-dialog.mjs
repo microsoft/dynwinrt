@@ -3,14 +3,14 @@
 
 import assert from 'node:assert/strict';
 import { DynCom } from '../../../bindings/js/dist/com.js';
-import { IFileOpenDialog } from '../../e2e_generated/com/shell/com/IFileOpenDialog.js';
+import { FileOpenDialog } from '../../e2e_generated/com/shell/com/FileOpenDialog.js';
 
 DynCom.initialize(0);
 
-const dialog = IFileOpenDialog.create();
+const dialog = new FileOpenDialog();
 const options = dialog.getOptions();
 dialog.setOptions(options);
 assert.equal(dialog.getOptions(), options);
-dialog._obj.release();
+dialog.release();
 
 console.log('file-open-dialog ok');

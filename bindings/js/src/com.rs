@@ -1,12 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use napi::JsValue;
 use napi::bindgen_prelude::{BigInt, FromNapiValue, ToNapiValue, Unknown};
+use napi::JsValue;
 use napi_derive::napi;
-use windows::core::{GUID, Interface as _};
+use windows::core::{Interface as _, GUID};
 
-use super::{DynWinRTValue, TABLE, WinGUID};
+use super::{DynWinRTValue, WinGUID, TABLE};
 
 #[allow(dead_code)]
 pub(super) enum NativePointerOwner {
@@ -18,13 +18,18 @@ pub(super) enum NativePointerOwner {
   },
   CoTaskMem(*mut std::ffi::c_void),
   Guid(*mut GUID),
+  WideString(Box<[u16]>),
+  AnsiString(Box<[u8]>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum PointerProvenance {
   None,
   Borrowed,
-  NativeOutput,
+  UnclassifiedOutput,
+  ComOutput,
+  CoTaskMemOutput,
+  BstrOutput,
 }
 
 impl NativePointerOwner {
@@ -115,6 +120,16 @@ fn co_create_instance(clsid: String, iid: &WinGUID) -> napi::Result<DynWinRTValu
     .map_err(|error| napi::Error::from_reason(error.message()))
 }
 
+fn try_cast(value: &DynWinRTValue, iid: &WinGUID) -> napi::Result<Option<DynWinRTValue>> {
+  const E_NOINTERFACE: windows::core::HRESULT = windows::core::HRESULT(0x80004002u32 as i32);
+
+  match value.0.cast(&iid.0) {
+    Ok(value) => Ok(Some(DynWinRTValue::new(value))),
+    Err(dynwinrt::Error::WindowsError(error)) if error.code() == E_NOINTERFACE => Ok(None),
+    Err(error) => Err(napi::Error::from_reason(error.message())),
+  }
+}
+
 fn create_test_hwnd() -> napi::Result<BigInt> {
   use std::sync::atomic::{AtomicUsize, Ordering};
   use windows::Win32::UI::WindowsAndMessaging::{CreateWindowExW, WINDOW_EX_STYLE, WS_POPUP};
@@ -151,6 +166,29 @@ fn create_test_hwnd() -> napi::Result<BigInt> {
 struct Uint8ArrayInfo {
   data: *const u8,
   length: usize,
+}
+
+fn validate_wide_string_bytes(bytes: &[u8]) -> napi::Result<()> {
+  if bytes.len() < 2 || bytes.len() % 2 != 0 {
+    return Err(napi::Error::from_reason(
+      "wideStringPointer(): Buffer/Uint8Array must have an even byte length and include a UTF-16 NUL terminator",
+    ));
+  }
+  if bytes[bytes.len() - 2..] != [0, 0] {
+    return Err(napi::Error::from_reason(
+      "wideStringPointer(): Buffer/Uint8Array must end with a UTF-16 NUL terminator",
+    ));
+  }
+  Ok(())
+}
+
+fn validate_ansi_string_bytes(bytes: &[u8]) -> napi::Result<()> {
+  if bytes.last() != Some(&0) {
+    return Err(napi::Error::from_reason(
+      "ansiStringPointer(): Buffer/Uint8Array must end with a NUL terminator",
+    ));
+  }
+  Ok(())
 }
 
 fn uint8_array_info(
@@ -282,6 +320,68 @@ fn pointer(value: Unknown) -> napi::Result<DynWinRTValue> {
   ))
 }
 
+fn wide_string_pointer(value: Unknown) -> napi::Result<DynWinRTValue> {
+  use napi::sys;
+
+  let env = value.value().env;
+  let raw = value.value().value;
+  let mut value_type = sys::ValueType::napi_undefined;
+  unsafe { sys::napi_typeof(env, raw, &mut value_type) };
+  if value_type == sys::ValueType::napi_string {
+    let text = unsafe { String::from_napi_value(env, raw) }?;
+    let mut storage = text
+      .encode_utf16()
+      .chain(std::iter::once(0))
+      .collect::<Vec<_>>()
+      .into_boxed_slice();
+    let ptr = storage.as_mut_ptr().cast();
+    return Ok(DynWinRTValue::with_pointer_owner(
+      dynwinrt::WinRTValue::RawPtr(ptr),
+      NativePointerOwner::WideString(storage),
+    ));
+  }
+  if let Some(array) = uint8_array_info(env, raw)? {
+    if !array.data.is_null() && (array.data as usize) % std::mem::align_of::<u16>() != 0 {
+      return Err(napi::Error::from_reason(
+        "wideStringPointer(): Buffer/Uint8Array backing address must be aligned for UTF-16",
+      ));
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(array.data, array.length) };
+    validate_wide_string_bytes(bytes)?;
+  }
+  pointer(value)
+}
+
+fn ansi_string_pointer(value: Unknown) -> napi::Result<DynWinRTValue> {
+  use napi::sys;
+
+  let env = value.value().env;
+  let raw = value.value().value;
+  let mut value_type = sys::ValueType::napi_undefined;
+  unsafe { sys::napi_typeof(env, raw, &mut value_type) };
+  if value_type == sys::ValueType::napi_string {
+    let text = unsafe { String::from_napi_value(env, raw) }?;
+    if !text.is_ascii() {
+      return Err(napi::Error::from_reason(
+        "ansiStringPointer(): non-ASCII strings require an explicitly encoded NUL-terminated Buffer/Uint8Array",
+      ));
+    }
+    let mut storage = text.into_bytes();
+    storage.push(0);
+    let mut storage = storage.into_boxed_slice();
+    let ptr = storage.as_mut_ptr().cast();
+    return Ok(DynWinRTValue::with_pointer_owner(
+      dynwinrt::WinRTValue::RawPtr(ptr),
+      NativePointerOwner::AnsiString(storage),
+    ));
+  }
+  if let Some(array) = uint8_array_info(env, raw)? {
+    let bytes = unsafe { std::slice::from_raw_parts(array.data, array.length) };
+    validate_ansi_string_bytes(bytes)?;
+  }
+  pointer(value)
+}
+
 fn handle_value(value: Unknown) -> napi::Result<BigInt> {
   use napi::sys;
 
@@ -342,7 +442,7 @@ fn adopt_com_pointer(
   value: &mut DynWinRTValue,
   iid: Option<&WinGUID>,
 ) -> napi::Result<DynWinRTValue> {
-  let ptr = take_native_output_pointer(value, "COM interface")?;
+  let ptr = take_native_output_pointer(value, PointerProvenance::ComOutput, "COM interface")?;
   let adopted = unsafe { dynwinrt::com::adopt_com_pointer(ptr) };
   match iid {
     Some(iid) => adopted
@@ -354,7 +454,11 @@ fn adopt_com_pointer(
 }
 
 fn adopt_co_task_mem_pointer(value: &mut DynWinRTValue) -> napi::Result<DynWinRTValue> {
-  let ptr = take_native_output_pointer(value, "CoTaskMem allocation")?;
+  let ptr = take_native_output_pointer(
+    value,
+    PointerProvenance::CoTaskMemOutput,
+    "CoTaskMem allocation",
+  )?;
   if ptr.is_null() {
     return Ok(DynWinRTValue::new(dynwinrt::WinRTValue::Null));
   }
@@ -384,7 +488,7 @@ fn as_pointer_bigint(value: &DynWinRTValue) -> napi::Result<BigInt> {
 }
 
 fn take_co_task_mem_wide_string(value: &mut DynWinRTValue) -> napi::Result<String> {
-  let ptr = take_native_output_pointer(value, "wide-string")?;
+  let ptr = take_native_output_pointer(value, PointerProvenance::CoTaskMemOutput, "wide-string")?;
   if ptr.is_null() {
     return Ok(String::new());
   }
@@ -395,7 +499,7 @@ fn take_co_task_mem_wide_string(value: &mut DynWinRTValue) -> napi::Result<Strin
 }
 
 fn take_co_task_mem_ansi_string(value: &mut DynWinRTValue) -> napi::Result<String> {
-  let ptr = take_native_output_pointer(value, "ANSI-string")?;
+  let ptr = take_native_output_pointer(value, PointerProvenance::CoTaskMemOutput, "ANSI-string")?;
   if ptr.is_null() {
     return Ok(String::new());
   }
@@ -406,7 +510,7 @@ fn take_co_task_mem_ansi_string(value: &mut DynWinRTValue) -> napi::Result<Strin
 }
 
 fn take_bstr(value: &mut DynWinRTValue) -> napi::Result<String> {
-  let ptr = take_native_output_pointer(value, "BSTR")?;
+  let ptr = take_native_output_pointer(value, PointerProvenance::BstrOutput, "BSTR")?;
   if ptr.is_null() {
     return Ok(String::new());
   }
@@ -423,6 +527,7 @@ fn validate_pointer_owner(value: &DynWinRTValue) -> napi::Result<()> {
 
 fn take_native_output_pointer(
   value: &mut DynWinRTValue,
+  expected: PointerProvenance,
   description: &str,
 ) -> napi::Result<*mut std::ffi::c_void> {
   if value.1.is_some() {
@@ -430,9 +535,10 @@ fn take_native_output_pointer(
       "Cannot consume an owner-backed {description} pointer"
     )));
   }
-  if value.2 != PointerProvenance::NativeOutput {
+  if value.2 != expected {
     return Err(napi::Error::from_reason(format!(
-      "Cannot adopt a borrowed {description} pointer; only owned native outputs may be consumed"
+      "Cannot consume {description} pointer with {:?} provenance; expected {:?}",
+      value.2, expected
     )));
   }
   match std::mem::replace(&mut value.0, dynwinrt::WinRTValue::Null) {
@@ -525,6 +631,21 @@ impl DynComInterface {
   }
 
   #[napi]
+  pub fn add_method_at(
+    &self,
+    vtable_index: u32,
+    name: String,
+    signature: &DynComMethodSig,
+  ) -> napi::Result<Self> {
+    self
+      .0
+      .clone()
+      .add_method_at(vtable_index as usize, &name, signature.0.clone())
+      .map(Self)
+      .map_err(|error| napi::Error::from_reason(error.message()))
+  }
+
+  #[napi]
   pub fn method(&self, vtable_index: i32) -> napi::Result<DynComMethodHandle> {
     self
       .0
@@ -570,16 +691,15 @@ impl DynComMethodHandle {
       validate_pointer_owner(arg)?;
     }
     let args = args.iter().map(|arg| arg.0.clone()).collect::<Vec<_>>();
-    let results = self
+    let mut results = self
       .0
-      .invoke(raw, &args)
+      .invoke_with_output_kinds(raw, &args)
       .map_err(|error| napi::Error::from_reason(error.message()))?;
-    Ok(DynWinRTValue::from_com_result(
-      results
-        .into_iter()
-        .next()
-        .unwrap_or(dynwinrt::WinRTValue::I32(0)),
-    ))
+    let (value, kind) = results.drain(..).next().unwrap_or((
+      dynwinrt::WinRTValue::I32(0),
+      dynwinrt::com::PointerOutputKind::None,
+    ));
+    Ok(DynWinRTValue::from_com_result(value, kind))
   }
 
   #[napi]
@@ -599,11 +719,11 @@ impl DynComMethodHandle {
     let args = args.iter().map(|arg| arg.0.clone()).collect::<Vec<_>>();
     self
       .0
-      .invoke(raw, &args)
+      .invoke_with_output_kinds(raw, &args)
       .map(|results| {
         results
           .into_iter()
-          .map(DynWinRTValue::from_com_result)
+          .map(|(value, kind)| DynWinRTValue::from_com_result(value, kind))
           .collect()
       })
       .map_err(|error| napi::Error::from_reason(error.message()))
@@ -752,6 +872,21 @@ impl DynCom {
   }
 
   #[napi]
+  pub fn owned_com_pointer_type() -> DynComType {
+    DynComType(dynwinrt::com::Type::owned_com_pointer())
+  }
+
+  #[napi]
+  pub fn co_task_mem_pointer_type() -> DynComType {
+    DynComType(dynwinrt::com::Type::co_task_mem_pointer())
+  }
+
+  #[napi]
+  pub fn bstr_pointer_type() -> DynComType {
+    DynComType(dynwinrt::com::Type::bstr_pointer())
+  }
+
+  #[napi]
   pub fn interface_type(iid: &WinGUID) -> DynComType {
     DynComType(dynwinrt::com::Type::winrt(TABLE.interface(iid.0)))
   }
@@ -883,11 +1018,32 @@ impl DynCom {
   }
 
   #[napi]
+  pub fn try_cast(value: &DynWinRTValue, iid: &WinGUID) -> napi::Result<Option<DynWinRTValue>> {
+    self::try_cast(value, iid)
+  }
+
+  #[napi]
   pub fn pointer(
     #[napi(ts_arg_type = "bigint | number | Buffer | Uint8Array | null | undefined")]
     value: Unknown,
   ) -> napi::Result<DynWinRTValue> {
     self::pointer(value)
+  }
+
+  #[napi]
+  pub fn wide_string_pointer(
+    #[napi(ts_arg_type = "string | bigint | number | Buffer | Uint8Array | null | undefined")]
+    value: Unknown,
+  ) -> napi::Result<DynWinRTValue> {
+    self::wide_string_pointer(value)
+  }
+
+  #[napi]
+  pub fn ansi_string_pointer(
+    #[napi(ts_arg_type = "string | bigint | number | Buffer | Uint8Array | null | undefined")]
+    value: Unknown,
+  ) -> napi::Result<DynWinRTValue> {
+    self::ansi_string_pointer(value)
   }
 
   #[napi]
@@ -1020,6 +1176,15 @@ mod tests {
   use super::*;
 
   #[test]
+  fn string_pointer_buffers_require_matching_nul_terminators() {
+    assert!(validate_wide_string_bytes(&[b'a', 0, 0, 0]).is_ok());
+    assert!(validate_wide_string_bytes(&[b'a', 0]).is_err());
+    assert!(validate_wide_string_bytes(&[b'a', 0, 0]).is_err());
+    assert!(validate_ansi_string_bytes(b"text\0").is_ok());
+    assert!(validate_ansi_string_bytes(b"text").is_err());
+  }
+
+  #[test]
   fn takes_and_clears_cotaskmem_wide_string() {
     let text = "dynwinrt";
     let wide = text.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
@@ -1029,7 +1194,10 @@ mod tests {
     unsafe {
       std::ptr::copy_nonoverlapping(wide.as_ptr(), ptr.cast::<u16>(), wide.len());
     }
-    let mut value = DynWinRTValue::from_com_result(dynwinrt::WinRTValue::RawPtr(ptr));
+    let mut value = DynWinRTValue::from_com_result(
+      dynwinrt::WinRTValue::RawPtr(ptr),
+      dynwinrt::com::PointerOutputKind::CoTaskMem,
+    );
 
     assert_eq!(take_co_task_mem_wide_string(&mut value).unwrap(), text);
     assert!(matches!(value.0, dynwinrt::WinRTValue::Null));
@@ -1038,11 +1206,17 @@ mod tests {
   #[test]
   fn consuming_native_output_pointer_clears_source_value() {
     let ptr = 0x1234usize as *mut std::ffi::c_void;
-    let mut value = DynWinRTValue::from_com_result(dynwinrt::WinRTValue::RawPtr(ptr));
+    let mut value = DynWinRTValue::from_com_result(
+      dynwinrt::WinRTValue::RawPtr(ptr),
+      dynwinrt::com::PointerOutputKind::Com,
+    );
 
-    assert_eq!(take_native_output_pointer(&mut value, "test").unwrap(), ptr);
+    assert_eq!(
+      take_native_output_pointer(&mut value, PointerProvenance::ComOutput, "test").unwrap(),
+      ptr
+    );
     assert!(matches!(value.0, dynwinrt::WinRTValue::Null));
-    assert!(take_native_output_pointer(&mut value, "test").is_err());
+    assert!(take_native_output_pointer(&mut value, PointerProvenance::ComOutput, "test").is_err());
   }
 
   #[test]
@@ -1050,20 +1224,36 @@ mod tests {
     let ptr = 0x1234usize as *mut std::ffi::c_void;
     let mut value = DynWinRTValue::with_borrowed_pointer(dynwinrt::WinRTValue::RawPtr(ptr));
 
-    let error = take_native_output_pointer(&mut value, "COM interface").unwrap_err();
-    assert!(
-      error
-        .reason
-        .contains("Cannot adopt a borrowed COM interface")
+    let error =
+      take_native_output_pointer(&mut value, PointerProvenance::ComOutput, "COM interface")
+        .unwrap_err();
+    assert!(error.reason.contains("Borrowed"));
+    assert!(matches!(value.0, dynwinrt::WinRTValue::RawPtr(raw) if raw == ptr));
+  }
+
+  #[test]
+  fn pointer_output_requires_the_exact_allocator_provenance() {
+    let ptr = unsafe { windows::Win32::System::Com::CoTaskMemAlloc(1) };
+    assert!(!ptr.is_null());
+    let mut value = DynWinRTValue::from_com_result(
+      dynwinrt::WinRTValue::RawPtr(ptr),
+      dynwinrt::com::PointerOutputKind::CoTaskMem,
     );
+
+    let error =
+      take_native_output_pointer(&mut value, PointerProvenance::ComOutput, "COM interface")
+        .unwrap_err();
+    assert!(error.reason.contains("CoTaskMemOutput"));
     assert!(matches!(value.0, dynwinrt::WinRTValue::RawPtr(raw) if raw == ptr));
   }
 
   #[test]
   fn takes_and_frees_bstr() {
     let raw = windows::core::BSTR::from("dynwinrt").into_raw();
-    let mut value =
-      DynWinRTValue::from_com_result(dynwinrt::WinRTValue::RawPtr(raw as *mut std::ffi::c_void));
+    let mut value = DynWinRTValue::from_com_result(
+      dynwinrt::WinRTValue::RawPtr(raw as *mut std::ffi::c_void),
+      dynwinrt::com::PointerOutputKind::Bstr,
+    );
 
     assert_eq!(take_bstr(&mut value).unwrap(), "dynwinrt");
     assert!(matches!(value.0, dynwinrt::WinRTValue::Null));
@@ -1076,11 +1266,24 @@ mod tests {
     let value = co_create_instance("00021401-0000-0000-c000-000000000046".into(), &iid).unwrap();
 
     let error = as_pointer_bigint(&value).unwrap_err();
-    assert!(
-      error
-        .reason
-        .contains("Managed COM objects cannot be exported")
-    );
+    assert!(error
+      .reason
+      .contains("Managed COM objects cannot be exported"));
+  }
+
+  #[test]
+  fn try_cast_distinguishes_no_interface_from_other_errors() {
+    dynwinrt::com::initialize_apartment(dynwinrt::com::ApartmentType::MultiThreaded).unwrap();
+    let shell_link_iid = WinGUID(GUID::from_u128(0x000214f9_0000_0000_c000_000000000046));
+    let value = co_create_instance(
+      "00021401-0000-0000-c000-000000000046".into(),
+      &shell_link_iid,
+    )
+    .unwrap();
+
+    assert!(try_cast(&value, &shell_link_iid).unwrap().is_some());
+    let unsupported = WinGUID(GUID::from_u128(0xaaaaaaaa_bbbb_cccc_dddd_eeeeeeeeeeee));
+    assert!(try_cast(&value, &unsupported).unwrap().is_none());
   }
 
   #[test]
