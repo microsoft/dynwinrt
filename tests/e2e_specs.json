@@ -50,6 +50,20 @@
       ]
     },
     {
+      "id": "decoder_entry_system_returned_constructor_boundary",
+      "namespace": "Windows.Foundation",
+      "class": "WwwFormUrlDecoderEntry",
+      "langs": ["py"],
+      "instantiate": { "kind": "none" },
+      "checks": [
+        {
+          "kind": "constructor_raises_type_error",
+          "member": "__init__",
+          "contains": "WwwFormUrlDecoderEntry"
+        }
+      ]
+    },
+    {
       "id": "uri_equals",
       "namespace": "Windows.Foundation",
       "class": "Uri",

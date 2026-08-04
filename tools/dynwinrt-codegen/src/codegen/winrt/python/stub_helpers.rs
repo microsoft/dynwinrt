@@ -11,10 +11,12 @@ use crate::types::{TypeKind, TypeMeta};
 
 use super::naming::{python_module_name, to_snake_case};
 use super::native_types::{FoundationType, foundation_type};
+use super::structs::{py_struct_field_read_type, py_struct_field_type};
 use super::type_helpers::{
     py_delegate_callable_type, py_factory_return_type, py_method_return_type, py_param_list,
     py_param_type_safe, py_return_type_safe,
 };
+use crate::codegen::winrt::shared::imports::ireference_inner_type;
 
 pub(super) fn format_py_type_import(namespace: &str, name: &str, kind: TypeKind) -> String {
     let module = python_module_name(namespace, name);
@@ -92,11 +94,23 @@ pub(super) fn emit_struct_stub(s: &TypeMeta) -> String {
             init_params.join(", ")
         ));
         for f in fields {
-            out.push_str(&format!(
-                "    {}: {}\n",
-                to_snake_case(&f.name),
-                py_struct_field_stub_type(&f.typ)
-            ));
+            let snake = to_snake_case(&f.name);
+            if ireference_inner_type(&f.typ).is_some() {
+                out.push_str(&format!(
+                    "    @property\n\
+                     \x20   def {snake}(self) -> {read_type}: ...\n\
+                     \x20   @{snake}.setter\n\
+                     \x20   def {snake}(self, value: {write_type}) -> None: ...\n",
+                    read_type = py_struct_field_read_type(&f.typ),
+                    write_type = py_struct_field_type(&f.typ),
+                ));
+            } else {
+                out.push_str(&format!(
+                    "    {}: {}\n",
+                    snake,
+                    py_struct_field_stub_type(&f.typ)
+                ));
+            }
         }
     }
     out.push('\n');
@@ -114,6 +128,10 @@ pub(super) fn emit_struct_stub(s: &TypeMeta) -> String {
 }
 
 pub(super) fn py_struct_field_stub_type(typ: &TypeMeta) -> String {
+    if ireference_inner_type(typ).is_some() {
+        return py_struct_field_type(typ);
+    }
+
     match typ {
         TypeMeta::Bool => "bool".to_string(),
         TypeMeta::I8

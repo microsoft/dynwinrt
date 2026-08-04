@@ -204,6 +204,20 @@ async def run_check(
             else:
                 cr['pass'] = True
 
+        elif kind == 'constructor_raises_type_error':
+            args = [literal_arg(a) for a in check.get('args', [])]
+            try:
+                cls(*args)
+                cr['error'] = 'constructor unexpectedly succeeded'
+            except TypeError as exc:
+                expected = check.get('contains', cls.__name__)
+                if expected not in str(exc):
+                    cr['error'] = (
+                        f'expected TypeError containing {expected!r}, got {str(exc)!r}'
+                    )
+                else:
+                    cr['pass'] = True
+
         elif kind == 'method_then_property_equals':
             target = obj
             if check.get('interface_class'):

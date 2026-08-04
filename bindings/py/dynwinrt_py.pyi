@@ -10,15 +10,22 @@ __all__ = [
     "DynWinRTType",
     "DynWinRTMethodSig",
     "DynWinRTMethodHandle",
+    "DynWinRTOverrideInterface",
+    "DynWinRTXamlRegistration",
     "DynWinRTValue",
     "DynWinRTArray",
     "DynWinRTStruct",
     "DynWinRtDelegate",
+    "DynWinRtElementFactory",
     "WinRTAsync",
     "WinRTAsyncWithProgress",
+    "ProjectedLifetimeScope",
+    "projected_lifetime_scope",
+    "release_projected",
     "init_winappsdk",
     "ro_initialize",
     "ro_uninitialize",
+    "register_xaml_runtime_class",
     "has_package_identity",
     "get_winappsdk_resource_pri_path",
     "get_computer_name",
@@ -40,6 +47,45 @@ class RoApartment:
     ) -> bool: ...
     def close(self) -> None: ...
     def __repr__(self) -> str: ...
+
+@final
+class DynWinRTXamlRegistration:
+    @property
+    def name(self) -> Optional[str]: ...
+    @property
+    def active(self) -> bool: ...
+    @property
+    def supported_overrides(self) -> List[str]: ...
+    def unregister(self) -> bool: ...
+    def release_instances(self) -> int: ...
+    def close(self) -> bool: ...
+    def __enter__(self) -> DynWinRTXamlRegistration: ...
+    def __exit__(
+        self, exc_type: object, exc_value: object, traceback: object
+    ) -> bool: ...
+
+def register_xaml_runtime_class(
+    runtime_class_name: str,
+    base_type_name: str,
+    base_iid: WinGUID,
+    constructor: Callable[[], object],
+    supported_overrides: Optional[Sequence[str]] = ...,
+) -> DynWinRTXamlRegistration: ...
+
+
+@final
+class ProjectedLifetimeScope:
+    @property
+    def disposed(self) -> bool: ...
+    def __enter__(self) -> ProjectedLifetimeScope: ...
+    def __exit__(
+        self, exc_type: object, exc_value: object, traceback: object
+    ) -> bool: ...
+    def close(self) -> None: ...
+
+
+def projected_lifetime_scope() -> ProjectedLifetimeScope: ...
+def release_projected(value: object) -> None: ...
 
 
 @final
@@ -136,6 +182,16 @@ class DynWinRTMethodSig:
 
 
 @final
+class DynWinRTOverrideInterface:
+    def __init__(
+        self,
+        iid: WinGUID,
+        abi_shapes: Sequence[str],
+        callbacks: Mapping[int, Callable[..., object]],
+    ) -> None: ...
+
+
+@final
 class DynWinRTMethodHandle:
     def invoke(
         self, obj: DynWinRTValue, args: Sequence[DynWinRTValue]
@@ -146,6 +202,25 @@ class DynWinRTMethodHandle:
     def invoke_all(
         self, obj: DynWinRTValue, args: Sequence[DynWinRTValue]
     ) -> List[DynWinRTValue]: ...
+    def invoke_composed(
+        self,
+        factory: DynWinRTValue,
+        args: Sequence[DynWinRTValue],
+        outer_index: int,
+        inner_output_index: int,
+        instance_output_index: int,
+        agile: bool,
+    ) -> DynWinRTValue: ...
+    def invoke_composed_with_overrides(
+        self,
+        factory: DynWinRTValue,
+        args: Sequence[DynWinRTValue],
+        outer_index: int,
+        inner_output_index: int,
+        instance_output_index: int,
+        agile: bool,
+        override_interfaces: Sequence[DynWinRTOverrideInterface],
+    ) -> DynWinRTValue: ...
     def get_string(self, obj: DynWinRTValue) -> str: ...
     def get_i32(self, obj: DynWinRTValue) -> int: ...
     def get_bool(self, obj: DynWinRTValue) -> bool: ...
@@ -224,7 +299,9 @@ class DynWinRTValue:
     def to_f64(self) -> float: ...
     def to_guid(self) -> WinGUID: ...
     def is_null(self) -> bool: ...
+    def release(self) -> None: ...
     def as_raw(self) -> int: ...
+    def identity_raw(self) -> int: ...
     def cast(self, iid: WinGUID) -> DynWinRTValue: ...
     def activate(self) -> DynWinRTValue: ...
     def call_0(
@@ -254,6 +331,7 @@ class DynWinRTValue:
 class WinRTAsync(Awaitable[_T], Protocol[_T]):
     def wait(self) -> _T: ...
     def cancel(self) -> None: ...
+    def release(self) -> None: ...
 
 
 class WinRTAsyncWithProgress(WinRTAsync[_T], Protocol[_T, _P]):
@@ -358,6 +436,19 @@ class DynWinRtDelegate:
         callback: Callable[..., object],
     ) -> DynWinRtDelegate: ...
     def to_value(self) -> DynWinRTValue: ...
+
+
+@final
+class DynWinRtElementFactory:
+    @staticmethod
+    def create(
+        element_iid: WinGUID,
+        get_element: Callable[[DynWinRTValue], DynWinRTValue],
+        recycle_element: Callable[[DynWinRTValue], object],
+    ) -> DynWinRtElementFactory: ...
+    def to_value(self) -> DynWinRTValue: ...
+    def release_callbacks(self) -> None: ...
+    def release(self) -> None: ...
     def __repr__(self) -> str: ...
 
 

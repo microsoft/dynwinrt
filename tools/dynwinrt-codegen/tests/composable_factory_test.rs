@@ -56,6 +56,18 @@ fn composable_factory_returns_public_instance() {
             ..Default::default()
         }),
         factory_interfaces: vec![factory],
+        overridable_interfaces: vec![InterfaceMeta {
+            name: "IWidgetOverrides".into(),
+            namespace: "Contoso".into(),
+            iid: "33333333-3333-3333-3333-333333333333".into(),
+            methods: vec![MethodMeta {
+                name: "MeasureOverride".into(),
+                raw_name: "MeasureOverride".into(),
+                vtable_index: 6,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
         constructors: vec![ConstructorMeta {
             kind: ConstructorKind::PublicComposition,
             factory_interface: Some(TypeRef {
@@ -124,11 +136,74 @@ fn composable_factory_returns_public_instance() {
         ),
         "Python composable constructor must pass an explicit null WinRT value for outer:\n{py}"
     );
+    assert!(py.contains("if _is_python_subclass:"));
+    assert!(py.contains(
+        "_IWidgetFactory.method(6).invoke_composed_with_overrides(Widget._get_f_IWidgetFactory(), [], 0, 0, 1, False, _override_interfaces)"
+    ));
+    assert!(py.contains("DynWinRTOverrideInterface(IID_IWidgetOverrides, ['void0']"));
+    assert!(py.contains("_override_callbacks[6] = _override_measure_override"));
+    assert!(py.contains("for _type in type(self).__mro__ if _type is not Widget"));
+    assert!(py.contains("'measure_override'"));
+    assert!(py.contains("_override_target_ref = _weakref_ref(self)"));
+    assert!(py.contains("_target = _target_ref()"));
+    assert!(py.contains("native overrides require public composable construction"));
+    assert!(py.contains(
+        "def register_xaml_runtime_class(cls, runtime_class_name: str, control_type: type):"
+    ));
+    assert!(py.contains(
+        "_dynwinrt_register_xaml_runtime_class(runtime_class_name, 'Contoso.Widget', IID_IWidget, control_type, _native_overrides)"
+    ));
+    assert!(py.contains("control_type must be a Python subclass of Widget"));
     assert!(
         pyi.contains("def __init__(self) -> None: ..."),
         "Python composable constructor stub must hide the ABI-only outer argument:\n{pyi}"
     );
     assert!(pyi.contains("def create_instance(outer: 'DynWinRTValue') -> 'Widget': ..."));
+    assert!(pyi.contains(
+        "native overrides are registered during construction; unsupported ABI shapes fail closed"
+    ));
+    assert!(pyi.contains(
+        "def register_xaml_runtime_class(cls, runtime_class_name: str, control_type: type[Widget]) -> DynWinRTXamlRegistration: ..."
+    ));
+
+    let mut duplicate_signature = class.clone();
+    duplicate_signature.constructors.insert(
+        0,
+        ConstructorMeta {
+            kind: ConstructorKind::DefaultActivation,
+            factory_interface: None,
+        },
+    );
+    let duplicate_py = python::generate_class(
+        &duplicate_signature,
+        &HashSet::from(["Widget".into()]),
+        &HashSet::new(),
+        &HashSet::new(),
+    );
+    assert!(
+        duplicate_py.contains(
+            "_IWidgetFactory.method(6).invoke_composed_with_overrides(Widget._get_f_IWidgetFactory(), [], 0, 0, 1, False, _override_interfaces)"
+        ),
+        "same-signature activation must retain composable subclass support:\n{duplicate_py}"
+    );
+
+    let mut unsupported_override = class.clone();
+    unsupported_override.overridable_interfaces[0].methods[0]
+        .params
+        .push(ParamMeta {
+            name: "value".into(),
+            typ: TypeMeta::Object,
+            direction: ParamDirection::In,
+        });
+    let unsupported_py = python::generate_class(
+        &unsupported_override,
+        &HashSet::from(["Widget".into()]),
+        &HashSet::new(),
+        &HashSet::new(),
+    );
+    assert!(unsupported_py.contains("Widget native override ABI is unsupported: "));
+    assert!(unsupported_py.contains("difference(())"));
+    assert!(!unsupported_py.contains("DynWinRTOverrideInterface(IID_IWidgetOverrides"));
 
     let mut protected = class.clone();
     protected.constructors[0].kind = ConstructorKind::ProtectedComposition;
@@ -164,7 +239,7 @@ fn composable_factory_returns_public_instance() {
         "protected composition must not become a public Python constructor:\n{protected_py}"
     );
     assert!(
-        protected_py.contains("raise TypeError(\"No matching constructor for Widget\")"),
+        protected_py.contains("raise TypeError(\"Widget cannot be constructed directly\")"),
         "protected composition must remain non-constructible from Python:\n{protected_py}"
     );
     assert!(
@@ -197,6 +272,14 @@ fn python_zero_arg_create_instance_gets_typed_create_alias() {
         namespace: "Contoso".into(),
         full_name: "Contoso.Widget".into(),
         factory_interfaces: vec![factory],
+        constructors: vec![ConstructorMeta {
+            kind: ConstructorKind::FactoryActivation,
+            factory_interface: Some(TypeRef {
+                namespace: "Contoso".into(),
+                name: "IWidgetFactory".into(),
+                kind: TypeKind::Interface,
+            }),
+        }],
         ..Default::default()
     };
     let known = HashSet::from(["Widget".into()]);

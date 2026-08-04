@@ -89,7 +89,8 @@ New-Item -ItemType Directory -Force -Path $output | Out-Null
 
 $generations = @(
     @("Microsoft.UI.Xaml", "Application,Window"),
-    @("Microsoft.UI.Xaml.Controls", "Grid,Button,TextBlock"),
+    @("Microsoft.UI.Xaml.Markup", "XamlReader"),
+    @("Microsoft.UI.Xaml.Controls", "Grid,Button,TextBlock,CommandBar,AppBarButton,ItemsRepeater,ListView,StackLayout,StackPanel"),
     @("Microsoft.UI.Xaml.Automation.Peers", "ButtonAutomationPeer"),
     @("Windows.System.Threading", "ThreadPool")
 )

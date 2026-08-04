@@ -7,7 +7,7 @@ use super::imports::{emit_type_checking_imports, format_py_type_import};
 use super::structs::generate_struct_helpers;
 use super::*;
 use crate::codegen::winrt::python::collections::{
-    CollectionKind, interface_kind, map_iterable_name, runtime_mixin,
+    CollectionKind, interface_kind, map_iterable_name, observable_vector_name, runtime_mixin,
 };
 
 /// Generate a Python file for a single enum.
@@ -91,14 +91,22 @@ pub fn generate_interface(
     out.push_str(HEADER);
     out.push_str(FUTURE_ANNOTATIONS);
     out.push_str(IMPORT_LINE);
+    let is_element_factory =
+        iface.namespace == "Microsoft.UI.Xaml" && iface.name == "IElementFactory";
+    if is_element_factory {
+        out.push_str("from dynwinrt_py import DynWinRtElementFactory\n");
+    }
     let collection_kind = interface_kind(iface);
-    if let Some(mixin) = collection_kind.and_then(runtime_mixin) {
+    let observable_vector = observable_vector_name(iface);
+    if observable_vector.is_none()
+        && let Some(mixin) = collection_kind.and_then(runtime_mixin)
+    {
         out.push_str(&format!("from dynwinrt_py.dynwinrt_py import {mixin}\n"));
     }
     if methods_have_async_output(iface.methods.iter()) {
         out.push_str(ASYNC_IMPORT_LINE);
     }
-    if has_ireference_input(iface.methods.iter()) {
+    if has_ireference_input(iface.methods.iter()) || has_ireference_struct_field(&used_structs) {
         out.push_str(IREFERENCE_HELPER);
     }
     out.push('\n');
@@ -126,6 +134,21 @@ pub fn generate_interface(
             let module = to_snake_case_filename(cname);
             type_checking_imports
                 .push(format!("from .{} import {}  # noqa: F401\n", module, cname));
+        }
+        if let Some(vector_name) = &observable_vector
+            && !collection_names.contains(vector_name)
+        {
+            let module = to_snake_case_filename(vector_name);
+            type_checking_imports.push(format!(
+                "from .{module} import {vector_name}  # noqa: F401\n"
+            ));
+        }
+        if observable_vector.is_some() {
+            let event_args = "IVectorChangedEventArgs";
+            let module = to_snake_case_filename(event_args);
+            type_checking_imports.push(format!(
+                "from .{module} import {event_args}  # noqa: F401\n"
+            ));
         }
     }
 
@@ -184,7 +207,13 @@ pub fn generate_interface(
     }
 
     // Wrapper class
-    if let Some(mixin) = collection_kind.and_then(runtime_mixin) {
+    if let Some(vector_name) = &observable_vector {
+        out.push_str(&format!(
+            "\nclass {}({}):\n",
+            iface.name,
+            py_runtime_symbol(vector_name, vector_name)
+        ));
+    } else if let Some(mixin) = collection_kind.and_then(runtime_mixin) {
         out.push_str(&format!("\nclass {}({mixin}):\n", iface.name));
     } else {
         out.push_str(&format!("\nclass {}:\n", iface.name));
@@ -200,7 +229,16 @@ pub fn generate_interface(
         ));
     }
     out.push_str("    def __init__(self, obj: DynWinRTValue):\n");
-    if iface.generic_piid.is_some() {
+    if let Some(vector_name) = &observable_vector {
+        out.push_str(&format!(
+            "        {}.__init__(self, obj)\n",
+            py_runtime_symbol(vector_name, vector_name)
+        ));
+        out.push_str(&format!(
+            "        self._observable_obj = obj.cast(IID_{})\n",
+            iface.name
+        ));
+    } else if iface.generic_piid.is_some() {
         out.push_str(&format!(
             "        self._obj = obj.cast(IID_{})\n",
             iface.name
@@ -208,6 +246,10 @@ pub fn generate_interface(
     } else {
         out.push_str("        self._obj = obj\n");
     }
+    out.push_str(&format!(
+        "        _dynwinrt_track_projected(self, '{}.{}')\n",
+        iface.namespace, iface.name
+    ));
     out.push('\n');
 
     // static from() — QI cast
@@ -226,7 +268,32 @@ pub fn generate_interface(
 
     // static create() for IVector<T> and IMap<K,V>
     if let Some(ref piid) = iface.generic_piid {
-        if piid == "913337e9-11a1-4345-a3a2-4e7f956e222d" && iface.generic_args.len() == 1 {
+        if piid == "5917eb53-50b4-4a0d-b309-65862b3f1dbc" && iface.generic_args.len() == 1 {
+            let elem_type = py_dynwinrt_type(&iface.generic_args[0]);
+            let elem_annotation = crate::codegen::winrt::python::type_helpers::py_param_type_safe(
+                &iface.generic_args[0],
+                known_types,
+            );
+            let wrap = py_wrap_native_value("item", &iface.generic_args[0]);
+            let vector_name = observable_vector
+                .as_ref()
+                .expect("observable vector companion");
+            out.push_str("    @staticmethod\n");
+            out.push_str(&format!(
+                "    def create(items: Iterable[{}]) -> '{}':\n",
+                elem_annotation, iface.name
+            ));
+            out.push_str(&format!(
+                "        return {}(_dynwinrt_new_vector(items, lambda item: {}, {}))\n\n",
+                iface.name, wrap, elem_type
+            ));
+            out.push_str(&format!("    def as_vector(self) -> '{}':\n", vector_name));
+            out.push_str(&format!(
+                "        return {}(self._obj)\n",
+                py_runtime_symbol(vector_name, vector_name)
+            ));
+            out.push('\n');
+        } else if piid == "913337e9-11a1-4345-a3a2-4e7f956e222d" && iface.generic_args.len() == 1 {
             let elem_type = py_dynwinrt_type(&iface.generic_args[0]);
             let elem_annotation = crate::codegen::winrt::python::type_helpers::py_param_type_safe(
                 &iface.generic_args[0],
@@ -269,6 +336,95 @@ pub fn generate_interface(
         }
     }
 
+    if is_element_factory {
+        let get_args = py_runtime_symbol("ElementFactoryGetArgs", "ElementFactoryGetArgs");
+        let recycle_args =
+            py_runtime_symbol("ElementFactoryRecycleArgs", "ElementFactoryRecycleArgs");
+        let ui_element_iid = py_runtime_symbol("UIElement", "IID_IUIElement");
+        out.push_str(
+            r#"    @staticmethod
+    def create(get_element, recycle_element):
+        elements = {}
+        callback_state = [True]
+
+        class RecycleArgsProxy:
+            def __init__(self, source, element):
+                object.__setattr__(self, '_source', source)
+                object.__setattr__(self, '_element', element)
+
+            @property
+            def element(self):
+                return self._element
+
+            def __getattr__(self, name):
+                return getattr(self._source, name)
+
+            def __setattr__(self, name, value):
+                if name == 'element':
+                    object.__setattr__(self, '_element', value)
+                setattr(self._source, name, value)
+
+"#,
+        );
+        out.push_str(&format!(
+            "        def get_native(args):\n\
+             \x20           if not callback_state[0]:\n\
+             \x20               raise RuntimeError('IElementFactory callbacks have been released.')\n\
+             \x20           projected_args = {get_args}._from_native(args)\n\
+             \x20           element = get_element(projected_args)\n\
+             \x20           native = getattr(element, '_obj', element)\n\
+             \x20           if not isinstance(native, DynWinRTValue):\n\
+             \x20               raise TypeError('get_element must return a projected UIElement.')\n\
+             \x20           native_element = native.cast({ui_element_iid})\n\
+             \x20           if not callback_state[0]:\n\
+             \x20               native_element.release()\n\
+             \x20               raise RuntimeError('IElementFactory callbacks have been released.')\n\
+             \x20           elements[native_element.identity_raw()] = element\n\
+             \x20           return native_element\n\n"
+        ));
+        out.push_str(&format!(
+            "        def recycle_native(args):\n\
+             \x20           if not callback_state[0]:\n\
+             \x20               raise RuntimeError('IElementFactory callbacks have been released.')\n\
+             \x20           projected_args = {recycle_args}._from_native(args)\n\
+             \x20           projected_element = projected_args.element\n\
+             \x20           if projected_element is None:\n\
+             \x20               if not callback_state[0]:\n\
+             \x20                   raise RuntimeError('IElementFactory callbacks have been released.')\n\
+             \x20               recycle_element(projected_args)\n\
+             \x20               return\n\
+             \x20           native = getattr(projected_element, '_obj', projected_element)\n\
+             \x20           element = elements.pop(native.identity_raw(), projected_element)\n\
+             \x20           if not callback_state[0]:\n\
+             \x20               raise RuntimeError('IElementFactory callbacks have been released.')\n\
+             \x20           recycle_element(RecycleArgsProxy(projected_args, element))\n\n"
+        ));
+        out.push_str(&format!(
+            "        implementation = DynWinRtElementFactory.create(\n\
+             \x20           {ui_element_iid}, get_native, recycle_native\n\
+             \x20       )\n\
+             \x20       factory = IElementFactory(implementation.to_value())\n\
+             \x20       factory._element_factory_implementation = implementation\n\
+             \x20       factory._element_factory_elements = elements\n\
+             \x20       factory._element_factory_callback_state = callback_state\n\
+             \x20       _dynwinrt_track_projected(factory, 'Microsoft.UI.Xaml.IElementFactory')\n\
+             \x20       return factory\n\n"
+        ));
+        out.push_str(
+            "    def release_callbacks(self):\n\
+             \x20       callback_state = getattr(self, '_element_factory_callback_state', None)\n\
+             \x20       if callback_state is not None:\n\
+             \x20           callback_state[0] = False\n\
+             \x20       elements = getattr(self, '_element_factory_elements', None)\n\
+             \x20       if elements is not None:\n\
+             \x20           elements.clear()\n\
+             \x20       implementation = getattr(self, '_element_factory_implementation', None)\n\
+             \x20       if implementation is not None:\n\
+             \x20           implementation.release_callbacks()\n\
+             \x20           self._element_factory_implementation = None\n\n",
+        );
+    }
+
     if matches!(
         collection_kind,
         Some(CollectionKind::Mapping | CollectionKind::MutableMapping)
@@ -283,6 +439,11 @@ pub fn generate_interface(
 
     // Instance methods (reorder so @property comes before @x.setter)
     let iface_var = format!("_{}", iface.name);
+    let obj_expr = if observable_vector.is_some() {
+        "self._observable_obj"
+    } else {
+        "self._obj"
+    };
     for methods in crate::codegen::winrt::python::overloads::grouped_methods(
         reorder_getters_before_setters(&iface.methods),
     ) {
@@ -291,7 +452,7 @@ pub fn generate_interface(
             .into_iter()
             .map(|method| InstanceOverload {
                 iface_var: iface_var.clone(),
-                obj_expr: "self._obj".to_string(),
+                obj_expr: obj_expr.to_string(),
                 method,
                 sibling_methods: Some(iface.methods.as_slice()),
                 property_has_getter: !method.is_property_setter
@@ -321,22 +482,16 @@ fn generate_delegate(iface: &InterfaceMeta) -> String {
     out.push_str("from dynwinrt_py import DynWinRTType, WinGUID\n\n");
 
     let invoke = iface.methods.iter().find(|m| m.name == "Invoke");
-    let param_exprs: Vec<String> = invoke
-        .map(|inv| {
-            inv.params
-                .iter()
-                .filter(|p| p.direction == ParamDirection::In)
-                .map(|p| py_dynwinrt_type(&p.typ))
-                .collect()
-        })
-        .unwrap_or_default();
-
     if iface.generic_piid.is_some() {
+        let generic_arg_exprs = iface
+            .generic_args
+            .iter()
+            .map(py_dynwinrt_type)
+            .collect::<Vec<_>>()
+            .join(", ");
         out.push_str(&format!(
             "IID_{} = DynWinRTType.parameterized(WinGUID.parse('{}'), [{}]).iid()\n",
-            iface.name,
-            iface.iid,
-            param_exprs.join(", ")
+            iface.name, iface.iid, generic_arg_exprs
         ));
     } else if !iface.iid.is_empty() {
         out.push_str(&format!(

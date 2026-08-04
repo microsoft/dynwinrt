@@ -58,7 +58,7 @@ pub fn render_python_pyproject(input: &PythonPackageManifestInput<'_>) -> String
          [project]\n\
          name = \"{distribution_name}\"\n\
          version = \"{package_version}\"\n\
-         requires-python = \">=3.9\"\n\
+         requires-python = \">=3.11,<3.15\"\n\
          dependencies = [\"dynwinrt-py=={runtime_version}\"]\n\
          \n\
          [tool.setuptools]\n\
@@ -272,6 +272,7 @@ mod tests {
         });
 
         assert!(out.contains("name = \"contoso-winrt\""));
+        assert!(out.contains("requires-python = \">=3.11,<3.15\""));
         assert!(out.contains(
             "packages = [\"contoso_winrt\", \"contoso_winrt.windows\", \
              \"contoso_winrt.windows.foundation\"]"

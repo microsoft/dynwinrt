@@ -440,3 +440,4 @@ bench-electron/out/
 **/settings.local.json
 # Generated E2E projections are recreated and removed by tests/e2e_test.ps1.
 tests/e2e_generated/
+.python-release/

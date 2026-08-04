@@ -74,6 +74,29 @@ pub struct InterfaceMeta {
     pub deprecated: Option<String>,
 }
 
+fn same_interface_identity(left: &InterfaceMeta, right: &InterfaceMeta) -> bool {
+    if left.namespace != right.namespace {
+        return false;
+    }
+    match (&left.generic_piid, &right.generic_piid) {
+        (Some(left_piid), Some(right_piid)) => {
+            left_piid == right_piid && left.generic_args == right.generic_args
+        }
+        (None, None) if !left.iid.is_empty() || !right.iid.is_empty() => left.iid == right.iid,
+        (None, None) => left.name == right.name,
+        _ => false,
+    }
+}
+
+fn push_unique_interface(interfaces: &mut Vec<InterfaceMeta>, interface: InterfaceMeta) {
+    if !interfaces
+        .iter()
+        .any(|existing| same_interface_identity(existing, &interface))
+    {
+        interfaces.push(interface);
+    }
+}
+
 /// How an interface relates to a RuntimeClass.
 #[derive(Debug, Clone, PartialEq)]
 pub enum InterfaceRole {
@@ -114,10 +137,15 @@ pub struct ClassMeta {
     pub default_interface: Option<InterfaceMeta>,
     /// Supplemental interfaces, including parameterized and versioned interfaces.
     pub required_interfaces: Vec<InterfaceMeta>,
+    /// Native virtual interfaces marked OverridableAttribute. These describe
+    /// implementation callbacks, not callable projected instance members.
+    pub overridable_interfaces: Vec<InterfaceMeta>,
     pub factory_interfaces: Vec<InterfaceMeta>,
     pub static_interfaces: Vec<InterfaceMeta>,
     pub has_default_constructor: bool,
     pub constructors: Vec<ConstructorMeta>,
+    /// The runtime class declares MarshalingBehavior(Agile).
+    pub is_agile: bool,
     /// XML doc summary (populated from sibling .xml).
     pub doc: Option<String>,
     /// XML `<deprecated>` text.
@@ -132,6 +160,27 @@ impl ClassMeta {
             .chain(self.factory_interfaces.iter())
             .chain(self.static_interfaces.iter())
             .chain(self.required_interfaces.iter())
+    }
+
+    /// Whether authoritative WinMD metadata declares parameterless activation.
+    pub fn has_default_activation(&self) -> bool {
+        self.constructors
+            .iter()
+            .any(|constructor| constructor.kind == ConstructorKind::DefaultActivation)
+    }
+
+    /// Whether an interface is named by public activation/composition metadata.
+    pub fn is_public_constructor_factory(&self, interface: &InterfaceMeta) -> bool {
+        self.constructors.iter().any(|constructor| {
+            constructor.is_public()
+                && constructor
+                    .factory_interface
+                    .as_ref()
+                    .is_some_and(|reference| {
+                        reference.namespace == interface.namespace
+                            && reference.name == interface.name
+                    })
+        })
     }
 }
 
@@ -736,8 +785,10 @@ fn parse_class_from_index(index: &reader::Index, namespace: &str, name: &str) ->
     let mut factory_interfaces = Vec::new();
     let mut static_interfaces = Vec::new();
     let mut generic_required_interfaces = Vec::new();
+    let mut overridable_interfaces = Vec::new();
     let mut has_default_constructor = false;
     let mut constructors = Vec::new();
+    let mut is_agile = false;
 
     // 1. Find default interface and collect all required interfaces
     let mut required_iface_names: Vec<(String, String)> = Vec::new();
@@ -748,6 +799,16 @@ fn parse_class_from_index(index: &reader::Index, namespace: &str, name: &str) ->
             _ => continue,
         };
 
+        if iface_impl.has_attribute("OverridableAttribute") {
+            if let Some(iface_meta) = parse_interface_type(index, &iface_ty)
+                && !overridable_interfaces
+                    .iter()
+                    .any(|existing| same_interface_identity(existing, &iface_meta))
+            {
+                overridable_interfaces.push(iface_meta);
+            }
+            continue;
+        }
         if iface_impl.has_attribute("DefaultAttribute") {
             if let Some(iface_meta) = parse_interface_type(index, &iface_ty) {
                 default_interface = Some(iface_meta);
@@ -757,7 +818,7 @@ fn parse_class_from_index(index: &reader::Index, namespace: &str, name: &str) ->
             windows_metadata::Type::Name(type_name) if !type_name.generics.is_empty()
         ) {
             if let Some(iface_meta) = parse_interface_type(index, &iface_ty) {
-                generic_required_interfaces.push(iface_meta);
+                push_unique_interface(&mut generic_required_interfaces, iface_meta);
             }
         } else {
             // Non-default required interface (e.g. ILanguageModel2, versioned interfaces)
@@ -768,13 +829,10 @@ fn parse_class_from_index(index: &reader::Index, namespace: &str, name: &str) ->
     // 1a. Walk ancestor classes and inherit their interfaces. In WinRT the runtime
     // reaches parent-class members via QI on the child instance — but each parent's
     // interface_impls are only listed on the parent's TypeDef, not repeated on the
-    // child. So we walk def.extends() ourselves and flatten every non-generic
+    // child. So we walk def.extends() ourselves and flatten every
     // ancestor interface onto this class's required_interfaces. Without this,
     // Button.background (from Control), ScrollViewer.content (from ContentControl),
     // and every other inherited member is silently absent from the wrapper class.
-    let default_iface_key = default_interface
-        .as_ref()
-        .map(|d| (d.namespace.clone(), d.name.clone()));
     let mut ancestor_key: Option<(String, String)> = def
         .extends()
         .map(|e| (e.namespace().to_string(), e.name().to_string()));
@@ -788,15 +846,35 @@ fn parse_class_from_index(index: &reader::Index, namespace: &str, name: &str) ->
         };
         for iface_impl in parent_def.interface_impls() {
             let iface_ty = iface_impl.interface(&[]);
+            if iface_impl.has_attribute("OverridableAttribute") {
+                if let Some(iface_meta) = parse_interface_type(index, &iface_ty)
+                    && !overridable_interfaces
+                        .iter()
+                        .any(|existing| same_interface_identity(existing, &iface_meta))
+                {
+                    overridable_interfaces.push(iface_meta);
+                }
+                continue;
+            }
             if let windows_metadata::Type::Name(tn) = &iface_ty {
-                // Skip generic instantiations — parse_interface can't substitute
-                // args here, and their flavor-specific files (IVector_T.js etc.)
-                // are already emitted separately for explicit casts.
                 if !tn.generics.is_empty() {
+                    // Do not fall back to the open generic definition: a failed
+                    // resolution would register the wrong IID and method types.
+                    if let Some(iface_meta) = parse_interface_type(index, &iface_ty)
+                        && !default_interface
+                            .as_ref()
+                            .is_some_and(|default| same_interface_identity(default, &iface_meta))
+                    {
+                        push_unique_interface(&mut generic_required_interfaces, iface_meta);
+                    }
                     continue;
                 }
                 let key = (tn.namespace.clone(), tn.name.clone());
-                if default_iface_key.as_ref() == Some(&key) {
+                if default_interface.as_ref().is_some_and(|default| {
+                    default.generic_piid.is_none()
+                        && default.namespace == key.0
+                        && default.name == key.1
+                }) {
                     continue;
                 }
                 if required_iface_names.iter().any(|k| k == &key) {
@@ -816,11 +894,18 @@ fn parse_class_from_index(index: &reader::Index, namespace: &str, name: &str) ->
     for (ns, iname) in &required_iface_names {
         if let Some(req_iface) = parse_interface(index, ns, iname) {
             if !req_iface.methods.is_empty() {
-                required_interfaces.push(req_iface);
+                push_unique_interface(&mut required_interfaces, req_iface);
             }
         }
     }
-    required_interfaces.extend(generic_required_interfaces);
+    for interface in generic_required_interfaces {
+        if !default_interface
+            .as_ref()
+            .is_some_and(|default| same_interface_identity(default, &interface))
+        {
+            push_unique_interface(&mut required_interfaces, interface);
+        }
+    }
 
     // 2. Find factory/static/default-constructor from class-level attributes
     for attr in def.attributes() {
@@ -860,17 +945,18 @@ fn parse_class_from_index(index: &reader::Index, namespace: &str, name: &str) ->
                         },
                     );
                 }
-                _ => {
-                    has_default_constructor = true;
-                    push_unique_constructor(
-                        &mut constructors,
-                        ConstructorMeta {
-                            kind: ConstructorKind::DefaultActivation,
-                            factory_interface: None,
-                        },
-                    );
-                }
+                // Unknown or malformed activation metadata must fail closed.
+                // Inferring a default constructor here makes system-returned
+                // classes user-constructible.
+                _ => {}
             }
+        } else if attr_name == "MarshalingBehaviorAttribute" {
+            is_agile = values.first().is_some_and(|(_, value)| {
+                matches!(
+                    value,
+                    windows_metadata::Value::I32(2) | windows_metadata::Value::U32(2)
+                )
+            });
         } else if attr_name == "StaticAttribute" {
             if let Some((_, windows_metadata::Value::Utf8(iface_full_name))) = values.first() {
                 if let Some((ns, n)) = split_full_name(iface_full_name) {
@@ -910,10 +996,12 @@ fn parse_class_from_index(index: &reader::Index, namespace: &str, name: &str) ->
         full_name,
         default_interface,
         required_interfaces,
+        overridable_interfaces,
         factory_interfaces,
         static_interfaces,
         has_default_constructor,
         constructors,
+        is_agile,
         doc: None,
         deprecated: None,
     })
@@ -960,6 +1048,9 @@ fn parse_interface_type(
     if type_name.generics.is_empty() {
         return parse_interface(index, &type_name.namespace, &type_name.name);
     }
+    if type_name.generics.iter().any(contains_open_generic) {
+        return None;
+    }
 
     let TypeMeta::Parameterized {
         namespace,
@@ -976,8 +1067,49 @@ fn parse_interface_type(
     else {
         return None;
     };
+    if piid.is_empty() || args.iter().any(|arg| !is_resolved_generic_arg(arg)) {
+        return None;
+    }
     let concrete_name = make_parameterized_name(&name, &args);
     parse_parameterized_interface(index, &namespace, &name, &concrete_name, &piid, &args)
+}
+
+fn contains_open_generic(typ: &windows_metadata::Type) -> bool {
+    match typ {
+        windows_metadata::Type::Generic(_) => true,
+        windows_metadata::Type::Name(name) => name.generics.iter().any(contains_open_generic),
+        windows_metadata::Type::Array(inner)
+        | windows_metadata::Type::ArrayRef(inner)
+        | windows_metadata::Type::ConstRef(inner)
+        | windows_metadata::Type::PtrMut(inner, _)
+        | windows_metadata::Type::PtrConst(inner, _)
+        | windows_metadata::Type::ArrayFixed(inner, _) => contains_open_generic(inner),
+        _ => false,
+    }
+}
+
+fn is_resolved_generic_arg(typ: &TypeMeta) -> bool {
+    match typ {
+        TypeMeta::Interface { iid, .. } | TypeMeta::Delegate { iid, .. } => !iid.is_empty(),
+        TypeMeta::RuntimeClass {
+            default_interface, ..
+        } => default_interface
+            .as_deref()
+            .is_some_and(is_resolved_generic_arg),
+        TypeMeta::Parameterized { piid, args, .. } => {
+            !piid.is_empty() && args.iter().all(is_resolved_generic_arg)
+        }
+        TypeMeta::Array(inner)
+        | TypeMeta::AsyncOperation(inner)
+        | TypeMeta::AsyncActionWithProgress(inner) => is_resolved_generic_arg(inner),
+        TypeMeta::AsyncOperationWithProgress(result, progress) => {
+            is_resolved_generic_arg(result) && is_resolved_generic_arg(progress)
+        }
+        TypeMeta::Struct { fields, .. } => fields
+            .iter()
+            .all(|field| is_resolved_generic_arg(&field.typ)),
+        _ => true,
+    }
 }
 
 /// Parse a parameterized interface definition (e.g. IVector`1) from winmd,
@@ -1520,6 +1652,23 @@ mod tests {
     }
 
     #[test]
+    fn instantiated_interface_identity_includes_generic_arguments() {
+        let interface = |arg| InterfaceMeta {
+            name: "ISameShortName".into(),
+            namespace: "N".into(),
+            iid: "generic-piid".into(),
+            generic_piid: Some("generic-piid".into()),
+            generic_args: vec![arg],
+            ..Default::default()
+        };
+        let mut interfaces = Vec::new();
+        push_unique_interface(&mut interfaces, interface(TypeMeta::U32));
+        push_unique_interface(&mut interfaces, interface(TypeMeta::U64));
+        push_unique_interface(&mut interfaces, interface(TypeMeta::U32));
+        assert_eq!(interfaces.len(), 2);
+    }
+
+    #[test]
     fn class_all_interfaces_iterates_all() {
         let mk_iface = |n: &str| InterfaceMeta {
             name: n.into(),
@@ -1671,6 +1820,28 @@ mod tests {
     fn test_system_returned_class_has_no_constructor() {
         let class = parse_class(WINDOWS_WINMD, "Windows.System", "User").unwrap();
         assert!(class.constructors.is_empty());
+        assert!(!class.static_interfaces.is_empty());
+        assert!(
+            !class.required_interfaces.is_empty(),
+            "versioned User interfaces must remain available"
+        );
+
+        let known_types = HashSet::from(["User".to_string()]);
+        let py = crate::codegen::winrt::python::generate_class(
+            &class,
+            &known_types,
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+        let pyi = crate::codegen::python_stub::generate_class_stub(
+            &class,
+            &known_types,
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+        assert!(py.contains("def _from_native(cls, obj: DynWinRTValue):"));
+        assert!(py.contains("User cannot be constructed directly"));
+        assert!(pyi.contains("def __new__(cls, _not_constructible: NoReturn) -> NoReturn: ..."));
     }
 
     #[test]
@@ -1699,9 +1870,75 @@ mod tests {
 
         let stack_panel =
             parse_class(&winmd_paths, "Microsoft.UI.Xaml.Controls", "StackPanel").unwrap();
+        assert!(stack_panel.is_agile);
         assert!(stack_panel.constructors.iter().any(|constructor| {
             constructor.kind == ConstructorKind::PublicComposition && constructor.is_public()
         }));
+        let stack_factory = stack_panel
+            .factory_interfaces
+            .iter()
+            .find(|interface| interface.name == "IStackPanelFactory")
+            .unwrap();
+        let create = stack_factory
+            .methods
+            .iter()
+            .find(|method| method.name == "CreateInstance")
+            .unwrap();
+        assert_eq!(
+            create
+                .params
+                .iter()
+                .map(|param| (param.name.as_str(), &param.direction))
+                .collect::<Vec<_>>(),
+            vec![
+                ("baseInterface", &ParamDirection::In),
+                ("innerInterface", &ParamDirection::Out),
+            ]
+        );
+        assert!(matches!(
+            create.return_type,
+            Some(TypeMeta::RuntimeClass { ref name, .. }) if name == "StackPanel"
+        ));
+        assert!(
+            stack_panel
+                .overridable_interfaces
+                .iter()
+                .any(|interface| interface.name == "IUIElementOverrides")
+        );
+        let framework_overrides = stack_panel
+            .overridable_interfaces
+            .iter()
+            .find(|interface| interface.name == "IFrameworkElementOverrides")
+            .unwrap();
+        assert_eq!(
+            framework_overrides.iid,
+            "ffc6fd98-f38c-5904-9ce4-97a3427cf4ba"
+        );
+        assert_eq!(
+            framework_overrides
+                .methods
+                .iter()
+                .map(|method| (method.name.as_str(), method.vtable_index))
+                .collect::<Vec<_>>(),
+            vec![
+                ("MeasureOverride", 6),
+                ("ArrangeOverride", 7),
+                ("OnApplyTemplate", 8),
+                ("GoToElementStateCore", 9),
+            ]
+        );
+        let on_apply_template = &framework_overrides.methods[2];
+        assert!(on_apply_template.params.is_empty());
+        assert!(on_apply_template.return_type.is_none());
+        assert_eq!(
+            stack_panel
+                .overridable_interfaces
+                .iter()
+                .find(|interface| interface.name == "IUIElementOverrides")
+                .unwrap()
+                .iid,
+            "9034f41e-ab7b-59e7-8168-50de6b689dde"
+        );
 
         let automation_peer = parse_class(
             &winmd_paths,
@@ -1712,6 +1949,28 @@ mod tests {
         assert!(automation_peer.constructors.iter().any(|constructor| {
             constructor.kind == ConstructorKind::ProtectedComposition && !constructor.is_public()
         }));
+        assert!(
+            automation_peer
+                .overridable_interfaces
+                .iter()
+                .any(|interface| interface.name == "IAutomationPeerOverrides")
+        );
+        let known_types = HashSet::from(["AutomationPeer".to_string()]);
+        let py = crate::codegen::winrt::python::generate_class(
+            &automation_peer,
+            &known_types,
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+        let pyi = crate::codegen::python_stub::generate_class_stub(
+            &automation_peer,
+            &known_types,
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+        assert!(py.contains("AutomationPeer cannot be constructed directly"));
+        assert!(py.contains("def _from_native(cls, obj: DynWinRTValue):"));
+        assert!(pyi.contains("def __new__(cls, _not_constructible: NoReturn) -> NoReturn: ..."));
     }
 
     #[test]
@@ -1905,6 +2164,24 @@ mod iface_tests {
                 name
             );
         }
+    }
+
+    #[test]
+    fn unresolved_parameterized_interface_types_fail_closed() {
+        let index = reader::Index::read(WINDOWS_WINMD).unwrap();
+        let open_vector = windows_metadata::Type::Name(windows_metadata::TypeName {
+            namespace: "Windows.Foundation.Collections".into(),
+            name: "IVector`1".into(),
+            generics: vec![windows_metadata::Type::Generic(0)],
+        });
+        assert!(super::parse_interface_type(&index, &open_vector).is_none());
+
+        let unresolved_arg = windows_metadata::Type::Name(windows_metadata::TypeName {
+            namespace: "Windows.Foundation.Collections".into(),
+            name: "IVector`1".into(),
+            generics: vec![windows_metadata::Type::named("Missing.Metadata", "Unknown")],
+        });
+        assert!(super::parse_interface_type(&index, &unresolved_arg).is_none());
     }
 
     #[test]

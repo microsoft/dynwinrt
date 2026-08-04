@@ -50,7 +50,7 @@ pub(super) fn method_pydoc(method: &MethodMeta, in_params: &[&crate::meta::Param
 // Python type annotation helpers
 // ======================================================================
 
-fn py_optional_type(typ: String) -> String {
+pub(crate) fn py_optional_type(typ: String) -> String {
     let unquoted = typ
         .strip_prefix('\'')
         .and_then(|value| value.strip_suffix('\''))
@@ -501,6 +501,15 @@ pub(crate) fn py_delegate_callable_type(typ: &TypeMeta, known_types: &HashSet<St
         {
             let arg = py_return_type_safe(Some(&args[0]), known_types);
             format!("Callable[[object, {}], object]", arg)
+        }
+        TypeMeta::Parameterized { name, args, .. }
+            if name.split('`').next() == Some("VectorChangedEventHandler") && args.len() == 1 =>
+        {
+            let observable = crate::meta::make_parameterized_name("IObservableVector", args);
+            format!(
+                "Callable[['{}', 'IVectorChangedEventArgs'], object]",
+                observable
+            )
         }
         _ => "Callable[..., object]".to_string(),
     }

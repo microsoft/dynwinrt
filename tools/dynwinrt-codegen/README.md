@@ -8,6 +8,19 @@ Read Windows metadata (`.winmd`) files and generate typed bindings that use `@mi
 npm install -D @microsoft/dynwinrt-codegen
 ```
 
+Python users can install the standalone native command:
+
+```powershell
+python -m pip install dynwinrt-codegen
+dynwinrt-codegen generate --namespace Windows.Foundation --class-name Uri `
+  --lang py --output generated_uri
+```
+
+The Python distribution contains only the executable. Its wheels are
+`py3-none-win_amd64` and `py3-none-win_arm64`, work with CPython 3.8–3.14, and
+do not install or invoke Cargo/Rust. Generated Python packages require CPython
+3.11–3.14 and pin `dynwinrt-py` to the exact codegen version.
+
 ## Usage
 
 ```bash

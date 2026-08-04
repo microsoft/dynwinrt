@@ -482,11 +482,13 @@ fn run() -> Result<(), String> {
                 }
 
                 winui::add_implicit_classes(&winmd, &mut classes);
+                let mut implicit_interfaces = Vec::new();
+                winui::add_implicit_interfaces(&winmd, &classes, &mut implicit_interfaces);
                 generate_for_types(
                     &winmd,
                     output_dir,
                     classes.clone(),
-                    Vec::new(),
+                    implicit_interfaces.clone(),
                     Vec::new(),
                     dry_run,
                     &lang,
@@ -507,9 +509,11 @@ fn run() -> Result<(), String> {
                         // We pick a sentinel filename `index.js` to detect presence; `.d.ts` is written alongside.
                         (typescript::append_to_index, typescript::generate_index)
                     };
-                    let deps = meta::resolve_dependencies(&winmd, &classes, &[], &[]);
+                    let deps =
+                        meta::resolve_dependencies(&winmd, &classes, &implicit_interfaces, &[]);
                     let mut all_classes = [classes.as_slice(), deps.classes.as_slice()].concat();
-                    let mut all_interfaces: Vec<_> = deps.interfaces.clone();
+                    let mut all_interfaces =
+                        [implicit_interfaces.as_slice(), deps.interfaces.as_slice()].concat();
                     let mut all_enums: Vec<_> = deps.enums.clone();
                     for c in all_classes.iter_mut() {
                         doc_table.apply_to_class(c);
@@ -625,6 +629,7 @@ fn run() -> Result<(), String> {
                     let mut interfaces = meta::parse_interfaces(&winmd, ns);
                     let mut enums = meta::parse_enums(&winmd, ns);
                     winui::add_implicit_classes(&winmd, &mut classes);
+                    winui::add_implicit_interfaces(&winmd, &classes, &mut interfaces);
                     for c in classes.iter_mut() {
                         doc_table.apply_to_class(c);
                     }
@@ -657,6 +662,8 @@ fn run() -> Result<(), String> {
                         all_interfaces.extend(meta::parse_interfaces(&winmd, ns));
                         all_enums.extend(meta::parse_enums(&winmd, ns));
                     }
+                    winui::add_implicit_classes(&winmd, &mut all_classes);
+                    winui::add_implicit_interfaces(&winmd, &all_classes, &mut all_interfaces);
                     let deps = meta::resolve_dependencies(
                         &winmd,
                         &all_classes,

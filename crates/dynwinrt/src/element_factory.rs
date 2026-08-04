@@ -86,10 +86,17 @@ impl DynamicElementFactory {
         *result = std::ptr::null_mut();
         let factory = Self::from_ptr(this);
         let iid = &*iid;
-        if *iid == IUnknown::IID || *iid == IInspectable::IID || *iid == IID_IELEMENT_FACTORY {
+        if *iid == IUnknown::IID
+            || *iid == IInspectable::IID
+            || *iid == windows_core::imp::IAgileObject::IID
+            || *iid == IID_IELEMENT_FACTORY
+        {
             *result = this;
             factory.ref_count.add_ref();
             S_OK
+        } else if *iid == windows_core::imp::IMarshal::IID {
+            factory.ref_count.add_ref();
+            windows_core::imp::marshaler(core::mem::transmute(this), result)
         } else {
             E_NOINTERFACE
         }
@@ -264,5 +271,22 @@ mod tests {
         let hr = unsafe { ((*vtable).recycle_element)(interface.as_raw(), argument.as_raw()) };
         assert!(hr.is_ok());
         assert_eq!(recycle_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn element_factory_is_agile_and_marshalable() {
+        let factory = create_element_factory(Box::new(|_| Err(E_FAIL)), Box::new(|_| S_OK));
+
+        let mut agile = std::ptr::null_mut();
+        let hr = unsafe { factory.query(&windows_core::imp::IAgileObject::IID, &mut agile) };
+        assert!(hr.is_ok());
+        assert!(!agile.is_null());
+        drop(unsafe { IUnknown::from_raw(agile) });
+
+        let mut marshal = std::ptr::null_mut();
+        let hr = unsafe { factory.query(&windows_core::imp::IMarshal::IID, &mut marshal) };
+        assert!(hr.is_ok());
+        assert!(!marshal.is_null());
+        drop(unsafe { IUnknown::from_raw(marshal) });
     }
 }

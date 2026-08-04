@@ -20,7 +20,7 @@ use crate::codegen::winrt::shared::structs::{
     collect_used_structs_from_class, collect_used_structs_from_iface,
 };
 
-use super::collections::{abc_name, class_interface, interface_kind};
+use super::collections::{abc_name, class_interface, interface_kind, observable_vector_name};
 use super::naming::{is_py_reserved, python_module_name, to_snake_case, to_snake_case_filename};
 use super::shared::reorder_getters_before_setters;
 use super::signature::py_dynwinrt_type;
@@ -129,6 +129,7 @@ pub fn generate_interface_stub(
     }
 
     let collection_names = collect_used_generics_from_methods(&iface.methods);
+    let observable_vector = observable_vector_name(iface);
     for cname in &collection_names {
         if cname != &iface.name && !delegate_names.contains(cname) {
             let module = to_snake_case_filename(cname);
@@ -137,6 +138,21 @@ pub fn generate_interface_stub(
                 module, cname
             ));
         }
+    }
+    if let Some(vector_name) = &observable_vector
+        && !collection_names.contains(vector_name)
+    {
+        let module = to_snake_case_filename(vector_name);
+        out.push_str(&format!(
+            "from .{module} import {vector_name}  # noqa: F401\n"
+        ));
+    }
+    if observable_vector.is_some() {
+        let event_args = "IVectorChangedEventArgs";
+        let module = to_snake_case_filename(event_args);
+        out.push_str(&format!(
+            "from .{module} import {event_args}  # noqa: F401\n"
+        ));
     }
 
     let mut sorted_delegates: Vec<_> = delegate_names.iter().collect();
@@ -204,7 +220,23 @@ pub fn generate_interface_stub(
 
     // IVector<T> / IMap<K,V> create()
     if let Some(ref piid) = iface.generic_piid {
-        if piid == "913337e9-11a1-4345-a3a2-4e7f956e222d" && iface.generic_args.len() == 1 {
+        if piid == "5917eb53-50b4-4a0d-b309-65862b3f1dbc" && iface.generic_args.len() == 1 {
+            let element =
+                super::type_helpers::py_param_type_safe(&iface.generic_args[0], known_types);
+            let vector_name = observable_vector
+                .as_ref()
+                .expect("observable vector companion");
+            out.push('\n');
+            out.push_str("    @staticmethod\n");
+            out.push_str(&format!(
+                "    def create(items: Iterable[{}]) -> '{}': ...\n",
+                element, iface.name
+            ));
+            out.push_str(&format!(
+                "    def as_vector(self) -> '{}': ...\n",
+                vector_name
+            ));
+        } else if piid == "913337e9-11a1-4345-a3a2-4e7f956e222d" && iface.generic_args.len() == 1 {
             let element =
                 super::type_helpers::py_param_type_safe(&iface.generic_args[0], known_types);
             out.push('\n');
@@ -224,6 +256,17 @@ pub fn generate_interface_stub(
                 key, value, iface.name
             ));
         }
+    }
+
+    if iface.namespace == "Microsoft.UI.Xaml" && iface.name == "IElementFactory" {
+        out.push_str(
+            "\n    @staticmethod\n\
+             \x20   def create(\n\
+             \x20       get_element: Callable[['ElementFactoryGetArgs'], 'UIElement'],\n\
+             \x20       recycle_element: Callable[['ElementFactoryRecycleArgs'], object],\n\
+             \x20   ) -> 'IElementFactory': ...\n\
+             \x20   def release_callbacks(self) -> None: ...\n",
+        );
     }
 
     for methods in super::overloads::grouped_methods(reorder_getters_before_setters(&iface.methods))
@@ -270,6 +313,10 @@ pub fn generate_class_stub(
     let collection_iface = class_interface(class);
     let collection_kind = collection_iface.and_then(interface_kind);
     let winui_bootstrap = winui::resolve_application_bootstrap(class, known_types);
+    let has_public_composition = class
+        .constructors
+        .iter()
+        .any(|constructor| constructor.kind == crate::meta::ConstructorKind::PublicComposition);
     let has_events = class.all_interfaces().any(|iface| {
         iface
             .methods
@@ -281,6 +328,12 @@ pub fn generate_class_stub(
     out.push_str(HEADER);
     out.push_str(FUTURE_ANNOTATIONS);
     out.push_str(IMPORT_LINE);
+    if !has_constructor_stub_overload(class) {
+        out.push_str("from typing import NoReturn\n");
+    }
+    if has_public_composition {
+        out.push_str("from dynwinrt_py import DynWinRTXamlRegistration\n");
+    }
     if methods_have_async_output(
         class
             .all_interfaces()
@@ -293,8 +346,13 @@ pub fn generate_class_stub(
     }
     if !class.required_interfaces.is_empty() {
         out.push_str("from typing import Type, TypeVar\n");
+    } else if winui::is_dispatcher_queue(class) {
+        out.push_str("from typing import TypeVar\n");
     }
     out.push('\n');
+    if winui::is_dispatcher_queue(class) {
+        out.push_str("_DispatchResultT = TypeVar('_DispatchResultT')\n\n");
+    }
 
     let mut delegate_names: HashSet<String> = delegate_type_names.clone();
     for iface in class.all_interfaces() {
@@ -415,7 +473,7 @@ pub fn generate_class_stub(
     }
 
     // Default constructor
-    if class.has_default_constructor {
+    if class.has_default_activation() {
         let has_create_factory = class.factory_interfaces.iter().any(|iface| {
             iface.methods.iter().any(|m| {
                 let snake = to_snake_case(&m.name);
@@ -462,13 +520,19 @@ pub fn generate_class_stub(
             .iter()
             .any(|method| to_snake_case(&method.name) == "create")
     });
-    let has_create_instance_alias = !class.has_default_constructor
+    let has_create_instance_alias = !class.has_default_activation()
         && !has_explicit_create_factory
         && class.factory_interfaces.iter().any(|iface| {
-            iface.methods.iter().any(|method| {
-                method.name == "CreateInstance"
-                    && crate::codegen::winrt::shared::imports::get_in_params(method).is_empty()
-            })
+            class.is_public_constructor_factory(iface)
+                && iface.methods.iter().any(|method| {
+                    method.name == "CreateInstance"
+                        && matches!(
+                            method.return_type.as_ref(),
+                            Some(TypeMeta::RuntimeClass { namespace, name, .. })
+                                if namespace == &class.namespace && name == &class.name
+                        )
+                        && crate::codegen::winrt::shared::imports::get_in_params(method).is_empty()
+                })
         });
     if has_create_instance_alias {
         out.push('\n');
@@ -605,6 +669,26 @@ pub fn generate_class_stub(
         out.push('\n');
         out.push_str(
             "    def as_interface(self, interface_class: Type[_InterfaceT]) -> _InterfaceT: ...\n",
+        );
+    }
+
+    if winui::is_dispatcher_queue(class) {
+        out.push_str(
+            "\n    async def enqueue_async(\n\
+             \x20       self,\n\
+             \x20       callback: Callable[..., _DispatchResultT],\n\
+             \x20       *args: object,\n\
+             \x20       **kwargs: object,\n\
+             \x20   ) -> _DispatchResultT: ...\n",
+        );
+        out.push_str(
+            "\n    async def enqueue_with_priority_async(\n\
+             \x20       self,\n\
+             \x20       priority: 'DispatcherQueuePriority',\n\
+             \x20       callback: Callable[..., _DispatchResultT],\n\
+             \x20       *args: object,\n\
+             \x20       **kwargs: object,\n\
+             \x20   ) -> _DispatchResultT: ...\n",
         );
     }
 
@@ -756,6 +840,10 @@ fn emit_constructor_stubs(
     // Collect (public_params_only, ...) for each accessible constructor.
     // Composable factories: strip trailing outer + skip ProtectedComposition.
     let mut overloads: Vec<Vec<&crate::meta::ParamMeta>> = Vec::new();
+    let has_public_composition = class
+        .constructors
+        .iter()
+        .any(|constructor| constructor.kind == crate::meta::ConstructorKind::PublicComposition);
 
     // Deduplicate by param-type signature.
     fn push_unique<'a>(
@@ -774,9 +862,7 @@ fn emit_constructor_stubs(
         overloads.push(params);
     }
 
-    let mut handled_any = false;
     for constructor in &class.constructors {
-        handled_any = true;
         match constructor.kind {
             crate::meta::ConstructorKind::DefaultActivation => {
                 push_unique(&mut overloads, Vec::new());
@@ -812,60 +898,36 @@ fn emit_constructor_stubs(
                     continue;
                 };
                 for method in &factory.methods {
-                    if !matches!(
-                        method.return_type.as_ref(),
-                        Some(TypeMeta::RuntimeClass { namespace, name, .. })
-                            if namespace == &class.namespace && name == &class.name
-                    ) {
+                    if !constructor_method_returns_class(method, class) {
                         continue;
                     }
                     let in_params = crate::codegen::winrt::shared::imports::get_in_params(method);
-                    if let Some(outer) = in_params.last() {
-                        let outer_name = outer.name.to_ascii_lowercase();
-                        let is_outer_name = outer_name == "outer"
-                            || outer_name == "base"
-                            || outer_name == "baseinterface"
-                            || outer_name == "outerinterface";
-                        let has_inner_output = method.params.iter().any(|p| {
-                            p.direction == crate::meta::ParamDirection::Out
-                                && matches!(p.typ, TypeMeta::Object)
-                                && p.name.to_ascii_lowercase().contains("inner")
-                        });
-                        if is_outer_name
-                            && matches!(outer.typ, TypeMeta::Object)
-                            && has_inner_output
-                        {
-                            let public: Vec<_> = in_params[..in_params.len() - 1].to_vec();
-                            push_unique(&mut overloads, public);
-                            continue;
-                        }
+                    if composable_has_public_shape(method, &in_params) {
+                        push_unique(&mut overloads, in_params[..in_params.len() - 1].to_vec());
                     }
-                    push_unique(&mut overloads, in_params);
                 }
             }
             crate::meta::ConstructorKind::ProtectedComposition => {}
         }
     }
 
-    // Legacy fallback: no constructors metadata → treat every factory method as
-    // an activation candidate (matches the runtime .py fallback path).
-    if !handled_any {
-        if class.has_default_constructor {
-            push_unique(&mut overloads, Vec::new());
-        }
-        for iface in &class.factory_interfaces {
-            for method in &iface.methods {
-                let in_params = crate::codegen::winrt::shared::imports::get_in_params(method);
-                push_unique(&mut overloads, in_params);
-            }
-        }
-    }
-
-    if overloads.is_empty() {
-        return "    def __init__(self, obj: DynWinRTValue) -> None: ...\n".to_string();
-    }
-
     let mut out = String::new();
+    if has_public_composition {
+        out.push_str(
+            "    # Python subclasses may use public composable constructors. Metadata-supported\n\
+             \x20   # native overrides are registered during construction; unsupported ABI shapes fail closed.\n",
+        );
+        out.push_str("    @classmethod\n");
+        out.push_str(&format!(
+            "    def register_xaml_runtime_class(cls, runtime_class_name: str, control_type: type[{}]) -> DynWinRTXamlRegistration: ...\n",
+            class.name
+        ));
+    }
+    if overloads.is_empty() {
+        out.push_str("    def __new__(cls, _not_constructible: NoReturn) -> NoReturn: ...\n");
+        return out;
+    }
+
     let count = overloads.len();
     for params in &overloads {
         if count > 1 {
@@ -882,6 +944,63 @@ fn emit_constructor_stubs(
         }
     }
     out
+}
+
+fn constructor_method_returns_class(method: &MethodMeta, class: &ClassMeta) -> bool {
+    matches!(
+        method.return_type.as_ref(),
+        Some(TypeMeta::RuntimeClass { namespace, name, .. })
+            if namespace == &class.namespace && name == &class.name
+    )
+}
+
+fn composable_has_public_shape(method: &MethodMeta, in_params: &[&crate::meta::ParamMeta]) -> bool {
+    let Some(outer) = in_params.last() else {
+        return false;
+    };
+    let outer_name = outer.name.to_ascii_lowercase();
+    let is_outer_name = matches!(
+        outer_name.as_str(),
+        "outer" | "base" | "baseinterface" | "outerinterface"
+    );
+    let has_inner_output = method.params.iter().any(|param| {
+        param.direction == crate::meta::ParamDirection::Out
+            && matches!(param.typ, TypeMeta::Object)
+            && param.name.to_ascii_lowercase().contains("inner")
+    });
+    is_outer_name && matches!(outer.typ, TypeMeta::Object) && has_inner_output
+}
+
+fn has_constructor_stub_overload(class: &ClassMeta) -> bool {
+    class
+        .constructors
+        .iter()
+        .any(|constructor| match constructor.kind {
+            crate::meta::ConstructorKind::DefaultActivation => true,
+            crate::meta::ConstructorKind::FactoryActivation
+            | crate::meta::ConstructorKind::PublicComposition => {
+                let Some(factory_ref) = constructor.factory_interface.as_ref() else {
+                    return false;
+                };
+                let Some(factory) = class.factory_interfaces.iter().find(|interface| {
+                    interface.namespace == factory_ref.namespace
+                        && interface.name == factory_ref.name
+                }) else {
+                    return false;
+                };
+                factory.methods.iter().any(|method| {
+                    if !constructor_method_returns_class(method, class) {
+                        return false;
+                    }
+                    constructor.kind == crate::meta::ConstructorKind::FactoryActivation
+                        || composable_has_public_shape(
+                            method,
+                            &crate::codegen::winrt::shared::imports::get_in_params(method),
+                        )
+                })
+            }
+            crate::meta::ConstructorKind::ProtectedComposition => false,
+        })
 }
 
 fn emit_instance_stub_group(

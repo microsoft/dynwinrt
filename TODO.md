@@ -8,6 +8,12 @@ _None currently. Reserved for issues that make v0.1 unshippable (crash on happy 
 
 ## P1 — Correctness / quality (near-term)
 
+- [ ] **Complete the first native Python ARM64 release-matrix run**. The
+  fail-closed wheel workflow targets the existing
+  `[self-hosted, Windows, ARM64, winui]` runner for CPython 3.11–3.14, but this
+  worktree can validate only x64. Do not mark ARM64 wheels releasable until all
+  native consumer jobs have imported them and called `Windows.Foundation.Uri`.
+
 - [ ] **Panic-free COM entrypoints**. Several `extern "system"` COM callbacks still `unwrap()` on raw pointer inputs, which is UB across the FFI boundary if a caller passes a bad pointer:
   - `crates/dynwinrt/src/delegate.rs:309` — `IUnknown::from_raw_borrowed(&raw).unwrap()` inside `marshal_abi_ptr` (fires whenever WinRT passes a null pointer arg to a delegate; not just malicious callers)
   - `crates/dynwinrt/src/com_helpers.rs:42, 53` — same pattern in `com_to_usize` / `com_usize_addref_out`
@@ -30,9 +36,15 @@ _None currently. Reserved for issues that make v0.1 unshippable (crash on happy 
 
 - [ ] **Codegen: `extract_iid` silently zero-fills malformed GuidAttribute**. `tools/dynwinrt-codegen/src/meta.rs:1030-1051` — if any GuidAttribute field is the wrong integer width, helpers return `0`, producing a plausible-but-wrong IID that will corrupt interface registration without any error. Treat non-matching shapes as a hard error / empty IID.
 
-- [ ] **Codegen: generic ancestors are dropped from projected classes**. `tools/dynwinrt-codegen/src/meta.rs:717-760` — the inherited-interface flattening skips any ancestor whose `TypeName` has generics, so classes inheriting a generic interface via a base class lose those members. Resolve generic ancestors to concrete instantiations (or document + guard the gap).
+- [x] **Codegen: project concrete generic ancestor interfaces**. Inherited generic
+      interfaces are resolved with their concrete arguments, deduplicated by full
+      instantiated identity, and covered with `ColorPaletteResources` inheriting
+      `IMap<Object, Object>` from `ResourceDictionary`.
 
-- [ ] **Codegen: composable `.ctor` on instance interfaces**. Runtime classes whose instance interface exposes a bare `.ctor(IInspectable* base, IInspectable** inner)` (the COM aggregation pattern used by XAML) still fall through the generic instance-method path. Confirmed unaffected outside `Microsoft.UI.Xaml.*`. Minimal fix: skip `method.name == ".ctor"` in `codegen/method.rs` + TS/Py generators; the `add_method(".ctor", ...)` vtable entry can stay so parameterized IID computation is unaffected. Full fix requires composition/aggregation support — out of scope until we take on XAML hosting.
+- [x] **Named Python XAML custom types**. Process-local registrations are chained
+  into the composed `IXamlMetadataProvider`; `XamlReader` activates generated
+  Python control subclasses by arbitrary qualified names and preserves native
+  overrides/identity. OS activation remains deliberately outside this boundary.
 
 - [ ] **Codegen: default-interface lookup returns first hit**. `tools/dynwinrt-codegen/src/meta.rs:1075-1090` — `find_default_interface_iid` returns on the first `DefaultAttribute` it resolves, which may not be the actual default in edge cases with malformed metadata. Validate against parsed default interface metadata or fail loudly.
 
@@ -56,7 +68,14 @@ _None currently. Reserved for issues that make v0.1 unshippable (crash on happy 
 
 - [ ] **Nullable / `IReference<T>` handling**. Null COM pointers surface as `WinRTValue::Null`; codegen wrappers should surface `T | null` in `.d.ts` for these return positions.
 
-- [ ] **`IReference<T>` as struct field**. `napi` has `getObject`/`setObject` and codegen has a fallback path, but this is exercised only by `Windows.Web.Http.HttpProgress` in Windows.winmd and untested. Add coverage.
+- [x] **Python `IReference<T>` as struct field**. Generated structs read native
+      `T | None`, accept native values and legacy wrappers, and box through
+      `DynWinRTStruct.set_object`; covered by SDK `HttpProgress` and synthetic
+      `IReference<Point>`.
+- [x] **JS `IReference<T>` as struct field**. Generated structs read native
+      `T | null`, accept native values, `null`, and legacy wrappers, and box
+      through `DynWinRtStruct.setObject`; covered by SDK `HttpProgress`,
+      synthetic `IReference<Point>`, and a runtime object-field round trip.
 
 - [ ] **Guid array / bool array fast paths**. Currently per-element via `.toValues().map(...)`. Add `toGuidVec()` / `toBoolVec()` if any real workload hits these.
 
@@ -82,8 +101,8 @@ _None currently. Reserved for issues that make v0.1 unshippable (crash on happy 
   collections, structs, typed delegates/events, nullable references, and an
   experimental WinUI Application bootstrap. Remaining work is tracked in
   `PYTHON_CHECKLIST.md`, especially generated package layout, CPython/architecture
-  coverage, DispatcherQueue/GIL integration, general XAML aggregation, object
-  identity, and delegates with more than two ABI parameters.
+  coverage, native XAML custom-control registration/overrides, object identity,
+  and delegates with more than two ABI parameters.
 
 - [ ] **Troubleshooting docs in READMEs**. Common failure modes not covered end-to-end: `WINAPPSDK_BOOTSTRAP_DLL_PATH` not set, mismatched apartment, missing capability. Root `README.md` has a small table; grow it based on the last three GitHub issues that repeated.
 
@@ -132,6 +151,9 @@ Kept for reference; git history is the source of truth. Grouped by area.
 - [x] Python `.pyi` type stubs and `py.typed` marker by default with `--lang py`
 
 ### Distribution / CI
+- [x] Python runtime wheel matrix for CPython 3.11–3.14 on x64/native ARM64,
+  standalone `py3-none-win_<arch>` codegen wheels, isolated artifact consumers,
+  GitHub release assets, and manual OIDC trusted-publishing gates
 - [x] npm prebuilds for `win32-x64-msvc` + `win32-arm64-msvc`
 - [x] `.github/workflows/build.yml` builds winrt-meta and dynwinrt-js on x64 + arm64, plus publishing and sample generation
 - [x] `winapp init --add-js-bindings` toolchain integration

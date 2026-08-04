@@ -51,6 +51,23 @@ pub(super) fn generate_struct_helpers(s: &TypeMeta) -> String {
             let snake = to_snake_case(&f.name);
             out.push_str(&format!("        self.{} = {}\n", snake, snake));
         }
+        for f in fields {
+            if ireference_inner_type(&f.typ).is_none() {
+                continue;
+            }
+            let snake = to_snake_case(&f.name);
+            out.push_str(&format!(
+                "\n    @_property\n\
+                 \x20   def {snake}(self) -> {read_type}:\n\
+                 \x20       return self._{snake}\n\
+                 \n\
+                 \x20   @{snake}.setter\n\
+                 \x20   def {snake}(self, value: {write_type}) -> None:\n\
+                 \x20       self._{snake} = _dynwinrt_unbox_reference(value)\n",
+                read_type = py_struct_field_read_type(&f.typ),
+                write_type = py_struct_field_type(&f.typ),
+            ));
+        }
     }
     out.push('\n');
 

@@ -56,6 +56,8 @@ of a dynamic projection.
 - [x] Accept `T | None` in `IReference<T>` input positions.
 - [x] Project null reference returns and reference-array elements as `T | None`
       consistently in runtime code and stubs.
+- [x] Project `IReference<T>` struct fields as native `T | None` on reads while
+      accepting native values, `None`, and legacy wrappers on writes.
 - [x] Preserve the full `UInt32` / `UInt64` range when converting to Python
       integers.
 - [x] Make Python stubs part of E2E and run a static type checker.
@@ -75,13 +77,21 @@ of a dynamic projection.
 
 - [x] Execute all tests under `bindings/py/tests` in CI.
 - [x] Build and install wheels before running Python E2E.
-- [ ] Test supported CPython versions on x64 and ARM64.
-- [ ] Remove unverified PyPy metadata or add real PyPy coverage.
-- [ ] Derive the Python package version from the release tag.
+- [ ] Complete the first live CPython 3.11–3.14 x64/ARM64 release-matrix run.
+      The native ARM64 jobs are configured on the existing self-hosted WinUI
+      runner and fail closed; local x64 validation does not count as ARM64
+      validation.
+- [x] Remove unverified PyPy metadata.
+- [x] Require `python-v<version>` release tags to match both Cargo package
+      versions rather than rewriting release sources in CI.
 - [ ] Publish signed/provenanced wheels to an approved internal Python feed.
-- [ ] Add Python wheel assets and installation notes to GitHub releases.
-- [ ] Provide a Python-native or standalone codegen installation path.
-- [ ] Add a clean-machine consumer test that uses only released artifacts.
+- [x] Add a protected-environment, OIDC trusted-publishing path that requires
+      manual opt-in from an existing release tag.
+- [x] Add complete tested Python wheel assets and installation notes to GitHub
+      releases.
+- [x] Provide a Python-native codegen CLI wheel using maturin binary bindings.
+- [x] Add clean, isolated wheel consumers that import/call stock WinRT and run
+      codegen with Cargo/Rust unavailable.
 
 ## P1: Python-native behavior
 
@@ -126,8 +136,17 @@ of a dynamic projection.
       for parity and still exposes its raw ABI shape.
 - [x] Keep protected composable constructors out of generated Python
       `__init__` overloads.
-- [ ] Hide or explicitly mark constructors for all system-returned classes.
-- [ ] Add composition/aggregation support required by XAML runtime classes.
+- [x] Make WinMD activation/composition metadata the constructor boundary:
+      system-returned and protected-composition classes retain native wrapping
+      but reject public construction and expose no constructible `.pyi` overload.
+- [x] Add a reusable outer/inner aggregation host for public composable Python
+      subclasses, preserving controlling COM identity and inner ownership.
+- [x] Add metadata-driven local overridable-interface vtables for public
+      composable subclasses, including native-invoked FrameworkElement
+      measure/arrange/template callbacks and fail-closed ABI validation.
+- [x] Register arbitrary Python runtime-class names and compose them into the
+      XAML metadata-provider chain so custom types can be instantiated by name
+      from XAML markup.
 - [ ] Make Windows App SDK initialization idempotent and version-aware.
 - [ ] Auto-discover or explicitly provision the bootstrap DLL.
 - [x] Expose the selected framework `resources.pri` path.
@@ -139,7 +158,14 @@ of a dynamic projection.
 - [x] Validate worker-thread and `asyncio` scheduling while the WinUI
       DispatcherQueue owns the UI thread, including a WinRT async completion
       and `try_enqueue` back to the UI thread.
-- [ ] Load Fluent Light, Dark, and High Contrast resources.
+- [x] Add projected lifetime scopes that release UI/COM wrappers before
+      apartment teardown.
+- [x] Add awaitable DispatcherQueue result/error/priority scheduling helpers.
+- [x] Project `IObservableVector<T>` as a mutable Python sequence with typed
+      `VectorChanged` events.
+- [x] Add a GIL-safe Python `IElementFactory` bridge and live ItemsRepeater
+      get/recycle identity coverage.
+- [x] Load and validate Fluent Light, Dark, and High Contrast resources.
 - [x] Add a real Python WinUI application E2E on x64.
 - [ ] Add Python WinUI application E2E coverage on ARM64.
 
@@ -174,6 +200,7 @@ of a dynamic projection.
 19. [x] Balance COM initialization with `RoApartment` and add deterministic `IClosable` cleanup.
 20. [x] Make reference returns null-safe without lying in generated annotations.
 21. [x] Preserve `UInt32` / `UInt64` values across the Python boundary.
+22. [x] Project and box `IReference<T>` struct fields, including struct-valued `T`.
 22. [x] Add typed event arguments while preserving token subscriptions and adding
         idempotent unsubscribe helpers.
 23. [x] Project public composable constructors and reject protected composition.

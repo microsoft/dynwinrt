@@ -58,6 +58,25 @@ fn build_event_wrapper(typ: Option<&TypeMeta>, known_types: &HashSet<String>) ->
             );
             (sig, wrapper)
         }
+        Some(typ @ TypeMeta::Parameterized { name, args, .. })
+            if name.split('`').next() == Some("VectorChangedEventHandler") && args.len() == 1 =>
+        {
+            let observable_name = crate::meta::make_parameterized_name("IObservableVector", args);
+            let sender = format!(
+                "(lambda value: None if value.is_null() else {}(value))(__sender__)",
+                py_runtime_symbol(&observable_name, &observable_name)
+            );
+            let event_args = format!(
+                "(lambda value: None if value.is_null() else {}(value))(__args__)",
+                py_runtime_symbol("IVectorChangedEventArgs", "IVectorChangedEventArgs")
+            );
+            let sig = py_delegate_callable_type(typ, known_types);
+            let wrapper = format!(
+                "(lambda callback=callback: (lambda __sender__, __args__: callback({}, {})))()",
+                sender, event_args
+            );
+            (sig, wrapper)
+        }
         _ => ("Callable[..., object]".to_string(), "callback".to_string()),
     }
 }
@@ -76,7 +95,11 @@ fn delegate_name(typ: &TypeMeta, delegate_type_names: &HashSet<String>) -> Optio
     }
 }
 
-fn py_wrap_method_arg(name: &str, typ: &TypeMeta, delegate_type_names: &HashSet<String>) -> String {
+pub(crate) fn py_wrap_method_arg(
+    name: &str,
+    typ: &TypeMeta,
+    delegate_type_names: &HashSet<String>,
+) -> String {
     if let Some(delegate) = delegate_name(typ, delegate_type_names) {
         return format!(
             "_dynwinrt_delegate({name}, {}, {})",
@@ -644,12 +667,12 @@ pub(crate) fn generate_method_body(
             let iid = py_runtime_symbol(dname, &format!("IID_{}", dname));
             let param_types = py_runtime_symbol(dname, &format!("{}_PARAM_TYPES", dname));
             out.push_str(&format!(
-                "        _handler = DynWinRtDelegate.create({}, {}, _wrapped)\n",
+                "        _handler = _dynwinrt_create_delegate({}, {}, _wrapped)\n",
                 iid, param_types
             ));
         } else {
             out.push_str(
-                "        _handler = DynWinRtDelegate.create(DynWinRTType.object().iid(), [DynWinRTType.object(), DynWinRTType.object()], _wrapped)\n"
+                "        _handler = _dynwinrt_create_delegate(DynWinRTType.object().iid(), [DynWinRTType.object(), DynWinRTType.object()], _wrapped)\n"
             );
         }
         out.push_str(&format!(
@@ -886,7 +909,8 @@ mod tests {
         );
 
         assert!(code.contains("def load_async(self) -> WinRTAsync[int]:"));
-        assert!(code.contains("return _DynWinRTAsync("));
+        assert!(code.contains("return _dynwinrt_track_projected(_DynWinRTAsync("));
+        assert!(code.contains("'WinRTAsync')"));
         assert!(code.contains("lambda value: value.to_u32()"));
         assert!(!code.contains(".wait()"));
     }
@@ -923,7 +947,8 @@ mod tests {
         assert!(code.contains(
             "def write_async(self, buffer: 'DynWinRTValue') -> WinRTAsyncWithProgress[int, int]:"
         ));
-        assert!(code.contains("return _DynWinRTAsyncWithProgress("));
+        assert!(code.contains("return _dynwinrt_track_projected(_DynWinRTAsyncWithProgress("));
+        assert!(code.contains("'WinRTAsyncWithProgress')"));
         assert!(code.contains("lambda value: value.to_u32()"));
         assert!(code.contains("lambda value: value.to_u64()"));
         assert!(!code.contains(".wait()"));
@@ -1086,6 +1111,7 @@ mod tests {
         );
 
         assert!(code.contains("def on_changed(self, callback:"));
+        assert!(code.contains("_dynwinrt_create_delegate("));
         assert!(code.contains("return _IWidget.method(6).invoke("));
         assert!(code.contains("def subscribe_changed(self, callback:"));
         assert!(code.contains("if not _active[0]:"));

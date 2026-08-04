@@ -11,11 +11,11 @@ use std::{
 };
 
 use dynwinrt;
-use napi::bindgen_prelude::{BigInt, PromiseRaw};
-use napi::threadsafe_function::ThreadsafeFunctionCallMode;
 use napi::Env;
+use napi::bindgen_prelude::{BigInt, Either, PromiseRaw};
+use napi::threadsafe_function::ThreadsafeFunctionCallMode;
 use napi_derive::napi;
-use windows::core::{IUnknown, Interface, HSTRING};
+use windows::core::{HSTRING, IUnknown, Interface};
 
 mod com;
 pub use com::{DynCom, DynComInterface, DynComMethodHandle, DynComMethodSig, DynComType};
@@ -105,7 +105,7 @@ pub fn get_winappsdk_resource_pri_path() -> napi::Result<String> {
 #[napi]
 pub fn ro_initialize(apartment_type: Option<i32>) {
   use windows::Win32::System::WinRT::{
-    RoInitialize, RO_INIT_MULTITHREADED, RO_INIT_SINGLETHREADED,
+    RO_INIT_MULTITHREADED, RO_INIT_SINGLETHREADED, RoInitialize,
   };
   let init_type = match apartment_type.unwrap_or(1) {
     0 => RO_INIT_SINGLETHREADED,
@@ -729,12 +729,53 @@ impl DynWinRTValue {
     DynWinRTValue::new(dynwinrt::WinRTValue::U32(value))
   }
   #[napi]
-  pub fn i64(value: i64) -> DynWinRTValue {
-    DynWinRTValue::new(dynwinrt::WinRTValue::I64(value))
+  pub fn i64(value: Either<BigInt, f64>) -> napi::Result<DynWinRTValue> {
+    let value = match value {
+      Either::A(value) => {
+        let (value, lossless) = value.get_i64();
+        if !lossless {
+          return Err(napi::Error::from_reason(
+            "i64 value must fit in a signed 64-bit integer",
+          ));
+        }
+        value
+      }
+      Either::B(value) => {
+        if !value.is_finite() || value.fract() != 0.0 || value.abs() > 9_007_199_254_740_991.0 {
+          return Err(napi::Error::from_reason(
+            "i64 number value must be a safe integer; use bigint for larger values",
+          ));
+        }
+        value as i64
+      }
+    };
+    Ok(DynWinRTValue::new(dynwinrt::WinRTValue::I64(value)))
   }
   #[napi]
-  pub fn u64(value: i64) -> DynWinRTValue {
-    DynWinRTValue::new(dynwinrt::WinRTValue::U64(value as u64))
+  pub fn u64(value: Either<BigInt, f64>) -> napi::Result<DynWinRTValue> {
+    let value = match value {
+      Either::A(value) => {
+        let (negative, value, lossless) = value.get_u64();
+        if negative || !lossless {
+          return Err(napi::Error::from_reason(
+            "u64 value must fit in an unsigned 64-bit integer",
+          ));
+        }
+        value
+      }
+      Either::B(value) => {
+        if !value.is_finite()
+          || value.fract() != 0.0
+          || !(0.0..=9_007_199_254_740_991.0).contains(&value)
+        {
+          return Err(napi::Error::from_reason(
+            "u64 number value must be a non-negative safe integer; use bigint for larger values",
+          ));
+        }
+        value as u64
+      }
+    };
+    Ok(DynWinRTValue::new(dynwinrt::WinRTValue::U64(value)))
   }
   #[napi]
   pub fn f32(value: f64) -> DynWinRTValue {
@@ -966,6 +1007,26 @@ impl DynWinRTValue {
       dynwinrt::WinRTValue::I64(i) => *i,
       dynwinrt::WinRTValue::U64(i) => *i as i64,
       _ => self.to_number() as i64,
+    }
+  }
+
+  #[napi]
+  pub fn to_i64_bigint(&self) -> napi::Result<BigInt> {
+    match &self.0 {
+      dynwinrt::WinRTValue::I64(value) => Ok(BigInt::from(*value)),
+      _ => Err(napi::Error::from_reason(
+        "toI64Bigint requires a signed 64-bit value",
+      )),
+    }
+  }
+
+  #[napi]
+  pub fn to_u64_bigint(&self) -> napi::Result<BigInt> {
+    match &self.0 {
+      dynwinrt::WinRTValue::U64(value) => Ok(BigInt::from(*value)),
+      _ => Err(napi::Error::from_reason(
+        "toU64Bigint requires an unsigned 64-bit value",
+      )),
     }
   }
 
@@ -1470,40 +1531,30 @@ impl DynWinRTStruct {
 
   #[napi]
   pub fn get_object(&self, index: u32) -> napi::Result<DynWinRTValue> {
-    let inner = self.0.get_field_struct(index as usize);
-    let raw = unsafe { *(inner.as_ptr() as *const *mut std::ffi::c_void) };
-    if raw.is_null() {
-      Ok(DynWinRTValue::new(dynwinrt::WinRTValue::Null))
-    } else {
-      let obj = unsafe { IUnknown::from_raw_borrowed(&raw) }
-        .ok_or_else(|| napi::Error::from_reason("null COM pointer"))?
-        .clone();
-      Ok(DynWinRTValue::new(dynwinrt::WinRTValue::Object(obj)))
+    match self
+      .0
+      .get_field_object(index as usize)
+      .map_err(|error| napi::Error::from_reason(error.message()))?
+    {
+      Some(object) => Ok(DynWinRTValue::new(dynwinrt::WinRTValue::Object(object))),
+      None => Ok(DynWinRTValue::new(dynwinrt::WinRTValue::Null)),
     }
   }
 
   #[napi]
-  pub fn set_object(&mut self, index: u32, value: &DynWinRTValue) {
+  pub fn set_object(&mut self, index: u32, value: &DynWinRTValue) -> napi::Result<()> {
     match &value.0 {
-      dynwinrt::WinRTValue::Object(obj) => {
-        let field_handle = self.0.type_handle().field_type(index as usize);
-        let mut field_val = field_handle.default_value();
-        unsafe {
-          // Clone the object (AddRef) and write the raw pointer
-          let cloned = obj.clone();
-          let raw = cloned.into_raw();
-          (field_val.as_mut_ptr() as *mut *mut std::ffi::c_void).write(raw);
-        }
-        // set_field_struct duplicates non-blittable fields, so field_val's COM pointer
-        // will be cloned (AddRef) into parent. Let field_val drop to release the original.
-        self.0.set_field_struct(index as usize, &field_val);
-      }
-      dynwinrt::WinRTValue::Null => {
-        let field_handle = self.0.type_handle().field_type(index as usize);
-        let field_val = field_handle.default_value();
-        self.0.set_field_struct(index as usize, &field_val);
-      }
-      _ => {}
+      dynwinrt::WinRTValue::Object(obj) => self
+        .0
+        .set_field_object(index as usize, Some(obj))
+        .map_err(|error| napi::Error::from_reason(error.message())),
+      dynwinrt::WinRTValue::Null => self
+        .0
+        .set_field_object(index as usize, None)
+        .map_err(|error| napi::Error::from_reason(error.message())),
+      _ => Err(napi::Error::from_reason(
+        "setObject requires a WinRT object or null value",
+      )),
     }
   }
 
@@ -1531,8 +1582,8 @@ pub fn has_package_identity() -> bool {
 pub fn get_computer_name() -> napi::Result<String> {
   #[cfg(target_os = "windows")]
   {
-    use windows::core::PWSTR;
     use windows::Win32::System::WindowsProgramming::GetComputerNameW;
+    use windows::core::PWSTR;
 
     let mut buffer = [0u16; 256];
     let mut size = buffer.len() as u32;
@@ -1735,8 +1786,8 @@ impl DynWinRtDelegate {
     #[napi(ts_arg_type = "(...args: DynWinRTValue[]) => void")]
     callback: napi::bindgen_prelude::Function<'static, Vec<DynWinRTValue>, ()>,
   ) -> napi::Result<DynWinRtDelegate> {
-    use napi::bindgen_prelude::ToNapiValue;
     use napi::JsValue;
+    use napi::bindgen_prelude::ToNapiValue;
     use windows::Win32::System::Threading::GetCurrentThreadId;
 
     // Track the thread we were registered on. WinRT delegate callbacks that
@@ -1955,8 +2006,8 @@ impl DynWinRtElementFactory {
     #[napi(ts_arg_type = "(args: DynWinRtValue) => void")]
     recycle_element: ElementFactoryRecycleFunction,
   ) -> napi::Result<DynWinRtElementFactory> {
-    use napi::bindgen_prelude::{FromNapiValue, ToNapiValue};
     use napi::JsValue;
+    use napi::bindgen_prelude::{FromNapiValue, ToNapiValue};
     use windows::Win32::System::Threading::GetCurrentThreadId;
 
     const E_FAIL: windows::core::HRESULT = windows::core::HRESULT(0x80004005u32 as i32);

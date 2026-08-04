@@ -26,6 +26,7 @@ from collections.abc import (
     Sequence as _Sequence,
 )
 from datetime import datetime as _datetime, timedelta as _timedelta, timezone as _timezone
+from contextvars import ContextVar as _ContextVar
 from operator import index as _index
 from typing import Protocol as _Protocol, TypeVar as _TypeVar
 from typing import Awaitable as _Awaitable, Callable as _Callable
@@ -38,9 +39,128 @@ _WINRT_EPOCH = _datetime(1601, 1, 1, tzinfo=_timezone.utc)
 class WinRTAsync(_Awaitable[_T], _Protocol[_T]):
     def wait(self) -> _T: ...
     def cancel(self) -> None: ...
+    def release(self) -> None: ...
 
 class WinRTAsyncWithProgress(WinRTAsync[_T], _Protocol[_T, _P]):
     def progress(self, callback: _Callable[[_P], object]) -> None: ...
+
+_active_projected_lifetime_scope = _ContextVar(
+    'dynwinrt_active_projected_lifetime_scope',
+    default=None,
+)
+
+def _dynwinrt_projected_native_values(value):
+    native_values = []
+    seen = set()
+    for attribute in (
+        '_obj',
+        '_collection_obj',
+        '_observable_obj',
+        '_element_factory_implementation',
+    ):
+        native = getattr(value, attribute, None)
+        if native is None or id(native) in seen:
+            continue
+        if callable(getattr(native, 'release', None)):
+            seen.add(id(native))
+            native_values.append(native)
+    if not native_values and callable(getattr(value, 'release', None)):
+        native_values.append(value)
+    return native_values
+
+class ProjectedLifetimeScope:
+    def __init__(self):
+        self._registry = {}
+        self._token = None
+        self._active = False
+        self._disposed = False
+        self._retry_pending = False
+
+    @property
+    def disposed(self):
+        return self._disposed
+
+    def __enter__(self):
+        if self._disposed:
+            raise RuntimeError('Cannot enter a disposed projection lifetime scope.')
+        if self._active:
+            raise RuntimeError('The projection lifetime scope is already active.')
+        self._token = _active_projected_lifetime_scope.set(self)
+        self._active = True
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        try:
+            self.close()
+        except BaseException as cleanup_error:
+            if exc_value is not None:
+                _dynwinrt_append_exception_cause(exc_value, cleanup_error)
+                raise exc_value.with_traceback(traceback)
+            raise
+        return False
+
+    def track(self, value, type_name=None):
+        if not self._active or self._disposed:
+            raise RuntimeError('Cannot track values in an inactive projection lifetime scope.')
+        for native in _dynwinrt_projected_native_values(value):
+            self._registry.setdefault(id(native), (native, type_name))
+        return value
+
+    def close(self):
+        if self._disposed:
+            return
+        if not self._active:
+            if not self._retry_pending:
+                raise RuntimeError('Cannot close a projection lifetime scope before entering it.')
+        elif _active_projected_lifetime_scope.get() is not self:
+            raise RuntimeError('Projection lifetime scopes must be closed in LIFO order.')
+        else:
+            _active_projected_lifetime_scope.reset(self._token)
+            self._token = None
+            self._active = False
+
+        first_error = None
+        for key, (native, _) in reversed(list(self._registry.items())):
+            try:
+                native.release()
+                del self._registry[key]
+            except BaseException as error:
+                if first_error is None:
+                    first_error = error
+        if first_error is not None:
+            self._retry_pending = True
+            raise first_error
+
+        self._token = None
+        self._active = False
+        self._retry_pending = False
+        self._disposed = True
+
+def _dynwinrt_append_exception_cause(error, cleanup_error):
+    current = error
+    seen = set()
+    while current.__cause__ is not None and id(current) not in seen:
+        seen.add(id(current))
+        current = current.__cause__
+    if id(current) not in seen and current is not cleanup_error:
+        current.__cause__ = cleanup_error
+        current.__suppress_context__ = True
+
+def projected_lifetime_scope():
+    return ProjectedLifetimeScope()
+
+def _dynwinrt_track_projected(value, type_name=None):
+    scope = _active_projected_lifetime_scope.get()
+    if scope is not None and scope._active and not scope._disposed:
+        scope.track(value, type_name)
+    return value
+
+def release_projected(value):
+    native_values = _dynwinrt_projected_native_values(value)
+    if not native_values:
+        raise TypeError('release_projected requires a generated projected wrapper.')
+    for native in reversed(native_values):
+        native.release()
 
 def _dynwinrt_guid(value):
     if isinstance(value, WinGUID):
@@ -88,6 +208,9 @@ def _dynwinrt_vector(value, wrap, element_type):
     if isinstance(raw, DynWinRTValue):
         return raw
     return DynWinRTValue.create_vector([wrap(item) for item in raw], element_type)
+
+def _dynwinrt_new_vector(value, wrap, element_type):
+    return DynWinRTValue.create_vector([wrap(item) for item in value], element_type)
 
 def _dynwinrt_map(value, wrap_key, wrap_value, key_type, value_type):
     raw = getattr(value, '_obj', value)
@@ -244,10 +367,13 @@ def _dynwinrt_dispatch_progress(callback, converter, value):
         m.add_class::<super::runtime::DynWinRTType>()?;
         m.add_class::<super::runtime::DynWinRTMethodSig>()?;
         m.add_class::<super::runtime::DynWinRTMethodHandle>()?;
+        m.add_class::<super::runtime::DynWinRTOverrideInterface>()?;
+        m.add_class::<super::runtime::DynWinRTXamlRegistration>()?;
         m.add_class::<super::runtime::DynWinRTValue>()?;
         m.add_class::<super::runtime::DynWinRTArray>()?;
         m.add_class::<super::runtime::DynWinRTStruct>()?;
         m.add_class::<super::runtime::DynWinRtDelegate>()?;
+        m.add_class::<super::runtime::DynWinRtElementFactory>()?;
         m.add_class::<super::async_runtime::DynWinRTAsync>()?;
         m.add_class::<super::async_runtime::DynWinRTAsyncWithProgress>()?;
 
@@ -255,6 +381,10 @@ def _dynwinrt_dispatch_progress(callback, converter, value):
         m.add_function(wrap_pyfunction!(super::runtime::init_winappsdk, m)?)?;
         m.add_function(wrap_pyfunction!(super::runtime::ro_initialize, m)?)?;
         m.add_function(wrap_pyfunction!(super::runtime::ro_uninitialize, m)?)?;
+        m.add_function(wrap_pyfunction!(
+            super::runtime::register_xaml_runtime_class,
+            m
+        )?)?;
         m.add_function(wrap_pyfunction!(super::runtime::has_package_identity, m)?)?;
         m.add_function(wrap_pyfunction!(
             super::runtime::get_winappsdk_resource_pri_path,
@@ -265,7 +395,13 @@ def _dynwinrt_dispatch_progress(callback, converter, value):
         m.py().run(
             c"
 __all__ = [name for name in __all__ if not name.startswith('_')]
-for _name in ('WinRTAsync', 'WinRTAsyncWithProgress'):
+for _name in (
+   'WinRTAsync',
+   'WinRTAsyncWithProgress',
+   'ProjectedLifetimeScope',
+   'projected_lifetime_scope',
+   'release_projected',
+):
     if _name not in __all__:
         __all__.append(_name)
 ",

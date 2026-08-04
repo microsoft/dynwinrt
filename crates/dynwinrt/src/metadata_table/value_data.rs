@@ -180,6 +180,58 @@ impl ValueTypeData {
         unsafe { (self.ptr.add(offset) as *mut T).write(value) }
     }
 
+    pub fn get_field_object(&self, index: usize) -> crate::result::Result<Option<IUnknown>> {
+        let h = &self.type_handle;
+        let field_handle = h.field_type(index);
+        if !field_handle.kind().is_com_pointer() {
+            return Err(crate::result::Error::expect_object_type(
+                field_handle.kind(),
+            ));
+        }
+        let offset = h.field_offset(index);
+        let raw = unsafe { *(self.ptr.add(offset) as *const *mut c_void) };
+        if raw.is_null() {
+            Ok(None)
+        } else {
+            Ok(unsafe { IUnknown::from_raw_borrowed(&raw) }.map(Clone::clone))
+        }
+    }
+
+    pub fn set_field_object(
+        &mut self,
+        index: usize,
+        value: Option<&IUnknown>,
+    ) -> crate::result::Result<()> {
+        let h = &self.type_handle;
+        let field_handle = h.field_type(index);
+        if !field_handle.kind().is_com_pointer() {
+            return Err(crate::result::Error::expect_object_type(
+                field_handle.kind(),
+            ));
+        }
+        let offset = h.field_offset(index);
+        let field = unsafe { &mut *(self.ptr.add(offset) as *mut *mut c_void) };
+        let new_raw = if let Some(object) = value {
+            let iid = if field_handle.kind() == TypeKind::Object {
+                windows_core::IInspectable::IID
+            } else {
+                field_handle.iid().ok_or_else(|| {
+                    crate::result::Error::NotAnInterface(field_handle.signature_string())
+                })?
+            };
+            let mut queried = std::ptr::null_mut();
+            unsafe { object.query(&iid, &mut queried) }.ok()?;
+            queried
+        } else {
+            std::ptr::null_mut()
+        };
+        let old_raw = std::mem::replace(field, new_raw);
+        if !old_raw.is_null() {
+            unsafe { drop(IUnknown::from_raw(old_raw)) };
+        }
+        Ok(())
+    }
+
     pub fn get_field_struct(&self, index: usize) -> ValueTypeData {
         let h = &self.type_handle;
         let offset = h.field_offset(index);
