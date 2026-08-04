@@ -1,7 +1,8 @@
-from typing import Awaitable, Callable, List, Optional, Protocol, Sequence, TypeVar, Union, final
+from typing import Awaitable, Callable, List, Mapping, Optional, Protocol, Sequence, TypeVar, Union, final
 
 _T = TypeVar("_T", covariant=True)
 _P = TypeVar("_P", covariant=True)
+_Tracked = TypeVar("_Tracked")
 
 __all__ = [
     "WinAppSDKContext",
@@ -81,6 +82,9 @@ class ProjectedLifetimeScope:
     def __exit__(
         self, exc_type: object, exc_value: object, traceback: object
     ) -> bool: ...
+    def track(
+        self, value: _Tracked, type_name: Optional[str] = ...
+    ) -> _Tracked: ...
     def close(self) -> None: ...
 
 
@@ -183,12 +187,12 @@ class DynWinRTMethodSig:
 
 @final
 class DynWinRTOverrideInterface:
-    def __init__(
-        self,
+    def __new__(
+        cls,
         iid: WinGUID,
         abi_shapes: Sequence[str],
         callbacks: Mapping[int, Callable[..., object]],
-    ) -> None: ...
+    ) -> DynWinRTOverrideInterface: ...
 
 
 @final
