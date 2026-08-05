@@ -10,8 +10,8 @@ on:
       - '.github/workflows/python-release.yml'
       - 'bindings/py/**'
       - 'crates/dynwinrt/**'
-      - 'scripts/test_python_*_wheel.ps1'
-      - 'scripts/verify_python_release.py'
+      - 'eng/release/python/test_python_*_wheel.ps1'
+      - 'eng/release/python/verify_python_release.py'
       - 'tools/dynwinrt-codegen/**'
       - 'Cargo.lock'
       - 'Cargo.toml'
@@ -60,7 +60,7 @@ jobs:
           $version = [regex]::Match($cargo, '(?m)^version = "([^"]+)"$').Groups[1].Value
           if (-not $version) { throw 'Could not read bindings/py Cargo version' }
 
-          $arguments = @('scripts\verify_python_release.py', 'source')
+          $arguments = @('eng\release\python\verify_python_release.py', 'source')
           if ($env:RELEASE_VERSION) {
             $arguments += @('--release-version', $env:RELEASE_VERSION)
           }
@@ -112,7 +112,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $wheel = @(Get-ChildItem artifacts\runtime\*.whl)
           if ($wheel.Count -ne 1) { throw "Expected one runtime wheel, found $($wheel.Count)" }
-          python scripts\verify_python_release.py wheel `
+          python eng\release\python\verify_python_release.py wheel `
             --wheel $wheel[0].FullName `
             --package dynwinrt-py `
             --version $env:VERSION `
@@ -159,7 +159,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $wheel = @(Get-ChildItem artifacts\runtime\*.whl)
           if ($wheel.Count -ne 1) { throw "Expected one runtime wheel, found $($wheel.Count)" }
-          python scripts\verify_python_release.py wheel `
+          python eng\release\python\verify_python_release.py wheel `
             --wheel $wheel[0].FullName `
             --package dynwinrt-py `
             --version $env:VERSION `
@@ -195,7 +195,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $wheel = @(Get-ChildItem artifacts\codegen\*.whl)
           if ($wheel.Count -ne 1) { throw "Expected one codegen wheel, found $($wheel.Count)" }
-          python scripts\verify_python_release.py wheel `
+          python eng\release\python\verify_python_release.py wheel `
             --wheel $wheel[0].FullName `
             --package dynwinrt-codegen `
             --version $env:VERSION `
@@ -233,7 +233,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $wheel = @(Get-ChildItem artifacts\codegen\*.whl)
           if ($wheel.Count -ne 1) { throw "Expected one codegen wheel, found $($wheel.Count)" }
-          python scripts\verify_python_release.py wheel `
+          python eng\release\python\verify_python_release.py wheel `
             --wheel $wheel[0].FullName `
             --package dynwinrt-codegen `
             --version $env:VERSION `
@@ -264,10 +264,10 @@ jobs:
         run: |
           python -m pip install "packaging>=24,<27" --quiet
           $wheel = @(Get-ChildItem artifacts\codegen\*.whl)
-          python scripts\verify_python_release.py wheel --wheel $wheel[0].FullName `
+          python eng\release\python\verify_python_release.py wheel --wheel $wheel[0].FullName `
             --package dynwinrt-codegen --version '${{ needs.validate.outputs.version }}' `
             --python-tag py3 --abi-tag none --platform-tag win_amd64
-          .\scripts\test_python_codegen_wheel.ps1 -Python (Get-Command python).Source `
+          .\eng\release\python\test_python_codegen_wheel.ps1 -Python (Get-Command python).Source `
             -WheelDirectory artifacts\codegen `
             -Version '${{ needs.validate.outputs.version }}' -Architecture x64
 
@@ -289,7 +289,7 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install "packaging>=24,<27" --quiet
-          .\scripts\test_python_codegen_wheel.ps1 -Python (Get-Command python).Source `
+          .\eng\release\python\test_python_codegen_wheel.ps1 -Python (Get-Command python).Source `
             -WheelDirectory artifacts\codegen `
             -Version '${{ needs.validate.outputs.version }}' -Architecture arm64
 
@@ -321,7 +321,7 @@ jobs:
       - name: Import wheel and call Windows.Foundation.Uri
         shell: pwsh
         run: |
-          .\scripts\test_python_runtime_wheel.ps1 -Python (Get-Command python).Source `
+          .\eng\release\python\test_python_runtime_wheel.ps1 -Python (Get-Command python).Source `
             -RuntimeWheelDirectory artifacts\runtime `
             -CodegenWheelDirectory artifacts\codegen `
             -Version '${{ needs.validate.outputs.version }}' `
@@ -356,7 +356,7 @@ jobs:
       - name: Import native wheel and call Windows.Foundation.Uri
         shell: pwsh
         run: |
-          .\scripts\test_python_runtime_wheel.ps1 -Python (Get-Command python).Source `
+          .\eng\release\python\test_python_runtime_wheel.ps1 -Python (Get-Command python).Source `
             -RuntimeWheelDirectory artifacts\runtime `
             -CodegenWheelDirectory artifacts\codegen `
             -Version '${{ needs.validate.outputs.version }}' `

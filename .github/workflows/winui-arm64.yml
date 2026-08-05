@@ -82,7 +82,7 @@ jobs:
       - name: Run live Python WinUI ARM64 E2E
         shell: pwsh
         run: |
-          .\tests\python_winui_e2e.ps1 `
+          .\tests\e2e\python_winui_e2e.ps1 `
             -WinuiWinmd $env:WINUI_WINMD `
             -RefList $env:WINUI_REFS `
             -BootstrapDll $env:WINUI_BOOTSTRAP `

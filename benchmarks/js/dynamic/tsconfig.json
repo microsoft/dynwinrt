@@ -1,0 +1,10 @@
+{
+  "extends": "../../../bindings/js/tsconfig.json",
+  "compilerOptions": {
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "outDir": "lib"
+  },
+  "include": ["."],
+  "exclude": ["lib"]
+}

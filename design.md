@@ -170,4 +170,3 @@ HRESULT Method_Out_Pointer(void* funPtr, ComPtr self, void* outValue) {
 *   [PyWinRT](https://github.com/pywinrt/pywinrt) Static C++/WinRT-based projections demonstrated significant versioning and distribution challenges.
 *  [lazy-winrt](https://github.com/JesseCol/lazy-winrt) **"Lazy-WinRT" Prototype**: This prototype validated the feasibility and potential performance of parsing WinMDs and invoking methods dynamically.
 *  [dynwinrt](https://github.com/microsoft/dynwinrt) — Rust-based implementation inspired by Lazy-WinRT. Ships the core runtime, JS bindings via `napi-rs`, Python bindings via `PyO3`, and the `dynwinrt-codegen` code-generation tool.
-

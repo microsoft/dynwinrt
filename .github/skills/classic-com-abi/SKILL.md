@@ -11,9 +11,9 @@ Use this skill for changes under:
 - `bindings/js/src/com.rs`;
 - `tools/dynwinrt-codegen/src/com_metadata.rs`;
 - `tools/dynwinrt-codegen/src/codegen/com/`; or
-- Classic COM runners in `tests/runners/com/`.
+- Classic COM runners in `tests/e2e/runners/com/`.
 
-Read [`docs/classic-com-support.md`](../../../docs/classic-com-support.md)
+Read [`docs/architecture/classic-com-support.md`](../../../docs/architecture/classic-com-support.md)
 before changing supported types or claiming support for an interface.
 
 ## Core principle

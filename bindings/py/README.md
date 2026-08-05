@@ -238,7 +238,7 @@ The live x64 smoke test accepts explicit WinAppSDK metadata and bootstrap
 inputs:
 
 ```powershell
-.\tests\python_winui_e2e.ps1 `
+.\tests\e2e\python_winui_e2e.ps1 `
   -WinuiWinmd <Microsoft.UI.Xaml.winmd> `
   -RefList <winmd-reference-list.txt> `
   -BootstrapDll <Microsoft.WindowsAppRuntime.Bootstrap.dll> `

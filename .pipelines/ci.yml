@@ -252,4 +252,4 @@ extends:
                 cd bindings/py
                 if (Test-Path .venv) { .venv/Scripts/Activate.ps1 }
                 cd ../..
-                .\tests\e2e_test.ps1 -SkipBuild
+                .\tests\e2e\e2e_test.ps1 -SkipBuild

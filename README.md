@@ -53,7 +53,7 @@ console.log(uri.host);                                 // "example.com"
 Classic COM bindings import their runtime API from the separate
 `@microsoft/dynwinrt/com` subpath. It is part of the same npm package; the
 package root remains the WinRT-only API. See
-[Classic COM support](docs/classic-com-support.md) for the supported ABI,
+[Classic COM support](docs/architecture/classic-com-support.md) for the supported ABI,
 common-interface test matrix, unsupported native types, and ownership rules.
 
 Generated bindings project unambiguous public WinRT activation metadata as JavaScript
@@ -114,8 +114,16 @@ dynwinrt/
 │   └── py/                   # Python bindings (PyO3; release workflow ready)
 ├── tools/
 │   └── dynwinrt-codegen/     # @microsoft/dynwinrt-codegen — typed-binding generator
-├── tests/                    # Integration tests + sample E2E projects
-└── bench-electron/           # Electron benchmark app
+├── tests/
+│   └── e2e/                  # Cross-language E2E specs, runners, and scripts
+├── benchmarks/
+│   ├── electron/             # Electron IPC benchmark app
+│   └── js/                   # Dynamic and static JS/native benchmarks
+├── samples/
+│   ├── js/                   # JavaScript/TypeScript samples
+│   └── python/               # Python samples
+├── docs/                     # Architecture, benchmark, guide, and status docs
+└── eng/release/python/       # Python release verification helpers
 ```
 
 ## Build from source
@@ -142,7 +150,10 @@ Rust installation at consumption time. Release and trusted-publishing
 instructions are in [`bindings/py/README.md`](bindings/py/README.md).
 
 Python runtime, codegen, packaging, and WinUI readiness are tracked in
-[`PYTHON_CHECKLIST.md`](PYTHON_CHECKLIST.md).
+[`docs/status/PYTHON_CHECKLIST.md`](docs/status/PYTHON_CHECKLIST.md).
+
+For deployment, see
+[Package a dynwinrt Node.js application as MSIX](docs/guides/windows/msix-packaging.md).
 
 ## Codegen CLI reference
 

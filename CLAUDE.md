@@ -16,8 +16,11 @@ dynwinrt/
 │   └── py/                   # Python bindings (PyO3)
 ├── tools/
 │   └── dynwinrt-codegen/     # Code generator (JS + .d.ts and Python from .winmd)
-├── tests/                    # Integration tests & sample projects
-└── bench-electron/           # Electron benchmark app
+├── tests/e2e/                # Cross-language E2E specs, runners, and scripts
+├── benchmarks/               # Electron and JS/native benchmarks
+├── samples/                  # JavaScript and Python samples
+├── docs/                     # Architecture, benchmark, guide, and status docs
+└── eng/release/python/       # Python release verification helpers
 ```
 
 ## Build Commands
@@ -175,12 +178,12 @@ let result = value.wait()?;
 ## Known Limitations
 
 - Delegate callbacks support up to 2 ABI parameters (covers ~95% of WinRT delegates)
-- No DispatcherQueue / XAML hosting support (data APIs only, no UI framework) — WinUI-style controls need composition/aggregation of runtime classes, which the codegen skips (see composable `.ctor` note in `TODO.md`)
+- No DispatcherQueue / XAML hosting support (data APIs only, no UI framework) — WinUI-style controls need composition/aggregation of runtime classes, which the codegen skips (see composable `.ctor` note in `docs/status/TODO.md`)
 - Python binding does not yet support async/await integration with `asyncio`
 
 ## Environment Setup — updated invariant
 
-`initialize_winappsdk()` currently `.expect(...)`s the `WINAPPSDK_BOOTSTRAP_DLL_PATH` environment variable at `crates/dynwinrt/src/winapp.rs:43`. Auto-detection from `~/.winapp/packages/`, `~/.nuget/packages/microsoft.windowsappsdk.*/`, and Program Files install paths is tracked in `TODO.md` P0.
+`initialize_winappsdk()` currently `.expect(...)`s the `WINAPPSDK_BOOTSTRAP_DLL_PATH` environment variable at `crates/dynwinrt/src/winapp.rs:43`. Auto-detection from `~/.winapp/packages/`, `~/.nuget/packages/microsoft.windowsappsdk.*/`, and Program Files install paths is tracked in `docs/status/TODO.md` P0.
 
 ## Implementation Notes
 
