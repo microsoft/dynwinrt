@@ -60,7 +60,7 @@ jobs:
         run: |
           $root = Join-Path $env:RUNNER_TEMP 'win32metadata'
           nuget install Microsoft.Windows.SDK.Win32Metadata `
-            -Version 69.0.7-preview `
+            -Version 71.0.14-preview `
             -OutputDirectory $root `
             -DirectDownload `
             -NonInteractive

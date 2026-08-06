@@ -382,7 +382,7 @@ test('DynCom Automation wrappers preserve tags, values, bounds, and transfer', (
   })
   t.throws(
     () => DynComSafeArray.interface(WinGuid.parse('ffffffff-ffff-ffff-ffff-ffffffffffff'), [activationFactory]),
-    { message: /interface is not supported|No such interface supported/i },
+    { message: /80004002|interface is not supported|No such interface supported/i },
   )
   const nullSafeArray = DynWinRtValue.nullValue()
   t.is(DynCom.takeNullableSafeArray(nullSafeArray), null)
