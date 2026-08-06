@@ -14,6 +14,10 @@
 
 param(
     [switch]$SkipBuild,
+    [switch]$KeepGenerated,
+    [string]$CargoProfile = "release",
+    [string]$CargoTarget,
+    [string]$Python,
     [ValidateSet("py", "ts", "com")]
     [string[]]$Lang = @("py", "ts", "com")
 )
@@ -31,6 +35,20 @@ $comInteropDir = Join-Path $comBindingsDir "interop"
 $comWicDir = Join-Path $comBindingsDir "wic"
 $comStreamDir = Join-Path $comBindingsDir "stream"
 $comSmtcDir = Join-Path $comBindingsDir "smtc"
+[string[]]$cargoProfileArgs = @(
+    if ($CargoProfile -eq "release") {
+        "--release"
+    } else {
+        "--profile"
+        $CargoProfile
+    }
+)
+[string[]]$cargoTargetArgs = @(
+    if ($CargoTarget) {
+        "--target"
+        $CargoTarget
+    }
+)
 
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
 
@@ -39,7 +57,12 @@ Write-Host "=== dynwinrt E2E Test ===" -ForegroundColor Cyan
 # --------------------------------------------------------------------------
 # Detect available tools
 # --------------------------------------------------------------------------
-$hasPython = [bool](Get-Command python -ErrorAction SilentlyContinue)
+$pythonExe = if ($Python) {
+    (Resolve-Path -LiteralPath $Python).Path
+} else {
+    (Get-Command python -ErrorAction SilentlyContinue).Source
+}
+$hasPython = [bool]$pythonExe
 $hasNode = [bool](Get-Command node -ErrorAction SilentlyContinue)
 
 if ("py" -in $Lang -and -not $hasPython) {
@@ -53,7 +76,7 @@ if (("ts" -in $Lang -or "com" -in $Lang) -and -not $hasNode) {
 
 function Find-Win32Winmd {
     if ($env:DYNWINRT_WIN32_WINMD -and (Test-Path $env:DYNWINRT_WIN32_WINMD)) {
-        return (Resolve-Path $env:DYNWINRT_WIN32_WINMD).Path
+        return (Resolve-Path -LiteralPath $env:DYNWINRT_WIN32_WINMD).Path
     }
 
     $packageRoot = Join-Path $env:USERPROFILE ".nuget\packages\microsoft.windows.sdk.win32metadata"
@@ -93,24 +116,35 @@ if ($Lang.Count -eq 0) { Write-Error "No languages available"; exit 1 }
 if (-not $SkipBuild) {
     Write-Host "`n--- Build ---" -ForegroundColor Yellow
 
-    cargo build -p dynwinrt-codegen --release
+    & cargo build -p dynwinrt-codegen @cargoProfileArgs @cargoTargetArgs
     if ($LASTEXITCODE -ne 0) { Write-Error "dynwinrt-codegen build failed"; exit 1 }
 
     if ("py" -in $Lang) {
         Push-Location (Join-Path $root "bindings\py")
-        if (-not (Test-Path .venv)) {
-            python -m venv .venv
-            .\.venv\Scripts\Activate.ps1
-            pip install pytest maturin --quiet
-        } else {
-            .\.venv\Scripts\Activate.ps1
+        if (-not $Python) {
+            $venvPython = Join-Path (Get-Location) ".venv\Scripts\python.exe"
+            if (-not (Test-Path $venvPython)) {
+                & $pythonExe -m venv .venv
+                if ($LASTEXITCODE -ne 0) { Write-Error "Python virtual environment creation failed"; exit 1 }
+                & $venvPython -m pip install pytest maturin --quiet
+                if ($LASTEXITCODE -ne 0) { Write-Error "Python test dependency installation failed"; exit 1 }
+            }
+            $pythonExe = (Resolve-Path -LiteralPath $venvPython).Path
         }
-        maturin build --quiet 2>&1 | Out-Null
+        [string[]]$maturinProfileArgs = @(
+            if ($CargoProfile -eq "release") {
+                "--release"
+            } else {
+                "--profile"
+                $CargoProfile
+            }
+        )
+        & $pythonExe -m maturin build @maturinProfileArgs @cargoTargetArgs --quiet 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0) { Write-Error "maturin build failed"; exit 1 }
         $wheelDir = if ($env:CARGO_TARGET_DIR) { Join-Path $env:CARGO_TARGET_DIR "wheels" } else { Join-Path $root "target\wheels" }
         $whl = (Get-ChildItem (Join-Path $wheelDir "*.whl") | Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName
         if (-not $whl) { Write-Error "No wheel found after maturin build"; exit 1 }
-        pip install $whl --force-reinstall --quiet 2>&1 | Out-Null
+        & $pythonExe -m pip install $whl --force-reinstall --quiet 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0) { Write-Error "pip install failed"; exit 1 }
         Pop-Location
     }
@@ -119,15 +153,17 @@ if (-not $SkipBuild) {
         Push-Location (Join-Path $root "bindings\js")
         npm install --quiet 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0) { Write-Error "npm install failed"; exit 1 }
-        npx napi build --no-const-enum --platform --release -o dist 2>&1 | Out-Null
+        & npx napi build --no-const-enum --platform @cargoProfileArgs @cargoTargetArgs -o dist 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0) { Write-Error "napi build failed"; exit 1 }
         npm run build:entrypoints --silent
         if ($LASTEXITCODE -ne 0) { Write-Error "runtime entrypoint generation failed"; exit 1 }
         Pop-Location
     }
 } else {
-    $venvActivate = Join-Path $root "bindings\py\.venv\Scripts\Activate.ps1"
-    if (Test-Path $venvActivate) { & $venvActivate }
+    $venvPython = Join-Path $root "bindings\py\.venv\Scripts\python.exe"
+    if (-not $Python -and (Test-Path $venvPython)) {
+        $pythonExe = (Resolve-Path -LiteralPath $venvPython).Path
+    }
 }
 
 # --------------------------------------------------------------------------
@@ -148,8 +184,6 @@ if ($skipped) {
 # --------------------------------------------------------------------------
 if (Test-Path $e2eDir) { Remove-Item -Recurse -Force $e2eDir }
 
-$winrtMeta = "cargo run -p dynwinrt-codegen --release --quiet --"
-
 function Generate($lang, $outDir) {
     $langSpecs = $active | Where-Object { ($(if ($_.langs) { $_.langs } else { @("py","ts") })) -contains $lang }
     # codegen now uses "js" instead of "ts" — map accordingly
@@ -164,7 +198,11 @@ function Generate($lang, $outDir) {
     foreach ($ns in ($byNs.Keys | Sort-Object)) {
         $classes = ($byNs[$ns] | Select-Object -Unique) -join ","
         Write-Host "  $lang`: $ns [$classes]"
-        Invoke-Expression "$winrtMeta generate --namespace `"$ns`" --class-name `"$classes`" --lang $codegenLang --output `"$outDir`""
+        & cargo run -p dynwinrt-codegen @cargoProfileArgs @cargoTargetArgs --quiet -- generate `
+            --namespace $ns `
+            --class-name $classes `
+            --lang $codegenLang `
+            --output $outDir
         if ($LASTEXITCODE -ne 0) { Write-Error "Generation failed: $ns ($lang)"; exit 1 }
     }
 }
@@ -180,7 +218,7 @@ if ("com" -in $Lang) {
     $comRuntimeImport = "../../../../../../bindings/js/dist/com-unsafe.js"
     $winrtRuntimeImport = "../../../../../bindings/js/dist/winrt.js"
 
-    & cargo run -p dynwinrt-codegen --release --quiet -- generate `
+    & cargo run -p dynwinrt-codegen @cargoProfileArgs @cargoTargetArgs --quiet -- generate `
         --winmd $win32Winmd `
         --namespace Windows.Win32.UI.Shell `
         --class-name "TaskbarList,IShellLinkW,IDataTransferManagerInterop,FileOperation,FileOpenDialog" `
@@ -188,7 +226,7 @@ if ("com" -in $Lang) {
         --import-name $comRuntimeImport
     if ($LASTEXITCODE -ne 0) { Write-Error "Classic COM Shell generation failed"; exit 1 }
 
-    & cargo run -p dynwinrt-codegen --release --quiet -- generate `
+    & cargo run -p dynwinrt-codegen @cargoProfileArgs @cargoTargetArgs --quiet -- generate `
         --winmd $win32Winmd `
         --namespace Windows.Win32.System.Com `
         --class-name IPersistFile `
@@ -196,7 +234,7 @@ if ("com" -in $Lang) {
         --import-name $comRuntimeImport
     if ($LASTEXITCODE -ne 0) { Write-Error "Classic COM persistence generation failed"; exit 1 }
 
-    & cargo run -p dynwinrt-codegen --release --quiet -- generate `
+    & cargo run -p dynwinrt-codegen @cargoProfileArgs @cargoTargetArgs --quiet -- generate `
         --winmd $win32Winmd `
         --namespace Windows.Win32.System.WinRT `
         --class-name ISystemMediaTransportControlsInterop `
@@ -204,7 +242,7 @@ if ("com" -in $Lang) {
         --import-name $comRuntimeImport
     if ($LASTEXITCODE -ne 0) { Write-Error "Classic COM interop generation failed"; exit 1 }
 
-    & cargo run -p dynwinrt-codegen --release --quiet -- generate `
+    & cargo run -p dynwinrt-codegen @cargoProfileArgs @cargoTargetArgs --quiet -- generate `
         --winmd $win32Winmd `
         --namespace Windows.Win32.Graphics.Imaging `
         --class-name IWICImagingFactory `
@@ -212,7 +250,7 @@ if ("com" -in $Lang) {
         --import-name $comRuntimeImport
     if ($LASTEXITCODE -ne 0) { Write-Error "Classic COM WIC generation failed"; exit 1 }
 
-    & cargo run -p dynwinrt-codegen --release --quiet -- generate `
+    & cargo run -p dynwinrt-codegen @cargoProfileArgs @cargoTargetArgs --quiet -- generate `
         --winmd $win32Winmd `
         --namespace Windows.Win32.System.Com `
         --class-name ISequentialStream `
@@ -220,7 +258,7 @@ if ("com" -in $Lang) {
         --import-name $comRuntimeImport
     if ($LASTEXITCODE -ne 0) { Write-Error "Classic COM stream generation failed"; exit 1 }
 
-    & cargo run -p dynwinrt-codegen --release --quiet -- generate `
+    & cargo run -p dynwinrt-codegen @cargoProfileArgs @cargoTargetArgs --quiet -- generate `
         --namespace Windows.Media `
         --class-name SystemMediaTransportControls `
         --output $comSmtcDir `
@@ -240,7 +278,7 @@ if ("py" -in $Lang) {
     $previousMypyPath = $env:MYPYPATH
     try {
         $env:MYPYPATH = $e2eDir
-        python -m mypy --strict (Join-Path $PSScriptRoot "typecheck\python_generated_api.py")
+        & $pythonExe -m mypy --strict (Join-Path $PSScriptRoot "typecheck\python_generated_api.py")
         if ($LASTEXITCODE -ne 0) { Write-Error "Python static type check failed"; exit 1 }
     } finally {
         $env:MYPYPATH = $previousMypyPath
@@ -248,7 +286,7 @@ if ("py" -in $Lang) {
 
     Write-Host "`n--- Python E2E ---" -ForegroundColor Yellow
     $pyResult = Join-Path $e2eDir "results_py.json"
-    python (Join-Path $runnersDir "py_runner.py") `
+    & $pythonExe (Join-Path $runnersDir "py_runner.py") `
         --specs $specsFile `
         --generated $pyBindingsDir `
         --output $pyResult
@@ -317,7 +355,9 @@ foreach ($r in $allResults) {
 }
 if ($totalFail -eq 0) {
     Write-Host "ALL PASSED" -ForegroundColor Green
-    Remove-Item -Recurse -Force $e2eDir
+    if (-not $KeepGenerated) {
+        Remove-Item -Recurse -Force $e2eDir
+    }
     exit 0
 } else {
     Write-Host "SOME FAILED" -ForegroundColor Red

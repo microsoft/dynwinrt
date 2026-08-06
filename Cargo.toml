@@ -15,3 +15,10 @@ license = "MIT"
 opt-level = 3
 lto = true
 codegen-units = 1
+
+[profile.coverage]
+inherits = "dev"
+incremental = false
+lto = false
+codegen-units = 1
+debug = 2

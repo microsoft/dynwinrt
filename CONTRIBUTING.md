@@ -40,6 +40,25 @@ cargo test -p dynwinrt
 cargo test -p dynwinrt-codegen
 ```
 
+### Coverage
+
+Install the Rust coverage tool once:
+
+```powershell
+rustup component add llvm-tools-preview
+cargo install cargo-llvm-cov --version 0.8.7 --locked
+```
+
+Run the mixed-language coverage pipeline:
+
+```powershell
+.\eng\coverage\coverage.ps1
+```
+
+The script builds instrumented Python and Node native modules, runs the
+Rust/Python/JavaScript tests and E2E suite, and writes HTML, LCOV, XML, and JSON
+reports under `artifacts\coverage`.
+
 ### Code Style
 
 - Run `cargo clippy` before submitting PRs
@@ -60,4 +79,3 @@ Please use the provided issue templates when available.
 5. Submit your pull request
 
 Thank you for contributing!
-

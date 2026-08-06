@@ -160,7 +160,7 @@ test('DynCom rejects SharedArrayBuffer-backed native storage', (t) => {
 test('DynCom does not adopt borrowed raw pointer bits as owned COM references', (t) => {
   const borrowed = DynCom.pointer(0n)
   const error = t.throws(() => DynCom.adoptComPointer(borrowed))
-  t.regex(error.message, /only owned native outputs may be consumed/)
+  t.regex(error.message, /Borrowed provenance; expected ComOutput/)
 })
 
 test('DynCom exposes HSTRING and semantic HRESULT primitives', (t) => {

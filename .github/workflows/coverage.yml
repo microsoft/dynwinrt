@@ -1,0 +1,95 @@
+name: Mixed-language coverage
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/coverage.yml'
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - 'bindings/js/**'
+      - 'bindings/py/**'
+      - 'crates/dynwinrt/**'
+      - 'eng/coverage/**'
+      - 'tests/e2e/**'
+      - 'tools/dynwinrt-codegen/**'
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coverage-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  coverage:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: bindings/js/package-lock.json
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - uses: NuGet/setup-nuget@v2
+
+      - name: Install cargo-llvm-cov
+        shell: pwsh
+        run: cargo install cargo-llvm-cov --version 0.8.7 --locked
+
+      - name: Install Win32 metadata
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'win32metadata'
+          nuget install Microsoft.Windows.SDK.Win32Metadata `
+            -Version 69.0.7-preview `
+            -OutputDirectory $root `
+            -DirectDownload `
+            -NonInteractive
+          $winmd = Get-ChildItem $root -Filter Windows.Win32.winmd -File -Recurse |
+            Select-Object -First 1
+          if (-not $winmd) {
+            throw 'Microsoft.Windows.SDK.Win32Metadata did not contain Windows.Win32.winmd'
+          }
+          "DYNWINRT_WIN32_WINMD=$($winmd.FullName)" >> $env:GITHUB_ENV
+
+      - name: Run Rust, Python, JavaScript, and E2E coverage
+        shell: pwsh
+        run: |
+          .\eng\coverage\coverage.ps1 `
+            -Win32Winmd $env:DYNWINRT_WIN32_WINMD
+
+      - name: Publish coverage summary
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path artifacts\coverage\summary.md) {
+            Get-Content artifacts\coverage\summary.md >> $env:GITHUB_STEP_SUMMARY
+          }
+
+      - name: Upload coverage reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mixed-language-coverage
+          path: artifacts/coverage/
+          if-no-files-found: warn
+          retention-days: 14
