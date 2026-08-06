@@ -496,7 +496,11 @@ try {
             Prepare-JavaScriptOutput
             Push-Location (Join-Path $root "bindings\js")
             try {
-                & npx napi build --no-const-enum --profile coverage --platform `
+                $napi = Join-Path $root "bindings\js\node_modules\.bin\napi.cmd"
+                if (-not (Test-Path -LiteralPath $napi)) {
+                    throw "NAPI CLI is missing: $napi"
+                }
+                & $napi build --no-const-enum --profile coverage --platform `
                     --target $script:cargoTarget -o dist
                 if ($LASTEXITCODE -ne 0) { return }
                 & npm run build:entrypoints --silent

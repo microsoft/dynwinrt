@@ -153,7 +153,9 @@ if (-not $SkipBuild) {
         Push-Location (Join-Path $root "bindings\js")
         npm install --quiet 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0) { Write-Error "npm install failed"; exit 1 }
-        & npx napi build --no-const-enum --platform @cargoProfileArgs @cargoTargetArgs -o dist 2>&1 | Out-Null
+        $napi = Join-Path $root "bindings\js\node_modules\.bin\napi.cmd"
+        if (-not (Test-Path -LiteralPath $napi)) { Write-Error "NAPI CLI is missing: $napi"; exit 1 }
+        & $napi build --no-const-enum --platform @cargoProfileArgs @cargoTargetArgs -o dist 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0) { Write-Error "napi build failed"; exit 1 }
         npm run build:entrypoints --silent
         if ($LASTEXITCODE -ne 0) { Write-Error "runtime entrypoint generation failed"; exit 1 }
