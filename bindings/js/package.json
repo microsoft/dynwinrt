@@ -17,12 +17,21 @@
       "require": "./dist/com.js",
       "default": "./dist/com.js"
     },
+    "./com/unsafe": {
+      "types": "./dist/com-unsafe.d.ts",
+      "import": "./dist/com-unsafe.js",
+      "require": "./dist/com-unsafe.js",
+      "default": "./dist/com-unsafe.js"
+    },
     "./package.json": "./package.json"
   },
   "typesVersions": {
     "*": {
       "com": [
         "dist/com.d.ts"
+      ],
+      "com/unsafe": [
+        "dist/com-unsafe.d.ts"
       ]
     }
   },

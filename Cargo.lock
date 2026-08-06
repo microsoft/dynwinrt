@@ -294,6 +294,7 @@ dependencies = [
  "criterion",
  "futures",
  "libffi",
+ "libffi-sys",
  "paste",
  "tokio",
  "windows",
@@ -311,6 +312,7 @@ dependencies = [
  "clap",
  "regex",
  "roxmltree",
+ "windows",
  "windows-metadata",
 ]
 
@@ -501,6 +503,7 @@ dependencies = [
  "napi-build",
  "napi-derive",
  "pollster",
+ "serde_json",
  "windows",
  "windows-future",
  "windows-string",

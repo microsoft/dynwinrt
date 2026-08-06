@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 const assert = require('node:assert/strict');
-const { DynCom } = require('../../../bindings/js/dist/com.js');
+const { DynCom } = require('../../../bindings/js/dist/com-unsafe.js');
 const barrel = require('../../e2e_generated/com/shell/com/index.js');
 const deep = require('../../e2e_generated/com/shell/com/TaskbarList.js');
 

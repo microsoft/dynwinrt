@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import assert from 'node:assert/strict';
-import { DynCom } from '../../../bindings/js/dist/com.js';
+import { DynCom } from '../../../bindings/js/dist/com-unsafe.js';
 import { FileOpenDialog } from '../../e2e_generated/com/shell/com/FileOpenDialog.js';
 
 DynCom.initialize(0);

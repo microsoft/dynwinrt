@@ -229,10 +229,10 @@ impl ValueTypeData {
         method_index: usize,
     ) -> windows_core::Result<windows_core::IUnknown> {
         use crate::call::get_vtable_function_ptr;
-        use libffi::middle::{Cif, CodePtr, Type, arg};
+        use libffi::middle::{CodePtr, Type, arg};
 
         let fptr = get_vtable_function_ptr(obj_raw, method_index);
-        let cif = Cif::new(
+        let cif = crate::native_call::system_cif(
             vec![
                 Type::pointer(),
                 self.type_handle.libffi_type(),

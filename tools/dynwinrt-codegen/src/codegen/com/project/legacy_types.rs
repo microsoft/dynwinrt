@@ -1,6 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! TypeMeta compatibility mapping used only by diagnostic preflight and
+//! synthetic renderer tests.
+
 use crate::com_metadata::{is_native_isize, is_native_usize};
 use crate::types::TypeMeta;
 
@@ -71,8 +74,12 @@ pub(in crate::codegen::com) fn project_type(typ: &TypeMeta) -> Result<ComType, U
         | TypeMeta::AsyncOperationWithProgress(_, _) => Err(UnsupportedComType::AsyncInterface),
         TypeMeta::Array(_) => Err(UnsupportedComType::Array),
         TypeMeta::Enum {
-            name, underlying, ..
+            namespace,
+            name,
+            underlying,
+            ..
         } => Ok(ComType::Enum {
+            namespace: namespace.clone(),
             name: name.clone(),
             underlying: project_enum_underlying(underlying)?,
         }),
@@ -95,12 +102,14 @@ pub(in crate::codegen::com) fn project_type(typ: &TypeMeta) -> Result<ComType, U
         {
             if let Some(underlying) = scalar_alias_underlying(name, &fields[0].typ) {
                 Ok(ComType::ScalarAlias {
+                    namespace: namespace.clone(),
                     name: name.clone(),
                     underlying,
                 })
             } else if matches!(fields[0].typ, TypeMeta::Object) {
                 classify_pointer_alias(name)
                     .map(|kind| ComType::PointerAlias {
+                        namespace: namespace.clone(),
                         name: name.clone(),
                         kind,
                     })
@@ -165,15 +174,9 @@ fn scalar_alias_underlying(name: &str, typ: &TypeMeta) -> Option<ComScalarRepr> 
 }
 
 fn classify_pointer_alias(name: &str) -> Option<PointerAliasKind> {
-    if matches!(
-        name,
-        "PWSTR" | "PCWSTR" | "LPWSTR" | "LPCWSTR" | "PWCHAR" | "PCWCHAR" | "LPWCH" | "LPCWCH"
-    ) {
+    if matches!(name, "PWSTR" | "PCWSTR" | "LPWSTR" | "LPCWSTR") {
         Some(PointerAliasKind::StringPointer(StringEncoding::Wide))
-    } else if matches!(
-        name,
-        "PSTR" | "PCSTR" | "LPSTR" | "LPCSTR" | "LPCH" | "LPCCH"
-    ) {
+    } else if matches!(name, "PSTR" | "PCSTR" | "LPSTR" | "LPCSTR") {
         Some(PointerAliasKind::StringPointer(StringEncoding::Ansi))
     } else if matches!(
         name,
@@ -312,6 +315,7 @@ mod tests {
         assert_eq!(
             project_type(&colorref),
             Ok(ComType::ScalarAlias {
+                namespace: "Windows.Win32.Foundation".into(),
                 name: "COLORREF".into(),
                 underlying: ComScalarRepr::Primitive(ComPrimitive::U32),
             })
@@ -328,6 +332,7 @@ mod tests {
         assert_eq!(
             project_type(&lparam),
             Ok(ComType::ScalarAlias {
+                namespace: "Windows.Win32.Foundation".into(),
                 name: "LPARAM".into(),
                 underlying: ComScalarRepr::NativeIsize,
             })

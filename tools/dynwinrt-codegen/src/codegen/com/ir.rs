@@ -55,6 +55,109 @@ pub(super) enum PointerAliasKind {
     StringPointer(StringEncoding),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SafeArrayElement {
+    I8,
+    U8,
+    I16,
+    U16,
+    I32,
+    U32,
+    I64,
+    U64,
+    F32,
+    F64,
+    Bool,
+    Bstr,
+    Interface { iid: [u8; 16] },
+    Variant,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum NativePodScalar {
+    I8,
+    U8,
+    I16,
+    U16,
+    I32,
+    U32,
+    I64,
+    U64,
+    F32,
+    F64,
+    NativeIsize,
+    NativeUsize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum NativePodFieldType {
+    Scalar(NativePodScalar),
+    Guid,
+    Pointer,
+    Struct {
+        name: String,
+        layout: Box<NativePodArchitectureLayout>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct NativePodField {
+    pub(super) name: String,
+    pub(super) offset: usize,
+    pub(super) count: u32,
+    pub(super) typ: NativePodFieldType,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct NativePodArchitectureLayout {
+    pub(super) size: usize,
+    pub(super) alignment: usize,
+    pub(super) fields: Vec<NativePodField>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct NativePodLayout {
+    pub(super) namespace: String,
+    pub(super) name: String,
+    pub(super) x86: NativePodArchitectureLayout,
+    pub(super) x64: NativePodArchitectureLayout,
+    pub(super) arm64: NativePodArchitectureLayout,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum NativeUnionFieldType {
+    Scalar(NativePodScalar),
+    Guid,
+    Pointer,
+    Struct {
+        name: String,
+        layout: Box<NativePodArchitectureLayout>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct NativeUnionField {
+    pub(super) name: String,
+    pub(super) count: u32,
+    pub(super) typ: NativeUnionFieldType,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct NativeUnionArchitectureLayout {
+    pub(super) size: usize,
+    pub(super) alignment: usize,
+    pub(super) fields: Vec<NativeUnionField>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct NativeUnionLayout {
+    pub(super) namespace: String,
+    pub(super) name: String,
+    pub(super) x86: NativeUnionArchitectureLayout,
+    pub(super) x64: NativeUnionArchitectureLayout,
+    pub(super) arm64: NativeUnionArchitectureLayout,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum ComType {
     Primitive(ComPrimitive),
@@ -65,21 +168,54 @@ pub(super) enum ComType {
     Guid,
     HString,
     Enum {
+        namespace: String,
         name: String,
         underlying: ComEnumUnderlying,
     },
     ScalarAlias {
+        namespace: String,
         name: String,
         underlying: ComScalarRepr,
     },
     RawPointer,
     PointerAlias {
+        namespace: String,
         name: String,
         kind: PointerAliasKind,
     },
+    NativePod {
+        layout: NativePodLayout,
+    },
+    NativePodPointer {
+        layout: NativePodLayout,
+    },
+    NativeUnionPointer {
+        layout: NativeUnionLayout,
+    },
     Bstr,
+    Variant,
+    VariantByValue,
+    SafeArray {
+        element: SafeArrayElement,
+    },
+    PropVariant,
+    DispatchParams,
+    ExcepInfo,
     ManagedInterface {
         iid: String,
+    },
+    CoTaskMemWideString,
+    StringArray {
+        encoding: StringEncoding,
+        element_pointer_depth: u8,
+        element_const: bool,
+    },
+    TypedBuffer {
+        element: Box<ComType>,
+    },
+    OwningArray {
+        element: Box<ComType>,
+        interface: Option<ProjectedInterfaceRef>,
     },
 }
 
@@ -102,13 +238,20 @@ pub(super) enum UnsupportedComType {
 pub(super) enum ComParamDirection {
     In,
     Out,
+    OptionalOut,
     InOut,
     OutStringBuffer,
+    InputBuffer,
+    CallerOutputBuffer,
+    CalleeAllocatedBuffer,
 }
 
 impl ComParamDirection {
     pub(super) fn is_input(self) -> bool {
-        matches!(self, Self::In | Self::InOut)
+        matches!(
+            self,
+            Self::In | Self::InOut | Self::InputBuffer | Self::CallerOutputBuffer
+        )
     }
 }
 
@@ -117,12 +260,16 @@ pub(super) struct ProjectedComParam {
     pub(super) name: String,
     pub(super) typ: ComType,
     pub(super) direction: ComParamDirection,
+    pub(super) surface_input: bool,
+    pub(super) surface_result: bool,
+    pub(super) nullable: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum ComReturnConvention {
     HResult,
     SemanticHResult,
+    DispatchInvokeHResult,
     Void,
     Direct(ComType),
 }
@@ -130,12 +277,25 @@ pub(super) enum ComReturnConvention {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum ResultConversion {
     Value,
+    BorrowedHandle,
     ManagedCom,
     Bstr,
     CoTaskMemString(StringEncoding),
     CoTaskMemData,
     HString,
     DynamicIidAdoption,
+    Buffer,
+    PlainArray,
+    EnumeratorArray {
+        interface: Option<ProjectedInterfaceRef>,
+    },
+    OwningArray {
+        interface: Option<ProjectedInterfaceRef>,
+    },
+    Variant,
+    SafeArray,
+    PropVariant,
+    ExcepInfo,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -159,15 +319,100 @@ pub(super) struct StringBufferPlan {
     pub(super) optional_param_indices: Vec<usize>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum BufferCountUnit {
+    Elements,
+    Bytes,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TypedBufferSizing {
+    SingleCall,
+    FixedCapacity,
+    TwoCall { max_retries: u8 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum TypedBufferRelation {
+    Input {
+        count_param_index: usize,
+        actual_length_param_index: Option<usize>,
+        unit: BufferCountUnit,
+    },
+    CallerOutput {
+        capacity_param_index: usize,
+        actual_length_param_index: Option<usize>,
+        unit: BufferCountUnit,
+        sizing: TypedBufferSizing,
+    },
+    EnumeratorNext {
+        capacity_param_index: usize,
+        fetched_param_index: usize,
+        fetched_optional_for_single: bool,
+    },
+    CalleeAllocated {
+        count_param_index: usize,
+        unit: BufferCountUnit,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct TypedBufferPlan {
+    pub(super) buffer_param_index: usize,
+    pub(super) element: ComType,
+    pub(super) relation: TypedBufferRelation,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum SharedCountPlan {
+    StringInputScalarOutput {
+        count_param_index: usize,
+        string_input_param_index: usize,
+        scalar_output_param_index: usize,
+    },
+    Parallel {
+        count_param_index: usize,
+        input_param_indices: Vec<usize>,
+        output_param_indices: Vec<usize>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) struct ProjectedInterfaceRef {
+    pub(super) namespace: String,
+    pub(super) name: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum ProjectedComMethodKind {
     Normal,
+    FixedCapacityBytes {
+        guid_param_index: usize,
+    },
     CallerSuppliedDynamicIid {
-        natural_param_count: usize,
+        iid_param_index: usize,
+        output_param_index: usize,
     },
     SynthesizedGetForWindow {
-        natural_param_count: usize,
+        iid_param_index: usize,
+        output_param_index: usize,
         target_iid: String,
+    },
+    DispatchInvoke {
+        result_param_index: usize,
+        excep_info_param_index: usize,
+        arg_err_param_index: usize,
+    },
+    EnumeratorNext {
+        buffer_param_index: usize,
+        capacity_param_index: usize,
+        fetched_param_index: usize,
+        fetched_optional_for_single: bool,
+        interface: Option<ProjectedInterfaceRef>,
+    },
+    OwningCallerOutput {
+        buffer_param_index: usize,
+        capacity_param_index: usize,
     },
 }
 
@@ -223,6 +468,8 @@ pub(super) struct ProjectedComMethod {
     pub(super) return_convention: ComReturnConvention,
     pub(super) results: Vec<ProjectedComResult>,
     pub(super) string_buffer: Option<StringBufferPlan>,
+    pub(super) typed_buffers: Vec<TypedBufferPlan>,
+    pub(super) shared_counts: Vec<SharedCountPlan>,
     pub(super) kind: ProjectedComMethodKind,
     pub(super) doc: Option<String>,
     pub(super) overload: Option<OverloadInfo>,
@@ -262,12 +509,26 @@ pub(super) fn dispatch_shape(typ: &ComType) -> Option<DispatchShape> {
             | ComScalarRepr::NativeUsize => Some(DispatchShape::BigInt),
             ComScalarRepr::Primitive(_) => Some(DispatchShape::Number),
         },
-        ComType::ManagedInterface { .. } => Some(DispatchShape::Object),
+        ComType::ManagedInterface { .. } | ComType::DispatchParams => Some(DispatchShape::Object),
         // Raw/aliased pointers and BSTR accept multiple overlapping JS input
         // shapes (`bigint`, `number`, `Buffer`, `Uint8Array`, or `string`)
         // depending on position, so they can collide with any other category
         // and are never safe overload-dispatch keys.
-        ComType::RawPointer | ComType::PointerAlias { .. } | ComType::Bstr => None,
+        ComType::RawPointer
+        | ComType::PointerAlias { .. }
+        | ComType::NativePod { .. }
+        | ComType::NativePodPointer { .. }
+        | ComType::NativeUnionPointer { .. }
+        | ComType::Variant
+        | ComType::VariantByValue
+        | ComType::SafeArray { .. }
+        | ComType::PropVariant
+        | ComType::ExcepInfo
+        | ComType::Bstr
+        | ComType::CoTaskMemWideString
+        | ComType::StringArray { .. }
+        | ComType::TypedBuffer { .. }
+        | ComType::OwningArray { .. } => None,
     }
 }
 
@@ -299,6 +560,7 @@ pub(super) struct ProjectedComEnumMember {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ProjectedComEnum {
+    pub(super) namespace: String,
     pub(super) name: String,
     pub(super) underlying: ComEnumUnderlying,
     pub(super) members: Vec<ProjectedComEnumMember>,

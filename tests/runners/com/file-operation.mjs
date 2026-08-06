@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import assert from 'node:assert/strict';
-import { DynCom } from '../../../bindings/js/dist/com.js';
+import { DynCom } from '../../../bindings/js/dist/com-unsafe.js';
 import { FILEOPERATION_FLAGS } from '../../e2e_generated/com/shell/com/FILEOPERATION_FLAGS.js';
 import { FileOperation } from '../../e2e_generated/com/shell/com/FileOperation.js';
 

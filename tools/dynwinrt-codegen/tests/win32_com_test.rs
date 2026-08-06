@@ -19,6 +19,7 @@ use std::process::Command;
 use dynwinrt_codegen::codegen::com;
 use dynwinrt_codegen::codegen::project::{get_import_name, set_import_name};
 use dynwinrt_codegen::com_metadata;
+use dynwinrt_codegen::com_metadata::{RawNativeType, RawParamDirection};
 use dynwinrt_codegen::meta;
 use dynwinrt_codegen::types::TypeMeta;
 
@@ -34,6 +35,43 @@ fn win32_available() -> bool {
     Path::new(&win32_winmd()).exists()
 }
 
+fn isolate_com_method(
+    interface: &com_metadata::ComInterfaceMeta,
+    method_name: &str,
+) -> com_metadata::ComInterfaceMeta {
+    let raw_index = interface
+        .raw_methods
+        .as_ref()
+        .unwrap()
+        .iter()
+        .position(|method| method.metadata_name == method_name)
+        .unwrap();
+    let method_index = interface
+        .interface
+        .methods
+        .iter()
+        .position(|method| method.name == method_name)
+        .unwrap();
+    let mut isolated = interface.clone();
+    isolated.raw_methods = Some(vec![
+        isolated.raw_methods.as_ref().unwrap()[raw_index].clone(),
+    ]);
+    isolated.interface.methods = vec![isolated.interface.methods[method_index].clone()];
+    isolated.own_methods_start = 0;
+    isolated
+}
+
+fn project_isolated_com_method(
+    namespace: &str,
+    interface_name: &str,
+    method_name: &str,
+) -> com::ComGeneratedOutput {
+    let interface =
+        com_metadata::parse_com_interface(&win32_winmd(), namespace, interface_name).unwrap();
+    com::generate_com_interface_files(&isolate_com_method(&interface, method_name), &win32_winmd())
+        .unwrap()
+}
+
 #[test]
 fn required_win32_metadata_is_present() {
     if std::env::var("DYNWINRT_REQUIRE_WIN32_METADATA").as_deref() == Ok("1") {
@@ -45,20 +83,787 @@ fn required_win32_metadata_is_present() {
     }
 }
 
-/// Returns a clone of `iface` with the named method removed.
-///
-/// `IShellLinkW::GetPath` takes a caller-writable `WIN32_FIND_DATAW*` (`pfd`)
-/// that has no safe layout/size projection (see the classic-COM-ABI skill's
-/// fail-closed requirement for unsupported writable native structs), so the
-/// whole interface now fails closed if it is included. Tests that only need
-/// `IShellLinkW`'s *other* members use this helper to exercise them without
-/// tripping that (separately, correctly, regression-tested) failure.
-fn without_method(
-    mut iface: com_metadata::ComInterfaceMeta,
-    name: &str,
-) -> com_metadata::ComInterfaceMeta {
-    iface.interface.methods.retain(|method| method.name != name);
-    iface
+#[test]
+fn real_metadata_preserves_automation_pointer_contracts_and_fails_closed() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+
+    let property_bag = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.System.Com.StructuredStorage",
+        "IPropertyBag",
+    )
+    .expect("IPropertyBag must exist");
+    let read = property_bag
+        .raw_methods
+        .as_ref()
+        .unwrap()
+        .iter()
+        .find(|method| method.metadata_name == "Read")
+        .unwrap();
+    let variant = read
+        .params
+        .iter()
+        .find(|param| param.name == "pVar")
+        .unwrap();
+    assert_eq!(variant.direction, RawParamDirection::InOut);
+    assert_eq!(variant.typ.pointer_depth, 1);
+    assert!(matches!(
+        &variant.typ.native_type,
+        RawNativeType::Named { namespace, name, .. }
+            if namespace == "Windows.Win32.System.Variant" && name == "VARIANT"
+    ));
+    let error = com::generate_com_interface_files(&property_bag, &win32_winmd()).unwrap_err();
+    assert!(error.contains("Automation BYREF/InOut"), "{error}");
+
+    let property_store = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.UI.Shell.PropertiesSystem",
+        "IPropertyStore",
+    )
+    .expect("IPropertyStore must exist");
+    let get_value = property_store
+        .raw_methods
+        .as_ref()
+        .unwrap()
+        .iter()
+        .find(|method| method.metadata_name == "GetValue")
+        .unwrap();
+    let propvariant = get_value
+        .params
+        .iter()
+        .find(|param| param.name == "pv")
+        .unwrap();
+    assert_eq!(propvariant.direction, RawParamDirection::Out);
+    assert_eq!(propvariant.typ.pointer_depth, 1);
+    assert!(matches!(
+        &propvariant.typ.native_type,
+        RawNativeType::Named { namespace, name, .. }
+            if namespace == "Windows.Win32.System.Com.StructuredStorage"
+                && name == "PROPVARIANT"
+    ));
+
+    let context = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.System.Wmi",
+        "IWbemContext",
+    )
+    .expect("IWbemContext must exist");
+    let get_names = context
+        .raw_methods
+        .as_ref()
+        .unwrap()
+        .iter()
+        .find(|method| method.metadata_name == "GetNames")
+        .unwrap();
+    let safe_array = get_names
+        .params
+        .iter()
+        .find(|param| param.name == "pNames")
+        .unwrap();
+    assert_eq!(safe_array.direction, RawParamDirection::Out);
+    assert_eq!(safe_array.typ.pointer_depth, 2);
+    assert!(matches!(
+        &safe_array.typ.native_type,
+        RawNativeType::Named { namespace, name, .. }
+            if namespace == "Windows.Win32.System.Com" && name == "SAFEARRAY"
+    ));
+    let raw_get_names = context
+        .raw_methods
+        .as_ref()
+        .unwrap()
+        .iter()
+        .position(|method| method.metadata_name == "GetNames")
+        .unwrap();
+    let projected_get_names = context
+        .interface
+        .methods
+        .iter()
+        .position(|method| method.name == "GetNames")
+        .unwrap();
+    let mut isolated_get_names = context.clone();
+    isolated_get_names.raw_methods = Some(vec![
+        isolated_get_names.raw_methods.as_ref().unwrap()[raw_get_names].clone(),
+    ]);
+    isolated_get_names.interface.methods =
+        vec![isolated_get_names.interface.methods[projected_get_names].clone()];
+    isolated_get_names.own_methods_start = 0;
+    let output = com::generate_com_interface_files(&isolated_get_names, &win32_winmd())
+        .expect("documented IWbemContext.GetNames BSTR SAFEARRAY must project");
+    assert!(output.js.contains("DynCom.safeArrayType('bstr')"));
+    isolated_get_names.raw_methods.as_mut().unwrap()[0]
+        .params
+        .iter_mut()
+        .find(|param| param.name == "pNames")
+        .unwrap()
+        .typ
+        .pointer_depth = 0;
+    let error = com::generate_com_interface_files(&isolated_get_names, &win32_winmd())
+        .expect_err("bare SAFEARRAY output must fail closed");
+    assert!(
+        error.contains("SAFEARRAY signature no longer matches exact documented evidence"),
+        "{error}"
+    );
+    isolated_get_names.raw_methods.as_mut().unwrap()[0]
+        .params
+        .iter_mut()
+        .find(|param| param.name == "pNames")
+        .unwrap()
+        .typ
+        .pointer_depth = 2;
+    isolated_get_names.raw_methods.as_mut().unwrap()[0].declaring_interface =
+        "INoSafeArrayEvidence".into();
+    let error = com::generate_com_interface_files(&isolated_get_names, &win32_winmd())
+        .expect_err("SAFEARRAY declaration identity drift must fail closed");
+    assert!(
+        error.contains("SAFEARRAY evidence is no longer registered"),
+        "{error}"
+    );
+
+    let type_comp =
+        com_metadata::parse_com_interface(&win32_winmd(), "Windows.Win32.System.Com", "ITypeComp")
+            .expect("ITypeComp must exist");
+    let bind = type_comp
+        .raw_methods
+        .as_ref()
+        .unwrap()
+        .iter()
+        .find(|method| method.metadata_name == "Bind")
+        .unwrap();
+    let bind_ptr = bind
+        .params
+        .iter()
+        .find(|param| param.name == "pBindPtr")
+        .unwrap();
+    assert_eq!(bind_ptr.direction, RawParamDirection::Out);
+    assert_eq!(bind_ptr.typ.pointer_depth, 1);
+    assert!(matches!(
+        &bind_ptr.typ.native_type,
+        RawNativeType::Named {
+            namespace,
+            name,
+            layout: Some(layout),
+            ..
+        } if namespace == "Windows.Win32.System.Com"
+            && name == "BINDPTR"
+            && layout.variants.iter().all(|variant| variant.is_union)
+    ));
+    let error = com::generate_com_interface_files(&type_comp, &win32_winmd()).unwrap_err();
+    assert!(
+        error.contains("requires native layout projection"),
+        "{error}"
+    );
+}
+
+#[test]
+fn real_metadata_projects_required_variant_by_value_inputs() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+
+    let accessible = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.UI.Accessibility",
+        "IAccessible",
+    )
+    .expect("IAccessible must exist");
+    assert_eq!(
+        accessible.interface.iid,
+        "618736e0-3c3d-11cf-810c-00aa00389b71"
+    );
+    let acc_select = accessible
+        .raw_methods
+        .as_ref()
+        .unwrap()
+        .iter()
+        .find(|method| method.metadata_name == "accSelect")
+        .unwrap();
+    assert_eq!(acc_select.vtable_index, 21);
+    let child = acc_select
+        .params
+        .iter()
+        .find(|param| param.name == "varChild")
+        .unwrap();
+    assert_eq!(child.direction, RawParamDirection::In);
+    assert!(!child.optional);
+    assert_eq!(child.typ.pointer_depth, 0);
+    assert!(matches!(
+        &child.typ.native_type,
+        RawNativeType::Named {
+            namespace,
+            name,
+            ..
+        } if namespace == "Windows.Win32.System.Variant" && name == "VARIANT"
+    ));
+
+    let isolated_accessible = isolate_com_method(&accessible, "accSelect");
+    let output = com::generate_com_interface_files(&isolated_accessible, &win32_winmd())
+        .expect("IAccessible::accSelect by-value VARIANT must project");
+    assert!(output.js.contains(
+        ".addMethodAt(21, 'accSelect', new DynComMethodSig().addIn(DynCom.i32Type()).addIn(DynCom.variantByValueType()))"
+    ));
+    assert!(output.js.contains("DynCom.variant(varChild)"));
+    assert!(
+        output
+            .dts
+            .contains("accSelect(flagsSelect: number, varChild: DynComVariant): void;")
+    );
+    assert!(!output.dts.contains("varChild: DynComVariant | null"));
+
+    let full_accessible = com::generate_com_interface_files(&accessible, &win32_winmd())
+        .expect("complete IAccessible must project after by-value VARIANT support");
+    assert!(full_accessible.js.contains(".addMethodAt(21, 'accSelect'"));
+    assert!(
+        full_accessible
+            .dts
+            .contains("get_accName(varChild: DynComVariant): string;")
+    );
+
+    let automation = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.UI.Accessibility",
+        "IUIAutomation",
+    )
+    .expect("IUIAutomation must exist");
+    assert_eq!(
+        automation.interface.iid,
+        "30cbe57d-d9d0-452a-ab13-7ac5ac4825ee"
+    );
+    let create_property_condition = automation
+        .raw_methods
+        .as_ref()
+        .unwrap()
+        .iter()
+        .find(|method| method.metadata_name == "CreatePropertyCondition")
+        .unwrap();
+    assert_eq!(create_property_condition.vtable_index, 23);
+    let value = create_property_condition
+        .params
+        .iter()
+        .find(|param| param.name == "value")
+        .unwrap();
+    assert_eq!(value.direction, RawParamDirection::In);
+    assert!(!value.optional);
+    assert_eq!(value.typ.pointer_depth, 0);
+    assert!(matches!(
+        &value.typ.native_type,
+        RawNativeType::Named {
+            namespace,
+            name,
+            ..
+        } if namespace == "Windows.Win32.System.Variant" && name == "VARIANT"
+    ));
+
+    let isolated_automation = isolate_com_method(&automation, "CreatePropertyCondition");
+    let output = com::generate_com_interface_files(&isolated_automation, &win32_winmd())
+        .expect("IUIAutomation::CreatePropertyCondition by-value VARIANT must project");
+    assert!(output.js.contains(
+        ".addMethodAt(23, 'CreatePropertyCondition', new DynComMethodSig().addIn(DynCom.i32Type()).addIn(DynCom.variantByValueType()).addOut(DynCom.interfaceType(WinGuid.parse('352ffba8-0973-437c-a61f-f64cafd81df9'))))"
+    ));
+    assert!(output.js.contains("DynCom.variant(value)"));
+    assert!(output.dts.contains(
+        "createPropertyCondition(propertyId: UIA_PROPERTY_ID, value: DynComVariant): DynWinRtValue;"
+    ));
+
+    let error = com::generate_com_interface_files(&automation, &win32_winmd())
+        .expect_err("complete IUIAutomation must retain its next fail-closed blocker");
+    assert!(error.contains("ElementFromPoint parameter `pt`"), "{error}");
+    assert!(error.contains("native layout projection"), "{error}");
+
+    let mut optional = isolated_automation.clone();
+    optional.raw_methods.as_mut().unwrap()[0]
+        .params
+        .iter_mut()
+        .find(|param| param.name == "value")
+        .unwrap()
+        .optional = true;
+    let error = com::generate_com_interface_files(&optional, &win32_winmd())
+        .expect_err("optional aggregate VARIANT cannot fabricate null/default semantics");
+    assert!(
+        error.contains(
+            "optional by-value VARIANT input has no proven native null/default semantics"
+        ),
+        "{error}"
+    );
+
+    let mut wrong_direction = isolated_automation;
+    wrong_direction.raw_methods.as_mut().unwrap()[0]
+        .params
+        .iter_mut()
+        .find(|param| param.name == "value")
+        .unwrap()
+        .direction = RawParamDirection::Out;
+    let error = com::generate_com_interface_files(&wrong_direction, &win32_winmd())
+        .expect_err("bare VARIANT output must require pointer metadata");
+    assert!(error.contains("VARIANT"), "{error}");
+    assert!(
+        error.contains("requires native layout projection"),
+        "{error}"
+    );
+
+    let property_bag = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.System.Com.StructuredStorage",
+        "IPropertyBag",
+    )
+    .expect("IPropertyBag must exist");
+    let isolated_write = isolate_com_method(&property_bag, "Write");
+    let pointer_variant = isolated_write.raw_methods.as_ref().unwrap()[0]
+        .params
+        .iter()
+        .find(|param| param.name == "pVar")
+        .unwrap();
+    assert_eq!(pointer_variant.direction, RawParamDirection::In);
+    assert_eq!(pointer_variant.typ.pointer_depth, 1);
+    let output = com::generate_com_interface_files(&isolated_write, &win32_winmd())
+        .expect("existing VARIANT pointer input must remain supported");
+    assert!(output.js.contains(".addIn(DynCom.variantType())"));
+    assert!(!output.js.contains("variantByValueType"));
+}
+
+#[test]
+fn real_metadata_projects_exact_documented_safearray_families() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+
+    for (namespace, interface, method, expected_abi) in [
+        (
+            "Windows.Win32.UI.Accessibility",
+            "IAccessibleEx",
+            "GetRuntimeId",
+            "DynCom.safeArrayType('i32')",
+        ),
+        (
+            "Windows.Win32.UI.Accessibility",
+            "IUIAutomationProxyFactoryEntry",
+            "SetWinEventsForAutomationEvent",
+            "DynCom.safeArrayType('u32')",
+        ),
+        (
+            "Windows.Win32.UI.Accessibility",
+            "ITextRangeProvider",
+            "GetBoundingRectangles",
+            "DynCom.safeArrayType('f64')",
+        ),
+        (
+            "Windows.Win32.Media.DirectShow",
+            "IESEvent",
+            "GetData",
+            "DynCom.safeArrayType('u8')",
+        ),
+        (
+            "Windows.Win32.System.Wmi",
+            "IWbemContext",
+            "GetNames",
+            "DynCom.safeArrayType('bstr')",
+        ),
+        (
+            "Windows.Win32.System.Performance",
+            "IPerformanceCounterDataCollector",
+            "get_PerformanceCounters",
+            "DynCom.safeArrayType('bstr')",
+        ),
+        (
+            "Windows.Win32.System.Performance",
+            "ITraceDataProvider",
+            "get_FilterData",
+            "DynCom.safeArrayType('u8')",
+        ),
+        (
+            "Windows.Win32.System.RemoteDesktop",
+            "IWorkspaceResTypeRegistry",
+            "GetRegisteredFileExtensions",
+            "DynCom.safeArrayType('bstr')",
+        ),
+        (
+            "Windows.Win32.System.WindowsProgramming",
+            "ICameraUIControl",
+            "GetSelectedItems",
+            "DynCom.safeArrayType('bstr')",
+        ),
+        (
+            "Windows.Win32.Storage.FileServerResourceManager",
+            "IFsrmActionReport",
+            "get_ReportTypes",
+            "DynCom.safeArrayType('variant')",
+        ),
+        (
+            "Windows.Win32.UI.Accessibility",
+            "ITextProvider",
+            "GetVisibleRanges",
+            "DynCom.safeArrayType('unknown', WinGuid.parse('5347ad7b-c355-46f8-aff5-909033582f63'))",
+        ),
+        (
+            "Windows.Win32.UI.Accessibility",
+            "IUIAutomationClientInfoSource",
+            "GetConnectedClients",
+            "DynCom.safeArrayType('unknown', WinGuid.parse('b2e8a3f1-4c5d-4e7a-8f6b-3d2e1c9a0b8f'))",
+        ),
+    ] {
+        let output = project_isolated_com_method(namespace, interface, method);
+        assert!(output.js.contains(expected_abi), "{interface}.{method}");
+        assert!(
+            output.dts.contains("DynComSafeArray"),
+            "{interface}.{method}"
+        );
+    }
+
+    for interface in [
+        "IAlertDataCollector",
+        "IApiTracingDataCollector",
+        "IConfigurationDataCollector",
+        "IDataCollectorSet",
+        "IPerformanceCounterDataCollector",
+        "ITraceDataProvider",
+    ] {
+        let parsed = com_metadata::parse_com_interface(
+            &win32_winmd(),
+            "Windows.Win32.System.Performance",
+            interface,
+        )
+        .unwrap();
+        com::generate_com_interface_files(&parsed, &win32_winmd())
+            .unwrap_or_else(|error| panic!("{interface} must project completely: {error}"));
+    }
+
+    let client_info = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.UI.Accessibility",
+        "IUIAutomationClientInfo",
+    )
+    .unwrap();
+    assert_eq!(
+        client_info.interface.iid,
+        "b2e8a3f1-4c5d-4e7a-8f6b-3d2e1c9a0b8f"
+    );
+}
+
+#[test]
+fn text_provider_selection_preserves_its_documented_nullable_safearray() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+
+    let output = project_isolated_com_method(
+        "Windows.Win32.UI.Accessibility",
+        "ITextProvider",
+        "GetSelection",
+    );
+    assert!(output.js.contains(
+        "DynCom.safeArrayType('unknown', WinGuid.parse('5347ad7b-c355-46f8-aff5-909033582f63'), true)"
+    ));
+    assert!(output.js.contains("DynCom.takeNullableSafeArray("));
+    assert!(
+        output
+            .dts
+            .contains("getSelection(): DynComSafeArray | null;")
+    );
+}
+
+#[test]
+fn fragment_embedded_roots_preserve_their_documented_nullable_safearray() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+
+    let output = project_isolated_com_method(
+        "Windows.Win32.UI.Accessibility",
+        "IRawElementProviderFragment",
+        "GetEmbeddedFragmentRoots",
+    );
+    assert!(output.js.contains(
+        "DynCom.safeArrayType('unknown', WinGuid.parse('620ce2a5-ab8f-40a9-86cb-de3c75599b58'), true)"
+    ));
+    assert!(output.js.contains("DynCom.takeNullableSafeArray("));
+    assert!(
+        output
+            .dts
+            .contains("getEmbeddedFragmentRoots(): DynComSafeArray | null;")
+    );
+
+    let grabbed = project_isolated_com_method(
+        "Windows.Win32.UI.Accessibility",
+        "IDragProvider",
+        "GetGrabbedItems",
+    );
+    assert!(grabbed.js.contains(
+        "DynCom.safeArrayType('unknown', WinGuid.parse('d6dd68d1-86fd-4332-8666-9abedea2d24c'), true)"
+    ));
+    assert!(grabbed.js.contains("DynCom.takeNullableSafeArray("));
+    assert!(
+        grabbed
+            .dts
+            .contains("getGrabbedItems(): DynComSafeArray | null;")
+    );
+
+    let runtime_id = project_isolated_com_method(
+        "Windows.Win32.UI.Accessibility",
+        "IRawElementProviderFragment",
+        "GetRuntimeId",
+    );
+    assert!(
+        runtime_id
+            .js
+            .contains("DynCom.safeArrayType('i32', undefined, true)")
+    );
+    assert!(runtime_id.js.contains("DynCom.takeNullableSafeArray("));
+    assert!(
+        runtime_id
+            .dts
+            .contains("getRuntimeId(): DynComSafeArray | null;")
+    );
+
+    let hosting = project_isolated_com_method(
+        "Windows.Win32.UI.Accessibility",
+        "IAccessibleHostingElementProviders",
+        "GetEmbeddedFragmentRoots",
+    );
+    assert!(hosting.js.contains(
+        "DynCom.safeArrayType('unknown', WinGuid.parse('620ce2a5-ab8f-40a9-86cb-de3c75599b58'))"
+    ));
+    assert!(!hosting.js.contains("DynCom.takeNullableSafeArray("));
+    assert!(
+        hosting
+            .dts
+            .contains("getEmbeddedFragmentRoots(): DynComSafeArray;")
+    );
+
+    let fragment = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.UI.Accessibility",
+        "IRawElementProviderFragment",
+    )
+    .unwrap();
+    let mut drifted = isolate_com_method(&fragment, "GetEmbeddedFragmentRoots");
+    drifted.raw_methods.as_mut().unwrap()[0].params[0].name = "changed".into();
+    let error = com::generate_com_interface_files(&drifted, &win32_winmd())
+        .expect_err("nullable SAFEARRAY signature drift must fail closed");
+    assert!(
+        error.contains("SAFEARRAY signature no longer matches exact documented evidence"),
+        "{error}"
+    );
+}
+
+#[test]
+fn nearest_unproven_safearray_shapes_remain_fail_closed() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+
+    for (namespace, interface, method) in [
+        (
+            "Windows.Win32.UI.TabletPC",
+            "ITextInputPanelEventSink",
+            "TextInserting",
+        ),
+        (
+            "Windows.Win32.UI.Input.Ime",
+            "IImePlugInDictDictionaryList",
+            "GetDictionariesInUse",
+        ),
+        (
+            "Windows.Win32.Networking.WinHttp",
+            "IWinHttpRequestEvents",
+            "OnResponseDataAvailable",
+        ),
+        (
+            "Windows.Win32.System.ComponentServices",
+            "ICOMAdminCatalog",
+            "GetCollectionByQuery",
+        ),
+        (
+            "Windows.Win32.System.TaskScheduler",
+            "IEmailAction",
+            "get_Attachments",
+        ),
+        (
+            "Windows.Win32.UI.Xaml.Diagnostics",
+            "IVisualTreeService",
+            "GetEnums",
+        ),
+    ] {
+        let parsed =
+            com_metadata::parse_com_interface(&win32_winmd(), namespace, interface).unwrap();
+        let error =
+            com::generate_com_interface_files(&isolate_com_method(&parsed, method), &win32_winmd())
+                .expect_err("unproven SAFEARRAY shape must fail closed");
+        assert!(
+            error.contains("SAFEARRAY") || error.contains("safe array"),
+            "{interface}.{method}: {error}"
+        );
+    }
+}
+
+#[test]
+fn real_metadata_projects_complete_idispatch_with_automation_compounds() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+
+    let dispatch =
+        com_metadata::parse_com_interface(&win32_winmd(), "Windows.Win32.System.Com", "IDispatch")
+            .expect("IDispatch must exist");
+    let raw_index = dispatch
+        .raw_methods
+        .as_ref()
+        .unwrap()
+        .iter()
+        .position(|method| method.metadata_name == "GetIDsOfNames")
+        .unwrap();
+    let compatibility_index = dispatch
+        .interface
+        .methods
+        .iter()
+        .position(|method| method.name == "GetIDsOfNames")
+        .unwrap();
+    let raw = &dispatch.raw_methods.as_ref().unwrap()[raw_index];
+    let names = &raw.params[1];
+    assert_eq!(names.direction, RawParamDirection::In);
+    assert_eq!(names.typ.pointer_depth, 1);
+    assert_eq!(
+        names.native_array.as_ref().unwrap().count_param_index,
+        Some(2)
+    );
+    assert!(matches!(
+        names.string_pointer_array.as_ref(),
+        Some(com_metadata::RawStringPointerArray {
+            encoding: com_metadata::RawStringEncoding::Utf16,
+            pointer_depth: 1,
+            ownership: com_metadata::RawElementOwnership::Borrowed,
+            ..
+        })
+    ));
+    let outputs = &raw.params[4];
+    assert_eq!(outputs.direction, RawParamDirection::Out);
+    assert_eq!(outputs.typ.pointer_depth, 1);
+    assert_eq!(
+        outputs.native_array.as_ref().unwrap().count_param_index,
+        Some(2)
+    );
+
+    let mut isolated = dispatch.clone();
+    isolated.raw_methods = Some(vec![
+        isolated.raw_methods.as_ref().unwrap()[raw_index].clone(),
+    ]);
+    isolated.interface.methods = vec![isolated.interface.methods[compatibility_index].clone()];
+    isolated.own_methods_start = 0;
+    let output = com::generate_com_interface_files(&isolated, &win32_winmd())
+        .expect("IDispatch::GetIDsOfNames must project in isolation");
+    assert!(output.js.contains(".addInputStringArray(true, 2)"));
+    assert!(
+        output
+            .js
+            .contains(".addCallerOutputBuffer(DynCom.i32Type(), 2, undefined, false, false)")
+    );
+    assert!(output.js.contains("DynCom.wideStringArray("));
+    assert!(output.js.contains("DynCom.callerOutputArray("));
+    assert!(output.js.contains("DynCom.takeI32Array("));
+    assert_eq!(output.js.matches(".invoke(").count(), 1);
+    assert!(!output.js.contains("Buffer.alloc"));
+    assert!(output.dts.contains("rgszNames: string[]"));
+    assert!(output.dts.contains("): number[];"));
+    assert!(!output.dts.contains("cNames:"));
+    assert!(!output.dts.contains("rgDispId:"));
+
+    let invoke = dispatch
+        .raw_methods
+        .as_ref()
+        .unwrap()
+        .iter()
+        .find(|method| method.metadata_name == "Invoke")
+        .unwrap();
+    assert_eq!(invoke.params.len(), 8);
+    assert!(
+        invoke.params[5..]
+            .iter()
+            .all(|param| { param.direction == RawParamDirection::Out && param.optional })
+    );
+
+    let output = com::generate_com_interface_files(&dispatch, &win32_winmd())
+        .expect("complete inherited IDispatch must project");
+    assert!(output.js.contains(".addMethodAt(3, 'GetTypeInfoCount'"));
+    assert!(output.js.contains(".addMethodAt(4, 'GetTypeInfo'"));
+    assert!(output.js.contains(".addMethodAt(5, 'GetIDsOfNames'"));
+    assert!(output.js.contains(".addMethodAt(6, 'Invoke'"));
+    assert!(output.js.contains(".addIn(DynCom.dispatchParamsType())"));
+    assert!(output.js.contains(".addOptionalOut(DynCom.variantType())"));
+    assert!(
+        output
+            .js
+            .contains(".addOptionalOut(DynCom.excepInfoType())")
+    );
+    assert!(output.js.contains(".addOptionalOut(DynCom.u32Type())"));
+    assert!(output.js.contains(".captureDispatchInvokeHresult()"));
+    assert!(output.js.contains("DynCom.dispatchParams(dispParams)"));
+    assert!(output.js.contains(".invokeDispatch(this._obj"));
+    assert!(output.js.contains("DynCom.takeVariant(_resultValue)"));
+    assert!(output.js.contains("DynCom.takeExcepInfo(_excepInfoValue)"));
+    assert!(output.js.contains("_error.hresult = _call.hresult"));
+    assert!(output.js.contains("_error.excepInfo = _excepInfo"));
+    assert!(output.js.contains("_error.argErr = _call.argErr"));
+    assert!(output.js.contains("_error.cause = new Error"));
+    assert!(
+        output
+            .js
+            .contains("_description ? `: ${_description}` : ''")
+    );
+    assert!(output.js.contains("options.result ?? true"));
+    assert!(output.js.contains("options.excepInfo ?? true"));
+    assert!(output.js.contains("options.argErr ?? true"));
+    assert!(!output.js.contains("_result.excepInfo"));
+    assert!(!output.js.contains("_result.argErr"));
+    assert!(!output.js.contains("nativeStructType"));
+    assert!(output.dts.contains(
+        "invoke(dispIdMember: number, riid: bigint | Buffer, lcid: number, wFlags: DISPATCH_FLAGS, dispParams: DynComDispatchParams, options?: { result?: boolean; excepInfo?: boolean; argErr?: boolean }): { result?: DynComVariant };"
+    ));
+
+    let invoke_raw_index = dispatch
+        .raw_methods
+        .as_ref()
+        .unwrap()
+        .iter()
+        .position(|method| method.metadata_name == "Invoke")
+        .unwrap();
+    let mut invalid_dispatch_output = dispatch.clone();
+    invalid_dispatch_output.raw_methods.as_mut().unwrap()[invoke_raw_index].params[4].direction =
+        RawParamDirection::Out;
+    let error = com::generate_com_interface_files(&invalid_dispatch_output, &win32_winmd())
+        .expect_err("DISPPARAMS output must fail closed");
+    assert!(
+        error.contains("DISPPARAMS") || error.contains("input-only"),
+        "{error}"
+    );
+
+    let mut invalid_excep_input = dispatch.clone();
+    invalid_excep_input.raw_methods.as_mut().unwrap()[invoke_raw_index].params[6].direction =
+        RawParamDirection::In;
+    invalid_excep_input.raw_methods.as_mut().unwrap()[invoke_raw_index].params[6].optional = false;
+    let error = com::generate_com_interface_files(&invalid_excep_input, &win32_winmd())
+        .expect_err("EXCEPINFO input must fail closed");
+    assert!(
+        error.contains("EXCEPINFO") || error.contains("output-only"),
+        "{error}"
+    );
+
+    let mut invalid_dispatch_indirection = dispatch;
+    invalid_dispatch_indirection.raw_methods.as_mut().unwrap()[invoke_raw_index].params[4]
+        .typ
+        .pointer_depth = 2;
+    let error = com::generate_com_interface_files(&invalid_dispatch_indirection, &win32_winmd())
+        .expect_err("nested DISPPARAMS pointer indirection must fail closed");
+    assert!(
+        error.contains("Invoke") || error.contains("DISPPARAMS"),
+        "{error}"
+    );
 }
 
 /// Resolve a `Windows.winmd` from the newest installed Windows SDK, matching
@@ -423,11 +1228,7 @@ fn shelllink_scalar_out_pointers_preserve_pointee_types() {
     let get_hotkey_vtable = get_hotkey.vtable_index;
     let get_show_cmd_vtable = get_show_cmd.vtable_index;
 
-    // `GetPath` is intentionally unsupported (see `without_method`); it is
-    // covered by its own fail-closed regression test below.
-    let interface_without_get_path = without_method(interface, "GetPath");
-    let output =
-        com::generate_com_interface_files(&interface_without_get_path, &win32_winmd()).unwrap();
+    let output = com::generate_com_interface_files(&interface, &win32_winmd()).unwrap();
     assert!(output.js.contains(&format!(
         ".addMethodAt({get_hotkey_vtable}, 'GetHotkey', new DynComMethodSig().addOut(DynCom.u16Type()))"
     )));
@@ -438,6 +1239,37 @@ fn shelllink_scalar_out_pointers_preserve_pointee_types() {
         output
             .dts
             .contains("getIconLocation(cch?: number): [string, number];")
+    );
+}
+
+#[test]
+fn nullable_native_pod_pointer_preserves_null_projection() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+    let interface = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.UI.Shell",
+        "ITaskbarList3",
+    )
+    .unwrap();
+    let output = com::generate_com_interface_files(&interface, &win32_winmd()).unwrap();
+
+    assert!(
+        output
+            .dts
+            .contains("setThumbnailClip(hwnd: HWND | Buffer | Uint8Array, prcClip: RECT | null)")
+    );
+    assert!(
+        output
+            .js
+            .contains("DynCom.nativeStructPointerType(_nativeLayout_RECT, true)")
+    );
+    assert!(
+        output
+            .js
+            .contains("prcClip === null ? DynCom.nullNativeStructPointer()")
     );
 }
 
@@ -915,6 +1747,32 @@ fn snapshot_itaskbarlist3() {
     }
 }
 
+#[test]
+fn snapshot_ishelllinkw_native_pod() {
+    if !win32_available() {
+        eprintln!("Skipping snapshot test: Win32 winmd not available");
+        return;
+    }
+    let interface =
+        com_metadata::parse_com_interface(&win32_winmd(), "Windows.Win32.UI.Shell", "IShellLinkW")
+            .expect("IShellLinkW must exist");
+    let out = com::generate_com_interface_files(&interface, &win32_winmd())
+        .expect("codegen must succeed for IShellLinkW");
+    let snapshot_dir: PathBuf =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots/ishelllinkw");
+
+    for (name, actual) in [("IShellLinkW.js", out.js), ("IShellLinkW.d.ts", out.dts)] {
+        let path = snapshot_dir.join(name);
+        let expected = fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("Failed to read {}: {error}", path.display()));
+        assert_eq!(
+            actual.trim_end(),
+            expected.trim_end(),
+            "{name} native POD snapshot changed"
+        );
+    }
+}
+
 // -------------------------------------------------------------------------
 // --import-name honored by classic-COM path
 // -------------------------------------------------------------------------
@@ -940,7 +1798,7 @@ fn import_name_flag_is_honored_by_com_path() {
     }
 
     let previous = get_import_name();
-    set_import_name("../dist/com.js");
+    set_import_name("../dist/com-unsafe.js");
 
     let result = std::panic::catch_unwind(|| {
         let com_iface = com_metadata::parse_com_interface(
@@ -960,8 +1818,8 @@ fn import_name_flag_is_honored_by_com_path() {
 
     // Custom import must appear on the runtime import line...
     assert!(
-        out.js.contains("require('../dist/com.js')"),
-        "classic-COM .js must honor --import-name (expected `require('../dist/com.js')`):\n{}",
+        out.js.contains("require('../dist/com-unsafe.js')"),
+        "classic-COM .js must honor --import-name (expected `require('../dist/com-unsafe.js')`):\n{}",
         out.js
     );
     // ...and the hardcoded default must NOT be present in the generated body.
@@ -985,8 +1843,8 @@ fn import_name_flag_is_honored_by_com_path() {
     assert!(
         default_out
             .js
-            .contains("require('@microsoft/dynwinrt/com')"),
-        "after restoring, default import must use '@microsoft/dynwinrt/com':\n{}",
+            .contains("require('@microsoft/dynwinrt/com/unsafe')"),
+        "after restoring, default import must use '@microsoft/dynwinrt/com/unsafe':\n{}",
         default_out.js
     );
 }
@@ -1006,7 +1864,7 @@ fn import_name_flag_is_honored_by_interop_wrapper() {
     }
 
     let previous = get_import_name();
-    set_import_name("../dist/com.js");
+    set_import_name("../dist/com-unsafe.js");
 
     let result = std::panic::catch_unwind(|| {
         let com_iface = com_metadata::parse_com_interface(
@@ -1024,7 +1882,7 @@ fn import_name_flag_is_honored_by_interop_wrapper() {
 
     // The interop .js itself must honor the flag.
     assert!(
-        out.js.contains("require('../dist/com.js')"),
+        out.js.contains("require('../dist/com-unsafe.js')"),
         "interop .js must honor --import-name:\n{}",
         out.js
     );
@@ -1090,7 +1948,6 @@ fn u16_input_param_uses_existing_u16_value_ctor_not_u16value() {
     let com_iface =
         com_metadata::parse_com_interface(&win32_winmd(), "Windows.Win32.UI.Shell", "IShellLinkW")
             .expect("IShellLinkW must exist");
-    let com_iface = without_method(com_iface, "GetPath");
     let out = com::generate_com_interface_files(&com_iface, &win32_winmd())
         .expect("codegen must succeed for IShellLinkW");
 
@@ -1113,14 +1970,23 @@ fn sid_buffers_keep_data_pointer_address_semantics() {
         return;
     }
 
-    let interface = com_metadata::parse_com_interface(
+    let mut interface = com_metadata::parse_com_interface(
         &win32_winmd(),
         "Windows.Win32.Storage.FileSystem",
         "IDiskQuotaControl",
     )
     .expect("IDiskQuotaControl must exist");
+    interface
+        .interface
+        .methods
+        .retain(|method| method.name == "AddUserSid");
+    interface
+        .raw_methods
+        .as_mut()
+        .unwrap()
+        .retain(|method| method.projected_name == "AddUserSid");
     let output = com::generate_com_interface_files(&interface, &win32_winmd())
-        .expect("IDiskQuotaControl generation should succeed");
+        .expect("isolated IDiskQuotaControl.AddUserSid generation should succeed");
 
     assert!(
         output
@@ -1138,27 +2004,1715 @@ fn sid_buffers_keep_data_pointer_address_semantics() {
 }
 
 #[test]
-fn native_array_buffers_fail_closed() {
+fn typed_counted_buffers_generate_from_real_win32_contracts() {
     if !win32_available() {
         eprintln!("Skipping: Win32 winmd not available");
         return;
     }
 
-    let interface = com_metadata::parse_com_interface(
+    let stream = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.System.Com",
+        "ISequentialStream",
+    )
+    .expect("ISequentialStream must exist");
+    let output = com::generate_com_interface_files(&stream, &win32_winmd())
+        .expect("documented ISequentialStream buffer overrides must project");
+    assert!(
+        output
+            .js
+            .contains(".addCallerOutputBuffer(DynCom.u8Type(), 1, 2, true, false)")
+            && output
+                .js
+                .contains(".addInputBuffer(DynCom.u8Type(), 1, 2, true)"),
+        "stream signatures must preserve byte capacity and actual-length relationships:\n{}",
+        output.js
+    );
+    assert!(
+        output.js.contains("read(pv)")
+            && output.js.contains("write(pv)")
+            && !output.js.contains("read(pv, cb")
+            && !output.js.contains("write(pv, cb"),
+        "derived byte counts must be hidden from the JS surface:\n{}",
+        output.js
+    );
+    assert!(
+        output
+            .dts
+            .contains("read(pv: Buffer | ArrayBufferView): [number, Buffer]")
+            && output
+                .dts
+                .contains("write(pv: Buffer | ArrayBufferView): [number, number]"),
+        "stream buffers must use natural typed-buffer declarations:\n{}",
+        output.dts
+    );
+
+    let opc = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.Storage.Packaging.Opc",
+        "IOpcSignatureCustomObject",
+    )
+    .expect("IOpcSignatureCustomObject must exist");
+    let output = com::generate_com_interface_files(&opc, &win32_winmd())
+        .expect("documented CoTaskMem byte output must project");
+    assert!(
+        output
+            .js
+            .contains(".addCoTaskMemOutputBuffer(DynCom.u8Type(), 1, true)")
+            && output.js.contains("return DynCom.takeBuffer(_out)")
+            && output.dts.contains("getXml(): Buffer"),
+        "callee-allocated bytes must carry their exact allocator into generated code:\n{}",
+        output.js
+    );
+}
+
+#[test]
+fn recorder_two_call_buffer_uses_bounded_exact_projection() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+
+    let mut recorder = com_metadata::parse_com_interface(
         &win32_winmd(),
         "Windows.Win32.Storage.Imapi",
         "IDiscRecorder",
     )
     .expect("IDiscRecorder must exist");
-    let error = com::generate_com_interface_files(&interface, &win32_winmd())
-        .expect_err("NativeArrayInfo byte buffers must not become scalar in/out storage");
+    let raw = recorder
+        .raw_methods
+        .as_ref()
+        .unwrap()
+        .iter()
+        .position(|method| method.metadata_name == "GetRecorderGUID")
+        .expect("GetRecorderGUID raw metadata");
+    let projected = recorder
+        .interface
+        .methods
+        .iter()
+        .position(|method| method.name == "GetRecorderGUID")
+        .expect("GetRecorderGUID projected metadata");
+    recorder.raw_methods = Some(vec![recorder.raw_methods.as_ref().unwrap()[raw].clone()]);
+    recorder.interface.methods = vec![recorder.interface.methods[projected].clone()];
+    recorder.own_methods_start = 0;
 
+    let output = com::generate_com_interface_files(&recorder, &win32_winmd())
+        .expect("the isolated exact documented two-call method must project");
     assert!(
-        error.contains("GetRecorderGUID")
-            && error.contains("pbyUniqueID")
-            && error.contains("caller-sized native buffers are not supported"),
-        "generation must fail with a targeted buffer diagnostic: {error}"
+        output
+            .js
+            .contains(".addCallerOutputBuffer(DynCom.u8Type(), 1, 2, true, true)")
+            && output.js.contains("getRecorderGUID()")
+            && output
+                .js
+                .contains("for (let _attempt = 0; _attempt <= 2; _attempt++)")
+            && output.js.contains("DynCom.bufferCount")
+            && output.js.contains("DynCom.nullBuffer()")
+            && output.js.contains("DynCom.bufferAllocationLength(_actual)")
+            && output
+                .js
+                .contains("COM buffer size changed during bounded two-call retry"),
+        "two-call sizing must be exact and bounded:\n{}",
+        output.js
     );
+    assert!(output.dts.contains("getRecorderGUID(): Buffer"));
+}
+
+#[test]
+fn imf_attributes_get_blob_uses_exact_fixed_capacity_bytes() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+
+    let mut attributes = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.Media.MediaFoundation",
+        "IMFAttributes",
+    )
+    .expect("IMFAttributes must exist");
+    assert_eq!(
+        attributes.interface.iid,
+        "2cd2d921-c447-44a7-a13c-4adabfc247e3"
+    );
+    assert_eq!(attributes.base_chain, ["IUnknown"]);
+    assert_eq!(attributes.base_offset, 3);
+    assert_eq!(attributes.own_methods_start, 3);
+
+    let raw_index = attributes
+        .raw_methods
+        .as_ref()
+        .unwrap()
+        .iter()
+        .position(|method| method.metadata_name == "GetBlob")
+        .expect("GetBlob raw metadata");
+    let raw = &attributes.raw_methods.as_ref().unwrap()[raw_index];
+    assert_eq!(raw.vtable_index, 15);
+    assert_eq!(raw.params.len(), 4);
+    let contract = raw
+        .exact_contract
+        .as_ref()
+        .expect("GetBlob exact contract evidence");
+    assert_eq!(
+        contract.kind,
+        com_metadata::RawExactMethodContractKind::FixedCapacityBytes
+    );
+    assert_eq!(
+        (
+            contract.buffer_param_index,
+            contract.capacity_param_index,
+            contract.actual_length_param_index,
+        ),
+        (1, 2, Some(3))
+    );
+    assert!(contract.citation.contains("imfattributes-getblob"));
+    assert_eq!(raw.params[0].typ.pointer_depth, 1);
+    assert!(raw.params[0].const_attribute);
+    assert_eq!(raw.params[0].direction, RawParamDirection::In);
+    assert_eq!(raw.params[1].typ.pointer_depth, 1);
+    assert_eq!(raw.params[1].direction, RawParamDirection::Out);
+    assert!(!raw.params[1].optional);
+    let relation = raw.params[1]
+        .native_array
+        .as_ref()
+        .expect("GetBlob byte relation");
+    assert_eq!(relation.count_param_index, Some(2));
+    assert_eq!(relation.actual_length_param_index, Some(3));
+    assert_eq!(relation.unit, com_metadata::RawCountUnit::Bytes);
+    assert!(relation.projected_capacity);
+    assert!(!relation.two_call);
+    assert_eq!(raw.params[2].direction, RawParamDirection::In);
+    assert!(matches!(raw.params[2].typ.native_type, RawNativeType::U32));
+    assert_eq!(raw.params[3].direction, RawParamDirection::Out);
+    assert!(raw.params[3].optional);
+    assert_eq!(raw.params[3].typ.pointer_depth, 1);
+
+    let projected_index = attributes
+        .interface
+        .methods
+        .iter()
+        .position(|method| method.name == "GetBlob")
+        .expect("GetBlob compatibility metadata");
+    attributes.raw_methods = Some(vec![raw.clone()]);
+    attributes.interface.methods = vec![attributes.interface.methods[projected_index].clone()];
+    attributes.own_methods_start = 0;
+
+    let output = com::generate_com_interface_files(&attributes, &win32_winmd())
+        .expect("isolated exact GetBlob must project");
+    assert!(
+        output
+            .js
+            .contains(".addCallerOutputBuffer(DynCom.u8Type(), 2, 3, true, false)")
+            && output.js.contains("getBlob(guidKey, capacity)")
+            && output
+                .js
+                .contains("Number.isSafeInteger(capacity) || capacity < 0")
+            && output
+                .js
+                .contains("DynCom.bufferAllocationLength(BigInt(capacity))")
+            && output
+                .js
+                .contains("DynCom.callerOutputArray(DynCom.u8Type(), BigInt(_capacity))")
+            && output.js.contains("return DynCom.takeBuffer(_out);"),
+        "fixed-capacity GetBlob must allocate exclusive runtime storage and hide native counts:\n{}",
+        output.js
+    );
+    assert!(
+        output
+            .dts
+            .contains("getBlob(guidKey: string, capacity: number): Buffer;"),
+        "{}",
+        output.dts
+    );
+
+    let mut invalid_actual = attributes.clone();
+    invalid_actual.raw_methods.as_mut().unwrap()[0].params[3].direction = RawParamDirection::InOut;
+    let error = com::generate_com_interface_files(&invalid_actual, &win32_winmd())
+        .expect_err("a distinct actual length must not accept InOut metadata");
+    assert!(
+        (error.contains("actual-length") && error.contains("must be Out"))
+            || error.contains("no longer matches exact contract evidence"),
+        "{error}"
+    );
+
+    use windows::Win32::Media::MediaFoundation::IMFAttributes;
+    use windows::core::Interface;
+    assert_eq!(
+        format!("{:?}", IMFAttributes::IID).to_ascii_lowercase(),
+        attributes.interface.iid
+    );
+}
+
+#[test]
+fn get_private_data_families_fail_closed_for_interface_ownership() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+
+    let families = [
+        (
+            "Windows.Win32.Graphics.Dxgi",
+            "IDXGIObject",
+            "aec22fb8-76f3-4639-9be0-28eb43a67a2e",
+            5,
+        ),
+        (
+            "Windows.Win32.Graphics.Direct3D10",
+            "ID3D10DeviceChild",
+            "9b7e4c00-342c-4106-a19f-4f2704f689f0",
+            4,
+        ),
+        (
+            "Windows.Win32.Graphics.Direct3D10",
+            "ID3D10Device",
+            "9b7e4c0f-342c-4106-a19f-4f2704f689f0",
+            66,
+        ),
+        (
+            "Windows.Win32.Graphics.Direct3D11",
+            "ID3D11DeviceChild",
+            "1841e5c8-16b0-489b-bcc8-44cfb0d5deae",
+            4,
+        ),
+        (
+            "Windows.Win32.Graphics.Direct3D11",
+            "ID3D11Device",
+            "db6f6ddb-ac77-4e88-8253-819df9bbf140",
+            34,
+        ),
+        (
+            "Windows.Win32.Graphics.Direct3D12",
+            "ID3D12Object",
+            "c4fec28f-7966-4e95-9f94-f431cb56c3b8",
+            3,
+        ),
+        (
+            "Windows.Win32.AI.MachineLearning.DirectML",
+            "IDMLObject",
+            "c8263aac-9e0c-4a2d-9b8e-007521a3317c",
+            3,
+        ),
+    ];
+    for (namespace, name, iid, slot) in families {
+        let mut interface =
+            com_metadata::parse_com_interface(&win32_winmd(), namespace, name).unwrap();
+        assert_eq!(interface.interface.iid, iid);
+        assert_eq!(interface.base_chain, ["IUnknown"]);
+        let raw_index = interface
+            .raw_methods
+            .as_ref()
+            .unwrap()
+            .iter()
+            .position(|method| method.metadata_name == "GetPrivateData")
+            .unwrap();
+        let projected_index = interface
+            .interface
+            .methods
+            .iter()
+            .position(|method| method.name == "GetPrivateData")
+            .unwrap();
+        let raw = interface.raw_methods.as_ref().unwrap()[raw_index].clone();
+        assert_eq!(raw.vtable_index, slot);
+        assert_eq!(
+            raw.exact_contract.as_ref().unwrap().kind,
+            com_metadata::RawExactMethodContractKind::UnsafePrivateData
+        );
+        interface.raw_methods = Some(vec![raw]);
+        interface.interface.methods = vec![interface.interface.methods[projected_index].clone()];
+        interface.own_methods_start = 0;
+        let error = com::generate_com_interface_files(&interface, &win32_winmd())
+            .expect_err("generic GetPrivateData Buffer projection must remain unsupported");
+        assert!(
+            error.contains("AddRef")
+                && error.contains("interface pointer")
+                && (error.contains("ownership") || error.contains("destructive")),
+            "{namespace}.{name}: {error}"
+        );
+    }
+}
+
+#[test]
+fn exact_fixed_capacity_byte_contract_mutations_fail_closed() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+
+    fn isolated() -> com_metadata::ComInterfaceMeta {
+        let mut interface = com_metadata::parse_com_interface(
+            &win32_winmd(),
+            "Windows.Win32.Media.MediaFoundation",
+            "IMFAttributes",
+        )
+        .unwrap();
+        let raw_index = interface
+            .raw_methods
+            .as_ref()
+            .unwrap()
+            .iter()
+            .position(|method| method.metadata_name == "GetBlob")
+            .unwrap();
+        let projected_index = interface
+            .interface
+            .methods
+            .iter()
+            .position(|method| method.name == "GetBlob")
+            .unwrap();
+        interface.raw_methods = Some(vec![
+            interface.raw_methods.as_ref().unwrap()[raw_index].clone(),
+        ]);
+        interface.interface.methods = vec![interface.interface.methods[projected_index].clone()];
+        interface.own_methods_start = 0;
+        interface
+    }
+
+    let mutations: Vec<Box<dyn Fn(&mut com_metadata::ComInterfaceMeta)>> = vec![
+        Box::new(|interface| {
+            interface.interface.iid = "11111111-2222-3333-4444-555555555555".into()
+        }),
+        Box::new(|interface| {
+            interface.raw_methods.as_mut().unwrap()[0].metadata_name = "GetBlob2".into()
+        }),
+        Box::new(|interface| interface.raw_methods.as_mut().unwrap()[0].vtable_index += 1),
+        Box::new(|interface| {
+            interface.raw_methods.as_mut().unwrap()[0].params[0]
+                .typ
+                .pointer_depth = 0
+        }),
+        Box::new(|interface| {
+            interface.raw_methods.as_mut().unwrap()[0].params[0].const_attribute = false
+        }),
+        Box::new(|interface| {
+            interface.raw_methods.as_mut().unwrap()[0].params[1].direction = RawParamDirection::In
+        }),
+        Box::new(|interface| {
+            interface.raw_methods.as_mut().unwrap()[0].params[1]
+                .typ
+                .pointer_depth = 2
+        }),
+        Box::new(|interface| interface.raw_methods.as_mut().unwrap()[0].params[1].optional = true),
+        Box::new(|interface| {
+            interface.raw_methods.as_mut().unwrap()[0].params[2].direction = RawParamDirection::Out
+        }),
+        Box::new(|interface| {
+            interface.raw_methods.as_mut().unwrap()[0].params[2]
+                .typ
+                .native_type = RawNativeType::U16
+        }),
+        Box::new(|interface| {
+            interface.raw_methods.as_mut().unwrap()[0].params[3].direction =
+                RawParamDirection::InOut
+        }),
+        Box::new(|interface| interface.raw_methods.as_mut().unwrap()[0].params[3].optional = false),
+        Box::new(|interface| {
+            interface.raw_methods.as_mut().unwrap()[0].params[3]
+                .typ
+                .pointer_depth = 2
+        }),
+        Box::new(|interface| {
+            interface.raw_methods.as_mut().unwrap()[0]
+                .return_type
+                .native_type = RawNativeType::Void
+        }),
+    ];
+    for mutate in mutations {
+        let mut interface = isolated();
+        mutate(&mut interface);
+        let error = com::generate_com_interface_files(&interface, &win32_winmd())
+            .expect_err("mutated exact byte contract must fail");
+        assert!(
+            error.contains("GetBlob") || error.contains("exact contract"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn unsupported_counted_buffer_contracts_fail_closed() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+
+    let enum_string = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.System.Com",
+        "IEnumString",
+    )
+    .expect("IEnumString must exist");
+    com::generate_com_interface_files(&enum_string, &win32_winmd())
+        .expect("exact IEnumString ownership must project");
+    let mut missing_array = enum_string.clone();
+    missing_array
+        .raw_methods
+        .as_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|method| method.metadata_name == "Next")
+        .unwrap()
+        .params[1]
+        .native_array = None;
+    let error = com::generate_com_interface_files(&missing_array, &win32_winmd())
+        .expect_err("IEnumString without count evidence must fail");
+    assert!(
+        error.contains("Next")
+            && (error.contains("pointer")
+                || error.contains("array")
+                || error.contains("EnumeratorNext")),
+        "missing initialized-range evidence must fail closed: {error}"
+    );
+    let mut unknown_allocator = enum_string;
+    unknown_allocator
+        .raw_methods
+        .as_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|method| method.metadata_name == "Next")
+        .unwrap()
+        .params[1]
+        .string_pointer_array
+        .as_mut()
+        .unwrap()
+        .ownership = com_metadata::RawElementOwnership::Unknown;
+    let error = com::generate_com_interface_files(&unknown_allocator, &win32_winmd())
+        .expect_err("IEnumString without CoTaskMem ownership must fail");
+    assert!(
+        error.contains("Next")
+            && (error.contains("ownership")
+                || error.contains("allocator")
+                || error.contains("cleanup")
+                || error.contains("caller-sized")),
+        "unknown element allocator must fail closed: {error}"
+    );
+
+    let mut stream = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.System.Com",
+        "ISequentialStream",
+    )
+    .unwrap();
+    let read = stream
+        .raw_methods
+        .as_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|method| method.metadata_name == "Read")
+        .unwrap();
+    read.params[0].native_array = None;
+    let error = com::generate_com_interface_files(&stream, &win32_winmd())
+        .expect_err("a writable void pointer without array evidence must fail");
+    assert!(
+        error.contains("Read") && error.contains("pv"),
+        "absent evidence must fail at the buffer parameter: {error}"
+    );
+
+    let mut stream = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.System.Com",
+        "ISequentialStream",
+    )
+    .unwrap();
+    stream
+        .raw_methods
+        .as_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|method| method.metadata_name == "Read")
+        .unwrap()
+        .params[0]
+        .native_array
+        .as_mut()
+        .unwrap()
+        .count_param_index = Some(99);
+    let error = com::generate_com_interface_files(&stream, &win32_winmd())
+        .expect_err("an out-of-range count relation must fail");
+    assert!(
+        error.contains("Read")
+            && error.contains("pv")
+            && (error.contains("outside the method")
+                || error.contains("caller-sized native buffers")),
+        "mismatched count relationships must fail closed: {error}"
+    );
+
+    let mut opc = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.Storage.Packaging.Opc",
+        "IOpcSignatureCustomObject",
+    )
+    .unwrap();
+    opc.raw_methods.as_mut().unwrap()[0].params[0].free_with = None;
+    let error = com::generate_com_interface_files(&opc, &win32_winmd())
+        .expect_err("callee allocation without its allocator must fail");
+    assert!(
+        error.contains("GetXml")
+            && error.contains("xmlMarkup")
+            && (error.contains("ownership") || error.contains("caller-sized native buffers")),
+        "unknown allocator must fail closed: {error}"
+    );
+}
+
+#[test]
+fn standard_enumerator_next_projects_partial_arrays_and_exact_interface_ownership() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+
+    let guid_enum =
+        com_metadata::parse_com_interface(&win32_winmd(), "Windows.Win32.System.Com", "IEnumGUID")
+            .expect("IEnumGUID must exist");
+    let next = guid_enum
+        .raw_methods
+        .as_ref()
+        .unwrap()
+        .iter()
+        .find(|method| method.metadata_name == "Next")
+        .unwrap();
+    let plan = next
+        .enumerator_next
+        .as_ref()
+        .expect("exact IEnumGUID::Next override");
+    assert_eq!(
+        (
+            plan.capacity_param_index,
+            plan.values_param_index,
+            plan.fetched_param_index,
+            plan.fetched_optional_for_single,
+        ),
+        (0, 1, 2, true)
+    );
+    let output = com::generate_com_interface_files(&guid_enum, &win32_winmd())
+        .expect("IEnumGUID must project completely");
+    assert!(
+        output.js.contains(
+            ".addEnumeratorNextBuffer(DynCom.guidType(), 0, 2).addOptionalOut(DynCom.u32Type()).preserveEnumeratorNextHresult()"
+        ) && output
+            .js
+            .contains("DynCom.enumeratorOutputArray(DynCom.guidType(), BigInt(count))")
+            && output.js.contains("DynCom.takeGuidArray(_out[1])")
+            && output.dts.contains("next(count: number): string[]")
+            && output.js.contains(".addMethodAt(6, 'Clone'"),
+        "IEnumGUID must expose its complete interface with a natural partial-array Next:\n{}",
+        output.js
+    );
+
+    let connection_enum = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.System.Com",
+        "IEnumConnectionPoints",
+    )
+    .expect("IEnumConnectionPoints must exist");
+    let next = connection_enum
+        .raw_methods
+        .as_ref()
+        .unwrap()
+        .iter()
+        .find(|method| method.metadata_name == "Next")
+        .unwrap();
+    assert!(
+        !next
+            .enumerator_next
+            .as_ref()
+            .expect("exact IEnumConnectionPoints::Next override")
+            .fetched_optional_for_single
+    );
+    let output = com::generate_com_interface_files(&connection_enum, &win32_winmd())
+        .expect("IEnumConnectionPoints must project completely");
+    assert!(
+        output.js.contains(
+            ".addEnumeratorNextBuffer(DynCom.interfaceType(WinGuid.parse('b196b286-bab4-101a-b69c-00aa00341d07')), 0, 2).addOut(DynCom.u32Type()).preserveEnumeratorNextHresult()"
+        ) && output.js.contains("DynCom.takeComArray(_out[1])")
+            && output
+                .js
+                .contains("value => IConnectionPoint._fromNative(value)")
+            && output
+                .dts
+                .contains("next(count: number): IConnectionPoint[]")
+            && output
+                .extra_files
+                .iter()
+                .any(|(name, _)| name == "IConnectionPoint.js")
+            && output
+                .extra_files
+                .iter()
+                .any(|(name, _)| name == "IConnectionPoint.d.ts"),
+        "owned interface elements must use managed wrappers and emit their complete dependency:\n{}",
+        output.js
+    );
+
+    let variant_enum = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.System.Ole",
+        "IEnumVARIANT",
+    )
+    .expect("IEnumVARIANT must exist");
+    let output = com::generate_com_interface_files(&variant_enum, &win32_winmd())
+        .expect("IEnumVARIANT must project completely");
+    assert!(
+        output
+            .js
+            .contains(".addEnumeratorNextBuffer(DynCom.variantType(), 0, 2)")
+            && output.js.contains("DynCom.takeVariantArray(_out[1])")
+            && output.dts.contains("next(count: number): DynComVariant[]"),
+        "{}",
+        output.js
+    );
+
+    let string_enum = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.System.Com",
+        "IEnumString",
+    )
+    .expect("IEnumString must exist");
+    let output = com::generate_com_interface_files(&string_enum, &win32_winmd())
+        .expect("IEnumString must project completely");
+    assert!(
+        output
+            .js
+            .contains(".addEnumeratorNextBuffer(DynCom.coTaskMemWideStringType(), 0, 2)")
+            && output
+                .js
+                .contains("DynCom.takeCoTaskMemWideStringArray(_out[1])")
+            && output.dts.contains("next(count: number): string[]"),
+        "{}",
+        output.js
+    );
+
+    let inherited_enum = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.UI.TextServices",
+        "IEnumITfCompositionView",
+    )
+    .expect("IEnumITfCompositionView must exist");
+    let next = inherited_enum
+        .raw_methods
+        .as_ref()
+        .unwrap()
+        .iter()
+        .find(|method| method.metadata_name == "Next")
+        .unwrap();
+    assert_eq!(next.vtable_index, 4);
+    assert!(next.enumerator_next.is_some());
+    let output = com::generate_com_interface_files(&inherited_enum, &win32_winmd())
+        .expect("exact non-slot-3 interface enumerator must project");
+    assert!(
+        output.js.contains(".preserveEnumeratorNextHresultAt(4)")
+            && output
+                .dts
+                .contains("next(count: number): ITfCompositionView[]"),
+        "{}",
+        output.js
+    );
+
+    use windows::Win32::System::Com::{
+        IConnectionPoint, IEnumConnectionPoints, IEnumGUID, IEnumString,
+    };
+    use windows::Win32::System::Ole::IEnumVARIANT;
+    use windows::core::Interface;
+    assert_eq!(
+        format!("{:?}", IEnumGUID::IID).to_ascii_lowercase(),
+        "0002e000-0000-0000-c000-000000000046"
+    );
+    assert_eq!(
+        format!("{:?}", IEnumConnectionPoints::IID).to_ascii_lowercase(),
+        "b196b285-bab4-101a-b69c-00aa00341d07"
+    );
+    assert_eq!(
+        format!("{:?}", IConnectionPoint::IID).to_ascii_lowercase(),
+        "b196b286-bab4-101a-b69c-00aa00341d07"
+    );
+    assert_eq!(
+        format!("{:?}", IEnumVARIANT::IID).to_ascii_lowercase(),
+        "00020404-0000-0000-c000-000000000046"
+    );
+    assert_eq!(
+        format!("{:?}", IEnumString::IID).to_ascii_lowercase(),
+        "00000101-0000-0000-c000-000000000046"
+    );
+    assert_eq!(std::mem::size_of::<windows::core::GUID>(), 16);
+    assert_eq!(std::mem::align_of::<windows::core::GUID>(), 4);
+    assert_eq!(
+        std::mem::size_of::<IConnectionPoint>(),
+        std::mem::size_of::<*mut std::ffi::c_void>()
+    );
+    assert_eq!(
+        std::mem::align_of::<IConnectionPoint>(),
+        std::mem::align_of::<*mut std::ffi::c_void>()
+    );
+    assert_eq!(
+        std::mem::size_of::<windows::Win32::System::Variant::VARIANT>(),
+        if cfg!(target_pointer_width = "64") {
+            24
+        } else {
+            16
+        }
+    );
+    assert_eq!(
+        std::mem::size_of::<windows::core::PWSTR>(),
+        std::mem::size_of::<*mut std::ffi::c_void>()
+    );
+}
+
+#[test]
+fn enumerator_next_exact_evidence_fails_closed_when_mutated() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+
+    let mut mismatched =
+        com_metadata::parse_com_interface(&win32_winmd(), "Windows.Win32.System.Com", "IEnumGUID")
+            .unwrap();
+    let next = mismatched
+        .raw_methods
+        .as_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|method| method.metadata_name == "Next")
+        .unwrap();
+    next.params[1]
+        .native_array
+        .as_mut()
+        .unwrap()
+        .count_param_index = Some(2);
+    let error = com::generate_com_interface_files(&mismatched, &win32_winmd()).unwrap_err();
+    assert!(
+        error.contains("Next")
+            && (error.contains("count")
+                || error.contains("caller-sized native buffers")
+                || error.contains("Unknown native type")
+                || error.contains("unknown native type")),
+        "{error}"
+    );
+
+    let mut nonstandard =
+        com_metadata::parse_com_interface(&win32_winmd(), "Windows.Win32.System.Com", "IEnumGUID")
+            .unwrap();
+    nonstandard
+        .raw_methods
+        .as_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|method| method.metadata_name == "Next")
+        .unwrap()
+        .vtable_index = 4;
+    let error = com::generate_com_interface_files(&nonstandard, &win32_winmd()).unwrap_err();
+    assert!(
+        error.contains("slot-3 ABI shape")
+            || error.contains("duplicate vtable slot")
+            || error.contains("vtable")
+            || error.contains("caller-sized native buffers"),
+        "{error}"
+    );
+
+    let mut variant_enum = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.System.Ole",
+        "IEnumVARIANT",
+    )
+    .expect("IEnumVARIANT must exist");
+    variant_enum
+        .raw_methods
+        .as_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|method| method.metadata_name == "Next")
+        .unwrap()
+        .params[1]
+        .typ
+        .pointer_depth = 2;
+    let error = com::generate_com_interface_files(&variant_enum, &win32_winmd())
+        .expect_err("mutated VARIANT enumerator must fail closed");
+    assert!(
+        error.contains("Next")
+            && (error.contains("initialized-range cleanup")
+                || error.contains("Automation")
+                || error.contains("caller-sized native buffers")
+                || error.contains("unsupported")
+                || error.contains("exact enumerator evidence")),
+        "{error}"
+    );
+}
+
+#[test]
+fn real_owning_counted_arrays_project_natural_inputs_and_outputs() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+
+    let type_info =
+        com_metadata::parse_com_interface(&win32_winmd(), "Windows.Win32.System.Com", "ITypeInfo")
+            .expect("ITypeInfo must exist");
+    let get_names = type_info
+        .raw_methods
+        .as_ref()
+        .unwrap()
+        .iter()
+        .find(|method| method.metadata_name == "GetNames")
+        .unwrap();
+    let names = get_names.params[1].native_array.as_ref().unwrap();
+    assert_eq!(names.count_param_index, Some(2));
+    assert_eq!(names.actual_length_param_index, Some(3));
+    assert!(names.evidence.iter().any(|evidence| matches!(
+        evidence,
+        com_metadata::RawEvidence::Override { citation, .. }
+            if citation.contains("itypeinfo-getnames")
+    )));
+    let get_names_output = com::generate_com_interface_files(
+        &isolate_com_method(&type_info, "GetNames"),
+        &win32_winmd(),
+    )
+    .unwrap();
+    assert!(
+        get_names_output
+            .js
+            .contains(".addCallerOutputBuffer(DynCom.bstrType(), 2, 3, false, false)")
+    );
+
+    let mut invalid = isolate_com_method(&type_info, "GetNames");
+    invalid.raw_methods.as_mut().unwrap()[0].params[3].direction = RawParamDirection::In;
+    let error = com::generate_com_interface_files(&invalid, &win32_winmd())
+        .expect_err("GetNames must require an authoritative output actual count");
+    assert!(
+        error.contains("actual length")
+            || error.contains("output")
+            || error.contains("caller-sized native buffers"),
+        "{error}"
+    );
+
+    let cases = [
+        (
+            "Windows.Win32.System.RemoteDesktop",
+            "ITSGAuthorizeResourceSink",
+            "OnChannelAuthorized",
+            "DynCom.bstrArray(",
+            "string[]",
+        ),
+        (
+            "Windows.Win32.System.Wmi",
+            "IWbemObjectSink",
+            "Indicate",
+            "DynCom.interfaceArray(",
+            "IWbemClassObject[]",
+        ),
+        (
+            "Windows.Win32.System.Com.StructuredStorage",
+            "IPropertyBag2",
+            "Write",
+            "DynCom.variantArray(",
+            "DynComVariant[]",
+        ),
+        (
+            "Windows.Win32.System.Com",
+            "ITypeInfo",
+            "GetNames",
+            "DynCom.takeBstrArray(",
+            "string[]",
+        ),
+    ];
+    for (namespace, interface, method, js, dts) in cases {
+        let output = project_isolated_com_method(namespace, interface, method);
+        assert!(
+            output.js.contains(js),
+            "{}.{}:\n{}",
+            interface,
+            method,
+            output.js
+        );
+        assert!(
+            output.dts.contains(dts),
+            "{}.{}:\n{}",
+            interface,
+            method,
+            output.dts
+        );
+    }
+    let sink =
+        project_isolated_com_method("Windows.Win32.System.Wmi", "IWbemObjectSink", "Indicate");
+    let wrapper = sink
+        .extra_files
+        .iter()
+        .find(|(name, _)| name == "IWbemClassObject.js")
+        .expect("nominal element wrapper dependency");
+    assert!(
+        wrapper.1.contains("class IWbemClassObject"),
+        "{}",
+        wrapper.1
+    );
+    assert!(
+        !wrapper.1.contains(".addMethodAt("),
+        "an incomplete dependency must remain an opaque nominal wrapper:\n{}",
+        wrapper.1
+    );
+}
+
+#[test]
+fn real_borrowed_hwnd_outputs_are_exact_numeric_getters() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+
+    let cases = [
+        (
+            "Windows.Win32.System.Ole",
+            "IOleWindow",
+            "GetWindow",
+            "getWindow(): HWND;",
+        ),
+        (
+            "Windows.Win32.System.Mmc",
+            "IConsole",
+            "GetMainWindow",
+            "getMainWindow(): HWND;",
+        ),
+        (
+            "Windows.Win32.Devices.ImageAcquisition",
+            "IWiaAppErrorHandler",
+            "GetWindow",
+            "getWindow(): HWND;",
+        ),
+        (
+            "Windows.Win32.UI.Shell",
+            "ICredentialProviderCredentialEvents",
+            "OnCreatingWindow",
+            "onCreatingWindow(): HWND;",
+        ),
+        (
+            "Windows.Win32.Media.PictureAcquisition",
+            "IPhotoProgressDialog",
+            "GetWindow",
+            "getWindow(): HWND;",
+        ),
+        (
+            "Windows.Win32.Media.DirectShow",
+            "IOverlay",
+            "GetWindowHandle",
+            "getWindowHandle(): HWND;",
+        ),
+        (
+            "Windows.Win32.Media.DirectShow.Tv",
+            "IMSVidCtl",
+            "get_Window",
+            "get_Window(): HWND;",
+        ),
+        (
+            "Windows.Win32.Media.DirectShow.Tv",
+            "IMSVidRect",
+            "get_HWnd",
+            "get_HWnd(): HWND;",
+        ),
+        (
+            "Windows.Win32.Media.MediaFoundation",
+            "IMFPMediaPlayer",
+            "GetVideoWindow",
+            "getVideoWindow(): HWND;",
+        ),
+        (
+            "Windows.Win32.Media.MediaFoundation",
+            "IMFVideoDisplayControl",
+            "GetVideoWindow",
+            "getVideoWindow(): HWND;",
+        ),
+        (
+            "Windows.Win32.System.WinRT",
+            "ICoreWindowInterop",
+            "get_WindowHandle",
+            "get_WindowHandle(): HWND;",
+        ),
+        (
+            "Windows.Win32.System.WinRT",
+            "IShareWindowCommandEventArgsInterop",
+            "GetWindow",
+            "getWindow(): HWND;",
+        ),
+        (
+            "Windows.Win32.System.WinRT.Xaml",
+            "IDesktopWindowXamlSourceNative",
+            "get_WindowHandle",
+            "get_WindowHandle(): HWND;",
+        ),
+        (
+            "Windows.Win32.System.UpdateAgent",
+            "IUpdateInstaller",
+            "get_ParentHwnd",
+            "get_ParentHwnd(): HWND;",
+        ),
+        (
+            "Windows.Win32.UI.Accessibility",
+            "IUIAutomationElement",
+            "get_CachedNativeWindowHandle",
+            "get_CachedNativeWindowHandle(): HWND;",
+        ),
+        (
+            "Windows.Win32.UI.Accessibility",
+            "IUIAutomationElement",
+            "get_CurrentNativeWindowHandle",
+            "get_CurrentNativeWindowHandle(): HWND;",
+        ),
+        (
+            "Windows.Win32.UI.Shell",
+            "ILaunchSourceViewSizePreference",
+            "GetSourceViewToPosition",
+            "getSourceViewToPosition(): HWND;",
+        ),
+        (
+            "Windows.Win32.UI.Shell",
+            "IFileIsInUse",
+            "GetSwitchToHWND",
+            "getSwitchToHWND(): HWND;",
+        ),
+        (
+            "Windows.Win32.UI.Shell",
+            "IPreviewHandler",
+            "QueryFocus",
+            "queryFocus(): HWND;",
+        ),
+        (
+            "Windows.Win32.UI.TabletPC",
+            "ITextInputPanel",
+            "get_AttachedEditWindow",
+            "get_AttachedEditWindow(): HWND;",
+        ),
+        (
+            "Windows.Win32.UI.TextServices",
+            "ITfContextOwner",
+            "GetWnd",
+            "getWnd(): HWND;",
+        ),
+        (
+            "Windows.Win32.UI.TextServices",
+            "ITfContextView",
+            "GetWnd",
+            "getWnd(): HWND;",
+        ),
+    ];
+    assert_eq!(cases.len(), 22);
+    for (namespace, interface, method, declaration) in cases {
+        let output = project_isolated_com_method(namespace, interface, method);
+        assert!(
+            output
+                .js
+                .contains(".addOut(DynCom.borrowedHandleOutputType())"),
+            "{interface}.{method}:\n{}",
+            output.js
+        );
+        assert!(
+            output.js.contains("DynCom.asPointerBigint("),
+            "{interface}.{method}:\n{}",
+            output.js
+        );
+        assert!(
+            output.dts.contains(declaration),
+            "{interface}.{method}:\n{}",
+            output.dts
+        );
+        assert!(!output.js.contains("adoptComPointer"));
+        assert!(!output.js.contains("DestroyWindow"));
+        assert!(!output.dts.contains("Buffer"));
+    }
+
+    let ole =
+        com_metadata::parse_com_interface(&win32_winmd(), "Windows.Win32.System.Ole", "IOleWindow")
+            .unwrap();
+    let mut drifted = isolate_com_method(&ole, "GetWindow");
+    drifted.raw_methods.as_mut().unwrap()[0].declaring_iid =
+        "00000000-0000-0000-c000-000000000046".into();
+    let error = com::generate_com_interface_files(&drifted, &win32_winmd())
+        .expect_err("borrowed HWND IID drift must fail closed");
+    assert!(error.contains("borrowed HWND evidence identity"), "{error}");
+
+    let mut drifted = isolate_com_method(&ole, "GetWindow");
+    drifted.raw_methods.as_mut().unwrap()[0].vtable_index += 1;
+    let error = com::generate_com_interface_files(&drifted, &win32_winmd())
+        .expect_err("borrowed HWND slot drift must fail closed");
+    assert!(error.contains("borrowed HWND evidence identity"), "{error}");
+
+    let mut drifted = isolate_com_method(&ole, "GetWindow");
+    drifted.raw_methods.as_mut().unwrap()[0].params[0].name = "changed".into();
+    let error = com::generate_com_interface_files(&drifted, &win32_winmd())
+        .expect_err("borrowed HWND parameter drift must fail closed");
+    assert!(
+        error.contains("exact documented borrowed HWND evidence"),
+        "{error}"
+    );
+
+    let mut drifted = isolate_com_method(&ole, "GetWindow");
+    drifted.raw_methods.as_mut().unwrap()[0].params[0]
+        .typ
+        .pointer_depth = 2;
+    let error = com::generate_com_interface_files(&drifted, &win32_winmd())
+        .expect_err("borrowed HWND pointer-depth drift must fail closed");
+    assert!(
+        error.contains("exact documented borrowed HWND evidence"),
+        "{error}"
+    );
+
+    let mut drifted = isolate_com_method(&ole, "GetWindow");
+    drifted.raw_methods.as_mut().unwrap()[0].params[0].direction = RawParamDirection::InOut;
+    let error = com::generate_com_interface_files(&drifted, &win32_winmd())
+        .expect_err("borrowed HWND direction drift must fail closed");
+    assert!(
+        error.contains("exact documented borrowed HWND evidence"),
+        "{error}"
+    );
+
+    let mut drifted = isolate_com_method(&ole, "GetWindow");
+    drifted.raw_methods.as_mut().unwrap()[0].params[0].free_with =
+        Some(com_metadata::RawFreeWith {
+            function: "DestroyWindow".into(),
+            evidence: com_metadata::RawEvidence::Override {
+                reason: "mutation",
+                citation: "mutation",
+            },
+        });
+    let error = com::generate_com_interface_files(&drifted, &win32_winmd())
+        .expect_err("borrowed HWND cleanup drift must fail closed");
+    assert!(
+        error.contains("exact documented borrowed HWND evidence"),
+        "{error}"
+    );
+
+    let mut drifted = isolate_com_method(&ole, "GetWindow");
+    drifted.raw_methods.as_mut().unwrap()[0].params.clear();
+    let error = com::generate_com_interface_files(&drifted, &win32_winmd())
+        .expect_err("borrowed HWND parameter-count drift must fail closed");
+    assert!(error.contains("borrowed HWND evidence"), "{error}");
+
+    let mut drifted = isolate_com_method(&ole, "GetWindow");
+    drifted.raw_methods.as_mut().unwrap()[0].params[0].optional = true;
+    let error = com::generate_com_interface_files(&drifted, &win32_winmd())
+        .expect_err("borrowed HWND optionality drift must fail closed");
+    assert!(
+        error.contains("exact documented borrowed HWND evidence"),
+        "{error}"
+    );
+
+    let mut drifted = isolate_com_method(&ole, "GetWindow");
+    drifted.raw_methods.as_mut().unwrap()[0]
+        .return_type
+        .native_type = com_metadata::RawNativeType::I32;
+    let error = com::generate_com_interface_files(&drifted, &win32_winmd())
+        .expect_err("borrowed HWND return-convention drift must fail closed");
+    assert!(
+        error.contains("exact documented borrowed HWND evidence"),
+        "{error}"
+    );
+}
+
+#[test]
+fn real_iolewindow_family_generates_with_borrowed_inherited_hwnd() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+
+    let interfaces = [
+        ("Windows.Win32.System.Ole", "IOleWindow"),
+        ("Windows.Win32.System.Ole", "IOleInPlaceActiveObject"),
+        ("Windows.Win32.System.Ole", "IOleInPlaceFrame"),
+        ("Windows.Win32.System.Ole", "IOleInPlaceObject"),
+        ("Windows.Win32.System.Ole", "IOleInPlaceObjectWindowless"),
+        ("Windows.Win32.System.Ole", "IOleInPlaceUIWindow"),
+        ("Windows.Win32.UI.Shell", "IDeskBand"),
+        ("Windows.Win32.UI.Shell", "IDeskBand2"),
+        ("Windows.Win32.UI.Shell", "IDeskBar"),
+        ("Windows.Win32.UI.Shell", "IDeskBarClient"),
+        ("Windows.Win32.UI.Shell", "IDockingWindow"),
+        ("Windows.Win32.UI.Shell", "IDockingWindowFrame"),
+        ("Windows.Win32.UI.Shell", "IDockingWindowSite"),
+        ("Windows.Win32.UI.Shell", "IMenuPopup"),
+    ];
+    for (namespace, interface) in interfaces {
+        let meta = com_metadata::parse_com_interface(&win32_winmd(), namespace, interface).unwrap();
+        let output = com::generate_com_interface_files(&meta, &win32_winmd())
+            .unwrap_or_else(|error| panic!("{interface}: {error}"));
+        assert!(
+            output.dts.contains("getWindow(): HWND;"),
+            "{interface}:\n{}",
+            output.dts
+        );
+        assert!(
+            output
+                .js
+                .contains(".addOut(DynCom.borrowedHandleOutputType())"),
+            "{interface}:\n{}",
+            output.js
+        );
+    }
+}
+
+#[test]
+fn canonical_iunknown_owning_arrays_use_managed_values_directly() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+
+    let cases = [
+        ("Windows.Win32.System.Com", "IEnumUnknown"),
+        ("Windows.Win32.Storage.VirtualDiskService", "IEnumVdsObject"),
+        ("Windows.Win32.System.Com.Events", "IEnumEventObject"),
+    ];
+    for (namespace, interface) in cases {
+        let meta = com_metadata::parse_com_interface(&win32_winmd(), namespace, interface).unwrap();
+        let output = com::generate_com_interface_files(&meta, &win32_winmd()).unwrap();
+        assert!(
+            output.js.contains("Array.from(DynCom.takeComArray("),
+            "{interface}:\n{}",
+            output.js
+        );
+        assert!(
+            output.dts.contains("DynWinRtValue[]"),
+            "{interface}:\n{}",
+            output.dts
+        );
+        assert!(!output.js.contains("require('./IUnknown.js')"));
+        assert!(!output.dts.contains("IUnknown[]"));
+        assert!(
+            output
+                .extra_files
+                .iter()
+                .all(|(name, _)| name != "IUnknown.js" && name != "IUnknown.d.ts")
+        );
+        let names = output
+            .extra_files
+            .iter()
+            .map(|(name, _)| name)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(names.len(), output.extra_files.len());
+    }
+}
+
+#[test]
+fn windows_iid_oracle_matches_ole_window_and_iunknown() {
+    use windows::core::Interface;
+
+    assert_eq!(
+        windows::Win32::System::Ole::IOleWindow::IID,
+        windows::core::GUID::from_u128(0x00000114_0000_0000_c000_000000000046)
+    );
+    assert_eq!(
+        windows::core::IUnknown::IID,
+        windows::core::GUID::from_u128(0x00000000_0000_0000_c000_000000000046)
+    );
+}
+
+#[test]
+fn dynamic_iid_requires_exact_guid_and_output_pointer_depths() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+    let interface = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.UI.Shell",
+        "IDataTransferManagerInterop",
+    )
+    .unwrap();
+    for (param_from_end, depth) in [(2usize, 2usize), (1usize, 3usize)] {
+        let mut invalid = interface.clone();
+        let method = invalid
+            .raw_methods
+            .as_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|method| method.metadata_name == "GetForWindow")
+            .unwrap();
+        let index = method.params.len() - param_from_end;
+        method.params[index].typ.pointer_depth = depth;
+        let error = com::generate_com_interface_files(&invalid, &win32_winmd()).unwrap_err();
+        assert!(
+            error.contains("GetForWindow") && error.contains("dynamic-IID"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn generalized_dynamic_iid_unlocks_non_positional_real_interfaces() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+
+    let surface = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.Graphics.DirectComposition",
+        "IDCompositionSurface",
+    )
+    .expect("IDCompositionSurface must exist");
+    let output = com::generate_com_interface_files(&surface, &win32_winmd())
+        .expect("IDCompositionSurface must project completely");
+    assert!(
+        output.dts.contains(
+            "beginDraw(updateRect: RECT | null, iid: string): [DynWinRtValue, POINT];"
+        ) && output.js.contains(
+            ".addIn(DynCom.nativeStructPointerType(_nativeLayout_RECT, true)).addIn(DynCom.pointerType()).addOut(DynCom.ownedComPointerType()).addOut(DynCom.nativeStructType(_nativeLayout_POINT))"
+        ) && output.js.contains(
+            "invokeAll(this._obj, [updateRect === null ? DynCom.nullNativeStructPointer() : DynCom.nativeStruct(_nativeLayout_RECT, updateRect), DynCom.iidPointer(_iid)])"
+        ) && output.js.contains(
+            "return [DynCom.adoptComPointer(_r[0], _iid), DynCom.nativeStructBytes(_nativeLayout_POINT, _r[1])];"
+        ),
+        "BeginDraw must preserve the non-terminal dynamic output and following POINT result:\n{}",
+        output.js
+    );
+
+    let texture = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.Graphics.DirectComposition",
+        "IDCompositionTexture",
+    )
+    .expect("IDCompositionTexture must exist");
+    let output = com::generate_com_interface_files(&texture, &win32_winmd())
+        .expect("IDCompositionTexture must project completely");
+    assert!(
+        output
+            .dts
+            .contains("getAvailableFence(iid: string): [bigint, DynWinRtValue];")
+            && output.js.contains(
+                ".addOut(DynCom.u64Type()).addIn(DynCom.pointerType()).addOut(DynCom.ownedComPointerType())"
+            )
+            && output
+                .js
+                .contains("invokeAll(this._obj, [DynCom.iidPointer(_iid)])")
+            && output.js.contains(
+                "return [DynCom.toU64Bigint(_r[0]), DynCom.adoptComPointer(_r[1], _iid)];"
+            ),
+        "GetAvailableFence must preserve output order before dynamic adoption:\n{}",
+        output.js
+    );
+
+    let class_factory = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.System.Ole",
+        "IClassFactory2",
+    )
+    .expect("IClassFactory2 must exist");
+    let output = com::generate_com_interface_files(&class_factory, &win32_winmd())
+        .expect("IClassFactory2 must project completely");
+    assert!(
+        output.dts.contains(
+            "createInstanceLic(pUnkOuter: DynWinRtValue | null, pUnkReserved: DynWinRtValue | null, riid: string, bstrKey: string): DynWinRtValue;"
+        ) && output.js.contains(
+            "createInstanceLic(pUnkOuter, pUnkReserved, riid, bstrKey)"
+        ) && output.js.contains(
+            "DynCom.iidPointer(_iid), DynCom.bstr(bstrKey)"
+        ) && output.js.contains("DynCom.adoptComPointer(_out, _iid)"),
+        "CreateInstanceLic must keep the visible BSTR after its non-adjacent IID:\n{}",
+        output.js
+    );
+
+    use windows::Win32::Graphics::DirectComposition::{IDCompositionSurface, IDCompositionTexture};
+    use windows::Win32::System::Ole::IClassFactory2;
+    use windows::core::Interface;
+    assert_eq!(
+        surface.interface.iid,
+        format!("{:?}", IDCompositionSurface::IID).to_ascii_lowercase()
+    );
+    assert_eq!(
+        texture.interface.iid,
+        format!("{:?}", IDCompositionTexture::IID).to_ascii_lowercase()
+    );
+    assert_eq!(
+        class_factory.interface.iid,
+        format!("{:?}", IClassFactory2::IID).to_ascii_lowercase()
+    );
+}
+
+#[test]
+fn real_dynamic_iid_optional_and_multi_interface_shapes_fail_closed() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+
+    let dxc = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.Graphics.Direct3D.Dxc",
+        "IDxcResult",
+    )
+    .expect("IDxcResult must exist");
+    let get_output = dxc
+        .raw_methods
+        .as_ref()
+        .unwrap()
+        .iter()
+        .find(|method| method.metadata_name == "GetOutput")
+        .unwrap();
+    assert!(get_output.params[2].optional);
+    let error = com::generate_com_interface_files(&dxc, &win32_winmd())
+        .expect_err("optional IDxcResult dynamic output must fail closed");
+    assert!(
+        error.contains("GetOutput") && error.contains("dynamic-IID"),
+        "{error}"
+    );
+
+    let viewport = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.Graphics.DirectManipulation",
+        "IDirectManipulationViewport2",
+    )
+    .expect("IDirectManipulationViewport2 must exist");
+    let get_tag = viewport
+        .raw_methods
+        .as_ref()
+        .unwrap()
+        .iter()
+        .find(|method| method.metadata_name == "GetTag")
+        .unwrap();
+    assert!(get_tag.params[1].optional);
+    let error = com::generate_com_interface_files(&viewport, &win32_winmd())
+        .expect_err("optional GetTag dynamic output must fail closed");
+    assert!(
+        error.contains("GetTag") && error.contains("dynamic-IID"),
+        "{error}"
+    );
+
+    let primary = isolate_com_method(&viewport, "GetPrimaryContent");
+    let output = com::generate_com_interface_files(&primary, &win32_winmd())
+        .expect("required GetPrimaryContent shape must project in isolation");
+    assert!(
+        output
+            .dts
+            .contains("getPrimaryContent(riid: string): DynWinRtValue;")
+            && output.js.contains("DynCom.adoptComPointer(_out, _iid)"),
+        "{}",
+        output.js
+    );
+
+    let lookup = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.Media.MediaFoundation",
+        "IMFTopologyServiceLookup",
+    )
+    .expect("IMFTopologyServiceLookup must exist");
+    let error = com::generate_com_interface_files(&lookup, &win32_winmd())
+        .expect_err("multi-interface lookup array must fail closed");
+    assert!(
+        error.contains("LookupService")
+            && error.contains("dynamic-IID")
+            && error.contains("in, out"),
+        "{error}"
+    );
+
+    let netcfg = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.NetworkManagement.NetManagement",
+        "INetCfg",
+    )
+    .expect("INetCfg must exist");
+    let error = com::generate_com_interface_files(&netcfg, &win32_winmd())
+        .expect_err("optional QueryNetCfgClass output must no longer be adopted");
+    assert!(
+        error.contains("QueryNetCfgClass") && error.contains("dynamic-IID"),
+        "{error}"
+    );
+
+    use windows::Win32::Graphics::Direct3D::Dxc::IDxcResult;
+    use windows::Win32::Graphics::DirectManipulation::IDirectManipulationViewport2;
+    use windows::core::Interface;
+    assert_eq!(
+        dxc.interface.iid,
+        format!("{:?}", IDxcResult::IID).to_ascii_lowercase()
+    );
+    assert_eq!(
+        viewport.interface.iid,
+        format!("{:?}", IDirectManipulationViewport2::IID).to_ascii_lowercase()
+    );
+}
+
+#[test]
+fn owned_handle_outputs_fail_without_a_projected_cleanup_owner() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+    let interface = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.UI.Shell",
+        "IExtractIconW",
+    )
+    .expect("IExtractIconW must exist");
+    let error = com::generate_com_interface_files(&interface, &win32_winmd())
+        .expect_err("owned HICON outputs must not project as borrowed bigint values");
+    assert!(
+        error.contains("owned handle output") || error.contains("cleanup"),
+        "{error}"
+    );
+}
+
+#[test]
+fn production_codegen_requires_validated_raw_com_facts() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+    let mut interface = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.UI.Shell",
+        "ITaskbarList3",
+    )
+    .expect("ITaskbarList3 must exist");
+    let pbutton = interface
+        .raw_methods
+        .as_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|method| method.metadata_name == "ThumbBarAddButtons")
+        .and_then(|method| {
+            method
+                .params
+                .iter_mut()
+                .find(|param| param.name == "pButton")
+        })
+        .expect("ThumbBarAddButtons.pButton raw facts must exist");
+    pbutton.typ.constness = com_metadata::RawConstness::Unspecified;
+
+    let error = com::generate_com_interface_files(&interface, &win32_winmd())
+        .expect_err("production projection must reject incomplete raw pointer facts");
+    assert!(
+        error.contains("ThumbBarAddButtons")
+            && error.contains("pButton")
+            && error.contains("unknown pointer meaning"),
+        "semantic validation must fail before the legacy adapter: {error}"
+    );
+}
+
+#[test]
+fn production_projection_ignores_legacy_abi_fields() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+    let mut interface = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.UI.Shell",
+        "ITaskbarList3",
+    )
+    .expect("ITaskbarList3 must exist");
+    let baseline = com::generate_com_interface_files(&interface, &win32_winmd())
+        .expect("baseline generation must succeed");
+
+    let method = interface
+        .interface
+        .methods
+        .iter_mut()
+        .find(|method| method.name == "SetProgressValue")
+        .expect("SetProgressValue must exist");
+    method.params[1].typ = TypeMeta::Bool;
+    method.params[1].direction = com_metadata::ParamDirection::Out;
+    method.vtable_index = 999;
+    method.return_type = None;
+    method.preserve_hresult = true;
+    method.owned_outputs = vec![com_metadata::OwnedOutput {
+        param_index: 1,
+        free_with: "NotARealCleanup".into(),
+    }];
+    interface
+        .referenced_enums
+        .iter_mut()
+        .find(|definition| definition.name == "TBPFLAG")
+        .unwrap()
+        .members[0]
+        .value = com_metadata::ComEnumValue::Signed(999);
+
+    let projected = com::generate_com_interface_files(&interface, &win32_winmd())
+        .expect("validated raw contracts, not compatibility ABI fields, drive projection");
+    assert_eq!(projected.js, baseline.js);
+    assert_eq!(projected.dts, baseline.dts);
+    assert_eq!(projected.extra_files, baseline.extra_files);
+}
+
+#[test]
+fn semantic_interface_rejects_reserved_and_duplicate_slots() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+
+    let mut inspectable = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.System.WinRT",
+        "ISystemMediaTransportControlsInterop",
+    )
+    .unwrap();
+    inspectable.raw_methods.as_mut().unwrap()[0].vtable_index = 3;
+    let error = com::generate_com_interface_files(&inspectable, &win32_winmd()).unwrap_err();
+    assert!(
+        error.contains("reserved vtable slot") && error.contains("first user slot is 6"),
+        "{error}"
+    );
+
+    let mut taskbar = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.UI.Shell",
+        "ITaskbarList3",
+    )
+    .unwrap();
+    let methods = taskbar.raw_methods.as_mut().unwrap();
+    methods[1].vtable_index = methods[0].vtable_index;
+    let error = com::generate_com_interface_files(&taskbar, &win32_winmd()).unwrap_err();
+    assert!(error.contains("duplicate vtable slot"), "{error}");
+}
+
+#[test]
+fn coclass_activation_requires_a_valid_nonzero_clsid() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+    let mut coclass =
+        com_metadata::parse_com_coclass(&win32_winmd(), "Windows.Win32.UI.Shell", "TaskbarList")
+            .unwrap()
+            .unwrap();
+
+    coclass.primary_interface.interface.iid =
+        coclass.primary_interface.interface.iid.to_ascii_uppercase();
+    com::generate_com_coclass_files(&coclass, &win32_winmd())
+        .expect("valid IID casing must not affect primary-interface selection");
+
+    coclass.clsid = "not-a-guid".into();
+    let error = com::generate_com_coclass_files(&coclass, &win32_winmd()).unwrap_err();
+    assert!(error.contains("invalid GUID"), "{error}");
+
+    coclass.clsid = "00000000-0000-0000-0000-000000000000".into();
+    let error = com::generate_com_coclass_files(&coclass, &win32_winmd()).unwrap_err();
+    assert!(error.contains("zero CLSID"), "{error}");
+}
+
+#[test]
+fn unresolved_named_pointer_aliases_fail_closed_before_name_classification() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+    let mut interface = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.UI.Shell",
+        "ITaskbarList3",
+    )
+    .unwrap();
+    let hwnd = interface
+        .raw_methods
+        .as_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|method| method.metadata_name == "AddTab")
+        .unwrap()
+        .params
+        .first_mut()
+        .unwrap();
+    if let com_metadata::RawNativeType::Named { kind, .. } = &mut hwnd.typ.native_type {
+        *kind = com_metadata::RawNamedKind::Unknown;
+    } else {
+        panic!("AddTab HWND must be a named type");
+    }
+
+    let error = com::generate_com_interface_files(&interface, &win32_winmd()).unwrap_err();
+    assert!(error.contains("unknown native type"), "{error}");
 }
 
 #[test]
@@ -1204,14 +3758,23 @@ fn required_parameters_after_string_buffer_count_remain_required() {
         return;
     }
 
-    let interface = com_metadata::parse_com_interface(
+    let mut interface = com_metadata::parse_com_interface(
         &win32_winmd(),
         "Windows.Win32.UI.Shell",
         "IExtractImage",
     )
     .expect("IExtractImage must exist");
+    interface
+        .interface
+        .methods
+        .retain(|method| method.name == "GetLocation");
+    interface
+        .raw_methods
+        .as_mut()
+        .unwrap()
+        .retain(|method| method.projected_name == "GetLocation");
     let output = com::generate_com_interface_files(&interface, &win32_winmd())
-        .expect("IExtractImage generation should succeed");
+        .expect("isolated IExtractImage.GetLocation generation should succeed");
 
     assert!(
         output
@@ -1229,7 +3792,7 @@ fn required_parameters_after_string_buffer_count_remain_required() {
     );
     assert!(
         output.dts.contains(
-            "getLocation(cch: number, pdwPriority: number, prgSize: bigint | Buffer, recClrDepth: number, pdwFlags: number)"
+            "getLocation(cch: number, pdwPriority: number, prgSize: SIZE, recClrDepth: number, pdwFlags: number)"
         ),
         "declarations must keep the parameters required:\n{}",
         output.dts
@@ -1318,46 +3881,113 @@ fn unsigned_enum_values_preserve_their_value() {
 }
 
 #[test]
-fn shelllink_getpath_fails_closed_on_unsupported_find_data_struct() {
+fn shelllink_getpath_projects_validated_find_data_pod() {
     if !win32_available() {
         eprintln!("Skipping: Win32 winmd not available");
         return;
     }
 
-    // `IShellLinkW::GetPath` takes a caller-writable `WIN32_FIND_DATAW* pfd`
-    // (an [in, out] multi-field struct with no NativeArrayInfo count and no
-    // recognized single-field pointer-alias/scalar shape). There is no safe
-    // layout/size projection for it, so generation must fail closed with an
-    // actionable diagnostic instead of silently treating it as an opaque
-    // caller-owned buffer (the removed `pfd`/`finddata` name heuristic).
     let interface =
         com_metadata::parse_com_interface(&win32_winmd(), "Windows.Win32.UI.Shell", "IShellLinkW")
             .expect("IShellLinkW must exist");
-    let error = com::generate_com_interface_files(&interface, &win32_winmd())
-        .expect_err("GetPath's WIN32_FIND_DATAW* must fail closed, not fall back to a heuristic");
+    let output = com::generate_com_interface_files(&interface, &win32_winmd())
+        .expect("WIN32_FIND_DATAW has a complete validated POD layout");
     assert!(
-        error.contains("GetPath") && error.contains("pfd") && error.contains("WIN32_FIND_DATAW"),
-        "diagnostic must name the interface, method, and offending parameter:\n{error}"
+        output
+            .dts
+            .contains("getPath(cch: number, pfd: WIN32_FIND_DATAW | null, fFlags: number): [string, WIN32_FIND_DATAW | null];")
+            && output.dts.contains("createWIN32_FIND_DATAW")
+            && output.js.contains("DynCom.nativeStructPointerType(")
+            && output.js.contains("DynCom.nullNativeStructPointer()")
+            && output.js.contains("DynCom.nativeStructBytes(")
+            && output.js.contains("\"size\":592")
+            && output.js.contains("\"count\":260")
+            && output.js.contains("Windows.Win32.Foundation.FILETIME"),
+        "GetPath must render only the validated nested/fixed-array POD plan:\n{}",
+        output.dts
     );
 }
 
 #[test]
-fn shelllink_other_methods_still_generate_when_getpath_is_excluded() {
+fn real_win32_pods_cover_value_pointer_out_and_inout_shapes() {
     if !win32_available() {
         eprintln!("Skipping: Win32 winmd not available");
         return;
     }
 
-    // Everything else on IShellLinkW (including its OTHER string-buffer
-    // methods, e.g. GetIconLocation) is unaffected by GetPath's fail-closed
-    // struct-layout limitation; a consumer can still generate the interface
-    // by excluding the one unsupported method.
+    let drop_target = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.System.Ole",
+        "IDropTarget",
+    )
+    .expect("IDropTarget must exist");
+    let drop_output = com::generate_com_interface_files(&drop_target, &win32_winmd())
+        .expect("POINTL by-value methods must project");
+    assert!(
+        drop_output
+            .dts
+            .contains("export type POINTL = DynComNativeStruct &")
+    );
+    assert!(
+        drop_output
+            .dts
+            .contains("dragOver(grfKeyState: MODIFIERKEYS_FLAGS, pt: POINTL")
+    );
+    assert!(
+        drop_output
+            .js
+            .contains("\"name\":\"Windows.Win32.Foundation.POINTL\",\"x86\":{\"size\":8")
+    );
+
+    let bind_ctx =
+        com_metadata::parse_com_interface(&win32_winmd(), "Windows.Win32.System.Com", "IBindCtx")
+            .expect("IBindCtx must exist");
+    let error = com::generate_com_interface_files(&bind_ctx, &win32_winmd())
+        .expect_err("BIND_OPTS must fail until cbStruct initialization is modeled");
+    assert!(error.contains("cbStruct"), "{error}");
+
+    let running_object_table = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.System.Com",
+        "IRunningObjectTable",
+    )
+    .expect("IRunningObjectTable must exist");
+    let rot_output = com::generate_com_interface_files(&running_object_table, &win32_winmd())
+        .expect("FILETIME input and output methods must project");
+    assert!(
+        rot_output
+            .dts
+            .contains("noteChangeTime(register: number, pfiletime: FILETIME): void;")
+    );
+    assert!(
+        rot_output
+            .dts
+            .contains("getTimeOfLastChange(pmkObjectName: DynWinRtValue): FILETIME;")
+    );
+    assert!(
+        rot_output
+            .js
+            .contains("DynCom.nativeStructPointerType(_nativeLayout_FILETIME)")
+    );
+    assert!(
+        rot_output
+            .js
+            .contains(".addOut(DynCom.nativeStructType(_nativeLayout_FILETIME))")
+    );
+}
+
+#[test]
+fn shelllink_other_methods_remain_unchanged_with_pod_support() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+
     let interface =
         com_metadata::parse_com_interface(&win32_winmd(), "Windows.Win32.UI.Shell", "IShellLinkW")
             .expect("IShellLinkW must exist");
-    let interface = without_method(interface, "GetPath");
     let output = com::generate_com_interface_files(&interface, &win32_winmd())
-        .expect("IShellLinkW generation should succeed once GetPath is excluded");
+        .expect("IShellLinkW generation should succeed");
 
     assert!(
         output
@@ -1520,6 +4150,11 @@ fn semantic_hresult_preserves_metadata_and_documented_contracts() {
         .interface
         .methods
         .retain(|method| method.name == "IsDirty");
+    interface
+        .raw_methods
+        .as_mut()
+        .unwrap()
+        .retain(|method| method.projected_name == "IsDirty");
     let output = com::generate_com_interface_files(&interface, &win32_winmd())
         .expect("semantic HRESULT generation must succeed");
     assert!(output.js.contains(".preserveHresult()"));
@@ -1530,6 +4165,11 @@ fn semantic_hresult_preserves_metadata_and_documented_contracts() {
         .interface
         .methods
         .retain(|method| method.name == "GetCurFile");
+    get_cur_file_interface
+        .raw_methods
+        .as_mut()
+        .unwrap()
+        .retain(|method| method.projected_name == "GetCurFile");
     let output = com::generate_com_interface_files(&get_cur_file_interface, &win32_winmd())
         .expect("GetCurFile semantic HRESULT generation must succeed");
     assert!(output.js.contains(".preserveHresult()"));
@@ -1594,8 +4234,12 @@ fn metadata_delegate_parameter_fails_closed_as_a_delegate() {
 
     let error = com::generate_com_interface_files(&interface, &win32_winmd())
         .expect_err("delegate parameters require a managed callback projection");
-    assert!(error.contains("PD2D1_EFFECT_FACTORY"));
-    assert!(error.contains("managed callback projection"));
+    assert!(
+        (error.contains("PD2D1_EFFECT_FACTORY") && error.contains("managed callback projection"))
+            || (error.contains("D2D1_PROPERTY_BINDING")
+                && error.contains("nested string/interface ownership")),
+        "{error}"
+    );
 }
 
 #[test]
@@ -1699,15 +4343,7 @@ fn com_only_generation_emits_an_importable_package_shape() {
             "--namespace",
             "Windows.Win32.UI.Shell",
             "--class-name",
-            // `IShellLinkW` is deliberately NOT used here: its `GetPath`
-            // parameter `pfd` (`WIN32_FIND_DATAW*`) has no safe layout/size
-            // projection and now correctly fails closed (see the
-            // `shelllink_getpath_fails_closed_on_unsupported_find_data_struct`
-            // regression test), which would fail this whole interface's
-            // generation. `IShellItem` exercises the same incremental
-            // multi-interface + referenced-enum path (it references both
-            // `SIGDN` and `SFGAO_FLAGS`) without hitting that limitation.
-            "IShellItem",
+            "IShellLinkW",
             "--output",
             output_dir.to_str().unwrap(),
         ])
@@ -1721,15 +4357,14 @@ fn com_only_generation_emits_an_importable_package_shape() {
     let incremental_index = fs::read_to_string(output_dir.join("com").join("index.js")).unwrap();
     assert!(
         incremental_index.contains("ITaskbarList3")
-            && incremental_index.contains("IShellItem")
-            && incremental_index.contains("TBPFLAG")
-            && incremental_index.contains("SIGDN"),
+            && incremental_index.contains("IShellLinkW")
+            && incremental_index.contains("TBPFLAG"),
         "incremental generation must preserve earlier exports:\n{incremental_index}"
     );
     let incremental_package = fs::read_to_string(output_dir.join("package.json")).unwrap();
     assert!(
         incremental_package.contains("\"./ITaskbarList3\"")
-            && incremental_package.contains("\"./IShellItem\""),
+            && incremental_package.contains("\"./IShellLinkW\""),
         "incremental generation must preserve earlier package subpaths:\n{incremental_package}"
     );
 
@@ -1847,9 +4482,9 @@ fn mixed_generation_supports_one_command_and_both_incremental_orders() {
 /// Requirement 8: multi-interface COM generation must be atomic enough that
 /// a later interface's projection failure doesn't leave an earlier,
 /// successfully-projected interface's files (or the `com/` barrel) newly
-/// written on disk. `ITaskbarList3` projects cleanly; `IShellLinkW` fails
-/// closed (its `GetPath` parameter `pfd` is an unsupported
-/// `WIN32_FIND_DATAW*`). Requesting both in one `--class-name` batch must
+/// written on disk. `ITaskbarList3` projects cleanly; `IShellFolder` fails
+/// closed because `ParseDisplayName` has an untyped owned pointer output.
+/// Requesting both in one `--class-name` batch must
 /// fail the whole command AND leave no `com/` output directory at all (since
 /// this is a from-scratch generation into a directory that doesn't exist
 /// yet).
@@ -1875,7 +4510,7 @@ fn multi_interface_com_generation_does_not_leave_partial_output_on_projection_fa
             "--namespace",
             "Windows.Win32.UI.Shell",
             "--class-name",
-            "ITaskbarList3,IShellLinkW",
+            "ITaskbarList3,IShellFolder",
             "--output",
             output_dir.to_str().unwrap(),
         ])
@@ -1888,7 +4523,7 @@ fn multi_interface_com_generation_does_not_leave_partial_output_on_projection_fa
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("IShellLinkW") && stderr.contains("pfd"),
+        stderr.contains("IShellFolder") && stderr.contains("ParseDisplayName"),
         "failure must name the offending interface/parameter:\n{stderr}"
     );
 

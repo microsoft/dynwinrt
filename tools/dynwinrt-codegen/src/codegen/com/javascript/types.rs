@@ -2,9 +2,13 @@
 // Licensed under the MIT License.
 
 use super::super::ir::{
-    ComEnumUnderlying, ComPrimitive, ComScalarRepr, ComType, PointerAliasKind, ProjectedComResult,
-    ResultConversion, StringEncoding,
+    ComEnumUnderlying, ComPrimitive, ComScalarRepr, ComType, NativePodArchitectureLayout,
+    NativePodFieldType, NativePodLayout, NativePodScalar, NativeUnionArchitectureLayout,
+    NativeUnionFieldType, NativeUnionLayout, PointerAliasKind, ProjectedComResult,
+    ResultConversion, SafeArrayElement, StringEncoding,
 };
+#[cfg(test)]
+use super::super::ir::{NativePodField, NativeUnionField};
 
 pub(super) fn abi_type_js(typ: &ComType) -> String {
     match typ {
@@ -30,12 +34,69 @@ pub(super) fn abi_type_js(typ: &ComType) -> String {
         ComType::HString => "DynCom.hstringType()".into(),
         ComType::Enum { underlying, .. } => enum_abi_type_js(*underlying).into(),
         ComType::ScalarAlias { underlying, .. } => scalar_abi_type_js(*underlying).into(),
-        ComType::RawPointer | ComType::PointerAlias { .. } | ComType::Bstr => {
-            "DynCom.pointerType()".into()
+        ComType::RawPointer | ComType::PointerAlias { .. } => "DynCom.pointerType()".into(),
+        ComType::Bstr => "DynCom.bstrType()".into(),
+        ComType::NativePod { layout } => {
+            format!("DynCom.nativeStructType({})", native_pod_layout_js(layout))
         }
+        ComType::NativePodPointer { layout } => format!(
+            "DynCom.nativeStructPointerType({})",
+            native_pod_layout_js(layout)
+        ),
+        ComType::NativeUnionPointer { layout } => format!(
+            "DynCom.nativeUnionPointerType({})",
+            native_union_layout_js(layout)
+        ),
+        ComType::Variant => "DynCom.variantType()".into(),
+        ComType::VariantByValue => "DynCom.variantByValueType()".into(),
+        ComType::SafeArray { element } => safe_array_abi_type_js(*element, false),
+        ComType::PropVariant => "DynCom.propVariantType()".into(),
+        ComType::DispatchParams => "DynCom.dispatchParamsType()".into(),
+        ComType::ExcepInfo => "DynCom.excepInfoType()".into(),
         ComType::ManagedInterface { iid } => {
             format!("DynCom.interfaceType(WinGuid.parse('{iid}'))")
         }
+        ComType::CoTaskMemWideString => "DynCom.coTaskMemWideStringType()".into(),
+        ComType::StringArray { .. } => "DynCom.pointerType()".into(),
+        ComType::TypedBuffer { element } => abi_type_js(element),
+        ComType::OwningArray { element, .. } => abi_type_js(element),
+    }
+}
+
+pub(super) fn safe_array_abi_type_js(element: SafeArrayElement, nullable: bool) -> String {
+    match element {
+        SafeArrayElement::Interface { iid } => format!(
+            "DynCom.safeArrayType('unknown', WinGuid.parse('{}'){})",
+            super::super::project::format_guid(&iid),
+            if nullable { ", true" } else { "" }
+        ),
+        _ => format!(
+            "DynCom.safeArrayType('{}'{}{})",
+            safe_array_element_name(element),
+            if nullable { ", undefined" } else { "" },
+            if nullable { ", true" } else { "" }
+        ),
+    }
+}
+
+fn safe_array_element_name(element: SafeArrayElement) -> &'static str {
+    match element {
+        SafeArrayElement::I8 => "i8",
+        SafeArrayElement::U8 => "u8",
+        SafeArrayElement::I16 => "i16",
+        SafeArrayElement::U16 => "u16",
+        SafeArrayElement::I32 => "i32",
+        SafeArrayElement::U32 => "u32",
+        SafeArrayElement::I64 => "i64",
+        SafeArrayElement::U64 => "u64",
+        SafeArrayElement::F32 => "f32",
+        SafeArrayElement::F64 => "f64",
+        SafeArrayElement::Bool => "bool",
+        SafeArrayElement::Bstr => "bstr",
+        SafeArrayElement::Interface { .. } => {
+            unreachable!("interface SAFEARRAY elements use exact-IID rendering")
+        }
+        SafeArrayElement::Variant => "variant",
     }
 }
 
@@ -44,10 +105,12 @@ pub(super) fn input_type_dts(typ: &ComType) -> String {
         ComType::PointerAlias {
             name,
             kind: PointerAliasKind::HandleValue,
+            ..
         } if name == "HWND" => format!("{name} | Buffer | Uint8Array"),
         ComType::PointerAlias {
             name,
             kind: PointerAliasKind::DataPointer,
+            ..
         } => format!("{name} | Buffer | Uint8Array"),
         _ => type_dts(typ),
     }
@@ -78,18 +141,63 @@ pub(super) fn type_dts(typ: &ComType) -> String {
         ComType::ScalarAlias { name, .. } => name.clone(),
         ComType::RawPointer => "bigint | Buffer".into(),
         ComType::PointerAlias { name, .. } => name.clone(),
-        ComType::Bstr => "BSTR".into(),
+        ComType::NativePod { layout } | ComType::NativePodPointer { layout } => layout.name.clone(),
+        ComType::NativeUnionPointer { layout } => layout.name.clone(),
+        ComType::Bstr => "string".into(),
+        ComType::Variant => "DynComVariant".into(),
+        ComType::VariantByValue => "DynComVariant".into(),
+        ComType::SafeArray { .. } => "DynComSafeArray".into(),
+        ComType::PropVariant => "DynComPropVariant".into(),
+        ComType::DispatchParams => "DynComDispatchParams".into(),
+        ComType::ExcepInfo => "DynComExcepInfo".into(),
         ComType::ManagedInterface { .. } => "DynWinRtValue".into(),
+        ComType::CoTaskMemWideString => "string".into(),
+        ComType::StringArray { .. } => "string[]".into(),
+        ComType::TypedBuffer { element } => match element.as_ref() {
+            ComType::NativePod { layout } => format!("{}Array", layout.name),
+            _ => "Buffer | ArrayBufferView".into(),
+        },
+        ComType::OwningArray { element, interface } => interface.as_ref().map_or_else(
+            || format!("{}[]", type_dts(element)),
+            |interface| format!("{}[]", interface.name),
+        ),
     }
 }
 
 pub(super) fn result_type_dts(result: &ProjectedComResult) -> String {
-    match result.conversion {
+    match &result.conversion {
         ResultConversion::Bstr | ResultConversion::CoTaskMemString(_) => "string".into(),
         ResultConversion::CoTaskMemData
         | ResultConversion::ManagedCom
         | ResultConversion::DynamicIidAdoption => "DynWinRtValue".into(),
-        ResultConversion::Value | ResultConversion::HString => type_dts(&result.typ),
+        ResultConversion::Value | ResultConversion::BorrowedHandle | ResultConversion::HString => {
+            type_dts(&result.typ)
+        }
+        ResultConversion::Buffer => "Buffer".into(),
+        ResultConversion::PlainArray => {
+            let ComType::TypedBuffer { element } = &result.typ else {
+                unreachable!("plain array result requires a typed-buffer result")
+            };
+            format!("{}[]", type_dts(element))
+        }
+        ResultConversion::EnumeratorArray { interface } => {
+            let (element, projected_interface) = projected_array_parts(&result.typ);
+            interface.as_ref().or(projected_interface).map_or_else(
+                || format!("{}[]", type_dts(element)),
+                |interface| format!("{}[]", interface.name),
+            )
+        }
+        ResultConversion::OwningArray { interface } => {
+            let (element, projected_interface) = projected_array_parts(&result.typ);
+            interface.as_ref().or(projected_interface).map_or_else(
+                || format!("{}[]", type_dts(element)),
+                |interface| format!("{}[]", interface.name),
+            )
+        }
+        ResultConversion::Variant => "DynComVariant".into(),
+        ResultConversion::SafeArray => "DynComSafeArray".into(),
+        ResultConversion::PropVariant => "DynComPropVariant".into(),
+        ResultConversion::ExcepInfo => "DynComExcepInfo".into(),
     }
 }
 
@@ -117,10 +225,12 @@ pub(super) fn wrap_arg_js(typ: &ComType, variable: &str) -> String {
         ComType::HString => format!("DynCom.hstring({variable})"),
         ComType::Enum { underlying, .. } => wrap_enum_arg_js(*underlying, variable),
         ComType::ScalarAlias { underlying, .. } => wrap_scalar_arg_js(*underlying, variable),
-        ComType::RawPointer | ComType::Bstr => format!("DynCom.pointer({variable})"),
+        ComType::RawPointer => format!("DynCom.pointer({variable})"),
+        ComType::Bstr => format!("DynCom.bstr({variable})"),
         ComType::PointerAlias {
             name,
             kind: PointerAliasKind::HandleValue,
+            ..
         } if name == "HWND" => {
             format!("DynCom.pointer(DynCom.handleValue({variable}))")
         }
@@ -133,12 +243,57 @@ pub(super) fn wrap_arg_js(typ: &ComType, variable: &str) -> String {
             ..
         } => format!("DynCom.ansiStringPointer({variable})"),
         ComType::PointerAlias { .. } => format!("DynCom.pointer({variable})"),
+        ComType::NativePod { layout } | ComType::NativePodPointer { layout } => format!(
+            "DynCom.nativeStruct({}, {variable})",
+            native_pod_layout_js(layout)
+        ),
+        ComType::NativeUnionPointer { layout } => format!(
+            "DynCom.nativeUnion({}, {variable})",
+            native_union_layout_js(layout)
+        ),
+        ComType::Variant => format!("DynCom.variant({variable})"),
+        ComType::VariantByValue => format!("DynCom.variant({variable})"),
+        ComType::SafeArray { .. } => format!("DynCom.safeArray({variable})"),
+        ComType::PropVariant => format!("DynCom.propVariant({variable})"),
+        ComType::DispatchParams => format!("DynCom.dispatchParams({variable})"),
+        ComType::ExcepInfo => unreachable!("EXCEPINFO is output-only"),
         ComType::ManagedInterface { .. } => variable.to_string(),
+        ComType::CoTaskMemWideString => {
+            unreachable!("CoTaskMem string elements are output-only")
+        }
+        ComType::StringArray { encoding, .. } => match encoding {
+            StringEncoding::Wide => format!("DynCom.wideStringArray({variable})"),
+            StringEncoding::Ansi => format!("DynCom.ansiStringArray({variable})"),
+        },
+        ComType::TypedBuffer { element } => match element.as_ref() {
+            ComType::NativePod { layout } => format!(
+                "DynCom.nativeStructBuffer({}, {variable})",
+                native_pod_layout_js(layout)
+            ),
+            _ => format!("DynCom.buffer({variable})"),
+        },
+        ComType::OwningArray { element, interface } => match element.as_ref() {
+            ComType::ManagedInterface { iid } => {
+                if interface.is_some() {
+                    format!(
+                        "DynCom.interfaceArray(WinGuid.parse('{iid}'), {variable}.map(value => value._obj))"
+                    )
+                } else {
+                    format!("DynCom.interfaceArray(WinGuid.parse('{iid}'), {variable})")
+                }
+            }
+            ComType::Bstr => format!("DynCom.bstrArray({variable})"),
+            ComType::Variant => format!("DynCom.variantArray({variable})"),
+            ComType::CoTaskMemWideString => {
+                unreachable!("CoTaskMem string elements are output-only")
+            }
+            _ => unreachable!("validated owning array element"),
+        },
     }
 }
 
 pub(super) fn unwrap_result_js(result: &ProjectedComResult, expression: &str) -> String {
-    match result.conversion {
+    match &result.conversion {
         ResultConversion::Bstr => format!("DynCom.takeBstr({expression})"),
         ResultConversion::CoTaskMemString(StringEncoding::Wide) => {
             format!("DynCom.takeCoTaskMemWideString({expression})")
@@ -153,7 +308,36 @@ pub(super) fn unwrap_result_js(result: &ProjectedComResult, expression: &str) ->
             expression.to_string()
         }
         ResultConversion::HString => format!("{expression}.toString()"),
-        ResultConversion::Value => unwrap_value_js(&result.typ, expression),
+        ResultConversion::Value | ResultConversion::BorrowedHandle => {
+            unwrap_value_js(&result.typ, expression)
+        }
+        ResultConversion::Buffer => format!("DynCom.takeBuffer({expression})"),
+        ResultConversion::PlainArray => {
+            let ComType::TypedBuffer { element } = &result.typ else {
+                unreachable!("plain array result requires a typed-buffer result")
+            };
+            unwrap_array_result_js(element, None, expression)
+        }
+        ResultConversion::EnumeratorArray { interface } => {
+            let (element, projected_interface) = projected_array_parts(&result.typ);
+            unwrap_array_result_js(
+                element,
+                interface.as_ref().or(projected_interface),
+                expression,
+            )
+        }
+        ResultConversion::OwningArray { interface } => {
+            let (element, projected_interface) = projected_array_parts(&result.typ);
+            unwrap_array_result_js(
+                element,
+                interface.as_ref().or(projected_interface),
+                expression,
+            )
+        }
+        ResultConversion::Variant => format!("DynCom.takeVariant({expression})"),
+        ResultConversion::SafeArray => format!("DynCom.takeSafeArray({expression})"),
+        ResultConversion::PropVariant => format!("DynCom.takePropVariant({expression})"),
+        ResultConversion::ExcepInfo => format!("DynCom.takeExcepInfo({expression})"),
     }
 }
 
@@ -182,10 +366,240 @@ fn unwrap_value_js(typ: &ComType, expression: &str) -> String {
         ComType::HString => format!("{expression}.toString()"),
         ComType::Enum { underlying, .. } => unwrap_enum_js(*underlying, expression),
         ComType::ScalarAlias { underlying, .. } => unwrap_scalar_js(*underlying, expression),
-        ComType::RawPointer | ComType::PointerAlias { .. } | ComType::Bstr => {
+        ComType::RawPointer | ComType::PointerAlias { .. } => {
             format!("DynCom.asPointerBigint({expression})")
         }
+        ComType::Bstr => unreachable!("BSTR outputs require the BSTR result conversion"),
+        ComType::NativePod { layout } | ComType::NativePodPointer { layout } => format!(
+            "DynCom.nativeStructBytes({}, {expression})",
+            native_pod_layout_js(layout)
+        ),
+        ComType::NativeUnionPointer { .. } => {
+            unreachable!("native union outputs require an active-field contract")
+        }
+        ComType::Variant => format!("DynCom.takeVariant({expression})"),
+        ComType::VariantByValue => unreachable!("by-value VARIANT is input-only"),
+        ComType::SafeArray { .. } => format!("DynCom.takeSafeArray({expression})"),
+        ComType::PropVariant => format!("DynCom.takePropVariant({expression})"),
+        ComType::DispatchParams => unreachable!("DISPPARAMS is input-only"),
+        ComType::ExcepInfo => format!("DynCom.takeExcepInfo({expression})"),
         ComType::ManagedInterface { .. } => expression.to_string(),
+        ComType::CoTaskMemWideString => {
+            unreachable!("CoTaskMem string elements are array-only")
+        }
+        ComType::StringArray { .. } => {
+            unreachable!("string arrays are input-only")
+        }
+        ComType::TypedBuffer { .. } => format!("DynCom.takeBuffer({expression})"),
+        ComType::OwningArray { .. } => {
+            unreachable!("owning arrays require an explicit array result conversion")
+        }
+    }
+}
+
+fn projected_array_parts(
+    typ: &ComType,
+) -> (&ComType, Option<&super::super::ir::ProjectedInterfaceRef>) {
+    match typ {
+        ComType::TypedBuffer { element } => (element, None),
+        ComType::OwningArray { element, interface } => (element, interface.as_ref()),
+        _ => unreachable!("array result requires a projected array type"),
+    }
+}
+
+fn unwrap_array_result_js(
+    element: &ComType,
+    interface: Option<&super::super::ir::ProjectedInterfaceRef>,
+    expression: &str,
+) -> String {
+    if let Some(interface) = interface {
+        return format!(
+            "Array.from(DynCom.takeComArray({expression}), value => {}._fromNative(value))",
+            interface.name
+        );
+    }
+    match element {
+        ComType::Bstr => format!("Array.from(DynCom.takeBstrArray({expression}))"),
+        ComType::Variant => format!("Array.from(DynCom.takeVariantArray({expression}))"),
+        ComType::CoTaskMemWideString => {
+            format!("Array.from(DynCom.takeCoTaskMemWideStringArray({expression}))")
+        }
+        ComType::Guid => format!("Array.from(DynCom.takeGuidArray({expression}))"),
+        ComType::NativePod { layout } => format!(
+            "Array.from(DynCom.takeNativeStructArray({expression}, {}))",
+            native_pod_layout_js(layout)
+        ),
+        ComType::ManagedInterface { .. } => {
+            format!("Array.from(DynCom.takeComArray({expression}))")
+        }
+        element => format!(
+            "Array.from(DynCom.{}({expression}))",
+            scalar_array_take_method(element)
+        ),
+    }
+}
+
+fn scalar_array_take_method(typ: &ComType) -> &'static str {
+    match typ {
+        ComType::Primitive(primitive) => match primitive {
+            ComPrimitive::Bool => "takeBoolArray",
+            ComPrimitive::I8 => "takeI8Array",
+            ComPrimitive::U8 => "takeU8Array",
+            ComPrimitive::I16 => "takeI16Array",
+            ComPrimitive::U16 | ComPrimitive::Char16 => "takeU16Array",
+            ComPrimitive::I32 => "takeI32Array",
+            ComPrimitive::U32 => "takeU32Array",
+            ComPrimitive::I64 => "takeI64Array",
+            ComPrimitive::U64 => "takeU64Array",
+            ComPrimitive::F32 => "takeF32Array",
+            ComPrimitive::F64 => "takeF64Array",
+        },
+        ComType::NativeIsize => "takeIsizeArray",
+        ComType::NativeUsize => "takeUsizeArray",
+        ComType::Win32Bool => "takeWin32BoolArray",
+        ComType::HResult => "takeI32Array",
+        ComType::Enum { underlying, .. } => match underlying {
+            ComEnumUnderlying::I8 => "takeI8Array",
+            ComEnumUnderlying::U8 => "takeU8Array",
+            ComEnumUnderlying::I16 => "takeI16Array",
+            ComEnumUnderlying::U16 => "takeU16Array",
+            ComEnumUnderlying::I32 => "takeI32Array",
+            ComEnumUnderlying::U32 => "takeU32Array",
+            ComEnumUnderlying::I64 => "takeI64Array",
+            ComEnumUnderlying::U64 => "takeU64Array",
+        },
+        ComType::ScalarAlias { underlying, .. } => match underlying {
+            ComScalarRepr::Primitive(primitive) => {
+                scalar_array_take_method(&ComType::Primitive(*primitive))
+            }
+            ComScalarRepr::NativeIsize => "takeIsizeArray",
+            ComScalarRepr::NativeUsize => "takeUsizeArray",
+        },
+        _ => unreachable!("validated plain array output element"),
+    }
+}
+
+pub(super) fn native_pod_layout_js(layout: &NativePodLayout) -> String {
+    format!("_nativeLayout_{}", layout.name)
+}
+
+pub(super) fn native_pod_descriptor_js(layout: &NativePodLayout) -> String {
+    let descriptor = format!(
+        "{{\"name\":\"{}.{}\",\"x86\":{},\"x64\":{},\"arm64\":{}}}",
+        layout.namespace,
+        layout.name,
+        native_pod_architecture_json(&layout.x86),
+        native_pod_architecture_json(&layout.x64),
+        native_pod_architecture_json(&layout.arm64),
+    );
+    format!(
+        "'{}'",
+        descriptor.replace('\\', "\\\\").replace('\'', "\\'")
+    )
+}
+
+pub(super) fn native_union_layout_js(layout: &NativeUnionLayout) -> String {
+    format!("_nativeUnionLayout_{}", layout.name)
+}
+
+pub(super) fn native_union_descriptor_js(layout: &NativeUnionLayout) -> String {
+    let descriptor = format!(
+        "{{\"name\":\"{}.{}\",\"x86\":{},\"x64\":{},\"arm64\":{}}}",
+        layout.namespace,
+        layout.name,
+        native_union_architecture_json(&layout.x86),
+        native_union_architecture_json(&layout.x64),
+        native_union_architecture_json(&layout.arm64),
+    );
+    format!(
+        "'{}'",
+        descriptor.replace('\\', "\\\\").replace('\'', "\\'")
+    )
+}
+
+fn native_pod_architecture_json(layout: &NativePodArchitectureLayout) -> String {
+    let fields = layout
+        .fields
+        .iter()
+        .map(|field| {
+            format!(
+                "{{\"name\":\"{}\",\"offset\":{},\"count\":{},\"type\":{}}}",
+                field.name,
+                field.offset,
+                field.count,
+                native_pod_field_type_json(&field.typ),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "{{\"size\":{},\"alignment\":{},\"fields\":[{}]}}",
+        layout.size, layout.alignment, fields
+    )
+}
+
+fn native_pod_field_type_json(typ: &NativePodFieldType) -> String {
+    match typ {
+        NativePodFieldType::Scalar(scalar) => {
+            format!("{{\"kind\":\"{}\"}}", native_pod_scalar_name(*scalar))
+        }
+        NativePodFieldType::Guid => "{\"kind\":\"guid\"}".into(),
+        NativePodFieldType::Pointer => "{\"kind\":\"pointer\"}".into(),
+        NativePodFieldType::Struct { name, layout } => format!(
+            "{{\"kind\":\"struct\",\"name\":\"{name}\",\"layout\":{}}}",
+            native_pod_architecture_json(layout)
+        ),
+    }
+}
+
+fn native_union_architecture_json(layout: &NativeUnionArchitectureLayout) -> String {
+    let fields = layout
+        .fields
+        .iter()
+        .map(|field| {
+            format!(
+                "{{\"name\":\"{}\",\"count\":{},\"type\":{}}}",
+                field.name,
+                field.count,
+                native_union_field_type_json(&field.typ),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "{{\"size\":{},\"alignment\":{},\"fields\":[{}]}}",
+        layout.size, layout.alignment, fields
+    )
+}
+
+fn native_union_field_type_json(typ: &NativeUnionFieldType) -> String {
+    match typ {
+        NativeUnionFieldType::Scalar(scalar) => {
+            format!("{{\"kind\":\"{}\"}}", native_pod_scalar_name(*scalar))
+        }
+        NativeUnionFieldType::Guid => "{\"kind\":\"guid\"}".into(),
+        NativeUnionFieldType::Pointer => "{\"kind\":\"pointer\"}".into(),
+        NativeUnionFieldType::Struct { name, layout } => format!(
+            "{{\"kind\":\"struct\",\"name\":\"{name}\",\"layout\":{}}}",
+            native_pod_architecture_json(layout)
+        ),
+    }
+}
+
+fn native_pod_scalar_name(scalar: NativePodScalar) -> &'static str {
+    match scalar {
+        NativePodScalar::I8 => "i8",
+        NativePodScalar::U8 => "u8",
+        NativePodScalar::I16 => "i16",
+        NativePodScalar::U16 => "u16",
+        NativePodScalar::I32 => "i32",
+        NativePodScalar::U32 => "u32",
+        NativePodScalar::I64 => "i64",
+        NativePodScalar::U64 => "u64",
+        NativePodScalar::F32 => "f32",
+        NativePodScalar::F64 => "f64",
+        NativePodScalar::NativeIsize => "isize",
+        NativePodScalar::NativeUsize => "usize",
     }
 }
 
@@ -306,6 +720,83 @@ fn unwrap_enum_js(underlying: ComEnumUnderlying, expression: &str) -> String {
 mod tests {
     use super::*;
 
+    fn pod_layout() -> NativePodLayout {
+        let architecture = NativePodArchitectureLayout {
+            size: 8,
+            alignment: 4,
+            fields: vec![
+                NativePodField {
+                    name: "value".into(),
+                    offset: 0,
+                    count: 1,
+                    typ: NativePodFieldType::Scalar(NativePodScalar::U32),
+                },
+                NativePodField {
+                    name: "parts".into(),
+                    offset: 4,
+                    count: 2,
+                    typ: NativePodFieldType::Scalar(NativePodScalar::U16),
+                },
+            ],
+        };
+        NativePodLayout {
+            namespace: "Test".into(),
+            name: "POD".into(),
+            x86: architecture.clone(),
+            x64: architecture.clone(),
+            arm64: architecture,
+        }
+    }
+
+    fn union_layout() -> NativeUnionLayout {
+        let architecture = NativeUnionArchitectureLayout {
+            size: 8,
+            alignment: 8,
+            fields: vec![
+                NativeUnionField {
+                    name: "integer".into(),
+                    count: 1,
+                    typ: NativeUnionFieldType::Scalar(NativePodScalar::U64),
+                },
+                NativeUnionField {
+                    name: "pointer".into(),
+                    count: 1,
+                    typ: NativeUnionFieldType::Pointer,
+                },
+            ],
+        };
+        NativeUnionLayout {
+            namespace: "Test".into(),
+            name: "UNION".into(),
+            x86: architecture.clone(),
+            x64: architecture.clone(),
+            arm64: architecture,
+        }
+    }
+
+    #[test]
+    fn native_pod_rendering_uses_only_validated_runtime_primitives() {
+        let typ = ComType::NativePod {
+            layout: pod_layout(),
+        };
+        assert!(abi_type_js(&typ).starts_with("DynCom.nativeStructType("));
+        assert_eq!(type_dts(&typ), "POD");
+        assert!(wrap_arg_js(&typ, "value").starts_with("DynCom.nativeStruct("));
+        assert!(unwrap_value_js(&typ, "result").starts_with("DynCom.nativeStructBytes("));
+        let descriptor = native_pod_descriptor_js(match &typ {
+            ComType::NativePod { layout } => layout,
+            _ => unreachable!(),
+        });
+        assert!(descriptor.contains("\"x86\":{\"size\":8"));
+        assert!(descriptor.contains("\"count\":2"));
+
+        let pointer = ComType::NativePodPointer {
+            layout: pod_layout(),
+        };
+        assert!(abi_type_js(&pointer).starts_with("DynCom.nativeStructPointerType("));
+        assert!(wrap_arg_js(&pointer, "value").starts_with("DynCom.nativeStruct("));
+    }
+
     #[test]
     fn mappings_cover_every_supported_com_type() {
         let types = vec![
@@ -328,19 +819,30 @@ mod tests {
             ComType::Guid,
             ComType::HString,
             ComType::Enum {
+                namespace: "Tests".into(),
                 name: "E".into(),
                 underlying: ComEnumUnderlying::U32,
             },
             ComType::ScalarAlias {
+                namespace: "Tests".into(),
                 name: "COLORREF".into(),
                 underlying: ComScalarRepr::Primitive(ComPrimitive::U32),
             },
             ComType::RawPointer,
             ComType::PointerAlias {
+                namespace: "Tests".into(),
                 name: "HWND".into(),
                 kind: PointerAliasKind::HandleValue,
             },
             ComType::Bstr,
+            ComType::NativeUnionPointer {
+                layout: union_layout(),
+            },
+            ComType::Variant,
+            ComType::SafeArray {
+                element: SafeArrayElement::Bstr,
+            },
+            ComType::PropVariant,
             ComType::ManagedInterface {
                 iid: "00000000-0000-0000-0000-000000000000".into(),
             },

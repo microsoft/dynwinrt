@@ -15,7 +15,7 @@
 //
 // Run: .\tests\e2e_test.ps1 -SkipBuild -Lang com
 
-import { DynCom, DynComMethodSig, WinGuid } from '../../../bindings/js/dist/com.js';
+import { DynCom, DynComMethodSig, WinGuid } from '../../../bindings/js/dist/com-unsafe.js';
 // Classic-COM interop wrapper: gets the SMTC pointer from an HWND.
 import { ISystemMediaTransportControlsInterop } from '../../e2e_generated/com/interop/com/ISystemMediaTransportControlsInterop.js';
 import { acquireHwndBigInt } from './hwnd.mjs';

@@ -2,16 +2,25 @@
 // Licensed under the MIT License.
 
 use super::*;
-use crate::codegen::com::generate_com_interface_files;
+use crate::codegen::com::ir::{ComPrimitive, ComScalarRepr};
 use crate::codegen::com::javascript::naming::{camel_case, strip_hungarian};
-use crate::codegen::com::project::project_com_interface;
-use crate::codegen::com::project::types::project_type;
+use crate::codegen::com::project::{
+    project_com_interface_for_test as project_com_interface, project_type_for_test as project_type,
+};
 use crate::com_metadata::{
     ComEnumMeta, ComEnumValue, ComInterfaceMeta, MethodMeta, ParamDirection, ParamMeta,
 };
 use crate::types::TypeMeta;
 
 type HandleAliasKind = PointerAliasKind;
+
+fn generate_com_interface_files(
+    meta: &ComInterfaceMeta,
+    winmd_paths: &str,
+) -> Result<super::ComGeneratedOutput, String> {
+    let projected = project_com_interface(meta, winmd_paths)?;
+    Ok(render_com_interface(&projected))
+}
 
 #[test]
 fn renderer_api_accepts_only_projected_ir() {
@@ -27,6 +36,857 @@ fn renderer_api_accepts_only_projected_ir() {
     let output = render_com_interface(&projected);
     assert!(output.js.contains("registerIUnknownInterface"));
     assert!(output.dts.contains("export declare class ITest"));
+    assert!(
+        output
+            .dts
+            .contains("import type { WinGuid } from '@microsoft/dynwinrt/com';")
+    );
+    assert!(
+        output
+            .dts
+            .contains("export declare const IID_ITest: WinGuid;")
+    );
+}
+
+#[test]
+fn renderer_projects_borrowed_hwnd_output_as_numeric_handle() {
+    let hwnd = ComType::PointerAlias {
+        namespace: "Windows.Win32.Foundation".into(),
+        name: "HWND".into(),
+        kind: PointerAliasKind::HandleValue,
+    };
+    let projected = ProjectedComInterface {
+        name: "IWindowOwner".into(),
+        namespace: "Tests".into(),
+        iid: "00000000-0000-0000-0000-000000000001".into(),
+        is_iunknown_rooted: true,
+        methods: vec![ProjectedComMethod {
+            name: "GetWindow".into(),
+            camel_name: "getWindow".into(),
+            vtable_index: 3,
+            params: vec![ProjectedComParam {
+                name: "phwnd".into(),
+                typ: hwnd.clone(),
+                direction: ComParamDirection::Out,
+                surface_input: false,
+                surface_result: true,
+                nullable: false,
+            }],
+            return_convention: ComReturnConvention::HResult,
+            results: vec![ProjectedComResult {
+                typ: hwnd,
+                source: ResultSource::Param(0),
+                conversion: ResultConversion::BorrowedHandle,
+            }],
+            string_buffer: None,
+            typed_buffers: Vec::new(),
+            shared_counts: Vec::new(),
+            kind: ProjectedComMethodKind::Normal,
+            doc: None,
+            overload: None,
+        }],
+        activation: ActivationPlan::None,
+        referenced_enums: Vec::new(),
+    };
+
+    let output = render_com_interface(&projected);
+    assert!(
+        output
+            .js
+            .contains(".addOut(DynCom.borrowedHandleOutputType())")
+    );
+    assert!(output.js.contains("return DynCom.asPointerBigint(_out);"));
+    assert!(output.dts.contains("getWindow(): HWND;"));
+    assert!(!output.dts.contains("getWindow(): Buffer"));
+    assert!(!output.js.contains("adoptComPointer"));
+}
+
+#[test]
+fn canonical_iunknown_arrays_use_managed_values_without_nominal_wrappers() {
+    let array = ComType::OwningArray {
+        element: Box::new(ComType::ManagedInterface {
+            iid: "00000000-0000-0000-c000-000000000046".into(),
+        }),
+        interface: None,
+    };
+    assert_eq!(type_dts(&array), "DynWinRtValue[]");
+    assert_eq!(
+        super::super::types::wrap_arg_js(&array, "values"),
+        "DynCom.interfaceArray(WinGuid.parse('00000000-0000-0000-c000-000000000046'), values)"
+    );
+    let result = ProjectedComResult {
+        typ: array,
+        source: ResultSource::Param(0),
+        conversion: ResultConversion::OwningArray { interface: None },
+    };
+    assert_eq!(result_type_dts(&result), "DynWinRtValue[]");
+    assert_eq!(
+        unwrap_result_js(&result, "_out"),
+        "Array.from(DynCom.takeComArray(_out))"
+    );
+
+    let projected = ProjectedComInterface {
+        name: "IUnknownArray".into(),
+        namespace: "Tests".into(),
+        iid: "00000000-0000-0000-0000-000000000001".into(),
+        is_iunknown_rooted: true,
+        methods: vec![ProjectedComMethod {
+            name: "GetValues".into(),
+            camel_name: "getValues".into(),
+            vtable_index: 3,
+            params: vec![ProjectedComParam {
+                name: "values".into(),
+                typ: result.typ.clone(),
+                direction: ComParamDirection::Out,
+                surface_input: false,
+                surface_result: true,
+                nullable: false,
+            }],
+            results: vec![result],
+            return_convention: ComReturnConvention::HResult,
+            string_buffer: None,
+            typed_buffers: Vec::new(),
+            shared_counts: Vec::new(),
+            kind: ProjectedComMethodKind::Normal,
+            doc: None,
+            overload: None,
+        }],
+        activation: ActivationPlan::None,
+        referenced_enums: Vec::new(),
+    };
+    let output = render_com_interface(&projected);
+    assert!(
+        output
+            .dts
+            .contains("import type { DynWinRtValue } from '@microsoft/dynwinrt/com';")
+    );
+}
+
+#[test]
+fn renderer_projects_bstr_replacement_as_a_string_roundtrip() {
+    let projected = ProjectedComInterface {
+        name: "IReplaceText".into(),
+        namespace: "Tests".into(),
+        iid: "00000000-0000-0000-0000-000000000001".into(),
+        is_iunknown_rooted: true,
+        methods: vec![ProjectedComMethod {
+            name: "Replace".into(),
+            camel_name: "replace".into(),
+            vtable_index: 3,
+            params: vec![ProjectedComParam {
+                name: "value".into(),
+                typ: ComType::Bstr,
+                direction: ComParamDirection::InOut,
+                surface_input: true,
+                surface_result: true,
+                nullable: false,
+            }],
+            return_convention: ComReturnConvention::HResult,
+            results: vec![ProjectedComResult {
+                typ: ComType::Bstr,
+                source: ResultSource::Param(0),
+                conversion: ResultConversion::Bstr,
+            }],
+            string_buffer: None,
+            typed_buffers: Vec::new(),
+            shared_counts: Vec::new(),
+            kind: ProjectedComMethodKind::Normal,
+            doc: None,
+            overload: None,
+        }],
+        activation: ActivationPlan::None,
+        referenced_enums: Vec::new(),
+    };
+    let output = render_com_interface(&projected);
+
+    assert!(
+        output
+            .js
+            .contains("new DynComMethodSig().addInOut(DynCom.bstrType())")
+    );
+    assert!(output.js.contains("DynCom.bstr(value)"));
+    assert!(output.js.contains("DynCom.takeBstr("));
+    assert!(output.dts.contains("replace(value: string): string;"));
+    assert!(!output.js.contains("Buffer"));
+    assert!(!output.dts.contains("bigint"));
+}
+
+#[test]
+fn renderer_allows_null_only_for_nullable_bstr_inputs() {
+    let projected = ProjectedComInterface {
+        name: "IOptionalText".into(),
+        namespace: "Tests".into(),
+        iid: "00000000-0000-0000-0000-000000000001".into(),
+        is_iunknown_rooted: true,
+        methods: vec![ProjectedComMethod {
+            name: "SetOptional".into(),
+            camel_name: "setOptional".into(),
+            vtable_index: 3,
+            params: vec![ProjectedComParam {
+                name: "value".into(),
+                typ: ComType::Bstr,
+                direction: ComParamDirection::In,
+                surface_input: true,
+                surface_result: false,
+                nullable: true,
+            }],
+            return_convention: ComReturnConvention::HResult,
+            results: Vec::new(),
+            string_buffer: None,
+            typed_buffers: Vec::new(),
+            shared_counts: Vec::new(),
+            kind: ProjectedComMethodKind::Normal,
+            doc: None,
+            overload: None,
+        }],
+        activation: ActivationPlan::None,
+        referenced_enums: Vec::new(),
+    };
+    let output = render_com_interface(&projected);
+
+    assert!(
+        output
+            .js
+            .contains("new DynComMethodSig().addIn(DynCom.nullableBstrType())")
+    );
+    assert!(
+        output
+            .js
+            .contains("value === null ? DynCom.nullBstr() : DynCom.bstr(value)")
+    );
+    assert!(
+        output
+            .dts
+            .contains("setOptional(value: string | null): void;")
+    );
+}
+
+#[test]
+fn real_automation_bstr_interfaces_render_natural_string_apis() {
+    let Some(winmd) = std::env::var("DYNWINRT_WIN32_WINMD")
+        .ok()
+        .filter(|path| std::path::Path::new(path).exists())
+    else {
+        return;
+    };
+    for (namespace, interface_name) in [
+        ("Windows.Win32.Web.InternetExplorer", "ITargetNotify2"),
+        ("Windows.Win32.Storage.Imapi", "IDiscRecorder"),
+        ("Windows.Win32.System.TaskScheduler", "IExecAction2"),
+    ] {
+        let meta =
+            crate::com_metadata::parse_com_interface(&winmd, namespace, interface_name).unwrap();
+        let projected = crate::codegen::com::project::project_com_interface(&meta, &winmd)
+            .unwrap_or_else(|error| panic!("{namespace}.{interface_name}: {error}"));
+        let output = render_com_interface(&projected);
+        assert!(output.js.contains("DynCom.bstrType()"));
+        assert!(output.js.contains("DynCom.takeBstr("));
+        assert!(output.dts.contains("string"));
+        if interface_name == "IDiscRecorder" {
+            assert!(
+                output
+                    .dts
+                    .contains("getDisplayNames(): [string, string, string];")
+            );
+        }
+    }
+}
+
+#[test]
+fn renderer_keeps_dynamic_iid_native_order_and_all_results() {
+    let input = |name: &str, typ| ProjectedComParam {
+        name: name.into(),
+        typ,
+        direction: ComParamDirection::In,
+        surface_input: true,
+        surface_result: false,
+        nullable: false,
+    };
+    let output = |name: &str, typ| ProjectedComParam {
+        name: name.into(),
+        typ,
+        direction: ComParamDirection::Out,
+        surface_input: false,
+        surface_result: true,
+        nullable: false,
+    };
+    let method = ProjectedComMethod {
+        name: "Resolve".into(),
+        camel_name: "resolve".into(),
+        vtable_index: 7,
+        params: vec![
+            input("context", ComType::Primitive(ComPrimitive::U32)),
+            output("status", ComType::Primitive(ComPrimitive::I32)),
+            input("riid", ComType::RawPointer),
+            output("object", ComType::RawPointer),
+            input("flags", ComType::Primitive(ComPrimitive::U16)),
+            output("cookie", ComType::Primitive(ComPrimitive::U64)),
+        ],
+        return_convention: ComReturnConvention::HResult,
+        results: vec![
+            ProjectedComResult {
+                typ: ComType::Primitive(ComPrimitive::I32),
+                source: ResultSource::Param(1),
+                conversion: ResultConversion::Value,
+            },
+            ProjectedComResult {
+                typ: ComType::RawPointer,
+                source: ResultSource::Param(3),
+                conversion: ResultConversion::DynamicIidAdoption,
+            },
+            ProjectedComResult {
+                typ: ComType::Primitive(ComPrimitive::U64),
+                source: ResultSource::Param(5),
+                conversion: ResultConversion::Value,
+            },
+        ],
+        string_buffer: None,
+        typed_buffers: Vec::new(),
+        shared_counts: Vec::new(),
+        kind: ProjectedComMethodKind::CallerSuppliedDynamicIid {
+            iid_param_index: 2,
+            output_param_index: 3,
+        },
+        doc: None,
+        overload: None,
+    };
+    let output = render_com_interface(&ProjectedComInterface {
+        name: "IResolve".into(),
+        namespace: "Tests".into(),
+        iid: "00000000-0000-0000-0000-000000000010".into(),
+        is_iunknown_rooted: true,
+        methods: vec![method],
+        activation: ActivationPlan::None,
+        referenced_enums: Vec::new(),
+    });
+
+    assert!(output.js.contains(
+        ".addIn(DynCom.u32Type()).addOut(DynCom.i32Type()).addIn(DynCom.pointerType()).addOut(DynCom.ownedComPointerType()).addIn(DynCom.u16Type()).addOut(DynCom.u64Type())"
+    ));
+    assert!(output.js.contains("resolve(context, riid, flags)"));
+    assert!(output.js.contains("const _iid = WinGuid.parse(riid)"));
+    assert!(output.js.contains(
+        "invokeAll(this._obj, [DynCom.u32(context), DynCom.iidPointer(_iid), DynCom.u16(flags)])"
+    ));
+    assert!(
+        output.js.contains(
+            "return [DynCom.toNumber(_r[0]), DynCom.adoptComPointer(_r[1], _iid), DynCom.toU64Bigint(_r[2])];"
+        ),
+        "{}",
+        output.js
+    );
+    assert!(output.dts.contains(
+        "resolve(context: number, riid: string, flags: number): [number, DynWinRtValue, bigint];"
+    ));
+}
+
+#[test]
+fn renderer_emits_distinct_by_value_variant_inputs() {
+    let projected = ProjectedComInterface {
+        name: "IVariantInput".into(),
+        namespace: "Tests".into(),
+        iid: "00000000-0000-0000-0000-000000000002".into(),
+        is_iunknown_rooted: true,
+        methods: vec![ProjectedComMethod {
+            name: "UseVariant".into(),
+            camel_name: "useVariant".into(),
+            vtable_index: 3,
+            params: vec![ProjectedComParam {
+                name: "value".into(),
+                typ: ComType::VariantByValue,
+                direction: ComParamDirection::In,
+                surface_input: true,
+                surface_result: false,
+                nullable: false,
+            }],
+            return_convention: ComReturnConvention::HResult,
+            results: Vec::new(),
+            string_buffer: None,
+            typed_buffers: Vec::new(),
+            shared_counts: Vec::new(),
+            kind: ProjectedComMethodKind::Normal,
+            doc: None,
+            overload: None,
+        }],
+        activation: ActivationPlan::None,
+        referenced_enums: Vec::new(),
+    };
+
+    let output = render_com_interface(&projected);
+    assert!(output.js.contains(
+        ".addMethodAt(3, 'UseVariant', new DynComMethodSig().addIn(DynCom.variantByValueType()))"
+    ));
+    assert!(output.js.contains("DynCom.variant(value)"));
+    assert!(
+        output
+            .dts
+            .contains("useVariant(value: DynComVariant): void;")
+    );
+    assert!(!output.dts.contains("DynComVariant | null"));
+}
+
+#[test]
+fn typed_buffer_scalar_aliases_are_collected_for_declarations() {
+    let alias = ComType::ScalarAlias {
+        namespace: "Windows.Win32.System.Com".into(),
+        name: "DISPID".into(),
+        underlying: ComScalarRepr::Primitive(ComPrimitive::I32),
+    };
+    let projected = ProjectedComInterface {
+        name: "ITest".into(),
+        namespace: "Tests".into(),
+        iid: "00000000-0000-0000-0000-000000000001".into(),
+        is_iunknown_rooted: true,
+        methods: vec![ProjectedComMethod {
+            name: "Resolve".into(),
+            camel_name: "resolve".into(),
+            vtable_index: 3,
+            params: vec![ProjectedComParam {
+                name: "values".into(),
+                typ: ComType::TypedBuffer {
+                    element: Box::new(alias),
+                },
+                direction: ComParamDirection::In,
+                surface_input: true,
+                surface_result: false,
+                nullable: false,
+            }],
+            return_convention: ComReturnConvention::HResult,
+            results: Vec::new(),
+            string_buffer: None,
+            typed_buffers: Vec::new(),
+            shared_counts: Vec::new(),
+            kind: ProjectedComMethodKind::Normal,
+            doc: None,
+            overload: None,
+        }],
+        activation: ActivationPlan::None,
+        referenced_enums: Vec::new(),
+    };
+
+    assert_eq!(
+        collect_scalar_aliases(&projected),
+        vec![("DISPID".into(), ComScalarRepr::Primitive(ComPrimitive::I32))]
+    );
+}
+
+#[test]
+fn renderer_serializes_fixed_capacity_bytes_from_projected_ir() {
+    let byte_buffer = ComType::TypedBuffer {
+        element: Box::new(ComType::Primitive(ComPrimitive::U8)),
+    };
+    let projected = ProjectedComInterface {
+        name: "ITestBlob".into(),
+        namespace: "Tests".into(),
+        iid: "00000000-0000-0000-0000-000000000001".into(),
+        is_iunknown_rooted: true,
+        methods: vec![ProjectedComMethod {
+            name: "GetBlob".into(),
+            camel_name: "getBlob".into(),
+            vtable_index: 15,
+            params: vec![
+                ProjectedComParam {
+                    name: "guidKey".into(),
+                    typ: ComType::Guid,
+                    direction: ComParamDirection::In,
+                    surface_input: true,
+                    surface_result: false,
+                    nullable: false,
+                },
+                ProjectedComParam {
+                    name: "pBuf".into(),
+                    typ: byte_buffer.clone(),
+                    direction: ComParamDirection::CallerOutputBuffer,
+                    surface_input: false,
+                    surface_result: true,
+                    nullable: false,
+                },
+                ProjectedComParam {
+                    name: "capacity".into(),
+                    typ: ComType::Primitive(ComPrimitive::U32),
+                    direction: ComParamDirection::In,
+                    surface_input: true,
+                    surface_result: false,
+                    nullable: false,
+                },
+                ProjectedComParam {
+                    name: "pcbBlobSize".into(),
+                    typ: ComType::Primitive(ComPrimitive::U32),
+                    direction: ComParamDirection::Out,
+                    surface_input: false,
+                    surface_result: false,
+                    nullable: false,
+                },
+            ],
+            return_convention: ComReturnConvention::HResult,
+            results: vec![ProjectedComResult {
+                typ: byte_buffer,
+                source: ResultSource::Param(1),
+                conversion: ResultConversion::Buffer,
+            }],
+            string_buffer: None,
+            typed_buffers: vec![TypedBufferPlan {
+                buffer_param_index: 1,
+                element: ComType::Primitive(ComPrimitive::U8),
+                relation: TypedBufferRelation::CallerOutput {
+                    capacity_param_index: 2,
+                    actual_length_param_index: Some(3),
+                    unit: BufferCountUnit::Bytes,
+                    sizing: TypedBufferSizing::FixedCapacity,
+                },
+            }],
+            shared_counts: Vec::new(),
+            kind: ProjectedComMethodKind::FixedCapacityBytes {
+                guid_param_index: 0,
+            },
+            doc: None,
+            overload: None,
+        }],
+        activation: ActivationPlan::None,
+        referenced_enums: Vec::new(),
+    };
+
+    let output = render_com_interface(&projected);
+    assert!(
+        output
+            .js
+            .contains(".addCallerOutputBuffer(DynCom.u8Type(), 2, 3, true, false)")
+    );
+    assert!(output.js.contains("getBlob(guidKey, capacity)"));
+    assert!(
+        output
+            .js
+            .contains("DynCom.callerOutputArray(DynCom.u8Type(), BigInt(_capacity))")
+    );
+    assert!(
+        output
+            .dts
+            .contains("getBlob(guidKey: string, capacity: number): Buffer;")
+    );
+}
+
+#[test]
+fn parallel_arrays_use_semantic_element_counts_and_guid_conversion() {
+    let projected = ProjectedComInterface {
+        name: "IParallel".into(),
+        namespace: "Tests".into(),
+        iid: "00000000-0000-0000-0000-000000000010".into(),
+        is_iunknown_rooted: true,
+        methods: vec![ProjectedComMethod {
+            name: "Copy".into(),
+            camel_name: "copy".into(),
+            vtable_index: 3,
+            params: vec![
+                ProjectedComParam {
+                    name: "values".into(),
+                    typ: ComType::TypedBuffer {
+                        element: Box::new(ComType::Primitive(ComPrimitive::U32)),
+                    },
+                    direction: ComParamDirection::InputBuffer,
+                    surface_input: true,
+                    surface_result: false,
+                    nullable: false,
+                },
+                ProjectedComParam {
+                    name: "ids".into(),
+                    typ: ComType::TypedBuffer {
+                        element: Box::new(ComType::Guid),
+                    },
+                    direction: ComParamDirection::CallerOutputBuffer,
+                    surface_input: false,
+                    surface_result: true,
+                    nullable: false,
+                },
+                ProjectedComParam {
+                    name: "count".into(),
+                    typ: ComType::Primitive(ComPrimitive::U32),
+                    direction: ComParamDirection::In,
+                    surface_input: false,
+                    surface_result: false,
+                    nullable: false,
+                },
+            ],
+            return_convention: ComReturnConvention::HResult,
+            results: vec![ProjectedComResult {
+                typ: ComType::TypedBuffer {
+                    element: Box::new(ComType::Guid),
+                },
+                source: ResultSource::Param(1),
+                conversion: ResultConversion::PlainArray,
+            }],
+            string_buffer: None,
+            typed_buffers: vec![
+                TypedBufferPlan {
+                    buffer_param_index: 0,
+                    element: ComType::Primitive(ComPrimitive::U32),
+                    relation: TypedBufferRelation::Input {
+                        count_param_index: 2,
+                        actual_length_param_index: None,
+                        unit: BufferCountUnit::Elements,
+                    },
+                },
+                TypedBufferPlan {
+                    buffer_param_index: 1,
+                    element: ComType::Guid,
+                    relation: TypedBufferRelation::CallerOutput {
+                        capacity_param_index: 2,
+                        actual_length_param_index: None,
+                        unit: BufferCountUnit::Elements,
+                        sizing: TypedBufferSizing::SingleCall,
+                    },
+                },
+            ],
+            shared_counts: vec![SharedCountPlan::Parallel {
+                count_param_index: 2,
+                input_param_indices: vec![0],
+                output_param_indices: vec![1],
+            }],
+            kind: ProjectedComMethodKind::Normal,
+            doc: None,
+            overload: None,
+        }],
+        activation: ActivationPlan::None,
+        referenced_enums: Vec::new(),
+    };
+
+    let output = render_com_interface(&projected);
+    assert!(
+        output
+            .js
+            .contains("DynCom.bufferElementCount(_sharedInput0, DynCom.u32Type())")
+    );
+    assert!(output.js.contains("DynCom.takeGuidArray("));
+}
+
+#[test]
+fn owning_array_bigint_capacity_is_not_number_validated() {
+    assert!(count_type_uses_bigint(&ComType::NativeUsize));
+    assert!(count_type_uses_bigint(&ComType::Primitive(
+        ComPrimitive::U64
+    )));
+    assert!(!count_type_uses_bigint(&ComType::Primitive(
+        ComPrimitive::U32
+    )));
+}
+
+#[test]
+fn renderer_emits_tagged_unions_and_automation_runtime_transfers() {
+    use crate::codegen::com::ir::{
+        NativePodScalar, NativeUnionArchitectureLayout, NativeUnionField, NativeUnionFieldType,
+        NativeUnionLayout, ProjectedComResult,
+    };
+
+    let union_architecture = NativeUnionArchitectureLayout {
+        size: 8,
+        alignment: 8,
+        fields: vec![
+            NativeUnionField {
+                name: "integer".into(),
+                count: 1,
+                typ: NativeUnionFieldType::Scalar(NativePodScalar::U64),
+            },
+            NativeUnionField {
+                name: "pointer".into(),
+                count: 1,
+                typ: NativeUnionFieldType::Pointer,
+            },
+        ],
+    };
+    let union = ComType::NativeUnionPointer {
+        layout: NativeUnionLayout {
+            namespace: "Tests".into(),
+            name: "TaggedValue".into(),
+            x86: union_architecture.clone(),
+            x64: union_architecture.clone(),
+            arm64: union_architecture,
+        },
+    };
+    let method =
+        |name: &str, slot: usize, input: ComType, output: ComType, conversion: ResultConversion| {
+            ProjectedComMethod {
+                name: name.into(),
+                camel_name: camel_case(name),
+                vtable_index: slot,
+                params: vec![
+                    ProjectedComParam {
+                        name: "value".into(),
+                        typ: input,
+                        direction: ComParamDirection::In,
+                        surface_input: true,
+                        surface_result: false,
+                        nullable: false,
+                    },
+                    ProjectedComParam {
+                        name: "result".into(),
+                        typ: output.clone(),
+                        direction: ComParamDirection::Out,
+                        surface_input: false,
+                        surface_result: true,
+                        nullable: false,
+                    },
+                ],
+                return_convention: ComReturnConvention::HResult,
+                results: vec![ProjectedComResult {
+                    typ: output,
+                    source: ResultSource::Param(1),
+                    conversion,
+                }],
+                string_buffer: None,
+                typed_buffers: Vec::new(),
+                shared_counts: Vec::new(),
+                kind: ProjectedComMethodKind::Normal,
+                doc: None,
+                overload: None,
+            }
+        };
+    let projected = ProjectedComInterface {
+        name: "IAutomationTest".into(),
+        namespace: "Tests".into(),
+        iid: "00000000-0000-0000-0000-000000000009".into(),
+        is_iunknown_rooted: true,
+        methods: vec![
+            method(
+                "UseUnion",
+                3,
+                union,
+                ComType::Variant,
+                ResultConversion::Variant,
+            ),
+            method(
+                "UseVariant",
+                4,
+                ComType::Variant,
+                ComType::SafeArray {
+                    element: crate::codegen::com::ir::SafeArrayElement::Bstr,
+                },
+                ResultConversion::SafeArray,
+            ),
+            method(
+                "UseSafeArray",
+                5,
+                ComType::SafeArray {
+                    element: crate::codegen::com::ir::SafeArrayElement::Bstr,
+                },
+                ComType::PropVariant,
+                ResultConversion::PropVariant,
+            ),
+        ],
+        activation: ActivationPlan::None,
+        referenced_enums: Vec::new(),
+    };
+
+    let output = render_com_interface(&projected);
+    assert!(output.js.contains("createTaggedValue(activeField, bytes)"));
+    assert!(output.js.contains("DynCom.nativeUnion("));
+    assert!(output.js.contains("DynCom.variant("));
+    assert!(output.js.contains("DynCom.safeArray("));
+    assert!(output.js.contains("DynCom.takeVariant("));
+    assert!(output.js.contains("DynCom.takeSafeArray("));
+    assert!(output.js.contains("DynCom.takePropVariant("));
+    assert!(output.dts.contains("activeField: 'integer' | 'pointer'"));
+    assert!(output.dts.contains("DynComNativeUnion"));
+    assert!(output.dts.contains("DynComVariant"));
+    assert!(output.dts.contains("DynComSafeArray"));
+    assert!(output.dts.contains("DynComPropVariant"));
+}
+
+#[test]
+fn renderer_emits_explicit_idispatch_invoke_options_and_compound_types() {
+    let input = |name: &str, typ| ProjectedComParam {
+        name: name.into(),
+        typ,
+        direction: ComParamDirection::In,
+        surface_input: true,
+        surface_result: false,
+        nullable: false,
+    };
+    let optional_output = |name: &str, typ| ProjectedComParam {
+        name: name.into(),
+        typ,
+        direction: ComParamDirection::OptionalOut,
+        surface_input: false,
+        surface_result: true,
+        nullable: false,
+    };
+    let failure_output = |name: &str, typ| ProjectedComParam {
+        surface_result: false,
+        ..optional_output(name, typ)
+    };
+    let method = ProjectedComMethod {
+        name: "Invoke".into(),
+        camel_name: "invoke".into(),
+        vtable_index: 6,
+        params: vec![
+            input("dispIdMember", ComType::Primitive(ComPrimitive::I32)),
+            input("riid", ComType::RawPointer),
+            input("lcid", ComType::Primitive(ComPrimitive::U32)),
+            input("wFlags", ComType::Primitive(ComPrimitive::U16)),
+            input("dispParams", ComType::DispatchParams),
+            optional_output("varResult", ComType::Variant),
+            failure_output("excepInfo", ComType::ExcepInfo),
+            failure_output("argErr", ComType::Primitive(ComPrimitive::U32)),
+        ],
+        return_convention: ComReturnConvention::DispatchInvokeHResult,
+        results: vec![ProjectedComResult {
+            typ: ComType::Variant,
+            source: ResultSource::Param(5),
+            conversion: ResultConversion::Variant,
+        }],
+        string_buffer: None,
+        typed_buffers: Vec::new(),
+        shared_counts: Vec::new(),
+        kind: ProjectedComMethodKind::DispatchInvoke {
+            result_param_index: 5,
+            excep_info_param_index: 6,
+            arg_err_param_index: 7,
+        },
+        doc: None,
+        overload: None,
+    };
+    let output = render_com_interface(&ProjectedComInterface {
+        name: "IDispatch".into(),
+        namespace: "Windows.Win32.System.Com".into(),
+        iid: "00020400-0000-0000-c000-000000000046".into(),
+        is_iunknown_rooted: true,
+        methods: vec![method],
+        activation: ActivationPlan::None,
+        referenced_enums: Vec::new(),
+    });
+
+    assert!(output.js.contains(".addIn(DynCom.dispatchParamsType())"));
+    assert!(
+        output
+            .js
+            .contains(".addOptionalOut(DynCom.excepInfoType())")
+    );
+    assert!(
+        output
+            .js
+            .contains("invoke(dispIdMember, riid, lcid, wFlags, dispParams, options = {})")
+    );
+    assert!(output.js.contains("DynCom.dispatchParams(dispParams)"));
+    assert!(output.js.contains("DynCom.boolValue(_requestExcepInfo)"));
+    assert!(output.js.contains(".captureDispatchInvokeHresult()"));
+    assert!(output.js.contains(".invokeDispatch(this._obj"));
+    assert!(output.js.contains("_error.hresult = _call.hresult"));
+    assert!(output.js.contains("_error.excepInfo = _excepInfo"));
+    assert!(output.js.contains("_error.argErr = _call.argErr"));
+    assert!(output.js.contains("_error.cause = new Error"));
+    assert!(output.js.contains("HRESULT ${_hresult}"));
+    assert!(
+        output
+            .js
+            .contains("_description ? `: ${_description}` : ''")
+    );
+    assert!(
+        output
+            .js
+            .contains("_result.result = DynCom.takeVariant(_resultValue)")
+    );
+    assert!(!output.js.contains("_result.excepInfo"));
+    assert!(!output.js.contains("_result.argErr"));
+    assert!(output.dts.contains("dispParams: DynComDispatchParams"));
+    assert!(output.dts.contains("): { result?: DynComVariant };"));
 }
 
 #[test]
@@ -234,6 +1094,7 @@ fn render_enum_files(en: &ComEnumMeta) -> (String, String) {
         _ => panic!("unsupported test enum underlying type"),
     };
     let projected = ProjectedComEnum {
+        namespace: en.namespace.clone(),
         name: en.name.clone(),
         underlying,
         members: en
@@ -290,7 +1151,14 @@ fn camel_case_basic() {
 fn default_runtime_import_uses_com_subpath() {
     let previous = crate::codegen::project::get_import_name();
     crate::codegen::project::set_import_name("@microsoft/dynwinrt");
-    assert_eq!(com_runtime_import_name(), "@microsoft/dynwinrt/com");
+    assert_eq!(com_runtime_import_name(), "@microsoft/dynwinrt/com/unsafe");
+    assert_eq!(com_public_import_name(), "@microsoft/dynwinrt/com");
+    crate::codegen::project::set_import_name("../dist/com.js");
+    assert_eq!(com_runtime_import_name(), "../dist/com-unsafe.js");
+    assert_eq!(com_public_import_name(), "../dist/com.js");
+    crate::codegen::project::set_import_name("./mycom.js");
+    assert_eq!(com_runtime_import_name(), "./mycom.js");
+    assert_eq!(com_public_import_name(), "./mycom.js");
     crate::codegen::project::set_import_name(&previous);
 }
 
@@ -730,6 +1598,8 @@ fn interop_generation_fails_when_target_iid_unresolvable() {
         coclass_name: None,
         own_methods_start: 3,
         referenced_enums: Vec::new(),
+        raw_referenced_enums: None,
+        raw_methods: None,
     };
     // Pass empty winmd_paths — even with the newest-SDK fallback, the
     // synthetic class name won't be found anywhere.
@@ -782,6 +1652,8 @@ fn non_interop_iunknown_interface_still_generates_without_winmd_lookup() {
         coclass_name: None,
         own_methods_start: 3,
         referenced_enums: Vec::new(),
+        raw_referenced_enums: None,
+        raw_methods: None,
     };
     let out = generate_com_interface_files(&com, "")
         .expect("plain classic-COM codegen must succeed with no winmds");
@@ -812,6 +1684,8 @@ fn plain_iface_with_method(m: MethodMeta) -> crate::com_metadata::ComInterfaceMe
         coclass_name: None,
         own_methods_start: 3,
         referenced_enums: Vec::new(),
+        raw_referenced_enums: None,
+        raw_methods: None,
     }
 }
 
@@ -1824,12 +2698,13 @@ fn caller_supplied_riid_output_is_adopted() {
     let com = plain_iface_with_method(method);
     let output = generate_com_interface_files(&com, "").unwrap();
 
-    assert!(output.js.contains("bindToHandler(pbc, iid)"));
-    assert!(output.js.contains("DynCom.adoptComPointer(_raw, _iid)"));
+    assert!(output.js.contains("bindToHandler(pbc, riid)"));
+    assert!(output.js.contains("const _iid = WinGuid.parse(riid)"));
+    assert!(output.js.contains("DynCom.adoptComPointer(_out, _iid)"));
     assert!(
         output
             .dts
-            .contains("bindToHandler(pbc: bigint | Buffer, iid: string): DynWinRtValue;")
+            .contains("bindToHandler(pbc: bigint | Buffer, riid: string): DynWinRtValue;")
     );
 }
 

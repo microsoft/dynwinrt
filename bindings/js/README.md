@@ -45,15 +45,22 @@ Classic COM uses a separate subpath from the same package, keeping the WinRT
 root API unchanged:
 
 ```js
-const { DynCom } = require('@microsoft/dynwinrt/com');
+const { initializeCom } = require('@microsoft/dynwinrt/com');
+initializeCom(1); // MTA
 ```
 
 COM interface values returned by activation, `QueryInterface`, or typed
 interface out-parameters own one reference and release it when their
-`DynWinRtValue` is released or collected. `adoptComPointer()` is only for a
-native output that transfers an existing `+1` reference; numeric pointers and
-typed-array pointers are borrowed and cannot be adopted. Win32 handles are not
-COM references and require their own type-specific cleanup function.
+`DynWinRtValue` is released or collected. Manual interface registration,
+native signatures, and raw pointer ownership are isolated under
+`@microsoft/dynwinrt/com/unsafe`. `adoptOwnedComPointer()` there consumes one
+explicit caller-supplied `+1` reference; Buffer backing addresses are not
+accepted. Win32 handles are not COM references and require their own
+type-specific cleanup function.
+
+See the repository's
+[Classic COM JavaScript usage guide](../../docs/classic-com-usage.md) for
+codegen, GUID/IID/CLSID, lifetime, Automation, and `/com/unsafe` examples.
 
 Unambiguous public WinRT activation metadata is projected as JavaScript constructors.
 Parameterized and composable activations support idiomatic forms such as

@@ -15,10 +15,58 @@ use crate::{
     value::WinRTValue,
 };
 
-#[derive(Debug, Clone)]
+pub(crate) fn system_cif(types: Vec<libffi::middle::Type>, result: libffi::middle::Type) -> Cif {
+    #[cfg(all(windows, target_arch = "x86"))]
+    {
+        Cif::new_with_abi(types.into_iter(), result, libffi_sys::ffi_abi_FFI_STDCALL)
+    }
+    #[cfg(not(all(windows, target_arch = "x86")))]
+    {
+        Cif::new(types.into_iter(), result)
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum NativeCallValue {
+    WinRt(WinRTValue),
+    NativeStruct(crate::com::NativeStructValue),
+    Variant(crate::com::VariantValue),
+    SafeArray(crate::com::SafeArrayValue),
+    PropVariant(crate::com::PropVariantValue),
+    ExcepInfo(crate::com::ExcepInfoValue),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CapturedHResultPlan {
+    pub(crate) result_output_index: usize,
+    pub(crate) excep_info_output_index: usize,
+    pub(crate) arg_err_output_index: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ParameterType {
     WinRT(TypeHandle),
     Pointer,
+    CoTaskMemWideString,
+    Bstr {
+        nullable: bool,
+    },
+    NativeStruct(Arc<crate::com::NativeStructLayout>),
+    NativeStructPointer {
+        layout: Arc<crate::com::NativeStructLayout>,
+        nullable: bool,
+    },
+    NativeUnionPointer(Arc<crate::com::NativeUnionLayout>),
+    Variant,
+    VariantByValue,
+    SafeArray {
+        element: Option<crate::com::SafeArrayElementType>,
+        interface_iid: Option<GUID>,
+        nullable: bool,
+    },
+    PropVariant,
+    DispatchParams,
+    ExcepInfo,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,10 +76,13 @@ pub(crate) enum OutputCleanup {
     HStringDelete,
     CoTaskMemFree,
     BstrFree,
+    VariantClear,
+    SafeArrayDestroy,
+    PropVariantClear,
 }
 
 impl OutputCleanup {
-    unsafe fn cleanup(self, ptr: *mut std::ffi::c_void) {
+    pub(crate) unsafe fn cleanup(self, ptr: *mut std::ffi::c_void) {
         if ptr.is_null() {
             return;
         }
@@ -46,6 +97,9 @@ impl OutputCleanup {
                 windows::Win32::System::Com::CoTaskMemFree(Some(ptr));
             },
             Self::BstrFree => drop(unsafe { windows_core::BSTR::from_raw(ptr.cast()) }),
+            Self::VariantClear => crate::com::automation::cleanup_variant(ptr),
+            Self::SafeArrayDestroy => crate::com::automation::cleanup_safearray(ptr),
+            Self::PropVariantClear => crate::com::automation::cleanup_propvariant(ptr),
         }
     }
 }
@@ -59,11 +113,178 @@ impl ParameterType {
         Self::Pointer
     }
 
+    pub(crate) fn co_task_mem_wide_string() -> Self {
+        Self::CoTaskMemWideString
+    }
+
+    pub(crate) fn bstr(nullable: bool) -> Self {
+        Self::Bstr { nullable }
+    }
+
+    pub(crate) fn native_struct(layout: Arc<crate::com::NativeStructLayout>) -> Self {
+        Self::NativeStruct(layout)
+    }
+
+    pub(crate) fn native_struct_pointer(
+        layout: Arc<crate::com::NativeStructLayout>,
+        nullable: bool,
+    ) -> Self {
+        Self::NativeStructPointer { layout, nullable }
+    }
+
+    pub(crate) fn native_union_pointer(layout: Arc<crate::com::NativeUnionLayout>) -> Self {
+        Self::NativeUnionPointer(layout)
+    }
+
+    pub(crate) fn variant() -> Self {
+        Self::Variant
+    }
+
+    pub(crate) fn variant_by_value() -> Self {
+        Self::VariantByValue
+    }
+
+    pub(crate) fn safe_array(element: Option<crate::com::SafeArrayElementType>) -> Self {
+        Self::SafeArray {
+            element,
+            interface_iid: None,
+            nullable: false,
+        }
+    }
+
+    pub(crate) fn interface_safe_array(iid: GUID) -> Self {
+        Self::SafeArray {
+            element: Some(crate::com::SafeArrayElementType::Unknown),
+            interface_iid: Some(iid),
+            nullable: false,
+        }
+    }
+
+    pub(crate) fn nullable_safe_array(
+        element: crate::com::SafeArrayElementType,
+        interface_iid: Option<GUID>,
+    ) -> Self {
+        Self::SafeArray {
+            element: Some(element),
+            interface_iid,
+            nullable: true,
+        }
+    }
+
+    pub(crate) fn prop_variant() -> Self {
+        Self::PropVariant
+    }
+
+    pub(crate) fn dispatch_params() -> Self {
+        Self::DispatchParams
+    }
+
+    pub(crate) fn excep_info() -> Self {
+        Self::ExcepInfo
+    }
+
     pub(crate) fn as_winrt(&self) -> Option<&TypeHandle> {
         match self {
             Self::WinRT(typ) => Some(typ),
-            Self::Pointer => None,
+            Self::Pointer
+            | Self::CoTaskMemWideString
+            | Self::Bstr { .. }
+            | Self::NativeStruct(_)
+            | Self::NativeStructPointer { .. }
+            | Self::NativeUnionPointer(_)
+            | Self::Variant
+            | Self::VariantByValue
+            | Self::SafeArray { .. }
+            | Self::PropVariant
+            | Self::DispatchParams
+            | Self::ExcepInfo => None,
         }
+    }
+
+    pub(crate) fn native_struct_layout(&self) -> Option<&Arc<crate::com::NativeStructLayout>> {
+        match self {
+            Self::NativeStruct(layout) | Self::NativeStructPointer { layout, .. } => Some(layout),
+            Self::WinRT(_)
+            | Self::Pointer
+            | Self::CoTaskMemWideString
+            | Self::Bstr { .. }
+            | Self::NativeUnionPointer(_)
+            | Self::Variant
+            | Self::VariantByValue
+            | Self::SafeArray { .. }
+            | Self::PropVariant
+            | Self::DispatchParams
+            | Self::ExcepInfo => None,
+        }
+    }
+
+    pub(crate) fn native_union_layout(&self) -> Option<&Arc<crate::com::NativeUnionLayout>> {
+        match self {
+            Self::NativeUnionPointer(layout) => Some(layout),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn is_native_struct(&self) -> bool {
+        matches!(self, Self::NativeStruct(_))
+    }
+
+    pub(crate) fn is_native_struct_pointer(&self) -> bool {
+        matches!(self, Self::NativeStructPointer { .. })
+    }
+
+    pub(crate) fn is_nullable_native_struct_pointer(&self) -> bool {
+        matches!(self, Self::NativeStructPointer { nullable: true, .. })
+    }
+
+    pub(crate) fn is_variant(&self) -> bool {
+        matches!(self, Self::Variant)
+    }
+
+    pub(crate) fn is_bstr(&self) -> bool {
+        matches!(self, Self::Bstr { .. })
+    }
+
+    pub(crate) fn is_nullable_bstr(&self) -> bool {
+        matches!(self, Self::Bstr { nullable: true })
+    }
+
+    pub(crate) fn is_variant_by_value(&self) -> bool {
+        matches!(self, Self::VariantByValue)
+    }
+
+    pub(crate) fn is_safe_array(&self) -> bool {
+        matches!(self, Self::SafeArray { .. })
+    }
+
+    pub(crate) fn safe_array_element(&self) -> Option<crate::com::SafeArrayElementType> {
+        match self {
+            Self::SafeArray { element, .. } => *element,
+            _ => None,
+        }
+    }
+
+    pub(crate) fn safe_array_interface_iid(&self) -> Option<GUID> {
+        match self {
+            Self::SafeArray { interface_iid, .. } => *interface_iid,
+            _ => None,
+        }
+    }
+
+    pub(crate) fn is_nullable_safe_array(&self) -> bool {
+        matches!(self, Self::SafeArray { nullable: true, .. })
+    }
+
+    pub(crate) fn is_prop_variant(&self) -> bool {
+        matches!(self, Self::PropVariant)
+    }
+
+    pub(crate) fn is_dispatch_params(&self) -> bool {
+        matches!(self, Self::DispatchParams)
+    }
+
+    pub(crate) fn is_excep_info(&self) -> bool {
+        matches!(self, Self::ExcepInfo)
     }
 
     pub(crate) fn is_array(&self) -> bool {
@@ -87,67 +308,70 @@ impl ParameterType {
     }
 
     pub(crate) fn supports_in_out(&self) -> bool {
-        matches!(self, Self::Pointer)
-            || matches!(
-                self,
-                Self::WinRT(typ)
-                    if matches!(
-                        typ.kind(),
-                        TypeKind::Bool
-                            | TypeKind::I8
-                            | TypeKind::U8
-                            | TypeKind::I16
-                            | TypeKind::U16
-                            | TypeKind::Char16
-                            | TypeKind::I32
-                            | TypeKind::U32
-                            | TypeKind::I64
-                            | TypeKind::U64
-                            | TypeKind::F32
-                            | TypeKind::F64
-                            | TypeKind::HResult
-                            | TypeKind::Enum(_)
-                            | TypeKind::Struct(_)
-                    )
-            )
-    }
-
-    pub(crate) fn supports_direct_return(&self) -> bool {
-        matches!(self, Self::Pointer)
-            || matches!(
-                self,
-                Self::WinRT(typ)
-                    if matches!(
-                        typ.kind(),
-                        TypeKind::Bool
-                            | TypeKind::I8
-                            | TypeKind::U8
-                            | TypeKind::I16
-                            | TypeKind::U16
-                            | TypeKind::Char16
-                            | TypeKind::I32
-                            | TypeKind::U32
-                            | TypeKind::I64
-                            | TypeKind::U64
-                            | TypeKind::F32
-                            | TypeKind::F64
-                            | TypeKind::HResult
-                            | TypeKind::Enum(_)
-                    )
-            )
+        matches!(
+            self,
+            Self::Pointer
+                | Self::Bstr { .. }
+                | Self::NativeStruct(_)
+                | Self::NativeStructPointer { .. }
+        ) || matches!(
+            self,
+            Self::WinRT(typ)
+                if matches!(
+                    typ.kind(),
+                    TypeKind::Bool
+                        | TypeKind::I8
+                        | TypeKind::U8
+                        | TypeKind::I16
+                        | TypeKind::U16
+                        | TypeKind::Char16
+                        | TypeKind::I32
+                        | TypeKind::U32
+                        | TypeKind::I64
+                        | TypeKind::U64
+                        | TypeKind::F32
+                        | TypeKind::F64
+                        | TypeKind::HResult
+                        | TypeKind::Enum(_)
+                        | TypeKind::Struct(_)
+                )
+        )
     }
 
     pub(crate) fn abi_type(&self) -> AbiType {
         match self {
             Self::WinRT(typ) => typ.abi_type(),
-            Self::Pointer => AbiType::Ptr,
+            Self::Pointer
+            | Self::CoTaskMemWideString
+            | Self::Bstr { .. }
+            | Self::NativeStructPointer { .. }
+            | Self::NativeUnionPointer(_)
+            | Self::Variant
+            | Self::SafeArray { .. }
+            | Self::PropVariant
+            | Self::DispatchParams
+            | Self::ExcepInfo => AbiType::Ptr,
+            Self::NativeStruct(_) | Self::VariantByValue => {
+                panic!("aggregate values do not have a scalar AbiType")
+            }
         }
     }
 
     pub(crate) fn libffi_type(&self) -> libffi::middle::Type {
         match self {
             Self::WinRT(typ) => typ.libffi_type(),
-            Self::Pointer => libffi::middle::Type::pointer(),
+            Self::Pointer
+            | Self::CoTaskMemWideString
+            | Self::Bstr { .. }
+            | Self::NativeStructPointer { .. }
+            | Self::NativeUnionPointer(_)
+            | Self::Variant
+            | Self::SafeArray { .. }
+            | Self::PropVariant
+            | Self::DispatchParams
+            | Self::ExcepInfo => libffi::middle::Type::pointer(),
+            Self::NativeStruct(layout) => layout.libffi_type(),
+            Self::VariantByValue => variant_by_value_libffi_type(),
         }
     }
 
@@ -167,36 +391,111 @@ impl ParameterType {
         match self {
             Self::WinRT(typ) => typ.default_winrt_value(),
             Self::Pointer => WinRTValue::RawPtr(std::ptr::null_mut()),
+            Self::CoTaskMemWideString => WinRTValue::RawPtr(std::ptr::null_mut()),
+            Self::Bstr { .. } => panic!("BSTR storage is allocated by the dynamic executor"),
+            Self::NativeStruct(_)
+            | Self::NativeStructPointer { .. }
+            | Self::NativeUnionPointer(_)
+            | Self::Variant
+            | Self::VariantByValue
+            | Self::SafeArray { .. }
+            | Self::PropVariant
+            | Self::DispatchParams
+            | Self::ExcepInfo => {
+                panic!("native POD storage is allocated by the dynamic executor")
+            }
         }
     }
 
     pub(crate) fn from_out(&self, ptr: *mut std::ffi::c_void) -> crate::result::Result<WinRTValue> {
         match self {
             Self::WinRT(typ) => typ.from_out(ptr),
-            Self::Pointer => Ok(WinRTValue::RawPtr(ptr)),
+            Self::Pointer
+            | Self::CoTaskMemWideString
+            | Self::Bstr { .. }
+            | Self::NativeStructPointer { .. }
+            | Self::NativeUnionPointer(_) => Ok(WinRTValue::RawPtr(ptr)),
+            Self::NativeStruct(_)
+            | Self::Variant
+            | Self::VariantByValue
+            | Self::SafeArray { .. }
+            | Self::PropVariant
+            | Self::DispatchParams
+            | Self::ExcepInfo => {
+                unreachable!("native POD output conversion uses NativeStructValue")
+            }
         }
     }
 
     pub(crate) fn from_out_value(&self, value: &AbiValue) -> crate::result::Result<WinRTValue> {
         match (self, value) {
             (Self::WinRT(typ), value) => typ.from_out_value(value),
-            (Self::Pointer, AbiValue::Pointer(ptr)) => Ok(WinRTValue::RawPtr(*ptr)),
-            (Self::Pointer, value) => Err(crate::result::Error::InvalidTypeAbiToWinRT(
+            (
+                Self::Pointer
+                | Self::CoTaskMemWideString
+                | Self::Bstr { .. }
+                | Self::NativeStructPointer { .. }
+                | Self::NativeUnionPointer(_),
+                AbiValue::Pointer(ptr),
+            ) => Ok(WinRTValue::RawPtr(*ptr)),
+            (
+                Self::Pointer
+                | Self::CoTaskMemWideString
+                | Self::Bstr { .. }
+                | Self::NativeStructPointer { .. }
+                | Self::NativeUnionPointer(_),
+                value,
+            ) => Err(crate::result::Error::InvalidTypeAbiToWinRT(
                 TypeKind::Object,
                 value.abi_type(),
             )),
+            (
+                Self::NativeStruct(_)
+                | Self::Variant
+                | Self::VariantByValue
+                | Self::SafeArray { .. }
+                | Self::PropVariant
+                | Self::DispatchParams
+                | Self::ExcepInfo,
+                _,
+            ) => {
+                unreachable!("native POD output conversion uses NativeStructValue")
+            }
         }
     }
 
-    fn default_output_cleanup(&self) -> OutputCleanup {
+    pub(crate) fn default_output_cleanup(&self) -> OutputCleanup {
         match self {
             Self::WinRT(typ) if typ.kind().is_com_pointer() => OutputCleanup::ComRelease,
             Self::WinRT(typ) if matches!(typ.kind(), TypeKind::HString) => {
                 OutputCleanup::HStringDelete
             }
-            Self::WinRT(_) | Self::Pointer => OutputCleanup::None,
+            Self::Variant => OutputCleanup::VariantClear,
+            Self::SafeArray { .. } => OutputCleanup::SafeArrayDestroy,
+            Self::PropVariant => OutputCleanup::PropVariantClear,
+            Self::ExcepInfo => OutputCleanup::None,
+            Self::Bstr { .. } => OutputCleanup::BstrFree,
+            Self::CoTaskMemWideString => OutputCleanup::CoTaskMemFree,
+            Self::WinRT(_)
+            | Self::Pointer
+            | Self::NativeStruct(_)
+            | Self::NativeStructPointer { .. }
+            | Self::NativeUnionPointer(_)
+            | Self::VariantByValue
+            | Self::DispatchParams => OutputCleanup::None,
         }
     }
+}
+
+fn variant_by_value_libffi_type() -> libffi::middle::Type {
+    use libffi::middle::Type;
+
+    let mut fields = vec![Type::u16(), Type::u16(), Type::u16(), Type::u16()];
+    #[cfg(target_pointer_width = "64")]
+    fields.extend([Type::u64(), Type::u64()]);
+    #[cfg(target_pointer_width = "32")]
+    fields.push(Type::u64());
+    Type::structure(fields)
 }
 
 /// How a parameter is passed at the ABI level.
@@ -204,6 +503,9 @@ impl ParameterType {
 pub enum ParamKind {
     In,
     Out,
+    /// Optional output pointer. The logical input is a Boolean request flag;
+    /// the native ABI receives either stable output storage or null.
+    OptionalOut,
     InOut,
     /// FillArray: caller allocates buffer, callee fills it.
     /// ABI expands to 2 params: (u32 capacity, T* items).
@@ -224,18 +526,25 @@ pub struct Parameter {
 
 impl Parameter {
     pub fn is_input(&self) -> bool {
-        matches!(self.kind, ParamKind::In | ParamKind::InOut)
+        matches!(
+            self.kind,
+            ParamKind::In | ParamKind::OptionalOut | ParamKind::InOut
+        )
     }
 
     pub fn is_out(&self) -> bool {
         matches!(
             self.kind,
-            ParamKind::Out | ParamKind::InOut | ParamKind::OutFillArray
+            ParamKind::Out | ParamKind::OptionalOut | ParamKind::InOut | ParamKind::OutFillArray
         )
     }
 
     pub fn is_in_out(&self) -> bool {
         self.kind == ParamKind::InOut
+    }
+
+    pub fn is_optional_out(&self) -> bool {
+        self.kind == ParamKind::OptionalOut
     }
 
     pub fn is_fill_array(&self) -> bool {
@@ -263,16 +572,24 @@ pub(crate) struct AbiMethodSignature {
 pub(crate) enum MethodReturn {
     HResult,
     SemanticHResult,
+    PreservedHResult,
+    CapturedHResult(CapturedHResultPlan),
     Void,
-    Value(ParameterType),
+    Value {
+        typ: ParameterType,
+        cleanup: OutputCleanup,
+    },
 }
 
 impl MethodReturn {
     fn libffi_type(&self) -> libffi::middle::Type {
         match self {
-            Self::HResult | Self::SemanticHResult => libffi::middle::Type::i32(),
+            Self::HResult
+            | Self::SemanticHResult
+            | Self::PreservedHResult
+            | Self::CapturedHResult(_) => libffi::middle::Type::i32(),
             Self::Void => libffi::middle::Type::void(),
-            Self::Value(typ) => typ.libffi_type(),
+            Self::Value { typ, .. } => typ.libffi_type(),
         }
     }
 }
@@ -324,7 +641,35 @@ impl AbiMethodSignature {
         self
     }
 
-    pub(crate) fn add_in_out_type(mut self, typ: ParameterType) -> Self {
+    pub(crate) fn add_optional_out_type_with_cleanup(
+        mut self,
+        typ: ParameterType,
+        output_cleanup: OutputCleanup,
+    ) -> Self {
+        let input_index = self.input_count;
+        self.input_count += 1;
+        self.parameters.push(Parameter {
+            kind: ParamKind::OptionalOut,
+            typ,
+            output_cleanup,
+            value_index: self.out_count,
+            input_index: Some(input_index),
+        });
+        self.out_count += 1;
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn add_in_out_type(self, typ: ParameterType) -> Self {
+        let cleanup = typ.default_output_cleanup();
+        self.add_in_out_type_with_cleanup(typ, cleanup)
+    }
+
+    pub(crate) fn add_in_out_type_with_cleanup(
+        mut self,
+        typ: ParameterType,
+        output_cleanup: OutputCleanup,
+    ) -> Self {
         assert!(
             typ.supports_in_out(),
             "in/out currently supports native scalars, pointers, enums, and structs"
@@ -334,7 +679,7 @@ impl AbiMethodSignature {
         self.parameters.push(Parameter {
             kind: ParamKind::InOut,
             typ,
-            output_cleanup: OutputCleanup::None,
+            output_cleanup,
             value_index: self.out_count,
             input_index: Some(input_index),
         });
@@ -353,25 +698,6 @@ impl AbiMethodSignature {
             input_index: Some(input_index),
         });
         self.out_count += 1;
-        self
-    }
-
-    pub(crate) fn returns_type(mut self, typ: ParameterType) -> Self {
-        assert!(
-            typ.supports_direct_return(),
-            "direct native returns currently support scalars, enums, and pointers"
-        );
-        self.return_kind = MethodReturn::Value(typ);
-        self
-    }
-
-    pub(crate) fn returns_void(mut self) -> Self {
-        self.return_kind = MethodReturn::Void;
-        self
-    }
-
-    pub(crate) fn preserve_hresult(mut self) -> Self {
-        self.return_kind = MethodReturn::SemanticHResult;
         self
     }
 
@@ -401,10 +727,22 @@ impl AbiMethodSignature {
             }
         }
         let in_count = self.parameters.iter().filter(|p| p.is_input()).count();
-        let has_complex_param = self
-            .parameters
-            .iter()
-            .any(|p| p.typ.is_array() || p.is_fill_array() || p.is_in_out() || p.typ.is_struct());
+        let has_complex_param = self.parameters.iter().any(|p| {
+            p.typ.is_array()
+                || p.is_fill_array()
+                || p.is_in_out()
+                || p.is_optional_out()
+                || p.typ.is_struct()
+                || p.typ.native_struct_layout().is_some()
+                || p.typ.native_union_layout().is_some()
+                || p.typ.is_variant()
+                || p.typ.is_bstr()
+                || p.typ.is_variant_by_value()
+                || p.typ.is_safe_array()
+                || p.typ.is_prop_variant()
+                || p.typ.is_dispatch_params()
+                || p.typ.is_excep_info()
+        });
 
         // Check if the single in-param (if any) is a simple non-HString, non-Struct type
         let simple_in = !has_complex_param && in_count == 1 && {
@@ -428,66 +766,64 @@ impl AbiMethodSignature {
         let scalar_out_count = self.out_count - fill_out_count - array_out_count;
 
         let returns_hresult = matches!(self.return_kind, MethodReturn::HResult);
-        let strategy = if returns_hresult
-            && !has_complex_param
-            && in_count == 0
-            && self.out_count == 1
-        {
-            CallStrategy::Direct0In1Out
-        } else if returns_hresult && !has_complex_param && in_count == 0 && self.out_count == 0 {
-            CallStrategy::Direct0In0Out
-        } else if returns_hresult && simple_in && self.out_count == 0 {
-            CallStrategy::Direct1In0Out
-        } else if returns_hresult && simple_in && self.out_count == 1 {
-            CallStrategy::Direct1In1Out
-        // ReceiveArray only: fn(this, *mut u32, *mut *mut c_void) -> HRESULT
-        } else if returns_hresult
-            && scalar_in_count == 0
-            && array_in_count == 0
-            && array_out_count == 1
-            && fill_out_count == 0
-            && scalar_out_count == 0
-        {
-            CallStrategy::DirectReceiveArray
-        // PassArray + 1 out: fn(this, u32, *const u8, out) -> HRESULT
-        } else if returns_hresult
-            && scalar_in_count == 0
-            && array_in_count == 1
-            && array_out_count == 0
-            && fill_out_count == 0
-            && scalar_out_count == 1
-        {
-            CallStrategy::DirectPassArray1Out
-        // FillArray only: fn(this, u32, *mut u8, *mut u32) -> HRESULT
-        } else if returns_hresult
-            && scalar_in_count == 0
-            && array_in_count == 0
-            && fill_out_count == 1
-            && array_out_count == 0
-            && scalar_out_count == 0
-        {
-            CallStrategy::DirectFillArray
-        // 1 scalar in + FillArray: fn(this, val, u32, *mut u8, *mut u32) -> HRESULT
-        } else if returns_hresult
-            && scalar_in_count == 1
-            && array_in_count == 0
-            && fill_out_count == 1
-            && array_out_count == 0
-            && scalar_out_count == 0
-        {
-            let in_param = self
-                .parameters
-                .iter()
-                .find(|p| p.is_input() && !p.typ.is_array())
-                .unwrap();
-            if !in_param.typ.is_hstring() && !in_param.typ.is_struct() {
-                CallStrategy::Direct1InFillArray
+        let strategy =
+            if returns_hresult && !has_complex_param && in_count == 0 && self.out_count == 1 {
+                CallStrategy::Direct0In1Out
+            } else if returns_hresult && !has_complex_param && in_count == 0 && self.out_count == 0
+            {
+                CallStrategy::Direct0In0Out
+            } else if returns_hresult && simple_in && self.out_count == 0 {
+                CallStrategy::Direct1In0Out
+            } else if returns_hresult && simple_in && self.out_count == 1 {
+                CallStrategy::Direct1In1Out
+            // ReceiveArray only: fn(this, *mut u32, *mut *mut c_void) -> HRESULT
+            } else if returns_hresult
+                && scalar_in_count == 0
+                && array_in_count == 0
+                && array_out_count == 1
+                && fill_out_count == 0
+                && scalar_out_count == 0
+            {
+                CallStrategy::DirectReceiveArray
+            // PassArray + 1 out: fn(this, u32, *const u8, out) -> HRESULT
+            } else if returns_hresult
+                && scalar_in_count == 0
+                && array_in_count == 1
+                && array_out_count == 0
+                && fill_out_count == 0
+                && scalar_out_count == 1
+            {
+                CallStrategy::DirectPassArray1Out
+            // FillArray only: fn(this, u32, *mut u8, *mut u32) -> HRESULT
+            } else if returns_hresult
+                && scalar_in_count == 0
+                && array_in_count == 0
+                && fill_out_count == 1
+                && array_out_count == 0
+                && scalar_out_count == 0
+            {
+                CallStrategy::DirectFillArray
+            // 1 scalar in + FillArray: fn(this, val, u32, *mut u8, *mut u32) -> HRESULT
+            } else if returns_hresult
+                && scalar_in_count == 1
+                && array_in_count == 0
+                && fill_out_count == 1
+                && array_out_count == 0
+                && scalar_out_count == 0
+            {
+                let in_param = self
+                    .parameters
+                    .iter()
+                    .find(|p| p.is_input() && !p.typ.is_array())
+                    .unwrap();
+                if !in_param.typ.is_hstring() && !in_param.typ.is_struct() {
+                    CallStrategy::Direct1InFillArray
+                } else {
+                    CallStrategy::Libffi(system_cif(types, self.return_kind.libffi_type()))
+                }
             } else {
-                CallStrategy::Libffi(Cif::new(types.into_iter(), self.return_kind.libffi_type()))
-            }
-        } else {
-            CallStrategy::Libffi(Cif::new(types.into_iter(), self.return_kind.libffi_type()))
-        };
+                CallStrategy::Libffi(system_cif(types, self.return_kind.libffi_type()))
+            };
 
         Method {
             info: MethodInfo {
@@ -500,6 +836,32 @@ impl AbiMethodSignature {
             strategy,
         }
     }
+}
+
+pub(crate) fn lower_completed_method(
+    table: &Arc<MetadataTable>,
+    index: usize,
+    parameters: Vec<(ParamKind, ParameterType, OutputCleanup)>,
+    return_kind: MethodReturn,
+) -> Method {
+    let mut signature = AbiMethodSignature::new(table);
+    for (kind, typ, cleanup) in parameters {
+        signature = match kind {
+            ParamKind::In => {
+                assert_eq!(cleanup, OutputCleanup::None);
+                signature.add_in_type(typ)
+            }
+            ParamKind::Out => signature.add_out_type_with_cleanup(typ, cleanup),
+            ParamKind::OptionalOut => signature.add_optional_out_type_with_cleanup(typ, cleanup),
+            ParamKind::InOut => signature.add_in_out_type_with_cleanup(typ, cleanup),
+            ParamKind::OutFillArray => {
+                assert_eq!(cleanup, OutputCleanup::None);
+                signature.add_out_fill_type(typ)
+            }
+        };
+    }
+    signature.return_kind = return_kind;
+    signature.build(index)
 }
 
 #[derive(Debug)]
@@ -868,10 +1230,152 @@ impl call::ArgumentList for InvocationArgs<'_> {
     }
 }
 
+struct ComInvocationArgs<'a> {
+    original: &'a [crate::com::Value],
+    replacements: Option<Vec<Option<WinRTValue>>>,
+}
+
+impl<'a> ComInvocationArgs<'a> {
+    fn new(original: &'a [crate::com::Value]) -> Self {
+        Self {
+            original,
+            replacements: None,
+        }
+    }
+
+    fn replace(&mut self, index: usize, value: WinRTValue) {
+        self.replacements.get_or_insert_with(|| {
+            std::iter::repeat_with(|| None)
+                .take(self.original.len())
+                .collect()
+        })[index] = Some(value);
+    }
+}
+
+impl call::ArgumentList for ComInvocationArgs<'_> {
+    fn get_value(&self, index: usize) -> &WinRTValue {
+        if let Some(value) = self
+            .replacements
+            .as_ref()
+            .and_then(|values| values[index].as_ref())
+        {
+            return value;
+        }
+        match &self.original[index] {
+            crate::com::Value::WinRt(value) => value,
+            crate::com::Value::Bstr(_) => {
+                panic!("BSTR argument requested as a WinRT value")
+            }
+            crate::com::Value::NativeStruct(_) => {
+                panic!("native struct argument requested as a WinRT value")
+            }
+            crate::com::Value::NativeUnion(_)
+            | crate::com::Value::Variant(_)
+            | crate::com::Value::SafeArray(_)
+            | crate::com::Value::PropVariant(_)
+            | crate::com::Value::DispatchParams(_)
+            | crate::com::Value::ExcepInfo(_) => {
+                panic!("COM-local argument requested as a WinRT value")
+            }
+            crate::com::Value::Buffer(_) => {
+                panic!("COM buffer reached the private native-call backend")
+            }
+        }
+    }
+
+    fn get_native_struct(&self, index: usize) -> Option<&crate::com::NativeStructValue> {
+        match &self.original[index] {
+            crate::com::Value::NativeStruct(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    fn get_bstr(&self, index: usize) -> Option<&crate::com::BstrValue> {
+        match &self.original[index] {
+            crate::com::Value::Bstr(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    fn get_native_union(&self, index: usize) -> Option<&crate::com::NativeUnionValue> {
+        match &self.original[index] {
+            crate::com::Value::NativeUnion(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    fn get_variant(&self, index: usize) -> Option<&crate::com::VariantValue> {
+        match &self.original[index] {
+            crate::com::Value::Variant(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    fn get_safe_array(&self, index: usize) -> Option<&crate::com::SafeArrayValue> {
+        match &self.original[index] {
+            crate::com::Value::SafeArray(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    fn get_prop_variant(&self, index: usize) -> Option<&crate::com::PropVariantValue> {
+        match &self.original[index] {
+            crate::com::Value::PropVariant(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    fn get_dispatch_params(&self, index: usize) -> Option<&crate::com::DispatchParamsValue> {
+        match &self.original[index] {
+            crate::com::Value::DispatchParams(value) => Some(value),
+            _ => None,
+        }
+    }
+}
+
 impl Method {
-    #[cfg(test)]
+    pub(crate) fn parameter_type(&self, parameter_index: usize) -> &ParameterType {
+        &self.info.parameters[parameter_index].typ
+    }
+
     pub(crate) fn output_cleanup(&self, parameter_index: usize) -> OutputCleanup {
         self.info.parameters[parameter_index].output_cleanup
+    }
+
+    pub(crate) fn direct_return_type(&self) -> Option<&ParameterType> {
+        match &self.info.return_kind {
+            MethodReturn::Value { typ, .. } => Some(typ),
+            MethodReturn::HResult
+            | MethodReturn::SemanticHResult
+            | MethodReturn::PreservedHResult
+            | MethodReturn::CapturedHResult(_)
+            | MethodReturn::Void => None,
+        }
+    }
+
+    pub(crate) fn uses_com_value_path(&self) -> bool {
+        self.info.parameters.iter().any(|parameter| {
+            parameter.is_optional_out()
+                || parameter.typ.native_struct_layout().is_some()
+                || parameter.typ.native_union_layout().is_some()
+                || parameter.typ.is_variant()
+                || parameter.typ.is_bstr()
+                || parameter.typ.is_variant_by_value()
+                || parameter.typ.is_safe_array()
+                || parameter.typ.is_prop_variant()
+                || parameter.typ.is_dispatch_params()
+                || parameter.typ.is_excep_info()
+        }) || self.direct_return_type().is_some_and(|typ| {
+            typ.native_struct_layout().is_some()
+                || typ.native_union_layout().is_some()
+                || typ.is_variant()
+                || typ.is_bstr()
+                || typ.is_variant_by_value()
+                || typ.is_safe_array()
+                || typ.is_prop_variant()
+                || typ.is_dispatch_params()
+                || typ.is_excep_info()
+        })
     }
 
     // --- Fast getter paths: zero Vec/WinRTValue allocation ---
@@ -1204,8 +1708,285 @@ impl Method {
                 self.info.out_count,
                 &self.info.return_kind,
                 cif,
-            ),
+            )
+            .and_then(|values| {
+                values
+                    .into_iter()
+                    .map(|value| match value {
+                        NativeCallValue::WinRt(value) => Ok(value),
+                        NativeCallValue::NativeStruct(_) => Err(invalid_argument(
+                            "native POD result reached the WinRT invocation path",
+                        )),
+                        NativeCallValue::Variant(_)
+                        | NativeCallValue::SafeArray(_)
+                        | NativeCallValue::PropVariant(_)
+                        | NativeCallValue::ExcepInfo(_) => Err(invalid_argument(
+                            "COM-local result reached the WinRT invocation path",
+                        )),
+                    })
+                    .collect()
+            }),
         }
+    }
+
+    fn prepare_com_invocation_args<'a>(
+        &self,
+        args: &'a [crate::com::Value],
+    ) -> windows_core::Result<ComInvocationArgs<'a>> {
+        if args.len() != self.info.input_count {
+            return Err(invalid_argument(&format!(
+                "Argument count mismatch: expected {}, received {}",
+                self.info.input_count,
+                args.len()
+            )));
+        }
+        let mut invocation_args = ComInvocationArgs::new(args);
+        for parameter in self
+            .info
+            .parameters
+            .iter()
+            .filter(|parameter| parameter.is_input())
+        {
+            let input_index = parameter.input_index.expect("input parameter index");
+            if parameter.is_optional_out() {
+                if !matches!(
+                    &args[input_index],
+                    crate::com::Value::WinRt(WinRTValue::Bool(_))
+                ) {
+                    return Err(invalid_argument(
+                        "Optional COM output request must be a Boolean value",
+                    ));
+                }
+                continue;
+            }
+            if parameter.typ.is_dispatch_params() {
+                if !matches!(&args[input_index], crate::com::Value::DispatchParams(_)) {
+                    return Err(invalid_argument(
+                        "Argument type mismatch: expected DISPPARAMS",
+                    ));
+                }
+                continue;
+            }
+            if parameter.typ.is_excep_info() {
+                return Err(invalid_argument("EXCEPINFO is output-only"));
+            }
+            if let Some(expected_layout) = parameter.typ.native_struct_layout() {
+                if parameter.typ.is_nullable_native_struct_pointer()
+                    && matches!(
+                        &args[input_index],
+                        crate::com::Value::WinRt(value) if value.is_null_object()
+                    )
+                {
+                    continue;
+                }
+                let value = match &args[input_index] {
+                    crate::com::Value::NativeStruct(value) => value,
+                    crate::com::Value::WinRt(value) => {
+                        return Err(invalid_argument(&format!(
+                            "Argument type mismatch: expected native struct `{}`, found {:?}",
+                            expected_layout.name(),
+                            value.get_type_kind()
+                        )));
+                    }
+                    crate::com::Value::Buffer(_) => {
+                        return Err(invalid_argument(
+                            "COM buffer passed to a native struct parameter",
+                        ));
+                    }
+                    _ => {
+                        return Err(invalid_argument(
+                            "COM-local value passed to a native struct parameter",
+                        ));
+                    }
+                };
+                if value.layout() != expected_layout {
+                    return Err(invalid_argument(&format!(
+                        "Native struct type mismatch: expected `{}`, received `{}`",
+                        expected_layout.name(),
+                        value.layout().name()
+                    )));
+                }
+                continue;
+            }
+
+            if let Some(expected_layout) = parameter.typ.native_union_layout() {
+                let crate::com::Value::NativeUnion(value) = &args[input_index] else {
+                    return Err(invalid_argument(&format!(
+                        "Argument type mismatch: expected native union `{}`",
+                        expected_layout.name()
+                    )));
+                };
+                if value.layout() != expected_layout {
+                    return Err(invalid_argument(&format!(
+                        "Native union type mismatch: expected `{}`, received `{}`",
+                        expected_layout.name(),
+                        value.layout().name()
+                    )));
+                }
+                continue;
+            }
+
+            if parameter.typ.is_variant() {
+                let crate::com::Value::Variant(value) = &args[input_index] else {
+                    return Err(invalid_argument("Argument type mismatch: expected VARIANT"));
+                };
+                value
+                    .validate_supported()
+                    .map_err(|error| invalid_argument(&error.message()))?;
+                continue;
+            }
+
+            if parameter.typ.is_bstr() {
+                let crate::com::Value::Bstr(value) = &args[input_index] else {
+                    return Err(invalid_argument("Argument type mismatch: expected BSTR"));
+                };
+                if value.as_deref().is_none() && !parameter.typ.is_nullable_bstr() {
+                    return Err(invalid_argument(
+                        "Null BSTR input requires a nullable BSTR contract",
+                    ));
+                }
+                continue;
+            }
+
+            if parameter.typ.is_variant_by_value() {
+                let crate::com::Value::Variant(value) = &args[input_index] else {
+                    return Err(invalid_argument(
+                        "Argument type mismatch: expected by-value VARIANT",
+                    ));
+                };
+                value
+                    .validate_supported()
+                    .map_err(|error| invalid_argument(&error.message()))?;
+                continue;
+            }
+
+            if parameter.typ.is_safe_array() {
+                let crate::com::Value::SafeArray(value) = &args[input_index] else {
+                    return Err(invalid_argument(
+                        "Argument type mismatch: expected SAFEARRAY",
+                    ));
+                };
+                if parameter
+                    .typ
+                    .safe_array_element()
+                    .is_some_and(|expected| expected != value.element_type())
+                {
+                    return Err(invalid_argument(&format!(
+                        "SAFEARRAY element type mismatch: expected {:?}, received {:?}",
+                        parameter.typ.safe_array_element().unwrap(),
+                        value.element_type()
+                    )));
+                }
+                if parameter
+                    .typ
+                    .safe_array_interface_iid()
+                    .is_some_and(|expected| value.interface_iid() != Some(expected))
+                {
+                    return Err(invalid_argument(&format!(
+                        "SAFEARRAY interface IID mismatch: expected {:?}, received {:?}",
+                        parameter.typ.safe_array_interface_iid().unwrap(),
+                        value.interface_iid()
+                    )));
+                }
+                continue;
+            }
+
+            if parameter.typ.is_prop_variant() {
+                let crate::com::Value::PropVariant(value) = &args[input_index] else {
+                    return Err(invalid_argument(
+                        "Argument type mismatch: expected PROPVARIANT",
+                    ));
+                };
+                value
+                    .validate_supported()
+                    .map_err(|error| invalid_argument(&error.message()))?;
+                continue;
+            }
+
+            let crate::com::Value::WinRt(value) = &args[input_index] else {
+                return Err(invalid_argument(
+                    "COM-local value passed to a scalar or pointer parameter",
+                ));
+            };
+            let coerced = if let Some(typ) = parameter.typ.as_winrt() {
+                if typ.is_array() {
+                    coerce_input_array(typ, value)?
+                } else if expected_object_iid(typ).is_some() {
+                    coerce_input_object(typ, value)?
+                } else {
+                    coerce_scalar_input(typ, value)?
+                }
+            } else {
+                validate_pointer_input(value)?;
+                None
+            };
+            if let Some(value) = coerced {
+                invocation_args.replace(input_index, value);
+            }
+        }
+        Ok(invocation_args)
+    }
+
+    pub(crate) fn call_com_dynamic(
+        &self,
+        obj: *mut std::ffi::c_void,
+        args: &[crate::com::Value],
+    ) -> windows_core::Result<Vec<crate::com::Value>> {
+        if matches!(self.info.return_kind, MethodReturn::CapturedHResult(_)) {
+            return Err(invalid_argument(
+                "captured HRESULT calls require the dedicated COM invocation path",
+            ));
+        }
+        let invocation_args = self.prepare_com_invocation_args(args)?;
+        let CallStrategy::Libffi(cif) = &self.strategy else {
+            return Err(invalid_argument(
+                "native POD calls must use the prepared libffi plan",
+            ));
+        };
+        call::call_method_dynamic(
+            self.info.index,
+            obj,
+            &self.info.parameters,
+            &invocation_args,
+            self.info.out_count,
+            &self.info.return_kind,
+            cif,
+        )
+        .map(|values| {
+            values
+                .into_iter()
+                .map(|value| match value {
+                    NativeCallValue::WinRt(value) => crate::com::Value::WinRt(value),
+                    NativeCallValue::NativeStruct(value) => crate::com::Value::NativeStruct(value),
+                    NativeCallValue::Variant(value) => crate::com::Value::Variant(value),
+                    NativeCallValue::SafeArray(value) => crate::com::Value::SafeArray(value),
+                    NativeCallValue::PropVariant(value) => crate::com::Value::PropVariant(value),
+                    NativeCallValue::ExcepInfo(value) => crate::com::Value::ExcepInfo(value),
+                })
+                .collect()
+        })
+    }
+
+    pub(crate) fn call_com_dynamic_captured(
+        &self,
+        obj: *mut std::ffi::c_void,
+        args: &[crate::com::Value],
+    ) -> windows_core::Result<call::CapturedHResultCall> {
+        let invocation_args = self.prepare_com_invocation_args(args)?;
+        let CallStrategy::Libffi(cif) = &self.strategy else {
+            return Err(invalid_argument(
+                "captured HRESULT calls must use the prepared libffi plan",
+            ));
+        };
+        call::call_method_dynamic_captured(
+            self.info.index,
+            obj,
+            &self.info.parameters,
+            &invocation_args,
+            self.info.out_count,
+            &self.info.return_kind,
+            cif,
+        )
     }
 }
 

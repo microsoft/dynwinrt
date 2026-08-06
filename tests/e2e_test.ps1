@@ -29,6 +29,7 @@ $comBindingsDir = Join-Path $e2eDir "com"
 $comShellDir = Join-Path $comBindingsDir "shell"
 $comInteropDir = Join-Path $comBindingsDir "interop"
 $comWicDir = Join-Path $comBindingsDir "wic"
+$comStreamDir = Join-Path $comBindingsDir "stream"
 $comSmtcDir = Join-Path $comBindingsDir "smtc"
 
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
@@ -176,13 +177,13 @@ foreach ($l in @($Lang | Where-Object { $_ -in @("py", "ts") })) {
 
 if ("com" -in $Lang) {
     Write-Host "`n--- Generate (Classic COM) ---" -ForegroundColor Yellow
-    $comRuntimeImport = "../../../../../bindings/js/dist/com.js"
+    $comRuntimeImport = "../../../../../bindings/js/dist/com-unsafe.js"
     $winrtRuntimeImport = "../../../../bindings/js/dist/winrt.js"
 
     & cargo run -p dynwinrt-codegen --release --quiet -- generate `
         --winmd $win32Winmd `
         --namespace Windows.Win32.UI.Shell `
-        --class-name "TaskbarList,IDataTransferManagerInterop,FileOperation,FileOpenDialog" `
+        --class-name "TaskbarList,IShellLinkW,IDataTransferManagerInterop,FileOperation,FileOpenDialog" `
         --output $comShellDir `
         --import-name $comRuntimeImport
     if ($LASTEXITCODE -ne 0) { Write-Error "Classic COM Shell generation failed"; exit 1 }
@@ -210,6 +211,14 @@ if ("com" -in $Lang) {
         --output $comWicDir `
         --import-name $comRuntimeImport
     if ($LASTEXITCODE -ne 0) { Write-Error "Classic COM WIC generation failed"; exit 1 }
+
+    & cargo run -p dynwinrt-codegen --release --quiet -- generate `
+        --winmd $win32Winmd `
+        --namespace Windows.Win32.System.Com `
+        --class-name ISequentialStream `
+        --output $comStreamDir `
+        --import-name $comRuntimeImport
+    if ($LASTEXITCODE -ne 0) { Write-Error "Classic COM stream generation failed"; exit 1 }
 
     & cargo run -p dynwinrt-codegen --release --quiet -- generate `
         --namespace Windows.Media `
@@ -272,9 +281,11 @@ if ("com" -in $Lang) {
         "taskbarlist.mjs",
         "electron-hwnd-buffer.mjs",
         "persist-file.mjs",
+        "shell-link-pod.mjs",
         "file-operation.mjs",
         "file-open-dialog.mjs",
         "wic-imaging-factory.mjs",
+        "sequential-stream-buffer.mjs",
         "dtm.mjs",
         "smtc.mjs"
     )
