@@ -22,6 +22,9 @@ mono_crash.*
 [Dd]ebugPublic/
 [Rr]elease/
 [Rr]eleases/
+!eng/release/
+!eng/release/python/
+!eng/release/python/**
 x64/
 x86/
 [Ww][Ii][Nn]32/
@@ -433,10 +436,15 @@ target
 **/generated
 **/node_modules
 tools/dynwinrt-codegen/npm/bin/**/*.exe
-bench-electron/out/
+!benchmarks/electron/out/
+benchmarks/electron/out/*
+!benchmarks/electron/out/preload/
+benchmarks/electron/out/preload/*
+!benchmarks/electron/out/preload/index.js
 **/build
 
 # Claude Code local settings
 **/settings.local.json
-# Generated E2E projections are recreated and removed by tests/e2e_test.ps1.
-tests/e2e_generated/
+# Generated E2E projections are recreated and removed by tests/e2e/e2e_test.ps1.
+tests/e2e/e2e_generated/
+.python-release/

@@ -96,7 +96,7 @@ jobs:
           .\bindings\py\.venv\Scripts\python.exe -m pytest bindings\py\tests -q
           .\bindings\py\.venv\Scripts\python.exe -m mypy.stubtest dynwinrt_py --allowlist bindings\py\stubtest_allowlist.txt --ignore-disjoint-bases
       - name: Run E2E tests
-        run: .\tests\e2e_test.ps1 -SkipBuild
+        run: .\tests\e2e\e2e_test.ps1 -SkipBuild
 
   # dynwinrt-codegen (x64 + arm64)
   dynwinrt-codegen:

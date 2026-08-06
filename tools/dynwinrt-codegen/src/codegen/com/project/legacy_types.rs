@@ -174,9 +174,15 @@ fn scalar_alias_underlying(name: &str, typ: &TypeMeta) -> Option<ComScalarRepr> 
 }
 
 fn classify_pointer_alias(name: &str) -> Option<PointerAliasKind> {
-    if matches!(name, "PWSTR" | "PCWSTR" | "LPWSTR" | "LPCWSTR") {
+    if matches!(
+        name,
+        "PWSTR" | "PCWSTR" | "LPWSTR" | "LPCWSTR" | "PWCHAR" | "PCWCHAR" | "LPWCH" | "LPCWCH"
+    ) {
         Some(PointerAliasKind::StringPointer(StringEncoding::Wide))
-    } else if matches!(name, "PSTR" | "PCSTR" | "LPSTR" | "LPCSTR") {
+    } else if matches!(
+        name,
+        "PSTR" | "PCSTR" | "LPSTR" | "LPCSTR" | "LPCH" | "LPCCH"
+    ) {
         Some(PointerAliasKind::StringPointer(StringEncoding::Ansi))
     } else if matches!(
         name,

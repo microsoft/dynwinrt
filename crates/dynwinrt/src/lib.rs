@@ -6,6 +6,7 @@ use windows::core::*;
 mod abi;
 mod call;
 pub mod com;
+mod composition;
 mod interfaces;
 mod native_call;
 mod result;
@@ -29,6 +30,10 @@ mod reference;
 pub mod vector;
 
 pub use crate::array::ArrayData;
+pub use crate::composition::{
+    LocalOverrideAbi, LocalOverrideInterface, LocalOverrideSizeCallback, LocalOverrideVoidCallback,
+    compose_winrt, compose_winrt_with_overrides,
+};
 pub use crate::dasync::{
     AsyncCompletedCallback, ProgressCallback, WinRTAsyncFuture, create_progress_handler,
     get_async_results, set_async_completed_handler,
@@ -45,7 +50,10 @@ pub use crate::roapi::ro_get_activation_factory_2;
 pub use crate::signature::{InterfaceSignature, MethodSignature};
 pub use crate::value::{ArrayOfIUnknownData, AsyncInfo, WinRTValue};
 pub use crate::winapp::{WinAppSdkContext, initialize_winappsdk};
-pub use crate::xaml_application::create_xaml_application;
+pub use crate::xaml_application::{
+    XamlRuntimeClassActivator, XamlRuntimeClassRegistration, create_xaml_application,
+    register_xaml_runtime_class,
+};
 pub use interfaces::uri_vtable;
 
 pub async fn get_async_string(

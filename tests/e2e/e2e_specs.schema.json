@@ -1,0 +1,153 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "dynwinrt E2E Test Specs",
+  "type": "object",
+  "required": ["specs"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "specs": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/spec" }
+    }
+  },
+  "definitions": {
+    "spec": {
+      "type": "object",
+      "required": ["namespace", "class", "instantiate", "checks"],
+      "properties": {
+        "namespace": { "type": "string", "description": "WinRT namespace" },
+        "class": { "type": "string", "description": "WinRT class name" },
+        "id": { "type": "string", "description": "Unique ID (auto-derived from class if omitted)" },
+        "langs": {
+          "type": "array",
+          "items": { "enum": ["py", "ts"] },
+          "default": ["py", "ts"]
+        },
+        "extra_classes": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Additional runtime classes to generate for this spec"
+        },
+        "skip_reason": { "type": "string", "description": "Skip this spec with a reason" },
+        "instantiate": { "$ref": "#/definitions/instantiate" },
+        "checks": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/check" }
+        }
+      }
+    },
+    "instantiate": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": { "enum": ["activate", "static_factory", "constructor", "none"] },
+        "method": { "type": "string", "description": "Factory method name (snake_case)" },
+        "args": { "type": "array", "description": "Factory method arguments" }
+      }
+    },
+    "check": {
+      "type": "object",
+      "required": ["kind", "member"],
+      "properties": {
+        "langs": {
+          "type": "array",
+          "items": { "enum": ["py", "ts"] },
+          "default": ["py", "ts"]
+        },
+        "kind": {
+          "enum": [
+            "property_equals",
+            "property_exists",
+            "property_in_range",
+            "method_equals",
+            "method_result_contains",
+             "static_equals",
+             "static_not_null",
+             "interface_cast",
+             "struct_roundtrip",
+             "array_roundtrip",
+             "static_string_length",
+             "static_expect_error",
+             "constructor_raises_type_error",
+             "cross_class_chain",
+             "async_memory_roundtrip",
+             "async_cancellation",
+             "property_set_equals",
+             "vector_view_access",
+             "vector_index_of",
+             "vector_get_many",
+             "ireference_roundtrip",
+             "event_callback",
+             "sequence_protocol",
+             "mutable_sequence_protocol",
+             "mapping_protocol",
+             "datetime_roundtrip",
+             "static_uuid_roundtrip",
+             "static_uuid_input",
+             "static_bytes_input",
+             "static_sequence_input",
+             "closable_context",
+             "method_then_property_equals",
+             "device_information_async_collection",
+             "bitmap_encoder_async_create"
+           ]
+         },
+         "member": { "type": "string", "description": "Property or method name (snake_case)" },
+        "args": { "type": "array", "description": "Method arguments" },
+        "args_factory": {
+          "type": "object",
+          "description": "Create an argument via factory method",
+          "properties": {
+            "class": { "type": "string" },
+            "method": { "type": "string" },
+            "args": { "type": "array" }
+          }
+        },
+        "expected": { "description": "Expected return value (string, number, boolean)" },
+         "expected_winerror": { "type": "integer", "description": "Expected signed HRESULT in OSError.winerror" },
+         "contains": { "type": "string", "description": "Expected substring in result" },
+         "min": { "type": "number", "description": "Minimum value for property_in_range" },
+         "max": { "type": "number", "description": "Maximum value for property_in_range" },
+         "min_length": { "type": "integer", "description": "Minimum string length for static_string_length" },
+         "interface_module": { "type": "string", "description": "Module name for interface_cast" },
+         "interface_class": { "type": "string", "description": "Interface class name for interface_cast" },
+         "method": { "type": "string", "description": "Method to call after cast for interface_cast" },
+         "struct_module": { "type": "string", "description": "Generated module containing struct helpers" },
+         "struct_class": { "type": "string", "description": "Struct class/interface name" },
+         "struct_args": { "type": "object", "description": "Field values for struct construction" },
+         "pack_fn": { "type": "string", "description": "Pack helper function name" },
+         "unpack_fn": { "type": "string", "description": "Unpack helper function name" },
+         "expected_fields": { "type": "object", "description": "Expected struct field values after roundtrip" },
+         "element_type": { "type": "string", "description": "Element type for array_roundtrip" },
+         "values": { "type": "array", "description": "Input values for array_roundtrip" },
+         "steps": {
+           "type": "array",
+           "description": "Steps for cross_class_chain checks"
+         },
+         "write_value": { "type": "integer", "description": "Integer value used by async memory roundtrip" },
+         "set_value": { "description": "Value to set for property_set_equals check" },
+         "expected_type": { "type": "string", "description": "Expected Python runtime type name" },
+         "min_size": { "type": "integer", "description": "Minimum vector size for vector_view_access" },
+         "search_value": { "description": "Value to search for in vector_index_of" },
+         "expected_index": { "type": "integer", "description": "Expected indexOf result (-1 if not found)" },
+         "capacity": { "type": "integer", "description": "FillArray capacity used by vector_get_many" },
+         "at_end": { "type": "boolean", "description": "Start vector_get_many at Size and expect no items" },
+         "factory": { "type": "string", "description": "PropertyValue factory used by ireference_roundtrip" },
+         "reference_module": { "type": "string", "description": "Generated IReference module used by ireference_roundtrip" },
+         "reference_class": { "type": "string", "description": "Generated IReference class used by ireference_roundtrip" },
+         "value": { "description": "Value used by ireference_roundtrip" },
+         "compatibility_value": { "description": "Value used to verify legacy wrapper compatibility" },
+         "event_name": { "type": "string", "description": "Event name for event_callback (PascalCase, e.g. Closed)" },
+         "trigger": { "type": "string", "description": "Method to call to trigger the event (snake_case)" },
+         "property_path": {
+           "type": "array",
+           "items": { "type": "string" },
+           "description": "Property path read after method_then_property_equals invokes member"
+         },
+         "expected_size": { "type": "integer", "description": "Expected collection size" },
+         "set_key": { "description": "Mapping key used for mutation checks" },
+         "set_value": { "description": "Collection value used for mutation checks" }
+       }
+     }
+   }
+}

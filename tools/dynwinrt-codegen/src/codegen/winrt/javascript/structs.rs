@@ -3,7 +3,10 @@
 
 //! JavaScript struct field helpers.
 
+use crate::codegen::winrt::shared::imports::ireference_inner_type;
 use crate::types::TypeMeta;
+
+use super::signature::{ref_marker, wrap_arg};
 
 // ======================================================================
 // Struct field type helpers (TypeScript)
@@ -11,6 +14,25 @@ use crate::types::TypeMeta;
 
 /// Map a struct field type to its TypeScript type annotation.
 pub(crate) fn ts_struct_field_type(typ: &TypeMeta) -> String {
+    if let Some(inner) = ireference_inner_type(typ) {
+        let TypeMeta::Parameterized { name, args, .. } = typ else {
+            unreachable!()
+        };
+        let wrapper = crate::meta::make_parameterized_name(name, args);
+        return format!("{} | null | {}", ts_ireference_inner_type(inner), wrapper);
+    }
+
+    ts_struct_field_read_type(typ)
+}
+
+fn ts_ireference_inner_type(typ: &TypeMeta) -> String {
+    match typ {
+        TypeMeta::Enum { name, .. } => name.clone(),
+        _ => ts_struct_field_read_type(typ),
+    }
+}
+
+fn ts_struct_field_read_type(typ: &TypeMeta) -> String {
     match typ {
         TypeMeta::Bool => "boolean".to_string(),
         TypeMeta::String => "string".to_string(),
@@ -34,6 +56,17 @@ pub(crate) fn ts_struct_field_type(typ: &TypeMeta) -> String {
 
 /// Generate a `DynWinRtStruct.getXxx(index)` expression for a struct field.
 pub(crate) fn struct_field_getter(typ: &TypeMeta, index: usize) -> String {
+    if ireference_inner_type(typ).is_some() {
+        let TypeMeta::Parameterized { name, args, .. } = typ else {
+            unreachable!()
+        };
+        let wrapper = ref_marker(&crate::meta::make_parameterized_name(name, args));
+        return format!(
+            "((value) => value.isNull() ? null : new {}(value).value)(s.getObject({}))",
+            wrapper, index
+        );
+    }
+
     match typ {
         TypeMeta::Bool => format!("s.getU8({}) !== 0", index),
         TypeMeta::I8 => format!("s.getI8({})", index),
@@ -58,6 +91,10 @@ pub(crate) fn struct_field_getter(typ: &TypeMeta, index: usize) -> String {
 
 /// Generate a `s.setXxx(index, expr)` statement for a struct field.
 pub(crate) fn struct_field_setter(typ: &TypeMeta, index: usize, value_expr: &str) -> String {
+    if ireference_inner_type(typ).is_some() {
+        return format!("s.setObject({}, {})", index, wrap_arg(value_expr, typ));
+    }
+
     match typ {
         TypeMeta::Bool => format!("s.setU8({}, {} ? 1 : 0)", index, value_expr),
         TypeMeta::I8 => format!("s.setI8({}, {})", index, value_expr),

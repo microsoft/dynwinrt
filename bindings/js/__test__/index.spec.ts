@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url'
 import {
   DynWinRtArray,
   DynWinRtMethodSig,
+  DynWinRtStruct,
   DynWinRtType,
   DynWinRtValue,
   WinGuid,
@@ -808,6 +809,19 @@ if (missingWinuiFixtures.length > 0) {
 
 test('round-trip WinRT values', (t) => {
   t.is(DynWinRtValue.i32(42).toNumber(), 42)
+  t.is(DynWinRtValue.i64(-42n).toI64Bigint(), -42n)
+  t.is(DynWinRtValue.u64(2n ** 63n).toU64Bigint(), 2n ** 63n)
+  t.is(DynWinRtValue.u64(42).toI64(), 42)
+  t.throws(() => DynWinRtValue.u64(-1), {
+    message: /non-negative safe integer/,
+  })
+  t.throws(() => DynWinRtValue.i64(1.5), { message: /safe integer/ })
+  t.throws(() => DynWinRtValue.u64(Number.POSITIVE_INFINITY), {
+    message: /safe integer/,
+  })
+  t.throws(() => DynWinRtValue.u64(Number.MAX_SAFE_INTEGER + 1), {
+    message: /use bigint/,
+  })
   t.is(DynWinRtValue.hstring('hello').toString(), 'hello')
   t.true(DynWinRtValue.nullValue().isNull())
 })
@@ -823,6 +837,34 @@ test('box IReference values', (t) => {
 
   t.is(reference.method(6).invoke(boxed, []).toNumber(), 17)
   t.true(DynWinRtValue.boxReference(DynWinRtValue.nullValue(), valueType).isNull())
+})
+
+test('round-trip IReference struct fields', (t) => {
+  roInitialize(1)
+  const valueType = DynWinRtType.u64()
+  const referenceType = DynWinRtType.parameterized(WinGuid.parse('61c17706-2d65-11e0-9ae8-d48564015472'), [valueType])
+  const reference = DynWinRtType.registerInterface('IReference_UInt64_Struct_Test', referenceType.iid()).addMethod(
+    'get_Value',
+    new DynWinRtMethodSig().addOut(valueType),
+  )
+  const holderType = DynWinRtType.structType('DynWinRT.Tests.OptionalUInt64Holder', [referenceType])
+  const holder = DynWinRtStruct.create(holderType)
+
+  holder.setObject(0, DynWinRtValue.boxReference(DynWinRtValue.u64(17n), valueType))
+  t.is(reference.method(6).invoke(holder.getObject(0), []).toU64Bigint(), 17n)
+
+  const incompatible = DynWinRtValue.activationFactory('Windows.Foundation.Uri')
+  t.throws(() => holder.setObject(0, incompatible), {
+    message: /80004002|No such interface/i,
+  })
+  incompatible.release()
+  t.is(reference.method(6).invoke(holder.getObject(0), []).toU64Bigint(), 17n)
+
+  holder.setObject(0, DynWinRtValue.nullValue())
+  t.true(holder.getObject(0).isNull())
+  t.throws(() => holder.setObject(0, DynWinRtValue.u64(17n)), {
+    message: /WinRT object or null/,
+  })
 })
 
 test('release WinRT object values deterministically', (t) => {

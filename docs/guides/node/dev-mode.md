@@ -164,6 +164,10 @@ The generated bindings under `.winapp/bindings/`, your `Package.appxmanifest`, a
 
 For end users installing the MSIX, no dev mode / no `winapp run` — Windows registers the package the normal way at install time.
 
+For the framework-independent executable, layout, certificate, signing, and
+clean-machine workflow, see
+[Package a dynwinrt Node.js application as MSIX](../windows/msix-packaging.md).
+
 ## Troubleshooting
 
 ### `mynode.exe : The term 'mynode.exe' is not recognized...`

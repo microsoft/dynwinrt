@@ -7,6 +7,9 @@ use crate::types::TypeMeta;
 
 use super::naming::to_snake_case;
 use super::native_types::{FoundationType, foundation_type};
+use super::signature::{py_runtime_symbol, py_wrap_arg};
+use super::type_helpers::py_optional_type;
+use crate::codegen::winrt::shared::imports::ireference_inner_type;
 
 // ======================================================================
 // Struct field type helpers (Python)
@@ -14,6 +17,18 @@ use super::native_types::{FoundationType, foundation_type};
 
 /// Python struct field getter expression.
 pub(crate) fn py_struct_field_getter(typ: &TypeMeta, index: usize) -> String {
+    if let Some(_inner) = ireference_inner_type(typ) {
+        let TypeMeta::Parameterized { name, args, .. } = typ else {
+            unreachable!()
+        };
+        let concrete = crate::meta::make_parameterized_name(name, args);
+        return format!(
+            "(lambda value: None if value.is_null() else {}(value).value)(s.get_object({}))",
+            py_runtime_symbol(&concrete, &concrete),
+            index
+        );
+    }
+
     match typ {
         TypeMeta::Bool => format!("s.get_u8({}) != 0", index),
         TypeMeta::I8 => format!("s.get_i8({})", index),
@@ -41,6 +56,10 @@ pub(crate) fn py_struct_field_getter(typ: &TypeMeta, index: usize) -> String {
 
 /// Python struct field setter expression.
 pub(crate) fn py_struct_field_setter(typ: &TypeMeta, index: usize, value_expr: &str) -> String {
+    if ireference_inner_type(typ).is_some() {
+        return format!("s.set_object({}, {})", index, py_wrap_arg(value_expr, typ));
+    }
+
     match typ {
         TypeMeta::Bool => format!("s.set_u8({}, 1 if {} else 0)", index, value_expr),
         TypeMeta::I8 => format!("s.set_i8({}, {})", index, value_expr),
@@ -71,6 +90,24 @@ pub(crate) fn py_struct_field_setter(typ: &TypeMeta, index: usize, value_expr: &
 
 /// Python type annotation for a struct field.
 pub(crate) fn py_struct_field_type(typ: &TypeMeta) -> String {
+    if let Some(inner) = ireference_inner_type(typ) {
+        let TypeMeta::Parameterized { name, args, .. } = typ else {
+            unreachable!()
+        };
+        let native = py_optional_type(py_struct_field_read_type(inner));
+        let wrapper = crate::meta::make_parameterized_name(name, args);
+        return format!("{native} | {wrapper}");
+    }
+
+    py_struct_field_read_type(typ)
+}
+
+/// Python read annotation for a struct field.
+pub(crate) fn py_struct_field_read_type(typ: &TypeMeta) -> String {
+    if let Some(inner) = ireference_inner_type(typ) {
+        return py_optional_type(py_struct_field_read_type(inner));
+    }
+
     match typ {
         TypeMeta::Bool => "bool".to_string(),
         TypeMeta::String => "str".to_string(),

@@ -40,7 +40,7 @@ cargo run -p dynwinrt-codegen -- generate --namespace Windows.Foundation --class
 cargo run -p dynwinrt-codegen -- generate --namespace Windows.Foundation --class-name Uri --lang py --output ./generated
 
 # E2E test (full pipeline: winmd → generate → call real WinRT APIs)
-.\tests\e2e_test.ps1 -SkipBuild -Lang py
+.\tests\e2e\e2e_test.ps1 -SkipBuild -Lang py
 ```
 
 ## E2E Testing
@@ -49,15 +49,15 @@ The E2E test framework validates the full pipeline: reading .winmd metadata → 
 
 ### How it works
 
-1. **Test specs** are defined in `tests/e2e_specs.json` (schema: `tests/e2e_specs.schema.json`) — each entry describes:
+1. **Test specs** are defined in `tests/e2e/e2e_specs.json` (schema: `tests/e2e/e2e_specs.schema.json`) — each entry describes:
    - `instantiate`: how to create an instance (`activate`, `static_factory`, or `none`)
    - `checks`: array of assertions (`property_equals`, `property_exists`, `method_equals`, `method_result_contains`, `static_equals`, `static_not_null`)
 
-2. **Runners** (`tests/runners/py_runner.py`, `tests/runners/ts_runner.ts`, and `tests/runners/com/*.mjs`) execute generated WinRT and Classic COM bindings.
+2. **Runners** (`tests/e2e/runners/py_runner.py`, `tests/e2e/runners/ts_runner.ts`, and `tests/e2e/runners/com/*.mjs`) execute generated WinRT and Classic COM bindings.
 
-3. **Orchestrator** (`tests/e2e_test.ps1`) handles build, temporary code generation, and runner invocation. Use `-Lang com` for the Classic COM suite; it requires `DYNWINRT_WIN32_WINMD` or an installed `Microsoft.Windows.SDK.Win32Metadata` package.
+3. **Orchestrator** (`tests/e2e/e2e_test.ps1`) handles build, temporary code generation, and runner invocation. Use `-Lang com` for the Classic COM suite; it requires `DYNWINRT_WIN32_WINMD` or an installed `Microsoft.Windows.SDK.Win32Metadata` package.
 
-4. **Adding new test cases**: Add entries to `e2e_specs.json`:
+4. **Adding new test cases**: Add entries to `tests/e2e/e2e_specs.json`:
 ```json
 {
   "namespace": "Windows.Foundation",

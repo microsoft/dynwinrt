@@ -1,0 +1,92 @@
+name: Python WinUI ARM64
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+on:
+  workflow_dispatch:
+
+jobs:
+  live-winui:
+    # This runner must have an interactive desktop session and the ARM64
+    # Microsoft.WindowsAppRuntime.2 framework installed.
+    runs-on: [self-hosted, Windows, ARM64, winui]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: NuGet/setup-nuget@v2
+
+      - name: Verify native ARM64 environment
+        shell: pwsh
+        run: |
+          python -c "import platform, struct; assert platform.machine().lower() in ('arm64', 'aarch64'); assert struct.calcsize('P') == 8"
+          $runtime = Get-AppxPackage Microsoft.WindowsAppRuntime.2 |
+            Where-Object Architecture -eq Arm64 |
+            Sort-Object Version -Descending |
+            Select-Object -First 1
+          if (-not $runtime) {
+            throw 'Microsoft.WindowsAppRuntime.2 ARM64 must be installed on the live WinUI runner'
+          }
+
+      - name: Restore WinAppSDK metadata and bootstrap
+        shell: pwsh
+        run: |
+          $packages = Join-Path $env:RUNNER_TEMP 'winappsdk'
+          nuget install Microsoft.WindowsAppSDK.Foundation -Version 2.3.5 -OutputDirectory $packages -DirectDownload -NonInteractive
+          nuget install Microsoft.WindowsAppSDK.InteractiveExperiences -Version 2.1.3 -OutputDirectory $packages -DirectDownload -NonInteractive
+          nuget install Microsoft.WindowsAppSDK.WinUI -Version 2.3.0 -OutputDirectory $packages -DirectDownload -NonInteractive
+
+          $winui = Get-ChildItem $packages -Filter Microsoft.UI.Xaml.winmd -File -Recurse |
+            Select-Object -First 1
+          $bootstrap = Get-ChildItem $packages -Filter Microsoft.WindowsAppRuntime.Bootstrap.dll -File -Recurse |
+            Where-Object FullName -Match 'runtimes[\\/]win-arm64[\\/]native' |
+            Select-Object -First 1
+          if (-not $winui -or -not $bootstrap) {
+            throw 'WinAppSDK metadata or ARM64 bootstrap DLL was not restored'
+          }
+
+          $refs = Get-ChildItem $packages -Filter *.winmd -File -Recurse |
+            Where-Object {
+              $_.FullName -ne $winui.FullName -and (
+                $_.FullName -Match 'Foundation' -or
+                $_.FullName -Match 'metadata[\\/]10\.0\.18362\.0' -or
+                $_.Name -eq 'Microsoft.UI.Text.winmd'
+              )
+            } |
+            Sort-Object FullName -Unique
+          $refList = Join-Path $env:RUNNER_TEMP 'winappsdk-refs.txt'
+          $refs.FullName | Set-Content -LiteralPath $refList -Encoding utf8
+
+          "WINUI_WINMD=$($winui.FullName)" >> $env:GITHUB_ENV
+          "WINUI_REFS=$refList" >> $env:GITHUB_ENV
+          "WINUI_BOOTSTRAP=$($bootstrap.FullName)" >> $env:GITHUB_ENV
+
+      - name: Build ARM64 codegen and Python runtime
+        shell: pwsh
+        run: |
+          cargo build -p dynwinrt-codegen --release
+          python -m venv bindings\py\.venv
+          $python = Join-Path $PWD 'bindings\py\.venv\Scripts\python.exe'
+          & $python -m pip install "maturin>=1.11,<2" --quiet
+          $env:VIRTUAL_ENV = Join-Path $PWD 'bindings\py\.venv'
+          Push-Location bindings\py
+          try {
+            & $python -m maturin develop --release
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } finally {
+            Pop-Location
+          }
+          "WINUI_PYTHON=$python" >> $env:GITHUB_ENV
+
+      - name: Run live Python WinUI ARM64 E2E
+        shell: pwsh
+        run: |
+          .\tests\e2e\python_winui_e2e.ps1 `
+            -WinuiWinmd $env:WINUI_WINMD `
+            -RefList $env:WINUI_REFS `
+            -BootstrapDll $env:WINUI_BOOTSTRAP `
+            -Major 2 `
+            -Minor 3 `
+            -Python $env:WINUI_PYTHON `
+            -SkipBuild

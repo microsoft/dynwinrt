@@ -59,7 +59,7 @@ accepted. Win32 handles are not COM references and require their own
 type-specific cleanup function.
 
 See the repository's
-[Classic COM JavaScript usage guide](../../docs/classic-com-usage.md) for
+[Classic COM JavaScript usage guide](../../docs/guides/windows/classic-com-usage.md) for
 codegen, GUID/IID/CLSID, lifetime, Automation, and `/com/unsafe` examples.
 
 Unambiguous public WinRT activation metadata is projected as JavaScript constructors.
@@ -69,6 +69,8 @@ methods remain available for compatibility.
 
 Generated `IReference<T>` values use `T | null` in JavaScript. Native values,
 `null`, and generated `IReference_*` wrappers are accepted as inputs.
+The same projection applies when `IReference<T>` appears inside a WinRT struct;
+packing boxes the field automatically and unpacking returns the native value.
 
 Generated packages export `createProjectedLifetimeScope()`. WinUI/XAML hosts
 can create a scope after Application and Window setup, then dispose it before

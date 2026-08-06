@@ -646,7 +646,8 @@ pub(crate) fn convert_return(
             | TypeMeta::I32
             | TypeMeta::U32,
         ) => format!("{}.toNumber()", expr),
-        Some(TypeMeta::I64 | TypeMeta::U64) => format!("{}.toI64()", expr),
+        Some(TypeMeta::I64) => format!("{}.toI64Bigint()", expr),
+        Some(TypeMeta::U64) => format!("{}.toU64Bigint()", expr),
         Some(TypeMeta::F32 | TypeMeta::F64) => format!("{}.toF64()", expr),
         Some(TypeMeta::Bool) => format!("{}.toBool()", expr),
         Some(TypeMeta::Enum { .. }) => format!("{}.toNumber()", expr),

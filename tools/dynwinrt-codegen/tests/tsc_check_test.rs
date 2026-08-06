@@ -197,6 +197,8 @@ export declare class DynWinRtMethodSig {
 export declare class DynWinRtValue {
     toNumber(): number;
     toI64(): number;
+    toI64Bigint(): bigint;
+    toU64Bigint(): bigint;
     toF64(): number;
     toBool(): boolean;
     toString(): string;

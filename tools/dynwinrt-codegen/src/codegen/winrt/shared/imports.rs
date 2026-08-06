@@ -60,6 +60,11 @@ fn collect_used_generics_from_methods_inner(methods: &[&MethodMeta]) -> Vec<Stri
                 visit(p, names);
             }
             TypeMeta::Array(inner) => visit(inner, names),
+            TypeMeta::Struct { fields, .. } => {
+                for field in fields {
+                    visit(&field.typ, names);
+                }
+            }
             _ => {}
         }
     }

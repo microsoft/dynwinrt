@@ -33,6 +33,10 @@ pub fn generate_class(
     let collection_iface = class_interface(class);
     let collection_kind = collection_iface.and_then(interface_kind);
     let winui_bootstrap = winui::resolve_application_bootstrap(class, known_types);
+    let has_public_composition = class
+        .constructors
+        .iter()
+        .any(|constructor| constructor.kind == ConstructorKind::PublicComposition);
     let collection_uses_default = collection_iface.is_some_and(|collection_iface| {
         class
             .default_interface
@@ -51,6 +55,14 @@ pub fn generate_class(
     out.push_str(HEADER);
     out.push_str(FUTURE_ANNOTATIONS);
     out.push_str(IMPORT_LINE);
+    if has_public_composition {
+        out.push_str(
+            "from dynwinrt_py import register_xaml_runtime_class as _dynwinrt_register_xaml_runtime_class\n",
+        );
+    }
+    if winui::is_dispatcher_queue(class) {
+        out.push_str("import asyncio\n");
+    }
     let mut collection_mixins = class
         .default_interface
         .iter()
@@ -77,7 +89,8 @@ pub fn generate_class(
         class
             .all_interfaces()
             .flat_map(|interface| interface.methods.iter()),
-    ) {
+    ) || has_ireference_struct_field(&used_structs)
+    {
         out.push_str(IREFERENCE_HELPER);
     }
     out.push('\n');
@@ -159,7 +172,10 @@ pub fn generate_class(
     // TYPE_CHECKING imports do not define runtime values, and interface
     // registration happens while this module is loading.
     let mut declared_iids = HashSet::new();
-    let all_class_ifaces: Vec<&InterfaceMeta> = class.all_interfaces().collect();
+    let all_class_ifaces: Vec<&InterfaceMeta> = class
+        .all_interfaces()
+        .chain(class.overridable_interfaces.iter())
+        .collect();
     for iface in &all_class_ifaces {
         let iid_name = format!("IID_{}", iface.name);
         if declared_iids.insert(iid_name.clone()) {
@@ -217,7 +233,7 @@ pub fn generate_class(
         out.push('\n');
     }
     // IActivationFactory for default constructor
-    if class.has_default_constructor {
+    if class.has_default_activation() {
         out.push_str("_IActivationFactory = DynWinRTType.register_interface(\n");
         out.push_str(
             "    'IActivationFactory', WinGUID.parse('00000035-0000-0000-c000-000000000046')) \\\n",
@@ -289,7 +305,7 @@ pub fn generate_class(
     }
 
     // Default constructor
-    if class.has_default_constructor {
+    if class.has_default_activation() {
         let has_create_factory = class.factory_interfaces.iter().any(|iface| {
             iface.methods.iter().any(|m| {
                 let snake = to_snake_case(&m.name);
@@ -372,12 +388,14 @@ pub fn generate_class(
             .iter()
             .any(|m| to_snake_case(&m.name) == "create")
     });
-    if !class.has_default_constructor && !has_explicit_create_factory {
+    if !class.has_default_activation() && !has_explicit_create_factory {
         let create_instance_no_args = class.factory_interfaces.iter().any(|iface| {
-            iface.methods.iter().any(|m| {
-                m.name == "CreateInstance"
-                    && crate::codegen::winrt::shared::imports::get_in_params(m).is_empty()
-            })
+            class.is_public_constructor_factory(iface)
+                && iface.methods.iter().any(|method| {
+                    method.name == "CreateInstance"
+                        && method_constructs_class(method, class)
+                        && crate::codegen::winrt::shared::imports::get_in_params(method).is_empty()
+                })
         });
         if create_instance_no_args {
             out.push('\n');
@@ -425,7 +443,7 @@ pub fn generate_class(
         out.push_str("        _launched = None\n");
         out.push_str("        if on_launched is not None:\n");
         out.push_str(&format!(
-            "            _launched = DynWinRtDelegate.create(WinGUID.parse('{callback_iid}'), [{callback_types}], lambda _args: on_launched()).to_value()\n",
+            "            _launched = _dynwinrt_create_delegate(WinGUID.parse('{callback_iid}'), [{callback_types}], lambda _args: on_launched()).to_value()\n",
             callback_iid = spec.launched_callback_iid,
         ));
         out.push_str(&format!(
@@ -464,7 +482,7 @@ pub fn generate_class(
         out.push_str("            if on_launched is not None:\n");
         out.push_str("                on_launched()\n");
         out.push_str(&format!(
-            "        _launched = DynWinRtDelegate.create(WinGUID.parse('{callback_iid}'), [{callback_types}], _on_launched_wrapped).to_value()\n",
+            "        _launched = _dynwinrt_create_delegate(WinGUID.parse('{callback_iid}'), [{callback_types}], _on_launched_wrapped).to_value()\n",
             callback_iid = spec.launched_callback_iid,
         ));
         out.push_str(&format!(
@@ -636,6 +654,73 @@ pub fn generate_class(
         out.push_str("        return interface_class.from_value(self._obj)\n");
     }
 
+    if winui::is_dispatcher_queue(class) {
+        out.push_str(
+            r#"
+
+    async def enqueue_async(self, callback, *args, **kwargs):
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+
+        def complete(result=None, error=None):
+            if future.done():
+                return
+            if error is None:
+                future.set_result(result)
+            else:
+                future.set_exception(error)
+
+        def post_complete(result=None, error=None):
+            try:
+                loop.call_soon_threadsafe(complete, result, error)
+            except RuntimeError:
+                pass
+
+        def invoke():
+            try:
+                result = callback(*args, **kwargs)
+            except BaseException as error:
+                post_complete(None, error)
+            else:
+                post_complete(result, None)
+
+        if not self.try_enqueue(invoke):
+            raise RuntimeError('DispatcherQueue rejected the callback.')
+        return await future
+
+    async def enqueue_with_priority_async(self, priority, callback, *args, **kwargs):
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+
+        def complete(result=None, error=None):
+            if future.done():
+                return
+            if error is None:
+                future.set_result(result)
+            else:
+                future.set_exception(error)
+
+        def post_complete(result=None, error=None):
+            try:
+                loop.call_soon_threadsafe(complete, result, error)
+            except RuntimeError:
+                pass
+
+        def invoke():
+            try:
+                result = callback(*args, **kwargs)
+            except BaseException as error:
+                post_complete(None, error)
+            else:
+                post_complete(result, None)
+
+        if not self.try_enqueue_with_priority(priority, invoke):
+            raise RuntimeError('DispatcherQueue rejected the callback.')
+        return await future
+"#,
+        );
+    }
+
     // Generate inline wrapper classes for required interfaces (non-default)
     for req_iface in &class.required_interfaces {
         if req_iface.iid.is_empty() {
@@ -655,6 +740,10 @@ pub fn generate_class(
         out.push_str(&format!(
             "        self._obj = obj.cast(IID_{})\n",
             req_iface.name
+        ));
+        out.push_str(&format!(
+            "        _dynwinrt_track_projected(self, '{}.{}')\n",
+            req_iface.namespace, req_iface.name
         ));
         out.push('\n');
         out.push_str("    @staticmethod\n");
@@ -738,14 +827,18 @@ struct PyCtorCandidate<'a> {
     public_params: Vec<&'a ParamMeta>,
     /// Full call expression, e.g. `type(self).create_instance(_bound[0], None)`.
     call_expr: String,
+    /// Aggregated call for Python subclasses. `None` means subclass activation
+    /// is not semantically available for this constructor shape.
+    composed_call_expr: Option<String>,
 }
 
 fn build_ctor_candidates<'a>(
     class: &'a ClassMeta,
     factory_names: &HashSet<String>,
+    delegate_type_names: &HashSet<String>,
 ) -> Vec<PyCtorCandidate<'a>> {
     fn push_unique<'a>(candidates: &mut Vec<PyCtorCandidate<'a>>, candidate: PyCtorCandidate<'a>) {
-        if candidates.iter().any(|existing| {
+        if let Some(existing) = candidates.iter_mut().find(|existing| {
             existing.public_params.len() == candidate.public_params.len()
                 && existing
                     .public_params
@@ -753,6 +846,9 @@ fn build_ctor_candidates<'a>(
                     .zip(&candidate.public_params)
                     .all(|(left, right)| left.name == right.name && left.typ == right.typ)
         }) {
+            if existing.composed_call_expr.is_none() {
+                existing.composed_call_expr = candidate.composed_call_expr;
+            }
             return;
         }
         candidates.push(candidate);
@@ -775,6 +871,7 @@ fn build_ctor_candidates<'a>(
                     PyCtorCandidate {
                         public_params: Vec::new(),
                         call_expr: format!("type(self).{}()", ctor_name),
+                        composed_call_expr: None,
                     },
                 );
             }
@@ -799,6 +896,7 @@ fn build_ctor_candidates<'a>(
                         PyCtorCandidate {
                             public_params: in_params,
                             call_expr,
+                            composed_call_expr: None,
                         },
                     );
                 }
@@ -829,11 +927,42 @@ fn build_ctor_candidates<'a>(
                         Some(outer_index),
                         factory_names,
                     );
+                    let inner_output_index = method
+                        .params
+                        .iter()
+                        .filter(|param| param.direction != ParamDirection::In)
+                        .position(|param| param.name.to_ascii_lowercase().contains("inner"))
+                        .expect("split_composable_params verified the inner output");
+                    let instance_output_index = method
+                        .params
+                        .iter()
+                        .filter(|param| param.direction != ParamDirection::In)
+                        .count();
+                    let wrapped_args = public_params
+                        .iter()
+                        .enumerate()
+                        .map(|(index, param)| {
+                            crate::codegen::winrt::python::method::py_wrap_method_arg(
+                                &format!("_bound[{index}]"),
+                                &param.typ,
+                                delegate_type_names,
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let composed_call_expr = format!(
+                        "_{factory}.method({vtable}).invoke_composed_with_overrides({class}._get_f_{factory}(), [{wrapped_args}], {outer_index}, {inner_output_index}, {instance_output_index}, {agile}, _override_interfaces)",
+                        factory = factory.name,
+                        class = class.name,
+                        vtable = method.vtable_index,
+                        agile = if class.is_agile { "True" } else { "False" },
+                    );
                     push_unique(
                         &mut candidates,
                         PyCtorCandidate {
                             public_params,
                             call_expr,
+                            composed_call_expr: Some(composed_call_expr),
                         },
                     );
                 }
@@ -879,6 +1008,62 @@ fn build_factory_call_expr(
     format!("type(self).{call_name}({args})")
 }
 
+fn is_size_f32(typ: &TypeMeta) -> bool {
+    matches!(
+        typ,
+        TypeMeta::Struct {
+            namespace,
+            name,
+            fields,
+        } if namespace == "Windows.Foundation"
+            && name == "Size"
+            && fields.len() == 2
+            && fields.iter().all(|field| field.typ == TypeMeta::F32)
+    )
+}
+
+fn override_abi_shape(method: &MethodMeta) -> Option<&'static str> {
+    let inputs = method
+        .params
+        .iter()
+        .filter(|param| param.direction == ParamDirection::In)
+        .collect::<Vec<_>>();
+    if method
+        .params
+        .iter()
+        .any(|param| param.direction != ParamDirection::In)
+    {
+        return None;
+    }
+    match (inputs.as_slice(), method.return_type.as_ref()) {
+        ([], None) => Some("void0"),
+        ([input], Some(output)) if is_size_f32(&input.typ) && is_size_f32(output) => {
+            Some("size_f32_to_size_f32")
+        }
+        ([first, second], Some(TypeMeta::Bool))
+            if first.typ == TypeMeta::String && second.typ == TypeMeta::Bool =>
+        {
+            Some("hstring_bool_to_bool")
+        }
+        _ => None,
+    }
+}
+
+fn python_tuple(values: &[String]) -> String {
+    if values.is_empty() {
+        "()".to_string()
+    } else {
+        format!(
+            "({},)",
+            values
+                .iter()
+                .map(|value| format!("'{value}'"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    }
+}
+
 fn generate_python_constructor(
     class: &ClassMeta,
     known_types: &HashSet<String>,
@@ -887,7 +1072,72 @@ fn generate_python_constructor(
     collection_uses_default: bool,
 ) -> String {
     let mut out = String::new();
-    out.push_str("    def _set_native(self, obj: DynWinRTValue):\n");
+    let has_public_composition = class
+        .constructors
+        .iter()
+        .any(|constructor| constructor.kind == ConstructorKind::PublicComposition);
+    let native_override_names = if has_public_composition {
+        let mut names = class
+            .overridable_interfaces
+            .iter()
+            .flat_map(|interface| interface.methods.iter())
+            .map(|method| to_snake_case(&method.name))
+            .collect::<Vec<_>>();
+        names.sort();
+        names.dedup();
+        Some(python_tuple(&names))
+    } else {
+        None
+    };
+    let supported_override_interfaces = class
+        .overridable_interfaces
+        .iter()
+        .filter_map(|interface| {
+            let shapes = interface
+                .methods
+                .iter()
+                .map(override_abi_shape)
+                .collect::<Option<Vec<_>>>()?;
+            (shapes.len() <= 8).then_some((interface, shapes))
+        })
+        .collect::<Vec<_>>();
+    let mut supported_override_names = supported_override_interfaces
+        .iter()
+        .flat_map(|(interface, shapes)| {
+            interface
+                .methods
+                .iter()
+                .zip(shapes)
+                .filter(|(_, shape)| matches!(**shape, "void0" | "size_f32_to_size_f32"))
+                .map(|(method, _)| to_snake_case(&method.name))
+        })
+        .collect::<Vec<_>>();
+    supported_override_names.sort();
+    supported_override_names.dedup();
+    let supported_override_names_expr = python_tuple(&supported_override_names);
+
+    if has_public_composition {
+        out.push_str(
+            "    def _set_native(self, obj: DynWinRTValue, _allow_native_overrides=False):\n",
+        );
+    } else {
+        out.push_str("    def _set_native(self, obj: DynWinRTValue):\n");
+    }
+    if let Some(native_override_names) = &native_override_names {
+        out.push_str(&format!("        if type(self) is not {}:\n", class.name));
+        out.push_str(&format!(
+            "            _native_members = set().union(*(set(_type.__dict__) for _type in type(self).__mro__ if _type is not {}))\n",
+            class.name
+        ));
+        out.push_str(&format!(
+            "            _native_overrides = sorted(_native_members.intersection({native_override_names}))\n"
+        ));
+        out.push_str("            if _native_overrides:\n");
+        out.push_str(&format!(
+            "                if _allow_native_overrides:\n                    pass\n                else:\n                    raise TypeError(\"{} native overrides require public composable construction: \" + \", \".join(_native_overrides))\n",
+            class.name
+        ));
+    }
     if let Some(default_iface) = &class.default_interface {
         if default_iface.iid.is_empty() {
             out.push_str("        self._obj = obj\n");
@@ -915,12 +1165,58 @@ fn generate_python_constructor(
     {
         out.push_str("        self._closed = False\n");
     }
+    out.push_str(&format!(
+        "        _dynwinrt_track_projected(self, '{}')\n",
+        class.full_name
+    ));
     out.push('\n');
     out.push_str("    @classmethod\n");
     out.push_str("    def _from_native(cls, obj: DynWinRTValue):\n");
     out.push_str("        instance = cls.__new__(cls)\n");
     out.push_str("        instance._set_native(obj)\n");
     out.push_str("        return instance\n\n");
+    if let Some(native_override_names) = &native_override_names {
+        out.push_str("    @classmethod\n");
+        out.push_str(
+            "    def register_xaml_runtime_class(cls, runtime_class_name: str, control_type: type):\n",
+        );
+        out.push_str(&format!(
+            "        \"\"\"Register a Python `{}` subclass for process-local XAML markup activation.\"\"\"\n",
+            class.name
+        ));
+        out.push_str(&format!(
+            "        if not isinstance(control_type, type) or control_type is {} or not issubclass(control_type, {}):\n",
+            class.name, class.name
+        ));
+        out.push_str(&format!(
+            "            raise TypeError(\"control_type must be a Python subclass of {}\")\n",
+            class.name
+        ));
+        out.push_str(&format!(
+            "        _native_members = set().union(*(set(_type.__dict__) for _type in control_type.__mro__ if _type is not {}))\n",
+            class.name
+        ));
+        out.push_str(&format!(
+            "        _native_overrides = sorted(_native_members.intersection({native_override_names}))\n"
+        ));
+        out.push_str(&format!(
+            "        _unsupported_native_overrides = sorted(set(_native_overrides).difference({supported_override_names_expr}))\n"
+        ));
+        out.push_str("        if _unsupported_native_overrides:\n");
+        out.push_str(&format!(
+            "            raise TypeError(\"{} native override ABI is unsupported: \" + \", \".join(_unsupported_native_overrides))\n",
+            class.name
+        ));
+        let default_iid = class
+            .default_interface
+            .as_ref()
+            .map(|interface| format!("IID_{}", interface.name))
+            .expect("public composable runtime class has a default interface");
+        out.push_str(&format!(
+            "        return _dynwinrt_register_xaml_runtime_class(runtime_class_name, '{}', {default_iid}, control_type, _native_overrides)\n\n",
+            class.full_name
+        ));
+    }
     out.push_str("    def __init__(self, *args, **kwargs):\n");
     out.push_str(
         "        if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):\n\
@@ -936,119 +1232,133 @@ fn generate_python_constructor(
     let factory_names =
         crate::codegen::winrt::python::overloads::method_names(factory_methods.iter().copied());
 
-    // Prefer the new constructors-metadata-driven path when the class carries
-    // activation/composable attributes. Fall back to the legacy factory-scan
-    // path when meta didn't record constructors (should be rare).
-    let candidates = build_ctor_candidates(class, &factory_names);
-    if !class.constructors.is_empty() {
-        for candidate in &candidates {
-            let parameter_names = candidate
-                .public_params
+    let candidates = build_ctor_candidates(class, &factory_names, delegate_type_names);
+    if has_public_composition {
+        let native_override_names = native_override_names
+            .as_ref()
+            .expect("public composition override names");
+        out.push_str(&format!(
+            "        _is_python_subclass = type(self) is not {}\n",
+            class.name
+        ));
+        out.push_str("        if _is_python_subclass:\n");
+        out.push_str(&format!(
+            "            _native_members = set().union(*(set(_type.__dict__) for _type in type(self).__mro__ if _type is not {}))\n",
+            class.name
+        ));
+        out.push_str(&format!(
+            "            _native_overrides = sorted(_native_members.intersection({native_override_names}))\n"
+        ));
+        out.push_str(&format!(
+            "            _unsupported_native_overrides = sorted(set(_native_overrides).difference({supported_override_names_expr}))\n"
+        ));
+        out.push_str("            if _unsupported_native_overrides:\n");
+        out.push_str(&format!(
+            "                raise TypeError(\"{} native override ABI is unsupported: \" + \", \".join(_unsupported_native_overrides))\n",
+            class.name
+        ));
+        out.push_str("            _override_interfaces = []\n");
+        out.push_str("            _override_target_ref = _weakref_ref(self)\n");
+        for (interface, shapes) in &supported_override_interfaces {
+            let callback_methods = interface
+                .methods
                 .iter()
-                .map(|param| format!("'{}'", to_snake_case(&param.name)))
-                .collect::<Vec<_>>()
-                .join(", ");
-            let parameter_names = if parameter_names.is_empty() {
-                "()".to_string()
-            } else {
-                format!("({parameter_names},)")
-            };
-            out.push_str(&format!(
-                "        _bound = _dynwinrt_bind_overload({parameter_names}, args, kwargs)\n"
-            ));
-            let guards = candidate
-                .public_params
-                .iter()
-                .enumerate()
-                .map(|(index, param)| {
-                    py_method_type_guard(
-                        &format!("_bound[{index}]"),
-                        &param.typ,
-                        known_types,
-                        delegate_type_names,
-                    )
-                })
+                .zip(shapes)
+                .filter(|(_, shape)| matches!(**shape, "void0" | "size_f32_to_size_f32"))
                 .collect::<Vec<_>>();
-            let condition = if guards.is_empty() {
-                "_bound is not None".to_string()
-            } else {
-                format!("_bound is not None and {}", guards.join(" and "))
-            };
+            if callback_methods.is_empty() {
+                continue;
+            }
+            out.push_str("            _override_callbacks = {}\n");
+            for (method, _) in callback_methods {
+                let name = to_snake_case(&method.name);
+                out.push_str(&format!(
+                    "            if '{name}' in _native_overrides:\n\
+                     \x20               def _override_{name}(*_args, _target_ref=_override_target_ref):\n\
+                     \x20                   _target = _target_ref()\n\
+                     \x20                   if _target is None:\n\
+                     \x20                       raise RuntimeError('Python override target has been released.')\n\
+                     \x20                   return _target.{name}(*_args)\n\
+                     \x20               _override_callbacks[{}] = _override_{name}\n",
+                    method.vtable_index
+                ));
+            }
+            out.push_str("            if _override_callbacks:\n");
             out.push_str(&format!(
-                "        if {condition}:\n\
-                 \x20           self._set_native({call}._obj)\n\
-                 \x20           return\n",
-                condition = condition,
-                call = candidate.call_expr,
-            ));
-        }
-    } else {
-        // Legacy fallback (no constructors metadata): treat every factory
-        // method as an activation candidate.
-        let has_create_factory = factory_methods.iter().any(|method| {
-            let name = to_snake_case(&method.name);
-            name == "create" || name.starts_with("create")
-        });
-        if class.has_default_constructor {
-            let constructor_name = default_constructor_name(has_create_factory);
-            out.push_str("        _bound = _dynwinrt_bind_overload((), args, kwargs)\n");
-            out.push_str("        if _bound is not None:\n");
-            out.push_str(&format!(
-                "            self._set_native(type(self).{}()._obj)\n            return\n",
-                constructor_name
-            ));
-        }
-        for method in factory_methods {
-            let in_params = crate::codegen::winrt::shared::imports::get_in_params(method);
-            let parameter_names = in_params
-                .iter()
-                .map(|param| format!("'{}'", to_snake_case(&param.name)))
-                .collect::<Vec<_>>()
-                .join(", ");
-            let parameter_names = if parameter_names.is_empty() {
-                "()".to_string()
-            } else {
-                format!("({parameter_names},)")
-            };
-            let public_name =
-                crate::codegen::winrt::python::overloads::method_group_key(method, &factory_names);
-            let overload_count = factory_methods_for_name(class, &factory_names, &public_name);
-            let call_name = if overload_count > 1 {
-                format!("_{public_name}_{}", method.vtable_index)
-            } else {
-                to_snake_case(&method.name)
-            };
-            out.push_str(&format!(
-                "        _bound = _dynwinrt_bind_overload({parameter_names}, args, kwargs)\n"
-            ));
-            let guards = in_params
-                .iter()
-                .enumerate()
-                .map(|(index, param)| {
-                    py_method_type_guard(
-                        &format!("_bound[{index}]"),
-                        &param.typ,
-                        known_types,
-                        delegate_type_names,
-                    )
-                })
-                .collect::<Vec<_>>();
-            let condition = if guards.is_empty() {
-                "_bound is not None".to_string()
-            } else {
-                format!("_bound is not None and {}", guards.join(" and "))
-            };
-            out.push_str(&format!(
-                "        if {condition}:\n\
-                 \x20           self._set_native(type(self).{call_name}(*_bound)._obj)\n\
-                 \x20           return\n"
+                "                _override_interfaces.append(DynWinRTOverrideInterface(IID_{}, [{}], _override_callbacks))\n",
+                interface.name,
+                shapes
+                    .iter()
+                    .map(|shape| format!("'{shape}'"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ));
         }
     }
-    out.push_str(&format!(
-        "        raise TypeError(\"No matching constructor for {}\")\n\n",
-        class.name
-    ));
+    for candidate in &candidates {
+        let parameter_names = candidate
+            .public_params
+            .iter()
+            .map(|param| format!("'{}'", to_snake_case(&param.name)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let parameter_names = if parameter_names.is_empty() {
+            "()".to_string()
+        } else {
+            format!("({parameter_names},)")
+        };
+        out.push_str(&format!(
+            "        _bound = _dynwinrt_bind_overload({parameter_names}, args, kwargs)\n"
+        ));
+        let guards = candidate
+            .public_params
+            .iter()
+            .enumerate()
+            .map(|(index, param)| {
+                py_method_type_guard(
+                    &format!("_bound[{index}]"),
+                    &param.typ,
+                    known_types,
+                    delegate_type_names,
+                )
+            })
+            .collect::<Vec<_>>();
+        let condition = if guards.is_empty() {
+            "_bound is not None".to_string()
+        } else {
+            format!("_bound is not None and {}", guards.join(" and "))
+        };
+        out.push_str(&format!("        if {condition}:\n"));
+        if let Some(composed_call) = &candidate.composed_call_expr {
+            out.push_str("            if _is_python_subclass:\n");
+            out.push_str(&format!(
+                "                self._set_native({composed_call}, _allow_native_overrides=True)\n\
+                 \x20               return\n"
+            ));
+        } else if has_public_composition {
+            out.push_str("            if _is_python_subclass:\n");
+            out.push_str(&format!(
+                "                raise TypeError(\"{} does not support Python subclass construction for this constructor\")\n",
+                class.name
+            ));
+        }
+        out.push_str(&format!(
+            "            self._set_native({}._obj)\n\
+             \x20           return\n",
+            candidate.call_expr
+        ));
+    }
+    if candidates.is_empty() {
+        out.push_str(&format!(
+            "        raise TypeError(\"{} cannot be constructed directly\")\n\n",
+            class.name
+        ));
+    } else {
+        out.push_str(&format!(
+            "        raise TypeError(\"No matching constructor for {}\")\n\n",
+            class.name
+        ));
+    }
     out
 }
 

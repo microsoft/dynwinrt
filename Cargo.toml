@@ -2,7 +2,7 @@
 members = [
     "crates/dynwinrt",
     "bindings/js",
-    "bindings/js/static-bench-rust",
+    "benchmarks/js/static-rust",
     "bindings/py",
     "tools/dynwinrt-codegen",
 ]

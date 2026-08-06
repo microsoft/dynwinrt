@@ -140,6 +140,21 @@ impl AsyncOperation {
             .map_err(|_| PyRuntimeError::new_err("async operation state lock was poisoned"))
     }
 
+    fn release(&self, py: Python<'_>) -> PyResult<()> {
+        let _ = self.cancel();
+        let future = {
+            let mut state = self.lock_state()?;
+            match std::mem::replace(&mut *state, ExecutionState::Idle) {
+                ExecutionState::Future(future) => Some(future),
+                ExecutionState::Idle | ExecutionState::Blocking => None,
+            }
+        };
+        if let Some(future) = future {
+            future.call_method0(py, "cancel")?;
+        }
+        Ok(())
+    }
+
     fn future<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let mut state = self.lock_state()?;
         match &*state {
@@ -222,7 +237,15 @@ impl AsyncOperation {
 
 #[pyclass(name = "_DynWinRTAsync")]
 pub struct DynWinRTAsync {
-    operation: Arc<AsyncOperation>,
+    operation: Option<Arc<AsyncOperation>>,
+}
+
+impl DynWinRTAsync {
+    fn operation(&self) -> PyResult<&Arc<AsyncOperation>> {
+        self.operation
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("the WinRT async operation has been released"))
+    }
 }
 
 #[pymethods]
@@ -230,20 +253,28 @@ impl DynWinRTAsync {
     #[new]
     fn new(value: &DynWinRTValue, result_converter: Py<PyAny>) -> PyResult<Self> {
         Ok(Self {
-            operation: Arc::new(AsyncOperation::new(value, result_converter)?),
+            operation: Some(Arc::new(AsyncOperation::new(value, result_converter)?)),
         })
     }
 
     fn __await__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        self.operation.await_iter(py)
+        self.operation()?.await_iter(py)
     }
 
     fn wait(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        self.operation.wait(py)
+        self.operation()?.wait(py)
     }
 
     fn cancel(&self) -> PyResult<()> {
-        self.operation.cancel()
+        self.operation()?.cancel()
+    }
+
+    fn release(&mut self, py: Python<'_>) -> PyResult<()> {
+        if let Some(operation) = &self.operation {
+            operation.release(py)?;
+        }
+        self.operation = None;
+        Ok(())
     }
 
     fn __repr__(&self) -> &'static str {
@@ -253,8 +284,16 @@ impl DynWinRTAsync {
 
 #[pyclass(name = "_DynWinRTAsyncWithProgress")]
 pub struct DynWinRTAsyncWithProgress {
-    operation: Arc<AsyncOperation>,
+    operation: Option<Arc<AsyncOperation>>,
     progress_converter: Py<PyAny>,
+}
+
+impl DynWinRTAsyncWithProgress {
+    fn operation(&self) -> PyResult<&Arc<AsyncOperation>> {
+        self.operation
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("the WinRT async operation has been released"))
+    }
 }
 
 #[pymethods]
@@ -276,21 +315,29 @@ impl DynWinRTAsyncWithProgress {
             ));
         }
         Ok(Self {
-            operation,
+            operation: Some(operation),
             progress_converter,
         })
     }
 
     fn __await__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        self.operation.await_iter(py)
+        self.operation()?.await_iter(py)
     }
 
     fn wait(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        self.operation.wait(py)
+        self.operation()?.wait(py)
     }
 
     fn cancel(&self) -> PyResult<()> {
-        self.operation.cancel()
+        self.operation()?.cancel()
+    }
+
+    fn release(&mut self, py: Python<'_>) -> PyResult<()> {
+        if let Some(operation) = &self.operation {
+            operation.release(py)?;
+        }
+        self.operation = None;
+        Ok(())
     }
 
     fn progress(&self, py: Python<'_>, callback: Py<PyAny>) -> PyResult<()> {
@@ -302,7 +349,8 @@ impl DynWinRTAsyncWithProgress {
             })?
             .unbind();
 
-        let info = match &self.operation.value {
+        let operation = self.operation()?;
+        let info = match &operation.value {
             dynwinrt::WinRTValue::Async(info) => info,
             _ => {
                 return Err(PyRuntimeError::new_err(
@@ -327,15 +375,23 @@ impl DynWinRTAsyncWithProgress {
             .import("dynwinrt_py.dynwinrt_py")?
             .getattr("_dynwinrt_dispatch_progress")?
             .unbind();
+        let callback_context = py
+            .import("contextvars")?
+            .getattr("copy_context")?
+            .call0()?
+            .unbind();
 
         let progress_callback: dynwinrt::ProgressCallback = Box::new(move |value| {
             Python::attach(|py| {
                 let result = (|| -> PyResult<()> {
                     let raw = Py::new(py, DynWinRTValue(value))?;
+                    let context = callback_context.call_method0(py, "copy")?;
+                    let context_run = context.getattr(py, "run")?;
                     loop_.call_method1(
                         py,
                         "call_soon_threadsafe",
                         (
+                            context_run,
                             dispatch_progress.clone_ref(py),
                             callback.clone_ref(py),
                             converter.clone_ref(py),

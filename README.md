@@ -55,15 +55,16 @@ Classic COM bindings import their runtime API from the separate
 `@microsoft/dynwinrt/com` for initialization and managed COM value types;
 manual ABI declarations require an explicit `/com/unsafe` import. All are
 part of the same npm package, while the package root remains WinRT-only. See
-[Classic COM support](docs/classic-com-support.md) for the supported ABI,
+[Classic COM support](docs/architecture/classic-com-support.md) for the supported ABI,
 common-interface test matrix, unsupported native types, and ownership rules.
-See [Classic COM JavaScript usage](docs/classic-com-usage.md) for codegen,
+See [Classic COM JavaScript usage](docs/guides/windows/classic-com-usage.md) for codegen,
 GUID/IID/CLSID, lifecycle, Automation, and explicit unsafe ABI examples.
 
 Generated bindings project unambiguous public WinRT activation metadata as JavaScript
 constructors, including overloads such as `new Uri(base, relative)`. Existing
 static factory methods remain available. Classes that can only be returned by
-the system, or that expose only protected composition, remain non-constructible.
+the system, or that expose only protected composition, remain non-constructible;
+Python stubs do not advertise their internal native-value wrapping path.
 Bindings also include async + progress support, generic collections
 (`IVector<T>`, `IMap<K,V>`), structs, enums, and delegates — see
 `tools/dynwinrt-codegen/npm/README.md` for the full feature list.
@@ -114,11 +115,19 @@ dynwinrt/
 ├── crates/dynwinrt/          # Core Rust runtime (FFI, metadata, async, delegates, collections)
 ├── bindings/
 │   ├── js/                   # @microsoft/dynwinrt — JS / TS bindings (napi-rs)
-│   └── py/                   # Python bindings (PyO3, experimental — not published)
+│   └── py/                   # Python bindings (PyO3; release workflow ready)
 ├── tools/
 │   └── dynwinrt-codegen/     # @microsoft/dynwinrt-codegen — typed-binding generator
-├── tests/                    # Integration tests + sample E2E projects
-└── bench-electron/           # Electron benchmark app
+├── tests/
+│   └── e2e/                  # Cross-language E2E specs, runners, and scripts
+├── benchmarks/
+│   ├── electron/             # Electron IPC benchmark app
+│   └── js/                   # Dynamic and static JS/native benchmarks
+├── samples/
+│   ├── js/                   # JavaScript/TypeScript samples
+│   └── python/               # Python samples
+├── docs/                     # Architecture, benchmark, guide, and status docs
+└── eng/release/python/       # Python release verification helpers
 ```
 
 ## Build from source
@@ -139,8 +148,16 @@ cargo build -p dynwinrt-codegen --release
 cargo run   -p dynwinrt-codegen -- generate --namespace Windows.Foundation --class-name Uri --output ./generated
 ```
 
+Python runtime wheels target CPython 3.11–3.14 on Windows x64 and ARM64. The
+standalone `dynwinrt-codegen` Python wheel targets CPython 3.8–3.14 and needs no
+Rust installation at consumption time. Release and trusted-publishing
+instructions are in [`bindings/py/README.md`](bindings/py/README.md).
+
 Python runtime, codegen, packaging, and WinUI readiness are tracked in
-[`PYTHON_CHECKLIST.md`](PYTHON_CHECKLIST.md).
+[`docs/status/PYTHON_CHECKLIST.md`](docs/status/PYTHON_CHECKLIST.md).
+
+For deployment, see
+[Package a dynwinrt Node.js application as MSIX](docs/guides/windows/msix-packaging.md).
 
 ## Codegen CLI reference
 

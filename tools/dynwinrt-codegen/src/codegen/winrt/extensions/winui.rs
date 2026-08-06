@@ -8,7 +8,7 @@
 
 use std::collections::HashSet;
 
-use crate::meta::ClassMeta;
+use crate::meta::{ClassMeta, InterfaceMeta};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WinUiClassRef {
@@ -70,8 +70,24 @@ pub const APPLICATION_BOOTSTRAP: WinUiBootstrapSpec = WinUiBootstrapSpec {
     launched_callback_params: LAUNCHED_CALLBACK_PARAMS,
 };
 
+pub const DISPATCHER_QUEUE: WinUiClassRef =
+    WinUiClassRef::new("Microsoft.UI.Dispatching", "DispatcherQueue");
+pub const ITEMS_REPEATER: WinUiClassRef =
+    WinUiClassRef::new("Microsoft.UI.Xaml.Controls", "ItemsRepeater");
+pub const ELEMENT_FACTORY: WinUiClassRef =
+    WinUiClassRef::new("Microsoft.UI.Xaml", "IElementFactory");
+const ELEMENT_FACTORY_CLASSES: &[WinUiClassRef] = &[
+    WinUiClassRef::new("Microsoft.UI.Xaml", "ElementFactoryGetArgs"),
+    WinUiClassRef::new("Microsoft.UI.Xaml", "ElementFactoryRecycleArgs"),
+    WinUiClassRef::new("Microsoft.UI.Xaml", "UIElement"),
+];
+
 pub fn is_application(class: &ClassMeta) -> bool {
     class.full_name == APPLICATION_BOOTSTRAP.application.full_name()
+}
+
+pub fn is_dispatcher_queue(class: &ClassMeta) -> bool {
+    class.full_name == DISPATCHER_QUEUE.full_name()
 }
 
 pub fn call_behavior(interface_name: &str, method_name: &str) -> WinUiCallBehavior {
@@ -99,15 +115,21 @@ pub fn resolve_application_bootstrap(
 
 pub fn add_implicit_classes(winmd: &str, classes: &mut Vec<ClassMeta>) {
     let spec = &APPLICATION_BOOTSTRAP;
-    if !classes.iter().any(is_application) {
-        return;
+    let mut references = Vec::new();
+    if classes.iter().any(is_application) {
+        references.extend([
+            spec.metadata_provider,
+            spec.controls_resources,
+            spec.resource_manager,
+        ]);
     }
-
-    for reference in [
-        spec.metadata_provider,
-        spec.controls_resources,
-        spec.resource_manager,
-    ] {
+    if classes
+        .iter()
+        .any(|class| class.full_name == ITEMS_REPEATER.full_name())
+    {
+        references.extend(ELEMENT_FACTORY_CLASSES);
+    }
+    for reference in references {
         let full_name = reference.full_name();
         if classes.iter().any(|class| class.full_name == full_name) {
             continue;
@@ -115,6 +137,29 @@ pub fn add_implicit_classes(winmd: &str, classes: &mut Vec<ClassMeta>) {
         if let Some(class) = crate::meta::parse_class(winmd, reference.namespace, reference.name) {
             classes.push(class);
         }
+    }
+}
+
+pub fn add_implicit_interfaces(
+    winmd: &str,
+    classes: &[ClassMeta],
+    interfaces: &mut Vec<InterfaceMeta>,
+) {
+    if !classes
+        .iter()
+        .any(|class| class.full_name == ITEMS_REPEATER.full_name())
+        || interfaces.iter().any(|interface| {
+            interface.namespace == ELEMENT_FACTORY.namespace
+                && interface.name == ELEMENT_FACTORY.name
+        })
+    {
+        return;
+    }
+    if let Some(interface) = crate::meta::parse_interfaces(winmd, ELEMENT_FACTORY.namespace)
+        .into_iter()
+        .find(|interface| interface.name == ELEMENT_FACTORY.name)
+    {
+        interfaces.push(interface);
     }
 }
 
