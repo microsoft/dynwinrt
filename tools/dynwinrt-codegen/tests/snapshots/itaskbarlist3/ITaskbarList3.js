@@ -31,7 +31,7 @@ const _ITaskbarList3 = new Proxy({}, {
             .addMethodAt(17, 'ThumbBarSetImageList', new DynComMethodSig().addIn(DynCom.pointerType()).addIn(DynCom.pointerType()))
             .addMethodAt(18, 'SetOverlayIcon', new DynComMethodSig().addIn(DynCom.pointerType()).addIn(DynCom.pointerType()).addIn(DynCom.pointerType()))
             .addMethodAt(19, 'SetThumbnailTooltip', new DynComMethodSig().addIn(DynCom.pointerType()).addIn(DynCom.pointerType()))
-            .addMethodAt(20, 'SetThumbnailClip', new DynComMethodSig().addIn(DynCom.pointerType()).addIn(DynCom.nativeStructPointerType(_nativeLayout_RECT, true)));
+            .addMethodAt(20, 'SetThumbnailClip', new DynComMethodSig().addIn(DynCom.pointerType()).addNullableIn(DynCom.nativeStructPointerType(_nativeLayout_RECT, true)));
         const value = _ITaskbarList3Cache[prop];
         return typeof value === 'function' ? value.bind(_ITaskbarList3Cache) : value;
     },
@@ -40,8 +40,12 @@ const _ITaskbarList3 = new Proxy({}, {
 class ITaskbarList3 {
     static IID = IID_ITaskbarList3;
     _obj;
-    constructor(obj) { this._obj = obj; }
-    static _fromNative(obj) { return Object.assign(Object.create(ITaskbarList3.prototype), { _obj: obj }); }
+    constructor(obj) {
+        const cast = obj.cast(IID_ITaskbarList3);
+        DynCom.bindComObject(cast);
+        this._obj = cast;
+    }
+    static _fromNative(obj) { return _wrapITaskbarList3Owned(obj.cast(IID_ITaskbarList3)); }
     /** Release the underlying native COM reference. Safe to call more than once. */
     release() {
         this._obj.release();
@@ -104,20 +108,24 @@ class ITaskbarList3 {
     }
     /** @see {@link https://learn.microsoft.com/windows/win32/api/shobjidl_core/nf-shobjidl_core-itaskbarlist3-thumbbarsetimagelist} */
     thumbBarSetImageList(hwnd, himl) {
-        _ITaskbarList3.method(17).invoke(this._obj, [DynCom.pointer(DynCom.handleValue(hwnd)), DynCom.pointer(himl)]);
+        _ITaskbarList3.method(17).invoke(this._obj, [DynCom.pointer(DynCom.handleValue(hwnd)), DynCom.pointer(DynCom.handleValue(himl))]);
     }
     /** @see {@link https://learn.microsoft.com/windows/win32/api/shobjidl_core/nf-shobjidl_core-itaskbarlist3-setoverlayicon} */
     setOverlayIcon(hwnd, hIcon, description) {
-        _ITaskbarList3.method(18).invoke(this._obj, [DynCom.pointer(DynCom.handleValue(hwnd)), DynCom.pointer(hIcon), DynCom.wideStringPointer(description)]);
+        _ITaskbarList3.method(18).invoke(this._obj, [DynCom.pointer(DynCom.handleValue(hwnd)), DynCom.pointer(DynCom.handleValue(hIcon)), DynCom.safeWideStringPointer(description)]);
     }
     /** @see {@link https://learn.microsoft.com/windows/win32/api/shobjidl_core/nf-shobjidl_core-itaskbarlist3-setthumbnailtooltip} */
     setThumbnailTooltip(hwnd, tip) {
-        _ITaskbarList3.method(19).invoke(this._obj, [DynCom.pointer(DynCom.handleValue(hwnd)), DynCom.wideStringPointer(tip)]);
+        _ITaskbarList3.method(19).invoke(this._obj, [DynCom.pointer(DynCom.handleValue(hwnd)), DynCom.safeWideStringPointer(tip)]);
     }
     /** @see {@link https://learn.microsoft.com/windows/win32/api/shobjidl_core/nf-shobjidl_core-itaskbarlist3-setthumbnailclip} */
     setThumbnailClip(hwnd, prcClip) {
         _ITaskbarList3.method(20).invoke(this._obj, [DynCom.pointer(DynCom.handleValue(hwnd)), prcClip === null ? DynCom.nullNativeStructPointer() : DynCom.nativeStruct(_nativeLayout_RECT, prcClip)]);
     }
+}
+function _wrapITaskbarList3Owned(obj) {
+    DynCom.bindComObject(obj);
+    return Object.assign(Object.create(ITaskbarList3.prototype), { _obj: obj });
 }
 exports.createRECT = createRECT;
 exports.createTHUMBBUTTON = createTHUMBBUTTON;

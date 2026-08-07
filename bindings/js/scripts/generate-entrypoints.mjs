@@ -26,12 +26,11 @@ const comExports = new Set([
   'DynComSafeArray',
   'DynComVariant',
   'DynWinRtValue',
-  'DynWinRTValue',
   'WinGuid',
-  'WinGUID',
   'initializeCom',
 ])
-const comTypeExports = [...comExports, 'DynComSafeArrayBound']
+const comTypeAliases = ['DynWinRTValue', 'WinGUID']
+const comTypeExports = [...comExports, ...comTypeAliases, 'DynComSafeArrayBound']
 const comUnsafeExports = new Set([
   ...comExports,
   'DynCom',
@@ -43,7 +42,7 @@ const comUnsafeExports = new Set([
   'DynComUnsafe',
   'DynComUnsafeInterface',
 ])
-const comUnsafeTypeExports = [...comUnsafeExports, 'DynComSafeArrayBound']
+const comUnsafeTypeExports = [...comUnsafeExports, ...comTypeAliases, 'DynComSafeArrayBound']
 
 writeFacade(
   'winrt',

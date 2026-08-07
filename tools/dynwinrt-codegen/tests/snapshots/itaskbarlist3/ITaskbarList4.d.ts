@@ -10,8 +10,8 @@ export type HICON = bigint | number;
 export type HIMAGELIST = bigint | number;
 /** Opaque Win32 handle value. Pass a raw pointer value as a `bigint` (full pointer width) or `number` (safe integer). */
 export type HWND = bigint | number;
-/** Win32 NUL-terminated string pointer. Pass a JS `string` (encoded automatically via DynCom.wideStringPointer), a `Buffer`/`Uint8Array` holding UTF-16LE bytes (including the NUL terminator), or a raw pointer as `bigint`. */
-export type PWSTR = string | Buffer | Uint8Array | bigint;
+/** Win32 NUL-terminated string pointer. Pass a JS `string` (encoded automatically), or a `Buffer`/`Uint8Array` holding UTF-16LE bytes including the NUL terminator. Arbitrary numeric addresses require the explicit unsafe runtime. */
+export type PWSTR = string | Buffer | Uint8Array;
 
 /** Validated native POD bytes (Windows.Win32.Foundation-specific size selected at runtime). */
 export type RECT = DynComNativeStruct & { readonly __dynComNativeStructLayout: 'Windows.Win32.Foundation.RECT' };

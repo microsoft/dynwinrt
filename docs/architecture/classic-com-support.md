@@ -370,10 +370,13 @@ HRESULT methods retain the normal throw-or-`void` behavior.
 **Problem:** A valid COM reference is not necessarily callable from every
 thread. STA objects require the owning apartment or a marshaled proxy.
 
-Required support includes:
+Generated Classic COM JavaScript wrappers now record the creating thread and
+reject wrong-thread invocation or explicit release. A wrong-thread finalizer
+leaks rather than calling `Release` in the wrong apartment. WinRT values remain
+unbound and retain their existing behavior.
 
-- tracking the apartment where a value was acquired;
-- preventing unsafe cross-thread calls;
+Remaining apartment work includes:
+
 - agile-object detection;
 - Global Interface Table or COM marshaling integration; and
 - deterministic callback dispatch to the correct apartment.
@@ -1178,9 +1181,13 @@ contracts and therefore add no complete-interface census entries. After
 removing enum-name ownership inference, requiring distinct actual-length
 parameters to be exact Out values, and separating counted character pointers
 from terminated strings, the exact final literal census is
-**5,558 / 7,929 = 70.097112%**. The result remains above the 70% target without
+**5,560 / 7,929 = 70.122336%**. The result remains above the 70% target without
 admitting any creator-owned, destroyable, InOut, undocumented, optional, or
 `HWND**` shape.
+
+CI reproduces this number with `dynwinrt-codegen com-census --json` and fails
+if the denominator changes, complete generation drops below 5,560, or coverage
+falls below 70%.
 
 ## Public-code frequency snapshot
 
@@ -1317,7 +1324,7 @@ hardware, and whether it adds a distinct ABI shape.
 Eleven unique Classic COM interfaces are currently exercised.
 Core live tests are in
 [`crates/dynwinrt/src/com.rs`](../../crates/dynwinrt/src/com.rs). The eleven Node
-runners plus the counted-buffer runner (twelve total) are in
+runners, the counted-buffer runner, and two Automation runners (fourteen total) are in
 [`tests/e2e/runners/com`](../../tests/e2e/runners/com) and are generated
 and executed by [`tests/e2e/e2e_test.ps1`](../../tests/e2e/e2e_test.ps1).
 

@@ -40,6 +40,33 @@ jobs:
         run: cargo test -p dynwinrt
       - name: Test dynwinrt-codegen
         run: cargo test -p dynwinrt-codegen
+      - name: Enforce Classic COM coverage baseline
+        shell: pwsh
+        run: |
+          $json = cargo run -p dynwinrt-codegen --quiet -- com-census `
+            --winmd $env:DYNWINRT_WIN32_WINMD `
+            --json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $result = $json | ConvertFrom-Json
+          if ($result.eligible_interfaces -ne 7929) {
+            throw "Classic COM census denominator changed: $($result.eligible_interfaces)"
+          }
+          if ($result.complete_interfaces -lt 5560) {
+            throw "Classic COM complete coverage regressed: $($result.complete_interfaces)"
+          }
+          if ($result.coverage_percent -lt 70.0) {
+            throw "Classic COM coverage fell below 70%: $($result.coverage_percent)"
+          }
+          Write-Host "Classic COM coverage: $($result.complete_interfaces)/$($result.eligible_interfaces) ($($result.coverage_percent)%)"
+      - name: Test Classic COM failure cleanup contracts
+        run: |
+          cargo test -p dynwinrt failing_hresult_releases_written_interface_output
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p dynwinrt automation_validation_failure_cleans_other_owned_outputs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p dynwinrt bstr_in_out_failure_cleans_unchanged_replaced_and_null_slots
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p dynwinrt excep_info_deferred_fill_runs_once_and_cleans_on_every_failure_path
       - name: Check x86 Classic COM runtime
         run: cargo check -p jswinrt_rs --target i686-pc-windows-msvc
 
@@ -161,3 +188,5 @@ jobs:
             bindings/js/dist/winrt.d.ts
             bindings/js/dist/com.js
             bindings/js/dist/com.d.ts
+            bindings/js/dist/com-unsafe.js
+            bindings/js/dist/com-unsafe.d.ts

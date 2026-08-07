@@ -312,6 +312,8 @@ dependencies = [
  "clap",
  "regex",
  "roxmltree",
+ "serde",
+ "serde_json",
  "windows",
  "windows-metadata",
 ]

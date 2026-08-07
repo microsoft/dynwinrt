@@ -6,8 +6,8 @@ import type { DynComNativeStruct } from '@microsoft/dynwinrt/com';
 
 /** Opaque Win32 handle value. Pass a raw pointer value as a `bigint` (full pointer width) or `number` (safe integer). */
 export type HWND = bigint | number;
-/** Win32 NUL-terminated string pointer. Pass a JS `string` (encoded automatically via DynCom.wideStringPointer), a `Buffer`/`Uint8Array` holding UTF-16LE bytes (including the NUL terminator), or a raw pointer as `bigint`. */
-export type PWSTR = string | Buffer | Uint8Array | bigint;
+/** Win32 NUL-terminated string pointer. Pass a JS `string` (encoded automatically), or a `Buffer`/`Uint8Array` holding UTF-16LE bytes including the NUL terminator. Arbitrary numeric addresses require the explicit unsafe runtime. */
+export type PWSTR = string | Buffer | Uint8Array;
 
 /** Validated native POD bytes (Windows.Win32.Storage.FileSystem-specific size selected at runtime). */
 export type WIN32_FIND_DATAW = DynComNativeStruct & { readonly __dynComNativeStructLayout: 'Windows.Win32.Storage.FileSystem.WIN32_FIND_DATAW' };
@@ -27,7 +27,7 @@ export declare class IShellLinkW {
     /** @see {@link https://learn.microsoft.com/windows/win32/api/shobjidl_core/nf-shobjidl_core-ishelllinkw-getidlist} */
     getIDList(): DynWinRtValue;
     /** @see {@link https://learn.microsoft.com/windows/win32/api/shobjidl_core/nf-shobjidl_core-ishelllinkw-setidlist} */
-    setIDList(pidl: bigint | Buffer): void;
+    setIDList(pidl: Buffer | Uint8Array): void;
     /** @see {@link https://learn.microsoft.com/windows/win32/api/shobjidl_core/nf-shobjidl_core-ishelllinkw-getdescription} */
     getDescription(cch?: number): string;
     /** @see {@link https://learn.microsoft.com/windows/win32/api/shobjidl_core/nf-shobjidl_core-ishelllinkw-setdescription} */

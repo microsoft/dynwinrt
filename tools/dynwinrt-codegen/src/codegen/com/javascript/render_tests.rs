@@ -46,6 +46,14 @@ fn renderer_api_accepts_only_projected_ir() {
             .dts
             .contains("export declare const IID_ITest: WinGuid;")
     );
+    assert!(output.js.contains("const cast = obj.cast(IID_ITest);"));
+    assert!(
+        output
+            .js
+            .contains("static _fromNative(obj) { return _wrapITestOwned(obj.cast(IID_ITest)); }")
+    );
+    assert!(output.js.contains("function _wrapITestOwned(obj)"));
+    assert!(output.js.contains("DynCom.bindComObject"));
 }
 
 #[test]
@@ -247,7 +255,7 @@ fn renderer_allows_null_only_for_nullable_bstr_inputs() {
     assert!(
         output
             .js
-            .contains("new DynComMethodSig().addIn(DynCom.nullableBstrType())")
+            .contains("new DynComMethodSig().addNullableIn(DynCom.nullableBstrType())")
     );
     assert!(
         output
@@ -2111,10 +2119,8 @@ fn handle_value_arg_accepts_buffer_and_string_pointer_keeps_buffer() {
     // HWND inputs accept Electron's pointer-width Buffer, but the HWND
     // output alias remains a numeric handle value.
     assert!(dts.contains("export type HWND = bigint | number;"));
-    assert!(dts.contains("export type PWSTR = string | Buffer | Uint8Array | bigint;"));
-    assert!(
-        dts.contains("Pass a JS `string` (encoded automatically via DynCom.wideStringPointer)")
-    );
+    assert!(dts.contains("export type PWSTR = string | Buffer | Uint8Array;"));
+    assert!(dts.contains("Pass a JS `string` (encoded automatically)"));
     assert!(
         dts.contains("setOverlayIcon(hwnd: HWND | Buffer | Uint8Array, description: PWSTR): void;")
     );
@@ -2127,7 +2133,7 @@ fn handle_value_arg_accepts_buffer_and_string_pointer_keeps_buffer() {
         "HWND arg must use DynCom.handleValue:\n{js}"
     );
     assert!(!js.contains("function _handleArg("));
-    assert!(js.contains("DynCom.wideStringPointer(description)"));
+    assert!(js.contains("DynCom.safeWideStringPointer(description)"));
 }
 
 #[test]
@@ -2154,9 +2160,9 @@ fn data_pointer_alias_does_not_read_buffer_contents_as_a_handle() {
     let js = render_js(&iface, None);
     let dts = render_dts(&iface, None);
 
-    assert!(dts.contains("export type PSID = bigint | number;"));
-    assert!(dts.contains("addUserSid(userSid: PSID | Buffer | Uint8Array): void;"));
-    assert!(js.contains("DynCom.pointer(userSid)"));
+    assert!(dts.contains("export type PSID = Buffer | Uint8Array;"));
+    assert!(dts.contains("addUserSid(userSid: PSID): void;"));
+    assert!(js.contains("DynCom.safeDataPointer(userSid)"));
     assert!(!js.contains("handleValue(userSid)"));
 }
 
@@ -2704,7 +2710,7 @@ fn caller_supplied_riid_output_is_adopted() {
     assert!(
         output
             .dts
-            .contains("bindToHandler(pbc: bigint | Buffer, riid: string): DynWinRtValue;")
+            .contains("bindToHandler(pbc: Buffer | Uint8Array, riid: string): DynWinRtValue;")
     );
 }
 

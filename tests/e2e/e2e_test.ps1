@@ -34,6 +34,7 @@ $comShellDir = Join-Path $comBindingsDir "shell"
 $comInteropDir = Join-Path $comBindingsDir "interop"
 $comWicDir = Join-Path $comBindingsDir "wic"
 $comStreamDir = Join-Path $comBindingsDir "stream"
+$comAutomationDir = Join-Path $comBindingsDir "automation"
 $comSmtcDir = Join-Path $comBindingsDir "smtc"
 [string[]]$cargoProfileArgs = @(
     if ($CargoProfile -eq "release") {
@@ -261,6 +262,13 @@ if ("com" -in $Lang) {
     if ($LASTEXITCODE -ne 0) { Write-Error "Classic COM stream generation failed"; exit 1 }
 
     & cargo run -p dynwinrt-codegen @cargoProfileArgs @cargoTargetArgs --quiet -- generate `
+        --winmd $win32Winmd `
+        --class-name "Windows.Win32.System.Com.IDispatch,Windows.Win32.System.Ole.IEnumVARIANT" `
+        --output $comAutomationDir `
+        --import-name $comRuntimeImport
+    if ($LASTEXITCODE -ne 0) { Write-Error "Classic COM Automation generation failed"; exit 1 }
+
+    & cargo run -p dynwinrt-codegen @cargoProfileArgs @cargoTargetArgs --quiet -- generate `
         --namespace Windows.Media `
         --class-name SystemMediaTransportControls `
         --output $comSmtcDir `
@@ -326,6 +334,8 @@ if ("com" -in $Lang) {
         "file-open-dialog.mjs",
         "wic-imaging-factory.mjs",
         "sequential-stream-buffer.mjs",
+        "automation-values.mjs",
+        "automation-dispatch.mjs",
         "dtm.mjs",
         "smtc.mjs"
     )

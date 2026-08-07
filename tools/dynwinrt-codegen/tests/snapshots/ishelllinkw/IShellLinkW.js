@@ -21,7 +21,7 @@ let _IShellLinkWCache;
 const _IShellLinkW = new Proxy({}, {
     get(_target, prop) {
         _IShellLinkWCache ??= DynCom.registerIUnknownInterface('Windows.Win32.UI.Shell.IShellLinkW', IID_IShellLinkW)
-            .addMethodAt(3, 'GetPath', new DynComMethodSig().addIn(DynCom.pointerType()).addIn(DynCom.i32Type()).addInOut(DynCom.nativeStructPointerType(_nativeLayout_WIN32_FIND_DATAW, true)).addIn(DynCom.u32Type()))
+            .addMethodAt(3, 'GetPath', new DynComMethodSig().addIn(DynCom.pointerType()).addIn(DynCom.i32Type()).addNullableInOut(DynCom.nativeStructPointerType(_nativeLayout_WIN32_FIND_DATAW, true)).addIn(DynCom.u32Type()))
             .addMethodAt(4, 'GetIDList', new DynComMethodSig().addOut(DynCom.coTaskMemPointerType()))
             .addMethodAt(5, 'SetIDList', new DynComMethodSig().addIn(DynCom.pointerType()))
             .addMethodAt(6, 'GetDescription', new DynComMethodSig().addIn(DynCom.pointerType()).addIn(DynCom.i32Type()))
@@ -47,8 +47,12 @@ const _IShellLinkW = new Proxy({}, {
 class IShellLinkW {
     static IID = IID_IShellLinkW;
     _obj;
-    constructor(obj) { this._obj = obj; }
-    static _fromNative(obj) { return Object.assign(Object.create(IShellLinkW.prototype), { _obj: obj }); }
+    constructor(obj) {
+        const cast = obj.cast(IID_IShellLinkW);
+        DynCom.bindComObject(cast);
+        this._obj = cast;
+    }
+    static _fromNative(obj) { return _wrapIShellLinkWOwned(obj.cast(IID_IShellLinkW)); }
     /** Release the underlying native COM reference. Safe to call more than once. */
     release() {
         this._obj.release();
@@ -68,7 +72,7 @@ class IShellLinkW {
     }
     /** @see {@link https://learn.microsoft.com/windows/win32/api/shobjidl_core/nf-shobjidl_core-ishelllinkw-setidlist} */
     setIDList(pidl) {
-        _IShellLinkW.method(5).invoke(this._obj, [DynCom.pointer(pidl)]);
+        _IShellLinkW.method(5).invoke(this._obj, [DynCom.safeDataPointer(pidl)]);
     }
     /** @see {@link https://learn.microsoft.com/windows/win32/api/shobjidl_core/nf-shobjidl_core-ishelllinkw-getdescription} */
     getDescription(cch = 260) {
@@ -80,7 +84,7 @@ class IShellLinkW {
     }
     /** @see {@link https://learn.microsoft.com/windows/win32/api/shobjidl_core/nf-shobjidl_core-ishelllinkw-setdescription} */
     setDescription(name) {
-        _IShellLinkW.method(7).invoke(this._obj, [DynCom.wideStringPointer(name)]);
+        _IShellLinkW.method(7).invoke(this._obj, [DynCom.safeWideStringPointer(name)]);
     }
     /** @see {@link https://learn.microsoft.com/windows/win32/api/shobjidl_core/nf-shobjidl_core-ishelllinkw-getworkingdirectory} */
     getWorkingDirectory(cch = 260) {
@@ -92,7 +96,7 @@ class IShellLinkW {
     }
     /** @see {@link https://learn.microsoft.com/windows/win32/api/shobjidl_core/nf-shobjidl_core-ishelllinkw-setworkingdirectory} */
     setWorkingDirectory(dir) {
-        _IShellLinkW.method(9).invoke(this._obj, [DynCom.wideStringPointer(dir)]);
+        _IShellLinkW.method(9).invoke(this._obj, [DynCom.safeWideStringPointer(dir)]);
     }
     /** @see {@link https://learn.microsoft.com/windows/win32/api/shobjidl_core/nf-shobjidl_core-ishelllinkw-getarguments} */
     getArguments(cch = 260) {
@@ -104,7 +108,7 @@ class IShellLinkW {
     }
     /** @see {@link https://learn.microsoft.com/windows/win32/api/shobjidl_core/nf-shobjidl_core-ishelllinkw-setarguments} */
     setArguments(args) {
-        _IShellLinkW.method(11).invoke(this._obj, [DynCom.wideStringPointer(args)]);
+        _IShellLinkW.method(11).invoke(this._obj, [DynCom.safeWideStringPointer(args)]);
     }
     /** @see {@link https://learn.microsoft.com/windows/win32/api/shobjidl_core/nf-shobjidl_core-ishelllinkw-gethotkey} */
     getHotkey() {
@@ -134,11 +138,11 @@ class IShellLinkW {
     }
     /** @see {@link https://learn.microsoft.com/windows/win32/api/shobjidl_core/nf-shobjidl_core-ishelllinkw-seticonlocation} */
     setIconLocation(iconPath, iIcon) {
-        _IShellLinkW.method(17).invoke(this._obj, [DynCom.wideStringPointer(iconPath), DynCom.i32(iIcon)]);
+        _IShellLinkW.method(17).invoke(this._obj, [DynCom.safeWideStringPointer(iconPath), DynCom.i32(iIcon)]);
     }
     /** @see {@link https://learn.microsoft.com/windows/win32/api/shobjidl_core/nf-shobjidl_core-ishelllinkw-setrelativepath} */
     setRelativePath(pathRel, reserved) {
-        _IShellLinkW.method(18).invoke(this._obj, [DynCom.wideStringPointer(pathRel), DynCom.u32(reserved)]);
+        _IShellLinkW.method(18).invoke(this._obj, [DynCom.safeWideStringPointer(pathRel), DynCom.u32(reserved)]);
     }
     /** @see {@link https://learn.microsoft.com/windows/win32/api/shobjidl_core/nf-shobjidl_core-ishelllinkw-resolve} */
     resolve(hwnd, fFlags) {
@@ -146,8 +150,12 @@ class IShellLinkW {
     }
     /** @see {@link https://learn.microsoft.com/windows/win32/api/shobjidl_core/nf-shobjidl_core-ishelllinkw-setpath} */
     setPath(file) {
-        _IShellLinkW.method(20).invoke(this._obj, [DynCom.wideStringPointer(file)]);
+        _IShellLinkW.method(20).invoke(this._obj, [DynCom.safeWideStringPointer(file)]);
     }
+}
+function _wrapIShellLinkWOwned(obj) {
+    DynCom.bindComObject(obj);
+    return Object.assign(Object.create(IShellLinkW.prototype), { _obj: obj });
 }
 exports.createWIN32_FIND_DATAW = createWIN32_FIND_DATAW;
 exports.IID_IShellLinkW = IID_IShellLinkW;

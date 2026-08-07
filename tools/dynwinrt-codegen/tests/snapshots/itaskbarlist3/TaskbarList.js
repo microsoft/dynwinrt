@@ -6,18 +6,29 @@ const CLSID_TaskbarList = '56fdf344-fd6d-11d0-958a-006097c9a090';
 
 class TaskbarList extends ITaskbarList4 {
     constructor() {
-        super(DynCom.coCreateInstance(CLSID_TaskbarList, IID_ITaskbarList4));
+        const obj = DynCom.coCreateInstance(CLSID_TaskbarList, IID_ITaskbarList4);
+        try {
+            super(obj);
+        } finally {
+            obj.release();
+        }
     }
     static _fromNative(obj) {
         const cast = obj.cast(IID_ITaskbarList4);
+        DynCom.bindComObject(cast);
         return Object.assign(Object.create(TaskbarList.prototype), { _obj: cast });
     }
     as(InterfaceClass) {
-        return InterfaceClass._fromNative(this._obj.cast(InterfaceClass.IID));
+        return InterfaceClass._fromNative(this._obj);
     }
     tryAs(InterfaceClass) {
         const obj = DynCom.tryCast(this._obj, InterfaceClass.IID);
-        return obj === null ? null : InterfaceClass._fromNative(obj);
+        if (obj === null) return null;
+        try {
+            return InterfaceClass._fromNative(obj);
+        } finally {
+            obj.release();
+        }
     }
     supports(InterfaceClass) {
         const obj = DynCom.tryCast(this._obj, InterfaceClass.IID);

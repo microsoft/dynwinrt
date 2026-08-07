@@ -546,6 +546,22 @@ pub enum Value {
     Buffer(ComBufferValue),
 }
 
+fn is_null_input_value(value: &Value) -> bool {
+    match value {
+        Value::WinRt(WinRTValue::RawPtr(pointer)) => pointer.is_null(),
+        Value::WinRt(value) => value.is_null_object(),
+        Value::Bstr(value) => value.as_deref().is_none(),
+        Value::NativeStruct(_)
+        | Value::NativeUnion(_)
+        | Value::Variant(_)
+        | Value::SafeArray(_)
+        | Value::PropVariant(_)
+        | Value::DispatchParams(_)
+        | Value::ExcepInfo(_)
+        | Value::Buffer(_) => false,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StringEncoding {
     Utf16,
@@ -1441,6 +1457,10 @@ impl Type {
         }
     }
 
+    fn input_is_intrinsically_nullable(&self) -> bool {
+        self.abi.is_nullable_native_struct_pointer() || self.abi.is_nullable_bstr()
+    }
+
     fn supports_direct_return(&self) -> bool {
         matches!(self.abi, ParameterType::Pointer)
             || matches!(
@@ -1619,6 +1639,7 @@ struct ComBufferContract {
 struct ComParameterSpec {
     direction: ComParameterDirection,
     typ: Type,
+    nullable: bool,
     buffer: Option<ComBufferContract>,
 }
 
@@ -1626,6 +1647,7 @@ struct ComParameterSpec {
 struct ComArgumentPlan {
     typ: ParameterType,
     direction: ComParameterDirection,
+    nullable: bool,
     storage: ComArgumentStorage,
     input_index: Option<usize>,
     output_index: Option<usize>,
@@ -1937,6 +1959,7 @@ impl ComCallPlan {
             arguments.push(ComArgumentPlan {
                 typ: typ.abi,
                 direction,
+                nullable: parameter.nullable,
                 storage,
                 input_index: parameter_input_index,
                 output_index: parameter_output_index,
@@ -2099,6 +2122,19 @@ impl ComCallPlan {
                 "COM call expects {expected_args} argument(s), received {}",
                 args.len()
             )));
+        }
+        for (parameter_index, argument) in self.arguments.iter().enumerate() {
+            let Some(input_index) = argument.input_index else {
+                continue;
+            };
+            if !argument.nullable
+                && !argument.typ.is_bstr()
+                && is_null_input_value(&args[input_index])
+            {
+                return Err(invalid_argument(format!(
+                    "required COM parameter {parameter_index} cannot be null"
+                )));
+            }
         }
 
         let mut prepared_buffers = (0..self.arguments.len()).map(|_| None).collect::<Vec<_>>();
@@ -3275,9 +3311,21 @@ impl MethodSignature {
     }
 
     pub fn add_in(mut self, typ: Type) -> Self {
+        let nullable = typ.input_is_intrinsically_nullable();
         self.parameters.push(ComParameterSpec {
             direction: ComParameterDirection::In,
             typ,
+            nullable,
+            buffer: None,
+        });
+        self
+    }
+
+    pub fn add_nullable_in(mut self, typ: Type) -> Self {
+        self.parameters.push(ComParameterSpec {
+            direction: ComParameterDirection::In,
+            typ,
+            nullable: true,
             buffer: None,
         });
         self
@@ -3287,6 +3335,7 @@ impl MethodSignature {
         self.parameters.push(ComParameterSpec {
             direction: ComParameterDirection::Out,
             typ,
+            nullable: false,
             buffer: None,
         });
         self
@@ -3296,15 +3345,28 @@ impl MethodSignature {
         self.parameters.push(ComParameterSpec {
             direction: ComParameterDirection::OptionalOut,
             typ,
+            nullable: false,
             buffer: None,
         });
         self
     }
 
     pub fn add_in_out(mut self, typ: Type) -> Self {
+        let nullable = typ.input_is_intrinsically_nullable();
         self.parameters.push(ComParameterSpec {
             direction: ComParameterDirection::InOut,
             typ,
+            nullable,
+            buffer: None,
+        });
+        self
+    }
+
+    pub fn add_nullable_in_out(mut self, typ: Type) -> Self {
+        self.parameters.push(ComParameterSpec {
+            direction: ComParameterDirection::InOut,
+            typ,
+            nullable: true,
             buffer: None,
         });
         self
@@ -3314,6 +3376,7 @@ impl MethodSignature {
         self.parameters.push(ComParameterSpec {
             direction: ComParameterDirection::OutFill,
             typ,
+            nullable: false,
             buffer: None,
         });
         self
@@ -3330,6 +3393,7 @@ impl MethodSignature {
         self.parameters.push(ComParameterSpec {
             direction: ComParameterDirection::InputBuffer,
             typ: Type::pointer(),
+            nullable: false,
             buffer: Some(ComBufferContract {
                 element,
                 relation: ComBufferRelation::Input {
@@ -3350,6 +3414,7 @@ impl MethodSignature {
         self.parameters.push(ComParameterSpec {
             direction: ComParameterDirection::InputBuffer,
             typ: Type::pointer(),
+            nullable: false,
             buffer: Some(ComBufferContract {
                 element: BufferElementPlan::string_pointer(encoding),
                 relation: ComBufferRelation::Input {
@@ -3374,6 +3439,7 @@ impl MethodSignature {
         self.parameters.push(ComParameterSpec {
             direction: ComParameterDirection::CallerOutputBuffer,
             typ: Type::pointer(),
+            nullable: false,
             buffer: Some(ComBufferContract {
                 element,
                 relation: ComBufferRelation::CallerCapacity {
@@ -3397,6 +3463,7 @@ impl MethodSignature {
         self.parameters.push(ComParameterSpec {
             direction: ComParameterDirection::CallerOutputBuffer,
             typ: Type::pointer(),
+            nullable: false,
             buffer: Some(ComBufferContract {
                 element,
                 relation: ComBufferRelation::EnumeratorNext {
@@ -3422,6 +3489,7 @@ impl MethodSignature {
         self.parameters.push(ComParameterSpec {
             direction: ComParameterDirection::CalleeAllocatedBuffer,
             typ,
+            nullable: false,
             buffer: Some(ComBufferContract {
                 element,
                 relation: ComBufferRelation::CalleeAllocated {
@@ -3562,6 +3630,7 @@ impl MethodSignature {
 
     fn build(self, vtable_index: usize) -> result::Result<RegisteredMethod> {
         validate_automation_contracts(&self.parameters, &self.return_plan)?;
+        validate_in_out_ownership(&self.parameters)?;
         validate_buffer_contracts(&self.parameters)?;
         let enumerator_buffers = self
             .parameters
@@ -3626,6 +3695,20 @@ impl MethodSignature {
             plan: ComCallPlan::new(native, self.parameters, self.return_plan),
         })
     }
+}
+
+fn validate_in_out_ownership(parameters: &[ComParameterSpec]) -> result::Result<()> {
+    for parameter in parameters {
+        if parameter.direction == ComParameterDirection::InOut
+            && !parameter.typ.abi.is_bstr()
+            && parameter.typ.output_cleanup() != OutputCleanup::None
+        {
+            return Err(invalid_argument(
+                "owned COM InOut parameters require an explicit replacement and cleanup contract; only dedicated BSTR replacement is currently supported",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn validate_automation_contracts(
@@ -4481,6 +4564,7 @@ mod tests {
     }
 
     static VOID_CALLS: AtomicU32 = AtomicU32::new(0);
+    static POINTER_INPUT_CALLS: AtomicU32 = AtomicU32::new(0);
     static BSTR_FAKE_ALLOCS: AtomicU32 = AtomicU32::new(0);
     static BSTR_FAKE_FREES: AtomicU32 = AtomicU32::new(0);
     static BSTR_INPUT_MATCHES: AtomicU32 = AtomicU32::new(0);
@@ -4597,6 +4681,14 @@ mod tests {
         value: *mut *mut c_void,
     ) -> windows_core::HRESULT {
         unsafe { *value = 0x1234usize as *mut c_void };
+        windows_core::HRESULT(0)
+    }
+
+    unsafe extern "system" fn observe_pointer_input(
+        _this: *mut c_void,
+        _value: *mut c_void,
+    ) -> windows_core::HRESULT {
+        POINTER_INPUT_CALLS.fetch_add(1, Ordering::Relaxed);
         windows_core::HRESULT(0)
     }
 
@@ -8523,6 +8615,63 @@ mod tests {
             ComSuccessDisposition::OwnedComPointer
         );
         assert_eq!(plan.results[1].failure_cleanup, OutputCleanup::ComRelease);
+    }
+
+    #[test]
+    fn required_pointer_nullability_is_enforced_before_dispatch() {
+        POINTER_INPUT_CALLS.store(0, Ordering::Relaxed);
+        let required = MethodSignature::new(&MetadataTable::new())
+            .add_in(Type::pointer())
+            .build(0)
+            .unwrap();
+        let nullable = MethodSignature::new(&MetadataTable::new())
+            .add_nullable_in(Type::pointer())
+            .build(0)
+            .unwrap();
+        let vtable = [observe_pointer_input as *mut c_void];
+        let mut object = FakeComObject {
+            vtable: vtable.as_ptr(),
+        };
+        let null = [Value::WinRt(WinRTValue::RawPtr(std::ptr::null_mut()))];
+
+        let error = required
+            .plan
+            .invoke_values((&mut object as *mut FakeComObject).cast(), &null)
+            .expect_err("required pointer must reject null before dispatch");
+        assert!(error.message().contains("cannot be null"));
+        assert_eq!(POINTER_INPUT_CALLS.load(Ordering::Relaxed), 0);
+
+        nullable
+            .plan
+            .invoke_values((&mut object as *mut FakeComObject).cast(), &null)
+            .expect("explicitly nullable pointer must reach native dispatch");
+        assert_eq!(POINTER_INPUT_CALLS.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn unsupported_owning_in_out_contracts_fail_registration() {
+        let table = MetadataTable::new();
+        for typ in [
+            Type::owned_com_pointer(),
+            Type::co_task_mem_pointer(),
+            Type::bstr_pointer(),
+            Type::winrt(table.interface(GUID::from_u128(0x00000000_0000_0000_c000_000000000046))),
+        ] {
+            let error = MethodSignature::new(&table)
+                .add_in_out(typ)
+                .build(0)
+                .expect_err("owning InOut must not silently lose cleanup");
+            assert!(error.message().contains("replacement and cleanup"));
+        }
+
+        MethodSignature::new(&table)
+            .add_in_out(Type::bstr())
+            .build(0)
+            .expect("dedicated BSTR replacement remains supported");
+        MethodSignature::new(&table)
+            .add_in_out(Type::pointer())
+            .build(0)
+            .expect("explicit unclassified borrowed pointer InOut remains available");
     }
 
     #[test]

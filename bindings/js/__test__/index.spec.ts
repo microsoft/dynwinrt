@@ -38,6 +38,8 @@ test('Classic COM is isolated from the WinRT root entrypoint', (t) => {
   t.false(Object.prototype.hasOwnProperty.call(comRuntime, 'DynComMethodSig'))
   t.false(Object.prototype.hasOwnProperty.call(comRuntime, 'DynComInterface'))
   t.false(Object.prototype.hasOwnProperty.call(comRuntime, 'DynComType'))
+  t.false(Object.prototype.hasOwnProperty.call(comRuntime, 'DynWinRTValue'))
+  t.false(Object.prototype.hasOwnProperty.call(comRuntime, 'WinGUID'))
   t.is(typeof comRuntime.initializeCom, 'function')
   t.truthy(DynCom)
   t.truthy(DynComUnsafe)
@@ -52,6 +54,8 @@ test('Classic COM is isolated from the WinRT root entrypoint', (t) => {
     "assert.equal(Object.prototype.hasOwnProperty.call(com, 'DynComMethodSig'), false);" +
     "assert.equal(Object.prototype.hasOwnProperty.call(com, 'DynComInterface'), false);" +
     "assert.equal(Object.prototype.hasOwnProperty.call(com, 'DynComType'), false);" +
+    "assert.equal(Object.prototype.hasOwnProperty.call(com, 'DynWinRTValue'), false);" +
+    "assert.equal(Object.prototype.hasOwnProperty.call(com, 'WinGUID'), false);" +
     "assert.equal(typeof winrt.DynWinRtType, 'function');" +
     "assert.equal(typeof com.DynComVariant, 'function');" +
     "assert.equal(typeof com.initializeCom, 'function');" +
@@ -75,6 +79,8 @@ test('Classic COM is isolated from the WinRT root entrypoint', (t) => {
     "assert.equal(Object.prototype.hasOwnProperty.call(com, 'DynComMethodSig'), false);" +
     "assert.equal(Object.prototype.hasOwnProperty.call(com, 'DynComInterface'), false);" +
     "assert.equal(Object.prototype.hasOwnProperty.call(com, 'DynComType'), false);" +
+    "assert.equal(Object.prototype.hasOwnProperty.call(com, 'DynWinRTValue'), false);" +
+    "assert.equal(Object.prototype.hasOwnProperty.call(com, 'WinGUID'), false);" +
     "assert.equal(typeof winrt.DynWinRtType, 'function');" +
     "assert.equal(typeof com.DynComVariant, 'function');" +
     "assert.equal(typeof com.initializeCom, 'function');" +
@@ -128,6 +134,29 @@ test('DynCom rejects pointers after their TypedArray backing store is detached',
   t.is(bytes.byteLength, 0)
   const error = t.throws(() => DynCom.asPointerBigint(pointer))
   t.regex(error.message, /backing ArrayBuffer is detached/)
+})
+
+test('Generated COM pointer helpers reject arbitrary numeric addresses', (t) => {
+  t.truthy(DynCom.safeDataPointer(Buffer.alloc(8)))
+  t.truthy(DynCom.safeDataPointer(new Uint8Array(8)))
+  t.throws(
+    () =>
+      (DynCom.safeDataPointer as unknown as (value: bigint) => unknown)(0x1234n),
+    { message: /arbitrary numeric addresses/ },
+  )
+
+  t.truthy(DynCom.safeWideStringPointer('wide'))
+  t.truthy(DynCom.safeAnsiStringPointer('ansi'))
+  t.throws(
+    () =>
+      (DynCom.safeWideStringPointer as unknown as (value: bigint) => unknown)(0x1234n),
+    { message: /arbitrary numeric addresses/ },
+  )
+  t.throws(
+    () =>
+      (DynCom.safeAnsiStringPointer as unknown as (value: number) => unknown)(0x1234),
+    { message: /arbitrary numeric addresses/ },
+  )
 })
 
 test('DynCom rejects detached counted buffers and accepts typed backing widths', (t) => {
