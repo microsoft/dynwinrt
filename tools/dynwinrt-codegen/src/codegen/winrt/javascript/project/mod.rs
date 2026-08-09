@@ -193,18 +193,11 @@ pub fn project_class(
     let all_ifaces: Vec<&InterfaceMeta> = class.all_interfaces().collect();
     for iface in &all_ifaces {
         collect_delegate_names_from_methods(&iface.methods, &mut delegate_names);
-        for method in &iface.methods {
-            for param in method
-                .params
-                .iter()
-                .filter(|param| param.direction == ParamDirection::In)
-            {
-                let type_name = ts_param_type_dts(&param.typ, known_types);
-                if delegate_type_names.contains(&type_name) {
-                    delegate_names.insert(type_name);
-                }
-            }
-        }
+        collect_known_delegate_names_from_methods(
+            &iface.methods,
+            delegate_type_names,
+            &mut delegate_names,
+        );
     }
     // All known delegate type names (used to filter type imports — delegates typed as Interface
     // in parameter metadata must not be imported as regular type imports)
@@ -1053,8 +1046,13 @@ pub fn project_interface(
     let used_structs = collect_used_structs_from_iface(iface);
     let has_structs = !used_structs.is_empty();
 
-    let mut delegate_names: HashSet<String> = delegate_type_names.clone();
+    let mut delegate_names: HashSet<String> = HashSet::new();
     collect_delegate_names_from_methods(&iface.methods, &mut delegate_names);
+    collect_known_delegate_names_from_methods(
+        &iface.methods,
+        delegate_type_names,
+        &mut delegate_names,
+    );
 
     // Build imports
     let mut imports = Vec::new();
@@ -1474,6 +1472,107 @@ fn collect_delegate_names_from_methods(
                 }
             }
         }
+    }
+}
+
+fn collect_known_delegate_names_from_methods(
+    methods: &[MethodMeta],
+    known_delegate_names: &HashSet<String>,
+    delegate_names: &mut HashSet<String>,
+) {
+    for method in methods {
+        for parameter in &method.params {
+            collect_known_delegate_names_from_type(
+                &parameter.typ,
+                known_delegate_names,
+                delegate_names,
+            );
+        }
+        if let Some(return_type) = &method.return_type {
+            collect_known_delegate_names_from_type(
+                return_type,
+                known_delegate_names,
+                delegate_names,
+            );
+        }
+    }
+}
+
+fn collect_known_delegate_names_from_type(
+    typ: &TypeMeta,
+    known_delegate_names: &HashSet<String>,
+    delegate_names: &mut HashSet<String>,
+) {
+    match typ {
+        TypeMeta::Delegate { name, .. } => {
+            delegate_names.insert(name.clone());
+        }
+        TypeMeta::Interface { name, .. } => {
+            if known_delegate_names.contains(name) {
+                delegate_names.insert(name.clone());
+            }
+        }
+        TypeMeta::AsyncActionWithProgress(inner)
+        | TypeMeta::AsyncOperation(inner)
+        | TypeMeta::Array(inner) => {
+            collect_known_delegate_names_from_type(
+                inner,
+                known_delegate_names,
+                delegate_names,
+            );
+        }
+        TypeMeta::AsyncOperationWithProgress(
+            result,
+            progress,
+        ) => {
+            collect_known_delegate_names_from_type(
+                result,
+                known_delegate_names,
+                delegate_names,
+            );
+            collect_known_delegate_names_from_type(
+                progress,
+                known_delegate_names,
+                delegate_names,
+            );
+        }
+        TypeMeta::Parameterized { name, args, .. } => {
+            let concrete =
+                crate::meta::make_parameterized_name(
+                    name,
+                    args,
+                );
+            if known_delegate_names.contains(&concrete) {
+                delegate_names.insert(concrete);
+            }
+            for argument in args {
+                collect_known_delegate_names_from_type(
+                    argument,
+                    known_delegate_names,
+                    delegate_names,
+                );
+            }
+        }
+        TypeMeta::RuntimeClass {
+            default_interface: Some(interface),
+            ..
+        } => {
+            collect_known_delegate_names_from_type(
+                interface,
+                known_delegate_names,
+                delegate_names,
+            );
+        }
+        TypeMeta::Struct { fields, .. } => {
+            for field in fields {
+                collect_known_delegate_names_from_type(
+                    &field.typ,
+                    known_delegate_names,
+                    delegate_names,
+                );
+            }
+        }
+        _ => {}
     }
 }
 

@@ -97,21 +97,15 @@ pub fn generate_class(
     let mut type_checking_imports = Vec::new();
 
     // Collect delegate names from all interfaces of this class
-    let mut delegate_names: HashSet<String> = delegate_type_names.clone();
+    let mut delegate_names = HashSet::new();
     let all_ifaces: Vec<&InterfaceMeta> = class.all_interfaces().collect();
     for iface in &all_ifaces {
-        for method in &iface.methods {
-            for p in &method.params {
-                if let TypeMeta::Delegate { name, .. } = &p.typ {
-                    delegate_names.insert(name.clone());
-                }
-                if method.is_event_add || method.is_event_remove {
-                    if let TypeMeta::Parameterized { name, args, .. } = &p.typ {
-                        delegate_names.insert(crate::meta::make_parameterized_name(name, args));
-                    }
-                }
-            }
-        }
+        delegate_names.extend(
+            super::super::collect_referenced_delegate_names(
+                &iface.methods,
+                delegate_type_names,
+            ),
+        );
     }
 
     // Collection generics import (skip delegates)
