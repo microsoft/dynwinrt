@@ -2058,13 +2058,15 @@ fn map_count_relation(
 }
 
 fn map_constness(constness: RawConstness, const_attribute: bool) -> Constness {
-    if const_attribute {
+    if constness == RawConstness::Mixed {
+        Constness::Unspecified
+    } else if const_attribute {
         Constness::Const
     } else {
         match constness {
             RawConstness::Const => Constness::Const,
             RawConstness::Mutable => Constness::Mutable,
-            RawConstness::Unspecified => Constness::Unspecified,
+            RawConstness::Mixed | RawConstness::Unspecified => Constness::Unspecified,
         }
     }
 }
@@ -2076,7 +2078,7 @@ fn buffer_constness(raw: &RawComParam) -> Constness {
     match raw.typ.constness {
         RawConstness::Const => return Constness::Const,
         RawConstness::Mutable => return Constness::Mutable,
-        RawConstness::Unspecified => {}
+        RawConstness::Mixed | RawConstness::Unspecified => {}
     }
     if raw.typ.pointer_depth > 0 {
         return Constness::Unspecified;
@@ -2207,6 +2209,18 @@ fn is_explicit_pointer_alias(namespace: &str, name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn const_attribute_does_not_erase_mixed_pointer_qualifiers() {
+        assert_eq!(
+            map_constness(RawConstness::Mixed, true),
+            Constness::Unspecified
+        );
+        assert_eq!(
+            map_constness(RawConstness::Unspecified, true),
+            Constness::Const
+        );
+    }
 
     fn win32_winmd() -> Option<String> {
         std::env::var("DYNWINRT_WIN32_WINMD")

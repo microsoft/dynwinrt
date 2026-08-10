@@ -4,7 +4,7 @@
 use napi::bindgen_prelude::{BigInt, Buffer, FromNapiValue, ToNapiValue, Unknown};
 use napi::JsValue;
 use napi_derive::napi;
-use windows::core::{Interface as _, GUID};
+use windows::core::{IUnknown, Interface as _, GUID};
 
 use super::{DynWinRTValue, WinGUID, TABLE};
 
@@ -283,19 +283,32 @@ impl Drop for NativePointerOwner {
 fn co_create_instance(clsid: String, iid: &WinGUID) -> napi::Result<DynWinRTValue> {
   let parsed = windows::core::GUID::try_from(clsid.as_str())
     .map_err(|_| napi::Error::from_reason(format!("Invalid CLSID: '{clsid}'")))?;
-  dynwinrt::com::co_create_instance(parsed, iid.0)
+  let mut value = dynwinrt::com::co_create_instance(parsed, iid.0)
     .map(DynWinRTValue::new)
-    .map_err(|error| napi::Error::from_reason(error.message()))
+    .map_err(|error| napi::Error::from_reason(error.message()))?;
+  value.bind_current_com_apartment()?;
+  Ok(value)
 }
 
 fn try_cast(value: &DynWinRTValue, iid: &WinGUID) -> napi::Result<Option<DynWinRTValue>> {
   const E_NOINTERFACE: windows::core::HRESULT = windows::core::HRESULT(0x80004002u32 as i32);
 
+  value.ensure_existing_com_apartment()?;
   match value.0.cast(&iid.0) {
-    Ok(value) => Ok(Some(DynWinRTValue::new(value))),
+    Ok(value) => {
+      let mut value = DynWinRTValue::new(value);
+      value.bind_current_com_apartment()?;
+      Ok(Some(value))
+    }
     Err(dynwinrt::Error::WindowsError(error)) if error.code() == E_NOINTERFACE => Ok(None),
     Err(error) => Err(napi::Error::from_reason(error.message())),
   }
+}
+
+fn apartment_bound_com_object(value: IUnknown) -> napi::Result<DynWinRTValue> {
+  let mut value = DynWinRTValue::new(dynwinrt::WinRTValue::Object(value));
+  value.bind_current_com_apartment()?;
+  Ok(value)
 }
 
 fn create_test_hwnd() -> napi::Result<BigInt> {
@@ -661,6 +674,33 @@ fn pointer(value: Unknown) -> napi::Result<DynWinRTValue> {
   ))
 }
 
+fn safe_data_pointer(value: Unknown, nullable: bool) -> napi::Result<DynWinRTValue> {
+  use napi::sys;
+
+  let env = value.value().env;
+  let raw = value.value().value;
+  let mut value_type = sys::ValueType::napi_undefined;
+  unsafe { sys::napi_typeof(env, raw, &mut value_type) };
+  if matches!(
+    value_type,
+    sys::ValueType::napi_null | sys::ValueType::napi_undefined
+  ) {
+    return if nullable {
+      pointer(value)
+    } else {
+      Err(napi::Error::from_reason(
+        "safeDataPointer(): null requires an explicitly nullable parameter",
+      ))
+    };
+  }
+  if uint8_array_info(env, raw)?.is_some() {
+    return pointer(value);
+  }
+  Err(napi::Error::from_reason(
+    "safeDataPointer(): expected Buffer or Uint8Array; arbitrary numeric addresses require @microsoft/dynwinrt/com/unsafe",
+  ))
+}
+
 fn wide_string_pointer(value: Unknown) -> napi::Result<DynWinRTValue> {
   use napi::sys;
 
@@ -721,6 +761,45 @@ fn ansi_string_pointer(value: Unknown) -> napi::Result<DynWinRTValue> {
     validate_ansi_string_bytes(bytes)?;
   }
   pointer(value)
+}
+
+fn safe_wide_string_pointer(value: Unknown, nullable: bool) -> napi::Result<DynWinRTValue> {
+  safe_string_pointer(value, nullable, true)
+}
+
+fn safe_ansi_string_pointer(value: Unknown, nullable: bool) -> napi::Result<DynWinRTValue> {
+  safe_string_pointer(value, nullable, false)
+}
+
+fn safe_string_pointer(value: Unknown, nullable: bool, wide: bool) -> napi::Result<DynWinRTValue> {
+  use napi::sys;
+
+  let env = value.value().env;
+  let raw = value.value().value;
+  let mut value_type = sys::ValueType::napi_undefined;
+  unsafe { sys::napi_typeof(env, raw, &mut value_type) };
+  if matches!(
+    value_type,
+    sys::ValueType::napi_null | sys::ValueType::napi_undefined
+  ) {
+    return if nullable {
+      pointer(value)
+    } else {
+      Err(napi::Error::from_reason(
+        "safe string pointer: null requires an explicitly nullable parameter",
+      ))
+    };
+  }
+  if value_type == sys::ValueType::napi_string || uint8_array_info(env, raw)?.is_some() {
+    return if wide {
+      wide_string_pointer(value)
+    } else {
+      ansi_string_pointer(value)
+    };
+  }
+  Err(napi::Error::from_reason(
+    "safe string pointer: expected string, Buffer, or Uint8Array; arbitrary numeric addresses require @microsoft/dynwinrt/com/unsafe",
+  ))
 }
 
 fn handle_value(value: Unknown) -> napi::Result<BigInt> {
@@ -789,8 +868,16 @@ fn adopt_com_pointer(
     Some(iid) => adopted
       .cast(&iid.0)
       .map(DynWinRTValue::new)
-      .map_err(|error| napi::Error::from_reason(error.message())),
-    None => Ok(DynWinRTValue::new(adopted)),
+      .map_err(|error| napi::Error::from_reason(error.message()))
+      .and_then(|mut value| {
+        value.bind_current_com_apartment()?;
+        Ok(value)
+      }),
+    None => {
+      let mut value = DynWinRTValue::new(adopted);
+      value.bind_current_com_apartment()?;
+      Ok(value)
+    }
   }
 }
 
@@ -829,6 +916,10 @@ fn adopt_owned_com_pointer_bits(
     .cast(&iid.0)
     .map(DynWinRTValue::new)
     .map_err(|error| napi::Error::from_reason(error.message()))
+    .and_then(|mut value| {
+      value.bind_current_com_apartment()?;
+      Ok(value)
+    })
 }
 
 fn unsafe_borrow_com_pointer(value: Unknown, iid: &WinGUID) -> napi::Result<DynWinRTValue> {
@@ -849,6 +940,10 @@ fn borrow_com_pointer_bits(
     .cast(&iid.0)
     .map(DynWinRTValue::new)
     .map_err(|error| napi::Error::from_reason(error.message()))
+    .and_then(|mut value| {
+      value.bind_current_com_apartment()?;
+      Ok(value)
+    })
 }
 
 fn adopt_co_task_mem_pointer(value: &mut DynWinRTValue) -> napi::Result<DynWinRTValue> {
@@ -1360,6 +1455,11 @@ impl DynComMethodSig {
   }
 
   #[napi]
+  pub fn add_nullable_in(&self, typ: &DynComType) -> Self {
+    Self(self.0.clone().add_nullable_in(typ.0.clone()))
+  }
+
+  #[napi]
   pub fn add_out(&self, typ: &DynComType) -> Self {
     Self(self.0.clone().add_out(typ.0.clone()))
   }
@@ -1377,6 +1477,11 @@ impl DynComMethodSig {
   #[napi]
   pub fn add_in_out(&self, typ: &DynComType) -> Self {
     Self(self.0.clone().add_in_out(typ.0.clone()))
+  }
+
+  #[napi]
+  pub fn add_nullable_in_out(&self, typ: &DynComType) -> Self {
+    Self(self.0.clone().add_nullable_in_out(typ.0.clone()))
   }
 
   #[napi]
@@ -1640,6 +1745,7 @@ impl DynComDispatchInvokeResult {
 impl DynComMethodHandle {
   #[napi]
   pub fn get_string(&self, obj: &DynWinRTValue) -> napi::Result<String> {
+    obj.ensure_com_apartment()?;
     let raw = obj
       .0
       .as_object()
@@ -1656,6 +1762,7 @@ impl DynComMethodHandle {
     obj: &DynWinRTValue,
     args: Vec<&DynWinRTValue>,
   ) -> napi::Result<DynWinRTValue> {
+    obj.ensure_com_apartment()?;
     if self.0.result_count() > 1 {
       return Err(napi::Error::from_reason(
         "invoke() cannot discard multiple COM results; use invokeAll()",
@@ -1688,6 +1795,7 @@ impl DynComMethodHandle {
     obj: &DynWinRTValue,
     args: Vec<&DynWinRTValue>,
   ) -> napi::Result<Vec<DynWinRTValue>> {
+    obj.ensure_com_apartment()?;
     let raw = obj
       .0
       .as_object()
@@ -1716,6 +1824,7 @@ impl DynComMethodHandle {
     obj: &DynWinRTValue,
     args: Vec<&DynWinRTValue>,
   ) -> napi::Result<DynComDispatchInvokeResult> {
+    obj.ensure_com_apartment()?;
     let raw = obj
       .0
       .as_object()
@@ -2130,7 +2239,7 @@ impl DynComVariant {
   pub fn to_interface(&self) -> napi::Result<Option<DynWinRTValue>> {
     match self.value()?.data().map_err(com_error)? {
       dynwinrt::com::VariantData::Unknown(value) | dynwinrt::com::VariantData::Dispatch(value) => {
-        Ok(value.map(|value| DynWinRTValue::new(dynwinrt::WinRTValue::Object(value))))
+        value.map(apartment_bound_com_object).transpose()
       }
       _ => Err(napi::Error::from_reason(
         "VARIANT does not contain VT_UNKNOWN or VT_DISPATCH",
@@ -2771,7 +2880,7 @@ impl DynComSafeArray {
       .map(|value| match value {
         dynwinrt::com::SafeArrayElementValue::Unknown(value)
         | dynwinrt::com::SafeArrayElementValue::Dispatch(value) => {
-          Ok(value.map(|value| DynWinRTValue::new(dynwinrt::WinRTValue::Object(value))))
+          value.map(apartment_bound_com_object).transpose()
         }
         _ => Err(napi::Error::from_reason(
           "SAFEARRAY element type is not VT_UNKNOWN or VT_DISPATCH",
@@ -3715,11 +3824,40 @@ impl DynCom {
   }
 
   #[napi]
+  pub fn bind_com_object(value: &mut DynWinRTValue) -> napi::Result<()> {
+    value.bind_current_com_apartment()
+  }
+
+  #[napi]
   pub fn pointer(
     #[napi(ts_arg_type = "bigint | number | Buffer | Uint8Array | null | undefined")]
     value: Unknown,
   ) -> napi::Result<DynWinRTValue> {
     self::pointer(value)
+  }
+
+  #[napi]
+  pub fn safe_data_pointer(
+    #[napi(ts_arg_type = "Buffer | Uint8Array | null | undefined")] value: Unknown,
+    nullable: Option<bool>,
+  ) -> napi::Result<DynWinRTValue> {
+    self::safe_data_pointer(value, nullable.unwrap_or(false))
+  }
+
+  #[napi]
+  pub fn safe_wide_string_pointer(
+    #[napi(ts_arg_type = "string | Buffer | Uint8Array | null | undefined")] value: Unknown,
+    nullable: Option<bool>,
+  ) -> napi::Result<DynWinRTValue> {
+    self::safe_wide_string_pointer(value, nullable.unwrap_or(false))
+  }
+
+  #[napi]
+  pub fn safe_ansi_string_pointer(
+    #[napi(ts_arg_type = "string | Buffer | Uint8Array | null | undefined")] value: Unknown,
+    nullable: Option<bool>,
+  ) -> napi::Result<DynWinRTValue> {
+    self::safe_ansi_string_pointer(value, nullable.unwrap_or(false))
   }
 
   #[napi]
@@ -4826,7 +4964,7 @@ mod tests {
         .as_slice(),
       &[1, 2, 3, 4, 5, 6, 7, 8]
     );
-    value.release();
+    value.release().unwrap();
     assert!(DynCom::native_struct_bytes(TEST_POD_DESCRIPTOR.into(), &value).is_err());
     let wrong_type = DynComNativeStruct {
       descriptor: TEST_POD_DESCRIPTOR.replace("Test.Pod", "Test.Other"),
@@ -5001,6 +5139,37 @@ mod tests {
     assert!(dynwinrt::WinRTValue::Object(object.clone())
       .cast(&iid.0)
       .is_ok());
+  }
+
+  #[test]
+  fn classic_com_objects_reject_cross_thread_use() {
+    let _ = dynwinrt::com::initialize_apartment(dynwinrt::com::ApartmentType::MultiThreaded);
+    let iid = WinGUID(windows::core::IUnknown::IID);
+    let value = co_create_instance("00021401-0000-0000-c000-000000000046".into(), &iid)
+      .expect("ShellLink activation");
+    value
+      .ensure_com_apartment()
+      .expect("creating apartment must be accepted");
+
+    let cross_thread_iid = iid;
+    let (value, error, cast_error) = std::thread::spawn(move || {
+      let error = value
+        .ensure_com_apartment()
+        .expect_err("cross-thread COM use must fail");
+      let cast_error = match value.cast(&cross_thread_iid) {
+        Ok(_) => panic!("QueryInterface must validate the source apartment first"),
+        Err(error) => error,
+      };
+      (value, error, cast_error)
+    })
+    .join()
+    .unwrap();
+
+    assert!(error.reason.contains("different apartment thread"));
+    assert!(cast_error.reason.contains("different apartment thread"));
+    value
+      .ensure_com_apartment()
+      .expect("ownership returned to the creating apartment");
   }
 
   #[test]

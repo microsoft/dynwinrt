@@ -1431,7 +1431,12 @@ impl Method {
             obj,
             &mut out as *mut _ as *mut std::ffi::c_void,
         );
-        hr.ok()?;
+        if hr.is_err() {
+            if !out.is_null() {
+                drop(unsafe { windows_core::IUnknown::from_raw(out) });
+            }
+            hr.ok()?;
+        }
         if out.is_null() {
             Ok(WinRTValue::Null)
         } else {
@@ -2004,6 +2009,45 @@ mod tests {
         calls: AtomicU32,
     }
 
+    #[repr(C)]
+    struct FailureGetterObject {
+        vtable: *const *mut std::ffi::c_void,
+        output: *mut std::ffi::c_void,
+    }
+
+    #[repr(C)]
+    struct TrackedUnknown {
+        vtable: *const *mut std::ffi::c_void,
+    }
+
+    static TRACKED_RELEASES: AtomicU32 = AtomicU32::new(0);
+
+    unsafe extern "system" fn tracked_query_interface(
+        _this: *mut std::ffi::c_void,
+        _iid: *const windows_core::GUID,
+        _object: *mut *mut std::ffi::c_void,
+    ) -> windows_core::HRESULT {
+        windows_core::HRESULT(0x80004002u32 as i32)
+    }
+
+    unsafe extern "system" fn tracked_add_ref(_this: *mut std::ffi::c_void) -> u32 {
+        2
+    }
+
+    unsafe extern "system" fn tracked_release(_this: *mut std::ffi::c_void) -> u32 {
+        TRACKED_RELEASES.fetch_add(1, Ordering::SeqCst);
+        0
+    }
+
+    unsafe extern "system" fn fail_after_writing_object(
+        this: *mut std::ffi::c_void,
+        output: *mut *mut std::ffi::c_void,
+    ) -> windows_core::HRESULT {
+        let object = unsafe { &*(this.cast::<FailureGetterObject>()) };
+        unsafe { *output = object.output };
+        windows_core::HRESULT(0x80004005u32 as i32)
+    }
+
     unsafe extern "system" fn increment_struct_first_field(
         this: *mut std::ffi::c_void,
         value: *mut i32,
@@ -2074,6 +2118,35 @@ mod tests {
         assert_eq!(error.code().0, 0x80070057u32 as i32);
         assert!(error.message().contains("Argument count mismatch"));
         assert_eq!(object.calls.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn object_fast_getter_releases_failure_written_output() {
+        TRACKED_RELEASES.store(0, Ordering::SeqCst);
+        let output_vtable = Box::new([
+            tracked_query_interface as *mut std::ffi::c_void,
+            tracked_add_ref as *mut std::ffi::c_void,
+            tracked_release as *mut std::ffi::c_void,
+        ]);
+        let mut output = TrackedUnknown {
+            vtable: output_vtable.as_ptr(),
+        };
+        let getter_vtable = Box::new([fail_after_writing_object as *mut std::ffi::c_void]);
+        let mut getter = FailureGetterObject {
+            vtable: getter_vtable.as_ptr(),
+            output: (&mut output as *mut TrackedUnknown).cast(),
+        };
+        let table = MetadataTable::new();
+        let method = AbiMethodSignature::new(&table)
+            .add_out_type(ParameterType::winrt(table.object()))
+            .build(0);
+
+        let error = method
+            .call_getter_object((&mut getter as *mut FailureGetterObject).cast())
+            .expect_err("failure HRESULT must not produce an object");
+
+        assert_eq!(error.code().0, 0x80004005u32 as i32);
+        assert_eq!(TRACKED_RELEASES.load(Ordering::SeqCst), 1);
     }
 
     #[test]

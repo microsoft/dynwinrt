@@ -18,8 +18,12 @@ const _IDataTransferManagerInterop = new Proxy({}, {
 class IDataTransferManagerInterop {
     static IID = IID_IDataTransferManagerInterop;
     _obj;
-    constructor(obj) { this._obj = obj; }
-    static _fromNative(obj) { return Object.assign(Object.create(IDataTransferManagerInterop.prototype), { _obj: obj }); }
+    constructor(obj) {
+        const cast = obj.cast(IID_IDataTransferManagerInterop);
+        DynCom.bindComObject(cast);
+        this._obj = cast;
+    }
+    static _fromNative(obj) { return _wrapIDataTransferManagerInteropOwned(obj.cast(IID_IDataTransferManagerInterop)); }
     /** Release the underlying native COM reference. Safe to call more than once. */
     release() {
         this._obj.release();
@@ -29,7 +33,7 @@ class IDataTransferManagerInterop {
     static create() {
         const factory = DynWinRtValue.activationFactory('Windows.ApplicationModel.DataTransfer.DataTransferManager');
         const _obj = factory.cast(IID_IDataTransferManagerInterop);
-        return new IDataTransferManagerInterop(_obj);
+        return _wrapIDataTransferManagerInteropOwned(_obj);
     }
     getForWindow(appWindow) {
         const _raw = _IDataTransferManagerInterop.method(3).invoke(this._obj, [DynCom.pointer(DynCom.handleValue(appWindow)), DynCom.iidPointer(IID_DataTransferManager_default)]);
@@ -40,6 +44,10 @@ class IDataTransferManagerInterop {
     showShareUIForWindow(appWindow) {
         _IDataTransferManagerInterop.method(4).invoke(this._obj, [DynCom.pointer(DynCom.handleValue(appWindow))]);
     }
+}
+function _wrapIDataTransferManagerInteropOwned(obj) {
+    DynCom.bindComObject(obj);
+    return Object.assign(Object.create(IDataTransferManagerInterop.prototype), { _obj: obj });
 }
 exports.IID_IDataTransferManagerInterop = IID_IDataTransferManagerInterop;
 exports.IDataTransferManagerInterop = IDataTransferManagerInterop;

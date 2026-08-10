@@ -338,7 +338,17 @@ impl ValueTypeData {
                 &[arg(&obj_raw), arg(data_ref), arg(&(&mut out))],
             )
         };
-        hr.ok()?;
+        if hr.is_err() {
+            if !out.is_null() {
+                drop(unsafe { windows_core::IUnknown::from_raw(out) });
+            }
+            hr.ok()?;
+        }
+        if out.is_null() {
+            return Err(windows_core::Error::from_hresult(windows_core::HRESULT(
+                0x80004003u32 as i32,
+            )));
+        }
         Ok(unsafe { windows_core::IUnknown::from_raw(out as _) })
     }
 }

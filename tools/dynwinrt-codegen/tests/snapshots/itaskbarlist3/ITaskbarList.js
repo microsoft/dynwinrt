@@ -20,8 +20,12 @@ const _ITaskbarList = new Proxy({}, {
 class ITaskbarList {
     static IID = IID_ITaskbarList;
     _obj;
-    constructor(obj) { this._obj = obj; }
-    static _fromNative(obj) { return Object.assign(Object.create(ITaskbarList.prototype), { _obj: obj }); }
+    constructor(obj) {
+        const cast = obj.cast(IID_ITaskbarList);
+        DynCom.bindComObject(cast);
+        this._obj = cast;
+    }
+    static _fromNative(obj) { return _wrapITaskbarListOwned(obj.cast(IID_ITaskbarList)); }
     /** Release the underlying native COM reference. Safe to call more than once. */
     release() {
         this._obj.release();
@@ -46,6 +50,10 @@ class ITaskbarList {
     setActiveAlt(hwnd) {
         _ITaskbarList.method(7).invoke(this._obj, [DynCom.pointer(DynCom.handleValue(hwnd))]);
     }
+}
+function _wrapITaskbarListOwned(obj) {
+    DynCom.bindComObject(obj);
+    return Object.assign(Object.create(ITaskbarList.prototype), { _obj: obj });
 }
 exports.IID_ITaskbarList = IID_ITaskbarList;
 exports.ITaskbarList = ITaskbarList;

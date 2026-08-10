@@ -107,11 +107,6 @@ pub(super) fn input_type_dts(typ: &ComType) -> String {
             kind: PointerAliasKind::HandleValue,
             ..
         } if name == "HWND" => format!("{name} | Buffer | Uint8Array"),
-        ComType::PointerAlias {
-            name,
-            kind: PointerAliasKind::DataPointer,
-            ..
-        } => format!("{name} | Buffer | Uint8Array"),
         _ => type_dts(typ),
     }
 }
@@ -139,7 +134,7 @@ pub(super) fn type_dts(typ: &ComType) -> String {
         ComType::HString => "string".into(),
         ComType::Enum { name, .. } => name.clone(),
         ComType::ScalarAlias { name, .. } => name.clone(),
-        ComType::RawPointer => "bigint | Buffer".into(),
+        ComType::RawPointer => "Buffer | Uint8Array".into(),
         ComType::PointerAlias { name, .. } => name.clone(),
         ComType::NativePod { layout } | ComType::NativePodPointer { layout } => layout.name.clone(),
         ComType::NativeUnionPointer { layout } => layout.name.clone(),
@@ -225,7 +220,7 @@ pub(super) fn wrap_arg_js(typ: &ComType, variable: &str) -> String {
         ComType::HString => format!("DynCom.hstring({variable})"),
         ComType::Enum { underlying, .. } => wrap_enum_arg_js(*underlying, variable),
         ComType::ScalarAlias { underlying, .. } => wrap_scalar_arg_js(*underlying, variable),
-        ComType::RawPointer => format!("DynCom.pointer({variable})"),
+        ComType::RawPointer => format!("DynCom.safeDataPointer({variable})"),
         ComType::Bstr => format!("DynCom.bstr({variable})"),
         ComType::PointerAlias {
             name,
@@ -237,12 +232,19 @@ pub(super) fn wrap_arg_js(typ: &ComType, variable: &str) -> String {
         ComType::PointerAlias {
             kind: PointerAliasKind::StringPointer(StringEncoding::Wide),
             ..
-        } => format!("DynCom.wideStringPointer({variable})"),
+        } => format!("DynCom.safeWideStringPointer({variable})"),
         ComType::PointerAlias {
             kind: PointerAliasKind::StringPointer(StringEncoding::Ansi),
             ..
-        } => format!("DynCom.ansiStringPointer({variable})"),
-        ComType::PointerAlias { .. } => format!("DynCom.pointer({variable})"),
+        } => format!("DynCom.safeAnsiStringPointer({variable})"),
+        ComType::PointerAlias {
+            kind: PointerAliasKind::DataPointer,
+            ..
+        } => format!("DynCom.safeDataPointer({variable})"),
+        ComType::PointerAlias {
+            kind: PointerAliasKind::HandleValue,
+            ..
+        } => format!("DynCom.pointer(DynCom.handleValue({variable}))"),
         ComType::NativePod { layout } | ComType::NativePodPointer { layout } => format!(
             "DynCom.nativeStruct({}, {variable})",
             native_pod_layout_js(layout)
@@ -414,7 +416,7 @@ fn unwrap_array_result_js(
 ) -> String {
     if let Some(interface) = interface {
         return format!(
-            "Array.from(DynCom.takeComArray({expression}), value => {}._fromNative(value))",
+            "Array.from(DynCom.takeComArray({expression}), value => {{ try {{ return {}._fromNative(value); }} finally {{ value.release(); }} }})",
             interface.name
         );
     }

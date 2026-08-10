@@ -21,8 +21,12 @@ const _ITaskbarList2 = new Proxy({}, {
 class ITaskbarList2 {
     static IID = IID_ITaskbarList2;
     _obj;
-    constructor(obj) { this._obj = obj; }
-    static _fromNative(obj) { return Object.assign(Object.create(ITaskbarList2.prototype), { _obj: obj }); }
+    constructor(obj) {
+        const cast = obj.cast(IID_ITaskbarList2);
+        DynCom.bindComObject(cast);
+        this._obj = cast;
+    }
+    static _fromNative(obj) { return _wrapITaskbarList2Owned(obj.cast(IID_ITaskbarList2)); }
     /** Release the underlying native COM reference. Safe to call more than once. */
     release() {
         this._obj.release();
@@ -51,6 +55,10 @@ class ITaskbarList2 {
     markFullscreenWindow(hwnd, fFullscreen) {
         _ITaskbarList2.method(8).invoke(this._obj, [DynCom.pointer(DynCom.handleValue(hwnd)), DynCom.i32(fFullscreen ? 1 : 0)]);
     }
+}
+function _wrapITaskbarList2Owned(obj) {
+    DynCom.bindComObject(obj);
+    return Object.assign(Object.create(ITaskbarList2.prototype), { _obj: obj });
 }
 exports.IID_ITaskbarList2 = IID_ITaskbarList2;
 exports.ITaskbarList2 = ITaskbarList2;

@@ -587,13 +587,69 @@ pub struct DynWinRTValue(
   Option<dynwinrt::com::NativeStructValue>,
   Option<dynwinrt::com::ComBufferValue>,
   Option<com::AutomationValue>,
+  Option<ComApartmentBinding>,
 );
 unsafe impl Send for DynWinRTValue {}
 unsafe impl Sync for DynWinRTValue {}
 
+#[derive(Clone)]
+struct ComApartmentBinding {
+  owner_thread: std::thread::ThreadId,
+}
+
 impl DynWinRTValue {
   fn new(value: dynwinrt::WinRTValue) -> Self {
-    Self(value, None, com::PointerProvenance::None, None, None, None)
+    Self(
+      value,
+      None,
+      com::PointerProvenance::None,
+      None,
+      None,
+      None,
+      None,
+    )
+  }
+
+  pub(crate) fn bind_current_com_apartment(&mut self) -> napi::Result<()> {
+    if self.0.as_object().is_none() {
+      return Err(napi::Error::from_reason(
+        "Classic COM apartment binding requires a managed COM object",
+      ));
+    }
+    let current = std::thread::current().id();
+    match &self.6 {
+      Some(binding) if binding.owner_thread != current => Err(napi::Error::from_reason(
+        "Classic COM object is already bound to a different apartment thread",
+      )),
+      Some(_) => Ok(()),
+      None => {
+        self.6 = Some(ComApartmentBinding {
+          owner_thread: current,
+        });
+        Ok(())
+      }
+    }
+  }
+
+  pub(crate) fn ensure_com_apartment(&self) -> napi::Result<()> {
+    let current = std::thread::current().id();
+    match &self.6 {
+      Some(binding) if binding.owner_thread == current => Ok(()),
+      Some(_) => Err(napi::Error::from_reason(
+        "Classic COM object used from a different apartment thread",
+      )),
+      None => Err(napi::Error::from_reason(
+        "Classic COM object must be apartment-bound before native invocation",
+      )),
+    }
+  }
+
+  pub(crate) fn ensure_existing_com_apartment(&self) -> napi::Result<()> {
+    if self.6.is_some() {
+      self.ensure_com_apartment()
+    } else {
+      Ok(())
+    }
   }
 
   fn with_pointer_owner(value: dynwinrt::WinRTValue, owner: com::NativePointerOwner) -> Self {
@@ -601,6 +657,7 @@ impl DynWinRTValue {
       value,
       Some(owner),
       com::PointerProvenance::Borrowed,
+      None,
       None,
       None,
       None,
@@ -612,6 +669,7 @@ impl DynWinRTValue {
       value,
       None,
       com::PointerProvenance::Borrowed,
+      None,
       None,
       None,
       None,
@@ -628,6 +686,7 @@ impl DynWinRTValue {
       com::PointerProvenance::Borrowed,
       None,
       Some(buffer),
+      None,
       None,
     )
   }
@@ -648,7 +707,10 @@ impl DynWinRTValue {
     } else {
       com::PointerProvenance::None
     };
-    Self(value, None, provenance, None, None, None)
+    let apartment = matches!(value, dynwinrt::WinRTValue::Object(_)).then(|| ComApartmentBinding {
+      owner_thread: std::thread::current().id(),
+    });
+    Self(value, None, provenance, None, None, None, apartment)
   }
 
   fn from_com_value(
@@ -664,12 +726,14 @@ impl DynWinRTValue {
         None,
         None,
         Some(com::AutomationValue::new(dynwinrt::com::Value::Bstr(value))),
+        None,
       ),
       dynwinrt::com::Value::NativeStruct(value) => Self(
         dynwinrt::WinRTValue::Null,
         None,
         com::PointerProvenance::None,
         Some(value),
+        None,
         None,
         None,
       ),
@@ -682,6 +746,7 @@ impl DynWinRTValue {
         Some(com::AutomationValue::new(
           dynwinrt::com::Value::NativeUnion(value),
         )),
+        None,
       ),
       dynwinrt::com::Value::Variant(value) => Self(
         dynwinrt::WinRTValue::Null,
@@ -692,6 +757,7 @@ impl DynWinRTValue {
         Some(com::AutomationValue::new(dynwinrt::com::Value::Variant(
           value,
         ))),
+        None,
       ),
       dynwinrt::com::Value::SafeArray(value) => Self(
         dynwinrt::WinRTValue::Null,
@@ -702,6 +768,7 @@ impl DynWinRTValue {
         Some(com::AutomationValue::new(dynwinrt::com::Value::SafeArray(
           value,
         ))),
+        None,
       ),
       dynwinrt::com::Value::PropVariant(value) => Self(
         dynwinrt::WinRTValue::Null,
@@ -712,6 +779,7 @@ impl DynWinRTValue {
         Some(com::AutomationValue::new(
           dynwinrt::com::Value::PropVariant(value),
         )),
+        None,
       ),
       dynwinrt::com::Value::DispatchParams(value) => Self(
         dynwinrt::WinRTValue::Null,
@@ -722,6 +790,7 @@ impl DynWinRTValue {
         Some(com::AutomationValue::new(
           dynwinrt::com::Value::DispatchParams(value),
         )),
+        None,
       ),
       dynwinrt::com::Value::ExcepInfo(value) => Self(
         dynwinrt::WinRTValue::Null,
@@ -732,6 +801,7 @@ impl DynWinRTValue {
         Some(com::AutomationValue::new(dynwinrt::com::Value::ExcepInfo(
           value,
         ))),
+        None,
       ),
       dynwinrt::com::Value::Buffer(value) => Self(
         dynwinrt::WinRTValue::Null,
@@ -739,6 +809,7 @@ impl DynWinRTValue {
         com::PointerProvenance::None,
         None,
         Some(value),
+        None,
         None,
       ),
     }
@@ -786,6 +857,15 @@ impl DynWinRTValue {
 
 impl Drop for DynWinRTValue {
   fn drop(&mut self) {
+    if self
+      .6
+      .as_ref()
+      .is_some_and(|binding| binding.owner_thread != std::thread::current().id())
+    {
+      let value = mem::replace(&mut self.0, dynwinrt::WinRTValue::Null);
+      mem::forget(value);
+      return;
+    }
     // After Application.Start returns, XAML has already torn down its thread
     // state. Leaking late projected COM references is safer than releasing
     // them into a destroyed DXamlCore; normal application teardown must call
@@ -809,7 +889,10 @@ impl Drop for DynWinRTValue {
 #[napi]
 impl DynWinRTValue {
   #[napi]
-  pub fn release(&mut self) {
+  pub fn release(&mut self) -> napi::Result<()> {
+    if self.6.is_some() {
+      self.ensure_com_apartment()?;
+    }
     self.release_native_pointer_output();
     self.0 = dynwinrt::WinRTValue::Null;
     self.1 = None;
@@ -817,6 +900,8 @@ impl DynWinRTValue {
     self.3 = None;
     self.4 = None;
     self.5 = None;
+    self.6 = None;
+    Ok(())
   }
 
   #[napi]
@@ -1120,11 +1205,14 @@ impl DynWinRTValue {
 
   #[napi]
   pub fn cast(&self, iid: &WinGUID) -> napi::Result<DynWinRTValue> {
+    self.ensure_existing_com_apartment()?;
     let result = self
       .0
       .cast(&iid.0)
       .map_err(|e| napi::Error::from_reason(format!("QueryInterface failed: {}", e.message())))?;
-    Ok(DynWinRTValue::new(result))
+    let mut result = DynWinRTValue::new(result);
+    result.6 = self.6.clone();
+    Ok(result)
   }
 
   #[napi]

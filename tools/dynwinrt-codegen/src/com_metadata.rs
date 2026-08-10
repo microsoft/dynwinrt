@@ -11,6 +11,7 @@ use crate::types::TypeMeta;
 pub enum RawConstness {
     Const,
     Mutable,
+    Mixed,
     Unspecified,
 }
 
@@ -399,6 +400,18 @@ pub fn parse_com_interface(
     parse_com_interface_from_index(&index, namespace, name)
 }
 
+pub fn parse_all_com_interfaces(winmd_paths: &str) -> Option<Vec<ComInterfaceMeta>> {
+    let index = crate::meta::load_index(winmd_paths)?;
+    Some(
+        index
+            .all()
+            .filter_map(|definition| {
+                parse_com_interface_from_index(&index, definition.namespace(), definition.name())
+            })
+            .collect(),
+    )
+}
+
 pub fn parse_com_coclass(
     winmd_paths: &str,
     namespace: &str,
@@ -451,43 +464,29 @@ fn parse_com_interface_from_index(
         return None;
     }
 
-    let mut base_chain = Vec::new();
-    let mut current = (namespace.to_string(), name.to_string());
-    let mut root = None;
-    for _ in 0..32 {
-        let current_def = index.get(&current.0, &current.1).next()?;
-        let base = match current_def.interface_impls().next()?.interface(&[]) {
-            windows_metadata::Type::Name(name) => (name.namespace, name.name),
-            _ => return None,
-        };
-        match base.1.as_str() {
-            "IUnknown" => {
-                root = Some((true, 3));
-                base_chain.push((
-                    "Windows.Win32.System.Com".to_string(),
-                    "IUnknown".to_string(),
-                    0,
-                ));
-                break;
-            }
-            "IInspectable" => {
-                root = Some((false, 6));
-                base_chain.push((
-                    "Windows.Foundation".to_string(),
-                    "IInspectable".to_string(),
-                    0,
-                ));
-                break;
-            }
-            _ => {
-                let base_def = index.get(&base.0, &base.1).next()?;
-                let count = base_def.methods().count();
-                base_chain.push((base.0.clone(), base.1.clone(), count));
-                current = base;
-            }
-        }
-    }
-    let (is_iunknown_rooted, root_offset) = root?;
+    let (is_iunknown_rooted, root_offset, base_chain) =
+        resolve_com_base_chain(namespace, name, |current_namespace, current_name| {
+            let current_def = index.get(current_namespace, current_name).next()?;
+            current_def
+                .interface_impls()
+                .map(|implementation| match implementation.interface(&[]) {
+                    windows_metadata::Type::Name(name) => {
+                        let method_count =
+                            if matches!(name.name.as_str(), "IUnknown" | "IInspectable") {
+                                0
+                            } else {
+                                index
+                                    .get(&name.namespace, &name.name)
+                                    .next()?
+                                    .methods()
+                                    .count()
+                            };
+                        Some((name.namespace, name.name, method_count))
+                    }
+                    _ => None,
+                })
+                .collect::<Option<Vec<_>>>()
+        })?;
     let own_methods_start = root_offset
         + base_chain
             .iter()
@@ -509,6 +508,7 @@ fn parse_com_interface_from_index(
         methods.append(&mut base_methods);
         raw_methods.append(&mut base_raw_methods);
     }
+
     if slot != own_methods_start {
         return None;
     }
@@ -543,6 +543,48 @@ fn parse_com_interface_from_index(
         raw_referenced_enums,
         raw_methods: Some(raw_methods),
     })
+}
+
+fn resolve_com_base_chain(
+    namespace: &str,
+    name: &str,
+    mut direct_bases: impl FnMut(&str, &str) -> Option<Vec<(String, String, usize)>>,
+) -> Option<(bool, usize, Vec<(String, String, usize)>)> {
+    let mut base_chain = Vec::new();
+    let mut current = (namespace.to_string(), name.to_string());
+    let mut visited = std::collections::BTreeSet::new();
+    for _ in 0..32 {
+        if !visited.insert(current.clone()) {
+            return None;
+        }
+        let bases = direct_bases(&current.0, &current.1)?;
+        let [base] = bases.as_slice() else {
+            return None;
+        };
+        match base.1.as_str() {
+            "IUnknown" => {
+                base_chain.push((
+                    "Windows.Win32.System.Com".to_string(),
+                    "IUnknown".to_string(),
+                    0,
+                ));
+                return Some((true, 3, base_chain));
+            }
+            "IInspectable" => {
+                base_chain.push((
+                    "Windows.Foundation".to_string(),
+                    "IInspectable".to_string(),
+                    0,
+                ));
+                return Some((false, 6, base_chain));
+            }
+            _ => {
+                base_chain.push(base.clone());
+                current = (base.0.clone(), base.1.clone());
+            }
+        }
+    }
+    None
 }
 
 fn parse_com_coclass_from_index(
@@ -2393,11 +2435,17 @@ fn raw_runtime_class_default_iid(
 
 fn add_raw_pointer(mut inner: RawComType, depth: usize, constness: RawConstness) -> RawComType {
     if inner.pointer_depth > 0
-        && inner.constness != RawConstness::Unspecified
+        && !matches!(
+            inner.constness,
+            RawConstness::Mixed | RawConstness::Unspecified
+        )
         && inner.constness != constness
     {
-        inner.constness = RawConstness::Unspecified;
-    } else if inner.constness != RawConstness::Unspecified {
+        inner.constness = RawConstness::Mixed;
+    } else if !matches!(
+        inner.constness,
+        RawConstness::Mixed | RawConstness::Unspecified
+    ) {
         inner.constness = constness;
     } else if inner.pointer_depth == 0 {
         inner.constness = constness;
@@ -3017,7 +3065,59 @@ mod tests {
         let mixed = add_raw_pointer(inner, 1, RawConstness::Mutable);
 
         assert_eq!(mixed.pointer_depth, 2);
-        assert_eq!(mixed.constness, RawConstness::Unspecified);
+        assert_eq!(mixed.constness, RawConstness::Mixed);
+    }
+
+    #[test]
+    fn com_inheritance_requires_one_acyclic_bounded_base_chain() {
+        let resolve = |graph: std::collections::BTreeMap<
+            (&'static str, &'static str),
+            Vec<(&'static str, &'static str, usize)>,
+        >| {
+            resolve_com_base_chain("Tests", "ILeaf", |namespace, name| {
+                graph.get(&(namespace, name)).map(|bases| {
+                    bases
+                        .iter()
+                        .map(|(namespace, name, count)| {
+                            ((*namespace).into(), (*name).into(), *count)
+                        })
+                        .collect()
+                })
+            })
+        };
+
+        let valid = std::collections::BTreeMap::from([
+            (("Tests", "ILeaf"), vec![("Tests", "IBase", 2)]),
+            (
+                ("Tests", "IBase"),
+                vec![("Windows.Win32.System.Com", "IUnknown", 0)],
+            ),
+        ]);
+        let (iunknown, slot, chain) = resolve(valid).unwrap();
+        assert!(iunknown);
+        assert_eq!(slot, 3);
+        assert_eq!(chain[0].1, "IBase");
+
+        let multiple = std::collections::BTreeMap::from([(
+            ("Tests", "ILeaf"),
+            vec![("Tests", "IBase", 2), ("Tests", "ISecond", 1)],
+        )]);
+        assert!(resolve(multiple).is_none());
+
+        let cyclic = std::collections::BTreeMap::from([
+            (("Tests", "ILeaf"), vec![("Tests", "IBase", 2)]),
+            (("Tests", "IBase"), vec![("Tests", "ILeaf", 1)]),
+        ]);
+        assert!(resolve(cyclic).is_none());
+
+        let mut deep = std::collections::BTreeMap::new();
+        deep.insert(("Tests", "ILeaf"), vec![("Tests", "I0", 1)]);
+        for index in 0..32 {
+            let current: &'static str = Box::leak(format!("I{index}").into_boxed_str());
+            let next: &'static str = Box::leak(format!("I{}", index + 1).into_boxed_str());
+            deep.insert(("Tests", current), vec![("Tests", next, 1)]);
+        }
+        assert!(resolve(deep).is_none());
     }
 
     #[test]

@@ -99,15 +99,17 @@ fn render_coclass_files(
         primary_interface.name
     ));
     js.push_str(&format!(
-        "    constructor() {{\n        super(DynCom.coCreateInstance(CLSID_{name}, IID_{}));\n    }}\n",
+        "    constructor() {{\n        const obj = DynCom.coCreateInstance(CLSID_{name}, IID_{});\n        try {{\n            super(obj);\n        }} finally {{\n            obj.release();\n        }}\n    }}\n",
         primary_interface.name
     ));
     js.push_str(&format!(
-        "    static _fromNative(obj) {{\n        const cast = obj.cast(IID_{});\n        return Object.assign(Object.create({name}.prototype), {{ _obj: cast }});\n    }}\n",
+        "    static _fromNative(obj) {{\n        const cast = obj.cast(IID_{});\n        DynCom.bindComObject(cast);\n        return Object.assign(Object.create({name}.prototype), {{ _obj: cast }});\n    }}\n",
         primary_interface.name
     ));
-    js.push_str("    as(InterfaceClass) {\n        return InterfaceClass._fromNative(this._obj.cast(InterfaceClass.IID));\n    }\n");
-    js.push_str("    tryAs(InterfaceClass) {\n        const obj = DynCom.tryCast(this._obj, InterfaceClass.IID);\n        return obj === null ? null : InterfaceClass._fromNative(obj);\n    }\n");
+    js.push_str(
+        "    as(InterfaceClass) {\n        return InterfaceClass._fromNative(this._obj);\n    }\n",
+    );
+    js.push_str("    tryAs(InterfaceClass) {\n        const obj = DynCom.tryCast(this._obj, InterfaceClass.IID);\n        if (obj === null) return null;\n        try {\n            return InterfaceClass._fromNative(obj);\n        } finally {\n            obj.release();\n        }\n    }\n");
     js.push_str("    supports(InterfaceClass) {\n        const obj = DynCom.tryCast(this._obj, InterfaceClass.IID);\n        if (obj === null) return false;\n        obj.release();\n        return true;\n    }\n");
     js.push_str("}\n");
 
@@ -264,10 +266,14 @@ fn render_js(meta: &ProjectedComInterface) -> String {
     out.push_str(&format!("        const value = {cache_var}[prop];\n        return typeof value === 'function' ? value.bind({cache_var}) : value;\n    }},\n}});\n\n"));
     out.push_str(&format!("export class {} {{\n", meta.name));
     out.push_str(&format!("    static IID = IID_{};\n", meta.name));
-    out.push_str("    _obj;\n    constructor(obj) { this._obj = obj; }\n");
+    let wrap_owned = format!("_wrap{}Owned", meta.name);
     out.push_str(&format!(
-        "    static _fromNative(obj) {{ return Object.assign(Object.create({}.prototype), {{ _obj: obj }}); }}\n",
+        "    _obj;\n    constructor(obj) {{\n        const cast = obj.cast(IID_{});\n        DynCom.bindComObject(cast);\n        this._obj = cast;\n    }}\n",
         meta.name
+    ));
+    out.push_str(&format!(
+        "    static _fromNative(obj) {{ return {wrap_owned}(obj.cast(IID_{})); }}\n",
+        meta.name,
     ));
     out.push_str("    /** Release the underlying native COM reference. Safe to call more than once. */\n    release() {\n        this._obj.release();\n    }\n");
     match &meta.activation {
@@ -280,7 +286,7 @@ fn render_js(meta: &ProjectedComInterface) -> String {
         } => {
             let full = format!("{class_namespace}.{class_name}");
             out.push_str(&format!("    /** Create a new `{}` by activating the `{full}` factory and QI'ing to the interop.\n     * `initializeCom()` must be called once (e.g. at process startup) before this is used. */\n", meta.name));
-            out.push_str(&format!("    static create() {{\n        const factory = DynWinRtValue.activationFactory('{full}');\n        const _obj = factory.cast(IID_{});\n        return new {}(_obj);\n    }}\n", meta.name, meta.name));
+            out.push_str(&format!("    static create() {{\n        const factory = DynWinRtValue.activationFactory('{full}');\n        const _obj = factory.cast(IID_{});\n        return {wrap_owned}(_obj);\n    }}\n", meta.name));
         }
     }
     let mut emitted_groups = std::collections::HashSet::new();
@@ -351,6 +357,10 @@ fn render_js(meta: &ProjectedComInterface) -> String {
         }
     }
     out.push_str("}\n");
+    out.push_str(&format!(
+        "function {wrap_owned}(obj) {{\n    DynCom.bindComObject(obj);\n    return Object.assign(Object.create({}.prototype), {{ _obj: obj }});\n}}\n",
+        meta.name
+    ));
     out
 }
 
@@ -366,10 +376,24 @@ fn build_method_sig_js(method: &ProjectedComMethod) -> String {
             continue;
         }
         match param.direction {
-            ComParamDirection::In => parts.push(format!(".addIn({})", param_abi_type_js(param))),
-            ComParamDirection::InOut => {
-                parts.push(format!(".addInOut({})", param_abi_type_js(param)))
-            }
+            ComParamDirection::In => parts.push(format!(
+                ".{}({})",
+                if param.nullable {
+                    "addNullableIn"
+                } else {
+                    "addIn"
+                },
+                param_abi_type_js(param)
+            )),
+            ComParamDirection::InOut => parts.push(format!(
+                ".{}({})",
+                if param.nullable {
+                    "addNullableInOut"
+                } else {
+                    "addInOut"
+                },
+                param_abi_type_js(param)
+            )),
 
             ComParamDirection::OutStringBuffer => parts.push(".addIn(DynCom.pointerType())".into()),
             ComParamDirection::Out => {
@@ -1616,14 +1640,14 @@ fn render_dts(meta: &ProjectedComInterface) -> String {
     for (name, kind) in collect_pointer_aliases(meta) {
         match kind {
             PointerAliasKind::HandleValue => out.push_str(&format!("/** Opaque Win32 handle value. Pass a raw pointer value as a `bigint` (full pointer width) or `number` (safe integer). */\nexport type {name} = bigint | number;\n")),
-            PointerAliasKind::DataPointer => out.push_str(&format!("/** Opaque native data address. Inputs may also use a `Buffer`/`Uint8Array`, whose backing-store address is passed and retained for the call. */\nexport type {name} = bigint | number;\n")),
+            PointerAliasKind::DataPointer => out.push_str(&format!("/** Retained native data storage. The backing-store address is passed for the duration of the call; arbitrary numeric addresses require the explicit unsafe runtime. */\nexport type {name} = Buffer | Uint8Array;\n")),
             PointerAliasKind::StringPointer(encoding) => {
                 let description = match encoding {
-                    StringEncoding::Wide => "Pass a JS `string` (encoded automatically via DynCom.wideStringPointer), a `Buffer`/`Uint8Array` holding UTF-16LE bytes (including the NUL terminator), or a raw pointer as `bigint`.",
-                    StringEncoding::Ansi => "Pass an ASCII JS `string` (encoded automatically via DynCom.ansiStringPointer), a `Buffer`/`Uint8Array` holding explicitly ANSI-encoded bytes (including the NUL terminator), or a raw pointer as `bigint`. Non-ASCII text must use pre-encoded bytes.",
+                    StringEncoding::Wide => "Pass a JS `string` (encoded automatically), or a `Buffer`/`Uint8Array` holding UTF-16LE bytes including the NUL terminator. Arbitrary numeric addresses require the explicit unsafe runtime.",
+                    StringEncoding::Ansi => "Pass an ASCII JS `string` (encoded automatically), or a `Buffer`/`Uint8Array` holding explicitly ANSI-encoded bytes including the NUL terminator. Non-ASCII text must use pre-encoded bytes; arbitrary numeric addresses require the explicit unsafe runtime.",
                 };
                 out.push_str(&format!(
-                    "/** Win32 NUL-terminated string pointer. {description} */\nexport type {name} = string | Buffer | Uint8Array | bigint;\n"
+                    "/** Win32 NUL-terminated string pointer. {description} */\nexport type {name} = string | Buffer | Uint8Array;\n"
                 ));
             }
         }

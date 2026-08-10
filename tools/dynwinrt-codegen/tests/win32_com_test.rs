@@ -823,7 +823,7 @@ fn real_metadata_projects_complete_idispatch_with_automation_compounds() {
     assert!(!output.js.contains("_result.argErr"));
     assert!(!output.js.contains("nativeStructType"));
     assert!(output.dts.contains(
-        "invoke(dispIdMember: number, riid: bigint | Buffer, lcid: number, wFlags: DISPATCH_FLAGS, dispParams: DynComDispatchParams, options?: { result?: boolean; excepInfo?: boolean; argErr?: boolean }): { result?: DynComVariant };"
+        "invoke(dispIdMember: number, riid: Buffer | Uint8Array, lcid: number, wFlags: DISPATCH_FLAGS, dispParams: DynComDispatchParams, options?: { result?: boolean; excepInfo?: boolean; argErr?: boolean }): { result?: DynComVariant };"
     ));
 
     let invoke_raw_index = dispatch
@@ -1102,8 +1102,10 @@ fn taskbarlist_coclass_generates_newable_class_and_interface_views() {
     assert!(out.js.contains("exports.TaskbarList = TaskbarList;"));
     assert!(
         out.js
-            .contains("super(DynCom.coCreateInstance(CLSID_TaskbarList, IID_ITaskbarList4))")
+            .contains("const obj = DynCom.coCreateInstance(CLSID_TaskbarList, IID_ITaskbarList4)")
     );
+    assert!(out.js.contains("super(obj)"));
+    assert!(out.js.contains("obj.release()"));
     assert!(out.js.contains("as(InterfaceClass)"));
     assert!(out.js.contains("DynCom.tryCast"));
     assert!(out.dts.contains("constructor();"));
@@ -1989,14 +1991,12 @@ fn sid_buffers_keep_data_pointer_address_semantics() {
         .expect("isolated IDiskQuotaControl.AddUserSid generation should succeed");
 
     assert!(
-        output
-            .dts
-            .contains("addUserSid(pUserSid: PSID | Buffer | Uint8Array"),
+        output.dts.contains("addUserSid(pUserSid: PSID,"),
         "PSID input must accept backing storage rather than handle bytes:\n{}",
         output.dts
     );
     assert!(
-        output.js.contains("DynCom.pointer(pUserSid)")
+        output.js.contains("DynCom.safeDataPointer(pUserSid)")
             && !output.js.contains("handleValue(pUserSid)"),
         "PSID Buffer must pass its address, not decoded contents:\n{}",
         output.js
@@ -2625,7 +2625,8 @@ fn standard_enumerator_next_projects_partial_arrays_and_exact_interface_ownershi
         ) && output.js.contains("DynCom.takeComArray(_out[1])")
             && output
                 .js
-                .contains("value => IConnectionPoint._fromNative(value)")
+                .contains("return IConnectionPoint._fromNative(value);")
+            && output.js.contains("finally { value.release(); }")
             && output
                 .dts
                 .contains("next(count: number): IConnectionPoint[]")
@@ -3350,7 +3351,7 @@ fn generalized_dynamic_iid_unlocks_non_positional_real_interfaces() {
         output.dts.contains(
             "beginDraw(updateRect: RECT | null, iid: string): [DynWinRtValue, POINT];"
         ) && output.js.contains(
-            ".addIn(DynCom.nativeStructPointerType(_nativeLayout_RECT, true)).addIn(DynCom.pointerType()).addOut(DynCom.ownedComPointerType()).addOut(DynCom.nativeStructType(_nativeLayout_POINT))"
+            ".addNullableIn(DynCom.nativeStructPointerType(_nativeLayout_RECT, true)).addIn(DynCom.pointerType()).addOut(DynCom.ownedComPointerType()).addOut(DynCom.nativeStructType(_nativeLayout_POINT))"
         ) && output.js.contains(
             "invokeAll(this._obj, [updateRect === null ? DynCom.nullNativeStructPointer() : DynCom.nativeStruct(_nativeLayout_RECT, updateRect), DynCom.iidPointer(_iid)])"
         ) && output.js.contains(
@@ -4366,6 +4367,54 @@ fn com_only_generation_emits_an_importable_package_shape() {
         incremental_package.contains("\"./ITaskbarList3\"")
             && incremental_package.contains("\"./IShellLinkW\""),
         "incremental generation must preserve earlier package subpaths:\n{incremental_package}"
+    );
+
+    let manifest_path = output_dir.join("com").join(".dynwinrt-com-manifest.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
+    let root = manifest["roots"]["Windows.Win32.UI.Shell.ITaskbarList3"]
+        .as_array_mut()
+        .expect("ITaskbarList3 manifest root");
+    root.push(serde_json::Value::String("Stale.js".into()));
+    fs::write(
+        &manifest_path,
+        serde_json::to_string_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        output_dir.join("com").join("Stale.js"),
+        "exports.Stale = 1;\n",
+    )
+    .unwrap();
+    let regenerate = Command::new(env!("CARGO_BIN_EXE_dynwinrt-codegen"))
+        .args([
+            "generate",
+            "--winmd",
+            &win32_winmd(),
+            "--namespace",
+            "Windows.Win32.UI.Shell",
+            "--class-name",
+            "ITaskbarList3",
+            "--output",
+            output_dir.to_str().unwrap(),
+        ])
+        .output()
+        .expect("regenerate manifest root");
+    assert!(
+        regenerate.status.success(),
+        "manifest regeneration failed:\n{}",
+        String::from_utf8_lossy(&regenerate.stderr)
+    );
+    assert!(
+        !output_dir.join("com").join("Stale.js").exists(),
+        "regenerating one COM root must remove only its stale manifest-owned files"
+    );
+    let regenerated_index = fs::read_to_string(output_dir.join("com").join("index.js")).unwrap();
+    assert!(
+        regenerated_index.contains("ITaskbarList3")
+            && regenerated_index.contains("IShellLinkW")
+            && !regenerated_index.contains("Stale"),
+        "manifest cleanup must preserve other incremental roots:\n{regenerated_index}"
     );
 
     fs::remove_dir_all(&output_dir).expect("remove COM package test directory");

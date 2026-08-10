@@ -6,6 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
+use serde::{Deserialize, Serialize};
 
 use dynwinrt_codegen::codegen::com;
 use dynwinrt_codegen::codegen::package;
@@ -45,6 +46,17 @@ struct Cli {
 enum Commands {
     /// Print supported machine-readable capabilities, one per line.
     Capabilities,
+
+    /// Measure complete safe Classic COM interface generation.
+    ComCensus {
+        /// Path(s) to Windows.Win32.winmd metadata, separated by ';'.
+        #[arg(long, value_name = "PATH")]
+        winmd: String,
+
+        /// Emit one machine-readable JSON object.
+        #[arg(long)]
+        json: bool,
+    },
 
     /// Generate bindings from .winmd files
     #[command(
@@ -127,11 +139,74 @@ enum Commands {
     },
 }
 
+const COM_MANIFEST_FILE: &str = ".dynwinrt-com-manifest.json";
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+struct ComGenerationManifest {
+    version: u32,
+    roots: BTreeMap<String, BTreeSet<String>>,
+}
+
+struct ComManifestUpdate {
+    manifest: ComGenerationManifest,
+    stale_files: BTreeSet<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ComCensusResult {
+    metadata: String,
+    eligible_interfaces: usize,
+    complete_interfaces: usize,
+    incomplete_interfaces: usize,
+    coverage_percent: f64,
+}
+
 fn main() {
     if let Err(e) = run() {
         eprintln!("error: {}", e);
         std::process::exit(1);
     }
+}
+
+fn run_com_census(winmd: &str, json: bool) -> Result<(), String> {
+    let interfaces = com_metadata::parse_all_com_interfaces(winmd)
+        .ok_or_else(|| format!("Failed to load Classic COM metadata from {winmd}"))?;
+    let eligible = interfaces
+        .into_iter()
+        .filter(|interface| {
+            (interface.is_iunknown_rooted || interface.interface.name.ends_with("Interop"))
+                && !(interface.interface.namespace == "Windows.Win32.UI.Controls.RichEdit"
+                    && interface.interface.name == "ITextHost2")
+        })
+        .collect::<Vec<_>>();
+    let complete = eligible
+        .iter()
+        .filter(|interface| com::generate_com_interface_files(interface, winmd).is_ok())
+        .count();
+    let result = ComCensusResult {
+        metadata: winmd.to_string(),
+        eligible_interfaces: eligible.len(),
+        complete_interfaces: complete,
+        incomplete_interfaces: eligible.len() - complete,
+        coverage_percent: if eligible.is_empty() {
+            0.0
+        } else {
+            complete as f64 * 100.0 / eligible.len() as f64
+        },
+    };
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string(&result)
+                .map_err(|error| format!("Failed to serialize COM census: {error}"))?
+        );
+    } else {
+        println!(
+            "Classic COM complete interfaces: {}/{} ({:.6}%)",
+            result.complete_interfaces, result.eligible_interfaces, result.coverage_percent
+        );
+    }
+    Ok(())
 }
 
 fn parse_class_requests(
@@ -167,6 +242,9 @@ fn run() -> Result<(), String> {
     match cli.command {
         Commands::Capabilities => {
             print_capabilities();
+        }
+        Commands::ComCensus { winmd, json } => {
+            run_com_census(&winmd, json)?;
         }
         Commands::Generate {
             winmd,
@@ -411,7 +489,14 @@ fn run() -> Result<(), String> {
                                     com_iface.interface.name, e
                                 )
                             })?;
-                        generated.push((com_iface.interface.name.clone(), out));
+                        generated.push((
+                            format!(
+                                "{}.{}",
+                                com_iface.interface.namespace, com_iface.interface.name
+                            ),
+                            com_iface.interface.name.clone(),
+                            out,
+                        ));
                     }
                     for coclass in &com_coclasses {
                         let out =
@@ -421,17 +506,26 @@ fn run() -> Result<(), String> {
                                     coclass.name, e
                                 )
                             })?;
-                        generated.push((coclass.name.clone(), out));
+                        generated.push((
+                            format!("{}.{}", coclass.namespace, coclass.name),
+                            coclass.name.clone(),
+                            out,
+                        ));
                     }
 
                     let mut planned_files = BTreeMap::new();
-                    for (name, out) in &generated {
+                    let mut root_files = BTreeMap::new();
+                    for (root, name, out) in &generated {
                         let mut files = vec![
                             (format!("{name}.js"), out.js.clone()),
                             (format!("{name}.d.ts"), out.dts.clone()),
                         ];
                         files.extend(out.extra_files.iter().cloned());
                         for (file_name, content) in files {
+                            root_files
+                                .entry(root.clone())
+                                .or_insert_with(BTreeSet::new)
+                                .insert(file_name.clone());
                             if let Some(existing) = planned_files.get(&file_name)
                                 && existing != &content
                             {
@@ -452,12 +546,15 @@ fn run() -> Result<(), String> {
                                 e
                             )
                         })?;
+                        let manifest_update =
+                            prepare_com_generation_manifest(&com_output_dir, &root_files)?;
                         for (file_name, content) in &planned_files {
                             fs::write(com_output_dir.join(file_name), content)
                                 .map_err(|e| format!("Failed to write {}: {}", file_name, e))?;
                         }
+                        apply_com_generation_manifest(&com_output_dir, manifest_update)?;
                     }
-                    for (name, out) in &generated {
+                    for (_, name, out) in &generated {
                         if dry_run {
                             println!("[dry-run] Would generate {}", name);
                         } else {
@@ -1220,6 +1317,88 @@ fn write_js_barrel_and_manifest(output_dir: &Path, index_content: &str) -> Resul
 
     println!("Generated {}", js_path.display());
     Ok(())
+}
+
+fn prepare_com_generation_manifest(
+    com_output_dir: &Path,
+    updated_roots: &BTreeMap<String, BTreeSet<String>>,
+) -> Result<ComManifestUpdate, String> {
+    let path = com_output_dir.join(COM_MANIFEST_FILE);
+    let mut manifest = if path.exists() {
+        let content = fs::read_to_string(&path)
+            .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
+        serde_json::from_str::<ComGenerationManifest>(&content).map_err(|error| {
+            format!(
+                "Invalid COM generation manifest {}: {error}",
+                path.display()
+            )
+        })?
+    } else {
+        ComGenerationManifest {
+            version: 1,
+            roots: BTreeMap::new(),
+        }
+    };
+    if manifest.version != 1 {
+        return Err(format!(
+            "Unsupported COM generation manifest version {} in {}",
+            manifest.version,
+            path.display()
+        ));
+    }
+
+    let previous_files = updated_roots
+        .keys()
+        .filter_map(|root| manifest.roots.get(root))
+        .flatten()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    for (root, files) in updated_roots {
+        manifest.roots.insert(root.clone(), files.clone());
+    }
+    let retained_files = manifest
+        .roots
+        .values()
+        .flatten()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let stale_files = previous_files
+        .difference(&retained_files)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    for stale in &stale_files {
+        let relative = Path::new(stale);
+        if relative.components().count() != 1
+            || !(stale.ends_with(".js") || stale.ends_with(".d.ts"))
+        {
+            return Err(format!(
+                "Refusing unsafe path `{stale}` in COM generation manifest {}",
+                path.display()
+            ));
+        }
+    }
+    Ok(ComManifestUpdate {
+        manifest,
+        stale_files,
+    })
+}
+
+fn apply_com_generation_manifest(
+    com_output_dir: &Path,
+    update: ComManifestUpdate,
+) -> Result<(), String> {
+    let path = com_output_dir.join(COM_MANIFEST_FILE);
+    for stale in &update.stale_files {
+        let stale_path = com_output_dir.join(stale);
+        if stale_path.exists() {
+            fs::remove_file(&stale_path)
+                .map_err(|error| format!("Failed to remove {}: {error}", stale_path.display()))?;
+        }
+    }
+    let content = serde_json::to_string_pretty(&update.manifest)
+        .map_err(|error| format!("Failed to serialize COM generation manifest: {error}"))?;
+    fs::write(&path, format!("{content}\n"))
+        .map_err(|error| format!("Failed to write {}: {error}", path.display()))
 }
 
 fn write_com_js_barrel(com_output_dir: &Path) -> Result<(), String> {
