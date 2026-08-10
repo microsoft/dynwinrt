@@ -89,7 +89,14 @@
              "closable_context",
              "method_then_property_equals",
              "device_information_async_collection",
-             "bitmap_encoder_async_create"
+             "bitmap_encoder_async_create",
+             "constructor_overload_dispatch",
+             "value_set_mapping",
+             "data_stream_scalar_roundtrip",
+             "calendar_comprehensive",
+             "storage_query_temp_folder",
+             "value_set_event_lifecycle",
+             "nested_struct_runtime"
            ]
          },
          "member": { "type": "string", "description": "Property or method name (snake_case)" },

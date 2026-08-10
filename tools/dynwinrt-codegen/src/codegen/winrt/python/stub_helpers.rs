@@ -141,8 +141,8 @@ pub(super) fn py_struct_field_stub_type(typ: &TypeMeta) -> String {
         | TypeMeta::I32
         | TypeMeta::U32
         | TypeMeta::I64
-        | TypeMeta::U64
-        | TypeMeta::Enum { .. } => "int".to_string(),
+        | TypeMeta::U64 => "int".to_string(),
+        TypeMeta::Enum { name, .. } => format!("'{}'", name),
         TypeMeta::Char16 => "str".to_string(),
         TypeMeta::F32 | TypeMeta::F64 => "float".to_string(),
         TypeMeta::String => "str".to_string(),

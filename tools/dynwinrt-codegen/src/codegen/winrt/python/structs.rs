@@ -5,7 +5,7 @@
 
 use crate::types::TypeMeta;
 
-use super::naming::to_snake_case;
+use super::naming::{python_module_name, to_snake_case};
 use super::native_types::{FoundationType, foundation_type};
 use super::signature::{py_runtime_symbol, py_wrap_arg};
 use super::type_helpers::py_optional_type;
@@ -36,7 +36,7 @@ pub(crate) fn py_struct_field_getter(typ: &TypeMeta, index: usize) -> String {
         TypeMeta::I16 => format!("s.get_i16({})", index),
         TypeMeta::U16 => format!("s.get_u16({})", index),
         TypeMeta::Char16 => format!("chr(s.get_u16({}))", index),
-        TypeMeta::I32 | TypeMeta::Enum { .. } => format!("s.get_i32({})", index),
+        TypeMeta::I32 => format!("s.get_i32({})", index),
         TypeMeta::U32 => format!("s.get_u32({})", index),
         TypeMeta::I64 => format!("s.get_i64({})", index),
         TypeMeta::U64 => format!("s.get_u64({})", index),
@@ -44,6 +44,17 @@ pub(crate) fn py_struct_field_getter(typ: &TypeMeta, index: usize) -> String {
         TypeMeta::F64 => format!("s.get_f64({})", index),
         TypeMeta::String => format!("s.get_hstring({})", index),
         TypeMeta::Guid => format!("_dynwinrt_uuid(s.get_guid({}))", index),
+        TypeMeta::Enum {
+            namespace,
+            name,
+            underlying,
+            ..
+        } => format!(
+            "_dynwinrt_enum('{}', '{}', {})",
+            python_module_name(namespace, name),
+            name,
+            py_struct_field_getter(underlying, index)
+        ),
         TypeMeta::Struct { name, .. } if name == "HResult" => format!("s.get_i32({})", index),
         TypeMeta::Struct { name, .. } => format!(
             "_unpack_{}(s.get_struct({}).to_value())",
@@ -67,7 +78,7 @@ pub(crate) fn py_struct_field_setter(typ: &TypeMeta, index: usize, value_expr: &
         TypeMeta::I16 => format!("s.set_i16({}, {})", index, value_expr),
         TypeMeta::U16 => format!("s.set_u16({}, {})", index, value_expr),
         TypeMeta::Char16 => format!("s.set_u16({}, ord({}))", index, value_expr),
-        TypeMeta::I32 | TypeMeta::Enum { .. } => format!("s.set_i32({}, {})", index, value_expr),
+        TypeMeta::I32 => format!("s.set_i32({}, {})", index, value_expr),
         TypeMeta::U32 => format!("s.set_u32({}, {})", index, value_expr),
         TypeMeta::I64 => format!("s.set_i64({}, {})", index, value_expr),
         TypeMeta::U64 => format!("s.set_u64({}, {})", index, value_expr),
@@ -75,6 +86,9 @@ pub(crate) fn py_struct_field_setter(typ: &TypeMeta, index: usize, value_expr: &
         TypeMeta::F64 => format!("s.set_f64({}, {})", index, value_expr),
         TypeMeta::String => format!("s.set_hstring({}, {})", index, value_expr),
         TypeMeta::Guid => format!("s.set_guid({}, _dynwinrt_guid({}))", index, value_expr),
+        TypeMeta::Enum { underlying, .. } => {
+            py_struct_field_setter(underlying, index, &format!("int({value_expr})"))
+        }
         TypeMeta::Struct { name, .. } if name == "HResult" => {
             format!("s.set_i32({}, {})", index, value_expr)
         }

@@ -2057,7 +2057,7 @@ fn write_python_package_indexes(
         .collect::<Vec<_>>();
 
     let root_index = python::generate_index(&root_classes, &root_interfaces, &root_enums);
-    write_python_index(
+    write_python_lazy_root_index(
         &output_dir.join("__init__.py"),
         &root_index,
         append,
@@ -2300,12 +2300,135 @@ fn write_python_index(
     write_file(path, &content)
 }
 
+fn write_python_lazy_root_index(
+    path: &Path,
+    generated: &str,
+    append: bool,
+    suppressed_names: &HashSet<String>,
+) -> Result<(), String> {
+    let existing = if append && path.exists() {
+        fs::read_to_string(path).map_err(|e| format!("Failed to read {}: {}", path.display(), e))?
+    } else {
+        GENERATED_PYTHON_HEADER.to_string()
+    };
+    let content = merge_python_lazy_root_indexes(&existing, generated, suppressed_names);
+    write_file(path, &content)
+}
+
+fn merge_python_lazy_root_indexes(
+    existing: &str,
+    generated: &str,
+    suppressed_names: &HashSet<String>,
+) -> String {
+    let mut exports = BTreeMap::<String, (String, String)>::new();
+    collect_python_root_exports(existing, suppressed_names, &mut exports);
+    collect_python_root_exports(generated, suppressed_names, &mut exports);
+
+    let mut out = String::from(GENERATED_PYTHON_HEADER);
+    out.push_str("from importlib import import_module as _import_module\n\n");
+    out.push_str("__all__ = (\n");
+    for name in exports.keys() {
+        out.push_str(&format!("    \"{name}\",\n"));
+    }
+    out.push_str(")\n\n");
+    out.push_str("_EXPORTS = {\n");
+    for (name, (module, symbol)) in &exports {
+        out.push_str(&format!("    \"{name}\": (\"{module}\", \"{symbol}\"),\n"));
+    }
+    out.push_str(
+        "}\n\n\
+         \n\
+         def __getattr__(name):\n\
+         \x20   try:\n\
+         \x20       module_name, symbol_name = _EXPORTS[name]\n\
+         \x20   except KeyError:\n\
+         \x20       raise AttributeError(\n\
+         \x20           f\"module {__name__!r} has no attribute {name!r}\"\n\
+         \x20       ) from None\n\
+         \x20   value = getattr(_import_module(module_name, __name__), symbol_name)\n\
+         \x20   globals()[name] = value\n\
+         \x20   return value\n\
+         \n\
+         \n\
+         def __dir__():\n\
+         \x20   return sorted(set(globals()) | set(__all__))\n",
+    );
+    out
+}
+
+fn collect_python_root_exports(
+    content: &str,
+    suppressed_names: &HashSet<String>,
+    exports: &mut BTreeMap<String, (String, String)>,
+) {
+    for line in content.lines() {
+        if let Some((module, symbols)) = parse_python_import_line(line) {
+            for (source_symbol, exported_symbol) in symbols {
+                if suppressed_names.contains(&source_symbol)
+                    || suppressed_names.contains(&exported_symbol)
+                {
+                    continue;
+                }
+                exports
+                    .entry(exported_symbol)
+                    .or_insert_with(|| (module.clone(), source_symbol));
+            }
+        } else if let Some((exported_symbol, module, source_symbol)) =
+            parse_python_lazy_export(line)
+        {
+            if suppressed_names.contains(&source_symbol)
+                || suppressed_names.contains(&exported_symbol)
+            {
+                continue;
+            }
+            exports
+                .entry(exported_symbol)
+                .or_insert((module, source_symbol));
+        }
+    }
+}
+
+fn parse_python_import_line(line: &str) -> Option<(String, Vec<(String, String)>)> {
+    let line = line.split_once("  #").map_or(line, |(line, _)| line);
+    let (source, exports) = line.split_once(" import ")?;
+    let module = source.strip_prefix("from ")?.to_string();
+    if !module.starts_with('.') {
+        return None;
+    }
+    let exports = exports
+        .split(',')
+        .map(str::trim)
+        .filter(|export| !export.is_empty())
+        .map(|export| {
+            export.split_once(" as ").map_or_else(
+                || (export.to_string(), export.to_string()),
+                |(source, alias)| (source.trim().to_string(), alias.trim().to_string()),
+            )
+        })
+        .collect();
+    Some((module, exports))
+}
+
+fn parse_python_lazy_export(line: &str) -> Option<(String, String, String)> {
+    let line = line.trim();
+    let line = line.strip_prefix('"')?;
+    let (exported_symbol, line) = line.split_once("\": (\"")?;
+    let (module, source_symbol) = line.split_once("\", \"")?;
+    let source_symbol = source_symbol.strip_suffix("\"),")?;
+    Some((
+        exported_symbol.to_string(),
+        module.to_string(),
+        source_symbol.to_string(),
+    ))
+}
+
 fn merge_python_indexes(
     existing: &str,
     generated: &str,
     suppressed_names: &HashSet<String>,
 ) -> String {
     let mut imports = BTreeSet::new();
+    let mut exported_symbols = HashSet::new();
     for line in existing.lines().chain(generated.lines()) {
         if line.starts_with("from .") {
             let (line, comment) = line
@@ -2318,10 +2441,14 @@ fn merge_python_indexes(
                 .split(',')
                 .map(str::trim)
                 .filter(|export| {
-                    let symbol = export
+                    let source_symbol = export
                         .split_once(" as ")
                         .map_or(*export, |(name, _)| name.trim());
-                    !suppressed_names.contains(symbol)
+                    let exported_symbol = export
+                        .split_once(" as ")
+                        .map_or(*export, |(_, alias)| alias.trim());
+                    !suppressed_names.contains(source_symbol)
+                        && exported_symbols.insert(exported_symbol.to_string())
                 })
                 .collect::<Vec<_>>();
             if !exports.is_empty() {
@@ -3429,6 +3556,16 @@ mod tests {
         .unwrap();
         assert!(facade.contains("IID_IWidget as IID_IWidget"));
         assert!(facade.contains("IWidget as IWidget"));
+        let root_runtime = fs::read_to_string(output.join("__init__.py")).unwrap();
+        assert!(root_runtime.contains("def __getattr__(name):"));
+        assert!(
+            root_runtime.contains("\"IWidget\": (\".contoso__foundation__i_widget\", \"IWidget\")")
+        );
+        assert!(!root_runtime.contains("from .contoso__foundation__i_widget import"));
+        let root_stub = fs::read_to_string(output.join("__init__.pyi")).unwrap();
+        assert!(root_stub.contains(
+            "from .contoso__foundation__i_widget import IID_IWidget, IWidget as IWidget"
+        ));
         fs::remove_dir_all(output).unwrap();
     }
 
@@ -3443,6 +3580,51 @@ mod tests {
 
         assert!(!merged.contains("ResourceManager"));
         assert!(merged.contains("Point, pack_point  # noqa: F401"));
+    }
+
+    #[test]
+    fn root_merge_deduplicates_shared_struct_exports() {
+        let existing = format!(
+            "{GENERATED_PYTHON_HEADER}from .contoso__first import First, EventRegistrationToken, pack_event_registration_token\n"
+        );
+        let generated = format!(
+            "{GENERATED_PYTHON_HEADER}from .contoso__second import Second, EventRegistrationToken, pack_event_registration_token, TextSegment\n"
+        );
+
+        let merged = merge_python_indexes(&existing, &generated, &HashSet::new());
+
+        assert!(merged.contains("from .contoso__first import First, EventRegistrationToken, pack_event_registration_token"));
+        assert!(merged.contains("from .contoso__second import Second, TextSegment"));
+        assert_eq!(merged.matches("EventRegistrationToken").count(), 1);
+        assert_eq!(merged.matches("pack_event_registration_token").count(), 1);
+    }
+
+    #[test]
+    fn lazy_root_merge_migrates_eager_indexes_and_appends_exports() {
+        let existing =
+            format!("{GENERATED_PYTHON_HEADER}from .contoso__first import First, Shared\n");
+        let generated =
+            format!("{GENERATED_PYTHON_HEADER}from .contoso__second import Second, Shared\n");
+
+        let merged = merge_python_lazy_root_indexes(&existing, &generated, &HashSet::new());
+
+        assert!(merged.contains("from importlib import import_module as _import_module"));
+        assert!(merged.contains("\"First\": (\".contoso__first\", \"First\")"));
+        assert!(merged.contains("\"Second\": (\".contoso__second\", \"Second\")"));
+        assert!(merged.contains("\"Shared\": (\".contoso__first\", \"Shared\")"));
+        assert_eq!(merged.matches("\"Shared\": (").count(), 1);
+        assert!(!merged.contains("from .contoso__first import"));
+        assert!(merged.contains("def __getattr__(name):"));
+        assert!(merged.contains("def __dir__():"));
+
+        let appended = merge_python_lazy_root_indexes(
+            &merged,
+            &format!("{GENERATED_PYTHON_HEADER}from .contoso__third import Third\n"),
+            &HashSet::from(["Second".to_string()]),
+        );
+        assert!(appended.contains("\"First\": (\".contoso__first\", \"First\")"));
+        assert!(appended.contains("\"Third\": (\".contoso__third\", \"Third\")"));
+        assert!(!appended.contains("\"Second\": ("));
     }
 
     #[test]

@@ -46,6 +46,10 @@
           "kind": "property_equals",
           "member": "absolute_uri",
           "expected": "https://example.com/root/child"
+        },
+        {
+          "kind": "constructor_overload_dispatch",
+          "member": "__init__"
         }
       ]
     },
@@ -290,7 +294,7 @@
       "id": "calendar_python_native_inputs",
       "namespace": "Windows.Globalization",
       "class": "Calendar",
-      "langs": ["py"],
+      "langs": ["py", "ts"],
       "instantiate": {
         "kind": "static_factory",
         "method": "create_calendar_default_calendar_and_clock",
@@ -298,14 +302,29 @@
       },
       "checks": [
         { "kind": "sequence_protocol", "member": "languages", "expected_size": 1 },
-        { "kind": "datetime_roundtrip", "member": "date_time" }
+        { "kind": "datetime_roundtrip", "member": "date_time", "langs": ["py"] },
+        { "kind": "calendar_comprehensive", "member": "self" }
+      ]
+    },
+    {
+      "id": "value_set_mapping_deep",
+      "namespace": "Windows.Foundation.Collections",
+      "class": "ValueSet",
+      "langs": ["py", "ts"],
+      "instantiate": {
+        "kind": "static_factory",
+        "method": "create"
+      },
+      "checks": [
+        { "kind": "value_set_mapping", "member": "self" },
+        { "kind": "value_set_event_lifecycle", "member": "map_changed", "langs": ["py"] }
       ]
     },
     {
       "id": "notification_data_mapping",
       "namespace": "Windows.UI.Notifications",
       "class": "NotificationData",
-      "langs": ["py"],
+      "langs": ["py", "ts"],
       "instantiate": {
         "kind": "static_factory",
         "method": "create_notification_data_with_values_and_sequence_number",
@@ -325,7 +344,7 @@
       "id": "file_open_picker_mutable_sequence",
       "namespace": "Windows.Storage.Pickers",
       "class": "FileOpenPicker",
-      "langs": ["py"],
+      "langs": ["py", "ts"],
       "instantiate": { "kind": "activate" },
       "checks": [
         {
@@ -386,14 +405,35 @@
       "extra_classes": ["DataWriter", "DataReader", "Buffer"],
       "instantiate": { "kind": "none" },
       "checks": [
-        { "kind": "async_memory_roundtrip", "member": "roundtrip", "write_value": 42 }
+        { "kind": "async_memory_roundtrip", "member": "roundtrip", "write_value": 42 },
+        { "kind": "data_stream_scalar_roundtrip", "member": "roundtrip", "langs": ["py"] }
+      ]
+    },
+    {
+      "id": "nested_struct_runtime",
+      "namespace": "Windows.Graphics.DirectX.Direct3D11",
+      "class": "IDirect3DSurface",
+      "langs": ["py", "ts"],
+      "instantiate": { "kind": "none" },
+      "checks": [
+        { "kind": "nested_struct_runtime", "member": "description" }
+      ]
+    },
+    {
+      "id": "storage_query_temp_folder",
+      "namespace": "Windows.Storage",
+      "class": "StorageFolder",
+      "langs": ["py", "ts"],
+      "instantiate": { "kind": "none" },
+      "checks": [
+        { "kind": "storage_query_temp_folder", "member": "query" }
       ]
     },
     {
       "id": "issue_69_device_information_async_collection",
       "namespace": "Windows.Devices.Enumeration",
       "class": "DeviceInformation",
-      "langs": ["ts"],
+      "langs": ["py", "ts"],
       "instantiate": { "kind": "none" },
       "checks": [
         {
@@ -406,7 +446,7 @@
       "id": "issue_71_bitmap_encoder_async_create",
       "namespace": "Windows.Graphics.Imaging",
       "class": "BitmapEncoder",
-      "langs": ["ts"],
+      "langs": ["py", "ts"],
       "instantiate": { "kind": "none" },
       "checks": [
         {
@@ -472,7 +512,8 @@
       "instantiate": { "kind": "activate" },
       "checks": [
         { "kind": "vector_get_many", "member": "languages", "capacity": 4 },
-        { "kind": "vector_get_many", "member": "languages", "capacity": 4, "at_end": true }
+        { "kind": "vector_get_many", "member": "languages", "capacity": 4, "at_end": true },
+        { "kind": "vector_get_many", "member": "languages", "capacity": 0, "langs": ["py"] }
       ]
     },
     {
@@ -494,16 +535,16 @@
       "id": "xml_document_cyclic_import",
       "namespace": "Windows.Data.Xml.Dom",
       "class": "XmlDocument",
-      "langs": ["py"],
+      "langs": ["py", "ts"],
       "instantiate": { "kind": "activate" },
       "checks": [
         {
           "kind": "method_then_property_equals",
-          "member": "LoadXml",
+          "member": "load_xml",
           "interface_module": "i_xml_document_io",
           "interface_class": "IXmlDocumentIO",
           "args": ["<root><child /></root>"],
-          "property_path": ["DocumentElement", "TagName"],
+          "property_path": ["document_element", "tag_name"],
           "expected": "root"
         }
       ]

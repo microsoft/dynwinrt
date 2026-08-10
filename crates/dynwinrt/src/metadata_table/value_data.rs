@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 use core::ffi::c_void;
-use windows_core::{IUnknown, Interface};
+use windows_core::{HSTRING, IUnknown, Interface};
 
 use super::type_handle::TypeHandle;
 use super::type_kind::TypeKind;
@@ -180,6 +180,43 @@ impl ValueTypeData {
         unsafe { (self.ptr.add(offset) as *mut T).write(value) }
     }
 
+    pub fn get_field_hstring(&self, index: usize) -> crate::result::Result<HSTRING> {
+        let h = &self.type_handle;
+        let field_handle = h.field_type(index);
+        if field_handle.kind() != TypeKind::HString {
+            return Err(crate::result::Error::InvalidType(
+                TypeKind::HString,
+                field_handle.kind(),
+            ));
+        }
+        let offset = h.field_offset(index);
+        let raw = unsafe { *(self.ptr.add(offset) as *const *mut c_void) };
+        if raw.is_null() {
+            Ok(HSTRING::new())
+        } else {
+            let value: &HSTRING = unsafe { &*((&raw) as *const *mut c_void as *const HSTRING) };
+            Ok(value.clone())
+        }
+    }
+
+    pub fn set_field_hstring(&mut self, index: usize, value: HSTRING) -> crate::result::Result<()> {
+        let h = &self.type_handle;
+        let field_handle = h.field_type(index);
+        if field_handle.kind() != TypeKind::HString {
+            return Err(crate::result::Error::InvalidType(
+                TypeKind::HString,
+                field_handle.kind(),
+            ));
+        }
+        let offset = h.field_offset(index);
+        let field = unsafe { &mut *(self.ptr.add(offset) as *mut *mut c_void) };
+        let old_raw = std::mem::replace(field, unsafe { std::mem::transmute(value) });
+        if !old_raw.is_null() {
+            let _old_value: HSTRING = unsafe { std::mem::transmute(old_raw) };
+        }
+        Ok(())
+    }
+
     pub fn get_field_object(&self, index: usize) -> crate::result::Result<Option<IUnknown>> {
         let h = &self.type_handle;
         let field_handle = h.field_type(index);
@@ -341,5 +378,38 @@ impl Clone for ValueTypeData {
             type_handle: self.type_handle.clone(),
             ptr,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::metadata_table::MetadataTable;
+
+    #[test]
+    fn hstring_field_round_trips_overwrites_and_clones() {
+        let table = MetadataTable::new();
+        let typ = table.struct_type("Test.HStringField", &[table.i32_type(), table.hstring()]);
+        let mut value = typ.default_value();
+
+        value.set_field_hstring(1, HSTRING::from("first")).unwrap();
+        assert_eq!(value.get_field_hstring(1).unwrap(), "first");
+
+        value.set_field_hstring(1, HSTRING::from("second")).unwrap();
+        assert_eq!(value.get_field_hstring(1).unwrap(), "second");
+
+        let clone = value.clone();
+        drop(value);
+        assert_eq!(clone.get_field_hstring(1).unwrap(), "second");
+    }
+
+    #[test]
+    fn hstring_field_access_rejects_other_types() {
+        let table = MetadataTable::new();
+        let typ = table.struct_type("Test.NotHString", &[table.i32_type()]);
+        let mut value = typ.default_value();
+
+        assert!(value.get_field_hstring(0).is_err());
+        assert!(value.set_field_hstring(0, HSTRING::from("wrong")).is_err());
     }
 }

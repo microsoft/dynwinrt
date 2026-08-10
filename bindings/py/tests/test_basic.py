@@ -55,6 +55,49 @@ def test_box_ireference_values():
     ).is_null()
 
 
+def test_create_map_round_trips_values_and_validates_lengths():
+    key_type = DynWinRTType.hstring()
+    value_type = DynWinRTType.i32_type()
+    mapping = DynWinRTValue.create_map(
+        [DynWinRTValue.from_hstring("answer")],
+        [DynWinRTValue.from_i32(42)],
+        key_type,
+        value_type,
+    )
+    map_type = DynWinRTType.parameterized(
+        WinGUID.parse("3c2925fe-8519-45c1-aa79-197b6718c1c1"),
+        [key_type, value_type],
+    )
+    map_interface = (
+        DynWinRTType.register_interface("IMap_String_Int32_Test", map_type.iid())
+        .add_method(
+            "Lookup",
+            DynWinRTMethodSig().add_in(key_type).add_out(value_type),
+        )
+        .add_method(
+            "get_Size",
+            DynWinRTMethodSig().add_out(DynWinRTType.u32_type()),
+        )
+    )
+    mapping = mapping.cast(map_type.iid())
+
+    assert map_interface.method(7).invoke(mapping, []).to_u32() == 1
+    assert map_interface.method(6).invoke(
+        mapping,
+        [DynWinRTValue.from_hstring("answer")],
+    ).to_int() == 42
+
+    import pytest
+
+    with pytest.raises(RuntimeError, match="same length"):
+        DynWinRTValue.create_map(
+            [DynWinRTValue.from_hstring("answer")],
+            [],
+            key_type,
+            value_type,
+        )
+
+
 def test_guid_parse():
     """WinGUID.parse should parse valid GUIDs."""
     guid = WinGUID.parse("9e365e57-48b2-4160-956f-c7385120bbfc")
@@ -227,6 +270,13 @@ def test_uri_dynamic_invocation():
     uri2 = create_method.invoke_hstring(factory_obj, "https://test.com")
     assert uri2 is not None
 
+    objects = DynWinRTArray.from_object_values(
+        [uri_obj, uri2],
+        DynWinRTType.object(),
+    )
+    assert objects.get(0).identity_raw() == uri_obj.identity_raw()
+    assert objects.get(1).identity_raw() == uri2.identity_raw()
+
 
 def test_invoke_detached_uses_the_normal_marshalling_path():
     ro_initialize(1)
@@ -337,6 +387,44 @@ def test_struct_to_value():
     s.set_u32(0, 99)
     val = s.to_value()
     assert val.is_struct()
+
+
+def test_struct_array_round_trip():
+    typ = DynWinRTType.struct_type(
+        "TestStructArray",
+        [DynWinRTType.i32_type(), DynWinRTType.f64_type()],
+    )
+    first = DynWinRTStruct.create(typ)
+    first.set_i32(0, 17)
+    first.set_f64(1, 1.5)
+    second = DynWinRTStruct.create(typ)
+    second.set_i32(0, 23)
+    second.set_f64(1, 2.5)
+
+    array = DynWinRTArray.from_values(
+        [first.to_value(), second.to_value()],
+        typ,
+    )
+
+    assert len(array) == 2
+    assert array.get(0).as_struct().get_i32(0) == 17
+    assert array.get(0).as_struct().get_f64(1) == 1.5
+    assert array.get(1).as_struct().get_i32(0) == 23
+    assert array.get(1).as_struct().get_f64(1) == 2.5
+
+
+def test_struct_hstring_field_round_trip():
+    typ = DynWinRTType.struct_type(
+        "TestStructHString",
+        [DynWinRTType.i32_type(), DynWinRTType.hstring()],
+    )
+    value = DynWinRTStruct.create(typ)
+    value.set_i32(0, 17)
+    value.set_hstring(1, "dynwinrt")
+
+    assert value.get_i32(0) == 17
+    assert value.get_hstring(1) == "dynwinrt"
+    assert value.to_value().as_struct().get_hstring(1) == "dynwinrt"
 
 
 def test_struct_all_field_types():

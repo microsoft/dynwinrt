@@ -1854,30 +1854,17 @@ impl DynWinRTStruct {
 
     // -- Non-blittable field access --
 
-    fn get_hstring(&self, index: usize) -> String {
-        let inner = self.0.get_field_struct(index);
-        let hstr: HSTRING = unsafe {
-            let raw = *(inner.as_ptr() as *const *mut std::ffi::c_void);
-            if raw.is_null() {
-                HSTRING::new()
-            } else {
-                let hstr_ref: &HSTRING =
-                    &*((&raw) as *const *mut std::ffi::c_void as *const HSTRING);
-                hstr_ref.clone()
-            }
-        };
-        hstr.to_string()
+    fn get_hstring(&self, index: usize) -> PyResult<String> {
+        self.0
+            .get_field_hstring(index)
+            .map(|value| value.to_string())
+            .map_err(map_dynwinrt_error)
     }
 
-    fn set_hstring(&mut self, index: usize, value: String) {
-        let hstr = HSTRING::from(&value);
-        let field_handle = self.0.type_handle().field_type(index);
-        let mut field_val = field_handle.default_value();
-        unsafe {
-            let raw: *mut std::ffi::c_void = std::mem::transmute(hstr);
-            (field_val.as_mut_ptr() as *mut *mut std::ffi::c_void).write(raw);
-        }
-        self.0.set_field_struct(index, &field_val);
+    fn set_hstring(&mut self, index: usize, value: String) -> PyResult<()> {
+        self.0
+            .set_field_hstring(index, HSTRING::from(&value))
+            .map_err(map_dynwinrt_error)
     }
 
     fn get_guid(&self, index: usize) -> WinGUID {

@@ -38,7 +38,7 @@ pub(super) fn generate_struct_helpers(s: &TypeMeta) -> String {
                 format!(
                     "{}: {} = {}",
                     to_snake_case(&f.name),
-                    py_struct_field_type(&f.typ),
+                    py_struct_constructor_field_type(&f.typ),
                     py_default_value(&f.typ)
                 )
             })
@@ -49,7 +49,16 @@ pub(super) fn generate_struct_helpers(s: &TypeMeta) -> String {
         ));
         for f in fields {
             let snake = to_snake_case(&f.name);
-            out.push_str(&format!("        self.{} = {}\n", snake, snake));
+            if let TypeMeta::Struct { name, .. } = &f.typ
+                && foundation_type(&f.typ).is_none()
+                && name != "HResult"
+            {
+                out.push_str(&format!(
+                    "        self.{snake} = {name}() if {snake} is None else {snake}\n"
+                ));
+            } else {
+                out.push_str(&format!("        self.{snake} = {snake}\n"));
+            }
         }
         for f in fields {
             if ireference_inner_type(&f.typ).is_none() {
@@ -165,6 +174,12 @@ fn generate_foundation_struct_helpers(s: &TypeMeta, kind: FoundationType) -> Str
 
 /// Python default value for struct field initialization.
 pub(super) fn py_default_value(typ: &TypeMeta) -> String {
+    match foundation_type(typ) {
+        Some(FoundationType::DateTime) => return "_dynwinrt_ticks_to_datetime(0)".to_string(),
+        Some(FoundationType::TimeSpan) => return "timedelta(0)".to_string(),
+        None => {}
+    }
+
     match typ {
         TypeMeta::Bool => "False".to_string(),
         TypeMeta::I8
@@ -174,13 +189,29 @@ pub(super) fn py_default_value(typ: &TypeMeta) -> String {
         | TypeMeta::I32
         | TypeMeta::U32
         | TypeMeta::I64
-        | TypeMeta::U64
-        | TypeMeta::Enum { .. } => "0".to_string(),
+        | TypeMeta::U64 => "0".to_string(),
+        TypeMeta::Enum {
+            namespace, name, ..
+        } => format!(
+            "_dynwinrt_enum('{}', '{}', 0)",
+            python_module_name(namespace, name),
+            name
+        ),
         TypeMeta::Char16 => "'\\0'".to_string(),
         TypeMeta::F32 | TypeMeta::F64 => "0.0".to_string(),
         TypeMeta::String => "''".to_string(),
         TypeMeta::Guid => "UUID(int=0)".to_string(),
+        TypeMeta::Struct { name, .. } if name == "HResult" => "0".to_string(),
         _ => "None".to_string(),
+    }
+}
+
+fn py_struct_constructor_field_type(typ: &TypeMeta) -> String {
+    match typ {
+        TypeMeta::Struct { name, .. } if foundation_type(typ).is_none() && name != "HResult" => {
+            format!("{} | None", py_struct_field_type(typ))
+        }
+        _ => py_struct_field_type(typ),
     }
 }
 

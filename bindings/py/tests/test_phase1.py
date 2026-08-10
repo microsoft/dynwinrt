@@ -44,6 +44,7 @@ from dynwinrt_py import (
 from dynwinrt_py.dynwinrt_py import (
     _DynWinRTAsync,
     _DynWinRTAsyncWithProgress,
+    _dynwinrt_dispatch_progress,
     _dynwinrt_datetime_to_ticks,
     _dynwinrt_new_vector,
     _dynwinrt_track_projected,
@@ -140,7 +141,7 @@ def test_sync_hresult_maps_to_os_error_with_winerror():
     assert exc_info.value.strerror
 
 
-def _missing_storage_file_operation(path: str):
+def _missing_storage_file_operation_value(path: str):
     statics_iid = WinGUID.parse(IID_ISTORAGE_FILE_STATICS)
     storage_file_type = DynWinRTType.runtime_class(
         "Windows.Storage.StorageFile",
@@ -162,7 +163,14 @@ def _missing_storage_file_operation(path: str):
         factory,
         [DynWinRTValue.from_hstring(path)],
     )
-    return _DynWinRTAsync(raw_operation, lambda value: value)
+    return raw_operation
+
+
+def _missing_storage_file_operation(path: str):
+    return _DynWinRTAsync(
+        _missing_storage_file_operation_value(path),
+        lambda value: value,
+    )
 
 
 def test_async_hresult_maps_to_os_error_with_winerror(tmp_path):
@@ -219,6 +227,33 @@ def test_progress_wrapper_rejects_non_async_value():
             DynWinRTValue.from_i32(42),
             lambda value: value.to_number(),
             lambda value: value.to_number(),
+        )
+
+
+def test_progress_wrapper_rejects_async_operation_without_progress(tmp_path):
+    raw_operation = _missing_storage_file_operation_value(
+        str(tmp_path / "missing-dynwinrt-progress-file")
+    )
+    with pytest.raises(
+        RuntimeError,
+        match="not a WinRT async operation with progress",
+    ):
+        _DynWinRTAsyncWithProgress(
+            raw_operation,
+            lambda value: value,
+            lambda value: value,
+        )
+
+
+def test_progress_dispatch_propagates_callback_errors():
+    def fail(_value):
+        raise ValueError("progress callback failed")
+
+    with pytest.raises(ValueError, match="progress callback failed"):
+        _dynwinrt_dispatch_progress(
+            fail,
+            lambda value: value.to_number(),
+            DynWinRTValue.from_u32(17),
         )
 
 

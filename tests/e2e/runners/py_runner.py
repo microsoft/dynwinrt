@@ -264,6 +264,7 @@ async def run_check(
                     f'got {type(actual).__name__}'
                 )
                 return cr
+
             min_val = check.get('min', float('-inf'))
             max_val = check.get('max', float('inf'))
             # Handle enum: extract .value if it's an IntEnum
@@ -332,7 +333,12 @@ async def run_check(
             buffer = dw.DynWinRTArray.from_string_values([''] * capacity)
             at_end = check.get('at_end', False)
             items = vec.get_many(vec.size if at_end else 0, buffer)
-            if at_end and len(items) != 0:
+            if capacity == 0:
+                if len(items) != 0:
+                    cr['error'] = 'zero-capacity get_many returned items'
+                else:
+                    cr['pass'] = True
+            elif at_end and len(items) != 0:
                 cr['error'] = f'get_many at Size returned {len(items)} items'
             elif not at_end and len(items) == 0:
                 cr['error'] = 'get_many returned no items'
@@ -527,11 +533,188 @@ async def run_check(
                         if mapping[check['set_key']] != check['set_value']:
                             cr['error'] = 'mapping assignment did not round-trip'
                             return cr
+                        if mapping.get(check['set_key']) != check['set_value']:
+                            cr['error'] = 'mapping get() disagreed with lookup'
+                            return cr
+                        missing = '__dynwinrt_missing__'
+                        if mapping.get(missing, 'fallback') != 'fallback':
+                            cr['error'] = 'mapping get() ignored its default'
+                            return cr
+                        try:
+                            _ = mapping[missing]
+                            cr['error'] = 'missing mapping lookup did not raise KeyError'
+                            return cr
+                        except KeyError:
+                            pass
                         del mapping[check['set_key']]
                         if check['set_key'] in mapping:
                             cr['error'] = 'mapping deletion did not remove the key'
                             return cr
+                        try:
+                            del mapping[check['set_key']]
+                            cr['error'] = 'missing mapping deletion did not raise KeyError'
+                            return cr
+                        except KeyError:
+                            pass
+                        view = mapping.get_view()
+                        if view is None or dict(view) != dict(mapping):
+                            cr['error'] = 'mapping view did not match the mutable map'
+                            return cr
+                        try:
+                            view[check['set_key']] = check['set_value']
+                            cr['error'] = 'read-only map view accepted assignment'
+                            return cr
+                        except TypeError:
+                            pass
                     cr['pass'] = True
+
+        elif kind == 'constructor_overload_dispatch':
+            single = cls(uri='https://example.com/single')
+            relative = cls(
+                base_uri='https://example.com/root/',
+                relative_uri='child',
+            )
+            mixed = cls('https://example.com/root/', relative_uri='mixed')
+            if (
+                single.host != 'example.com'
+                or not relative.absolute_uri.endswith('/root/child')
+                or not mixed.absolute_uri.endswith('/root/mixed')
+            ):
+                cr['error'] = 'keyword or mixed constructor overload returned wrong URI'
+                return cr
+
+            invalid_calls = [
+                ((), {}),
+                ((42,), {}),
+                (('https://example.com', 'child', 'extra'), {}),
+                (('https://example.com',), {'uri': 'https://duplicate.example'}),
+                ((), {'unknown': 'https://example.com'}),
+            ]
+            for args, kwargs in invalid_calls:
+                try:
+                    cls(*args, **kwargs)
+                    cr['error'] = (
+                        f'invalid constructor unexpectedly accepted args={args!r}, '
+                        f'kwargs={kwargs!r}'
+                    )
+                    return cr
+                except TypeError:
+                    pass
+            cr['pass'] = True
+
+        elif kind == 'value_set_mapping':
+            property_value_cls = generated_type(pkg_name, 'PropertyValue')
+            first = property_value_cls.create_string('first')
+            second = property_value_cls.create_int32(2)
+            first_raw = getattr(first, '_obj', first)
+            second_raw = getattr(second, '_obj', second)
+
+            if len(obj) != 0 or obj.size != 0:
+                cr['error'] = 'new ValueSet was not empty'
+                return cr
+            if obj.insert('first', first_raw):
+                cr['error'] = 'first ValueSet insert reported replacement'
+                return cr
+            obj['second'] = second
+            if len(obj) != 2 or not obj.has_key('first') or 'second' not in obj:
+                cr['error'] = 'ValueSet insertion or membership failed'
+                return cr
+            first_lookup = obj.lookup('first')
+            second_lookup = obj['second']
+            if first_lookup.is_null() or second_lookup.is_null():
+                cr['error'] = 'ValueSet lookup returned null'
+                return cr
+            if (
+                first_lookup.identity_raw() != first_raw.identity_raw()
+                or second_lookup.identity_raw() != second_raw.identity_raw()
+            ):
+                cr['error'] = 'ValueSet payloads did not round-trip'
+                return cr
+
+            view = obj.get_view()
+            if view is None or len(view) != 2 or set(view) != {'first', 'second'}:
+                cr['error'] = 'ValueSet view did not preserve entries'
+                return cr
+
+            try:
+                _ = obj['missing']
+                cr['error'] = 'missing ValueSet lookup did not raise KeyError'
+                return cr
+            except KeyError:
+                pass
+            try:
+                del obj['missing']
+                cr['error'] = 'missing ValueSet deletion did not raise KeyError'
+                return cr
+            except KeyError:
+                pass
+
+            del obj['first']
+            if obj.has_key('first') or len(obj) != 1:
+                cr['error'] = 'ValueSet deletion failed'
+                return cr
+            obj.clear()
+            if len(obj) != 0 or list(obj):
+                cr['error'] = 'ValueSet clear failed'
+                return cr
+            cr['pass'] = True
+
+        elif kind == 'value_set_event_lifecycle':
+            import dynwinrt_py as dw
+
+            counts = {'on': 0, 'subscribe': 0, 'once': 0}
+
+            def increment(name):
+                def callback(*_args):
+                    counts[name] += 1
+                return callback
+
+            token = obj.on_map_changed(increment('on'))
+            unsubscribe = obj.subscribe_map_changed(increment('subscribe'))
+            obj.once_map_changed(increment('once'))
+            property_value_cls = generated_type(pkg_name, 'PropertyValue')
+
+            obj['first-event'] = property_value_cls.create_int32(1)
+            obj['second-event'] = property_value_cls.create_int32(2)
+            if counts != {'on': 2, 'subscribe': 2, 'once': 1}:
+                cr['error'] = f'event lifecycle counts were wrong: {counts!r}'
+                return cr
+
+            obj.off_map_changed(token)
+            unsubscribe()
+            unsubscribe()
+            obj['after-unsubscribe'] = property_value_cls.create_int32(3)
+            if counts != {'on': 2, 'subscribe': 2, 'once': 1}:
+                cr['error'] = f'event unsubscribe was ineffective: {counts!r}'
+                return cr
+
+            errors = []
+            previous_hook = sys.unraisablehook
+            sys.unraisablehook = errors.append
+
+            def fail(*_args):
+                raise RuntimeError('ValueSet callback failed')
+
+            failing_token = obj.on_map_changed(fail)
+            try:
+                try:
+                    obj['callback-error'] = property_value_cls.create_int32(4)
+                except OSError:
+                    pass
+            finally:
+                sys.unraisablehook = previous_hook
+                obj.off_map_changed(failing_token)
+
+            if (
+                len(errors) != 1
+                or 'ValueSet callback failed' not in str(errors[0].exc_value)
+            ):
+                cr['error'] = (
+                    'event callback failure was not reported through '
+                    f'sys.unraisablehook: {errors!r}'
+                )
+            else:
+                cr['pass'] = True
 
         elif kind == 'mutable_sequence_protocol':
             sequence = getattr(obj, member)
@@ -550,6 +733,31 @@ async def run_check(
                         f'got {list(sequence)!r}'
                     )
                 else:
+                    sequence[:] = values
+                    sequence[1:2] = ['.bmp', '.webp']
+                    if list(sequence) != [
+                        values[0],
+                        '.bmp',
+                        '.webp',
+                        values[2],
+                    ]:
+                        cr['error'] = (
+                            f'slice assignment failed: {list(sequence)!r}'
+                        )
+                        return cr
+                    for operation in (
+                        lambda: sequence[len(sequence)],
+                        lambda: sequence.__setitem__(len(sequence), '.bad'),
+                        lambda: sequence.__delitem__(len(sequence)),
+                    ):
+                        try:
+                            operation()
+                            cr['error'] = (
+                                'out-of-range sequence operation succeeded'
+                            )
+                            return cr
+                        except IndexError:
+                            pass
                     cr['pass'] = True
 
         elif kind == 'datetime_roundtrip':
@@ -606,6 +814,16 @@ async def run_check(
                 resource.__enter__()
                 cr['error'] = 'closed object allowed context re-entry'
             except RuntimeError:
+                if hasattr(resource, 'create_reference'):
+                    from dynwinrt_py import release_projected
+
+                    release_projected(resource)
+                    try:
+                        resource.create_reference()
+                        cr['error'] = 'released object allowed a WinRT method call'
+                        return cr
+                    except (OSError, RuntimeError):
+                        pass
                 cr['pass'] = True
 
         elif kind == 'cross_class_chain':
@@ -704,6 +922,63 @@ async def run_check(
 
             converted = await _DynWinRTAsync(raw_store, convert_store_result)
 
+            failing_stream = (
+                cls.create() if hasattr(cls, 'create') else cls.create_default()
+            )
+            failing_writer = writer_cls.create_data_writer(
+                failing_stream.get_output_stream_at(0)
+            )
+            failing_writer.write_int32(write_val)
+            raw_failing_store = writer_mod._IDataWriter.method_by_name(
+                'StoreAsync'
+            ).invoke(failing_writer._obj, [])
+
+            def reject_store_result(_value):
+                raise ValueError('async result conversion failed')
+
+            try:
+                await _DynWinRTAsync(raw_failing_store, reject_store_result)
+                cr['error'] = 'async result converter failure was not propagated'
+                return cr
+            except ValueError as error:
+                if str(error) != 'async result conversion failed':
+                    cr['error'] = f'unexpected async conversion error: {error}'
+                    return cr
+
+            release_stream = (
+                cls.create() if hasattr(cls, 'create') else cls.create_default()
+            )
+            release_writer = writer_cls.create_data_writer(
+                release_stream.get_output_stream_at(0)
+            )
+            release_writer.write_int32(write_val)
+            released_operation = release_writer.store_async()
+            await released_operation
+            released_operation.release()
+            released_operation.release()
+            for action in (
+                lambda: released_operation.wait(),
+                lambda: released_operation.cancel(),
+            ):
+                try:
+                    action()
+                    cr['error'] = 'released async operation accepted an operation'
+                    return cr
+                except RuntimeError as error:
+                    if 'has been released' not in str(error):
+                        cr['error'] = (
+                            f'unexpected released operation error: {error}'
+                        )
+                        return cr
+            try:
+                await released_operation
+                cr['error'] = 'released async operation remained awaitable'
+                return cr
+            except RuntimeError as error:
+                if 'has been released' not in str(error):
+                    cr['error'] = f'unexpected released await error: {error}'
+                    return cr
+
             buffer_cls = generated_type(pkg_name, 'Buffer')
             progress_buffer = buffer_cls.create(1024 * 1024)
             progress_buffer.length = progress_buffer.capacity
@@ -712,6 +987,26 @@ async def run_check(
             write_op.progress(progress.append)
             written = await write_op
             await asyncio.sleep(0)
+            progress_errors = []
+
+            def progress_without_loop():
+                try:
+                    write_op.progress(lambda _value: None)
+                except RuntimeError as error:
+                    progress_errors.append(str(error))
+
+            await asyncio.get_running_loop().run_in_executor(
+                None, progress_without_loop
+            )
+            if (
+                progress_errors
+                != ['progress() requires a running asyncio event loop']
+            ):
+                cr['error'] = (
+                    'progress() without an event loop returned an unexpected '
+                    f'error: {progress_errors!r}'
+                )
+                return cr
 
             if (
                 stored < 4
@@ -733,6 +1028,303 @@ async def run_check(
                 )
             else:
                 cr['pass'] = True
+
+        elif kind == 'data_stream_scalar_roundtrip':
+            from datetime import datetime, timedelta, timezone
+            from uuid import UUID
+
+            stream = cls.create() if hasattr(cls, 'create') else cls.create_default()
+            writer_cls = generated_type(pkg_name, 'DataWriter')
+            reader_cls = generated_type(pkg_name, 'DataReader')
+            writer = writer_cls.create_data_writer(stream.get_output_stream_at(0))
+
+            guid = UUID('12345678-1234-5678-9abc-def012345678')
+            timestamp = datetime(2024, 1, 2, 3, 4, 5, 6000, tzinfo=timezone.utc)
+            duration = timedelta(days=1, seconds=2, microseconds=3000)
+            text = 'dynwinrt'
+
+            writer.write_byte(0xAB)
+            writer.write_bytes(b'\x01\x02\x03')
+            writer.write_boolean(True)
+            writer.write_guid(guid)
+            writer.write_int16(-1234)
+            writer.write_int32(-12345678)
+            writer.write_int64(-1234567890123)
+            writer.write_u_int16(54321)
+            writer.write_u_int32(3_000_000_000)
+            writer.write_u_int64(9_000_000_000_000_000_000)
+            writer.write_single(1.25)
+            writer.write_double(2.5)
+            writer.write_date_time(timestamp)
+            writer.write_time_span(duration)
+            text_units = writer.measure_string(text)
+            writer.write_string(text)
+            pending = writer.unstored_buffer_length
+            stored = await writer.store_async()
+            flushed = await writer.flush_async()
+
+            stream.seek(0)
+            reader = reader_cls.create_data_reader(stream.get_input_stream_at(0))
+            loaded = await reader.load_async(stored)
+            values = {
+                'byte': reader.read_byte(),
+                'bytes': reader.read_bytes(bytearray(3)),
+                'bool': reader.read_boolean(),
+                'guid': reader.read_guid(),
+                'i16': reader.read_int16(),
+                'i32': reader.read_int32(),
+                'i64': reader.read_int64(),
+                'u16': reader.read_u_int16(),
+                'u32': reader.read_u_int32(),
+                'u64': reader.read_u_int64(),
+                'f32': reader.read_single(),
+                'f64': reader.read_double(),
+                'datetime': reader.read_date_time(),
+                'duration': reader.read_time_span(),
+                'text': reader.read_string(text_units),
+            }
+            remaining = reader.unconsumed_buffer_length
+            writer_stream = writer.detach_stream()
+            reader_stream = reader.detach_stream()
+            writer.close()
+            reader.close()
+
+            expected = {
+                'byte': 0xAB,
+                'bytes': b'\x01\x02\x03',
+                'bool': True,
+                'guid': guid,
+                'i16': -1234,
+                'i32': -12345678,
+                'i64': -1234567890123,
+                'u16': 54321,
+                'u32': 3_000_000_000,
+                'u64': 9_000_000_000_000_000_000,
+                'datetime': timestamp,
+                'duration': duration,
+                'text': text,
+            }
+            mismatches = {
+                key: (expected[key], values[key])
+                for key in expected
+                if expected[key] != values[key]
+            }
+            if abs(values['f32'] - 1.25) > 0.0001:
+                mismatches['f32'] = (1.25, values['f32'])
+            if abs(values['f64'] - 2.5) > 1e-10:
+                mismatches['f64'] = (2.5, values['f64'])
+            if (
+                pending <= 0
+                or stored != pending
+                or loaded != stored
+                or not flushed
+                or remaining != 0
+                or writer_stream is None
+                or reader_stream is None
+                or mismatches
+            ):
+                cr['error'] = (
+                    f'data stream roundtrip failed: pending={pending}, '
+                    f'stored={stored}, loaded={loaded}, flushed={flushed}, '
+                    f'remaining={remaining}, mismatches={mismatches!r}'
+                )
+            else:
+                cr['pass'] = True
+
+        elif kind == 'calendar_comprehensive':
+            obj.year = 2024
+            obj.month = 1
+            obj.day = 2
+            obj.hour = 3
+            obj.minute = 4
+            obj.second = 5
+            obj.nanosecond = 0
+            numeric_properties = [
+                'first_era',
+                'last_era',
+                'number_of_eras',
+                'era',
+                'first_year_in_this_era',
+                'last_year_in_this_era',
+                'number_of_years_in_this_era',
+                'first_month_in_this_year',
+                'last_month_in_this_year',
+                'number_of_months_in_this_year',
+                'first_day_in_this_month',
+                'last_day_in_this_month',
+                'number_of_days_in_this_month',
+                'first_period_in_this_day',
+                'last_period_in_this_day',
+                'number_of_periods_in_this_day',
+                'first_hour_in_this_period',
+                'last_hour_in_this_period',
+                'number_of_hours_in_this_period',
+                'first_minute_in_this_hour',
+                'last_minute_in_this_hour',
+                'number_of_minutes_in_this_hour',
+                'first_second_in_this_minute',
+                'last_second_in_this_minute',
+                'number_of_seconds_in_this_minute',
+                'nanosecond',
+            ]
+            if not all(isinstance(getattr(obj, name), int) for name in numeric_properties):
+                cr['error'] = 'Calendar numeric metadata returned a non-integer'
+                return cr
+            if not isinstance(obj.is_daylight_saving_time, bool):
+                cr['error'] = 'Calendar daylight-saving property was not bool'
+                return cr
+
+            original = obj.get_date_time()
+            clone = obj.clone()
+            if clone is None or obj.compare(clone) != 0 or obj.compare_date_time(original) != 0:
+                cr['error'] = 'Calendar clone or comparison failed'
+                return cr
+
+            for method, amount in [
+                ('add_years', 1),
+                ('add_months', 1),
+                ('add_weeks', 1),
+                ('add_days', 1),
+                ('add_hours', 1),
+                ('add_minutes', 1),
+                ('add_seconds', 1),
+                ('add_nanoseconds', 10_000),
+            ]:
+                before = obj.get_date_time()
+                getattr(obj, method)(amount)
+                if obj.get_date_time() == before:
+                    cr['error'] = f'Calendar {method} did not change the value'
+                    return cr
+                getattr(obj, method)(-amount)
+                if obj.get_date_time() != before:
+                    cr['error'] = f'Calendar {method} did not round-trip'
+                    return cr
+            if obj.compare_date_time(original) != 0:
+                cr['error'] = 'Calendar arithmetic changed the original value'
+                return cr
+
+            other = obj.clone()
+            obj.add_days(1)
+            obj.copy_to(other)
+            if obj.compare(other) != 0:
+                cr['error'] = 'Calendar copy_to did not copy the current value'
+                return cr
+            obj.set_date_time(original)
+
+            calendar_system = obj.get_calendar_system()
+            clock = obj.get_clock()
+            time_zone = obj.get_time_zone()
+            numeral_system = obj.numeral_system
+            obj.change_calendar_system(calendar_system)
+            obj.change_clock(clock)
+            obj.change_time_zone(time_zone)
+            obj.numeral_system = numeral_system
+
+            string_calls = [
+                ('era_as_full_string', ()),
+                ('era_as_string', (3,)),
+                ('year_as_string', ()),
+                ('year_as_truncated_string', (2,)),
+                ('year_as_padded_string', (4,)),
+                ('month_as_full_string', ()),
+                ('month_as_string', (3,)),
+                ('month_as_full_solo_string', ()),
+                ('month_as_solo_string', (3,)),
+                ('month_as_numeric_string', ()),
+                ('month_as_padded_numeric_string', (2,)),
+                ('day_as_string', ()),
+                ('day_as_padded_string', (2,)),
+                ('day_of_week_as_full_string', ()),
+                ('day_of_week_as_string', (3,)),
+                ('day_of_week_as_full_solo_string', ()),
+                ('day_of_week_as_solo_string', (3,)),
+                ('period_as_full_string', ()),
+                ('period_as_string', (2,)),
+                ('hour_as_string', ()),
+                ('hour_as_padded_string', (2,)),
+                ('minute_as_string', ()),
+                ('minute_as_padded_string', (2,)),
+                ('second_as_string', ()),
+                ('second_as_padded_string', (2,)),
+                ('nanosecond_as_string', ()),
+                ('nanosecond_as_padded_string', (3,)),
+                ('time_zone_as_full_string', ()),
+                ('time_zone_as_string', (3,)),
+            ]
+            formatted = [
+                getattr(obj, method)(*args)
+                for method, args in string_calls
+            ]
+            if not all(isinstance(value, str) for value in formatted):
+                cr['error'] = 'Calendar formatting returned a non-string'
+                return cr
+
+            minimum = obj.clone()
+            maximum = obj.clone()
+            minimum.set_to_min()
+            maximum.set_to_max()
+            if minimum.compare(maximum) >= 0:
+                cr['error'] = 'Calendar min/max ordering was invalid'
+                return cr
+            obj.set_to_now()
+            if not isinstance(obj.resolved_language, str):
+                cr['error'] = 'Calendar resolved_language was not a string'
+            else:
+                cr['pass'] = True
+
+        elif kind == 'storage_query_temp_folder':
+            from pathlib import Path
+            from tempfile import TemporaryDirectory
+
+            with TemporaryDirectory(prefix='dynwinrt-query-') as temp_dir:
+                root = Path(temp_dir)
+                (root / 'alpha.txt').write_text('alpha', encoding='utf-8')
+                (root / 'beta.txt').write_text('beta', encoding='utf-8')
+
+                folder = await cls.get_folder_from_path_async(str(root))
+                if folder is None or Path(folder.path) != root:
+                    cr['error'] = 'StorageFolder path lookup failed'
+                    return cr
+
+                direct_files = await (
+                    folder.get_files_async_overload_default_options_start_and_count()
+                )
+                query = folder.create_file_query_overload_default()
+                if query is None:
+                    cr['error'] = 'StorageFolder.create_file_query returned null'
+                    return cr
+                count = await query.get_item_count_async()
+                query_files = await query.get_files_async_default_start_and_count()
+                options = query.get_current_query_options()
+                query_folder = query.folder
+                missing = await folder.try_get_item_async('missing.file')
+                alpha = await folder.get_file_async('alpha.txt')
+
+                if options is not None:
+                    query.apply_new_query_options(options)
+
+                direct_names = sorted(file.name for file in direct_files or [])
+                query_names = sorted(file.name for file in query_files or [])
+                if (
+                    direct_names != ['alpha.txt', 'beta.txt']
+                    or query_names != direct_names
+                    or count != 2
+                    or query_folder is None
+                    or not query_folder.is_equal(folder)
+                    or missing is not None
+                    or alpha is None
+                    or alpha.name != 'alpha.txt'
+                    or not alpha.is_of_type(
+                        generated_type(pkg_name, 'StorageItemTypes').File
+                    )
+                ):
+                    cr['error'] = (
+                        f'Storage query failed: direct={direct_names!r}, '
+                        f'query={query_names!r}, count={count}, '
+                        f'missing={missing!r}, alpha={alpha!r}'
+                    )
+                else:
+                    cr['pass'] = True
 
         elif kind == 'async_cancellation':
             import dynwinrt_py as dw
@@ -810,6 +1402,18 @@ async def run_check(
 
             task = asyncio.ensure_future(operation)
             await asyncio.sleep(0)
+            try:
+                operation.wait()
+                task.cancel()
+                release.set()
+                cr['error'] = 'wait() was not rejected after awaiting started'
+                return cr
+            except RuntimeError as error:
+                if 'after awaiting has started' not in str(error):
+                    task.cancel()
+                    release.set()
+                    cr['error'] = f'unexpected started wait() error: {error}'
+                    return cr
             task.cancel()
             try:
                 await task
@@ -824,6 +1428,67 @@ async def run_check(
                 cr['error'] = f'work item failed: {worker_errors[0]}'
             elif not observed:
                 cr['error'] = 'IAsyncInfo.Cancel was not observed by the work item'
+            else:
+                cr['pass'] = True
+
+        elif kind == 'device_information_async_collection':
+            devices = await getattr(cls, member)()
+            if devices is None or not isinstance(devices.size, int):
+                cr['error'] = (
+                    'DeviceInformation.find_all_async() did not return '
+                    'a collection with an integer size'
+                )
+            else:
+                cr['pass'] = True
+
+        elif kind == 'bitmap_encoder_async_create':
+            stream_cls = generated_type(pkg_name, 'InMemoryRandomAccessStream')
+            stream = (
+                stream_cls.create()
+                if hasattr(stream_cls, 'create')
+                else stream_cls.create_default()
+            )
+            encoder_id = (
+                cls.get_jpeg_encoder_id()
+                if hasattr(cls, 'get_jpeg_encoder_id')
+                else cls.jpeg_encoder_id
+            )
+            encoder = await getattr(cls, member)(encoder_id, stream)
+            if encoder is None:
+                cr['error'] = 'BitmapEncoder.create_async() returned null'
+            else:
+                cr['pass'] = True
+
+        elif kind == 'nested_struct_runtime':
+            module = importlib.import_module(
+                implementation_module_name(pkg_name, namespace, cls.__name__)
+            )
+            descriptor_type = getattr(module, 'Direct3DSurfaceDescription')
+            nested_type = getattr(module, 'Direct3DMultisampleDescription')
+            pixel_format = generated_type(pkg_name, 'DirectXPixelFormat')
+            pack = getattr(module, 'pack_direct3_d_surface_description')
+            unpack = getattr(module, 'unpack_direct3_d_surface_description')
+
+            first = descriptor_type()
+            second = descriptor_type()
+            if (
+                not isinstance(first.multisample_description, nested_type)
+                or first.multisample_description is second.multisample_description
+                or not isinstance(first.format, pixel_format)
+            ):
+                cr['error'] = 'nested struct defaults were not Python-native'
+                return cr
+
+            first.multisample_description.count = 4
+            first.multisample_description.quality = 7
+            first.format = pixel_format.R32G32B32A32Typeless
+            roundtrip = unpack(pack(first).to_value())
+            if (
+                roundtrip.multisample_description.count != 4
+                or roundtrip.multisample_description.quality != 7
+                or roundtrip.format != pixel_format.R32G32B32A32Typeless
+            ):
+                cr['error'] = 'nested struct or enum did not round-trip'
             else:
                 cr['pass'] = True
 

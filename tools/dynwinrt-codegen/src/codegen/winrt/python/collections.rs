@@ -120,3 +120,34 @@ pub(crate) fn is_mapping_input(kind: CollectionKind, args: &[TypeMeta]) -> bool 
             TypeMeta::Parameterized { piid, .. } if piid == IKEY_VALUE_PAIR_PIID
         ))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn map_piids_project_to_python_mapping_protocols() {
+        assert_eq!(
+            kind_from_piid(IMAP_VIEW_PIID),
+            Some(CollectionKind::Mapping)
+        );
+        assert_eq!(
+            runtime_mixin(CollectionKind::Mapping),
+            Some("_WinRTMappingMixin")
+        );
+        assert_eq!(abc_name(CollectionKind::Mapping), Some("Mapping"));
+
+        assert_eq!(
+            kind_from_piid(IMAP_PIID),
+            Some(CollectionKind::MutableMapping)
+        );
+        assert_eq!(
+            runtime_mixin(CollectionKind::MutableMapping),
+            Some("_WinRTMutableMappingMixin")
+        );
+        assert_eq!(
+            abc_name(CollectionKind::MutableMapping),
+            Some("MutableMapping")
+        );
+    }
+}

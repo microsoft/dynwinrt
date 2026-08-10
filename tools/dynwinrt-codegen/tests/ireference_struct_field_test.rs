@@ -252,6 +252,72 @@ fn scalar_ireference_fields_preserve_native_python_types() {
 }
 
 #[test]
+fn nested_struct_defaults_and_enum_fields_are_python_native() {
+    let mode = TypeMeta::Enum {
+        namespace: "Synthetic".into(),
+        name: "Mode".into(),
+        underlying: Box::new(TypeMeta::U32),
+        members: vec![],
+        is_flags: false,
+        doc: None,
+        deprecated: None,
+    };
+    let inner = TypeMeta::Struct {
+        namespace: "Synthetic".into(),
+        name: "Inner".into(),
+        fields: vec![FieldMeta {
+            name: "Count".into(),
+            typ: TypeMeta::U32,
+        }],
+    };
+    let outer = TypeMeta::Struct {
+        namespace: "Synthetic".into(),
+        name: "Outer".into(),
+        fields: vec![
+            FieldMeta {
+                name: "Mode".into(),
+                typ: mode,
+            },
+            FieldMeta {
+                name: "Inner".into(),
+                typ: inner,
+            },
+        ],
+    };
+    let class = class_with_struct("UsesNestedStruct", outer);
+    let known = HashSet::from([
+        "UsesNestedStruct".to_string(),
+        "Mode".to_string(),
+        "Inner".to_string(),
+        "Outer".to_string(),
+    ]);
+    let py = python::generate_class(&class, &known, &HashSet::new(), &HashSet::new());
+    let pyi = python_stub::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
+
+    assert!(
+        py.contains("def __init__(self, mode: 'Mode' = _dynwinrt_enum('mode', 'Mode', 0), inner: 'Inner' | None = None):"),
+        "{py}"
+    );
+    assert!(
+        py.contains("self.inner = Inner() if inner is None else inner"),
+        "{py}"
+    );
+    assert!(
+        py.contains("mode=_dynwinrt_enum('mode', 'Mode', s.get_u32(0))"),
+        "{py}"
+    );
+    assert!(py.contains("s.set_u32(0, int(v.mode))"), "{py}");
+    assert!(py.contains("s.set_struct(1, _pack_inner(v.inner))"), "{py}");
+
+    assert!(
+        pyi.contains("def __init__(self, mode: 'Mode' = ..., inner: 'Inner' = ...) -> None: ..."),
+        "{pyi}"
+    );
+    assert!(pyi.contains("mode: 'Mode'"), "{pyi}");
+    assert!(pyi.contains("inner: 'Inner'"), "{pyi}");
+}
+
+#[test]
 fn sdk_http_progress_ireference_u64_fields_are_native_optional_values() {
     if !std::path::Path::new(WINDOWS_WINMD).exists() {
         eprintln!("Skipping: Windows.winmd not found");

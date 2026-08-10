@@ -247,6 +247,28 @@ def run(bindings_dir: Path, bootstrap_dll: Path, major: int, minor: int) -> None
                                 )
                             return available_size
 
+                        def arrange_override(
+                            self, final_size: tuple[float, float]
+                        ) -> tuple[float, float]:
+                            state["arrange_override_count"] = (
+                                int(state.get("arrange_override_count", 0)) + 1
+                            )
+                            state["arrange_override_thread_id"] = threading.get_ident()
+                            state["arrange_override_context"] = override_context.get()
+                            if not isinstance(final_size, tuple) or len(final_size) != 2:
+                                raise RuntimeError(
+                                    "ArrangeOverride did not receive a Size tuple"
+                                )
+                            return final_size
+
+                    class PythonButton(Button):
+                        def on_apply_template(self) -> None:
+                            state["on_apply_template_count"] = (
+                                int(state.get("on_apply_template_count", 0)) + 1
+                            )
+                            state["on_apply_template_thread_id"] = threading.get_ident()
+                            state["on_apply_template_context"] = override_context.get()
+
                     class MarkupPythonStackPanel(StackPanel):
                         def measure_override(
                             self, available_size: tuple[float, float]
@@ -350,6 +372,7 @@ def run(bindings_dir: Path, bootstrap_dll: Path, major: int, minor: int) -> None
                         )
 
                     composed_stack_panel = PythonStackPanel()
+                    button = PythonButton()
                     override_context.reset(context_token)
                     override_context.set("changed-after-construction")
                     composed_stack_panel.spacing = 3.0
@@ -580,6 +603,32 @@ def run(bindings_dir: Path, bootstrap_dll: Path, major: int, minor: int) -> None
                                 ):
                                     raise RuntimeError(
                                         "MeasureOverride lost its captured ContextVar context"
+                                    )
+                                if int(state.get("arrange_override_count", 0)) < 1:
+                                    raise RuntimeError(
+                                        "WinUI did not invoke Python ArrangeOverride"
+                                    )
+                                if (
+                                    state.get("arrange_override_thread_id")
+                                    != state["ui_thread_id"]
+                                    or state.get("arrange_override_context")
+                                    != "captured-at-construction"
+                                ):
+                                    raise RuntimeError(
+                                        "ArrangeOverride lost its thread or context"
+                                    )
+                                if int(state.get("on_apply_template_count", 0)) < 1:
+                                    raise RuntimeError(
+                                        "WinUI did not invoke Python OnApplyTemplate"
+                                    )
+                                if (
+                                    state.get("on_apply_template_thread_id")
+                                    != state["ui_thread_id"]
+                                    or state.get("on_apply_template_context")
+                                    != "captured-at-construction"
+                                ):
+                                    raise RuntimeError(
+                                        "OnApplyTemplate lost its thread or context"
                                     )
                                 state["composition_validated"] = True
                                 if not factory_elements:
