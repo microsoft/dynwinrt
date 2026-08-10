@@ -540,6 +540,84 @@ impl DynWinRTMethodHandle {
       .map_err(|e| napi::Error::from_reason(e.message()))
   }
 
+  #[napi]
+  pub fn set_hstring(&self, obj: &DynWinRTValue, value: String) -> napi::Result<()> {
+    let raw = obj
+      .0
+      .as_object()
+      .ok_or_else(|| napi::Error::from_reason("set_hstring: not an Object"))?
+      .as_raw();
+    self
+      .0
+      .call_setter_hstring(raw, &HSTRING::from(value))
+      .map_err(|e| napi::Error::from_reason(e.message()))
+  }
+
+  #[napi]
+  pub fn set_bool(&self, obj: &DynWinRTValue, value: bool) -> napi::Result<()> {
+    let raw = obj
+      .0
+      .as_object()
+      .ok_or_else(|| napi::Error::from_reason("set_bool: not an Object"))?
+      .as_raw();
+    self
+      .0
+      .call_setter_bool(raw, value)
+      .map_err(|e| napi::Error::from_reason(e.message()))
+  }
+
+  #[napi]
+  pub fn set_i32(&self, obj: &DynWinRTValue, value: i32) -> napi::Result<()> {
+    let raw = obj
+      .0
+      .as_object()
+      .ok_or_else(|| napi::Error::from_reason("set_i32: not an Object"))?
+      .as_raw();
+    self
+      .0
+      .call_setter_i32(raw, value)
+      .map_err(|e| napi::Error::from_reason(e.message()))
+  }
+
+  #[napi]
+  pub fn set_u32(&self, obj: &DynWinRTValue, value: u32) -> napi::Result<()> {
+    let raw = obj
+      .0
+      .as_object()
+      .ok_or_else(|| napi::Error::from_reason("set_u32: not an Object"))?
+      .as_raw();
+    self
+      .0
+      .call_setter_u32(raw, value)
+      .map_err(|e| napi::Error::from_reason(e.message()))
+  }
+
+  #[napi]
+  pub fn set_f32(&self, obj: &DynWinRTValue, value: f64) -> napi::Result<()> {
+    let raw = obj
+      .0
+      .as_object()
+      .ok_or_else(|| napi::Error::from_reason("set_f32: not an Object"))?
+      .as_raw();
+    self
+      .0
+      .call_setter_f32(raw, value as f32)
+      .map_err(|e| napi::Error::from_reason(e.message()))
+  }
+
+  #[napi]
+  pub fn set_f64(&self, obj: &DynWinRTValue, value: f64) -> napi::Result<()> {
+    let raw = obj
+      .0
+      .as_object()
+      .ok_or_else(|| napi::Error::from_reason("set_f64: not an Object"))?
+      .as_raw();
+    self
+      .0
+      .call_setter_f64(raw, value)
+      .map_err(|e| napi::Error::from_reason(e.message()))
+  }
+
   /// 1-arg invoke with hstring input → DynWinRTValue result
   #[napi]
   pub fn invoke_hstring(&self, obj: &DynWinRTValue, arg: String) -> napi::Result<DynWinRTValue> {

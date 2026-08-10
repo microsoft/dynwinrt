@@ -88,6 +88,84 @@ fn convert_projected_return(
     }
 }
 
+fn fast_getter_expression(
+    iface_var: &str,
+    vtable_index: usize,
+    obj_expr: &str,
+    typ: Option<&TypeMeta>,
+    invoke_expr: &str,
+    known_types: &HashSet<String>,
+    delegate_names: &HashSet<String>,
+) -> Option<String> {
+    let method = match typ {
+        Some(TypeMeta::String) => "getString",
+        Some(TypeMeta::Bool) => "getBool",
+        Some(TypeMeta::I32 | TypeMeta::Enum { .. }) => "getI32",
+        Some(
+            TypeMeta::Object
+            | TypeMeta::Interface { .. }
+            | TypeMeta::RuntimeClass { .. }
+            | TypeMeta::Delegate { .. }
+            | TypeMeta::Parameterized { .. },
+        ) => "getObj",
+        _ => return None,
+    };
+    let fallback = convert_projected_return(invoke_expr, typ, known_types, delegate_names);
+    if method != "getObj" {
+        return Some(format!(
+            "(() => {{ const _m = {iface}.method({index}); return typeof _m.{method} === 'function' ? _m.{method}({obj}) : {fallback}; }})()",
+            iface = iface_var,
+            index = vtable_index,
+            obj = obj_expr,
+        ));
+    }
+
+    let fast_value = format!(
+        "(() => {{ const _m = {iface}.method({index}); return typeof _m.getObj === 'function' ? _m.getObj({obj}) : _m.invoke({obj}, []); }})()",
+        iface = iface_var,
+        index = vtable_index,
+        obj = obj_expr,
+    );
+    Some(convert_projected_return(
+        &fast_value,
+        typ,
+        known_types,
+        delegate_names,
+    ))
+}
+
+fn setter_line(
+    iface_var: &str,
+    vtable_index: usize,
+    obj_expr: &str,
+    typ: Option<&TypeMeta>,
+) -> String {
+    let wrapped = typ
+        .map(|typ| wrap_arg("value", typ))
+        .unwrap_or_else(|| "value".into());
+    let fallback = format!("_m.invoke({}, [{}]);", obj_expr, wrapped);
+    let Some(method) = (match typ {
+        Some(TypeMeta::String) => Some("setHstring"),
+        Some(TypeMeta::Bool) => Some("setBool"),
+        Some(TypeMeta::I32 | TypeMeta::Enum { .. }) => Some("setI32"),
+        Some(TypeMeta::U32) => Some("setU32"),
+        Some(TypeMeta::F32) => Some("setF32"),
+        Some(TypeMeta::F64) => Some("setF64"),
+        _ => None,
+    }) else {
+        return format!(
+            "{}.method({}).invoke({}, [{}]);",
+            iface_var, vtable_index, obj_expr, wrapped,
+        );
+    };
+    format!(
+        "{{ const _m = {iface}.method({index}); if (typeof _m.{method} === 'function') _m.{method}({obj}, value); else {fallback} }}",
+        iface = iface_var,
+        index = vtable_index,
+        obj = obj_expr,
+    )
+}
+
 fn output_ts_type(
     typ: &TypeMeta,
     known_types: &HashSet<String>,
@@ -364,8 +442,18 @@ pub(super) fn project_static_method(
             "_{}.method({}).invoke({}, [])",
             iface.name, method.vtable_index, statics_call
         );
-        let converted =
-            convert_projected_return(&invoke_expr, return_type_meta, known_types, delegate_names);
+        let converted = fast_getter_expression(
+            &format!("_{}", iface.name),
+            method.vtable_index,
+            &statics_call,
+            return_type_meta,
+            &invoke_expr,
+            known_types,
+            delegate_names,
+        )
+        .unwrap_or_else(|| {
+            convert_projected_return(&invoke_expr, return_type_meta, known_types, delegate_names)
+        });
         let doc = build_method_doc(method, &in_params);
         return ProjectedMember::Property(ProjectedProperty {
             name: prop_name,
@@ -644,12 +732,23 @@ pub(super) fn project_instance_method(
             "{}.method({}).invoke({}, [])",
             iface_var, method.vtable_index, obj_expr
         );
-        let converted = convert_projected_return(
-            &invoke_expr,
+        let converted = fast_getter_expression(
+            iface_var,
+            method.vtable_index,
+            obj_expr,
             return_type_meta,
+            &invoke_expr,
             known_types,
             delegate_type_names,
-        );
+        )
+        .unwrap_or_else(|| {
+            convert_projected_return(
+                &invoke_expr,
+                return_type_meta,
+                known_types,
+                delegate_type_names,
+            )
+        });
 
         // Check if there's a corresponding setter
         let setter =
@@ -685,13 +784,11 @@ pub(super) fn project_instance_method(
                 .map(|p| ts_param_type_safe(&p.typ, known_types))
                 .unwrap_or_else(|| "any".to_string())
         };
-        let arg = in_params
-            .first()
-            .map(|p| wrap_arg("value", &p.typ))
-            .unwrap_or_else(|| "value".to_string());
-        let setter_line = format!(
-            "{}.method({}).invoke({}, [{}]);",
-            iface_var, method.vtable_index, obj_expr, arg
+        let setter_line = setter_line(
+            iface_var,
+            method.vtable_index,
+            obj_expr,
+            in_params.first().map(|param| &param.typ),
         );
 
         // Check if there's a corresponding getter (if so, it will add the property)
@@ -1061,14 +1158,12 @@ fn find_setter_for_property(
             .is_some()
             .then(|| ts_param_type_safe(&param.typ, known_types))
     });
-    let arg = setter_in_params
-        .first()
-        .map(|p| wrap_arg("value", &p.typ))
-        .unwrap_or_else(|| "value".to_string());
     Some((
-        format!(
-            "{}.method({}).invoke({}, [{}]);",
-            iface_var, setter.vtable_index, obj_expr, arg
+        setter_line(
+            iface_var,
+            setter.vtable_index,
+            obj_expr,
+            setter_in_params.first().map(|param| &param.typ),
         ),
         setter_ts_type,
     ))

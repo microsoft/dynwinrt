@@ -563,12 +563,12 @@ pub fn project_class(
             async_kind: AsyncKind::None,
             is_static: true,
             invoke_expr: format!(
-                "_IActivationFactory.method(6).invoke(DynWinRtValue.activationFactory('{}'), [])",
-                class.full_name
+                "__get_ActivateInstance().invoke({}._defaultActivationFactory(), [])",
+                class.name,
             ),
             sync_return_expr: Some(format!(
-                "{}._fromNative(_IActivationFactory.method(6).invoke(DynWinRtValue.activationFactory('{}'), []))",
-                class.name, class.full_name
+                "{}._fromNative(__get_ActivateInstance().invoke({}._defaultActivationFactory(), []))",
+                class.name, class.name,
             )),
             async_convert_v: None,
             is_void: false,
@@ -847,6 +847,14 @@ pub fn project_class(
     let mut static_cache_fields = Vec::new();
     let mut static_accessors = Vec::new();
     let mut declared: HashSet<String> = HashSet::new();
+    if class.has_default_constructor {
+        static_cache_fields.push("static __defaultActivationFactory;".into());
+        static_accessors.push(format!(
+            "static _defaultActivationFactory() {{ return {class}.__defaultActivationFactory ??= DynWinRtValue.activationFactory('{full}'); }}",
+            class = class.name,
+            full = class.full_name,
+        ));
+    }
     for iface in &class.factory_interfaces {
         let key = format!("f_{}", iface.name);
         if !iface.iid.is_empty() && declared.insert(key.clone()) {

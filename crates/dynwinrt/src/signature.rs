@@ -72,6 +72,54 @@ impl Method {
         self.0.call_getter_object(obj)
     }
 
+    pub fn call_setter_hstring(
+        &self,
+        obj: *mut std::ffi::c_void,
+        value: &windows_core::HSTRING,
+    ) -> windows_core::Result<()> {
+        self.0.call_setter_hstring(obj, value)
+    }
+
+    pub fn call_setter_bool(
+        &self,
+        obj: *mut std::ffi::c_void,
+        value: bool,
+    ) -> windows_core::Result<()> {
+        self.0.call_setter_bool(obj, value)
+    }
+
+    pub fn call_setter_i32(
+        &self,
+        obj: *mut std::ffi::c_void,
+        value: i32,
+    ) -> windows_core::Result<()> {
+        self.0.call_setter_i32(obj, value)
+    }
+
+    pub fn call_setter_u32(
+        &self,
+        obj: *mut std::ffi::c_void,
+        value: u32,
+    ) -> windows_core::Result<()> {
+        self.0.call_setter_u32(obj, value)
+    }
+
+    pub fn call_setter_f32(
+        &self,
+        obj: *mut std::ffi::c_void,
+        value: f32,
+    ) -> windows_core::Result<()> {
+        self.0.call_setter_f32(obj, value)
+    }
+
+    pub fn call_setter_f64(
+        &self,
+        obj: *mut std::ffi::c_void,
+        value: f64,
+    ) -> windows_core::Result<()> {
+        self.0.call_setter_f64(obj, value)
+    }
+
     pub fn call_dynamic(
         &self,
         obj: *mut std::ffi::c_void,

@@ -27,11 +27,11 @@ class IUriRuntimeClassWithAbsoluteCanonicalUri {
     }
 
     get absoluteCanonicalUri() {
-        return _IUriRuntimeClassWithAbsoluteCanonicalUri.method(6).invoke(this._obj, []).toString();
+        return (() => { const _m = _IUriRuntimeClassWithAbsoluteCanonicalUri.method(6); return typeof _m.getString === 'function' ? _m.getString(this._obj) : _IUriRuntimeClassWithAbsoluteCanonicalUri.method(6).invoke(this._obj, []).toString(); })();
     }
 
     get displayIri() {
-        return _IUriRuntimeClassWithAbsoluteCanonicalUri.method(7).invoke(this._obj, []).toString();
+        return (() => { const _m = _IUriRuntimeClassWithAbsoluteCanonicalUri.method(7); return typeof _m.getString === 'function' ? _m.getString(this._obj) : _IUriRuntimeClassWithAbsoluteCanonicalUri.method(7).invoke(this._obj, []).toString(); })();
     }
 }
 exports.IID_IUriRuntimeClassWithAbsoluteCanonicalUri = IID_IUriRuntimeClassWithAbsoluteCanonicalUri;

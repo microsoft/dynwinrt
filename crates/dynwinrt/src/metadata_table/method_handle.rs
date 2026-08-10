@@ -70,4 +70,64 @@ impl MethodHandle {
         let method_ptr = self.table.method_ptr(self.index);
         unsafe { (*method_ptr).call_getter_object(obj) }.map_err(crate::result::Error::WindowsError)
     }
+
+    pub fn call_setter_hstring(
+        &self,
+        obj: *mut std::ffi::c_void,
+        value: &windows_core::HSTRING,
+    ) -> crate::result::Result<()> {
+        let method_ptr = self.table.method_ptr(self.index);
+        unsafe { (*method_ptr).call_setter_hstring(obj, value) }
+            .map_err(crate::result::Error::WindowsError)
+    }
+
+    pub fn call_setter_bool(
+        &self,
+        obj: *mut std::ffi::c_void,
+        value: bool,
+    ) -> crate::result::Result<()> {
+        let method_ptr = self.table.method_ptr(self.index);
+        unsafe { (*method_ptr).call_setter_bool(obj, value) }
+            .map_err(crate::result::Error::WindowsError)
+    }
+
+    pub fn call_setter_i32(
+        &self,
+        obj: *mut std::ffi::c_void,
+        value: i32,
+    ) -> crate::result::Result<()> {
+        let method_ptr = self.table.method_ptr(self.index);
+        unsafe { (*method_ptr).call_setter_i32(obj, value) }
+            .map_err(crate::result::Error::WindowsError)
+    }
+
+    pub fn call_setter_u32(
+        &self,
+        obj: *mut std::ffi::c_void,
+        value: u32,
+    ) -> crate::result::Result<()> {
+        let method_ptr = self.table.method_ptr(self.index);
+        unsafe { (*method_ptr).call_setter_u32(obj, value) }
+            .map_err(crate::result::Error::WindowsError)
+    }
+
+    pub fn call_setter_f32(
+        &self,
+        obj: *mut std::ffi::c_void,
+        value: f32,
+    ) -> crate::result::Result<()> {
+        let method_ptr = self.table.method_ptr(self.index);
+        unsafe { (*method_ptr).call_setter_f32(obj, value) }
+            .map_err(crate::result::Error::WindowsError)
+    }
+
+    pub fn call_setter_f64(
+        &self,
+        obj: *mut std::ffi::c_void,
+        value: f64,
+    ) -> crate::result::Result<()> {
+        let method_ptr = self.table.method_ptr(self.index);
+        unsafe { (*method_ptr).call_setter_f64(obj, value) }
+            .map_err(crate::result::Error::WindowsError)
+    }
 }

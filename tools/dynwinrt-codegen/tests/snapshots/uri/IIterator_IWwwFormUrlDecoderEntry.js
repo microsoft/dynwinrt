@@ -35,11 +35,11 @@ class IIterator_IWwwFormUrlDecoderEntry {
     }
 
     get current() {
-        return ((v) => v.isNull() ? null : new (__get_IWwwFormUrlDecoderEntry())(v))(_IIterator_IWwwFormUrlDecoderEntry.method(6).invoke(this._obj, []));
+        return ((v) => v.isNull() ? null : new (__get_IWwwFormUrlDecoderEntry())(v))((() => { const _m = _IIterator_IWwwFormUrlDecoderEntry.method(6); return typeof _m.getObj === 'function' ? _m.getObj(this._obj) : _m.invoke(this._obj, []); })());
     }
 
     get hasCurrent() {
-        return _IIterator_IWwwFormUrlDecoderEntry.method(7).invoke(this._obj, []).toBool();
+        return (() => { const _m = _IIterator_IWwwFormUrlDecoderEntry.method(7); return typeof _m.getBool === 'function' ? _m.getBool(this._obj) : _IIterator_IWwwFormUrlDecoderEntry.method(7).invoke(this._obj, []).toBool(); })();
     }
 
     moveNext() {

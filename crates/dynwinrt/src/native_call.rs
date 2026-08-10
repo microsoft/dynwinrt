@@ -1380,8 +1380,57 @@ impl Method {
 
     // --- Fast getter paths: zero Vec/WinRTValue allocation ---
 
+    fn validate_fast_getter(
+        &self,
+        label: &str,
+        accepts: impl FnOnce(&TypeKind) -> bool,
+    ) -> windows_core::Result<()> {
+        let valid = self.info.input_count == 0
+            && self.info.out_count == 1
+            && self.info.parameters.len() == 1
+            && self.info.parameters[0].kind == ParamKind::Out
+            && matches!(self.info.return_kind, MethodReturn::HResult)
+            && matches!(
+                &self.info.parameters[0].typ,
+                ParameterType::WinRT(typ) if accepts(&typ.kind())
+            );
+        if valid {
+            Ok(())
+        } else {
+            Err(invalid_argument(&format!(
+                "{label} requires a zero-input, one-output WinRT getter with the expected ABI type",
+            )))
+        }
+    }
+
+    fn validate_fast_setter(
+        &self,
+        label: &str,
+        accepts: impl FnOnce(&TypeKind) -> bool,
+    ) -> windows_core::Result<()> {
+        let valid = self.info.input_count == 1
+            && self.info.out_count == 0
+            && self.info.parameters.len() == 1
+            && self.info.parameters[0].kind == ParamKind::In
+            && matches!(self.info.return_kind, MethodReturn::HResult)
+            && matches!(
+                &self.info.parameters[0].typ,
+                ParameterType::WinRT(typ) if accepts(&typ.kind())
+            );
+        if valid {
+            Ok(())
+        } else {
+            Err(invalid_argument(&format!(
+                "{label} requires a one-input, zero-output WinRT setter with the expected ABI type",
+            )))
+        }
+    }
+
     /// Getter → i32 (0 in, 1 out). Writes directly to stack i32.
     pub fn call_getter_i32(&self, obj: *mut std::ffi::c_void) -> windows_core::Result<i32> {
+        self.validate_fast_getter("get_i32", |kind| {
+            matches!(kind, TypeKind::I32 | TypeKind::Enum(_))
+        })?;
         let mut out: i32 = 0;
         let hr = call::call_winrt_method_1(
             self.info.index,
@@ -1394,11 +1443,12 @@ impl Method {
 
     /// Getter → bool (0 in, 1 out). Writes directly to stack bool.
     pub fn call_getter_bool(&self, obj: *mut std::ffi::c_void) -> windows_core::Result<bool> {
-        let mut out: i32 = 0; // WinRT bool is i32 on ABI
+        self.validate_fast_getter("get_bool", |kind| matches!(kind, TypeKind::Bool))?;
+        let mut out: u8 = 0;
         let hr = call::call_winrt_method_1(
             self.info.index,
             obj,
-            &mut out as *mut i32 as *mut std::ffi::c_void,
+            &mut out as *mut u8 as *mut std::ffi::c_void,
         );
         hr.ok()?;
         Ok(out != 0)
@@ -1409,6 +1459,7 @@ impl Method {
         &self,
         obj: *mut std::ffi::c_void,
     ) -> windows_core::Result<windows_core::HSTRING> {
+        self.validate_fast_getter("get_hstring", |kind| matches!(kind, TypeKind::HString))?;
         // HSTRING is a pointer-sized handle on ABI. Let WinRT write it directly.
         let mut out = windows_core::HSTRING::new();
         let hr = call::call_winrt_method_1(
@@ -1425,6 +1476,16 @@ impl Method {
         &self,
         obj: *mut std::ffi::c_void,
     ) -> windows_core::Result<WinRTValue> {
+        self.validate_fast_getter("get_object", |kind| {
+            matches!(
+                kind,
+                TypeKind::Object
+                    | TypeKind::Interface(_)
+                    | TypeKind::Delegate(_)
+                    | TypeKind::RuntimeClass(_)
+                    | TypeKind::Parameterized(_)
+            )
+        })?;
         let mut out: *mut std::ffi::c_void = std::ptr::null_mut();
         let hr = call::call_winrt_method_1(
             self.info.index,
@@ -1444,6 +1505,66 @@ impl Method {
                 windows_core::IUnknown::from_raw(out)
             }))
         }
+    }
+
+    // --- Fast setter paths: zero Vec/WinRTValue allocation ---
+
+    pub fn call_setter_hstring(
+        &self,
+        obj: *mut std::ffi::c_void,
+        value: &windows_core::HSTRING,
+    ) -> windows_core::Result<()> {
+        self.validate_fast_setter("set_hstring", |kind| matches!(kind, TypeKind::HString))?;
+        // Pass the HSTRING handle value, not a pointer to the Rust wrapper.
+        let raw: *mut std::ffi::c_void = unsafe { std::mem::transmute_copy(value) };
+        call::call_winrt_method_1(self.info.index, obj, raw).ok()
+    }
+
+    pub fn call_setter_bool(
+        &self,
+        obj: *mut std::ffi::c_void,
+        value: bool,
+    ) -> windows_core::Result<()> {
+        self.validate_fast_setter("set_bool", |kind| matches!(kind, TypeKind::Bool))?;
+        call::call_winrt_method_1(self.info.index, obj, u8::from(value)).ok()
+    }
+
+    pub fn call_setter_i32(
+        &self,
+        obj: *mut std::ffi::c_void,
+        value: i32,
+    ) -> windows_core::Result<()> {
+        self.validate_fast_setter("set_i32", |kind| {
+            matches!(kind, TypeKind::I32 | TypeKind::Enum(_))
+        })?;
+        call::call_winrt_method_1(self.info.index, obj, value).ok()
+    }
+
+    pub fn call_setter_u32(
+        &self,
+        obj: *mut std::ffi::c_void,
+        value: u32,
+    ) -> windows_core::Result<()> {
+        self.validate_fast_setter("set_u32", |kind| matches!(kind, TypeKind::U32))?;
+        call::call_winrt_method_1(self.info.index, obj, value).ok()
+    }
+
+    pub fn call_setter_f32(
+        &self,
+        obj: *mut std::ffi::c_void,
+        value: f32,
+    ) -> windows_core::Result<()> {
+        self.validate_fast_setter("set_f32", |kind| matches!(kind, TypeKind::F32))?;
+        call::call_winrt_method_1(self.info.index, obj, value).ok()
+    }
+
+    pub fn call_setter_f64(
+        &self,
+        obj: *mut std::ffi::c_void,
+        value: f64,
+    ) -> windows_core::Result<()> {
+        self.validate_fast_setter("set_f64", |kind| matches!(kind, TypeKind::F64))?;
+        call::call_winrt_method_1(self.info.index, obj, value).ok()
     }
 
     pub fn call_dynamic(
@@ -2067,6 +2188,23 @@ mod tests {
         windows_core::HRESULT(0)
     }
 
+    unsafe extern "system" fn write_bool(
+        _this: *mut std::ffi::c_void,
+        value: *mut u8,
+    ) -> windows_core::HRESULT {
+        unsafe { *value = 1 };
+        windows_core::HRESULT(0)
+    }
+
+    unsafe extern "system" fn record_bool(
+        this: *mut std::ffi::c_void,
+        value: u8,
+    ) -> windows_core::HRESULT {
+        let object = unsafe { &*(this as *const FakeComObject) };
+        object.calls.store(value as u32, Ordering::Relaxed);
+        windows_core::HRESULT(0)
+    }
+
     fn struct_in_out_method(
         table: &Arc<MetadataTable>,
         expected: TypeHandle,
@@ -2097,6 +2235,60 @@ mod tests {
         assert_eq!(method.info.parameters[1].input_index, Some(1));
         assert_eq!(method.info.parameters[2].value_index, 1);
         assert_eq!(method.info.parameters[2].input_index, None);
+    }
+
+    #[test]
+    fn fast_accessors_reject_incompatible_method_shapes() {
+        let table = MetadataTable::new();
+        let setter = AbiMethodSignature::new(&table)
+            .add_in_type(ParameterType::winrt(table.i32_type()))
+            .build(0);
+        assert!(setter.call_getter_i32(std::ptr::null_mut()).is_err());
+
+        let getter = AbiMethodSignature::new(&table)
+            .add_out_type(ParameterType::winrt(table.i32_type()))
+            .build(0);
+        assert!(getter.call_setter_i32(std::ptr::null_mut(), 1).is_err());
+
+        let boolean_setter = AbiMethodSignature::new(&table)
+            .add_in_type(ParameterType::winrt(table.bool_type()))
+            .build(0);
+        assert!(
+            boolean_setter
+                .call_setter_i32(std::ptr::null_mut(), 1)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn fast_boolean_accessors_use_u8_abi() {
+        let table = MetadataTable::new();
+        let getter = AbiMethodSignature::new(&table)
+            .add_out_type(ParameterType::winrt(table.bool_type()))
+            .build(0);
+        let getter_vtable = Box::new([write_bool as *mut std::ffi::c_void]);
+        let getter_object = FakeComObject {
+            vtable: getter_vtable.as_ptr(),
+            calls: AtomicU32::new(0),
+        };
+        assert!(
+            getter
+                .call_getter_bool(&getter_object as *const _ as *mut _)
+                .unwrap()
+        );
+
+        let setter = AbiMethodSignature::new(&table)
+            .add_in_type(ParameterType::winrt(table.bool_type()))
+            .build(0);
+        let setter_vtable = Box::new([record_bool as *mut std::ffi::c_void]);
+        let setter_object = FakeComObject {
+            vtable: setter_vtable.as_ptr(),
+            calls: AtomicU32::new(0),
+        };
+        setter
+            .call_setter_bool(&setter_object as *const _ as *mut _, true)
+            .unwrap();
+        assert_eq!(setter_object.calls.load(Ordering::Relaxed), 1);
     }
 
     #[test]

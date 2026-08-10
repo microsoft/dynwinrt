@@ -99,6 +99,7 @@ fn render_esm(file: &ProjectedFile) -> String {
     // Activation factory (if needed)
     if file.needs_activation_factory {
         out.push_str("const _IActivationFactory = DynWinRtType.registerInterface('IActivationFactory', WinGuid.parse('00000035-0000-0000-c000-000000000046'))\n    .addMethod('ActivateInstance', new DynWinRtMethodSig().addOut(DynWinRtType.object()));\n");
+        out.push_str("let __activateInstance;\nconst __get_ActivateInstance = () => (__activateInstance ??= _IActivationFactory.method(6));\n");
         out.push('\n');
     }
 

@@ -130,49 +130,49 @@ class Uri {
         return _IUriEscapeStatics.method(7).invoke(Uri.s_IUriEscapeStatics(), [DynWinRtValue.hstring(toEscape)]).toString();
     }
     get absoluteUri() {
-        return _IUriRuntimeClass.method(6).invoke(this._obj, []).toString();
+        return (() => { const _m = _IUriRuntimeClass.method(6); return typeof _m.getString === 'function' ? _m.getString(this._obj) : _IUriRuntimeClass.method(6).invoke(this._obj, []).toString(); })();
     }
     get displayUri() {
-        return _IUriRuntimeClass.method(7).invoke(this._obj, []).toString();
+        return (() => { const _m = _IUriRuntimeClass.method(7); return typeof _m.getString === 'function' ? _m.getString(this._obj) : _IUriRuntimeClass.method(7).invoke(this._obj, []).toString(); })();
     }
     get domain() {
-        return _IUriRuntimeClass.method(8).invoke(this._obj, []).toString();
+        return (() => { const _m = _IUriRuntimeClass.method(8); return typeof _m.getString === 'function' ? _m.getString(this._obj) : _IUriRuntimeClass.method(8).invoke(this._obj, []).toString(); })();
     }
     get extension() {
-        return _IUriRuntimeClass.method(9).invoke(this._obj, []).toString();
+        return (() => { const _m = _IUriRuntimeClass.method(9); return typeof _m.getString === 'function' ? _m.getString(this._obj) : _IUriRuntimeClass.method(9).invoke(this._obj, []).toString(); })();
     }
     get fragment() {
-        return _IUriRuntimeClass.method(10).invoke(this._obj, []).toString();
+        return (() => { const _m = _IUriRuntimeClass.method(10); return typeof _m.getString === 'function' ? _m.getString(this._obj) : _IUriRuntimeClass.method(10).invoke(this._obj, []).toString(); })();
     }
     get host() {
-        return _IUriRuntimeClass.method(11).invoke(this._obj, []).toString();
+        return (() => { const _m = _IUriRuntimeClass.method(11); return typeof _m.getString === 'function' ? _m.getString(this._obj) : _IUriRuntimeClass.method(11).invoke(this._obj, []).toString(); })();
     }
     get password() {
-        return _IUriRuntimeClass.method(12).invoke(this._obj, []).toString();
+        return (() => { const _m = _IUriRuntimeClass.method(12); return typeof _m.getString === 'function' ? _m.getString(this._obj) : _IUriRuntimeClass.method(12).invoke(this._obj, []).toString(); })();
     }
     get path() {
-        return _IUriRuntimeClass.method(13).invoke(this._obj, []).toString();
+        return (() => { const _m = _IUriRuntimeClass.method(13); return typeof _m.getString === 'function' ? _m.getString(this._obj) : _IUriRuntimeClass.method(13).invoke(this._obj, []).toString(); })();
     }
     get query() {
-        return _IUriRuntimeClass.method(14).invoke(this._obj, []).toString();
+        return (() => { const _m = _IUriRuntimeClass.method(14); return typeof _m.getString === 'function' ? _m.getString(this._obj) : _IUriRuntimeClass.method(14).invoke(this._obj, []).toString(); })();
     }
     get queryParsed() {
-        return ((v) => v.isNull() ? null : (__get_WwwFormUrlDecoder())._fromNative(v))(_IUriRuntimeClass.method(15).invoke(this._obj, []));
+        return ((v) => v.isNull() ? null : (__get_WwwFormUrlDecoder())._fromNative(v))((() => { const _m = _IUriRuntimeClass.method(15); return typeof _m.getObj === 'function' ? _m.getObj(this._obj) : _m.invoke(this._obj, []); })());
     }
     get rawUri() {
-        return _IUriRuntimeClass.method(16).invoke(this._obj, []).toString();
+        return (() => { const _m = _IUriRuntimeClass.method(16); return typeof _m.getString === 'function' ? _m.getString(this._obj) : _IUriRuntimeClass.method(16).invoke(this._obj, []).toString(); })();
     }
     get schemeName() {
-        return _IUriRuntimeClass.method(17).invoke(this._obj, []).toString();
+        return (() => { const _m = _IUriRuntimeClass.method(17); return typeof _m.getString === 'function' ? _m.getString(this._obj) : _IUriRuntimeClass.method(17).invoke(this._obj, []).toString(); })();
     }
     get userName() {
-        return _IUriRuntimeClass.method(18).invoke(this._obj, []).toString();
+        return (() => { const _m = _IUriRuntimeClass.method(18); return typeof _m.getString === 'function' ? _m.getString(this._obj) : _IUriRuntimeClass.method(18).invoke(this._obj, []).toString(); })();
     }
     get port() {
-        return _IUriRuntimeClass.method(19).invoke(this._obj, []).toNumber();
+        return (() => { const _m = _IUriRuntimeClass.method(19); return typeof _m.getI32 === 'function' ? _m.getI32(this._obj) : _IUriRuntimeClass.method(19).invoke(this._obj, []).toNumber(); })();
     }
     get suspicious() {
-        return _IUriRuntimeClass.method(20).invoke(this._obj, []).toBool();
+        return (() => { const _m = _IUriRuntimeClass.method(20); return typeof _m.getBool === 'function' ? _m.getBool(this._obj) : _IUriRuntimeClass.method(20).invoke(this._obj, []).toBool(); })();
     }
     equals(pUri) {
         return _IUriRuntimeClass.method(21).invoke(this._obj, [(pUri == null ? DynWinRtValue.nullValue() : _unwrap(pUri).cast(IID_ARG_Windows_Foundation_Uri))]).toBool();
@@ -191,10 +191,10 @@ class Uri {
         return InterfaceClass.from(this._obj);
     }
     get absoluteCanonicalUri() {
-        return _IUriRuntimeClassWithAbsoluteCanonicalUri.method(6).invoke(this._obj.cast(IID_IUriRuntimeClassWithAbsoluteCanonicalUri), []).toString();
+        return (() => { const _m = _IUriRuntimeClassWithAbsoluteCanonicalUri.method(6); return typeof _m.getString === 'function' ? _m.getString(this._obj.cast(IID_IUriRuntimeClassWithAbsoluteCanonicalUri)) : _IUriRuntimeClassWithAbsoluteCanonicalUri.method(6).invoke(this._obj.cast(IID_IUriRuntimeClassWithAbsoluteCanonicalUri), []).toString(); })();
     }
     get displayIri() {
-        return _IUriRuntimeClassWithAbsoluteCanonicalUri.method(7).invoke(this._obj.cast(IID_IUriRuntimeClassWithAbsoluteCanonicalUri), []).toString();
+        return (() => { const _m = _IUriRuntimeClassWithAbsoluteCanonicalUri.method(7); return typeof _m.getString === 'function' ? _m.getString(this._obj.cast(IID_IUriRuntimeClassWithAbsoluteCanonicalUri)) : _IUriRuntimeClassWithAbsoluteCanonicalUri.method(7).invoke(this._obj.cast(IID_IUriRuntimeClassWithAbsoluteCanonicalUri), []).toString(); })();
     }
 }
 
@@ -210,11 +210,11 @@ class IUriRuntimeClassWithAbsoluteCanonicalUri {
     }
 
     get absoluteCanonicalUri() {
-        return _IUriRuntimeClassWithAbsoluteCanonicalUri.method(6).invoke(this._obj, []).toString();
+        return (() => { const _m = _IUriRuntimeClassWithAbsoluteCanonicalUri.method(6); return typeof _m.getString === 'function' ? _m.getString(this._obj) : _IUriRuntimeClassWithAbsoluteCanonicalUri.method(6).invoke(this._obj, []).toString(); })();
     }
 
     get displayIri() {
-        return _IUriRuntimeClassWithAbsoluteCanonicalUri.method(7).invoke(this._obj, []).toString();
+        return (() => { const _m = _IUriRuntimeClassWithAbsoluteCanonicalUri.method(7); return typeof _m.getString === 'function' ? _m.getString(this._obj) : _IUriRuntimeClassWithAbsoluteCanonicalUri.method(7).invoke(this._obj, []).toString(); })();
     }
 }
 

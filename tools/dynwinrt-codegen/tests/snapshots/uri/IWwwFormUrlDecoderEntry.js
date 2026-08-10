@@ -27,11 +27,11 @@ class IWwwFormUrlDecoderEntry {
     }
 
     get name() {
-        return _IWwwFormUrlDecoderEntry.method(6).invoke(this._obj, []).toString();
+        return (() => { const _m = _IWwwFormUrlDecoderEntry.method(6); return typeof _m.getString === 'function' ? _m.getString(this._obj) : _IWwwFormUrlDecoderEntry.method(6).invoke(this._obj, []).toString(); })();
     }
 
     get value() {
-        return _IWwwFormUrlDecoderEntry.method(7).invoke(this._obj, []).toString();
+        return (() => { const _m = _IWwwFormUrlDecoderEntry.method(7); return typeof _m.getString === 'function' ? _m.getString(this._obj) : _IWwwFormUrlDecoderEntry.method(7).invoke(this._obj, []).toString(); })();
     }
 }
 exports.IID_IWwwFormUrlDecoderEntry = IID_IWwwFormUrlDecoderEntry;
