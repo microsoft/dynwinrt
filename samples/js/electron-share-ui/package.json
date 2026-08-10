@@ -1,0 +1,25 @@
+{
+  "name": "dynwinrt-electron-share-ui-sample",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Electron Share UI sample using dynwinrt WinRT and Classic COM interop",
+  "main": "./out/main/index.js",
+  "scripts": {
+    "generate": "powershell -NoProfile -ExecutionPolicy Bypass -File ./generate.ps1",
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "start": "electron-vite dev"
+  },
+  "dependencies": {
+    "@microsoft/dynwinrt": "file:../../../bindings/js",
+    "@electron-toolkit/utils": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.0",
+    "electron": "^40.10.6",
+    "electron-vite": "^5.0.0",
+    "typescript": "^5.9.2",
+    "vite": "^7.0.0"
+  }
+}

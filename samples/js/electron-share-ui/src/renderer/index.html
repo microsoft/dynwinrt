@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>dynwinrt Electron Share UI</title>
+    <link rel="stylesheet" href="./src/style.css" />
+  </head>
+  <body>
+    <main>
+      <section class="dialog">
+        <div class="content">
+          <header>
+            <h1>Share</h1>
+            <p>Enter the text you want to share.</p>
+          </header>
+
+          <label class="visually-hidden" for="text">Text to share</label>
+          <textarea
+            id="text"
+            maxlength="2000"
+            placeholder="Type something to share"
+          >Hello from dynwinrt</textarea>
+        </div>
+
+        <footer class="command-bar">
+          <div class="feedback">
+            <span id="count">20 characters</span>
+            <span id="status" role="status" aria-live="polite"></span>
+          </div>
+          <button id="share" type="button">Share</button>
+        </footer>
+      </section>
+    </main>
+    <script type="module" src="./src/index.ts"></script>
+  </body>
+</html>
