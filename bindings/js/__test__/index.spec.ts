@@ -4,6 +4,7 @@
 import test from 'ava'
 import { spawn, spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -21,8 +22,6 @@ import {
 } from '../dist/winrt.js'
 import * as winrtRuntime from '../dist/winrt.js'
 import * as comRuntime from '../dist/com.js'
-import * as unsafeComRuntime from '../dist/com-unsafe.js'
-import * as nativeRuntime from '../dist/index.js'
 import {
   DynCom,
   DynComDispatchParams,
@@ -32,6 +31,12 @@ import {
   DynComUnsafe,
   DynComVariant,
 } from '../dist/com-unsafe.js'
+
+const requireFromTest = createRequire(import.meta.url)
+const nativeRuntime = requireFromTest('../dist/index.js') as Record<string, unknown>
+const winrtCjsRuntime = requireFromTest('../dist/winrt.js') as Record<string, unknown>
+const comCjsRuntime = requireFromTest('../dist/com.js') as Record<string, unknown>
+const unsafeComRuntime = requireFromTest('../dist/com-unsafe.js') as Record<string, unknown>
 
 const moduleKeys = (value: object) =>
   Object.keys(value)
@@ -127,9 +132,9 @@ test('package facades exactly partition native exports', (t) => {
     'DynComUnsafeInterface',
   ])
 
-  t.deepEqual(moduleKeys(winrtRuntime), expectedWinrt)
+  t.deepEqual(moduleKeys(winrtCjsRuntime), expectedWinrt)
   t.deepEqual(
-    moduleKeys(comRuntime),
+    moduleKeys(comCjsRuntime),
     nativeKeys.filter((name) => safeComNames.has(name)),
   )
   t.deepEqual(
@@ -137,9 +142,9 @@ test('package facades exactly partition native exports', (t) => {
     nativeKeys.filter((name) => unsafeComNames.has(name)),
   )
 
-  t.is(winrtRuntime.WinGuid, comRuntime.WinGuid)
-  t.is(comRuntime.initializeCom, unsafeComRuntime.initializeCom)
-  for (const name of moduleKeys(comRuntime)) {
+  t.is(winrtCjsRuntime.WinGuid, comCjsRuntime.WinGuid)
+  t.is(comCjsRuntime.initializeCom, unsafeComRuntime.initializeCom)
+  for (const name of moduleKeys(comCjsRuntime)) {
     t.true(moduleKeys(unsafeComRuntime).includes(name), `${name} must remain available from /com/unsafe`)
   }
 })
