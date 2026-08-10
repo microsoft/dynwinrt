@@ -1282,8 +1282,11 @@ async def run_check(
                 (root / 'beta.txt').write_text('beta', encoding='utf-8')
 
                 folder = await cls.get_folder_from_path_async(str(root))
-                if folder is None or Path(folder.path) != root:
-                    cr['error'] = 'StorageFolder path lookup failed'
+                if folder is None or not Path(folder.path).samefile(root):
+                    cr['error'] = (
+                        'StorageFolder path lookup failed: '
+                        f'expected={str(root)!r}, actual={getattr(folder, "path", None)!r}'
+                    )
                     return cr
 
                 direct_files = await (
