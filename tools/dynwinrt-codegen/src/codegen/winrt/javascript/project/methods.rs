@@ -25,10 +25,80 @@ fn projected_method_outputs(method: &MethodMeta) -> Vec<(usize, &TypeMeta)> {
     outputs
 }
 
-fn output_ts_type(typ: &TypeMeta, known_types: &HashSet<String>) -> String {
+fn is_projected_delegate_type(typ: Option<&TypeMeta>, delegate_names: &HashSet<String>) -> bool {
     match typ {
+        Some(TypeMeta::Delegate { .. }) => true,
+        Some(TypeMeta::Interface { name, .. }) => delegate_names.contains(name),
+        Some(TypeMeta::Parameterized { name, args, .. }) => {
+            delegate_names.contains(&crate::meta::make_parameterized_name(name, args))
+        }
+        _ => false,
+    }
+}
+
+fn projected_ts_return_type(
+    typ: Option<&TypeMeta>,
+    is_async: bool,
+    known_types: &HashSet<String>,
+    delegate_names: &HashSet<String>,
+) -> String {
+    match typ {
+        Some(TypeMeta::AsyncOperation(inner)) => format!(
+            "Promise<{}>",
+            projected_ts_return_type(Some(inner), false, known_types, delegate_names)
+        ),
+        Some(TypeMeta::AsyncOperationWithProgress(result, _)) => {
+            let inner = projected_ts_return_type(Some(result), false, known_types, delegate_names);
+            format!(
+                "Promise<{i}> & {{ progress(cb: (value: unknown) => void): Promise<{i}> & {{ progress: any; toPromise(): Promise<{i}>; cancel(): void; }}; toPromise(): Promise<{i}>; cancel(): void; }}",
+                i = inner
+            )
+        }
+        Some(TypeMeta::Array(inner)) if is_projected_delegate_type(Some(inner), delegate_names) => {
+            "Array<DynWinRtValue | null>".into()
+        }
+        _ if is_projected_delegate_type(typ, delegate_names) => {
+            if is_async {
+                "Promise<DynWinRtValue | null>".into()
+            } else {
+                "DynWinRtValue | null".into()
+            }
+        }
+        _ => ts_return_type_safe(typ, is_async, known_types),
+    }
+}
+
+fn convert_projected_return(
+    expr: &str,
+    typ: Option<&TypeMeta>,
+    known_types: &HashSet<String>,
+    delegate_names: &HashSet<String>,
+) -> String {
+    match typ {
+        Some(TypeMeta::Array(inner)) if is_projected_delegate_type(Some(inner), delegate_names) => {
+            format!(
+                "{}.asArray().toValues().map(v => v.isNull() ? null : v)",
+                expr
+            )
+        }
+        _ if is_projected_delegate_type(typ, delegate_names) => {
+            format!("((v) => v.isNull() ? null : v)({})", expr)
+        }
+        _ => convert_return(expr, typ, false, known_types, &NO_DEFERRED),
+    }
+}
+
+fn output_ts_type(
+    typ: &TypeMeta,
+    known_types: &HashSet<String>,
+    delegate_names: &HashSet<String>,
+) -> String {
+    match typ {
+        TypeMeta::Array(inner) if is_projected_delegate_type(Some(inner), delegate_names) => {
+            "Array<DynWinRtValue | null>".into()
+        }
         TypeMeta::Array(inner) => ts_array_element_type(inner, known_types),
-        _ => ts_return_type_safe(Some(typ), false, known_types),
+        _ => projected_ts_return_type(Some(typ), false, known_types, delegate_names),
     }
 }
 
@@ -36,11 +106,21 @@ fn convert_output(
     expr: &str,
     typ: &TypeMeta,
     known_types: &HashSet<String>,
+    delegate_names: &HashSet<String>,
     deferred: &HashSet<String>,
 ) -> String {
     match typ {
+        TypeMeta::Array(inner) if is_projected_delegate_type(Some(inner), delegate_names) => {
+            format!(
+                "{}.asArray().toValues().map(v => v.isNull() ? null : v)",
+                expr
+            )
+        }
         TypeMeta::Array(inner) => {
             convert_array_return(&format!("{}.asArray()", expr), inner, known_types, deferred)
+        }
+        _ if is_projected_delegate_type(Some(typ), delegate_names) => {
+            format!("((v) => v.isNull() ? null : v)({})", expr)
         }
         _ => convert_return(expr, Some(typ), false, known_types, deferred),
     }
@@ -50,15 +130,16 @@ fn project_multi_output(
     method: &MethodMeta,
     invoke_expr: &str,
     known_types: &HashSet<String>,
+    delegate_names: &HashSet<String>,
 ) -> (String, String) {
     let outputs = projected_method_outputs(method);
     let return_type = match outputs.as_slice() {
-        [(_, typ)] => output_ts_type(typ, known_types),
+        [(_, typ)] => output_ts_type(typ, known_types, delegate_names),
         _ => format!(
             "[{}]",
             outputs
                 .iter()
-                .map(|(_, typ)| output_ts_type(typ, known_types))
+                .map(|(_, typ)| output_ts_type(typ, known_types, delegate_names))
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
@@ -67,8 +148,13 @@ fn project_multi_output(
     let converted = outputs
         .iter()
         .map(|(index, typ)| {
-            let converted =
-                convert_output(&format!("_r[{}]", index), typ, known_types, &NO_DEFERRED);
+            let converted = convert_output(
+                &format!("_r[{}]", index),
+                typ,
+                known_types,
+                delegate_names,
+                &NO_DEFERRED,
+            );
             if fill_array_uses_retval_count(method)
                 && fill_array_output_index(method) == Some(*index)
             {
@@ -237,24 +323,49 @@ pub(super) fn project_static_method(
     });
     let is_async = return_type_meta.is_some_and(|rt| rt.is_async()) && !is_with_progress;
     let is_multi_output = method_abi_output_count(method) > 1;
+    let has_array_out = method.params.iter().any(|p| {
+        (p.direction == ParamDirection::Out || p.direction == ParamDirection::OutFill)
+            && matches!(p.typ, TypeMeta::Array(_))
+    });
+    let has_return = method_abi_output_count(method) > 0;
+    let array_out_elem =
+        if has_array_out && (return_type_meta.is_none() || fill_array_uses_retval_count(method)) {
+            method.params.iter().find_map(|p| {
+                if p.direction == ParamDirection::Out || p.direction == ParamDirection::OutFill {
+                    if let TypeMeta::Array(inner) = &p.typ {
+                        Some(inner.as_ref())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
+        } else {
+            None
+        };
+    let single_out = if has_return && return_type_meta.is_none() && array_out_elem.is_none() {
+        projected_method_outputs(method)
+            .into_iter()
+            .next()
+            .map(|(_, typ)| typ)
+    } else {
+        None
+    };
 
     let statics_call = format!("{cls}.s_{iface}()", cls = class.name, iface = iface.name);
 
     // Static property getter
     if method.is_property_getter && in_params.is_empty() {
         let prop_name = to_camel_case(method.name.strip_prefix("get_").unwrap_or(&method.name));
-        let ts_return = ts_return_type_safe(return_type_meta, false, known_types);
+        let ts_return =
+            projected_ts_return_type(return_type_meta, false, known_types, delegate_names);
         let invoke_expr = format!(
             "_{}.method({}).invoke({}, [])",
             iface.name, method.vtable_index, statics_call
         );
-        let converted = convert_return(
-            &invoke_expr,
-            return_type_meta,
-            false,
-            known_types,
-            &NO_DEFERRED,
-        );
+        let converted =
+            convert_projected_return(&invoke_expr, return_type_meta, known_types, delegate_names);
         let doc = build_method_doc(method, &in_params);
         return ProjectedMember::Property(ProjectedProperty {
             name: prop_name,
@@ -268,7 +379,17 @@ pub(super) fn project_static_method(
         });
     }
 
-    let mut ts_return = ts_return_type_safe(return_type_meta, is_async, known_types);
+    let mut ts_return = if let Some(elem) = array_out_elem {
+        if is_projected_delegate_type(Some(elem), delegate_names) {
+            "Array<DynWinRtValue | null>".into()
+        } else {
+            ts_array_element_type(elem, known_types)
+        }
+    } else if let Some(output) = single_out {
+        output_ts_type(output, known_types, delegate_names)
+    } else {
+        projected_ts_return_type(return_type_meta, is_async, known_types, delegate_names)
+    };
     let params = project_params(
         &in_params,
         known_types,
@@ -295,6 +416,7 @@ pub(super) fn project_static_method(
     let async_kind;
     let sync_return_expr;
     let async_convert_v;
+    let array_return_expr;
     let mut progress_convert = None;
 
     if is_with_progress {
@@ -308,23 +430,24 @@ pub(super) fn project_static_method(
             _ => None,
         };
         let progress_ts = progress_type
-            .map(|p| ts_return_type_safe(Some(p), false, known_types))
+            .map(|p| projected_ts_return_type(Some(p), false, known_types, delegate_names))
             .unwrap_or_else(|| "unknown".to_string());
         // Build conversion expression for progress value
-        let p_convert = convert_return("_p", progress_type, false, known_types, &NO_DEFERRED);
+        let p_convert = convert_projected_return("_p", progress_type, known_types, delegate_names);
         if p_convert != "_p" {
             progress_convert = Some(p_convert);
         }
         let is_action = matches!(return_type_meta, Some(TypeMeta::AsyncActionWithProgress(_)));
-        let inner_convert = convert_return("_v", inner_type, false, known_types, &NO_DEFERRED);
+        let inner_convert = convert_projected_return("_v", inner_type, known_types, delegate_names);
         if is_action {
             async_kind = AsyncKind::ActionWithProgress(progress_ts);
         } else {
-            let inner_ts = ts_return_type_safe(inner_type, false, known_types);
+            let inner_ts = projected_ts_return_type(inner_type, false, known_types, delegate_names);
             async_kind = AsyncKind::OperationWithProgress(inner_ts, progress_ts);
         }
         sync_return_expr = None;
         async_convert_v = Some(inner_convert);
+        array_return_expr = None;
     } else if is_async {
         let inner_type = async_inner_type(return_type_meta);
         let is_action = matches!(return_type_meta, Some(TypeMeta::AsyncAction));
@@ -332,33 +455,70 @@ pub(super) fn project_static_method(
             async_kind = AsyncKind::Action;
             async_convert_v = None;
         } else {
-            let convert_v = convert_return("_v", inner_type, false, known_types, &NO_DEFERRED);
-            let inner_ts = ts_return_type_safe(inner_type, false, known_types);
+            let convert_v = convert_projected_return("_v", inner_type, known_types, delegate_names);
+            let inner_ts = projected_ts_return_type(inner_type, false, known_types, delegate_names);
             async_kind = AsyncKind::Operation(inner_ts);
             async_convert_v = Some(convert_v);
         }
         sync_return_expr = None;
+        array_return_expr = None;
     } else if is_multi_output {
         async_kind = AsyncKind::None;
-        let (multi_return, multi_expr) = project_multi_output(method, &invoke_expr, known_types);
+        let (multi_return, multi_expr) =
+            project_multi_output(method, &invoke_expr, known_types, delegate_names);
         ts_return = multi_return;
         sync_return_expr = Some(multi_expr);
         async_convert_v = None;
+        array_return_expr = None;
+    } else if let Some(elem) = array_out_elem {
+        async_kind = AsyncKind::None;
+        let arr_expr = if fill_array_uses_retval_count(method) {
+            format!(
+                "_r[{}].asArray()",
+                fill_array_output_index(method).expect("FillArray output index")
+            )
+        } else {
+            format!("{}.asArray()", invoke_expr)
+        };
+        let converted = if is_projected_delegate_type(Some(elem), delegate_names) {
+            format!("{}.toValues().map(v => v.isNull() ? null : v)", arr_expr)
+        } else {
+            convert_array_return(&arr_expr, elem, known_types, &NO_DEFERRED)
+        };
+        sync_return_expr = None;
+        async_convert_v = None;
+        array_return_expr = if fill_array_uses_retval_count(method) {
+            Some(format!(
+                "(() => {{ const _r = {}; return {}.slice(0, _r[{}].toNumber()); }})()",
+                invoke_expr,
+                converted,
+                method_abi_output_count(method) - 1
+            ))
+        } else {
+            Some(converted)
+        };
+    } else if let Some(output) = single_out {
+        async_kind = AsyncKind::None;
+        sync_return_expr = Some(convert_output(
+            &invoke_expr,
+            output,
+            known_types,
+            delegate_names,
+            &NO_DEFERRED,
+        ));
+        async_convert_v = None;
+        array_return_expr = None;
     } else {
         async_kind = AsyncKind::None;
-        let converted = convert_return(
-            &invoke_expr,
-            return_type_meta,
-            false,
-            known_types,
-            &NO_DEFERRED,
-        );
+        let converted =
+            convert_projected_return(&invoke_expr, return_type_meta, known_types, delegate_names);
         sync_return_expr = if return_type_meta.is_some() {
             Some(converted)
         } else {
             None
         };
         async_convert_v = None;
+        array_return_expr = None;
     }
 
     let mut ts_params = params;
@@ -403,8 +563,8 @@ pub(super) fn project_static_method(
         sync_return_expr,
         async_convert_v,
         progress_convert,
-        is_void: return_type_meta.is_none() && !is_async,
-        array_return_expr: None,
+        is_void: !has_return && !is_async,
+        array_return_expr,
         delegate_wraps,
         js_only: false,
         overload_of,
@@ -437,13 +597,8 @@ pub(super) fn project_instance_method(
     });
     let has_return = method_abi_output_count(method) > 0;
 
-    let is_delegate_type = |typ: Option<&TypeMeta>| -> bool {
-        match typ {
-            Some(TypeMeta::Delegate { .. }) => true,
-            Some(TypeMeta::Interface { name, .. }) => delegate_type_names.contains(name),
-            _ => false,
-        }
-    };
+    let is_delegate_type =
+        |typ: Option<&TypeMeta>| is_projected_delegate_type(typ, delegate_type_names);
 
     let mut doc = build_method_doc(method, &in_params);
 
@@ -483,26 +638,18 @@ pub(super) fn project_instance_method(
     // Property getter
     if method.is_property_getter && in_params.is_empty() {
         let prop_name = to_camel_case(method.name.strip_prefix("get_").unwrap_or(&method.name));
-        let ts_return = if is_delegate_type(return_type_meta) {
-            "DynWinRtValue".to_string()
-        } else {
-            ts_return_type_safe(return_type_meta, false, known_types)
-        };
+        let ts_return =
+            projected_ts_return_type(return_type_meta, false, known_types, delegate_type_names);
         let invoke_expr = format!(
             "{}.method({}).invoke({}, [])",
             iface_var, method.vtable_index, obj_expr
         );
-        let converted = if is_delegate_type(return_type_meta) {
-            invoke_expr.clone()
-        } else {
-            convert_return(
-                &invoke_expr,
-                return_type_meta,
-                false,
-                known_types,
-                &NO_DEFERRED,
-            )
-        };
+        let converted = convert_projected_return(
+            &invoke_expr,
+            return_type_meta,
+            known_types,
+            delegate_type_names,
+        );
 
         // Check if there's a corresponding setter
         let setter =
@@ -602,11 +749,25 @@ pub(super) fn project_instance_method(
         } else {
             None
         };
+    let single_out = if has_return && return_type_meta.is_none() && array_out_elem.is_none() {
+        projected_method_outputs(method)
+            .into_iter()
+            .next()
+            .map(|(_, typ)| typ)
+    } else {
+        None
+    };
 
     let mut ts_return = if let Some(elem) = array_out_elem {
-        ts_array_element_type(elem, known_types)
+        if is_projected_delegate_type(Some(elem), delegate_type_names) {
+            "Array<DynWinRtValue | null>".into()
+        } else {
+            ts_array_element_type(elem, known_types)
+        }
+    } else if let Some(output) = single_out {
+        output_ts_type(output, known_types, delegate_type_names)
     } else {
-        ts_return_type_safe(return_type_meta, is_async, known_types)
+        projected_ts_return_type(return_type_meta, is_async, known_types, delegate_type_names)
     };
 
     let args_expr = build_args_expr(&in_params);
@@ -638,18 +799,21 @@ pub(super) fn project_instance_method(
             _ => None,
         };
         let progress_ts = progress_type
-            .map(|p| ts_return_type_safe(Some(p), false, known_types))
+            .map(|p| projected_ts_return_type(Some(p), false, known_types, delegate_type_names))
             .unwrap_or_else(|| "unknown".to_string());
-        let p_convert = convert_return("_p", progress_type, false, known_types, &NO_DEFERRED);
+        let p_convert =
+            convert_projected_return("_p", progress_type, known_types, delegate_type_names);
         if p_convert != "_p" {
             progress_convert = Some(p_convert);
         }
         let is_action = matches!(return_type_meta, Some(TypeMeta::AsyncActionWithProgress(_)));
-        let inner_convert = convert_return("_v", inner_type, false, known_types, &NO_DEFERRED);
+        let inner_convert =
+            convert_projected_return("_v", inner_type, known_types, delegate_type_names);
         if is_action {
             async_kind = AsyncKind::ActionWithProgress(progress_ts);
         } else {
-            let inner_ts = ts_return_type_safe(inner_type, false, known_types);
+            let inner_ts =
+                projected_ts_return_type(inner_type, false, known_types, delegate_type_names);
             async_kind = AsyncKind::OperationWithProgress(inner_ts, progress_ts);
         }
         sync_return_expr = None;
@@ -662,8 +826,10 @@ pub(super) fn project_instance_method(
             async_kind = AsyncKind::Action;
             async_convert_v = None;
         } else {
-            let convert_v = convert_return("_v", inner_type, false, known_types, &NO_DEFERRED);
-            let inner_ts = ts_return_type_safe(inner_type, false, known_types);
+            let convert_v =
+                convert_projected_return("_v", inner_type, known_types, delegate_type_names);
+            let inner_ts =
+                projected_ts_return_type(inner_type, false, known_types, delegate_type_names);
             async_kind = AsyncKind::Operation(inner_ts);
             async_convert_v = Some(convert_v);
         }
@@ -671,7 +837,8 @@ pub(super) fn project_instance_method(
         array_return_expr = None;
     } else if is_multi_output && !fill_array_uses_retval_count(method) {
         async_kind = AsyncKind::None;
-        let (multi_return, multi_expr) = project_multi_output(method, &invoke_expr, known_types);
+        let (multi_return, multi_expr) =
+            project_multi_output(method, &invoke_expr, known_types, delegate_type_names);
         ts_return = multi_return;
         sync_return_expr = Some(multi_expr);
         async_convert_v = None;
@@ -686,7 +853,11 @@ pub(super) fn project_instance_method(
         } else {
             format!("{}.asArray()", invoke_expr)
         };
-        let converted = convert_array_return(&arr_expr, elem, known_types, &NO_DEFERRED);
+        let converted = if is_projected_delegate_type(Some(elem), delegate_type_names) {
+            format!("{}.toValues().map(v => v.isNull() ? null : v)", arr_expr)
+        } else {
+            convert_array_return(&arr_expr, elem, known_types, &NO_DEFERRED)
+        };
         sync_return_expr = None;
         async_convert_v = None;
         array_return_expr = if fill_array_uses_retval_count(method) {
@@ -699,15 +870,25 @@ pub(super) fn project_instance_method(
         } else {
             Some(converted)
         };
+    } else if let Some(output) = single_out {
+        async_kind = AsyncKind::None;
+        sync_return_expr = Some(convert_output(
+            &invoke_expr,
+            output,
+            known_types,
+            delegate_type_names,
+            &NO_DEFERRED,
+        ));
+        async_convert_v = None;
+        array_return_expr = None;
     } else {
         async_kind = AsyncKind::None;
         if has_return {
-            let converted = convert_return(
+            let converted = convert_projected_return(
                 &invoke_expr,
                 return_type_meta,
-                false,
                 known_types,
-                &NO_DEFERRED,
+                delegate_type_names,
             );
             sync_return_expr = Some(converted);
         } else {

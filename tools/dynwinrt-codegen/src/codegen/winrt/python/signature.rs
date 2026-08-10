@@ -621,6 +621,16 @@ pub(crate) fn py_wrap_async(
     result_converter: Option<String>,
     known_types: &HashSet<String>,
 ) -> String {
+    py_wrap_async_with_converters(expr, async_type, result_converter, None, known_types)
+}
+
+pub(crate) fn py_wrap_async_with_converters(
+    expr: &str,
+    async_type: &TypeMeta,
+    result_converter: Option<String>,
+    progress_converter: Option<String>,
+    known_types: &HashSet<String>,
+) -> String {
     match async_type {
         TypeMeta::AsyncAction => format!(
             "_dynwinrt_track_projected(_DynWinRTAsync({}, {}), 'WinRTAsync')",
@@ -636,13 +646,13 @@ pub(crate) fn py_wrap_async(
             "_dynwinrt_track_projected(_DynWinRTAsyncWithProgress({}, {}, {}), 'WinRTAsyncWithProgress')",
             expr,
             result_converter.unwrap_or_else(|| "lambda _value: None".to_string()),
-            py_value_converter(progress, known_types)
+            progress_converter.unwrap_or_else(|| py_value_converter(progress, known_types))
         ),
         TypeMeta::AsyncOperationWithProgress(result, progress) => format!(
             "_dynwinrt_track_projected(_DynWinRTAsyncWithProgress({}, {}, {}), 'WinRTAsyncWithProgress')",
             expr,
             result_converter.unwrap_or_else(|| py_value_converter(result, known_types)),
-            py_value_converter(progress, known_types)
+            progress_converter.unwrap_or_else(|| py_value_converter(progress, known_types))
         ),
         _ => panic!("py_wrap_async requires an async type: {:?}", async_type),
     }

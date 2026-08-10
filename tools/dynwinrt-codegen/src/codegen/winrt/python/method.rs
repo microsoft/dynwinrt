@@ -14,14 +14,33 @@ use crate::codegen::winrt::shared::imports::{
 use super::naming::to_snake_case;
 use super::signature::{
     py_convert_return, py_runtime_symbol, py_type_guard, py_wrap_arg, py_wrap_async,
+    py_wrap_async_with_converters,
 };
 use super::type_helpers::{
     method_pydoc, py_delegate_callable_type, py_factory_return_type, py_method_abi_output_count,
-    py_method_outputs, py_method_return_type, py_param_list, py_return_type_safe,
+    py_method_outputs, py_method_return_type, py_output_type, py_param_list,
 };
 
 fn is_delegate_type(typ: &TypeMeta, delegate_type_names: &HashSet<String>) -> bool {
     delegate_name(typ, delegate_type_names).is_some()
+}
+
+fn delegate_value_converter(
+    typ: &TypeMeta,
+    delegate_type_names: &HashSet<String>,
+) -> Option<String> {
+    if is_delegate_type(typ, delegate_type_names) {
+        return Some("lambda value: None if value.is_null() else value".into());
+    }
+    if let TypeMeta::Array(inner) = typ
+        && is_delegate_type(inner, delegate_type_names)
+    {
+        return Some(
+            "lambda value: [None if item.is_null() else item for item in value.as_array().to_values()]"
+                .into(),
+        );
+    }
+    None
 }
 
 /// Build a Python callback signature + wrapper expression for an event delegate.
@@ -143,8 +162,38 @@ fn convert_method_output(
     known_types: &HashSet<String>,
     delegate_type_names: &HashSet<String>,
 ) -> String {
-    if is_delegate_type(typ, delegate_type_names) {
-        return format!("(lambda value: None if value.is_null() else value)({expr})");
+    if let Some(converter) = delegate_value_converter(typ, delegate_type_names) {
+        return format!("({converter})({expr})");
+    }
+    match typ {
+        TypeMeta::AsyncOperation(result) => {
+            return py_wrap_async_with_converters(
+                expr,
+                typ,
+                delegate_value_converter(result, delegate_type_names),
+                None,
+                known_types,
+            );
+        }
+        TypeMeta::AsyncActionWithProgress(progress) => {
+            return py_wrap_async_with_converters(
+                expr,
+                typ,
+                None,
+                delegate_value_converter(progress, delegate_type_names),
+                known_types,
+            );
+        }
+        TypeMeta::AsyncOperationWithProgress(result, progress) => {
+            return py_wrap_async_with_converters(
+                expr,
+                typ,
+                delegate_value_converter(result, delegate_type_names),
+                delegate_value_converter(progress, delegate_type_names),
+                known_types,
+            );
+        }
+        _ => {}
     }
     py_convert_return(expr, Some(typ), typ.is_async(), known_types)
 }
@@ -751,12 +800,9 @@ pub(crate) fn generate_method_body(
 
     if method.is_property_getter && in_params.is_empty() {
         let prop_name = to_snake_case(method.name.strip_prefix("get_").unwrap_or(&method.name));
-        let py_return = if return_type.is_some_and(|typ| is_delegate_type(typ, delegate_type_names))
-        {
-            "DynWinRTValue | None".to_string()
-        } else {
-            py_return_type_safe(return_type, known_types)
-        };
+        let py_return = return_type
+            .map(|typ| py_output_type(typ, known_types, delegate_type_names))
+            .unwrap_or_else(|| "None".to_string());
         out.push_str("    @_property\n");
         out.push_str(&format!("    def {}(self) -> {}:\n", prop_name, py_return));
         out.push_str(&method_pydoc(method, &in_params));

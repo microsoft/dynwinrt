@@ -3,12 +3,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use dynwinrt_codegen::codegen::{
-    project, python, python_stub, render_js,
-};
-use dynwinrt_codegen::meta::{
-    InterfaceMeta, MethodMeta, ParamDirection, ParamMeta,
-};
+use dynwinrt_codegen::codegen::{project, python, python_stub, render_dts, render_js};
+use dynwinrt_codegen::meta::{InterfaceMeta, MethodMeta, ParamDirection, ParamMeta};
 use dynwinrt_codegen::types::TypeMeta;
 
 fn delegate_interface(name: &str) -> TypeMeta {
@@ -41,11 +37,37 @@ fn generated_interfaces_import_only_referenced_delegates() {
                 name: "GetCallbacksAsync".into(),
                 raw_name: "GetCallbacksAsync".into(),
                 vtable_index: 7,
-                return_type: Some(TypeMeta::AsyncOperation(
-                    Box::new(TypeMeta::Array(Box::new(
-                        delegate_interface("AsyncHandler"),
-                    ))),
-                )),
+                return_type: Some(TypeMeta::AsyncOperation(Box::new(TypeMeta::Array(
+                    Box::new(delegate_interface("AsyncHandler")),
+                )))),
+                ..Default::default()
+            },
+            MethodMeta {
+                name: "GetCallback".into(),
+                raw_name: "GetCallback".into(),
+                vtable_index: 8,
+                return_type: Some(delegate_interface("AsyncHandler")),
+                ..Default::default()
+            },
+            MethodMeta {
+                name: "GetCallbackOut".into(),
+                raw_name: "GetCallbackOut".into(),
+                vtable_index: 9,
+                params: vec![ParamMeta {
+                    name: "callback".into(),
+                    typ: delegate_interface("AsyncHandler"),
+                    direction: ParamDirection::Out,
+                }],
+                ..Default::default()
+            },
+            MethodMeta {
+                name: "get_Callbacks".into(),
+                raw_name: "get_Callbacks".into(),
+                vtable_index: 10,
+                return_type: Some(TypeMeta::Array(Box::new(delegate_interface(
+                    "AsyncHandler",
+                )))),
+                is_property_getter: true,
                 ..Default::default()
             },
         ],
@@ -67,14 +89,8 @@ fn generated_interfaces_import_only_referenced_delegates() {
             "DataProviderHandler".into(),
             "(value: unknown) => void".into(),
         ),
-        (
-            "AsyncHandler".into(),
-            "() => void".into(),
-        ),
-        (
-            "UnrelatedHandler".into(),
-            "() => void".into(),
-        ),
+        ("AsyncHandler".into(), "() => void".into()),
+        ("UnrelatedHandler".into(), "() => void".into()),
     ]);
     let projected = project::project_interface(
         &interface,
@@ -85,16 +101,9 @@ fn generated_interfaces_import_only_referenced_delegates() {
         &HashMap::new(),
     );
     let js = render_js::render(&projected);
-    let py = python::generate_interface(
-        &interface,
-        &known_types,
-        &delegates,
-    );
-    let pyi = python_stub::generate_interface_stub(
-        &interface,
-        &known_types,
-        &delegates,
-    );
+    let dts = render_dts::render(&projected);
+    let py = python::generate_interface(&interface, &known_types, &delegates);
+    let pyi = python_stub::generate_interface_stub(&interface, &known_types, &delegates);
 
     for generated in [&js, &py, &pyi] {
         assert!(
@@ -103,16 +112,48 @@ fn generated_interfaces_import_only_referenced_delegates() {
             "{generated}",
         );
         assert!(
-            generated.contains("AsyncHandler")
-                || generated.contains("async_handler"),
+            generated.contains("AsyncHandler") || generated.contains("async_handler"),
             "{generated}",
         );
         assert!(
-            !generated.contains("UnrelatedHandler")
-                && !generated.contains("unrelated_handler"),
+            !generated.contains("UnrelatedHandler") && !generated.contains("unrelated_handler"),
             "{generated}",
         );
     }
+
+    assert!(
+        js.contains(".asArray().toValues().map(v => v.isNull() ? null : v)",)
+            && !js.contains("new AsyncHandler")
+            && !js.contains("__get_AsyncHandler"),
+        "{js}",
+    );
+    assert!(
+        js.contains("getCallback()")
+            && js.contains("((v) => v.isNull() ? null : v)",)
+            && js.contains("getCallbackOut()"),
+        "{js}",
+    );
+    assert!(
+        dts.contains("Promise<Array<DynWinRtValue | null>>",)
+            && dts.contains("getCallback(): DynWinRtValue | null",)
+            && dts.contains("getCallbackOut(): DynWinRtValue | null",)
+            && dts.contains("get callbacks(): Array<DynWinRtValue | null>",)
+            && !dts.contains("Promise<AsyncHandler[]>"),
+        "{dts}",
+    );
+    assert!(
+        py.contains("WinRTAsync[list[DynWinRTValue | None]]",)
+            && py.contains("value.as_array().to_values()",)
+            && py.contains("def callbacks(self) -> list[DynWinRTValue | None]:",)
+            && !py.contains("WinRTAsync[list[AsyncHandler | None]]",),
+        "{py}",
+    );
+    assert!(
+        pyi.contains("WinRTAsync[list[DynWinRTValue | None]]",)
+            && pyi.contains("def callbacks(self) -> list[DynWinRTValue | None]:",)
+            && !pyi.contains("WinRTAsync[list[AsyncHandler | None]]",),
+        "{pyi}",
+    );
 }
 
 #[test]
@@ -123,12 +164,8 @@ fn delegate_free_interfaces_do_not_import_global_delegates() {
         iid: "22222222-2222-2222-2222-222222222222".into(),
         ..Default::default()
     };
-    let known_types = HashSet::from([
-        "IValue".into(),
-        "UnrelatedHandler".into(),
-    ]);
-    let delegates =
-        HashSet::from(["UnrelatedHandler".into()]);
+    let known_types = HashSet::from(["IValue".into(), "UnrelatedHandler".into()]);
+    let delegates = HashSet::from(["UnrelatedHandler".into()]);
     let projected = project::project_interface(
         &interface,
         &known_types,
@@ -138,24 +175,13 @@ fn delegate_free_interfaces_do_not_import_global_delegates() {
         &HashMap::new(),
     );
 
+    assert!(!render_js::render(&projected).contains("UnrelatedHandler"),);
     assert!(
-        !render_js::render(&projected)
-            .contains("UnrelatedHandler"),
+        !python::generate_interface(&interface, &known_types, &delegates,)
+            .contains("unrelated_handler"),
     );
     assert!(
-        !python::generate_interface(
-            &interface,
-            &known_types,
-            &delegates,
-        )
-        .contains("unrelated_handler"),
-    );
-    assert!(
-        !python_stub::generate_interface_stub(
-            &interface,
-            &known_types,
-            &delegates,
-        )
-        .contains("unrelated_handler"),
+        !python_stub::generate_interface_stub(&interface, &known_types, &delegates,)
+            .contains("unrelated_handler"),
     );
 }

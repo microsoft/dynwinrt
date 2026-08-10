@@ -13,8 +13,8 @@ use super::naming::{python_module_name, to_snake_case};
 use super::native_types::{FoundationType, foundation_type};
 use super::structs::{py_struct_field_read_type, py_struct_field_type};
 use super::type_helpers::{
-    py_delegate_callable_type, py_factory_return_type, py_method_return_type, py_param_list,
-    py_param_type_safe, py_return_type_safe,
+    py_delegate_callable_type, py_factory_return_type, py_method_return_type, py_output_type,
+    py_param_list, py_param_type_safe,
 };
 use crate::codegen::winrt::shared::imports::ireference_inner_type;
 
@@ -236,11 +236,9 @@ pub(super) fn emit_method_stub_named(
 
     if method.is_property_getter && in_params.is_empty() {
         let prop_name = to_snake_case(method.name.strip_prefix("get_").unwrap_or(&method.name));
-        let py_return = if is_delegate_type(return_type) {
-            "DynWinRTValue | None".to_string()
-        } else {
-            py_return_type_safe(return_type, known_types)
-        };
+        let py_return = return_type
+            .map(|typ| py_output_type(typ, known_types, delegate_type_names))
+            .unwrap_or_else(|| "None".to_string());
         out.push_str(&format!("{indent}@builtins.property\n"));
         out.push_str(&format!(
             "{indent}def {}(self) -> {}: ...\n",

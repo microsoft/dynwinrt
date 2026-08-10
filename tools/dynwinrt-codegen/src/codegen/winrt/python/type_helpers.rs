@@ -246,16 +246,40 @@ pub(super) fn py_method_outputs(method: &MethodMeta) -> Vec<(usize, &TypeMeta)> 
     outputs
 }
 
-fn py_output_type(
+fn is_delegate_output(typ: &TypeMeta, delegate_type_names: &HashSet<String>) -> bool {
+    match typ {
+        TypeMeta::Delegate { .. } => true,
+        TypeMeta::Interface { name, .. } => delegate_type_names.contains(name),
+        TypeMeta::Parameterized { name, args, .. } => {
+            delegate_type_names.contains(&crate::meta::make_parameterized_name(name, args))
+        }
+        _ => false,
+    }
+}
+
+pub(super) fn py_output_type(
     typ: &TypeMeta,
     known_types: &HashSet<String>,
     delegate_type_names: &HashSet<String>,
 ) -> String {
     match typ {
-        TypeMeta::Delegate { .. } => "DynWinRTValue | None".to_string(),
-        TypeMeta::Interface { name, .. } if delegate_type_names.contains(name) => {
-            "DynWinRTValue | None".to_string()
+        _ if is_delegate_output(typ, delegate_type_names) => "DynWinRTValue | None".to_string(),
+        TypeMeta::Array(inner) if is_delegate_output(inner, delegate_type_names) => {
+            "list[DynWinRTValue | None]".to_string()
         }
+        TypeMeta::AsyncOperation(inner) => format!(
+            "WinRTAsync[{}]",
+            py_output_type(inner, known_types, delegate_type_names)
+        ),
+        TypeMeta::AsyncOperationWithProgress(result, progress) => format!(
+            "WinRTAsyncWithProgress[{}, {}]",
+            py_output_type(result, known_types, delegate_type_names),
+            py_output_type(progress, known_types, delegate_type_names)
+        ),
+        TypeMeta::AsyncActionWithProgress(progress) => format!(
+            "WinRTAsyncWithProgress[None, {}]",
+            py_output_type(progress, known_types, delegate_type_names)
+        ),
         _ => py_return_type_safe(Some(typ), known_types),
     }
 }
