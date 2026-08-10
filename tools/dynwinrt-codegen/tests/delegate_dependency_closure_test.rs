@@ -4,7 +4,7 @@
 use std::collections::{HashMap, HashSet};
 
 use dynwinrt_codegen::codegen::{project, python, python_stub, render_dts, render_js};
-use dynwinrt_codegen::meta::{InterfaceMeta, MethodMeta, ParamDirection, ParamMeta};
+use dynwinrt_codegen::meta::{ClassMeta, InterfaceMeta, MethodMeta, ParamDirection, ParamMeta};
 use dynwinrt_codegen::types::TypeMeta;
 
 fn delegate_interface(name: &str) -> TypeMeta {
@@ -16,7 +16,7 @@ fn delegate_interface(name: &str) -> TypeMeta {
 }
 
 #[test]
-fn generated_interfaces_import_only_referenced_delegates() {
+fn generated_interfaces_import_only_runtime_delegates() {
     let interface = InterfaceMeta {
         name: "IDataSource".into(),
         namespace: "Contoso".into(),
@@ -70,6 +70,13 @@ fn generated_interfaces_import_only_referenced_delegates() {
                 is_property_getter: true,
                 ..Default::default()
             },
+            MethodMeta {
+                name: "GetDataProvider".into(),
+                raw_name: "GetDataProvider".into(),
+                vtable_index: 11,
+                return_type: Some(delegate_interface("DataProviderHandler")),
+                ..Default::default()
+            },
         ],
         ..Default::default()
     };
@@ -105,14 +112,24 @@ fn generated_interfaces_import_only_referenced_delegates() {
     let py = python::generate_interface(&interface, &known_types, &delegates);
     let pyi = python_stub::generate_interface_stub(&interface, &known_types, &delegates);
 
+    assert_eq!(
+        js.matches("require('./DataProviderHandler.js')").count(),
+        1,
+        "{js}",
+    );
+    assert_eq!(
+        py.matches("from .data_provider_handler import").count(),
+        1,
+        "{py}",
+    );
+    assert_eq!(
+        pyi.matches("from .data_provider_handler import").count(),
+        1,
+        "{pyi}",
+    );
     for generated in [&js, &py, &pyi] {
         assert!(
-            generated.contains("DataProviderHandler")
-                || generated.contains("data_provider_handler"),
-            "{generated}",
-        );
-        assert!(
-            generated.contains("AsyncHandler") || generated.contains("async_handler"),
+            !generated.contains("AsyncHandler") && !generated.contains("async_handler"),
             "{generated}",
         );
         assert!(
@@ -138,6 +155,7 @@ fn generated_interfaces_import_only_referenced_delegates() {
             && dts.contains("getCallback(): DynWinRtValue | null",)
             && dts.contains("getCallbackOut(): DynWinRtValue | null",)
             && dts.contains("get callbacks(): Array<DynWinRtValue | null>",)
+            && dts.contains("getDataProvider(): DynWinRtValue | null",)
             && !dts.contains("Promise<AsyncHandler[]>"),
         "{dts}",
     );
@@ -154,6 +172,85 @@ fn generated_interfaces_import_only_referenced_delegates() {
             && !pyi.contains("WinRTAsync[list[AsyncHandler | None]]",),
         "{pyi}",
     );
+}
+
+#[test]
+fn generated_classes_do_not_import_output_only_delegates() {
+    let class = ClassMeta {
+        name: "CallbackSource".into(),
+        namespace: "Contoso".into(),
+        full_name: "Contoso.CallbackSource".into(),
+        default_interface: Some(InterfaceMeta {
+            name: "ICallbackSource".into(),
+            namespace: "Contoso".into(),
+            iid: "33333333-3333-3333-3333-333333333333".into(),
+            methods: vec![
+                MethodMeta {
+                    name: "SetHandler".into(),
+                    raw_name: "SetHandler".into(),
+                    vtable_index: 6,
+                    params: vec![ParamMeta {
+                        name: "callback".into(),
+                        typ: delegate_interface("InputHandler"),
+                        direction: ParamDirection::In,
+                    }],
+                    ..Default::default()
+                },
+                MethodMeta {
+                    name: "GetHandlerAsync".into(),
+                    raw_name: "GetHandlerAsync".into(),
+                    vtable_index: 7,
+                    return_type: Some(TypeMeta::AsyncOperation(Box::new(delegate_interface(
+                        "OutputHandler",
+                    )))),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let known_types = HashSet::from([
+        "CallbackSource".into(),
+        "ICallbackSource".into(),
+        "InputHandler".into(),
+        "OutputHandler".into(),
+    ]);
+    let delegates = HashSet::from(["InputHandler".into(), "OutputHandler".into()]);
+    let signatures = HashMap::from([
+        ("InputHandler".into(), "() => void".into()),
+        ("OutputHandler".into(), "() => void".into()),
+    ]);
+    let projected = project::project_class(
+        &class,
+        &known_types,
+        &delegates,
+        &HashSet::new(),
+        &signatures,
+        &HashMap::new(),
+        &HashMap::new(),
+    );
+    let js = render_js::render(&projected);
+    let dts = render_dts::render(&projected);
+    let py = python::generate_class(&class, &known_types, &delegates, &HashSet::new());
+    let pyi = python_stub::generate_class_stub(&class, &known_types, &delegates, &HashSet::new());
+
+    assert!(
+        js.contains("require('./InputHandler.js')")
+            && !js.contains("require('./OutputHandler.js')"),
+        "{js}",
+    );
+    assert!(
+        dts.contains("getHandlerAsync(signal?: AbortSignal): Promise<DynWinRtValue | null>",),
+        "{dts}",
+    );
+    for generated in [&py, &pyi] {
+        assert!(
+            generated.contains("from .input_handler import",)
+                && !generated.contains("from .output_handler import",),
+            "{generated}",
+        );
+    }
 }
 
 #[test]

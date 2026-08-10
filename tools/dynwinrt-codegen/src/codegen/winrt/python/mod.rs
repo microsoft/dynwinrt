@@ -45,19 +45,12 @@ pub(crate) fn collect_referenced_delegate_names(
             | TypeMeta::Array(inner) => {
                 collect(inner, known, result);
             }
-            TypeMeta::AsyncOperationWithProgress(
-                result_type,
-                progress,
-            ) => {
+            TypeMeta::AsyncOperationWithProgress(result_type, progress) => {
                 collect(result_type, known, result);
                 collect(progress, known, result);
             }
             TypeMeta::Parameterized { name, args, .. } => {
-                let concrete =
-                    crate::meta::make_parameterized_name(
-                        name,
-                        args,
-                    );
+                let concrete = crate::meta::make_parameterized_name(name, args);
                 if known.contains(&concrete) {
                     result.insert(concrete);
                 }
@@ -83,18 +76,43 @@ pub(crate) fn collect_referenced_delegate_names(
     let mut result = std::collections::HashSet::new();
     for method in methods {
         for parameter in &method.params {
-            collect(
-                &parameter.typ,
-                known_delegate_names,
-                &mut result,
-            );
+            collect(&parameter.typ, known_delegate_names, &mut result);
         }
         if let Some(return_type) = &method.return_type {
-            collect(
-                return_type,
-                known_delegate_names,
-                &mut result,
-            );
+            collect(return_type, known_delegate_names, &mut result);
+        }
+    }
+    result
+}
+
+pub(crate) fn collect_runtime_delegate_names(
+    methods: &[crate::meta::MethodMeta],
+    known_delegate_names: &std::collections::HashSet<String>,
+) -> std::collections::HashSet<String> {
+    use crate::meta::ParamDirection;
+    use crate::types::TypeMeta;
+
+    let mut result = std::collections::HashSet::new();
+    for method in methods {
+        for parameter in &method.params {
+            if parameter.direction != ParamDirection::In {
+                continue;
+            }
+            match &parameter.typ {
+                TypeMeta::Delegate { name, .. } => {
+                    result.insert(name.clone());
+                }
+                TypeMeta::Interface { name, .. } if known_delegate_names.contains(name) => {
+                    result.insert(name.clone());
+                }
+                TypeMeta::Parameterized { name, args, .. } => {
+                    let concrete = crate::meta::make_parameterized_name(name, args);
+                    if known_delegate_names.contains(&concrete) {
+                        result.insert(concrete);
+                    }
+                }
+                _ => {}
+            }
         }
     }
     result
