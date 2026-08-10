@@ -295,9 +295,10 @@ fn nested_struct_defaults_and_enum_fields_are_python_native() {
     let pyi = python_stub::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
 
     assert!(
-        py.contains("def __init__(self, mode: 'Mode' = _dynwinrt_enum('mode', 'Mode', 0), inner: 'Inner' | None = None):"),
+        py.contains("def __init__(self, mode: 'Mode' = _dynwinrt_enum('mode', 'Mode', 0), inner: Inner | None = None):"),
         "{py}"
     );
+    assert!(!py.contains("inner: 'Inner' | None"), "{py}");
     assert!(
         py.contains("self.inner = Inner() if inner is None else inner"),
         "{py}"

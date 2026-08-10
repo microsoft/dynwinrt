@@ -1463,6 +1463,8 @@ async def run_check(
                 cr['pass'] = True
 
         elif kind == 'nested_struct_runtime':
+            from typing import get_type_hints
+
             module = importlib.import_module(
                 implementation_module_name(pkg_name, namespace, cls.__name__)
             )
@@ -1471,6 +1473,22 @@ async def run_check(
             pixel_format = generated_type(pkg_name, 'DirectXPixelFormat')
             pack = getattr(module, 'pack_direct3_d_surface_description')
             unpack = getattr(module, 'unpack_direct3_d_surface_description')
+            constructor_hints = get_type_hints(
+                descriptor_type.__init__,
+                globalns={
+                    **vars(module),
+                    'DirectXPixelFormat': pixel_format,
+                },
+            )
+            if (
+                constructor_hints.get('multisample_description')
+                != nested_type | None
+            ):
+                cr['error'] = (
+                    'nested struct constructor annotation did not resolve: '
+                    f'{constructor_hints!r}'
+                )
+                return cr
 
             first = descriptor_type()
             second = descriptor_type()

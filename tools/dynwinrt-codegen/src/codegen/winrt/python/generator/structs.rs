@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::codegen::winrt::python::native_types::{FoundationType, foundation_type};
+use crate::codegen::winrt::python::type_helpers::py_optional_type;
 
 // ======================================================================
 // Struct helpers: Python dataclass-style + _unpack/_pack functions
@@ -209,7 +210,7 @@ pub(super) fn py_default_value(typ: &TypeMeta) -> String {
 fn py_struct_constructor_field_type(typ: &TypeMeta) -> String {
     match typ {
         TypeMeta::Struct { name, .. } if foundation_type(typ).is_none() && name != "HResult" => {
-            format!("{} | None", py_struct_field_type(typ))
+            py_optional_type(py_struct_field_type(typ))
         }
         _ => py_struct_field_type(typ),
     }
