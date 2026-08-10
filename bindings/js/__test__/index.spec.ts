@@ -121,9 +121,7 @@ test('package facades exactly partition native exports', (t) => {
     'DynComSafeArray',
     'DynComVariant',
     'DynWinRtValue',
-    'DynWinRTValue',
     'WinGuid',
-    'WinGUID',
     'initializeCom',
   ])
   const unsafeComNames = new Set([
@@ -150,6 +148,10 @@ test('package facades exactly partition native exports', (t) => {
 
   t.is(winrtCjsRuntime.WinGuid, comCjsRuntime.WinGuid)
   t.is(comCjsRuntime.initializeCom, unsafeComRuntime.initializeCom)
+  t.false(Object.prototype.hasOwnProperty.call(comCjsRuntime, 'DynWinRTValue'))
+  t.false(Object.prototype.hasOwnProperty.call(comCjsRuntime, 'WinGUID'))
+  t.false(Object.prototype.hasOwnProperty.call(unsafeComRuntime, 'DynWinRTValue'))
+  t.false(Object.prototype.hasOwnProperty.call(unsafeComRuntime, 'WinGUID'))
   for (const name of moduleKeys(comCjsRuntime)) {
     t.true(moduleKeys(unsafeComRuntime).includes(name), `${name} must remain available from /com/unsafe`)
   }
