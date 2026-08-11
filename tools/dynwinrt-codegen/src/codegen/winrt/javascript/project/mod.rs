@@ -55,8 +55,8 @@ pub struct StandaloneInterfaceIdentity {
 }
 
 impl StandaloneInterfaceIdentity {
-    fn describe(&self) -> String {
-        format!("{}.{} ({})", self.namespace, self.name, self.iid)
+    pub fn source_marker(&self) -> String {
+        format!("{}.{}:{}", self.namespace, self.name, self.iid)
     }
 }
 
@@ -78,15 +78,44 @@ pub struct CanonicalInterfaceSource {
     pub shared_member_source: bool,
 }
 
+pub fn ambiguous_standalone_interface_names<'a>(
+    interfaces: impl IntoIterator<Item = &'a InterfaceMeta>,
+) -> HashSet<String> {
+    let mut identities_by_name: HashMap<String, HashSet<StandaloneInterfaceIdentity>> =
+        HashMap::new();
+    for iface in interfaces {
+        let Some(identity) = standalone_interface_identity(iface) else {
+            continue;
+        };
+        identities_by_name
+            .entry(iface.name.clone())
+            .or_default()
+            .insert(identity);
+    }
+    identities_by_name
+        .into_iter()
+        .filter_map(|(name, identities)| (identities.len() > 1).then_some(name))
+        .collect()
+}
+
 pub fn canonical_interface_sources(
     interfaces: &[InterfaceMeta],
     shared_candidates: &[InterfaceMeta],
     class_names: &HashSet<String>,
+    excluded_shared_source_names: &HashSet<String>,
+    forced_shared_source_identities: &HashSet<StandaloneInterfaceIdentity>,
 ) -> Result<Vec<CanonicalInterfaceSource>, String> {
-    let shared_identities = shared_candidates
+    let mut shared_identities = shared_candidates
         .iter()
         .filter_map(standalone_interface_identity)
         .collect::<HashSet<_>>();
+    shared_identities.extend(forced_shared_source_identities.iter().cloned());
+    let ambiguous_names = ambiguous_standalone_interface_names(
+        shared_candidates
+            .iter()
+            .chain(interfaces)
+            .filter(|iface| !class_names.contains(&iface.name)),
+    );
     let mut sources: Vec<CanonicalInterfaceSource> = Vec::new();
     let mut source_by_name: HashMap<String, usize> = HashMap::new();
 
@@ -97,20 +126,20 @@ pub fn canonical_interface_sources(
         let Some(identity) = standalone_interface_identity(iface) else {
             continue;
         };
-        let shared_member_source = shared_identities.contains(&identity);
+        let ambiguous = ambiguous_names.contains(&iface.name)
+            || excluded_shared_source_names.contains(&iface.name);
+        let shared_member_source = !ambiguous && shared_identities.contains(&identity);
         if let Some(existing_index) = source_by_name.get(&iface.name).copied() {
             let existing = &mut sources[existing_index];
+            if ambiguous {
+                *existing = CanonicalInterfaceSource {
+                    interface: iface.clone(),
+                    identity,
+                    shared_member_source: false,
+                };
+                continue;
+            }
             if existing.identity != identity {
-                if existing.shared_member_source || shared_member_source {
-                    return Err(format!(
-                        "Cannot use `{0}.js` as a shared interface member source because `{1}` and \
-                         `{2}` have different interface identities. Generate them separately or \
-                         select only one type.",
-                        iface.name,
-                        existing.identity.describe(),
-                        identity.describe(),
-                    ));
-                }
                 *existing = CanonicalInterfaceSource {
                     interface: iface.clone(),
                     identity,
@@ -281,6 +310,28 @@ pub fn project_class(
     delegate_sig_refs: &HashMap<String, Vec<String>>,
     delegate_param_wraps: &HashMap<String, Vec<String>>,
 ) -> ProjectedFile {
+    project_class_with_excluded_interface_imports(
+        class,
+        known_types,
+        delegate_type_names,
+        shared_interface_sources,
+        &HashSet::new(),
+        delegate_sigs,
+        delegate_sig_refs,
+        delegate_param_wraps,
+    )
+}
+
+pub fn project_class_with_excluded_interface_imports(
+    class: &ClassMeta,
+    known_types: &HashSet<String>,
+    delegate_type_names: &HashSet<String>,
+    shared_interface_sources: &HashSet<StandaloneInterfaceIdentity>,
+    excluded_interface_import_names: &HashSet<String>,
+    delegate_sigs: &HashMap<String, String>,
+    delegate_sig_refs: &HashMap<String, Vec<String>>,
+    delegate_param_wraps: &HashMap<String, Vec<String>>,
+) -> ProjectedFile {
     let used_structs = collect_used_structs_from_class(class);
     let winui_bootstrap = winui::resolve_application_bootstrap(class, known_types);
     let supports_unpackaged_xaml =
@@ -361,7 +412,14 @@ pub fn project_class(
 
     // Type imports
     let mut imported_names: HashSet<String> = HashSet::new();
+    let mut imported_interface_names: HashSet<String> = HashSet::new();
     let type_imports = collect_type_imports(class);
+    let local_required_interface_names = class
+        .required_interfaces
+        .iter()
+        .filter(|iface| excluded_interface_import_names.contains(&iface.name))
+        .map(|iface| iface.name.as_str())
+        .collect::<HashSet<_>>();
     let mut sorted_imports: Vec<_> = type_imports.iter().collect();
     sorted_imports
         .sort_by(|a, b| (&a.namespace, &a.name, &a.kind).cmp(&(&b.namespace, &b.name, &b.kind)));
@@ -374,11 +432,16 @@ pub fn project_class(
         if r.name == class.name {
             continue;
         }
+        if r.kind == TypeKind::Interface && local_required_interface_names.contains(r.name.as_str())
+        {
+            continue;
+        }
         if known_types.contains(&r.name) && !all_delegate_names.contains(&r.name) {
             imports.push(format_type_import_projected(&r.name, r.kind));
             imported_names.insert(r.name.clone());
             if r.kind == TypeKind::Interface {
                 imported_names.insert(format!("IID_{}", r.name));
+                imported_interface_names.insert(r.name.clone());
             }
         } else if all_delegate_names.contains(&r.name)
             && delegate_sigs.contains_key(&r.name)
@@ -415,6 +478,7 @@ pub fn project_class(
             && !req_iface.iid.is_empty()
             && standalone_interface_identity(req_iface)
                 .is_some_and(|identity| shared_interface_sources.contains(&identity))
+            && !excluded_interface_import_names.contains(&req_iface.name)
             && !imported_names.contains(&req_iface.name)
         {
             imports.push(format_type_import_projected(
@@ -423,6 +487,7 @@ pub fn project_class(
             ));
             imported_names.insert(req_iface.name.clone());
             imported_names.insert(format!("IID_{}", req_iface.name));
+            imported_interface_names.insert(req_iface.name.clone());
         }
     }
 
@@ -448,13 +513,17 @@ pub fn project_class(
             .required_interfaces
             .iter()
             .any(|ri| ri.iid == ICLOSABLE_IID);
-    if needs_iclosable && !imported_names.contains("IClosable") {
+    if needs_iclosable
+        && !excluded_interface_import_names.contains("IClosable")
+        && !imported_names.contains("IClosable")
+    {
         imports.push(format_type_import_projected(
             "IClosable",
             TypeKind::Interface,
         ));
         imported_names.insert("IClosable".into());
         imported_names.insert("IID_IClosable".into());
+        imported_interface_names.insert("IClosable".into());
     }
 
     // IID consts(private, for class-internal use)
@@ -978,7 +1047,8 @@ pub fn project_class(
 
     // Required interface inline wrappers
     let mut required_ifaces = Vec::new();
-    let mut shared_member_candidates: Vec<(String, String, Vec<String>)> = Vec::new();
+    let mut verified_shared_interface_sources = Vec::new();
+    let mut shared_member_candidates: Vec<(String, String, String, Vec<String>)> = Vec::new();
     let mut conflicting_shared_members = HashSet::new();
     let share_interface_members = shared_interface_members_enabled();
     // Track names already on the main class to avoid conflicts
@@ -999,12 +1069,28 @@ pub fn project_class(
         if req_iface.iid.is_empty() {
             continue;
         }
-        let is_imported = imported_names.contains(&req_iface.name);
+        let is_imported = imported_interface_names.contains(&req_iface.name);
         let is_shared_member_source = share_interface_members
             && req_iface.generic_piid.is_none()
             && standalone_interface_identity(req_iface)
                 .is_some_and(|identity| shared_interface_sources.contains(&identity))
             && is_imported;
+        if is_shared_member_source {
+            let interface_identity = standalone_interface_identity(req_iface)
+                .expect("shared interface source must have an identity")
+                .source_marker();
+            if !verified_shared_interface_sources.iter().any(
+                |source: &ProjectedSharedInterfaceSource| {
+                    source.interface_name == req_iface.name
+                        && source.interface_identity == interface_identity
+                },
+            ) {
+                verified_shared_interface_sources.push(ProjectedSharedInterfaceSource {
+                    interface_name: req_iface.name.clone(),
+                    interface_identity,
+                });
+            }
+        }
 
         let reg_var = format!("_{}", req_iface.name);
         let mut ri_members = Vec::new();
@@ -1147,7 +1233,9 @@ pub fn project_class(
 
     let mut shared_interface_members: Vec<ProjectedSharedInterfaceMembers> = Vec::new();
     if share_interface_members {
-        for (member_key, interface_name, descriptor_keys) in shared_member_candidates {
+        for (member_key, interface_name, interface_identity, descriptor_keys) in
+            shared_member_candidates
+        {
             if conflicting_shared_members.contains(&member_key)
                 || descriptor_keys.iter().any(|descriptor_key| {
                     final_descriptor_counts
@@ -1157,9 +1245,10 @@ pub fn project_class(
             {
                 continue;
             }
-            let group = shared_interface_members
-                .iter_mut()
-                .find(|group| group.interface_name == interface_name);
+            let group = shared_interface_members.iter_mut().find(|group| {
+                group.interface_name == interface_name
+                    && group.interface_identity == interface_identity
+            });
             if let Some(group) = group {
                 if !group.member_keys.contains(&member_key) {
                     group.member_keys.push(member_key);
@@ -1172,6 +1261,7 @@ pub fn project_class(
             } else {
                 shared_interface_members.push(ProjectedSharedInterfaceMembers {
                     interface_name,
+                    interface_identity,
                     member_keys: vec![member_key],
                     descriptor_keys,
                 });
@@ -1195,6 +1285,7 @@ pub fn project_class(
             doc,
             members,
             required_ifaces,
+            shared_interface_sources: verified_shared_interface_sources,
             shared_interface_members,
             static_cache_fields,
             static_accessors,
@@ -1465,6 +1556,9 @@ pub fn project_interface_with_shared_member_source(
             has_static_from: !iface.iid.is_empty(),
             has_parameterized_cast,
             shared_member_source,
+            interface_identity: standalone_interface_identity(iface)
+                .map(|identity| identity.source_marker())
+                .unwrap_or_default(),
             members,
             is_delegate: false,
         }],
@@ -1608,7 +1702,7 @@ pub fn project_delegate(
 // ======================================================================
 
 fn record_shared_member_candidate(
-    candidates: &mut Vec<(String, String, Vec<String>)>,
+    candidates: &mut Vec<(String, String, String, Vec<String>)>,
     conflicts: &mut HashSet<String>,
     interface: &InterfaceMeta,
     member: &ProjectedMember,
@@ -1630,11 +1724,18 @@ fn record_shared_member_candidate(
     if descriptor_keys.is_empty() {
         return;
     }
-    if let Some((_, existing_interface, existing_descriptors)) = candidates
+    let Some(interface_identity) = standalone_interface_identity(interface) else {
+        return;
+    };
+    let interface_identity = interface_identity.source_marker();
+    if let Some((_, existing_interface, existing_identity, existing_descriptors)) = candidates
         .iter_mut()
-        .find(|(existing_key, _, _)| existing_key == &member_key)
+        .find(|(existing_key, _, _, _)| existing_key == &member_key)
     {
-        if existing_interface != &interface.name || matches!(member, ProjectedMember::Method(_)) {
+        if existing_interface != &interface.name
+            || existing_identity != &interface_identity
+            || matches!(member, ProjectedMember::Method(_))
+        {
             conflicts.insert(member_key);
         } else {
             for descriptor_key in descriptor_keys {
@@ -1645,7 +1746,12 @@ fn record_shared_member_candidate(
         }
         return;
     }
-    candidates.push((member_key, interface.name.clone(), descriptor_keys));
+    candidates.push((
+        member_key,
+        interface.name.clone(),
+        interface_identity,
+        descriptor_keys,
+    ));
 }
 
 fn shared_member_key(member: &ProjectedMember) -> Option<String> {

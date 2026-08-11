@@ -381,6 +381,12 @@ fn run() -> Result<(), String> {
                 project::set_import_name(&import_name);
                 project::set_shared_interface_members(shared_interface_members);
             }
+            let (metadata_excluded_shared_source_names, metadata_shared_source_identities) =
+                if lang == "js" && shared_interface_members {
+                    loaded_metadata_interface_plan(&winmd)
+                } else {
+                    (HashSet::new(), HashSet::new())
+                };
             if !dry_run {
                 fs::create_dir_all(output_dir).map_err(|e| {
                     format!("Failed to create output directory '{}': {}", output, e)
@@ -591,6 +597,26 @@ fn run() -> Result<(), String> {
                 winui::add_implicit_classes(&winmd, &mut classes);
                 let mut implicit_interfaces = Vec::new();
                 winui::add_implicit_interfaces(&winmd, &classes, &mut implicit_interfaces);
+                let (
+                    mut excluded_shared_source_names,
+                    mut shared_interface_source_identities,
+                    reserved_non_interface_output_names,
+                ) = if lang == "js" && project::shared_interface_members_enabled() {
+                    shared_interface_plan_for_batches(
+                        &winmd,
+                        &[(classes.clone(), implicit_interfaces.clone(), Vec::new())],
+                    )
+                } else {
+                    (HashSet::new(), HashSet::new(), HashSet::new())
+                };
+                excluded_shared_source_names
+                    .extend(metadata_excluded_shared_source_names.iter().cloned());
+                shared_interface_source_identities.extend(
+                    metadata_shared_source_identities
+                        .iter()
+                        .filter(|identity| !excluded_shared_source_names.contains(&identity.name))
+                        .cloned(),
+                );
                 generate_for_types(
                     &winmd,
                     output_dir,
@@ -601,6 +627,9 @@ fn run() -> Result<(), String> {
                     &lang,
                     pyi,
                     &doc_table,
+                    &excluded_shared_source_names,
+                    &shared_interface_source_identities,
+                    &reserved_non_interface_output_names,
                 )?;
 
                 // Write (or append to) the index file for the output directory
@@ -649,6 +678,8 @@ fn run() -> Result<(), String> {
                                 ))
                             } else {
                                 !class_names.contains(&interface.name)
+                                    && !reserved_non_interface_output_names
+                                        .contains(&interface.name)
                             }
                     });
                     all_enums.retain(|e| match e {
@@ -717,10 +748,7 @@ fn run() -> Result<(), String> {
                     }
                 };
 
-                let mut total_classes = 0usize;
-                let mut total_interfaces = 0usize;
-                let mut total_enums = 0usize;
-
+                let mut namespace_batches = Vec::new();
                 for ns in &namespaces {
                     if let Some(interface) =
                         com_metadata::first_classic_com_interface_in_namespace(&winmd, ns)
@@ -734,9 +762,34 @@ fn run() -> Result<(), String> {
                     }
                     let mut classes = meta::parse_namespace(&winmd, ns);
                     let mut interfaces = meta::parse_interfaces(&winmd, ns);
-                    let mut enums = meta::parse_enums(&winmd, ns);
+                    let enums = meta::parse_enums(&winmd, ns);
                     winui::add_implicit_classes(&winmd, &mut classes);
                     winui::add_implicit_interfaces(&winmd, &classes, &mut interfaces);
+                    namespace_batches.push((classes, interfaces, enums));
+                }
+                let (
+                    mut excluded_shared_source_names,
+                    mut shared_interface_source_identities,
+                    reserved_non_interface_output_names,
+                ) = if lang == "js" && project::shared_interface_members_enabled() {
+                    shared_interface_plan_for_batches(&winmd, &namespace_batches)
+                } else {
+                    (HashSet::new(), HashSet::new(), HashSet::new())
+                };
+                excluded_shared_source_names
+                    .extend(metadata_excluded_shared_source_names.iter().cloned());
+                shared_interface_source_identities.extend(
+                    metadata_shared_source_identities
+                        .iter()
+                        .filter(|identity| !excluded_shared_source_names.contains(&identity.name))
+                        .cloned(),
+                );
+
+                let mut total_classes = 0usize;
+                let mut total_interfaces = 0usize;
+                let mut total_enums = 0usize;
+
+                for (mut classes, mut interfaces, mut enums) in namespace_batches {
                     for c in classes.iter_mut() {
                         doc_table.apply_to_class(c);
                     }
@@ -748,8 +801,18 @@ fn run() -> Result<(), String> {
                     }
 
                     let (nc, ni, ne) = generate_for_types(
-                        &winmd, output_dir, classes, interfaces, enums, dry_run, &lang, pyi,
+                        &winmd,
+                        output_dir,
+                        classes,
+                        interfaces,
+                        enums,
+                        dry_run,
+                        &lang,
+                        pyi,
                         &doc_table,
+                        &excluded_shared_source_names,
+                        &shared_interface_source_identities,
+                        &reserved_non_interface_output_names,
                     )?;
                     total_classes += nc;
                     total_interfaces += ni;
@@ -804,6 +867,8 @@ fn run() -> Result<(), String> {
                                 ))
                             } else {
                                 !class_names.contains(&interface.name)
+                                    && !reserved_non_interface_output_names
+                                        .contains(&interface.name)
                             }
                     });
                     all_enums.retain(|e| match e {
@@ -876,6 +941,9 @@ fn generate_for_types(
     lang: &str,
     pyi: bool,
     doc_table: &DocTable,
+    excluded_shared_source_names: &HashSet<String>,
+    forced_shared_source_identities: &HashSet<project::StandaloneInterfaceIdentity>,
+    reserved_non_interface_output_names: &HashSet<String>,
 ) -> Result<(usize, usize, usize), String> {
     let deps = meta::resolve_dependencies(winmd, &classes, &interfaces, &enums);
     let mut all_classes = classes;
@@ -1024,11 +1092,22 @@ fn generate_for_types(
     for iface in &canonical_shared_interfaces {
         known_types.insert(iface.name.clone());
     }
+    let mut effective_excluded_shared_source_names = excluded_shared_source_names.clone();
+    for en in &all_enums {
+        if let TypeMeta::Enum { name, .. } = en
+            && !name.contains('<')
+            && !class_names_all.contains(name)
+        {
+            effective_excluded_shared_source_names.insert(name.clone());
+        }
+    }
     let canonical_interface_sources = if shared_interface_members_enabled {
         Some(project::canonical_interface_sources(
             &all_interfaces,
             &canonical_shared_interfaces,
             &class_names_all,
+            &effective_excluded_shared_source_names,
+            forced_shared_source_identities,
         )?)
     } else {
         None
@@ -1064,15 +1143,118 @@ fn generate_for_types(
                 &delegate_type_names,
                 canonical_interface_sources.as_deref(),
                 &shared_interface_source_identities,
+                &effective_excluded_shared_source_names,
+                reserved_non_interface_output_names,
                 &delegate_signatures,
                 &delegate_sig_refs,
                 &delegate_param_wraps,
             )?;
         }
+
         drop(python_layout);
     }
 
     Ok((all_classes.len(), all_interfaces.len(), all_enums.len()))
+}
+
+fn shared_interface_plan_for_batches(
+    winmd: &str,
+    batches: &[(
+        Vec<meta::ClassMeta>,
+        Vec<meta::InterfaceMeta>,
+        Vec<TypeMeta>,
+    )],
+) -> (
+    HashSet<String>,
+    HashSet<project::StandaloneInterfaceIdentity>,
+    HashSet<String>,
+) {
+    let mut standalone_sources = Vec::new();
+    let mut shared_source_identities = HashSet::new();
+    let mut non_interface_writer_names = HashSet::new();
+    for (classes, interfaces, enums) in batches {
+        let deps = meta::resolve_dependencies(winmd, classes, interfaces, enums);
+        let all_classes = classes.iter().chain(&deps.classes).collect::<Vec<_>>();
+        let class_names = all_classes
+            .iter()
+            .map(|class| class.name.clone())
+            .collect::<HashSet<_>>();
+        non_interface_writer_names.extend(class_names.iter().cloned());
+        non_interface_writer_names.extend(enums.iter().chain(&deps.enums).filter_map(
+            |en| match en {
+                TypeMeta::Enum { name, .. }
+                    if !name.contains('<') && !class_names.contains(name) =>
+                {
+                    Some(name.clone())
+                }
+                _ => None,
+            },
+        ));
+        standalone_sources.extend(
+            interfaces
+                .iter()
+                .chain(&deps.interfaces)
+                .filter(|iface| !class_names.contains(&iface.name))
+                .cloned(),
+        );
+
+        let mut required_interface_count: HashMap<
+            project::StandaloneInterfaceIdentity,
+            (&meta::InterfaceMeta, usize),
+        > = HashMap::new();
+        for class in all_classes {
+            for req_iface in &class.required_interfaces {
+                let Some(identity) = project::standalone_interface_identity(req_iface) else {
+                    continue;
+                };
+                required_interface_count
+                    .entry(identity)
+                    .and_modify(|(_, count)| *count += 1)
+                    .or_insert((req_iface, 1));
+            }
+        }
+        standalone_sources.extend(
+            required_interface_count
+                .into_values()
+                .filter(|(iface, count)| *count >= 2 && !class_names.contains(&iface.name))
+                .map(|(iface, _)| {
+                    shared_source_identities.insert(
+                        project::standalone_interface_identity(iface)
+                            .expect("counted required interface must have an identity"),
+                    );
+                    iface.clone()
+                }),
+        );
+    }
+
+    let mut excluded_names = project::ambiguous_standalone_interface_names(&standalone_sources);
+    excluded_names.extend(non_interface_writer_names.iter().cloned());
+    shared_source_identities.retain(|identity| !excluded_names.contains(&identity.name));
+    (
+        excluded_names,
+        shared_source_identities,
+        non_interface_writer_names,
+    )
+}
+
+fn loaded_metadata_interface_plan(
+    winmd: &str,
+) -> (
+    HashSet<String>,
+    HashSet<project::StandaloneInterfaceIdentity>,
+) {
+    let interfaces = meta::parse_all_interfaces_including_exclusive(winmd);
+    let excluded_names = project::ambiguous_standalone_interface_names(&interfaces);
+    let shared_source_identities = interfaces
+        .iter()
+        .filter(|iface| {
+            iface.generic_piid.is_none()
+                && !iface.methods.iter().any(|method| method.name == ".ctor")
+                && !excluded_names.contains(&iface.name)
+        })
+        .filter_map(project::standalone_interface_identity)
+        .collect();
+    (excluded_names, shared_source_identities)
 }
 
 fn python_type_identities(
@@ -1138,6 +1320,8 @@ fn generate_js_files(
     delegate_type_names: &HashSet<String>,
     canonical_interface_sources: Option<&[project::CanonicalInterfaceSource]>,
     shared_interface_source_identities: &HashSet<project::StandaloneInterfaceIdentity>,
+    excluded_interface_import_names: &HashSet<String>,
+    reserved_non_interface_output_names: &HashSet<String>,
     delegate_sigs: &HashMap<String, String>,
     delegate_sig_refs: &HashMap<String, Vec<String>>,
     delegate_param_wraps: &HashMap<String, Vec<String>>,
@@ -1170,6 +1354,9 @@ fn generate_js_files(
     if let Some(canonical_sources) = canonical_interface_sources {
         for source in canonical_sources {
             let iface = &source.interface;
+            if reserved_non_interface_output_names.contains(&iface.name) {
+                continue;
+            }
             let projected = project::project_interface_with_shared_member_source(
                 iface,
                 known_types,
@@ -1186,6 +1373,9 @@ fn generate_js_files(
     } else {
         for iface in shared_interfaces {
             if class_names.contains(iface.name.as_str()) {
+                continue;
+            }
+            if reserved_non_interface_output_names.contains(&iface.name) {
                 continue;
             }
             if !is_emittable_interface(iface) {
@@ -1205,6 +1395,9 @@ fn generate_js_files(
         }
         for iface in all_interfaces {
             if class_names.contains(iface.name.as_str()) {
+                continue;
+            }
+            if reserved_non_interface_output_names.contains(&iface.name) {
                 continue;
             }
             if !is_emittable_interface(iface) {
@@ -1264,11 +1457,12 @@ fn generate_js_files(
         if !class_is_usable(class) {
             continue;
         }
-        let projected = project::project_class(
+        let projected = project::project_class_with_excluded_interface_imports(
             class,
             known_types,
             delegate_type_names,
             shared_interface_source_identities,
+            excluded_interface_import_names,
             delegate_sigs,
             delegate_sig_refs,
             delegate_param_wraps,

@@ -259,14 +259,48 @@ pub fn parse_namespace(winmd_paths: &str, namespace: &str) -> Vec<ClassMeta> {
 /// Exclusive interfaces (prefixed with I and paired with a RuntimeClass) are skipped
 /// since they are implementation details. We only generate public-facing interfaces.
 pub fn parse_interfaces(winmd_paths: &str, namespace: &str) -> Vec<InterfaceMeta> {
+    parse_interfaces_with_exclusive(winmd_paths, namespace, false)
+}
+
+/// Parse every non-generic interface in a namespace, including interfaces
+/// marked ExclusiveTo for generation-wide identity planning.
+pub fn parse_interfaces_including_exclusive(
+    winmd_paths: &str,
+    namespace: &str,
+) -> Vec<InterfaceMeta> {
+    parse_interfaces_with_exclusive(winmd_paths, namespace, true)
+}
+
+/// Parse every non-generic interface across the loaded metadata in one pass,
+/// including interfaces marked ExclusiveTo.
+pub fn parse_all_interfaces_including_exclusive(winmd_paths: &str) -> Vec<InterfaceMeta> {
     let index = match load_index(winmd_paths) {
         Some(idx) => idx,
         None => return Vec::new(),
     };
+    parse_interfaces_from_index(&index, None, true)
+}
 
+fn parse_interfaces_with_exclusive(
+    winmd_paths: &str,
+    namespace: &str,
+    include_exclusive: bool,
+) -> Vec<InterfaceMeta> {
+    let index = match load_index(winmd_paths) {
+        Some(idx) => idx,
+        None => return Vec::new(),
+    };
+    parse_interfaces_from_index(&index, Some(namespace), include_exclusive)
+}
+
+fn parse_interfaces_from_index(
+    index: &reader::Index,
+    namespace: Option<&str>,
+    include_exclusive: bool,
+) -> Vec<InterfaceMeta> {
     let mut interfaces = Vec::new();
     for def in index.all() {
-        if def.namespace() != namespace {
+        if namespace.is_some_and(|namespace| def.namespace() != namespace) {
             continue;
         }
         // Skip CLR projection types
@@ -287,10 +321,10 @@ pub fn parse_interfaces(winmd_paths: &str, namespace: &str) -> Vec<InterfaceMeta
             continue;
         }
         // Skip exclusive interfaces (marked with ExclusiveTo attribute)
-        if def.has_attribute("ExclusiveToAttribute") {
+        if !include_exclusive && def.has_attribute("ExclusiveToAttribute") {
             continue;
         }
-        if let Some(iface) = parse_interface(&index, namespace, def.name()) {
+        if let Some(iface) = parse_interface(index, def.namespace(), def.name()) {
             interfaces.push(iface);
         }
     }

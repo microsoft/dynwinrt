@@ -257,6 +257,9 @@ pub struct ProjectedClass {
     pub doc: Option<DocInfo>,
     pub members: Vec<ProjectedMember>,
     pub required_ifaces: Vec<ProjectedRequiredIface>,
+    /// Standalone shared sources imported by this class, including interfaces
+    /// whose descriptors remain class-local after conflict filtering.
+    pub shared_interface_sources: Vec<ProjectedSharedInterfaceSource>,
     /// Required-interface members whose implementation descriptors are copied
     /// from a shared standalone interface prototype.
     pub shared_interface_members: Vec<ProjectedSharedInterfaceMembers>,
@@ -266,8 +269,15 @@ pub struct ProjectedClass {
     pub static_accessors: Vec<String>,
 }
 
+pub struct ProjectedSharedInterfaceSource {
+    pub interface_name: String,
+    pub interface_identity: String,
+}
+
 pub struct ProjectedSharedInterfaceMembers {
     pub interface_name: String,
+    /// Normalized metadata identity expected from the standalone source file.
+    pub interface_identity: String,
     /// Projection-level member keys used to suppress duplicate class bodies.
     pub member_keys: Vec<String>,
     /// JavaScript property-key expressions copied from the interface prototype.
@@ -282,6 +292,8 @@ pub struct ProjectedIface {
     pub has_parameterized_cast: bool,
     /// The interface prototype may be reused by concrete runtime classes.
     pub shared_member_source: bool,
+    /// Normalized metadata identity stored on a shared member source.
+    pub interface_identity: String,
     pub members: Vec<ProjectedMember>,
     pub is_delegate: bool,
 }

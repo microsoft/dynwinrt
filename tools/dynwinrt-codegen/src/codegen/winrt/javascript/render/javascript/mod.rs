@@ -117,16 +117,27 @@ fn render_esm(file: &ProjectedFile) -> String {
         .classes
         .iter()
         .any(|class| !class.shared_interface_members.is_empty());
+    let verifies_shared_interface_sources = file
+        .classes
+        .iter()
+        .any(|class| !class.shared_interface_sources.is_empty());
     let is_shared_interface_source = file.ifaces.iter().any(|iface| iface.shared_member_source);
-    if copies_shared_interface_members || is_shared_interface_source {
+    if verifies_shared_interface_sources || is_shared_interface_source {
         out.push_str(
             "const __sharedInterfaceMemberSource = Symbol.for('dynwinrt.sharedInterfaceMemberSource');\n\n",
         );
     }
+    if verifies_shared_interface_sources {
+        out.push_str(
+            "const __verifyInterfaceSource = (source, identity) => {\n\
+    if (source[__sharedInterfaceMemberSource] !== identity) throw new Error(`Interface ${source.name} is not a shared member source for ${identity}`);\n\
+};\n\n",
+        );
+    }
     if copies_shared_interface_members {
         out.push_str(
-            "const __copyInterfaceMembers = (target, source, keys) => {\n\
-    if (source[__sharedInterfaceMemberSource] !== true) throw new Error(`Interface ${source.name} is not a shared member source`);\n\
+            "const __copyInterfaceMembers = (target, source, identity, keys) => {\n\
+    __verifyInterfaceSource(source, identity);\n\
     for (const key of keys) {\n\
         const descriptor = Object.getOwnPropertyDescriptor(source.prototype, key);\n\
         if (descriptor === undefined) throw new Error(`Missing shared interface member ${String(key)}`);\n\
@@ -335,11 +346,25 @@ fn render_class_js(out: &mut String, class: &ProjectedClass) {
         render_member_js(out, member, &class.name);
     }
     out.push_str("}\n");
+    for source in &class.shared_interface_sources {
+        let copied = class.shared_interface_members.iter().any(|shared| {
+            shared.interface_name == source.interface_name
+                && shared.interface_identity == source.interface_identity
+        });
+        if !copied {
+            out.push_str(&format!(
+                "__verifyInterfaceSource({}, '{}');\n",
+                ref_marker(&source.interface_name),
+                source.interface_identity,
+            ));
+        }
+    }
     for shared in &class.shared_interface_members {
         out.push_str(&format!(
-            "__copyInterfaceMembers({}, {}, [{}]);\n",
+            "__copyInterfaceMembers({}, {}, '{}', [{}]);\n",
             class.name,
             ref_marker(&shared.interface_name),
+            shared.interface_identity,
             shared.descriptor_keys.join(", "),
         ));
     }
@@ -396,8 +421,8 @@ fn render_iface_js(out: &mut String, iface: &ProjectedIface, _file: &ProjectedFi
     out.push_str("}\n");
     if iface.shared_member_source {
         out.push_str(&format!(
-            "Object.defineProperty({}, __sharedInterfaceMemberSource, {{ value: true }});\n",
-            iface.name
+            "Object.defineProperty({}, __sharedInterfaceMemberSource, {{ value: '{}' }});\n",
+            iface.name, iface.interface_identity,
         ));
     }
 }
