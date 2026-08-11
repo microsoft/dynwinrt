@@ -200,7 +200,7 @@ impl TypeHandle {
     }
 
     pub(crate) fn normalized_async_type(&self) -> crate::result::Result<Self> {
-        match self.kind {
+        let normalized = match self.kind {
             TypeKind::IAsyncAction
             | TypeKind::IAsyncActionWithProgress(_)
             | TypeKind::IAsyncOperation(_)
@@ -210,7 +210,11 @@ impl TypeHandle {
                 normalize_async_type(generic_def, &args, &self.table)
             }
             _ => Err(invalid_async_type()),
-        }
+        }?;
+        normalized
+            .table
+            .try_signature_string_kind(normalized.kind)?;
+        Ok(normalized)
     }
 
     /// Reverse-lookup an enum member name from its i32 value.
@@ -502,11 +506,14 @@ fn normalize_async_type(
     args: &[TypeKind],
     table: &Arc<MetadataTable>,
 ) -> crate::result::Result<TypeHandle> {
-    let piid = match generic_def {
-        TypeKind::Generic { piid, .. } => piid,
-        TypeKind::Interface(iid) => iid,
+    let (piid, declared_arity) = match generic_def {
+        TypeKind::Generic { piid, arity } => (piid, Some(arity as usize)),
+        TypeKind::Interface(iid) => (iid, None),
         _ => return Err(invalid_async_type()),
     };
+    if declared_arity.is_some_and(|arity| arity != args.len()) {
+        return Err(invalid_async_type());
+    }
 
     match (piid, args) {
         (IASYNC_ACTION, []) => Ok(table.async_action()),

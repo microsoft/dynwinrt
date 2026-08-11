@@ -193,6 +193,17 @@ test('Classic COM raw ABI access requires the explicit unsafe entrypoint', (t) =
   )
 })
 
+test('DynCom rejects invalid WinRT async result signatures', (t) => {
+  const invalidAsyncType = DynWinRtType.iAsyncOperation(
+    DynWinRtType.arrayType(DynWinRtType.i32()),
+  )
+
+  const error = t.throws(() =>
+    DynCom.projectWinRtAsync(DynWinRtValue.nullValue(), invalidAsyncType),
+  )
+  t.regex(error.message, /valid WinRT signature/)
+})
+
 test('DynCom rejects pointers after their TypedArray backing store is detached', (t) => {
   const bytes = new Uint8Array(16)
   const pointer = DynCom.pointer(bytes)

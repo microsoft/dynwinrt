@@ -9213,6 +9213,15 @@ mod tests {
         assert!(project_winrt_async(&WinRTValue::Null, malformed).is_err());
     }
 
+    #[test]
+    fn project_winrt_async_rejects_invalid_result_signature() {
+        let table = MetadataTable::new();
+        let array = table.array(&table.i32_type());
+        let invalid = table.async_operation(&array);
+
+        assert!(project_winrt_async(&WinRTValue::Null, invalid).is_err());
+    }
+
     #[tokio::test]
     async fn project_winrt_async_normalizes_parameterized_operation() -> result::Result<()> {
         use windows::Storage::{IStorageFile, StorageFile};
