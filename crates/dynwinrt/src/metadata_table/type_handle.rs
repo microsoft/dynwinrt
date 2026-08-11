@@ -199,6 +199,20 @@ impl TypeHandle {
         }
     }
 
+    pub(crate) fn normalized_async_type(&self) -> crate::result::Result<Self> {
+        match self.kind {
+            TypeKind::IAsyncAction
+            | TypeKind::IAsyncActionWithProgress(_)
+            | TypeKind::IAsyncOperation(_)
+            | TypeKind::IAsyncOperationWithProgress(_) => Ok(self.clone()),
+            TypeKind::Parameterized(idx) => {
+                let (generic_def, args) = self.table.get_parameterized(idx);
+                normalize_async_type(generic_def, &args, &self.table)
+            }
+            _ => Err(invalid_async_type()),
+        }
+    }
+
     /// Reverse-lookup an enum member name from its i32 value.
     /// Returns None if not an Enum type or no member matches.
     pub fn enum_member_name(&self, value: i32) -> Option<String> {
@@ -471,44 +485,45 @@ fn make_async_value_from_kind(
     args: &[TypeKind],
     table: &Arc<MetadataTable>,
 ) -> crate::result::Result<WinRTValue> {
-    let piid = match generic_def {
-        TypeKind::Generic { piid, .. } => piid,
-        TypeKind::Interface(iid) => iid,
-        _ => {
-            return Err(crate::result::Error::WindowsError(
-                windows_core::Error::from_hresult(windows_core::HRESULT(0x80004002u32 as i32)),
-            ));
-        }
-    };
+    let async_type = normalize_async_type(generic_def, args, table)?;
 
     let info: windows_future::IAsyncInfo = raw
         .cast()
         .map_err(|e| crate::result::Error::WindowsError(e))?;
 
-    let async_type = if piid == IASYNC_ACTION {
-        table.async_action()
-    } else if piid == IASYNC_OPERATION {
-        let t = args.first().copied().unwrap_or(TypeKind::Object);
-        let t_h = table.make(t);
-        table.async_operation(&t_h)
-    } else if piid == IASYNC_ACTION_WITH_PROGRESS {
-        let p = args.first().copied().unwrap_or(TypeKind::Object);
-        let p_h = table.make(p);
-        table.async_action_with_progress(&p_h)
-    } else if piid == IASYNC_OPERATION_WITH_PROGRESS {
-        let t = args.first().copied().unwrap_or(TypeKind::Object);
-        let p = args.get(1).copied().unwrap_or(TypeKind::Object);
-        let t_h = table.make(t);
-        let p_h = table.make(p);
-        table.async_operation_with_progress(&t_h, &p_h)
-    } else {
-        return Err(crate::result::Error::WindowsError(
-            windows_core::Error::from_hresult(windows_core::HRESULT(0x80004002u32 as i32)),
-        ));
-    };
-
     Ok(WinRTValue::Async(crate::value::AsyncInfo {
         info,
         async_type,
     }))
+}
+
+fn normalize_async_type(
+    generic_def: TypeKind,
+    args: &[TypeKind],
+    table: &Arc<MetadataTable>,
+) -> crate::result::Result<TypeHandle> {
+    let piid = match generic_def {
+        TypeKind::Generic { piid, .. } => piid,
+        TypeKind::Interface(iid) => iid,
+        _ => return Err(invalid_async_type()),
+    };
+
+    match (piid, args) {
+        (IASYNC_ACTION, []) => Ok(table.async_action()),
+        (IASYNC_OPERATION, [result]) => Ok(table.async_operation(&table.make(*result))),
+        (IASYNC_ACTION_WITH_PROGRESS, [progress]) => {
+            Ok(table.async_action_with_progress(&table.make(*progress)))
+        }
+        (IASYNC_OPERATION_WITH_PROGRESS, [result, progress]) => {
+            Ok(table.async_operation_with_progress(&table.make(*result), &table.make(*progress)))
+        }
+        _ => Err(invalid_async_type()),
+    }
+}
+
+fn invalid_async_type() -> crate::result::Error {
+    crate::result::Error::WindowsError(windows_core::Error::new(
+        windows_core::HRESULT(0x80070057u32 as i32),
+        "Invalid WinRT async type",
+    ))
 }

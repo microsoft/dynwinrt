@@ -4385,16 +4385,11 @@ pub fn project_winrt_async(
     value: &WinRTValue,
     async_type: TypeHandle,
 ) -> result::Result<WinRTValue> {
-    if !async_type.is_async() {
-        return Err(invalid_argument(
-            "project_winrt_async requires a WinRT async type",
-        ));
-    }
+    let async_type = async_type.normalized_async_type()?;
     let object = value
         .as_object()
         .ok_or_else(|| invalid_argument("project_winrt_async requires a COM object"))?;
-    let info: windows_future::IAsyncInfo =
-        object.cast().map_err(result::Error::WindowsError)?;
+    let info: windows_future::IAsyncInfo = object.cast().map_err(result::Error::WindowsError)?;
     Ok(WinRTValue::Async(crate::value::AsyncInfo {
         info,
         async_type,
@@ -9202,10 +9197,54 @@ mod tests {
         let object: IUnknown = operation.cast().map_err(result::Error::WindowsError)?;
         let source = WinRTValue::Object(object);
 
-        let projected =
-            project_winrt_async(&source, MetadataTable::new().async_action())?;
+        let projected = project_winrt_async(&source, MetadataTable::new().async_action())?;
         assert!(matches!(projected, WinRTValue::Async(_)));
         assert!(matches!(source, WinRTValue::Object(_)));
+
+        Ok(())
+    }
+
+    #[test]
+    fn project_winrt_async_rejects_malformed_parameterized_type() {
+        let table = MetadataTable::new();
+        let generic = table.generic(crate::metadata_table::IASYNC_OPERATION, 1);
+        let malformed = table.parameterized(&generic, &[]);
+
+        assert!(project_winrt_async(&WinRTValue::Null, malformed).is_err());
+    }
+
+    #[tokio::test]
+    async fn project_winrt_async_normalizes_parameterized_operation() -> result::Result<()> {
+        use windows::Storage::{IStorageFile, StorageFile};
+
+        let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
+        let path = std::env::current_exe().map_err(|error| invalid_argument(error.to_string()))?;
+        let operation =
+            StorageFile::GetFileFromPathAsync(&HSTRING::from(path.to_string_lossy().as_ref()))
+                .map_err(result::Error::WindowsError)?;
+        let object: IUnknown = operation.cast().map_err(result::Error::WindowsError)?;
+        let source = WinRTValue::Object(object);
+
+        let table = MetadataTable::new();
+        let storage_file_interface = table.interface(IStorageFile::IID);
+        let storage_file_type = table.runtime_class(
+            "Windows.Storage.StorageFile".to_string(),
+            &storage_file_interface,
+        );
+        let generic = table.generic(crate::metadata_table::IASYNC_OPERATION, 1);
+        let parameterized = table.parameterized(&generic, &[storage_file_type]);
+        let projected = project_winrt_async(&source, parameterized)?;
+
+        let async_info = match &projected {
+            WinRTValue::Async(info) => info,
+            other => panic!("expected Async, got {other:?}"),
+        };
+        assert!(matches!(
+            async_info.async_type.kind(),
+            TypeKind::IAsyncOperation(_)
+        ));
+        let _ = async_info.handler_iid();
+        assert!(matches!(projected.await?, WinRTValue::Object(_)));
 
         Ok(())
     }
@@ -9231,14 +9270,20 @@ mod tests {
         let table = MetadataTable::new();
         let result_type = table.make(TypeKind::U32);
         let progress_type = table.make(TypeKind::U32);
+        let generic = table.generic(crate::metadata_table::IASYNC_OPERATION_WITH_PROGRESS, 2);
         let async_type =
-            table.async_operation_with_progress(&result_type, &progress_type);
+            table.parameterized(&generic, &[result_type.clone(), progress_type.clone()]);
         let projected = project_winrt_async(&source, async_type)?;
 
         let async_info = match &projected {
             WinRTValue::Async(info) => info,
             other => panic!("expected Async, got {other:?}"),
         };
+        assert!(matches!(
+            async_info.async_type.kind(),
+            TypeKind::IAsyncOperationWithProgress(_)
+        ));
+        let _ = async_info.handler_iid();
         assert_eq!(async_info.result_type().unwrap().kind(), TypeKind::U32);
         assert_eq!(async_info.progress_type().unwrap().kind(), TypeKind::U32);
 
