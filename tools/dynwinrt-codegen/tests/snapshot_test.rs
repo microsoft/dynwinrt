@@ -20,6 +20,21 @@ use dynwinrt_codegen::types::TypeMeta;
 const WINDOWS_WINMD: &str =
     r"C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd";
 
+fn repeated_required_interface_iids(classes: &[meta::ClassMeta]) -> HashSet<String> {
+    let mut counts = HashMap::new();
+    for class in classes {
+        for interface in &class.required_interfaces {
+            if !interface.iid.is_empty() {
+                *counts.entry(interface.iid.clone()).or_insert(0usize) += 1;
+            }
+        }
+    }
+    counts
+        .into_iter()
+        .filter_map(|(iid, count)| (count >= 2).then_some(iid))
+        .collect()
+}
+
 /// Generate TypeScript for Uri and compare every file against the snapshot.
 #[test]
 fn snapshot_uri_class() {
@@ -60,7 +75,7 @@ fn snapshot_uri_class() {
         .map(|i| i.name.clone())
         .collect();
 
-    let shared_iids: HashSet<project::StandaloneInterfaceIdentity> = HashSet::new();
+    let shared_iids = repeated_required_interface_iids(&all_classes);
     let (delegate_sigs, delegate_sig_refs, delegate_param_wraps) =
         project::build_delegate_signatures(&all_interfaces, &delegate_type_names, &known_types);
 
@@ -370,7 +385,7 @@ fn ts_async_methods_emit_abort_signal_scaffolding() {
         })
         .map(|i| i.name.clone())
         .collect();
-    let shared: HashSet<project::StandaloneInterfaceIdentity> = HashSet::new();
+    let shared = repeated_required_interface_iids(&dw_all_classes);
     let (dw_delegate_sigs, dw_delegate_sig_refs, dw_delegate_param_wraps) =
         project::build_delegate_signatures(&dw_ifaces, &delegates, &known);
 

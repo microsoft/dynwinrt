@@ -143,6 +143,21 @@ fn extract_exports(code: &str) -> Vec<String> {
         .collect()
 }
 
+fn repeated_required_interface_iids(classes: &[meta::ClassMeta]) -> HashSet<String> {
+    let mut counts = HashMap::new();
+    for class in classes {
+        for interface in &class.required_interfaces {
+            if !interface.iid.is_empty() {
+                *counts.entry(interface.iid.clone()).or_insert(0usize) += 1;
+            }
+        }
+    }
+    counts
+        .into_iter()
+        .filter_map(|(iid, count)| (count >= 2).then_some(iid))
+        .collect()
+}
+
 /// Helper: build known_types, delegate_type_names, shared_iids from parsed metadata.
 fn setup_metadata(
     winmd: &str,
@@ -154,7 +169,7 @@ fn setup_metadata(
     Vec<TypeMeta>,
     HashSet<String>,
     HashSet<String>,
-    HashSet<project::StandaloneInterfaceIdentity>,
+    HashSet<String>,
     HashMap<String, String>,
     HashMap<String, Vec<String>>,
     HashMap<String, Vec<String>>,
@@ -189,7 +204,7 @@ fn setup_metadata(
         })
         .map(|i| i.name.clone())
         .collect();
-    let shared_iids: HashSet<project::StandaloneInterfaceIdentity> = HashSet::new();
+    let shared_iids = repeated_required_interface_iids(&all_classes);
     let (delegate_sigs, delegate_sig_refs, delegate_param_wraps) =
         project::build_delegate_signatures(&all_interfaces, &delegate_type_names, &known_types);
 
@@ -436,7 +451,7 @@ fn js_dts_structural_consistency_user_watcher() {
         })
         .map(|i| i.name.clone())
         .collect();
-    let shared_iids: HashSet<project::StandaloneInterfaceIdentity> = HashSet::new();
+    let shared_iids = repeated_required_interface_iids(&all_classes);
     let (delegate_sigs, delegate_sig_refs, delegate_param_wraps) =
         project::build_delegate_signatures(&all_interfaces, &delegate_type_names, &known_types);
 

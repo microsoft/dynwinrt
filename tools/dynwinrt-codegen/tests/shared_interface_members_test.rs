@@ -71,6 +71,87 @@ fn shared_sources(interface: &InterfaceMeta) -> HashSet<project::StandaloneInter
     HashSet::from([project::standalone_interface_identity(interface).unwrap()])
 }
 
+fn snapshot_hash(contents: &str) -> u64 {
+    contents.bytes().fold(0xcbf29ce484222325, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+    })
+}
+
+#[test]
+fn default_projection_preserves_legacy_standalone_interface_imports() {
+    let interface = value_interface();
+    let class = widget_class(&interface);
+    let known_types = HashSet::from(["Widget".into(), "IValue".into()]);
+    let standalone_interface_iids = HashSet::from([interface.iid.clone()]);
+
+    project::set_shared_interface_members(false);
+    let projected = project::project_class(
+        &class,
+        &known_types,
+        &HashSet::new(),
+        &standalone_interface_iids,
+        &HashMap::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+    );
+    let separated = project::project_class_with_shared_member_sources(
+        &class,
+        &known_types,
+        &HashSet::new(),
+        &standalone_interface_iids,
+        &HashSet::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+    );
+    let descriptor_only = project::project_class_with_shared_member_sources(
+        &class,
+        &known_types,
+        &HashSet::new(),
+        &HashSet::new(),
+        &shared_sources(&interface),
+        &HashMap::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+    );
+
+    let interface_imports = projected
+        .imports
+        .iter()
+        .filter(|import| import.from == "./IValue.js")
+        .map(|import| (import.symbols.clone(), import.runtime_only, import.dts_only))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        interface_imports,
+        vec![(vec!["IID_IValue".into(), "IValue".into()], false, false)]
+    );
+    assert!(projected.classes[0].required_ifaces.is_empty());
+    assert_eq!(descriptor_only.classes[0].required_ifaces.len(), 1);
+    assert!(
+        descriptor_only
+            .imports
+            .iter()
+            .all(|import| import.from != "./IValue.js")
+    );
+    assert_eq!(render_js::render(&projected), render_js::render(&separated));
+    assert_eq!(
+        render_dts::render(&projected),
+        render_dts::render(&separated)
+    );
+
+    let class_js = render_js::render(&projected);
+    let class_dts = render_dts::render(&projected);
+    assert_eq!(
+        (snapshot_hash(&class_js), snapshot_hash(&class_dts)),
+        (14855624038810436456, 13331642975496716118),
+        "flag-off output changed from the origin/main compatibility snapshot"
+    );
+    assert!(class_js.contains("require('./IValue.js')"));
+    assert!(class_js.contains("_IValue.method(6).invoke(this._obj.cast(IID_IValue)"));
+    assert!(!class_js.contains("__copyInterfaceMembers"));
+    assert!(!class_js.contains("export class IValue"));
+}
+
 #[test]
 fn opt_in_reuses_shared_interface_descriptors_without_changing_dts() {
     let interface = value_interface();
@@ -88,9 +169,10 @@ fn opt_in_reuses_shared_interface_descriptors_without_changing_dts() {
         &HashMap::new(),
         true,
     );
-    let class_file = project::project_class(
+    let class_file = project::project_class_with_shared_member_sources(
         &class,
         &known_types,
+        &HashSet::new(),
         &HashSet::new(),
         &shared_iids,
         &HashMap::new(),
@@ -120,7 +202,7 @@ fn opt_in_reuses_shared_interface_descriptors_without_changing_dts() {
         &class,
         &known_types,
         &HashSet::new(),
-        &shared_iids,
+        &HashSet::from([interface.iid.clone()]),
         &HashMap::new(),
         &HashMap::new(),
         &HashMap::new(),
@@ -157,9 +239,10 @@ fn canonical_interface_source_survives_equivalent_duplicate_emission() {
         &HashMap::new(),
         sources[0].shared_member_source,
     );
-    let class_file = project::project_class(
+    let class_file = project::project_class_with_shared_member_sources(
         &widget_class(&duplicate),
         &HashSet::from(["Widget".into(), "IValue".into()]),
+        &HashSet::new(),
         &HashSet::new(),
         &HashSet::from([sources[0].identity.clone()]),
         &HashMap::new(),
@@ -336,6 +419,7 @@ fn ambiguous_standalone_interface_identities_remain_class_local() {
             class,
             &known_types,
             &HashSet::new(),
+            &HashSet::new(),
             &shared_source_identities,
             &ambiguous_names,
             &HashMap::new(),
@@ -436,9 +520,10 @@ fn shared_interface_members_preserve_overload_dispatch_and_declarations() {
         &HashMap::new(),
         true,
     ));
-    let class_file = project::project_class(
+    let class_file = project::project_class_with_shared_member_sources(
         &class,
         &known_types,
+        &HashSet::new(),
         &HashSet::new(),
         &shared_iids,
         &HashMap::new(),
@@ -516,9 +601,10 @@ fn shared_interface_members_preserve_cross_interface_overload_dispatch() {
     let shared_iids = shared_sources(&required_interface);
 
     project::set_shared_interface_members(true);
-    let class_file = project::project_class(
+    let class_file = project::project_class_with_shared_member_sources(
         &class,
         &known_types,
+        &HashSet::new(),
         &HashSet::new(),
         &shared_iids,
         &HashMap::new(),
@@ -594,9 +680,10 @@ fn shared_interface_event_alias_conflicts_remain_class_local() {
     let shared_iids = shared_sources(&required_interface);
 
     project::set_shared_interface_members(true);
-    let class_file = project::project_class(
+    let class_file = project::project_class_with_shared_member_sources(
         &class,
         &known_types,
+        &HashSet::new(),
         &HashSet::new(),
         &shared_iids,
         &HashMap::new(),
@@ -668,6 +755,7 @@ fn excluded_iclosable_uses_local_wrapper() {
     let class_file = project::project_class_with_excluded_interface_imports(
         &class,
         &HashSet::from(["Widget".into(), "IClosable".into()]),
+        &HashSet::new(),
         &HashSet::new(),
         &HashSet::new(),
         &HashSet::from(["IClosable".into()]),
@@ -742,9 +830,10 @@ fn collection_getter_casts_concrete_view_and_rejects_invalid_sources() {
             &HashMap::new(),
             true,
         ));
-    let class_js = render_js::render(&project::project_class(
+    let class_js = render_js::render(&project::project_class_with_shared_member_sources(
         &class,
         &known_types,
+        &HashSet::new(),
         &HashSet::new(),
         &shared_sources,
         &HashMap::new(),
@@ -895,9 +984,10 @@ fn shared_interface_descriptor_executes_for_raw_and_concrete_views() {
         &HashMap::new(),
         true,
     ));
-    let class_js = render_js::render(&project::project_class(
+    let class_js = render_js::render(&project::project_class_with_shared_member_sources(
         &class,
         &known_types,
+        &HashSet::new(),
         &HashSet::new(),
         &shared_iids,
         &HashMap::new(),

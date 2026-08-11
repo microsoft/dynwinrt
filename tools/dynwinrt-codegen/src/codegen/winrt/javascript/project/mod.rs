@@ -305,7 +305,31 @@ pub fn project_class(
     class: &ClassMeta,
     known_types: &HashSet<String>,
     delegate_type_names: &HashSet<String>,
-    shared_interface_sources: &HashSet<StandaloneInterfaceIdentity>,
+    standalone_interface_iids: &HashSet<String>,
+    delegate_sigs: &HashMap<String, String>,
+    delegate_sig_refs: &HashMap<String, Vec<String>>,
+    delegate_param_wraps: &HashMap<String, Vec<String>>,
+) -> ProjectedFile {
+    project_class_with_shared_member_sources(
+        class,
+        known_types,
+        delegate_type_names,
+        standalone_interface_iids,
+        &HashSet::new(),
+        delegate_sigs,
+        delegate_sig_refs,
+        delegate_param_wraps,
+    )
+}
+
+/// Project a class with explicit opt-in shared descriptor source identities in
+/// addition to the legacy standalone-interface IID set.
+pub fn project_class_with_shared_member_sources(
+    class: &ClassMeta,
+    known_types: &HashSet<String>,
+    delegate_type_names: &HashSet<String>,
+    standalone_interface_iids: &HashSet<String>,
+    shared_member_source_identities: &HashSet<StandaloneInterfaceIdentity>,
     delegate_sigs: &HashMap<String, String>,
     delegate_sig_refs: &HashMap<String, Vec<String>>,
     delegate_param_wraps: &HashMap<String, Vec<String>>,
@@ -314,7 +338,8 @@ pub fn project_class(
         class,
         known_types,
         delegate_type_names,
-        shared_interface_sources,
+        standalone_interface_iids,
+        shared_member_source_identities,
         &HashSet::new(),
         delegate_sigs,
         delegate_sig_refs,
@@ -322,11 +347,14 @@ pub fn project_class(
     )
 }
 
+/// Project a class while keeping legacy standalone-interface imports separate
+/// from opt-in shared descriptor source identities.
 pub fn project_class_with_excluded_interface_imports(
     class: &ClassMeta,
     known_types: &HashSet<String>,
     delegate_type_names: &HashSet<String>,
-    shared_interface_sources: &HashSet<StandaloneInterfaceIdentity>,
+    standalone_interface_iids: &HashSet<String>,
+    shared_member_source_identities: &HashSet<StandaloneInterfaceIdentity>,
     excluded_interface_import_names: &HashSet<String>,
     delegate_sigs: &HashMap<String, String>,
     delegate_sig_refs: &HashMap<String, Vec<String>>,
@@ -336,6 +364,7 @@ pub fn project_class_with_excluded_interface_imports(
     let winui_bootstrap = winui::resolve_application_bootstrap(class, known_types);
     let supports_unpackaged_xaml =
         winui_bootstrap.is_some_and(|bootstrap| bootstrap.supports_unpackaged_resources);
+    let share_interface_members = shared_interface_members_enabled();
 
     // Collect delegate names only from interfaces of THIS class (not the entire batch)
     // for delegate imports; but also include global delegate_type_names for type filtering
@@ -476,8 +505,11 @@ pub fn project_class_with_excluded_interface_imports(
     for req_iface in &class.required_interfaces {
         if req_iface.generic_piid.is_none()
             && !req_iface.iid.is_empty()
-            && standalone_interface_identity(req_iface)
-                .is_some_and(|identity| shared_interface_sources.contains(&identity))
+            && (standalone_interface_iids.contains(&req_iface.iid)
+                || (share_interface_members
+                    && standalone_interface_identity(req_iface).is_some_and(|identity| {
+                        shared_member_source_identities.contains(&identity)
+                    })))
             && !excluded_interface_import_names.contains(&req_iface.name)
             && !imported_names.contains(&req_iface.name)
         {
@@ -1050,7 +1082,6 @@ pub fn project_class_with_excluded_interface_imports(
     let mut verified_shared_interface_sources = Vec::new();
     let mut shared_member_candidates: Vec<(String, String, String, Vec<String>)> = Vec::new();
     let mut conflicting_shared_members = HashSet::new();
-    let share_interface_members = shared_interface_members_enabled();
     // Track names already on the main class to avoid conflicts
     let mut main_member_names: HashSet<String> = members
         .iter()
@@ -1073,7 +1104,7 @@ pub fn project_class_with_excluded_interface_imports(
         let is_shared_member_source = share_interface_members
             && req_iface.generic_piid.is_none()
             && standalone_interface_identity(req_iface)
-                .is_some_and(|identity| shared_interface_sources.contains(&identity))
+                .is_some_and(|identity| shared_member_source_identities.contains(&identity))
             && is_imported;
         if is_shared_member_source {
             let interface_identity = standalone_interface_identity(req_iface)

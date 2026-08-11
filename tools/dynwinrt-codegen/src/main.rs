@@ -1142,6 +1142,7 @@ fn generate_for_types(
                 &known_types,
                 &delegate_type_names,
                 canonical_interface_sources.as_deref(),
+                &shared_iids,
                 &shared_interface_source_identities,
                 &effective_excluded_shared_source_names,
                 reserved_non_interface_output_names,
@@ -1310,6 +1311,54 @@ fn validate_unique_class_output_names(classes: &[meta::ClassMeta]) -> Result<(),
     Ok(())
 }
 
+fn generated_shared_interface_source_identity(contents: &str) -> Option<&str> {
+    const PREFIX: &str = ", __sharedInterfaceMemberSource, { value: '";
+    const SUFFIX: &str = "' });";
+    let start = contents.find(PREFIX)? + PREFIX.len();
+    let end = contents[start..].find(SUFFIX)? + start;
+    Some(&contents[start..end])
+}
+
+fn plan_existing_shared_interface_sources(
+    output_dir: &Path,
+    sources: &[project::CanonicalInterfaceSource],
+    reserved_non_interface_output_names: &HashSet<String>,
+) -> Result<HashSet<String>, String> {
+    let mut preserved_source_names = HashSet::new();
+    for source in sources {
+        let interface = &source.interface;
+        if reserved_non_interface_output_names.contains(&interface.name) {
+            continue;
+        }
+        let path = output_dir.join(format!("{}.js", interface.name));
+        let existing = match fs::read_to_string(&path) {
+            Ok(existing) => existing,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(format!("Failed to read {}: {}", path.display(), error));
+            }
+        };
+        let Some(existing_identity) = generated_shared_interface_source_identity(&existing) else {
+            continue;
+        };
+        let requested_identity = source.identity.source_marker();
+        if source.shared_member_source && existing_identity != requested_identity {
+            return Err(format!(
+                "Refusing to overwrite shared interface source `{}`: existing generated identity \
+                 `{}` does not match requested identity `{}`. Use a separate output directory or \
+                 remove and regenerate the conflicting file.",
+                path.display(),
+                existing_identity,
+                requested_identity,
+            ));
+        }
+        if !source.shared_member_source {
+            preserved_source_names.insert(interface.name.clone());
+        }
+    }
+    Ok(preserved_source_names)
+}
+
 fn generate_js_files(
     output_dir: &Path,
     all_classes: &[meta::ClassMeta],
@@ -1319,7 +1368,8 @@ fn generate_js_files(
     known_types: &HashSet<String>,
     delegate_type_names: &HashSet<String>,
     canonical_interface_sources: Option<&[project::CanonicalInterfaceSource]>,
-    shared_interface_source_identities: &HashSet<project::StandaloneInterfaceIdentity>,
+    standalone_interface_iids: &HashSet<String>,
+    shared_member_source_identities: &HashSet<project::StandaloneInterfaceIdentity>,
     excluded_interface_import_names: &HashSet<String>,
     reserved_non_interface_output_names: &HashSet<String>,
     delegate_sigs: &HashMap<String, String>,
@@ -1351,10 +1401,24 @@ fn generate_js_files(
         !iface.iid.is_empty()
     }
 
+    let preserved_shared_source_names = canonical_interface_sources
+        .map(|canonical_sources| {
+            plan_existing_shared_interface_sources(
+                output_dir,
+                canonical_sources,
+                reserved_non_interface_output_names,
+            )
+        })
+        .transpose()?
+        .unwrap_or_default();
+
     if let Some(canonical_sources) = canonical_interface_sources {
         for source in canonical_sources {
             let iface = &source.interface;
             if reserved_non_interface_output_names.contains(&iface.name) {
+                continue;
+            }
+            if preserved_shared_source_names.contains(&iface.name) {
                 continue;
             }
             let projected = project::project_interface_with_shared_member_source(
@@ -1461,7 +1525,8 @@ fn generate_js_files(
             class,
             known_types,
             delegate_type_names,
-            shared_interface_source_identities,
+            standalone_interface_iids,
+            shared_member_source_identities,
             excluded_interface_import_names,
             delegate_sigs,
             delegate_sig_refs,
@@ -3619,6 +3684,56 @@ mod tests {
         ))
     }
 
+    fn shared_interface_source(
+        namespace: &str,
+        name: &str,
+        iid: &str,
+    ) -> project::CanonicalInterfaceSource {
+        let interface = meta::InterfaceMeta {
+            namespace: namespace.into(),
+            name: name.into(),
+            iid: iid.into(),
+            ..Default::default()
+        };
+        project::CanonicalInterfaceSource {
+            identity: project::standalone_interface_identity(&interface).unwrap(),
+            interface,
+            shared_member_source: true,
+        }
+    }
+
+    fn generate_shared_interface_sources(
+        output: &Path,
+        sources: &[project::CanonicalInterfaceSource],
+    ) -> Result<(), String> {
+        let known_types = sources
+            .iter()
+            .map(|source| source.interface.name.clone())
+            .collect();
+        let shared_source_identities = sources
+            .iter()
+            .filter(|source| source.shared_member_source)
+            .map(|source| source.identity.clone())
+            .collect();
+        generate_js_files(
+            output,
+            &[],
+            &[],
+            &[],
+            &[],
+            &known_types,
+            &HashSet::new(),
+            Some(sources),
+            &HashSet::new(),
+            &shared_source_identities,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+    }
+
     #[test]
     fn com_barrel_deduplicates_only_identical_pod_factories() {
         let descriptor =
@@ -3722,6 +3837,70 @@ mod tests {
 
         validate_unique_class_output_names(&[class.clone(), class])
             .expect("identical metadata does not create an ambiguous output");
+    }
+
+    #[test]
+    fn incremental_shared_interface_same_identity_is_idempotent() {
+        let output = test_directory("shared-interface-same-identity");
+        fs::create_dir_all(&output).unwrap();
+        let source =
+            shared_interface_source("Contoso", "IValue", "11111111-1111-1111-1111-111111111111");
+
+        generate_shared_interface_sources(&output, std::slice::from_ref(&source)).unwrap();
+        let first_js = fs::read(output.join("IValue.js")).unwrap();
+        let first_dts = fs::read(output.join("IValue.d.ts")).unwrap();
+
+        generate_shared_interface_sources(&output, std::slice::from_ref(&source)).unwrap();
+
+        assert_eq!(fs::read(output.join("IValue.js")).unwrap(), first_js);
+        assert_eq!(fs::read(output.join("IValue.d.ts")).unwrap(), first_dts);
+        fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
+    fn incremental_shared_interface_identity_mismatch_is_atomic() {
+        let output = test_directory("shared-interface-identity-mismatch");
+        fs::create_dir_all(&output).unwrap();
+        let original =
+            shared_interface_source("Contoso", "IValue", "11111111-1111-1111-1111-111111111111");
+        generate_shared_interface_sources(&output, std::slice::from_ref(&original)).unwrap();
+        let original_js = fs::read(output.join("IValue.js")).unwrap();
+        let original_dts = fs::read(output.join("IValue.d.ts")).unwrap();
+
+        let preceding =
+            shared_interface_source("Contoso", "IOther", "22222222-2222-2222-2222-222222222222");
+        let conflicting =
+            shared_interface_source("Fabrikam", "IValue", "33333333-3333-3333-3333-333333333333");
+        let error = generate_shared_interface_sources(&output, &[preceding, conflicting])
+            .expect_err("different flat-file identity must be rejected before writes");
+
+        assert!(error.contains("Refusing to overwrite shared interface source"));
+        assert!(error.contains("Contoso.IValue:11111111-1111-1111-1111-111111111111"));
+        assert!(error.contains("Fabrikam.IValue:33333333-3333-3333-3333-333333333333"));
+        assert_eq!(fs::read(output.join("IValue.js")).unwrap(), original_js);
+        assert_eq!(fs::read(output.join("IValue.d.ts")).unwrap(), original_dts);
+        assert!(!output.join("IOther.js").exists());
+        assert!(!output.join("IOther.d.ts").exists());
+        fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
+    fn incremental_ambiguous_interface_fallback_does_not_abort() {
+        let output = test_directory("shared-interface-ambiguous-fallback");
+        fs::create_dir_all(&output).unwrap();
+        let original =
+            shared_interface_source("Contoso", "IValue", "11111111-1111-1111-1111-111111111111");
+        generate_shared_interface_sources(&output, std::slice::from_ref(&original)).unwrap();
+        let original_js = fs::read(output.join("IValue.js")).unwrap();
+
+        let mut fallback =
+            shared_interface_source("Fabrikam", "IValue", "33333333-3333-3333-3333-333333333333");
+        fallback.shared_member_source = false;
+        generate_shared_interface_sources(&output, std::slice::from_ref(&fallback))
+            .expect("ambiguous class-local fallback must not be rejected");
+
+        assert_eq!(fs::read(output.join("IValue.js")).unwrap(), original_js);
+        fs::remove_dir_all(output).unwrap();
     }
 
     #[test]
