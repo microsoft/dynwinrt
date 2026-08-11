@@ -16,7 +16,7 @@ use dynwinrt_codegen::codegen::winrt::extensions::winui;
 use dynwinrt_codegen::codegen::winrt::javascript::bundle::{
     BindingBundleSpec, GeneratedBindingBundle, binding_bundle_redirect, binding_output_file_path,
     collect_binding_bundle_modules, generate_binding_bundle_with_modules,
-    parse_binding_bundle_spec, validate_binding_file_stem,
+    parse_binding_bundle_spec, portable_binding_name_key, validate_binding_file_stem,
 };
 use dynwinrt_codegen::codegen::{project, render_dts, render_js};
 use dynwinrt_codegen::com_metadata;
@@ -257,13 +257,17 @@ fn parse_class_requests(
 }
 
 fn parse_binding_bundle_specs(values: &[String]) -> Result<Vec<BindingBundleSpec>, String> {
-    let mut names = HashSet::new();
+    let mut names = HashMap::<String, String>::new();
     values
         .iter()
         .map(|value| {
             let spec = parse_binding_bundle_spec(value)?;
-            if !names.insert(spec.name.clone()) {
-                return Err(format!("Duplicate --bundle name `{}`", spec.name));
+            let key = portable_binding_name_key(&spec.name);
+            if let Some(existing) = names.insert(key, spec.name.clone()) {
+                return Err(format!(
+                    "Duplicate --bundle name `{}`; it collides case-insensitively with `{existing}`",
+                    spec.name,
+                ));
             }
             Ok(spec)
         })
@@ -1358,7 +1362,8 @@ fn write_js_barrel_and_manifest(
     // exports that were filtered out (for example ref-only WinUI controls such
     // as CompositionTarget).
     let index_content = render_index_from_existing_js_files(output_dir)?;
-    let (bundle_overrides, prepared_bundles) = prepare_binding_bundles(output_dir, bundles)?;
+    let (bundle_overrides, prepared_bundles) =
+        prepare_binding_bundles(output_dir, bundles, &index_content)?;
     write_binding_bundles(output_dir, &prepared_bundles)?;
 
     let js_content =
@@ -1483,17 +1488,20 @@ fn preflight_binding_bundles(
             artifacts.into_iter().collect::<Vec<_>>().join(", "),
         ));
     }
+    let existing_stems = collect_portable_binding_output_stems(output_dir)?;
     for bundle in bundles {
         let js_path =
             binding_output_file_path(output_dir, &bundle.name, "js", "bundle output name")?;
         let dts_path =
             binding_output_file_path(output_dir, &bundle.name, "d.ts", "bundle output name")?;
-        if js_path.exists() || dts_path.exists() {
+        if let Some(existing) = existing_stems.get(&portable_binding_name_key(&bundle.name)) {
             return Err(format!(
-                "Bundle name `{}` collides with an existing generated module",
-                bundle.name
+                "Bundle name `{}` collides with an existing generated module `{existing}` \
+                 (case-insensitive match)",
+                bundle.name,
             ));
         }
+        debug_assert!(!js_path.exists() && !dts_path.exists());
         let missing_roots = bundle
             .modules
             .iter()
@@ -1515,6 +1523,55 @@ fn preflight_binding_bundles(
         }
     }
     Ok(())
+}
+
+fn collect_portable_binding_output_stems(
+    output_dir: &Path,
+) -> Result<BTreeMap<String, String>, String> {
+    let mut stems = BTreeMap::<String, String>::new();
+    let entries = fs::read_dir(output_dir).map_err(|error| {
+        format!(
+            "Failed to inspect binding output directory {}: {error}",
+            output_dir.display()
+        )
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            format!(
+                "Failed to inspect an entry in binding output directory {}: {error}",
+                output_dir.display()
+            )
+        })?;
+        if !entry
+            .file_type()
+            .map_err(|error| format!("Failed to inspect {}: {error}", entry.path().display()))?
+            .is_file()
+        {
+            continue;
+        }
+        let Some(file_name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        let stem = file_name
+            .strip_suffix(".d.ts")
+            .or_else(|| file_name.strip_suffix(".js"));
+        let Some(stem) = stem else {
+            continue;
+        };
+        let key = portable_binding_name_key(stem);
+        if let Some(existing) = stems.get(&key) {
+            if existing != stem {
+                return Err(format!(
+                    "Generated module names `{existing}` and `{stem}` collide \
+                     case-insensitively in {}",
+                    output_dir.display()
+                ));
+            }
+        } else {
+            stems.insert(key, stem.to_string());
+        }
+    }
+    Ok(stems)
 }
 
 fn ensure_unbundled_js_generation_output(output_dir: &Path) -> Result<(), String> {
@@ -1598,6 +1655,7 @@ fn collect_existing_binding_bundle_artifacts(
 fn prepare_binding_bundles(
     output_dir: &Path,
     bundles: &[BindingBundleSpec],
+    index_content: &str,
 ) -> Result<
     (
         BTreeMap<String, String>,
@@ -1607,6 +1665,7 @@ fn prepare_binding_bundles(
 > {
     let mut overrides = BTreeMap::new();
     let mut generated_bundles = Vec::new();
+    let canonical_export_owners = typescript::collect_index_export_owners(index_content);
     let closures = bundles
         .iter()
         .map(|bundle| {
@@ -1614,35 +1673,39 @@ fn prepare_binding_bundles(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    let mut explicit_owners = BTreeMap::<String, String>::new();
+    let mut explicit_owners = BTreeMap::<String, (String, String)>::new();
     for bundle in bundles {
         for module in &bundle.modules {
-            if let Some(existing) = explicit_owners.insert(module.clone(), bundle.name.clone()) {
+            let key = portable_binding_name_key(module);
+            if let Some((existing_module, existing_bundle)) =
+                explicit_owners.insert(key, (module.clone(), bundle.name.clone()))
+            {
                 return Err(format!(
-                    "Configured root module `{module}` belongs to both bundle `{existing}` and `{}`",
+                    "Configured root module `{module}` collides case-insensitively with \
+                     `{existing_module}` and belongs to both bundle `{existing_bundle}` and `{}`",
                     bundle.name,
                 ));
             }
         }
     }
 
-    let mut closure_memberships = BTreeMap::<String, Vec<String>>::new();
+    let mut closure_memberships = BTreeMap::<String, BTreeSet<String>>::new();
     for (bundle, modules) in &closures {
         for module in modules {
             closure_memberships
-                .entry(module.clone())
+                .entry(portable_binding_name_key(module))
                 .or_default()
-                .push(bundle.name.clone());
+                .insert(bundle.name.clone());
         }
     }
 
     let module_owners = closure_memberships
         .into_iter()
-        .filter_map(|(module, owners)| {
-            if let Some(explicit_owner) = explicit_owners.get(&module) {
-                Some((module, explicit_owner.clone()))
+        .filter_map(|(module_key, owners)| {
+            if let Some((_, explicit_owner)) = explicit_owners.get(&module_key) {
+                Some((module_key, explicit_owner.clone()))
             } else if owners.len() == 1 {
-                Some((module, owners[0].clone()))
+                Some((module_key, owners.into_iter().next().unwrap()))
             } else {
                 None
             }
@@ -1652,16 +1715,19 @@ fn prepare_binding_bundles(
     for (bundle, closure) in closures {
         let included_modules = closure
             .into_iter()
-            .filter(|module| module_owners.get(module) == Some(&bundle.name))
+            .filter(|module| {
+                module_owners.get(&portable_binding_name_key(module)) == Some(&bundle.name)
+            })
             .collect::<BTreeSet<_>>();
         let generated =
             generate_binding_bundle_with_modules(output_dir, bundle, &included_modules)?;
         for export in &generated.exports {
-            if let Some(existing) = overrides.insert(export.clone(), bundle.name.clone()) {
-                return Err(format!(
-                    "Binding export `{export}` is configured in both bundle `{existing}` and `{}`",
-                    bundle.name
-                ));
+            let Some(canonical_module) = canonical_export_owners.get(export) else {
+                continue;
+            };
+            if module_owners.get(&portable_binding_name_key(canonical_module)) == Some(&bundle.name)
+            {
+                overrides.insert(export.clone(), bundle.name.clone());
             }
         }
         generated_bundles.push((bundle.name.clone(), generated));

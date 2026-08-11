@@ -226,6 +226,23 @@ pub fn esm_index_to_cjs_getter_with_overrides(
     out
 }
 
+pub fn collect_index_export_owners(esm_index: &str) -> BTreeMap<String, String> {
+    let mut owners = BTreeMap::new();
+    for line in esm_index.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with("//") {
+            continue;
+        }
+        let Some((names, module)) = parse_index_export(trimmed) else {
+            continue;
+        };
+        for name in names {
+            owners.insert(name, module.clone());
+        }
+    }
+    owners
+}
+
 #[cfg(test)]
 mod bundle_override_tests {
     use super::*;
@@ -239,6 +256,21 @@ export { TextBlock } from './TextBlock.js';\n";
         let output = esm_index_to_cjs_getter_with_overrides(index, &overrides);
         assert!(output.contains("__exportLazy('Button', './first-screen.js');"));
         assert!(output.contains("__exportLazy('TextBlock', './TextBlock.js');"));
+    }
+
+    #[test]
+    fn index_export_owners_use_rendered_canonical_modules() {
+        let index = "\
+export { IPropertyValue, Point } from './IPropertyValue.js';\n\
+export { PropertyValue } from './PropertyValue.js';\n";
+        assert_eq!(
+            collect_index_export_owners(index),
+            BTreeMap::from([
+                ("IPropertyValue".into(), "IPropertyValue".into()),
+                ("Point".into(), "IPropertyValue".into()),
+                ("PropertyValue".into(), "PropertyValue".into()),
+            ])
+        );
     }
 }
 

@@ -65,6 +65,8 @@ exports.count = () => tracked.size;\n",
         "\
 export declare const AName: string;\n\
 export declare class A {}\n\
+export interface Point { x: number; y: number; }\n\
+export type Rect = { x: number; y: number; width: number; height: number };\n\
 export declare const APeer: () => string;\n\
 export declare const Track: (value: object) => object;\n\
 export declare const Separator: string;\n",
@@ -102,9 +104,19 @@ export declare const BPeer: () => string;\n",
     assert!(generated.exports.contains("track"));
     assert!(generated.dts.contains("from './A.js';"));
     assert!(generated.dts.contains("from './B.js';"));
+    assert!(
+        generated
+            .dts
+            .contains("export type { Point, Rect } from './A.js';")
+    );
 
     fs::write(directory.join("first-screen.js"), generated.js).unwrap();
     fs::write(directory.join("first-screen.d.ts"), generated.dts).unwrap();
+    assert!(
+        fs::read_to_string(directory.join("A.d.ts"))
+            .unwrap()
+            .contains("export interface Point")
+    );
     for module in &generated.modules {
         fs::write(
             directory.join(format!("{module}.js")),
@@ -166,6 +178,40 @@ assert.equal(AName, DeepAName);\n",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
+}
+
+#[test]
+fn bundle_rejects_case_insensitive_names_and_fixed_entrypoints() {
+    let directory = test_directory("binding-bundle-portable-names");
+    let _ = fs::remove_dir_all(&directory);
+    fs::create_dir_all(&directory).unwrap();
+    fs::write(directory.join("A.js"), "exports.A = 'A';\n").unwrap();
+
+    let duplicate = run_bundles(&directory, &["First=A", "first=A"]);
+    let stderr = String::from_utf8_lossy(&duplicate.stderr);
+    assert!(!duplicate.status.success());
+    assert!(stderr.contains("case-insensitively"));
+    assert!(!directory.join("First.js").exists());
+    assert!(!directory.join("first.js").exists());
+
+    let module_collision = run_bundle(&directory, "a=A");
+    let stderr = String::from_utf8_lossy(&module_collision.stderr);
+    assert!(!module_collision.status.success());
+    assert!(stderr.contains("collides with an existing generated module `A`"));
+    assert!(!directory.join("a.d.ts").exists());
+
+    let module_casing = run_bundle(&directory, "first=a");
+    let stderr = String::from_utf8_lossy(&module_casing.stderr);
+    assert!(!module_casing.status.success());
+    assert!(stderr.contains("module `a` with non-portable casing"));
+    assert!(!directory.join("first.js").exists());
+
+    let reserved = run_bundle(&directory, "PrOxY=A");
+    let stderr = String::from_utf8_lossy(&reserved.stderr);
+    assert!(!reserved.status.success());
+    assert!(stderr.contains("Reserved bundle name"));
+    assert!(!directory.join("PrOxY.js").exists());
+    fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]
@@ -347,6 +393,133 @@ assert.strictEqual(require('./B.js').B, second.B);\n",
     assert!(
         node.status.success(),
         "multi-bundle runtime failed:\n{}",
+        String::from_utf8_lossy(&node.stderr)
+    );
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn multiple_bundles_use_the_ordinary_barrel_canonical_export_owner() {
+    if Command::new("node").arg("--version").output().is_err() {
+        eprintln!("Skipping canonical bundle owner test: node is unavailable");
+        return;
+    }
+
+    let directory = test_directory("binding-bundle-canonical-owner");
+    let _ = fs::remove_dir_all(&directory);
+    fs::create_dir_all(&directory).unwrap();
+    fs::write(
+        directory.join("IPropertyValue.js"),
+        "\
+exports.IPropertyValue = class IPropertyValue {};\n\
+exports.Point = { owner: 'IPropertyValue' };\n",
+    )
+    .unwrap();
+    fs::write(
+        directory.join("PropertyValue.js"),
+        "\
+exports.PropertyValue = class PropertyValue {};\n\
+exports.Point = { owner: 'PropertyValue' };\n",
+    )
+    .unwrap();
+
+    let output = run_bundles(
+        &directory,
+        &["property=PropertyValue", "interface=IPropertyValue"],
+    );
+    assert!(
+        output.status.success(),
+        "multi-bundle generation failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let root = fs::read_to_string(directory.join("index.js")).unwrap();
+    assert!(root.contains("__exportLazy('Point', './interface.js');"));
+    assert!(!root.contains("__exportLazy('Point', './property.js');"));
+
+    fs::write(
+        directory.join("canonical-owner-test.js"),
+        "\
+const assert = require('node:assert/strict');\n\
+const root = require('./index.js');\n\
+const interfaceBundle = require('./interface.js');\n\
+const propertyBundle = require('./property.js');\n\
+const deepInterface = require('./IPropertyValue.js');\n\
+const deepProperty = require('./PropertyValue.js');\n\
+assert.strictEqual(root.Point, interfaceBundle.Point);\n\
+assert.notStrictEqual(root.Point, propertyBundle.Point);\n\
+assert.strictEqual(deepInterface.Point, interfaceBundle.Point);\n\
+assert.strictEqual(deepProperty.Point, propertyBundle.Point);\n",
+    )
+    .unwrap();
+    let node = Command::new("node")
+        .arg("canonical-owner-test.js")
+        .current_dir(&directory)
+        .output()
+        .unwrap();
+    assert!(
+        node.status.success(),
+        "canonical owner runtime failed:\n{}",
+        String::from_utf8_lossy(&node.stderr)
+    );
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn bundle_uses_canonical_dependency_owner_for_duplicate_exports() {
+    if Command::new("node").arg("--version").output().is_err() {
+        eprintln!("Skipping canonical dependency owner test: node is unavailable");
+        return;
+    }
+
+    let directory = test_directory("binding-bundle-canonical-dependency-owner");
+    let _ = fs::remove_dir_all(&directory);
+    fs::create_dir_all(&directory).unwrap();
+    fs::write(
+        directory.join("AAux.js"),
+        "exports.Helper = { owner: 'AAux' };\n",
+    )
+    .unwrap();
+    fs::write(
+        directory.join("B.js"),
+        "\
+require('./AAux.js');\n\
+exports.B = class B {};\n\
+exports.Helper = { owner: 'B' };\n",
+    )
+    .unwrap();
+
+    let output = run_bundle(&directory, "combo=B");
+    assert!(
+        output.status.success(),
+        "bundle generation failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let root = fs::read_to_string(directory.join("index.js")).unwrap();
+    let bundle = fs::read_to_string(directory.join("combo.js")).unwrap();
+    assert!(root.contains("__exportLazy('Helper', './combo.js');"));
+    assert!(bundle.contains("get: () => __load('./AAux.js').Helper"));
+
+    fs::write(
+        directory.join("canonical-dependency-test.js"),
+        "\
+const assert = require('node:assert/strict');\n\
+const root = require('./index.js');\n\
+const combo = require('./combo.js');\n\
+const deepAux = require('./AAux.js');\n\
+const deepB = require('./B.js');\n\
+assert.strictEqual(root.Helper, combo.Helper);\n\
+assert.strictEqual(root.Helper, deepAux.Helper);\n\
+assert.notStrictEqual(root.Helper, deepB.Helper);\n",
+    )
+    .unwrap();
+    let node = Command::new("node")
+        .arg("canonical-dependency-test.js")
+        .current_dir(&directory)
+        .output()
+        .unwrap();
+    assert!(
+        node.status.success(),
+        "canonical dependency runtime failed:\n{}",
         String::from_utf8_lossy(&node.stderr)
     );
     fs::remove_dir_all(directory).unwrap();

@@ -8,6 +8,9 @@ use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
+const RESERVED_BUNDLE_NAMES: &[&str] = &["com", "index", "lifetime", "proxy"];
+const RESERVED_BUNDLE_MODULE_NAMES: &[&str] = &["index", "lifetime"];
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BindingBundleSpec {
     pub name: String,
@@ -24,35 +27,54 @@ pub struct GeneratedBindingBundle {
 }
 
 pub fn parse_binding_bundle_spec(value: &str) -> Result<BindingBundleSpec, String> {
-    let (name, modules) = value
+    let (name, module_list) = value
         .split_once('=')
         .ok_or_else(|| format!("Invalid --bundle `{value}`; expected NAME=MODULE[,MODULE...]"))?;
     let name = name.trim();
     validate_binding_file_stem(name, "bundle name")?;
-    if matches!(name, "index" | "index.proxy" | "index.getter" | "lifetime") {
+    if RESERVED_BUNDLE_NAMES.contains(&portable_binding_name_key(name).as_str()) {
         return Err(format!("Reserved bundle name `{name}`"));
     }
 
-    let mut modules = modules
+    let mut modules = Vec::new();
+    let mut module_spellings = BTreeMap::<String, String>::new();
+    for module in module_list
         .split(',')
         .map(str::trim)
         .filter(|module| !module.is_empty())
-        .map(|module| module.strip_suffix(".js").unwrap_or(module).to_string())
-        .collect::<Vec<_>>();
+        .map(|module| module.strip_suffix(".js").unwrap_or(module))
+    {
+        validate_binding_file_stem(module, "bundle module")?;
+        let key = portable_binding_name_key(module);
+        if RESERVED_BUNDLE_MODULE_NAMES.contains(&key.as_str()) {
+            return Err(format!("Reserved bundle module `{module}`"));
+        }
+        if let Some(existing) = module_spellings.get(&key) {
+            if existing != module {
+                return Err(format!(
+                    "Bundle `{name}` configures module names `{existing}` and `{module}` that \
+                     collide case-insensitively"
+                ));
+            }
+            continue;
+        }
+        module_spellings.insert(key, module.to_string());
+        modules.push(module.to_string());
+    }
     if modules.is_empty() {
         return Err(format!(
             "Bundle `{name}` must configure at least one module"
         ));
     }
-    for module in &modules {
-        validate_binding_file_stem(module, "bundle module")?;
-    }
     modules.sort();
-    modules.dedup();
     Ok(BindingBundleSpec {
         name: name.to_string(),
         modules,
     })
+}
+
+pub fn portable_binding_name_key(value: &str) -> String {
+    value.to_ascii_lowercase()
 }
 
 pub fn generate_binding_bundle(
@@ -72,9 +94,32 @@ pub fn collect_binding_bundle_modules(
         validate_binding_file_stem(module, "bundle module")?;
     }
 
+    let available_modules = collect_portable_js_module_stems(output_dir)?;
     let mut modules = BTreeSet::new();
+    let mut module_spellings = BTreeMap::<String, String>::new();
     let mut pending = VecDeque::from(spec.modules.clone());
     while let Some(module) = pending.pop_front() {
+        let key = portable_binding_name_key(&module);
+        if let Some(existing) = available_modules.get(&key)
+            && existing != &module
+        {
+            return Err(format!(
+                "Bundle `{}` references module `{module}` with non-portable casing; \
+                 the generated file is `{existing}.js`",
+                spec.name
+            ));
+        }
+        if let Some(existing) = module_spellings.get(&key) {
+            if existing != &module {
+                return Err(format!(
+                    "Bundle `{}` dependency closure contains module names `{existing}` and \
+                     `{module}` that collide case-insensitively",
+                    spec.name
+                ));
+            }
+        } else {
+            module_spellings.insert(key, module.clone());
+        }
         if modules.contains(&module) {
             continue;
         }
@@ -106,6 +151,157 @@ pub fn collect_binding_bundle_modules(
     Ok(modules)
 }
 
+fn collect_portable_js_module_stems(output_dir: &Path) -> Result<BTreeMap<String, String>, String> {
+    let mut stems = BTreeMap::<String, String>::new();
+    let entries = fs::read_dir(output_dir).map_err(|error| {
+        format!(
+            "Failed to inspect binding output directory {}: {error}",
+            output_dir.display()
+        )
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            format!(
+                "Failed to inspect an entry in binding output directory {}: {error}",
+                output_dir.display()
+            )
+        })?;
+        if !entry
+            .file_type()
+            .map_err(|error| format!("Failed to inspect {}: {error}", entry.path().display()))?
+            .is_file()
+        {
+            continue;
+        }
+        let Some(file_name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        let Some(stem) = file_name.strip_suffix(".js") else {
+            continue;
+        };
+        let key = portable_binding_name_key(stem);
+        if let Some(existing) = stems.get(&key) {
+            if existing != stem {
+                return Err(format!(
+                    "Generated module names `{existing}` and `{stem}` collide \
+                     case-insensitively in {}",
+                    output_dir.display()
+                ));
+            }
+        } else {
+            stems.insert(key, stem.to_string());
+        }
+    }
+    Ok(stems)
+}
+
+fn select_export_owners(
+    exports_by_module: &BTreeMap<String, BTreeSet<String>>,
+    configured_roots: &[String],
+    canonical_owners: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    let mut owners = BTreeMap::<String, String>::new();
+    for (export, module) in canonical_owners {
+        if exports_by_module
+            .get(module)
+            .is_some_and(|exports| exports.contains(export))
+        {
+            owners.insert(export.clone(), module.clone());
+        }
+    }
+    for (module, exports) in exports_by_module {
+        if exports.contains(module) {
+            owners
+                .entry(module.clone())
+                .or_insert_with(|| module.clone());
+        }
+    }
+    for module in configured_roots {
+        if let Some(exports) = exports_by_module.get(module) {
+            for export in exports {
+                owners
+                    .entry(export.clone())
+                    .or_insert_with(|| module.clone());
+            }
+        }
+    }
+    for (module, exports) in exports_by_module {
+        for export in exports {
+            owners
+                .entry(export.clone())
+                .or_insert_with(|| module.clone());
+        }
+    }
+    owners
+}
+
+fn collect_canonical_export_owners(
+    exports_by_module: &BTreeMap<String, BTreeSet<String>>,
+) -> BTreeMap<String, String> {
+    let mut owners = BTreeMap::new();
+    for (module, exports) in exports_by_module {
+        if exports.contains(module) {
+            owners.insert(module.clone(), module.clone());
+        }
+    }
+    for (module, exports) in exports_by_module {
+        for export in exports {
+            owners
+                .entry(export.clone())
+                .or_insert_with(|| module.clone());
+        }
+    }
+    owners
+}
+
+fn collect_output_export_owners(
+    output_dir: &Path,
+    extension: &str,
+    collect_exports: fn(&str) -> BTreeSet<String>,
+) -> Result<BTreeMap<String, String>, String> {
+    let mut exports_by_module = BTreeMap::new();
+    let suffix = format!(".{extension}");
+    let entries = fs::read_dir(output_dir).map_err(|error| {
+        format!(
+            "Failed to inspect binding output directory {}: {error}",
+            output_dir.display()
+        )
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            format!(
+                "Failed to inspect an entry in binding output directory {}: {error}",
+                output_dir.display()
+            )
+        })?;
+        if !entry
+            .file_type()
+            .map_err(|error| format!("Failed to inspect {}: {error}", entry.path().display()))?
+            .is_file()
+        {
+            continue;
+        }
+        let Some(file_name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        let Some(module) = file_name.strip_suffix(&suffix) else {
+            continue;
+        };
+        if matches!(module, "index" | "index.proxy" | "index.getter") {
+            continue;
+        }
+        let source = fs::read_to_string(entry.path())
+            .map_err(|error| format!("Failed to read {}: {error}", entry.path().display()))?;
+        if extension == "js"
+            && source.contains("Object.defineProperty(exports, '__dynwinrtLoadBundledModule'")
+        {
+            continue;
+        }
+        exports_by_module.insert(module.to_string(), collect_exports(&source));
+    }
+    Ok(collect_canonical_export_owners(&exports_by_module))
+}
+
 pub fn generate_binding_bundle_with_modules(
     output_dir: &Path,
     spec: &BindingBundleSpec,
@@ -135,31 +331,39 @@ pub fn generate_binding_bundle_with_modules(
         modules.insert(module.clone(), source);
     }
 
-    let mut export_owners = BTreeMap::<String, String>::new();
-    for (module, source) in &modules {
-        for export in collect_cjs_exports(source) {
-            if export == *module {
-                export_owners.insert(export, module.clone());
-            }
-        }
-    }
-    for module in &spec.modules {
-        let source = modules
-            .get(module)
-            .ok_or_else(|| format!("Bundle `{}` did not load `{module}`", spec.name))?;
-        for export in collect_cjs_exports(source) {
-            export_owners
-                .entry(export)
-                .or_insert_with(|| module.clone());
-        }
-    }
-    for (module, source) in &modules {
-        for export in collect_cjs_exports(source) {
-            export_owners
-                .entry(export)
-                .or_insert_with(|| module.clone());
-        }
-    }
+    let runtime_exports_by_module = modules
+        .iter()
+        .map(|(module, source)| (module.clone(), collect_cjs_exports(source)))
+        .collect::<BTreeMap<_, _>>();
+    let canonical_runtime_owners =
+        collect_output_export_owners(output_dir, "js", collect_cjs_exports)?;
+    let export_owners = select_export_owners(
+        &runtime_exports_by_module,
+        &spec.modules,
+        &canonical_runtime_owners,
+    );
+
+    let declaration_exports_by_module = modules
+        .keys()
+        .map(|module| {
+            let path = binding_output_file_path(output_dir, module, "d.ts", "bundle declaration")?;
+            let exports = match fs::read_to_string(&path) {
+                Ok(source) => collect_dts_exports(&source),
+                Err(error) if error.kind() == ErrorKind::NotFound => BTreeSet::new(),
+                Err(error) => {
+                    return Err(format!("Failed to read {}: {error}", path.display()));
+                }
+            };
+            Ok((module.clone(), exports))
+        })
+        .collect::<Result<BTreeMap<_, _>, String>>()?;
+    let canonical_declaration_owners =
+        collect_output_export_owners(output_dir, "d.ts", collect_dts_exports)?;
+    let declaration_owners = select_export_owners(
+        &declaration_exports_by_module,
+        &spec.modules,
+        &canonical_declaration_owners,
+    );
 
     let bundled_source_bytes = modules.values().map(String::len).sum();
     let mut js = String::new();
@@ -217,14 +421,26 @@ const __load = (id) => {\n\
 
     let mut dts = String::from("// Generated by dynwinrt-codegen — do not edit\n");
     for module in modules.keys() {
-        let names = export_owners
+        let runtime_names = export_owners
             .iter()
             .filter_map(|(name, owner)| (owner == module).then_some(name.as_str()))
             .collect::<Vec<_>>();
-        if !names.is_empty() {
+        if !runtime_names.is_empty() {
             dts.push_str(&format!(
                 "export {{ {} }} from './{module}.js';\n",
-                names.join(", ")
+                runtime_names.join(", ")
+            ));
+        }
+        let type_only_names = declaration_owners
+            .iter()
+            .filter_map(|(name, owner)| {
+                (owner == module && !export_owners.contains_key(name)).then_some(name.as_str())
+            })
+            .collect::<Vec<_>>();
+        if !type_only_names.is_empty() {
+            dts.push_str(&format!(
+                "export type {{ {} }} from './{module}.js';\n",
+                type_only_names.join(", ")
             ));
         }
     }
@@ -340,6 +556,181 @@ fn collect_cjs_exports(source: &str) -> BTreeSet<String> {
         .collect()
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum TypeScriptToken {
+    Identifier(String),
+    Symbol(char),
+}
+
+fn tokenize_typescript(source: &str) -> Vec<TypeScriptToken> {
+    let mut tokens = Vec::new();
+    let mut chars = source.char_indices().peekable();
+    while let Some((_, character)) = chars.next() {
+        if character.is_whitespace() {
+            continue;
+        }
+        if character == '/' {
+            match chars.peek().map(|(_, next)| *next) {
+                Some('/') => {
+                    chars.next();
+                    for (_, next) in chars.by_ref() {
+                        if next == '\n' {
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                Some('*') => {
+                    chars.next();
+                    let mut previous = '\0';
+                    for (_, next) in chars.by_ref() {
+                        if previous == '*' && next == '/' {
+                            break;
+                        }
+                        previous = next;
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+        }
+        if matches!(character, '\'' | '"' | '`') {
+            let quote = character;
+            let mut escaped = false;
+            for (_, next) in chars.by_ref() {
+                if escaped {
+                    escaped = false;
+                } else if next == '\\' {
+                    escaped = true;
+                } else if next == quote {
+                    break;
+                }
+            }
+            continue;
+        }
+        if character.is_ascii_alphabetic() || matches!(character, '_' | '$') {
+            let mut identifier = String::from(character);
+            while let Some((_, next)) = chars.peek() {
+                if next.is_ascii_alphanumeric() || matches!(next, '_' | '$') {
+                    identifier.push(*next);
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+            tokens.push(TypeScriptToken::Identifier(identifier));
+        } else {
+            tokens.push(TypeScriptToken::Symbol(character));
+        }
+    }
+    tokens
+}
+
+fn identifier_at(tokens: &[TypeScriptToken], index: usize) -> Option<&str> {
+    match tokens.get(index)? {
+        TypeScriptToken::Identifier(identifier) => Some(identifier),
+        TypeScriptToken::Symbol(_) => None,
+    }
+}
+
+fn collect_export_list(
+    tokens: &[TypeScriptToken],
+    mut index: usize,
+    exports: &mut BTreeSet<String>,
+) -> usize {
+    while index < tokens.len() {
+        match tokens.get(index) {
+            Some(TypeScriptToken::Symbol('}')) => return index + 1,
+            Some(TypeScriptToken::Identifier(identifier)) => {
+                let mut exported = identifier.as_str();
+                if identifier == "type" {
+                    index += 1;
+                    let Some(name) = identifier_at(tokens, index) else {
+                        continue;
+                    };
+                    exported = name;
+                }
+                if identifier_at(tokens, index + 1) == Some("as") {
+                    if let Some(alias) = identifier_at(tokens, index + 2) {
+                        exported = alias;
+                        index += 2;
+                    }
+                }
+                exports.insert(exported.to_string());
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    index
+}
+
+fn collect_dts_exports(source: &str) -> BTreeSet<String> {
+    let tokens = tokenize_typescript(source);
+    let mut exports = BTreeSet::new();
+    let mut index = 0;
+    let mut brace_depth = 0usize;
+    while index < tokens.len() {
+        match tokens.get(index) {
+            Some(TypeScriptToken::Symbol('{')) => {
+                brace_depth += 1;
+                index += 1;
+            }
+            Some(TypeScriptToken::Symbol('}')) => {
+                brace_depth = brace_depth.saturating_sub(1);
+                index += 1;
+            }
+            Some(TypeScriptToken::Identifier(keyword))
+                if brace_depth == 0 && keyword == "export" =>
+            {
+                index += 1;
+                while matches!(identifier_at(&tokens, index), Some("declare" | "abstract")) {
+                    index += 1;
+                }
+                if identifier_at(&tokens, index) == Some("default") {
+                    index += 1;
+                    while matches!(identifier_at(&tokens, index), Some("declare" | "abstract")) {
+                        index += 1;
+                    }
+                }
+                if matches!(tokens.get(index), Some(TypeScriptToken::Symbol('{'))) {
+                    index = collect_export_list(&tokens, index + 1, &mut exports);
+                    continue;
+                }
+                let Some(kind) = identifier_at(&tokens, index) else {
+                    continue;
+                };
+                index += 1;
+                if kind == "type" && matches!(tokens.get(index), Some(TypeScriptToken::Symbol('{')))
+                {
+                    index = collect_export_list(&tokens, index + 1, &mut exports);
+                    continue;
+                }
+                if matches!(
+                    kind,
+                    "class"
+                        | "const"
+                        | "enum"
+                        | "function"
+                        | "interface"
+                        | "let"
+                        | "module"
+                        | "namespace"
+                        | "type"
+                        | "var"
+                ) && let Some(name) = identifier_at(&tokens, index)
+                {
+                    exports.insert(name.to_string());
+                }
+            }
+            _ => {
+                index += 1;
+            }
+        }
+    }
+    exports
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -352,6 +743,26 @@ mod tests {
     }
 
     #[test]
+    fn bundle_spec_rejects_portable_name_collisions() {
+        let error = parse_binding_bundle_spec("first=A,a").unwrap_err();
+        assert!(error.contains("collide case-insensitively"));
+        for name in ["INDEX", "Lifetime", "PrOxY", "COM"] {
+            assert!(
+                parse_binding_bundle_spec(&format!("{name}=A"))
+                    .unwrap_err()
+                    .contains("Reserved bundle name")
+            );
+        }
+        for module in ["INDEX", "Lifetime"] {
+            assert!(
+                parse_binding_bundle_spec(&format!("first={module}"))
+                    .unwrap_err()
+                    .contains("Reserved bundle module")
+            );
+        }
+    }
+
+    #[test]
     fn require_scanner_keeps_only_flat_generated_siblings() {
         let source = "\
 const a = require('./A.js');\n\
@@ -360,6 +771,28 @@ const nested = require('./nested/B.js');\n";
         assert_eq!(
             collect_relative_requires(source),
             BTreeSet::from(["A".to_string()])
+        );
+    }
+
+    #[test]
+    fn declaration_export_scanner_keeps_value_and_type_exports() {
+        let source = "\
+// export interface Ignored {}\n\
+export interface Point { x: number; }\n\
+export type Rect = { width: number };\n\
+export declare class Widget {}\n\
+export declare function createWidget(): Widget;\n\
+export { External, type ExternalShape as Shape } from './External.js';\n";
+        assert_eq!(
+            collect_dts_exports(source),
+            BTreeSet::from([
+                "External".to_string(),
+                "Point".to_string(),
+                "Rect".to_string(),
+                "Shape".to_string(),
+                "Widget".to_string(),
+                "createWidget".to_string(),
+            ])
         );
     }
 }
