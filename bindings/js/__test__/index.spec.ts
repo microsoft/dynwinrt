@@ -171,6 +171,7 @@ test('WinRT root facade exposes usable native primitives', (t) => {
 
 test('Classic COM raw ABI access requires the explicit unsafe entrypoint', (t) => {
   const iid = WinGuid.parse('00000000-0000-0000-c000-000000000046')
+  t.is(typeof DynCom.projectWinRtAsync, 'function')
   const raw = DynComUnsafe.registerIUnknownInterface('Unsafe.IUnknown', iid).addMethodAt(
     3,
     'Raw',

@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>dynwinrt Windows Hello</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main>
+      <h1>Windows Hello</h1>
+      <p>Verify the current user with face, fingerprint, or PIN.</p>
+      <div id="availability">Checking availability…</div>
+      <button id="verify" type="button" disabled>Verify identity</button>
+      <div id="result" role="status" aria-live="polite"></div>
+    </main>
+    <script src="./renderer.js"></script>
+  </body>
+</html>

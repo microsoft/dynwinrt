@@ -4377,6 +4377,30 @@ pub unsafe fn adopt_com_pointer(ptr: *mut c_void) -> WinRTValue {
     }
 }
 
+/// Project a managed COM object as a typed WinRT async operation.
+///
+/// The input remains owned by the caller. The returned `Async` value holds a
+/// separate `IAsyncInfo` reference and can be awaited independently.
+pub fn project_winrt_async(
+    value: &WinRTValue,
+    async_type: TypeHandle,
+) -> result::Result<WinRTValue> {
+    if !async_type.is_async() {
+        return Err(invalid_argument(
+            "project_winrt_async requires a WinRT async type",
+        ));
+    }
+    let object = value
+        .as_object()
+        .ok_or_else(|| invalid_argument("project_winrt_async requires a COM object"))?;
+    let info: windows_future::IAsyncInfo =
+        object.cast().map_err(result::Error::WindowsError)?;
+    Ok(WinRTValue::Async(crate::value::AsyncInfo {
+        info,
+        async_type,
+    }))
+}
+
 #[cfg(test)]
 fn call_method(
     vtable_index: usize,
@@ -4439,8 +4463,10 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
     use windows::{
         ApplicationModel::DataTransfer::DataTransferManager,
+        System::Threading::{ThreadPool, WorkItemHandler},
         Win32::{
             System::Com::{CoGetMalloc, IMalloc, IPersistFile, IStream},
+            System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize},
             UI::Shell::{IDataTransferManagerInterop, SHCreateMemStream},
             UI::WindowsAndMessaging::{
                 CreateWindowExW, DestroyWindow, WINDOW_EX_STYLE, WS_OVERLAPPED,
@@ -9165,6 +9191,73 @@ mod tests {
         let result = unsafe { iface.method(14).unwrap().invoke(adopted.as_raw(), &[]) }?;
 
         assert_eq!(result[0].as_i32().unwrap(), 7);
+        Ok(())
+    }
+
+    #[test]
+    fn project_winrt_async_borrows_managed_object() -> result::Result<()> {
+        let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
+        let handler = WorkItemHandler::new(|_| Ok(()));
+        let operation = ThreadPool::RunAsync(&handler).map_err(result::Error::WindowsError)?;
+        let object: IUnknown = operation.cast().map_err(result::Error::WindowsError)?;
+        let source = WinRTValue::Object(object);
+
+        let projected =
+            project_winrt_async(&source, MetadataTable::new().async_action())?;
+        assert!(matches!(projected, WinRTValue::Async(_)));
+        assert!(matches!(source, WinRTValue::Object(_)));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn project_winrt_async_preserves_progress_contract() -> result::Result<()> {
+        use std::sync::{Arc, atomic::Ordering};
+        use windows::Storage::Streams::{Buffer, IOutputStream, InMemoryRandomAccessStream};
+
+        let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
+        let stream = InMemoryRandomAccessStream::new().map_err(result::Error::WindowsError)?;
+        let output: IOutputStream = stream.cast().map_err(result::Error::WindowsError)?;
+        let buffer = Buffer::Create(1234).map_err(result::Error::WindowsError)?;
+        buffer
+            .SetLength(1234)
+            .map_err(result::Error::WindowsError)?;
+        let operation = output
+            .WriteAsync(&buffer)
+            .map_err(result::Error::WindowsError)?;
+        let object: IUnknown = operation.cast().map_err(result::Error::WindowsError)?;
+        let source = WinRTValue::Object(object);
+
+        let table = MetadataTable::new();
+        let result_type = table.make(TypeKind::U32);
+        let progress_type = table.make(TypeKind::U32);
+        let async_type =
+            table.async_operation_with_progress(&result_type, &progress_type);
+        let projected = project_winrt_async(&source, async_type)?;
+
+        let async_info = match &projected {
+            WinRTValue::Async(info) => info,
+            other => panic!("expected Async, got {other:?}"),
+        };
+        assert_eq!(async_info.result_type().unwrap().kind(), TypeKind::U32);
+        assert_eq!(async_info.progress_type().unwrap().kind(), TypeKind::U32);
+
+        let progress_count = Arc::new(AtomicU32::new(0));
+        let callback_count = progress_count.clone();
+        let handler = crate::create_progress_handler(
+            async_info.progress_handler_iid().unwrap(),
+            async_info.progress_type().unwrap(),
+            Box::new(move |value| {
+                assert!(matches!(value, WinRTValue::U32(_)));
+                callback_count.fetch_add(1, Ordering::SeqCst);
+            }),
+        );
+        async_info.set_progress_handler(&handler)?;
+
+        let result = projected.await?;
+        assert!(matches!(result, WinRTValue::U32(1234)));
+        assert!(matches!(source, WinRTValue::Object(_)));
+
         Ok(())
     }
 

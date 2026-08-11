@@ -1,0 +1,18 @@
+{
+  "name": "dynwinrt-windows-hello-sample",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Windows Hello user verification using dynwinrt",
+  "main": "main.js",
+  "scripts": {
+    "generate": "powershell -NoProfile -ExecutionPolicy Bypass -File ./generate.ps1",
+    "check": "node check.js",
+    "start": "electron ."
+  },
+  "dependencies": {
+    "@microsoft/dynwinrt": "file:../../../bindings/js"
+  },
+  "devDependencies": {
+    "electron": "^40.10.6"
+  }
+}

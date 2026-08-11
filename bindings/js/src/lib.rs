@@ -135,6 +135,12 @@ pub(crate) fn set_winui_dispatcher_loop_active(active: bool) {
 #[napi]
 pub struct DynWinRTType(dynwinrt::TypeHandle);
 
+impl DynWinRTType {
+  pub(crate) fn type_handle(&self) -> dynwinrt::TypeHandle {
+    self.0.clone()
+  }
+}
+
 #[napi]
 impl DynWinRTType {
   #[napi]

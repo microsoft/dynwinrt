@@ -1,0 +1,69 @@
+:root {
+  color-scheme: light dark;
+  font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  color: #1a1a1a;
+  background: #f3f3f3;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  display: grid;
+  min-height: 100vh;
+  margin: 0;
+  place-items: center;
+}
+
+main {
+  display: grid;
+  gap: 14px;
+  width: min(100% - 48px, 420px);
+}
+
+h1,
+p {
+  margin: 0;
+}
+
+h1 {
+  font-size: 24px;
+}
+
+p,
+#availability,
+#result {
+  color: #666;
+}
+
+button {
+  height: 36px;
+  border: 1px solid #005a9e;
+  border-radius: 4px;
+  color: white;
+  background: #0067c0;
+  font: inherit;
+  font-weight: 600;
+}
+
+button:disabled {
+  opacity: 0.55;
+}
+
+#result {
+  min-height: 21px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color: white;
+    background: #202020;
+  }
+
+  p,
+  #availability,
+  #result {
+    color: #c5c5c5;
+  }
+}

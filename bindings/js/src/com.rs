@@ -6,7 +6,7 @@ use napi::JsValue;
 use napi_derive::napi;
 use windows::core::{IUnknown, Interface as _, GUID};
 
-use super::{DynWinRTValue, WinGUID, TABLE};
+use super::{DynWinRTType, DynWinRTValue, WinGUID, TABLE};
 
 #[allow(dead_code)]
 pub(super) enum NativePointerOwner {
@@ -879,6 +879,15 @@ fn adopt_com_pointer(
       Ok(value)
     }
   }
+}
+
+fn project_winrt_async(
+  value: &DynWinRTValue,
+  async_type: &DynWinRTType,
+) -> napi::Result<DynWinRTValue> {
+  dynwinrt::com::project_winrt_async(&value.0, async_type.type_handle())
+    .map(DynWinRTValue::new)
+    .map_err(|error| napi::Error::from_reason(error.message()))
 }
 
 fn explicit_raw_com_pointer(
@@ -4523,6 +4532,14 @@ impl DynCom {
     iid: Option<&WinGUID>,
   ) -> napi::Result<DynWinRTValue> {
     self::adopt_com_pointer(value, iid)
+  }
+
+  #[napi]
+  pub fn project_win_rt_async(
+    value: &DynWinRTValue,
+    async_type: &DynWinRTType,
+  ) -> napi::Result<DynWinRTValue> {
+    self::project_winrt_async(value, async_type)
   }
 
   #[napi]
