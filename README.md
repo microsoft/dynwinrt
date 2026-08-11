@@ -171,9 +171,61 @@ For deployment, see
 | `--lang LANG` | No | `js` (default, emits `.js` + `.d.ts`) or `py` (emits `.py` + `.pyi` and `py.typed`) |
 | `--no-pyi` | No | With `--lang py`, emit implementation files without type stubs |
 | `--output DIR` | No | Output directory (default `./generated`) |
+| `--shared-interface-members` | No | JS opt-in: reuse shared required-interface prototype descriptors instead of duplicating inherited member bodies in every concrete class |
 | `--dry-run` | No | Validate input, don't write files |
 
 For each WinRT class the codegen emits a typed wrapper, factory, interface registration, async + progress support, generic collections, structs, enums, delegates, and an `index.js` / `index.d.ts` that re-exports every emitted symbol.
+
+### Binding layout optimization
+
+Large WinUI projections can opt into shared inherited-interface implementations
+without changing concrete class declarations or member names:
+
+```powershell
+dynwinrt-codegen generate `
+  --winmd-list .winapp\winmds.txt `
+  --class-name Microsoft.UI.Xaml.Controls.Button,Microsoft.UI.Xaml.Controls.TextBlock `
+  --output .winapp\bindings `
+  --shared-interface-members
+```
+
+The generated concrete prototypes receive the same method/accessor descriptors
+from standalone shared interface prototypes. Overloaded or conflicting members
+remain class-local, raw interface wrapper classes remain available, and the
+option does not change existing `.d.ts` files.
+
+After normal JS generation completes, configure one or more first-screen
+CommonJS bundles with the `bundle` subcommand:
+
+```powershell
+dynwinrt-codegen bundle `
+  --output .winapp\bindings `
+  --bundle first-screen=Application,Window,Button,lifetime
+```
+
+`first-screen.js` contains those roots and their generated relative-require
+closure. The root `index.js` redirects matching named exports to the bundle;
+unconfigured exports keep their normal per-type lazy files. Bundled per-type
+`.js` paths become redirect shims into the bundle's canonical CommonJS cache,
+while every `.d.ts` path remains unchanged. Root CommonJS, root ESM, and deep
+imports therefore share constructor and lifetime identity. External
+`@microsoft/dynwinrt` requires stay external and cycles use CommonJS-style
+partial module exports. When multiple bundles share a dependency, an explicitly
+configured root owns it; otherwise the shared module stays unbundled so every
+bundle resolves the same CommonJS instance.
+
+Run `bundle` only against a freshly generated, unbundled output directory. The
+command is intentionally single-use: it fails if any configured root is
+missing or if bundle artifacts/redirect shims already exist, rather than
+silently embedding stale sources. Generate into a new or cleaned output
+directory (or copy a fresh generation directory) before changing bundle roots
+or rebuilding a bundle; in-place generation over a bundled tree is rejected.
+
+Focused validation:
+
+```powershell
+cargo test -p dynwinrt-codegen --test shared_interface_members_test --test binding_bundle_test
+```
 
 ## Local development — fix import paths in generated files
 

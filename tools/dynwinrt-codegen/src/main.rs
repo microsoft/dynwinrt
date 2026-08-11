@@ -13,6 +13,11 @@ use dynwinrt_codegen::codegen::package;
 use dynwinrt_codegen::codegen::python;
 use dynwinrt_codegen::codegen::typescript;
 use dynwinrt_codegen::codegen::winrt::extensions::winui;
+use dynwinrt_codegen::codegen::winrt::javascript::bundle::{
+    BindingBundleSpec, GeneratedBindingBundle, binding_bundle_redirect, binding_output_file_path,
+    collect_binding_bundle_modules, generate_binding_bundle_with_modules,
+    parse_binding_bundle_spec, validate_binding_file_stem,
+};
 use dynwinrt_codegen::codegen::{project, render_dts, render_js};
 use dynwinrt_codegen::com_metadata;
 use dynwinrt_codegen::meta;
@@ -125,6 +130,11 @@ enum Commands {
         #[arg(long, default_value = "@microsoft/dynwinrt", value_name = "NAME")]
         import_name: String,
 
+        /// Reuse standalone interface prototype implementations for inherited
+        /// concrete-class members. Opt-in while compatibility data is gathered.
+        #[arg(long)]
+        shared_interface_members: bool,
+
         /// Validate metadata and resolve dependencies without writing files
         #[arg(long)]
         dry_run: bool,
@@ -136,6 +146,16 @@ enum Commands {
         /// Skip .pyi type stubs and the py.typed marker (requires --lang py).
         #[arg(long, conflicts_with = "pyi")]
         no_pyi: bool,
+    },
+    /// Bundle an already-generated JavaScript binding directory.
+    Bundle {
+        /// Generated binding directory to bundle in place.
+        #[arg(long, value_name = "DIR")]
+        output: String,
+
+        /// Repeatable bundle definition: NAME=MODULE[,MODULE...].
+        #[arg(long = "bundle", value_name = "NAME=MODULE[,MODULE...]")]
+        bundles: Vec<String>,
     },
 }
 
@@ -236,6 +256,20 @@ fn parse_class_requests(
         .collect()
 }
 
+fn parse_binding_bundle_specs(values: &[String]) -> Result<Vec<BindingBundleSpec>, String> {
+    let mut names = HashSet::new();
+    values
+        .iter()
+        .map(|value| {
+            let spec = parse_binding_bundle_spec(value)?;
+            if !names.insert(spec.name.clone()) {
+                return Err(format!("Duplicate --bundle name `{}`", spec.name));
+            }
+            Ok(spec)
+        })
+        .collect()
+}
+
 fn run() -> Result<(), String> {
     let cli = Cli::parse();
 
@@ -245,6 +279,22 @@ fn run() -> Result<(), String> {
         }
         Commands::ComCensus { winmd, json } => {
             run_com_census(&winmd, json)?;
+        }
+        Commands::Bundle { output, bundles } => {
+            let bundles = parse_binding_bundle_specs(&bundles)?;
+            if bundles.is_empty() {
+                return Err("bundle requires at least one --bundle specification".into());
+            }
+            let output = PathBuf::from(output);
+            if !output.is_dir() {
+                return Err(format!(
+                    "Generated binding directory does not exist: {}",
+                    output.display(),
+                ));
+            }
+            let transaction = OutputTransaction::begin(&output)?;
+            write_js_barrel_and_manifest(transaction.stage_dir(), "", &bundles)?;
+            transaction.commit()?;
         }
         Commands::Generate {
             winmd,
@@ -257,6 +307,7 @@ fn run() -> Result<(), String> {
             lang,
             output,
             import_name,
+            shared_interface_members,
             dry_run,
             pyi,
             no_pyi,
@@ -264,6 +315,10 @@ fn run() -> Result<(), String> {
             if lang != "py" && (pyi || no_pyi) {
                 return Err("--pyi and --no-pyi require --lang py".into());
             }
+            if lang != "js" && shared_interface_members {
+                return Err("--shared-interface-members requires --lang js".into());
+            }
+            let binding_bundles: Vec<BindingBundleSpec> = Vec::new();
             let pyi = lang == "py" && !no_pyi;
             // Collect winmd paths from --folder and/or --winmd
             let mut winmd_parts: Vec<String> = Vec::new();
@@ -359,7 +414,7 @@ fn run() -> Result<(), String> {
 
             let final_output_dir = Path::new(&output);
             let mut python_output = if lang == "py" && !dry_run {
-                Some(PythonOutputTransaction::begin(final_output_dir)?)
+                Some(OutputTransaction::begin(final_output_dir)?)
             } else {
                 None
             };
@@ -370,12 +425,14 @@ fn run() -> Result<(), String> {
             let output_dir = effective_output_dir.as_path();
             if lang == "js" {
                 project::set_import_name(&import_name);
+                project::set_shared_interface_members(shared_interface_members);
             }
             if !dry_run {
                 fs::create_dir_all(output_dir).map_err(|e| {
                     format!("Failed to create output directory '{}': {}", output, e)
                 })?;
                 if lang == "js" {
+                    ensure_unbundled_js_generation_output(output_dir)?;
                     migrate_legacy_com_only_package(output_dir)?;
                 }
             }
@@ -675,7 +732,7 @@ fn run() -> Result<(), String> {
                         } else {
                             generate_fn(&all_classes, &all_interfaces, &all_enums)
                         };
-                        write_js_barrel_and_manifest(output_dir, &index_content)?;
+                        write_js_barrel_and_manifest(output_dir, &index_content, &binding_bundles)?;
                     }
                 }
             } else {
@@ -821,7 +878,7 @@ fn run() -> Result<(), String> {
                     } else {
                         let index_code =
                             typescript::generate_index(&all_classes, &all_interfaces, &all_enums);
-                        write_js_barrel_and_manifest(output_dir, &index_code)?;
+                        write_js_barrel_and_manifest(output_dir, &index_code, &binding_bundles)?;
                     }
                 }
 
@@ -1266,12 +1323,17 @@ fn generate_js_files(
 /// are removed cleanly. Then we scan the directory for real `.js` files (each
 /// one corresponds to a subpath consumer can deep-import) and emit a
 /// `package.json` with the conditional-exports map.
-fn write_js_barrel_and_manifest(output_dir: &Path, index_content: &str) -> Result<(), String> {
+fn write_js_barrel_and_manifest(
+    output_dir: &Path,
+    index_content: &str,
+    bundles: &[BindingBundleSpec],
+) -> Result<(), String> {
     let js_path = output_dir.join("index.js");
     let mjs_path = output_dir.join("index.mjs");
     let proxy_path = output_dir.join("index.proxy.js");
     let dts_path = output_dir.join("index.d.ts");
     let _ = index_content;
+    preflight_binding_bundles(output_dir, bundles)?;
     write_lifetime_module(output_dir)?;
 
     // Clean up any stale `.index.ts` cache from older codegen versions.
@@ -1291,14 +1353,16 @@ fn write_js_barrel_and_manifest(output_dir: &Path, index_content: &str) -> Resul
     // Sweep index.js and any other files that still reference sibling modules
     // that were skipped by class/interface filters during emission.
     strip_broken_imports(output_dir)?;
-
     // Build the barrel from what actually landed on disk rather than from raw
     // metadata. This avoids root ESM/CJS barrels referencing files or helper
     // exports that were filtered out (for example ref-only WinUI controls such
     // as CompositionTarget).
     let index_content = render_index_from_existing_js_files(output_dir)?;
+    let (bundle_overrides, prepared_bundles) = prepare_binding_bundles(output_dir, bundles)?;
+    write_binding_bundles(output_dir, &prepared_bundles)?;
 
-    let js_content = typescript::esm_index_to_cjs_getter(&index_content);
+    let js_content =
+        typescript::esm_index_to_cjs_getter_with_overrides(&index_content, &bundle_overrides);
     fs::write(&js_path, &js_content)
         .map_err(|e| format!("Failed to write {}: {}", js_path.display(), e))?;
 
@@ -1399,6 +1463,259 @@ fn apply_com_generation_manifest(
         .map_err(|error| format!("Failed to serialize COM generation manifest: {error}"))?;
     fs::write(&path, format!("{content}\n"))
         .map_err(|error| format!("Failed to write {}: {error}", path.display()))
+}
+
+fn preflight_binding_bundles(
+    output_dir: &Path,
+    bundles: &[BindingBundleSpec],
+) -> Result<(), String> {
+    if bundles.is_empty() {
+        return Ok(());
+    }
+
+    let artifacts = collect_existing_binding_bundle_artifacts(output_dir)?;
+    if !artifacts.is_empty() {
+        return Err(format!(
+            "Binding output {} already contains bundle artifacts or redirect shims: {}. \
+             Refusing to rebundle potentially stale embedded sources. Regenerate into a new or \
+             cleaned unbundled output directory, then run `bundle` once.",
+            output_dir.display(),
+            artifacts.into_iter().collect::<Vec<_>>().join(", "),
+        ));
+    }
+    for bundle in bundles {
+        let js_path =
+            binding_output_file_path(output_dir, &bundle.name, "js", "bundle output name")?;
+        let dts_path =
+            binding_output_file_path(output_dir, &bundle.name, "d.ts", "bundle output name")?;
+        if js_path.exists() || dts_path.exists() {
+            return Err(format!(
+                "Bundle name `{}` collides with an existing generated module",
+                bundle.name
+            ));
+        }
+        let missing_roots = bundle
+            .modules
+            .iter()
+            .map(|module| {
+                binding_output_file_path(output_dir, module, "js", "configured bundle root")
+                    .map(|path| (module, path))
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .filter_map(|(module, path)| (!path.is_file()).then_some(module.as_str()))
+            .collect::<Vec<_>>();
+        if !missing_roots.is_empty() {
+            return Err(format!(
+                "Bundle `{}` cannot be created because configured root module(s) are missing: {}. \
+                 Regenerate or copy a complete unbundled binding output and retry.",
+                bundle.name,
+                missing_roots.join(", "),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn ensure_unbundled_js_generation_output(output_dir: &Path) -> Result<(), String> {
+    let artifacts = collect_existing_binding_bundle_artifacts(output_dir)?;
+    if !artifacts.is_empty() {
+        return Err(format!(
+            "Binding output {} already contains bundle artifacts or redirect shims: {}. \
+             Refusing in-place generation because stale bundle files would remain publishable. \
+             Generate into a new or cleaned unbundled output directory instead.",
+            output_dir.display(),
+            artifacts.into_iter().collect::<Vec<_>>().join(", "),
+        ));
+    }
+    Ok(())
+}
+
+fn collect_existing_binding_bundle_artifacts(
+    output_dir: &Path,
+) -> Result<BTreeSet<String>, String> {
+    let mut artifacts = BTreeSet::new();
+    let global_inventory = output_dir.join(".dynwinrt-binding-bundles");
+    if global_inventory.exists() {
+        artifacts.insert(".dynwinrt-binding-bundles".to_string());
+        if global_inventory.is_file() {
+            for name in fs::read_to_string(&global_inventory)
+                .map_err(|error| format!("Failed to read {}: {error}", global_inventory.display()))?
+                .lines()
+                .filter(|line| !line.is_empty())
+            {
+                validate_binding_file_stem(name, "bundle inventory name")?;
+            }
+        }
+    }
+
+    let entries = fs::read_dir(output_dir).map_err(|error| {
+        format!(
+            "Failed to inspect binding output directory {}: {error}",
+            output_dir.display()
+        )
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            format!(
+                "Failed to inspect an entry in binding output directory {}: {error}",
+                output_dir.display()
+            )
+        })?;
+        let path = entry.path();
+        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if let Some(bundle_name) = file_name.strip_prefix(".dynwinrt-binding-bundle-") {
+            validate_binding_file_stem(bundle_name, "bundle inventory name")?;
+            artifacts.insert(file_name.to_string());
+            if path.is_file() {
+                for module in fs::read_to_string(&path)
+                    .map_err(|error| format!("Failed to read {}: {error}", path.display()))?
+                    .lines()
+                    .filter(|line| !line.is_empty())
+                {
+                    binding_output_file_path(output_dir, module, "js", "bundle inventory module")?;
+                }
+            }
+            continue;
+        }
+        if !file_name.ends_with(".js") || !path.is_file() {
+            continue;
+        }
+        let source = fs::read_to_string(&path)
+            .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
+        if source.contains("Object.defineProperty(exports, '__dynwinrtLoadBundledModule'")
+            || source.contains(".__dynwinrtLoadBundledModule(")
+        {
+            artifacts.insert(file_name.to_string());
+        }
+    }
+
+    Ok(artifacts)
+}
+
+fn prepare_binding_bundles(
+    output_dir: &Path,
+    bundles: &[BindingBundleSpec],
+) -> Result<
+    (
+        BTreeMap<String, String>,
+        Vec<(String, GeneratedBindingBundle)>,
+    ),
+    String,
+> {
+    let mut overrides = BTreeMap::new();
+    let mut generated_bundles = Vec::new();
+    let closures = bundles
+        .iter()
+        .map(|bundle| {
+            collect_binding_bundle_modules(output_dir, bundle).map(|modules| (bundle, modules))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut explicit_owners = BTreeMap::<String, String>::new();
+    for bundle in bundles {
+        for module in &bundle.modules {
+            if let Some(existing) = explicit_owners.insert(module.clone(), bundle.name.clone()) {
+                return Err(format!(
+                    "Configured root module `{module}` belongs to both bundle `{existing}` and `{}`",
+                    bundle.name,
+                ));
+            }
+        }
+    }
+
+    let mut closure_memberships = BTreeMap::<String, Vec<String>>::new();
+    for (bundle, modules) in &closures {
+        for module in modules {
+            closure_memberships
+                .entry(module.clone())
+                .or_default()
+                .push(bundle.name.clone());
+        }
+    }
+
+    let module_owners = closure_memberships
+        .into_iter()
+        .filter_map(|(module, owners)| {
+            if let Some(explicit_owner) = explicit_owners.get(&module) {
+                Some((module, explicit_owner.clone()))
+            } else if owners.len() == 1 {
+                Some((module, owners[0].clone()))
+            } else {
+                None
+            }
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    for (bundle, closure) in closures {
+        let included_modules = closure
+            .into_iter()
+            .filter(|module| module_owners.get(module) == Some(&bundle.name))
+            .collect::<BTreeSet<_>>();
+        let generated =
+            generate_binding_bundle_with_modules(output_dir, bundle, &included_modules)?;
+        for export in &generated.exports {
+            if let Some(existing) = overrides.insert(export.clone(), bundle.name.clone()) {
+                return Err(format!(
+                    "Binding export `{export}` is configured in both bundle `{existing}` and `{}`",
+                    bundle.name
+                ));
+            }
+        }
+        generated_bundles.push((bundle.name.clone(), generated));
+    }
+    Ok((overrides, generated_bundles))
+}
+
+fn write_binding_bundles(
+    output_dir: &Path,
+    generated_bundles: &[(String, GeneratedBindingBundle)],
+) -> Result<(), String> {
+    for (bundle_name, generated) in generated_bundles {
+        let js_path =
+            binding_output_file_path(output_dir, bundle_name, "js", "bundle output name")?;
+        let dts_path =
+            binding_output_file_path(output_dir, bundle_name, "d.ts", "bundle output name")?;
+        fs::write(&js_path, &generated.js)
+            .map_err(|error| format!("Failed to write {}: {error}", js_path.display()))?;
+        fs::write(&dts_path, &generated.dts)
+            .map_err(|error| format!("Failed to write {}: {error}", dts_path.display()))?;
+        println!(
+            "Generated {} ({} modules, {} source bytes)",
+            js_path.display(),
+            generated.module_count,
+            generated.bundled_source_bytes,
+        );
+        for module in &generated.modules {
+            let module_path = binding_output_file_path(output_dir, module, "js", "bundled module")?;
+            fs::write(&module_path, binding_bundle_redirect(bundle_name, module))
+                .map_err(|error| format!("Failed to write {}: {error}", module_path.display(),))?;
+        }
+        fs::write(
+            output_dir.join(format!(".dynwinrt-binding-bundle-{bundle_name}")),
+            generated
+                .modules
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+        .map_err(|error| format!("Failed to write bundle module inventory: {error}",))?;
+    }
+    if !generated_bundles.is_empty() {
+        fs::write(
+            output_dir.join(".dynwinrt-binding-bundles"),
+            generated_bundles
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+        .map_err(|error| format!("Failed to write binding bundle inventory: {error}",))?;
+    }
+    Ok(())
 }
 
 fn write_com_js_barrel(com_output_dir: &Path) -> Result<(), String> {
@@ -1828,6 +2145,9 @@ fn render_index_from_existing_js_files(output_dir: &Path) -> Result<String, Stri
             Ok(c) => c,
             Err(_) => continue,
         };
+        if content.contains("Object.defineProperty(exports, '__dynwinrtLoadBundledModule'") {
+            continue;
+        }
         let mut names = collect_public_exports_from_js(&content);
         names.sort();
         names.dedup();
@@ -2804,20 +3124,20 @@ fn validate_python_public_identities(
     Ok(())
 }
 
-struct PythonOutputTransaction {
+struct OutputTransaction {
     final_dir: PathBuf,
     stage_dir: PathBuf,
     backup_dir: PathBuf,
     committed: bool,
 }
 
-impl PythonOutputTransaction {
+impl OutputTransaction {
     fn begin(final_dir: &Path) -> Result<Self, String> {
         let parent = final_dir.parent().unwrap_or_else(|| Path::new("."));
         let leaf = final_dir
             .file_name()
             .and_then(|name| name.to_str())
-            .ok_or_else(|| format!("Invalid Python output directory '{}'", final_dir.display()))?;
+            .ok_or_else(|| format!("Invalid output directory '{}'", final_dir.display()))?;
         fs::create_dir_all(parent)
             .map_err(|e| format!("Failed to create {}: {}", parent.display(), e))?;
 
@@ -2830,7 +3150,7 @@ impl PythonOutputTransaction {
         if final_dir.exists() {
             if !final_dir.is_dir() {
                 return Err(format!(
-                    "Python output path '{}' is not a directory",
+                    "Output path '{}' is not a directory",
                     final_dir.display()
                 ));
             }
@@ -2868,7 +3188,7 @@ impl PythonOutputTransaction {
             if had_existing_output {
                 if let Err(rollback_error) = fs::rename(&self.backup_dir, &self.final_dir) {
                     return Err(format!(
-                        "Failed to replace Python output directory '{}': {}. Rollback also failed: \
+                        "Failed to replace output directory '{}': {}. Rollback also failed: \
                          {}. The original output remains at '{}'",
                         self.final_dir.display(),
                         error,
@@ -2878,7 +3198,7 @@ impl PythonOutputTransaction {
                 }
             }
             return Err(format!(
-                "Failed to replace Python output directory '{}': {}",
+                "Failed to replace output directory '{}': {}",
                 self.final_dir.display(),
                 error
             ));
@@ -2888,7 +3208,7 @@ impl PythonOutputTransaction {
         if had_existing_output {
             fs::remove_dir_all(&self.backup_dir).map_err(|e| {
                 format!(
-                    "Replaced Python output but failed to remove backup '{}': {}",
+                    "Replaced output but failed to remove backup '{}': {}",
                     self.backup_dir.display(),
                     e
                 )
@@ -2898,7 +3218,7 @@ impl PythonOutputTransaction {
     }
 }
 
-impl Drop for PythonOutputTransaction {
+impl Drop for OutputTransaction {
     fn drop(&mut self) {
         if !self.committed && self.stage_dir.exists() {
             let _ = fs::remove_dir_all(&self.stage_dir);
@@ -3269,6 +3589,8 @@ fn print_capabilities() {
         "input.winmd-list",
         "input.ref-list",
         "selector.namespace-class",
+        "layout.shared-interface-members",
+        "layout.bundle",
     ] {
         println!("{}", capability);
     }
@@ -3348,6 +3670,47 @@ mod tests {
             std::process::id(),
             NEXT_ID.fetch_add(1, Ordering::Relaxed)
         ))
+    }
+
+    #[test]
+    fn js_barrel_uses_current_module_exports_instead_of_stale_index_exports() {
+        let output = test_directory("stale-js-index");
+        let _ = fs::remove_dir_all(&output);
+        fs::create_dir_all(&output).unwrap();
+        fs::write(
+            output.join("Widget.js"),
+            "exports.CurrentWidget = class CurrentWidget {};\n",
+        )
+        .unwrap();
+        fs::write(
+            output.join("index.d.ts"),
+            "export { StaleWidget } from './Widget.js';\n",
+        )
+        .unwrap();
+
+        let index = render_index_from_existing_js_files(&output).unwrap();
+
+        assert!(index.contains("CurrentWidget"));
+        assert!(!index.contains("StaleWidget"));
+        fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
+    fn js_generation_rejects_in_place_output_with_bundle_shims() {
+        let output = test_directory("bundled-js-generation");
+        let _ = fs::remove_dir_all(&output);
+        fs::create_dir_all(&output).unwrap();
+        fs::write(
+            output.join("Widget.js"),
+            binding_bundle_redirect("first-screen", "Widget"),
+        )
+        .unwrap();
+
+        let error = ensure_unbundled_js_generation_output(&output).unwrap_err();
+
+        assert!(error.contains("Refusing in-place generation"));
+        assert!(error.contains("new or cleaned unbundled output directory"));
+        fs::remove_dir_all(output).unwrap();
     }
 
     #[test]
@@ -3596,7 +3959,7 @@ mod tests {
         fs::create_dir_all(&output).unwrap();
         fs::write(output.join("existing.py"), "old").unwrap();
 
-        let transaction = PythonOutputTransaction::begin(&output).unwrap();
+        let transaction = OutputTransaction::begin(&output).unwrap();
         fs::write(transaction.stage_dir().join("existing.py"), "new").unwrap();
         fs::write(transaction.stage_dir().join("added.py"), "added").unwrap();
         transaction.commit().unwrap();
@@ -3619,7 +3982,7 @@ mod tests {
         fs::write(output.join("existing.py"), "old").unwrap();
 
         {
-            let transaction = PythonOutputTransaction::begin(&output).unwrap();
+            let transaction = OutputTransaction::begin(&output).unwrap();
             fs::write(transaction.stage_dir().join("existing.py"), "new").unwrap();
         }
 

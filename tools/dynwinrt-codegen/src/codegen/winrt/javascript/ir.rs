@@ -257,10 +257,21 @@ pub struct ProjectedClass {
     pub doc: Option<DocInfo>,
     pub members: Vec<ProjectedMember>,
     pub required_ifaces: Vec<ProjectedRequiredIface>,
+    /// Required-interface members whose implementation descriptors are copied
+    /// from a shared standalone interface prototype.
+    pub shared_interface_members: Vec<ProjectedSharedInterfaceMembers>,
     /// Static factory/static interface cache field declarations (JS only)
     pub static_cache_fields: Vec<String>,
     /// Static factory/static interface accessor methods (JS only)
     pub static_accessors: Vec<String>,
+}
+
+pub struct ProjectedSharedInterfaceMembers {
+    pub interface_name: String,
+    /// Projection-level member keys used to suppress duplicate class bodies.
+    pub member_keys: Vec<String>,
+    /// JavaScript property-key expressions copied from the interface prototype.
+    pub descriptor_keys: Vec<String>,
 }
 
 pub struct ProjectedIface {
@@ -269,6 +280,8 @@ pub struct ProjectedIface {
     pub iid_const: Option<ProjectedIidConst>,
     pub has_static_from: bool,
     pub has_parameterized_cast: bool,
+    /// The interface prototype may be reused by concrete runtime classes.
+    pub shared_member_source: bool,
     pub members: Vec<ProjectedMember>,
     pub is_delegate: bool,
 }

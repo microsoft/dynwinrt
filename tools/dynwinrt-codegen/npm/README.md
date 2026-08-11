@@ -56,7 +56,31 @@ npx dynwinrt-codegen generate \
 | `--ref PATH` | Additional `.winmd` files for type resolution only (no code emitted) |
 | `--lang LANG` | `js` (default, emits `.js` + `.d.ts`) or `py` (Python) |
 | `--output DIR` | Output directory (default `./generated`) |
+| `--shared-interface-members` | JS opt-in that shares inherited interface member descriptors across concrete classes |
 | `--dry-run` | Validate input, don't write files |
+
+### First-screen layout
+
+```powershell
+npx dynwinrt-codegen bundle `
+  --output .winapp\bindings `
+  --bundle first-screen=Application,Window,Button,lifetime
+```
+
+The opt-in shared-member mode keeps the concrete JS and declaration API intact,
+including raw interface wrappers and overload dispatch. Each bundle embeds the
+configured generated modules plus their relative dependency closure in one
+CommonJS file, preserves external runtime requires and CommonJS cycle caching,
+and emits a matching `.d.ts` re-export file. Bundled per-type paths are
+canonical redirect shims, so root/deep CommonJS and ESM imports share
+constructor and projection-lifetime identity. Dependencies shared by multiple
+bundles stay unbundled unless one bundle explicitly configures them as a root,
+so all bundles resolve one CommonJS instance.
+
+Run `bundle` only on a freshly generated, unbundled output directory. It fails
+when configured roots are missing or bundle artifacts/shims already exist;
+generate into a new or cleaned directory (or copy fresh output) before changing
+roots or rebundling. In-place generation over a bundled tree is rejected.
 
 ## What gets generated
 

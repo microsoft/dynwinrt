@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+pub mod bundle;
 pub(crate) mod docs;
 pub mod generator;
 pub mod ir;

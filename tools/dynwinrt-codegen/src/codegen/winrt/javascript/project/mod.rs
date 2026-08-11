@@ -23,6 +23,7 @@ use crate::types::{TypeKind, TypeMeta};
 
 thread_local! {
     static RUNTIME_IMPORT_NAME: RefCell<String> = RefCell::new("@microsoft/dynwinrt".into());
+    static SHARED_INTERFACE_MEMBERS: RefCell<bool> = const { RefCell::new(false) };
 }
 
 /// Set the runtime package import name used in generated JS/TS files.
@@ -33,6 +34,16 @@ pub fn set_import_name(name: &str) {
 
 pub fn get_import_name() -> String {
     RUNTIME_IMPORT_NAME.with(|n| n.borrow().clone())
+}
+
+/// Opt into reusing standalone interface prototype descriptors from concrete
+/// runtime classes instead of rendering inherited member bodies repeatedly.
+pub fn set_shared_interface_members(enabled: bool) {
+    SHARED_INTERFACE_MEMBERS.with(|value| *value.borrow_mut() = enabled);
+}
+
+fn shared_interface_members_enabled() -> bool {
+    SHARED_INTERFACE_MEMBERS.with(|value| *value.borrow())
 }
 
 use crate::codegen::winrt::shared::imports::{
@@ -878,6 +889,9 @@ pub fn project_class(
 
     // Required interface inline wrappers
     let mut required_ifaces = Vec::new();
+    let mut shared_member_candidates: Vec<(String, String, Vec<String>)> = Vec::new();
+    let mut conflicting_shared_members = HashSet::new();
+    let share_interface_members = shared_interface_members_enabled();
     // Track names already on the main class to avoid conflicts
     let mut main_member_names: HashSet<String> = members
         .iter()
@@ -987,9 +1001,25 @@ pub fn project_class(
                 let sig_key = format!("{}#{}", name, pm.params.len());
                 if main_member_names.insert(sig_key) {
                     members.push(member.clone());
+                    if share_interface_members && is_imported {
+                        record_shared_member_candidate(
+                            &mut shared_member_candidates,
+                            &mut conflicting_shared_members,
+                            req_iface,
+                            member,
+                        );
+                    }
                 }
             } else if main_member_names.insert(name) {
                 members.push(member.clone());
+                if share_interface_members && is_imported {
+                    record_shared_member_candidate(
+                        &mut shared_member_candidates,
+                        &mut conflicting_shared_members,
+                        req_iface,
+                        member,
+                    );
+                }
             }
         }
 
@@ -1012,6 +1042,45 @@ pub fn project_class(
     // Merge overloaded method names: rename `foo2`, `foo3` to `foo` when `foo` exists.
     // Must happen after flatten so required-interface methods are included.
     merge_overload_names(&mut members);
+    let mut final_member_counts = HashMap::new();
+    for member in &members {
+        if let Some(member_key) = shared_member_key(member) {
+            *final_member_counts.entry(member_key).or_insert(0usize) += 1;
+        }
+    }
+    conflicting_shared_members.extend(
+        final_member_counts
+            .into_iter()
+            .filter_map(|(member_key, count)| (count > 1).then_some(member_key)),
+    );
+
+    let mut shared_interface_members: Vec<ProjectedSharedInterfaceMembers> = Vec::new();
+    if share_interface_members {
+        for (member_key, interface_name, descriptor_keys) in shared_member_candidates {
+            if conflicting_shared_members.contains(&member_key) {
+                continue;
+            }
+            let group = shared_interface_members
+                .iter_mut()
+                .find(|group| group.interface_name == interface_name);
+            if let Some(group) = group {
+                if !group.member_keys.contains(&member_key) {
+                    group.member_keys.push(member_key);
+                }
+                for descriptor_key in descriptor_keys {
+                    if !group.descriptor_keys.contains(&descriptor_key) {
+                        group.descriptor_keys.push(descriptor_key);
+                    }
+                }
+            } else {
+                shared_interface_members.push(ProjectedSharedInterfaceMembers {
+                    interface_name,
+                    member_keys: vec![member_key],
+                    descriptor_keys,
+                });
+            }
+        }
+    }
 
     // Check if _unwrap is used
     let needs_unwrap = check_needs_unwrap(&members, &required_ifaces);
@@ -1029,6 +1098,7 @@ pub fn project_class(
             doc,
             members,
             required_ifaces,
+            shared_interface_members,
             static_cache_fields,
             static_accessors,
         }],
@@ -1173,6 +1243,12 @@ pub fn project_interface(
 
     // Members
     let iface_var = format!("_{}", iface.name);
+    let shared_member_source = shared_interface_members_enabled() && !iface.iid.is_empty();
+    let obj_expr = if shared_member_source {
+        "__interfaceValue(this)"
+    } else {
+        "this._obj"
+    };
     let mut members = Vec::new();
     for method in &iface.methods {
         if should_skip_raw_collection_method(iface, &method.name) {
@@ -1180,7 +1256,7 @@ pub fn project_interface(
         }
         if let Some(m) = project_instance_method(
             &iface_var,
-            "this._obj",
+            obj_expr,
             method,
             known_types,
             &delegate_names,
@@ -1193,7 +1269,7 @@ pub fn project_interface(
     }
 
     // Collection helpers
-    project_collection_helpers(iface, known_types, &mut members, &mut imports, "this._obj");
+    project_collection_helpers(iface, known_types, &mut members, &mut imports, obj_expr);
 
     // Static create() for IVector / IMap
     project_collection_create(iface, known_types, &mut members, &mut imports);
@@ -1269,6 +1345,7 @@ pub fn project_interface(
             iid_const: None, // already in file-level iid_consts
             has_static_from: !iface.iid.is_empty(),
             has_parameterized_cast,
+            shared_member_source,
             members,
             is_delegate: false,
         }],
@@ -1411,6 +1488,99 @@ pub fn project_delegate(
 // Utility helpers
 // ======================================================================
 
+fn record_shared_member_candidate(
+    candidates: &mut Vec<(String, String, Vec<String>)>,
+    conflicts: &mut HashSet<String>,
+    interface: &InterfaceMeta,
+    member: &ProjectedMember,
+) {
+    let Some(member_key) = shared_member_key(member) else {
+        return;
+    };
+    if matches!(
+        member,
+        ProjectedMember::Method(ProjectedMethod {
+            overload_of: Some(_),
+            ..
+        })
+    ) {
+        conflicts.insert(member_key);
+        return;
+    }
+    let descriptor_keys = shared_member_descriptor_keys(member);
+    if descriptor_keys.is_empty() {
+        return;
+    }
+    if let Some((_, existing_interface, existing_descriptors)) = candidates
+        .iter_mut()
+        .find(|(existing_key, _, _)| existing_key == &member_key)
+    {
+        if existing_interface != &interface.name || matches!(member, ProjectedMember::Method(_)) {
+            conflicts.insert(member_key);
+        } else {
+            for descriptor_key in descriptor_keys {
+                if !existing_descriptors.contains(&descriptor_key) {
+                    existing_descriptors.push(descriptor_key);
+                }
+            }
+        }
+        return;
+    }
+    candidates.push((member_key, interface.name.clone(), descriptor_keys));
+}
+
+fn shared_member_key(member: &ProjectedMember) -> Option<String> {
+    match member {
+        ProjectedMember::Method(method) => {
+            let has_numeric_suffix = method
+                .name
+                .chars()
+                .last()
+                .is_some_and(|character| character.is_ascii_digit());
+            (!has_numeric_suffix).then(|| method.name.clone())
+        }
+        ProjectedMember::Property(property) => Some(property.name.clone()),
+        ProjectedMember::Event(event) if !event.subscribe_name.is_empty() => {
+            Some(event.subscribe_name.clone())
+        }
+        ProjectedMember::Symbol(symbol) => Some(symbol_dedup_key(&symbol.kind)),
+        _ => None,
+    }
+}
+
+fn shared_member_descriptor_keys(member: &ProjectedMember) -> Vec<String> {
+    let quoted = |name: &str| format!("'{name}'");
+    match member {
+        ProjectedMember::Method(method) => vec![quoted(&method.name)],
+        ProjectedMember::Property(property) => vec![quoted(&property.name)],
+        ProjectedMember::Event(event) if !event.subscribe_name.is_empty() => {
+            let event_name = event
+                .subscribe_name
+                .strip_prefix("on")
+                .unwrap_or(&event.subscribe_name);
+            let mut names = vec![
+                quoted(&event.subscribe_name),
+                quoted(&format!("once{event_name}")),
+            ];
+            if event.remove_vtable_index.is_some() {
+                names.push(quoted(&format!("off{event_name}")));
+            }
+            names
+        }
+        ProjectedMember::Symbol(symbol) => vec![match &symbol.kind {
+            SymbolKind::ToString { .. } => quoted("toString"),
+            SymbolKind::ToPrimitive => "Symbol.toPrimitive".into(),
+            SymbolKind::ToStringTag { .. } => "Symbol.toStringTag".into(),
+            SymbolKind::Iterator { .. } => "Symbol.iterator".into(),
+            SymbolKind::CollectionLength => quoted("length"),
+            SymbolKind::CollectionAt { .. } => quoted("at"),
+            SymbolKind::CollectionToArray { .. } => quoted("toArray"),
+            SymbolKind::IteratorNext { .. } => quoted("next"),
+        }],
+        _ => Vec::new(),
+    }
+}
+
 /// Returns a dedup key for a SymbolKind so flatten can detect duplicate symbols.
 pub fn symbol_dedup_key(kind: &SymbolKind) -> String {
     match kind {
@@ -1502,9 +1672,9 @@ fn collect_known_delegate_names_from_methods(
     delegate_names: &mut HashSet<String>,
 ) {
     for method in methods {
-        for parameter in &method.params {
+        for param in &method.params {
             collect_known_delegate_names_from_type(
-                &parameter.typ,
+                &param.typ,
                 known_delegate_names,
                 delegate_names,
             );
@@ -1543,9 +1713,9 @@ fn collect_known_delegate_names_from_type(
             collect_known_delegate_names_from_type(progress, known_delegate_names, delegate_names);
         }
         TypeMeta::Parameterized { name, args, .. } => {
-            let concrete = crate::meta::make_parameterized_name(name, args);
-            if known_delegate_names.contains(&concrete) {
-                delegate_names.insert(concrete);
+            let parameterized_name = crate::meta::make_parameterized_name(name, args);
+            if known_delegate_names.contains(&parameterized_name) {
+                delegate_names.insert(parameterized_name);
             }
             for argument in args {
                 collect_known_delegate_names_from_type(
