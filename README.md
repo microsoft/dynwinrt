@@ -171,9 +171,37 @@ For deployment, see
 | `--lang LANG` | No | `js` (default, emits `.js` + `.d.ts`) or `py` (emits `.py` + `.pyi` and `py.typed`) |
 | `--no-pyi` | No | With `--lang py`, emit implementation files without type stubs |
 | `--output DIR` | No | Output directory (default `./generated`) |
+| `--shared-interface-members` | No | JS opt-in: reuse shared required-interface prototype descriptors instead of duplicating inherited member bodies in every concrete class |
 | `--dry-run` | No | Validate input, don't write files |
 
 For each WinRT class the codegen emits a typed wrapper, factory, interface registration, async + progress support, generic collections, structs, enums, delegates, and an `index.js` / `index.d.ts` that re-exports every emitted symbol.
+
+### Shared interface members
+
+Large JavaScript projections can opt into shared inherited-interface
+implementations without changing concrete class declarations or member names:
+
+```powershell
+dynwinrt-codegen generate `
+  --winmd-list .winapp\winmds.txt `
+  --class-name Microsoft.UI.Xaml.Controls.Button,Microsoft.UI.Xaml.Controls.TextBlock `
+  --output .winapp\bindings `
+  --shared-interface-members
+```
+
+The generated concrete prototypes receive the same method and accessor
+descriptors from standalone shared interface prototypes. Overloaded or
+conflicting members remain class-local, raw interface wrapper classes remain
+available, and the option does not change generated `.d.ts` files. Only
+required interfaces already canonicalized as standalone shared wrappers
+participate; one-off inline required interfaces remain class-local. Generation
+without this flag is unchanged.
+
+Focused validation:
+
+```powershell
+cargo test -p dynwinrt-codegen --test shared_interface_members_test
+```
 
 ## Local development — fix import paths in generated files
 

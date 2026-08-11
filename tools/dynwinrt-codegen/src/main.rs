@@ -125,6 +125,11 @@ enum Commands {
         #[arg(long, default_value = "@microsoft/dynwinrt", value_name = "NAME")]
         import_name: String,
 
+        /// Reuse standalone interface prototype implementations for inherited
+        /// concrete-class members. Opt-in while compatibility data is gathered.
+        #[arg(long)]
+        shared_interface_members: bool,
+
         /// Validate metadata and resolve dependencies without writing files
         #[arg(long)]
         dry_run: bool,
@@ -257,12 +262,16 @@ fn run() -> Result<(), String> {
             lang,
             output,
             import_name,
+            shared_interface_members,
             dry_run,
             pyi,
             no_pyi,
         } => {
             if lang != "py" && (pyi || no_pyi) {
                 return Err("--pyi and --no-pyi require --lang py".into());
+            }
+            if lang != "js" && shared_interface_members {
+                return Err("--shared-interface-members requires --lang js".into());
             }
             let pyi = lang == "py" && !no_pyi;
             // Collect winmd paths from --folder and/or --winmd
@@ -370,6 +379,7 @@ fn run() -> Result<(), String> {
             let output_dir = effective_output_dir.as_path();
             if lang == "js" {
                 project::set_import_name(&import_name);
+                project::set_shared_interface_members(shared_interface_members);
             }
             if !dry_run {
                 fs::create_dir_all(output_dir).map_err(|e| {
@@ -1118,13 +1128,14 @@ fn generate_js_files(
         if !is_emittable_interface(iface) {
             continue;
         }
-        let projected = project::project_interface(
+        let projected = project::project_interface_with_shared_member_source(
             iface,
             known_types,
             delegate_type_names,
             delegate_sigs,
             delegate_sig_refs,
             delegate_param_wraps,
+            project::shared_interface_members_enabled() && shared_iids.contains(&iface.iid),
         );
         let js = render_js::render(&projected);
         let dts = render_dts::render(&projected);
@@ -1137,13 +1148,14 @@ fn generate_js_files(
         if !is_emittable_interface(iface) {
             continue;
         }
-        let projected = project::project_interface(
+        let projected = project::project_interface_with_shared_member_source(
             iface,
             known_types,
             delegate_type_names,
             delegate_sigs,
             delegate_sig_refs,
             delegate_param_wraps,
+            project::shared_interface_members_enabled() && shared_iids.contains(&iface.iid),
         );
         let js = render_js::render(&projected);
         let dts = render_dts::render(&projected);
@@ -3269,6 +3281,7 @@ fn print_capabilities() {
         "input.winmd-list",
         "input.ref-list",
         "selector.namespace-class",
+        "layout.shared-interface-members",
     ] {
         println!("{}", capability);
     }

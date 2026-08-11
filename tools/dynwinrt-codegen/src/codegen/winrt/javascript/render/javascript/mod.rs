@@ -113,6 +113,21 @@ fn render_esm(file: &ProjectedFile) -> String {
     }
 
     // Classes
+    if file
+        .classes
+        .iter()
+        .any(|class| !class.shared_interface_members.is_empty())
+    {
+        out.push_str(
+            "const __copyInterfaceMembers = (target, source, keys) => {\n\
+    for (const key of keys) {\n\
+        const descriptor = Object.getOwnPropertyDescriptor(source.prototype, key);\n\
+        if (descriptor === undefined) throw new Error(`Missing shared interface member ${String(key)}`);\n\
+        Object.defineProperty(target.prototype, key, descriptor);\n\
+    }\n\
+};\n\n",
+        );
+    }
     for class in &file.classes {
         render_class_js(&mut out, class);
 
@@ -251,6 +266,11 @@ fn render_class_js(out: &mut String, class: &ProjectedClass) {
 
     // Members — handle same-name overloads (from OverloadAttribute merging)
     out.push('\n');
+    let shared_member_keys: std::collections::HashSet<&str> = class
+        .shared_interface_members
+        .iter()
+        .flat_map(|group| group.member_keys.iter().map(String::as_str))
+        .collect();
     let mut emitted_names: std::collections::HashSet<String> = std::collections::HashSet::new();
     // Group same-name methods within class.members
     let mut same_class_groups: std::collections::HashMap<String, Vec<usize>> =
@@ -267,6 +287,12 @@ fn render_class_js(out: &mut String, class: &ProjectedClass) {
     }
 
     for (i, member) in class.members.iter().enumerate() {
+        if member_render_key(member)
+            .as_deref()
+            .is_some_and(|key| shared_member_keys.contains(key))
+        {
+            continue;
+        }
         if let ProjectedMember::Method(method) = member {
             // Skip if already emitted as part of a group
             if !emitted_names.insert(method.name.clone()) {
@@ -302,11 +328,26 @@ fn render_class_js(out: &mut String, class: &ProjectedClass) {
         render_member_js(out, member, &class.name);
     }
     out.push_str("}\n");
+    for shared in &class.shared_interface_members {
+        out.push_str(&format!(
+            "__copyInterfaceMembers({}, {}, [{}]);\n",
+            class.name,
+            ref_marker(&shared.interface_name),
+            shared.descriptor_keys.join(", "),
+        ));
+    }
 }
 
 fn render_iface_js(out: &mut String, iface: &ProjectedIface, _file: &ProjectedFile) {
     if let Some(ref doc) = iface.doc {
         out.push_str(&render_jsdoc(doc, ""));
+    }
+    if iface.shared_member_source {
+        out.push_str("const __interfaceInstances = new WeakSet();\n");
+        out.push_str(&format!(
+            "const __interfaceValue = (value) => __interfaceInstances.has(value) ? value._obj : value._obj.cast(IID_{});\n",
+            iface.name
+        ));
     }
     out.push_str(&format!("export class {} {{\n", iface.name));
     out.push_str("    _obj;\n\n");
@@ -318,12 +359,14 @@ fn render_iface_js(out: &mut String, iface: &ProjectedIface, _file: &ProjectedFi
             "        this._obj = obj.cast(IID_{});\n",
             iface.name
         ));
-        out.push_str("    }\n");
     } else {
         out.push_str("    constructor(obj) {\n");
         out.push_str("        this._obj = obj;\n");
-        out.push_str("    }\n");
     }
+    if iface.shared_member_source {
+        out.push_str("        __interfaceInstances.add(this);\n");
+    }
+    out.push_str("    }\n");
 
     // static from()
     if iface.has_static_from {
@@ -361,6 +404,22 @@ fn render_required_iface_js(out: &mut String, ri: &ProjectedRequiredIface) {
         render_member_js(out, member, &ri.name);
     }
     out.push_str("}\n");
+}
+
+fn member_render_key(member: &ProjectedMember) -> Option<String> {
+    match member {
+        ProjectedMember::Method(method) => Some(method.name.clone()),
+        ProjectedMember::Property(property) => Some(property.name.clone()),
+        ProjectedMember::Event(event) if !event.subscribe_name.is_empty() => {
+            Some(event.subscribe_name.clone())
+        }
+        ProjectedMember::Symbol(symbol) => {
+            Some(crate::codegen::winrt::javascript::project::symbol_dedup_key(&symbol.kind))
+        }
+        ProjectedMember::Close => Some("close".into()),
+        ProjectedMember::AsCast => Some("as".into()),
+        _ => None,
+    }
 }
 
 fn render_member_js(out: &mut String, member: &ProjectedMember, _class_name: &str) {

@@ -56,7 +56,25 @@ npx dynwinrt-codegen generate \
 | `--ref PATH` | Additional `.winmd` files for type resolution only (no code emitted) |
 | `--lang LANG` | `js` (default, emits `.js` + `.d.ts`) or `py` (Python) |
 | `--output DIR` | Output directory (default `./generated`) |
+| `--shared-interface-members` | JS opt-in that shares inherited interface member descriptors across concrete classes |
 | `--dry-run` | Validate input, don't write files |
+
+### Shared interface members
+
+```powershell
+npx dynwinrt-codegen generate `
+  --winmd-list .winapp\winmds.txt `
+  --class-name Microsoft.UI.Xaml.Controls.Button,Microsoft.UI.Xaml.Controls.TextBlock `
+  --output .winapp\bindings `
+  --shared-interface-members
+```
+
+The generated concrete prototypes reuse method and accessor descriptors from
+the standalone required-interface prototypes. Overloaded or conflicting
+members remain class-local, raw interface wrappers remain available, generated
+`.d.ts` files are unchanged, and generation without the flag is unchanged.
+Only interfaces already emitted as canonical standalone shared wrappers
+participate; one-off inline required interfaces remain class-local.
 
 ## What gets generated
 
