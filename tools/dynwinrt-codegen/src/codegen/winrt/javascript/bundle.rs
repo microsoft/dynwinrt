@@ -413,9 +413,15 @@ const __load = (id) => {\n\
     js.push_str(
         "Object.defineProperty(exports, '__dynwinrtLoadBundledModule', { value: __load });\n",
     );
+    // Keep the lazy getters behind a helper. Node 22's CommonJS lexer drops a
+    // named export when it sees a direct Object.defineProperty getter for the
+    // same name, even if a static exports.Name assignment is also present.
+    js.push_str(
+        "const __defineBundleExport = (name, get) => Object.defineProperty(exports, name, { enumerable: true, configurable: true, get });\n",
+    );
     for (export, owner) in &export_owners {
         js.push_str(&format!(
-            "exports.{export} = undefined;\nObject.defineProperty(exports, '{export}', {{ enumerable: true, configurable: true, get: () => __load('./{owner}.js').{export} }});\n",
+            "exports.{export} = undefined;\n__defineBundleExport('{export}', () => __load('./{owner}.js').{export});\n",
         ));
     }
 

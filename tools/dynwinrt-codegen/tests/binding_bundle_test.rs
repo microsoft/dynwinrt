@@ -99,8 +99,16 @@ export declare const BPeer: () => string;\n",
     .unwrap();
     assert_eq!(generated.module_count, 3);
     assert!(generated.js.contains("require('node:path')"));
-    assert!(generated.js.contains("get: () => __load('./A.js').AName",));
-    assert!(generated.js.contains("get: () => __load('./B.js').BName",));
+    assert!(
+        generated
+            .js
+            .contains("__defineBundleExport('AName', () => __load('./A.js').AName);")
+    );
+    assert!(
+        generated
+            .js
+            .contains("__defineBundleExport('BName', () => __load('./B.js').BName);")
+    );
     assert!(generated.exports.contains("track"));
     assert!(generated.dts.contains("from './A.js';"));
     assert!(generated.dts.contains("from './B.js';"));
@@ -497,7 +505,7 @@ exports.Helper = { owner: 'B' };\n",
     let root = fs::read_to_string(directory.join("index.js")).unwrap();
     let bundle = fs::read_to_string(directory.join("combo.js")).unwrap();
     assert!(root.contains("__exportLazy('Helper', './combo.js');"));
-    assert!(bundle.contains("get: () => __load('./AAux.js').Helper"));
+    assert!(bundle.contains("__defineBundleExport('Helper', () => __load('./AAux.js').Helper);"));
 
     fs::write(
         directory.join("canonical-dependency-test.js"),
