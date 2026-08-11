@@ -778,6 +778,10 @@ mod tests {
         assert_eq!(table.hstring().signature_string(), "string");
 
         let g = table.generic(IASYNC_OPERATION, 1);
+        assert_eq!(
+            g.signature_string(),
+            "{9fc2b0bb-e446-44e2-aa61-9cab8f636af2}",
+        );
         let sig = table.parameterized(&g, &[table.hstring()]);
         assert_eq!(
             sig.signature_string(),

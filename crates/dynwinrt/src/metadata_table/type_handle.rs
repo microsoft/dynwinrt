@@ -213,7 +213,7 @@ impl TypeHandle {
         }?;
         normalized
             .table
-            .try_signature_string_kind(normalized.kind)?;
+            .try_closed_signature_string_kind(normalized.kind)?;
         Ok(normalized)
     }
 

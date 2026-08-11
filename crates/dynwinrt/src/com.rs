@@ -4389,7 +4389,15 @@ pub fn project_winrt_async(
     let object = value
         .as_object()
         .ok_or_else(|| invalid_argument("project_winrt_async requires a COM object"))?;
-    let info: windows_future::IAsyncInfo = object.cast().map_err(result::Error::WindowsError)?;
+    let iid = async_type
+        .iid()
+        .ok_or_else(|| invalid_argument("project_winrt_async requires a closed async IID"))?;
+    let mut concrete_ptr = std::ptr::null_mut();
+    unsafe { object.query(&iid, &mut concrete_ptr) }
+        .ok()
+        .map_err(result::Error::WindowsError)?;
+    let concrete = unsafe { IUnknown::from_raw(concrete_ptr) };
+    let info: windows_future::IAsyncInfo = concrete.cast().map_err(result::Error::WindowsError)?;
     Ok(WinRTValue::Async(crate::value::AsyncInfo {
         info,
         async_type,
@@ -9220,6 +9228,30 @@ mod tests {
         let invalid = table.async_operation(&array);
 
         assert!(project_winrt_async(&WinRTValue::Null, invalid).is_err());
+    }
+
+    #[test]
+    fn project_winrt_async_rejects_mismatched_interface_iid() -> result::Result<()> {
+        use windows::Storage::Streams::{Buffer, IOutputStream, InMemoryRandomAccessStream};
+
+        let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
+        let stream = InMemoryRandomAccessStream::new().map_err(result::Error::WindowsError)?;
+        let output: IOutputStream = stream.cast().map_err(result::Error::WindowsError)?;
+        let buffer = Buffer::Create(16).map_err(result::Error::WindowsError)?;
+        buffer.SetLength(16).map_err(result::Error::WindowsError)?;
+        let operation = output
+            .WriteAsync(&buffer)
+            .map_err(result::Error::WindowsError)?;
+        let object: IUnknown = operation.cast().map_err(result::Error::WindowsError)?;
+        let source = WinRTValue::Object(object);
+
+        let table = MetadataTable::new();
+        let wrong_result = table.make(TypeKind::U64);
+        let wrong_progress = table.make(TypeKind::U64);
+        let wrong_type = table.async_operation_with_progress(&wrong_result, &wrong_progress);
+
+        assert!(project_winrt_async(&source, wrong_type).is_err());
+        Ok(())
     }
 
     #[tokio::test]

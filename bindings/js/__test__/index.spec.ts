@@ -204,6 +204,22 @@ test('DynCom rejects invalid WinRT async result signatures', (t) => {
   t.regex(error.message, /valid WinRT signature/)
 })
 
+test('DynCom verifies the projected WinRT async interface IID', (t) => {
+  roInitialize(1)
+  const factory = DynWinRtValue.activationFactory('Windows.Foundation.Uri')
+  try {
+    const error = t.throws(() =>
+      DynCom.projectWinRtAsync(
+        factory,
+        DynWinRtType.iAsyncOperation(DynWinRtType.i32()),
+      ),
+    )
+    t.regex(error.message, /0x80004002|interface/i)
+  } finally {
+    factory.release()
+  }
+})
+
 test('DynCom rejects pointers after their TypedArray backing store is detached', (t) => {
   const bytes = new Uint8Array(16)
   const pointer = DynCom.pointer(bytes)

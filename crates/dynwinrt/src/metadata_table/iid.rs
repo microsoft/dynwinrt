@@ -43,18 +43,34 @@ impl MetadataTable {
         &self,
         kind: TypeKind,
     ) -> crate::result::Result<String> {
+        self.try_signature_string_kind_impl(kind, true)
+    }
+
+    pub(crate) fn try_closed_signature_string_kind(
+        &self,
+        kind: TypeKind,
+    ) -> crate::result::Result<String> {
+        self.try_signature_string_kind_impl(kind, false)
+    }
+
+    fn try_signature_string_kind_impl(
+        &self,
+        kind: TypeKind,
+        allow_open_generic: bool,
+    ) -> crate::result::Result<String> {
         if let Some(sig) = kind.signature() {
             return Ok(sig.into());
         }
         match kind {
             TypeKind::Interface(iid) => Ok(format_guid_braced(&iid)),
+            TypeKind::Generic { piid, .. } if allow_open_generic => Ok(format_guid_braced(&piid)),
             TypeKind::Delegate(iid) => Ok(format!("delegate({})", format_guid_braced(&iid))),
             TypeKind::RuntimeClass(idx) => {
                 let (name, default_interface) = self.get_runtime_class(idx);
                 Ok(format!(
                     "rc({};{})",
                     name,
-                    self.try_signature_string_kind(default_interface)?
+                    self.try_signature_string_kind_impl(default_interface, false)?
                 ))
             }
             TypeKind::Parameterized(idx) => {
@@ -66,7 +82,7 @@ impl MetadataTable {
                 };
                 let arg_sigs: crate::result::Result<Vec<String>> = args
                     .iter()
-                    .map(|a| self.try_signature_string_kind(*a))
+                    .map(|a| self.try_signature_string_kind_impl(*a, false))
                     .collect();
                 Ok(pinterface_signature_from_strings(
                     &format_guid_braced(&piid),
@@ -97,7 +113,7 @@ impl MetadataTable {
                 let field_sigs: crate::result::Result<Vec<String>> = entry
                     .field_kinds
                     .iter()
-                    .map(|k| self.try_signature_string_kind(*k))
+                    .map(|k| self.try_signature_string_kind_impl(*k, false))
                     .collect();
                 Ok(format!("struct({};{})", name, field_sigs?.join(";")))
             }
@@ -112,7 +128,7 @@ impl MetadataTable {
     ) -> crate::result::Result<String> {
         let arg_sigs: crate::result::Result<Vec<String>> = type_args
             .iter()
-            .map(|a| self.try_signature_string_kind(*a))
+            .map(|a| self.try_signature_string_kind_impl(*a, false))
             .collect();
         Ok(pinterface_signature_from_strings(
             &format_guid_braced(piid),
