@@ -74,7 +74,9 @@ the standalone required-interface prototypes. Overloaded or conflicting
 members remain class-local, raw interface wrappers remain available, generated
 `.d.ts` files are unchanged, and generation without the flag is unchanged.
 Only interfaces already emitted as canonical standalone shared wrappers
-participate; one-off inline required interfaces remain class-local.
+participate; one-off inline required interfaces remain class-local. Generation
+rejects a shared source filename that is ambiguous between distinct interface
+identities.
 
 ## What gets generated
 

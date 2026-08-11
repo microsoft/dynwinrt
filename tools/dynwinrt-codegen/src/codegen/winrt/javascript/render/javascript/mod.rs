@@ -113,13 +113,20 @@ fn render_esm(file: &ProjectedFile) -> String {
     }
 
     // Classes
-    if file
+    let copies_shared_interface_members = file
         .classes
         .iter()
-        .any(|class| !class.shared_interface_members.is_empty())
-    {
+        .any(|class| !class.shared_interface_members.is_empty());
+    let is_shared_interface_source = file.ifaces.iter().any(|iface| iface.shared_member_source);
+    if copies_shared_interface_members || is_shared_interface_source {
+        out.push_str(
+            "const __sharedInterfaceMemberSource = Symbol.for('dynwinrt.sharedInterfaceMemberSource');\n\n",
+        );
+    }
+    if copies_shared_interface_members {
         out.push_str(
             "const __copyInterfaceMembers = (target, source, keys) => {\n\
+    if (source[__sharedInterfaceMemberSource] !== true) throw new Error(`Interface ${source.name} is not a shared member source`);\n\
     for (const key of keys) {\n\
         const descriptor = Object.getOwnPropertyDescriptor(source.prototype, key);\n\
         if (descriptor === undefined) throw new Error(`Missing shared interface member ${String(key)}`);\n\
@@ -387,6 +394,12 @@ fn render_iface_js(out: &mut String, iface: &ProjectedIface, _file: &ProjectedFi
     // so we just need the file.iid_consts to contain it
 
     out.push_str("}\n");
+    if iface.shared_member_source {
+        out.push_str(&format!(
+            "Object.defineProperty({}, __sharedInterfaceMemberSource, {{ value: true }});\n",
+            iface.name
+        ));
+    }
 }
 
 fn render_required_iface_js(out: &mut String, ri: &ProjectedRequiredIface) {

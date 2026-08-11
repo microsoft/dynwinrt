@@ -995,6 +995,50 @@ fn generate_for_types(
 
     let (delegate_signatures, delegate_sig_refs, delegate_param_wraps) =
         project::build_delegate_signatures(&all_interfaces, &delegate_type_names, &known_types);
+    let shared_interface_members_enabled =
+        lang == "js" && project::shared_interface_members_enabled();
+    let canonical_shared_interfaces = if shared_interface_members_enabled {
+        let mut required_interface_count: HashMap<
+            project::StandaloneInterfaceIdentity,
+            (&meta::InterfaceMeta, usize),
+        > = HashMap::new();
+        for class in &all_classes {
+            for req_iface in &class.required_interfaces {
+                let Some(identity) = project::standalone_interface_identity(req_iface) else {
+                    continue;
+                };
+                required_interface_count
+                    .entry(identity)
+                    .and_modify(|(_, count)| *count += 1)
+                    .or_insert((req_iface, 1));
+            }
+        }
+        required_interface_count
+            .values()
+            .filter(|(_, count)| *count >= 2)
+            .map(|(iface, _)| (*iface).clone())
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    for iface in &canonical_shared_interfaces {
+        known_types.insert(iface.name.clone());
+    }
+    let canonical_interface_sources = if shared_interface_members_enabled {
+        Some(project::canonical_interface_sources(
+            &all_interfaces,
+            &canonical_shared_interfaces,
+            &class_names_all,
+        )?)
+    } else {
+        None
+    };
+    let shared_interface_source_identities = canonical_interface_sources
+        .iter()
+        .flatten()
+        .filter(|source| source.shared_member_source)
+        .map(|source| source.identity.clone())
+        .collect::<HashSet<_>>();
 
     if !dry_run {
         if lang == "py" {
@@ -1018,7 +1062,8 @@ fn generate_for_types(
                 &shared_interfaces,
                 &known_types,
                 &delegate_type_names,
-                &shared_iids,
+                canonical_interface_sources.as_deref(),
+                &shared_interface_source_identities,
                 &delegate_signatures,
                 &delegate_sig_refs,
                 &delegate_param_wraps,
@@ -1091,7 +1136,8 @@ fn generate_js_files(
     shared_interfaces: &[meta::InterfaceMeta],
     known_types: &HashSet<String>,
     delegate_type_names: &HashSet<String>,
-    shared_iids: &HashSet<String>,
+    canonical_interface_sources: Option<&[project::CanonicalInterfaceSource]>,
+    shared_interface_source_identities: &HashSet<project::StandaloneInterfaceIdentity>,
     delegate_sigs: &HashMap<String, String>,
     delegate_sig_refs: &HashMap<String, Vec<String>>,
     delegate_param_wraps: &HashMap<String, Vec<String>>,
@@ -1121,45 +1167,61 @@ fn generate_js_files(
         !iface.iid.is_empty()
     }
 
-    for iface in shared_interfaces {
-        if class_names.contains(iface.name.as_str()) {
-            continue;
+    if let Some(canonical_sources) = canonical_interface_sources {
+        for source in canonical_sources {
+            let iface = &source.interface;
+            let projected = project::project_interface_with_shared_member_source(
+                iface,
+                known_types,
+                delegate_type_names,
+                delegate_sigs,
+                delegate_sig_refs,
+                delegate_param_wraps,
+                source.shared_member_source,
+            );
+            let js = render_js::render(&projected);
+            let dts = render_dts::render(&projected);
+            emit(&iface.name, &js, &dts)?;
         }
-        if !is_emittable_interface(iface) {
-            continue;
+    } else {
+        for iface in shared_interfaces {
+            if class_names.contains(iface.name.as_str()) {
+                continue;
+            }
+            if !is_emittable_interface(iface) {
+                continue;
+            }
+            let projected = project::project_interface(
+                iface,
+                known_types,
+                delegate_type_names,
+                delegate_sigs,
+                delegate_sig_refs,
+                delegate_param_wraps,
+            );
+            let js = render_js::render(&projected);
+            let dts = render_dts::render(&projected);
+            emit(&iface.name, &js, &dts)?;
         }
-        let projected = project::project_interface_with_shared_member_source(
-            iface,
-            known_types,
-            delegate_type_names,
-            delegate_sigs,
-            delegate_sig_refs,
-            delegate_param_wraps,
-            project::shared_interface_members_enabled() && shared_iids.contains(&iface.iid),
-        );
-        let js = render_js::render(&projected);
-        let dts = render_dts::render(&projected);
-        emit(&iface.name, &js, &dts)?;
-    }
-    for iface in all_interfaces {
-        if class_names.contains(iface.name.as_str()) {
-            continue;
+        for iface in all_interfaces {
+            if class_names.contains(iface.name.as_str()) {
+                continue;
+            }
+            if !is_emittable_interface(iface) {
+                continue;
+            }
+            let projected = project::project_interface(
+                iface,
+                known_types,
+                delegate_type_names,
+                delegate_sigs,
+                delegate_sig_refs,
+                delegate_param_wraps,
+            );
+            let js = render_js::render(&projected);
+            let dts = render_dts::render(&projected);
+            emit(&iface.name, &js, &dts)?;
         }
-        if !is_emittable_interface(iface) {
-            continue;
-        }
-        let projected = project::project_interface_with_shared_member_source(
-            iface,
-            known_types,
-            delegate_type_names,
-            delegate_sigs,
-            delegate_sig_refs,
-            delegate_param_wraps,
-            project::shared_interface_members_enabled() && shared_iids.contains(&iface.iid),
-        );
-        let js = render_js::render(&projected);
-        let dts = render_dts::render(&projected);
-        emit(&iface.name, &js, &dts)?;
     }
     for en in all_enums {
         if let TypeMeta::Enum { name, .. } = en {
@@ -1206,7 +1268,7 @@ fn generate_js_files(
             class,
             known_types,
             delegate_type_names,
-            shared_iids,
+            shared_interface_source_identities,
             delegate_sigs,
             delegate_sig_refs,
             delegate_param_wraps,

@@ -195,7 +195,9 @@ conflicting members remain class-local, raw interface wrapper classes remain
 available, and the option does not change generated `.d.ts` files. Only
 required interfaces already canonicalized as standalone shared wrappers
 participate; one-off inline required interfaces remain class-local. Generation
-without this flag is unchanged.
+without this flag is unchanged. If a shared source filename is ambiguous
+between distinct interface identities, generation fails instead of choosing
+an unsafe descriptor source.
 
 Focused validation:
 

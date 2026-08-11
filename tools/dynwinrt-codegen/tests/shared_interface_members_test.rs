@@ -40,6 +40,23 @@ fn value_interface() -> InterfaceMeta {
     }
 }
 
+fn items_control_interface() -> InterfaceMeta {
+    InterfaceMeta {
+        name: "IItemsControl".into(),
+        namespace: "Contoso.Controls".into(),
+        iid: "77777777-7777-7777-7777-777777777777".into(),
+        methods: vec![MethodMeta {
+            name: "get_Items".into(),
+            raw_name: "get_Items".into(),
+            vtable_index: 6,
+            return_type: Some(TypeMeta::Object),
+            is_property_getter: true,
+            ..Default::default()
+        }],
+        ..Default::default()
+    }
+}
+
 fn widget_class(interface: &InterfaceMeta) -> ClassMeta {
     ClassMeta {
         name: "Widget".into(),
@@ -50,12 +67,16 @@ fn widget_class(interface: &InterfaceMeta) -> ClassMeta {
     }
 }
 
+fn shared_sources(interface: &InterfaceMeta) -> HashSet<project::StandaloneInterfaceIdentity> {
+    HashSet::from([project::standalone_interface_identity(interface).unwrap()])
+}
+
 #[test]
 fn opt_in_reuses_shared_interface_descriptors_without_changing_dts() {
     let interface = value_interface();
     let class = widget_class(&interface);
     let known_types = HashSet::from(["Widget".into(), "IValue".into()]);
-    let shared_iids = HashSet::from([interface.iid.clone()]);
+    let shared_iids = shared_sources(&interface);
 
     project::set_shared_interface_members(true);
     let interface_file = project::project_interface_with_shared_member_source(
@@ -84,7 +105,9 @@ fn opt_in_reuses_shared_interface_descriptors_without_changing_dts() {
 
     assert!(interface_js.contains("const __interfaceInstances = new WeakSet();"));
     assert!(interface_js.contains("__interfaceValue(this)"));
+    assert!(interface_js.contains("Object.defineProperty(IValue, __sharedInterfaceMemberSource"));
     assert!(class_js.contains("__copyInterfaceMembers(Widget, (__get_IValue()), ['value']);"));
+    assert!(class_js.contains("source[__sharedInterfaceMemberSource] !== true"));
     assert!(!class_js.contains("_IValue.method(6).invoke(this._obj.cast(IID_IValue)"));
     assert!(class_dts.contains("get value(): number;"));
     assert!(class_dts.contains("set value(value: number);"));
@@ -100,6 +123,94 @@ fn opt_in_reuses_shared_interface_descriptors_without_changing_dts() {
     ));
     assert!(!default_class_js.contains("__copyInterfaceMembers"));
     assert!(default_class_js.contains("_IValue.method(6).invoke(this._obj.cast(IID_IValue)"));
+}
+
+#[test]
+fn canonical_interface_source_survives_equivalent_duplicate_emission() {
+    let shared = value_interface();
+    let mut duplicate = shared.clone();
+    duplicate.iid = shared.iid.to_ascii_uppercase();
+    let sources = project::canonical_interface_sources(
+        &[duplicate.clone()],
+        std::slice::from_ref(&shared),
+        &HashSet::new(),
+    )
+    .unwrap();
+
+    assert_eq!(sources.len(), 1);
+    assert!(sources[0].shared_member_source);
+    assert_eq!(sources[0].interface.iid, shared.iid);
+
+    project::set_shared_interface_members(true);
+    let interface_file = project::project_interface_with_shared_member_source(
+        &sources[0].interface,
+        &HashSet::from(["Widget".into(), "IValue".into()]),
+        &HashSet::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+        sources[0].shared_member_source,
+    );
+    let class_file = project::project_class(
+        &widget_class(&duplicate),
+        &HashSet::from(["Widget".into(), "IValue".into()]),
+        &HashSet::new(),
+        &HashSet::from([sources[0].identity.clone()]),
+        &HashMap::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+    );
+    project::set_shared_interface_members(false);
+
+    assert!(render_js::render(&interface_file).contains("__interfaceValue(this)"));
+    assert!(render_js::render(&class_file).contains("__copyInterfaceMembers"));
+    assert_eq!(
+        render_dts::render(&interface_file),
+        render_dts::render(&project::project_interface(
+            &duplicate,
+            &HashSet::from(["Widget".into(), "IValue".into()]),
+            &HashSet::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        ))
+    );
+}
+
+#[test]
+fn ambiguous_standalone_interface_identity_fails_explicitly() {
+    let first = value_interface();
+    let mut second = first.clone();
+    second.namespace = "Fabrikam".into();
+    second.iid = "88888888-8888-8888-8888-888888888888".into();
+
+    let error = project::canonical_interface_sources(
+        std::slice::from_ref(&second),
+        std::slice::from_ref(&first),
+        &HashSet::new(),
+    )
+    .expect_err("ambiguous shared source identities must fail");
+    assert!(error.contains("IValue.js"), "{error}");
+    assert!(error.contains("Contoso.IValue"), "{error}");
+    assert!(error.contains("Fabrikam.IValue"), "{error}");
+}
+
+#[test]
+fn nonshared_duplicate_interface_keeps_legacy_final_source() {
+    let first = value_interface();
+    let mut second = first.clone();
+    second.namespace = "Fabrikam".into();
+    second.iid = "88888888-8888-8888-8888-888888888888".into();
+
+    let sources =
+        project::canonical_interface_sources(&[first, second.clone()], &[], &HashSet::new())
+            .unwrap();
+    assert_eq!(sources.len(), 1);
+    assert!(!sources[0].shared_member_source);
+    assert_eq!(
+        sources[0].identity,
+        project::standalone_interface_identity(&second).unwrap()
+    );
 }
 
 #[test]
@@ -143,7 +254,7 @@ fn shared_interface_members_preserve_overload_dispatch_and_declarations() {
     };
     let class = widget_class(&interface);
     let known_types = HashSet::from(["Widget".into(), "IOverloaded".into()]);
-    let shared_iids = HashSet::from([interface.iid.clone()]);
+    let shared_iids = shared_sources(&interface);
 
     project::set_shared_interface_members(true);
     let interface_js = render_js::render(&project::project_interface_with_shared_member_source(
@@ -229,7 +340,7 @@ fn shared_interface_members_preserve_cross_interface_overload_dispatch() {
         ..widget_class(&required_interface)
     };
     let known_types = HashSet::from(["Widget".into(), "IWidget".into(), "IRequired".into()]);
-    let shared_iids = HashSet::from([required_interface.iid.clone()]);
+    let shared_iids = shared_sources(&required_interface);
 
     project::set_shared_interface_members(true);
     let class_file = project::project_class(
@@ -304,7 +415,7 @@ fn shared_interface_event_alias_conflicts_remain_class_local() {
         ..widget_class(&required_interface)
     };
     let known_types = HashSet::from(["Widget".into(), "IWidget".into(), "IChanged".into()]);
-    let shared_iids = HashSet::from([required_interface.iid.clone()]);
+    let shared_iids = shared_sources(&required_interface);
 
     project::set_shared_interface_members(true);
     let class_file = project::project_class(
@@ -363,16 +474,169 @@ fn noncanonical_required_interfaces_remain_class_local() {
 }
 
 #[test]
-fn shared_interface_descriptor_executes_for_raw_and_concrete_views() {
+fn collection_getter_casts_concrete_view_and_rejects_unmarked_source() {
     if Command::new("node").arg("--version").output().is_err() {
         eprintln!("Skipping shared-interface runtime test: node is unavailable");
         return;
     }
 
+    let interface = items_control_interface();
+    let class = ClassMeta {
+        name: "ListView".into(),
+        namespace: "Contoso.Controls".into(),
+        full_name: "Contoso.Controls.ListView".into(),
+        required_interfaces: vec![interface.clone()],
+        ..Default::default()
+    };
+    let known_types = HashSet::from(["ListView".into(), "IItemsControl".into()]);
+    let shared_sources = shared_sources(&interface);
+
+    project::set_import_name("./runtime.js");
+    project::set_shared_interface_members(true);
+    let interface_js = render_js::render(&project::project_interface_with_shared_member_source(
+        &interface,
+        &known_types,
+        &HashSet::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+        true,
+    ));
+    let unsafe_interface_js =
+        render_js::render(&project::project_interface_with_shared_member_source(
+            &interface,
+            &known_types,
+            &HashSet::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            false,
+        ));
+    let class_js = render_js::render(&project::project_class(
+        &class,
+        &known_types,
+        &HashSet::new(),
+        &shared_sources,
+        &HashMap::new(),
+        &HashMap::new(),
+        &HashMap::new(),
+    ));
+    project::set_shared_interface_members(false);
+    project::set_import_name("@microsoft/dynwinrt");
+
+    let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join(format!("shared-collection-runtime-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&directory);
+    fs::create_dir_all(&directory).unwrap();
+    fs::write(directory.join("IItemsControl.js"), &interface_js).unwrap();
+    fs::write(directory.join("ListView.js"), class_js).unwrap();
+    fs::write(
+        directory.join("lifetime.js"),
+        "\
+    exports.castProjectedValueBorrowed = (value) => value;\n\
+    exports.castProjectedValueOwned = (value) => value;\n\
+    exports.trackProjectedValue = (value) => value;\n",
+    )
+    .unwrap();
+    fs::write(
+            directory.join("runtime.js"),
+            "\
+    class DynWinRtMethodSig {\n\
+      addIn() { return this; }\n\
+      addOut() { return this; }\n\
+    }\n\
+    const DynWinRtType = {\n\
+      registerInterface() {\n\
+        return {\n\
+          addMethod() { return this; },\n\
+          method(index) { return { invoke: (obj, args) => obj.invoke(index, args) }; },\n\
+        };\n\
+      },\n\
+      object() { return {}; },\n\
+    };\n\
+    const DynWinRtValue = {};\n\
+    const DynWinRtArray = {};\n\
+    const DynWinRtDelegate = {};\n\
+    const WinGuid = { parse: (value) => value };\n\
+    module.exports = { DynWinRtType, DynWinRtMethodSig, DynWinRtValue, DynWinRtArray, DynWinRtDelegate, WinGuid };\n",
+        )
+        .unwrap();
+    fs::write(
+            directory.join("test.js"),
+            "\
+    const assert = require('node:assert/strict');\n\
+    const { IItemsControl } = require('./IItemsControl.js');\n\
+    const { ListView } = require('./ListView.js');\n\
+    const items = { isNull: () => false, kind: 'ItemCollection' };\n\
+    const missing = { isNull: () => true };\n\
+    let casts = 0;\n\
+    const interfaceValue = {\n\
+      invoke(index) {\n\
+        assert.equal(index, 6);\n\
+        return items;\n\
+      },\n\
+    };\n\
+    const raw = {\n\
+      invoke(index) {\n\
+        assert.equal(index, 6);\n\
+        return missing;\n\
+      },\n\
+      cast() {\n\
+        casts++;\n\
+        return interfaceValue;\n\
+      },\n\
+    };\n\
+    const list = Object.assign(Object.create(ListView.prototype), { _obj: raw });\n\
+    const concreteDescriptor = Object.getOwnPropertyDescriptor(ListView.prototype, 'items');\n\
+    const interfaceDescriptor = Object.getOwnPropertyDescriptor(IItemsControl.prototype, 'items');\n\
+    assert.equal(concreteDescriptor.get, interfaceDescriptor.get);\n\
+    assert.equal(list.items, items);\n\
+    assert.equal(IItemsControl.from(raw).items, items);\n\
+    assert.equal(casts, 2);\n",
+        )
+        .unwrap();
+
+    let output = Command::new("node")
+        .arg("test.js")
+        .current_dir(&directory)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "node failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    fs::write(directory.join("IItemsControl.js"), unsafe_interface_js).unwrap();
+    let fail_closed = Command::new("node")
+            .args([
+                "-e",
+                "require('node:assert/strict').throws(() => require('./ListView.js'), /not a shared member source/)",
+            ])
+            .current_dir(&directory)
+            .output()
+            .unwrap();
+    let _ = fs::remove_dir_all(&directory);
+    assert!(
+        fail_closed.status.success(),
+        "fail-closed node check failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&fail_closed.stdout),
+        String::from_utf8_lossy(&fail_closed.stderr),
+    );
+}
+
+#[test]
+fn shared_interface_descriptor_executes_for_raw_and_concrete_views() {
+    if Command::new("node").arg("--version").output().is_err() {
+        eprintln!("Skipping shared-interface runtime test: node is unavailable");
+        return;
+    }
     let interface = value_interface();
     let class = widget_class(&interface);
     let known_types = HashSet::from(["Widget".into(), "IValue".into()]);
-    let shared_iids = HashSet::from([interface.iid.clone()]);
+    let shared_iids = shared_sources(&interface);
 
     project::set_import_name("./runtime.js");
     project::set_shared_interface_members(true);

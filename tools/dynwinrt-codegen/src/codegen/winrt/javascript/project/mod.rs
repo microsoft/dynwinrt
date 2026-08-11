@@ -47,6 +47,93 @@ pub fn shared_interface_members_enabled() -> bool {
     SHARED_INTERFACE_MEMBERS.with(|value| *value.borrow())
 }
 
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct StandaloneInterfaceIdentity {
+    pub namespace: String,
+    pub name: String,
+    pub iid: String,
+}
+
+impl StandaloneInterfaceIdentity {
+    fn describe(&self) -> String {
+        format!("{}.{} ({})", self.namespace, self.name, self.iid)
+    }
+}
+
+pub fn standalone_interface_identity(iface: &InterfaceMeta) -> Option<StandaloneInterfaceIdentity> {
+    if iface.iid.is_empty() {
+        return None;
+    }
+    Some(StandaloneInterfaceIdentity {
+        namespace: iface.namespace.clone(),
+        name: iface.name.clone(),
+        iid: iface.iid.to_ascii_lowercase(),
+    })
+}
+
+#[derive(Clone, Debug)]
+pub struct CanonicalInterfaceSource {
+    pub interface: InterfaceMeta,
+    pub identity: StandaloneInterfaceIdentity,
+    pub shared_member_source: bool,
+}
+
+pub fn canonical_interface_sources(
+    interfaces: &[InterfaceMeta],
+    shared_candidates: &[InterfaceMeta],
+    class_names: &HashSet<String>,
+) -> Result<Vec<CanonicalInterfaceSource>, String> {
+    let shared_identities = shared_candidates
+        .iter()
+        .filter_map(standalone_interface_identity)
+        .collect::<HashSet<_>>();
+    let mut sources: Vec<CanonicalInterfaceSource> = Vec::new();
+    let mut source_by_name: HashMap<String, usize> = HashMap::new();
+
+    for iface in shared_candidates.iter().chain(interfaces) {
+        if class_names.contains(&iface.name) {
+            continue;
+        }
+        let Some(identity) = standalone_interface_identity(iface) else {
+            continue;
+        };
+        let shared_member_source = shared_identities.contains(&identity);
+        if let Some(existing_index) = source_by_name.get(&iface.name).copied() {
+            let existing = &mut sources[existing_index];
+            if existing.identity != identity {
+                if existing.shared_member_source || shared_member_source {
+                    return Err(format!(
+                        "Cannot use `{0}.js` as a shared interface member source because `{1}` and \
+                         `{2}` have different interface identities. Generate them separately or \
+                         select only one type.",
+                        iface.name,
+                        existing.identity.describe(),
+                        identity.describe(),
+                    ));
+                }
+                *existing = CanonicalInterfaceSource {
+                    interface: iface.clone(),
+                    identity,
+                    shared_member_source: false,
+                };
+                continue;
+            }
+            existing.shared_member_source |= shared_member_source;
+            continue;
+        }
+
+        source_by_name.insert(iface.name.clone(), sources.len());
+        sources.push(CanonicalInterfaceSource {
+            interface: iface.clone(),
+            identity,
+            shared_member_source,
+        });
+    }
+
+    sources.sort_by(|left, right| left.interface.name.cmp(&right.interface.name));
+    Ok(sources)
+}
+
 use crate::codegen::winrt::shared::imports::{
     NO_DEFERRED, collect_iface_type_imports, collect_type_imports,
     collect_used_generics_from_class, collect_used_generics_from_methods, fill_array_output_index,
@@ -189,7 +276,7 @@ pub fn project_class(
     class: &ClassMeta,
     known_types: &HashSet<String>,
     delegate_type_names: &HashSet<String>,
-    shared_iids: &HashSet<String>,
+    shared_interface_sources: &HashSet<StandaloneInterfaceIdentity>,
     delegate_sigs: &HashMap<String, String>,
     delegate_sig_refs: &HashMap<String, Vec<String>>,
     delegate_param_wraps: &HashMap<String, Vec<String>>,
@@ -326,7 +413,8 @@ pub fn project_class(
     for req_iface in &class.required_interfaces {
         if req_iface.generic_piid.is_none()
             && !req_iface.iid.is_empty()
-            && shared_iids.contains(&req_iface.iid)
+            && standalone_interface_identity(req_iface)
+                .is_some_and(|identity| shared_interface_sources.contains(&identity))
             && !imported_names.contains(&req_iface.name)
         {
             imports.push(format_type_import_projected(
@@ -912,8 +1000,11 @@ pub fn project_class(
             continue;
         }
         let is_imported = imported_names.contains(&req_iface.name);
-        let is_shared_member_source =
-            share_interface_members && shared_iids.contains(&req_iface.iid) && is_imported;
+        let is_shared_member_source = share_interface_members
+            && req_iface.generic_piid.is_none()
+            && standalone_interface_identity(req_iface)
+                .is_some_and(|identity| shared_interface_sources.contains(&identity))
+            && is_imported;
 
         let reg_var = format!("_{}", req_iface.name);
         let mut ri_members = Vec::new();

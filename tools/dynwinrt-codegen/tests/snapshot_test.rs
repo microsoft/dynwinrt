@@ -60,7 +60,7 @@ fn snapshot_uri_class() {
         .map(|i| i.name.clone())
         .collect();
 
-    let shared_iids: HashSet<String> = HashSet::new();
+    let shared_iids: HashSet<project::StandaloneInterfaceIdentity> = HashSet::new();
     let (delegate_sigs, delegate_sig_refs, delegate_param_wraps) =
         project::build_delegate_signatures(&all_interfaces, &delegate_type_names, &known_types);
 
@@ -370,7 +370,7 @@ fn ts_async_methods_emit_abort_signal_scaffolding() {
         })
         .map(|i| i.name.clone())
         .collect();
-    let shared: HashSet<String> = HashSet::new();
+    let shared: HashSet<project::StandaloneInterfaceIdentity> = HashSet::new();
     let (dw_delegate_sigs, dw_delegate_sig_refs, dw_delegate_param_wraps) =
         project::build_delegate_signatures(&dw_ifaces, &delegates, &known);
 
