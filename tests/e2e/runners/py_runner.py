@@ -1513,6 +1513,186 @@ async def run_check(
             else:
                 cr['pass'] = True
 
+        elif kind == 'generated_helper_matrix':
+            from pathlib import Path
+
+            import dynwinrt_py as dw
+
+            # This spec runs last. Earlier E2E specs validate real generated
+            # call sites; this matrix covers each emitted copy of shared helpers.
+            property_type = generated_type(pkg_name, 'PropertyType')
+            property_type_module = implementation_module_name(
+                pkg_name, 'Windows.Foundation', 'PropertyType'
+            )
+            valid_enum = next(iter(property_type))
+            invalid_enum = 2_000_000_000
+            uri_type = generated_type(pkg_name, 'Uri')
+            uri = uri_type('https://example.com/helper-matrix')
+            uri_module = implementation_module_name(
+                pkg_name, 'Windows.Foundation', 'Uri'
+            )
+            generated_package = importlib.import_module(pkg_name)
+            delegate_iid = getattr(
+                generated_package,
+                'IID_TypedEventHandler_IMemoryBufferReference_Object',
+            )
+            delegate_params = getattr(
+                generated_package,
+                'TypedEventHandler_IMemoryBufferReference_Object_PARAM_TYPES',
+            )
+            reference_type = generated_type(pkg_name, 'IReference_UInt32')
+            value_type = dw.DynWinRTType.u32_type()
+            counters = {
+                'modules': 0,
+                'enum': 0,
+                'delegate': 0,
+                'wrap_values': 0,
+                'ireference': 0,
+            }
+
+            for module_path in sorted(Path(generated_dir).glob('*.py')):
+                if module_path.name == '__init__.py':
+                    continue
+                generated_module = importlib.import_module(
+                    f'{pkg_name}.{module_path.stem}'
+                )
+                counters['modules'] += 1
+
+                enum_helper = getattr(generated_module, '_dynwinrt_enum', None)
+                if enum_helper is not None:
+                    converted = enum_helper(
+                        property_type_module.removeprefix(f'{pkg_name}.'),
+                        'PropertyType',
+                        int(valid_enum),
+                    )
+                    unknown = enum_helper(
+                        property_type_module.removeprefix(f'{pkg_name}.'),
+                        'PropertyType',
+                        invalid_enum,
+                    )
+                    if not isinstance(converted, property_type):
+                        cr['error'] = (
+                            f'{module_path.name}: valid enum was not projected'
+                        )
+                        return cr
+                    if type(unknown) is not int or unknown != invalid_enum:
+                        cr['error'] = (
+                            f'{module_path.name}: unknown enum was not preserved'
+                        )
+                        return cr
+                    counters['enum'] += 1
+
+                delegate_helper = getattr(
+                    generated_module, '_dynwinrt_delegate', None
+                )
+                if delegate_helper is not None:
+                    raw = dw.DynWinRTValue.null_value()
+                    if delegate_helper(raw, delegate_iid, delegate_params) is not raw:
+                        cr['error'] = (
+                            f'{module_path.name}: raw delegate was not preserved'
+                        )
+                        return cr
+                    try:
+                        delegate_helper(17, delegate_iid, delegate_params)
+                        cr['error'] = (
+                            f'{module_path.name}: invalid delegate was accepted'
+                        )
+                        return cr
+                    except TypeError:
+                        pass
+                    callback_value = delegate_helper(
+                        lambda *_args: None,
+                        delegate_iid,
+                        delegate_params,
+                    )
+                    if not isinstance(callback_value, dw.DynWinRTValue):
+                        cr['error'] = (
+                            f'{module_path.name}: callable delegate was not wrapped'
+                        )
+                        return cr
+                    callback_value.release()
+                    counters['delegate'] += 1
+
+                wrap_values = getattr(
+                    generated_module, '_dynwinrt_wrap_values', None
+                )
+                if wrap_values is not None:
+                    wrapped = wrap_values(
+                        uri_module.removeprefix(f'{pkg_name}.'),
+                        'Uri',
+                        [dw.DynWinRTValue.null_value(), uri._obj],
+                    )
+                    if (
+                        wrapped[0] is not None
+                        or not isinstance(wrapped[1], uri_type)
+                    ):
+                        cr['error'] = (
+                            f'{module_path.name}: value wrapping branches failed'
+                        )
+                        return cr
+                    dw.release_projected(wrapped[1])
+                    counters['wrap_values'] += 1
+
+                box_reference = getattr(
+                    generated_module, '_dynwinrt_box_reference', None
+                )
+                unbox_reference = getattr(
+                    generated_module, '_dynwinrt_unbox_reference', None
+                )
+                if box_reference is not None and unbox_reference is not None:
+                    raw = dw.DynWinRTValue.null_value()
+                    if (
+                        box_reference(
+                            raw,
+                            value_type,
+                            dw.DynWinRTValue.from_u32,
+                        )
+                        is not raw
+                    ):
+                        cr['error'] = (
+                            f'{module_path.name}: raw IReference was not preserved'
+                        )
+                        return cr
+                    if not box_reference(
+                        None,
+                        value_type,
+                        dw.DynWinRTValue.from_u32,
+                    ).is_null():
+                        cr['error'] = (
+                            f'{module_path.name}: None IReference was not null'
+                        )
+                        return cr
+                    boxed = box_reference(
+                        17,
+                        value_type,
+                        dw.DynWinRTValue.from_u32,
+                    )
+                    reference = reference_type.from_value(boxed)
+                    if unbox_reference(reference) != 17:
+                        cr['error'] = (
+                            f'{module_path.name}: IReference did not unbox'
+                        )
+                        return cr
+                    if unbox_reference(23) != 23:
+                        cr['error'] = (
+                            f'{module_path.name}: native optional value changed'
+                        )
+                        return cr
+                    counters['ireference'] += 1
+
+            uri._obj.release()
+            if (
+                counters['modules'] < 100
+                or counters['enum'] < 50
+                or counters['delegate'] < 50
+                or counters['wrap_values'] < 50
+                or counters['ireference'] < 1
+            ):
+                cr['error'] = f'generated helper matrix was too small: {counters}'
+            else:
+                print(f'  generated helper matrix: {counters}')
+                cr['pass'] = True
+
         else:
             cr['error'] = f'unknown check kind: {kind}'
 

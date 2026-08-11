@@ -589,6 +589,16 @@
       "checks": [
         { "kind": "vector_index_of", "member": "languages", "search_value": "xx-NONEXISTENT", "expected_index": -1 }
       ]
+    },
+    {
+      "id": "python_generated_helper_matrix",
+      "namespace": "Windows.Foundation",
+      "class": "Uri",
+      "langs": ["py"],
+      "instantiate": { "kind": "none" },
+      "checks": [
+        { "kind": "generated_helper_matrix", "member": "helpers" }
+      ]
     }
   ]
 }
