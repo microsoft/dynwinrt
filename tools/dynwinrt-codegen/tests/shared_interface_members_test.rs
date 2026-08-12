@@ -193,9 +193,7 @@ fn cli_shared_uri_preserves_deep_raw_interface_exports() {
 
     assert!(baseline_js.contains("exports.IStringable = IStringable;"));
     assert!(baseline_dts.contains("export declare class IStringable"));
-    assert!(shared_js.contains(
-        "Object.defineProperty(exports, 'IStringable', { enumerable: true, get: () => require('./IStringable.js').IStringable });"
-    ));
+    assert!(shared_js.contains("exports.IStringable = require('./IStringable.js').IStringable;"));
     assert!(shared_dts.contains("export { IStringable } from './IStringable.js';"));
     assert!(shared_js.contains("return (__get_IStringable()).from(this._obj).toString();"));
     assert!(
@@ -253,7 +251,7 @@ fn cli_mixed_flag_incremental_generation_preserves_shared_sources() {
     assert_node_script(
         &output,
         "verify-deferral.cjs",
-        "require('./Deferral.js');\n",
+        "Object.assign(globalThis, require('./runtime.js'));\nrequire('./Deferral.js');\n",
     );
 
     let unflagged_result = run_codegen(&output, "MemoryBuffer", false);
@@ -275,7 +273,7 @@ fn cli_mixed_flag_incremental_generation_preserves_shared_sources() {
     assert_node_script(
         &output,
         "verify-deferral-after-unflagged.cjs",
-        "require('./Deferral.js');\n",
+        "Object.assign(globalThis, require('./runtime.js'));\nrequire('./Deferral.js');\n",
     );
 
     let mismatched_iclosable = preserved_iclosable.replace(

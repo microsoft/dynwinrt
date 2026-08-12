@@ -39,7 +39,7 @@ pub fn render(file: &ProjectedFile) -> String {
             cjs.push('\n');
         }
         cjs.push_str(&format!(
-            "Object.defineProperty(exports, '{}', {{ enumerable: true, get: () => require('{}').{} }});\n",
+            "exports.{} = require('{}').{};\n",
             re_export.name, re_export.from, re_export.name,
         ));
     }
