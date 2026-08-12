@@ -324,7 +324,7 @@ fn parse_interfaces_from_index(
         if !include_exclusive && def.has_attribute("ExclusiveToAttribute") {
             continue;
         }
-        if let Some(iface) = parse_interface(index, def.namespace(), def.name()) {
+        if let Some(iface) = parse_interface_def(index, &def) {
             interfaces.push(iface);
         }
     }
@@ -1068,8 +1068,12 @@ fn split_full_name(full_name: &str) -> Option<(&str, &str)> {
 
 fn parse_interface(index: &reader::Index, namespace: &str, name: &str) -> Option<InterfaceMeta> {
     let def = index.get(namespace, name).next()?;
-    let iid = extract_iid(&def);
-    parse_interface_methods(index, &def, name, namespace, &iid, &[])
+    parse_interface_def(index, &def)
+}
+
+fn parse_interface_def(index: &reader::Index, def: &reader::TypeDef) -> Option<InterfaceMeta> {
+    let iid = extract_iid(def);
+    parse_interface_methods(index, def, def.name(), def.namespace(), &iid, &[])
 }
 
 fn parse_interface_type(
@@ -1660,6 +1664,100 @@ fn resolve_named_type(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use windows_metadata::writer::{AttributeType, HasAttribute, MemberRefParent, TypeDefOrRef};
+
+    fn write_interface_winmd(path: &Path, assembly_name: &str, iid: (u32, u16, u16, [u8; 8])) {
+        let mut file = windows_metadata::writer::File::new(assembly_name);
+        let interface = file.TypeDef(
+            "Contoso.Duplicates",
+            "IRepeated",
+            TypeDefOrRef::default(),
+            windows_metadata::TypeAttributes::Public
+                | windows_metadata::TypeAttributes::Interface
+                | windows_metadata::TypeAttributes::Abstract
+                | windows_metadata::TypeAttributes::WindowsRuntime,
+        );
+        let guid_attribute = file.TypeRef("Windows.Foundation.Metadata", "GuidAttribute");
+        let constructor = file.MemberRef(
+            ".ctor",
+            &windows_metadata::Signature {
+                flags: windows_metadata::MethodCallAttributes::HASTHIS,
+                return_type: windows_metadata::Type::Void,
+                types: vec![
+                    windows_metadata::Type::U32,
+                    windows_metadata::Type::U16,
+                    windows_metadata::Type::U16,
+                    windows_metadata::Type::U8,
+                    windows_metadata::Type::U8,
+                    windows_metadata::Type::U8,
+                    windows_metadata::Type::U8,
+                    windows_metadata::Type::U8,
+                    windows_metadata::Type::U8,
+                    windows_metadata::Type::U8,
+                    windows_metadata::Type::U8,
+                ],
+            },
+            MemberRefParent::TypeRef(guid_attribute),
+        );
+        let mut values = vec![
+            ("".into(), windows_metadata::Value::U32(iid.0)),
+            ("".into(), windows_metadata::Value::U16(iid.1)),
+            ("".into(), windows_metadata::Value::U16(iid.2)),
+        ];
+        values.extend(
+            iid.3
+                .into_iter()
+                .map(|value| ("".into(), windows_metadata::Value::U8(value))),
+        );
+        file.Attribute(
+            HasAttribute::TypeDef(interface),
+            AttributeType::MemberRef(constructor),
+            &values,
+        );
+        std::fs::write(path, file.into_stream()).unwrap();
+    }
+
+    #[test]
+    fn interface_enumeration_parses_each_duplicate_typedef_directly() {
+        let directory = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join(format!(
+                "duplicate-interface-metadata-{}",
+                std::process::id()
+            ));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        let first = directory.join("First.winmd");
+        let second = directory.join("Second.winmd");
+        write_interface_winmd(&first, "First", (0x11111111, 0x1111, 0x1111, [0x11; 8]));
+        write_interface_winmd(&second, "Second", (0x22222222, 0x2222, 0x2222, [0x22; 8]));
+
+        let paths = format!("{};{}", first.display(), second.display());
+        let interfaces = parse_all_interfaces_including_exclusive(&paths)
+            .into_iter()
+            .filter(|interface| {
+                interface.namespace == "Contoso.Duplicates" && interface.name == "IRepeated"
+            })
+            .collect::<Vec<_>>();
+        let mut iids = interfaces
+            .iter()
+            .map(|interface| interface.iid.clone())
+            .collect::<Vec<_>>();
+        iids.sort();
+
+        assert_eq!(
+            iids,
+            vec![
+                "11111111-1111-1111-1111-111111111111",
+                "22222222-2222-2222-2222-222222222222",
+            ]
+        );
+        assert_eq!(
+            crate::codegen::project::ambiguous_standalone_interface_names(&interfaces),
+            HashSet::from(["IRepeated".into()])
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn make_parameterized_name_single_arg() {

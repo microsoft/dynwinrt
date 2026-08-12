@@ -3,11 +3,15 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use dynwinrt_codegen::codegen::{project, render_dts, render_js};
 use dynwinrt_codegen::meta::{ClassMeta, InterfaceMeta, MethodMeta, ParamDirection, ParamMeta};
 use dynwinrt_codegen::types::TypeMeta;
+
+const WINDOWS_WINMD: &str =
+    r"C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd";
 
 fn value_interface() -> InterfaceMeta {
     InterfaceMeta {
@@ -75,6 +79,220 @@ fn snapshot_hash(contents: &str) -> u64 {
     contents.bytes().fold(0xcbf29ce484222325, |hash, byte| {
         (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
     })
+}
+
+fn cli_test_directory(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join(format!("{name}-{}", std::process::id()))
+}
+
+fn run_codegen(output: &Path, class_names: &str, shared: bool) -> std::process::Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_dynwinrt-codegen"));
+    command.args([
+        "generate",
+        "--winmd",
+        WINDOWS_WINMD,
+        "--namespace",
+        "Windows.Foundation",
+        "--class-name",
+        class_names,
+        "--output",
+    ]);
+    command.arg(output);
+    command.args(["--import-name", "./runtime.js"]);
+    if shared {
+        command.arg("--shared-interface-members");
+    }
+    command.output().expect("run dynwinrt-codegen")
+}
+
+fn write_runtime_stub(output: &Path) {
+    fs::write(
+        output.join("runtime.js"),
+        "\
+class DynWinRtMethodSig { addIn() { return this; } addOut() { return this; } }\n\
+const registration = { addMethod() { return this; }, method() { return {}; } };\n\
+const DynWinRtType = new Proxy({\n\
+  registerInterface() { return registration; },\n\
+  parameterized() { return { iid() { return 'iid'; } }; },\n\
+}, { get(target, key) { return target[key] ?? (() => ({})); } });\n\
+const callable = new Proxy({}, { get() { return () => ({}); } });\n\
+module.exports = {\n\
+  DynWinRtType,\n\
+  DynWinRtMethodSig,\n\
+  DynWinRtValue: callable,\n\
+  DynWinRtArray: callable,\n\
+  DynWinRtDelegate: callable,\n\
+  WinGuid: { parse(value) { return value; } },\n\
+};\n",
+    )
+    .unwrap();
+}
+
+fn assert_node_script(output: &Path, name: &str, script: &str) {
+    if Command::new("node").arg("--version").output().is_err() {
+        eprintln!("Skipping generated module-load assertion: node is unavailable");
+        return;
+    }
+    let script_path = output.join(name);
+    fs::write(&script_path, script).unwrap();
+    let result = Command::new("node").arg(&script_path).output().unwrap();
+    assert!(
+        result.status.success(),
+        "node failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr),
+    );
+}
+
+fn snapshot_directory(output: &Path) -> HashMap<String, Vec<u8>> {
+    fs::read_dir(output)
+        .unwrap()
+        .map(|entry| entry.unwrap())
+        .filter(|entry| entry.file_type().unwrap().is_file())
+        .map(|entry| {
+            (
+                entry.file_name().to_string_lossy().into_owned(),
+                fs::read(entry.path()).unwrap(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn cli_shared_uri_preserves_deep_raw_interface_exports() {
+    if !Path::new(WINDOWS_WINMD).exists() {
+        eprintln!("Skipping shared Uri CLI test: Windows.winmd not found");
+        return;
+    }
+
+    let root = cli_test_directory("shared-uri-deep-interface");
+    let baseline = root.join("baseline");
+    let shared = root.join("shared");
+    let _ = fs::remove_dir_all(&root);
+
+    let baseline_result = run_codegen(&baseline, "Uri", false);
+    assert!(
+        baseline_result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&baseline_result.stderr),
+    );
+    let shared_result = run_codegen(&shared, "Uri", true);
+    assert!(
+        shared_result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&shared_result.stderr),
+    );
+
+    let baseline_js = fs::read_to_string(baseline.join("Uri.js")).unwrap();
+    let baseline_dts = fs::read_to_string(baseline.join("Uri.d.ts")).unwrap();
+    let shared_js = fs::read_to_string(shared.join("Uri.js")).unwrap();
+    let shared_dts = fs::read_to_string(shared.join("Uri.d.ts")).unwrap();
+    let canonical_js = fs::read_to_string(shared.join("IStringable.js")).unwrap();
+
+    assert!(baseline_js.contains("exports.IStringable = IStringable;"));
+    assert!(baseline_dts.contains("export declare class IStringable"));
+    assert!(shared_js.contains(
+        "Object.defineProperty(exports, 'IStringable', { enumerable: true, get: () => require('./IStringable.js').IStringable });"
+    ));
+    assert!(shared_dts.contains("export { IStringable } from './IStringable.js';"));
+    assert!(shared_js.contains("return (__get_IStringable()).from(this._obj).toString();"));
+    assert!(
+        canonical_js
+            .contains("Windows.Foundation.IStringable:96369f54-8eb6-48f0-abce-c1b211e627c3")
+    );
+
+    write_runtime_stub(&shared);
+    assert_node_script(
+        &shared,
+        "verify-deep-interface.cjs",
+        "\
+const assert = require('node:assert/strict');\n\
+const deep = require('./Uri.js');\n\
+const canonical = require('./IStringable.js');\n\
+assert.equal(deep.IStringable, canonical.IStringable);\n",
+    );
+    assert_node_script(
+        &shared,
+        "verify-deep-interface.mjs",
+        "\
+import assert from 'node:assert/strict';\n\
+import { IStringable as Deep } from './Uri.js';\n\
+import { IStringable as Canonical } from './IStringable.js';\n\
+assert.equal(Deep, Canonical);\n",
+    );
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn cli_mixed_flag_incremental_generation_preserves_shared_sources() {
+    if !Path::new(WINDOWS_WINMD).exists() {
+        eprintln!("Skipping mixed-flag CLI test: Windows.winmd not found");
+        return;
+    }
+
+    let output = cli_test_directory("mixed-flag-shared-source");
+    let _ = fs::remove_dir_all(&output);
+
+    let shared_result = run_codegen(&output, "Deferral,MemoryBuffer", true);
+    assert!(
+        shared_result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&shared_result.stderr),
+    );
+    write_runtime_stub(&output);
+    let deferral_before = fs::read(output.join("Deferral.js")).unwrap();
+    let shared_iclosable = fs::read_to_string(output.join("IClosable.js")).unwrap();
+    assert!(
+        shared_iclosable
+            .contains("Windows.Foundation.IClosable:30d5a829-7fa4-4026-83bb-d75bae4ea99e")
+    );
+    assert!(shared_iclosable.contains("value._obj.cast(IID_IClosable)"));
+    assert_node_script(
+        &output,
+        "verify-deferral.cjs",
+        "require('./Deferral.js');\n",
+    );
+
+    let unflagged_result = run_codegen(&output, "MemoryBuffer", false);
+    assert!(
+        unflagged_result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&unflagged_result.stderr),
+    );
+    assert_eq!(
+        fs::read(output.join("Deferral.js")).unwrap(),
+        deferral_before
+    );
+    let preserved_iclosable = fs::read_to_string(output.join("IClosable.js")).unwrap();
+    assert!(
+        preserved_iclosable
+            .contains("Windows.Foundation.IClosable:30d5a829-7fa4-4026-83bb-d75bae4ea99e")
+    );
+    assert!(preserved_iclosable.contains("value._obj.cast(IID_IClosable)"));
+    assert_node_script(
+        &output,
+        "verify-deferral-after-unflagged.cjs",
+        "require('./Deferral.js');\n",
+    );
+
+    let mismatched_iclosable = preserved_iclosable.replace(
+        "Windows.Foundation.IClosable:30d5a829-7fa4-4026-83bb-d75bae4ea99e",
+        "Fabrikam.IClosable:11111111-1111-1111-1111-111111111111",
+    );
+    fs::write(output.join("IClosable.js"), mismatched_iclosable).unwrap();
+    let before_rejection = snapshot_directory(&output);
+    let rejected = run_codegen(&output, "MemoryBuffer", false);
+    assert!(!rejected.status.success());
+    assert!(
+        String::from_utf8_lossy(&rejected.stderr)
+            .contains("Refusing to overwrite shared interface source")
+    );
+    assert_eq!(snapshot_directory(&output), before_rejection);
+
+    fs::remove_dir_all(output).unwrap();
 }
 
 #[test]

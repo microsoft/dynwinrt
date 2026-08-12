@@ -33,7 +33,17 @@ pub fn render(file: &ProjectedFile) -> String {
             runtime_sources.insert(imp.from.clone());
         }
     }
-    convert_to_cjs_with_lazy(&esm, &runtime_sources)
+    let mut cjs = convert_to_cjs_with_lazy(&esm, &runtime_sources);
+    for re_export in &file.re_exports {
+        if !cjs.ends_with('\n') {
+            cjs.push('\n');
+        }
+        cjs.push_str(&format!(
+            "Object.defineProperty(exports, '{}', {{ enumerable: true, get: () => require('{}').{} }});\n",
+            re_export.name, re_export.from, re_export.name,
+        ));
+    }
+    cjs
 }
 
 /// Render a projected file as ESM JS (internal — post-processed to CJS by render()).
@@ -645,7 +655,10 @@ fn render_member_js(out: &mut String, member: &ProjectedMember, _class_name: &st
         ProjectedMember::Symbol(symbol) => {
             match &symbol.kind {
                 SymbolKind::ToString { iface_name } => {
-                    out.push_str(&format!("    toString() {{\n        return {}.from(this._obj).toString();\n    }}\n", iface_name));
+                    out.push_str(&format!(
+                        "    toString() {{\n        return {}.from(this._obj).toString();\n    }}\n",
+                        ref_marker(iface_name),
+                    ));
                 }
                 SymbolKind::ToPrimitive => {
                     out.push_str("    [Symbol.toPrimitive](_hint) {\n        return this.toString();\n    }\n");

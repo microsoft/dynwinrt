@@ -442,6 +442,7 @@ pub fn project_class_with_excluded_interface_imports(
     // Type imports
     let mut imported_names: HashSet<String> = HashSet::new();
     let mut imported_interface_names: HashSet<String> = HashSet::new();
+    let mut shared_only_interface_imports: HashSet<String> = HashSet::new();
     let type_imports = collect_type_imports(class);
     let local_required_interface_names = class
         .required_interfaces
@@ -501,18 +502,30 @@ pub fn project_class_with_excluded_interface_imports(
         }
     }
 
+    let needs_iclosable = class.name != "IClosable"
+        && class
+            .required_interfaces
+            .iter()
+            .any(|ri| ri.iid == ICLOSABLE_IID);
+
     // Import shared required interfaces
     for req_iface in &class.required_interfaces {
+        let is_legacy_standalone = standalone_interface_iids.contains(&req_iface.iid);
+        let is_shared_member_source = share_interface_members
+            && standalone_interface_identity(req_iface)
+                .is_some_and(|identity| shared_member_source_identities.contains(&identity));
         if req_iface.generic_piid.is_none()
             && !req_iface.iid.is_empty()
-            && (standalone_interface_iids.contains(&req_iface.iid)
-                || (share_interface_members
-                    && standalone_interface_identity(req_iface).is_some_and(|identity| {
-                        shared_member_source_identities.contains(&identity)
-                    })))
+            && (is_legacy_standalone || is_shared_member_source)
             && !excluded_interface_import_names.contains(&req_iface.name)
             && !imported_names.contains(&req_iface.name)
         {
+            if is_shared_member_source
+                && !is_legacy_standalone
+                && !(needs_iclosable && req_iface.name == "IClosable")
+            {
+                shared_only_interface_imports.insert(req_iface.name.clone());
+            }
             imports.push(format_type_import_projected(
                 &req_iface.name,
                 TypeKind::Interface,
@@ -540,11 +553,6 @@ pub fn project_class_with_excluded_interface_imports(
     // IClosable by name. Register the import here so the IID-const loop below
     // sees `IID_IClosable` in `imported_names` and skips declaring it,
     // avoiding a duplicate identifier in single-class emission.
-    let needs_iclosable = class.name != "IClosable"
-        && class
-            .required_interfaces
-            .iter()
-            .any(|ri| ri.iid == ICLOSABLE_IID);
     if needs_iclosable
         && !excluded_interface_import_names.contains("IClosable")
         && !imported_names.contains("IClosable")
@@ -1304,10 +1312,19 @@ pub fn project_class_with_excluded_interface_imports(
     let needs_unwrap = check_needs_unwrap(&members, &required_ifaces);
 
     let doc = build_doc_info(class.doc.as_deref(), class.deprecated.as_deref(), None, &[]);
+    let mut re_exports = shared_only_interface_imports
+        .into_iter()
+        .map(|name| ProjectedReExport {
+            from: format!("./{}.js", name),
+            name,
+        })
+        .collect::<Vec<_>>();
+    re_exports.sort_by(|left, right| left.name.cmp(&right.name));
 
     ProjectedFile {
         name: class.name.clone(),
         imports,
+        re_exports,
         iid_consts,
         registrations,
         structs,
@@ -1575,6 +1592,7 @@ pub fn project_interface_with_shared_member_source(
     ProjectedFile {
         name: iface.name.clone(),
         imports,
+        re_exports: vec![],
         iid_consts,
         registrations,
         structs,
@@ -1626,6 +1644,7 @@ pub fn project_enum(en: &TypeMeta) -> Option<ProjectedFile> {
     Some(ProjectedFile {
         name: name.clone(),
         imports: vec![],
+        re_exports: vec![],
         iid_consts: vec![],
         registrations: vec![],
         structs: vec![],
@@ -1709,6 +1728,7 @@ pub fn project_delegate(
     ProjectedFile {
         name: iface.name.clone(),
         imports,
+        re_exports: vec![],
         iid_consts: vec![],
         registrations: vec![],
         structs: vec![],

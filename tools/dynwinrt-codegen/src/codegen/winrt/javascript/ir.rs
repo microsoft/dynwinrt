@@ -213,6 +213,11 @@ pub struct ProjectedImport {
     pub is_runtime_package: bool,
 }
 
+pub struct ProjectedReExport {
+    pub name: String,
+    pub from: String,
+}
+
 /// Disposition of a required interface.
 pub enum RequiredIfaceDisposition {
     /// Imported from its own generated file
@@ -320,6 +325,8 @@ pub struct ProjectedDelegate {
 pub struct ProjectedFile {
     pub name: String,
     pub imports: Vec<ProjectedImport>,
+    /// Public symbols preserved from a canonical sibling module.
+    pub re_exports: Vec<ProjectedReExport>,
     /// IID constants (rendered as `const` in JS, `declare const` in DTS)
     pub iid_consts: Vec<ProjectedIidConst>,
     /// Interface registration blocks (JS only)

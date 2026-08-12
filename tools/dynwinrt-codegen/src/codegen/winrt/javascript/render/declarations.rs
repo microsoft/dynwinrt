@@ -102,6 +102,12 @@ pub fn render(file: &ProjectedFile) -> String {
             ));
         }
     }
+    for re_export in &file.re_exports {
+        out.push_str(&format!(
+            "export {{ {} }} from '{}';\n",
+            re_export.name, re_export.from,
+        ));
+    }
     if !out.ends_with('\n') || out.len() > 50 {
         out.push('\n');
     }

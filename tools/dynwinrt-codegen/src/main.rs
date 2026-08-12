@@ -482,6 +482,42 @@ fn run() -> Result<(), String> {
                     ));
                 }
 
+                winui::add_implicit_classes(&winmd, &mut classes);
+                let mut implicit_interfaces = Vec::new();
+                winui::add_implicit_interfaces(&winmd, &classes, &mut implicit_interfaces);
+                let (
+                    mut excluded_shared_source_names,
+                    mut shared_interface_source_identities,
+                    reserved_non_interface_output_names,
+                ) = if lang == "js" && project::shared_interface_members_enabled() {
+                    shared_interface_plan_for_batches(
+                        &winmd,
+                        &[(classes.clone(), implicit_interfaces.clone(), Vec::new())],
+                    )
+                } else {
+                    (HashSet::new(), HashSet::new(), HashSet::new())
+                };
+                excluded_shared_source_names
+                    .extend(metadata_excluded_shared_source_names.iter().cloned());
+                shared_interface_source_identities.extend(
+                    metadata_shared_source_identities
+                        .iter()
+                        .filter(|identity| !excluded_shared_source_names.contains(&identity.name))
+                        .cloned(),
+                );
+                if lang == "js" && !dry_run && !classes.is_empty() {
+                    preflight_js_generation_batch(
+                        &winmd,
+                        output_dir,
+                        &classes,
+                        &implicit_interfaces,
+                        &[],
+                        &excluded_shared_source_names,
+                        &shared_interface_source_identities,
+                        &reserved_non_interface_output_names,
+                    )?;
+                }
+
                 // Classic COM occupies its own ESM subpackage so its symbols
                 // cannot collide with or leak into the WinRT root barrel.
                 if !com_interfaces.is_empty() || !com_coclasses.is_empty() {
@@ -594,29 +630,6 @@ fn run() -> Result<(), String> {
                     }
                 }
 
-                winui::add_implicit_classes(&winmd, &mut classes);
-                let mut implicit_interfaces = Vec::new();
-                winui::add_implicit_interfaces(&winmd, &classes, &mut implicit_interfaces);
-                let (
-                    mut excluded_shared_source_names,
-                    mut shared_interface_source_identities,
-                    reserved_non_interface_output_names,
-                ) = if lang == "js" && project::shared_interface_members_enabled() {
-                    shared_interface_plan_for_batches(
-                        &winmd,
-                        &[(classes.clone(), implicit_interfaces.clone(), Vec::new())],
-                    )
-                } else {
-                    (HashSet::new(), HashSet::new(), HashSet::new())
-                };
-                excluded_shared_source_names
-                    .extend(metadata_excluded_shared_source_names.iter().cloned());
-                shared_interface_source_identities.extend(
-                    metadata_shared_source_identities
-                        .iter()
-                        .filter(|identity| !excluded_shared_source_names.contains(&identity.name))
-                        .cloned(),
-                );
                 generate_for_types(
                     &winmd,
                     output_dir,
@@ -784,6 +797,20 @@ fn run() -> Result<(), String> {
                         .filter(|identity| !excluded_shared_source_names.contains(&identity.name))
                         .cloned(),
                 );
+                if lang == "js" && !dry_run {
+                    for (classes, interfaces, enums) in &namespace_batches {
+                        preflight_js_generation_batch(
+                            &winmd,
+                            output_dir,
+                            classes,
+                            interfaces,
+                            enums,
+                            &excluded_shared_source_names,
+                            &shared_interface_source_identities,
+                            &reserved_non_interface_output_names,
+                        )?;
+                    }
+                }
 
                 let mut total_classes = 0usize;
                 let mut total_interfaces = 0usize;
@@ -1359,6 +1386,166 @@ fn plan_existing_shared_interface_sources(
     Ok(preserved_source_names)
 }
 
+fn plan_unflagged_existing_shared_interface_sources<'a>(
+    output_dir: &Path,
+    interfaces: impl IntoIterator<Item = &'a meta::InterfaceMeta>,
+) -> Result<HashSet<project::StandaloneInterfaceIdentity>, String> {
+    let mut preserved_identities = HashSet::new();
+    for interface in interfaces {
+        let Some(requested_identity) = project::standalone_interface_identity(interface) else {
+            continue;
+        };
+        let path = output_dir.join(format!("{}.js", interface.name));
+        let existing = match fs::read_to_string(&path) {
+            Ok(existing) => existing,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(format!("Failed to read {}: {}", path.display(), error));
+            }
+        };
+        let Some(existing_identity) = generated_shared_interface_source_identity(&existing) else {
+            continue;
+        };
+        let requested_marker = requested_identity.source_marker();
+        if existing_identity != requested_marker {
+            return Err(format!(
+                "Refusing to overwrite shared interface source `{}`: existing generated identity \
+                 `{}` does not match requested identity `{}`. Use a separate output directory or \
+                 remove and regenerate the conflicting file.",
+                path.display(),
+                existing_identity,
+                requested_marker,
+            ));
+        }
+        preserved_identities.insert(requested_identity);
+    }
+    Ok(preserved_identities)
+}
+
+fn reject_non_interface_overwrites_of_shared_sources<'a>(
+    output_dir: &Path,
+    names: impl IntoIterator<Item = &'a str>,
+) -> Result<(), String> {
+    let mut checked = HashSet::new();
+    for name in names {
+        if !checked.insert(name) {
+            continue;
+        }
+        let path = output_dir.join(format!("{name}.js"));
+        let existing = match fs::read_to_string(&path) {
+            Ok(existing) => existing,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(format!("Failed to read {}: {}", path.display(), error));
+            }
+        };
+        let Some(existing_identity) = generated_shared_interface_source_identity(&existing) else {
+            continue;
+        };
+        return Err(format!(
+            "Refusing to overwrite shared interface source `{}` with non-interface output `{}`: \
+             existing generated identity is `{}`. Use a separate output directory or remove and \
+             regenerate the conflicting file.",
+            path.display(),
+            name,
+            existing_identity,
+        ));
+    }
+    Ok(())
+}
+
+fn preflight_js_generation_batch(
+    winmd: &str,
+    output_dir: &Path,
+    classes: &[meta::ClassMeta],
+    interfaces: &[meta::InterfaceMeta],
+    enums: &[TypeMeta],
+    excluded_shared_source_names: &HashSet<String>,
+    forced_shared_source_identities: &HashSet<project::StandaloneInterfaceIdentity>,
+    reserved_non_interface_output_names: &HashSet<String>,
+) -> Result<(), String> {
+    let deps = meta::resolve_dependencies(winmd, classes, interfaces, enums);
+    let all_classes = classes.iter().chain(&deps.classes).collect::<Vec<_>>();
+    let all_interfaces = interfaces
+        .iter()
+        .chain(&deps.interfaces)
+        .collect::<Vec<_>>();
+    let all_enums = enums.iter().chain(&deps.enums).collect::<Vec<_>>();
+    let class_names = all_classes
+        .iter()
+        .map(|class| class.name.clone())
+        .collect::<HashSet<_>>();
+    let enum_names = all_enums
+        .iter()
+        .filter_map(|typ| match typ {
+            TypeMeta::Enum { name, .. } if !name.contains('<') && !class_names.contains(name) => {
+                Some(name.as_str())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    reject_non_interface_overwrites_of_shared_sources(
+        output_dir,
+        all_classes
+            .iter()
+            .map(|class| class.name.as_str())
+            .chain(enum_names),
+    )?;
+
+    if project::shared_interface_members_enabled() {
+        let mut required_interface_count: HashMap<
+            project::StandaloneInterfaceIdentity,
+            (&meta::InterfaceMeta, usize),
+        > = HashMap::new();
+        for class in &all_classes {
+            for req_iface in &class.required_interfaces {
+                let Some(identity) = project::standalone_interface_identity(req_iface) else {
+                    continue;
+                };
+                required_interface_count
+                    .entry(identity)
+                    .and_modify(|(_, count)| *count += 1)
+                    .or_insert((req_iface, 1));
+            }
+        }
+        let canonical_shared_interfaces = required_interface_count
+            .into_values()
+            .filter(|(_, count)| *count >= 2)
+            .map(|(iface, _)| iface.clone())
+            .collect::<Vec<_>>();
+        let mut effective_excluded_names = excluded_shared_source_names.clone();
+        effective_excluded_names.extend(all_enums.iter().filter_map(|typ| match typ {
+            TypeMeta::Enum { name, .. } if !name.contains('<') && !class_names.contains(name) => {
+                Some(name.clone())
+            }
+            _ => None,
+        }));
+        let all_interfaces = all_interfaces.into_iter().cloned().collect::<Vec<_>>();
+        let canonical_sources = project::canonical_interface_sources(
+            &all_interfaces,
+            &canonical_shared_interfaces,
+            &class_names,
+            &effective_excluded_names,
+            forced_shared_source_identities,
+        )?;
+        plan_existing_shared_interface_sources(
+            output_dir,
+            &canonical_sources,
+            reserved_non_interface_output_names,
+        )?;
+    } else {
+        plan_unflagged_existing_shared_interface_sources(
+            output_dir,
+            all_interfaces.into_iter().filter(|iface| {
+                !class_names.contains(&iface.name)
+                    && !reserved_non_interface_output_names.contains(&iface.name)
+                    && !iface.iid.is_empty()
+            }),
+        )?;
+    }
+    Ok(())
+}
+
 fn generate_js_files(
     output_dir: &Path,
     all_classes: &[meta::ClassMeta],
@@ -1401,6 +1588,22 @@ fn generate_js_files(
         !iface.iid.is_empty()
     }
 
+    let enum_output_names = all_enums.iter().filter_map(|typ| match typ {
+        TypeMeta::Enum { name, .. }
+            if !name.contains('<') && !class_names.contains(name.as_str()) =>
+        {
+            Some(name.as_str())
+        }
+        _ => None,
+    });
+    reject_non_interface_overwrites_of_shared_sources(
+        output_dir,
+        all_classes
+            .iter()
+            .map(|class| class.name.as_str())
+            .chain(enum_output_names),
+    )?;
+
     let preserved_shared_source_names = canonical_interface_sources
         .map(|canonical_sources| {
             plan_existing_shared_interface_sources(
@@ -1411,6 +1614,21 @@ fn generate_js_files(
         })
         .transpose()?
         .unwrap_or_default();
+    let unflagged_preserved_shared_source_identities = if canonical_interface_sources.is_none() {
+        plan_unflagged_existing_shared_interface_sources(
+            output_dir,
+            shared_interfaces
+                .iter()
+                .chain(all_interfaces)
+                .filter(|iface| {
+                    !class_names.contains(iface.name.as_str())
+                        && !reserved_non_interface_output_names.contains(&iface.name)
+                        && is_emittable_interface(iface)
+                }),
+        )?
+    } else {
+        HashSet::new()
+    };
 
     if let Some(canonical_sources) = canonical_interface_sources {
         for source in canonical_sources {
@@ -1445,13 +1663,18 @@ fn generate_js_files(
             if !is_emittable_interface(iface) {
                 continue;
             }
-            let projected = project::project_interface(
+            let preserve_shared_source =
+                project::standalone_interface_identity(iface).is_some_and(|identity| {
+                    unflagged_preserved_shared_source_identities.contains(&identity)
+                });
+            let projected = project::project_interface_with_shared_member_source(
                 iface,
                 known_types,
                 delegate_type_names,
                 delegate_sigs,
                 delegate_sig_refs,
                 delegate_param_wraps,
+                preserve_shared_source,
             );
             let js = render_js::render(&projected);
             let dts = render_dts::render(&projected);
@@ -1467,13 +1690,18 @@ fn generate_js_files(
             if !is_emittable_interface(iface) {
                 continue;
             }
-            let projected = project::project_interface(
+            let preserve_shared_source =
+                project::standalone_interface_identity(iface).is_some_and(|identity| {
+                    unflagged_preserved_shared_source_identities.contains(&identity)
+                });
+            let projected = project::project_interface_with_shared_member_source(
                 iface,
                 known_types,
                 delegate_type_names,
                 delegate_sigs,
                 delegate_sig_refs,
                 delegate_param_wraps,
+                preserve_shared_source,
             );
             let js = render_js::render(&projected);
             let dts = render_dts::render(&projected);
@@ -3881,6 +4109,28 @@ mod tests {
         assert_eq!(fs::read(output.join("IValue.d.ts")).unwrap(), original_dts);
         assert!(!output.join("IOther.js").exists());
         assert!(!output.join("IOther.d.ts").exists());
+        fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
+    fn incremental_shared_interface_rejects_non_interface_overwrite() {
+        let output = test_directory("shared-interface-non-interface-overwrite");
+        fs::create_dir_all(&output).unwrap();
+        let original =
+            shared_interface_source("Contoso", "IValue", "11111111-1111-1111-1111-111111111111");
+        generate_shared_interface_sources(&output, std::slice::from_ref(&original)).unwrap();
+        let original_js = fs::read(output.join("IValue.js")).unwrap();
+        let original_dts = fs::read(output.join("IValue.d.ts")).unwrap();
+
+        let error =
+            reject_non_interface_overwrites_of_shared_sources(&output, ["IOther", "IValue"])
+                .expect_err("class or enum output must not replace a shared interface source");
+
+        assert!(error.contains("Refusing to overwrite shared interface source"));
+        assert!(error.contains("non-interface output `IValue`"));
+        assert_eq!(fs::read(output.join("IValue.js")).unwrap(), original_js);
+        assert_eq!(fs::read(output.join("IValue.d.ts")).unwrap(), original_dts);
+        assert!(!output.join("IOther.js").exists());
         fs::remove_dir_all(output).unwrap();
     }
 
