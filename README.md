@@ -156,6 +156,16 @@ instructions are in [`bindings/py/README.md`](bindings/py/README.md).
 Python runtime, codegen, packaging, and WinUI readiness are tracked in
 [`docs/status/PYTHON_CHECKLIST.md`](docs/status/PYTHON_CHECKLIST.md).
 
+Electron samples include:
+
+- [Windows Hello](samples/js/windows-hello/README.md) — WinRT async APIs and
+  HWND-bound Classic COM interop.
+- [Share UI](samples/js/electron-share-ui/README.md) — typed WinRT and
+  `IDataTransferManagerInterop`.
+- [System Media Controls](samples/js/electron-smtc/README.md) — complete SMTC
+  publication and GSMTC loopback control, with automated event and state
+  validation.
+
 For deployment, see
 [Package a dynwinrt Node.js application as MSIX](docs/guides/windows/msix-packaging.md).
 

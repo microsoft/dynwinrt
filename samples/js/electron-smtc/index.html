@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>dynwinrt System Media Controls</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main>
+      <h1>System Media Controls</h1>
+      <p>
+        Publish an Electron SMTC session, then discover and control it through
+        the global GSMTC session manager.
+      </p>
+      <div class="form">
+        <label>Title <input id="title" value="dynwinrt SMTC sample" /></label>
+        <label>Artist <input id="artist" value="dynwinrt" /></label>
+        <label
+          >Duration (seconds)
+          <input id="duration" type="number" value="300" min="1"
+        /></label>
+        <label
+          >Seek position (seconds)
+          <input id="position" type="number" value="42" min="0"
+        /></label>
+      </div>
+      <div class="actions">
+        <button id="initialize">Initialize</button>
+        <button id="update">Update metadata/timeline</button>
+        <button id="play">Play through GSMTC</button>
+        <button id="pause">Pause through GSMTC</button>
+        <button id="seek">Seek through GSMTC</button>
+        <button id="validate">Run full validation</button>
+      </div>
+      <h2>State</h2>
+      <pre id="status">Not initialized.</pre>
+      <h2>Events</h2>
+      <pre id="events">Waiting for events…</pre>
+    </main>
+    <script src="./renderer.js"></script>
+  </body>
+</html>
