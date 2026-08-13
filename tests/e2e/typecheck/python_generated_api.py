@@ -4,7 +4,7 @@
 from collections.abc import Sequence
 from typing import Awaitable, List, Tuple
 
-from dynwinrt_py import (
+from dynwinrt import (
     DynWinRTArray,
     WinRTAsync,
     WinRTAsyncWithProgress,

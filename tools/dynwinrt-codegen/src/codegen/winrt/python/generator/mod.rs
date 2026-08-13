@@ -49,11 +49,11 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 from uuid import UUID
 from weakref import ref as _weakref_ref
-from dynwinrt_py import (
+from dynwinrt import (
     DynWinRTType, DynWinRTMethodSig, DynWinRTValue, DynWinRTArray,
     DynWinRTStruct, DynWinRtDelegate, DynWinRTOverrideInterface, WinGUID,
 )
-from dynwinrt_py.dynwinrt_py import (
+from dynwinrt.dynwinrt import (
     _dynwinrt_array, _dynwinrt_bind_overload, _dynwinrt_datetime_to_ticks, _dynwinrt_guid,
     _dynwinrt_map, _dynwinrt_new_vector, _dynwinrt_ticks_to_datetime, _dynwinrt_ticks_to_timedelta,
     _dynwinrt_timedelta_to_ticks, _dynwinrt_track_projected, _dynwinrt_uuid, _dynwinrt_vector,
@@ -95,8 +95,8 @@ def _dynwinrt_delegate(value, iid, parameter_types):
 \n";
 
 const ASYNC_IMPORT_LINE: &str = "\
-from dynwinrt_py import WinRTAsync, WinRTAsyncWithProgress
-from dynwinrt_py.dynwinrt_py import _DynWinRTAsync, _DynWinRTAsyncWithProgress
+from dynwinrt import WinRTAsync, WinRTAsyncWithProgress
+from dynwinrt.dynwinrt import _DynWinRTAsync, _DynWinRTAsyncWithProgress
 ";
 
 const IREFERENCE_HELPER: &str = "\

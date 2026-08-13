@@ -13,7 +13,7 @@ verifies the results against known expected values.
 Requires: Windows 10/11 with standard SDK (no extra installs needed).
 """
 
-from dynwinrt_py import (
+from dynwinrt import (
     DynWinRTType,
     DynWinRTMethodSig,
     DynWinRTValue,

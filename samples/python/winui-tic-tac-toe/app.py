@@ -7,7 +7,7 @@ os.environ["WINAPPSDK_BOOTSTRAP_DLL_PATH"] = str(
     ROOT / ".runtime" / "Microsoft.WindowsAppRuntime.Bootstrap.dll"
 )
 
-from dynwinrt_py import RoApartment, init_winappsdk, projected_lifetime_scope
+from dynwinrt import RoApartment, init_winappsdk, projected_lifetime_scope
 from generated.microsoft.ui.windowing import SizeInt32
 from generated.microsoft.ui.xaml import Application, ApplicationTheme, Window
 from generated.microsoft.ui.xaml.controls import Button, Size, StackPanel, TextBlock

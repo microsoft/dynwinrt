@@ -94,14 +94,14 @@ pub fn generate_interface(
     let is_element_factory =
         iface.namespace == "Microsoft.UI.Xaml" && iface.name == "IElementFactory";
     if is_element_factory {
-        out.push_str("from dynwinrt_py import DynWinRtElementFactory\n");
+        out.push_str("from dynwinrt import DynWinRtElementFactory\n");
     }
     let collection_kind = interface_kind(iface);
     let observable_vector = observable_vector_name(iface);
     if observable_vector.is_none()
         && let Some(mixin) = collection_kind.and_then(runtime_mixin)
     {
-        out.push_str(&format!("from dynwinrt_py.dynwinrt_py import {mixin}\n"));
+        out.push_str(&format!("from dynwinrt.dynwinrt import {mixin}\n"));
     }
     if methods_have_async_output(iface.methods.iter()) {
         out.push_str(ASYNC_IMPORT_LINE);
@@ -470,7 +470,7 @@ fn generate_delegate(iface: &InterfaceMeta) -> String {
     let mut out = String::new();
     out.push_str(HEADER);
     out.push_str(FUTURE_ANNOTATIONS);
-    out.push_str("from dynwinrt_py import DynWinRTType, WinGUID\n\n");
+    out.push_str("from dynwinrt import DynWinRTType, WinGUID\n\n");
 
     let invoke = iface.methods.iter().find(|m| m.name == "Invoke");
     if iface.generic_piid.is_some() {

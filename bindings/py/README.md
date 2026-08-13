@@ -1,6 +1,6 @@
-# dynwinrt-py
+# dynwinrt
 
-`dynwinrt-py` is the native CPython runtime for generated dynwinrt projections.
+`dynwinrt` is the native CPython runtime for generated dynwinrt projections.
 Release wheels support CPython 3.11 through 3.14 on Windows x64 and ARM64.
 The floor is intentionally the first CPython line for which the release
 infrastructure can install and execute a native Windows ARM64 interpreter; the
@@ -10,12 +10,12 @@ Install the runtime and the standalone generator from an approved feed or a
 downloaded release:
 
 ```powershell
-python -m pip install dynwinrt-py dynwinrt-codegen
+python -m pip install dynwinrt dynwinrt-codegen
 dynwinrt-codegen generate --namespace Windows.Foundation --class-name Uri `
   --lang py --output generated_uri
 ```
 
-Generated Python package manifests pin `dynwinrt-py` to exactly the version of
+Generated Python package manifests pin `dynwinrt` to exactly the version of
 `dynwinrt-codegen` that emitted them.
 
 ## Develop
@@ -36,7 +36,7 @@ The wheel includes `__init__.pyi` and `py.typed` for static type checking.
 installed command with Rust removed from `PATH`.
 
 Pull requests run the x64 matrix. ARM64 jobs run only for manual dispatches and
-`python-v*` tags on the repository's existing
+`v*` release tags on the repository's existing
 `[self-hosted, Windows, ARM64, winui]` runner. This avoids executing untrusted
 pull-request code on a self-hosted machine. A release remains blocked rather
 than producing ARM64 artifacts if that runner or one of its native CPython
@@ -44,16 +44,19 @@ versions is unavailable.
 
 To release:
 
-1. Set the same version in `bindings\py\Cargo.toml` and
-   `tools\dynwinrt-codegen\Cargo.toml`, update `Cargo.lock`, and merge it.
-2. Create `python-v<version>` (for example, `python-v0.1.0`). The workflow
-   rejects mismatched or malformed tags and attaches only the complete tested
-   wheel set to the GitHub release. A hyphenated version is marked prerelease.
+1. Create the ordinary repository release tag (for example,
+   `v0.1.0-preview.20`). The workflow derives the Python package version from
+   the tag and updates its build workspaces without modifying the repository.
+   PEP 440 normalizes `preview.N` wheel versions to `rcN`.
+2. The JavaScript release pipeline creates the GitHub release. After all ten
+   Python wheels pass their consumption tests, this workflow waits for that
+   release and uploads the wheels alongside the npm tarballs. It never creates
+   a separate Python GitHub release.
 3. Configure the protected `pypi` GitHub environment with required reviewers
-   and PyPI trusted publishers for both projects. To publish, manually dispatch
-   the workflow **from that existing tag** with `publish_pypi` enabled and
-   `release_version` set. OIDC trusted publishing is used; no API token is
-   stored in the repository.
+   and PyPI trusted publishers for `dynwinrt` and `dynwinrt-codegen`. To
+   publish, manually dispatch the workflow **from that existing tag** with
+   `publish_pypi` enabled and `release_version` set. OIDC trusted publishing is
+   used; no API token is stored in the repository.
 
 Do not enable publication from a branch, pull request, or ordinary push.
 
@@ -223,7 +226,7 @@ Use a projected lifetime scope inside the COM apartment so generated wrappers
 release their native values before `RoUninitialize`:
 
 ```python
-from dynwinrt_py import RoApartment, projected_lifetime_scope
+from dynwinrt import RoApartment, projected_lifetime_scope
 
 with RoApartment(0), projected_lifetime_scope():
     app = Application.create()

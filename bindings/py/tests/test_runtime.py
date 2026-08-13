@@ -1,9 +1,9 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
-import dynwinrt_py
+import dynwinrt
 import pytest
-from dynwinrt_py import DynWinRTType, DynWinRTValue, WinGUID, ro_initialize
+from dynwinrt import DynWinRTType, DynWinRTValue, WinGUID, ro_initialize
 
 
 def test_to_number():

@@ -6,7 +6,7 @@ os.environ["WINAPPSDK_BOOTSTRAP_DLL_PATH"] = str(
     ROOT / ".runtime" / "Microsoft.WindowsAppRuntime.Bootstrap.dll"
 )
 
-from dynwinrt_py import (
+from dynwinrt import (
     DynWinRTMethodSig,
     DynWinRTType,
     DynWinRTValue,

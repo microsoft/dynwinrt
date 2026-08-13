@@ -43,11 +43,12 @@ def verify_source(tag: str | None, release_version: str | None) -> None:
         ROOT / "tools" / "dynwinrt-codegen" / "pyproject.toml"
     )["project"]
 
-    assert runtime_cargo["name"] == runtime_project["name"] == "dynwinrt-py"
+    assert runtime_cargo["name"] == "dynwinrt-py"
+    assert runtime_project["name"] == "dynwinrt"
     assert codegen_cargo["name"] == codegen_project["name"] == "dynwinrt-codegen"
     assert runtime_cargo["version"] == codegen_cargo["version"], (
         "Runtime and codegen Cargo versions must match because generated packages "
-        "pin dynwinrt-py to the codegen version"
+        "pin dynwinrt to the codegen version"
     )
     assert SpecifierSet(runtime_project["requires-python"]) == SpecifierSet(
         RUNTIME_REQUIRES
@@ -60,7 +61,7 @@ def verify_source(tag: str | None, release_version: str | None) -> None:
         ROOT / "tools" / "dynwinrt-codegen" / "src" / "codegen" / "package.rs"
     ).read_text(encoding="utf-8")
     assert f'requires-python = \\"{RUNTIME_REQUIRES}\\"' in generated_manifest
-    assert 'dependencies = [\\"dynwinrt-py=={runtime_version}\\"]' in generated_manifest
+    assert 'dependencies = [\\"dynwinrt=={runtime_version}\\"]' in generated_manifest
 
     pyo3 = runtime_manifest["dependencies"]["pyo3"]
     assert Version(str(pyo3)) >= Version("0.29.0")
@@ -73,8 +74,8 @@ def verify_source(tag: str | None, release_version: str | None) -> None:
             f"version {raw_version!r}"
         )
     if tag:
-        match = re.fullmatch(r"python-v(.+)", tag)
-        assert match, f"Python release tags must match python-v<version>, got {tag!r}"
+        match = re.fullmatch(r"v(.+)", tag)
+        assert match, f"Release tags must match v<version>, got {tag!r}"
         assert match.group(1) == raw_version, (
             f"Tag {tag!r} does not exactly match Cargo version {raw_version!r}"
         )
@@ -108,7 +109,7 @@ def verify_wheel(args: argparse.Namespace) -> None:
         assert canonicalize_name(metadata["Name"]) == canonicalize_name(args.package)
         assert Version(metadata["Version"]) == Version(args.version)
         expected_requires = (
-            RUNTIME_REQUIRES if args.package == "dynwinrt-py" else CODEGEN_REQUIRES
+            RUNTIME_REQUIRES if args.package == "dynwinrt" else CODEGEN_REQUIRES
         )
         assert SpecifierSet(metadata["Requires-Python"]) == SpecifierSet(
             expected_requires
@@ -116,7 +117,7 @@ def verify_wheel(args: argparse.Namespace) -> None:
         dependencies = metadata.get_all("Requires-Dist", [])
         assert dependencies == [], f"Unexpected wheel dependencies: {dependencies}"
         names = archive.namelist()
-        if args.package == "dynwinrt-py":
+        if args.package == "dynwinrt":
             assert any(name.endswith(".pyd") for name in names)
             assert any(name.endswith("/py.typed") for name in names)
             assert any(name.endswith(".pyi") for name in names)

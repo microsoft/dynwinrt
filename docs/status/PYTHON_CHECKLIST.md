@@ -47,7 +47,7 @@ of a dynamic projection.
 
 ## P0: runtime and generated API agreement
 
-- [x] Ship a `.pyi` and `py.typed` marker for the `dynwinrt_py` extension.
+- [x] Ship a `.pyi` and `py.typed` marker for the `dynwinrt` extension.
 - [x] Return declared enum members as generated `IntEnum` instances while
       preserving unknown values as integers.
 - [x] Use `invoke_all()` for arbitrary multiple-out methods.
@@ -82,8 +82,9 @@ of a dynamic projection.
       runner and fail closed; local x64 validation does not count as ARM64
       validation.
 - [x] Remove unverified PyPy metadata.
-- [x] Require `python-v<version>` release tags to match both Cargo package
-      versions rather than rewriting release sources in CI.
+- [x] Derive Python artifact versions from ordinary `v<version>` release tags,
+      inject them only into ephemeral CI workspaces, and attach the complete
+      wheel set to the shared JavaScript GitHub release.
 - [ ] Publish signed/provenanced wheels to an approved internal Python feed.
 - [x] Add a protected-environment, OIDC trusted-publishing path that requires
       manual opt-in from an existing release tag.
@@ -123,7 +124,7 @@ of a dynamic projection.
       Windows App SDK, and custom WinMD namespaces.
 - [ ] Add runnable samples for files, notifications, imaging, async, events,
       collections, and custom WinMD consumption.
-- [ ] Document generated-code version compatibility with `dynwinrt-py`.
+- [ ] Document generated-code version compatibility with `dynwinrt`.
 - [ ] Add troubleshooting for metadata, apartment, bootstrap, architecture,
       and wheel compatibility failures.
 - [ ] Add progress-callback tests for worker-thread delivery and operations
@@ -187,7 +188,7 @@ of a dynamic projection.
 6. [x] Use `invoke_all()` for arbitrary multiple-out methods.
 7. [x] Model FillArray as caller-owned `(capacity, buffer)` ABI.
 8. [x] Verify Python and JavaScript `IndexOf` and `GetMany`, including zero items.
-9. [x] Ship typed `dynwinrt_py` wheels and validate the native extension stubs.
+9. [x] Ship typed `dynwinrt` wheels and validate the native extension stubs.
 10. [x] Generate Python stubs by default and type-check generated E2E APIs.
 11. [x] Unbox `IReference<T>` returns as `T | None`.
 12. [x] Box native Python values and `None` for `IReference<T>` inputs.

@@ -1,8 +1,8 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
-import dynwinrt_py
-from dynwinrt_py import (
+import dynwinrt
+from dynwinrt import (
     DynWinRTType,
     DynWinRTMethodSig,
     DynWinRTValue,

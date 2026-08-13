@@ -57,7 +57,7 @@ pub fn generate_class(
     out.push_str(IMPORT_LINE);
     if has_public_composition {
         out.push_str(
-            "from dynwinrt_py import register_xaml_runtime_class as _dynwinrt_register_xaml_runtime_class\n",
+            "from dynwinrt import register_xaml_runtime_class as _dynwinrt_register_xaml_runtime_class\n",
         );
     }
     if winui::is_dispatcher_queue(class) {
@@ -74,7 +74,7 @@ pub fn generate_class(
     collection_mixins.dedup();
     if !collection_mixins.is_empty() {
         out.push_str(&format!(
-            "from dynwinrt_py.dynwinrt_py import {}\n",
+            "from dynwinrt.dynwinrt import {}\n",
             collection_mixins.join(", ")
         ));
     }
@@ -488,7 +488,7 @@ pub fn generate_class(
         ));
         if bootstrap.supports_unpackaged_resources {
             out.push_str(
-                "        from dynwinrt_py import has_package_identity, get_winappsdk_resource_pri_path\n",
+                "        from dynwinrt import has_package_identity, get_winappsdk_resource_pri_path\n",
             );
             out.push_str("        if not has_package_identity():\n");
             out.push_str(&format!(

@@ -5,7 +5,7 @@ relative_files = True
 
 [report]
 include =
-    */dynwinrt_py/*
+    */dynwinrt/*
     tests/e2e/e2e_generated/python_bindings/*
 omit =
     */__pycache__/*

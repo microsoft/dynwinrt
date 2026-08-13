@@ -20,7 +20,7 @@ returned object as the projected `SystemBackdrop` expected by
   `Microsoft.WindowsAppRuntime.Bootstrap.dll`. The matching x64 WinAppSDK
   framework/runtime packages and resources must also be installed or available
   to the unpackaged runtime.
-- `dynwinrt_py` installed in the Python interpreter used to run the sample.
+- `dynwinrt` installed in the Python interpreter used to run the sample.
 - A compatible `dynwinrt-codegen` executable, either on `PATH` or passed with
   `-Codegen`.
 
@@ -45,7 +45,7 @@ Generate the local projection package and copy the bootstrap DLL:
 ```
 
 If codegen is installed on `PATH`, omit `-Codegen`. Run with the Python
-environment that contains `dynwinrt_py`:
+environment that contains `dynwinrt`:
 
 ```powershell
 .\run.ps1 -Python C:\path\to\python.exe

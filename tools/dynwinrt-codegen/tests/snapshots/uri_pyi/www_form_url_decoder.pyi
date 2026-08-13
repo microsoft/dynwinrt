@@ -7,7 +7,7 @@ from collections.abc import (
 from datetime import datetime, timedelta
 from uuid import UUID
 from typing import overload
-from dynwinrt_py import (
+from dynwinrt import (
     DynWinRTType, DynWinRTValue, DynWinRTArray, DynWinRTStruct, DynWinRtDelegate, WinGUID,
 )
 from typing import Type, TypeVar

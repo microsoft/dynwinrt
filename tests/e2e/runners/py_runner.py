@@ -75,7 +75,7 @@ def projected_values_equal(left, right):
 
 def wrap_arg(val):
     """Wrap a Python value into a DynWinRTValue for method args."""
-    import dynwinrt_py as dw
+    import dynwinrt as dw
     if isinstance(val, str):
         return dw.DynWinRTValue.from_hstring(val)
     if isinstance(val, bool):
@@ -115,7 +115,7 @@ async def run_spec(spec: dict, generated_dir: str, pkg_name: str) -> dict:
         obj = None
 
         if inst_kind == 'activate':
-            import dynwinrt_py as dw
+            import dynwinrt as dw
             raw = dw.DynWinRTValue.activation_factory(f'{ns}.{cls_name}').activate()
             obj = cls(raw)
         elif inst_kind == 'static_factory':
@@ -326,7 +326,7 @@ async def run_check(
                 cr['pass'] = True
 
         elif kind == 'vector_get_many':
-            import dynwinrt_py as dw
+            import dynwinrt as dw
 
             vec = getattr(obj, member)
             capacity = min(check.get('capacity', 4), vec.size)
@@ -411,7 +411,7 @@ async def run_check(
                     cr['pass'] = True
 
         elif kind == 'array_roundtrip':
-            import dynwinrt_py as dw
+            import dynwinrt as dw
             elem_type = check['element_type']
             values = check['values']
 
@@ -660,7 +660,7 @@ async def run_check(
             cr['pass'] = True
 
         elif kind == 'value_set_event_lifecycle':
-            import dynwinrt_py as dw
+            import dynwinrt as dw
 
             counts = {'on': 0, 'subscribe': 0, 'once': 0}
 
@@ -815,7 +815,7 @@ async def run_check(
                 cr['error'] = 'closed object allowed context re-entry'
             except RuntimeError:
                 if hasattr(resource, 'create_reference'):
-                    from dynwinrt_py import release_projected
+                    from dynwinrt import release_projected
 
                     release_projected(resource)
                     try:
@@ -855,8 +855,8 @@ async def run_check(
                 cr['pass'] = True
 
         elif kind == 'async_memory_roundtrip':
-            import dynwinrt_py as dw
-            from dynwinrt_py.dynwinrt_py import _DynWinRTAsync
+            import dynwinrt as dw
+            from dynwinrt.dynwinrt import _DynWinRTAsync
 
             write_val = check.get('write_value', 42)
             stream = cls.create() if hasattr(cls, 'create') else cls.create_default()
@@ -884,7 +884,7 @@ async def run_check(
             read_val = reader.read_int32()
 
             def blocking_store():
-                import dynwinrt_py as dw
+                import dynwinrt as dw
 
                 dw.ro_initialize(1)
                 try:
@@ -1330,7 +1330,7 @@ async def run_check(
                     cr['pass'] = True
 
         elif kind == 'async_cancellation':
-            import dynwinrt_py as dw
+            import dynwinrt as dw
 
             info_iid = dw.WinGUID.parse('00000036-0000-0000-c000-000000000046')
             info_type = (
@@ -1516,7 +1516,7 @@ async def run_check(
         elif kind == 'generated_helper_matrix':
             from pathlib import Path
 
-            import dynwinrt_py as dw
+            import dynwinrt as dw
 
             # This spec runs last. Earlier E2E specs validate real generated
             # call sites; this matrix covers each emitted copy of shared helpers.
@@ -1716,7 +1716,7 @@ def main():
     sys.path.insert(0, gen_parent)
 
     # Init WinRT
-    import dynwinrt_py as dw
+    import dynwinrt as dw
     dw.ro_initialize(1)
 
     # Load specs

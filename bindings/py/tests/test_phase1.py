@@ -22,8 +22,8 @@ from types import SimpleNamespace
 
 import pytest
 
-import dynwinrt_py
-from dynwinrt_py import (
+import dynwinrt
+from dynwinrt import (
     DynWinRTType,
     DynWinRTMethodSig,
     DynWinRTOverrideInterface,
@@ -41,7 +41,7 @@ from dynwinrt_py import (
     ro_initialize,
     register_xaml_runtime_class,
 )
-from dynwinrt_py.dynwinrt_py import (
+from dynwinrt.dynwinrt import (
     _DynWinRTAsync,
     _DynWinRTAsyncWithProgress,
     _dynwinrt_dispatch_progress,
@@ -536,7 +536,7 @@ def test_element_factory_callback_cleanup_allows_reentrant_destructors():
 def test_async_protocols_are_public():
     assert WinRTAsync.__name__ == "WinRTAsync"
     assert WinRTAsyncWithProgress.__name__ == "WinRTAsyncWithProgress"
-    assert not hasattr(dynwinrt_py, "_DynWinRTAsync")
+    assert not hasattr(dynwinrt, "_DynWinRTAsync")
 
 
 def test_ro_apartment_balances_nested_initialization():

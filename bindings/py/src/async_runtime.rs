@@ -177,14 +177,14 @@ impl AsyncOperation {
 
         let converter = self.converter.clone_ref(py);
         let convert_future = py
-            .import("dynwinrt_py.dynwinrt_py")?
+            .import("dynwinrt.dynwinrt")?
             .getattr("_dynwinrt_convert_future")?;
         let coroutine = convert_future.call1((raw_future.clone(), converter))?;
         let future = py
             .import("asyncio")?
             .call_method0("get_running_loop")?
             .call_method1("create_task", (coroutine,))?;
-        py.import("dynwinrt_py.dynwinrt_py")?
+        py.import("dynwinrt.dynwinrt")?
             .getattr("_dynwinrt_link_cancellation")?
             .call1((future.clone(), raw_future))?;
         let future = future.unbind();
@@ -372,7 +372,7 @@ impl DynWinRTAsyncWithProgress {
         })?;
         let converter = self.progress_converter.clone_ref(py);
         let dispatch_progress = py
-            .import("dynwinrt_py.dynwinrt_py")?
+            .import("dynwinrt.dynwinrt")?
             .getattr("_dynwinrt_dispatch_progress")?
             .unbind();
         let callback_context = py

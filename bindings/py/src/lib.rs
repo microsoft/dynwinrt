@@ -9,7 +9,7 @@ mod runtime;
 mod values;
 
 #[pymodule]
-mod dynwinrt_py {
+mod dynwinrt {
     use pyo3::prelude::*;
 
     #[pymodule_init]

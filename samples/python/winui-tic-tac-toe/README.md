@@ -13,7 +13,7 @@ window resizing, a named Python `TicTacToePanel` XAML registration, a native
   `Microsoft.WindowsAppRuntime.Bootstrap.dll`. The matching x64 WinAppSDK
   framework/runtime packages and resources must also be installed or available
   to the unpackaged runtime.
-- `dynwinrt_py` installed in the Python interpreter used to run the sample.
+- `dynwinrt` installed in the Python interpreter used to run the sample.
 - A compatible `dynwinrt-codegen` executable, either on `PATH` or passed with
   `-Codegen`.
 
@@ -40,7 +40,7 @@ DLL (replace the fixture paths):
 ```
 
 If the CLI is installed on `PATH`, omit `-Codegen`. Run with the same Python
-environment that contains `dynwinrt_py`:
+environment that contains `dynwinrt`:
 
 ```powershell
 .\run.ps1 -Python C:\path\to\python.exe

@@ -50,7 +50,7 @@ if (-not (Get-ChildItem $pyOutput -Filter *.py -File -Recurse) -or
 }
 
 $manifest = Get-Content (Join-Path $pyOutput 'pyproject.toml') -Raw
-if ($manifest -notmatch [regex]::Escape("dependencies = [`"dynwinrt-py==$Version`"]")) {
-    throw "Generated package does not pin dynwinrt-py==$Version"
+if ($manifest -notmatch [regex]::Escape("dependencies = [`"dynwinrt==$Version`"]")) {
+    throw "Generated package does not pin dynwinrt==$Version"
 }
 Write-Host "Standalone $Architecture codegen wheel consumed without cargo or rustc"

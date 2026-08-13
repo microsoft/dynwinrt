@@ -23,7 +23,7 @@ def run(bindings_dir: Path, bootstrap_dll: Path, major: int, minor: int) -> None
     sys.path.insert(0, str(bindings_dir.parent))
     package = bindings_dir.name
 
-    from dynwinrt_py import (
+    from dynwinrt import (
         DynWinRTType,
         DynWinRTValue,
         RoApartment,

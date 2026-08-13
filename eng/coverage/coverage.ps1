@@ -320,7 +320,7 @@ function Write-Reports {
         $measuredFiles = @($coverageJson["files"].Keys)
         $productFiles = @($measuredFiles | Where-Object {
             $_ -match "tests[\\/]e2e[\\/]e2e_generated[\\/]python_bindings" -or
-            ($_ -match "dynwinrt_py" -and $_ -notmatch "bindings[\\/]py[\\/]tests")
+            ($_ -match "dynwinrt" -and $_ -notmatch "bindings[\\/]py[\\/]tests")
         })
         if ($productFiles.Count -gt 0) {
             Invoke-Step "Python HTML coverage report" {
@@ -607,7 +607,7 @@ try {
             & $script:pythonExe -m pytest bindings\py\tests -q
         }
         Invoke-Step "Python stubtest" {
-            & $script:pythonExe -m mypy.stubtest dynwinrt_py `
+            & $script:pythonExe -m mypy.stubtest dynwinrt `
                 --allowlist bindings\py\stubtest_allowlist.txt `
                 --ignore-disjoint-bases
         }

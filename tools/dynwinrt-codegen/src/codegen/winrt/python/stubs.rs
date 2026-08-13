@@ -40,10 +40,10 @@ from collections.abc import (
 from datetime import datetime, timedelta
 from uuid import UUID
 from typing import overload
-from dynwinrt_py import (
+from dynwinrt import (
     DynWinRTType, DynWinRTValue, DynWinRTArray, DynWinRTStruct, DynWinRtDelegate, WinGUID,
 )\n";
-const ASYNC_IMPORT_LINE: &str = "from dynwinrt_py import WinRTAsync, WinRTAsyncWithProgress\n";
+const ASYNC_IMPORT_LINE: &str = "from dynwinrt import WinRTAsync, WinRTAsyncWithProgress\n";
 
 /// Generate a `.pyi` stub for an enum. Returns `None` for non-enum TypeMeta.
 pub fn generate_enum_stub(en: &TypeMeta) -> Option<String> {
@@ -89,7 +89,7 @@ pub fn generate_interface_stub(
         let mut out = String::new();
         out.push_str(HEADER);
         out.push_str(FUTURE_ANNOTATIONS);
-        out.push_str("from dynwinrt_py import DynWinRTType, WinGUID\n\n");
+        out.push_str("from dynwinrt import DynWinRTType, WinGUID\n\n");
         out.push_str(&format!("IID_{}: WinGUID\n", iface.name));
         out.push_str(&format!("{}_PARAM_TYPES: list[DynWinRTType]\n", iface.name));
         return out;
@@ -323,7 +323,7 @@ pub fn generate_class_stub(
         out.push_str("from typing import NoReturn\n");
     }
     if has_public_composition {
-        out.push_str("from dynwinrt_py import DynWinRTXamlRegistration\n");
+        out.push_str("from dynwinrt import DynWinRTXamlRegistration\n");
     }
     if methods_have_async_output(
         class

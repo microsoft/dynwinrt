@@ -240,7 +240,7 @@ extends:
               script: |
                 .\bindings\py\.venv\Scripts\python.exe -m pytest bindings\py\tests -q
                 if ($LASTEXITCODE -ne 0) { Write-Error "Python binding tests failed"; exit 1 }
-                .\bindings\py\.venv\Scripts\python.exe -m mypy.stubtest dynwinrt_py --allowlist bindings\py\stubtest_allowlist.txt --ignore-disjoint-bases
+                .\bindings\py\.venv\Scripts\python.exe -m mypy.stubtest dynwinrt --allowlist bindings\py\stubtest_allowlist.txt --ignore-disjoint-bases
                 if ($LASTEXITCODE -ne 0) { Write-Error "Python runtime stub validation failed"; exit 1 }
 
           # E2E tests: winmd → generate → type-check → call real WinRT and COM APIs

@@ -257,7 +257,7 @@ fn element_factory_projects_js_callback_constructor() {
     assert!(dts.contains(
         "static create(getElement: (args: ElementFactoryGetArgs) => UIElement, recycleElement: (args: ElementFactoryRecycleArgs) => void): IElementFactory & { releaseCallbacks(): void };",
     ));
-    assert!(py.contains("from dynwinrt_py import DynWinRtElementFactory"));
+    assert!(py.contains("from dynwinrt import DynWinRtElementFactory"));
     assert!(py.contains("def create(get_element, recycle_element):"));
     assert!(py.contains("native_element = native.cast("));
     assert!(py.contains("elements[native_element.identity_raw()] = element"));

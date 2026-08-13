@@ -6,6 +6,7 @@ param(
     [Parameter(Mandatory = $true)][string]$RuntimeWheelDirectory,
     [Parameter(Mandatory = $true)][string]$CodegenWheelDirectory,
     [Parameter(Mandatory = $true)][string]$Version,
+    [Parameter(Mandatory = $true)][string]$PythonPackageVersion,
     [Parameter(Mandatory = $true)][ValidateSet('x64', 'arm64')][string]$Architecture,
     [Parameter(Mandatory = $true)][string]$PythonMinor
 )
@@ -20,7 +21,7 @@ New-Item $root -ItemType Directory -Force | Out-Null
 & $Python -m venv (Join-Path $root 'venv')
 $venvPython = Join-Path $root 'venv\Scripts\python.exe'
 & $venvPython -m pip install --disable-pip-version-check --no-index `
-    --find-links $RuntimeWheelDirectory "dynwinrt-py==$Version"
+    --find-links $RuntimeWheelDirectory "dynwinrt==$Version"
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 & $venvPython -m pip install --disable-pip-version-check --no-index `
     --find-links $CodegenWheelDirectory "dynwinrt-codegen==$Version"
@@ -46,14 +47,14 @@ assert platform.machine().lower() in (
     ("amd64", "x86_64") if expected_arch == "x64" else ("arm64", "aarch64")
 )
 assert f"{sys.version_info.major}.{sys.version_info.minor}" == expected_minor
-assert importlib.metadata.version("dynwinrt-py") == expected_version
+assert importlib.metadata.version("dynwinrt") == expected_version
 assert importlib.metadata.version("dynwinrt-codegen") == expected_version
 
-import dynwinrt_py
-from dynwinrt_py import RoApartment, projected_lifetime_scope
+import dynwinrt
+from dynwinrt import RoApartment, projected_lifetime_scope
 from generated_uri import Uri
 
-assert ".python-release" in str(pathlib.Path(dynwinrt_py.__file__).resolve())
+assert ".python-release" in str(pathlib.Path(dynwinrt.__file__).resolve())
 with RoApartment(1), projected_lifetime_scope():
     uri = Uri("https://example.com:443/release?q=1")
     assert uri.host == "example.com"
@@ -64,7 +65,7 @@ print("isolated runtime consumer OK")
 
 Push-Location $root
 try {
-    & $venvPython -c $test $Architecture $PythonMinor $Version
+    & $venvPython -c $test $Architecture $PythonMinor $PythonPackageVersion
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 } finally {
     Pop-Location
