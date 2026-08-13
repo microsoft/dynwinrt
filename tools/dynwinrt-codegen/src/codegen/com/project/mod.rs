@@ -10,14 +10,14 @@ use crate::com_metadata::{ComCoclassMeta, ComInterfaceMeta};
 use super::ir::{
     ActivationPlan, BufferCountUnit as ProjectedBufferCountUnit, ComEnumUnderlying,
     ComParamDirection, ComPrimitive, ComReturnConvention, ComScalarRepr, ComType, DispatchShape,
-    NativePodArchitectureLayout, NativePodField, NativePodFieldType, NativePodLayout,
-    NativePodScalar, NativeUnionArchitectureLayout, NativeUnionField, NativeUnionFieldType,
-    NativeUnionLayout, OverloadDispatch, OverloadInfo, PointerAliasKind, ProjectedComCoclass,
-    ProjectedComEnum, ProjectedComEnumMember, ProjectedComInterface, ProjectedComMethod,
-    ProjectedComMethodKind, ProjectedComParam, ProjectedComResult, ProjectedEnumValue,
-    ProjectedInterfaceRef, ResultConversion, ResultSource, SafeArrayElement, SharedCountPlan,
-    StringBufferPlan, StringEncoding, TypedBufferPlan, TypedBufferRelation, TypedBufferSizing,
-    dispatch_shape,
+    NativePodArchitectureLayout, NativePodField, NativePodFieldType, NativePodInitializer,
+    NativePodLayout, NativePodScalar, NativeUnionArchitectureLayout, NativeUnionField,
+    NativeUnionFieldType, NativeUnionLayout, OverloadDispatch, OverloadInfo, PointerAliasKind,
+    ProjectedComCoclass, ProjectedComEnum, ProjectedComEnumMember, ProjectedComInterface,
+    ProjectedComMethod, ProjectedComMethodKind, ProjectedComParam, ProjectedComResult,
+    ProjectedEnumValue, ProjectedInterfaceRef, ResultConversion, ResultSource, SafeArrayElement,
+    SharedCountPlan, StringBufferPlan, StringEncoding, TypedBufferPlan, TypedBufferRelation,
+    TypedBufferSizing, dispatch_shape,
 };
 use super::javascript::naming::camel_case;
 use super::model::ValidatedComInterface;
@@ -232,6 +232,10 @@ fn validate_projected_surface_names(meta: &ProjectedComInterface) -> Result<(), 
                 | ComType::Guid
                 | ComType::HString
                 | ComType::RawPointer
+                | ComType::AllocatorPointer
+                | ComType::ConsumedAllocatorPointer
+                | ComType::InspectedAllocatorPointer
+                | ComType::GuidPointer
                 | ComType::Bstr
                 | ComType::Variant
                 | ComType::VariantByValue
@@ -239,6 +243,7 @@ fn validate_projected_surface_names(meta: &ProjectedComInterface) -> Result<(), 
                 | ComType::PropVariant
                 | ComType::DispatchParams
                 | ComType::ExcepInfo
+                | ComType::StatStg
                 | ComType::ManagedInterface { .. }
                 | ComType::CoTaskMemWideString
                 | ComType::StringArray { .. } => {}
@@ -275,6 +280,7 @@ fn diagnostic_compatibility(
         || semantic_error.contains("VARIANT")
         || semantic_error.contains("DISPPARAMS")
         || semantic_error.contains("EXCEPINFO")
+        || semantic_error.contains("STATSTG")
         || semantic_error.contains("IDispatch::Invoke")
         || semantic_error.contains("optional COM outputs")
         || semantic_error.contains("nested interface")
@@ -494,9 +500,20 @@ fn project_method(
         &typed_buffers,
     )?;
 
+    let malloc_contract = matches!(
+        method.special_contract(),
+        Some(ComMethodSpecialContract::Malloc)
+    );
     let mut params = Vec::with_capacity(method.params().len());
     for (index, param) in method.params().iter().enumerate() {
-        let typ = project_param_type(semantic, param)?;
+        let mut typ = project_param_type(semantic, param)?;
+        if malloc_contract && matches!(typ, ComType::RawPointer) {
+            typ = match method.name() {
+                "Free" => ComType::ConsumedAllocatorPointer,
+                "DidAlloc" => ComType::InspectedAllocatorPointer,
+                _ => ComType::AllocatorPointer,
+            };
+        }
         let typed_buffer = typed_buffers
             .iter()
             .find(|plan| plan.buffer_param_index == index);
@@ -726,7 +743,7 @@ fn project_method(
                         ..
                     }
             )
-            || !matches!(params[1].typ, ComType::RawPointer)
+            || !matches!(params[1].typ, ComType::GuidPointer)
             || !matches!(
                 params[2].typ,
                 ComType::Primitive(ComPrimitive::U32)
@@ -779,6 +796,10 @@ fn project_method(
         matches!(
             typ,
             ComType::RawPointer
+                | ComType::AllocatorPointer
+                | ComType::ConsumedAllocatorPointer
+                | ComType::InspectedAllocatorPointer
+                | ComType::GuidPointer
                 | ComType::PointerAlias { .. }
                 | ComType::NativePodPointer { .. }
                 | ComType::Bstr
@@ -804,11 +825,15 @@ fn project_method(
             ComReturnConvention::Direct(typ)
         }
         ComReturnKind::DirectPointer(abi_type) => {
-            return Err(format!(
-                "{}: unsupported direct native return type {}",
-                context(),
-                semantic_type_name(semantic, abi_type)
-            ));
+            let typ = project_value_type(semantic, abi_type)?;
+            if !malloc_contract || !matches!(typ, ComType::RawPointer) {
+                return Err(format!(
+                    "{}: unsupported direct native return type {}",
+                    context(),
+                    semantic_type_name(semantic, abi_type)
+                ));
+            }
+            ComReturnConvention::Direct(ComType::AllocatorPointer)
         }
     };
     if matches!(kind, ProjectedComMethodKind::DispatchInvoke { .. })
@@ -838,7 +863,13 @@ fn project_method(
         results.push(ProjectedComResult {
             typ,
             source: ResultSource::DirectReturn,
-            conversion: ResultConversion::Value,
+            conversion: if malloc_contract && method.name() == "Alloc" {
+                ResultConversion::MallocAllocation
+            } else if malloc_contract && method.name() == "Realloc" {
+                ResultConversion::MallocReallocation
+            } else {
+                ResultConversion::Value
+            },
         });
     }
     for (index, (contract, param)) in method.params().iter().zip(&params).enumerate() {
@@ -1019,6 +1050,8 @@ fn project_input_type(
                 .map_err(|error| error.to_string())?;
             if matches!(pointee_definition.abi(), ComAbiType::ComInterface { .. }) {
                 project_value_type(semantic, *pointee)
+            } else if matches!(pointee_definition.abi(), ComAbiType::Guid) {
+                Ok(ComType::GuidPointer)
             } else if matches!(pointee_definition.abi(), ComAbiType::NativeStruct(_)) {
                 let ComType::NativePod { layout } = project_value_type(semantic, *pointee)? else {
                     unreachable!("validated native struct projection")
@@ -1049,6 +1082,8 @@ fn project_input_type(
                 project_value_type(semantic, *pointee)
             } else if matches!(pointee_definition.abi(), ComAbiType::ExcepInfo) {
                 Err("EXCEPINFO is output-only".into())
+            } else if matches!(pointee_definition.abi(), ComAbiType::StatStg) {
+                Err("STATSTG is output-only".into())
             } else {
                 Ok(ComType::RawPointer)
             }
@@ -1059,7 +1094,8 @@ fn project_input_type(
         ComAbiType::PropVariant
         | ComAbiType::SafeArray { .. }
         | ComAbiType::DispatchParams
-        | ComAbiType::ExcepInfo => Err(format!(
+        | ComAbiType::ExcepInfo
+        | ComAbiType::StatStg => Err(format!(
             "{} must be passed through its native pointer contract",
             semantic_type_definition_name(definition)
         )),
@@ -1147,6 +1183,7 @@ fn project_output_type(
             "Automation outputs require VARIANT*, PROPVARIANT*, or SAFEARRAY** pointer metadata"
                 .into(),
         ),
+        ComAbiType::StatStg => project_value_type(semantic, abi_type),
         _ => project_value_type(semantic, abi_type),
     }
 }
@@ -1275,6 +1312,7 @@ fn project_value_type(
         ComAbiType::PropVariant => Ok(ComType::PropVariant),
         ComAbiType::DispatchParams => Ok(ComType::DispatchParams),
         ComAbiType::ExcepInfo => Ok(ComType::ExcepInfo),
+        ComAbiType::StatStg => Ok(ComType::StatStg),
         ComAbiType::NativeUnion(_) | ComAbiType::FunctionPointer(_) | ComAbiType::Unknown(_) => {
             Err(format!(
                 "unsupported Classic-COM semantic type {}",
@@ -1480,28 +1518,81 @@ fn project_native_pod_layout(
         .layout_definition(layout_id)
         .map_err(|error| error.to_string())?;
     let mut visiting = std::collections::HashSet::new();
+    let x86 = project_native_pod_architecture(
+        semantic,
+        layouts.get(Architecture::X86),
+        Architecture::X86,
+        &mut visiting,
+    )?;
+    let x64 = project_native_pod_architecture(
+        semantic,
+        layouts.get(Architecture::X64),
+        Architecture::X64,
+        &mut visiting,
+    )?;
+    let arm64 = project_native_pod_architecture(
+        semantic,
+        layouts.get(Architecture::Arm64),
+        Architecture::Arm64,
+        &mut visiting,
+    )?;
+    let initializers = native_pod_initializers(namespace, name, &x86, &x64, &arm64)?;
     Ok(NativePodLayout {
         namespace: namespace.into(),
         name: name.into(),
-        x86: project_native_pod_architecture(
-            semantic,
-            layouts.get(Architecture::X86),
-            Architecture::X86,
-            &mut visiting,
-        )?,
-        x64: project_native_pod_architecture(
-            semantic,
-            layouts.get(Architecture::X64),
-            Architecture::X64,
-            &mut visiting,
-        )?,
-        arm64: project_native_pod_architecture(
-            semantic,
-            layouts.get(Architecture::Arm64),
-            Architecture::Arm64,
-            &mut visiting,
-        )?,
+        initializers,
+        x86,
+        x64,
+        arm64,
     })
+}
+
+fn native_pod_initializers(
+    namespace: &str,
+    name: &str,
+    x86: &NativePodArchitectureLayout,
+    x64: &NativePodArchitectureLayout,
+    arm64: &NativePodArchitectureLayout,
+) -> Result<Vec<NativePodInitializer>, String> {
+    if namespace != "Windows.Win32.System.Com"
+        || !matches!(name, "BIND_OPTS" | "BIND_OPTS2" | "BIND_OPTS3")
+    {
+        return Ok(Vec::new());
+    }
+    let expected = match name {
+        "BIND_OPTS" => [(16, 4), (16, 4), (16, 4)],
+        "BIND_OPTS2" => [(32, 4), (40, 8), (40, 8)],
+        "BIND_OPTS3" => [(36, 4), (48, 8), (48, 8)],
+        _ => unreachable!(),
+    };
+    for (architecture, layout, (size, alignment)) in [
+        ("x86", x86, expected[0]),
+        ("x64", x64, expected[1]),
+        ("ARM64", arm64, expected[2]),
+    ] {
+        if layout.size != size || layout.alignment != alignment {
+            return Err(format!(
+                "{namespace}.{name} {architecture} layout must be size {size}, alignment {alignment}; found size {}, alignment {}",
+                layout.size, layout.alignment
+            ));
+        }
+        let Some(field) = layout.fields.iter().find(|field| field.name == "cbStruct") else {
+            return Err(format!(
+                "{namespace}.{name} {architecture} layout is missing cbStruct"
+            ));
+        };
+        if field.offset != 0
+            || field.count != 1
+            || field.typ != NativePodFieldType::Scalar(NativePodScalar::U32)
+        {
+            return Err(format!(
+                "{namespace}.{name} {architecture} cbStruct must be one u32 at offset 0"
+            ));
+        }
+    }
+    Ok(vec![NativePodInitializer::SizeOfLayout {
+        field: "cbStruct".into(),
+    }])
 }
 
 fn project_native_pod_architecture(
@@ -1618,6 +1709,7 @@ fn project_native_pod_field_type(
         | ComAbiType::PropVariant
         | ComAbiType::DispatchParams
         | ComAbiType::ExcepInfo
+        | ComAbiType::StatStg
         | ComAbiType::FunctionPointer(_)
         | ComAbiType::Unknown(_) => Err(format!(
             "unsupported nested native POD field {}",
@@ -2370,6 +2462,9 @@ fn result_conversion(
         {
             Ok(ResultConversion::ExcepInfo)
         }
+        (ComOwnership::StatStgOwned, Cleanup::StatStgClear) if matches!(typ, ComType::StatStg) => {
+            Ok(ResultConversion::StatStg)
+        }
         (ownership, cleanup) => Err(format!(
             "{}: unsupported projected ownership {ownership:?} with cleanup {cleanup:?}",
             param.name()
@@ -2892,6 +2987,7 @@ mod tests {
             layout: NativePodLayout {
                 namespace: namespace.into(),
                 name: "COLLISION".into(),
+                initializers: Vec::new(),
                 x86: architecture.clone(),
                 x64: architecture.clone(),
                 arm64: architecture.clone(),
@@ -2934,6 +3030,56 @@ mod tests {
         let error = validate_projected_surface_names(&interface).unwrap_err();
         assert!(error.contains("Contoso.One.COLLISION"));
         assert!(error.contains("Contoso.Two.COLLISION"));
+    }
+
+    #[test]
+    fn bind_opts_initializer_requires_exact_cross_architecture_layout() {
+        let bind_opts = |size, alignment, offset| NativePodArchitectureLayout {
+            size,
+            alignment,
+            fields: vec![NativePodField {
+                name: "cbStruct".into(),
+                offset,
+                count: 1,
+                typ: NativePodFieldType::Scalar(NativePodScalar::U32),
+            }],
+        };
+        let initializers = native_pod_initializers(
+            "Windows.Win32.System.Com",
+            "BIND_OPTS",
+            &bind_opts(16, 4, 0),
+            &bind_opts(16, 4, 0),
+            &bind_opts(16, 4, 0),
+        )
+        .unwrap();
+        assert_eq!(
+            initializers,
+            [NativePodInitializer::SizeOfLayout {
+                field: "cbStruct".into()
+            }]
+        );
+
+        let error = native_pod_initializers(
+            "Windows.Win32.System.Com",
+            "BIND_OPTS",
+            &bind_opts(16, 4, 4),
+            &bind_opts(16, 4, 0),
+            &bind_opts(16, 4, 0),
+        )
+        .unwrap_err();
+        assert!(error.contains("offset 0"), "{error}");
+
+        assert!(
+            native_pod_initializers(
+                "Contoso",
+                "BIND_OPTS",
+                &bind_opts(16, 4, 4),
+                &bind_opts(16, 4, 4),
+                &bind_opts(16, 4, 4),
+            )
+            .unwrap()
+            .is_empty()
+        );
     }
 
     #[test]

@@ -263,6 +263,9 @@ Do not treat every pointer as a Buffer:
 The following sources return a managed `+1` reference:
 
 - `CoCreateInstance`;
+- `CoGetClassObject`;
+- `CoGetMalloc`;
+- `CreateErrorInfo` and a successful `GetErrorInfo`;
 - `QueryInterface`;
 - a validated interface out parameter;
 - the QI result returned by `DynComUnsafe.borrowComPointer()`.
@@ -405,6 +408,20 @@ const object = DynComUnsafe.coCreateInstance(
 );
 object.release();
 ```
+
+`DynCom.coGetClassObject(clsid, iid)`, `DynCom.coGetMalloc()`, and
+`DynCom.createErrorInfo()` expose the corresponding stock COM acquisition
+paths to generated unsafe wrappers. `DynCom.getErrorInfo()` returns `null`
+when the current logical thread has no error object and consumes a stored
+object when one exists.
+
+IMalloc returns opaque `DynComAllocation` values only under the exact
+`IMalloc` IID/slot/signature contract. Each value retains its originating
+allocator and rejects forged or stale addresses. `free()`, `realloc()`, and
+`getSize()` require that allocator identity; `didAlloc()` only borrows a live
+allocation for inspection, as COM permits probing memory from another
+allocator. `free()` and successful `realloc()` consume the old value;
+`release()` provides deterministic cleanup.
 
 ### 8.5 A by-value GUID is not a REFIID
 

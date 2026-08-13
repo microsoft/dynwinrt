@@ -35,6 +35,7 @@ $comInteropDir = Join-Path $comBindingsDir "interop"
 $comWicDir = Join-Path $comBindingsDir "wic"
 $comStreamDir = Join-Path $comBindingsDir "stream"
 $comAutomationDir = Join-Path $comBindingsDir "automation"
+$comInfrastructureDir = Join-Path $comBindingsDir "infrastructure"
 $comSmtcDir = Join-Path $comBindingsDir "smtc"
 [string[]]$cargoProfileArgs = @(
     if ($CargoProfile -eq "release") {
@@ -239,6 +240,14 @@ if ("com" -in $Lang) {
 
     & cargo run -p dynwinrt-codegen @cargoProfileArgs @cargoTargetArgs --quiet -- generate `
         --winmd $win32Winmd `
+        --namespace Windows.Win32.UI.Shell.PropertiesSystem `
+        --class-name IPropertyStore `
+        --output $comShellDir `
+        --import-name $comRuntimeImport
+    if ($LASTEXITCODE -ne 0) { Write-Error "Classic COM property store generation failed"; exit 1 }
+
+    & cargo run -p dynwinrt-codegen @cargoProfileArgs @cargoTargetArgs --quiet -- generate `
+        --winmd $win32Winmd `
         --namespace Windows.Win32.System.WinRT `
         --class-name ISystemMediaTransportControlsInterop `
         --output $comInteropDir `
@@ -256,7 +265,7 @@ if ("com" -in $Lang) {
     & cargo run -p dynwinrt-codegen @cargoProfileArgs @cargoTargetArgs --quiet -- generate `
         --winmd $win32Winmd `
         --namespace Windows.Win32.System.Com `
-        --class-name ISequentialStream `
+        --class-name IStream `
         --output $comStreamDir `
         --import-name $comRuntimeImport
     if ($LASTEXITCODE -ne 0) { Write-Error "Classic COM stream generation failed"; exit 1 }
@@ -267,6 +276,22 @@ if ("com" -in $Lang) {
         --output $comAutomationDir `
         --import-name $comRuntimeImport
     if ($LASTEXITCODE -ne 0) { Write-Error "Classic COM Automation generation failed"; exit 1 }
+
+    & cargo run -p dynwinrt-codegen @cargoProfileArgs @cargoTargetArgs --quiet -- generate `
+        --winmd $win32Winmd `
+        --namespace Windows.Win32.System.Com `
+        --class-name "IMalloc,IClassFactory,IErrorInfo" `
+        --output $comInfrastructureDir `
+        --import-name $comRuntimeImport
+    if ($LASTEXITCODE -ne 0) { Write-Error "Classic COM infrastructure generation failed"; exit 1 }
+
+    & cargo run -p dynwinrt-codegen @cargoProfileArgs @cargoTargetArgs --quiet -- generate `
+        --winmd $win32Winmd `
+        --namespace Windows.Win32.System.Ole `
+        --class-name ICreateErrorInfo `
+        --output $comInfrastructureDir `
+        --import-name $comRuntimeImport
+    if ($LASTEXITCODE -ne 0) { Write-Error "Classic COM error-info generation failed"; exit 1 }
 
     & cargo run -p dynwinrt-codegen @cargoProfileArgs @cargoTargetArgs --quiet -- generate `
         --namespace Windows.Media `
@@ -329,6 +354,7 @@ if ("com" -in $Lang) {
         "taskbarlist.mjs",
         "electron-hwnd-buffer.mjs",
         "persist-file.mjs",
+        "property-store.mjs",
         "shell-link-pod.mjs",
         "file-operation.mjs",
         "file-open-dialog.mjs",
@@ -336,6 +362,7 @@ if ("com" -in $Lang) {
         "sequential-stream-buffer.mjs",
         "automation-values.mjs",
         "automation-dispatch.mjs",
+        "com-infrastructure.mjs",
         "dtm.mjs",
         "smtc.mjs"
     )

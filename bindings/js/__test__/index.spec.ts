@@ -3,7 +3,7 @@
 
 import test from 'ava'
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -113,12 +113,14 @@ test('package facades exactly partition native exports', (t) => {
   const expectedWinrt = nativeKeys.filter((name) => !name.startsWith('DynCom') && name !== 'initializeCom')
   const safeComNames = new Set([
     'DynComDispatchParams',
+    'DynComAllocation',
     'DynComExcepInfo',
     'DynComNativeStruct',
     'DynComNativeStructArray',
     'DynComNativeUnion',
     'DynComPropVariant',
     'DynComSafeArray',
+    'DynComStatStg',
     'DynComVariant',
     'DynWinRtValue',
     'WinGuid',
@@ -155,6 +157,15 @@ test('package facades exactly partition native exports', (t) => {
   for (const name of moduleKeys(comCjsRuntime)) {
     t.true(moduleKeys(unsafeComRuntime).includes(name), `${name} must remain available from /com/unsafe`)
   }
+})
+
+test('COM allocation declaration is opaque and non-constructible', (t) => {
+  const declaration = readFileSync(
+    fileURLToPath(new URL('../dist/com.d.ts', import.meta.url)),
+    'utf8',
+  )
+  t.regex(declaration, /export interface DynComAllocation/)
+  t.notRegex(declaration, /export \{[^}]*DynComAllocation[^}]*\} from/)
 })
 
 test('WinRT root facade exposes usable native primitives', (t) => {

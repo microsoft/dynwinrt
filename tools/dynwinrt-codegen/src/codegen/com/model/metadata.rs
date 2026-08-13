@@ -135,16 +135,6 @@ pub(super) fn map_interface(meta: &ComInterfaceMeta) -> Result<SemanticComInterf
             raw_methods.len()
         )));
     }
-    if raw_methods.iter().any(|method| {
-        method.params.iter().any(|param| {
-            raw_contains_named_type(&param.typ, "Windows.Win32.System.Com", "BIND_OPTS")
-        }) || raw_contains_named_type(&method.return_type, "Windows.Win32.System.Com", "BIND_OPTS")
-    }) {
-        return Err(ModelError::Unsupported(UnsupportedReason::Other(
-            "IBindCtx BIND_OPTS requires cbStruct to be initialized to the architecture-specific structure size"
-                .into(),
-        )));
-    }
     let iid = ComGuid::parse(&meta.interface.iid)?;
     let mut model = ComModel::default();
     let methods = meta
@@ -155,10 +145,10 @@ pub(super) fn map_interface(meta: &ComInterfaceMeta) -> Result<SemanticComInterf
         .map(|(method, raw)| {
             map_method(
                 &mut model,
-                iid,
-                &meta.interface.iid,
                 &meta.interface.namespace,
                 &meta.interface.name,
+                &meta.interface.iid,
+                iid,
                 method,
                 raw,
             )
@@ -291,10 +281,10 @@ fn metadata_enum_scalar(typ: &crate::types::TypeMeta) -> Option<ScalarType> {
 
 fn map_method(
     model: &mut ComModel,
-    interface_iid: ComGuid,
-    interface_iid_text: &str,
     interface_namespace: &str,
     interface_name: &str,
+    interface_iid_text: &str,
+    interface_iid: ComGuid,
     method: &crate::com_metadata::MethodMeta,
     raw: &RawComMethod,
 ) -> Result<ComMethodContract, ModelError> {
@@ -347,8 +337,8 @@ fn map_method(
             }
             map_param(
                 model,
-                interface_namespace,
-                interface_name,
+                &raw.declaring_namespace,
+                &raw.declaring_interface,
                 index,
                 raw_param,
                 raw,
@@ -396,6 +386,10 @@ fn map_method(
             Some(RawExactMethodContractKind::UnsafePrivateData) => {
                 unreachable!("unsafe private-data contracts fail before method mapping")
             }
+            Some(RawExactMethodContractKind::StatStg) => method,
+            Some(RawExactMethodContractKind::Malloc) => {
+                method.with_special_contract(ComMethodSpecialContract::Malloc)
+            }
             None => method,
         },
     )
@@ -430,7 +424,20 @@ fn map_param(
             .then_some(RawParamDirection::Out)
     })
     .unwrap_or(raw.direction);
-    let (abi_type, count) = if let Some(array) = &raw.native_array {
+    let (abi_type, count) = if raw_method.exact_contract.as_ref().is_some_and(|contract| {
+        contract.kind == RawExactMethodContractKind::StatStg
+            && contract.buffer_param_index == param_index
+    }) {
+        (
+            insert_abi(
+                model,
+                Some(QualifiedName::new("Windows.Win32.System.Com", "STATSTG")?),
+                None,
+                ComAbiType::StatStg,
+            )?,
+            None,
+        )
+    } else if let Some(array) = &raw.native_array {
         if effective_direction == RawParamDirection::InOut {
             return Err(ModelError::Unsupported(UnsupportedReason::Other(
                 "in/out counted-buffer contents require a dedicated preserve-input storage plan"
@@ -1310,6 +1317,7 @@ fn validate_pod_field_type(
         | ComAbiType::PropVariant
         | ComAbiType::DispatchParams
         | ComAbiType::ExcepInfo
+        | ComAbiType::StatStg
         | ComAbiType::FunctionPointer(_)
         | ComAbiType::Unknown(_) => Err(ModelError::Unsupported(UnsupportedReason::UnknownLayout)),
     }
@@ -1377,6 +1385,7 @@ fn abi_size_alignment(
         | ComAbiType::PropVariant
         | ComAbiType::DispatchParams
         | ComAbiType::ExcepInfo
+        | ComAbiType::StatStg
         | ComAbiType::Unknown(_) => {
             return Err(ModelError::Unsupported(UnsupportedReason::UnknownLayout));
         }
@@ -1592,6 +1601,7 @@ fn buffer_element_ownership(
         | ComAbiType::PropVariant
         | ComAbiType::DispatchParams
         | ComAbiType::ExcepInfo
+        | ComAbiType::StatStg
         | ComAbiType::FunctionPointer(_)
         | ComAbiType::Unknown(_) => BufferElementOwnership::Unknown,
     };
@@ -1725,6 +1735,9 @@ fn map_ownership(
         ComAbiType::ExcepInfo if direction == Direction::Out => {
             Ok((ComOwnership::ExcepInfoOwned, Cleanup::ExcepInfoClear))
         }
+        ComAbiType::StatStg if direction == Direction::Out => {
+            Ok((ComOwnership::StatStgOwned, Cleanup::StatStgClear))
+        }
         ComAbiType::DispatchParams if direction == Direction::Out => Err(
             ModelError::Unsupported(UnsupportedReason::Other(
                 "DISPPARAMS is input-only".into(),
@@ -1748,6 +1761,7 @@ fn map_ownership(
         | ComAbiType::PropVariant
         | ComAbiType::DispatchParams
         | ComAbiType::ExcepInfo
+        | ComAbiType::StatStg
             if direction == Direction::InOut =>
         {
             Err(ModelError::Unsupported(UnsupportedReason::Other(
@@ -1781,6 +1795,7 @@ fn map_ownership(
         | ComAbiType::PropVariant
         | ComAbiType::DispatchParams
         | ComAbiType::ExcepInfo
+        | ComAbiType::StatStg
         | ComAbiType::FunctionPointer(_)
         | ComAbiType::Unknown(_) => {
             Err(ModelError::Unsupported(UnsupportedReason::UnknownOwnership))

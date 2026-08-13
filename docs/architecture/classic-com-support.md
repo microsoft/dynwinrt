@@ -320,10 +320,9 @@ The implemented Automation subset now provides:
 Complete inherited `IDispatch` now projects from real metadata.
 `GetIDsOfNames` retains its natural shared-count array surface, and `Invoke`
 takes `DynComDispatchParams` plus explicit LCID, flags, IID, and optional-output
-request options. XML Automation, Task Scheduler, and `IPropertyStore` still
-stop at their own unsupported BYREF/InOut, nested ownership, or `PROPERTYKEY`
-contracts; support for `IDispatch` inheritance does not imply those derived
-interfaces are complete.
+request options. XML Automation and Task Scheduler still stop at their own
+unsupported BYREF/InOut or nested-ownership contracts; support for `IDispatch`
+inheritance does not imply those derived interfaces are complete.
 
 ### 6. SAFEARRAY
 
@@ -578,8 +577,8 @@ and `@microsoft/dynwinrt/com`.
 | Allocator ownership | COM Release, BSTR output/replacement and array elements, VARIANT clear, CoTaskMem buffers/PWSTR elements, boxed GUID, retained JS buffers | LocalFree, custom allocators, allocator interfaces, unknown ownership |
 | Interface pointers | Typed input/output interfaces, QueryInterface, dynamic IID output | Interface in/out replacement and arbitrary implemented sink interfaces |
 | Apartments | Explicit initialization and same-thread invocation | Cross-apartment marshaling, GIT/agility handling, callback dispatch |
-| Activation | In-process `CoCreateInstance` | `CoGetClassObject`, aggregation, arbitrary CLSCTX, and non-CoCreate factory functions |
-| Direct pointer returns | Runtime signature supports them | Metadata codegen does not yet preserve raw-pointer direct-return semantics, so `IMalloc` generation fails closed |
+| Activation | In-process `CoCreateInstance` and `CoGetClassObject` | Aggregation, arbitrary CLSCTX, and other non-CoCreate factory functions |
+| Direct pointer returns | Runtime signature plus exact `IMalloc` codegen | Other direct pointer returns remain fail-closed without exact ownership and cleanup evidence |
 
 ### Not implemented
 
@@ -606,7 +605,7 @@ and `@microsoft/dynwinrt/com`.
 | Semantic `HRESULT` methods | Supported | `CanReturnMultipleSuccessValuesAttribute` preserves successful values such as `S_OK` and `S_FALSE`; failed values still become errors. |
 | Native `void` returns | Supported | Used by interfaces such as `IMalloc`. |
 | Direct scalar returns | Supported | Includes signed/unsigned integers, floating point values, and enums. |
-| Direct pointer returns | Runtime supported; codegen partial | The runtime can describe a pointer return explicitly. Metadata codegen currently fails closed for interfaces such as `IMalloc` because it does not preserve the raw-pointer return kind. |
+| Direct pointer returns | Exact-contract support | `IMalloc` returns opaque allocator-bound values. Other direct pointer returns fail closed until ownership and cleanup are proven. |
 | `[in]`, `[out]`, and `[in, out]` parameters | Supported for modeled types | Scalars and validated native POD storage are supported. Other composite in/out types fail generation. |
 | Primitive integer and floating-point types | Supported | `i8` through `u64`, `f32`, `f64`, `BOOL`, and `HRESULT`. |
 | `ISize` / `USize` | Supported | Projected with the target pointer width; verified by an i686 compile check. |
@@ -663,7 +662,7 @@ of every type in the 24 MB metadata file.
 | Unsupported `VARIANT` alternatives, aggregate directions, and BYREF/InOut | Automation APIs | Required input-only by-value VARIANT is supported. Optional aggregate defaults, bare aggregate output/InOut, DATE, DECIMAL, CY, ERROR, RECORD, unsupported flags, and every BYREF/InOut combination fail closed until their lifetime/replacement contracts are proven. | Runtime validation + Win32 winmd signatures |
 | Unsupported `DISPPARAMS` / `EXCEPINFO` shapes | Automation APIs outside exact `IDispatch::Invoke` | Output/InOut DISPPARAMS, input/InOut EXCEPINFO, nested compounds, reinstalled deferred callbacks, and unrelated function-pointer contracts fail closed. | Runtime validation + Win32 winmd signature |
 | Unsupported `PROPVARIANT` alternatives | Property System | Streams/interfaces, arrays, clipboard/storage alternatives, nested VT_VECTOR\|VT_VARIANT, BYREF, and unknown combinations are rejected. | Runtime validation + Win32 winmd signature |
-| `PROPERTYKEY` and native structs outside the POD subset | `IPropertyStore::GetAt` | Every architecture-specific layout and nested field contract must reach the validated POD model; full `IPropertyStore` still fails closed before a complete interface can be emitted even though scalar PROPVARIANT storage is implemented. | Win32 winmd + codegen diagnostic |
+| Native structs with nested owned pointers outside dedicated contracts | Storage and Shell APIs | `STATSTG` has a dedicated output-only model that adopts and frees its CoTaskMem name on every success and failure path. Arbitrary nested pointer structs still fail closed. | Runtime ownership tests + Win32 winmd signature |
 | Unsupported `SAFEARRAY` shapes | Automation and Office-style COM APIs | Exact declaration-registry entries support documented `VT_I4`, `VT_UI1`, `VT_UI4`, `VT_R8`, `VT_BSTR`, `VT_VARIANT`, and `VT_UNKNOWN` plus an exact interface IID. Unknown VARTYPE, signature drift, input `SAFEARRAY**`, InOut replacement, unsupported records/dispatch contracts, rank > 8, inconsistent bounds/length/element width, and unproven nullable outputs are rejected. | Exact Microsoft citations + SafeArray API validation + Win32 winmd signatures |
 | `FORMATETC` / `STGMEDIUM` | `IDataObject`, clipboard, drag-and-drop | `STGMEDIUM` is a union of handles and interfaces with type-specific release behavior. | Win32 winmd + codegen diagnostic |
 | Untagged/by-value/output/nested unions, bitfields, flexible arrays, and nested owned-resource structs | `STGMEDIUM`, `STRRET`, `BINDPTR`, audio/media formats | Tagged pointer-input unions support only safely POD fields. Missing discriminants, nested unions, BSTR/interfaces/resources, bitfields, and flexible tails fail closed. | Win32 winmd + codegen diagnostics |
@@ -679,10 +678,10 @@ of every type in the 24 MB metadata file.
 | General out-of-process activation controls | Custom `CLSCTX` scenarios | The unsafe runtime's `DynCom.coCreateInstance()` currently uses `CLSCTX_INPROC_SERVER`. | Runtime/public-API boundary |
 | Flat Win32 DLL exports | `CreateFile`, registry functions, GDI, etc. | These are not COM interfaces and need a separate DLL-export/handle model. | Architecture boundary |
 
-Consequently, `IPropertyStore` and `IDataObject` remain important,
-widely encountered interfaces that are not currently supported as complete
-generated bindings. `IDispatch` itself is complete; derived Automation
-interfaces still validate all of their additional methods independently.
+Consequently, `IDataObject` remains an important, widely encountered interface
+that is not currently supported as a complete generated binding.
+`IPropertyStore` and `IDispatch` are complete; derived Automation interfaces
+still validate all of their additional methods independently.
 
 ## Complete-interface census after by-value VARIANT
 
@@ -1181,12 +1180,12 @@ contracts and therefore add no complete-interface census entries. After
 removing enum-name ownership inference, requiring distinct actual-length
 parameters to be exact Out values, and separating counted character pointers
 from terminated strings, the exact final literal census is
-**5,560 / 7,929 = 70.122336%**. The result remains above the 70% target without
+**5,567 / 7,929 = 70.210619%**. The result remains above the 70% target without
 admitting any creator-owned, destroyable, InOut, undocumented, optional, or
 `HWND**` shape.
 
 CI reproduces this number with `dynwinrt-codegen com-census --json` and fails
-if the denominator changes, complete generation drops below 5,560, or coverage
+if the denominator changes, complete generation drops below 5,567, or coverage
 falls below 70%.
 
 ## Public-code frequency snapshot
@@ -1235,8 +1234,8 @@ against the resolved namespace.
 | 1 | `ID3D11Device` | 27,552 | 87 | Yes | Fail closed: untyped output ownership |
 | 2 | `IDXGIFactory` | 17,432 | 83 | Yes | Fail closed: untyped output ownership |
 | 3 | `IDataObject` | 10,648 | 44 | Yes | Fail closed: `STGMEDIUM` has unmodeled discriminant/resource ownership |
-| 4 | `IMalloc` | 10,624 | 56 | Yes | Fail closed: direct raw-pointer return mapping; runtime tested |
-| 5 | `IClassFactory` | 6,712 | 70 | Yes | Generates; acquisition helper and live test still needed |
+| 4 | `IMalloc` | 10,624 | 56 | Yes | Generates completely and is live-tested through `CoGetMalloc` |
+| 5 | `IClassFactory` | 6,712 | 70 | Yes | Generates completely and is live-tested through `CoGetClassObject` |
 | 6 | `IDispatch` via `IID_IDispatch` | 6,408 | 46 | Yes | Complete inherited interface generates; `Invoke` uses dedicated DISPPARAMS/EXCEPINFO and explicit optional-output requests |
 | 7 | `IPersistFile` | 5,996 | 97 | Yes | Generates and live-tested |
 | 8 | `IConnectionPoint` | 5,832 | 51 | Yes | Generates; implementing event sinks is not supported |
@@ -1248,11 +1247,11 @@ against the resolved namespace.
 | 14 | `IXMLDOMDocument` | 3,784 | 46 | Yes | Fail closed: inherited unsupported Automation shapes beyond scalar VARIANT |
 | 15 | `ID2D1Factory` | 3,752 | 92 | Yes | Generates; requires flat factory acquisition and native input structs |
 | 16 | `IDWriteFactory` | 3,712 | 76 | Yes | Generates; requires flat factory acquisition |
-| 17 | `IStream` via `IID_IStream` | 3,560 | 41 | Yes | Fail closed on `STATSTG`; safe runtime subset is live-tested |
-| 18 | `IPropertyStore` | 3,400 | 77 | Yes | Fail closed: `PROPERTYKEY`; PROPVARIANT runtime subset exists |
+| 17 | `IStream` via `IID_IStream` | 3,560 | 41 | Yes | Generates completely; WIC live coverage exercises inherited buffers, seek, `STATSTG`, and Clone HRESULT propagation |
+| 18 | `IPropertyStore` | 3,400 | 77 | Yes | Generates completely and is live-tested with an unsaved ShellLink |
 | 19 | `IShellItem` | 3,028 | 76 | Yes | Generates; acquisition/live test still needed |
 | 20 | `IMMDeviceEnumerator` | 2,932 | 83 | Yes | Generates; live result depends on audio services/devices |
-| 21 | `IBindCtx` | 2,660 | 42 | Yes | Fails closed until `BIND_OPTS.cbStruct` initialization is modeled |
+| 21 | `IBindCtx` | 2,660 | 42 | Yes | Generates with exact `BIND_OPTS.cbStruct = sizeof(BIND_OPTS)` initialization and live `CreateBindCtx` coverage |
 | 22 | `IFileOpenDialog` | 2,536 | 92 | Yes | Generates and live-tested without showing UI |
 | 23 | `IRunningObjectTable` | 2,532 | 50 | Yes | Generates with POD `FILETIME`; acquisition/live test still needed |
 | 24 | `IAudioClient` | 2,500 | 82 | Yes | Fail closed: format pointer/output ownership |
@@ -1267,28 +1266,29 @@ against the resolved namespace.
 
 - **29 of 30** candidates are defined as `IUnknown`-rooted interfaces in
   Windows.Win32.winmd. `ICoreWebView2` is the only external-metadata case.
-- **19 of 29** Win32-metadata candidates pass complete codegen validation.
-  **10 of 29** fail closed on an unsupported ABI or ownership shape.
+- **23 of 29** Win32-metadata candidates pass complete codegen validation.
+  **6 of 29** fail closed on an unsupported ABI or ownership shape.
 - Among the **top 10** by `.cpp` hits, only `IClassFactory`,
-  `IDispatch`, `IPersistFile`, `IConnectionPoint`, and `IWICImagingFactory`
-  pass complete codegen. `IMalloc` has a tested runtime path but not a complete
-  generated interface.
+  `IDispatch`, `IPersistFile`, `IConnectionPoint`, `IWICImagingFactory`, and
+  `IMalloc` pass complete codegen.
 - The largest unsupported demand clusters are:
   - discriminated resource unions and non-POD layout (`IDataObject`, parts of Shell and streams);
   - Automation contracts beyond the exact supported `IDispatch` compounds
     (XML and Task Scheduler BYREF/InOut and nested ownership);
   - explicit output ownership (`DXGI`, audio);
   - interface in/out semantics (WMI); and
-  - remaining Property System types (`PROPERTYKEY` and unsupported PROPVARIANT alternatives).
-- Six frequency-survey candidates have generated live coverage:
+  - unsupported PROPVARIANT alternatives in Property System APIs beyond
+    `IPropertyStore`.
+- Ten frequency-survey candidates have generated live coverage:
   `IPersistFile`, `IWICImagingFactory`, `IFileDialog` through
-  `FileOpenDialog`, `TaskbarList`, `FileOperation`, and `IShellLinkW`.
-  `IMalloc` and `IStream` add runtime-only live coverage.
+  `FileOpenDialog`, `TaskbarList`, `FileOperation`, `IShellLinkW`, `IStream`,
+  `IPropertyStore`, `IMalloc`, and `IClassFactory`. `IBindCtx` also has live
+  runtime coverage.
 
-This means the current ten-interface suite provides useful ABI breadth, but it
+This means the current suite provides useful ABI breadth, but it
 does **not** cover every high-frequency interface. In particular,
-`IDataObject`, `IPropertyStore`, graphics interfaces, WMI, audio, and live
-real-object `IDispatch::Invoke` coverage remain material gaps.
+`IDataObject`, graphics interfaces, WMI, audio, and live real-object
+`IDispatch::Invoke` coverage remain material gaps.
 
 ## Engineering priority map
 
@@ -1298,10 +1298,10 @@ hardware, and whether it adds a distinct ABI shape.
 
 | Interface | Typical use | Current status |
 |---|---|---|
-| `ISequentialStream` / `IStream` | OLE streams, imaging, shell, serialization | Generated `Read`/`Write` wrappers use documented byte contracts; the core live memory-stream test covers typed input/output buffers, actual lengths, seek, and interface output. |
+| `ISequentialStream` / `IStream` | OLE streams, imaging, shell, serialization | Complete generation includes documented `Read`/`Write` byte contracts and owned `STATSTG`; WIC live coverage exercises buffers, seek, stat, and Clone HRESULT propagation. |
 | `IOpcSignatureCustomObject` | OPC signature custom XML | `GetXml` generates as a CoTaskMem-owned callee byte buffer; acquisition is application-specific. |
 | `IDiscRecorder` | Legacy IMAPI recorder | Complete generation now includes the exact `GetRecorderGUID` two-call method and documentation-correct `getDisplayNames(): [string, string, string]` BSTR outputs. |
-| `IMalloc` | COM task allocator | Core live test covers direct pointer, pointer-sized, scalar, and void returns. |
+| `IMalloc` | COM task allocator | Complete generation is gated by exact IID/slot/shape evidence. Opaque values reject forged/stale addresses; destructive and size operations enforce allocator identity, while `DidAlloc` permits borrowed cross-allocator inspection. |
 | `IPersistFile` | Loading and saving persistent COM objects | Core tests query it from `IShellLinkW`; Node activates the Shell Link coclass directly as `IPersistFile` and verifies `GetClassID`. |
 | `IShellLinkW` | Shortcut creation and inspection | Core runtime tests cover strings, `u16`, enums, and scalar outputs; generated Node coverage round-trips `GetPath` with nested `FILETIME` and fixed WCHAR-array `WIN32_FIND_DATAW` POD storage. |
 | `FileOpenDialog` | Desktop file selection | Node test covers coclass construction and option round-trip without showing UI. |
@@ -1310,21 +1310,21 @@ hardware, and whether it adds a distinct ABI shape.
 | `TaskbarList` / `ITaskbarList3` | Taskbar progress and window state | Node test covers `new`, inherited vtable slots, HWND values, BOOL, enums, `u64`, and `as`/`tryAs`/`supports`. |
 | `IDataTransferManagerInterop` | HWND-to-WinRT data-transfer bridge | Core and Node tests cover `IUnknown`-rooted interop and interface output. |
 | `ISystemMediaTransportControlsInterop` | HWND-to-WinRT media controls | Node test covers `IInspectable`-rooted interop and use of the returned WinRT object. |
-| `IClassFactory` | Low-level COM activation | High-value next test; needs a public `CoGetClassObject` acquisition path. |
-| `IBindCtx` / `IRunningObjectTable` | Monikers and object binding | `IRunningObjectTable` generates with validated `FILETIME`; `IBindCtx` fails closed because zero-initialized `BIND_OPTS.cbStruct` is invalid. |
-| `ICreateErrorInfo` / `IErrorInfo` | COM rich error information | Good next test for GUID, wide strings, BSTR, and thread-local error state. |
+| `IClassFactory` | Low-level COM activation | Complete generation and public `CoGetClassObject` acquisition are live-tested with paired server locking and owned `CreateInstance` output. |
+| `IBindCtx` / `IRunningObjectTable` | Monikers and object binding | Both generate. `BIND_OPTS` carries an exact size initializer, and explicit bytes with a zero or incorrect `cbStruct` fail before native dispatch. |
+| `ICreateErrorInfo` / `IErrorInfo` | COM rich error information | Complete generation and acquisition are live-tested for GUID, wide strings, owned BSTR output, thread-local storage, and one-shot consumption. |
 | `IMMDeviceEnumerator` | Audio endpoint discovery | Generates today, but live behavior depends on available audio endpoints. |
 | `IAudioClient` | Low-level audio streaming | Fails closed because its format and output-pointer shapes are not fully modeled. |
 | `IDispatch` | Automation and scripting | Complete inherited real-metadata generation passes. `GetIDsOfNames` projects as `string[] -> number[]`; `Invoke` accepts `DynComDispatchParams` and explicit result/excepInfo/argErr request options, returning dedicated owning wrappers. Derived Automation interfaces remain independently validated. |
-| `IPropertyStore` | Shell/property metadata | The PROPVARIANT runtime subset is implemented; complete generation remains blocked by PROPERTYKEY projection and full-interface validation. |
+| `IPropertyStore` | Shell/property metadata | Complete generation and live ShellLink `SetValue`/`GetValue`/`Commit` coverage pass with dedicated PROPVARIANT ownership. |
 | `IDataObject` | Clipboard and drag-and-drop | Unsupported until FORMATETC and STGMEDIUM are modeled. |
 
 ## Automated coverage
 
-Eleven unique Classic COM interfaces are currently exercised.
+Classic COM interfaces are exercised across core and generated Node coverage.
 Core live tests are in
-[`crates/dynwinrt/src/com.rs`](../../crates/dynwinrt/src/com.rs). The eleven Node
-runners, the counted-buffer runner, and two Automation runners (fourteen total) are in
+[`crates/dynwinrt/src/com.rs`](../../crates/dynwinrt/src/com.rs). The sixteen Node
+runners are in
 [`tests/e2e/runners/com`](../../tests/e2e/runners/com) and are generated
 and executed by [`tests/e2e/e2e_test.ps1`](../../tests/e2e/e2e_test.ps1).
 
@@ -1363,9 +1363,12 @@ meaningful `argErr`, and generate an `Error` with `hresult` plus optional
 |---|---|---|
 | `IShellLinkW` | Core + Node E2E | Generated activation through its IID, wide strings, hotkeys/show command, and `GetPath` with zeroed 592-byte `WIN32_FIND_DATAW` POD storage. |
 | `IPersistFile` | Core + Node E2E | `QueryInterface`/direct IID activation, owned returned reference, GUID output, and deterministic release. |
-| `IMalloc` | Core | Direct pointer return, `usize` return, direct `i32`, direct `void`, allocation cleanup. |
-| `IStream` | Core | Typed counted byte input/output buffers, actual `u32` lengths, `i64` seek, `u64` output, and `IStream**` clone. |
-| `ISequentialStream` | Node E2E | Generated caller-owned `Read` byte buffer, hidden capacity, actual-length slicing, and preserved semantic HRESULT against a stock WIC memory stream. |
+| `IMalloc` | Core + Node E2E | Exact opaque allocation projection, allocator identity for ownership-sensitive operations, borrowed `DidAlloc` inspection, automatic/explicit cleanup, resize, and direct scalar/void returns. |
+| `IClassFactory` | Core + Node E2E | Public `CoGetClassObject`, owned factory reference, paired `LockServer`, dynamic-IID `CreateInstance`, and +1 output adoption. |
+| `ICreateErrorInfo` / `IErrorInfo` | Core + Node E2E | Public acquisition, GUID/PWSTR setters, owned BSTR getters, thread-local isolation, and consume-on-read behavior. |
+| `IStream` | Core + Node E2E | Typed counted byte input/output buffers, actual `u32` lengths, `i64` seek, owned `STATSTG`, `IStream**` clone ABI, and stock-WIC Clone HRESULT propagation. |
+| `IPropertyStore` | Node E2E | Generated `PROPERTYKEY` POD and owned PROPVARIANT values against an unsaved ShellLink, including `Commit`. |
+| `IBindCtx` | Core + Node | Exact multi-architecture `BIND_OPTS` layout, automatic `cbStruct`, pre-dispatch validation, and live `CreateBindCtx` round trip. |
 | `TaskbarList` / `ITaskbarList3` | Node E2E | Coclass construction, inherited slots, runtime QI views, HWND, BOOL, enum, and `u64`. |
 | `FileOperation` | Node E2E | Coclass construction, unsigned flags, and state query. |
 | `FileOpenDialog` | Node E2E | STA coclass construction and get/set options without user interaction. |

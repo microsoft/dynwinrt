@@ -3,9 +3,9 @@
 
 use super::super::ir::{
     ComEnumUnderlying, ComPrimitive, ComScalarRepr, ComType, NativePodArchitectureLayout,
-    NativePodFieldType, NativePodLayout, NativePodScalar, NativeUnionArchitectureLayout,
-    NativeUnionFieldType, NativeUnionLayout, PointerAliasKind, ProjectedComResult,
-    ResultConversion, SafeArrayElement, StringEncoding,
+    NativePodFieldType, NativePodInitializer, NativePodLayout, NativePodScalar,
+    NativeUnionArchitectureLayout, NativeUnionFieldType, NativeUnionLayout, PointerAliasKind,
+    ProjectedComResult, ResultConversion, SafeArrayElement, StringEncoding,
 };
 #[cfg(test)]
 use super::super::ir::{NativePodField, NativeUnionField};
@@ -31,10 +31,15 @@ pub(super) fn abi_type_js(typ: &ComType) -> String {
         ComType::NativeUsize => "DynCom.usizeType()".into(),
         ComType::Win32Bool | ComType::HResult => "DynCom.i32Type()".into(),
         ComType::Guid => "DynCom.guidType()".into(),
+        ComType::GuidPointer => "DynCom.pointerType()".into(),
         ComType::HString => "DynCom.hstringType()".into(),
         ComType::Enum { underlying, .. } => enum_abi_type_js(*underlying).into(),
         ComType::ScalarAlias { underlying, .. } => scalar_abi_type_js(*underlying).into(),
-        ComType::RawPointer | ComType::PointerAlias { .. } => "DynCom.pointerType()".into(),
+        ComType::RawPointer
+        | ComType::AllocatorPointer
+        | ComType::ConsumedAllocatorPointer
+        | ComType::InspectedAllocatorPointer
+        | ComType::PointerAlias { .. } => "DynCom.pointerType()".into(),
         ComType::Bstr => "DynCom.bstrType()".into(),
         ComType::NativePod { layout } => {
             format!("DynCom.nativeStructType({})", native_pod_layout_js(layout))
@@ -53,6 +58,7 @@ pub(super) fn abi_type_js(typ: &ComType) -> String {
         ComType::PropVariant => "DynCom.propVariantType()".into(),
         ComType::DispatchParams => "DynCom.dispatchParamsType()".into(),
         ComType::ExcepInfo => "DynCom.excepInfoType()".into(),
+        ComType::StatStg => "DynCom.statStgType()".into(),
         ComType::ManagedInterface { iid } => {
             format!("DynCom.interfaceType(WinGuid.parse('{iid}'))")
         }
@@ -131,10 +137,14 @@ pub(super) fn type_dts(typ: &ComType) -> String {
         ComType::Win32Bool => "boolean".into(),
         ComType::HResult => "number".into(),
         ComType::Guid => "string".into(),
+        ComType::GuidPointer => "string".into(),
         ComType::HString => "string".into(),
         ComType::Enum { name, .. } => name.clone(),
         ComType::ScalarAlias { name, .. } => name.clone(),
         ComType::RawPointer => "Buffer | Uint8Array".into(),
+        ComType::AllocatorPointer
+        | ComType::ConsumedAllocatorPointer
+        | ComType::InspectedAllocatorPointer => "DynComAllocation".into(),
         ComType::PointerAlias { name, .. } => name.clone(),
         ComType::NativePod { layout } | ComType::NativePodPointer { layout } => layout.name.clone(),
         ComType::NativeUnionPointer { layout } => layout.name.clone(),
@@ -145,6 +155,7 @@ pub(super) fn type_dts(typ: &ComType) -> String {
         ComType::PropVariant => "DynComPropVariant".into(),
         ComType::DispatchParams => "DynComDispatchParams".into(),
         ComType::ExcepInfo => "DynComExcepInfo".into(),
+        ComType::StatStg => "DynComStatStg".into(),
         ComType::ManagedInterface { .. } => "DynWinRtValue".into(),
         ComType::CoTaskMemWideString => "string".into(),
         ComType::StringArray { .. } => "string[]".into(),
@@ -193,6 +204,10 @@ pub(super) fn result_type_dts(result: &ProjectedComResult) -> String {
         ResultConversion::SafeArray => "DynComSafeArray".into(),
         ResultConversion::PropVariant => "DynComPropVariant".into(),
         ResultConversion::ExcepInfo => "DynComExcepInfo".into(),
+        ResultConversion::StatStg => "DynComStatStg".into(),
+        ResultConversion::MallocAllocation | ResultConversion::MallocReallocation => {
+            "DynComAllocation | null".into()
+        }
     }
 }
 
@@ -217,10 +232,20 @@ pub(super) fn wrap_arg_js(typ: &ComType, variable: &str) -> String {
         ComType::Win32Bool => format!("DynCom.i32({variable} ? 1 : 0)"),
         ComType::HResult => format!("DynCom.i32({variable})"),
         ComType::Guid => format!("DynCom.guid(WinGuid.parse({variable}))"),
+        ComType::GuidPointer => format!("DynCom.iidPointer(WinGuid.parse({variable}))"),
         ComType::HString => format!("DynCom.hstring({variable})"),
         ComType::Enum { underlying, .. } => wrap_enum_arg_js(*underlying, variable),
         ComType::ScalarAlias { underlying, .. } => wrap_scalar_arg_js(*underlying, variable),
         ComType::RawPointer => format!("DynCom.safeDataPointer({variable})"),
+        ComType::AllocatorPointer => {
+            format!("DynCom.mallocAllocationPointer(this._obj, {variable})")
+        }
+        ComType::ConsumedAllocatorPointer => {
+            format!("DynCom.takeMallocAllocationPointer(this._obj, {variable})")
+        }
+        ComType::InspectedAllocatorPointer => {
+            format!("DynCom.mallocInspectionPointer({variable})")
+        }
         ComType::Bstr => format!("DynCom.bstr({variable})"),
         ComType::PointerAlias {
             name,
@@ -259,6 +284,7 @@ pub(super) fn wrap_arg_js(typ: &ComType, variable: &str) -> String {
         ComType::PropVariant => format!("DynCom.propVariant({variable})"),
         ComType::DispatchParams => format!("DynCom.dispatchParams({variable})"),
         ComType::ExcepInfo => unreachable!("EXCEPINFO is output-only"),
+        ComType::StatStg => unreachable!("STATSTG is output-only"),
         ComType::ManagedInterface { .. } => variable.to_string(),
         ComType::CoTaskMemWideString => {
             unreachable!("CoTaskMem string elements are output-only")
@@ -340,6 +366,13 @@ pub(super) fn unwrap_result_js(result: &ProjectedComResult, expression: &str) ->
         ResultConversion::SafeArray => format!("DynCom.takeSafeArray({expression})"),
         ResultConversion::PropVariant => format!("DynCom.takePropVariant({expression})"),
         ResultConversion::ExcepInfo => format!("DynCom.takeExcepInfo({expression})"),
+        ResultConversion::StatStg => format!("DynCom.takeStatStg({expression})"),
+        ResultConversion::MallocAllocation => {
+            format!("DynCom.takeMallocAllocation(this._obj, {expression})")
+        }
+        ResultConversion::MallocReallocation => {
+            format!("DynCom.finishMallocReallocation(this._obj, pv, _mallocSize, {expression})")
+        }
     }
 }
 
@@ -365,10 +398,15 @@ fn unwrap_value_js(typ: &ComType, expression: &str) -> String {
         ComType::Win32Bool => format!("(DynCom.toNumber({expression}) !== 0)"),
         ComType::HResult => format!("DynCom.toNumber({expression})"),
         ComType::Guid => format!("DynCom.toGuidString({expression})"),
+        ComType::GuidPointer => unreachable!("GUID pointer values are input-only"),
         ComType::HString => format!("{expression}.toString()"),
         ComType::Enum { underlying, .. } => unwrap_enum_js(*underlying, expression),
         ComType::ScalarAlias { underlying, .. } => unwrap_scalar_js(*underlying, expression),
-        ComType::RawPointer | ComType::PointerAlias { .. } => {
+        ComType::RawPointer
+        | ComType::AllocatorPointer
+        | ComType::ConsumedAllocatorPointer
+        | ComType::InspectedAllocatorPointer
+        | ComType::PointerAlias { .. } => {
             format!("DynCom.asPointerBigint({expression})")
         }
         ComType::Bstr => unreachable!("BSTR outputs require the BSTR result conversion"),
@@ -385,6 +423,7 @@ fn unwrap_value_js(typ: &ComType, expression: &str) -> String {
         ComType::PropVariant => format!("DynCom.takePropVariant({expression})"),
         ComType::DispatchParams => unreachable!("DISPPARAMS is input-only"),
         ComType::ExcepInfo => format!("DynCom.takeExcepInfo({expression})"),
+        ComType::StatStg => format!("DynCom.takeStatStg({expression})"),
         ComType::ManagedInterface { .. } => expression.to_string(),
         ComType::CoTaskMemWideString => {
             unreachable!("CoTaskMem string elements are array-only")
@@ -486,10 +525,26 @@ pub(super) fn native_pod_layout_js(layout: &NativePodLayout) -> String {
 }
 
 pub(super) fn native_pod_descriptor_js(layout: &NativePodLayout) -> String {
+    let initializers = layout
+        .initializers
+        .iter()
+        .map(|initializer| match initializer {
+            NativePodInitializer::SizeOfLayout { field } => {
+                format!("{{\"kind\":\"sizeOfLayout\",\"field\":\"{field}\"}}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let initializers = if initializers.is_empty() {
+        String::new()
+    } else {
+        format!(",\"initializers\":[{initializers}]")
+    };
     let descriptor = format!(
-        "{{\"name\":\"{}.{}\",\"x86\":{},\"x64\":{},\"arm64\":{}}}",
+        "{{\"name\":\"{}.{}\"{},\"x86\":{},\"x64\":{},\"arm64\":{}}}",
         layout.namespace,
         layout.name,
+        initializers,
         native_pod_architecture_json(&layout.x86),
         native_pod_architecture_json(&layout.x64),
         native_pod_architecture_json(&layout.arm64),
@@ -744,6 +799,7 @@ mod tests {
         NativePodLayout {
             namespace: "Test".into(),
             name: "POD".into(),
+            initializers: Vec::new(),
             x86: architecture.clone(),
             x64: architecture.clone(),
             arm64: architecture,

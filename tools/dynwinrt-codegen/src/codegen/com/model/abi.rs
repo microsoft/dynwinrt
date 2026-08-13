@@ -163,6 +163,7 @@ pub(in crate::codegen::com) enum ComAbiType {
     PropVariant,
     DispatchParams,
     ExcepInfo,
+    StatStg,
     FunctionPointer(SignatureId),
     Unknown(UnsupportedReason),
 }

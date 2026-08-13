@@ -887,6 +887,17 @@ impl DynWinRTValue {
         ))),
         None,
       ),
+      dynwinrt::com::Value::StatStg(value) => Self(
+        dynwinrt::WinRTValue::Null,
+        None,
+        com::PointerProvenance::None,
+        None,
+        None,
+        Some(com::AutomationValue::new(dynwinrt::com::Value::StatStg(
+          value,
+        ))),
+        None,
+      ),
       dynwinrt::com::Value::Buffer(value) => Self(
         dynwinrt::WinRTValue::Null,
         None,

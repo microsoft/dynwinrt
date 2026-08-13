@@ -552,7 +552,10 @@ fn wrap_param_arg_js(param: &ProjectedComParam, variable: &str) -> String {
             ComType::ManagedInterface { .. } => {
                 format!("{variable} === null ? DynCom.nullComValue() : {wrapped}")
             }
-            ComType::RawPointer | ComType::PointerAlias { .. } => {
+            ComType::AllocatorPointer
+            | ComType::ConsumedAllocatorPointer
+            | ComType::InspectedAllocatorPointer => wrapped,
+            ComType::RawPointer | ComType::GuidPointer | ComType::PointerAlias { .. } => {
                 format!("{variable} === null ? DynCom.pointer(null) : {wrapped}")
             }
             ComType::Bstr => format!("{variable} === null ? DynCom.nullBstr() : {wrapped}"),
@@ -600,7 +603,10 @@ fn out_abi_type_js(method: &ProjectedComMethod, param_index: usize, typ: &ComTyp
             | ResultConversion::Variant
             | ResultConversion::SafeArray
             | ResultConversion::PropVariant
-            | ResultConversion::ExcepInfo,
+            | ResultConversion::ExcepInfo
+            | ResultConversion::StatStg
+            | ResultConversion::MallocAllocation
+            | ResultConversion::MallocReallocation,
         )
         | None => abi_type_js(typ),
     }
@@ -916,11 +922,28 @@ fn emit_method_js_named(
             }
         }
     }
+    let malloc_reallocation = method
+        .results
+        .iter()
+        .any(|result| result.conversion == ResultConversion::MallocReallocation);
+    if malloc_reallocation {
+        let size_surface = inputs
+            .iter()
+            .position(|(index, _)| *index == 1)
+            .expect("validated IMalloc::Realloc size input");
+        let size_name = js_param_name(&method.params[1].name, size_surface);
+        out.push_str(&format!(
+            "        const _mallocSize = BigInt({size_name});\n"
+        ));
+    }
     let args = method
         .params
         .iter()
         .enumerate()
         .filter_map(|(index, param)| {
+            if malloc_reallocation && index == 1 {
+                return Some("DynCom.usize(_mallocSize)".into());
+            }
             for group in &method.shared_counts {
                 match group {
                     SharedCountPlan::StringInputScalarOutput {
@@ -1936,6 +1959,10 @@ fn collect_pointer_aliases(meta: &ProjectedComInterface) -> Vec<(String, Pointer
                 | ComType::Enum { .. }
                 | ComType::ScalarAlias { .. }
                 | ComType::RawPointer
+                | ComType::AllocatorPointer
+                | ComType::ConsumedAllocatorPointer
+                | ComType::InspectedAllocatorPointer
+                | ComType::GuidPointer
                 | ComType::Bstr
                 | ComType::NativePod { .. }
                 | ComType::NativePodPointer { .. }
@@ -1946,6 +1973,7 @@ fn collect_pointer_aliases(meta: &ProjectedComInterface) -> Vec<(String, Pointer
                 | ComType::PropVariant
                 | ComType::DispatchParams
                 | ComType::ExcepInfo
+                | ComType::StatStg
                 | ComType::ManagedInterface { .. }
                 | ComType::CoTaskMemWideString
                 | ComType::StringArray { .. }
@@ -2031,6 +2059,10 @@ fn collect_native_pods(meta: &ProjectedComInterface) -> Vec<super::super::ir::Na
                 | ComType::Enum { .. }
                 | ComType::ScalarAlias { .. }
                 | ComType::RawPointer
+                | ComType::AllocatorPointer
+                | ComType::ConsumedAllocatorPointer
+                | ComType::InspectedAllocatorPointer
+                | ComType::GuidPointer
                 | ComType::PointerAlias { .. }
                 | ComType::Bstr
                 | ComType::NativeUnionPointer { .. }
@@ -2040,6 +2072,7 @@ fn collect_native_pods(meta: &ProjectedComInterface) -> Vec<super::super::ir::Na
                 | ComType::PropVariant
                 | ComType::DispatchParams
                 | ComType::ExcepInfo
+                | ComType::StatStg
                 | ComType::ManagedInterface { .. }
                 | ComType::CoTaskMemWideString
                 | ComType::StringArray { .. } => {}
@@ -2120,6 +2153,14 @@ fn collect_runtime_types(meta: &ProjectedComInterface) -> Vec<&'static str> {
                 ComType::ExcepInfo => {
                     types.insert("DynComExcepInfo");
                 }
+                ComType::StatStg => {
+                    types.insert("DynComStatStg");
+                }
+                ComType::AllocatorPointer
+                | ComType::ConsumedAllocatorPointer
+                | ComType::InspectedAllocatorPointer => {
+                    types.insert("DynComAllocation");
+                }
                 ComType::OwningArray { element, .. } => match element.as_ref() {
                     ComType::Variant => {
                         types.insert("DynComVariant");
@@ -2176,6 +2217,10 @@ fn collect_scalar_alias(
         | ComType::HString
         | ComType::Enum { .. }
         | ComType::RawPointer
+        | ComType::AllocatorPointer
+        | ComType::ConsumedAllocatorPointer
+        | ComType::InspectedAllocatorPointer
+        | ComType::GuidPointer
         | ComType::PointerAlias { .. }
         | ComType::Bstr
         | ComType::NativePod { .. }
@@ -2187,6 +2232,7 @@ fn collect_scalar_alias(
         | ComType::PropVariant
         | ComType::DispatchParams
         | ComType::ExcepInfo
+        | ComType::StatStg
         | ComType::ManagedInterface { .. }
         | ComType::CoTaskMemWideString
         | ComType::StringArray { .. } => {}

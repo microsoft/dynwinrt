@@ -34,6 +34,7 @@ pub(crate) enum NativeCallValue {
     SafeArray(crate::com::SafeArrayValue),
     PropVariant(crate::com::PropVariantValue),
     ExcepInfo(crate::com::ExcepInfoValue),
+    StatStg(crate::com::StatStgValue),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,6 +68,7 @@ pub(crate) enum ParameterType {
     PropVariant,
     DispatchParams,
     ExcepInfo,
+    StatStg,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -183,6 +185,10 @@ impl ParameterType {
         Self::ExcepInfo
     }
 
+    pub(crate) fn stat_stg() -> Self {
+        Self::StatStg
+    }
+
     pub(crate) fn as_winrt(&self) -> Option<&TypeHandle> {
         match self {
             Self::WinRT(typ) => Some(typ),
@@ -197,7 +203,8 @@ impl ParameterType {
             | Self::SafeArray { .. }
             | Self::PropVariant
             | Self::DispatchParams
-            | Self::ExcepInfo => None,
+            | Self::ExcepInfo
+            | Self::StatStg => None,
         }
     }
 
@@ -214,7 +221,8 @@ impl ParameterType {
             | Self::SafeArray { .. }
             | Self::PropVariant
             | Self::DispatchParams
-            | Self::ExcepInfo => None,
+            | Self::ExcepInfo
+            | Self::StatStg => None,
         }
     }
 
@@ -287,6 +295,10 @@ impl ParameterType {
         matches!(self, Self::ExcepInfo)
     }
 
+    pub(crate) fn is_stat_stg(&self) -> bool {
+        matches!(self, Self::StatStg)
+    }
+
     pub(crate) fn is_array(&self) -> bool {
         self.as_winrt().is_some_and(TypeHandle::is_array)
     }
@@ -350,7 +362,8 @@ impl ParameterType {
             | Self::SafeArray { .. }
             | Self::PropVariant
             | Self::DispatchParams
-            | Self::ExcepInfo => AbiType::Ptr,
+            | Self::ExcepInfo
+            | Self::StatStg => AbiType::Ptr,
             Self::NativeStruct(_) | Self::VariantByValue => {
                 panic!("aggregate values do not have a scalar AbiType")
             }
@@ -369,7 +382,8 @@ impl ParameterType {
             | Self::SafeArray { .. }
             | Self::PropVariant
             | Self::DispatchParams
-            | Self::ExcepInfo => libffi::middle::Type::pointer(),
+            | Self::ExcepInfo
+            | Self::StatStg => libffi::middle::Type::pointer(),
             Self::NativeStruct(layout) => layout.libffi_type(),
             Self::VariantByValue => variant_by_value_libffi_type(),
         }
@@ -401,7 +415,8 @@ impl ParameterType {
             | Self::SafeArray { .. }
             | Self::PropVariant
             | Self::DispatchParams
-            | Self::ExcepInfo => {
+            | Self::ExcepInfo
+            | Self::StatStg => {
                 panic!("native POD storage is allocated by the dynamic executor")
             }
         }
@@ -421,7 +436,8 @@ impl ParameterType {
             | Self::SafeArray { .. }
             | Self::PropVariant
             | Self::DispatchParams
-            | Self::ExcepInfo => {
+            | Self::ExcepInfo
+            | Self::StatStg => {
                 unreachable!("native POD output conversion uses NativeStructValue")
             }
         }
@@ -456,7 +472,8 @@ impl ParameterType {
                 | Self::SafeArray { .. }
                 | Self::PropVariant
                 | Self::DispatchParams
-                | Self::ExcepInfo,
+                | Self::ExcepInfo
+                | Self::StatStg,
                 _,
             ) => {
                 unreachable!("native POD output conversion uses NativeStructValue")
@@ -474,6 +491,7 @@ impl ParameterType {
             Self::SafeArray { .. } => OutputCleanup::SafeArrayDestroy,
             Self::PropVariant => OutputCleanup::PropVariantClear,
             Self::ExcepInfo => OutputCleanup::None,
+            Self::StatStg => OutputCleanup::None,
             Self::Bstr { .. } => OutputCleanup::BstrFree,
             Self::CoTaskMemWideString => OutputCleanup::CoTaskMemFree,
             Self::WinRT(_)
@@ -742,6 +760,7 @@ impl AbiMethodSignature {
                 || p.typ.is_prop_variant()
                 || p.typ.is_dispatch_params()
                 || p.typ.is_excep_info()
+                || p.typ.is_stat_stg()
         });
 
         // Check if the single in-param (if any) is a simple non-HString, non-Struct type
@@ -1274,7 +1293,8 @@ impl call::ArgumentList for ComInvocationArgs<'_> {
             | crate::com::Value::SafeArray(_)
             | crate::com::Value::PropVariant(_)
             | crate::com::Value::DispatchParams(_)
-            | crate::com::Value::ExcepInfo(_) => {
+            | crate::com::Value::ExcepInfo(_)
+            | crate::com::Value::StatStg(_) => {
                 panic!("COM-local argument requested as a WinRT value")
             }
             crate::com::Value::Buffer(_) => {
@@ -1365,6 +1385,7 @@ impl Method {
                 || parameter.typ.is_prop_variant()
                 || parameter.typ.is_dispatch_params()
                 || parameter.typ.is_excep_info()
+                || parameter.typ.is_stat_stg()
         }) || self.direct_return_type().is_some_and(|typ| {
             typ.native_struct_layout().is_some()
                 || typ.native_union_layout().is_some()
@@ -1375,6 +1396,7 @@ impl Method {
                 || typ.is_prop_variant()
                 || typ.is_dispatch_params()
                 || typ.is_excep_info()
+                || typ.is_stat_stg()
         })
     }
 
@@ -1846,7 +1868,8 @@ impl Method {
                         NativeCallValue::Variant(_)
                         | NativeCallValue::SafeArray(_)
                         | NativeCallValue::PropVariant(_)
-                        | NativeCallValue::ExcepInfo(_) => Err(invalid_argument(
+                        | NativeCallValue::ExcepInfo(_)
+                        | NativeCallValue::StatStg(_) => Err(invalid_argument(
                             "COM-local result reached the WinRT invocation path",
                         )),
                     })
@@ -2088,6 +2111,7 @@ impl Method {
                     NativeCallValue::SafeArray(value) => crate::com::Value::SafeArray(value),
                     NativeCallValue::PropVariant(value) => crate::com::Value::PropVariant(value),
                     NativeCallValue::ExcepInfo(value) => crate::com::Value::ExcepInfo(value),
+                    NativeCallValue::StatStg(value) => crate::com::Value::StatStg(value),
                 })
                 .collect()
         })

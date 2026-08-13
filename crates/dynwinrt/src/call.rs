@@ -516,6 +516,8 @@ fn call_method_dynamic_impl<A: ArgumentList + ?Sized>(
         std::collections::BTreeMap::<usize, Box<crate::com::automation::ExcepInfoOutput>>::new();
     let mut excep_info_values =
         std::collections::BTreeMap::<usize, crate::com::ExcepInfoValue>::new();
+    let mut stat_stg_out_values =
+        std::collections::BTreeMap::<usize, crate::com::StatStgOutput>::new();
     let mut optional_out_requests: Vec<Option<bool>> = Vec::with_capacity(out_count);
 
     // Array storage: Box'd for pointer stability (addresses don't change after creation)
@@ -763,6 +765,19 @@ fn call_method_dynamic_impl<A: ArgumentList + ?Sized>(
                 safe_array_out_values.push(None);
                 prop_variant_out_values.push(None);
                 excep_info_out_values.insert(p.value_index, value);
+                array_out_map.push(None);
+                fill_array_map.push(None);
+            } else if p.typ.is_stat_stg() {
+                let mut value = crate::com::StatStgOutput::new();
+                out_ptrs.push(value.as_mut_ptr().cast());
+                out_values.push(AbiValue::Pointer(std::ptr::null_mut()));
+                struct_out_values.push(None);
+                guid_out_values.push(None);
+                native_struct_out_values.push(None);
+                variant_out_values.push(None);
+                safe_array_out_values.push(None);
+                prop_variant_out_values.push(None);
+                stat_stg_out_values.insert(p.value_index, value);
                 array_out_map.push(None);
                 fill_array_map.push(None);
             } else if p.typ.is_struct() {
@@ -1290,6 +1305,15 @@ fn call_method_dynamic_impl<A: ArgumentList + ?Sized>(
                     result_values.push(NativeCallValue::PropVariant(value));
                 } else if let Some(value) = excep_info_values.remove(&p.value_index) {
                     result_values.push(NativeCallValue::ExcepInfo(value));
+                } else if let Some(value) = stat_stg_out_values.remove(&p.value_index) {
+                    result_values.push(NativeCallValue::StatStg(value.into_value().map_err(
+                        |error| {
+                            windows_core::Error::new(
+                                windows_core::HRESULT(0x80070057u32 as i32),
+                                &error.message(),
+                            )
+                        },
+                    )?));
                 } else if let Some(struct_val) = struct_out_values[p.value_index].take() {
                     result_values.push(NativeCallValue::WinRt(WinRTValue::Struct(struct_val)));
                 } else {

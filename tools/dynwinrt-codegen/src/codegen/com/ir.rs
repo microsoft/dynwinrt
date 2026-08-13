@@ -119,9 +119,15 @@ pub(super) struct NativePodArchitectureLayout {
 pub(super) struct NativePodLayout {
     pub(super) namespace: String,
     pub(super) name: String,
+    pub(super) initializers: Vec<NativePodInitializer>,
     pub(super) x86: NativePodArchitectureLayout,
     pub(super) x64: NativePodArchitectureLayout,
     pub(super) arm64: NativePodArchitectureLayout,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum NativePodInitializer {
+    SizeOfLayout { field: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -166,6 +172,7 @@ pub(super) enum ComType {
     Win32Bool,
     HResult,
     Guid,
+    GuidPointer,
     HString,
     Enum {
         namespace: String,
@@ -178,6 +185,9 @@ pub(super) enum ComType {
         underlying: ComScalarRepr,
     },
     RawPointer,
+    AllocatorPointer,
+    ConsumedAllocatorPointer,
+    InspectedAllocatorPointer,
     PointerAlias {
         namespace: String,
         name: String,
@@ -201,6 +211,7 @@ pub(super) enum ComType {
     PropVariant,
     DispatchParams,
     ExcepInfo,
+    StatStg,
     ManagedInterface {
         iid: String,
     },
@@ -296,6 +307,9 @@ pub(super) enum ResultConversion {
     SafeArray,
     PropVariant,
     ExcepInfo,
+    StatStg,
+    MallocAllocation,
+    MallocReallocation,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -515,6 +529,10 @@ pub(super) fn dispatch_shape(typ: &ComType) -> Option<DispatchShape> {
         // depending on position, so they can collide with any other category
         // and are never safe overload-dispatch keys.
         ComType::RawPointer
+        | ComType::AllocatorPointer
+        | ComType::ConsumedAllocatorPointer
+        | ComType::InspectedAllocatorPointer
+        | ComType::GuidPointer
         | ComType::PointerAlias { .. }
         | ComType::NativePod { .. }
         | ComType::NativePodPointer { .. }
@@ -524,6 +542,7 @@ pub(super) fn dispatch_shape(typ: &ComType) -> Option<DispatchShape> {
         | ComType::SafeArray { .. }
         | ComType::PropVariant
         | ComType::ExcepInfo
+        | ComType::StatStg
         | ComType::Bstr
         | ComType::CoTaskMemWideString
         | ComType::StringArray { .. }

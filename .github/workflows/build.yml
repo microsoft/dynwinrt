@@ -51,7 +51,7 @@ jobs:
           if ($result.eligible_interfaces -ne 7929) {
             throw "Classic COM census denominator changed: $($result.eligible_interfaces)"
           }
-          if ($result.complete_interfaces -lt 5560) {
+          if ($result.complete_interfaces -lt 5567) {
             throw "Classic COM complete coverage regressed: $($result.complete_interfaces)"
           }
           if ($result.coverage_percent -lt 70.0) {

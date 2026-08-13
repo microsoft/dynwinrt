@@ -11,9 +11,9 @@ use std::{
 
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, COINIT_MULTITHREADED, CoCreateInstance,
-    CoInitializeEx, CoUninitialize,
+    CoGetClassObject, CoGetMalloc, CoInitializeEx, CoUninitialize,
 };
-use windows_core::{GUID, IUnknown, Interface as WindowsInterface};
+use windows_core::{GUID, IUnknown, Interface as WindowsInterface, PCWSTR};
 
 use crate::{
     MetadataTable, TypeHandle, TypeKind, WinRTValue,
@@ -180,6 +180,7 @@ pub struct NativeStructLayout {
     size: usize,
     alignment: usize,
     fields: Vec<NativeStructField>,
+    size_field_offsets: Vec<usize>,
 }
 
 impl NativeStructLayout {
@@ -257,7 +258,66 @@ impl NativeStructLayout {
             size,
             alignment,
             fields,
+            size_field_offsets: Vec::new(),
         })
+    }
+
+    pub fn with_size_field_initializer(mut self, field_name: &str) -> result::Result<Self> {
+        u32::try_from(self.size)
+            .map_err(|_| invalid_argument("native struct size exceeds u32 initializer"))?;
+        let field = self
+            .fields
+            .iter()
+            .find(|field| field.name == field_name)
+            .ok_or_else(|| {
+                invalid_argument(format!(
+                    "native struct `{}` has no size field `{field_name}`",
+                    self.name
+                ))
+            })?;
+        if field.count != 1 || field.typ != NativeStructFieldType::Scalar(NativeStructScalar::U32) {
+            return Err(invalid_argument(format!(
+                "native struct `{}` size field `{field_name}` must be one u32",
+                self.name
+            )));
+        }
+        let end = field
+            .offset
+            .checked_add(size_of::<u32>())
+            .ok_or_else(|| invalid_argument("native struct size field offset overflow"))?;
+        if end > self.size {
+            return Err(invalid_argument(format!(
+                "native struct `{}` size field `{field_name}` extends past {} bytes",
+                self.name, self.size
+            )));
+        }
+        self.size_field_offsets.push(field.offset);
+        Ok(self)
+    }
+
+    fn initialize_bytes(&self, bytes: &mut [u8]) {
+        let size = u32::try_from(self.size).expect("validated native struct size initializer");
+        for offset in &self.size_field_offsets {
+            bytes[*offset..*offset + size_of::<u32>()].copy_from_slice(&size.to_ne_bytes());
+        }
+    }
+
+    fn validate_bytes(&self, bytes: &[u8]) -> result::Result<()> {
+        let expected = u32::try_from(self.size).expect("validated native struct size initializer");
+        for offset in &self.size_field_offsets {
+            let actual = u32::from_ne_bytes(
+                bytes[*offset..*offset + size_of::<u32>()]
+                    .try_into()
+                    .expect("validated native struct size field range"),
+            );
+            if actual != expected {
+                return Err(invalid_argument(format!(
+                    "native struct `{}` size field must be {}, received {actual}",
+                    self.name, self.size
+                )));
+            }
+        }
+        Ok(())
     }
 
     pub const fn size(&self) -> usize {
@@ -312,14 +372,14 @@ impl NativeStructValue {
                 bytes.len()
             )));
         }
+        layout.validate_bytes(&bytes)?;
         Ok(Self { layout, bytes })
     }
 
     pub fn zeroed(layout: Arc<NativeStructLayout>) -> Self {
-        Self {
-            bytes: vec![0; layout.size],
-            layout,
-        }
+        let mut bytes = vec![0; layout.size];
+        layout.initialize_bytes(&mut bytes);
+        Self { bytes, layout }
     }
 
     pub fn layout(&self) -> &Arc<NativeStructLayout> {
@@ -330,6 +390,143 @@ impl NativeStructValue {
         &self.bytes
     }
 }
+
+#[repr(C)]
+struct RawStatStg {
+    name: *mut u16,
+    stream_type: u32,
+    size: u64,
+    modified_time: u64,
+    created_time: u64,
+    accessed_time: u64,
+    mode: u32,
+    locks_supported: u32,
+    clsid: GUID,
+    state_bits: u32,
+    reserved: u32,
+}
+
+const _: [(); 8] = [(); align_of::<RawStatStg>()];
+#[cfg(target_pointer_width = "32")]
+const _: [(); 72] = [(); size_of::<RawStatStg>()];
+#[cfg(target_pointer_width = "64")]
+const _: [(); 80] = [(); size_of::<RawStatStg>()];
+
+pub(crate) struct StatStgOutput {
+    raw: Box<RawStatStg>,
+}
+
+impl StatStgOutput {
+    pub(crate) fn new() -> Self {
+        Self {
+            raw: Box::new(unsafe { std::mem::zeroed() }),
+        }
+    }
+
+    pub(crate) fn as_mut_ptr(&mut self) -> *mut c_void {
+        (&mut *self.raw as *mut RawStatStg).cast()
+    }
+
+    pub(crate) fn into_value(mut self) -> result::Result<StatStgValue> {
+        let name = if self.raw.name.is_null() {
+            None
+        } else {
+            let value = unsafe { PCWSTR(self.raw.name).to_string() }
+                .map_err(|_| invalid_argument("STATSTG name is not valid UTF-16"))?;
+            self.free_name();
+            Some(value)
+        };
+        Ok(StatStgValue {
+            name,
+            stream_type: self.raw.stream_type,
+            size: self.raw.size,
+            modified_time: self.raw.modified_time,
+            created_time: self.raw.created_time,
+            accessed_time: self.raw.accessed_time,
+            mode: self.raw.mode,
+            locks_supported: self.raw.locks_supported,
+            clsid: self.raw.clsid,
+            state_bits: self.raw.state_bits,
+        })
+    }
+
+    fn free_name(&mut self) {
+        if self.raw.name.is_null() {
+            return;
+        }
+        unsafe {
+            windows::Win32::System::Com::CoTaskMemFree(Some(self.raw.name.cast()));
+        }
+        #[cfg(test)]
+        STATSTG_TEST_FREES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.raw.name = std::ptr::null_mut();
+    }
+}
+
+impl Drop for StatStgOutput {
+    fn drop(&mut self) {
+        self.free_name();
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatStgValue {
+    name: Option<String>,
+    stream_type: u32,
+    size: u64,
+    modified_time: u64,
+    created_time: u64,
+    accessed_time: u64,
+    mode: u32,
+    locks_supported: u32,
+    clsid: GUID,
+    state_bits: u32,
+}
+
+impl StatStgValue {
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+
+    pub const fn stream_type(&self) -> u32 {
+        self.stream_type
+    }
+
+    pub const fn size(&self) -> u64 {
+        self.size
+    }
+
+    pub const fn modified_time(&self) -> u64 {
+        self.modified_time
+    }
+
+    pub const fn created_time(&self) -> u64 {
+        self.created_time
+    }
+
+    pub const fn accessed_time(&self) -> u64 {
+        self.accessed_time
+    }
+
+    pub const fn mode(&self) -> u32 {
+        self.mode
+    }
+
+    pub const fn locks_supported(&self) -> u32 {
+        self.locks_supported
+    }
+
+    pub const fn clsid(&self) -> GUID {
+        self.clsid
+    }
+
+    pub const fn state_bits(&self) -> u32 {
+        self.state_bits
+    }
+}
+
+#[cfg(test)]
+static STATSTG_TEST_FREES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NativeUnionFieldType {
@@ -543,6 +740,7 @@ pub enum Value {
     PropVariant(PropVariantValue),
     DispatchParams(DispatchParamsValue),
     ExcepInfo(ExcepInfoValue),
+    StatStg(StatStgValue),
     Buffer(ComBufferValue),
 }
 
@@ -558,6 +756,7 @@ fn is_null_input_value(value: &Value) -> bool {
         | Value::PropVariant(_)
         | Value::DispatchParams(_)
         | Value::ExcepInfo(_)
+        | Value::StatStg(_)
         | Value::Buffer(_) => false,
     }
 }
@@ -1243,7 +1442,8 @@ impl BufferElementPlan {
             | ParameterType::SafeArray { .. }
             | ParameterType::PropVariant
             | ParameterType::DispatchParams
-            | ParameterType::ExcepInfo => {
+            | ParameterType::ExcepInfo
+            | ParameterType::StatStg => {
                 return Err(invalid_argument(
                     "Automation buffer elements require dedicated ownership and cleanup plans",
                 ));
@@ -1435,6 +1635,13 @@ impl Type {
     pub fn excep_info() -> Self {
         Self {
             abi: ParameterType::excep_info(),
+            pointer_output: PointerOutputKind::None,
+        }
+    }
+
+    pub fn stat_stg() -> Self {
+        Self {
+            abi: ParameterType::stat_stg(),
             pointer_output: PointerOutputKind::None,
         }
     }
@@ -2096,7 +2303,8 @@ impl ComCallPlan {
                 | Value::SafeArray(_)
                 | Value::PropVariant(_)
                 | Value::DispatchParams(_)
-                | Value::ExcepInfo(_) => Err(invalid_argument(
+                | Value::ExcepInfo(_)
+                | Value::StatStg(_) => Err(invalid_argument(
                     "COM-local result requires the COM value invocation path",
                 )),
                 Value::Buffer(_) => Err(invalid_argument(
@@ -2279,7 +2487,8 @@ impl ComCallPlan {
                     | Value::SafeArray(_)
                     | Value::PropVariant(_)
                     | Value::DispatchParams(_)
-                    | Value::ExcepInfo(_) => Err(invalid_argument(
+                    | Value::ExcepInfo(_)
+                    | Value::StatStg(_) => Err(invalid_argument(
                         "COM-local value passed to a scalar COM method",
                     )),
                     Value::Buffer(_) => Err(invalid_argument(
@@ -3736,6 +3945,24 @@ fn validate_automation_contracts(
         {
             return Err(invalid_argument("EXCEPINFO is output-only"));
         }
+        if parameter.typ.abi.is_stat_stg()
+            && !matches!(
+                parameter.direction,
+                ComParameterDirection::Out | ComParameterDirection::OptionalOut
+            )
+        {
+            return Err(invalid_argument("STATSTG is output-only"));
+        }
+        if parameter.typ.abi.is_stat_stg()
+            && !matches!(
+                return_plan,
+                ComReturnPlan::HResult | ComReturnPlan::SemanticHResult
+            )
+        {
+            return Err(invalid_argument(
+                "STATSTG outputs require an HRESULT return convention",
+            ));
+        }
         if parameter.typ.abi.is_excep_info()
             && !matches!(
                 return_plan,
@@ -4364,6 +4591,93 @@ pub fn co_create_instance(clsid: GUID, iid: GUID) -> result::Result<WinRTValue> 
     Ok(WinRTValue::Object(unsafe { IUnknown::from_raw(result) }))
 }
 
+pub fn co_get_class_object(clsid: GUID, iid: GUID) -> result::Result<WinRTValue> {
+    let unknown: IUnknown = unsafe { CoGetClassObject(&clsid, CLSCTX_INPROC_SERVER, None) }
+        .map_err(result::Error::WindowsError)?;
+    let mut result = std::ptr::null_mut();
+    unsafe { unknown.query(&iid, &mut result) }
+        .ok()
+        .map_err(result::Error::WindowsError)?;
+    Ok(WinRTValue::Object(unsafe { IUnknown::from_raw(result) }))
+}
+
+pub fn co_get_malloc() -> result::Result<WinRTValue> {
+    let allocator = unsafe { CoGetMalloc(1) }.map_err(result::Error::WindowsError)?;
+    Ok(WinRTValue::Object(allocator.into()))
+}
+
+pub fn create_error_info() -> result::Result<WinRTValue> {
+    windows_link::link!("oleaut32.dll" "system" fn CreateErrorInfo(
+        error_info: *mut *mut c_void
+    ) -> windows_core::HRESULT);
+
+    let mut error_info = std::ptr::null_mut();
+    unsafe { CreateErrorInfo(&mut error_info) }
+        .ok()
+        .map_err(result::Error::WindowsError)?;
+    if error_info.is_null() {
+        return Err(invalid_argument(
+            "CreateErrorInfo succeeded without returning an interface",
+        ));
+    }
+    Ok(unsafe { adopt_com_pointer(error_info) })
+}
+
+pub fn set_error_info(value: Option<&WinRTValue>) -> result::Result<()> {
+    windows_link::link!("oleaut32.dll" "system" fn SetErrorInfo(
+        reserved: u32,
+        error_info: *mut c_void
+    ) -> windows_core::HRESULT);
+
+    let error_info = value
+        .map(|value| {
+            let unknown = value
+                .as_object()
+                .ok_or_else(|| invalid_argument("SetErrorInfo requires a COM object"))?;
+            let mut error_info = std::ptr::null_mut();
+            unsafe {
+                unknown.query(
+                    &GUID::from_u128(0x1cf2b120_547d_101b_8e65_08002b2bd119),
+                    &mut error_info,
+                )
+            }
+            .ok()
+            .map_err(result::Error::WindowsError)?;
+            Ok::<IUnknown, result::Error>(unsafe { IUnknown::from_raw(error_info) })
+        })
+        .transpose()?;
+    unsafe {
+        SetErrorInfo(
+            0,
+            error_info
+                .as_ref()
+                .map_or(std::ptr::null_mut(), |value| value.as_raw()),
+        )
+    }
+    .ok()
+    .map_err(result::Error::WindowsError)
+}
+
+pub fn get_error_info() -> result::Result<Option<WinRTValue>> {
+    windows_link::link!("oleaut32.dll" "system" fn GetErrorInfo(
+        reserved: u32,
+        error_info: *mut *mut c_void
+    ) -> windows_core::HRESULT);
+
+    let mut error_info = std::ptr::null_mut();
+    let status = unsafe { GetErrorInfo(0, &mut error_info) };
+    if status == windows_core::HRESULT(1) {
+        return Ok(None);
+    }
+    status.ok().map_err(result::Error::WindowsError)?;
+    if error_info.is_null() {
+        return Err(invalid_argument(
+            "GetErrorInfo succeeded without returning an interface",
+        ));
+    }
+    Ok(Some(unsafe { adopt_com_pointer(error_info) }))
+}
+
 /// Adopt an AddRef-owned COM interface pointer into a managed Object value.
 ///
 /// The pointer must represent a caller-owned COM reference (+1). This function
@@ -4468,7 +4782,7 @@ mod tests {
         ApplicationModel::DataTransfer::DataTransferManager,
         System::Threading::{ThreadPool, WorkItemHandler},
         Win32::{
-            System::Com::{CoGetMalloc, IMalloc, IPersistFile, IStream},
+            System::Com::{CoGetMalloc, CreateBindCtx, IBindCtx, IMalloc, IPersistFile, IStream},
             System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize},
             UI::Shell::{IDataTransferManagerInterop, SHCreateMemStream},
             UI::WindowsAndMessaging::{
@@ -4737,6 +5051,68 @@ mod tests {
             *guid = GUID::from_u128(0x11111111_2222_3333_4444_555555555555);
             *value = 42;
         }
+        windows_core::HRESULT(0)
+    }
+
+    unsafe fn set_stat_stg_name(output: *mut RawStatStg, units: &[u16]) {
+        let bytes = units.len() * size_of::<u16>();
+        let name = unsafe { windows::Win32::System::Com::CoTaskMemAlloc(bytes) }.cast::<u16>();
+        assert!(!name.is_null());
+        unsafe {
+            std::ptr::copy_nonoverlapping(units.as_ptr(), name, units.len());
+            (*output).name = name;
+        }
+    }
+
+    unsafe extern "system" fn write_stat_stg(
+        _this: *mut c_void,
+        output: *mut RawStatStg,
+        flags: u32,
+    ) -> windows_core::HRESULT {
+        unsafe {
+            if flags == 0 {
+                set_stat_stg_name(
+                    output,
+                    &[b't' as u16, b'e' as u16, b's' as u16, b't' as u16, 0],
+                );
+            }
+            (*output).stream_type = 2;
+            (*output).size = 1234;
+            (*output).modified_time = 11;
+            (*output).created_time = 12;
+            (*output).accessed_time = 13;
+            (*output).mode = 0x20;
+            (*output).locks_supported = 0x40;
+            (*output).clsid = GUID::from_u128(0x11111111_2222_3333_4444_555555555555);
+            (*output).state_bits = 0x80;
+        }
+        windows_core::HRESULT(0)
+    }
+
+    unsafe extern "system" fn write_stat_stg_name_despite_noname(
+        _this: *mut c_void,
+        output: *mut RawStatStg,
+        _flags: u32,
+    ) -> windows_core::HRESULT {
+        unsafe { set_stat_stg_name(output, &[b'x' as u16, 0]) };
+        windows_core::HRESULT(0)
+    }
+
+    unsafe extern "system" fn write_stat_stg_then_fail(
+        _this: *mut c_void,
+        output: *mut RawStatStg,
+        _flags: u32,
+    ) -> windows_core::HRESULT {
+        unsafe { set_stat_stg_name(output, &[b'f' as u16, 0]) };
+        windows_core::HRESULT(0x80004005u32 as i32)
+    }
+
+    unsafe extern "system" fn write_invalid_stat_stg_name(
+        _this: *mut c_void,
+        output: *mut RawStatStg,
+        _flags: u32,
+    ) -> windows_core::HRESULT {
+        unsafe { set_stat_stg_name(output, &[0xd800, 0]) };
         windows_core::HRESULT(0)
     }
 
@@ -5293,6 +5669,15 @@ mod tests {
         value: u64,
     }
 
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct TestBindOpts {
+        cb_struct: u32,
+        flags: u32,
+        mode: u32,
+        deadline: u32,
+    }
+
     fn test_pod_layout(name: &str) -> Arc<NativeStructLayout> {
         Arc::new(
             NativeStructLayout::new(
@@ -5340,6 +5725,75 @@ mod tests {
 
     fn read_test_pod(value: &NativeStructValue) -> TestPod {
         unsafe { std::ptr::read_unaligned(value.bytes().as_ptr().cast::<TestPod>()) }
+    }
+
+    fn test_bind_opts_layout() -> Arc<NativeStructLayout> {
+        Arc::new(
+            NativeStructLayout::new(
+                "Windows.Win32.System.Com.BIND_OPTS",
+                size_of::<TestBindOpts>(),
+                align_of::<TestBindOpts>(),
+                vec![
+                    NativeStructField::new(
+                        "cbStruct",
+                        0,
+                        1,
+                        NativeStructFieldType::Scalar(NativeStructScalar::U32),
+                    )
+                    .unwrap(),
+                    NativeStructField::new(
+                        "grfFlags",
+                        4,
+                        1,
+                        NativeStructFieldType::Scalar(NativeStructScalar::U32),
+                    )
+                    .unwrap(),
+                    NativeStructField::new(
+                        "grfMode",
+                        8,
+                        1,
+                        NativeStructFieldType::Scalar(NativeStructScalar::U32),
+                    )
+                    .unwrap(),
+                    NativeStructField::new(
+                        "dwTickCountDeadline",
+                        12,
+                        1,
+                        NativeStructFieldType::Scalar(NativeStructScalar::U32),
+                    )
+                    .unwrap(),
+                ],
+            )
+            .unwrap()
+            .with_size_field_initializer("cbStruct")
+            .unwrap(),
+        )
+    }
+
+    unsafe extern "system" fn read_bind_opts(
+        _this: *mut c_void,
+        value: *const TestBindOpts,
+    ) -> windows_core::HRESULT {
+        let value = unsafe { &*value };
+        if value.cb_struct == size_of::<TestBindOpts>() as u32 {
+            windows_core::HRESULT(0)
+        } else {
+            windows_core::HRESULT(0x80070057u32 as i32)
+        }
+    }
+
+    unsafe extern "system" fn write_bind_opts(
+        _this: *mut c_void,
+        value: *mut TestBindOpts,
+    ) -> windows_core::HRESULT {
+        let value = unsafe { &mut *value };
+        if value.cb_struct != size_of::<TestBindOpts>() as u32 {
+            return windows_core::HRESULT(0x80070057u32 as i32);
+        }
+        value.flags = 7;
+        value.mode = 11;
+        value.deadline = 13;
+        windows_core::HRESULT(0)
     }
 
     unsafe extern "system" fn require_aligned_pod(
@@ -5816,6 +6270,17 @@ mod tests {
             .expect("valid native POD signature")
             .plan
             .invoke_values((&mut object as *mut FakeComObject).cast(), args)
+    }
+
+    fn invoke_test_stat_stg(function: *mut c_void, flags: u32) -> result::Result<Vec<Value>> {
+        let table = MetadataTable::new();
+        invoke_test_pod(
+            function,
+            MethodSignature::new(&table)
+                .add_out(Type::stat_stg())
+                .add_in(Type::winrt(table.u32_type())),
+            &[Value::WinRt(WinRTValue::U32(flags))],
+        )
     }
 
     fn reset_bstr_counts() {
@@ -7235,6 +7700,97 @@ mod tests {
     }
 
     #[test]
+    fn native_struct_size_field_initializer_is_applied_and_validated() {
+        let layout = test_bind_opts_layout();
+        let value = NativeStructValue::zeroed(layout.clone());
+        assert_eq!(
+            u32::from_ne_bytes(value.bytes()[0..4].try_into().unwrap()),
+            size_of::<TestBindOpts>() as u32
+        );
+
+        let mut valid = vec![0; size_of::<TestBindOpts>()];
+        valid[0..4].copy_from_slice(&(size_of::<TestBindOpts>() as u32).to_ne_bytes());
+        NativeStructValue::new(layout.clone(), valid).unwrap();
+
+        let error = NativeStructValue::new(layout.clone(), vec![0; size_of::<TestBindOpts>()])
+            .expect_err("zero cbStruct must be rejected");
+        assert!(error.message().contains("size field"), "{error:?}");
+
+        let table = MetadataTable::new();
+        invoke_test_pod(
+            read_bind_opts as *mut c_void,
+            MethodSignature::new(&table).add_in(Type::native_struct_pointer(layout.clone())),
+            &[Value::NativeStruct(value.clone())],
+        )
+        .unwrap();
+
+        let output = invoke_test_pod(
+            write_bind_opts as *mut c_void,
+            MethodSignature::new(&table).add_in_out(Type::native_struct(layout)),
+            &[Value::NativeStruct(value)],
+        )
+        .unwrap();
+        let Value::NativeStruct(output) = &output[0] else {
+            panic!("expected BIND_OPTS output");
+        };
+        let output =
+            unsafe { std::ptr::read_unaligned(output.bytes().as_ptr().cast::<TestBindOpts>()) };
+        assert_eq!(
+            (output.cb_struct, output.flags, output.mode, output.deadline),
+            (size_of::<TestBindOpts>() as u32, 7, 11, 13)
+        );
+    }
+
+    #[test]
+    fn bind_ctx_get_set_options_preserves_initialized_cb_struct() -> result::Result<()> {
+        let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
+        let bind_ctx: IBindCtx =
+            unsafe { CreateBindCtx(0) }.map_err(result::Error::WindowsError)?;
+        let table = MetadataTable::new();
+        let layout = test_bind_opts_layout();
+        let interface = register_interface(
+            &table,
+            "Windows.Win32.System.Com.IBindCtx",
+            IBindCtx::IID,
+            InterfaceBase::IUnknown,
+        )
+        .add_method_at(
+            6,
+            "SetBindOptions",
+            MethodSignature::new(&table).add_in(Type::native_struct_pointer(layout.clone())),
+        )?
+        .add_method_at(
+            7,
+            "GetBindOptions",
+            MethodSignature::new(&table).add_in_out(Type::native_struct(layout.clone())),
+        )?;
+        let initial = NativeStructValue::zeroed(layout);
+        let output = unsafe {
+            interface
+                .method(7)
+                .unwrap()
+                .invoke_values_with_output_kinds(bind_ctx.as_raw(), &[Value::NativeStruct(initial)])
+        }?;
+        let Value::NativeStruct(options) = &output[0].0 else {
+            panic!("expected BIND_OPTS output");
+        };
+        assert_eq!(
+            u32::from_ne_bytes(options.bytes()[0..4].try_into().unwrap()),
+            size_of::<TestBindOpts>() as u32
+        );
+        unsafe {
+            interface
+                .method(6)
+                .unwrap()
+                .invoke_values_with_output_kinds(
+                    bind_ctx.as_raw(),
+                    &[Value::NativeStruct(options.clone())],
+                )
+        }?;
+        Ok(())
+    }
+
+    #[test]
     fn native_union_runtime_requires_brand_and_active_field() {
         let table = MetadataTable::new();
         let layout = test_union_layout();
@@ -7753,6 +8309,90 @@ mod tests {
             error
                 .message()
                 .contains("restricted to the exact IDispatch::Invoke")
+        );
+    }
+
+    #[test]
+    fn stat_stg_layout_conversion_and_cleanup_are_owned() {
+        assert_eq!(align_of::<RawStatStg>(), 8);
+        assert_eq!(
+            size_of::<RawStatStg>(),
+            if cfg!(target_pointer_width = "32") {
+                72
+            } else {
+                80
+            }
+        );
+
+        STATSTG_TEST_FREES.store(0, Ordering::Relaxed);
+        let output = invoke_test_stat_stg(write_stat_stg as *mut c_void, 0).unwrap();
+        let Value::StatStg(stat) = &output[0] else {
+            panic!("expected STATSTG output");
+        };
+        assert_eq!(stat.name(), Some("test"));
+        assert_eq!(stat.stream_type(), 2);
+        assert_eq!(stat.size(), 1234);
+        assert_eq!(stat.modified_time(), 11);
+        assert_eq!(stat.created_time(), 12);
+        assert_eq!(stat.accessed_time(), 13);
+        assert_eq!(stat.mode(), 0x20);
+        assert_eq!(stat.locks_supported(), 0x40);
+        assert_eq!(
+            stat.clsid(),
+            GUID::from_u128(0x11111111_2222_3333_4444_555555555555)
+        );
+        assert_eq!(stat.state_bits(), 0x80);
+        assert_eq!(STATSTG_TEST_FREES.load(Ordering::Relaxed), 1);
+        drop(output);
+        assert_eq!(STATSTG_TEST_FREES.load(Ordering::Relaxed), 1);
+
+        STATSTG_TEST_FREES.store(0, Ordering::Relaxed);
+        let output = invoke_test_stat_stg(write_stat_stg as *mut c_void, 1).unwrap();
+        let Value::StatStg(stat) = &output[0] else {
+            panic!("expected STATSTG output");
+        };
+        assert_eq!(stat.name(), None);
+        assert_eq!(STATSTG_TEST_FREES.load(Ordering::Relaxed), 0);
+
+        STATSTG_TEST_FREES.store(0, Ordering::Relaxed);
+        let output =
+            invoke_test_stat_stg(write_stat_stg_name_despite_noname as *mut c_void, 1).unwrap();
+        let Value::StatStg(stat) = &output[0] else {
+            panic!("expected STATSTG output");
+        };
+        assert_eq!(stat.name(), Some("x"));
+        assert_eq!(STATSTG_TEST_FREES.load(Ordering::Relaxed), 1);
+
+        STATSTG_TEST_FREES.store(0, Ordering::Relaxed);
+        let error = invoke_test_stat_stg(write_stat_stg_then_fail as *mut c_void, 0).unwrap_err();
+        assert!(error.message().contains("0x80004005"));
+        assert_eq!(STATSTG_TEST_FREES.load(Ordering::Relaxed), 1);
+
+        STATSTG_TEST_FREES.store(0, Ordering::Relaxed);
+        let error =
+            invoke_test_stat_stg(write_invalid_stat_stg_name as *mut c_void, 0).unwrap_err();
+        assert!(error.message().contains("valid UTF-16"));
+        assert_eq!(STATSTG_TEST_FREES.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn stat_stg_contract_is_output_only_hresult() {
+        let table = MetadataTable::new();
+        let error = MethodSignature::new(&table)
+            .add_in(Type::stat_stg())
+            .build(0)
+            .unwrap_err();
+        assert!(error.message().contains("STATSTG is output-only"));
+
+        let error = MethodSignature::new(&table)
+            .add_out(Type::stat_stg())
+            .returns_void()
+            .build(0)
+            .unwrap_err();
+        assert!(
+            error
+                .message()
+                .contains("STATSTG outputs require an HRESULT")
         );
     }
 
@@ -9357,6 +9997,46 @@ mod tests {
             result::Error::WindowsError(err) => assert_eq!(err.code(), REGDB_E_CLASSNOTREG),
             err => panic!("expected REGDB_E_CLASSNOTREG, got {err:?}"),
         }
+        Ok(())
+    }
+
+    #[test]
+    fn com_p0_acquisition_returns_owned_interfaces() -> result::Result<()> {
+        initialize_apartment(ApartmentType::MultiThreaded)?;
+
+        let allocator = co_get_malloc()?;
+        assert!(allocator.as_object().is_some());
+
+        let factory = co_get_class_object(
+            CLSID_SHELL_LINK,
+            GUID::from_u128(0x00000001_0000_0000_c000_000000000046),
+        )?;
+        assert!(factory.as_object().is_some());
+
+        let error_info = create_error_info()?;
+        assert!(error_info.as_object().is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn error_info_is_thread_local_and_consumed_once() -> result::Result<()> {
+        initialize_apartment(ApartmentType::MultiThreaded)?;
+        set_error_info(None)?;
+        assert!(get_error_info()?.is_none());
+
+        let created = create_error_info()?;
+        set_error_info(Some(&created))?;
+
+        let other_thread = std::thread::spawn(|| -> result::Result<bool> {
+            initialize_apartment(ApartmentType::MultiThreaded)?;
+            Ok(get_error_info()?.is_none())
+        })
+        .join()
+        .expect("error-info worker must not panic")?;
+        assert!(other_thread);
+
+        assert!(get_error_info()?.is_some());
+        assert!(get_error_info()?.is_none());
         Ok(())
     }
 

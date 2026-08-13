@@ -37,6 +37,7 @@ enum AutomationValueKind {
   PropVariant(dynwinrt::com::PropVariantValue),
   DispatchParams(dynwinrt::com::DispatchParamsValue),
   ExcepInfo(dynwinrt::com::ExcepInfoValue),
+  StatStg(dynwinrt::com::StatStgValue),
 }
 
 pub(super) struct AutomationValue {
@@ -54,6 +55,7 @@ impl AutomationValue {
       dynwinrt::com::Value::PropVariant(value) => AutomationValueKind::PropVariant(value),
       dynwinrt::com::Value::DispatchParams(value) => AutomationValueKind::DispatchParams(value),
       dynwinrt::com::Value::ExcepInfo(value) => AutomationValueKind::ExcepInfo(value),
+      dynwinrt::com::Value::StatStg(value) => AutomationValueKind::StatStg(value),
       _ => unreachable!("AutomationValue requires an automation COM value"),
     };
     Self {
@@ -90,6 +92,7 @@ impl AutomationValue {
         dynwinrt::com::Value::DispatchParams(value.clone())
       }
       AutomationValueKind::ExcepInfo(value) => dynwinrt::com::Value::ExcepInfo(value.clone()),
+      AutomationValueKind::StatStg(value) => dynwinrt::com::Value::StatStg(value.clone()),
     })
   }
 
@@ -133,6 +136,17 @@ impl AutomationValue {
       value => {
         self.value = value;
         Err(napi::Error::from_reason("Value is not COM EXCEPINFO"))
+      }
+    }
+  }
+
+  pub(super) fn take_stat_stg(&mut self) -> napi::Result<dynwinrt::com::StatStgValue> {
+    self.ensure_owner_thread()?;
+    match self.value.take() {
+      Some(AutomationValueKind::StatStg(value)) => Ok(value),
+      value => {
+        self.value = value;
+        Err(napi::Error::from_reason("Value is not COM STATSTG"))
       }
     }
   }
@@ -280,14 +294,57 @@ impl Drop for NativePointerOwner {
   }
 }
 
-fn co_create_instance(clsid: String, iid: &WinGUID) -> napi::Result<DynWinRTValue> {
-  let parsed = windows::core::GUID::try_from(clsid.as_str())
-    .map_err(|_| napi::Error::from_reason(format!("Invalid CLSID: '{clsid}'")))?;
-  let mut value = dynwinrt::com::co_create_instance(parsed, iid.0)
+fn parse_clsid(clsid: &str) -> napi::Result<windows::core::GUID> {
+  windows::core::GUID::try_from(clsid)
+    .map_err(|_| napi::Error::from_reason(format!("Invalid CLSID: '{clsid}'")))
+}
+
+fn bind_com_result(result: dynwinrt::Result<dynwinrt::WinRTValue>) -> napi::Result<DynWinRTValue> {
+  let mut value = result
     .map(DynWinRTValue::new)
     .map_err(|error| napi::Error::from_reason(error.message()))?;
   value.bind_current_com_apartment()?;
   Ok(value)
+}
+
+fn co_create_instance(clsid: String, iid: &WinGUID) -> napi::Result<DynWinRTValue> {
+  bind_com_result(dynwinrt::com::co_create_instance(
+    parse_clsid(&clsid)?,
+    iid.0,
+  ))
+}
+
+fn co_get_class_object(clsid: String, iid: &WinGUID) -> napi::Result<DynWinRTValue> {
+  bind_com_result(dynwinrt::com::co_get_class_object(
+    parse_clsid(&clsid)?,
+    iid.0,
+  ))
+}
+
+fn co_get_malloc() -> napi::Result<DynWinRTValue> {
+  bind_com_result(dynwinrt::com::co_get_malloc())
+}
+
+fn create_error_info() -> napi::Result<DynWinRTValue> {
+  bind_com_result(dynwinrt::com::create_error_info())
+}
+
+fn set_error_info(value: Option<&DynWinRTValue>) -> napi::Result<()> {
+  if let Some(value) = value {
+    value.ensure_existing_com_apartment()?;
+  }
+  dynwinrt::com::set_error_info(value.map(|value| &value.0)).map_err(com_error)
+}
+
+fn get_error_info() -> napi::Result<Option<DynWinRTValue>> {
+  dynwinrt::com::get_error_info()
+    .map_err(com_error)?
+    .map(|value| {
+      let mut value = DynWinRTValue::new(value);
+      value.bind_current_com_apartment()?;
+      Ok(value)
+    })
+    .transpose()
 }
 
 fn try_cast(value: &DynWinRTValue, iid: &WinGUID) -> napi::Result<Option<DynWinRTValue>> {
@@ -1098,7 +1155,38 @@ fn native_struct_layout(
       "Native struct descriptor is missing `{architecture}`"
     ))
   })?;
-  parse_native_struct_variant(name, layout)
+  let parsed = parse_native_struct_variant(name, layout)?;
+  let mut parsed = std::sync::Arc::try_unwrap(parsed)
+    .map_err(|_| napi::Error::from_reason("Native struct layout is unexpectedly shared"))?;
+  let initializers = root
+    .get("initializers")
+    .map(|value| {
+      value
+        .as_array()
+        .ok_or_else(|| napi::Error::from_reason("Native struct `initializers` must be an array"))
+    })
+    .transpose()?;
+  for initializer in initializers.into_iter().flatten() {
+    let kind = initializer
+      .get("kind")
+      .and_then(serde_json::Value::as_str)
+      .ok_or_else(|| napi::Error::from_reason("Native struct initializer is missing `kind`"))?;
+    let field = initializer
+      .get("field")
+      .and_then(serde_json::Value::as_str)
+      .ok_or_else(|| napi::Error::from_reason("Native struct initializer is missing `field`"))?;
+    parsed = match kind {
+      "sizeOfLayout" => parsed
+        .with_size_field_initializer(field)
+        .map_err(|error| napi::Error::from_reason(error.message()))?,
+      _ => {
+        return Err(napi::Error::from_reason(format!(
+          "Unsupported native struct initializer `{kind}`"
+        )));
+      }
+    };
+  }
+  Ok(std::sync::Arc::new(parsed))
 }
 
 fn native_union_layout(
@@ -1971,6 +2059,33 @@ impl DynComUnsafe {
     self::co_create_instance(clsid, iid)
   }
 
+  #[napi]
+  pub fn co_get_class_object(clsid: String, iid: &WinGUID) -> napi::Result<DynWinRTValue> {
+    self::co_get_class_object(clsid, iid)
+  }
+
+  #[napi]
+  pub fn co_get_malloc() -> napi::Result<DynWinRTValue> {
+    self::co_get_malloc()
+  }
+
+  #[napi]
+  pub fn create_error_info() -> napi::Result<DynWinRTValue> {
+    self::create_error_info()
+  }
+
+  #[napi]
+  pub fn set_error_info(
+    #[napi(ts_arg_type = "DynWinRtValue | null | undefined")] value: Option<&DynWinRTValue>,
+  ) -> napi::Result<()> {
+    self::set_error_info(value)
+  }
+
+  #[napi]
+  pub fn get_error_info() -> napi::Result<Option<DynWinRTValue>> {
+    self::get_error_info()
+  }
+
   /// Takes ownership of one caller-supplied +1 COM reference.
   #[napi]
   pub fn adopt_owned_com_pointer(
@@ -2461,6 +2576,332 @@ impl DynComExcepInfo {
     self.value = None;
     Ok(())
   }
+}
+
+#[napi]
+pub struct DynComStatStg {
+  owner_thread: std::thread::ThreadId,
+  value: Option<dynwinrt::com::StatStgValue>,
+}
+
+impl DynComStatStg {
+  fn new(value: dynwinrt::com::StatStgValue) -> Self {
+    Self {
+      owner_thread: std::thread::current().id(),
+      value: Some(value),
+    }
+  }
+
+  fn value(&self) -> napi::Result<&dynwinrt::com::StatStgValue> {
+    if std::thread::current().id() != self.owner_thread {
+      return Err(napi::Error::from_reason(
+        "Apartment-bound STATSTG used from a different thread",
+      ));
+    }
+    self
+      .value
+      .as_ref()
+      .ok_or_else(|| napi::Error::from_reason("STATSTG has been released"))
+  }
+}
+
+// StatStgValue owns immutable Rust data after conversion; the native name
+// pointer has already been adopted and nulled before this wrapper is created.
+unsafe impl Send for DynComStatStg {}
+unsafe impl Sync for DynComStatStg {}
+
+#[napi]
+impl DynComStatStg {
+  #[napi(getter)]
+  pub fn name(&self) -> napi::Result<Option<String>> {
+    Ok(self.value()?.name().map(str::to_owned))
+  }
+
+  #[napi(getter)]
+  pub fn storage_type(&self) -> napi::Result<u32> {
+    Ok(self.value()?.stream_type())
+  }
+
+  #[napi(getter)]
+  pub fn size(&self) -> napi::Result<BigInt> {
+    Ok(self.value()?.size().into())
+  }
+
+  #[napi(getter)]
+  pub fn modified_time(&self) -> napi::Result<BigInt> {
+    Ok(self.value()?.modified_time().into())
+  }
+
+  #[napi(getter)]
+  pub fn creation_time(&self) -> napi::Result<BigInt> {
+    Ok(self.value()?.created_time().into())
+  }
+
+  #[napi(getter)]
+  pub fn access_time(&self) -> napi::Result<BigInt> {
+    Ok(self.value()?.accessed_time().into())
+  }
+
+  #[napi(getter)]
+  pub fn mode(&self) -> napi::Result<u32> {
+    Ok(self.value()?.mode())
+  }
+
+  #[napi(getter)]
+  pub fn locks_supported(&self) -> napi::Result<u32> {
+    Ok(self.value()?.locks_supported())
+  }
+
+  #[napi(getter)]
+  pub fn class_id(&self) -> napi::Result<String> {
+    Ok(format!("{:?}", self.value()?.clsid()))
+  }
+
+  #[napi(getter)]
+  pub fn state_bits(&self) -> napi::Result<u32> {
+    Ok(self.value()?.state_bits())
+  }
+
+  #[napi]
+  pub fn release(&mut self) -> napi::Result<()> {
+    if std::thread::current().id() != self.owner_thread {
+      return Err(napi::Error::from_reason(
+        "Apartment-bound STATSTG used from a different thread",
+      ));
+    }
+    self.value = None;
+    Ok(())
+  }
+}
+
+#[napi]
+pub struct DynComAllocation {
+  owner_thread: std::thread::ThreadId,
+  allocator: Option<windows::Win32::System::Com::IMalloc>,
+  pointer: usize,
+}
+
+impl DynComAllocation {
+  fn new(allocator: windows::Win32::System::Com::IMalloc, pointer: *mut std::ffi::c_void) -> Self {
+    debug_assert!(!pointer.is_null());
+    Self {
+      owner_thread: std::thread::current().id(),
+      allocator: Some(allocator),
+      pointer: pointer as usize,
+    }
+  }
+
+  fn ensure_owner_thread(&self) -> napi::Result<()> {
+    if std::thread::current().id() == self.owner_thread {
+      Ok(())
+    } else {
+      Err(napi::Error::from_reason(
+        "Apartment-bound IMalloc allocation used from a different thread",
+      ))
+    }
+  }
+
+  fn validate_allocator(
+    &self,
+    allocator: &windows::Win32::System::Com::IMalloc,
+  ) -> napi::Result<()> {
+    self.ensure_owner_thread()?;
+    let expected: IUnknown = self
+      .allocator
+      .as_ref()
+      .ok_or_else(|| napi::Error::from_reason("IMalloc allocation has been released"))?
+      .cast()
+      .map_err(|error| napi::Error::from_reason(error.to_string()))?;
+    let actual: IUnknown = allocator
+      .cast()
+      .map_err(|error| napi::Error::from_reason(error.to_string()))?;
+    if expected.as_raw() != actual.as_raw() {
+      return Err(napi::Error::from_reason(
+        "IMalloc allocation belongs to a different allocator",
+      ));
+    }
+    if self.pointer == 0 {
+      return Err(napi::Error::from_reason(
+        "IMalloc allocation has been released",
+      ));
+    }
+    Ok(())
+  }
+
+  fn borrowed_pointer(
+    &self,
+    allocator: &windows::Win32::System::Com::IMalloc,
+  ) -> napi::Result<*mut std::ffi::c_void> {
+    self.validate_allocator(allocator)?;
+    Ok(self.pointer as *mut std::ffi::c_void)
+  }
+
+  fn inspection_pointer(&self) -> napi::Result<*mut std::ffi::c_void> {
+    self.ensure_owner_thread()?;
+    if self.pointer == 0 {
+      return Err(napi::Error::from_reason(
+        "IMalloc allocation has been released",
+      ));
+    }
+    Ok(self.pointer as *mut std::ffi::c_void)
+  }
+
+  fn take_pointer(
+    &mut self,
+    allocator: &windows::Win32::System::Com::IMalloc,
+  ) -> napi::Result<*mut std::ffi::c_void> {
+    self.validate_allocator(allocator)?;
+    let pointer = std::mem::replace(&mut self.pointer, 0);
+    self.allocator = None;
+    Ok(pointer as *mut std::ffi::c_void)
+  }
+
+  fn release_inner(&mut self) {
+    if self.pointer != 0 {
+      if let Some(allocator) = &self.allocator {
+        unsafe { allocator.Free(Some(self.pointer as *mut std::ffi::c_void)) };
+      }
+      self.pointer = 0;
+      self.allocator = None;
+    }
+  }
+}
+
+impl Drop for DynComAllocation {
+  fn drop(&mut self) {
+    if std::thread::current().id() != self.owner_thread || super::winui_dispatcher_loop_exited() {
+      // Never invoke an apartment-bound allocator from a foreign or shut-down thread.
+      self.pointer = 0;
+      if let Some(allocator) = self.allocator.take() {
+        std::mem::forget(allocator);
+      }
+      return;
+    }
+    self.release_inner();
+  }
+}
+
+#[napi]
+impl DynComAllocation {
+  #[napi(getter)]
+  pub fn released(&self) -> bool {
+    self.pointer == 0
+  }
+
+  #[napi]
+  pub fn release(&mut self) -> napi::Result<()> {
+    self.ensure_owner_thread()?;
+    self.release_inner();
+    Ok(())
+  }
+}
+
+fn malloc_allocator(value: &DynWinRTValue) -> napi::Result<windows::Win32::System::Com::IMalloc> {
+  value.ensure_existing_com_apartment()?;
+  value
+    .0
+    .as_object()
+    .ok_or_else(|| napi::Error::from_reason("IMalloc operation requires a COM object"))?
+    .cast()
+    .map_err(|error| napi::Error::from_reason(error.to_string()))
+}
+
+fn malloc_pointer_value(pointer: *mut std::ffi::c_void) -> DynWinRTValue {
+  DynWinRTValue::with_borrowed_pointer(dynwinrt::WinRTValue::RawPtr(pointer))
+}
+
+fn take_malloc_return_pointer(value: &mut DynWinRTValue) -> napi::Result<*mut std::ffi::c_void> {
+  if value.1.is_some() || value.2 != PointerProvenance::UnclassifiedOutput {
+    return Err(napi::Error::from_reason(
+      "IMalloc allocation requires an unowned direct pointer return",
+    ));
+  }
+  match std::mem::replace(&mut value.0, dynwinrt::WinRTValue::Null) {
+    dynwinrt::WinRTValue::RawPtr(pointer) => {
+      value.2 = PointerProvenance::None;
+      Ok(pointer)
+    }
+    dynwinrt::WinRTValue::Null => {
+      value.2 = PointerProvenance::None;
+      Ok(std::ptr::null_mut())
+    }
+    other => {
+      value.0 = other;
+      Err(napi::Error::from_reason(
+        "IMalloc allocation result is not a native pointer",
+      ))
+    }
+  }
+}
+
+fn malloc_allocation_pointer(
+  allocator: &DynWinRTValue,
+  allocation: Option<&DynComAllocation>,
+) -> napi::Result<DynWinRTValue> {
+  let allocator = malloc_allocator(allocator)?;
+  allocation
+    .map(|allocation| allocation.borrowed_pointer(&allocator))
+    .transpose()
+    .map(|pointer| malloc_pointer_value(pointer.unwrap_or(std::ptr::null_mut())))
+}
+
+fn malloc_inspection_pointer(allocation: Option<&DynComAllocation>) -> napi::Result<DynWinRTValue> {
+  allocation
+    .map(DynComAllocation::inspection_pointer)
+    .transpose()
+    .map(|pointer| malloc_pointer_value(pointer.unwrap_or(std::ptr::null_mut())))
+}
+
+fn take_malloc_allocation_pointer(
+  allocator: &DynWinRTValue,
+  allocation: Option<&mut DynComAllocation>,
+) -> napi::Result<DynWinRTValue> {
+  let allocator = malloc_allocator(allocator)?;
+  allocation
+    .map(|allocation| allocation.take_pointer(&allocator))
+    .transpose()
+    .map(|pointer| malloc_pointer_value(pointer.unwrap_or(std::ptr::null_mut())))
+}
+
+fn take_malloc_allocation(
+  allocator: &DynWinRTValue,
+  value: &mut DynWinRTValue,
+) -> napi::Result<Option<DynComAllocation>> {
+  let allocator = malloc_allocator(allocator)?;
+  let pointer = take_malloc_return_pointer(value)?;
+  Ok((!pointer.is_null()).then(|| DynComAllocation::new(allocator, pointer)))
+}
+
+fn finish_malloc_reallocation(
+  allocator: &DynWinRTValue,
+  allocation: Option<&mut DynComAllocation>,
+  size: BigInt,
+  value: &mut DynWinRTValue,
+) -> napi::Result<Option<DynComAllocation>> {
+  let allocator = malloc_allocator(allocator)?;
+  if let Some(allocation) = allocation.as_deref() {
+    allocation.validate_allocator(&allocator)?;
+  }
+  let pointer = take_malloc_return_pointer(value)?;
+  if !pointer.is_null() {
+    if let Some(allocation) = allocation {
+      let _ = allocation.take_pointer(&allocator)?;
+    }
+    return Ok(Some(DynComAllocation::new(allocator, pointer)));
+  }
+
+  let (negative, size, lossless) = size.get_u64();
+  if negative || !lossless {
+    return Err(napi::Error::from_reason(
+      "IMalloc reallocation size must be an unsigned integer",
+    ));
+  }
+  if size == 0 {
+    if let Some(allocation) = allocation {
+      let _ = allocation.take_pointer(&allocator)?;
+    }
+  }
+  Ok(None)
 }
 
 #[napi(object)]
@@ -3697,6 +4138,11 @@ impl DynCom {
   }
 
   #[napi]
+  pub fn stat_stg_type() -> DynComType {
+    DynComType(dynwinrt::com::Type::stat_stg())
+  }
+
+  #[napi]
   pub fn interface_type(iid: &WinGUID) -> DynComType {
     DynComType(dynwinrt::com::Type::winrt(TABLE.interface(iid.0)))
   }
@@ -3828,6 +4274,33 @@ impl DynCom {
   }
 
   #[napi]
+  pub fn co_get_class_object(clsid: String, iid: &WinGUID) -> napi::Result<DynWinRTValue> {
+    self::co_get_class_object(clsid, iid)
+  }
+
+  #[napi]
+  pub fn co_get_malloc() -> napi::Result<DynWinRTValue> {
+    self::co_get_malloc()
+  }
+
+  #[napi]
+  pub fn create_error_info() -> napi::Result<DynWinRTValue> {
+    self::create_error_info()
+  }
+
+  #[napi]
+  pub fn set_error_info(
+    #[napi(ts_arg_type = "DynWinRtValue | null | undefined")] value: Option<&DynWinRTValue>,
+  ) -> napi::Result<()> {
+    self::set_error_info(value)
+  }
+
+  #[napi]
+  pub fn get_error_info() -> napi::Result<Option<DynWinRTValue>> {
+    self::get_error_info()
+  }
+
+  #[napi]
   pub fn try_cast(value: &DynWinRTValue, iid: &WinGUID) -> napi::Result<Option<DynWinRTValue>> {
     self::try_cast(value, iid)
   }
@@ -3843,6 +4316,47 @@ impl DynCom {
     value: Unknown,
   ) -> napi::Result<DynWinRTValue> {
     self::pointer(value)
+  }
+
+  #[napi]
+  pub fn malloc_allocation_pointer(
+    allocator: &DynWinRTValue,
+    allocation: Option<&DynComAllocation>,
+  ) -> napi::Result<DynWinRTValue> {
+    self::malloc_allocation_pointer(allocator, allocation)
+  }
+
+  #[napi]
+  pub fn malloc_inspection_pointer(
+    allocation: Option<&DynComAllocation>,
+  ) -> napi::Result<DynWinRTValue> {
+    self::malloc_inspection_pointer(allocation)
+  }
+
+  #[napi]
+  pub fn take_malloc_allocation_pointer(
+    allocator: &DynWinRTValue,
+    allocation: Option<&mut DynComAllocation>,
+  ) -> napi::Result<DynWinRTValue> {
+    self::take_malloc_allocation_pointer(allocator, allocation)
+  }
+
+  #[napi]
+  pub fn take_malloc_allocation(
+    allocator: &DynWinRTValue,
+    value: &mut DynWinRTValue,
+  ) -> napi::Result<Option<DynComAllocation>> {
+    self::take_malloc_allocation(allocator, value)
+  }
+
+  #[napi]
+  pub fn finish_malloc_reallocation(
+    allocator: &DynWinRTValue,
+    allocation: Option<&mut DynComAllocation>,
+    size: BigInt,
+    value: &mut DynWinRTValue,
+  ) -> napi::Result<Option<DynComAllocation>> {
+    self::finish_malloc_reallocation(allocator, allocation, size, value)
   }
 
   #[napi]
@@ -4308,18 +4822,15 @@ impl DynCom {
     bytes: Option<Buffer>,
   ) -> napi::Result<DynComNativeStruct> {
     let layout = native_struct_layout(&descriptor)?;
-    let bytes = bytes
-      .map(|bytes| bytes.to_vec())
-      .unwrap_or_else(|| vec![0; layout.size()]);
-    if bytes.len() != layout.size() {
-      return Err(napi::Error::from_reason(format!(
-        "Native struct `{}` requires exactly {} bytes, received {}",
-        layout.name(),
-        layout.size(),
-        bytes.len()
-      )));
+    let value = match bytes {
+      Some(bytes) => dynwinrt::com::NativeStructValue::new(layout, bytes.to_vec()),
+      None => Ok(dynwinrt::com::NativeStructValue::zeroed(layout)),
     }
-    Ok(DynComNativeStruct { descriptor, bytes })
+    .map_err(com_error)?;
+    Ok(DynComNativeStruct {
+      descriptor,
+      bytes: value.bytes().to_vec(),
+    })
   }
 
   #[napi]
@@ -4499,6 +5010,17 @@ impl DynCom {
   }
 
   #[napi]
+  pub fn take_stat_stg(value: &mut DynWinRTValue) -> napi::Result<DynComStatStg> {
+    let result = value
+      .5
+      .as_mut()
+      .ok_or_else(|| napi::Error::from_reason("Value is not COM STATSTG"))?
+      .take_stat_stg()?;
+    value.5 = None;
+    Ok(DynComStatStg::new(result))
+  }
+
+  #[napi]
   pub fn wide_string_pointer(
     #[napi(ts_arg_type = "string | bigint | number | Buffer | Uint8Array | null | undefined")]
     value: Unknown,
@@ -4653,11 +5175,28 @@ mod tests {
   use std::ffi::c_void;
 
   const TEST_POD_DESCRIPTOR: &str = r#"{"name":"Test.Pod","x86":{"size":8,"alignment":4,"fields":[{"name":"first","offset":0,"count":1,"type":{"kind":"u32"}},{"name":"second","offset":4,"count":2,"type":{"kind":"u16"}}]},"x64":{"size":8,"alignment":4,"fields":[{"name":"first","offset":0,"count":1,"type":{"kind":"u32"}},{"name":"second","offset":4,"count":2,"type":{"kind":"u16"}}]},"arm64":{"size":8,"alignment":4,"fields":[{"name":"first","offset":0,"count":1,"type":{"kind":"u32"}},{"name":"second","offset":4,"count":2,"type":{"kind":"u16"}}]}}"#;
+  const TEST_INITIALIZED_POD_DESCRIPTOR: &str = r#"{"name":"Test.Initialized","initializers":[{"kind":"sizeOfLayout","field":"size"}],"x86":{"size":8,"alignment":4,"fields":[{"name":"size","offset":0,"count":1,"type":{"kind":"u32"}},{"name":"value","offset":4,"count":1,"type":{"kind":"u32"}}]},"x64":{"size":8,"alignment":4,"fields":[{"name":"size","offset":0,"count":1,"type":{"kind":"u32"}},{"name":"value","offset":4,"count":1,"type":{"kind":"u32"}}]},"arm64":{"size":8,"alignment":4,"fields":[{"name":"size","offset":0,"count":1,"type":{"kind":"u32"}},{"name":"value","offset":4,"count":1,"type":{"kind":"u32"}}]}}"#;
   const TEST_UNION_DESCRIPTOR: &str = r#"{"name":"Test.Union","x86":{"size":8,"alignment":8,"fields":[{"name":"integer","count":1,"type":{"kind":"u64"}},{"name":"pointer","count":1,"type":{"kind":"pointer"}}]},"x64":{"size":8,"alignment":8,"fields":[{"name":"integer","count":1,"type":{"kind":"u64"}},{"name":"pointer","count":1,"type":{"kind":"pointer"}}]},"arm64":{"size":8,"alignment":8,"fields":[{"name":"integer","count":1,"type":{"kind":"u64"}},{"name":"pointer","count":1,"type":{"kind":"pointer"}}]}}"#;
 
   #[repr(C)]
   struct FakeComObject {
     vtable: *const *mut c_void,
+  }
+
+  #[test]
+  fn malloc_inspection_pointer_borrows_without_allocator_validation() {
+    dynwinrt::com::initialize_apartment(dynwinrt::com::ApartmentType::MultiThreaded).unwrap();
+    let allocator = unsafe { windows::Win32::System::Com::CoGetMalloc(1) }.unwrap();
+    let pointer = unsafe { allocator.Alloc(16) };
+    assert!(!pointer.is_null());
+    let allocation = DynComAllocation::new(allocator, pointer);
+
+    let borrowed = malloc_inspection_pointer(Some(&allocation)).unwrap();
+    assert_eq!(
+      as_pointer_bigint(&borrowed).unwrap().get_u64().1,
+      pointer as usize as u64
+    );
+    assert!(!allocation.released());
   }
 
   #[test]
@@ -4964,6 +5503,23 @@ mod tests {
       Some(Buffer::from(vec![0; 7]))
     )
     .is_err());
+
+    let initialized_zeroed =
+      DynCom::create_native_struct(TEST_INITIALIZED_POD_DESCRIPTOR.into(), None).unwrap();
+    assert_eq!(
+      initialized_zeroed.bytes.as_slice(),
+      &[8, 0, 0, 0, 0, 0, 0, 0]
+    );
+    assert!(DynCom::create_native_struct(
+      TEST_INITIALIZED_POD_DESCRIPTOR.into(),
+      Some(Buffer::from(vec![0; 8]))
+    )
+    .is_err());
+    assert!(DynCom::create_native_struct(
+      TEST_INITIALIZED_POD_DESCRIPTOR.into(),
+      Some(Buffer::from(vec![8, 0, 0, 0, 1, 0, 0, 0]))
+    )
+    .is_ok());
 
     let branded = DynComNativeStruct {
       descriptor: TEST_POD_DESCRIPTOR.into(),

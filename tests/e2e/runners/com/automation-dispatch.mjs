@@ -12,11 +12,11 @@ import {
   IID_IDispatch,
 } from "../../e2e_generated/com/automation/com/IDispatch.js";
 import { IEnumVARIANT } from "../../e2e_generated/com/automation/com/IEnumVARIANT.js";
-import { ISequentialStream } from "../../e2e_generated/com/stream/com/ISequentialStream.js";
+import { IStream } from "../../e2e_generated/com/stream/com/IStream.js";
 
 const CLSID_SHELL_APPLICATION = "13709620-c279-11ce-a49e-444553540000";
 const DISPATCH_PROPERTYGET = 2;
-const IID_NULL = Buffer.alloc(16);
+const IID_NULL = "00000000-0000-0000-0000-000000000000";
 
 initializeCom(1);
 
@@ -49,7 +49,7 @@ function namedMember(dispatch, name, flags = DISPATCH_PROPERTYGET) {
 
 try {
   assert.throws(
-    () => ISequentialStream._fromNative(shell._obj),
+    () => IStream._fromNative(shell._obj),
     /QueryInterface failed/,
   );
   assert.ok(shell.getTypeInfoCount() >= 1);

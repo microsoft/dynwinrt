@@ -822,8 +822,9 @@ fn real_metadata_projects_complete_idispatch_with_automation_compounds() {
     assert!(!output.js.contains("_result.excepInfo"));
     assert!(!output.js.contains("_result.argErr"));
     assert!(!output.js.contains("nativeStructType"));
+    assert!(output.js.contains("DynCom.iidPointer(WinGuid.parse(riid))"));
     assert!(output.dts.contains(
-        "invoke(dispIdMember: number, riid: Buffer | Uint8Array, lcid: number, wFlags: DISPATCH_FLAGS, dispParams: DynComDispatchParams, options?: { result?: boolean; excepInfo?: boolean; argErr?: boolean }): { result?: DynComVariant };"
+        "invoke(dispIdMember: number, riid: string, lcid: number, wFlags: DISPATCH_FLAGS, dispParams: DynComDispatchParams, options?: { result?: boolean; excepInfo?: boolean; argErr?: boolean }): { result?: DynComVariant };"
     ));
 
     let invoke_raw_index = dispatch
@@ -3826,6 +3827,120 @@ fn bstr_outputs_are_decoded_and_freed() {
 }
 
 #[test]
+fn com_p0_interfaces_generate_with_exact_pointer_and_ownership_contracts() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+
+    let malloc =
+        com_metadata::parse_com_interface(&win32_winmd(), "Windows.Win32.System.Com", "IMalloc")
+            .expect("IMalloc must exist");
+    let malloc_output = com::generate_com_interface_files(&malloc, &win32_winmd())
+        .expect("IMalloc generation should succeed");
+    assert!(
+        malloc_output
+            .dts
+            .contains("alloc(cb: bigint): DynComAllocation | null;")
+            && malloc_output.dts.contains(
+                "realloc(pv: DynComAllocation | null, cb: bigint): DynComAllocation | null;"
+            )
+            && malloc_output
+                .dts
+                .contains("free(pv: DynComAllocation | null): void;"),
+        "{}",
+        malloc_output.dts
+    );
+    assert!(
+        malloc_output
+            .js
+            .contains("return DynCom.takeMallocAllocation(this._obj, _out);")
+            && malloc_output
+                .js
+                .contains("DynCom.mallocAllocationPointer(this._obj, pv)")
+            && malloc_output
+                .js
+                .contains("DynCom.mallocInspectionPointer(pv)")
+            && !malloc_output
+                .js
+                .contains("didAlloc(pv) {\n        const _out = _IMalloc.method(7).invoke(this._obj, [DynCom.mallocAllocationPointer(this._obj, pv)])")
+            && malloc_output
+                .js
+                .contains("DynCom.takeMallocAllocationPointer(this._obj, pv)")
+            && malloc_output.js.contains("const _mallocSize = BigInt(cb);")
+            && malloc_output
+                .js
+                .contains("DynCom.finishMallocReallocation(this._obj, pv, _mallocSize, _out)"),
+        "{}",
+        malloc_output.js
+    );
+
+    let class_factory = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.System.Com",
+        "IClassFactory",
+    )
+    .expect("IClassFactory must exist");
+    let class_factory_output = com::generate_com_interface_files(&class_factory, &win32_winmd())
+        .expect("IClassFactory generation should succeed");
+    assert!(
+        class_factory_output.dts.contains(
+            "createInstance(pUnkOuter: DynWinRtValue | null, riid: string): DynWinRtValue;"
+        ) && class_factory_output
+            .js
+            .contains("return DynCom.adoptComPointer(_out, _iid);"),
+        "{}\n{}",
+        class_factory_output.dts,
+        class_factory_output.js
+    );
+
+    let create_error = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.System.Ole",
+        "ICreateErrorInfo",
+    )
+    .expect("ICreateErrorInfo must exist");
+    let create_error_output = com::generate_com_interface_files(&create_error, &win32_winmd())
+        .expect("ICreateErrorInfo generation should succeed");
+    assert!(
+        create_error_output
+            .dts
+            .contains("setGUID(rguid: string): void;")
+            && create_error_output
+                .js
+                .contains("DynCom.iidPointer(WinGuid.parse(rguid))"),
+        "{}\n{}",
+        create_error_output.dts,
+        create_error_output.js
+    );
+}
+
+#[test]
+fn imalloc_exact_contract_fails_closed_on_metadata_drift() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+
+    let mut malloc =
+        com_metadata::parse_com_interface(&win32_winmd(), "Windows.Win32.System.Com", "IMalloc")
+            .expect("IMalloc must exist");
+    let alloc = malloc
+        .raw_methods
+        .as_mut()
+        .expect("raw COM methods")
+        .iter_mut()
+        .find(|method| method.metadata_name == "Alloc")
+        .expect("IMalloc::Alloc");
+    alloc.return_type.pointer_depth = 0;
+    let error = com::generate_com_interface_files(&malloc, &win32_winmd()).unwrap_err();
+    assert!(
+        error.contains("IMalloc.Alloc signature no longer matches exact contract evidence"),
+        "{error}"
+    );
+}
+
+#[test]
 fn unsigned_enum_values_preserve_their_value() {
     if !win32_available() {
         eprintln!("Skipping: Win32 winmd not available");
@@ -3943,9 +4058,61 @@ fn real_win32_pods_cover_value_pointer_out_and_inout_shapes() {
     let bind_ctx =
         com_metadata::parse_com_interface(&win32_winmd(), "Windows.Win32.System.Com", "IBindCtx")
             .expect("IBindCtx must exist");
-    let error = com::generate_com_interface_files(&bind_ctx, &win32_winmd())
-        .expect_err("BIND_OPTS must fail until cbStruct initialization is modeled");
-    assert!(error.contains("cbStruct"), "{error}");
+    let bind_output = com::generate_com_interface_files(&bind_ctx, &win32_winmd())
+        .expect("BIND_OPTS must project with an exact cbStruct initializer");
+    assert!(
+        bind_output
+            .dts
+            .contains("export declare function createBIND_OPTS(bytes?: Buffer): BIND_OPTS;")
+            && bind_output
+                .dts
+                .contains("setBindOptions(pbindopts: BIND_OPTS): void;")
+            && bind_output
+                .dts
+                .contains("getBindOptions(pbindopts: BIND_OPTS): BIND_OPTS;"),
+        "{}",
+        bind_output.dts
+    );
+    assert!(
+        bind_output
+            .js
+            .contains("\"initializers\":[{\"kind\":\"sizeOfLayout\",\"field\":\"cbStruct\"}]")
+            && bind_output
+                .js
+                .contains(".addInOut(DynCom.nativeStructType(_nativeLayout_BIND_OPTS))"),
+        "{}",
+        bind_output.js
+    );
+
+    let stream =
+        com_metadata::parse_com_interface(&win32_winmd(), "Windows.Win32.System.Com", "IStream")
+            .expect("IStream must exist");
+    let stream_output = com::generate_com_interface_files(&stream, &win32_winmd())
+        .expect("the complete IStream inheritance chain must project");
+    assert!(
+        stream_output
+            .dts
+            .contains("stat(grfStatFlag: number): DynComStatStg;")
+            && stream_output
+                .dts
+                .contains("seek(dlibMove: bigint, origin: STREAM_SEEK): bigint;")
+            && stream_output.dts.contains("clone(): DynWinRtValue;"),
+        "{}",
+        stream_output.dts
+    );
+    assert!(
+        stream_output
+            .js
+            .contains(".addMethodAt(3, 'Read', new DynComMethodSig().addCallerOutputBuffer")
+            && stream_output.js.contains(
+                ".addMethodAt(12, 'Stat', new DynComMethodSig().addOut(DynCom.statStgType())"
+            )
+            && stream_output
+                .js
+                .contains("return DynCom.takeStatStg(_out);"),
+        "{}",
+        stream_output.js
+    );
 
     let running_object_table = com_metadata::parse_com_interface(
         &win32_winmd(),
@@ -3974,6 +4141,48 @@ fn real_win32_pods_cover_value_pointer_out_and_inout_shapes() {
         rot_output
             .js
             .contains(".addOut(DynCom.nativeStructType(_nativeLayout_FILETIME))")
+    );
+}
+
+#[test]
+fn istream_stat_exact_contract_fails_closed_on_metadata_drift() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+
+    let mut stream =
+        com_metadata::parse_com_interface(&win32_winmd(), "Windows.Win32.System.Com", "IStream")
+            .expect("IStream must exist");
+    let stat = stream
+        .raw_methods
+        .as_mut()
+        .expect("raw COM methods")
+        .iter_mut()
+        .find(|method| method.metadata_name == "Stat")
+        .expect("IStream::Stat");
+    stat.params[0].name = "drifted".into();
+    let error = com::generate_com_interface_files(&stream, &win32_winmd()).unwrap_err();
+    assert!(
+        error.contains("IStream.Stat signature no longer matches exact contract evidence"),
+        "{error}"
+    );
+
+    let mut stream =
+        com_metadata::parse_com_interface(&win32_winmd(), "Windows.Win32.System.Com", "IStream")
+            .expect("IStream must exist");
+    let stat = stream
+        .raw_methods
+        .as_mut()
+        .expect("raw COM methods")
+        .iter_mut()
+        .find(|method| method.metadata_name == "Stat")
+        .expect("IStream::Stat");
+    stat.declaring_iid = "11111111-2222-3333-4444-555555555555".into();
+    let error = com::generate_com_interface_files(&stream, &win32_winmd()).unwrap_err();
+    assert!(
+        error.contains("IStream.Stat declaring interface identity no longer matches"),
+        "{error}"
     );
 }
 

@@ -264,6 +264,8 @@ pub struct RawComMethod {
 pub enum RawExactMethodContractKind {
     FixedCapacityBytes,
     UnsafePrivateData,
+    StatStg,
+    Malloc,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1285,6 +1287,8 @@ fn apply_exact_method_contract(
                 return;
             }
         }
+        RawExactMethodContractKind::StatStg => {}
+        RawExactMethodContractKind::Malloc => {}
     }
 }
 
@@ -1313,6 +1317,62 @@ fn registered_exact_method_contract(
             Some(3),
             "IMFAttributes::GetBlob documents a caller-allocated byte buffer with an input byte capacity and output actual byte count",
             "https://learn.microsoft.com/windows/win32/api/mfobjects/nf-mfobjects-imfattributes-getblob",
+        ),
+        ("Windows.Win32.System.Com", "IStream", "Stat") => (
+            RawExactMethodContractKind::StatStg,
+            0,
+            1,
+            None,
+            "IStream::Stat returns an owned STATSTG whose nested name is allocated with CoTaskMem",
+            "https://learn.microsoft.com/windows/win32/api/objidl/nf-objidl-istream-stat",
+        ),
+        ("Windows.Win32.System.Com", "IMalloc", "Alloc") => (
+            RawExactMethodContractKind::Malloc,
+            0,
+            0,
+            None,
+            "IMalloc::Alloc returns allocator-owned memory that must be released with the same IMalloc::Free",
+            "https://learn.microsoft.com/windows/win32/api/objidl/nf-objidl-imalloc-alloc",
+        ),
+        ("Windows.Win32.System.Com", "IMalloc", "Realloc") => (
+            RawExactMethodContractKind::Malloc,
+            0,
+            1,
+            None,
+            "IMalloc::Realloc consumes a nullable allocation address and returns memory owned by the same allocator",
+            "https://learn.microsoft.com/windows/win32/api/objidl/nf-objidl-imalloc-realloc",
+        ),
+        ("Windows.Win32.System.Com", "IMalloc", "Free") => (
+            RawExactMethodContractKind::Malloc,
+            0,
+            0,
+            None,
+            "IMalloc::Free accepts only memory allocated by a compatible IMalloc instance",
+            "https://learn.microsoft.com/windows/win32/api/objidl/nf-objidl-imalloc-free",
+        ),
+        ("Windows.Win32.System.Com", "IMalloc", "GetSize") => (
+            RawExactMethodContractKind::Malloc,
+            0,
+            0,
+            None,
+            "IMalloc::GetSize accepts a nullable allocation address owned by a compatible allocator",
+            "https://learn.microsoft.com/windows/win32/api/objidl/nf-objidl-imalloc-getsize",
+        ),
+        ("Windows.Win32.System.Com", "IMalloc", "DidAlloc") => (
+            RawExactMethodContractKind::Malloc,
+            0,
+            0,
+            None,
+            "IMalloc::DidAlloc inspects a nullable allocation address without taking ownership",
+            "https://learn.microsoft.com/windows/win32/api/objidl/nf-objidl-imalloc-didalloc",
+        ),
+        ("Windows.Win32.System.Com", "IMalloc", "HeapMinimize") => (
+            RawExactMethodContractKind::Malloc,
+            0,
+            0,
+            None,
+            "IMalloc::HeapMinimize has no parameters and no return value",
+            "https://learn.microsoft.com/windows/win32/api/objidl/nf-objidl-imalloc-heapminimize",
         ),
         ("Windows.Win32.Graphics.Dxgi", "IDXGIObject", "GetPrivateData") => (
             RawExactMethodContractKind::UnsafePrivateData,
@@ -1381,6 +1441,8 @@ fn registered_exact_method_contract(
             "ID3D11DeviceChild" | "ID3D11Device" => "Windows.Win32.Graphics.Direct3D11",
             "ID3D12Object" => "Windows.Win32.Graphics.Direct3D12",
             "IDMLObject" => "Windows.Win32.AI.MachineLearning.DirectML",
+            "IStream" => "Windows.Win32.System.Com",
+            "IMalloc" => "Windows.Win32.System.Com",
             _ => unreachable!("matched exact method interface"),
         },
         declaring_interface: match interface {
@@ -1392,6 +1454,8 @@ fn registered_exact_method_contract(
             "ID3D11Device" => "ID3D11Device",
             "ID3D12Object" => "ID3D12Object",
             "IDMLObject" => "IDMLObject",
+            "IStream" => "IStream",
+            "IMalloc" => "IMalloc",
             _ => unreachable!("matched exact method interface"),
         },
         declaring_iid: match kind {
@@ -1408,10 +1472,22 @@ fn registered_exact_method_contract(
                 "IDMLObject" => "c8263aac-9e0c-4a2d-9b8e-007521a3317c",
                 _ => unreachable!("matched exact private-data interface"),
             },
+            RawExactMethodContractKind::StatStg => "0000000c-0000-0000-c000-000000000046",
+            RawExactMethodContractKind::Malloc => "00000002-0000-0000-c000-000000000046",
         },
         method_name: match kind {
             RawExactMethodContractKind::FixedCapacityBytes => "GetBlob",
             RawExactMethodContractKind::UnsafePrivateData => "GetPrivateData",
+            RawExactMethodContractKind::StatStg => "Stat",
+            RawExactMethodContractKind::Malloc => match method {
+                "Alloc" => "Alloc",
+                "Realloc" => "Realloc",
+                "Free" => "Free",
+                "GetSize" => "GetSize",
+                "DidAlloc" => "DidAlloc",
+                "HeapMinimize" => "HeapMinimize",
+                _ => unreachable!("matched exact IMalloc method"),
+            },
         },
         vtable_index: match (interface, method) {
             ("IMFAttributes", "GetBlob") => 15,
@@ -1421,6 +1497,13 @@ fn registered_exact_method_contract(
             ("ID3D11DeviceChild", "GetPrivateData") => 4,
             ("ID3D11Device", "GetPrivateData") => 34,
             ("ID3D12Object", "GetPrivateData") | ("IDMLObject", "GetPrivateData") => 3,
+            ("IStream", "Stat") => 12,
+            ("IMalloc", "Alloc") => 3,
+            ("IMalloc", "Realloc") => 4,
+            ("IMalloc", "Free") => 5,
+            ("IMalloc", "GetSize") => 6,
+            ("IMalloc", "DidAlloc") => 7,
+            ("IMalloc", "HeapMinimize") => 8,
             _ => unreachable!("matched exact method identity"),
         },
         buffer_param_index: buffer,
@@ -1561,6 +1644,17 @@ pub(crate) fn validate_exact_method_contract(
     if &expected != contract {
         return Err("exact method contract evidence does not match the registry".into());
     }
+    if raw.declaring_namespace != contract.declaring_namespace
+        || raw.declaring_interface != contract.declaring_interface
+        || !raw
+            .declaring_iid
+            .eq_ignore_ascii_case(contract.declaring_iid)
+    {
+        return Err(format!(
+            "{}.{} declaring interface identity no longer matches exact contract evidence",
+            contract.declaring_interface, contract.method_name
+        ));
+    }
     if current_namespace == contract.declaring_namespace
         && current_interface == contract.declaring_interface
         && !current_iid.eq_ignore_ascii_case(contract.declaring_iid)
@@ -1621,15 +1715,51 @@ pub(crate) fn validate_exact_method_contract(
             let optional = contract.declaring_interface != "IDXGIObject";
             raw_private_data_shape(raw, optional)
         }
+        RawExactMethodContractKind::StatStg => {
+            raw_method_shape(raw)
+                == "Stat@12(pstatstg:out:required:noconstattr:Windows.Win32.System.Com.STATSTG[Struct]/ptr1/Mutable,grfStatFlag:in:required:noconstattr:u32/ptr0/Unspecified)->Windows.Win32.Foundation.HRESULT[Struct]/ptr0/Unspecified/underlying=i32/ptr0/Unspecified:plain_hresult:not_enumerator_next"
+        }
+        RawExactMethodContractKind::Malloc => {
+            let expected = match contract.method_name {
+                "Alloc" => {
+                    "Alloc@3(cb:in:required:noconstattr:usize/ptr0/Unspecified)->void/ptr1/Mutable:plain_hresult:not_enumerator_next"
+                }
+                "Realloc" => {
+                    "Realloc@4(pv:in:optional:noconstattr:void/ptr1/Mutable,cb:in:required:noconstattr:usize/ptr0/Unspecified)->void/ptr1/Mutable:plain_hresult:not_enumerator_next"
+                }
+                "Free" => {
+                    "Free@5(pv:in:optional:noconstattr:void/ptr1/Mutable)->void/ptr0/Unspecified:plain_hresult:not_enumerator_next"
+                }
+                "GetSize" => {
+                    "GetSize@6(pv:in:optional:noconstattr:void/ptr1/Mutable)->usize/ptr0/Unspecified:plain_hresult:not_enumerator_next"
+                }
+                "DidAlloc" => {
+                    "DidAlloc@7(pv:in:optional:noconstattr:void/ptr1/Mutable)->i32/ptr0/Unspecified:plain_hresult:not_enumerator_next"
+                }
+                "HeapMinimize" => {
+                    "HeapMinimize@8()->void/ptr0/Unspecified:plain_hresult:not_enumerator_next"
+                }
+                _ => return Err("unknown exact IMalloc method contract".into()),
+            };
+            raw_method_shape(raw) == expected
+        }
+    };
+    let indices_valid = match contract.kind {
+        RawExactMethodContractKind::FixedCapacityBytes
+        | RawExactMethodContractKind::UnsafePrivateData
+        | RawExactMethodContractKind::StatStg => {
+            contract.buffer_param_index < raw.params.len()
+                && contract.capacity_param_index < raw.params.len()
+                && contract
+                    .actual_length_param_index
+                    .is_none_or(|index| index < raw.params.len())
+        }
+        RawExactMethodContractKind::Malloc => true,
     };
     if !valid_shape
         || raw.semantic_hresult.is_some()
         || raw.enumerator_next.is_some()
-        || contract.buffer_param_index >= raw.params.len()
-        || contract.capacity_param_index >= raw.params.len()
-        || contract
-            .actual_length_param_index
-            .is_some_and(|index| index >= raw.params.len())
+        || !indices_valid
     {
         return Err(format!(
             "{}.{} signature no longer matches exact contract evidence",

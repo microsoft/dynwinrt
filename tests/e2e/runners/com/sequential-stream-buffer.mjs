@@ -4,9 +4,9 @@
 import assert from 'node:assert/strict';
 import { DynCom, DynComMethodSig, WinGuid } from '../../../../bindings/js/dist/com-unsafe.js';
 import {
-  IID_ISequentialStream,
-  ISequentialStream,
-} from '../../e2e_generated/com/stream/com/ISequentialStream.js';
+  IID_IStream,
+  IStream,
+} from '../../e2e_generated/com/stream/com/IStream.js';
 import {
   IID_IWICImagingFactory,
   IWICImagingFactory,
@@ -36,13 +36,22 @@ wicStream
   .method(16)
   .invoke(stream, [DynCom.pointer(expected), DynCom.u32(expected.length)]);
 
-const sequential = ISequentialStream._fromNative(stream.cast(IID_ISequentialStream));
-const [hresult, actual] = sequential.read(Buffer.alloc(expected.length));
+const projectedStream = IStream._fromNative(stream.cast(IID_IStream));
+const stat = projectedStream.stat(1);
+assert.equal(stat.name, null);
+assert.equal(stat.storageType, 2);
+assert.equal(stat.size, BigInt(expected.length));
+stat.release();
+
+assert.equal(projectedStream.seek(0n, 0), 0n);
+const [hresult, actual] = projectedStream.read(Buffer.alloc(expected.length));
 assert.equal(hresult, 0);
 assert.deepEqual(actual, expected);
 
-sequential.release();
+assert.throws(() => projectedStream.clone(), /0x80004001/);
+
+projectedStream.release();
 stream.release();
 factory.release();
 
-console.log('sequential-stream-buffer ok');
+console.log('istream-buffer ok');

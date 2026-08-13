@@ -34,6 +34,7 @@ impl ComReturnKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::codegen::com) enum ComMethodSpecialContract {
     FixedCapacityBytes { guid_param: ParamIndex },
+    Malloc,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -144,6 +145,7 @@ impl ComMethodContract {
                             constness: Constness::Mutable,
                             ..
                         }
+                        | ComAbiType::StatStg
                     )
                 {
                     return Err(ModelError::InvalidContract(format!(

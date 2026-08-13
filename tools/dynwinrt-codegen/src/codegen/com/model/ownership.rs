@@ -32,6 +32,7 @@ pub(in crate::codegen::com) enum ComOwnership {
     SafeArrayOwned,
     PropVariantOwned,
     ExcepInfoOwned,
+    StatStgOwned,
     LocalOwned,
     HandleOwned(HandleCleanup),
     CustomOwned(CleanupId),
@@ -49,6 +50,7 @@ pub(in crate::codegen::com) enum Cleanup {
     SafeArrayDestroy,
     PropVariantClear,
     ExcepInfoClear,
+    StatStgClear,
     LocalFree,
     Handle(HandleCleanup),
     Custom(CleanupId),
@@ -108,6 +110,7 @@ pub(super) fn validate_ownership_cleanup(
         | (ComOwnership::SafeArrayOwned, Cleanup::SafeArrayDestroy)
         | (ComOwnership::PropVariantOwned, Cleanup::PropVariantClear)
         | (ComOwnership::ExcepInfoOwned, Cleanup::ExcepInfoClear)
+        | (ComOwnership::StatStgOwned, Cleanup::StatStgClear)
         | (ComOwnership::LocalOwned, Cleanup::LocalFree) => true,
         (ComOwnership::HandleOwned(expected), Cleanup::Handle(actual)) => expected == actual,
         (ComOwnership::CustomOwned(expected), Cleanup::Custom(actual)) => expected == actual,
