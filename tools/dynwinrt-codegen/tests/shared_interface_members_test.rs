@@ -435,6 +435,7 @@ fn canonical_interface_source_survives_equivalent_duplicate_emission() {
     let sources = project::canonical_interface_sources(
         &[duplicate.clone()],
         std::slice::from_ref(&shared),
+        std::slice::from_ref(&shared),
         &HashSet::new(),
         &HashSet::new(),
         &HashSet::new(),
@@ -443,7 +444,7 @@ fn canonical_interface_source_survives_equivalent_duplicate_emission() {
 
     assert_eq!(sources.len(), 1);
     assert!(sources[0].shared_member_source);
-    assert_eq!(sources[0].interface.iid, shared.iid);
+    assert_eq!(sources[0].interface.iid, duplicate.iid);
 
     project::set_shared_interface_members(true);
     let interface_file = project::project_interface_with_shared_member_source(
@@ -491,6 +492,7 @@ fn equivalent_cross_batch_emission_preserves_shared_source_marker() {
     let sources = project::canonical_interface_sources(
         std::slice::from_ref(&shared),
         &[],
+        &[],
         &HashSet::new(),
         &HashSet::new(),
         &forced_shared_sources,
@@ -518,6 +520,7 @@ fn non_interface_output_collision_disables_forced_shared_source() {
     let interface = value_interface();
     let identity = project::standalone_interface_identity(&interface).unwrap();
     let sources = project::canonical_interface_sources(
+        std::slice::from_ref(&interface),
         std::slice::from_ref(&interface),
         std::slice::from_ref(&interface),
         &HashSet::new(),
@@ -579,6 +582,7 @@ fn ambiguous_standalone_interface_identities_remain_class_local() {
     let combined_sources = project::canonical_interface_sources(
         &[first.clone(), second.clone()],
         &[first.clone(), second.clone()],
+        &[first.clone(), second.clone()],
         &HashSet::new(),
         &HashSet::new(),
         &HashSet::new(),
@@ -604,6 +608,7 @@ fn ambiguous_standalone_interface_identities_remain_class_local() {
     project::set_shared_interface_members(true);
     for (interface, class) in [(&first, &first_class), (&second, &second_class)] {
         let sources = project::canonical_interface_sources(
+            std::slice::from_ref(interface),
             std::slice::from_ref(interface),
             std::slice::from_ref(interface),
             &HashSet::new(),
@@ -669,6 +674,7 @@ fn nonshared_duplicate_interface_keeps_legacy_final_source() {
 
     let sources = project::canonical_interface_sources(
         &[first, second.clone()],
+        &[],
         &[],
         &HashSet::new(),
         &HashSet::new(),

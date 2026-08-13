@@ -98,20 +98,23 @@ pub fn ambiguous_standalone_interface_names<'a>(
         .collect()
 }
 
+/// Build the flat interface-module plan using the legacy emission order, then
+/// annotate only safe final winners as descriptor-sharing sources.
 pub fn canonical_interface_sources(
     interfaces: &[InterfaceMeta],
-    shared_candidates: &[InterfaceMeta],
+    standalone_candidates: &[InterfaceMeta],
+    shared_member_candidates: &[InterfaceMeta],
     class_names: &HashSet<String>,
     excluded_shared_source_names: &HashSet<String>,
     forced_shared_source_identities: &HashSet<StandaloneInterfaceIdentity>,
 ) -> Result<Vec<CanonicalInterfaceSource>, String> {
-    let mut shared_identities = shared_candidates
+    let mut shared_identities = shared_member_candidates
         .iter()
         .filter_map(standalone_interface_identity)
         .collect::<HashSet<_>>();
     shared_identities.extend(forced_shared_source_identities.iter().cloned());
     let ambiguous_names = ambiguous_standalone_interface_names(
-        shared_candidates
+        standalone_candidates
             .iter()
             .chain(interfaces)
             .filter(|iface| !class_names.contains(&iface.name)),
@@ -119,35 +122,19 @@ pub fn canonical_interface_sources(
     let mut sources: Vec<CanonicalInterfaceSource> = Vec::new();
     let mut source_by_name: HashMap<String, usize> = HashMap::new();
 
-    for iface in shared_candidates.iter().chain(interfaces) {
+    for iface in standalone_candidates.iter().chain(interfaces) {
         if class_names.contains(&iface.name) {
             continue;
         }
         let Some(identity) = standalone_interface_identity(iface) else {
             continue;
         };
-        let ambiguous = ambiguous_names.contains(&iface.name)
-            || excluded_shared_source_names.contains(&iface.name);
-        let shared_member_source = !ambiguous && shared_identities.contains(&identity);
         if let Some(existing_index) = source_by_name.get(&iface.name).copied() {
-            let existing = &mut sources[existing_index];
-            if ambiguous {
-                *existing = CanonicalInterfaceSource {
-                    interface: iface.clone(),
-                    identity,
-                    shared_member_source: false,
-                };
-                continue;
-            }
-            if existing.identity != identity {
-                *existing = CanonicalInterfaceSource {
-                    interface: iface.clone(),
-                    identity,
-                    shared_member_source: false,
-                };
-                continue;
-            }
-            existing.shared_member_source |= shared_member_source;
+            sources[existing_index] = CanonicalInterfaceSource {
+                interface: iface.clone(),
+                identity,
+                shared_member_source: false,
+            };
             continue;
         }
 
@@ -155,10 +142,15 @@ pub fn canonical_interface_sources(
         sources.push(CanonicalInterfaceSource {
             interface: iface.clone(),
             identity,
-            shared_member_source,
+            shared_member_source: false,
         });
     }
 
+    for source in &mut sources {
+        source.shared_member_source = !ambiguous_names.contains(&source.interface.name)
+            && !excluded_shared_source_names.contains(&source.interface.name)
+            && shared_identities.contains(&source.identity);
+    }
     sources.sort_by(|left, right| left.interface.name.cmp(&right.interface.name));
     Ok(sources)
 }

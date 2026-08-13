@@ -956,6 +956,57 @@ fn run() -> Result<(), String> {
     Ok(())
 }
 
+struct RequiredInterfacePlans {
+    standalone_iids: HashSet<String>,
+    standalone_interfaces: Vec<meta::InterfaceMeta>,
+    shared_member_candidates: Vec<meta::InterfaceMeta>,
+}
+
+fn required_interface_plans<'a>(
+    classes: impl IntoIterator<Item = &'a meta::ClassMeta>,
+) -> RequiredInterfacePlans {
+    let mut legacy_counts: HashMap<String, (&meta::InterfaceMeta, usize)> = HashMap::new();
+    let mut identity_counts: HashMap<
+        project::StandaloneInterfaceIdentity,
+        (&meta::InterfaceMeta, usize),
+    > = HashMap::new();
+    for class in classes {
+        for interface in &class.required_interfaces {
+            if interface.iid.is_empty() {
+                continue;
+            }
+            legacy_counts
+                .entry(interface.iid.clone())
+                .and_modify(|(_, count)| *count += 1)
+                .or_insert((interface, 1));
+            if let Some(identity) = project::standalone_interface_identity(interface) {
+                identity_counts
+                    .entry(identity)
+                    .and_modify(|(_, count)| *count += 1)
+                    .or_insert((interface, 1));
+            }
+        }
+    }
+
+    RequiredInterfacePlans {
+        standalone_iids: legacy_counts
+            .iter()
+            .filter(|(_, (_, count))| *count >= 2)
+            .map(|(iid, _)| iid.clone())
+            .collect(),
+        standalone_interfaces: legacy_counts
+            .into_values()
+            .filter(|(_, count)| *count >= 2)
+            .map(|(interface, _)| interface.clone())
+            .collect(),
+        shared_member_candidates: identity_counts
+            .into_values()
+            .filter(|(_, count)| *count >= 2)
+            .map(|(interface, _)| interface.clone())
+            .collect(),
+    }
+}
+
 /// Generate files for a set of types plus their transitive dependencies.
 /// When `dry_run` is true, all parsing/resolution runs but no files are written.
 fn generate_for_types(
@@ -1061,29 +1112,9 @@ fn generate_for_types(
         .map(|i| i.name.clone())
         .collect();
 
-    let mut req_iface_count: HashMap<String, (&meta::InterfaceMeta, usize)> = HashMap::new();
-    for class in &all_classes {
-        for ri in &class.required_interfaces {
-            if ri.iid.is_empty() {
-                continue;
-            }
-            req_iface_count
-                .entry(ri.iid.clone())
-                .and_modify(|(_, c)| *c += 1)
-                .or_insert((ri, 1));
-        }
-    }
-    let shared_iids: HashSet<String> = req_iface_count
-        .iter()
-        .filter(|(_, (_, count))| *count >= 2)
-        .map(|(iid, _)| iid.clone())
-        .collect();
-
-    let shared_interfaces: Vec<meta::InterfaceMeta> = req_iface_count
-        .iter()
-        .filter(|(_, (_, count))| *count >= 2)
-        .map(|(_, (iface, _))| (*iface).clone())
-        .collect();
+    let required_interface_plans = required_interface_plans(&all_classes);
+    let shared_iids = required_interface_plans.standalone_iids;
+    let shared_interfaces = required_interface_plans.standalone_interfaces;
     for iface in &shared_interfaces {
         known_types.insert(iface.name.clone());
     }
@@ -1093,26 +1124,7 @@ fn generate_for_types(
     let shared_interface_members_enabled =
         lang == "js" && project::shared_interface_members_enabled();
     let canonical_shared_interfaces = if shared_interface_members_enabled {
-        let mut required_interface_count: HashMap<
-            project::StandaloneInterfaceIdentity,
-            (&meta::InterfaceMeta, usize),
-        > = HashMap::new();
-        for class in &all_classes {
-            for req_iface in &class.required_interfaces {
-                let Some(identity) = project::standalone_interface_identity(req_iface) else {
-                    continue;
-                };
-                required_interface_count
-                    .entry(identity)
-                    .and_modify(|(_, count)| *count += 1)
-                    .or_insert((req_iface, 1));
-            }
-        }
-        required_interface_count
-            .values()
-            .filter(|(_, count)| *count >= 2)
-            .map(|(iface, _)| (*iface).clone())
-            .collect::<Vec<_>>()
+        required_interface_plans.shared_member_candidates
     } else {
         Vec::new()
     };
@@ -1120,31 +1132,40 @@ fn generate_for_types(
         known_types.insert(iface.name.clone());
     }
     let mut effective_excluded_shared_source_names = excluded_shared_source_names.clone();
+    let mut effective_reserved_non_interface_output_names =
+        reserved_non_interface_output_names.clone();
     for en in &all_enums {
         if let TypeMeta::Enum { name, .. } = en
             && !name.contains('<')
             && !class_names_all.contains(name)
         {
             effective_excluded_shared_source_names.insert(name.clone());
+            effective_reserved_non_interface_output_names.insert(name.clone());
         }
     }
-    let canonical_interface_sources = if shared_interface_members_enabled {
-        Some(project::canonical_interface_sources(
-            &all_interfaces,
-            &canonical_shared_interfaces,
-            &class_names_all,
-            &effective_excluded_shared_source_names,
-            forced_shared_source_identities,
-        )?)
+    let empty_forced_shared_source_identities = HashSet::new();
+    let effective_forced_shared_source_identities = if shared_interface_members_enabled {
+        forced_shared_source_identities
     } else {
-        None
+        &empty_forced_shared_source_identities
     };
-    let shared_interface_source_identities = canonical_interface_sources
-        .iter()
-        .flatten()
-        .filter(|source| source.shared_member_source)
-        .map(|source| source.identity.clone())
-        .collect::<HashSet<_>>();
+    let interface_emission_plan = project::canonical_interface_sources(
+        &all_interfaces,
+        &shared_interfaces,
+        &canonical_shared_interfaces,
+        &class_names_all,
+        &effective_excluded_shared_source_names,
+        effective_forced_shared_source_identities,
+    )?;
+    let shared_interface_source_identities = if shared_interface_members_enabled {
+        interface_emission_plan
+            .iter()
+            .filter(|source| source.shared_member_source)
+            .map(|source| source.identity.clone())
+            .collect::<HashSet<_>>()
+    } else {
+        HashSet::new()
+    };
 
     if !dry_run {
         if lang == "py" {
@@ -1163,16 +1184,13 @@ fn generate_for_types(
             generate_js_files(
                 output_dir,
                 &all_classes,
-                &all_interfaces,
                 &all_enums,
-                &shared_interfaces,
                 &known_types,
                 &delegate_type_names,
-                canonical_interface_sources.as_deref(),
+                &interface_emission_plan,
                 &shared_iids,
                 &shared_interface_source_identities,
-                &effective_excluded_shared_source_names,
-                reserved_non_interface_output_names,
+                &effective_reserved_non_interface_output_names,
                 &delegate_signatures,
                 &delegate_sig_refs,
                 &delegate_param_wraps,
@@ -1484,35 +1502,21 @@ fn preflight_js_generation_batch(
             _ => None,
         })
         .collect::<Vec<_>>();
+    let mut effective_reserved_non_interface_output_names =
+        reserved_non_interface_output_names.clone();
+    effective_reserved_non_interface_output_names
+        .extend(enum_names.iter().map(|name| (*name).to_string()));
     reject_non_interface_overwrites_of_shared_sources(
         output_dir,
         all_classes
             .iter()
             .map(|class| class.name.as_str())
-            .chain(enum_names),
+            .chain(enum_names.iter().copied()),
     )?;
 
-    if project::shared_interface_members_enabled() {
-        let mut required_interface_count: HashMap<
-            project::StandaloneInterfaceIdentity,
-            (&meta::InterfaceMeta, usize),
-        > = HashMap::new();
-        for class in &all_classes {
-            for req_iface in &class.required_interfaces {
-                let Some(identity) = project::standalone_interface_identity(req_iface) else {
-                    continue;
-                };
-                required_interface_count
-                    .entry(identity)
-                    .and_modify(|(_, count)| *count += 1)
-                    .or_insert((req_iface, 1));
-            }
-        }
-        let canonical_shared_interfaces = required_interface_count
-            .into_values()
-            .filter(|(_, count)| *count >= 2)
-            .map(|(iface, _)| iface.clone())
-            .collect::<Vec<_>>();
+    let required_interface_plans = required_interface_plans(all_classes.iter().copied());
+    let all_interfaces = all_interfaces.into_iter().cloned().collect::<Vec<_>>();
+    let interface_emission_plan = if project::shared_interface_members_enabled() {
         let mut effective_excluded_names = excluded_shared_source_names.clone();
         effective_excluded_names.extend(all_enums.iter().filter_map(|typ| match typ {
             TypeMeta::Enum { name, .. } if !name.contains('<') && !class_names.contains(name) => {
@@ -1520,27 +1524,42 @@ fn preflight_js_generation_batch(
             }
             _ => None,
         }));
-        let all_interfaces = all_interfaces.into_iter().cloned().collect::<Vec<_>>();
-        let canonical_sources = project::canonical_interface_sources(
+        project::canonical_interface_sources(
             &all_interfaces,
-            &canonical_shared_interfaces,
+            &required_interface_plans.standalone_interfaces,
+            &required_interface_plans.shared_member_candidates,
             &class_names,
             &effective_excluded_names,
             forced_shared_source_identities,
-        )?;
+        )?
+    } else {
+        project::canonical_interface_sources(
+            &all_interfaces,
+            &required_interface_plans.standalone_interfaces,
+            &[],
+            &class_names,
+            &HashSet::new(),
+            &HashSet::new(),
+        )?
+    };
+
+    if project::shared_interface_members_enabled() {
         plan_existing_shared_interface_sources(
             output_dir,
-            &canonical_sources,
-            reserved_non_interface_output_names,
+            &interface_emission_plan,
+            &effective_reserved_non_interface_output_names,
         )?;
     } else {
         plan_unflagged_existing_shared_interface_sources(
             output_dir,
-            all_interfaces.into_iter().filter(|iface| {
-                !class_names.contains(&iface.name)
-                    && !reserved_non_interface_output_names.contains(&iface.name)
-                    && !iface.iid.is_empty()
-            }),
+            interface_emission_plan
+                .iter()
+                .map(|source| &source.interface)
+                .filter(|iface| {
+                    !class_names.contains(&iface.name)
+                        && !effective_reserved_non_interface_output_names.contains(&iface.name)
+                        && !iface.iid.is_empty()
+                }),
         )?;
     }
     Ok(())
@@ -1549,15 +1568,12 @@ fn preflight_js_generation_batch(
 fn generate_js_files(
     output_dir: &Path,
     all_classes: &[meta::ClassMeta],
-    all_interfaces: &[meta::InterfaceMeta],
     all_enums: &[TypeMeta],
-    shared_interfaces: &[meta::InterfaceMeta],
     known_types: &HashSet<String>,
     delegate_type_names: &HashSet<String>,
-    canonical_interface_sources: Option<&[project::CanonicalInterfaceSource]>,
+    interface_emission_plan: &[project::CanonicalInterfaceSource],
     standalone_interface_iids: &HashSet<String>,
     shared_member_source_identities: &HashSet<project::StandaloneInterfaceIdentity>,
-    excluded_interface_import_names: &HashSet<String>,
     reserved_non_interface_output_names: &HashSet<String>,
     delegate_sigs: &HashMap<String, String>,
     delegate_sig_refs: &HashMap<String, Vec<String>>,
@@ -1604,22 +1620,22 @@ fn generate_js_files(
             .chain(enum_output_names),
     )?;
 
-    let preserved_shared_source_names = canonical_interface_sources
-        .map(|canonical_sources| {
-            plan_existing_shared_interface_sources(
-                output_dir,
-                canonical_sources,
-                reserved_non_interface_output_names,
-            )
-        })
-        .transpose()?
-        .unwrap_or_default();
-    let unflagged_preserved_shared_source_identities = if canonical_interface_sources.is_none() {
+    let shared_interface_members_enabled = project::shared_interface_members_enabled();
+    let preserved_shared_source_names = if shared_interface_members_enabled {
+        plan_existing_shared_interface_sources(
+            output_dir,
+            interface_emission_plan,
+            reserved_non_interface_output_names,
+        )?
+    } else {
+        HashSet::new()
+    };
+    let unflagged_preserved_shared_source_identities = if !shared_interface_members_enabled {
         plan_unflagged_existing_shared_interface_sources(
             output_dir,
-            shared_interfaces
+            interface_emission_plan
                 .iter()
-                .chain(all_interfaces)
+                .map(|source| &source.interface)
                 .filter(|iface| {
                     !class_names.contains(iface.name.as_str())
                         && !reserved_non_interface_output_names.contains(&iface.name)
@@ -1630,83 +1646,33 @@ fn generate_js_files(
         HashSet::new()
     };
 
-    if let Some(canonical_sources) = canonical_interface_sources {
-        for source in canonical_sources {
-            let iface = &source.interface;
-            if reserved_non_interface_output_names.contains(&iface.name) {
-                continue;
-            }
-            if preserved_shared_source_names.contains(&iface.name) {
-                continue;
-            }
-            let projected = project::project_interface_with_shared_member_source(
-                iface,
-                known_types,
-                delegate_type_names,
-                delegate_sigs,
-                delegate_sig_refs,
-                delegate_param_wraps,
-                source.shared_member_source,
-            );
-            let js = render_js::render(&projected);
-            let dts = render_dts::render(&projected);
-            emit(&iface.name, &js, &dts)?;
+    for source in interface_emission_plan {
+        let iface = &source.interface;
+        if reserved_non_interface_output_names.contains(&iface.name) {
+            continue;
         }
-    } else {
-        for iface in shared_interfaces {
-            if class_names.contains(iface.name.as_str()) {
-                continue;
-            }
-            if reserved_non_interface_output_names.contains(&iface.name) {
-                continue;
-            }
-            if !is_emittable_interface(iface) {
-                continue;
-            }
-            let preserve_shared_source =
-                project::standalone_interface_identity(iface).is_some_and(|identity| {
-                    unflagged_preserved_shared_source_identities.contains(&identity)
-                });
-            let projected = project::project_interface_with_shared_member_source(
-                iface,
-                known_types,
-                delegate_type_names,
-                delegate_sigs,
-                delegate_sig_refs,
-                delegate_param_wraps,
-                preserve_shared_source,
-            );
-            let js = render_js::render(&projected);
-            let dts = render_dts::render(&projected);
-            emit(&iface.name, &js, &dts)?;
+        if preserved_shared_source_names.contains(&iface.name) {
+            continue;
         }
-        for iface in all_interfaces {
-            if class_names.contains(iface.name.as_str()) {
-                continue;
-            }
-            if reserved_non_interface_output_names.contains(&iface.name) {
-                continue;
-            }
-            if !is_emittable_interface(iface) {
-                continue;
-            }
-            let preserve_shared_source =
-                project::standalone_interface_identity(iface).is_some_and(|identity| {
-                    unflagged_preserved_shared_source_identities.contains(&identity)
-                });
-            let projected = project::project_interface_with_shared_member_source(
-                iface,
-                known_types,
-                delegate_type_names,
-                delegate_sigs,
-                delegate_sig_refs,
-                delegate_param_wraps,
-                preserve_shared_source,
-            );
-            let js = render_js::render(&projected);
-            let dts = render_dts::render(&projected);
-            emit(&iface.name, &js, &dts)?;
+        if !is_emittable_interface(iface) {
+            continue;
         }
+        let preserve_shared_source =
+            project::standalone_interface_identity(iface).is_some_and(|identity| {
+                unflagged_preserved_shared_source_identities.contains(&identity)
+            });
+        let projected = project::project_interface_with_shared_member_source(
+            iface,
+            known_types,
+            delegate_type_names,
+            delegate_sigs,
+            delegate_sig_refs,
+            delegate_param_wraps,
+            source.shared_member_source || preserve_shared_source,
+        );
+        let js = render_js::render(&projected);
+        let dts = render_dts::render(&projected);
+        emit(&iface.name, &js, &dts)?;
     }
     for en in all_enums {
         if let TypeMeta::Enum { name, .. } = en {
@@ -1755,7 +1721,7 @@ fn generate_js_files(
             delegate_type_names,
             standalone_interface_iids,
             shared_member_source_identities,
-            excluded_interface_import_names,
+            reserved_non_interface_output_names,
             delegate_sigs,
             delegate_sig_refs,
             delegate_param_wraps,
@@ -3943,23 +3909,23 @@ mod tests {
             .filter(|source| source.shared_member_source)
             .map(|source| source.identity.clone())
             .collect();
-        generate_js_files(
+        project::set_shared_interface_members(true);
+        let result = generate_js_files(
             output,
-            &[],
-            &[],
             &[],
             &[],
             &known_types,
             &HashSet::new(),
-            Some(sources),
+            sources,
             &HashSet::new(),
             &shared_source_identities,
             &HashSet::new(),
-            &HashSet::new(),
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
-        )
+        );
+        project::set_shared_interface_members(false);
+        result
     }
 
     #[test]
@@ -4151,6 +4117,120 @@ mod tests {
 
         assert_eq!(fs::read(output.join("IValue.js")).unwrap(), original_js);
         fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
+    fn legacy_standalone_layout_survives_nonshareable_identity_planning() {
+        let iid = "11111111-1111-1111-1111-111111111111";
+        let first_interface = meta::InterfaceMeta {
+            name: "IValue".into(),
+            namespace: "Contoso".into(),
+            iid: iid.into(),
+            methods: vec![meta::MethodMeta {
+                name: "get_Value".into(),
+                raw_name: "get_Value".into(),
+                vtable_index: 6,
+                return_type: Some(TypeMeta::I32),
+                is_property_getter: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut second_interface = first_interface.clone();
+        second_interface.namespace = "Fabrikam".into();
+        let classes = vec![
+            meta::ClassMeta {
+                name: "Widget".into(),
+                namespace: "Contoso".into(),
+                full_name: "Contoso.Widget".into(),
+                required_interfaces: vec![first_interface],
+                ..Default::default()
+            },
+            meta::ClassMeta {
+                name: "Gadget".into(),
+                namespace: "Fabrikam".into(),
+                full_name: "Fabrikam.Gadget".into(),
+                required_interfaces: vec![second_interface],
+                ..Default::default()
+            },
+        ];
+        let required_interfaces = required_interface_plans(&classes);
+        assert_eq!(
+            required_interfaces.standalone_iids,
+            HashSet::from([iid.into()])
+        );
+        assert_eq!(required_interfaces.standalone_interfaces.len(), 1);
+        assert!(required_interfaces.shared_member_candidates.is_empty());
+
+        let class_names = classes
+            .iter()
+            .map(|class| class.name.clone())
+            .collect::<HashSet<_>>();
+        let excluded_shared_sources = HashSet::from(["IValue".into()]);
+        let emission_plan = project::canonical_interface_sources(
+            &[],
+            &required_interfaces.standalone_interfaces,
+            &required_interfaces.shared_member_candidates,
+            &class_names,
+            &excluded_shared_sources,
+            &HashSet::new(),
+        )
+        .unwrap();
+        assert_eq!(emission_plan.len(), 1);
+        assert_eq!(emission_plan[0].interface.name, "IValue");
+        assert!(!emission_plan[0].shared_member_source);
+
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join(format!("legacy-standalone-layout-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let baseline = root.join("baseline");
+        let shared = root.join("shared");
+        fs::create_dir_all(&baseline).unwrap();
+        fs::create_dir_all(&shared).unwrap();
+        let known_types = HashSet::from(["Widget".into(), "Gadget".into(), "IValue".into()]);
+        for (output, enabled) in [(&baseline, false), (&shared, true)] {
+            project::set_shared_interface_members(enabled);
+            generate_js_files(
+                output,
+                &classes,
+                &[],
+                &known_types,
+                &HashSet::new(),
+                &emission_plan,
+                &required_interfaces.standalone_iids,
+                &HashSet::new(),
+                &HashSet::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+            )
+            .unwrap();
+        }
+        project::set_shared_interface_members(false);
+
+        for class_name in ["Widget", "Gadget"] {
+            let baseline_js =
+                fs::read_to_string(baseline.join(format!("{class_name}.js"))).unwrap();
+            let shared_js = fs::read_to_string(shared.join(format!("{class_name}.js"))).unwrap();
+            let baseline_dts =
+                fs::read_to_string(baseline.join(format!("{class_name}.d.ts"))).unwrap();
+            let shared_dts = fs::read_to_string(shared.join(format!("{class_name}.d.ts"))).unwrap();
+            assert_eq!(shared_js, baseline_js);
+            assert_eq!(shared_dts, baseline_dts);
+            assert!(shared_js.contains("require('./IValue.js')"));
+            assert!(!shared_js.contains("class IValue"));
+            assert!(!shared_dts.contains("export declare class IValue"));
+        }
+        assert_eq!(
+            fs::read(shared.join("IValue.js")).unwrap(),
+            fs::read(baseline.join("IValue.js")).unwrap()
+        );
+        assert_eq!(
+            fs::read(shared.join("IValue.d.ts")).unwrap(),
+            fs::read(baseline.join("IValue.d.ts")).unwrap()
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
