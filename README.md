@@ -179,7 +179,7 @@ For each WinRT class the codegen emits a typed wrapper, factory, interface regis
 ### Shared interface members
 
 Large JavaScript projections can opt into shared inherited-interface
-implementations without changing concrete class declarations or member names:
+implementations while preserving the public declaration API and import paths:
 
 ```powershell
 dynwinrt-codegen generate `
@@ -192,12 +192,15 @@ dynwinrt-codegen generate `
 The generated concrete prototypes receive the same method and accessor
 descriptors from standalone shared interface prototypes. Overloaded or
 conflicting members remain class-local, raw interface wrapper classes remain
-available, and the option does not change generated `.d.ts` files. Only
-required interfaces already canonicalized as standalone shared wrappers
-participate; one-off inline required interfaces remain class-local. Generation
-without this flag is unchanged. If a standalone interface filename is
-ambiguous between distinct interface identities, none of those identities
-participate in sharing and their inherited members remain class-local.
+available, and the public declaration API and import paths are preserved. Class
+deep modules may replace inline required-interface declarations with equivalent
+re-exports from canonical standalone interface declarations. Only required
+interfaces already canonicalized as standalone shared wrappers participate;
+one-off inline required interfaces remain class-local. Generation without this
+flag remains byte-compatible with the default output. If a standalone
+interface filename is ambiguous between distinct interface identities, none of
+those identities participate in sharing and their inherited members remain
+class-local.
 
 Focused validation:
 

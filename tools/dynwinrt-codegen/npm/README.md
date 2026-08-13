@@ -71,13 +71,15 @@ npx dynwinrt-codegen generate `
 
 The generated concrete prototypes reuse method and accessor descriptors from
 the standalone required-interface prototypes. Overloaded or conflicting
-members remain class-local, raw interface wrappers remain available, generated
-`.d.ts` files are unchanged, and generation without the flag is unchanged.
-Only interfaces already emitted as canonical standalone shared wrappers
-participate; one-off inline required interfaces remain class-local. Generation
-excludes every identity behind a standalone interface filename that is
-ambiguous between distinct interface identities; those inherited members
-remain class-local.
+members remain class-local, and raw interface wrappers remain available. The
+public declaration API and import paths are preserved. Class deep modules may
+replace inline required-interface declarations with equivalent re-exports from
+canonical standalone interface declarations. Only interfaces already emitted
+as canonical standalone shared wrappers participate; one-off inline required
+interfaces remain class-local. Generation without the flag remains
+byte-compatible with the default output. Generation excludes every identity
+behind a standalone interface filename that is ambiguous between distinct
+interface identities; those inherited members remain class-local.
 
 ## What gets generated
 
