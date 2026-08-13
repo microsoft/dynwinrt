@@ -212,6 +212,26 @@ impl ArrayData {
         }
     }
 
+    /// Return the raw buffer as a typed slice when this array is CoTaskMem-backed
+    /// and the requested element width matches.
+    ///
+    /// # Safety
+    /// Caller must ensure `T` matches the semantic element type.
+    pub unsafe fn try_as_typed_slice<T: Copy>(&self) -> Option<&[T]> {
+        match &self.buffer {
+            ArrayBuffer::CoTaskMem { ptr, len }
+                if std::mem::size_of::<T>() == self.element_type.element_size() =>
+            {
+                if *len == 0 {
+                    Some(&[])
+                } else {
+                    Some(unsafe { std::slice::from_raw_parts(*ptr as *const T, *len) })
+                }
+            }
+            ArrayBuffer::CoTaskMem { .. } | ArrayBuffer::Values(_) => None,
+        }
+    }
+
     // ------------------------------------------------------------------
     // Per-element access (works for all types)
     // ------------------------------------------------------------------

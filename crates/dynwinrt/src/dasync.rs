@@ -382,6 +382,9 @@ use crate::metadata_table::TypeHandle;
 /// Callback type for progress notifications.
 pub type ProgressCallback = Box<dyn Fn(WinRTValue) + Send + Sync>;
 
+/// Callback type for progress notifications that can report dispatch failure.
+pub type ProgressResultCallback = Box<dyn Fn(WinRTValue) -> HRESULT + Send + Sync>;
+
 /// Create a progress handler for a WithProgress async operation.
 ///
 /// Reuses `delegate::create_delegate` — the progress handler is simply a
@@ -395,6 +398,22 @@ pub fn create_progress_handler(
     progress_type: TypeHandle,
     callback: ProgressCallback,
 ) -> IUnknown {
+    create_progress_handler_with_result(
+        handler_iid,
+        progress_type,
+        Box::new(move |value| {
+            callback(value);
+            HRESULT(0)
+        }),
+    )
+}
+
+/// Create a progress handler whose callback HRESULT is returned to WinRT.
+pub fn create_progress_handler_with_result(
+    handler_iid: GUID,
+    progress_type: TypeHandle,
+    callback: ProgressResultCallback,
+) -> IUnknown {
     // Progress handler Invoke signature: (sender: Object, progress: TProgress)
     let sender_type = progress_type
         .table()
@@ -405,9 +424,10 @@ pub fn create_progress_handler(
         Box::new(move |args: &[WinRTValue]| {
             // args[0] = sender, args[1] = progress value
             if args.len() >= 2 {
-                callback(args[1].clone());
+                callback(args[1].clone())
+            } else {
+                HRESULT(0)
             }
-            HRESULT(0)
         });
 
     crate::delegate::create_delegate(handler_iid, param_types, delegate_callback)
@@ -598,6 +618,22 @@ mod tests {
 
         assert!(result.is_ok());
         assert_eq!(received.load(Ordering::SeqCst), 42);
+
+        let failing_handler = super::create_progress_handler_with_result(
+            handler_iid,
+            reg.make(TypeKind::U64),
+            Box::new(|_| HRESULT(0x80004005u32 as i32)),
+        );
+        let failing_vtable =
+            unsafe { &**(failing_handler.as_raw() as *const *const ProgressHandlerVtbl) };
+        let result = unsafe {
+            (failing_vtable.invoke)(
+                failing_handler.as_raw(),
+                std::ptr::null_mut(),
+                42usize as *mut std::ffi::c_void,
+            )
+        };
+        assert_eq!(result, HRESULT(0x80004005u32 as i32));
     }
 
     /// Test SetProgress on a real IAsyncOperationWithProgress using HTTP BufferAllAsync.

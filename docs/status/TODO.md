@@ -24,15 +24,21 @@ _None currently. Reserved for issues that make v0.1 unshippable (crash on happy 
 
   Fix pattern: at every COM ABI entry, validate each out-pointer against null and return `E_POINTER`; convert `.unwrap()` on incoming COM pointers to `Result` + `E_UNEXPECTED`.
 
-- [ ] **JS `u64` round-trips through signed integers**. `to_u64_vec()` returns `Vec<i64>` and `from_u64_values()` takes `Vec<i64>` (`bindings/js/src/lib.rs:809-810, 892-895`). Also `DynWinRTValue::u64(value: i64)` at line 470 casts negatives to giant unsigned values silently. Values > `i64::MAX` are silent data corruption. Switch to `BigInt` or `u64` on the JS boundary.
+- [x] **JS 64-bit integer round trips**. Scalar, array, and struct-field
+      boundaries accept range-checked `bigint` or safe integers. Array outputs
+      use `bigint[]`, preserving the complete signed and unsigned 64-bit ranges.
 
-- [ ] **JS binding: TSFN failure returns success**. `bindings/js/src/lib.rs:1463` discards the return of `tsfn.call(...)` and always returns `HRESULT(0)`. When the JS event queue is closed or the env is tearing down, WinRT sees success but the callback is silently dropped. Map failures to `E_FAIL` / a cancellation code.
+- [x] **JS binding: TSFN failure propagation**. Delegate and progress callbacks
+      map a failed TSFN queue operation to `E_FAIL` instead of reporting
+      `S_OK` for a callback that was not accepted. The binding owns its TSFN
+      payload lifecycle, releases rejected and teardown-drained values, uses a
+      finite queue, and serializes calls with per-environment cleanup.
 
-- [ ] **JS binding: panic-shaped public APIs**. Two public methods still `panic!` on ordinary type mismatches, which propagates as a Node abort rather than a JS `throw`:
-  - `bindings/js/src/lib.rs:645` — `DynWinRTValue::to_number` for unsupported kinds
-  - `bindings/js/src/lib.rs:692` — `DynWinRTValue::as_raw` for non-object values
-
-  Convert both to `napi::Result<T>`.
+- [x] **JS binding: panic-shaped public APIs**. Invalid value conversions,
+      raw-pointer access, primitive array conversions, array indexes, and
+      struct field accesses now return `napi::Result<T>` errors. Struct fields
+      validate type, numeric range, and nested struct identity before entering
+      core accessors.
 
 - [ ] **Codegen: `extract_iid` silently zero-fills malformed GuidAttribute**. `tools/dynwinrt-codegen/src/meta.rs:1030-1051` — if any GuidAttribute field is the wrong integer width, helpers return `0`, producing a plausible-but-wrong IID that will corrupt interface registration without any error. Treat non-matching shapes as a hard error / empty IID.
 
@@ -58,7 +64,11 @@ _None currently. Reserved for issues that make v0.1 unshippable (crash on happy 
 
 - [ ] **Rust: map key semantics under-specified**. `crates/dynwinrt/src/map.rs:79-120` — pointer identity is the default, with an ad-hoc string extraction path for `IPropertyValue`. Define one contract (identity vs value equality) and enforce it explicitly.
 
-- [ ] **JS: N-API result codes ignored on same-thread delegate path**. `bindings/js/src/lib.rs:1416-1448` — `napi_get_undefined`, `napi_is_exception_pending`, `napi_get_and_clear_last_exception`, `napi_close_handle_scope` return statuses are dropped. Any failure can leave a pending exception across the ABI while still returning `S_OK`. Check every status.
+- [x] **JS: same-thread delegate N-API status handling**. Global lookup,
+      callback invocation, exception inspection/clearing, fatal exception
+      forwarding, and handle-scope closure are checked and mapped to a failing
+      HRESULT when dispatch cannot complete. Each delegate also carries a
+      `napi_async_context`, preserving `async_hooks` and `AsyncLocalStorage`.
 
 - [ ] **JS: `DynWinRtStruct::set_object` silently no-ops**. `bindings/js/src/lib.rs:1103-1125` — unsupported input kinds hit `_ => {}`. Return `napi::Result<()>` with a clear error.
 

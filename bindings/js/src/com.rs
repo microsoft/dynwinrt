@@ -4553,17 +4553,17 @@ impl DynCom {
   }
 
   #[napi]
-  pub fn to_number(value: &DynWinRTValue) -> i32 {
+  pub fn to_number(value: &DynWinRTValue) -> napi::Result<f64> {
     value.to_number()
   }
 
   #[napi]
-  pub fn to_bool(value: &DynWinRTValue) -> bool {
+  pub fn to_bool(value: &DynWinRTValue) -> napi::Result<bool> {
     value.to_bool()
   }
 
   #[napi]
-  pub fn to_f64(value: &DynWinRTValue) -> f64 {
+  pub fn to_f64(value: &DynWinRTValue) -> napi::Result<f64> {
     value.to_f64()
   }
 

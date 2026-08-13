@@ -35,8 +35,9 @@ pub use crate::composition::{
     compose_winrt, compose_winrt_with_overrides,
 };
 pub use crate::dasync::{
-    AsyncCompletedCallback, ProgressCallback, WinRTAsyncFuture, create_progress_handler,
-    get_async_results, set_async_completed_handler,
+    AsyncCompletedCallback, ProgressCallback, ProgressResultCallback, WinRTAsyncFuture,
+    create_progress_handler, create_progress_handler_with_result, get_async_results,
+    set_async_completed_handler,
 };
 pub use crate::dispatcher_queue::{SystemDispatcherQueue, SystemDispatcherQueueHandle};
 pub use crate::element_factory::{

@@ -924,9 +924,19 @@ if (missingWinuiFixtures.length > 0) {
 
 test('round-trip WinRT values', (t) => {
   t.is(DynWinRtValue.i32(42).toNumber(), 42)
+  t.is(DynWinRtValue.u32(0xffffffff).toNumber(), 0xffffffff)
   t.is(DynWinRtValue.i64(-42n).toI64Bigint(), -42n)
   t.is(DynWinRtValue.u64(2n ** 63n).toU64Bigint(), 2n ** 63n)
   t.is(DynWinRtValue.u64(42).toI64(), 42)
+  t.throws(() => DynWinRtValue.i64(9_007_199_254_740_992n).toI64(), {
+    message: /safe-integer range.*bigint conversion/,
+  })
+  t.throws(() => DynWinRtValue.u64(9_007_199_254_740_992n).toI64(), {
+    message: /safe-integer range.*bigint conversion/,
+  })
+  t.throws(() => DynWinRtValue.u64(2n ** 63n).toI64(), {
+    message: /greater than i64::MAX/,
+  })
   t.throws(() => DynWinRtValue.u64(-1), {
     message: /non-negative safe integer/,
   })
@@ -939,6 +949,81 @@ test('round-trip WinRT values', (t) => {
   })
   t.is(DynWinRtValue.hstring('hello').toString(), 'hello')
   t.true(DynWinRtValue.nullValue().isNull())
+})
+
+test('invalid WinRT value conversions throw JavaScript errors', (t) => {
+  const value = DynWinRtValue.hstring('not numeric')
+
+  t.throws(() => value.toNumber(), { message: /Cannot convert.*to number/ })
+  t.throws(() => value.toBool(), { message: /Cannot convert.*to number/ })
+  t.throws(() => value.toI64(), { message: /Cannot convert.*to number/ })
+  t.throws(() => value.toF64(), { message: /Cannot convert.*to number/ })
+  t.throws(() => value.asRaw(), { message: /non-object/ })
+  t.throws(() => DynCom.toNumber(value), { message: /Cannot convert.*to number/ })
+})
+
+test('u64 arrays and struct fields preserve the full unsigned range', (t) => {
+  const values = [0n, 2n ** 63n, 2n ** 64n - 1n]
+  const array = DynWinRtArray.fromU64Values(values)
+  t.deepEqual(array.toU64Vec(), values)
+  t.deepEqual(DynWinRtArray.fromU64Values([42]).toU64Vec(), [42n])
+  t.throws(() => DynWinRtArray.fromU64Values([-1]), {
+    message: /non-negative safe integer/,
+  })
+  t.throws(() => DynWinRtArray.fromU64Values([2n ** 64n]), {
+    message: /fit in an unsigned 64-bit integer/,
+  })
+
+  const structType = DynWinRtType.structType('DynWinRT.Tests.IntegerBoundary', [
+    DynWinRtType.u64(),
+    DynWinRtType.i64(),
+  ])
+  const value = DynWinRtStruct.create(structType)
+  value.setU64(0, 2n ** 64n - 1n)
+  t.is(value.getU64(0), 2n ** 64n - 1n)
+  t.throws(() => value.setU64(0, -1n), {
+    message: /fit in an unsigned 64-bit integer/,
+  })
+  value.setI64(1, -(2n ** 63n))
+  t.is(value.getI64(1), -(2n ** 63n))
+  t.throws(() => value.setI64(1, 2n ** 63n), {
+    message: /fit in a signed 64-bit integer/,
+  })
+
+  const signedValues = [-(2n ** 63n), 0n, 2n ** 63n - 1n]
+  t.deepEqual(DynWinRtArray.fromI64Values(signedValues).toI64Vec(), signedValues)
+  t.throws(() => DynWinRtArray.fromI64Values([2n ** 63n]), {
+    message: /fit in a signed 64-bit integer/,
+  })
+})
+
+test('struct field access rejects invalid indexes, types, ranges, and identities', (t) => {
+  t.throws(() => DynWinRtStruct.create(DynWinRtType.i32()), {
+    message: /requires a struct type/,
+  })
+
+  const scalarType = DynWinRtType.structType('DynWinRT.Tests.ValidatedScalarFields', [
+    DynWinRtType.i32(),
+    DynWinRtType.u8(),
+  ])
+  const scalar = DynWinRtStruct.create(scalarType)
+  t.throws(() => scalar.getI32(2), { message: /out of bounds/ })
+  t.throws(() => scalar.getI32(2 ** 32), { message: /u32 range/ })
+  t.throws(() => scalar.getI32(1.9), { message: /integer in the u32 range/ })
+  t.throws(() => scalar.getU64(0), { message: /expected u64/ })
+  t.throws(() => scalar.setU8(1, 256), { message: /outside the u8 range/ })
+  t.throws(() => scalar.setU8(1, 2 ** 32), { message: /u32 range/ })
+  t.throws(() => scalar.setU8(1, 1.9), { message: /integer in the u32 range/ })
+  t.throws(() => scalar.setI32(0, 2 ** 32), { message: /i32 range/ })
+
+  const innerAType = DynWinRtType.structType('DynWinRT.Tests.InnerA', [DynWinRtType.i32()])
+  const innerBType = DynWinRtType.structType('DynWinRT.Tests.InnerB', [DynWinRtType.i32()])
+  const outerType = DynWinRtType.structType('DynWinRT.Tests.Outer', [innerAType])
+  const outer = DynWinRtStruct.create(outerType)
+  const innerB = DynWinRtStruct.create(innerBType)
+  t.throws(() => outer.setStruct(0, innerB), {
+    message: /requires Struct.*found Struct/,
+  })
 })
 
 test('box IReference values', (t) => {
@@ -992,10 +1077,16 @@ test('release WinRT object values deterministically', (t) => {
 test('round-trip WinRT value arrays', (t) => {
   const array = DynWinRtArray.fromI32Values([1, 2, 3])
   t.is(array.len(), 3)
+  t.deepEqual(array.toI32Vec(), [1, 2, 3])
   t.deepEqual(
     array.toValues().map((value) => value.toNumber()),
     [1, 2, 3],
   )
+  t.deepEqual([...DynWinRtArray.fromU8Values([1, 2, 3]).toBuffer()], [1, 2, 3])
+  t.throws(() => array.toU64Vec(), { message: /element type I32/ })
+  t.throws(() => array.get(3), { message: /out of bounds/ })
+  t.throws(() => array.get(2 ** 32), { message: /u32 range/ })
+  t.throws(() => array.get(1.9), { message: /integer in the u32 range/ })
 })
 
 test('create empty vectors for large struct element types', (t) => {

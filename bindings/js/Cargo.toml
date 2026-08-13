@@ -11,6 +11,9 @@ repository = "https://github.com/microsoft/dynwinrt"
 [lib]
 crate-type = ["cdylib"]
 
+[features]
+test-hooks = []
+
 [dependencies]
 napi = { version = "3", features = ["napi7"] }
 napi-derive = "3.0.0"
