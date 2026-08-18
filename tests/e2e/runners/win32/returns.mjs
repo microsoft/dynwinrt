@@ -136,21 +136,26 @@ const year = systemTimeBytes.readUInt16LE(0);
 const month = systemTimeBytes.readUInt16LE(2);
 assert(year >= 2020);
 assert(month >= 1 && month <= 12);
+console.log("[win32-e2e] system time aggregate passed");
 
 const oneTick = createFILETIME(Buffer.from([1, 0, 0, 0, 0, 0, 0, 0]));
 const twoTicks = createFILETIME(Buffer.from([2, 0, 0, 0, 0, 0, 0, 0]));
 assert.equal(ftAddFt(oneTick, twoTicks).bytes.readUInt32LE(0), 3);
+console.log("[win32-e2e] by-value FILETIME call passed");
 
 const processHandle = openProcess(0x1000, false, process.pid);
 assert(processHandle.result);
 processHandle.result.close();
 assert(processHandle.result.closed);
+console.log("[win32-e2e] OpenProcess ownership passed");
 
 const attributes = createSecurityAttributes({
   securityDescriptor: null,
   inheritHandle: false,
 });
+console.log("[win32-e2e] SECURITY_ATTRIBUTES builder passed");
 const pipe = createPipe(attributes, 0);
+console.log("[win32-e2e] CreatePipe call returned");
 assert.equal(pipe.result, true);
 assert(pipe.hReadPipe);
 assert(pipe.hWritePipe);
