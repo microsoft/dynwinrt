@@ -20,8 +20,8 @@ The sample covers:
 
 ## Prerequisites
 
-- Windows 10 version 1809 or later;
-- Node.js and Rust/Cargo;
+- Windows 10 version 2004 or later;
+- Node.js 22.12 or later and Rust/Cargo;
 - a Windows SDK containing `Windows.winmd`;
 - `Microsoft.Windows.SDK.Win32Metadata` in the NuGet global cache (or set
   `DYNWINRT_WIN32_WINMD`); and

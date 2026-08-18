@@ -9,13 +9,14 @@
     "setup-identity": "powershell -NoProfile -ExecutionPolicy Bypass -File ./setup-identity.ps1",
     "check": "npm run generate && npm run setup-identity && electron . --validate",
     "demo": "npm run setup-identity && electron . --demo",
-    "start": "npm run setup-identity && electron ."
+    "start": "npm run setup-identity && electron .",
+    "postinstall": "install-electron"
   },
   "dependencies": {
     "@microsoft/dynwinrt": "file:../../../bindings/js"
   },
   "devDependencies": {
     "@microsoft/winappcli": "^0.5.0",
-    "electron": "^41.10.3"
+    "electron": "^43.3.0"
   }
 }

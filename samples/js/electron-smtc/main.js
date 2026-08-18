@@ -28,7 +28,15 @@ function createWindow() {
   loopback = new MediaControlsLoopback(window, (event) => {
     if (!window.isDestroyed()) window.webContents.send("smtc:event", event);
   });
-  window.once("closed", () => loopback?.dispose());
+  window.once("closed", () => {
+    try {
+      loopback?.dispose();
+    } catch (error) {
+      console.error("Failed to dispose the media controls loopback.", error);
+    } finally {
+      loopback = undefined;
+    }
+  });
   return window;
 }
 
