@@ -4,44 +4,317 @@
     <meta charset="UTF-8" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self'"
+      content="default-src 'self'; img-src 'self'; script-src 'self'; style-src 'self'"
     />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>dynwinrt System Media Controls</title>
     <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
-    <main>
-      <h1>System Media Controls</h1>
-      <p>
-        Publish an Electron SMTC session, then discover and control it through
-        the global GSMTC session manager.
-      </p>
-      <div class="form">
-        <label>Title <input id="title" value="dynwinrt SMTC sample" /></label>
-        <label>Artist <input id="artist" value="dynwinrt" /></label>
-        <label
-          >Duration (seconds)
-          <input id="duration" type="number" value="300" min="1"
-        /></label>
-        <label
-          >Seek position (seconds)
-          <input id="position" type="number" value="42" min="0"
-        /></label>
-      </div>
-      <div class="actions">
-        <button id="initialize">Initialize</button>
-        <button id="update">Update metadata/timeline</button>
-        <button id="play">Play through GSMTC</button>
-        <button id="pause">Pause through GSMTC</button>
-        <button id="seek">Seek through GSMTC</button>
-        <button id="validate">Run full validation</button>
-      </div>
-      <h2>State</h2>
-      <pre id="status">Not initialized.</pre>
-      <h2>Events</h2>
-      <pre id="events">Waiting for events…</pre>
-    </main>
+    <div class="app-shell">
+      <header class="app-header">
+        <div class="brand">
+          <div class="app-mark" aria-hidden="true">♪</div>
+          <div>
+            <h1>System Media Controls</h1>
+            <p>SMTC publisher and GSMTC controller loopback</p>
+          </div>
+        </div>
+        <div class="header-actions">
+          <span id="connection-status" class="status-pill idle"
+            >Not initialized</span
+          >
+          <button id="validate" class="button subtle">Run validation</button>
+          <button id="initialize" class="button primary">
+            Start media session
+          </button>
+        </div>
+      </header>
+
+      <main>
+        <section class="player-surface">
+          <aside class="playlist-pane">
+            <div class="pane-heading">
+              <span class="overline">Queue</span>
+              <h2>Runtime Radio</h2>
+              <p>Original audio synthesized locally</p>
+            </div>
+
+            <ol id="playlist" class="playlist">
+              <li class="active">Neon Window</li>
+              <li>Metadata Drive</li>
+              <li>Interop Nights</li>
+            </ol>
+
+            <details class="metadata-editor">
+              <summary>Edit current metadata</summary>
+              <div class="form-grid">
+                <label>
+                  Title
+                  <input id="title" value="Neon Window" />
+                </label>
+                <label>
+                  Artist
+                  <input id="artist" value="dynwinrt Ensemble" />
+                </label>
+                <label>
+                  Duration in seconds
+                  <input id="duration" type="number" value="185" min="1" />
+                </label>
+                <button id="update" class="button primary">
+                  Publish metadata
+                </button>
+              </div>
+            </details>
+          </aside>
+
+          <section class="now-playing-pane">
+            <div class="cover-stage">
+              <img
+                id="publisher-artwork"
+                class="artwork"
+                src="./Assets/AlbumBlue.png"
+                alt="Current album artwork"
+              />
+            </div>
+
+            <div class="track-copy">
+              <span id="publisher-track-number" class="overline"
+                >Track 1 of 3</span
+              >
+              <h2 id="publisher-title">Neon Window</h2>
+              <p id="publisher-artist" class="artist">dynwinrt Ensemble</p>
+              <p id="publisher-album" class="secondary">
+                Runtime Radio · Electronic
+              </p>
+              <div class="state-row">
+                <span id="publisher-status" class="state-chip">Stopped</span>
+                <span id="publisher-rate" class="state-chip">1.00x</span>
+                <span id="publisher-mode" class="state-chip">Sequential</span>
+              </div>
+            </div>
+
+            <div class="timeline">
+              <input
+                id="seek"
+                type="range"
+                min="0"
+                max="185"
+                value="0"
+                aria-label="Seek through GSMTC"
+              />
+              <input
+                id="publisher-progress"
+                class="visually-hidden"
+                type="range"
+                min="0"
+                max="185"
+                value="0"
+                disabled
+                aria-hidden="true"
+              />
+              <div class="timeline-labels">
+                <span id="publisher-position">0:00</span>
+                <span id="seek-value" class="visually-hidden">0:00</span>
+                <span id="publisher-duration">3:05</span>
+              </div>
+            </div>
+
+            <div class="transport" aria-label="GSMTC transport controls">
+              <button
+                data-action="previous"
+                data-capability="previous"
+                class="icon-button"
+                aria-label="Previous track"
+                title="Previous track"
+              >
+                <svg viewBox="0 0 20 20" aria-hidden="true">
+                  <path d="M4 4h2v12H4V4Zm3 6 9-6v12l-9-6Z" />
+                </svg>
+              </button>
+              <button
+                data-action="rewind"
+                data-capability="rewind"
+                class="icon-button"
+                aria-label="Rewind 15 seconds"
+                title="Rewind 15 seconds"
+              >
+                <svg viewBox="0 0 20 20" aria-hidden="true">
+                  <path d="M9 4v4l-6-4v12l6-4v4l8-6-8-6Z" />
+                </svg>
+              </button>
+              <button
+                data-action="toggle"
+                data-capability="toggle"
+                class="icon-button play-button primary"
+                aria-label="Play or pause"
+                title="Play or pause"
+              >
+                <svg viewBox="0 0 20 20" aria-hidden="true">
+                  <path id="toggle-icon-path" d="M6 3.8v12.4L16 10 6 3.8Z" />
+                </svg>
+              </button>
+              <button
+                data-action="stop"
+                data-capability="stop"
+                class="icon-button"
+                aria-label="Stop"
+                title="Stop"
+              >
+                <svg viewBox="0 0 20 20" aria-hidden="true">
+                  <path d="M5 5h10v10H5V5Z" />
+                </svg>
+              </button>
+              <button
+                data-action="fastForward"
+                data-capability="fastForward"
+                class="icon-button"
+                aria-label="Forward 15 seconds"
+                title="Forward 15 seconds"
+              >
+                <svg viewBox="0 0 20 20" aria-hidden="true">
+                  <path d="M11 4v4l6-4v12l-6-4v4l-8-6 8-6Z" />
+                </svg>
+              </button>
+              <button
+                data-action="next"
+                data-capability="next"
+                class="icon-button"
+                aria-label="Next track"
+                title="Next track"
+              >
+                <svg viewBox="0 0 20 20" aria-hidden="true">
+                  <path d="m4 4 9 6-9 6V4Zm10 0h2v12h-2V4Z" />
+                </svg>
+              </button>
+            </div>
+
+            <div class="playback-options">
+              <div class="audio-status">
+                <div class="audio-glyph" aria-hidden="true">♫</div>
+                <div>
+                  <strong>Generated audio</strong>
+                  <span id="audio-status">Ready when playback starts</span>
+                </div>
+                <button id="audio-toggle" class="button subtle">Mute</button>
+              </div>
+
+              <label>
+                Speed
+                <select id="rate">
+                  <option value="0.5">0.50x</option>
+                  <option value="1" selected>1.00x</option>
+                  <option value="1.25">1.25x</option>
+                  <option value="1.5">1.50x</option>
+                  <option value="2">2.00x</option>
+                </select>
+              </label>
+
+              <label class="switch-option">
+                <input id="shuffle" type="checkbox" />
+                <span>Shuffle</span>
+              </label>
+
+              <label>
+                Repeat
+                <select id="repeat">
+                  <option value="0" selected>None</option>
+                  <option value="1">Track</option>
+                  <option value="2">List</option>
+                </select>
+              </label>
+            </div>
+
+            <details class="advanced-controls">
+              <summary>More transport controls</summary>
+              <div class="advanced-actions">
+                <button
+                  data-action="record"
+                  data-capability="record"
+                  class="button"
+                >
+                  Record request
+                </button>
+                <button
+                  data-action="channelDown"
+                  data-capability="channelDown"
+                  class="button"
+                >
+                  Channel down
+                </button>
+                <button
+                  data-action="channelUp"
+                  data-capability="channelUp"
+                  class="button"
+                >
+                  Channel up
+                </button>
+              </div>
+            </details>
+          </section>
+        </section>
+
+        <section class="observer-grid">
+          <article class="info-card gsmct-card">
+            <div class="card-heading">
+              <div>
+                <span class="overline">Observed through GSMTC</span>
+                <h2>Global media session</h2>
+              </div>
+              <span class="role-badge">Controller</span>
+            </div>
+            <div class="session-summary">
+              <img
+                id="controller-artwork"
+                class="artwork-small"
+                src="./Assets/AlbumBlue.png"
+                alt="Artwork observed through GSMTC"
+              />
+              <div>
+                <h3 id="controller-title">Waiting for session</h3>
+                <p id="controller-artist">No media properties yet</p>
+                <p id="controller-source" class="source-id">Source AUMID</p>
+              </div>
+            </div>
+            <div id="capabilities" class="capability-grid">
+              <span class="capability pending">Waiting for playback info</span>
+            </div>
+          </article>
+
+          <article class="info-card sessions-card">
+            <div class="card-heading">
+              <div>
+                <span class="overline">Windows discovery</span>
+                <h2>Media sessions</h2>
+              </div>
+              <button id="refresh-sessions" class="button subtle">
+                Refresh
+              </button>
+            </div>
+            <div id="sessions" class="sessions">
+              <p class="empty-state">Start the sample to enumerate GSMTC.</p>
+            </div>
+          </article>
+        </section>
+
+        <details class="developer-tools">
+          <summary>Developer diagnostics</summary>
+          <div class="diagnostics">
+            <div class="diagnostics-heading">
+              <h2>SMTC and GSMTC event flow</h2>
+              <button id="clear-events" class="button subtle">Clear</button>
+            </div>
+            <ol id="events" class="event-list">
+              <li class="empty-state">Waiting for SMTC and GSMTC events.</li>
+            </ol>
+            <details class="validation-output">
+              <summary>Validation result</summary>
+              <pre id="status">No validation has run.</pre>
+            </details>
+          </div>
+        </details>
+      </main>
+    </div>
     <script src="./renderer.js"></script>
   </body>
 </html>

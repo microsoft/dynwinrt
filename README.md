@@ -162,9 +162,9 @@ Electron samples include:
   HWND-bound Classic COM interop.
 - [Share UI](samples/js/electron-share-ui/README.md) — typed WinRT and
   `IDataTransferManagerInterop`.
-- [System Media Controls](samples/js/electron-smtc/README.md) — complete SMTC
-  publication and GSMTC loopback control, with automated event and state
-  validation.
+- [System Media Controls](samples/js/electron-smtc/README.md) — interactive,
+  end-to-end SMTC publication and GSMTC loopback control with playlist,
+  artwork, live timeline, session discovery, and automated validation.
 
 For deployment, see
 [Package a dynwinrt Node.js application as MSIX](docs/guides/windows/msix-packaging.md).

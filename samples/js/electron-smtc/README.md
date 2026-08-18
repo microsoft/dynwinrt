@@ -12,11 +12,22 @@ The sample covers:
 
 - acquiring SMTC for an Electron `BrowserWindow` HWND through
   `ISystemMediaTransportControlsInterop`;
-- metadata and `SystemMediaTransportControlsDisplayUpdater`;
-- playback state and timeline updates;
-- play, pause, next, previous, seek, playback-rate, shuffle, and repeat requests;
-- SMTC and GSMTC event subscriptions; and
-- media-property, playback-info, and timeline round trips.
+- a three-track playlist with generated artwork, rich music metadata, and
+  `SystemMediaTransportControlsDisplayUpdater`;
+- a live playback clock with track transitions, seek, rate, shuffle, and repeat;
+- play, pause, toggle, stop, next, previous, record, fast-forward, rewind, and
+  channel requests;
+- SMTC sound-level, transport, and request events;
+- GSMTC manager, media-property, playback-info, and timeline events;
+- global session discovery and current-session highlighting; and
+- the complete GSMTC playback capability matrix.
+
+The UI presents the SMTC publisher and GSMTC controller side by side so each
+request and resulting state change is visible. A small Web Audio synthesizer
+generates original notes locally and follows the published playback state,
+track, position, and rate; no media files or network downloads are used. The
+window uses native Windows 11 Mica plus the system light/dark theme, accent
+color, and Fluent-style controls.
 
 ## Prerequisites
 
@@ -47,8 +58,11 @@ npm run generate
 npm start
 ```
 
-To launch the UI and immediately populate it with a complete successful
-loopback run:
+Use the GSMTC panel to control the published session, or use Windows hardware
+media keys and the system media UI. The session list also shows other media
+applications visible to GSMTC.
+
+To launch the UI and immediately populate it with a successful loopback run:
 
 ```powershell
 npm run demo
@@ -61,6 +75,8 @@ npm run check
 ```
 
 The check registers the Electron debug identity, runs a hidden Electron window,
-publishes an SMTC session, discovers it through GSMTC, issues real transport
-requests, verifies the resulting callbacks and state, prints the result as
-JSON, and exits nonzero on any failure.
+publishes an SMTC session, discovers it through GSMTC, issues every supported
+transport request, verifies artwork and metadata, exercises the live timeline
+and playlist, validates the capability matrix and event round trips, prints the
+result as JSON, and exits nonzero on any failure. Synthesized audio is disabled
+in this validation mode.
