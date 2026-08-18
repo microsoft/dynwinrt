@@ -23,6 +23,11 @@ pub use com::{
   DynComNativeStructArray, DynComNativeUnion, DynComPropVariant, DynComSafeArray,
   DynComSafeArrayBound, DynComType, DynComUnsafe, DynComUnsafeInterface, DynComVariant,
 };
+mod win32;
+pub use win32::{
+  DynWin32, DynWin32CallResult, DynWin32Function, DynWin32FunctionSpec, DynWin32NativeStruct,
+  DynWin32ParameterSpec, DynWin32Resource, DynWin32Unsafe, DynWin32Value,
+};
 mod async_promise;
 mod managed_tsfn;
 mod scheduled_start;

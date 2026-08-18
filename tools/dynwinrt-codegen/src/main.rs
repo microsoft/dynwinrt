@@ -12,11 +12,13 @@ use dynwinrt_codegen::codegen::com;
 use dynwinrt_codegen::codegen::package;
 use dynwinrt_codegen::codegen::python;
 use dynwinrt_codegen::codegen::typescript;
+use dynwinrt_codegen::codegen::win32;
 use dynwinrt_codegen::codegen::winrt::extensions::winui;
 use dynwinrt_codegen::codegen::{project, render_dts, render_js};
 use dynwinrt_codegen::com_metadata;
 use dynwinrt_codegen::meta;
 use dynwinrt_codegen::types::TypeMeta;
+use dynwinrt_codegen::win32_metadata;
 use dynwinrt_codegen::xml_doc::DocTable;
 
 #[derive(Parser)]
@@ -49,6 +51,17 @@ enum Commands {
 
     /// Measure complete safe Classic COM interface generation.
     ComCensus {
+        /// Path(s) to Windows.Win32.winmd metadata, separated by ';'.
+        #[arg(long, value_name = "PATH")]
+        winmd: String,
+
+        /// Emit one machine-readable JSON object.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Measure safe flat Win32 export generation.
+    Win32Census {
         /// Path(s) to Windows.Win32.winmd metadata, separated by ';'.
         #[arg(long, value_name = "PATH")]
         winmd: String,
@@ -140,6 +153,7 @@ enum Commands {
 }
 
 const COM_MANIFEST_FILE: &str = ".dynwinrt-com-manifest.json";
+const WIN32_MANIFEST_FILE: &str = ".dynwinrt-win32-manifest.json";
 
 #[derive(Debug, Default, Deserialize, Serialize)]
 struct ComGenerationManifest {
@@ -152,6 +166,18 @@ struct ComManifestUpdate {
     stale_files: BTreeSet<String>,
 }
 
+#[derive(Debug, Default, Deserialize, Serialize)]
+struct Win32GenerationManifest {
+    version: u32,
+    roots: BTreeMap<String, BTreeSet<String>>,
+}
+
+#[derive(Debug)]
+struct Win32ManifestUpdate {
+    manifest: Win32GenerationManifest,
+    stale_files: BTreeSet<String>,
+}
+
 #[derive(Debug, Serialize)]
 struct ComCensusResult {
     metadata: String,
@@ -159,6 +185,16 @@ struct ComCensusResult {
     complete_interfaces: usize,
     incomplete_interfaces: usize,
     coverage_percent: f64,
+}
+
+#[derive(Debug, Serialize)]
+struct Win32CensusResult {
+    metadata: String,
+    eligible_functions: usize,
+    complete_functions: usize,
+    omitted_functions: usize,
+    coverage_percent: f64,
+    omission_reasons: BTreeMap<String, usize>,
 }
 
 fn main() {
@@ -209,6 +245,93 @@ fn run_com_census(winmd: &str, json: bool) -> Result<(), String> {
     Ok(())
 }
 
+fn run_win32_census(winmd: &str, json: bool) -> Result<(), String> {
+    let functions = win32_metadata::parse_all_functions(winmd)
+        .ok_or_else(|| format!("Failed to load flat Win32 metadata from {winmd}"))?;
+    let mut containers = BTreeMap::<(String, String), Vec<win32_metadata::RawFunction>>::new();
+    for function in functions.iter().cloned() {
+        containers
+            .entry((function.namespace.clone(), function.container.clone()))
+            .or_default()
+            .push(function);
+    }
+    let mut omission_reasons = BTreeMap::new();
+    let mut complete = 0usize;
+    for ((namespace, class_name), functions) in containers {
+        let projection = win32::project_apis(&win32_metadata::RawApis {
+            namespace,
+            class_name,
+            functions,
+        });
+        complete += projection.complete_count();
+        for omission in projection.omitted {
+            *omission_reasons
+                .entry(win32_omission_reason_code(&omission.reason).to_string())
+                .or_insert(0) += 1;
+        }
+    }
+    let result = Win32CensusResult {
+        metadata: winmd.to_string(),
+        eligible_functions: functions.len(),
+        complete_functions: complete,
+        omitted_functions: functions.len() - complete,
+        coverage_percent: if functions.is_empty() {
+            0.0
+        } else {
+            complete as f64 * 100.0 / functions.len() as f64
+        },
+        omission_reasons,
+    };
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string(&result)
+                .map_err(|error| format!("Failed to serialize Win32 census: {error}"))?
+        );
+    } else {
+        println!(
+            "Flat Win32 complete functions: {}/{} ({:.6}%)",
+            result.complete_functions, result.eligible_functions, result.coverage_percent
+        );
+        for (reason, count) in &result.omission_reasons {
+            println!("  {count:>5}  {reason}");
+        }
+    }
+    Ok(())
+}
+
+fn win32_omission_reason_code(reason: &str) -> &'static str {
+    if reason.contains("calling convention") {
+        "calling-convention"
+    } else if reason.contains("variadic") {
+        "variadic"
+    } else if reason.contains("both x64 and ARM64") {
+        "architecture"
+    } else if reason.contains("System32 DLL") {
+        "module-policy"
+    } else if reason.contains("callback thunk") {
+        "callback"
+    } else if reason.contains("cleanup") {
+        "cleanup"
+    } else if reason.contains("pointer return lifetime") {
+        "return-ownership"
+    } else if reason.contains("native buffer") || reason.contains("count parameter") {
+        "buffer-contract"
+    } else if reason.contains("writable pointer") {
+        "writable-pointer"
+    } else if reason.contains("NativeStruct") {
+        "native-layout"
+    } else if reason.contains("pointer depth") || reason.contains("void is not") {
+        "pointer-contract"
+    } else if reason.contains("enum underlying") {
+        "enum-abi"
+    } else if reason.contains("unknown") || reason.contains("Unknown") {
+        "unknown-native-type"
+    } else {
+        "other"
+    }
+}
+
 fn parse_class_requests(
     class_names: &str,
     default_namespace: Option<&str>,
@@ -245,6 +368,9 @@ fn run() -> Result<(), String> {
         }
         Commands::ComCensus { winmd, json } => {
             run_com_census(&winmd, json)?;
+        }
+        Commands::Win32Census { winmd, json } => {
+            run_win32_census(&winmd, json)?;
         }
         Commands::Generate {
             winmd,
@@ -386,11 +512,16 @@ fn run() -> Result<(), String> {
             if let Some(ref cls_arg) = class_name {
                 let class_requests = parse_class_requests(cls_arg, namespace.as_deref())?;
 
-                // First: partition into WinRT classes and classic-COM interfaces.
+                // First: partition into WinRT, Classic COM, and flat Win32 domains.
                 let mut classes = Vec::new();
                 let mut com_interfaces: Vec<com_metadata::ComInterfaceMeta> = Vec::new();
                 let mut com_coclasses: Vec<com_metadata::ComCoclassMeta> = Vec::new();
+                let mut win32_apis: Vec<win32_metadata::RawApis> = Vec::new();
                 for (ns, cls) in &class_requests {
+                    if let Some(apis) = win32_metadata::parse_apis(&winmd, ns, cls) {
+                        win32_apis.push(apis);
+                        continue;
+                    }
                     if let Some(com_iface) = com_metadata::parse_com_interface(&winmd, ns, cls) {
                         // Route through classic-COM path when:
                         //   1) The interface is IUnknown-rooted (base +3), OR
@@ -440,7 +571,11 @@ fn run() -> Result<(), String> {
                 // JS files into a Python output directory would produce the
                 // wrong artifact types with no diagnostic. Reject the
                 // combination up front.
-                if lang != "js" && (!com_interfaces.is_empty() || !com_coclasses.is_empty()) {
+                if lang != "js"
+                    && (!com_interfaces.is_empty()
+                        || !com_coclasses.is_empty()
+                        || !win32_apis.is_empty())
+                {
                     let mut offenders: Vec<String> = Vec::new();
                     for ci in &com_interfaces {
                         offenders.push(format!(
@@ -454,6 +589,12 @@ fn run() -> Result<(), String> {
                             coclass.namespace, coclass.name
                         ));
                     }
+                    for apis in &win32_apis {
+                        offenders.push(format!(
+                            "{}.{} (flat Win32 DllImport container)",
+                            apis.namespace, apis.class_name
+                        ));
+                    }
                     return Err(format!(
                         "`--lang {}` is not supported for classic-COM interfaces \
                          (they emit only `.js` + `.d.ts` today). \
@@ -464,6 +605,18 @@ fn run() -> Result<(), String> {
                         offenders.join(", "),
                         lang
                     ));
+                }
+
+                if !win32_apis.is_empty() {
+                    let runtime_import = if import_name == "@microsoft/dynwinrt" {
+                        "@microsoft/dynwinrt/win32".to_string()
+                    } else {
+                        import_name.clone()
+                    };
+                    generate_win32_apis_batch(output_dir, &win32_apis, &runtime_import, dry_run)?;
+                    if classes.is_empty() && com_interfaces.is_empty() && com_coclasses.is_empty() {
+                        return Ok(());
+                    }
                 }
 
                 // Classic COM occupies its own ESM subpackage so its symbols
@@ -679,6 +832,29 @@ fn run() -> Result<(), String> {
                     }
                 }
             } else {
+                if let Some(flat_namespace) = namespace
+                    .as_deref()
+                    .filter(|namespace| namespace.starts_with("Windows.Win32."))
+                    .filter(|namespace| {
+                        com_metadata::first_classic_com_interface_in_namespace(&winmd, namespace)
+                            .is_none()
+                    })
+                    && let Some(apis) = win32_metadata::parse_apis(&winmd, flat_namespace, "Apis")
+                {
+                    if lang != "js" {
+                        return Err(format!(
+                            "`--lang {lang}` is not supported for flat Win32 namespace \
+                             `{flat_namespace}`; re-run with `--lang js`"
+                        ));
+                    }
+                    let runtime_import = if import_name == "@microsoft/dynwinrt" {
+                        "@microsoft/dynwinrt/win32".to_string()
+                    } else {
+                        import_name.clone()
+                    };
+                    generate_win32_apis_batch(output_dir, &[apis], &runtime_import, dry_run)?;
+                    return Ok(());
+                }
                 if lang == "py" && !dry_run {
                     clean_python_generated_output(output_dir)?;
                 }
@@ -1319,6 +1495,257 @@ fn write_js_barrel_and_manifest(output_dir: &Path, index_content: &str) -> Resul
     Ok(())
 }
 
+fn generate_win32_apis_batch(
+    output_dir: &Path,
+    apis: &[win32_metadata::RawApis],
+    runtime_import: &str,
+    dry_run: bool,
+) -> Result<(), String> {
+    let win32_output_dir = output_dir.join("win32");
+    let mut planned_files = BTreeMap::<String, String>::new();
+    let mut root_files = BTreeMap::<String, BTreeSet<String>>::new();
+    let mut namespaces = BTreeSet::new();
+
+    for apis in apis {
+        let (generated, omitted) = win32::generate_apis_files(apis, runtime_import);
+        for omission in &omitted {
+            eprintln!(
+                "warning: dynwinrt-codegen: omitting flat Win32 export `{}` - {}",
+                omission.identity, omission.reason
+            );
+        }
+        if generated.js.lines().all(|line| {
+            !line.trim_start().starts_with("exports.")
+                || line.trim_start().starts_with("exports.Apis")
+        }) {
+            return Err(format!(
+                "Flat Win32 codegen for {}.{} produced no complete safe exports",
+                apis.namespace, apis.class_name
+            ));
+        }
+
+        namespaces.insert(apis.namespace.clone());
+        let root = format!("{}.{}", apis.namespace, apis.class_name);
+        let mut files = vec![
+            (format!("{}.js", apis.class_name), generated.js),
+            (format!("{}.d.ts", apis.class_name), generated.dts),
+        ];
+        files.extend(generated.extra_files);
+        for (name, content) in files {
+            let relative = format!("{}/{}", apis.namespace, name);
+            if let Some(existing) = planned_files.insert(relative.clone(), content.clone())
+                && existing != content
+            {
+                return Err(format!(
+                    "Flat Win32 generation produced conflicting `{relative}` outputs"
+                ));
+            }
+            root_files.entry(root.clone()).or_default().insert(relative);
+        }
+    }
+
+    if dry_run {
+        for apis in apis {
+            println!(
+                "[dry-run] Would generate flat Win32 {}.{}",
+                apis.namespace, apis.class_name
+            );
+        }
+        return Ok(());
+    }
+
+    fs::create_dir_all(&win32_output_dir).map_err(|error| {
+        format!(
+            "Failed to create flat Win32 output directory {}: {error}",
+            win32_output_dir.display()
+        )
+    })?;
+    let manifest_update = prepare_win32_generation_manifest(&win32_output_dir, &root_files)?;
+    for (relative, content) in &planned_files {
+        let path = win32_output_dir.join(relative);
+        let parent = path
+            .parent()
+            .ok_or_else(|| format!("Flat Win32 output `{relative}` has no parent"))?;
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("Failed to create {}: {error}", parent.display()))?;
+        fs::write(&path, content)
+            .map_err(|error| format!("Failed to write {}: {error}", path.display()))?;
+    }
+    apply_win32_generation_manifest(&win32_output_dir, manifest_update)?;
+    for namespace in namespaces {
+        write_win32_namespace_index(&win32_output_dir.join(namespace))?;
+    }
+    write_win32_root_index(&win32_output_dir)?;
+    write_bindings_manifest(output_dir)?;
+    Ok(())
+}
+
+fn prepare_win32_generation_manifest(
+    win32_output_dir: &Path,
+    updated_roots: &BTreeMap<String, BTreeSet<String>>,
+) -> Result<Win32ManifestUpdate, String> {
+    let path = win32_output_dir.join(WIN32_MANIFEST_FILE);
+    let mut manifest = if path.exists() {
+        let content = fs::read_to_string(&path)
+            .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
+        serde_json::from_str::<Win32GenerationManifest>(&content).map_err(|error| {
+            format!(
+                "Invalid flat Win32 generation manifest {}: {error}",
+                path.display()
+            )
+        })?
+    } else {
+        Win32GenerationManifest {
+            version: 1,
+            roots: BTreeMap::new(),
+        }
+    };
+    if manifest.version != 1 {
+        return Err(format!(
+            "Unsupported flat Win32 generation manifest version {} in {}",
+            manifest.version,
+            path.display()
+        ));
+    }
+    for files in manifest.roots.values().chain(updated_roots.values()) {
+        for relative in files {
+            validate_win32_manifest_path(relative, &path)?;
+        }
+    }
+
+    let previous_files = updated_roots
+        .keys()
+        .filter_map(|root| manifest.roots.get(root))
+        .flatten()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    for (root, files) in updated_roots {
+        manifest.roots.insert(root.clone(), files.clone());
+    }
+    let retained_files = manifest
+        .roots
+        .values()
+        .flatten()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let stale_files = previous_files
+        .difference(&retained_files)
+        .cloned()
+        .collect();
+    Ok(Win32ManifestUpdate {
+        manifest,
+        stale_files,
+    })
+}
+
+fn validate_win32_manifest_path(relative: &str, manifest: &Path) -> Result<(), String> {
+    let path = Path::new(relative);
+    if path.is_absolute()
+        || path
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+        || !(relative.ends_with(".js") || relative.ends_with(".d.ts"))
+    {
+        return Err(format!(
+            "Refusing unsafe path `{relative}` in flat Win32 generation manifest {}",
+            manifest.display()
+        ));
+    }
+    Ok(())
+}
+
+fn apply_win32_generation_manifest(
+    win32_output_dir: &Path,
+    update: Win32ManifestUpdate,
+) -> Result<(), String> {
+    for relative in &update.stale_files {
+        let path = win32_output_dir.join(relative);
+        if path.exists() {
+            fs::remove_file(&path)
+                .map_err(|error| format!("Failed to remove {}: {error}", path.display()))?;
+        }
+    }
+    let path = win32_output_dir.join(WIN32_MANIFEST_FILE);
+    let content = serde_json::to_string_pretty(&update.manifest)
+        .map_err(|error| format!("Failed to serialize flat Win32 manifest: {error}"))?;
+    fs::write(&path, format!("{content}\n"))
+        .map_err(|error| format!("Failed to write {}: {error}", path.display()))
+}
+
+fn write_win32_namespace_index(namespace_dir: &Path) -> Result<(), String> {
+    let mut modules = fs::read_dir(namespace_dir)
+        .map_err(|error| format!("Failed to read {}: {error}", namespace_dir.display()))?
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            let name = path.file_stem()?.to_str()?.to_string();
+            (path.extension()?.to_str()? == "js" && name != "index").then_some(name)
+        })
+        .collect::<BTreeSet<_>>();
+    modules.remove("index");
+    let mut js = String::from("// Generated by dynwinrt-codegen - do not edit\n'use strict'\n");
+    let mut mjs = String::from("// Generated by dynwinrt-codegen - do not edit\n");
+    let mut dts = String::from("// Generated by dynwinrt-codegen - do not edit\n");
+    let mut exported = BTreeMap::<String, String>::new();
+    for module in modules {
+        js.push_str(&format!(
+            "Object.assign(exports, require('./{module}.js'))\n"
+        ));
+        dts.push_str(&format!("export * from './{module}.js'\n"));
+        let content = fs::read_to_string(namespace_dir.join(format!("{module}.js")))
+            .map_err(|error| format!("Failed to read flat Win32 module `{module}`: {error}"))?;
+        let exports = collect_com_cjs_exports(&content);
+        if !exports.is_empty() {
+            let binding = format!("_module_{}", normalize_python_package_name(&module));
+            mjs.push_str(&format!("import {binding} from './{module}.js'\n"));
+            for name in exports {
+                if let Some(existing) = exported.insert(name.clone(), module.clone()) {
+                    return Err(format!(
+                        "Flat Win32 namespace export `{name}` is ambiguous between `{existing}` and `{module}`"
+                    ));
+                }
+                mjs.push_str(&format!("export const {name} = {binding}.{name}\n"));
+            }
+        }
+    }
+    fs::write(namespace_dir.join("index.js"), js)
+        .map_err(|error| format!("Failed to write Win32 namespace index: {error}"))?;
+    fs::write(namespace_dir.join("index.mjs"), mjs)
+        .map_err(|error| format!("Failed to write Win32 namespace ESM index: {error}"))?;
+    fs::write(namespace_dir.join("index.d.ts"), dts)
+        .map_err(|error| format!("Failed to write Win32 namespace declarations: {error}"))
+}
+
+fn write_win32_root_index(win32_output_dir: &Path) -> Result<(), String> {
+    let namespaces = fs::read_dir(win32_output_dir)
+        .map_err(|error| format!("Failed to read {}: {error}", win32_output_dir.display()))?
+        .flatten()
+        .filter(|entry| entry.path().is_dir() && entry.path().join("index.js").is_file())
+        .filter_map(|entry| entry.file_name().to_str().map(str::to_string))
+        .collect::<BTreeSet<_>>();
+    let mut js = String::from("// Generated by dynwinrt-codegen - do not edit\n'use strict'\n");
+    let mut mjs = String::from("// Generated by dynwinrt-codegen - do not edit\n");
+    let mut dts = String::from("// Generated by dynwinrt-codegen - do not edit\n");
+    for namespace in namespaces {
+        let identifier = namespace.replace('.', "_");
+        js.push_str(&format!(
+            "exports.{identifier} = require('./{namespace}/index.js')\n"
+        ));
+        mjs.push_str(&format!(
+            "export * as {identifier} from './{namespace}/index.mjs'\n"
+        ));
+        dts.push_str(&format!(
+            "export * as {identifier} from './{namespace}/index.js'\n"
+        ));
+    }
+    fs::write(win32_output_dir.join("index.js"), js)
+        .map_err(|error| format!("Failed to write flat Win32 root index: {error}"))?;
+    fs::write(win32_output_dir.join("index.mjs"), mjs)
+        .map_err(|error| format!("Failed to write flat Win32 root ESM index: {error}"))?;
+    fs::write(win32_output_dir.join("index.d.ts"), dts)
+        .map_err(|error| format!("Failed to write flat Win32 root declarations: {error}"))
+}
+
 fn prepare_com_generation_manifest(
     com_output_dir: &Path,
     updated_roots: &BTreeMap<String, BTreeSet<String>>,
@@ -1635,14 +2062,33 @@ fn write_bindings_manifest(output_dir: &Path) -> Result<(), String> {
         BTreeSet::new()
     };
     let com_subpath_names = collect_com_subpath_names(&output_dir.join("com"))?;
+    let win32_subpath_names = collect_win32_subpath_names(&output_dir.join("win32"))?;
     let content = package::render_bindings_package_json(&package::BindingsPackageManifestInput {
         has_winrt_root,
         winrt_subpath_names: &winrt_subpath_names,
         com_subpath_names: &com_subpath_names,
+        win32_subpath_names: &win32_subpath_names,
     });
     let path = output_dir.join("package.json");
     fs::write(&path, content)
         .map_err(|error| format!("Failed to write {}: {error}", path.display()))
+}
+
+fn collect_win32_subpath_names(win32_output_dir: &Path) -> Result<BTreeSet<String>, String> {
+    if !win32_output_dir.is_dir() {
+        return Ok(BTreeSet::new());
+    }
+    Ok(fs::read_dir(win32_output_dir)
+        .map_err(|error| {
+            format!(
+                "Failed to read flat Win32 output directory {}: {error}",
+                win32_output_dir.display()
+            )
+        })?
+        .flatten()
+        .filter(|entry| entry.path().is_dir() && entry.path().join("index.d.ts").is_file())
+        .filter_map(|entry| entry.file_name().to_str().map(str::to_string))
+        .collect())
 }
 
 fn collect_com_subpath_names(com_output_dir: &Path) -> Result<BTreeSet<String>, String> {
@@ -3269,6 +3715,10 @@ fn print_capabilities() {
         "input.winmd-list",
         "input.ref-list",
         "selector.namespace-class",
+        "domain.classic-com",
+        "domain.flat-win32",
+        "census.classic-com",
+        "census.flat-win32",
     ] {
         println!("{}", capability);
     }
@@ -3348,6 +3798,122 @@ mod tests {
             std::process::id(),
             NEXT_ID.fetch_add(1, Ordering::Relaxed)
         ))
+    }
+
+    #[test]
+    fn win32_manifest_removes_only_files_owned_by_updated_roots() {
+        let output = test_directory("win32-manifest");
+        fs::create_dir_all(output.join("Ns")).unwrap();
+        fs::write(output.join("Ns").join("A.js"), "a").unwrap();
+        fs::write(output.join("Ns").join("Shared.js"), "shared").unwrap();
+        let manifest = Win32GenerationManifest {
+            version: 1,
+            roots: BTreeMap::from([
+                (
+                    "Ns.A".into(),
+                    BTreeSet::from(["Ns/A.js".into(), "Ns/Shared.js".into()]),
+                ),
+                ("Ns.B".into(), BTreeSet::from(["Ns/Shared.js".into()])),
+            ]),
+        };
+        fs::write(
+            output.join(WIN32_MANIFEST_FILE),
+            serde_json::to_string(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        let update = prepare_win32_generation_manifest(
+            &output,
+            &BTreeMap::from([("Ns.A".into(), BTreeSet::from(["Ns/New.js".into()]))]),
+        )
+        .unwrap();
+        apply_win32_generation_manifest(&output, update).unwrap();
+        assert!(!output.join("Ns").join("A.js").exists());
+        assert!(output.join("Ns").join("Shared.js").exists());
+        fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
+    fn win32_manifest_rejects_parent_paths() {
+        let output = test_directory("win32-manifest-unsafe");
+        fs::create_dir_all(&output).unwrap();
+        fs::write(
+            output.join(WIN32_MANIFEST_FILE),
+            r#"{"version":1,"roots":{"bad":["../outside.js"]}}"#,
+        )
+        .unwrap();
+        let error = prepare_win32_generation_manifest(
+            &output,
+            &BTreeMap::from([("good".into(), BTreeSet::from(["Ns/A.js".into()]))]),
+        )
+        .expect_err("unsafe paths must fail before generation writes");
+        assert!(error.contains("Refusing unsafe path"));
+        fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
+    fn win32_generation_preserves_isolated_incremental_namespace_packages() {
+        fn apis(namespace: &str, function_name: &str) -> win32_metadata::RawApis {
+            win32_metadata::RawApis {
+                namespace: namespace.into(),
+                class_name: "Apis".into(),
+                functions: vec![win32_metadata::RawFunction {
+                    namespace: namespace.into(),
+                    container: "Apis".into(),
+                    name: function_name.into(),
+                    dll: "kernel32.dll".into(),
+                    entry_point: function_name.into(),
+                    return_type: win32_metadata::RawType {
+                        base: win32_metadata::RawBaseType::Scalar(win32_metadata::RawScalar::U32),
+                        pointer_depth: 0,
+                        constness: win32_metadata::RawConstness::Unspecified,
+                    },
+                    parameters: Vec::new(),
+                    return_status: win32_metadata::RawStatusSemantics::None,
+                    return_free_with: None,
+                    supports_last_error: false,
+                    calling_convention: win32_metadata::RawCallingConvention::System,
+                    architectures: win32_metadata::RawArchitectures {
+                        x86: true,
+                        x64: true,
+                        arm64: true,
+                    },
+                    variadic: false,
+                }],
+            }
+        }
+
+        let output = test_directory("win32-incremental-namespaces");
+        generate_win32_apis_batch(
+            &output,
+            &[apis("Tests.Win32.First", "FirstValue")],
+            "@microsoft/dynwinrt/win32",
+            false,
+        )
+        .unwrap();
+        generate_win32_apis_batch(
+            &output,
+            &[apis("Tests.Win32.Second", "SecondValue")],
+            "@microsoft/dynwinrt/win32",
+            false,
+        )
+        .unwrap();
+
+        let win32 = output.join("win32");
+        assert!(win32.join("Tests.Win32.First").join("Apis.js").is_file());
+        assert!(win32.join("Tests.Win32.Second").join("Apis.js").is_file());
+        let root_index = fs::read_to_string(win32.join("index.js")).unwrap();
+        assert!(root_index.contains("Tests_Win32_First"));
+        assert!(root_index.contains("Tests_Win32_Second"));
+        let manifest = fs::read_to_string(win32.join(WIN32_MANIFEST_FILE)).unwrap();
+        assert!(manifest.contains("Tests.Win32.First.Apis"));
+        assert!(manifest.contains("Tests.Win32.Second.Apis"));
+        let package = fs::read_to_string(output.join("package.json")).unwrap();
+        assert!(package.contains("\"./win32\""));
+        assert!(package.contains("\"./win32/Tests.Win32.First\""));
+        assert!(package.contains("\"./win32/Tests.Win32.Second\""));
+
+        fs::remove_dir_all(output).unwrap();
     }
 
     #[test]

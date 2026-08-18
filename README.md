@@ -60,6 +60,13 @@ common-interface test matrix, unsupported native types, and ownership rules.
 See [Classic COM JavaScript usage](docs/guides/windows/classic-com-usage.md) for codegen,
 GUID/IID/CLSID, lifecycle, Automation, and explicit unsafe ABI examples.
 
+Flat Win32 `[DllImport]` bindings use the separate
+`@microsoft/dynwinrt/win32` runtime and generated namespace subpaths. Numeric
+data addresses require `@microsoft/dynwinrt/win32/unsafe`; safe wrappers retain
+Buffer storage and manage owned handles. See
+[Flat Win32 architecture](docs/architecture/flat-win32-support.md) and
+[Flat Win32 usage](docs/guides/windows/flat-win32-usage.md).
+
 Generated bindings project unambiguous public WinRT activation metadata as JavaScript
 constructors, including overloads such as `new Uri(base, relative)`. Existing
 static factory methods remain available. Classes that can only be returned by

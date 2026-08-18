@@ -14,6 +14,7 @@ pub struct BindingsPackageManifestInput<'a> {
     pub has_winrt_root: bool,
     pub winrt_subpath_names: &'a BTreeSet<String>,
     pub com_subpath_names: &'a BTreeSet<String>,
+    pub win32_subpath_names: &'a BTreeSet<String>,
 }
 
 pub struct PythonPackageManifestInput<'a> {
@@ -27,10 +28,12 @@ pub struct PythonPackageManifestInput<'a> {
 /// Preserve the existing WinRT-only renderer API and byte-for-byte output.
 pub fn render_package_json(input: &PackageManifestInput<'_>) -> String {
     let com_subpath_names = BTreeSet::new();
+    let win32_subpath_names = BTreeSet::new();
     render_bindings_package_json(&BindingsPackageManifestInput {
         has_winrt_root: true,
         winrt_subpath_names: input.subpath_names,
         com_subpath_names: &com_subpath_names,
+        win32_subpath_names: &win32_subpath_names,
     })
 }
 
@@ -38,7 +41,7 @@ pub fn render_bindings_package_json(input: &BindingsPackageManifestInput<'_>) ->
     if input.has_winrt_root {
         render_winrt_package(input)
     } else {
-        render_com_only_package(input.com_subpath_names)
+        render_domain_only_package(input.com_subpath_names, input.win32_subpath_names)
     }
 }
 
@@ -105,25 +108,35 @@ fn render_winrt_package(input: &BindingsPackageManifestInput<'_>) -> String {
     }
 
     append_com_exports(&mut out, input.com_subpath_names);
+    append_win32_exports(&mut out, input.win32_subpath_names);
     out.push_str("\n  }\n");
     out.push_str("}\n");
     out
 }
 
-fn render_com_only_package(com_subpath_names: &BTreeSet<String>) -> String {
+fn render_domain_only_package(
+    com_subpath_names: &BTreeSet<String>,
+    win32_subpath_names: &BTreeSet<String>,
+) -> String {
+    let root = if !com_subpath_names.is_empty() {
+        "com"
+    } else {
+        "win32"
+    };
     let mut out = String::new();
     out.push_str("{\n");
     out.push_str("  \"name\": \"@winapp/bindings\",\n");
     out.push_str("  \"type\": \"commonjs\",\n");
     out.push_str("  \"sideEffects\": false,\n");
-    out.push_str("  \"main\": \"./index.js\",\n");
-    out.push_str("  \"types\": \"./index.d.ts\",\n");
+    out.push_str(&format!("  \"main\": \"./{root}/index.js\",\n"));
+    out.push_str(&format!("  \"types\": \"./{root}/index.d.ts\",\n"));
     out.push_str("  \"exports\": {\n");
     out.push_str("    \".\": {\n");
-    out.push_str("      \"types\": \"./com/index.d.ts\",\n");
-    out.push_str("      \"import\": \"./com/index.mjs\",\n");
-    out.push_str("      \"require\": \"./com/index.js\",\n");
-    out.push_str("      \"default\": \"./com/index.js\"\n");
+    out.push_str(&format!("      \"types\": \"./{root}/index.d.ts\",\n"));
+    let root_import = format!("./{root}/index.mjs");
+    out.push_str(&format!("      \"import\": \"{root_import}\",\n"));
+    out.push_str(&format!("      \"require\": \"./{root}/index.js\",\n"));
+    out.push_str(&format!("      \"default\": \"./{root}/index.js\"\n"));
     out.push_str("    }");
 
     // Preserve the original COM-only deep-import paths while storing all COM
@@ -139,9 +152,35 @@ fn render_com_only_package(com_subpath_names: &BTreeSet<String>) -> String {
     }
 
     append_com_exports(&mut out, com_subpath_names);
+    append_win32_exports(&mut out, win32_subpath_names);
     out.push_str("\n  }\n");
     out.push_str("}\n");
     out
+}
+
+fn append_win32_exports(out: &mut String, win32_subpath_names: &BTreeSet<String>) {
+    if win32_subpath_names.is_empty() {
+        return;
+    }
+
+    out.push_str(",\n");
+    out.push_str("    \"./win32\": {\n");
+    out.push_str("      \"types\": \"./win32/index.d.ts\",\n");
+    out.push_str("      \"import\": \"./win32/index.mjs\",\n");
+    out.push_str("      \"require\": \"./win32/index.js\"\n");
+    out.push_str("    }");
+    for name in win32_subpath_names {
+        out.push_str(",\n");
+        out.push_str(&format!("    \"./win32/{name}\": {{\n"));
+        out.push_str(&format!(
+            "      \"types\": \"./win32/{name}/index.d.ts\",\n"
+        ));
+        out.push_str(&format!(
+            "      \"import\": \"./win32/{name}/index.mjs\",\n"
+        ));
+        out.push_str(&format!("      \"require\": \"./win32/{name}/index.js\"\n"));
+        out.push_str("    }");
+    }
 }
 
 fn append_com_exports(out: &mut String, com_subpath_names: &BTreeSet<String>) {
@@ -226,10 +265,12 @@ mod tests {
     fn mixed_package_keeps_duplicate_names_in_separate_domains() {
         let winrt = BTreeSet::from(["Uri".to_string()]);
         let com = BTreeSet::from(["Uri".to_string()]);
+        let win32 = BTreeSet::new();
         let out = render_bindings_package_json(&BindingsPackageManifestInput {
             has_winrt_root: true,
             winrt_subpath_names: &winrt,
             com_subpath_names: &com,
+            win32_subpath_names: &win32,
         });
 
         assert!(out.contains("\"./Uri\""));
@@ -245,10 +286,12 @@ mod tests {
     fn com_only_package_preserves_legacy_root_subpaths() {
         let com = BTreeSet::from(["ITaskbarList3".to_string()]);
         let winrt = BTreeSet::new();
+        let win32 = BTreeSet::new();
         let out = render_bindings_package_json(&BindingsPackageManifestInput {
             has_winrt_root: false,
             winrt_subpath_names: &winrt,
             com_subpath_names: &com,
+            win32_subpath_names: &win32,
         });
 
         assert!(out.contains("\"type\": \"commonjs\""));
@@ -259,6 +302,23 @@ mod tests {
         assert!(out.contains("\"import\": \"./com/index.mjs\""));
         assert!(out.contains("\"require\": \"./com/index.js\""));
         assert!(out.contains("\"./com/*\""));
+    }
+
+    #[test]
+    fn win32_only_package_exports_namespace_subpaths() {
+        let winrt = BTreeSet::new();
+        let com = BTreeSet::new();
+        let win32 = BTreeSet::from(["Windows.Win32.System.Registry".to_string()]);
+        let out = render_bindings_package_json(&BindingsPackageManifestInput {
+            has_winrt_root: false,
+            winrt_subpath_names: &winrt,
+            com_subpath_names: &com,
+            win32_subpath_names: &win32,
+        });
+        assert!(out.contains("\"./win32\""));
+        assert!(out.contains("\"./win32/Windows.Win32.System.Registry\""));
+        assert!(out.contains("./win32/Windows.Win32.System.Registry/index.js"));
+        assert!(out.contains("\"import\": \"./win32/Windows.Win32.System.Registry/index.mjs\""));
     }
 
     #[test]

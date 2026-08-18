@@ -4,6 +4,7 @@
 pub mod com;
 pub mod common;
 pub mod package;
+pub mod win32;
 pub mod winrt;
 
 // Preserve the existing public module paths while callers migrate to

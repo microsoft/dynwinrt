@@ -8,9 +8,9 @@ import { fileURLToPath } from 'node:url'
 const packageDir = fileURLToPath(new URL('..', import.meta.url))
 const distDir = join(packageDir, 'dist')
 const loader = readFileSync(join(distDir, 'index.js'), 'utf8')
-const nativeExports = [
-  ...loader.matchAll(/^module\.exports\.([A-Za-z_$][\w$]*) = nativeBinding\.\1$/gm),
-].map((match) => match[1])
+const nativeExports = [...loader.matchAll(/^module\.exports\.([A-Za-z_$][\w$]*) = nativeBinding\.\1$/gm)].map(
+  (match) => match[1],
+)
 
 if (nativeExports.length === 0) {
   throw new Error('No N-API exports found in dist/index.js')
@@ -62,10 +62,29 @@ const comUnsafeTypeExports = [
   ...comTypeAliases,
   'DynComSafeArrayBound',
 ]
+const win32Exports = new Set([
+  'DynWin32',
+  'DynWin32NativeStruct',
+  'DynWin32OverlappedOperation',
+  'DynWin32Resource',
+  'DynWin32Value',
+  'DynWinRtValue',
+])
+const win32TypeExports = [...win32Exports]
+const win32UnsafeExports = new Set([
+  ...win32Exports,
+  'DynWin32CallResult',
+  'DynWin32Function',
+  'DynWin32Unsafe',
+  'DynWin32Value',
+])
+const win32UnsafeTypeExports = [...win32UnsafeExports, 'DynWin32FunctionSpec', 'DynWin32ParameterSpec']
 
 writeFacade(
   'winrt',
-  nativeExports.filter((name) => !name.startsWith('DynCom') && name !== 'initializeCom'),
+  nativeExports.filter(
+    (name) => !name.startsWith('DynCom') && !name.startsWith('DynWin32') && name !== 'initializeCom',
+  ),
 )
 writeFacade(
   'com',
@@ -80,6 +99,18 @@ writeFacade(
   comUnsafeTypeExports,
   comUnsafeExports,
   opaqueComDeclarations,
+)
+writeFacade(
+  'win32',
+  nativeExports.filter((name) => win32Exports.has(name)),
+  win32TypeExports,
+  win32Exports,
+)
+writeFacade(
+  'win32-unsafe',
+  nativeExports.filter((name) => win32UnsafeExports.has(name)),
+  win32UnsafeTypeExports,
+  win32UnsafeExports,
 )
 
 function writeFacade(

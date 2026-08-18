@@ -28,6 +28,12 @@ mono_crash.*
 x64/
 x86/
 [Ww][Ii][Nn]32/
+!tools/dynwinrt-codegen/src/codegen/win32/
+!tools/dynwinrt-codegen/src/codegen/win32/**
+!tests/e2e/runners/win32/
+!tests/e2e/runners/win32/**
+!samples/js/win32/
+!samples/js/win32/**
 [Aa][Rr][Mm]/
 [Aa][Rr][Mm]64/
 [Aa][Rr][Mm]64[Ee][Cc]/
