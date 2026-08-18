@@ -69,11 +69,11 @@ jobs:
           if ($result.eligible_functions -ne 18321) {
             throw "Flat Win32 census denominator changed: $($result.eligible_functions)"
           }
-          if ($result.complete_functions -lt 8959) {
+          if ($result.complete_functions -lt 8943) {
             throw "Flat Win32 complete coverage regressed: $($result.complete_functions)"
           }
-          if ($result.coverage_percent -lt 48.9) {
-            throw "Flat Win32 coverage fell below 48.9%: $($result.coverage_percent)"
+          if ($result.coverage_percent -lt 48.8) {
+            throw "Flat Win32 coverage fell below 48.8%: $($result.coverage_percent)"
           }
           Write-Host "Flat Win32 coverage: $($result.complete_functions)/$($result.eligible_functions) ($($result.coverage_percent)%)"
       - name: Test Classic COM failure cleanup contracts

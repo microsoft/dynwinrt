@@ -78,6 +78,38 @@ fn scalar_return_projects_directly_without_result_wrapper() {
 }
 
 #[test]
+fn mapi_exports_fail_closed_without_an_initialization_contract() {
+    let Some(winmd) = configured_winmd() else {
+        return;
+    };
+    let raw = dynwinrt_codegen::win32_metadata::parse_apis(
+        &winmd,
+        "Windows.Win32.System.AddressBook",
+        "Apis",
+    )
+    .unwrap();
+    let function = raw
+        .functions
+        .iter()
+        .find(|function| function.name == "FtAddFt")
+        .expect("FtAddFt metadata")
+        .clone();
+    let projection = dynwinrt_codegen::codegen::win32::project_apis(
+        &dynwinrt_codegen::win32_metadata::RawApis {
+            namespace: raw.namespace,
+            class_name: raw.class_name,
+            functions: vec![function],
+        },
+    );
+    assert_eq!(projection.complete_count(), 0);
+    assert!(
+        projection.omitted[0]
+            .reason
+            .contains("requires MAPI/MAPI utility initialization")
+    );
+}
+
+#[test]
 fn generated_safe_surface_uses_unsafe_binding_only_internally() {
     let Some(winmd) = configured_winmd() else {
         return;

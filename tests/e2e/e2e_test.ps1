@@ -322,7 +322,7 @@ if ("win32" -in $Lang) {
         "Windows.Win32.System.Registry",
         "Windows.Win32.System.SystemInformation",
         "Windows.Win32.System.LibraryLoader",
-        "Windows.Win32.System.AddressBook",
+        "Windows.Win32.Graphics.Gdi",
         "Windows.Win32.System.Threading",
         "Windows.Win32.System.Com",
         "Windows.Win32.Networking.Ldap",

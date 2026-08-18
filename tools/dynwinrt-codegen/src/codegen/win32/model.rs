@@ -1463,5 +1463,11 @@ fn validate_module(module: &str) -> Result<(), String> {
     {
         return Err(format!("module `{module}` is not a bare System32 DLL name"));
     }
+    if lower == "mapi32.dll" {
+        return Err(
+            "module `mapi32.dll` requires MAPI/MAPI utility initialization that the safe flat Win32 projection does not model"
+                .into(),
+        );
+    }
     Ok(())
 }

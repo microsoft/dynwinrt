@@ -64,6 +64,8 @@ explicit `@microsoft/dynwinrt/win32/unsafe` entrypoint.
 APIs that consume and close a handle require `DynWin32Resource`; passing
 `resource.value` or another numeric handle is rejected. Double-NUL string-list
 parameters accept `string[]` or explicitly encoded, double-terminated storage.
+MAPI exports are omitted from the safe projection until their required
+initialization lifecycle is modeled.
 
 Validated native structs receive generated factories and branded storage:
 

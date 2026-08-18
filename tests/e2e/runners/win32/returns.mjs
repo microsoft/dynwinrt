@@ -10,9 +10,10 @@ import {
 import { ldapGetLastError } from "../../e2e_generated/win32/win32/Windows.Win32.Networking.Ldap/Apis.js";
 import { getAdaptersAddresses } from "../../e2e_generated/win32/win32/Windows.Win32.NetworkManagement.IpHelper/Apis.js";
 import {
-  createFILETIME,
-  ftAddFt,
-} from "../../e2e_generated/win32/win32/Windows.Win32.System.AddressBook/Apis.js";
+  createPOINT,
+  createRECT,
+  ptInRect,
+} from "../../e2e_generated/win32/win32/Windows.Win32.Graphics.Gdi/Apis.js";
 import {
   createProcessInformation,
   createStartupInfoW,
@@ -138,10 +139,16 @@ assert(year >= 2020);
 assert(month >= 1 && month <= 12);
 console.log("[win32-e2e] system time aggregate passed");
 
-const oneTick = createFILETIME(Buffer.from([1, 0, 0, 0, 0, 0, 0, 0]));
-const twoTicks = createFILETIME(Buffer.from([2, 0, 0, 0, 0, 0, 0, 0]));
-assert.equal(ftAddFt(oneTick, twoTicks).bytes.readUInt32LE(0), 3);
-console.log("[win32-e2e] by-value FILETIME call passed");
+const rectBytes = Buffer.alloc(16);
+rectBytes.writeInt32LE(0, 0);
+rectBytes.writeInt32LE(0, 4);
+rectBytes.writeInt32LE(10, 8);
+rectBytes.writeInt32LE(10, 12);
+const pointBytes = Buffer.alloc(8);
+pointBytes.writeInt32LE(5, 0);
+pointBytes.writeInt32LE(5, 4);
+assert.equal(ptInRect(createRECT(rectBytes), createPOINT(pointBytes)), true);
+console.log("[win32-e2e] by-value POINT call passed");
 
 const processHandle = openProcess(0x1000, false, process.pid);
 assert(processHandle.result);

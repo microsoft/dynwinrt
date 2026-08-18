@@ -35,7 +35,8 @@ owned resources only when the function's success rule succeeds.
 
 Modules are loaded only from System32 with `LOAD_LIBRARY_SEARCH_SYSTEM32` and
 remain loaded for the process lifetime. Bare `.dll` and `.drv` names are
-accepted; paths are rejected.
+accepted; paths are rejected. `mapi32.dll` is excluded from the safe projection
+until MAPI/MAPI utility initialization and shutdown are modeled explicitly.
 
 The runtime supports x64 and ARM64 with explicit `system` and `cdecl` plans.
 A 32-bit build compiles, but plan binding fails explicitly until generation
@@ -187,8 +188,8 @@ dynwinrt-codegen win32-census `
 ```
 
 For `Microsoft.Windows.SDK.Win32Metadata 71.0.14-preview`, the baseline is
-8,959 complete safe functions out of 18,321 DllImport rows
-(48.900169204737736%). Omission reasons are grouped into stable categories.
+8,943 complete safe functions out of 18,321 DllImport rows
+(48.8128377271983%). Omission reasons are grouped into stable categories.
 
 `windows-metadata` remains behind the flat-local adapter. Parameter rows are
 associated by ECMA-335 `Param.Sequence`, and calling convention remains a raw
