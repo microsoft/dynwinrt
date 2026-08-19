@@ -67,6 +67,7 @@ const win32Exports = new Set([
   'DynWin32NativeStruct',
   'DynWin32OverlappedOperation',
   'DynWin32Resource',
+  'DynWin32SubsystemContext',
   'DynWin32Value',
   'DynWinRtValue',
 ])

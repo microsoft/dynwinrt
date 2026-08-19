@@ -110,6 +110,104 @@ fn mapi_exports_fail_closed_without_an_initialization_contract() {
 }
 
 #[test]
+fn subsystem_initializers_gate_generated_functions() {
+    let Some(winmd) = configured_winmd() else {
+        return;
+    };
+
+    let cases = [
+        (
+            "Windows.Win32.Networking.WinSock",
+            &[
+                "WSAGetLastError",
+                "WSASetLastError",
+                "WSAStartup",
+                "WSACleanup",
+            ][..],
+            "initializeWinsock",
+            "winsock",
+            "wsaSetLastError(_subsystem: DynWin32SubsystemContext",
+            "wsaGetLastError()",
+            2,
+        ),
+        (
+            "Windows.Win32.Graphics.GdiPlus",
+            &[
+                "GdipGetImageDecodersSize",
+                "GdiplusStartup",
+                "GdiplusShutdown",
+                "GdiplusNotificationHook",
+                "GdiplusNotificationUnhook",
+            ][..],
+            "initializeGdiPlus",
+            "gdiplus",
+            "gdipGetImageDecodersSize(_subsystem: DynWin32SubsystemContext",
+            "",
+            4,
+        ),
+        (
+            "Windows.Win32.Media.MediaFoundation",
+            &["MFGetTimerPeriodicity", "MFStartup", "MFShutdown"][..],
+            "initializeMediaFoundation",
+            "mediaFoundation",
+            "mfGetTimerPeriodicity(_subsystem: DynWin32SubsystemContext",
+            "",
+            2,
+        ),
+    ];
+
+    for (
+        namespace,
+        names,
+        initializer,
+        subsystem,
+        signature,
+        exempt_signature,
+        expected_omissions,
+    ) in cases
+    {
+        let raw = dynwinrt_codegen::win32_metadata::parse_apis(&winmd, namespace, "Apis").unwrap();
+        let selected = dynwinrt_codegen::win32_metadata::RawApis {
+            namespace: raw.namespace,
+            class_name: raw.class_name,
+            functions: raw
+                .functions
+                .into_iter()
+                .filter(|function| names.contains(&function.name.as_str()))
+                .collect(),
+        };
+        let (output, omissions) = dynwinrt_codegen::codegen::win32::generate_apis_files(
+            &selected,
+            "@microsoft/dynwinrt/win32",
+        );
+        assert!(output.dts.contains(&format!(
+            "function {initializer}(): DynWin32SubsystemContext"
+        )));
+        assert!(output.dts.contains(signature), "{}", output.dts);
+        assert!(
+            output
+                .js
+                .contains(&format!("invokeWithSubsystem(_subsystem, \"{subsystem}\"")),
+            "{}",
+            output.js
+        );
+        if !exempt_signature.is_empty() {
+            assert!(output.dts.contains(exempt_signature));
+        }
+        assert_eq!(
+            omissions.len(),
+            expected_omissions,
+            "{namespace}: {omissions:#?}"
+        );
+        assert!(omissions.iter().all(|omission| {
+            omission
+                .reason
+                .contains("lifecycle is managed by the generated initialization adapter")
+        }));
+    }
+}
+
+#[test]
 fn generated_safe_surface_uses_unsafe_binding_only_internally() {
     let Some(winmd) = configured_winmd() else {
         return;

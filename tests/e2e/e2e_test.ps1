@@ -326,7 +326,10 @@ if ("win32" -in $Lang) {
         "Windows.Win32.System.Threading",
         "Windows.Win32.System.Com",
         "Windows.Win32.Networking.Ldap",
+        "Windows.Win32.Networking.WinSock",
         "Windows.Win32.NetworkManagement.IpHelper",
+        "Windows.Win32.Graphics.GdiPlus",
+        "Windows.Win32.Media.MediaFoundation",
         "Windows.Win32.System.Pipes",
         "Windows.Win32.Storage.FileSystem"
     )) {
@@ -426,7 +429,7 @@ if ("com" -in $Lang) {
 
 if ("win32" -in $Lang) {
     Write-Host "`n--- Flat Win32 E2E ---" -ForegroundColor Yellow
-    $win32Runners = @("registry.mjs", "returns.mjs")
+    $win32Runners = @("registry.mjs", "returns.mjs", "subsystems.mjs")
     $win32Passed = 0
     $win32Failed = 0
     foreach ($runner in $win32Runners) {

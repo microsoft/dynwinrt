@@ -643,6 +643,7 @@ fn project_function(contract: &FunctionContract) -> Result<ProjectedFunction, St
             calling_convention: contract.calling_convention,
         },
         return_shape,
+        subsystem: contract.subsystem,
     })
 }
 
@@ -1039,6 +1040,7 @@ mod tests {
                 outputs: vec![],
                 last_error: false,
             },
+            subsystem: None,
         }];
         assign_unicode_aliases(&mut functions);
         assert_eq!(functions[0].unicode_alias.as_deref(), Some("regOpenKeyEx"));

@@ -64,6 +64,13 @@ pub enum CallingConvention {
     Cdecl,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Subsystem {
+    Winsock,
+    GdiPlus,
+    MediaFoundation,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StringEncoding {
     Wide,
@@ -263,6 +270,7 @@ pub struct FunctionContract {
     pub success_rule: SuccessRule,
     pub capture_last_error: bool,
     pub calling_convention: CallingConvention,
+    pub subsystem: Option<Subsystem>,
     pub enums: Vec<EnumDefinition>,
 }
 
@@ -410,6 +418,7 @@ pub struct ProjectedFunction {
     pub inputs: Vec<InputExpression>,
     pub runtime: RuntimePlan,
     pub return_shape: ReturnShape,
+    pub subsystem: Option<Subsystem>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

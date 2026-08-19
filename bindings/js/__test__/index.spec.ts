@@ -33,10 +33,7 @@ import {
 } from '../dist/com-unsafe.js'
 import { DynWin32 } from '../dist/win32.js'
 import * as win32Runtime from '../dist/win32.js'
-import {
-  DynWin32Function,
-  DynWin32Unsafe,
-} from '../dist/win32-unsafe.js'
+import { DynWin32Function, DynWin32Unsafe } from '../dist/win32-unsafe.js'
 
 const requireFromTest = createRequire(import.meta.url)
 const nativeRuntime = requireFromTest('../dist/index.js') as Record<string, unknown>
@@ -152,15 +149,11 @@ test('package facades exactly partition native exports', (t) => {
     'DynWin32NativeStruct',
     'DynWin32OverlappedOperation',
     'DynWin32Resource',
+    'DynWin32SubsystemContext',
     'DynWin32Value',
     'DynWinRtValue',
   ])
-  const unsafeWin32Names = new Set([
-    ...safeWin32Names,
-    'DynWin32CallResult',
-    'DynWin32Function',
-    'DynWin32Unsafe',
-  ])
+  const unsafeWin32Names = new Set([...safeWin32Names, 'DynWin32CallResult', 'DynWin32Function', 'DynWin32Unsafe'])
 
   t.deepEqual(moduleKeys(winrtCjsRuntime), expectedWinrt)
   t.deepEqual(
@@ -195,10 +188,7 @@ test('package facades exactly partition native exports', (t) => {
 })
 
 test('COM allocation declaration is opaque and non-constructible', (t) => {
-  const declaration = readFileSync(
-    fileURLToPath(new URL('../dist/com.d.ts', import.meta.url)),
-    'utf8',
-  )
+  const declaration = readFileSync(fileURLToPath(new URL('../dist/com.d.ts', import.meta.url)), 'utf8')
   t.regex(declaration, /export interface DynComAllocation/)
   t.notRegex(declaration, /export \{[^}]*DynComAllocation[^}]*\} from/)
 })
@@ -240,13 +230,9 @@ test('Classic COM raw ABI access requires the explicit unsafe entrypoint', (t) =
 })
 
 test('DynCom rejects invalid WinRT async result signatures', (t) => {
-  const invalidAsyncType = DynWinRtType.iAsyncOperation(
-    DynWinRtType.arrayType(DynWinRtType.i32()),
-  )
+  const invalidAsyncType = DynWinRtType.iAsyncOperation(DynWinRtType.arrayType(DynWinRtType.i32()))
 
-  const error = t.throws(() =>
-    DynCom.projectWinRtAsync(DynWinRtValue.nullValue(), invalidAsyncType),
-  )
+  const error = t.throws(() => DynCom.projectWinRtAsync(DynWinRtValue.nullValue(), invalidAsyncType))
   t.regex(error.message, /valid WinRT signature/)
 })
 
@@ -254,12 +240,7 @@ test('DynCom verifies the projected WinRT async interface IID', (t) => {
   roInitialize(1)
   const factory = DynWinRtValue.activationFactory('Windows.Foundation.Uri')
   try {
-    const error = t.throws(() =>
-      DynCom.projectWinRtAsync(
-        factory,
-        DynWinRtType.iAsyncOperation(DynWinRtType.i32()),
-      ),
-    )
+    const error = t.throws(() => DynCom.projectWinRtAsync(factory, DynWinRtType.iAsyncOperation(DynWinRtType.i32())))
     t.regex(error.message, /0x80004002|interface/i)
   } finally {
     factory.release()
@@ -339,17 +320,11 @@ test('flat Win32 native aggregate storage is aligned, branded, and mutable', (t)
     x64: { size: 8, alignment: 4, fields: [] },
     arm64: { size: 8, alignment: 4, fields: [] },
   })
-  const point = DynWin32.createNativeStruct(
-    descriptor,
-    Buffer.from([1, 0, 0, 0, 2, 0, 0, 0]),
-  )
+  const point = DynWin32.createNativeStruct(descriptor, Buffer.from([1, 0, 0, 0, 2, 0, 0, 0]))
   t.is(point.length, 8)
   t.deepEqual([...point.bytes], [1, 0, 0, 0, 2, 0, 0, 0])
   t.truthy(DynWin32.nativeStruct(point, descriptor))
-  t.throws(
-    () => DynWin32.nativeStruct(point, descriptor.replace('POINT', 'SIZE')),
-    { message: /type mismatch/ },
-  )
+  t.throws(() => DynWin32.nativeStruct(point, descriptor.replace('POINT', 'SIZE')), { message: /type mismatch/ })
 
   const hugeDescriptor = JSON.stringify({
     name: 'Tests.HUGE',
@@ -377,6 +352,32 @@ test('flat Win32 multi-strings require double-NUL storage', (t) => {
   })
   t.truthy(DynWin32.wideMultiString(Buffer.from([65, 0, 0, 0, 0, 0])))
   t.truthy(DynWin32.ansiMultiString(Buffer.from([65, 0, 0])))
+})
+
+test('flat Win32 subsystem contexts enforce kind and close state', (t) => {
+  const winsock = DynWin32.initializeWinsock()
+  t.is(winsock.subsystem, 'winsock')
+  t.false(winsock.closed)
+  t.notThrows(() => DynWin32.requireSubsystem(winsock, 'winsock'))
+  t.throws(() => DynWin32.requireSubsystem(winsock, 'gdiplus'), {
+    message: /require a gdiplus context, received winsock/,
+  })
+  winsock.close()
+  t.true(winsock.closed)
+  t.throws(() => DynWin32.requireSubsystem(winsock, 'winsock'), {
+    message: /context is closed/,
+  })
+  t.notThrows(() => winsock.close())
+
+  const gdiplus = DynWin32.initializeGdiPlus()
+  t.notThrows(() => DynWin32.requireSubsystem(gdiplus, 'gdiplus'))
+  gdiplus.close()
+
+  const mediaFoundation = DynWin32.initializeMediaFoundation()
+  t.notThrows(() => DynWin32.requireSubsystem(mediaFoundation, 'mediaFoundation'))
+  mediaFoundation.close()
+
+  t.is(typeof DynWin32.initializeMapiUtilities, 'function')
 })
 
 test('flat Win32 pointer-bearing aggregates retain safe field owners', (t) => {
@@ -419,31 +420,21 @@ test('flat Win32 pointer-bearing aggregates retain safe field owners', (t) => {
   DynWin32.setNativeStructU32(attributes, descriptor, 'nLength', attributes.length)
   DynWin32.setNativeStructBool32(attributes, descriptor, 'bInheritHandle', true)
   const descriptorBytes = new Uint8Array(20)
-  DynWin32.setNativeStructPointer(
-    attributes,
-    descriptor,
-    'lpSecurityDescriptor',
-    DynWin32.dataPointer(descriptorBytes),
-  )
+  DynWin32.setNativeStructPointer(attributes, descriptor, 'lpSecurityDescriptor', DynWin32.dataPointer(descriptorBytes))
   t.throws(() => attributes.bytes, { message: /unavailable/ })
   t.throws(
     () =>
-      DynWin32.setNativeStructPointer(
-        attributes,
-        descriptor,
-        'lpSecurityDescriptor',
-        DynWin32Unsafe.pointer(0x1234n),
-      ),
+      DynWin32.setNativeStructPointer(attributes, descriptor, 'lpSecurityDescriptor', DynWin32Unsafe.pointer(0x1234n)),
     { message: /retained Buffer or string storage/ },
   )
 
   const aggregate = DynWin32.nativeStruct(attributes, descriptor)
   structuredClone(descriptorBytes.buffer, { transfer: [descriptorBytes.buffer] })
   const noArgs = DynWin32Function.bind({
-      dll: 'kernel32.dll',
-      entryPoint: 'GetLastError',
-      parameters: [],
-      returnType: 'u32',
+    dll: 'kernel32.dll',
+    entryPoint: 'GetLastError',
+    parameters: [],
+    returnType: 'u32',
   })
   t.throws(() => noArgs.invoke([aggregate]), { message: /detached/ })
 })
@@ -462,24 +453,18 @@ test('DynCom rejects pointers after their TypedArray backing store is detached',
 test('Generated COM pointer helpers reject arbitrary numeric addresses', (t) => {
   t.truthy(DynCom.safeDataPointer(Buffer.alloc(8)))
   t.truthy(DynCom.safeDataPointer(new Uint8Array(8)))
-  t.throws(
-    () =>
-      (DynCom.safeDataPointer as unknown as (value: bigint) => unknown)(0x1234n),
-    { message: /arbitrary numeric addresses/ },
-  )
+  t.throws(() => (DynCom.safeDataPointer as unknown as (value: bigint) => unknown)(0x1234n), {
+    message: /arbitrary numeric addresses/,
+  })
 
   t.truthy(DynCom.safeWideStringPointer('wide'))
   t.truthy(DynCom.safeAnsiStringPointer('ansi'))
-  t.throws(
-    () =>
-      (DynCom.safeWideStringPointer as unknown as (value: bigint) => unknown)(0x1234n),
-    { message: /arbitrary numeric addresses/ },
-  )
-  t.throws(
-    () =>
-      (DynCom.safeAnsiStringPointer as unknown as (value: number) => unknown)(0x1234),
-    { message: /arbitrary numeric addresses/ },
-  )
+  t.throws(() => (DynCom.safeWideStringPointer as unknown as (value: bigint) => unknown)(0x1234n), {
+    message: /arbitrary numeric addresses/,
+  })
+  t.throws(() => (DynCom.safeAnsiStringPointer as unknown as (value: number) => unknown)(0x1234), {
+    message: /arbitrary numeric addresses/,
+  })
 })
 
 test('DynCom rejects detached counted buffers and accepts typed backing widths', (t) => {
@@ -1202,10 +1187,7 @@ test('u64 arrays and struct fields preserve the full unsigned range', (t) => {
     message: /fit in an unsigned 64-bit integer/,
   })
 
-  const structType = DynWinRtType.structType('DynWinRT.Tests.IntegerBoundary', [
-    DynWinRtType.u64(),
-    DynWinRtType.i64(),
-  ])
+  const structType = DynWinRtType.structType('DynWinRT.Tests.IntegerBoundary', [DynWinRtType.u64(), DynWinRtType.i64()])
   const value = DynWinRtStruct.create(structType)
   value.setU64(0, 2n ** 64n - 1n)
   t.is(value.getU64(0), 2n ** 64n - 1n)

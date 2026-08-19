@@ -64,8 +64,30 @@ explicit `@microsoft/dynwinrt/win32/unsafe` entrypoint.
 APIs that consume and close a handle require `DynWin32Resource`; passing
 `resource.value` or another numeric handle is rejected. Double-NUL string-list
 parameters accept `string[]` or explicitly encoded, double-terminated storage.
-MAPI exports are omitted from the safe projection until their required
-initialization lifecycle is modeled.
+MAPI exports remain omitted from the safe projection until full
+MAPI/provider requirements are classified per function.
+
+Subsystem-dependent namespaces expose an explicit context:
+
+```js
+import {
+  initializeWinsock,
+  wsaSetLastError,
+} from "@winapp/bindings/win32/Windows.Win32.Networking.WinSock";
+
+const winsock = initializeWinsock();
+try {
+  wsaSetLastError(winsock, 0);
+} finally {
+  winsock.close();
+}
+```
+
+GDI+ and Media Foundation use the same pattern through
+`initializeGdiPlus()` and `initializeMediaFoundation()`. Generated wrappers
+reject a context for the wrong subsystem and reject use after `close()`.
+Close the context only after all sockets, GDI+ objects, Media Foundation
+objects, callbacks, and work queues created under it have been released.
 
 Validated native structs receive generated factories and branded storage:
 
@@ -130,10 +152,11 @@ const read = await readFileAsync(file, destination, 0n);
 ```
 
 The runtime holds the file resource and private native storage until completion
-or cancellation, waits on a fixed-capacity native waiter outside the libuv
-worker pool, and revalidates read Buffers before copying data back. More than
-eight concurrent operations are rejected explicitly. The file must have been
-opened with `FILE_FLAG_OVERLAPPED`.
+or cancellation, receives completions through a shared IOCP outside the libuv
+worker pool, and revalidates read Buffers before copying data back. Cancellation
+does not release storage until its completion packet arrives. The runtime
+enforces process-wide pending-operation and native-buffer limits. The file must
+have been opened with `FILE_FLAG_OVERLAPPED`.
 
 Runnable examples are available under
 [`samples/js/win32`](../../../samples/js/win32/README.md). They cover direct

@@ -13,7 +13,7 @@ use super::ir::{
     AbiType, BufferContract, CallingConvention, Cleanup, Constness, Direction, EnumDefinition,
     EnumMember, EnumUnderlying, FunctionContract, NativeAggregateKind, NativeArchitectureLayout,
     NativeField, NativeFieldType, NativeLayout, NativeScalar, ParameterContract, Scalar,
-    StringEncoding, SuccessRule, ValueType,
+    StringEncoding, Subsystem, SuccessRule, ValueType,
 };
 
 pub(super) fn validate_apis(raw: &RawApis) -> (Vec<FunctionContract>, Vec<(String, String)>) {
@@ -100,6 +100,7 @@ pub(super) fn validate_function(raw: &RawFunction) -> Result<FunctionContract, S
         return Err("export is not available on both x64 and ARM64".into());
     }
     validate_module(&raw.dll)?;
+    let subsystem = subsystem_requirement(raw)?;
     if raw.entry_point.is_empty() || raw.entry_point.as_bytes().contains(&0) {
         return Err("entry point is empty or contains NUL".into());
     }
@@ -332,8 +333,38 @@ pub(super) fn validate_function(raw: &RawFunction) -> Result<FunctionContract, S
         success_rule,
         capture_last_error: raw.supports_last_error,
         calling_convention,
+        subsystem,
         enums,
     })
+}
+
+fn subsystem_requirement(raw: &RawFunction) -> Result<Option<Subsystem>, String> {
+    match raw.namespace.as_str() {
+        "Windows.Win32.Networking.WinSock" => match raw.name.as_str() {
+            "WSAStartup" | "WSACleanup" => {
+                Err("Winsock lifecycle is managed by the generated initialization adapter".into())
+            }
+            "WSAGetLastError" => Ok(None),
+            _ => Ok(Some(Subsystem::Winsock)),
+        },
+        "Windows.Win32.Graphics.GdiPlus" => match raw.name.as_str() {
+            "GdiplusStartup"
+            | "GdiplusShutdown"
+            | "GdiplusNotificationHook"
+            | "GdiplusNotificationUnhook" => {
+                Err("GDI+ lifecycle is managed by the generated initialization adapter".into())
+            }
+            _ => Ok(Some(Subsystem::GdiPlus)),
+        },
+        "Windows.Win32.Media.MediaFoundation" => match raw.name.as_str() {
+            "MFStartup" | "MFShutdown" => Err(
+                "Media Foundation lifecycle is managed by the generated initialization adapter"
+                    .into(),
+            ),
+            _ => Ok(Some(Subsystem::MediaFoundation)),
+        },
+        _ => Ok(None),
+    }
 }
 
 fn known_mutable_in_place_string(function: &RawFunction, parameter: &ParameterContract) -> bool {

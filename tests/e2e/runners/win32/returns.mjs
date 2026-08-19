@@ -352,7 +352,7 @@ try {
   console.log("[win32-e2e] pending cancellation passed");
 
   const poolController = new AbortController();
-  const concurrentReads = Array.from({ length: 16 }, () =>
+  const concurrentReads = Array.from({ length: 32 }, () =>
     readFileAsync(pipeClient, Buffer.alloc(1), 0n, poolController.signal),
   );
   const poolDeadline = Date.now() + 5000;
@@ -364,26 +364,6 @@ try {
     true,
     "concurrent reads did not enter pending I/O",
   );
-  const queueLimitError = await withTimeout(
-    Promise.any(
-      concurrentReads.map((read) =>
-        read.then(
-          () =>
-            Promise.reject(new Error("pending read completed unexpectedly")),
-          (error) => {
-            if (/waiter capacity is full/i.test(error.message)) {
-              return error;
-            }
-            throw error;
-          },
-        ),
-      ),
-    ),
-    10000,
-    "bounded OVERLAPPED waiter did not reject excess work",
-    () => poolController.abort(),
-  );
-  assert.match(queueLimitError.message, /waiter capacity is full/i);
   await Promise.race([
     promisify(pbkdf2)("dynwinrt", "win32", 1, 16, "sha256"),
     new Promise((_, reject) =>
@@ -404,13 +384,11 @@ try {
   assert(
     cancelledReads.every(
       (result) =>
-        result.status === "rejected" &&
-        (result.reason.name === "AbortError" ||
-          /waiter capacity is full/i.test(result.reason.message)),
+        result.status === "rejected" && result.reason.name === "AbortError",
     ),
   );
   assert.equal(pipeClient.busy, false);
-  console.log("[win32-e2e] bounded waiter and libuv availability passed");
+  console.log("[win32-e2e] IOCP concurrency and libuv availability passed");
 
   const detachable = new ArrayBuffer(1);
   const detachedBuffer = Buffer.from(detachable);

@@ -35,23 +35,41 @@ owned resources only when the function's success rule succeeds.
 
 Modules are loaded only from System32 with `LOAD_LIBRARY_SEARCH_SYSTEM32` and
 remain loaded for the process lifetime. Bare `.dll` and `.drv` names are
-accepted; paths are rejected. `mapi32.dll` is excluded from the safe projection
-until MAPI/MAPI utility initialization and shutdown are modeled explicitly.
+accepted; paths are rejected. `mapi32.dll` remains excluded from the safe
+projection until full MAPI/provider lifecycle requirements are classified per
+function.
+
+Winsock, GDI+, and Media Foundation functions carry explicit subsystem
+requirements in semantic and projected IR. Generated namespaces export
+`initializeWinsock`, `initializeGdiPlus`, or `initializeMediaFoundation`, and
+every dependent wrapper accepts the resulting `DynWin32SubsystemContext` as its
+first argument. The runtime holds the context close lock across native dispatch
+so another thread cannot shut down the subsystem between validation and the
+call. Raw startup/shutdown exports are omitted from the safe surface.
+
+The runtime also exposes an explicit MAPI utility context backed by
+`ScInitMapiUtil`/`DeinitMapiUtil` for manual/unsafe scenarios. Safe
+`mapi32.dll` generation remains closed because full Extended MAPI initialization
+is not present in Windows.Win32 metadata and the MAPI stub/provider lifecycle
+requires a separately audited function classification.
 
 The runtime supports x64 and ARM64 with explicit `system` and `cdecl` plans.
 A 32-bit build compiles, but plan binding fails explicitly until generation
 also carries target-specific availability and all x86 convention variants.
 
 `ReadFile` and `WriteFile` use a separate OVERLAPPED Promise path rather than
-the synchronous call plan. It owns an event and private native buffer, leases a
-managed file handle for the operation, handles immediate and
-`ERROR_IO_PENDING` completion, supports `AbortSignal`/`CancelIoEx`, and copies
-read results back on the JavaScript thread. Completion waits run on a shared,
-fixed eight-thread native waiter rather than the libuv worker pool; excess
-operations are rejected explicitly instead of allocating unbounded OS threads.
-Before copying a read result, the JS thread reacquires and revalidates the Node
-Buffer backing store so a transferred/detached ArrayBuffer cannot leave a stale
-destination pointer. EOF resolves with zero bytes.
+the synchronous call plan. It associates each managed file handle once with a
+process-wide IO completion port, pins one `OVERLAPPED` plus private native
+buffer per operation, and leases the handle until the completion packet is
+consumed. A small shared completion-worker set uses windows-rs IOCP primitives;
+no thread blocks per operation and the libuv worker pool is not used.
+`AbortSignal` calls `CancelIoEx`, but storage remains alive until IOCP reports
+the cancelled completion. Before copying a read result, the JS thread reacquires
+and revalidates the Node Buffer backing store so a transferred/detached
+ArrayBuffer cannot leave a stale destination pointer. Pending work is bounded
+to 1,024 operations, 64 MiB per operation, and 256 MiB of private native
+buffers in total; reservations remain charged until the JS completion consumes
+the task. EOF resolves with zero bytes.
 
 ## Metadata and codegen layers
 
@@ -188,8 +206,8 @@ dynwinrt-codegen win32-census `
 ```
 
 For `Microsoft.Windows.SDK.Win32Metadata 71.0.14-preview`, the baseline is
-8,943 complete safe functions out of 18,321 DllImport rows
-(48.8128377271983%). Omission reasons are grouped into stable categories.
+8,936 complete safe functions out of 18,321 DllImport rows
+(48.77463020577479%). Omission reasons are grouped into stable categories.
 
 `windows-metadata` remains behind the flat-local adapter. Parameter rows are
 associated by ECMA-335 `Param.Sequence`, and calling convention remains a raw
