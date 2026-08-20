@@ -13,6 +13,7 @@ mod result;
 mod roapi;
 mod signature;
 mod value;
+pub mod win32;
 mod winapp;
 mod xaml_application;
 

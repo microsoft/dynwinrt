@@ -8,4 +8,5 @@ pub mod com_metadata;
 mod com_safe_array_registry;
 pub mod meta;
 pub mod types;
+pub mod win32_metadata;
 pub mod xml_doc;

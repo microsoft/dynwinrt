@@ -23,6 +23,18 @@
       "require": "./dist/com-unsafe.js",
       "default": "./dist/com-unsafe.js"
     },
+    "./win32": {
+      "types": "./dist/win32.d.ts",
+      "import": "./dist/win32.js",
+      "require": "./dist/win32.js",
+      "default": "./dist/win32.js"
+    },
+    "./win32/unsafe": {
+      "types": "./dist/win32-unsafe.d.ts",
+      "import": "./dist/win32-unsafe.js",
+      "require": "./dist/win32-unsafe.js",
+      "default": "./dist/win32-unsafe.js"
+    },
     "./package.json": "./package.json"
   },
   "typesVersions": {
@@ -32,6 +44,12 @@
       ],
       "com/unsafe": [
         "dist/com-unsafe.d.ts"
+      ],
+      "win32": [
+        "dist/win32.d.ts"
+      ],
+      "win32/unsafe": [
+        "dist/win32-unsafe.d.ts"
       ]
     }
   },

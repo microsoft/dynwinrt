@@ -58,6 +58,24 @@ jobs:
             throw "Classic COM coverage fell below 70%: $($result.coverage_percent)"
           }
           Write-Host "Classic COM coverage: $($result.complete_interfaces)/$($result.eligible_interfaces) ($($result.coverage_percent)%)"
+      - name: Enforce flat Win32 coverage baseline
+        shell: pwsh
+        run: |
+          $json = cargo run -p dynwinrt-codegen --quiet -- win32-census `
+            --winmd $env:DYNWINRT_WIN32_WINMD `
+            --json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $result = $json | ConvertFrom-Json
+          if ($result.eligible_functions -ne 18321) {
+            throw "Flat Win32 census denominator changed: $($result.eligible_functions)"
+          }
+          if ($result.complete_functions -lt 8936) {
+            throw "Flat Win32 complete coverage regressed: $($result.complete_functions)"
+          }
+          if ($result.coverage_percent -lt 48.7) {
+            throw "Flat Win32 coverage fell below 48.7%: $($result.coverage_percent)"
+          }
+          Write-Host "Flat Win32 coverage: $($result.complete_functions)/$($result.eligible_functions) ($($result.coverage_percent)%)"
       - name: Test Classic COM failure cleanup contracts
         run: |
           cargo test -p dynwinrt failing_hresult_releases_written_interface_output
@@ -193,3 +211,7 @@ jobs:
             bindings/js/dist/com.d.ts
             bindings/js/dist/com-unsafe.js
             bindings/js/dist/com-unsafe.d.ts
+            bindings/js/dist/win32.js
+            bindings/js/dist/win32.d.ts
+            bindings/js/dist/win32-unsafe.js
+            bindings/js/dist/win32-unsafe.d.ts

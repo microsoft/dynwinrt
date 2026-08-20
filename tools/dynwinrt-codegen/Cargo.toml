@@ -8,7 +8,7 @@ repository = "https://github.com/microsoft/dynwinrt"
 authors = ["Microsoft"]
 
 [dependencies]
-windows-metadata = "0.59.0"
+windows-metadata = "=0.59.0"
 clap = { version = "4", features = ["derive"] }
 roxmltree = "0.20"
 regex = "1"
@@ -26,6 +26,7 @@ features = [
     "Win32_Graphics_DirectComposition",
     "Win32_Graphics_DirectManipulation",
     "Win32_Media_MediaFoundation",
+    "Win32_Networking_Ldap",
     "Win32_Storage_FileSystem",
     "Win32_System_Com",
     "Win32_System_Ole",

@@ -22,6 +22,7 @@ windows-future = "0.3.2"
 windows-string = "0.0.0"
 pollster = "0.4.0"
 serde_json = "1"
+libffi = "5.1.0"
 
 [dependencies.windows]
 version = ">=0.59, <=0.62"
@@ -29,6 +30,12 @@ features = [
     "Data_Xml_Dom",
     "Win32_Security",
     "Win32_System_Threading",
+    "Win32_System_IO",
+    "Win32_Storage_FileSystem",
+    "Win32_Networking_WinSock",
+    "Win32_Graphics_GdiPlus",
+    "Win32_Media_MediaFoundation",
+    "Win32_System_AddressBook",
     "Win32_Storage_Packaging_Appx",
     "Web_Http",
     "Win32_System_SystemInformation",

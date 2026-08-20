@@ -1,0 +1,13 @@
+{
+  "name": "dynwinrt-win32-samples",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "system-info": "node system-info.mjs",
+    "registry": "node registry-product-name.mjs",
+    "overlapped-file": "node overlapped-file.mjs"
+  },
+  "dependencies": {
+    "@microsoft/dynwinrt": "file:../../../bindings/js"
+  }
+}

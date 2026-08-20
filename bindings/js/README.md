@@ -62,6 +62,14 @@ See the repository's
 [Classic COM JavaScript usage guide](../../docs/guides/windows/classic-com-usage.md) for
 codegen, GUID/IID/CLSID, lifetime, Automation, and `/com/unsafe` examples.
 
+Flat Win32 exports use `@microsoft/dynwinrt/win32`. Generated wrappers bind an
+immutable native call plan, accept retained Buffer storage for dereferenced
+pointers, and return `DynWin32Resource` for owned handles. Arbitrary numeric
+addresses and manual raw ABI plans require
+`@microsoft/dynwinrt/win32/unsafe`. Winsock, GDI+, and Media Foundation
+namespaces expose explicit initialization contexts. See the
+[flat Win32 usage guide](../../docs/guides/windows/flat-win32-usage.md).
+
 Unambiguous public WinRT activation metadata is projected as JavaScript constructors.
 Parameterized and composable activations support idiomatic forms such as
 `new Uri(base, relative)` and `new StackPanel()`. The generated static factory

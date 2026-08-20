@@ -229,6 +229,37 @@ pub fn get_vtable_function_ptr(obj: *mut c_void, method_index: usize) -> *mut c_
     }
 }
 
+pub(crate) unsafe fn call_native_function(
+    cif: &libffi::middle::Cif,
+    function: *mut c_void,
+    args: &[Arg<'_>],
+    return_type: Option<AbiType>,
+) -> Option<AbiValue> {
+    use libffi::middle::CodePtr;
+
+    match return_type {
+        None => {
+            unsafe { cif.call::<()>(CodePtr(function), args) };
+            None
+        }
+        Some(AbiType::Bool) => Some(AbiValue::Bool(unsafe { cif.call(CodePtr(function), args) })),
+        Some(AbiType::I8) => Some(AbiValue::I8(unsafe { cif.call(CodePtr(function), args) })),
+        Some(AbiType::U8) => Some(AbiValue::U8(unsafe { cif.call(CodePtr(function), args) })),
+        Some(AbiType::I16) => Some(AbiValue::I16(unsafe { cif.call(CodePtr(function), args) })),
+        Some(AbiType::U16) => Some(AbiValue::U16(unsafe { cif.call(CodePtr(function), args) })),
+        Some(AbiType::I32) => Some(AbiValue::I32(unsafe { cif.call(CodePtr(function), args) })),
+        Some(AbiType::U32) => Some(AbiValue::U32(unsafe { cif.call(CodePtr(function), args) })),
+        Some(AbiType::I64) => Some(AbiValue::I64(unsafe { cif.call(CodePtr(function), args) })),
+        Some(AbiType::U64) => Some(AbiValue::U64(unsafe { cif.call(CodePtr(function), args) })),
+        Some(AbiType::F32) => Some(AbiValue::F32(unsafe { cif.call(CodePtr(function), args) })),
+        Some(AbiType::F64) => Some(AbiValue::F64(unsafe { cif.call(CodePtr(function), args) })),
+        Some(AbiType::Guid) => Some(AbiValue::Guid(unsafe { cif.call(CodePtr(function), args) })),
+        Some(AbiType::Ptr) => Some(AbiValue::Pointer(unsafe {
+            cif.call(CodePtr(function), args)
+        })),
+    }
+}
+
 pub fn call_winrt_method_0(vtable_index: usize, obj: *mut c_void) -> HRESULT {
     let method_ptr = get_vtable_function_ptr(obj, vtable_index);
     unsafe {

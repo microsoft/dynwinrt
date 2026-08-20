@@ -347,7 +347,10 @@ fn get_error_info() -> napi::Result<Option<DynWinRTValue>> {
     .transpose()
 }
 
-fn try_cast(value: &DynWinRTValue, iid: &WinGUID) -> napi::Result<Option<DynWinRTValue>> {
+pub(super) fn try_cast(
+  value: &DynWinRTValue,
+  iid: &WinGUID,
+) -> napi::Result<Option<DynWinRTValue>> {
   const E_NOINTERFACE: windows::core::HRESULT = windows::core::HRESULT(0x80004002u32 as i32);
 
   value.ensure_existing_com_apartment()?;
@@ -655,7 +658,7 @@ fn uint8_array_info(
   }))
 }
 
-fn pointer(value: Unknown) -> napi::Result<DynWinRTValue> {
+pub(super) fn pointer(value: Unknown) -> napi::Result<DynWinRTValue> {
   use napi::sys;
 
   let env = value.value().env;
@@ -731,7 +734,7 @@ fn pointer(value: Unknown) -> napi::Result<DynWinRTValue> {
   ))
 }
 
-fn safe_data_pointer(value: Unknown, nullable: bool) -> napi::Result<DynWinRTValue> {
+pub(super) fn safe_data_pointer(value: Unknown, nullable: bool) -> napi::Result<DynWinRTValue> {
   use napi::sys;
 
   let env = value.value().env;
@@ -820,12 +823,32 @@ fn ansi_string_pointer(value: Unknown) -> napi::Result<DynWinRTValue> {
   pointer(value)
 }
 
-fn safe_wide_string_pointer(value: Unknown, nullable: bool) -> napi::Result<DynWinRTValue> {
+pub(super) fn safe_wide_string_pointer(
+  value: Unknown,
+  nullable: bool,
+) -> napi::Result<DynWinRTValue> {
   safe_string_pointer(value, nullable, true)
 }
 
-fn safe_ansi_string_pointer(value: Unknown, nullable: bool) -> napi::Result<DynWinRTValue> {
+pub(super) fn safe_ansi_string_pointer(
+  value: Unknown,
+  nullable: bool,
+) -> napi::Result<DynWinRTValue> {
   safe_string_pointer(value, nullable, false)
+}
+
+pub(super) fn safe_wide_multi_string_pointer(
+  value: Unknown,
+  nullable: bool,
+) -> napi::Result<DynWinRTValue> {
+  safe_multi_string_pointer(value, nullable, true)
+}
+
+pub(super) fn safe_ansi_multi_string_pointer(
+  value: Unknown,
+  nullable: bool,
+) -> napi::Result<DynWinRTValue> {
+  safe_multi_string_pointer(value, nullable, false)
 }
 
 fn safe_string_pointer(value: Unknown, nullable: bool, wide: bool) -> napi::Result<DynWinRTValue> {
@@ -856,6 +879,113 @@ fn safe_string_pointer(value: Unknown, nullable: bool, wide: bool) -> napi::Resu
   }
   Err(napi::Error::from_reason(
     "safe string pointer: expected string, Buffer, or Uint8Array; arbitrary numeric addresses require @microsoft/dynwinrt/com/unsafe",
+  ))
+}
+
+fn safe_multi_string_pointer(
+  value: Unknown,
+  nullable: bool,
+  wide: bool,
+) -> napi::Result<DynWinRTValue> {
+  use napi::sys;
+
+  let env = value.value().env;
+  let raw = value.value().value;
+  let mut value_type = sys::ValueType::napi_undefined;
+  unsafe { sys::napi_typeof(env, raw, &mut value_type) };
+  if matches!(
+    value_type,
+    sys::ValueType::napi_null | sys::ValueType::napi_undefined
+  ) {
+    return if nullable {
+      pointer(value)
+    } else {
+      Err(napi::Error::from_reason(
+        "safe multi-string pointer: null requires an explicitly nullable parameter",
+      ))
+    };
+  }
+
+  let mut is_array = false;
+  napi::check_status!(
+    unsafe { sys::napi_is_array(env, raw, &mut is_array) },
+    "Failed to inspect multi-string input"
+  )?;
+  if value_type == sys::ValueType::napi_string || is_array {
+    let values = if is_array {
+      unsafe { Vec::<String>::from_napi_value(env, raw) }?
+    } else {
+      vec![unsafe { String::from_napi_value(env, raw) }?]
+    };
+    if values.iter().any(|value| value.contains('\0')) {
+      return Err(napi::Error::from_reason(
+        "multi-string array entries cannot contain NUL characters",
+      ));
+    }
+    return if wide {
+      let mut storage = Vec::<u16>::new();
+      if values.is_empty() {
+        storage.push(0);
+      } else {
+        for value in values {
+          storage.extend(value.encode_utf16());
+          storage.push(0);
+        }
+      }
+      storage.push(0);
+      let mut storage = storage.into_boxed_slice();
+      let ptr = storage.as_mut_ptr().cast();
+      Ok(DynWinRTValue::with_pointer_owner(
+        dynwinrt::WinRTValue::RawPtr(ptr),
+        NativePointerOwner::WideString(storage),
+      ))
+    } else {
+      if values.iter().any(|value| !value.is_ascii()) {
+        return Err(napi::Error::from_reason(
+          "ANSI multi-string values must be ASCII; use an explicitly encoded Buffer for other code pages",
+        ));
+      }
+      let mut storage = Vec::<u8>::new();
+      if values.is_empty() {
+        storage.push(0);
+      } else {
+        for value in values {
+          storage.extend(value.into_bytes());
+          storage.push(0);
+        }
+      }
+      storage.push(0);
+      let mut storage = storage.into_boxed_slice();
+      let ptr = storage.as_mut_ptr().cast();
+      Ok(DynWinRTValue::with_pointer_owner(
+        dynwinrt::WinRTValue::RawPtr(ptr),
+        NativePointerOwner::AnsiString(storage),
+      ))
+    };
+  }
+
+  if let Some(array) = uint8_array_info(env, raw)? {
+    let bytes = unsafe { std::slice::from_raw_parts(array.data, array.length) };
+    if wide {
+      if (!array.data.is_null() && (array.data as usize) % std::mem::align_of::<u16>() != 0)
+        || bytes.len() < 4
+        || bytes.len() % 2 != 0
+        || bytes[bytes.len() - 4..] != [0, 0, 0, 0]
+      {
+        return Err(napi::Error::from_reason(
+          "wide multi-string Buffer/Uint8Array must be aligned UTF-16LE storage ending in two NUL code units",
+        ));
+      }
+    } else if bytes.len() < 2 || bytes[bytes.len() - 2..] != [0, 0] {
+      return Err(napi::Error::from_reason(
+        "ANSI multi-string Buffer/Uint8Array must end in two NUL bytes",
+      ));
+    }
+    return pointer(value);
+  }
+
+  Err(napi::Error::from_reason(
+    "safe multi-string pointer: expected string, string[], Buffer, or Uint8Array",
   ))
 }
 
@@ -1077,11 +1207,15 @@ fn take_bstr(value: &mut DynWinRTValue) -> napi::Result<String> {
   String::try_from(&value).map_err(|error| napi::Error::from_reason(error.to_string()))
 }
 
-fn validate_pointer_owner(value: &DynWinRTValue) -> napi::Result<()> {
+pub(super) fn validate_pointer_owner(value: &DynWinRTValue) -> napi::Result<()> {
   if let Some(owner) = &value.1 {
     owner.validate()?;
   }
   Ok(())
+}
+
+pub(super) fn has_native_pointer_owner(value: &DynWinRTValue) -> bool {
+  value.1.is_some()
 }
 
 fn take_native_output_pointer(
