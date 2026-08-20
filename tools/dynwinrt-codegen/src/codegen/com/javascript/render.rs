@@ -9,11 +9,11 @@ use std::collections::BTreeMap;
 use super::super::ir::ProjectedComEnumMember;
 use super::super::ir::{
     ActivationPlan, BufferCountUnit, ComEnumUnderlying, ComParamDirection, ComPrimitive,
-    ComReturnConvention, ComType, DispatchShape, OverloadDispatch, PointerAliasKind,
-    ProjectedComCoclass, ProjectedComEnum, ProjectedComInterface, ProjectedComMethod,
-    ProjectedComMethodKind, ProjectedComParam, ProjectedComResult, ProjectedEnumValue,
-    ProjectedInterfaceRef, ResultConversion, ResultSource, SharedCountPlan, StringEncoding,
-    TypedBufferPlan, TypedBufferRelation, TypedBufferSizing,
+    ComReturnConvention, ComSinkReturnConvention, ComType, DispatchShape, OverloadDispatch,
+    PointerAliasKind, ProjectedComCoclass, ProjectedComEnum, ProjectedComInterface,
+    ProjectedComMethod, ProjectedComMethodKind, ProjectedComParam, ProjectedComResult,
+    ProjectedEnumValue, ProjectedInterfaceRef, ResultConversion, ResultSource, SharedCountPlan,
+    StringEncoding, TypedBufferPlan, TypedBufferRelation, TypedBufferSizing,
 };
 use super::naming::js_param_name;
 #[cfg(test)]
@@ -21,7 +21,7 @@ use super::types::type_dts;
 use super::types::{
     abi_type_js, input_type_dts, native_pod_descriptor_js, native_pod_layout_js,
     native_union_descriptor_js, native_union_layout_js, result_type_dts, safe_array_abi_type_js,
-    scalar_type_dts, unwrap_result_js, wrap_arg_js,
+    scalar_type_dts, unwrap_callback_arg_js, unwrap_result_js, wrap_arg_js,
 };
 use crate::codegen::winrt::javascript::render::javascript::commonjs::convert_to_cjs_with_eager;
 
@@ -246,24 +246,44 @@ fn render_js(meta: &ProjectedComInterface) -> String {
     };
     let cache_var = format!("_{}Cache", meta.name);
     let iface_var = format!("_{}", meta.name);
-    out.push_str(&format!("let {cache_var};\n"));
-    out.push_str(&format!(
-        "const {iface_var} = new Proxy({{}}, {{\n    get(_target, prop) {{\n        {cache_var} ??= DynCom.{register_fn}('{}.{}', IID_{})\n",
+    let get_iface_var = format!("_get{}", meta.name);
+    let method_lines = meta
+        .methods
+        .iter()
+        .map(|method| {
+            format!(
+                "            .addMethodAt({}, '{}', {})\n",
+                method.vtable_index,
+                method.name,
+                build_method_sig_js(method)
+            )
+        })
+        .collect::<String>();
+    let mut registration = format!(
+        "DynCom.{register_fn}('{}.{}', IID_{})",
         meta.namespace, meta.name, meta.name
-    ));
-    for method in &meta.methods {
+    );
+    if meta.sink.is_some() {
+        for base_iid in &meta.base_iids {
+            registration.push_str(&format!(
+                "\n            .addBaseInterface(WinGuid.parse('{base_iid}'))"
+            ));
+        }
+    }
+    if !method_lines.is_empty() {
+        registration.push('\n');
+        registration.push_str(method_lines.trim_end());
+    }
+    out.push_str(&format!("let {cache_var};\n"));
+    if meta.sink.is_some() {
         out.push_str(&format!(
-            "            .addMethodAt({}, '{}', {})\n",
-            method.vtable_index,
-            method.name,
-            build_method_sig_js(method)
+            "const {get_iface_var} = () => {{\n    {cache_var} ??= {registration};\n    return {cache_var};\n}};\nconst {iface_var} = new Proxy({{}}, {{\n    get(_target, prop) {{\n        const iface = {get_iface_var}();\n        const value = iface[prop];\n        return typeof value === 'function' ? value.bind(iface) : value;\n    }},\n}});\n\n"
+        ));
+    } else {
+        out.push_str(&format!(
+            "const {iface_var} = new Proxy({{}}, {{\n    get(_target, prop) {{\n        {cache_var} ??= {registration};\n        const value = {cache_var}[prop];\n        return typeof value === 'function' ? value.bind({cache_var}) : value;\n    }},\n}});\n\n"
         ));
     }
-    if out.ends_with('\n') {
-        out.pop();
-    }
-    out.push_str(";\n");
-    out.push_str(&format!("        const value = {cache_var}[prop];\n        return typeof value === 'function' ? value.bind({cache_var}) : value;\n    }},\n}});\n\n"));
     out.push_str(&format!("export class {} {{\n", meta.name));
     out.push_str(&format!("    static IID = IID_{};\n", meta.name));
     let wrap_owned = format!("_wrap{}Owned", meta.name);
@@ -275,6 +295,13 @@ fn render_js(meta: &ProjectedComInterface) -> String {
         "    static _fromNative(obj) {{ return {wrap_owned}(obj.cast(IID_{})); }}\n",
         meta.name,
     ));
+    if meta.sink.is_some() {
+        out.push_str("    /** Borrowed native value for passing this implementation to generated COM methods. Do not release it separately. */\n    get nativeValue() { return this._obj; }\n");
+        out.push_str(
+            "    /** Query another generated interface implemented by the same COM identity. */\n    as(InterfaceClass) { return InterfaceClass._fromNative(this._obj); }\n",
+        );
+        render_sink_implementation_js(&mut out, meta, &wrap_owned, &get_iface_var);
+    }
     out.push_str("    /** Release the underlying native COM reference. Safe to call more than once. */\n    release() {\n        this._obj.release();\n    }\n");
     match &meta.activation {
         ActivationPlan::None => {}
@@ -362,6 +389,166 @@ fn render_js(meta: &ProjectedComInterface) -> String {
         meta.name
     ));
     out
+}
+
+fn render_sink_implementation_js(
+    out: &mut String,
+    meta: &ProjectedComInterface,
+    wrap_owned: &str,
+    get_iface_var: &str,
+) {
+    let sink = meta.sink.as_ref().expect("sink plan");
+    let handler_names = sink
+        .methods
+        .iter()
+        .map(|sink_method| sink_method.handler_name.as_str())
+        .collect::<Vec<_>>();
+    out.push_str(&format!(
+        "    /** Describe an apartment-bound COM interface implementation for composition with other generated interfaces. */\n    static implementation(handlers) {{\n        if (handlers === null || typeof handlers !== 'object' || Array.isArray(handlers)) throw new TypeError('{} implementation handlers must be an object');\n",
+        meta.name
+    ));
+    out.push_str(&format!(
+        "        for (const name of [{}]) {{\n            if (typeof handlers[name] !== 'function') throw new TypeError(`${{name}} must be a function`);\n        }}\n",
+        handler_names
+            .iter()
+            .map(|name| format!("'{name}'"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    ));
+    out.push_str("        const dispatch = (vtableIndex, ...args) => {\n            switch (vtableIndex) {\n");
+    for sink_method in &sink.methods {
+        let method = meta
+            .methods
+            .iter()
+            .find(|method| method.vtable_index == sink_method.vtable_index)
+            .expect("validated sink method");
+        out.push_str(&format!(
+            "                case {}: {{\n                    const callback = handlers.{};\n",
+            sink_method.vtable_index, sink_method.handler_name
+        ));
+        let callback_args = method
+            .params
+            .iter()
+            .filter(|param| param.surface_input)
+            .enumerate()
+            .map(|(index, param)| unwrap_callback_arg_js(&param.typ, &format!("args[{index}]")))
+            .collect::<Vec<_>>()
+            .join(", ");
+        out.push_str(&format!(
+            "                    const result = callback.call(handlers{}{});\n                    if (result !== null && (typeof result === 'object' || typeof result === 'function') && typeof result.then === 'function') throw new TypeError('COM implementation handlers must return synchronously');\n",
+            if callback_args.is_empty() { "" } else { ", " },
+            callback_args
+        ));
+        let output_results = method
+            .results
+            .iter()
+            .filter(|result| matches!(result.source, ResultSource::Param(_)))
+            .collect::<Vec<_>>();
+        match sink_method.return_convention {
+            ComSinkReturnConvention::HResult => match sink_method.output_count {
+                0 => {
+                    out.push_str("                    return result === undefined ? 0 : result;\n")
+                }
+                1 => {
+                    let wrapped = wrap_callback_result_js(method, output_results[0], "value");
+                    out.push_str(&format!(
+                        "                    const explicit = Array.isArray(result);\n                    const hresult = explicit ? result[0] : 0;\n                    const value = explicit ? result[1] : result;\n                    return [hresult, {wrapped}];\n"
+                    ));
+                }
+                output_count => {
+                    let wrapped = output_results
+                        .iter()
+                        .enumerate()
+                        .map(|(index, result)| {
+                            wrap_callback_result_js(method, result, &format!("values[{index}]"))
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    out.push_str(&format!(
+                        "                    const explicit = result !== null && typeof result === 'object' && !Array.isArray(result) && 'hresult' in result;\n                    const hresult = explicit ? result.hresult : 0;\n                    const values = explicit ? result.values : result;\n                    if (!Array.isArray(values) || values.length !== {output_count}) throw new TypeError('COM sink handler must return {output_count} output values');\n                    return [hresult, {wrapped}];\n"
+                    ));
+                }
+            },
+            ComSinkReturnConvention::SemanticHResult => {
+                if sink_method.output_count == 0 {
+                    out.push_str("                    return result;\n");
+                } else {
+                    let wrapped = output_results
+                        .iter()
+                        .enumerate()
+                        .map(|(index, result)| {
+                            wrap_callback_result_js(
+                                method,
+                                result,
+                                &format!("result[{}]", index + 1),
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let expected = sink_method.output_count + 1;
+                    out.push_str(&format!(
+                        "                    if (!Array.isArray(result) || result.length !== {expected}) throw new TypeError('COM sink semantic HRESULT handler must return {expected} values');\n                    return [result[0], {wrapped}];\n"
+                    ));
+                }
+            }
+            ComSinkReturnConvention::Void => match sink_method.output_count {
+                0 => out.push_str("                    return undefined;\n"),
+                1 => {
+                    let wrapped = wrap_callback_result_js(method, output_results[0], "result");
+                    out.push_str(&format!("                    return [{wrapped}];\n"));
+                }
+                output_count => {
+                    let wrapped = output_results
+                        .iter()
+                        .enumerate()
+                        .map(|(index, result)| {
+                            wrap_callback_result_js(method, result, &format!("result[{index}]"))
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    out.push_str(&format!(
+                        "                    if (!Array.isArray(result) || result.length !== {output_count}) throw new TypeError('COM sink void handler must return {output_count} output values');\n                    return [{wrapped}];\n"
+                    ));
+                }
+            },
+            ComSinkReturnConvention::Direct => {
+                let direct = method
+                    .results
+                    .iter()
+                    .find(|result| matches!(result.source, ResultSource::DirectReturn))
+                    .expect("validated direct sink return");
+                if sink_method.output_count == 0 {
+                    let wrapped = wrap_arg_js(&direct.typ, "result");
+                    out.push_str(&format!("                    return {wrapped};\n"));
+                } else {
+                    let wrapped = method
+                        .results
+                        .iter()
+                        .enumerate()
+                        .map(|(index, result)| {
+                            wrap_callback_result_js(method, result, &format!("result[{index}]"))
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let expected = sink_method.output_count + 1;
+                    out.push_str(&format!(
+                        "                    if (!Array.isArray(result) || result.length !== {expected}) throw new TypeError('COM sink direct-return handler must return {expected} values');\n                    return [{wrapped}];\n"
+                    ));
+                }
+            }
+        }
+        out.push_str("                }\n");
+    }
+    out.push_str("                default: throw new RangeError(`Unexpected COM sink vtable index ${vtableIndex}`);\n            }\n        };\n");
+    out.push_str(&format!(
+        "        return Object.freeze({{ interfaceType: {}(), iid: '{}', dispatch }});\n    }}\n",
+        get_iface_var,
+        meta.iid.to_ascii_lowercase()
+    ));
+    out.push_str(&format!(
+        "    /** Create an apartment-bound COM object, optionally implementing additional generated interfaces. */\n    static implement(handlers, ...additional) {{\n        const primary = {}.implementation(handlers);\n        if (additional.length === 0) return {}(DynCom.createIUnknownSink(primary.interfaceType, primary.dispatch));\n        const implementations = [primary, ...additional];\n        const byIid = new Map();\n        for (const implementation of implementations) {{\n            if (implementation === null || typeof implementation !== 'object' || implementation.interfaceType == null || typeof implementation.iid !== 'string' || typeof implementation.dispatch !== 'function') throw new TypeError('Invalid generated COM implementation descriptor');\n            const iid = implementation.iid.toLowerCase();\n            if (byIid.has(iid)) throw new TypeError(`Duplicate COM implementation IID ${{implementation.iid}}`);\n            byIid.set(iid, implementation);\n        }}\n        const identity = DynCom.createComObject(implementations.map(implementation => implementation.interfaceType), (iid, vtableIndex, ...args) => {{\n            const implementation = byIid.get(iid.toLowerCase());\n            if (implementation === undefined) throw new RangeError(`Unexpected COM implementation IID ${{iid}}`);\n            return implementation.dispatch(vtableIndex, ...args);\n        }});\n        try {{\n            return {}(identity.cast(IID_{}));\n        }} finally {{\n            identity.release();\n        }}\n    }}\n",
+        meta.name, wrap_owned, wrap_owned, meta.name
+    ));
 }
 
 fn build_method_sig_js(method: &ProjectedComMethod) -> String {
@@ -563,6 +750,17 @@ fn wrap_param_arg_js(param: &ProjectedComParam, variable: &str) -> String {
         };
     }
     wrapped
+}
+
+fn wrap_callback_result_js(
+    method: &ProjectedComMethod,
+    result: &ProjectedComResult,
+    variable: &str,
+) -> String {
+    match result.source {
+        ResultSource::Param(index) => wrap_param_arg_js(&method.params[index], variable),
+        ResultSource::DirectReturn => wrap_arg_js(&result.typ, variable),
+    }
 }
 
 fn param_input_type_dts(param: &ProjectedComParam) -> String {
@@ -1607,8 +1805,13 @@ fn unwrap_dynamic_iid_result_js(
 fn render_dts(meta: &ProjectedComInterface) -> String {
     let mut out = String::new();
     out.push_str("// Generated by dynwinrt-codegen — do not edit\n");
+    let public_types = if meta.sink.is_some() {
+        "DynComImplementation, WinGuid"
+    } else {
+        "WinGuid"
+    };
     out.push_str(&format!(
-        "import type {{ WinGuid }} from '{}';\n",
+        "import type {{ {public_types} }} from '{}';\n",
         com_public_import_name()
     ));
     for en in &meta.referenced_enums {
@@ -1625,7 +1828,7 @@ fn render_dts(meta: &ProjectedComInterface) -> String {
             ));
         }
     }
-    if needs_bridge_import(meta) {
+    if meta.sink.is_some() || needs_bridge_import(meta) {
         out.push_str(&format!(
             "import type {{ DynWinRtValue }} from '{}';\n",
             com_public_import_name()
@@ -1714,6 +1917,42 @@ fn render_dts(meta: &ProjectedComInterface) -> String {
     if !collect_native_unions(meta).is_empty() {
         out.push('\n');
     }
+    if let Some(sink) = &meta.sink {
+        out.push_str(&format!(
+            "export interface {}Implementation {{\n",
+            meta.name
+        ));
+        for sink_method in &sink.methods {
+            let method = meta
+                .methods
+                .iter()
+                .find(|method| method.vtable_index == sink_method.vtable_index)
+                .expect("validated sink method");
+            let return_type = match sink_method.return_convention {
+                ComSinkReturnConvention::HResult => match sink_method.output_count {
+                    0 => "void | number".into(),
+                    1 => {
+                        let result = dts_return_type(method);
+                        format!("{result} | readonly [hresult: number, value: {result}]")
+                    }
+                    _ => {
+                        let result = dts_return_type(method);
+                        format!("{result} | {{ hresult: number; values: {result} }}")
+                    }
+                },
+                ComSinkReturnConvention::SemanticHResult
+                | ComSinkReturnConvention::Void
+                | ComSinkReturnConvention::Direct => dts_return_type(method),
+            };
+            out.push_str(&format!(
+                "    {}: ({}) => {};\n",
+                sink_method.handler_name,
+                dts_params(method).join(", "),
+                return_type
+            ));
+        }
+        out.push_str("}\n\n");
+    }
     out.push_str(&format!(
         "export declare const IID_{}: WinGuid;\n\nexport declare class {} {{\n",
         meta.name, meta.name
@@ -1732,6 +1971,18 @@ fn render_dts(meta: &ProjectedComInterface) -> String {
         )),
     }
     out.push_str(&format!("    /** Wrap an existing native COM pointer (for QueryInterface bridging). */\n    static _fromNative(obj: unknown): {};\n", meta.name));
+    if meta.sink.is_some() {
+        out.push_str("    /** Borrowed native value for passing this implementation to generated COM methods. Do not release it separately. */\n    readonly nativeValue: DynWinRtValue;\n");
+        out.push_str("    /** Query another generated interface implemented by the same COM identity. */\n    as<T>(InterfaceClass: { readonly IID: unknown; _fromNative(obj: unknown): T }): T;\n");
+        out.push_str(&format!(
+        "    /** Describe this interface implementation for composition with other generated interfaces. */\n    static implementation(handlers: {}Implementation): DynComImplementation;\n",
+        meta.name
+    ));
+        out.push_str(&format!(
+        "    /** Create an apartment-bound COM object, optionally implementing additional generated interfaces. */\n    static implement(handlers: {}Implementation, ...additional: DynComImplementation[]): {};\n",
+        meta.name, meta.name
+    ));
+    }
     out.push_str("    /** Release the underlying native COM reference. Safe to call more than once. */\n    release(): void;\n");
     let mut emitted_groups = std::collections::HashSet::new();
     for method in &meta.methods {

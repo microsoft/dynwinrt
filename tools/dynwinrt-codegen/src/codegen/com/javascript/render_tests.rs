@@ -2,7 +2,9 @@
 // Licensed under the MIT License.
 
 use super::*;
-use crate::codegen::com::ir::{ComPrimitive, ComScalarRepr};
+use crate::codegen::com::ir::{
+    ComPrimitive, ComScalarRepr, ComSinkPlan, ComSinkReturnConvention, ProjectedComSinkMethod,
+};
 use crate::codegen::com::javascript::naming::{camel_case, strip_hungarian};
 use crate::codegen::com::project::{
     project_com_interface_for_test as project_com_interface, project_type_for_test as project_type,
@@ -28,10 +30,12 @@ fn renderer_api_accepts_only_projected_ir() {
         name: "ITest".into(),
         namespace: "Tests".into(),
         iid: "00000000-0000-0000-0000-000000000001".into(),
+        base_iids: Vec::new(),
         is_iunknown_rooted: true,
         methods: Vec::new(),
         activation: ActivationPlan::None,
         referenced_enums: Vec::new(),
+        sink: None,
     };
     let output = render_com_interface(&projected);
     assert!(output.js.contains("registerIUnknownInterface"));
@@ -57,6 +61,267 @@ fn renderer_api_accepts_only_projected_ir() {
 }
 
 #[test]
+fn renderer_serializes_validated_com_sink_plan() {
+    let interface_param = |name: &str| ProjectedComParam {
+        name: name.into(),
+        typ: ComType::ManagedInterface {
+            iid: "00000000-0000-0000-c000-000000000046".into(),
+        },
+        direction: ComParamDirection::In,
+        surface_input: true,
+        surface_result: false,
+        nullable: false,
+    };
+    let methods = vec![
+        ProjectedComMethod {
+            name: "OnChanged".into(),
+            camel_name: "onChanged".into(),
+            vtable_index: 3,
+            params: vec![interface_param("sender")],
+            return_convention: ComReturnConvention::HResult,
+            results: Vec::new(),
+            string_buffer: None,
+            typed_buffers: Vec::new(),
+            shared_counts: Vec::new(),
+            kind: ProjectedComMethodKind::Normal,
+            doc: None,
+            overload: None,
+        },
+        ProjectedComMethod {
+            name: "OnDecision".into(),
+            camel_name: "onDecision".into(),
+            vtable_index: 4,
+            params: vec![
+                interface_param("sender"),
+                interface_param("item"),
+                ProjectedComParam {
+                    name: "decision".into(),
+                    typ: ComType::Enum {
+                        namespace: "Tests".into(),
+                        name: "DECISION".into(),
+                        underlying: ComEnumUnderlying::I32,
+                    },
+                    direction: ComParamDirection::Out,
+                    surface_input: false,
+                    surface_result: true,
+                    nullable: false,
+                },
+            ],
+            return_convention: ComReturnConvention::HResult,
+            results: vec![ProjectedComResult {
+                typ: ComType::Enum {
+                    namespace: "Tests".into(),
+                    name: "DECISION".into(),
+                    underlying: ComEnumUnderlying::I32,
+                },
+                source: ResultSource::Param(2),
+                conversion: ResultConversion::Value,
+            }],
+            string_buffer: None,
+            typed_buffers: Vec::new(),
+            shared_counts: Vec::new(),
+            kind: ProjectedComMethodKind::Normal,
+            doc: None,
+            overload: None,
+        },
+    ];
+    let projected = ProjectedComInterface {
+        name: "ITestSink".into(),
+        namespace: "Tests".into(),
+        iid: "00000000-0000-0000-0000-000000000001".into(),
+        base_iids: Vec::new(),
+        is_iunknown_rooted: true,
+        methods,
+        activation: ActivationPlan::None,
+        referenced_enums: vec![ProjectedComEnum {
+            namespace: "Tests".into(),
+            name: "DECISION".into(),
+            underlying: ComEnumUnderlying::I32,
+            members: Vec::new(),
+        }],
+        sink: Some(ComSinkPlan {
+            methods: vec![
+                ProjectedComSinkMethod {
+                    vtable_index: 3,
+                    handler_name: "onChanged".into(),
+                    return_convention: ComSinkReturnConvention::HResult,
+                    output_count: 0,
+                },
+                ProjectedComSinkMethod {
+                    vtable_index: 4,
+                    handler_name: "onDecision".into(),
+                    return_convention: ComSinkReturnConvention::HResult,
+                    output_count: 1,
+                },
+            ],
+        }),
+    };
+
+    let output = render_com_interface(&projected);
+    assert!(output.js.contains("static implementation(handlers)"));
+    assert!(
+        output
+            .js
+            .contains("static implement(handlers, ...additional)")
+    );
+    assert!(
+        output
+            .js
+            .contains("get nativeValue() { return this._obj; }")
+    );
+    assert!(
+        output
+            .js
+            .contains("DynCom.createIUnknownSink(primary.interfaceType, primary.dispatch)")
+    );
+    assert!(
+        output
+            .dts
+            .contains("export interface ITestSinkImplementation")
+    );
+    assert!(output.dts.contains("readonly nativeValue: DynWinRtValue;"));
+    assert!(
+        output
+            .dts
+            .contains("onChanged: (sender: DynWinRtValue) => void | number;")
+    );
+    assert!(output.dts.contains(
+        "onDecision: (sender: DynWinRtValue, item: DynWinRtValue) => DECISION | readonly [hresult: number, value: DECISION];"
+    ));
+    assert!(output.dts.contains(
+        "static implementation(handlers: ITestSinkImplementation): DynComImplementation;"
+    ));
+    assert!(
+        output.dts.contains(
+            "static implement(handlers: ITestSinkImplementation, ...additional: DynComImplementation[]): ITestSink;"
+        )
+    );
+}
+
+#[test]
+fn renderer_serializes_direct_and_void_com_sink_returns() {
+    let methods = vec![
+        ProjectedComMethod {
+            name: "GetValue".into(),
+            camel_name: "getValue".into(),
+            vtable_index: 3,
+            params: Vec::new(),
+            return_convention: ComReturnConvention::Direct(ComType::Primitive(ComPrimitive::I32)),
+            results: vec![ProjectedComResult {
+                typ: ComType::Primitive(ComPrimitive::I32),
+                source: ResultSource::DirectReturn,
+                conversion: ResultConversion::Value,
+            }],
+            string_buffer: None,
+            typed_buffers: Vec::new(),
+            shared_counts: Vec::new(),
+            kind: ProjectedComMethodKind::Normal,
+            doc: None,
+            overload: None,
+        },
+        ProjectedComMethod {
+            name: "Notify".into(),
+            camel_name: "notify".into(),
+            vtable_index: 4,
+            params: Vec::new(),
+            return_convention: ComReturnConvention::Void,
+            results: Vec::new(),
+            string_buffer: None,
+            typed_buffers: Vec::new(),
+            shared_counts: Vec::new(),
+            kind: ProjectedComMethodKind::Normal,
+            doc: None,
+            overload: None,
+        },
+    ];
+    let projected = ProjectedComInterface {
+        name: "INativeReturnSink".into(),
+        namespace: "Tests".into(),
+        iid: "00000000-0000-0000-0000-000000000002".into(),
+        base_iids: Vec::new(),
+        is_iunknown_rooted: true,
+        methods,
+        activation: ActivationPlan::None,
+        referenced_enums: Vec::new(),
+        sink: Some(ComSinkPlan {
+            methods: vec![
+                ProjectedComSinkMethod {
+                    vtable_index: 3,
+                    handler_name: "getValue".into(),
+                    return_convention: ComSinkReturnConvention::Direct,
+                    output_count: 0,
+                },
+                ProjectedComSinkMethod {
+                    vtable_index: 4,
+                    handler_name: "notify".into(),
+                    return_convention: ComSinkReturnConvention::Void,
+                    output_count: 0,
+                },
+            ],
+        }),
+    };
+
+    let output = render_com_interface(&projected);
+    assert!(output.js.contains("return DynCom.i32(result);"));
+    assert!(output.js.contains("return undefined;"));
+    assert!(
+        output
+            .dts
+            .contains("import type { DynWinRtValue } from '@microsoft/dynwinrt/com';")
+    );
+    assert!(output.dts.contains("getValue: () => number;"));
+    assert!(output.dts.contains("notify: () => void;"));
+}
+
+#[test]
+fn callback_results_use_nullable_abi_wrappers() {
+    assert_eq!(
+        unwrap_callback_arg_js(&ComType::Bstr, "value"),
+        "DynCom.copyCallbackBstr(value)"
+    );
+    let method = |typ: ComType, conversion: ResultConversion| ProjectedComMethod {
+        name: "GetOptional".into(),
+        camel_name: "getOptional".into(),
+        vtable_index: 3,
+        params: vec![ProjectedComParam {
+            name: "value".into(),
+            typ: typ.clone(),
+            direction: ComParamDirection::Out,
+            surface_input: false,
+            surface_result: true,
+            nullable: true,
+        }],
+        return_convention: ComReturnConvention::HResult,
+        results: vec![ProjectedComResult {
+            typ,
+            source: ResultSource::Param(0),
+            conversion,
+        }],
+        string_buffer: None,
+        typed_buffers: Vec::new(),
+        shared_counts: Vec::new(),
+        kind: ProjectedComMethodKind::Normal,
+        doc: None,
+        overload: None,
+    };
+    let bstr = method(ComType::Bstr, ResultConversion::Bstr);
+    assert_eq!(
+        wrap_callback_result_js(&bstr, &bstr.results[0], "value"),
+        "value === null ? DynCom.nullBstr() : DynCom.bstr(value)"
+    );
+    let interface = method(
+        ComType::ManagedInterface {
+            iid: "00000000-0000-0000-c000-000000000046".into(),
+        },
+        ResultConversion::ManagedCom,
+    );
+    assert_eq!(
+        wrap_callback_result_js(&interface, &interface.results[0], "value"),
+        "value === null ? DynCom.nullComValue() : value"
+    );
+}
+
+#[test]
 fn renderer_projects_borrowed_hwnd_output_as_numeric_handle() {
     let hwnd = ComType::PointerAlias {
         namespace: "Windows.Win32.Foundation".into(),
@@ -67,6 +332,7 @@ fn renderer_projects_borrowed_hwnd_output_as_numeric_handle() {
         name: "IWindowOwner".into(),
         namespace: "Tests".into(),
         iid: "00000000-0000-0000-0000-000000000001".into(),
+        base_iids: Vec::new(),
         is_iunknown_rooted: true,
         methods: vec![ProjectedComMethod {
             name: "GetWindow".into(),
@@ -95,6 +361,7 @@ fn renderer_projects_borrowed_hwnd_output_as_numeric_handle() {
         }],
         activation: ActivationPlan::None,
         referenced_enums: Vec::new(),
+        sink: None,
     };
 
     let output = render_com_interface(&projected);
@@ -137,6 +404,7 @@ fn canonical_iunknown_arrays_use_managed_values_without_nominal_wrappers() {
         name: "IUnknownArray".into(),
         namespace: "Tests".into(),
         iid: "00000000-0000-0000-0000-000000000001".into(),
+        base_iids: Vec::new(),
         is_iunknown_rooted: true,
         methods: vec![ProjectedComMethod {
             name: "GetValues".into(),
@@ -161,6 +429,7 @@ fn canonical_iunknown_arrays_use_managed_values_without_nominal_wrappers() {
         }],
         activation: ActivationPlan::None,
         referenced_enums: Vec::new(),
+        sink: None,
     };
     let output = render_com_interface(&projected);
     assert!(
@@ -176,6 +445,7 @@ fn renderer_projects_bstr_replacement_as_a_string_roundtrip() {
         name: "IReplaceText".into(),
         namespace: "Tests".into(),
         iid: "00000000-0000-0000-0000-000000000001".into(),
+        base_iids: Vec::new(),
         is_iunknown_rooted: true,
         methods: vec![ProjectedComMethod {
             name: "Replace".into(),
@@ -204,6 +474,7 @@ fn renderer_projects_bstr_replacement_as_a_string_roundtrip() {
         }],
         activation: ActivationPlan::None,
         referenced_enums: Vec::new(),
+        sink: None,
     };
     let output = render_com_interface(&projected);
 
@@ -225,6 +496,7 @@ fn renderer_allows_null_only_for_nullable_bstr_inputs() {
         name: "IOptionalText".into(),
         namespace: "Tests".into(),
         iid: "00000000-0000-0000-0000-000000000001".into(),
+        base_iids: Vec::new(),
         is_iunknown_rooted: true,
         methods: vec![ProjectedComMethod {
             name: "SetOptional".into(),
@@ -249,6 +521,7 @@ fn renderer_allows_null_only_for_nullable_bstr_inputs() {
         }],
         activation: ActivationPlan::None,
         referenced_enums: Vec::new(),
+        sink: None,
     };
     let output = render_com_interface(&projected);
 
@@ -362,10 +635,12 @@ fn renderer_keeps_dynamic_iid_native_order_and_all_results() {
         name: "IResolve".into(),
         namespace: "Tests".into(),
         iid: "00000000-0000-0000-0000-000000000010".into(),
+        base_iids: Vec::new(),
         is_iunknown_rooted: true,
         methods: vec![method],
         activation: ActivationPlan::None,
         referenced_enums: Vec::new(),
+        sink: None,
     });
 
     assert!(output.js.contains(
@@ -394,6 +669,7 @@ fn renderer_emits_distinct_by_value_variant_inputs() {
         name: "IVariantInput".into(),
         namespace: "Tests".into(),
         iid: "00000000-0000-0000-0000-000000000002".into(),
+        base_iids: Vec::new(),
         is_iunknown_rooted: true,
         methods: vec![ProjectedComMethod {
             name: "UseVariant".into(),
@@ -418,6 +694,7 @@ fn renderer_emits_distinct_by_value_variant_inputs() {
         }],
         activation: ActivationPlan::None,
         referenced_enums: Vec::new(),
+        sink: None,
     };
 
     let output = render_com_interface(&projected);
@@ -444,6 +721,7 @@ fn typed_buffer_scalar_aliases_are_collected_for_declarations() {
         name: "ITest".into(),
         namespace: "Tests".into(),
         iid: "00000000-0000-0000-0000-000000000001".into(),
+        base_iids: Vec::new(),
         is_iunknown_rooted: true,
         methods: vec![ProjectedComMethod {
             name: "Resolve".into(),
@@ -470,6 +748,7 @@ fn typed_buffer_scalar_aliases_are_collected_for_declarations() {
         }],
         activation: ActivationPlan::None,
         referenced_enums: Vec::new(),
+        sink: None,
     };
 
     assert_eq!(
@@ -487,6 +766,7 @@ fn renderer_serializes_fixed_capacity_bytes_from_projected_ir() {
         name: "ITestBlob".into(),
         namespace: "Tests".into(),
         iid: "00000000-0000-0000-0000-000000000001".into(),
+        base_iids: Vec::new(),
         is_iunknown_rooted: true,
         methods: vec![ProjectedComMethod {
             name: "GetBlob".into(),
@@ -552,6 +832,7 @@ fn renderer_serializes_fixed_capacity_bytes_from_projected_ir() {
         }],
         activation: ActivationPlan::None,
         referenced_enums: Vec::new(),
+        sink: None,
     };
 
     let output = render_com_interface(&projected);
@@ -579,6 +860,7 @@ fn parallel_arrays_use_semantic_element_counts_and_guid_conversion() {
         name: "IParallel".into(),
         namespace: "Tests".into(),
         iid: "00000000-0000-0000-0000-000000000010".into(),
+        base_iids: Vec::new(),
         is_iunknown_rooted: true,
         methods: vec![ProjectedComMethod {
             name: "Copy".into(),
@@ -655,6 +937,7 @@ fn parallel_arrays_use_semantic_element_counts_and_guid_conversion() {
         }],
         activation: ActivationPlan::None,
         referenced_enums: Vec::new(),
+        sink: None,
     };
 
     let output = render_com_interface(&projected);
@@ -751,6 +1034,7 @@ fn renderer_emits_tagged_unions_and_automation_runtime_transfers() {
         name: "IAutomationTest".into(),
         namespace: "Tests".into(),
         iid: "00000000-0000-0000-0000-000000000009".into(),
+        base_iids: Vec::new(),
         is_iunknown_rooted: true,
         methods: vec![
             method(
@@ -781,6 +1065,7 @@ fn renderer_emits_tagged_unions_and_automation_runtime_transfers() {
         ],
         activation: ActivationPlan::None,
         referenced_enums: Vec::new(),
+        sink: None,
     };
 
     let output = render_com_interface(&projected);
@@ -855,10 +1140,12 @@ fn renderer_emits_explicit_idispatch_invoke_options_and_compound_types() {
         name: "IDispatch".into(),
         namespace: "Windows.Win32.System.Com".into(),
         iid: "00020400-0000-0000-c000-000000000046".into(),
+        base_iids: Vec::new(),
         is_iunknown_rooted: true,
         methods: vec![method],
         activation: ActivationPlan::None,
         referenced_enums: Vec::new(),
+        sink: None,
     });
 
     assert!(output.js.contains(".addIn(DynCom.dispatchParamsType())"));
@@ -903,10 +1190,12 @@ fn coclass_renderer_uses_new_and_runtime_query_interface_views() {
         name: "ITest4".into(),
         namespace: "Tests".into(),
         iid: "00000000-0000-0000-0000-000000000004".into(),
+        base_iids: Vec::new(),
         is_iunknown_rooted: true,
         methods: Vec::new(),
         activation: ActivationPlan::None,
         referenced_enums: Vec::new(),
+        sink: None,
     };
     let coclass = ProjectedComCoclass {
         name: "Test".into(),
@@ -1602,6 +1891,7 @@ fn interop_generation_fails_when_target_iid_unresolvable() {
         base_offset: 3,
         is_iunknown_rooted: true,
         base_chain: vec!["IUnknown".into()],
+        base_iids: Vec::new(),
         coclass_clsid: None,
         coclass_name: None,
         own_methods_start: 3,
@@ -1656,6 +1946,7 @@ fn non_interop_iunknown_interface_still_generates_without_winmd_lookup() {
         base_offset: 3,
         is_iunknown_rooted: true,
         base_chain: vec!["IUnknown".into()],
+        base_iids: Vec::new(),
         coclass_clsid: None,
         coclass_name: None,
         own_methods_start: 3,
@@ -1688,6 +1979,7 @@ fn plain_iface_with_method(m: MethodMeta) -> crate::com_metadata::ComInterfaceMe
         base_offset: 3,
         is_iunknown_rooted: true,
         base_chain: vec!["IUnknown".into()],
+        base_iids: Vec::new(),
         coclass_clsid: None,
         coclass_name: None,
         own_methods_start: 3,

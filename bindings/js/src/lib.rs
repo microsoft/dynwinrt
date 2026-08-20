@@ -2463,15 +2463,15 @@ impl RustStaticBench {
 // DynWinRtDelegate — dynamic WinRT delegate (callback) binding
 // ======================================================================
 
-struct DirectDelegateCallback {
+struct DirectJsCallback {
   env: napi::sys::napi_env,
   callback_ref: napi::sys::napi_ref,
   async_context: napi::sys::napi_async_context,
   lifecycle: Arc<managed_tsfn::TsfnLifecycle>,
 }
 
-unsafe impl Send for DirectDelegateCallback {}
-unsafe impl Sync for DirectDelegateCallback {}
+unsafe impl Send for DirectJsCallback {}
+unsafe impl Sync for DirectJsCallback {}
 
 fn napi_status(name: &str, status: napi::sys::napi_status) -> napi::Result<()> {
   if status == napi::sys::Status::napi_ok {
@@ -2484,9 +2484,10 @@ fn napi_status(name: &str, status: napi::sys::napi_status) -> napi::Result<()> {
   }
 }
 
-fn create_direct_delegate_resources(
+fn create_direct_callback_resources(
   env: napi::sys::napi_env,
   callback: napi::sys::napi_value,
+  resource_name_bytes: &[u8],
 ) -> napi::Result<(
   napi::sys::napi_ref,
   napi::sys::napi_async_context,
@@ -2499,28 +2500,27 @@ fn create_direct_delegate_resources(
 
   let result = (|| {
     let mut resource = std::ptr::null_mut();
-    napi_status("napi_create_object(delegate resource)", unsafe {
+    napi_status("napi_create_object(callback resource)", unsafe {
       napi::sys::napi_create_object(env, &mut resource)
     })?;
 
     let mut resource_ref = std::ptr::null_mut();
-    napi_status("napi_create_reference(delegate resource)", unsafe {
+    napi_status("napi_create_reference(callback resource)", unsafe {
       napi::sys::napi_create_reference(env, resource, 1, &mut resource_ref)
     })?;
 
     let async_context = (|| {
       let mut resource_name = std::ptr::null_mut();
-      let name = b"dynwinrt.delegate";
-      napi_status("napi_create_string_utf8(delegate resource)", unsafe {
+      napi_status("napi_create_string_utf8(callback resource)", unsafe {
         napi::sys::napi_create_string_utf8(
           env,
-          name.as_ptr().cast(),
-          name.len() as isize,
+          resource_name_bytes.as_ptr().cast(),
+          resource_name_bytes.len() as isize,
           &mut resource_name,
         )
       })?;
       let mut async_context = std::ptr::null_mut();
-      napi_status("napi_async_init(delegate)", unsafe {
+      napi_status("napi_async_init(callback)", unsafe {
         napi::sys::napi_async_init(env, resource, resource_name, &mut async_context)
       })?;
       Ok::<_, napi::Error>(async_context)
@@ -2543,7 +2543,7 @@ fn create_direct_delegate_resources(
       let async_status = unsafe { napi::sys::napi_async_destroy(env, async_context) };
       if async_status != napi::sys::Status::napi_ok {
         eprintln!(
-          "[dynwinrt] delegate async context cleanup failed: {}",
+          "[dynwinrt] callback async context cleanup failed: {}",
           napi::Status::from(async_status)
         );
       }
@@ -2551,7 +2551,7 @@ fn create_direct_delegate_resources(
         let status = unsafe { napi::sys::napi_delete_reference(env, reference) };
         if status != napi::sys::Status::napi_ok {
           eprintln!(
-            "[dynwinrt] delegate reference cleanup failed: {}",
+            "[dynwinrt] callback reference cleanup failed: {}",
             napi::Status::from(status)
           );
         }
@@ -2566,6 +2566,79 @@ fn create_direct_delegate_resources(
     }
   }
   result
+}
+
+fn invoke_direct_js_callback<R>(
+  direct: &DirectJsCallback,
+  build_args: impl FnOnce(napi::sys::napi_env) -> napi::Result<Vec<napi::sys::napi_value>>,
+  parse_result: impl FnOnce(napi::sys::napi_env, napi::sys::napi_value) -> napi::Result<R>,
+) -> napi::Result<R> {
+  if direct.lifecycle.is_closing() {
+    return Err(napi::Error::from_reason(
+      "Cannot invoke a callback while the Node environment is closing",
+    ));
+  }
+
+  let env = direct.env;
+  unsafe {
+    let mut scope: napi::sys::napi_handle_scope = std::ptr::null_mut();
+    napi_status(
+      "napi_open_handle_scope(callback)",
+      napi::sys::napi_open_handle_scope(env, &mut scope),
+    )?;
+
+    let result = (|| {
+      let mut function = std::ptr::null_mut();
+      napi_status(
+        "napi_get_reference_value(callback)",
+        napi::sys::napi_get_reference_value(env, direct.callback_ref, &mut function),
+      )?;
+      let args = build_args(env)?;
+      let mut receiver = std::ptr::null_mut();
+      napi_status(
+        "napi_get_global(callback)",
+        napi::sys::napi_get_global(env, &mut receiver),
+      )?;
+      let mut result = std::ptr::null_mut();
+      let status = napi::sys::napi_make_callback(
+        env,
+        direct.async_context,
+        receiver,
+        function,
+        args.len(),
+        args.as_ptr(),
+        &mut result,
+      );
+      if status != napi::sys::Status::napi_ok {
+        let mut is_pending = false;
+        napi_status(
+          "napi_is_exception_pending(callback)",
+          napi::sys::napi_is_exception_pending(env, &mut is_pending),
+        )?;
+        if is_pending {
+          let mut error = std::ptr::null_mut();
+          napi_status(
+            "napi_get_and_clear_last_exception(callback)",
+            napi::sys::napi_get_and_clear_last_exception(env, &mut error),
+          )?;
+          napi_status(
+            "napi_fatal_exception(callback)",
+            napi::sys::napi_fatal_exception(env, error),
+          )?;
+        }
+        return Err(napi::Error::from_reason(format!(
+          "napi_make_callback failed with status {status}",
+        )));
+      }
+      parse_result(env, result)
+    })();
+
+    napi_status(
+      "napi_close_handle_scope(callback)",
+      napi::sys::napi_close_handle_scope(env, scope),
+    )?;
+    result
+  }
 }
 
 #[napi]
@@ -2599,7 +2672,7 @@ impl DynWinRtDelegate {
     let raw_env = callback.value().env;
     let raw_callback = napi::JsValue::raw(&callback);
     let (callback_ref, async_context, finalizer) =
-      create_direct_delegate_resources(raw_env, raw_callback)?;
+      create_direct_callback_resources(raw_env, raw_callback, b"dynwinrt.delegate")?;
     let tsfn = managed_tsfn::ManagedTsfn::create(
       raw_env,
       raw_callback,
@@ -2614,7 +2687,7 @@ impl DynWinRtDelegate {
       Some(finalizer),
     )?;
     let lifecycle = tsfn.lifecycle();
-    let direct = Arc::new(DirectDelegateCallback {
+    let direct = Arc::new(DirectJsCallback {
       env: raw_env,
       callback_ref,
       async_context,
@@ -2636,9 +2709,6 @@ impl DynWinRtDelegate {
           args.iter().map(|a| DynWinRTValue::new(a.clone())).collect();
 
         if current_tid == register_tid {
-          if direct.lifecycle.is_closing() {
-            return E_FAIL;
-          }
           // Same-thread synchronous direct invocation. Bypass the TSFN because
           // libuv may be blocked (e.g. DispatcherQueue.runEventLoop), so
           // uv_async_send would queue the callback but never fire it.
@@ -2647,102 +2717,23 @@ impl DynWinRtDelegate {
           // ultimately called by an `extern "system"` COM stub, and letting a
           // Rust panic unwind through the FFI boundary is UB. On panic we
           // convert to E_UNEXPECTED so the WinRT caller sees a clean failure.
-          let raw_env = direct.env;
           let unwind_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
             || -> windows::core::HRESULT {
-              unsafe {
-                let mut scope: napi::sys::napi_handle_scope = std::ptr::null_mut();
-                if napi::sys::napi_open_handle_scope(raw_env, &mut scope)
-                  != napi::sys::Status::napi_ok
-                {
-                  // Env is probably being torn down. Don't lie to WinRT that we
-                  // ran successfully — surface E_FAIL so async ops etc. don't
-                  // silently hang waiting for a completion that never happens.
-                  eprintln!("[dynwinrt] delegate: napi_open_handle_scope failed (env teardown?)");
-                  return E_FAIL;
-                }
-                let call_result = (|| -> napi::Result<()> {
-                  let mut fn_val = std::ptr::null_mut();
-                  napi_status("napi_get_reference_value(delegate callback)", {
-                    napi::sys::napi_get_reference_value(raw_env, direct.callback_ref, &mut fn_val)
-                  })?;
-                  // Spread each DynWinRTValue as its own napi_value so the JS
-                  // callback receives them as positional args. The blanket
-                  // `Vec<T>::into_vec` impl wraps the whole vec as a single JS
-                  // Array, which is wrong here — we need one arg per element.
-                  let mut argv: Vec<napi::sys::napi_value> = Vec::with_capacity(js_args.len());
-                  for v in js_args {
-                    let raw = DynWinRTValue::to_napi_value(raw_env, v)?;
-                    argv.push(raw);
-                  }
-                  let mut receiver: napi::sys::napi_value = std::ptr::null_mut();
-                  let status = napi::sys::napi_get_global(raw_env, &mut receiver);
-                  if status != napi::sys::Status::napi_ok {
-                    return Err(napi::Error::from_reason(format!(
-                      "napi_get_global failed with status {status}",
-                    )));
-                  }
-                  let mut result: napi::sys::napi_value = std::ptr::null_mut();
-                  let status = napi::sys::napi_make_callback(
-                    raw_env,
-                    direct.async_context,
-                    receiver,
-                    fn_val,
-                    argv.len(),
-                    argv.as_ptr(),
-                    &mut result,
-                  );
-                  if status != napi::sys::Status::napi_ok {
-                    // Surface any pending JS exception so it doesn't silently poison
-                    // future calls. Delegates return HRESULT; there's no clean way to
-                    // propagate a JS throw back through WinRT, so we route it through
-                    // napi_fatal_exception (same policy tsfn uses).
-                    let mut is_pending: bool = false;
-                    let pending_status =
-                      napi::sys::napi_is_exception_pending(raw_env, &mut is_pending);
-                    if pending_status != napi::sys::Status::napi_ok {
-                      return Err(napi::Error::from_reason(format!(
-                        "napi_is_exception_pending failed with status {pending_status}",
-                      )));
-                    }
-                    if is_pending {
-                      let mut err: napi::sys::napi_value = std::ptr::null_mut();
-                      let clear_status =
-                        napi::sys::napi_get_and_clear_last_exception(raw_env, &mut err);
-                      if clear_status != napi::sys::Status::napi_ok {
-                        return Err(napi::Error::from_reason(format!(
-                          "napi_get_and_clear_last_exception failed with status {clear_status}",
-                        )));
-                      }
-                      let fatal_status = napi::sys::napi_fatal_exception(raw_env, err);
-                      if fatal_status != napi::sys::Status::napi_ok {
-                        return Err(napi::Error::from_reason(format!(
-                          "napi_fatal_exception failed with status {fatal_status}",
-                        )));
-                      }
-                    }
-                    return Err(napi::Error::from_reason(format!(
-                      "napi_make_callback failed with status {status}",
-                    )));
-                  }
-                  Ok(())
-                })();
-                let close_status = napi::sys::napi_close_handle_scope(raw_env, scope);
-                if close_status != napi::sys::Status::napi_ok {
-                  eprintln!(
-                    "[dynwinrt] delegate: napi_close_handle_scope failed with status {close_status}"
-                  );
-                  return E_FAIL;
-                }
-                // Log and report any non-exception error to WinRT. Without this,
-                // failures like invalid handles or marshaler errors would be
-                // silently dropped and the delegate would appear to have run.
-                if let Err(e) = call_result {
-                  eprintln!("[dynwinrt] delegate dispatch error: {e}");
-                  return E_FAIL;
-                }
-                windows::core::HRESULT(0)
+              let call_result = invoke_direct_js_callback(
+                &direct,
+                |env| {
+                  js_args
+                    .into_iter()
+                    .map(|value| unsafe { DynWinRTValue::to_napi_value(env, value) })
+                    .collect()
+                },
+                |_env, _result| Ok(()),
+              );
+              if let Err(error) = call_result {
+                eprintln!("[dynwinrt] delegate dispatch error: {error}");
+                return E_FAIL;
               }
+              windows::core::HRESULT(0)
             },
           ));
           return match unwind_result {

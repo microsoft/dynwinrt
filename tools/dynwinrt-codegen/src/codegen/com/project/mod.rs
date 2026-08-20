@@ -9,15 +9,16 @@ use crate::com_metadata::{ComCoclassMeta, ComInterfaceMeta};
 
 use super::ir::{
     ActivationPlan, BufferCountUnit as ProjectedBufferCountUnit, ComEnumUnderlying,
-    ComParamDirection, ComPrimitive, ComReturnConvention, ComScalarRepr, ComType, DispatchShape,
-    NativePodArchitectureLayout, NativePodField, NativePodFieldType, NativePodInitializer,
-    NativePodLayout, NativePodScalar, NativeUnionArchitectureLayout, NativeUnionField,
-    NativeUnionFieldType, NativeUnionLayout, OverloadDispatch, OverloadInfo, PointerAliasKind,
-    ProjectedComCoclass, ProjectedComEnum, ProjectedComEnumMember, ProjectedComInterface,
-    ProjectedComMethod, ProjectedComMethodKind, ProjectedComParam, ProjectedComResult,
-    ProjectedEnumValue, ProjectedInterfaceRef, ResultConversion, ResultSource, SafeArrayElement,
-    SharedCountPlan, StringBufferPlan, StringEncoding, TypedBufferPlan, TypedBufferRelation,
-    TypedBufferSizing, dispatch_shape,
+    ComParamDirection, ComPrimitive, ComReturnConvention, ComScalarRepr, ComSinkPlan,
+    ComSinkReturnConvention, ComType, DispatchShape, NativePodArchitectureLayout, NativePodField,
+    NativePodFieldType, NativePodInitializer, NativePodLayout, NativePodScalar,
+    NativeUnionArchitectureLayout, NativeUnionField, NativeUnionFieldType, NativeUnionLayout,
+    OverloadDispatch, OverloadInfo, PointerAliasKind, ProjectedComCoclass, ProjectedComEnum,
+    ProjectedComEnumMember, ProjectedComInterface, ProjectedComMethod, ProjectedComMethodKind,
+    ProjectedComParam, ProjectedComResult, ProjectedComSinkMethod, ProjectedEnumValue,
+    ProjectedInterfaceRef, ResultConversion, ResultSource, SafeArrayElement, SharedCountPlan,
+    StringBufferPlan, StringEncoding, TypedBufferPlan, TypedBufferRelation, TypedBufferSizing,
+    dispatch_shape,
 };
 use super::javascript::naming::camel_case;
 use super::model::ValidatedComInterface;
@@ -62,10 +63,12 @@ pub(super) fn project_com_reference_interface(
         name: meta.interface.name.clone(),
         namespace: meta.interface.namespace.clone(),
         iid: meta.interface.iid.clone(),
+        base_iids: meta.base_iids.clone(),
         is_iunknown_rooted: meta.is_iunknown_rooted,
         methods: Vec::new(),
         activation: ActivationPlan::None,
         referenced_enums: Vec::new(),
+        sink: None,
     };
     validate_projected_surface_names(&projected)?;
     Ok(projected)
@@ -137,18 +140,249 @@ fn project_validated_interface(
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
+    let sink = project_sink_plan(meta, &methods);
 
     let projected = ProjectedComInterface {
         name: meta.interface.name.clone(),
         namespace: meta.interface.namespace.clone(),
         iid: format_guid(semantic.iid().as_bytes()),
+        base_iids: meta.base_iids.clone(),
         is_iunknown_rooted: semantic.is_iunknown_rooted(),
         methods,
         activation,
         referenced_enums,
+        sink,
     };
     validate_projected_surface_names(&projected)?;
     Ok(projected)
+}
+
+fn project_sink_plan(
+    meta: &ComInterfaceMeta,
+    methods: &[ProjectedComMethod],
+) -> Option<ComSinkPlan> {
+    let expected_base_iids = meta
+        .base_chain
+        .iter()
+        .filter(|name| name.as_str() != "IUnknown" && name.as_str() != "IInspectable")
+        .count();
+    if !meta.is_iunknown_rooted || meta.base_iids.len() != expected_base_iids || methods.is_empty()
+    {
+        return None;
+    }
+
+    let methods = methods
+        .iter()
+        .enumerate()
+        .map(|(index, method)| {
+            if method.vtable_index != index + 3
+                || method.kind != ProjectedComMethodKind::Normal
+                || method.string_buffer.is_some()
+                || method
+                    .typed_buffers
+                    .iter()
+                    .any(|buffer| !callback_buffer_supported(buffer))
+                || !method.shared_counts.is_empty()
+            {
+                return None;
+            }
+            let return_convention = match &method.return_convention {
+                ComReturnConvention::HResult => ComSinkReturnConvention::HResult,
+                ComReturnConvention::SemanticHResult => ComSinkReturnConvention::SemanticHResult,
+                ComReturnConvention::Void => ComSinkReturnConvention::Void,
+                ComReturnConvention::Direct(typ) if callback_output_type_supported(typ) => {
+                    ComSinkReturnConvention::Direct
+                }
+                ComReturnConvention::Direct(_) | ComReturnConvention::DispatchInvokeHResult => {
+                    return None;
+                }
+            };
+            let hidden_params = method
+                .typed_buffers
+                .iter()
+                .flat_map(|buffer| match buffer.relation {
+                    TypedBufferRelation::Input {
+                        count_param_index,
+                        actual_length_param_index,
+                        ..
+                    } => [Some(count_param_index), actual_length_param_index],
+                    TypedBufferRelation::CallerOutput {
+                        actual_length_param_index,
+                        ..
+                    } => [actual_length_param_index, None],
+                    TypedBufferRelation::EnumeratorNext {
+                        fetched_param_index,
+                        ..
+                    } => [Some(fetched_param_index), None],
+                    TypedBufferRelation::CalleeAllocated {
+                        count_param_index, ..
+                    } => [Some(count_param_index), None],
+                })
+                .flatten()
+                .collect::<std::collections::HashSet<_>>();
+            if method.params.iter().enumerate().any(|(index, param)| {
+                if hidden_params.contains(&index) && !param.surface_input && !param.surface_result {
+                    return false;
+                }
+                match param.direction {
+                    ComParamDirection::In => {
+                        !param.surface_input
+                            || param.surface_result
+                            || !callback_input_type_supported(&param.typ)
+                    }
+                    ComParamDirection::Out => {
+                        param.surface_input
+                            || !param.surface_result
+                            || !callback_output_type_supported(&param.typ)
+                    }
+                    ComParamDirection::InOut => {
+                        !param.surface_input
+                            || !param.surface_result
+                            || !callback_input_type_supported(&param.typ)
+                            || !callback_inout_type_supported(&param.typ)
+                    }
+                    ComParamDirection::InputBuffer => {
+                        !param.surface_input
+                            || param.surface_result
+                            || !matches!(param.typ, ComType::TypedBuffer { .. })
+                    }
+                    ComParamDirection::CallerOutputBuffer => {
+                        param.surface_input
+                            || !param.surface_result
+                            || !matches!(param.typ, ComType::TypedBuffer { .. })
+                    }
+                    ComParamDirection::CalleeAllocatedBuffer => {
+                        param.surface_input
+                            || !param.surface_result
+                            || !matches!(param.typ, ComType::TypedBuffer { .. })
+                    }
+                    _ => true,
+                }
+            }) || method
+                .results
+                .iter()
+                .any(|result| !callback_result_supported(result))
+            {
+                return None;
+            }
+
+            fn callback_buffer_supported(buffer: &TypedBufferPlan) -> bool {
+                matches!(
+                    buffer.relation,
+                    TypedBufferRelation::Input {
+                        actual_length_param_index: None,
+                        ..
+                    } | TypedBufferRelation::CallerOutput {
+                        sizing: TypedBufferSizing::FixedCapacity,
+                        ..
+                    } | TypedBufferRelation::CalleeAllocated { .. }
+                ) && matches!(
+                    &buffer.element,
+                    ComType::Primitive(_)
+                        | ComType::Guid
+                        | ComType::Enum { .. }
+                        | ComType::ScalarAlias { .. }
+                        | ComType::NativePod { .. }
+                )
+            }
+            Some(ProjectedComSinkMethod {
+                vtable_index: method.vtable_index,
+                handler_name: method.overload.as_ref().map_or_else(
+                    || method.camel_name.clone(),
+                    |overload| overload.impl_name.trim_start_matches('_').to_string(),
+                ),
+                return_convention,
+                output_count: method
+                    .results
+                    .iter()
+                    .filter(|result| matches!(result.source, ResultSource::Param(_)))
+                    .count(),
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(ComSinkPlan { methods })
+}
+
+fn callback_input_type_supported(typ: &ComType) -> bool {
+    matches!(
+        typ,
+        ComType::Primitive(_)
+            | ComType::NativeIsize
+            | ComType::NativeUsize
+            | ComType::Win32Bool
+            | ComType::HResult
+            | ComType::Guid
+            | ComType::GuidPointer
+            | ComType::HString
+            | ComType::Enum { .. }
+            | ComType::ScalarAlias { .. }
+            | ComType::Bstr
+            | ComType::ManagedInterface { .. }
+            | ComType::NativePod { .. }
+            | ComType::NativePodPointer { .. }
+            | ComType::PointerAlias {
+                kind: PointerAliasKind::HandleValue | PointerAliasKind::StringPointer(_),
+                ..
+            }
+    )
+}
+
+fn callback_output_type_supported(typ: &ComType) -> bool {
+    matches!(
+        typ,
+        ComType::Primitive(_)
+            | ComType::NativeIsize
+            | ComType::NativeUsize
+            | ComType::Win32Bool
+            | ComType::HResult
+            | ComType::Guid
+            | ComType::HString
+            | ComType::Enum { .. }
+            | ComType::ScalarAlias { .. }
+            | ComType::Bstr
+            | ComType::ManagedInterface { .. }
+            | ComType::NativePod { .. }
+            | ComType::PointerAlias {
+                kind: PointerAliasKind::HandleValue,
+                ..
+            }
+    )
+}
+
+fn callback_inout_type_supported(typ: &ComType) -> bool {
+    matches!(
+        typ,
+        ComType::Primitive(_)
+            | ComType::NativeIsize
+            | ComType::NativeUsize
+            | ComType::Win32Bool
+            | ComType::HResult
+            | ComType::Guid
+            | ComType::Enum { .. }
+            | ComType::ScalarAlias { .. }
+            | ComType::Bstr
+            | ComType::NativePod { .. }
+            | ComType::PointerAlias {
+                kind: PointerAliasKind::HandleValue,
+                ..
+            }
+    )
+}
+
+fn callback_result_supported(result: &ProjectedComResult) -> bool {
+    (callback_output_type_supported(&result.typ)
+        && matches!(
+            result.conversion,
+            ResultConversion::Value
+                | ResultConversion::BorrowedHandle
+                | ResultConversion::ManagedCom
+                | ResultConversion::Bstr
+        ))
+        || (matches!(result.typ, ComType::TypedBuffer { .. })
+            && matches!(
+                result.conversion,
+                ResultConversion::Buffer | ResultConversion::PlainArray
+            ))
 }
 
 fn validate_projected_surface_names(meta: &ProjectedComInterface) -> Result<(), String> {
@@ -158,6 +392,13 @@ fn validate_projected_surface_names(meta: &ProjectedComInterface) -> Result<(), 
         &meta.name,
         format!("interface {}.{}", meta.namespace, meta.name),
     )?;
+    if meta.sink.is_some() {
+        insert_surface_name(
+            &mut names,
+            &format!("{}Implementation", meta.name),
+            format!("implementation {}.{}", meta.namespace, meta.name),
+        )?;
+    }
     for definition in &meta.referenced_enums {
         insert_surface_name(
             &mut names,
@@ -2740,6 +2981,141 @@ mod tests {
     }
 
     #[test]
+    fn sink_plan_accepts_refguid_handle_and_callee_allocated_buffer_contracts() {
+        let meta = ComInterfaceMeta {
+            interface: crate::com_metadata::InterfaceMeta::default(),
+            base_offset: 3,
+            is_iunknown_rooted: true,
+            base_chain: vec!["IUnknown".into()],
+            base_iids: Vec::new(),
+            coclass_clsid: None,
+            coclass_name: None,
+            own_methods_start: 3,
+            referenced_enums: Vec::new(),
+            raw_referenced_enums: None,
+            raw_methods: None,
+        };
+        let handle = ComType::PointerAlias {
+            namespace: "Windows.Win32.Foundation".into(),
+            name: "HANDLE".into(),
+            kind: PointerAliasKind::HandleValue,
+        };
+        let buffer = ComType::TypedBuffer {
+            element: Box::new(ComType::Primitive(ComPrimitive::U8)),
+        };
+        let method = ProjectedComMethod {
+            name: "Invoke".into(),
+            camel_name: "invoke".into(),
+            vtable_index: 3,
+            params: vec![
+                ProjectedComParam {
+                    name: "riid".into(),
+                    typ: ComType::GuidPointer,
+                    direction: ComParamDirection::In,
+                    surface_input: true,
+                    surface_result: false,
+                    nullable: false,
+                },
+                ProjectedComParam {
+                    name: "handle".into(),
+                    typ: handle.clone(),
+                    direction: ComParamDirection::Out,
+                    surface_input: false,
+                    surface_result: true,
+                    nullable: false,
+                },
+                ProjectedComParam {
+                    name: "buffer".into(),
+                    typ: buffer.clone(),
+                    direction: ComParamDirection::CalleeAllocatedBuffer,
+                    surface_input: false,
+                    surface_result: true,
+                    nullable: false,
+                },
+                ProjectedComParam {
+                    name: "count".into(),
+                    typ: ComType::Primitive(ComPrimitive::U32),
+                    direction: ComParamDirection::Out,
+                    surface_input: false,
+                    surface_result: false,
+                    nullable: false,
+                },
+            ],
+            return_convention: ComReturnConvention::HResult,
+            results: vec![
+                ProjectedComResult {
+                    typ: handle,
+                    source: ResultSource::Param(1),
+                    conversion: ResultConversion::BorrowedHandle,
+                },
+                ProjectedComResult {
+                    typ: buffer,
+                    source: ResultSource::Param(2),
+                    conversion: ResultConversion::Buffer,
+                },
+            ],
+            string_buffer: None,
+            typed_buffers: vec![TypedBufferPlan {
+                buffer_param_index: 2,
+                element: ComType::Primitive(ComPrimitive::U8),
+                relation: TypedBufferRelation::CalleeAllocated {
+                    count_param_index: 3,
+                    unit: ProjectedBufferCountUnit::Elements,
+                },
+            }],
+            shared_counts: Vec::new(),
+            kind: ProjectedComMethodKind::Normal,
+            doc: None,
+            overload: Some(OverloadInfo {
+                public_name: "invoke".into(),
+                impl_name: "_invoke_3".into(),
+                dispatch: OverloadDispatch::Arity,
+            }),
+        };
+
+        let plan = project_sink_plan(&meta, std::slice::from_ref(&method))
+            .expect("supported callback sink");
+        assert_eq!(plan.methods[0].output_count, 2);
+        assert_eq!(plan.methods[0].handler_name, "invoke_3");
+
+        let mut incomplete_base = meta;
+        incomplete_base.base_chain = vec!["IExternalBase".into(), "IUnknown".into()];
+        assert!(project_sink_plan(&incomplete_base, &[method]).is_none());
+    }
+
+    #[test]
+    fn real_metadata_derived_sink_registers_every_base_iid() {
+        let Some(winmd) = std::env::var("DYNWINRT_WIN32_WINMD")
+            .ok()
+            .filter(|path| std::path::Path::new(path).exists())
+        else {
+            return;
+        };
+        let interfaces =
+            crate::com_metadata::parse_all_com_interfaces(&winmd).expect("parse Win32 metadata");
+        let (meta, output) = interfaces
+            .iter()
+            .filter(|meta| meta.is_iunknown_rooted && !meta.base_iids.is_empty())
+            .find_map(|meta| {
+                crate::codegen::com::generate_com_interface_files(meta, &winmd)
+                    .ok()
+                    .filter(|output| output.js.contains("static implementation(handlers)"))
+                    .map(|output| (meta, output))
+            })
+            .expect("Win32 metadata should contain a supported derived callback interface");
+        for iid in &meta.base_iids {
+            assert!(
+                output
+                    .js
+                    .contains(&format!(".addBaseInterface(WinGuid.parse('{iid}'))")),
+                "{}.{} omitted base IID {iid}",
+                meta.interface.namespace,
+                meta.interface.name
+            );
+        }
+    }
+
+    #[test]
     fn validated_semantic_projection_only_diverges_for_pod_upgrades() {
         let Some(winmd) = std::env::var("DYNWINRT_WIN32_WINMD")
             .ok()
@@ -2802,6 +3178,7 @@ mod tests {
                 "SetThumbnailClip" | "ThumbBarAddButtons" | "ThumbBarUpdateButtons"
             )
         });
+        semantic.sink = None;
         assert_eq!(semantic, legacy);
     }
 
@@ -3018,6 +3395,7 @@ mod tests {
             name: "ITest".into(),
             namespace: "Tests".into(),
             iid: "00000000-0000-0000-c000-000000000046".into(),
+            base_iids: Vec::new(),
             is_iunknown_rooted: true,
             methods: vec![
                 method("first", pod("Contoso.One"), 3),
@@ -3025,6 +3403,7 @@ mod tests {
             ],
             activation: ActivationPlan::None,
             referenced_enums: Vec::new(),
+            sink: None,
         };
 
         let error = validate_projected_surface_names(&interface).unwrap_err();
@@ -3150,6 +3529,7 @@ mod tests {
             name: "ITest".into(),
             namespace: "Tests".into(),
             iid: "00000000-0000-0000-c000-000000000046".into(),
+            base_iids: Vec::new(),
             is_iunknown_rooted: true,
             methods: Vec::new(),
             activation: ActivationPlan::None,
@@ -3167,6 +3547,7 @@ mod tests {
                     members: Vec::new(),
                 },
             ],
+            sink: None,
         };
         assert!(validate_projected_surface_names(&interface).is_err());
 
@@ -3205,6 +3586,7 @@ mod tests {
             name: name.into(),
             namespace: "Tests".into(),
             iid: "00000000-0000-0000-c000-000000000046".into(),
+            base_iids: Vec::new(),
             is_iunknown_rooted: true,
             methods: Vec::new(),
             activation: ActivationPlan::None,
@@ -3214,6 +3596,7 @@ mod tests {
                 underlying: ComEnumUnderlying::I32,
                 members: Vec::new(),
             }],
+            sink: None,
         };
         assert!(
             validate_coclass_enum_files(

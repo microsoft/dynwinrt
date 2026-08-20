@@ -9,6 +9,7 @@ pub mod com;
 mod composition;
 mod interfaces;
 mod native_call;
+mod native_callback;
 mod result;
 mod roapi;
 mod signature;

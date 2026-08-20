@@ -376,6 +376,41 @@ pub(super) fn unwrap_result_js(result: &ProjectedComResult, expression: &str) ->
     }
 }
 
+pub(super) fn unwrap_callback_arg_js(typ: &ComType, expression: &str) -> String {
+    match typ {
+        ComType::Bstr => format!("DynCom.copyCallbackBstr({expression})"),
+        ComType::GuidPointer => format!("DynCom.copyCallbackGuid({expression})"),
+        ComType::NativePod { layout } => format!(
+            "create{}(DynCom.nativeStructBytes({}, {expression}).bytes)",
+            layout.name,
+            native_pod_layout_js(layout)
+        ),
+        ComType::NativePodPointer { layout } => format!(
+            "{expression}.isNull() ? null : create{}(DynCom.nativeStructBytes({}, {expression}).bytes)",
+            layout.name,
+            native_pod_layout_js(layout)
+        ),
+        ComType::TypedBuffer { element } => match element.as_ref() {
+            ComType::NativePod { layout } => {
+                format!(
+                    "create{}Array(DynCom.takeBuffer({expression}))",
+                    layout.name
+                )
+            }
+            _ => format!("DynCom.takeBuffer({expression})"),
+        },
+        ComType::PointerAlias {
+            kind: PointerAliasKind::StringPointer(StringEncoding::Wide),
+            ..
+        } => format!("DynCom.copyCallbackWideString({expression})"),
+        ComType::PointerAlias {
+            kind: PointerAliasKind::StringPointer(StringEncoding::Ansi),
+            ..
+        } => format!("DynCom.copyCallbackAnsiString({expression})"),
+        _ => unwrap_value_js(typ, expression),
+    }
+}
+
 fn unwrap_value_js(typ: &ComType, expression: &str) -> String {
     match typ {
         ComType::Primitive(primitive) => match primitive {

@@ -224,6 +224,93 @@ try {
 }
 ```
 
+### 5.4 Implement generated COM event sinks
+
+Codegen emits `static implement()` only when an interface is
+`IUnknown`-rooted and every method in its complete inherited vtable maps to
+the validated callback ABI subset. For example, `IFileDialogEvents` can be
+implemented by synchronous JavaScript handlers:
+
+```js
+import { initializeCom } from "@microsoft/dynwinrt/com";
+import {
+  FDE_OVERWRITE_RESPONSE,
+  FileOpenDialog,
+  IFileDialogEvents,
+  FDE_SHAREVIOLATION_RESPONSE,
+} from "./generated/com/index.js";
+
+initializeCom(0); // File dialogs and their event sink use this STA thread.
+
+const dialog = new FileOpenDialog();
+const events = IFileDialogEvents.implement({
+  onFileOk(fileDialog) {
+    console.log("File accepted", fileDialog.isNull());
+    return 0; // S_OK; another successful HRESULT such as S_FALSE is also allowed.
+  },
+  onFolderChanging() {},
+  onFolderChange() {},
+  onSelectionChange() {},
+  onShareViolation(_fileDialog, _item) {
+    return FDE_SHAREVIOLATION_RESPONSE.FDESVR_REFUSE;
+    // To return an explicit HRESULT too: return [hresult, response].
+  },
+  onTypeChange() {},
+  onOverwrite() {
+    return FDE_OVERWRITE_RESPONSE.FDEOR_DEFAULT;
+  },
+});
+
+const cookie = dialog.advise(events.nativeValue);
+try {
+  dialog.show(hwnd);
+} finally {
+  dialog.unadvise(cookie);
+  events.release();
+  dialog.release();
+}
+```
+
+`nativeValue` is a borrowed bridge for generated COM input parameters. Do not
+release it separately; release the generated sink wrapper after every source
+has been unadvised.
+
+Multiple generated interfaces can share one COM identity. Use
+`implementation()` for every additional interface and call `as()` to obtain a
+QueryInterface view:
+
+```js
+const object = IPrimary.implement(
+  primaryHandlers,
+  ISecondary.implementation(secondaryHandlers),
+);
+const secondary = object.as(ISecondary);
+
+secondary.release();
+object.release();
+```
+
+The generated implementation boundary is:
+
+- one or more generated `IUnknown`-rooted interfaces, including validated
+  single-inheritance/base-IID chains;
+- every generated handler must be provided; dynwinrt never invents semantic
+  callback defaults;
+- HRESULT, semantic HRESULT, `void`, and direct scalar returns;
+- scalar, enum, GUID/REFGUID, handle, COM-interface In/Out, BSTR/HSTRING,
+  borrowed NUL-terminated strings, POD value/pointer, basic InOut, and plain
+  counted-buffer contracts with known capacity/count/allocator semantics;
+- static thunks for common signatures and dynamic libffi closures for the
+  remaining validated signatures;
+- synchronous handlers on the creating thread only; Promises are unsupported;
+- a wrong-thread HRESULT method returns `RPC_E_WRONG_THREAD` without entering
+  JS; direct-return methods return a zero value and `void` methods do nothing.
+
+If any method contains an unmodeled Automation/union/ownership/allocator
+contract, codegen omits `implement()` for the entire interface. Cross-apartment
+dispatch, connection-point helpers, COM aggregation, custom marshaling, and
+COM server registration remain unsupported.
+
 ## 6. JavaScript projections of common native types
 
 | Native semantics                  | JavaScript/TypeScript                                                 |

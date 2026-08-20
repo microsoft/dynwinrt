@@ -4,17 +4,22 @@ const { DynCom, DynComMethodSig, WinGuid } = require('@microsoft/dynwinrt/com/un
 const IID_ITaskbarList2 = WinGuid.parse('602d4995-b13a-429b-a66e-1935e44f4317');
 
 let _ITaskbarList2Cache;
-const _ITaskbarList2 = new Proxy({}, {
-    get(_target, prop) {
-        _ITaskbarList2Cache ??= DynCom.registerIUnknownInterface('Windows.Win32.UI.Shell.ITaskbarList2', IID_ITaskbarList2)
+const _getITaskbarList2 = () => {
+    _ITaskbarList2Cache ??= DynCom.registerIUnknownInterface('Windows.Win32.UI.Shell.ITaskbarList2', IID_ITaskbarList2)
+            .addBaseInterface(WinGuid.parse('56fdf342-fd6d-11d0-958a-006097c9a090'))
             .addMethodAt(3, 'HrInit', new DynComMethodSig())
             .addMethodAt(4, 'AddTab', new DynComMethodSig().addIn(DynCom.pointerType()))
             .addMethodAt(5, 'DeleteTab', new DynComMethodSig().addIn(DynCom.pointerType()))
             .addMethodAt(6, 'ActivateTab', new DynComMethodSig().addIn(DynCom.pointerType()))
             .addMethodAt(7, 'SetActiveAlt', new DynComMethodSig().addIn(DynCom.pointerType()))
             .addMethodAt(8, 'MarkFullscreenWindow', new DynComMethodSig().addIn(DynCom.pointerType()).addIn(DynCom.i32Type()));
-        const value = _ITaskbarList2Cache[prop];
-        return typeof value === 'function' ? value.bind(_ITaskbarList2Cache) : value;
+    return _ITaskbarList2Cache;
+};
+const _ITaskbarList2 = new Proxy({}, {
+    get(_target, prop) {
+        const iface = _getITaskbarList2();
+        const value = iface[prop];
+        return typeof value === 'function' ? value.bind(iface) : value;
     },
 });
 
@@ -27,6 +32,82 @@ class ITaskbarList2 {
         this._obj = cast;
     }
     static _fromNative(obj) { return _wrapITaskbarList2Owned(obj.cast(IID_ITaskbarList2)); }
+    /** Borrowed native value for passing this implementation to generated COM methods. Do not release it separately. */
+    get nativeValue() { return this._obj; }
+    /** Query another generated interface implemented by the same COM identity. */
+    as(InterfaceClass) { return InterfaceClass._fromNative(this._obj); }
+    /** Describe an apartment-bound COM interface implementation for composition with other generated interfaces. */
+    static implementation(handlers) {
+        if (handlers === null || typeof handlers !== 'object' || Array.isArray(handlers)) throw new TypeError('ITaskbarList2 implementation handlers must be an object');
+        for (const name of ['hrInit', 'addTab', 'deleteTab', 'activateTab', 'setActiveAlt', 'markFullscreenWindow']) {
+            if (typeof handlers[name] !== 'function') throw new TypeError(`${name} must be a function`);
+        }
+        const dispatch = (vtableIndex, ...args) => {
+            switch (vtableIndex) {
+                case 3: {
+                    const callback = handlers.hrInit;
+                    const result = callback.call(handlers);
+                    if (result !== null && (typeof result === 'object' || typeof result === 'function') && typeof result.then === 'function') throw new TypeError('COM implementation handlers must return synchronously');
+                    return result === undefined ? 0 : result;
+                }
+                case 4: {
+                    const callback = handlers.addTab;
+                    const result = callback.call(handlers, DynCom.asPointerBigint(args[0]));
+                    if (result !== null && (typeof result === 'object' || typeof result === 'function') && typeof result.then === 'function') throw new TypeError('COM implementation handlers must return synchronously');
+                    return result === undefined ? 0 : result;
+                }
+                case 5: {
+                    const callback = handlers.deleteTab;
+                    const result = callback.call(handlers, DynCom.asPointerBigint(args[0]));
+                    if (result !== null && (typeof result === 'object' || typeof result === 'function') && typeof result.then === 'function') throw new TypeError('COM implementation handlers must return synchronously');
+                    return result === undefined ? 0 : result;
+                }
+                case 6: {
+                    const callback = handlers.activateTab;
+                    const result = callback.call(handlers, DynCom.asPointerBigint(args[0]));
+                    if (result !== null && (typeof result === 'object' || typeof result === 'function') && typeof result.then === 'function') throw new TypeError('COM implementation handlers must return synchronously');
+                    return result === undefined ? 0 : result;
+                }
+                case 7: {
+                    const callback = handlers.setActiveAlt;
+                    const result = callback.call(handlers, DynCom.asPointerBigint(args[0]));
+                    if (result !== null && (typeof result === 'object' || typeof result === 'function') && typeof result.then === 'function') throw new TypeError('COM implementation handlers must return synchronously');
+                    return result === undefined ? 0 : result;
+                }
+                case 8: {
+                    const callback = handlers.markFullscreenWindow;
+                    const result = callback.call(handlers, DynCom.asPointerBigint(args[0]), (DynCom.toNumber(args[1]) !== 0));
+                    if (result !== null && (typeof result === 'object' || typeof result === 'function') && typeof result.then === 'function') throw new TypeError('COM implementation handlers must return synchronously');
+                    return result === undefined ? 0 : result;
+                }
+                default: throw new RangeError(`Unexpected COM sink vtable index ${vtableIndex}`);
+            }
+        };
+        return Object.freeze({ interfaceType: _getITaskbarList2(), iid: '602d4995-b13a-429b-a66e-1935e44f4317', dispatch });
+    }
+    /** Create an apartment-bound COM object, optionally implementing additional generated interfaces. */
+    static implement(handlers, ...additional) {
+        const primary = ITaskbarList2.implementation(handlers);
+        if (additional.length === 0) return _wrapITaskbarList2Owned(DynCom.createIUnknownSink(primary.interfaceType, primary.dispatch));
+        const implementations = [primary, ...additional];
+        const byIid = new Map();
+        for (const implementation of implementations) {
+            if (implementation === null || typeof implementation !== 'object' || implementation.interfaceType == null || typeof implementation.iid !== 'string' || typeof implementation.dispatch !== 'function') throw new TypeError('Invalid generated COM implementation descriptor');
+            const iid = implementation.iid.toLowerCase();
+            if (byIid.has(iid)) throw new TypeError(`Duplicate COM implementation IID ${implementation.iid}`);
+            byIid.set(iid, implementation);
+        }
+        const identity = DynCom.createComObject(implementations.map(implementation => implementation.interfaceType), (iid, vtableIndex, ...args) => {
+            const implementation = byIid.get(iid.toLowerCase());
+            if (implementation === undefined) throw new RangeError(`Unexpected COM implementation IID ${iid}`);
+            return implementation.dispatch(vtableIndex, ...args);
+        });
+        try {
+            return _wrapITaskbarList2Owned(identity.cast(IID_ITaskbarList2));
+        } finally {
+            identity.release();
+        }
+    }
     /** Release the underlying native COM reference. Safe to call more than once. */
     release() {
         this._obj.release();

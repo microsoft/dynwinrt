@@ -110,6 +110,28 @@ the count and output storage, and returns a numeric/enum array.
 Parameter direction, return convention, result ownership, cleanup, buffer
 relationships, activation, and dynamic-IID behavior are encoded in the
 projected IR.
+An optional implementation plan is encoded only for an `IUnknown`-rooted
+interface whose complete contiguous vtable maps to the validated callback
+subset. That subset includes scalar/enum/GUID/handle/interface values,
+HRESULT/void/direct-scalar returns, BSTR/HSTRING and borrowed string pointers,
+POD values/pointers, basic InOut, and authoritative plain counted-buffer
+contracts. Each registered method owns both its outbound `ComCallPlan` and
+full inbound `CallbackMethodPlan`. The runtime chooses a static thunk for a
+common signature or a cached libffi closure for every other supported
+signature; the renderer never serializes backend shapes.
+
+Implemented objects may expose multiple independently generated interface
+views. QueryInterface routes each derived and base IID to its frozen view,
+every view shares one reference count, and QueryInterface for `IUnknown`
+always returns the canonical identity. Generated implementation descriptors
+compose these views without exposing handwritten signatures.
+
+libffi allocates executable closure memory. A process mitigation such as
+`ProhibitDynamicCode` can therefore reject a signature that has no static fast
+path; object creation reports that failure instead of publishing a partial
+vtable. Prepared closures are cached for the process lifetime so a callback
+that performs the final reentrant `Release` cannot free the machine-code page
+currently executing.
 Production projection reads those decisions only from the validated semantic
 contracts; the shared compatibility metadata supplies names, documentation,
 and enum member values, not ABI meaning.
@@ -351,6 +373,12 @@ Required support:
 - callback threading/apartment dispatch; and
 - conversion of callback failures to HRESULT.
 
+The dynamic implementation backend now provides generated vtables, canonical
+multi-interface identity, static fast paths plus libffi closures, owner-thread
+dispatch, and fail-closed output validation. Interface InOut replacement
+remains unsupported because its old/new reference ownership is not encoded
+strongly enough.
+
 ### 8. Semantic HRESULT values
 
 **Problem:** Most HRESULTs are throw-or-success, but methods such as
@@ -397,7 +425,8 @@ conventions, `GetLastError`, callbacks, and handle cleanup.
 3. Explicit allocator/ownership metadata.
 4. VARIANT/PROPVARIANT and semantic HRESULT handling.
 5. SAFEARRAY.
-6. Arbitrary COM sink/interface implementation.
+6. Broaden generated COM sink/interface implementation beyond the initial
+   same-thread interface-input subset.
 7. Apartment-aware marshaling.
 8. Separate flat-Win32 acquisition/invocation layer.
 
@@ -434,6 +463,7 @@ not be described as solving every problem in the map above.
 | WinRT runtime-class references | A resolved runtime class lowers through its default interface IID and remains a managed COM value. Missing defaults fail closed. |
 | Common interop pattern | Supports HWND + REFIID + `void**` bridges and adopts the returned interface reference. |
 | Explicit COM initialization | Activation no longer silently chooses MTA; callers select STA or MTA with `initializeCom()`. Generated implementation files use the isolated unsafe runtime internally. |
+| Dynamic JavaScript COM implementations | Any `IUnknown`-rooted interface whose complete contiguous vtable maps to the validated callback subset receives `static implement()` and `static implementation()`. Static fast-path thunks cover common signatures; cached libffi closures cover arbitrary supported parameter counts, scalar widths, POD layouts, outputs, and native return conventions using the platform COM calling convention. Objects support derived/base IID aliases, multiple interface views, canonical IUnknown identity, shared atomic AddRef/Release, synchronous owner-thread JS dispatch, required Out initialization/validation, allocator-correct transfer, and panic/exception containment. Count/capacity values are read according to their In/InOut ABI direction, fixed outputs without an actual-length slot require exact size, and typed interface outputs are queried to the declared IID. QI references, BSTR/HSTRING values, and CoTaskMem buffers remain RAII-owned until every output is prepared; only then are all native output slots committed, so preparation failure leaves owned outputs null and releases every temporary owner. Wrong-thread HRESULT methods return `RPC_E_WRONG_THREAD`; direct returns are zeroed and void methods do nothing because those native ABIs have no error channel. `IFileDialogEvents` is live-tested with `Advise`/`Unadvise`; `IDropTarget` exercises libffi, POD/InOut, generated multi-interface composition, and QueryInterface. |
 | Fail-closed generation | Unknown/unsafe layouts, untagged/by-value/output unions, bitfields, flexible arrays, nested owned fields, unsupported VARTYPE/BYREF/SAFEARRAY/PROPVARIANT combinations, unsupported arrays, pointer outputs, ownership, and in/out shapes stop generation with a targeted error. |
 | Consumable output | Classic COM files live under `com/`, with `./com` and `./com/*` package exports. Mixed and incremental generation preserve the WinRT-only root barrel; COM-only output retains its legacy root entrypoint. |
 | Explicit vtable registration | Every generated method is registered with `.addMethodAt(vtableIndex, name, signature)`, keyed by its actual metadata-derived vtable slot. Methods are never deduplicated by name, so same-name overloads at different slots both register correctly. |
@@ -575,8 +605,8 @@ and `@microsoft/dynwinrt/com`.
 | SAFEARRAY | Rank 1–8, signed bounds, typed scalar/bool/BSTR/interface/VARIANT elements, SafeArray API validation and cleanup | Unsupported element VARTYPEs, rank > 8, untyped arrays whose VARTYPE cannot be proven, and Automation InOut replacement |
 | PROPVARIANT | Scalar numeric/bool, LPWSTR, CLSID, FILETIME, blob, and supported vectors with PropVariantClear | Nested VARIANT vectors, streams/interfaces, arrays, clipboard/storage types, BYREF, and unknown VARTYPEs |
 | Allocator ownership | COM Release, BSTR output/replacement and array elements, VARIANT clear, CoTaskMem buffers/PWSTR elements, boxed GUID, retained JS buffers | LocalFree, custom allocators, allocator interfaces, unknown ownership |
-| Interface pointers | Typed input/output interfaces, QueryInterface, dynamic IID output | Interface in/out replacement and arbitrary implemented sink interfaces |
-| Apartments | Explicit initialization and same-thread invocation | Cross-apartment marshaling, GIT/agility handling, callback dispatch |
+| Interface pointers | Typed input/output interfaces, QueryInterface, dynamic IID output, and generated multi-interface callback objects with inherited IID aliases | Interface in/out replacement, aggregation, and `IInspectable` implementation |
+| Apartments | Explicit initialization, non-agile owner-thread implementations, synchronous same-thread callbacks, and rejection before entering JS on a foreign thread | Cross-apartment marshaling, GIT/agility handling, and callback dispatch |
 | Activation | In-process `CoCreateInstance` and `CoGetClassObject` | Aggregation, arbitrary CLSCTX, and other non-CoCreate factory functions |
 | Direct pointer returns | Runtime signature plus exact `IMalloc` codegen | Other direct pointer returns remain fail-closed without exact ownership and cleanup evidence |
 
@@ -592,7 +622,8 @@ and `@microsoft/dynwinrt/com`.
 - BSTR pointer nesting, scalar input `BSTR*`, callee-allocated outer arrays
   without exact allocators, and unknown/custom BSTR allocation contracts;
 - FORMATETC and STGMEDIUM;
-- arbitrary COM event/callback sink generation;
+- callback methods containing unmodeled ownership, Automation, union, array,
+  or interface-replacement contracts;
 - cross-thread/apartment marshaling; and
 - the general flat-Win32 DLL-export and handle-cleanup layer.
 
@@ -673,7 +704,7 @@ of every type in the 24 MB metadata file.
 | Private-data bytes or interface pointer | `IDXGIObject`, `ID3D10DeviceChild`, `ID3D10Device`, `ID3D11DeviceChild`, `ID3D11Device`, `ID3D12Object`, and `IDMLObject` `GetPrivateData` | The same GUID-keyed method may return ordinary bytes or an AddRef'd interface pointer. A `Buffer` projection would lose the interface ownership transfer; Direct3D 10 NULL calls are destructive, and DXGI's data parameter is required. | Exact Win32 winmd identities + Microsoft method documentation |
 | Untyped output pointers without allocator/ownership | `IAudioClient::IsFormatSupported` and unrelated `void*` outputs | The runtime cannot infer whether the result is borrowed, COM-owned, `CoTaskMem`, or another allocator. | Win32 winmd + codegen diagnostics |
 | Interface `[in, out]` ownership | `IWbemServices::OpenNamespace` | Replacing an existing interface pointer requires explicit release/AddRef transfer semantics. | Win32 winmd + codegen diagnostic |
-| Arbitrary COM sink/interface implementation | Connection points and event sinks | `Advise` requires implementing a caller-defined COM interface, not only invoking one. | Runtime/public-API boundary |
+| Callback methods outside the validated implementation subset | Automation providers, custom marshaling, and resource-owning callbacks | The dynamic backend supports broad scalar/string/POD/buffer ABI shapes and multi-interface inheritance, but VARIANT/SAFEARRAY/PROPVARIANT callbacks, untagged unions, unknown pointers/allocators, interface replacement, and custom marshal contracts still fail the whole interface closed. | Runtime/codegen validation boundary |
 | COM aggregation | `IClassFactory::CreateInstance` with `pUnkOuter` | The public activation helper always creates a non-aggregated in-process object. | Runtime/public-API boundary |
 | General out-of-process activation controls | Custom `CLSCTX` scenarios | The unsafe runtime's `DynCom.coCreateInstance()` currently uses `CLSCTX_INPROC_SERVER`. | Runtime/public-API boundary |
 | Flat Win32 DLL exports | `CreateFile`, registry functions, GDI, etc. | These are not COM interfaces and need a separate DLL-export/handle model. | Architecture boundary |
@@ -1238,10 +1269,10 @@ against the resolved namespace.
 | 5 | `IClassFactory` | 6,712 | 70 | Yes | Generates completely and is live-tested through `CoGetClassObject` |
 | 6 | `IDispatch` via `IID_IDispatch` | 6,408 | 46 | Yes | Complete inherited interface generates; `Invoke` uses dedicated DISPPARAMS/EXCEPINFO and explicit optional-output requests |
 | 7 | `IPersistFile` | 5,996 | 97 | Yes | Generates and live-tested |
-| 8 | `IConnectionPoint` | 5,832 | 51 | Yes | Generates; implementing event sinks is not supported |
+| 8 | `IConnectionPoint` | 5,832 | 51 | Yes | Generates; callback objects passed to `Advise` must satisfy the complete validated same-thread implementation subset |
 | 9 | `IWbemServices` | 5,680 | 76 | Yes | Fail closed: interface in/out ownership |
 | 10 | `IWICImagingFactory` | 4,536 | 83 | Yes | Generates and live-tested |
-| 11 | `IDropTarget` | 4,368 | 57 | Yes | Generates with by-value POD `POINTL`; implementing a drop target is not supported |
+| 11 | `IDropTarget` | 4,368 | 57 | Yes | Generates for client calls and dynamic JavaScript implementation; live E2E covers by-value `POINTL`, scalar/InOut callback ABI, libffi dispatch, and multi-interface QueryInterface |
 | 12 | `IShellFolder` | 4,056 | 33 | Yes | Fail closed: untyped PIDL output ownership (and later `STRRET` union ABI) |
 | 13 | `IFileDialog` | 4,048 | 98 | Yes | Generates; inherited methods tested through `IFileOpenDialog` |
 | 14 | `IXMLDOMDocument` | 3,784 | 46 | Yes | Fail closed: inherited unsupported Automation shapes beyond scalar VARIANT |
@@ -1323,7 +1354,7 @@ hardware, and whether it adds a distinct ABI shape.
 
 Classic COM interfaces are exercised across core and generated Node coverage.
 Core live tests are in
-[`crates/dynwinrt/src/com.rs`](../../crates/dynwinrt/src/com.rs). The sixteen Node
+[`crates/dynwinrt/src/com.rs`](../../crates/dynwinrt/src/com.rs). The seventeen Node
 runners are in
 [`tests/e2e/runners/com`](../../tests/e2e/runners/com) and are generated
 and executed by [`tests/e2e/e2e_test.ps1`](../../tests/e2e/e2e_test.ps1).
@@ -1371,7 +1402,8 @@ meaningful `argErr`, and generate an `Error` with `hresult` plus optional
 | `IBindCtx` | Core + Node | Exact multi-architecture `BIND_OPTS` layout, automatic `cbStruct`, pre-dispatch validation, and live `CreateBindCtx` round trip. |
 | `TaskbarList` / `ITaskbarList3` | Node E2E | Coclass construction, inherited slots, runtime QI views, HWND, BOOL, enum, and `u64`. |
 | `FileOperation` | Node E2E | Coclass construction, unsigned flags, and state query. |
-| `FileOpenDialog` | Node E2E | STA coclass construction and get/set options without user interaction. |
+| `FileOpenDialog` / `IFileDialogEvents` | Core + Node E2E | STA coclass construction, generated synchronous JS implementation, self-vtable callback dispatch, public native-value bridge, and real `Advise`/`Unadvise` without showing UI. |
+| `IDropTarget` | Core + Node E2E | Dynamic libffi callbacks, interface/scalar/POD/InOut parameters, generated multi-interface composition, and QueryInterface to the additional view. |
 | `IWICImagingFactory` | Node E2E | Explicit CLSID activation and typed interface output. |
 | `IDataTransferManagerInterop` | Core + Node E2E | `IUnknown` base, HWND, REFIID, and WinRT interface output. |
 | `ISystemMediaTransportControlsInterop` | Node E2E | `IInspectable` base and meaningful use of the returned WinRT projection. |
@@ -1380,10 +1412,13 @@ Additional regression tests cover:
 
 - a test-only windows-rs ABI oracle for selected stable interfaces and native
   layouts: interface IIDs, host-target size/alignment, and field offsets for
-  `RECT`, `THUMBBUTTON`, `WIN32_FIND_DATAW`, `DISPPARAMS`, and `EXCEPINFO`;
+  `RECT`, `THUMBBUTTON`, `WIN32_FIND_DATAW`, `DISPPARAMS`, `EXCEPINFO`, and
+  the complete `IFileDialogEvents` callback vtable;
   windows-rs is not a production dispatch backend and does not replace
   semantic validation;
 - rejection of duplicate ownership through exported pointer bits;
+- generated COM sink Worker teardown, wrong-thread late invocation,
+  JavaScript exception-to-HRESULT behavior, and callback-resource cleanup;
 - detached TypedArray backing storage;
 - BSTR exact-length allocation, replacement, null/failure cleanup, and
   `CoTaskMem` cleanup;

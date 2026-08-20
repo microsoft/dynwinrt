@@ -40,10 +40,14 @@ const comTypeExports = [
 ]
 const opaqueComDeclarations = [
   'declare const dynComAllocationBrand: unique symbol',
+  'declare const dynComImplementationBrand: unique symbol',
   'export interface DynComAllocation {',
   '  readonly [dynComAllocationBrand]: never',
   '  readonly released: boolean',
   '  release(): void',
+  '}',
+  'export interface DynComImplementation {',
+  '  readonly [dynComImplementationBrand]: never',
   '}',
 ]
 const comUnsafeExports = new Set([

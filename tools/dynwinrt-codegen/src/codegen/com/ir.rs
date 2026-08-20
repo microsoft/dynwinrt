@@ -489,6 +489,27 @@ pub(super) struct ProjectedComMethod {
     pub(super) overload: Option<OverloadInfo>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ProjectedComSinkMethod {
+    pub(super) vtable_index: usize,
+    pub(super) handler_name: String,
+    pub(super) return_convention: ComSinkReturnConvention,
+    pub(super) output_count: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ComSinkReturnConvention {
+    HResult,
+    SemanticHResult,
+    Void,
+    Direct,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ComSinkPlan {
+    pub(super) methods: Vec<ProjectedComSinkMethod>,
+}
+
 /// Classifies the JS runtime shape a validated `ComType` presents as, for
 /// overload-dispatch purposes. Returns `None` for any type whose JS
 /// representation is ambiguous or overlaps another candidate shape (pointer
@@ -590,10 +611,12 @@ pub(super) struct ProjectedComInterface {
     pub(super) name: String,
     pub(super) namespace: String,
     pub(super) iid: String,
+    pub(super) base_iids: Vec<String>,
     pub(super) is_iunknown_rooted: bool,
     pub(super) methods: Vec<ProjectedComMethod>,
     pub(super) activation: ActivationPlan,
     pub(super) referenced_enums: Vec<ProjectedComEnum>,
+    pub(super) sink: Option<ComSinkPlan>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

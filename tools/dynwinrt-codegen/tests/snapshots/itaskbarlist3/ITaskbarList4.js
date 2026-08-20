@@ -12,9 +12,11 @@ function createTHUMBBUTTONArray(bytes) { return DynCom.createNativeStructArray(_
 const IID_ITaskbarList4 = WinGuid.parse('c43dc798-95d1-4bea-9030-bb99e2983a1a');
 
 let _ITaskbarList4Cache;
-const _ITaskbarList4 = new Proxy({}, {
-    get(_target, prop) {
-        _ITaskbarList4Cache ??= DynCom.registerIUnknownInterface('Windows.Win32.UI.Shell.ITaskbarList4', IID_ITaskbarList4)
+const _getITaskbarList4 = () => {
+    _ITaskbarList4Cache ??= DynCom.registerIUnknownInterface('Windows.Win32.UI.Shell.ITaskbarList4', IID_ITaskbarList4)
+            .addBaseInterface(WinGuid.parse('ea1afb91-9e28-4b86-90e9-9e9f8a5eefaf'))
+            .addBaseInterface(WinGuid.parse('602d4995-b13a-429b-a66e-1935e44f4317'))
+            .addBaseInterface(WinGuid.parse('56fdf342-fd6d-11d0-958a-006097c9a090'))
             .addMethodAt(3, 'HrInit', new DynComMethodSig())
             .addMethodAt(4, 'AddTab', new DynComMethodSig().addIn(DynCom.pointerType()))
             .addMethodAt(5, 'DeleteTab', new DynComMethodSig().addIn(DynCom.pointerType()))
@@ -34,8 +36,13 @@ const _ITaskbarList4 = new Proxy({}, {
             .addMethodAt(19, 'SetThumbnailTooltip', new DynComMethodSig().addIn(DynCom.pointerType()).addIn(DynCom.pointerType()))
             .addMethodAt(20, 'SetThumbnailClip', new DynComMethodSig().addIn(DynCom.pointerType()).addNullableIn(DynCom.nativeStructPointerType(_nativeLayout_RECT, true)))
             .addMethodAt(21, 'SetTabProperties', new DynComMethodSig().addIn(DynCom.pointerType()).addIn(DynCom.i32Type()));
-        const value = _ITaskbarList4Cache[prop];
-        return typeof value === 'function' ? value.bind(_ITaskbarList4Cache) : value;
+    return _ITaskbarList4Cache;
+};
+const _ITaskbarList4 = new Proxy({}, {
+    get(_target, prop) {
+        const iface = _getITaskbarList4();
+        const value = iface[prop];
+        return typeof value === 'function' ? value.bind(iface) : value;
     },
 });
 
@@ -48,6 +55,160 @@ class ITaskbarList4 {
         this._obj = cast;
     }
     static _fromNative(obj) { return _wrapITaskbarList4Owned(obj.cast(IID_ITaskbarList4)); }
+    /** Borrowed native value for passing this implementation to generated COM methods. Do not release it separately. */
+    get nativeValue() { return this._obj; }
+    /** Query another generated interface implemented by the same COM identity. */
+    as(InterfaceClass) { return InterfaceClass._fromNative(this._obj); }
+    /** Describe an apartment-bound COM interface implementation for composition with other generated interfaces. */
+    static implementation(handlers) {
+        if (handlers === null || typeof handlers !== 'object' || Array.isArray(handlers)) throw new TypeError('ITaskbarList4 implementation handlers must be an object');
+        for (const name of ['hrInit', 'addTab', 'deleteTab', 'activateTab', 'setActiveAlt', 'markFullscreenWindow', 'setProgressValue', 'setProgressState', 'registerTab', 'unregisterTab', 'setTabOrder', 'setTabActive', 'thumbBarAddButtons', 'thumbBarUpdateButtons', 'thumbBarSetImageList', 'setOverlayIcon', 'setThumbnailTooltip', 'setThumbnailClip', 'setTabProperties']) {
+            if (typeof handlers[name] !== 'function') throw new TypeError(`${name} must be a function`);
+        }
+        const dispatch = (vtableIndex, ...args) => {
+            switch (vtableIndex) {
+                case 3: {
+                    const callback = handlers.hrInit;
+                    const result = callback.call(handlers);
+                    if (result !== null && (typeof result === 'object' || typeof result === 'function') && typeof result.then === 'function') throw new TypeError('COM implementation handlers must return synchronously');
+                    return result === undefined ? 0 : result;
+                }
+                case 4: {
+                    const callback = handlers.addTab;
+                    const result = callback.call(handlers, DynCom.asPointerBigint(args[0]));
+                    if (result !== null && (typeof result === 'object' || typeof result === 'function') && typeof result.then === 'function') throw new TypeError('COM implementation handlers must return synchronously');
+                    return result === undefined ? 0 : result;
+                }
+                case 5: {
+                    const callback = handlers.deleteTab;
+                    const result = callback.call(handlers, DynCom.asPointerBigint(args[0]));
+                    if (result !== null && (typeof result === 'object' || typeof result === 'function') && typeof result.then === 'function') throw new TypeError('COM implementation handlers must return synchronously');
+                    return result === undefined ? 0 : result;
+                }
+                case 6: {
+                    const callback = handlers.activateTab;
+                    const result = callback.call(handlers, DynCom.asPointerBigint(args[0]));
+                    if (result !== null && (typeof result === 'object' || typeof result === 'function') && typeof result.then === 'function') throw new TypeError('COM implementation handlers must return synchronously');
+                    return result === undefined ? 0 : result;
+                }
+                case 7: {
+                    const callback = handlers.setActiveAlt;
+                    const result = callback.call(handlers, DynCom.asPointerBigint(args[0]));
+                    if (result !== null && (typeof result === 'object' || typeof result === 'function') && typeof result.then === 'function') throw new TypeError('COM implementation handlers must return synchronously');
+                    return result === undefined ? 0 : result;
+                }
+                case 8: {
+                    const callback = handlers.markFullscreenWindow;
+                    const result = callback.call(handlers, DynCom.asPointerBigint(args[0]), (DynCom.toNumber(args[1]) !== 0));
+                    if (result !== null && (typeof result === 'object' || typeof result === 'function') && typeof result.then === 'function') throw new TypeError('COM implementation handlers must return synchronously');
+                    return result === undefined ? 0 : result;
+                }
+                case 9: {
+                    const callback = handlers.setProgressValue;
+                    const result = callback.call(handlers, DynCom.asPointerBigint(args[0]), DynCom.toU64Bigint(args[1]), DynCom.toU64Bigint(args[2]));
+                    if (result !== null && (typeof result === 'object' || typeof result === 'function') && typeof result.then === 'function') throw new TypeError('COM implementation handlers must return synchronously');
+                    return result === undefined ? 0 : result;
+                }
+                case 10: {
+                    const callback = handlers.setProgressState;
+                    const result = callback.call(handlers, DynCom.asPointerBigint(args[0]), DynCom.toNumber(args[1]));
+                    if (result !== null && (typeof result === 'object' || typeof result === 'function') && typeof result.then === 'function') throw new TypeError('COM implementation handlers must return synchronously');
+                    return result === undefined ? 0 : result;
+                }
+                case 11: {
+                    const callback = handlers.registerTab;
+                    const result = callback.call(handlers, DynCom.asPointerBigint(args[0]), DynCom.asPointerBigint(args[1]));
+                    if (result !== null && (typeof result === 'object' || typeof result === 'function') && typeof result.then === 'function') throw new TypeError('COM implementation handlers must return synchronously');
+                    return result === undefined ? 0 : result;
+                }
+                case 12: {
+                    const callback = handlers.unregisterTab;
+                    const result = callback.call(handlers, DynCom.asPointerBigint(args[0]));
+                    if (result !== null && (typeof result === 'object' || typeof result === 'function') && typeof result.then === 'function') throw new TypeError('COM implementation handlers must return synchronously');
+                    return result === undefined ? 0 : result;
+                }
+                case 13: {
+                    const callback = handlers.setTabOrder;
+                    const result = callback.call(handlers, DynCom.asPointerBigint(args[0]), DynCom.asPointerBigint(args[1]));
+                    if (result !== null && (typeof result === 'object' || typeof result === 'function') && typeof result.then === 'function') throw new TypeError('COM implementation handlers must return synchronously');
+                    return result === undefined ? 0 : result;
+                }
+                case 14: {
+                    const callback = handlers.setTabActive;
+                    const result = callback.call(handlers, DynCom.asPointerBigint(args[0]), DynCom.asPointerBigint(args[1]), DynCom.toU32(args[2]));
+                    if (result !== null && (typeof result === 'object' || typeof result === 'function') && typeof result.then === 'function') throw new TypeError('COM implementation handlers must return synchronously');
+                    return result === undefined ? 0 : result;
+                }
+                case 15: {
+                    const callback = handlers.thumbBarAddButtons;
+                    const result = callback.call(handlers, DynCom.asPointerBigint(args[0]), createTHUMBBUTTONArray(DynCom.takeBuffer(args[1])));
+                    if (result !== null && (typeof result === 'object' || typeof result === 'function') && typeof result.then === 'function') throw new TypeError('COM implementation handlers must return synchronously');
+                    return result === undefined ? 0 : result;
+                }
+                case 16: {
+                    const callback = handlers.thumbBarUpdateButtons;
+                    const result = callback.call(handlers, DynCom.asPointerBigint(args[0]), createTHUMBBUTTONArray(DynCom.takeBuffer(args[1])));
+                    if (result !== null && (typeof result === 'object' || typeof result === 'function') && typeof result.then === 'function') throw new TypeError('COM implementation handlers must return synchronously');
+                    return result === undefined ? 0 : result;
+                }
+                case 17: {
+                    const callback = handlers.thumbBarSetImageList;
+                    const result = callback.call(handlers, DynCom.asPointerBigint(args[0]), DynCom.asPointerBigint(args[1]));
+                    if (result !== null && (typeof result === 'object' || typeof result === 'function') && typeof result.then === 'function') throw new TypeError('COM implementation handlers must return synchronously');
+                    return result === undefined ? 0 : result;
+                }
+                case 18: {
+                    const callback = handlers.setOverlayIcon;
+                    const result = callback.call(handlers, DynCom.asPointerBigint(args[0]), DynCom.asPointerBigint(args[1]), DynCom.copyCallbackWideString(args[2]));
+                    if (result !== null && (typeof result === 'object' || typeof result === 'function') && typeof result.then === 'function') throw new TypeError('COM implementation handlers must return synchronously');
+                    return result === undefined ? 0 : result;
+                }
+                case 19: {
+                    const callback = handlers.setThumbnailTooltip;
+                    const result = callback.call(handlers, DynCom.asPointerBigint(args[0]), DynCom.copyCallbackWideString(args[1]));
+                    if (result !== null && (typeof result === 'object' || typeof result === 'function') && typeof result.then === 'function') throw new TypeError('COM implementation handlers must return synchronously');
+                    return result === undefined ? 0 : result;
+                }
+                case 20: {
+                    const callback = handlers.setThumbnailClip;
+                    const result = callback.call(handlers, DynCom.asPointerBigint(args[0]), args[1].isNull() ? null : createRECT(DynCom.nativeStructBytes(_nativeLayout_RECT, args[1]).bytes));
+                    if (result !== null && (typeof result === 'object' || typeof result === 'function') && typeof result.then === 'function') throw new TypeError('COM implementation handlers must return synchronously');
+                    return result === undefined ? 0 : result;
+                }
+                case 21: {
+                    const callback = handlers.setTabProperties;
+                    const result = callback.call(handlers, DynCom.asPointerBigint(args[0]), DynCom.toNumber(args[1]));
+                    if (result !== null && (typeof result === 'object' || typeof result === 'function') && typeof result.then === 'function') throw new TypeError('COM implementation handlers must return synchronously');
+                    return result === undefined ? 0 : result;
+                }
+                default: throw new RangeError(`Unexpected COM sink vtable index ${vtableIndex}`);
+            }
+        };
+        return Object.freeze({ interfaceType: _getITaskbarList4(), iid: 'c43dc798-95d1-4bea-9030-bb99e2983a1a', dispatch });
+    }
+    /** Create an apartment-bound COM object, optionally implementing additional generated interfaces. */
+    static implement(handlers, ...additional) {
+        const primary = ITaskbarList4.implementation(handlers);
+        if (additional.length === 0) return _wrapITaskbarList4Owned(DynCom.createIUnknownSink(primary.interfaceType, primary.dispatch));
+        const implementations = [primary, ...additional];
+        const byIid = new Map();
+        for (const implementation of implementations) {
+            if (implementation === null || typeof implementation !== 'object' || implementation.interfaceType == null || typeof implementation.iid !== 'string' || typeof implementation.dispatch !== 'function') throw new TypeError('Invalid generated COM implementation descriptor');
+            const iid = implementation.iid.toLowerCase();
+            if (byIid.has(iid)) throw new TypeError(`Duplicate COM implementation IID ${implementation.iid}`);
+            byIid.set(iid, implementation);
+        }
+        const identity = DynCom.createComObject(implementations.map(implementation => implementation.interfaceType), (iid, vtableIndex, ...args) => {
+            const implementation = byIid.get(iid.toLowerCase());
+            if (implementation === undefined) throw new RangeError(`Unexpected COM implementation IID ${iid}`);
+            return implementation.dispatch(vtableIndex, ...args);
+        });
+        try {
+            return _wrapITaskbarList4Owned(identity.cast(IID_ITaskbarList4));
+        } finally {
+            identity.release();
+        }
+    }
     /** Release the underlying native COM reference. Safe to call more than once. */
     release() {
         this._obj.release();

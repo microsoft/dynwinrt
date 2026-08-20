@@ -225,7 +225,7 @@ if ("com" -in $Lang) {
     & cargo run -p dynwinrt-codegen @cargoProfileArgs @cargoTargetArgs --quiet -- generate `
         --winmd $win32Winmd `
         --namespace Windows.Win32.UI.Shell `
-        --class-name "TaskbarList,IShellLinkW,IDataTransferManagerInterop,FileOperation,FileOpenDialog" `
+        --class-name "TaskbarList,IShellLinkW,IDataTransferManagerInterop,FileOperation,FileOpenDialog,IFileDialogEvents" `
         --output $comShellDir `
         --import-name $comRuntimeImport
     if ($LASTEXITCODE -ne 0) { Write-Error "Classic COM Shell generation failed"; exit 1 }
@@ -294,6 +294,14 @@ if ("com" -in $Lang) {
     if ($LASTEXITCODE -ne 0) { Write-Error "Classic COM error-info generation failed"; exit 1 }
 
     & cargo run -p dynwinrt-codegen @cargoProfileArgs @cargoTargetArgs --quiet -- generate `
+        --winmd $win32Winmd `
+        --namespace Windows.Win32.System.Ole `
+        --class-name IDropTarget `
+        --output $comShellDir `
+        --import-name $comRuntimeImport
+    if ($LASTEXITCODE -ne 0) { Write-Error "Classic COM callback generation failed"; exit 1 }
+
+    & cargo run -p dynwinrt-codegen @cargoProfileArgs @cargoTargetArgs --quiet -- generate `
         --namespace Windows.Media `
         --class-name SystemMediaTransportControls `
         --output $comSmtcDir `
@@ -358,6 +366,7 @@ if ("com" -in $Lang) {
         "shell-link-pod.mjs",
         "file-operation.mjs",
         "file-open-dialog.mjs",
+        "drop-target.mjs",
         "wic-imaging-factory.mjs",
         "sequential-stream-buffer.mjs",
         "automation-values.mjs",

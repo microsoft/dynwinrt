@@ -58,7 +58,8 @@ part of the same npm package, while the package root remains WinRT-only. See
 [Classic COM support](docs/architecture/classic-com-support.md) for the supported ABI,
 common-interface test matrix, unsupported native types, and ownership rules.
 See [Classic COM JavaScript usage](docs/guides/windows/classic-com-usage.md) for codegen,
-GUID/IID/CLSID, lifecycle, Automation, and explicit unsafe ABI examples.
+GUID/IID/CLSID, lifecycle, generated same-thread event sinks, Automation, and explicit unsafe ABI
+examples.
 
 Generated bindings project unambiguous public WinRT activation metadata as JavaScript
 constructors, including overloads such as `new Uri(base, relative)`. Existing

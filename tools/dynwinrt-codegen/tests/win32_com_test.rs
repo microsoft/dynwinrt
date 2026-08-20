@@ -84,6 +84,60 @@ fn required_win32_metadata_is_present() {
 }
 
 #[test]
+fn file_dialog_events_and_drop_target_project_safe_javascript_sinks() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+
+    let events = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.UI.Shell",
+        "IFileDialogEvents",
+    )
+    .expect("IFileDialogEvents must exist");
+    assert_eq!(events.base_chain, ["IUnknown"]);
+    assert_eq!(events.own_methods_start, 3);
+    let output = com::generate_com_interface_files(&events, &win32_winmd()).unwrap();
+    assert!(output.js.contains("static implementation(handlers)"));
+    assert!(
+        output
+            .js
+            .contains("DynCom.createIUnknownSink(primary.interfaceType, primary.dispatch)")
+    );
+    assert!(!output.js.contains("interface_in1"));
+    assert!(
+        output
+            .dts
+            .contains("export interface IFileDialogEventsImplementation")
+    );
+    assert!(output.dts.contains(
+        "static implement(handlers: IFileDialogEventsImplementation, ...additional: DynComImplementation[]): IFileDialogEvents;"
+    ));
+
+    let dialog =
+        com_metadata::parse_com_interface(&win32_winmd(), "Windows.Win32.UI.Shell", "IFileDialog")
+            .expect("IFileDialog must exist");
+    assert_ne!(dialog.base_chain, ["IUnknown"]);
+    let output = com::generate_com_interface_files(&dialog, &win32_winmd()).unwrap();
+    assert!(!output.js.contains("static implementation(handlers)"));
+    assert!(!output.dts.contains("IFileDialogImplementation"));
+
+    let drop_target = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.System.Ole",
+        "IDropTarget",
+    )
+    .expect("IDropTarget must exist");
+    assert_eq!(drop_target.base_chain, ["IUnknown"]);
+    let output = com::generate_com_interface_files(&drop_target, &win32_winmd()).unwrap();
+    assert!(
+        output.js.contains("static implementation(handlers)"),
+        "validated POD/scalar/InOut callback shapes should use the dynamic sink backend"
+    );
+}
+
+#[test]
 fn real_metadata_preserves_automation_pointer_contracts_and_fails_closed() {
     if !win32_available() {
         eprintln!("Skipping: Win32 winmd not available");

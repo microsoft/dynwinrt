@@ -20,7 +20,7 @@ use windows::core::{IUnknown, Interface};
 
 use crate::{
   managed_tsfn::{self, ManagedTsfn},
-  DynWinRtDelegate,
+  DynWinRTValue, DynWinRtDelegate,
 };
 
 static PRODUCED: AtomicUsize = AtomicUsize::new(0);
@@ -33,6 +33,7 @@ static OTHER_FAILURE: AtomicUsize = AtomicUsize::new(0);
 static HELD_STRONG: Mutex<Option<ManagedTsfn<TestPayload>>> = Mutex::new(None);
 static HELD_WEAK: Mutex<Option<ManagedTsfn<TestPayload>>> = Mutex::new(None);
 static RETAINED_DELEGATE: AtomicUsize = AtomicUsize::new(0);
+static RETAINED_COM_SINK: AtomicUsize = AtomicUsize::new(0);
 static DELEGATE_STRESS_DONE: AtomicUsize = AtomicUsize::new(0);
 static DELEGATE_STRESS_SUCCEEDED: AtomicUsize = AtomicUsize::new(0);
 static DELEGATE_STRESS_FAILED: AtomicUsize = AtomicUsize::new(0);
@@ -61,6 +62,19 @@ pub struct TsfnTestStats {
 pub struct TsfnDelegateInvokeStats {
   pub succeeded: u32,
   pub failed: u32,
+}
+
+#[napi(object)]
+pub struct TsfnComSinkInvokeResult {
+  pub hresult: i32,
+  pub output: i32,
+}
+
+#[napi(object)]
+pub struct TsfnComAllocatedBufferResult {
+  pub hresult: i32,
+  pub count: u32,
+  pub byte_sum: u32,
 }
 
 fn count(value: &AtomicUsize) -> u32 {
@@ -320,6 +334,341 @@ pub fn tsfn_test_wait_retained_delegate_stress(
 #[napi]
 pub fn tsfn_test_release_retained_delegate() {
   let raw = RETAINED_DELEGATE.swap(0, Ordering::SeqCst);
+  if raw != 0 {
+    unsafe { drop(IUnknown::from_raw(raw as *mut c_void)) };
+  }
+}
+
+#[napi]
+pub fn tsfn_test_retain_com_sink(value: &DynWinRTValue) -> napi::Result<()> {
+  let object = value
+    .0
+    .as_object()
+    .ok_or_else(|| napi::Error::from_reason("COM sink test value is not a COM object"))?
+    .clone();
+  let raw = object.into_raw() as usize;
+  let previous = RETAINED_COM_SINK.swap(raw, Ordering::SeqCst);
+  if previous != 0 {
+    unsafe { drop(IUnknown::from_raw(previous as *mut c_void)) };
+  }
+  Ok(())
+}
+
+unsafe fn invoke_com_sink(raw: *mut c_void) -> i32 {
+  let vtable = unsafe { *(raw as *const *const *const c_void) };
+  let invoke: unsafe extern "system" fn(*mut c_void, *mut c_void) -> windows::core::HRESULT =
+    unsafe { std::mem::transmute(*vtable.add(3)) };
+  unsafe { invoke(raw, std::ptr::null_mut()) }.0
+}
+
+unsafe fn invoke_com_sink_out(raw: *mut c_void) -> TsfnComSinkInvokeResult {
+  let vtable = unsafe { *(raw as *const *const *const c_void) };
+  let invoke: unsafe extern "system" fn(
+    *mut c_void,
+    *mut c_void,
+    *mut c_void,
+    *mut i32,
+  ) -> windows::core::HRESULT = unsafe { std::mem::transmute(*vtable.add(3)) };
+  let mut output = -1;
+  let hresult = unsafe { invoke(raw, std::ptr::null_mut(), std::ptr::null_mut(), &mut output) };
+  TsfnComSinkInvokeResult {
+    hresult: hresult.0,
+    output,
+  }
+}
+
+unsafe fn invoke_com_sink_i32(raw: *mut c_void, value: i32) -> i32 {
+  let vtable = unsafe { *(raw as *const *const *const c_void) };
+  let invoke: unsafe extern "system" fn(*mut c_void, i32) -> windows::core::HRESULT =
+    unsafe { std::mem::transmute(*vtable.add(3)) };
+  unsafe { invoke(raw, value) }.0
+}
+
+unsafe fn invoke_com_sink_direct_i32(raw: *mut c_void, value: i32) -> i32 {
+  let vtable = unsafe { *(raw as *const *const *const c_void) };
+  let invoke: unsafe extern "system" fn(*mut c_void, i32) -> i32 =
+    unsafe { std::mem::transmute(*vtable.add(3)) };
+  unsafe { invoke(raw, value) }
+}
+
+unsafe fn invoke_com_sink_void_i32(raw: *mut c_void, value: i32) {
+  let vtable = unsafe { *(raw as *const *const *const c_void) };
+  let invoke: unsafe extern "system" fn(*mut c_void, i32) =
+    unsafe { std::mem::transmute(*vtable.add(3)) };
+  unsafe { invoke(raw, value) };
+}
+
+unsafe fn invoke_com_sink_guid(raw: *mut c_void, value: &windows::core::GUID) -> i32 {
+  let vtable = unsafe { *(raw as *const *const *const c_void) };
+  let invoke: unsafe extern "system" fn(
+    *mut c_void,
+    *const windows::core::GUID,
+  ) -> windows::core::HRESULT = unsafe { std::mem::transmute(*vtable.add(3)) };
+  unsafe { invoke(raw, value) }.0
+}
+
+unsafe fn invoke_com_sink_bstr(raw: *mut c_void) -> i32 {
+  let vtable = unsafe { *(raw as *const *const *const c_void) };
+  let invoke: unsafe extern "system" fn(*mut c_void, *const u16) -> windows::core::HRESULT =
+    unsafe { std::mem::transmute(*vtable.add(3)) };
+  let value = windows::core::BSTR::from("embedded\0callback");
+  unsafe { invoke(raw, value.as_ptr()) }.0
+}
+
+unsafe fn invoke_com_sink_wide_string(raw: *mut c_void) -> i32 {
+  let vtable = unsafe { *(raw as *const *const *const c_void) };
+  let invoke: unsafe extern "system" fn(*mut c_void, *const u16) -> windows::core::HRESULT =
+    unsafe { std::mem::transmute(*vtable.add(3)) };
+  let value = "wide callback\0".encode_utf16().collect::<Vec<_>>();
+  unsafe { invoke(raw, value.as_ptr()) }.0
+}
+
+unsafe fn invoke_com_sink_ansi_string(raw: *mut c_void) -> i32 {
+  let vtable = unsafe { *(raw as *const *const *const c_void) };
+  let invoke: unsafe extern "system" fn(*mut c_void, *const i8) -> windows::core::HRESULT =
+    unsafe { std::mem::transmute(*vtable.add(3)) };
+  unsafe { invoke(raw, c"ansi callback".as_ptr()) }.0
+}
+
+unsafe fn invoke_com_sink_allocated_buffer(raw: *mut c_void) -> TsfnComAllocatedBufferResult {
+  let vtable = unsafe { *(raw as *const *const *const c_void) };
+  let invoke: unsafe extern "system" fn(
+    *mut c_void,
+    *mut *mut u8,
+    *mut u32,
+  ) -> windows::core::HRESULT = unsafe { std::mem::transmute(*vtable.add(3)) };
+  let mut bytes = std::ptr::null_mut();
+  let mut count = u32::MAX;
+  let hresult = unsafe { invoke(raw, &mut bytes, &mut count) };
+  let byte_sum = if bytes.is_null() || count == 0 {
+    0
+  } else {
+    unsafe { std::slice::from_raw_parts(bytes, count as usize) }
+      .iter()
+      .map(|value| u32::from(*value))
+      .sum()
+  };
+  if !bytes.is_null() {
+    unsafe { windows::Win32::System::Com::CoTaskMemFree(Some(bytes.cast())) };
+  }
+  TsfnComAllocatedBufferResult {
+    hresult: hresult.0,
+    count,
+    byte_sum,
+  }
+}
+
+unsafe fn invoke_com_sink_caller_buffer(raw: *mut c_void) -> TsfnComAllocatedBufferResult {
+  let vtable = unsafe { *(raw as *const *const *const c_void) };
+  let invoke: unsafe extern "system" fn(
+    *mut c_void,
+    *mut u8,
+    u32,
+    *mut u32,
+  ) -> windows::core::HRESULT = unsafe { std::mem::transmute(*vtable.add(3)) };
+  let mut bytes = [0xff; 5];
+  let mut count = u32::MAX;
+  let hresult = unsafe { invoke(raw, bytes.as_mut_ptr(), bytes.len() as u32, &mut count) };
+  TsfnComAllocatedBufferResult {
+    hresult: hresult.0,
+    count,
+    byte_sum: bytes.iter().map(|value| u32::from(*value)).sum(),
+  }
+}
+
+#[napi]
+pub fn tsfn_test_invoke_retained_com_sink() -> napi::Result<i32> {
+  let raw = RETAINED_COM_SINK.load(Ordering::SeqCst) as *mut c_void;
+  if raw.is_null() {
+    return Err(napi::Error::from_reason(
+      "No COM sink is retained by the TSFN test harness",
+    ));
+  }
+  Ok(unsafe { invoke_com_sink(raw) })
+}
+
+#[napi]
+pub fn tsfn_test_invoke_retained_com_sink_on_thread() -> napi::Result<i32> {
+  let raw = RETAINED_COM_SINK.load(Ordering::SeqCst);
+  if raw == 0 {
+    return Err(napi::Error::from_reason(
+      "No COM sink is retained by the TSFN test harness",
+    ));
+  }
+  thread::spawn(move || unsafe { invoke_com_sink(raw as *mut c_void) })
+    .join()
+    .map_err(|_| napi::Error::from_reason("COM sink test thread panicked"))
+}
+
+#[napi]
+pub fn tsfn_test_invoke_retained_com_sink_out() -> napi::Result<TsfnComSinkInvokeResult> {
+  let raw = RETAINED_COM_SINK.load(Ordering::SeqCst) as *mut c_void;
+  if raw.is_null() {
+    return Err(napi::Error::from_reason(
+      "No COM sink is retained by the TSFN test harness",
+    ));
+  }
+  Ok(unsafe { invoke_com_sink_out(raw) })
+}
+
+#[napi]
+pub fn tsfn_test_invoke_retained_com_sink_i32(value: i32) -> napi::Result<i32> {
+  let raw = RETAINED_COM_SINK.load(Ordering::SeqCst) as *mut c_void;
+  if raw.is_null() {
+    return Err(napi::Error::from_reason(
+      "No COM sink is retained by the TSFN test harness",
+    ));
+  }
+  Ok(unsafe { invoke_com_sink_i32(raw, value) })
+}
+
+#[napi]
+pub fn tsfn_test_invoke_retained_com_sink_i32_on_thread(value: i32) -> napi::Result<i32> {
+  let raw = RETAINED_COM_SINK.load(Ordering::SeqCst);
+  if raw == 0 {
+    return Err(napi::Error::from_reason(
+      "No COM sink is retained by the TSFN test harness",
+    ));
+  }
+  thread::spawn(move || unsafe { invoke_com_sink_i32(raw as *mut c_void, value) })
+    .join()
+    .map_err(|_| napi::Error::from_reason("COM sink test thread panicked"))
+}
+
+#[napi]
+pub fn tsfn_test_invoke_retained_com_sink_direct_i32(value: i32) -> napi::Result<i32> {
+  let raw = RETAINED_COM_SINK.load(Ordering::SeqCst) as *mut c_void;
+  if raw.is_null() {
+    return Err(napi::Error::from_reason(
+      "No COM sink is retained by the TSFN test harness",
+    ));
+  }
+  Ok(unsafe { invoke_com_sink_direct_i32(raw, value) })
+}
+
+#[napi]
+pub fn tsfn_test_invoke_retained_com_sink_direct_i32_on_thread(value: i32) -> napi::Result<i32> {
+  let raw = RETAINED_COM_SINK.load(Ordering::SeqCst);
+  if raw == 0 {
+    return Err(napi::Error::from_reason(
+      "No COM sink is retained by the TSFN test harness",
+    ));
+  }
+  thread::spawn(move || unsafe { invoke_com_sink_direct_i32(raw as *mut c_void, value) })
+    .join()
+    .map_err(|_| napi::Error::from_reason("COM sink test thread panicked"))
+}
+
+#[napi]
+pub fn tsfn_test_invoke_retained_com_sink_void_i32(value: i32) -> napi::Result<()> {
+  let raw = RETAINED_COM_SINK.load(Ordering::SeqCst) as *mut c_void;
+  if raw.is_null() {
+    return Err(napi::Error::from_reason(
+      "No COM sink is retained by the TSFN test harness",
+    ));
+  }
+  unsafe { invoke_com_sink_void_i32(raw, value) };
+  Ok(())
+}
+
+#[napi]
+pub fn tsfn_test_invoke_retained_com_sink_guid() -> napi::Result<i32> {
+  let raw = RETAINED_COM_SINK.load(Ordering::SeqCst) as *mut c_void;
+  if raw.is_null() {
+    return Err(napi::Error::from_reason(
+      "No COM sink is retained by the TSFN test harness",
+    ));
+  }
+  let value = windows::core::GUID::from_u128(0x990c600e_60c7_4d28_af4c_bf148a92b11a);
+  Ok(unsafe { invoke_com_sink_guid(raw, &value) })
+}
+
+#[napi]
+pub fn tsfn_test_invoke_retained_com_sink_bstr() -> napi::Result<i32> {
+  let raw = RETAINED_COM_SINK.load(Ordering::SeqCst) as *mut c_void;
+  if raw.is_null() {
+    return Err(napi::Error::from_reason(
+      "No COM sink is retained by the TSFN test harness",
+    ));
+  }
+  Ok(unsafe { invoke_com_sink_bstr(raw) })
+}
+
+#[napi]
+pub fn tsfn_test_invoke_retained_com_sink_wide_string() -> napi::Result<i32> {
+  let raw = RETAINED_COM_SINK.load(Ordering::SeqCst) as *mut c_void;
+  if raw.is_null() {
+    return Err(napi::Error::from_reason(
+      "No COM sink is retained by the TSFN test harness",
+    ));
+  }
+  Ok(unsafe { invoke_com_sink_wide_string(raw) })
+}
+
+#[napi]
+pub fn tsfn_test_invoke_retained_com_sink_ansi_string() -> napi::Result<i32> {
+  let raw = RETAINED_COM_SINK.load(Ordering::SeqCst) as *mut c_void;
+  if raw.is_null() {
+    return Err(napi::Error::from_reason(
+      "No COM sink is retained by the TSFN test harness",
+    ));
+  }
+  Ok(unsafe { invoke_com_sink_ansi_string(raw) })
+}
+
+#[napi]
+pub fn tsfn_test_invoke_retained_com_sink_allocated_buffer(
+) -> napi::Result<TsfnComAllocatedBufferResult> {
+  let raw = RETAINED_COM_SINK.load(Ordering::SeqCst) as *mut c_void;
+  if raw.is_null() {
+    return Err(napi::Error::from_reason(
+      "No COM sink is retained by the TSFN test harness",
+    ));
+  }
+  Ok(unsafe { invoke_com_sink_allocated_buffer(raw) })
+}
+
+#[napi]
+pub fn tsfn_test_invoke_retained_com_sink_caller_buffer(
+) -> napi::Result<TsfnComAllocatedBufferResult> {
+  let raw = RETAINED_COM_SINK.load(Ordering::SeqCst) as *mut c_void;
+  if raw.is_null() {
+    return Err(napi::Error::from_reason(
+      "No COM sink is retained by the TSFN test harness",
+    ));
+  }
+  Ok(unsafe { invoke_com_sink_caller_buffer(raw) })
+}
+
+#[napi]
+pub fn tsfn_test_invoke_retained_com_object_i32(
+  iid: &crate::WinGUID,
+  value: i32,
+) -> napi::Result<i32> {
+  let raw = RETAINED_COM_SINK.load(Ordering::SeqCst) as *mut c_void;
+  if raw.is_null() {
+    return Err(napi::Error::from_reason(
+      "No COM object is retained by the TSFN test harness",
+    ));
+  }
+  let identity = unsafe { IUnknown::from_raw_borrowed(&raw) }
+    .ok_or_else(|| napi::Error::from_reason("Retained COM identity is null"))?;
+  let mut view = std::ptr::null_mut();
+  unsafe { identity.query(&iid.0, &mut view) }
+    .ok()
+    .map_err(|error| napi::Error::from_reason(error.message()))?;
+  if view.is_null() {
+    return Err(napi::Error::from_reason(
+      "Retained COM object did not expose the requested interface",
+    ));
+  }
+  let view = unsafe { IUnknown::from_raw(view) };
+  Ok(unsafe { invoke_com_sink_i32(view.as_raw(), value) })
+}
+
+#[napi]
+pub fn tsfn_test_release_retained_com_sink() {
+  let raw = RETAINED_COM_SINK.swap(0, Ordering::SeqCst);
   if raw != 0 {
     unsafe { drop(IUnknown::from_raw(raw as *mut c_void)) };
   }

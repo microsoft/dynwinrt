@@ -355,6 +355,7 @@ pub struct ComInterfaceMeta {
     pub base_offset: usize,
     pub is_iunknown_rooted: bool,
     pub base_chain: Vec<String>,
+    pub base_iids: Vec<String>,
     pub coclass_clsid: Option<String>,
     pub coclass_name: Option<String>,
     pub own_methods_start: usize,
@@ -495,6 +496,15 @@ fn parse_com_interface_from_index(
             .filter(|(_, name, _)| name != "IUnknown" && name != "IInspectable")
             .map(|(_, _, count)| count)
             .sum::<usize>();
+    let base_iids = base_chain
+        .iter()
+        .filter(|(_, name, _)| name != "IUnknown" && name != "IInspectable")
+        .filter_map(|(namespace, name, _)| {
+            let definition = index.get(namespace, name).next()?;
+            let iid = crate::meta::extract_iid(&definition);
+            (!iid.is_empty()).then_some(iid)
+        })
+        .collect::<Vec<_>>();
 
     let mut methods = Vec::new();
     let mut raw_methods = Vec::new();
@@ -538,6 +548,7 @@ fn parse_com_interface_from_index(
         base_offset: root_offset,
         is_iunknown_rooted,
         base_chain: base_chain.into_iter().map(|(_, name, _)| name).collect(),
+        base_iids,
         coclass_clsid,
         coclass_name,
         own_methods_start,
@@ -3078,6 +3089,7 @@ mod tests {
             base_offset: 3,
             is_iunknown_rooted: true,
             base_chain: base_chain.iter().map(|name| (*name).into()).collect(),
+            base_iids: Vec::new(),
             coclass_clsid: None,
             coclass_name: None,
             own_methods_start: 3,

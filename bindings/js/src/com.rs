@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use napi::bindgen_prelude::{BigInt, Buffer, FromNapiValue, ToNapiValue, Unknown};
+use napi::bindgen_prelude::{BigInt, Buffer, FromNapiValue, Function, ToNapiValue, Unknown};
 use napi::JsValue;
 use napi_derive::napi;
 use windows::core::{IUnknown, Interface as _, GUID};
@@ -297,6 +297,223 @@ impl Drop for NativePointerOwner {
 fn parse_clsid(clsid: &str) -> napi::Result<windows::core::GUID> {
   windows::core::GUID::try_from(clsid)
     .map_err(|_| napi::Error::from_reason(format!("Invalid CLSID: '{clsid}'")))
+}
+
+fn callback_string_pointer(value: &DynWinRTValue) -> napi::Result<*const std::ffi::c_void> {
+  match &value.0 {
+    dynwinrt::WinRTValue::RawPtr(value) => Ok(value.cast_const()),
+    dynwinrt::WinRTValue::Null => Ok(std::ptr::null()),
+    _ => Err(napi::Error::from_reason(
+      "COM callback string value is not a native pointer",
+    )),
+  }
+}
+
+fn sink_callback_i32(
+  env: napi::sys::napi_env,
+  value: napi::sys::napi_value,
+  context: &str,
+) -> napi::Result<i32> {
+  let mut value_type = napi::sys::ValueType::napi_undefined;
+  super::napi_status("napi_typeof(COM sink result)", unsafe {
+    napi::sys::napi_typeof(env, value, &mut value_type)
+  })?;
+  if value_type != napi::sys::ValueType::napi_number {
+    return Err(napi::Error::from_reason(format!(
+      "{context} must be a 32-bit integer",
+    )));
+  }
+  let mut number = 0.0;
+  super::napi_status("napi_get_value_double(COM sink result)", unsafe {
+    napi::sys::napi_get_value_double(env, value, &mut number)
+  })?;
+  if !number.is_finite()
+    || number.fract() != 0.0
+    || number < i32::MIN as f64
+    || number > i32::MAX as f64
+  {
+    return Err(napi::Error::from_reason(format!(
+      "{context} must be a 32-bit integer",
+    )));
+  }
+  Ok(number as i32)
+}
+
+fn parse_sink_callback_result(
+  env: napi::sys::napi_env,
+  value: napi::sys::napi_value,
+  contract: dynwinrt::com::CallbackContract,
+) -> napi::Result<dynwinrt::com::SinkCallbackResult> {
+  if contract.return_kind == dynwinrt::com::CallbackReturnKind::HResult
+    && contract.output_count == 0
+  {
+    return sink_callback_i32(env, value, "COM sink HRESULT")
+      .map(|value| dynwinrt::com::SinkCallbackResult::hresult(windows::core::HRESULT(value)));
+  }
+  if contract.return_kind == dynwinrt::com::CallbackReturnKind::Void && contract.output_count == 0 {
+    return Ok(dynwinrt::com::SinkCallbackResult::hresult(
+      windows::core::HRESULT(0),
+    ));
+  }
+  if contract.return_kind == dynwinrt::com::CallbackReturnKind::Value && contract.output_count == 0
+  {
+    return Ok(dynwinrt::com::SinkCallbackResult::with_return(
+      callback_com_value(env, value)?,
+    ));
+  }
+  let mut is_array = false;
+  super::napi_status("napi_is_array(COM sink result)", unsafe {
+    napi::sys::napi_is_array(env, value, &mut is_array)
+  })?;
+  if !is_array {
+    return Err(napi::Error::from_reason(
+      "COM sink callback with multiple native results must return an array",
+    ));
+  }
+  let mut length = 0;
+  super::napi_status("napi_get_array_length(COM sink result)", unsafe {
+    napi::sys::napi_get_array_length(env, value, &mut length)
+  })?;
+  let prefix = usize::from(contract.return_kind != dynwinrt::com::CallbackReturnKind::Void);
+  if length as usize != contract.output_count + prefix {
+    return Err(napi::Error::from_reason(
+      "COM sink callback returned an unexpected number of outputs",
+    ));
+  }
+  let mut hresult = windows::core::HRESULT(0);
+  let mut return_value = None;
+  if contract.return_kind == dynwinrt::com::CallbackReturnKind::HResult {
+    let mut raw = std::ptr::null_mut();
+    super::napi_status("napi_get_element(COM sink HRESULT)", unsafe {
+      napi::sys::napi_get_element(env, value, 0, &mut raw)
+    })?;
+    hresult = windows::core::HRESULT(sink_callback_i32(env, raw, "COM sink HRESULT")?);
+  } else if contract.return_kind == dynwinrt::com::CallbackReturnKind::Value {
+    let mut raw = std::ptr::null_mut();
+    super::napi_status("napi_get_element(COM sink return)", unsafe {
+      napi::sys::napi_get_element(env, value, 0, &mut raw)
+    })?;
+    return_value = Some(callback_com_value(env, raw)?);
+  }
+  let mut outputs = Vec::with_capacity(contract.output_count);
+  for index in 0..contract.output_count {
+    let mut output = std::ptr::null_mut();
+    super::napi_status("napi_get_element(COM sink output)", unsafe {
+      napi::sys::napi_get_element(env, value, (index + prefix) as u32, &mut output)
+    })?;
+    outputs.push(callback_com_value(env, output)?);
+  }
+  Ok(dynwinrt::com::SinkCallbackResult {
+    hresult,
+    return_value,
+    outputs,
+  })
+}
+
+fn callback_com_value(
+  env: napi::sys::napi_env,
+  value: napi::sys::napi_value,
+) -> napi::Result<dynwinrt::com::Value> {
+  let value = unsafe { <&DynWinRTValue>::from_napi_value(env, value) }?;
+  let value = value.to_com_value()?;
+  Ok(match value {
+    dynwinrt::com::Value::Buffer(buffer) => {
+      let count = buffer.count();
+      dynwinrt::com::Value::Buffer(dynwinrt::com::ComBufferValue::from_owned_bytes(
+        buffer.copy_bytes().map_err(com_error)?,
+        count,
+      ))
+    }
+    value => value,
+  })
+}
+
+fn create_iunknown_sink(
+  interface: &DynComInterface,
+  callback: Function<'static, Vec<DynWinRTValue>, ()>,
+) -> napi::Result<DynWinRTValue> {
+  create_com_object_value(vec![interface], callback, false)
+}
+
+fn create_com_object_value(
+  interfaces: Vec<&DynComInterface>,
+  callback: Function<'static, Vec<DynWinRTValue>, ()>,
+  include_iid: bool,
+) -> napi::Result<DynWinRTValue> {
+  if interfaces.is_empty() {
+    return Err(napi::Error::from_reason(
+      "COM object requires at least one interface",
+    ));
+  }
+  let owner_thread = std::thread::current().id();
+  let env = callback.value().env;
+  let raw_callback = napi::JsValue::raw(&callback);
+  let (callback_ref, async_context, finalizer) =
+    super::create_direct_callback_resources(env, raw_callback, b"dynwinrt.comSink")?;
+  let tsfn = super::managed_tsfn::ManagedTsfn::create(
+    env,
+    raw_callback,
+    1,
+    false,
+    |(), _env| Ok(Vec::new()),
+    Some(finalizer),
+  )?;
+  let direct = std::sync::Arc::new(super::DirectJsCallback {
+    env,
+    callback_ref,
+    async_context,
+    lifecycle: tsfn.lifecycle(),
+  });
+  let sink_callback: dynwinrt::com::SinkCallback =
+    std::sync::Arc::new(move |iid, vtable_index, values, output| {
+      let _keep_callback_resources_alive = &tsfn;
+      if std::thread::current().id() != owner_thread {
+        return dynwinrt::com::SinkCallbackResult::hresult(windows::core::HRESULT(
+          0x8001010Eu32 as i32,
+        ));
+      }
+      let js_values = values
+        .iter()
+        .cloned()
+        .map(|value| DynWinRTValue::from_com_value(value, dynwinrt::com::PointerOutputKind::None))
+        .collect::<Vec<_>>();
+      let result = super::invoke_direct_js_callback(
+        &direct,
+        |env| {
+          let mut slot = std::ptr::null_mut();
+          super::napi_status("napi_create_uint32(COM sink slot)", unsafe {
+            napi::sys::napi_create_uint32(env, vtable_index as u32, &mut slot)
+          })?;
+          let mut args = Vec::with_capacity(js_values.len() + 1);
+          if include_iid {
+            args.push(unsafe { String::to_napi_value(env, format!("{iid:?}")) }?);
+          }
+          args.push(slot);
+          for value in js_values {
+            args.push(unsafe { DynWinRTValue::to_napi_value(env, value) }?);
+          }
+          Ok(args)
+        },
+        |env, value| parse_sink_callback_result(env, value, output),
+      );
+      result.unwrap_or_else(|error| {
+        eprintln!("[dynwinrt] COM sink callback failed: {error}");
+        dynwinrt::com::SinkCallbackResult::hresult(windows::core::HRESULT(0x80004005u32 as i32))
+      })
+    });
+
+  let interfaces = interfaces
+    .into_iter()
+    .map(|interface| interface.0.clone())
+    .collect::<Vec<_>>();
+  let result = if include_iid {
+    dynwinrt::com::create_object(&interfaces, sink_callback)
+  } else {
+    dynwinrt::com::create_sink(&interfaces[0], sink_callback)
+  };
+  result
+    .map(|value| DynWinRTValue::new(dynwinrt::WinRTValue::Object(value)))
+    .map_err(|error| napi::Error::from_reason(error.message()))
 }
 
 fn bind_com_result(result: dynwinrt::Result<dynwinrt::WinRTValue>) -> napi::Result<DynWinRTValue> {
@@ -1077,6 +1294,13 @@ fn take_bstr(value: &mut DynWinRTValue) -> napi::Result<String> {
   String::try_from(&value).map_err(|error| napi::Error::from_reason(error.to_string()))
 }
 
+fn copy_callback_bstr(value: &DynWinRTValue) -> napi::Result<Option<String>> {
+  let dynwinrt::com::Value::Bstr(value) = value.to_com_value()? else {
+    return Err(napi::Error::from_reason("COM callback value is not a BSTR"));
+  };
+  Ok(value.as_deref().map(str::to_owned))
+}
+
 fn validate_pointer_owner(value: &DynWinRTValue) -> napi::Result<()> {
   if let Some(owner) = &value.1 {
     owner.validate()?;
@@ -1734,6 +1958,16 @@ pub struct DynComInterface(dynwinrt::com::Interface);
 
 #[napi]
 impl DynComInterface {
+  #[napi]
+  pub fn add_base_interface(&self, iid: &WinGUID) -> napi::Result<Self> {
+    self
+      .0
+      .clone()
+      .add_base_interface(iid.0)
+      .map(Self)
+      .map_err(com_error)
+  }
+
   #[napi]
   pub fn add_method(&self, name: String, signature: &DynComMethodSig) -> Self {
     Self(self.0.clone().add_method(&name, signature.0.clone()))
@@ -3877,6 +4111,28 @@ impl DynCom {
     initialize_com(apartment_type)
   }
 
+  #[napi(js_name = "createIUnknownSink")]
+  pub fn create_iunknown_sink(
+    interface: &DynComInterface,
+    #[napi(
+      ts_arg_type = "(vtableIndex: number, ...args: DynWinRtValue[]) => number | [number, ...DynWinRtValue[]]"
+    )]
+    callback: Function<'static, Vec<DynWinRTValue>, ()>,
+  ) -> napi::Result<DynWinRTValue> {
+    self::create_iunknown_sink(interface, callback)
+  }
+
+  #[napi(js_name = "createComObject")]
+  pub fn create_com_object(
+    interfaces: Vec<&DynComInterface>,
+    #[napi(
+      ts_arg_type = "(interfaceIid: string, vtableIndex: number, ...args: DynWinRtValue[]) => number | [number, ...DynWinRtValue[]]"
+    )]
+    callback: Function<'static, Vec<DynWinRTValue>, ()>,
+  ) -> napi::Result<DynWinRTValue> {
+    create_com_object_value(interfaces, callback, true)
+  }
+
   #[napi(js_name = "registerIUnknownInterface")]
   pub fn register_iunknown_interface(name: String, iid: &WinGUID) -> DynComInterface {
     DynComInterface(dynwinrt::com::register_interface(
@@ -4001,6 +4257,47 @@ impl DynCom {
   #[napi]
   pub fn pointer_type() -> DynComType {
     DynComType(dynwinrt::com::Type::pointer())
+  }
+
+  #[napi]
+  pub fn copy_callback_wide_string(value: &DynWinRTValue) -> napi::Result<Option<String>> {
+    let pointer = callback_string_pointer(value)?;
+    if pointer.is_null() {
+      return Ok(None);
+    }
+    unsafe { windows::core::PCWSTR(pointer.cast()).to_string() }
+      .map(Some)
+      .map_err(|_| napi::Error::from_reason("COM callback string is not valid UTF-16"))
+  }
+
+  #[napi]
+  pub fn copy_callback_ansi_string(value: &DynWinRTValue) -> napi::Result<Option<String>> {
+    let pointer = callback_string_pointer(value)?;
+    if pointer.is_null() {
+      return Ok(None);
+    }
+    Ok(Some(
+      unsafe { std::ffi::CStr::from_ptr(pointer.cast()) }
+        .to_string_lossy()
+        .into_owned(),
+    ))
+  }
+
+  #[napi]
+  pub fn copy_callback_guid(value: &DynWinRTValue) -> napi::Result<String> {
+    let pointer = callback_string_pointer(value)?;
+    if pointer.is_null() {
+      return Err(napi::Error::from_reason(
+        "COM callback GUID pointer is null",
+      ));
+    }
+    let value = unsafe { pointer.cast::<windows::core::GUID>().read_unaligned() };
+    Ok(format!("{value:?}"))
+  }
+
+  #[napi]
+  pub fn copy_callback_bstr(value: &DynWinRTValue) -> napi::Result<Option<String>> {
+    self::copy_callback_bstr(value)
   }
 
   #[napi]

@@ -78,10 +78,12 @@ fn project_legacy_interface(
         name: meta.interface.name.clone(),
         namespace: meta.interface.namespace.clone(),
         iid: meta.interface.iid.clone(),
+        base_iids: meta.base_iids.clone(),
         is_iunknown_rooted: meta.is_iunknown_rooted,
         methods,
         activation,
         referenced_enums,
+        sink: None,
     };
     Ok(projected)
 }
@@ -851,6 +853,7 @@ mod tests {
             base_offset: 3,
             is_iunknown_rooted: true,
             base_chain: vec!["IUnknown".into()],
+            base_iids: Vec::new(),
             coclass_clsid: None,
             coclass_name: None,
             own_methods_start: 3,

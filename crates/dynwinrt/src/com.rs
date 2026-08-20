@@ -2,10 +2,13 @@
 // Licensed under the MIT License.
 
 use core::ffi::c_void;
+#[cfg(test)]
+use std::cell::Cell;
 use std::{
     cell::{RefCell, UnsafeCell},
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     mem::{align_of, size_of},
+    panic::{AssertUnwindSafe, catch_unwind},
     sync::{Arc, Mutex, MutexGuard, RwLock, TryLockError},
 };
 
@@ -13,7 +16,7 @@ use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, COINIT_MULTITHREADED, CoCreateInstance,
     CoGetClassObject, CoGetMalloc, CoInitializeEx, CoUninitialize,
 };
-use windows_core::{GUID, IUnknown, Interface as WindowsInterface, PCWSTR};
+use windows_core::{GUID, HRESULT, IInspectable, IUnknown, Interface as WindowsInterface, PCWSTR};
 
 use crate::{
     MetadataTable, TypeHandle, TypeKind, WinRTValue,
@@ -1123,6 +1126,10 @@ impl ComBufferValue {
         }
     }
 
+    pub fn from_owned_bytes(bytes: Vec<u8>, count: usize) -> Self {
+        Self::owned(bytes, count)
+    }
+
     fn owned_com(values: Vec<WinRTValue>) -> Self {
         Self {
             storage: ComBufferStorage::OwnedCom { values },
@@ -1189,6 +1196,7 @@ impl ComBufferValue {
             ComBufferStorage::Owned { bytes, .. } | ComBufferStorage::OwnedInput { bytes, .. } => {
                 Ok(Some(bytes.clone()))
             }
+
             ComBufferStorage::CallerOutput {
                 blocks, byte_len, ..
             } => {
@@ -1208,6 +1216,28 @@ impl ComBufferValue {
             | ComBufferStorage::OwnedCom { .. }
             | ComBufferStorage::OwnedStrings { .. }
             | ComBufferStorage::OwnedVariants { .. } => Ok(None),
+        }
+    }
+
+    pub fn copy_bytes(&self) -> result::Result<Vec<u8>> {
+        if let Some(bytes) = self.snapshot_bytes()? {
+            return Ok(bytes);
+        }
+        match &self.storage {
+            ComBufferStorage::Borrowed { ptr, byte_len, .. } => {
+                if *byte_len == 0 {
+                    Ok(Vec::new())
+                } else if ptr.is_null() {
+                    Err(invalid_argument(
+                        "non-empty borrowed COM buffer has a null pointer",
+                    ))
+                } else {
+                    Ok(unsafe { std::slice::from_raw_parts(*ptr, *byte_len) }.to_vec())
+                }
+            }
+            _ => Err(invalid_argument(
+                "COM buffer representation cannot be copied as contiguous bytes",
+            )),
         }
     }
 
@@ -1385,6 +1415,7 @@ impl BufferElementPlan {
                         | TypeKind::F32
                         | TypeKind::F64
                         | TypeKind::Guid
+                        | TypeKind::HString
                         | TypeKind::HResult
                         | TypeKind::Enum(_)
                 ) =>
@@ -1671,25 +1702,25 @@ impl Type {
     fn supports_direct_return(&self) -> bool {
         matches!(self.abi, ParameterType::Pointer)
             || matches!(
-                &self.abi,
-                ParameterType::WinRT(typ)
-                    if matches!(
-                        typ.kind(),
-                        TypeKind::Bool
-                            | TypeKind::I8
-                            | TypeKind::U8
-                            | TypeKind::I16
-                            | TypeKind::U16
-                            | TypeKind::Char16
-                            | TypeKind::I32
-                            | TypeKind::U32
-                            | TypeKind::I64
-                            | TypeKind::U64
-                            | TypeKind::F32
-                            | TypeKind::F64
-                            | TypeKind::HResult
-                            | TypeKind::Enum(_)
-                    )
+            &self.abi,
+            ParameterType::WinRT(typ)
+                if matches!(
+                    typ.kind(),
+                    TypeKind::Bool
+                        | TypeKind::I8
+                        | TypeKind::U8
+                        | TypeKind::I16
+                        | TypeKind::U16
+                        | TypeKind::Char16
+                        | TypeKind::I32
+                        | TypeKind::U32
+                        | TypeKind::I64
+                        | TypeKind::U64
+                        | TypeKind::F32
+                        | TypeKind::F64
+                        | TypeKind::HResult
+                        | TypeKind::Enum(_)
+                )
             )
     }
 }
@@ -1968,6 +1999,1089 @@ enum ComReturnPlan {
     DispatchInvokeHResult(CapturedHResultPlan),
     Void,
     Direct(Type),
+}
+
+#[derive(Debug, Clone)]
+struct CallbackMethodPlan {
+    // Preserve the complete validated COM contract. Static thunks and dynamic
+    // libffi closures are lowering choices over the same plan.
+    parameters: Vec<ComParameterSpec>,
+    return_plan: ComReturnPlan,
+}
+
+struct PreparedCallback {
+    output_count: usize,
+    caller_capacities: Vec<Option<usize>>,
+}
+
+impl PreparedCallback {
+    fn caller_capacity(&self, buffer_param: usize) -> Result<usize, HRESULT> {
+        self.caller_capacities
+            .get(buffer_param)
+            .copied()
+            .flatten()
+            .ok_or(SINK_E_FAIL)
+    }
+}
+
+enum PreparedNativeCallbackOutput {
+    Bool(u8),
+    I8(i8),
+    U8(u8),
+    I16(i16),
+    U16(u16),
+    I32(i32),
+    U32(u32),
+    I64(i64),
+    U64(u64),
+    F32(f32),
+    F64(f64),
+    Guid(GUID),
+    Pointer(*mut c_void),
+    Bstr(Option<windows_core::BSTR>),
+    HString(windows_core::HSTRING),
+    Interface(Option<IUnknown>),
+    NativeStruct(Vec<u8>),
+}
+
+impl PreparedNativeCallbackOutput {
+    unsafe fn commit(self, target: *mut c_void) {
+        match self {
+            Self::Bool(value) | Self::U8(value) => unsafe { target.cast::<u8>().write(value) },
+            Self::I8(value) => unsafe { target.cast::<i8>().write(value) },
+            Self::I16(value) => unsafe { target.cast::<i16>().write(value) },
+            Self::U16(value) => unsafe { target.cast::<u16>().write(value) },
+            Self::I32(value) => unsafe { target.cast::<i32>().write(value) },
+            Self::U32(value) => unsafe { target.cast::<u32>().write(value) },
+            Self::I64(value) => unsafe { target.cast::<i64>().write(value) },
+            Self::U64(value) => unsafe { target.cast::<u64>().write(value) },
+            Self::F32(value) => unsafe { target.cast::<f32>().write(value) },
+            Self::F64(value) => unsafe { target.cast::<f64>().write(value) },
+            Self::Guid(value) => unsafe { target.cast::<GUID>().write(value) },
+            Self::Pointer(value) => unsafe { target.cast::<*mut c_void>().write(value) },
+            Self::Bstr(value) => unsafe {
+                target.cast::<*mut u16>().write(
+                    value
+                        .map(|value| value.into_raw().cast_mut())
+                        .unwrap_or(std::ptr::null_mut()),
+                )
+            },
+            Self::HString(value) => unsafe { target.cast::<windows_core::HSTRING>().write(value) },
+            Self::Interface(value) => unsafe {
+                target.cast::<*mut c_void>().write(
+                    value
+                        .map(IUnknown::into_raw)
+                        .unwrap_or(std::ptr::null_mut()),
+                )
+            },
+            Self::NativeStruct(bytes) => unsafe {
+                std::ptr::copy_nonoverlapping(bytes.as_ptr(), target.cast::<u8>(), bytes.len())
+            },
+        }
+    }
+}
+
+enum PreparedCallbackWrite {
+    Native {
+        target: *mut c_void,
+        value: PreparedNativeCallbackOutput,
+        replace_bstr: bool,
+    },
+    CallerBuffer {
+        target: *mut u8,
+        bytes: Vec<u8>,
+        actual: Option<(*mut c_void, PreparedNativeCallbackOutput)>,
+    },
+    CalleeBuffer {
+        target: *mut *mut c_void,
+        allocation: BufferAllocationGuard,
+        count_target: *mut c_void,
+        count: PreparedNativeCallbackOutput,
+    },
+}
+
+impl PreparedCallbackWrite {
+    unsafe fn commit(self) {
+        match self {
+            Self::Native {
+                target,
+                value,
+                replace_bstr,
+            } => {
+                if replace_bstr {
+                    let current = unsafe { target.cast::<*mut u16>().read() };
+                    if !current.is_null() {
+                        drop(unsafe { windows_core::BSTR::from_raw(current.cast_const()) });
+                    }
+                }
+                unsafe { value.commit(target) };
+            }
+            Self::CallerBuffer {
+                target,
+                bytes,
+                actual,
+            } => {
+                if !bytes.is_empty() {
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(bytes.as_ptr(), target, bytes.len());
+                    }
+                }
+                if let Some((target, actual)) = actual {
+                    unsafe { actual.commit(target) };
+                }
+            }
+            Self::CalleeBuffer {
+                target,
+                allocation,
+                count_target,
+                count,
+            } => {
+                unsafe { target.write(allocation.into_raw()) };
+                unsafe { count.commit(count_target) };
+            }
+        }
+    }
+}
+
+struct PreparedCallbackWrites(Vec<PreparedCallbackWrite>);
+
+impl PreparedCallbackWrites {
+    unsafe fn commit(self) {
+        for write in self.0 {
+            unsafe { write.commit() };
+        }
+    }
+}
+
+impl CallbackMethodPlan {
+    fn new(parameters: Vec<ComParameterSpec>, return_plan: ComReturnPlan) -> Self {
+        Self {
+            parameters,
+            return_plan,
+        }
+    }
+
+    fn static_shape(&self) -> Option<StaticCallbackShape> {
+        let interface_input = |parameter: &ComParameterSpec| {
+            parameter.direction == ComParameterDirection::In
+                && parameter.buffer.is_none()
+                && matches!(
+                    &parameter.typ.abi,
+                    ParameterType::WinRT(typ)
+                        if matches!(
+                            typ.kind(),
+                            TypeKind::Object
+                                | TypeKind::Interface(_)
+                                | TypeKind::RuntimeClass(_)
+                        )
+                )
+        };
+        let i32_output = |parameter: &ComParameterSpec| {
+            parameter.direction == ComParameterDirection::Out
+                && parameter.buffer.is_none()
+                && matches!(
+                    &parameter.typ.abi,
+                    ParameterType::WinRT(typ) if matches!(typ.kind(), TypeKind::I32)
+                )
+        };
+        let hresult = matches!(
+            self.return_plan,
+            ComReturnPlan::HResult | ComReturnPlan::SemanticHResult
+        );
+        if !hresult {
+            None
+        } else {
+            match self.parameters.as_slice() {
+                [first] if interface_input(first) => Some(StaticCallbackShape::InterfaceIn1),
+                [first, second] if interface_input(first) && interface_input(second) => {
+                    Some(StaticCallbackShape::InterfaceIn2)
+                }
+                [first, second, output]
+                    if interface_input(first) && interface_input(second) && i32_output(output) =>
+                {
+                    Some(StaticCallbackShape::InterfaceIn2OutI32)
+                }
+                _ => None,
+            }
+        }
+    }
+
+    fn libffi_signature(&self) -> Option<crate::native_callback::CallbackSignature> {
+        let parameters = self
+            .parameters
+            .iter()
+            .map(|parameter| {
+                if let Some(buffer) = &parameter.buffer {
+                    return matches!(
+                        (&parameter.direction, &buffer.relation, &buffer.element.kind),
+                        (
+                            ComParameterDirection::InputBuffer,
+                            ComBufferRelation::Input { .. },
+                            BufferElementKind::Plain
+                        ) | (
+                            ComParameterDirection::CallerOutputBuffer,
+                            ComBufferRelation::CallerCapacity {
+                                two_call: false,
+                                ..
+                            },
+                            BufferElementKind::Plain
+                        ) | (
+                            ComParameterDirection::CalleeAllocatedBuffer,
+                            ComBufferRelation::CalleeAllocated {
+                                allocator: BufferAllocator::CoTaskMem,
+                                ..
+                            },
+                            BufferElementKind::Plain
+                        )
+                    )
+                    .then_some((
+                        crate::native_callback::CallbackAbiType::Pointer,
+                        libffi::middle::Type::pointer(),
+                    ));
+                }
+                match parameter.direction {
+                    ComParameterDirection::In => {
+                        let abi = Self::callback_abi_type(&parameter.typ.abi)?;
+                        Some((abi, parameter.typ.abi.libffi_type()))
+                    }
+                    ComParameterDirection::Out
+                        if Self::supports_callback_output(&parameter.typ) =>
+                    {
+                        Some((
+                            crate::native_callback::CallbackAbiType::Pointer,
+                            libffi::middle::Type::pointer(),
+                        ))
+                    }
+                    ComParameterDirection::InOut
+                        if Self::supports_callback_inout(&parameter.typ) =>
+                    {
+                        Some((
+                            crate::native_callback::CallbackAbiType::Pointer,
+                            libffi::middle::Type::pointer(),
+                        ))
+                    }
+                    _ => None,
+                }
+            })
+            .collect::<Option<Vec<_>>>()?;
+        match &self.return_plan {
+            ComReturnPlan::HResult | ComReturnPlan::SemanticHResult => Some(
+                crate::native_callback::CallbackSignature::hresult(parameters),
+            ),
+            ComReturnPlan::Void => {
+                Some(crate::native_callback::CallbackSignature::void(parameters))
+            }
+            ComReturnPlan::Direct(typ) => {
+                let abi = Self::callback_abi_type(&typ.abi)?;
+                Some(crate::native_callback::CallbackSignature::direct(
+                    parameters,
+                    (abi, typ.abi.libffi_type()),
+                ))
+            }
+            ComReturnPlan::EnumeratorNextHResult | ComReturnPlan::DispatchInvokeHResult(_) => None,
+        }
+    }
+
+    fn callback_contract(&self, output_count: usize) -> CallbackContract {
+        match self.return_plan {
+            ComReturnPlan::HResult | ComReturnPlan::SemanticHResult => {
+                CallbackContract::hresult(output_count)
+            }
+            ComReturnPlan::Void => CallbackContract::void(output_count),
+            ComReturnPlan::Direct(_) => CallbackContract::direct(output_count),
+            ComReturnPlan::EnumeratorNextHResult | ComReturnPlan::DispatchInvokeHResult(_) => {
+                unreachable!("unsupported callback return plan was not lowered")
+            }
+        }
+    }
+
+    fn callback_abi_type(typ: &ParameterType) -> Option<crate::native_callback::CallbackAbiType> {
+        match typ {
+            ParameterType::WinRT(typ) => match typ.kind() {
+                TypeKind::I8 => Some(crate::native_callback::CallbackAbiType::I8),
+                TypeKind::Bool | TypeKind::U8 => Some(crate::native_callback::CallbackAbiType::U8),
+                TypeKind::I16 => Some(crate::native_callback::CallbackAbiType::I16),
+                TypeKind::U16 | TypeKind::Char16 => {
+                    Some(crate::native_callback::CallbackAbiType::U16)
+                }
+                TypeKind::I32 | TypeKind::HResult | TypeKind::Enum(_) => {
+                    Some(crate::native_callback::CallbackAbiType::I32)
+                }
+                TypeKind::U32 => Some(crate::native_callback::CallbackAbiType::U32),
+                TypeKind::I64 => Some(crate::native_callback::CallbackAbiType::I64),
+                TypeKind::U64 => Some(crate::native_callback::CallbackAbiType::U64),
+                TypeKind::F32 => Some(crate::native_callback::CallbackAbiType::F32),
+                TypeKind::F64 => Some(crate::native_callback::CallbackAbiType::F64),
+                TypeKind::Guid => Some(crate::native_callback::CallbackAbiType::Guid),
+                TypeKind::HString
+                | TypeKind::Object
+                | TypeKind::Interface(_)
+                | TypeKind::Delegate(_)
+                | TypeKind::RuntimeClass(_)
+                | TypeKind::Parameterized(_) => {
+                    Some(crate::native_callback::CallbackAbiType::Pointer)
+                }
+                _ => None,
+            },
+            ParameterType::Pointer
+            | ParameterType::CoTaskMemWideString
+            | ParameterType::Bstr { .. }
+            | ParameterType::NativeStructPointer { .. }
+            | ParameterType::NativeUnionPointer(_)
+            | ParameterType::Variant
+            | ParameterType::SafeArray { .. }
+            | ParameterType::PropVariant
+            | ParameterType::DispatchParams
+            | ParameterType::ExcepInfo
+            | ParameterType::StatStg => Some(crate::native_callback::CallbackAbiType::Pointer),
+            ParameterType::NativeStruct(layout) => {
+                Some(crate::native_callback::CallbackAbiType::NativeStruct(
+                    format!("{layout:?}"),
+                    layout.size(),
+                ))
+            }
+            ParameterType::VariantByValue => None,
+        }
+    }
+
+    fn supports_callback_output(typ: &Type) -> bool {
+        matches!(
+            &typ.abi,
+            ParameterType::Pointer | ParameterType::Bstr { .. } | ParameterType::NativeStruct(_)
+        ) || matches!(
+                &typ.abi,
+                ParameterType::WinRT(value)
+                if matches!(
+                    value.kind(),
+                    TypeKind::Bool
+                        | TypeKind::I8
+                        | TypeKind::U8
+                        | TypeKind::I16
+                        | TypeKind::U16
+                        | TypeKind::Char16
+                        | TypeKind::I32
+                        | TypeKind::U32
+                        | TypeKind::I64
+                        | TypeKind::U64
+                        | TypeKind::F32
+                        | TypeKind::F64
+                        | TypeKind::Guid
+                        | TypeKind::HString
+                        | TypeKind::HResult
+                        | TypeKind::Enum(_)
+                        | TypeKind::Object
+                        | TypeKind::Interface(_)
+                        | TypeKind::Delegate(_)
+                        | TypeKind::RuntimeClass(_)
+                        | TypeKind::Parameterized(_)
+                )
+        )
+    }
+
+    fn supports_callback_inout(typ: &Type) -> bool {
+        matches!(
+            &typ.abi,
+            ParameterType::Pointer | ParameterType::Bstr { .. } | ParameterType::NativeStruct(_)
+        ) || matches!(
+            &typ.abi,
+            ParameterType::WinRT(value)
+                if matches!(
+                    value.kind(),
+                    TypeKind::Bool
+                        | TypeKind::I8
+                        | TypeKind::U8
+                        | TypeKind::I16
+                        | TypeKind::U16
+                        | TypeKind::Char16
+                        | TypeKind::I32
+                        | TypeKind::U32
+                        | TypeKind::I64
+                        | TypeKind::U64
+                        | TypeKind::F32
+                        | TypeKind::F64
+                        | TypeKind::Guid
+                        | TypeKind::HResult
+                        | TypeKind::Enum(_)
+                )
+        )
+    }
+
+    fn callback_hidden_params(&self) -> BTreeSet<usize> {
+        self.parameters
+            .iter()
+            .filter_map(|parameter| parameter.buffer.as_ref())
+            .flat_map(|buffer| {
+                let (first, second) = match &buffer.relation {
+                    ComBufferRelation::Input {
+                        count_param,
+                        actual_length_param,
+                        ..
+                    } => (Some(*count_param), *actual_length_param),
+                    ComBufferRelation::CallerCapacity {
+                        actual_length_param,
+                        ..
+                    } => (*actual_length_param, None),
+                    ComBufferRelation::EnumeratorNext { fetched_param, .. } => {
+                        (Some(*fetched_param), None)
+                    }
+                    ComBufferRelation::CalleeAllocated { count_param, .. } => {
+                        (Some(*count_param), None)
+                    }
+                };
+                first.into_iter().chain(second)
+            })
+            .collect()
+    }
+
+    unsafe fn prepare_callback_outputs(
+        &self,
+        args: *const *const c_void,
+    ) -> Result<PreparedCallback, HRESULT> {
+        let hidden = self.callback_hidden_params();
+        let mut prepared = PreparedCallback {
+            output_count: 0,
+            caller_capacities: vec![None; self.parameters.len()],
+        };
+        for (index, parameter) in self.parameters.iter().enumerate() {
+            if let Some(buffer) = &parameter.buffer {
+                match &buffer.relation {
+                    ComBufferRelation::Input { .. } => continue,
+                    ComBufferRelation::CallerCapacity {
+                        capacity_param,
+                        actual_length_param,
+                        unit,
+                        two_call: false,
+                    } if parameter.direction == ComParameterDirection::CallerOutputBuffer
+                        && matches!(buffer.element.kind, BufferElementKind::Plain) =>
+                    {
+                        let capacity_value =
+                            unsafe { self.read_callback_parameter_input(args, *capacity_param)? };
+                        let capacity =
+                            count_from_value(&capacity_value).map_err(|_| SINK_E_FAIL)?;
+                        prepared.caller_capacities[index] = Some(capacity);
+                        let byte_len = match unit {
+                            BufferCountUnit::Bytes => capacity,
+                            BufferCountUnit::Elements => capacity
+                                .checked_mul(buffer.element.size)
+                                .ok_or(SINK_E_FAIL)?,
+                        };
+                        let target = unsafe { *(*args.add(index + 1)).cast::<*mut u8>() };
+                        if byte_len > 0 && target.is_null() {
+                            return Err(SINK_E_POINTER);
+                        }
+                        if byte_len > 0 {
+                            unsafe { std::ptr::write_bytes(target, 0, byte_len) };
+                        }
+                        if let Some(actual_index) = actual_length_param {
+                            let actual =
+                                unsafe { *(*args.add(*actual_index + 1)).cast::<*mut c_void>() };
+                            if actual.is_null() {
+                                if self.parameters[*actual_index].direction
+                                    != ComParameterDirection::OptionalOut
+                                {
+                                    return Err(SINK_E_POINTER);
+                                }
+                            } else {
+                                let size =
+                                    Self::callback_output_size(&self.parameters[*actual_index].typ)
+                                        .ok_or(SINK_E_FAIL)?;
+                                unsafe { std::ptr::write_bytes(actual, 0, size) };
+                            }
+                        }
+                        prepared.output_count += 1;
+                        continue;
+                    }
+                    ComBufferRelation::CalleeAllocated {
+                        count_param,
+                        allocator: BufferAllocator::CoTaskMem,
+                        ..
+                    } if parameter.direction == ComParameterDirection::CalleeAllocatedBuffer
+                        && matches!(buffer.element.kind, BufferElementKind::Plain) =>
+                    {
+                        let target = unsafe { *(*args.add(index + 1)).cast::<*mut *mut c_void>() };
+                        if target.is_null() {
+                            return Err(SINK_E_POINTER);
+                        }
+                        unsafe { target.write(std::ptr::null_mut()) };
+                        let count_target =
+                            unsafe { *(*args.add(*count_param + 1)).cast::<*mut c_void>() };
+                        if count_target.is_null() {
+                            return Err(SINK_E_POINTER);
+                        }
+                        let size = Self::callback_output_size(&self.parameters[*count_param].typ)
+                            .ok_or(SINK_E_FAIL)?;
+                        unsafe { std::ptr::write_bytes(count_target, 0, size) };
+                        prepared.output_count += 1;
+                        continue;
+                    }
+                    _ => return Err(SINK_E_FAIL),
+                }
+            }
+            if hidden.contains(&index) {
+                continue;
+            }
+            if !matches!(
+                parameter.direction,
+                ComParameterDirection::Out | ComParameterDirection::InOut
+            ) {
+                continue;
+            }
+            let target = unsafe { *(*args.add(index + 1)).cast::<*mut c_void>() };
+            if target.is_null() {
+                return Err(SINK_E_POINTER);
+            }
+            let size = Self::callback_output_size(&parameter.typ).ok_or(SINK_E_FAIL)?;
+            if parameter.direction == ComParameterDirection::Out {
+                unsafe { std::ptr::write_bytes(target, 0, size) };
+            }
+            prepared.output_count += 1;
+        }
+        Ok(prepared)
+    }
+
+    fn callback_output_size(typ: &Type) -> Option<usize> {
+        match &typ.abi {
+            ParameterType::WinRT(typ) => match typ.kind() {
+                TypeKind::Bool | TypeKind::I8 | TypeKind::U8 => Some(1),
+                TypeKind::I16 | TypeKind::U16 | TypeKind::Char16 => Some(2),
+                TypeKind::I32
+                | TypeKind::U32
+                | TypeKind::F32
+                | TypeKind::HResult
+                | TypeKind::Enum(_) => Some(4),
+                TypeKind::I64 | TypeKind::U64 | TypeKind::F64 => Some(8),
+                TypeKind::Guid => Some(size_of::<GUID>()),
+                TypeKind::Object
+                | TypeKind::Interface(_)
+                | TypeKind::Delegate(_)
+                | TypeKind::RuntimeClass(_)
+                | TypeKind::Parameterized(_) => Some(size_of::<*mut c_void>()),
+                TypeKind::HString => Some(size_of::<*mut c_void>()),
+                _ => None,
+            },
+            ParameterType::Pointer
+            | ParameterType::CoTaskMemWideString
+            | ParameterType::NativeStructPointer { .. }
+            | ParameterType::NativeUnionPointer(_)
+            | ParameterType::Variant
+            | ParameterType::SafeArray { .. }
+            | ParameterType::PropVariant
+            | ParameterType::DispatchParams
+            | ParameterType::ExcepInfo
+            | ParameterType::StatStg => Some(size_of::<*mut c_void>()),
+            ParameterType::Bstr { .. } => Some(size_of::<*mut u16>()),
+            ParameterType::NativeStruct(layout) => Some(layout.size()),
+            _ => None,
+        }
+    }
+
+    unsafe fn callback_inputs(&self, args: *const *const c_void) -> Result<Vec<Value>, HRESULT> {
+        let hidden = self.callback_hidden_params();
+        let mut values = Vec::new();
+        for (index, parameter) in self.parameters.iter().enumerate() {
+            if hidden.contains(&index) {
+                continue;
+            }
+            if let Some(buffer) = &parameter.buffer {
+                if matches!(
+                    parameter.direction,
+                    ComParameterDirection::CallerOutputBuffer
+                        | ComParameterDirection::CalleeAllocatedBuffer
+                ) {
+                    continue;
+                }
+                let ComBufferRelation::Input {
+                    count_param, unit, ..
+                } = &buffer.relation
+                else {
+                    return Err(SINK_E_FAIL);
+                };
+                if !matches!(buffer.element.kind, BufferElementKind::Plain) {
+                    return Err(SINK_E_FAIL);
+                }
+                let count_value =
+                    unsafe { self.read_callback_parameter_input(args, *count_param)? };
+                let count = count_from_value(&count_value).map_err(|_| SINK_E_FAIL)?;
+                let byte_len = match *unit {
+                    BufferCountUnit::Bytes => count,
+                    BufferCountUnit::Elements => {
+                        count.checked_mul(buffer.element.size).ok_or(SINK_E_FAIL)?
+                    }
+                };
+                if byte_len % buffer.element.size != 0 {
+                    return Err(SINK_E_FAIL);
+                }
+                let pointer = unsafe { *(*args.add(index + 1)).cast::<*mut u8>() };
+                if byte_len > 0 && pointer.is_null() {
+                    return Err(SINK_E_POINTER);
+                }
+                let bytes = if byte_len == 0 {
+                    Vec::new()
+                } else {
+                    unsafe { std::slice::from_raw_parts(pointer, byte_len) }.to_vec()
+                };
+                values.push(Value::Buffer(ComBufferValue::owned(
+                    bytes,
+                    byte_len / buffer.element.size,
+                )));
+                continue;
+            }
+            match parameter.direction {
+                ComParameterDirection::In | ComParameterDirection::InOut => {
+                    values.push(unsafe { self.read_callback_parameter_input(args, index)? })
+                }
+                _ => {}
+            }
+        }
+        Ok(values)
+    }
+
+    unsafe fn read_callback_parameter_input(
+        &self,
+        args: *const *const c_void,
+        index: usize,
+    ) -> Result<Value, HRESULT> {
+        let parameter = self.parameters.get(index).ok_or(SINK_E_FAIL)?;
+        let argument = unsafe { *args.add(index + 1) };
+        let value = match parameter.direction {
+            ComParameterDirection::In => argument,
+            ComParameterDirection::InOut => {
+                if argument.is_null() {
+                    return Err(SINK_E_POINTER);
+                }
+                unsafe { *argument.cast::<*const c_void>() }
+            }
+            _ => return Err(SINK_E_FAIL),
+        };
+        unsafe { Self::read_callback_input(&parameter.typ.abi, value) }
+    }
+
+    unsafe fn read_callback_input(
+        typ: &ParameterType,
+        value: *const c_void,
+    ) -> Result<Value, HRESULT> {
+        if value.is_null() {
+            return Err(SINK_E_POINTER);
+        }
+        let winrt = |value| Ok(Value::WinRt(value));
+        match typ {
+            ParameterType::WinRT(typ) => match typ.kind() {
+                TypeKind::Bool => winrt(WinRTValue::Bool(unsafe { *value.cast::<u8>() } != 0)),
+                TypeKind::I8 => winrt(WinRTValue::I8(unsafe { *value.cast::<i8>() })),
+                TypeKind::U8 => winrt(WinRTValue::U8(unsafe { *value.cast::<u8>() })),
+                TypeKind::I16 => winrt(WinRTValue::I16(unsafe { *value.cast::<i16>() })),
+                TypeKind::U16 | TypeKind::Char16 => {
+                    winrt(WinRTValue::U16(unsafe { *value.cast::<u16>() }))
+                }
+                TypeKind::I32 => winrt(WinRTValue::I32(unsafe { *value.cast::<i32>() })),
+                TypeKind::U32 => winrt(WinRTValue::U32(unsafe { *value.cast::<u32>() })),
+                TypeKind::I64 => winrt(WinRTValue::I64(unsafe { *value.cast::<i64>() })),
+                TypeKind::U64 => winrt(WinRTValue::U64(unsafe { *value.cast::<u64>() })),
+                TypeKind::F32 => winrt(WinRTValue::F32(unsafe { *value.cast::<f32>() })),
+                TypeKind::F64 => winrt(WinRTValue::F64(unsafe { *value.cast::<f64>() })),
+                TypeKind::Guid => winrt(WinRTValue::Guid(unsafe { *value.cast::<GUID>() })),
+                TypeKind::HString => {
+                    let raw = unsafe { *value.cast::<*mut c_void>() };
+                    if raw.is_null() {
+                        winrt(WinRTValue::HString(windows_core::HSTRING::new()))
+                    } else {
+                        let value = unsafe {
+                            &*(&raw as *const *mut c_void as *const windows_core::HSTRING)
+                        };
+                        winrt(WinRTValue::HString(value.clone()))
+                    }
+                }
+                TypeKind::HResult => winrt(WinRTValue::HResult(HRESULT(unsafe {
+                    *value.cast::<i32>()
+                }))),
+                TypeKind::Enum(_) => winrt(WinRTValue::Enum {
+                    value: unsafe { *value.cast::<i32>() },
+                    type_handle: typ.clone(),
+                }),
+                TypeKind::Object
+                | TypeKind::Interface(_)
+                | TypeKind::Delegate(_)
+                | TypeKind::RuntimeClass(_)
+                | TypeKind::Parameterized(_) => {
+                    let raw = unsafe { *value.cast::<*mut c_void>() };
+                    if raw.is_null() {
+                        winrt(WinRTValue::Null)
+                    } else {
+                        winrt(WinRTValue::Object(
+                            unsafe { IUnknown::from_raw_borrowed(&raw) }
+                                .ok_or(SINK_E_POINTER)?
+                                .clone(),
+                        ))
+                    }
+                }
+                _ => Err(SINK_E_FAIL),
+            },
+            ParameterType::Pointer
+            | ParameterType::CoTaskMemWideString
+            | ParameterType::NativeUnionPointer(_)
+            | ParameterType::Variant
+            | ParameterType::SafeArray { .. }
+            | ParameterType::PropVariant
+            | ParameterType::DispatchParams
+            | ParameterType::ExcepInfo
+            | ParameterType::StatStg => {
+                winrt(WinRTValue::RawPtr(unsafe { *value.cast::<*mut c_void>() }))
+            }
+            ParameterType::Bstr { nullable } => {
+                let raw = unsafe { *value.cast::<*const u16>() };
+                if raw.is_null() {
+                    if *nullable {
+                        Ok(Value::Bstr(BstrValue::null()))
+                    } else {
+                        Err(SINK_E_POINTER)
+                    }
+                } else {
+                    let value =
+                        std::mem::ManuallyDrop::new(unsafe { windows_core::BSTR::from_raw(raw) });
+                    String::try_from(&*value)
+                        .map(BstrValue::new)
+                        .map(Value::Bstr)
+                        .map_err(|_| SINK_E_FAIL)
+                }
+            }
+            ParameterType::NativeStruct(layout) => {
+                let bytes =
+                    unsafe { std::slice::from_raw_parts(value.cast::<u8>(), layout.size()) }
+                        .to_vec();
+                NativeStructValue::new(layout.clone(), bytes)
+                    .map(Value::NativeStruct)
+                    .map_err(|_| SINK_E_FAIL)
+            }
+            ParameterType::NativeStructPointer { layout, nullable } => {
+                let raw = unsafe { *value.cast::<*mut u8>() };
+                if raw.is_null() {
+                    if *nullable {
+                        Ok(Value::WinRt(WinRTValue::Null))
+                    } else {
+                        Err(SINK_E_POINTER)
+                    }
+                } else {
+                    let bytes = unsafe { std::slice::from_raw_parts(raw, layout.size()) }.to_vec();
+                    NativeStructValue::new(layout.clone(), bytes)
+                        .map(Value::NativeStruct)
+                        .map_err(|_| SINK_E_FAIL)
+                }
+            }
+            ParameterType::VariantByValue => Err(SINK_E_FAIL),
+        }
+    }
+
+    unsafe fn prepare_callback_writes(
+        &self,
+        args: *const *const c_void,
+        outputs: &[Value],
+        prepared: &PreparedCallback,
+    ) -> Result<PreparedCallbackWrites, HRESULT> {
+        let hidden = self.callback_hidden_params();
+        let mut output_index = 0;
+        let mut writes = Vec::with_capacity(outputs.len());
+        for (index, parameter) in self.parameters.iter().enumerate() {
+            if let Some(buffer) = &parameter.buffer {
+                if parameter.direction == ComParameterDirection::InputBuffer {
+                    continue;
+                }
+                let supported = matches!(
+                    (&parameter.direction, &buffer.relation, &buffer.element.kind),
+                    (
+                        ComParameterDirection::CallerOutputBuffer,
+                        ComBufferRelation::CallerCapacity {
+                            two_call: false,
+                            ..
+                        },
+                        BufferElementKind::Plain
+                    ) | (
+                        ComParameterDirection::CalleeAllocatedBuffer,
+                        ComBufferRelation::CalleeAllocated {
+                            allocator: BufferAllocator::CoTaskMem,
+                            ..
+                        },
+                        BufferElementKind::Plain
+                    )
+                );
+                let Some(Value::Buffer(value)) = outputs.get(output_index) else {
+                    return Err(SINK_E_FAIL);
+                };
+                if !supported {
+                    return Err(SINK_E_FAIL);
+                }
+                let bytes = value.copy_bytes().map_err(|_| SINK_E_FAIL)?;
+                match &buffer.relation {
+                    ComBufferRelation::CallerCapacity {
+                        actual_length_param,
+                        unit,
+                        two_call: false,
+                        ..
+                    } if parameter.direction == ComParameterDirection::CallerOutputBuffer => {
+                        let capacity = prepared.caller_capacity(index)?;
+                        let capacity_bytes = match unit {
+                            BufferCountUnit::Bytes => capacity,
+                            BufferCountUnit::Elements => capacity
+                                .checked_mul(buffer.element.size)
+                                .ok_or(SINK_E_FAIL)?,
+                        };
+                        if (actual_length_param.is_none() && bytes.len() != capacity_bytes)
+                            || bytes.len() > capacity_bytes
+                            || (matches!(unit, BufferCountUnit::Elements)
+                                && bytes.len() % buffer.element.size != 0)
+                        {
+                            return Err(SINK_E_FAIL);
+                        }
+                        let target = unsafe { *(*args.add(index + 1)).cast::<*mut u8>() };
+                        if !bytes.is_empty() && target.is_null() {
+                            return Err(SINK_E_POINTER);
+                        }
+                        let actual = if let Some(actual_index) = actual_length_param {
+                            let actual_target =
+                                unsafe { *(*args.add(*actual_index + 1)).cast::<*mut c_void>() };
+                            if actual_target.is_null() {
+                                if self.parameters[*actual_index].direction
+                                    == ComParameterDirection::OptionalOut
+                                {
+                                    None
+                                } else {
+                                    return Err(SINK_E_POINTER);
+                                }
+                            } else {
+                                let actual = match unit {
+                                    BufferCountUnit::Bytes => bytes.len(),
+                                    BufferCountUnit::Elements => bytes.len() / buffer.element.size,
+                                };
+                                let actual = Value::WinRt(
+                                    count_value(&self.parameters[*actual_index].typ.abi, actual)
+                                        .map_err(|_| SINK_E_FAIL)?,
+                                );
+                                Some((
+                                    actual_target,
+                                    Self::prepare_native_callback_output(
+                                        &self.parameters[*actual_index].typ,
+                                        false,
+                                        &actual,
+                                    )?,
+                                ))
+                            }
+                        } else {
+                            None
+                        };
+                        writes.push(PreparedCallbackWrite::CallerBuffer {
+                            target,
+                            bytes,
+                            actual,
+                        });
+                    }
+                    ComBufferRelation::CalleeAllocated {
+                        count_param,
+                        unit,
+                        allocator: BufferAllocator::CoTaskMem,
+                    } if parameter.direction == ComParameterDirection::CalleeAllocatedBuffer => {
+                        if matches!(unit, BufferCountUnit::Elements)
+                            && bytes.len() % buffer.element.size != 0
+                        {
+                            return Err(SINK_E_FAIL);
+                        }
+                        let count = match unit {
+                            BufferCountUnit::Bytes => bytes.len(),
+                            BufferCountUnit::Elements => bytes.len() / buffer.element.size,
+                        };
+                        let count = Value::WinRt(
+                            count_value(&self.parameters[*count_param].typ.abi, count)
+                                .map_err(|_| SINK_E_FAIL)?,
+                        );
+                        let count = Self::prepare_native_callback_output(
+                            &self.parameters[*count_param].typ,
+                            false,
+                            &count,
+                        )?;
+                        let allocation = if bytes.is_empty() {
+                            std::ptr::null_mut()
+                        } else {
+                            callback_co_task_mem_alloc(bytes.len())
+                        };
+                        if !bytes.is_empty() && allocation.is_null() {
+                            return Err(SINK_E_OUTOFMEMORY);
+                        }
+                        let allocation =
+                            BufferAllocationGuard::new(allocation, BufferAllocator::CoTaskMem);
+                        if !bytes.is_empty() {
+                            unsafe {
+                                std::ptr::copy_nonoverlapping(
+                                    bytes.as_ptr(),
+                                    allocation.ptr.cast::<u8>(),
+                                    bytes.len(),
+                                )
+                            };
+                        }
+                        let target = unsafe { *(*args.add(index + 1)).cast::<*mut *mut c_void>() };
+                        if target.is_null() {
+                            return Err(SINK_E_POINTER);
+                        }
+                        let count_target =
+                            unsafe { *(*args.add(*count_param + 1)).cast::<*mut c_void>() };
+                        if count_target.is_null() {
+                            return Err(SINK_E_POINTER);
+                        }
+                        writes.push(PreparedCallbackWrite::CalleeBuffer {
+                            target,
+                            allocation,
+                            count_target,
+                            count,
+                        });
+                    }
+                    _ => return Err(SINK_E_FAIL),
+                }
+                output_index += 1;
+                continue;
+            }
+            if hidden.contains(&index) {
+                continue;
+            }
+            if matches!(
+                parameter.direction,
+                ComParameterDirection::Out | ComParameterDirection::InOut
+            ) {
+                let value = outputs.get(output_index).ok_or(SINK_E_FAIL)?;
+                let target = unsafe { *(*args.add(index + 1)).cast::<*mut c_void>() };
+                if target.is_null() {
+                    return Err(SINK_E_POINTER);
+                }
+                writes.push(PreparedCallbackWrite::Native {
+                    target,
+                    value: Self::prepare_native_callback_output(
+                        &parameter.typ,
+                        parameter.nullable,
+                        value,
+                    )?,
+                    replace_bstr: parameter.direction == ComParameterDirection::InOut
+                        && matches!(&parameter.typ.abi, ParameterType::Bstr { .. }),
+                });
+                output_index += 1;
+            }
+        }
+        if output_index != outputs.len() {
+            return Err(SINK_E_FAIL);
+        }
+        Ok(PreparedCallbackWrites(writes))
+    }
+
+    fn prepare_native_callback_output(
+        typ: &Type,
+        nullable: bool,
+        value: &Value,
+    ) -> Result<PreparedNativeCallbackOutput, HRESULT> {
+        match (&typ.abi, value) {
+            (ParameterType::Pointer, Value::WinRt(WinRTValue::RawPtr(value))) => {
+                Ok(PreparedNativeCallbackOutput::Pointer(*value))
+            }
+            (ParameterType::Bstr { nullable }, Value::Bstr(value)) => match value.as_deref() {
+                Some(value) => Ok(PreparedNativeCallbackOutput::Bstr(Some(
+                    windows_core::BSTR::from(value),
+                ))),
+                None if *nullable => Ok(PreparedNativeCallbackOutput::Bstr(None)),
+                None => Err(SINK_E_FAIL),
+            },
+            (ParameterType::NativeStruct(expected), Value::NativeStruct(value)) => {
+                if value.layout() == expected {
+                    Ok(PreparedNativeCallbackOutput::NativeStruct(
+                        value.bytes().to_vec(),
+                    ))
+                } else {
+                    Err(SINK_E_FAIL)
+                }
+            }
+            (ParameterType::WinRT(typ), Value::WinRt(value)) => match (typ.kind(), value) {
+                (TypeKind::Bool, WinRTValue::Bool(value)) => {
+                    Ok(PreparedNativeCallbackOutput::Bool(u8::from(*value)))
+                }
+                (TypeKind::I8, WinRTValue::I8(value)) => {
+                    Ok(PreparedNativeCallbackOutput::I8(*value))
+                }
+                (TypeKind::U8, WinRTValue::U8(value)) => {
+                    Ok(PreparedNativeCallbackOutput::U8(*value))
+                }
+                (TypeKind::I16, WinRTValue::I16(value)) => {
+                    Ok(PreparedNativeCallbackOutput::I16(*value))
+                }
+                (TypeKind::U16 | TypeKind::Char16, WinRTValue::U16(value)) => {
+                    Ok(PreparedNativeCallbackOutput::U16(*value))
+                }
+                (TypeKind::I32, WinRTValue::I32(value)) => {
+                    Ok(PreparedNativeCallbackOutput::I32(*value))
+                }
+                (TypeKind::U32, WinRTValue::U32(value)) => {
+                    Ok(PreparedNativeCallbackOutput::U32(*value))
+                }
+                (TypeKind::I64, WinRTValue::I64(value)) => {
+                    Ok(PreparedNativeCallbackOutput::I64(*value))
+                }
+                (TypeKind::U64, WinRTValue::U64(value)) => {
+                    Ok(PreparedNativeCallbackOutput::U64(*value))
+                }
+                (TypeKind::F32, WinRTValue::F32(value)) => {
+                    Ok(PreparedNativeCallbackOutput::F32(*value))
+                }
+                (TypeKind::F64, WinRTValue::F64(value)) => {
+                    Ok(PreparedNativeCallbackOutput::F64(*value))
+                }
+                (TypeKind::Guid, WinRTValue::Guid(value)) => {
+                    Ok(PreparedNativeCallbackOutput::Guid(*value))
+                }
+                (TypeKind::HString, WinRTValue::HString(value)) => {
+                    Ok(PreparedNativeCallbackOutput::HString(value.clone()))
+                }
+                (TypeKind::HResult, WinRTValue::HResult(value)) => {
+                    Ok(PreparedNativeCallbackOutput::I32(value.0))
+                }
+                (TypeKind::Enum(_), WinRTValue::Enum { value, type_handle })
+                    if typ == type_handle =>
+                {
+                    Ok(PreparedNativeCallbackOutput::I32(*value))
+                }
+                (
+                    TypeKind::Object
+                    | TypeKind::Interface(_)
+                    | TypeKind::Delegate(_)
+                    | TypeKind::RuntimeClass(_)
+                    | TypeKind::Parameterized(_),
+                    WinRTValue::Object(value),
+                ) => Self::query_callback_interface_output(typ, value)
+                    .map(|value| PreparedNativeCallbackOutput::Interface(Some(value))),
+                (
+                    TypeKind::Object
+                    | TypeKind::Interface(_)
+                    | TypeKind::Delegate(_)
+                    | TypeKind::RuntimeClass(_)
+                    | TypeKind::Parameterized(_),
+                    WinRTValue::Null,
+                ) if nullable => Ok(PreparedNativeCallbackOutput::Interface(None)),
+                _ => Err(SINK_E_FAIL),
+            },
+            _ => Err(SINK_E_FAIL),
+        }
+    }
+
+    fn query_callback_interface_output(
+        typ: &TypeHandle,
+        value: &IUnknown,
+    ) -> Result<IUnknown, HRESULT> {
+        let iid = if typ.kind() == TypeKind::Object {
+            IInspectable::IID
+        } else {
+            typ.iid().ok_or(SINK_E_FAIL)?
+        };
+        let mut result = std::ptr::null_mut();
+        let hresult = unsafe { value.query(&iid, &mut result) };
+        if hresult.is_err() {
+            return Err(hresult);
+        }
+        if result.is_null() {
+            return Err(SINK_E_NOINTERFACE);
+        }
+        Ok(unsafe { IUnknown::from_raw(result) })
+    }
 }
 
 #[derive(Debug)]
@@ -3487,12 +4601,31 @@ impl BufferAllocationGuard {
         }
         self.ptr = std::ptr::null_mut();
     }
+
+    fn into_raw(mut self) -> *mut c_void {
+        let ptr = self.ptr;
+        self.ptr = std::ptr::null_mut();
+        ptr
+    }
 }
 
 impl Drop for BufferAllocationGuard {
     fn drop(&mut self) {
         self.free();
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    static FAIL_NEXT_CALLBACK_COTASKMEM_ALLOC: Cell<bool> = const { Cell::new(false) };
+}
+
+fn callback_co_task_mem_alloc(size: usize) -> *mut c_void {
+    #[cfg(test)]
+    if FAIL_NEXT_CALLBACK_COTASKMEM_ALLOC.with(|fail| fail.replace(false)) {
+        return std::ptr::null_mut();
+    }
+    unsafe { windows::Win32::System::Com::CoTaskMemAlloc(size) }
 }
 
 // Safety: a ComCallPlan is fully built before publication and remains
@@ -3861,6 +4994,8 @@ impl MethodSignature {
                 "EnumeratorNext buffers require the enumerator HRESULT return convention",
             ));
         }
+        let callback_plan =
+            CallbackMethodPlan::new(self.parameters.clone(), self.return_plan.clone());
         let native_parameters = self
             .parameters
             .iter()
@@ -3902,6 +5037,7 @@ impl MethodSignature {
             lower_completed_method(&self.table, vtable_index, native_parameters, native_return);
         Ok(RegisteredMethod {
             plan: ComCallPlan::new(native, self.parameters, self.return_plan),
+            callback_plan,
         })
     }
 }
@@ -4354,14 +5490,24 @@ fn require_direction(
 #[derive(Debug)]
 struct RegisteredMethod {
     plan: ComCallPlan,
+    callback_plan: CallbackMethodPlan,
 }
+
+type RegisteredMethods = BTreeMap<usize, (String, Arc<RegisteredMethod>)>;
+type CallbackInterfaceDefinition = (
+    GUID,
+    Vec<GUID>,
+    Vec<CallbackBackendMethod>,
+    Vec<CallbackMethodPlan>,
+);
 
 #[derive(Debug, Clone)]
 pub struct Interface {
     name: String,
     iid: GUID,
     base_slot: usize,
-    methods: Arc<RwLock<BTreeMap<usize, (String, Arc<RegisteredMethod>)>>>,
+    base_iids: Arc<RwLock<Vec<GUID>>>,
+    methods: Arc<RwLock<RegisteredMethods>>,
 }
 
 impl Interface {
@@ -4382,6 +5528,21 @@ impl Interface {
             .map_or(self.base_slot, |(slot, _)| slot + 1);
         self.add_method_at(vtable_index, name, signature)
             .expect("sequential COM method registration must use a free vtable slot")
+    }
+
+    pub fn add_base_interface(self, iid: GUID) -> result::Result<Self> {
+        if iid == IUnknown::IID || iid == self.iid {
+            return Err(invalid_argument(
+                "COM base interface IID must be distinct from IUnknown and the interface IID",
+            ));
+        }
+        let mut base_iids = self.base_iids.write().unwrap();
+        if base_iids.contains(&iid) {
+            return Err(invalid_argument("COM base interface IID is duplicated"));
+        }
+        base_iids.push(iid);
+        drop(base_iids);
+        Ok(self)
     }
 
     pub fn add_method_at(
@@ -4419,6 +5580,59 @@ impl Interface {
             .unwrap()
             .get(&vtable_index)
             .map(|(_, method)| MethodHandle(Arc::clone(method)))
+    }
+
+    fn callback_backends(&self) -> result::Result<CallbackInterfaceDefinition> {
+        if self.base_slot != InterfaceBase::IUnknown.first_method_slot() {
+            return Err(invalid_argument(
+                "COM sink interfaces must use the IUnknown vtable root",
+            ));
+        }
+        let methods = self.methods.read().unwrap();
+        if methods.is_empty() {
+            return Err(invalid_argument(
+                "COM sink interface must contain at least one method",
+            ));
+        }
+        let mut backends = Vec::with_capacity(methods.len());
+        let mut plans = Vec::with_capacity(methods.len());
+        for (index, (&slot, (name, method))) in methods.iter().enumerate() {
+            if slot != self.base_slot + index {
+                return Err(invalid_argument(format!(
+                    "COM sink method '{name}' uses non-contiguous vtable slot {slot}",
+                )));
+            }
+            let backend = if index < SINK_INTERFACE_IN1_THUNKS.len() {
+                method
+                    .callback_plan
+                    .static_shape()
+                    .map(CallbackBackendMethod::Static)
+                    .or_else(|| {
+                        method
+                            .callback_plan
+                            .libffi_signature()
+                            .map(CallbackBackendMethod::Libffi)
+                    })
+            } else {
+                method
+                    .callback_plan
+                    .libffi_signature()
+                    .map(CallbackBackendMethod::Libffi)
+            };
+            let Some(backend) = backend else {
+                return Err(invalid_argument(format!(
+                    "COM sink method '{name}' at vtable slot {slot} requires a callback ABI that is not supported",
+                )));
+            };
+            backends.push(backend);
+            plans.push(method.callback_plan.clone());
+        }
+        Ok((
+            self.iid,
+            self.base_iids.read().unwrap().clone(),
+            backends,
+            plans,
+        ))
     }
 }
 
@@ -4510,8 +5724,616 @@ pub fn register_interface(
         name: name.to_string(),
         iid,
         base_slot: base.first_method_slot(),
+        base_iids: Arc::new(RwLock::new(Vec::new())),
         methods: Arc::new(RwLock::new(BTreeMap::new())),
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StaticCallbackShape {
+    InterfaceIn1,
+    InterfaceIn2,
+    InterfaceIn2OutI32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CallbackBackendMethod {
+    Static(StaticCallbackShape),
+    Libffi(crate::native_callback::CallbackSignature),
+}
+
+#[derive(Debug, Clone)]
+pub struct SinkCallbackResult {
+    pub hresult: HRESULT,
+    pub return_value: Option<Value>,
+    pub outputs: Vec<Value>,
+}
+
+impl SinkCallbackResult {
+    pub fn hresult(hresult: HRESULT) -> Self {
+        Self {
+            hresult,
+            return_value: None,
+            outputs: Vec::new(),
+        }
+    }
+
+    pub fn with_output(hresult: HRESULT, value: Value) -> Self {
+        Self {
+            hresult,
+            return_value: None,
+            outputs: vec![value],
+        }
+    }
+
+    pub fn with_outputs(hresult: HRESULT, values: Vec<Value>) -> Self {
+        Self {
+            hresult,
+            return_value: None,
+            outputs: values,
+        }
+    }
+
+    pub fn with_return(value: Value) -> Self {
+        Self {
+            hresult: HRESULT(0),
+            return_value: Some(value),
+            outputs: Vec::new(),
+        }
+    }
+
+    pub fn with_return_and_outputs(value: Value, outputs: Vec<Value>) -> Self {
+        Self {
+            hresult: HRESULT(0),
+            return_value: Some(value),
+            outputs,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallbackReturnKind {
+    HResult,
+    Void,
+    Value,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CallbackContract {
+    pub return_kind: CallbackReturnKind,
+    pub output_count: usize,
+}
+
+impl CallbackContract {
+    pub const fn hresult(output_count: usize) -> Self {
+        Self {
+            return_kind: CallbackReturnKind::HResult,
+            output_count,
+        }
+    }
+
+    pub const fn void(output_count: usize) -> Self {
+        Self {
+            return_kind: CallbackReturnKind::Void,
+            output_count,
+        }
+    }
+
+    pub const fn direct(output_count: usize) -> Self {
+        Self {
+            return_kind: CallbackReturnKind::Value,
+            output_count,
+        }
+    }
+}
+
+pub type SinkCallback =
+    Arc<dyn Fn(GUID, usize, &[Value], CallbackContract) -> SinkCallbackResult + Send + Sync>;
+
+const SINK_E_FAIL: HRESULT = HRESULT(0x80004005u32 as i32);
+const SINK_E_NOINTERFACE: HRESULT = HRESULT(0x80004002u32 as i32);
+const SINK_E_OUTOFMEMORY: HRESULT = HRESULT(0x8007000Eu32 as i32);
+const SINK_E_POINTER: HRESULT = HRESULT(0x80004003u32 as i32);
+
+#[repr(C)]
+struct DynamicComInterfaceView {
+    vtable: *const *const c_void,
+    owner: *mut DynamicComSink,
+    interface_index: usize,
+    _vtable_storage: Box<[*const c_void]>,
+}
+
+#[repr(C)]
+struct DynamicComSink {
+    vtable: *const windows_core::IUnknown_Vtbl,
+    ref_count: windows_core::imp::RefCount,
+    callback: SinkCallback,
+    // Each view must keep a stable address after its owner pointer is published.
+    #[allow(clippy::vec_box)]
+    interfaces: Vec<Box<DynamicComInterfaceView>>,
+    iids: Vec<GUID>,
+    iid_map: Vec<(GUID, usize)>,
+    callback_plans: Vec<Vec<CallbackMethodPlan>>,
+}
+
+// The refcount is atomic, the vtable is immutable after publication, and the
+// callback is explicitly Send + Sync. Language bindings may impose a stricter
+// apartment/thread policy before invoking their callback.
+unsafe impl Send for DynamicComSink {}
+unsafe impl Sync for DynamicComSink {}
+
+macro_rules! define_sink_thunks {
+    ($(($index:expr, $one:ident, $two:ident, $two_out:ident)),+ $(,)?) => {
+        $(
+            unsafe extern "system" fn $one(
+                this: *mut c_void,
+                value: *mut c_void,
+            ) -> HRESULT {
+                unsafe { DynamicComSink::dispatch_interface_in1(this, $index, value) }
+            }
+
+            unsafe extern "system" fn $two(
+                this: *mut c_void,
+                first: *mut c_void,
+                second: *mut c_void,
+            ) -> HRESULT {
+                unsafe {
+                    DynamicComSink::dispatch_interface_in2(this, $index, first, second)
+                }
+            }
+
+            unsafe extern "system" fn $two_out(
+                this: *mut c_void,
+                first: *mut c_void,
+                second: *mut c_void,
+                result: *mut i32,
+            ) -> HRESULT {
+                unsafe {
+                    DynamicComSink::dispatch_interface_in2_out_i32(
+                        this, $index, first, second, result,
+                    )
+                }
+            }
+        )+
+
+        const SINK_INTERFACE_IN1_THUNKS:
+            [unsafe extern "system" fn(*mut c_void, *mut c_void) -> HRESULT;
+                define_sink_thunks!(@count $($index),+)] =
+            [$($one),+];
+        const SINK_INTERFACE_IN2_THUNKS:
+            [unsafe extern "system" fn(*mut c_void, *mut c_void, *mut c_void) -> HRESULT;
+                define_sink_thunks!(@count $($index),+)] =
+            [$($two),+];
+        const SINK_INTERFACE_IN2_OUT_I32_THUNKS:
+            [unsafe extern "system" fn(
+                *mut c_void,
+                *mut c_void,
+                *mut c_void,
+                *mut i32,
+            ) -> HRESULT; define_sink_thunks!(@count $($index),+)] =
+            [$($two_out),+];
+    };
+    (@count $($item:expr),+) => {
+        <[()]>::len(&[$(define_sink_thunks!(@replace $item)),+])
+    };
+    (@replace $_item:expr) => { () };
+}
+
+define_sink_thunks!(
+    (0, sink_one_0, sink_two_0, sink_two_out_0),
+    (1, sink_one_1, sink_two_1, sink_two_out_1),
+    (2, sink_one_2, sink_two_2, sink_two_out_2),
+    (3, sink_one_3, sink_two_3, sink_two_out_3),
+    (4, sink_one_4, sink_two_4, sink_two_out_4),
+    (5, sink_one_5, sink_two_5, sink_two_out_5),
+    (6, sink_one_6, sink_two_6, sink_two_out_6),
+    (7, sink_one_7, sink_two_7, sink_two_out_7),
+    (8, sink_one_8, sink_two_8, sink_two_out_8),
+    (9, sink_one_9, sink_two_9, sink_two_out_9),
+    (10, sink_one_10, sink_two_10, sink_two_out_10),
+    (11, sink_one_11, sink_two_11, sink_two_out_11),
+    (12, sink_one_12, sink_two_12, sink_two_out_12),
+    (13, sink_one_13, sink_two_13, sink_two_out_13),
+    (14, sink_one_14, sink_two_14, sink_two_out_14),
+    (15, sink_one_15, sink_two_15, sink_two_out_15),
+);
+
+impl DynamicComSink {
+    fn create(
+        interfaces: Vec<CallbackInterfaceDefinition>,
+        callback: SinkCallback,
+    ) -> result::Result<IUnknown> {
+        if interfaces.is_empty() {
+            return Err(invalid_argument(
+                "COM object requires at least one interface",
+            ));
+        }
+        let mut seen = HashSet::new();
+        let mut views = Vec::with_capacity(interfaces.len());
+        let mut iids = Vec::with_capacity(interfaces.len());
+        let mut iid_map = Vec::new();
+        let mut all_plans = Vec::with_capacity(interfaces.len());
+        for (interface_index, (iid, base_iids, methods, plans)) in
+            interfaces.into_iter().enumerate()
+        {
+            if iid == IUnknown::IID || !seen.insert(iid) {
+                return Err(invalid_argument(
+                    "COM object interface IIDs must be unique and cannot be IID_IUnknown",
+                ));
+            }
+            iid_map.push((iid, interface_index));
+            for base_iid in base_iids {
+                if base_iid == IUnknown::IID || !seen.insert(base_iid) {
+                    return Err(invalid_argument(
+                        "COM object base interface IIDs must be unique across interface roots",
+                    ));
+                }
+                iid_map.push((base_iid, interface_index));
+            }
+            let mut slots = vec![
+                Self::view_query_interface as *const () as *const c_void,
+                Self::view_add_ref as *const () as *const c_void,
+                Self::view_release as *const () as *const c_void,
+            ];
+            for (index, method) in methods.iter().enumerate() {
+                slots.push(match method {
+                    CallbackBackendMethod::Static(StaticCallbackShape::InterfaceIn1) => {
+                        SINK_INTERFACE_IN1_THUNKS[index] as *const () as *const c_void
+                    }
+                    CallbackBackendMethod::Static(StaticCallbackShape::InterfaceIn2) => {
+                        SINK_INTERFACE_IN2_THUNKS[index] as *const () as *const c_void
+                    }
+                    CallbackBackendMethod::Static(StaticCallbackShape::InterfaceIn2OutI32) => {
+                        SINK_INTERFACE_IN2_OUT_I32_THUNKS[index] as *const () as *const c_void
+                    }
+                    CallbackBackendMethod::Libffi(signature) => {
+                        crate::native_callback::callback_code(
+                            index + 3,
+                            signature.clone(),
+                            Self::dispatch_libffi,
+                        )
+                        .map_err(|error| {
+                            invalid_argument(format!(
+                                "failed to create COM callback at vtable slot {}: {error}",
+                                index + 3
+                            ))
+                        })?
+                    }
+                });
+            }
+            let storage = slots.into_boxed_slice();
+            views.push(Box::new(DynamicComInterfaceView {
+                vtable: storage.as_ptr(),
+                owner: std::ptr::null_mut(),
+                interface_index,
+                _vtable_storage: storage,
+            }));
+            iids.push(iid);
+            all_plans.push(plans);
+        }
+        let mut sink = Box::new(Self {
+            vtable: &Self::IDENTITY_VTABLE,
+            ref_count: windows_core::imp::RefCount::new(1),
+            callback,
+            interfaces: views,
+            iids,
+            iid_map,
+            callback_plans: all_plans,
+        });
+        let owner = (&mut *sink) as *mut Self;
+        for view in &mut sink.interfaces {
+            view.owner = owner;
+        }
+        Ok(unsafe { IUnknown::from_raw(Box::into_raw(sink).cast()) })
+    }
+
+    const IDENTITY_VTABLE: windows_core::IUnknown_Vtbl = windows_core::IUnknown_Vtbl {
+        QueryInterface: Self::query_interface,
+        AddRef: Self::add_ref,
+        Release: Self::release,
+    };
+
+    unsafe extern "system" fn query_interface(
+        this: *mut c_void,
+        iid: *const GUID,
+        result: *mut *mut c_void,
+    ) -> HRESULT {
+        if result.is_null() {
+            return SINK_E_POINTER;
+        }
+        unsafe { *result = std::ptr::null_mut() };
+        if iid.is_null() {
+            return SINK_E_POINTER;
+        }
+        unsafe { Self::query_interface_impl(this.cast(), &*iid, result) }
+    }
+
+    unsafe extern "system" fn add_ref(this: *mut c_void) -> u32 {
+        unsafe { &*this.cast::<Self>() }.ref_count.add_ref()
+    }
+
+    unsafe extern "system" fn release(this: *mut c_void) -> u32 {
+        let sink = unsafe { &*this.cast::<Self>() };
+        let remaining = sink.ref_count.release();
+        if remaining == 0 {
+            unsafe { drop(Box::from_raw(this.cast::<Self>())) };
+        }
+        remaining
+    }
+
+    unsafe fn query_interface_impl(
+        owner: *mut Self,
+        iid: &GUID,
+        result: *mut *mut c_void,
+    ) -> HRESULT {
+        let sink = unsafe { &*owner };
+        let pointer = if *iid == IUnknown::IID {
+            owner.cast()
+        } else if let Some((_, index)) = sink.iid_map.iter().find(|(candidate, _)| candidate == iid)
+        {
+            (&*sink.interfaces[*index] as *const DynamicComInterfaceView)
+                .cast_mut()
+                .cast()
+        } else {
+            return SINK_E_NOINTERFACE;
+        };
+        unsafe { *result = pointer };
+        sink.ref_count.add_ref();
+        HRESULT(0)
+    }
+
+    unsafe fn view_from_ptr(this: *mut c_void) -> &'static DynamicComInterfaceView {
+        unsafe { &*this.cast::<DynamicComInterfaceView>() }
+    }
+
+    unsafe fn owner_from_view(this: *mut c_void) -> &'static Self {
+        unsafe { &*Self::view_from_ptr(this).owner }
+    }
+
+    unsafe extern "system" fn view_query_interface(
+        this: *mut c_void,
+        iid: *const GUID,
+        result: *mut *mut c_void,
+    ) -> HRESULT {
+        if result.is_null() {
+            return SINK_E_POINTER;
+        }
+        unsafe { *result = std::ptr::null_mut() };
+        if iid.is_null() {
+            return SINK_E_POINTER;
+        }
+        let owner = unsafe { Self::view_from_ptr(this).owner };
+        unsafe { Self::query_interface_impl(owner, &*iid, result) }
+    }
+
+    unsafe extern "system" fn view_add_ref(this: *mut c_void) -> u32 {
+        unsafe { Self::owner_from_view(this) }.ref_count.add_ref()
+    }
+
+    unsafe extern "system" fn view_release(this: *mut c_void) -> u32 {
+        let owner = unsafe { Self::view_from_ptr(this).owner };
+        unsafe { Self::release(owner.cast()) }
+    }
+
+    unsafe fn borrowed_interface(value: *mut c_void) -> Value {
+        if value.is_null() {
+            Value::WinRt(WinRTValue::Null)
+        } else {
+            Value::WinRt(WinRTValue::Object(
+                unsafe { IUnknown::from_raw_borrowed(&value) }
+                    .expect("non-null COM callback interface")
+                    .clone(),
+            ))
+        }
+    }
+
+    unsafe fn dispatch_interface_in1(
+        this: *mut c_void,
+        method_index: usize,
+        value: *mut c_void,
+    ) -> HRESULT {
+        catch_unwind(AssertUnwindSafe(|| {
+            let view = unsafe { Self::view_from_ptr(this) };
+            let sink = unsafe { &*view.owner };
+            let callback = sink.callback.clone();
+            let values = [unsafe { Self::borrowed_interface(value) }];
+            let result = callback(
+                sink.iids[view.interface_index],
+                method_index + 3,
+                &values,
+                CallbackContract::hresult(0),
+            );
+            if result.return_value.is_some() || !result.outputs.is_empty() {
+                SINK_E_FAIL
+            } else {
+                result.hresult
+            }
+        }))
+        .unwrap_or(SINK_E_FAIL)
+    }
+
+    unsafe fn dispatch_interface_in2(
+        this: *mut c_void,
+        method_index: usize,
+        first: *mut c_void,
+        second: *mut c_void,
+    ) -> HRESULT {
+        catch_unwind(AssertUnwindSafe(|| {
+            let view = unsafe { Self::view_from_ptr(this) };
+            let sink = unsafe { &*view.owner };
+            let callback = sink.callback.clone();
+            let values = [unsafe { Self::borrowed_interface(first) }, unsafe {
+                Self::borrowed_interface(second)
+            }];
+            let result = callback(
+                sink.iids[view.interface_index],
+                method_index + 3,
+                &values,
+                CallbackContract::hresult(0),
+            );
+            if result.return_value.is_some() || !result.outputs.is_empty() {
+                SINK_E_FAIL
+            } else {
+                result.hresult
+            }
+        }))
+        .unwrap_or(SINK_E_FAIL)
+    }
+
+    unsafe fn dispatch_interface_in2_out_i32(
+        this: *mut c_void,
+        method_index: usize,
+        first: *mut c_void,
+        second: *mut c_void,
+        result: *mut i32,
+    ) -> HRESULT {
+        if result.is_null() {
+            return SINK_E_POINTER;
+        }
+        unsafe { *result = 0 };
+        catch_unwind(AssertUnwindSafe(|| {
+            let view = unsafe { Self::view_from_ptr(this) };
+            let sink = unsafe { &*view.owner };
+            let callback = sink.callback.clone();
+            let values = [unsafe { Self::borrowed_interface(first) }, unsafe {
+                Self::borrowed_interface(second)
+            }];
+            let callback_result = callback(
+                sink.iids[view.interface_index],
+                method_index + 3,
+                &values,
+                CallbackContract::hresult(1),
+            );
+            if callback_result.return_value.is_some() {
+                return SINK_E_FAIL;
+            }
+            if callback_result.hresult.is_ok() {
+                let [Value::WinRt(WinRTValue::I32(value))] = callback_result.outputs.as_slice()
+                else {
+                    return SINK_E_FAIL;
+                };
+                unsafe { *result = *value };
+            }
+            callback_result.hresult
+        }))
+        .unwrap_or(SINK_E_FAIL)
+    }
+
+    unsafe fn dispatch_libffi(
+        slot: usize,
+        signature: &crate::native_callback::CallbackSignature,
+        args: *const *const c_void,
+        result: *mut c_void,
+    ) {
+        if result.is_null()
+            && !matches!(
+                signature.return_abi(),
+                crate::native_callback::CallbackReturnAbi::Void
+            )
+        {
+            return;
+        }
+        unsafe { signature.initialize_failure_result(result, SINK_E_FAIL) };
+        let invocation = catch_unwind(AssertUnwindSafe(|| -> Result<(), HRESULT> {
+            if args.is_null() {
+                return Err(SINK_E_POINTER);
+            }
+            let this = unsafe { *(*args).cast::<*mut c_void>() };
+            if this.is_null() {
+                return Err(SINK_E_POINTER);
+            }
+            let (callback, plan, iid) = {
+                let view = unsafe { Self::view_from_ptr(this) };
+                let sink = unsafe { &*view.owner };
+                let Some(plan) = sink
+                    .callback_plans
+                    .get(view.interface_index)
+                    .and_then(|plans| plans.get(slot - 3))
+                else {
+                    return Err(SINK_E_FAIL);
+                };
+                (
+                    sink.callback.clone(),
+                    plan.clone(),
+                    sink.iids[view.interface_index],
+                )
+            };
+            if signature.parameters().len() != plan.parameters.len() {
+                return Err(SINK_E_FAIL);
+            }
+            let prepared = unsafe { plan.prepare_callback_outputs(args)? };
+            let values = unsafe { plan.callback_inputs(args)? };
+            let callback_result = callback(
+                iid,
+                slot,
+                &values,
+                plan.callback_contract(prepared.output_count),
+            );
+            if callback_result.hresult.is_err() {
+                return Err(callback_result.hresult);
+            }
+            let prepared_return = match &plan.return_plan {
+                ComReturnPlan::HResult | ComReturnPlan::SemanticHResult | ComReturnPlan::Void
+                    if callback_result.return_value.is_some() =>
+                {
+                    return Err(SINK_E_FAIL);
+                }
+                ComReturnPlan::Direct(typ) => {
+                    let value = callback_result.return_value.as_ref().ok_or(SINK_E_FAIL)?;
+                    Some(CallbackMethodPlan::prepare_native_callback_output(
+                        typ, false, value,
+                    )?)
+                }
+                ComReturnPlan::EnumeratorNextHResult | ComReturnPlan::DispatchInvokeHResult(_) => {
+                    return Err(SINK_E_FAIL);
+                }
+                _ => None,
+            };
+            let prepared_writes =
+                unsafe { plan.prepare_callback_writes(args, &callback_result.outputs, &prepared)? };
+            unsafe { prepared_writes.commit() };
+            match &plan.return_plan {
+                ComReturnPlan::HResult | ComReturnPlan::SemanticHResult => unsafe {
+                    result.cast::<i32>().write(callback_result.hresult.0);
+                },
+                ComReturnPlan::Void => {}
+                ComReturnPlan::Direct(_) => unsafe {
+                    prepared_return
+                        .expect("direct callback result was prepared")
+                        .commit(result);
+                },
+                ComReturnPlan::EnumeratorNextHResult | ComReturnPlan::DispatchInvokeHResult(_) => {
+                    unreachable!()
+                }
+            }
+            Ok(())
+        }));
+        if let Err(error) = invocation.unwrap_or(Err(SINK_E_FAIL)) {
+            unsafe { signature.initialize_failure_result(result, error) };
+        }
+    }
+}
+
+pub fn create_sink(interface: &Interface, callback: SinkCallback) -> result::Result<IUnknown> {
+    let identity = create_object(std::slice::from_ref(interface), callback)?;
+    let mut view = std::ptr::null_mut();
+    unsafe { identity.query(&interface.iid(), &mut view) }
+        .ok()
+        .map_err(result::Error::WindowsError)?;
+    if view.is_null() {
+        return Err(invalid_argument(
+            "COM object did not expose its registered sink interface",
+        ));
+    }
+    Ok(unsafe { IUnknown::from_raw(view) })
+}
+
+pub fn create_object(interfaces: &[Interface], callback: SinkCallback) -> result::Result<IUnknown> {
+    let interfaces = interfaces
+        .iter()
+        .map(Interface::callback_backends)
+        .collect::<result::Result<Vec<_>>>()?;
+    DynamicComSink::create(interfaces, callback)
 }
 
 fn invalid_argument(message: impl Into<String>) -> result::Error {
@@ -4777,19 +6599,1542 @@ mod tests {
         MetadataTable, com_helpers::E_NOINTERFACE, ro_get_activation_factory_2,
         roapi::query_interface,
     };
-    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
     use windows::{
         ApplicationModel::DataTransfer::DataTransferManager,
         System::Threading::{ThreadPool, WorkItemHandler},
         Win32::{
             System::Com::{CoGetMalloc, CreateBindCtx, IBindCtx, IMalloc, IPersistFile, IStream},
             System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize},
-            UI::Shell::{IDataTransferManagerInterop, SHCreateMemStream},
+            UI::Shell::{
+                FDE_SHAREVIOLATION_RESPONSE, IDataTransferManagerInterop, IFileDialog,
+                IFileDialogEvents, IShellItem, SHCreateMemStream,
+            },
             UI::WindowsAndMessaging::{
                 CreateWindowExW, DestroyWindow, WINDOW_EX_STYLE, WS_OVERLAPPED,
             },
         },
     };
+
+    const IID_TEST_SINK: GUID = GUID::from_u128(0x7ac2eaa2_97a4_43f0_9b0f_421c2363ef11);
+
+    fn sink_interface(iid: GUID, shapes: &[StaticCallbackShape]) -> Interface {
+        let table = MetadataTable::new();
+        let interface_type = Type::winrt(table.interface(IUnknown::IID));
+        let mut interface = register_interface(&table, "Test.ISink", iid, InterfaceBase::IUnknown);
+        for (index, shape) in shapes.iter().enumerate() {
+            let signature = match shape {
+                StaticCallbackShape::InterfaceIn1 => {
+                    MethodSignature::new(&table).add_in(interface_type.clone())
+                }
+                StaticCallbackShape::InterfaceIn2 => MethodSignature::new(&table)
+                    .add_in(interface_type.clone())
+                    .add_in(interface_type.clone()),
+                StaticCallbackShape::InterfaceIn2OutI32 => MethodSignature::new(&table)
+                    .add_in(interface_type.clone())
+                    .add_in(interface_type.clone())
+                    .add_out(Type::winrt(table.i32_type())),
+            };
+            interface = interface
+                .add_method_at(index + 3, &format!("Method{index}"), signature)
+                .unwrap();
+        }
+        interface
+    }
+
+    #[test]
+    fn dynamic_com_sink_is_send_and_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<DynamicComSink>();
+    }
+
+    #[test]
+    fn dynamic_com_sink_dispatches_exact_shapes_and_preserves_identity() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let retained = calls.clone();
+        let callback: SinkCallback = Arc::new(move |iid, slot, values, output| {
+            assert_eq!(iid, IID_TEST_SINK);
+            assert_eq!(
+                output,
+                if slot == 5 {
+                    CallbackContract::hresult(1)
+                } else {
+                    CallbackContract::hresult(0)
+                }
+            );
+            retained.lock().unwrap().push((
+                slot,
+                values
+                    .iter()
+                    .map(|value| matches!(value, Value::WinRt(WinRTValue::Object(_))))
+                    .collect::<Vec<_>>(),
+            ));
+            match slot {
+                3 => SinkCallbackResult::hresult(HRESULT(1)),
+                4 => SinkCallbackResult::hresult(HRESULT(0)),
+                5 => SinkCallbackResult::with_output(HRESULT(0), Value::WinRt(WinRTValue::I32(7))),
+                _ => unreachable!(),
+            }
+        });
+        let interface = sink_interface(
+            IID_TEST_SINK,
+            &[
+                StaticCallbackShape::InterfaceIn1,
+                StaticCallbackShape::InterfaceIn2,
+                StaticCallbackShape::InterfaceIn2OutI32,
+            ],
+        );
+        let sink = create_sink(&interface, callback).unwrap();
+
+        let mut queried = std::ptr::null_mut();
+        unsafe { sink.query(&IID_TEST_SINK, &mut queried) }
+            .ok()
+            .unwrap();
+        assert_eq!(queried, sink.as_raw());
+        unsafe { drop(IUnknown::from_raw(queried)) };
+
+        let mut unsupported = 1usize as *mut c_void;
+        assert_eq!(
+            unsafe { sink.query(&GUID::zeroed(), &mut unsupported) },
+            SINK_E_NOINTERFACE
+        );
+        assert!(unsupported.is_null());
+
+        let vtable = unsafe { *(sink.as_raw() as *const *const *const c_void) };
+        let one: unsafe extern "system" fn(*mut c_void, *mut c_void) -> HRESULT =
+            unsafe { std::mem::transmute(*vtable.add(3)) };
+        let two: unsafe extern "system" fn(*mut c_void, *mut c_void, *mut c_void) -> HRESULT =
+            unsafe { std::mem::transmute(*vtable.add(4)) };
+        let two_out: unsafe extern "system" fn(
+            *mut c_void,
+            *mut c_void,
+            *mut c_void,
+            *mut i32,
+        ) -> HRESULT = unsafe { std::mem::transmute(*vtable.add(5)) };
+
+        assert_eq!(unsafe { one(sink.as_raw(), sink.as_raw()) }, HRESULT(1));
+        assert_eq!(
+            unsafe { two(sink.as_raw(), sink.as_raw(), std::ptr::null_mut()) },
+            HRESULT(0)
+        );
+        let mut output = -1;
+        assert_eq!(
+            unsafe { two_out(sink.as_raw(), sink.as_raw(), sink.as_raw(), &mut output,) },
+            HRESULT(0)
+        );
+        assert_eq!(output, 7);
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![
+                (3, vec![true]),
+                (4, vec![true, false]),
+                (5, vec![true, true]),
+            ]
+        );
+    }
+
+    #[test]
+    fn dynamic_com_sink_fails_closed_for_invalid_output_and_panics() {
+        let interface = sink_interface(IID_TEST_SINK, &[StaticCallbackShape::InterfaceIn2OutI32]);
+        let missing_output = create_sink(
+            &interface,
+            Arc::new(|_, _, _, _| SinkCallbackResult::hresult(HRESULT(0))),
+        )
+        .unwrap();
+        let vtable = unsafe { *(missing_output.as_raw() as *const *const *const c_void) };
+        let invoke: unsafe extern "system" fn(
+            *mut c_void,
+            *mut c_void,
+            *mut c_void,
+            *mut i32,
+        ) -> HRESULT = unsafe { std::mem::transmute(*vtable.add(3)) };
+        assert_eq!(
+            unsafe {
+                invoke(
+                    missing_output.as_raw(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                )
+            },
+            SINK_E_POINTER
+        );
+        let mut output = 99;
+        assert_eq!(
+            unsafe {
+                invoke(
+                    missing_output.as_raw(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    &mut output,
+                )
+            },
+            SINK_E_FAIL
+        );
+        assert_eq!(output, 0);
+
+        let interface = sink_interface(IID_TEST_SINK, &[StaticCallbackShape::InterfaceIn1]);
+        let panicking = create_sink(
+            &interface,
+            Arc::new(|_, _, _, _| panic!("sink callback panic")),
+        )
+        .unwrap();
+        let vtable = unsafe { *(panicking.as_raw() as *const *const *const c_void) };
+        let invoke: unsafe extern "system" fn(*mut c_void, *mut c_void) -> HRESULT =
+            unsafe { std::mem::transmute(*vtable.add(3)) };
+        assert_eq!(
+            unsafe { invoke(panicking.as_raw(), std::ptr::null_mut()) },
+            SINK_E_FAIL
+        );
+
+        let empty = sink_interface(IID_TEST_SINK, &[]);
+        assert!(create_sink(&empty, Arc::new(|_, _, _, _| unreachable!())).is_err());
+        let too_many = sink_interface(IID_TEST_SINK, &[StaticCallbackShape::InterfaceIn1; 17]);
+        let many = create_sink(
+            &too_many,
+            Arc::new(|_, slot, values, output| {
+                assert_eq!(slot, 19);
+                assert_eq!(values.len(), 1);
+                assert_eq!(output, CallbackContract::hresult(0));
+                SinkCallbackResult::hresult(HRESULT(0))
+            }),
+        )
+        .unwrap();
+        let vtable = unsafe { *(many.as_raw() as *const *const *const c_void) };
+        let invoke: unsafe extern "system" fn(*mut c_void, *mut c_void) -> HRESULT =
+            unsafe { std::mem::transmute(*vtable.add(19)) };
+        assert_eq!(
+            unsafe { invoke(many.as_raw(), std::ptr::null_mut()) },
+            HRESULT(0)
+        );
+
+        let table = MetadataTable::new();
+        let unsupported = register_interface(
+            &table,
+            "Test.IUnsupportedSink",
+            IID_TEST_SINK,
+            InterfaceBase::IUnknown,
+        )
+        .add_method(
+            "Invoke",
+            MethodSignature::new(&table).add_in(Type::variant_by_value()),
+        );
+        assert!(
+            create_sink(&unsupported, Arc::new(|_, _, _, _| unreachable!()))
+                .unwrap_err()
+                .message()
+                .contains("callback ABI")
+        );
+        let interface_inout = register_interface(
+            &table,
+            "Test.IInterfaceInOutSink",
+            GUID::from_u128(0x0cd81fa8_b496_4ce5_b073_77e9dce985f1),
+            InterfaceBase::IUnknown,
+        );
+        assert!(
+            interface_inout
+                .add_method_at(
+                    3,
+                    "Invoke",
+                    MethodSignature::new(&table)
+                        .add_in_out(Type::winrt(table.interface(IUnknown::IID))),
+                )
+                .unwrap_err()
+                .message()
+                .contains("replacement and cleanup")
+        );
+
+        let non_contiguous = register_interface(
+            &table,
+            "Test.INonContiguousSink",
+            IID_TEST_SINK,
+            InterfaceBase::IUnknown,
+        )
+        .add_method_at(
+            4,
+            "Invoke",
+            MethodSignature::new(&table).add_in(Type::winrt(table.interface(IUnknown::IID))),
+        )
+        .unwrap();
+        assert!(
+            create_sink(&non_contiguous, Arc::new(|_, _, _, _| unreachable!()))
+                .unwrap_err()
+                .message()
+                .contains("non-contiguous")
+        );
+
+        let inspectable = register_interface(
+            &table,
+            "Test.IInspectableSink",
+            IID_TEST_SINK,
+            InterfaceBase::IInspectable,
+        )
+        .add_method(
+            "Invoke",
+            MethodSignature::new(&table).add_in(Type::winrt(table.interface(IUnknown::IID))),
+        );
+        assert!(
+            create_sink(&inspectable, Arc::new(|_, _, _, _| unreachable!()))
+                .unwrap_err()
+                .message()
+                .contains("IUnknown vtable root")
+        );
+    }
+
+    #[test]
+    fn dynamic_com_sink_matches_windows_rs_ifiledialogevents_abi() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let retained = calls.clone();
+        let interface = sink_interface(
+            IFileDialogEvents::IID,
+            &[
+                StaticCallbackShape::InterfaceIn1,
+                StaticCallbackShape::InterfaceIn2,
+                StaticCallbackShape::InterfaceIn1,
+                StaticCallbackShape::InterfaceIn1,
+                StaticCallbackShape::InterfaceIn2OutI32,
+                StaticCallbackShape::InterfaceIn1,
+                StaticCallbackShape::InterfaceIn2OutI32,
+            ],
+        );
+        let sink = create_sink(
+            &interface,
+            Arc::new(move |_, slot, values, output| {
+                assert_eq!(
+                    output,
+                    if matches!(slot, 7 | 9) {
+                        CallbackContract::hresult(1)
+                    } else {
+                        CallbackContract::hresult(0)
+                    }
+                );
+                retained.lock().unwrap().push((
+                    slot,
+                    values
+                        .iter()
+                        .map(|value| matches!(value, Value::WinRt(WinRTValue::Object(_))))
+                        .collect::<Vec<_>>(),
+                ));
+                if matches!(slot, 7 | 9) {
+                    SinkCallbackResult::with_output(HRESULT(0), Value::WinRt(WinRTValue::I32(2)))
+                } else {
+                    SinkCallbackResult::hresult(HRESULT(0))
+                }
+            }),
+        )
+        .unwrap();
+        let events: IFileDialogEvents = sink.cast().unwrap();
+
+        unsafe { events.OnFileOk(None::<&IFileDialog>) }.unwrap();
+        let response =
+            unsafe { events.OnShareViolation(None::<&IFileDialog>, None::<&IShellItem>) }.unwrap();
+        assert_eq!(response, FDE_SHAREVIOLATION_RESPONSE(2));
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![(3, vec![false]), (7, vec![false, false])]
+        );
+    }
+
+    #[test]
+    fn dynamic_com_sink_survives_reentrant_final_release() {
+        let retained = Arc::new(AtomicUsize::new(0));
+        let callback_retained = retained.clone();
+        let calls = Arc::new(AtomicU32::new(0));
+        let callback_calls = calls.clone();
+        let interface = sink_interface(IID_TEST_SINK, &[StaticCallbackShape::InterfaceIn1]);
+        let sink = create_sink(
+            &interface,
+            Arc::new(move |_, _, _, _| {
+                let raw = callback_retained.swap(0, Ordering::SeqCst);
+                assert_ne!(raw, 0);
+                unsafe { drop(IUnknown::from_raw(raw as *mut c_void)) };
+                callback_calls.fetch_add(1, Ordering::SeqCst);
+                SinkCallbackResult::hresult(HRESULT(0))
+            }),
+        )
+        .unwrap();
+        let raw = sink.into_raw();
+        retained.store(raw as usize, Ordering::SeqCst);
+
+        let vtable = unsafe { *(raw as *const *const *const c_void) };
+        let invoke: unsafe extern "system" fn(*mut c_void, *mut c_void) -> HRESULT =
+            unsafe { std::mem::transmute(*vtable.add(3)) };
+        assert_eq!(unsafe { invoke(raw, std::ptr::null_mut()) }, HRESULT(0));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(retained.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn dynamic_com_sink_libffi_survives_reentrant_final_release() {
+        let table = MetadataTable::new();
+        let retained = Arc::new(AtomicUsize::new(0));
+        let callback_retained = retained.clone();
+        let calls = Arc::new(AtomicU32::new(0));
+        let callback_calls = calls.clone();
+        let interface = register_interface(
+            &table,
+            "Test.IReentrantLibffiSink",
+            IID_TEST_SINK,
+            InterfaceBase::IUnknown,
+        )
+        .add_method(
+            "Invoke",
+            MethodSignature::new(&table).add_in(Type::winrt(table.i32_type())),
+        );
+        let sink = create_sink(
+            &interface,
+            Arc::new(move |_, _, _, _| {
+                let raw = callback_retained.swap(0, Ordering::SeqCst);
+                assert_ne!(raw, 0);
+                unsafe { drop(IUnknown::from_raw(raw as *mut c_void)) };
+                callback_calls.fetch_add(1, Ordering::SeqCst);
+                SinkCallbackResult::hresult(HRESULT(0))
+            }),
+        )
+        .unwrap();
+        let raw = sink.into_raw();
+        retained.store(raw as usize, Ordering::SeqCst);
+
+        let vtable = unsafe { *(raw as *const *const *const c_void) };
+        let invoke: unsafe extern "system" fn(*mut c_void, i32) -> HRESULT =
+            unsafe { std::mem::transmute(*vtable.add(3)) };
+        assert_eq!(unsafe { invoke(raw, 1) }, HRESULT(0));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(retained.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn dynamic_com_sink_uses_libffi_for_runtime_i32_signature() {
+        let table = MetadataTable::new();
+        let interface = register_interface(
+            &table,
+            "Test.ILibffiSink",
+            IID_TEST_SINK,
+            InterfaceBase::IUnknown,
+        )
+        .add_method(
+            "Invoke",
+            MethodSignature::new(&table).add_in(Type::winrt(table.i32_type())),
+        );
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let retained = calls.clone();
+        let sink = create_sink(
+            &interface,
+            Arc::new(move |_, slot, values, output| {
+                assert_eq!(slot, 3);
+                assert_eq!(output, CallbackContract::hresult(0));
+                let [Value::WinRt(WinRTValue::I32(value))] = values else {
+                    panic!("expected one i32 callback value");
+                };
+                retained.lock().unwrap().push(*value);
+                SinkCallbackResult::hresult(HRESULT(*value + 1))
+            }),
+        )
+        .unwrap();
+        let vtable = unsafe { *(sink.as_raw() as *const *const *const c_void) };
+        let invoke: unsafe extern "system" fn(*mut c_void, i32) -> HRESULT =
+            unsafe { std::mem::transmute(*vtable.add(3)) };
+        assert_eq!(unsafe { invoke(sink.as_raw(), 41) }, HRESULT(42));
+        assert_eq!(*calls.lock().unwrap(), vec![41]);
+    }
+
+    #[test]
+    fn dynamic_com_sink_libffi_supports_direct_and_void_returns() {
+        let table = MetadataTable::new();
+        let interface = register_interface(
+            &table,
+            "Test.ILibffiNativeReturnSink",
+            IID_TEST_SINK,
+            InterfaceBase::IUnknown,
+        )
+        .add_method(
+            "Direct",
+            MethodSignature::new(&table)
+                .add_in(Type::winrt(table.i32_type()))
+                .returns(Type::winrt(table.i32_type())),
+        )
+        .add_method(
+            "Void",
+            MethodSignature::new(&table)
+                .add_in(Type::winrt(table.u32_type()))
+                .returns_void(),
+        )
+        .add_method(
+            "DirectOut",
+            MethodSignature::new(&table)
+                .add_out(Type::winrt(table.u32_type()))
+                .returns(Type::winrt(table.i32_type())),
+        )
+        .add_method(
+            "VoidOut",
+            MethodSignature::new(&table)
+                .add_out(Type::winrt(table.u32_type()))
+                .returns_void(),
+        );
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let retained = calls.clone();
+        let sink = create_sink(
+            &interface,
+            Arc::new(move |_, slot, values, contract| {
+                retained.lock().unwrap().push((slot, contract));
+                match (slot, values) {
+                    (3, [Value::WinRt(WinRTValue::I32(value))]) => {
+                        SinkCallbackResult::with_return(Value::WinRt(WinRTValue::I32(value + 1)))
+                    }
+                    (4, [Value::WinRt(WinRTValue::U32(42))]) => {
+                        SinkCallbackResult::hresult(HRESULT(0))
+                    }
+                    (5, []) => SinkCallbackResult::with_return_and_outputs(
+                        Value::WinRt(WinRTValue::I32(7)),
+                        vec![Value::WinRt(WinRTValue::U32(8))],
+                    ),
+                    (6, []) => SinkCallbackResult::with_output(
+                        HRESULT(0),
+                        Value::WinRt(WinRTValue::U32(9)),
+                    ),
+                    _ => panic!("unexpected native-return callback"),
+                }
+            }),
+        )
+        .unwrap();
+        let vtable = unsafe { *(sink.as_raw() as *const *const *const c_void) };
+        let direct: unsafe extern "system" fn(*mut c_void, i32) -> i32 =
+            unsafe { std::mem::transmute(*vtable.add(3)) };
+        let void: unsafe extern "system" fn(*mut c_void, u32) =
+            unsafe { std::mem::transmute(*vtable.add(4)) };
+        let direct_out: unsafe extern "system" fn(*mut c_void, *mut u32) -> i32 =
+            unsafe { std::mem::transmute(*vtable.add(5)) };
+        let void_out: unsafe extern "system" fn(*mut c_void, *mut u32) =
+            unsafe { std::mem::transmute(*vtable.add(6)) };
+
+        assert_eq!(unsafe { direct(sink.as_raw(), 41) }, 42);
+        unsafe { void(sink.as_raw(), 42) };
+        let mut direct_output = u32::MAX;
+        assert_eq!(unsafe { direct_out(sink.as_raw(), &mut direct_output) }, 7);
+        assert_eq!(direct_output, 8);
+        let mut void_output = u32::MAX;
+        unsafe { void_out(sink.as_raw(), &mut void_output) };
+        assert_eq!(void_output, 9);
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![
+                (3, CallbackContract::direct(0)),
+                (4, CallbackContract::void(0)),
+                (5, CallbackContract::direct(1)),
+                (6, CallbackContract::void(1)),
+            ]
+        );
+    }
+
+    #[test]
+    fn dynamic_com_sink_libffi_zeroes_failed_direct_returns() {
+        let table = MetadataTable::new();
+        let interface = register_interface(
+            &table,
+            "Test.ILibffiFailedDirectSink",
+            IID_TEST_SINK,
+            InterfaceBase::IUnknown,
+        )
+        .add_method(
+            "Direct",
+            MethodSignature::new(&table).returns(Type::winrt(table.i64_type())),
+        );
+        let sink = create_sink(
+            &interface,
+            Arc::new(|_, _, _, _| SinkCallbackResult::hresult(SINK_E_FAIL)),
+        )
+        .unwrap();
+        let vtable = unsafe { *(sink.as_raw() as *const *const *const c_void) };
+        let direct: unsafe extern "system" fn(*mut c_void) -> i64 =
+            unsafe { std::mem::transmute(*vtable.add(3)) };
+        assert_eq!(unsafe { direct(sink.as_raw()) }, 0);
+    }
+
+    #[test]
+    fn dynamic_com_sink_libffi_returns_every_scalar_width() {
+        let table = MetadataTable::new();
+        let types = [
+            Type::winrt(table.i8_type()),
+            Type::winrt(table.u8_type()),
+            Type::winrt(table.i16_type()),
+            Type::winrt(table.u16_type()),
+            Type::winrt(table.i32_type()),
+            Type::winrt(table.u32_type()),
+            Type::winrt(table.i64_type()),
+            Type::winrt(table.u64_type()),
+            Type::winrt(table.f32_type()),
+            Type::winrt(table.f64_type()),
+        ];
+        let mut interface = register_interface(
+            &table,
+            "Test.ILibffiScalarReturnSink",
+            IID_TEST_SINK,
+            InterfaceBase::IUnknown,
+        );
+        for (index, typ) in types.into_iter().enumerate() {
+            interface = interface.add_method(
+                &format!("Get{index}"),
+                MethodSignature::new(&table).returns(typ),
+            );
+        }
+        let sink = create_sink(
+            &interface,
+            Arc::new(|_, slot, _, contract| {
+                assert_eq!(contract, CallbackContract::direct(0));
+                SinkCallbackResult::with_return(Value::WinRt(match slot {
+                    3 => WinRTValue::I8(-8),
+                    4 => WinRTValue::U8(250),
+                    5 => WinRTValue::I16(-1600),
+                    6 => WinRTValue::U16(65000),
+                    7 => WinRTValue::I32(-32000),
+                    8 => WinRTValue::U32(4_000_000_000),
+                    9 => WinRTValue::I64(-9_000_000_000),
+                    10 => WinRTValue::U64(18_000_000_000),
+                    11 => WinRTValue::F32(1.5),
+                    12 => WinRTValue::F64(-2.25),
+                    _ => unreachable!(),
+                }))
+            }),
+        )
+        .unwrap();
+        let vtable = unsafe { *(sink.as_raw() as *const *const *const c_void) };
+        macro_rules! invoke {
+            ($slot:literal, $return_type:ty) => {{
+                let method: unsafe extern "system" fn(*mut c_void) -> $return_type =
+                    unsafe { std::mem::transmute(*vtable.add($slot)) };
+                unsafe { method(sink.as_raw()) }
+            }};
+        }
+        assert_eq!(invoke!(3, i8), -8);
+        assert_eq!(invoke!(4, u8), 250);
+        assert_eq!(invoke!(5, i16), -1600);
+        assert_eq!(invoke!(6, u16), 65000);
+        assert_eq!(invoke!(7, i32), -32000);
+        assert_eq!(invoke!(8, u32), 4_000_000_000);
+        assert_eq!(invoke!(9, i64), -9_000_000_000);
+        assert_eq!(invoke!(10, u64), 18_000_000_000);
+        assert_eq!(invoke!(11, f32), 1.5);
+        assert_eq!(invoke!(12, f64), -2.25);
+    }
+
+    #[test]
+    fn dynamic_com_sink_libffi_round_trips_scalars_guid_and_multiple_outputs() {
+        let table = MetadataTable::new();
+        let interface = register_interface(
+            &table,
+            "Test.ILibffiScalarSink",
+            IID_TEST_SINK,
+            InterfaceBase::IUnknown,
+        )
+        .add_method(
+            "Invoke",
+            MethodSignature::new(&table)
+                .add_in(Type::winrt(table.i8_type()))
+                .add_in(Type::winrt(table.u8_type()))
+                .add_in(Type::winrt(table.bool_type()))
+                .add_in(Type::winrt(table.i16_type()))
+                .add_in(Type::winrt(table.u16_type()))
+                .add_in(Type::winrt(table.i32_type()))
+                .add_in(Type::winrt(table.u32_type()))
+                .add_in(Type::winrt(table.i64_type()))
+                .add_in(Type::winrt(table.u64_type()))
+                .add_in(Type::winrt(table.f32_type()))
+                .add_in(Type::winrt(table.f64_type()))
+                .add_in(Type::winrt(table.guid_type()))
+                .add_out(Type::winrt(table.u64_type()))
+                .add_out(Type::winrt(table.guid_type())),
+        );
+        let guid = GUID::from_u128(0x991ea999_c420_4a2d_a13c_ab577d0f5f79);
+        let output_guid = GUID::from_u128(0xc63ad19c_6528_47f7_8995_d5f1508d157a);
+        let sink = create_sink(
+            &interface,
+            Arc::new(move |_, slot, values, output| {
+                assert_eq!(slot, 3);
+                assert_eq!(output, CallbackContract::hresult(2));
+                assert!(matches!(values[0], Value::WinRt(WinRTValue::I8(-8))));
+                assert!(matches!(values[1], Value::WinRt(WinRTValue::U8(250))));
+                assert!(matches!(values[2], Value::WinRt(WinRTValue::Bool(true))));
+                assert!(matches!(values[3], Value::WinRt(WinRTValue::I16(-1600))));
+                assert!(matches!(values[4], Value::WinRt(WinRTValue::U16(65000))));
+                assert!(matches!(values[5], Value::WinRt(WinRTValue::I32(-32000))));
+                assert!(matches!(
+                    values[6],
+                    Value::WinRt(WinRTValue::U32(4_000_000_000))
+                ));
+                assert!(matches!(values[7], Value::WinRt(WinRTValue::I64(-64_000))));
+                assert!(matches!(
+                    values[8],
+                    Value::WinRt(WinRTValue::U64(18_000_000_000))
+                ));
+                assert!(matches!(values[9], Value::WinRt(WinRTValue::F32(value)) if value == 1.25));
+                assert!(matches!(values[10], Value::WinRt(WinRTValue::F64(value)) if value == 2.5));
+                assert!(matches!(
+                    values[11],
+                    Value::WinRt(WinRTValue::Guid(value)) if value == guid
+                ));
+                SinkCallbackResult::with_outputs(
+                    HRESULT(0),
+                    vec![
+                        Value::WinRt(WinRTValue::U64(99)),
+                        Value::WinRt(WinRTValue::Guid(output_guid)),
+                    ],
+                )
+            }),
+        )
+        .unwrap();
+        let vtable = unsafe { *(sink.as_raw() as *const *const *const c_void) };
+        let invoke: unsafe extern "system" fn(
+            *mut c_void,
+            i8,
+            u8,
+            u8,
+            i16,
+            u16,
+            i32,
+            u32,
+            i64,
+            u64,
+            f32,
+            f64,
+            GUID,
+            *mut u64,
+            *mut GUID,
+        ) -> HRESULT = unsafe { std::mem::transmute(*vtable.add(3)) };
+        let mut output_u64 = 0;
+        let mut actual_guid = GUID::zeroed();
+        assert_eq!(
+            unsafe {
+                invoke(
+                    sink.as_raw(),
+                    -8,
+                    250,
+                    1,
+                    -1600,
+                    65000,
+                    -32000,
+                    4_000_000_000,
+                    -64_000,
+                    18_000_000_000,
+                    1.25,
+                    2.5,
+                    guid,
+                    &mut output_u64,
+                    &mut actual_guid,
+                )
+            },
+            HRESULT(0)
+        );
+        assert_eq!(output_u64, 99);
+        assert_eq!(actual_guid, output_guid);
+    }
+
+    #[test]
+    fn dynamic_com_sink_libffi_round_trips_bstr_and_native_pod() {
+        let table = MetadataTable::new();
+        let layout = Arc::new(
+            NativeStructLayout::new(
+                "Test.Pair",
+                8,
+                4,
+                vec![
+                    NativeStructField::new(
+                        "first",
+                        0,
+                        1,
+                        NativeStructFieldType::Scalar(NativeStructScalar::I32),
+                    )
+                    .unwrap(),
+                    NativeStructField::new(
+                        "second",
+                        4,
+                        1,
+                        NativeStructFieldType::Scalar(NativeStructScalar::I32),
+                    )
+                    .unwrap(),
+                ],
+            )
+            .unwrap(),
+        );
+        let interface = register_interface(
+            &table,
+            "Test.ILibffiCompoundSink",
+            IID_TEST_SINK,
+            InterfaceBase::IUnknown,
+        )
+        .add_method(
+            "Invoke",
+            MethodSignature::new(&table)
+                .add_in(Type::bstr())
+                .add_in(Type::native_struct(layout.clone()))
+                .add_out(Type::bstr())
+                .add_out(Type::native_struct(layout.clone())),
+        );
+        let output_layout = layout.clone();
+        let sink = create_sink(
+            &interface,
+            Arc::new(move |_, _, values, output| {
+                assert_eq!(output, CallbackContract::hresult(2));
+                let [Value::Bstr(text), Value::NativeStruct(pair)] = values else {
+                    panic!("expected BSTR and native struct inputs");
+                };
+                assert_eq!(text.as_deref(), Some("embedded\0nul"));
+                assert_eq!(pair.bytes(), &[10, 0, 0, 0, 20, 0, 0, 0]);
+                SinkCallbackResult::with_outputs(
+                    HRESULT(0),
+                    vec![
+                        Value::Bstr(BstrValue::new("returned\0value")),
+                        Value::NativeStruct(
+                            NativeStructValue::new(
+                                output_layout.clone(),
+                                vec![30, 0, 0, 0, 40, 0, 0, 0],
+                            )
+                            .unwrap(),
+                        ),
+                    ],
+                )
+            }),
+        )
+        .unwrap();
+
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct Pair {
+            first: i32,
+            second: i32,
+        }
+
+        let input_text = windows_core::BSTR::from("embedded\0nul");
+        let input_pair = Pair {
+            first: 10,
+            second: 20,
+        };
+        let mut output_text = std::ptr::null();
+        let mut output_pair = Pair {
+            first: 0,
+            second: 0,
+        };
+        let vtable = unsafe { *(sink.as_raw() as *const *const *const c_void) };
+        let invoke: unsafe extern "system" fn(
+            *mut c_void,
+            *const u16,
+            Pair,
+            *mut *const u16,
+            *mut Pair,
+        ) -> HRESULT = unsafe { std::mem::transmute(*vtable.add(3)) };
+        assert_eq!(
+            unsafe {
+                invoke(
+                    sink.as_raw(),
+                    input_text.as_ptr(),
+                    input_pair,
+                    &mut output_text,
+                    &mut output_pair,
+                )
+            },
+            HRESULT(0)
+        );
+        let output_text = unsafe { windows_core::BSTR::from_raw(output_text) };
+        assert_eq!(String::try_from(&output_text).unwrap(), "returned\0value");
+        assert_eq!((output_pair.first, output_pair.second), (30, 40));
+
+        let mut rejected_text = std::ptr::dangling();
+        let mut rejected_pair = Pair {
+            first: -1,
+            second: -1,
+        };
+        assert_eq!(
+            unsafe {
+                invoke(
+                    sink.as_raw(),
+                    std::ptr::null(),
+                    input_pair,
+                    &mut rejected_text,
+                    &mut rejected_pair,
+                )
+            },
+            SINK_E_POINTER
+        );
+        assert!(rejected_text.is_null());
+        assert_eq!((rejected_pair.first, rejected_pair.second), (0, 0));
+    }
+
+    #[test]
+    fn dynamic_com_sink_libffi_round_trips_hstring() {
+        let table = MetadataTable::new();
+        let interface = register_interface(
+            &table,
+            "Test.ILibffiHStringSink",
+            IID_TEST_SINK,
+            InterfaceBase::IUnknown,
+        )
+        .add_method(
+            "Invoke",
+            MethodSignature::new(&table)
+                .add_in(Type::winrt(table.hstring()))
+                .add_out(Type::winrt(table.hstring())),
+        );
+        let method = interface.method(3).unwrap();
+        let sink = create_sink(
+            &interface,
+            Arc::new(move |_, _, values, output| {
+                assert_eq!(output, CallbackContract::hresult(1));
+                let [Value::WinRt(WinRTValue::HString(value))] = values else {
+                    panic!("expected HSTRING callback input");
+                };
+                assert_eq!(value, "input");
+                SinkCallbackResult::with_output(
+                    HRESULT(0),
+                    Value::WinRt(WinRTValue::HString(windows_core::HSTRING::from("output"))),
+                )
+            }),
+        )
+        .unwrap();
+        let result = unsafe {
+            method.invoke(
+                sink.as_raw(),
+                &[WinRTValue::HString(windows_core::HSTRING::from("input"))],
+            )
+        }
+        .unwrap();
+        assert!(matches!(
+            result.as_slice(),
+            [WinRTValue::HString(value)] if value == "output"
+        ));
+    }
+
+    #[test]
+    fn dynamic_com_sink_libffi_copies_counted_input_buffer() {
+        let table = MetadataTable::new();
+        let signature = MethodSignature::new(&table)
+            .add_input_buffer(
+                Type::winrt(table.u8_type()),
+                1,
+                None,
+                BufferCountUnit::Elements,
+            )
+            .unwrap()
+            .add_in(Type::winrt(table.u32_type()));
+        let interface = register_interface(
+            &table,
+            "Test.ILibffiBufferSink",
+            IID_TEST_SINK,
+            InterfaceBase::IUnknown,
+        )
+        .add_method("Invoke", signature);
+        let sink = create_sink(
+            &interface,
+            Arc::new(move |_, _, values, output| {
+                assert_eq!(output, CallbackContract::hresult(0));
+                let [Value::Buffer(buffer)] = values else {
+                    panic!("expected one counted buffer input");
+                };
+                assert_eq!(buffer.snapshot_bytes().unwrap().unwrap(), vec![1, 2, 3, 4]);
+                assert_eq!(buffer.count(), 4);
+                SinkCallbackResult::hresult(HRESULT(0))
+            }),
+        )
+        .unwrap();
+        let vtable = unsafe { *(sink.as_raw() as *const *const *const c_void) };
+        let invoke: unsafe extern "system" fn(*mut c_void, *const u8, u32) -> HRESULT =
+            unsafe { std::mem::transmute(*vtable.add(3)) };
+        let bytes = [1u8, 2, 3, 4];
+        assert_eq!(
+            unsafe { invoke(sink.as_raw(), bytes.as_ptr(), bytes.len() as u32) },
+            HRESULT(0)
+        );
+    }
+
+    #[test]
+    fn dynamic_com_sink_libffi_fills_caller_output_buffer() {
+        let table = MetadataTable::new();
+        let signature = MethodSignature::new(&table)
+            .add_caller_output_buffer(
+                Type::winrt(table.u8_type()),
+                1,
+                Some(2),
+                BufferCountUnit::Elements,
+                false,
+            )
+            .unwrap()
+            .add_in(Type::winrt(table.u32_type()))
+            .add_out(Type::winrt(table.u32_type()));
+        let interface = register_interface(
+            &table,
+            "Test.ILibffiOutputBufferSink",
+            IID_TEST_SINK,
+            InterfaceBase::IUnknown,
+        )
+        .add_method("Invoke", signature);
+        let sink = create_sink(
+            &interface,
+            Arc::new(move |_, _, values, output| {
+                assert!(matches!(values, [Value::WinRt(WinRTValue::U32(5))]));
+                assert_eq!(output, CallbackContract::hresult(1));
+                SinkCallbackResult::with_output(
+                    HRESULT(0),
+                    Value::Buffer(ComBufferValue::from_owned_bytes(vec![9, 8, 7], 3)),
+                )
+            }),
+        )
+        .unwrap();
+        let vtable = unsafe { *(sink.as_raw() as *const *const *const c_void) };
+        let invoke: unsafe extern "system" fn(*mut c_void, *mut u8, u32, *mut u32) -> HRESULT =
+            unsafe { std::mem::transmute(*vtable.add(3)) };
+        let mut bytes = [0xffu8; 5];
+        let mut actual = u32::MAX;
+        assert_eq!(
+            unsafe {
+                invoke(
+                    sink.as_raw(),
+                    bytes.as_mut_ptr(),
+                    bytes.len() as u32,
+                    &mut actual,
+                )
+            },
+            HRESULT(0)
+        );
+        assert_eq!(bytes, [9, 8, 7, 0, 0]);
+        assert_eq!(actual, 3);
+    }
+
+    #[test]
+    fn dynamic_com_sink_libffi_reads_aliased_inout_capacity_value() {
+        let table = MetadataTable::new();
+        let signature = MethodSignature::new(&table)
+            .add_caller_output_buffer(
+                Type::winrt(table.u8_type()),
+                1,
+                Some(1),
+                BufferCountUnit::Elements,
+                false,
+            )
+            .unwrap()
+            .add_in_out(Type::winrt(table.u32_type()));
+        let interface = register_interface(
+            &table,
+            "Test.ILibffiAliasedCapacitySink",
+            IID_TEST_SINK,
+            InterfaceBase::IUnknown,
+        )
+        .add_method("Invoke", signature);
+        let sink = create_sink(
+            &interface,
+            Arc::new(|_, _, values, output| {
+                assert!(values.is_empty());
+                assert_eq!(output, CallbackContract::hresult(1));
+                SinkCallbackResult::with_output(
+                    HRESULT(0),
+                    Value::Buffer(ComBufferValue::from_owned_bytes(vec![9, 8, 7], 3)),
+                )
+            }),
+        )
+        .unwrap();
+        let vtable = unsafe { *(sink.as_raw() as *const *const *const c_void) };
+        let invoke: unsafe extern "system" fn(*mut c_void, *mut u8, *mut u32) -> HRESULT =
+            unsafe { std::mem::transmute(*vtable.add(3)) };
+        let mut bytes = [0xffu8; 7];
+        let mut capacity_actual = 5;
+        assert_eq!(
+            unsafe { invoke(sink.as_raw(), bytes.as_mut_ptr(), &mut capacity_actual,) },
+            HRESULT(0)
+        );
+        assert_eq!(capacity_actual, 3);
+        assert_eq!(bytes, [9, 8, 7, 0, 0, 0xff, 0xff]);
+    }
+
+    #[test]
+    fn dynamic_com_sink_libffi_rejects_short_exact_output_buffer() {
+        let table = MetadataTable::new();
+        let signature = MethodSignature::new(&table)
+            .add_caller_output_buffer(
+                Type::winrt(table.u8_type()),
+                1,
+                None,
+                BufferCountUnit::Elements,
+                false,
+            )
+            .unwrap()
+            .add_in(Type::winrt(table.u32_type()));
+        let interface = register_interface(
+            &table,
+            "Test.ILibffiExactOutputBufferSink",
+            IID_TEST_SINK,
+            InterfaceBase::IUnknown,
+        )
+        .add_method("Invoke", signature);
+        let sink = create_sink(
+            &interface,
+            Arc::new(|_, _, values, output| {
+                assert!(matches!(values, [Value::WinRt(WinRTValue::U32(5))]));
+                assert_eq!(output, CallbackContract::hresult(1));
+                SinkCallbackResult::with_output(
+                    HRESULT(0),
+                    Value::Buffer(ComBufferValue::from_owned_bytes(vec![9, 8, 7], 3)),
+                )
+            }),
+        )
+        .unwrap();
+        let vtable = unsafe { *(sink.as_raw() as *const *const *const c_void) };
+        let invoke: unsafe extern "system" fn(*mut c_void, *mut u8, u32) -> HRESULT =
+            unsafe { std::mem::transmute(*vtable.add(3)) };
+        let mut bytes = [0xffu8; 7];
+        assert_eq!(
+            unsafe { invoke(sink.as_raw(), bytes.as_mut_ptr(), 5) },
+            SINK_E_FAIL
+        );
+        assert_eq!(bytes, [0, 0, 0, 0, 0, 0xff, 0xff]);
+    }
+
+    #[test]
+    fn dynamic_com_sink_libffi_allocates_co_task_mem_output_buffer() {
+        let table = MetadataTable::new();
+        let signature = MethodSignature::new(&table)
+            .add_callee_allocated_buffer(
+                Type::winrt(table.u8_type()),
+                1,
+                BufferCountUnit::Elements,
+                BufferAllocator::CoTaskMem,
+            )
+            .unwrap()
+            .add_out(Type::winrt(table.u32_type()));
+        let interface = register_interface(
+            &table,
+            "Test.ILibffiAllocatedBufferSink",
+            IID_TEST_SINK,
+            InterfaceBase::IUnknown,
+        )
+        .add_method("Invoke", signature);
+        let sink = create_sink(
+            &interface,
+            Arc::new(move |_, _, values, output| {
+                assert!(values.is_empty());
+                assert_eq!(output, CallbackContract::hresult(1));
+                SinkCallbackResult::with_output(
+                    HRESULT(0),
+                    Value::Buffer(ComBufferValue::from_owned_bytes(vec![4, 5, 6], 3)),
+                )
+            }),
+        )
+        .unwrap();
+        let vtable = unsafe { *(sink.as_raw() as *const *const *const c_void) };
+        let invoke: unsafe extern "system" fn(*mut c_void, *mut *mut u8, *mut u32) -> HRESULT =
+            unsafe { std::mem::transmute(*vtable.add(3)) };
+        let mut bytes = std::ptr::dangling_mut::<u8>();
+        let mut count = u32::MAX;
+        assert_eq!(
+            unsafe { invoke(sink.as_raw(), &mut bytes, &mut count) },
+            HRESULT(0)
+        );
+        assert_eq!(count, 3);
+        assert_eq!(
+            unsafe { std::slice::from_raw_parts(bytes, count as usize) },
+            [4, 5, 6]
+        );
+        unsafe { windows::Win32::System::Com::CoTaskMemFree(Some(bytes.cast())) };
+    }
+
+    #[test]
+    fn dynamic_com_sink_libffi_rolls_back_owned_outputs_before_commit() {
+        let table = MetadataTable::new();
+        let source = create_sink(
+            &sink_interface(IID_TEST_SINK, &[StaticCallbackShape::InterfaceIn1]),
+            Arc::new(|_, _, _, _| SinkCallbackResult::hresult(HRESULT(0))),
+        )
+        .unwrap();
+        let probe_ref_count = |value: &IUnknown| {
+            let vtable = unsafe { *(value.as_raw() as *const *const windows_core::IUnknown_Vtbl) };
+            let added = unsafe { ((*vtable).AddRef)(value.as_raw()) };
+            let restored = unsafe { ((*vtable).Release)(value.as_raw()) };
+            assert_eq!(added, restored + 1);
+            restored
+        };
+        let baseline_refs = probe_ref_count(&source);
+        let source_raw = source.as_raw() as usize;
+        let signature = MethodSignature::new(&table)
+            .add_out(Type::winrt(table.interface(IUnknown::IID)))
+            .add_callee_allocated_buffer(
+                Type::winrt(table.u8_type()),
+                2,
+                BufferCountUnit::Elements,
+                BufferAllocator::CoTaskMem,
+            )
+            .unwrap()
+            .add_out(Type::winrt(table.u32_type()));
+        let interface = register_interface(
+            &table,
+            "Test.ITransactionalOutputSink",
+            GUID::from_u128(0xd76be352_ef91_4202_85cb_672e2dbf3474),
+            InterfaceBase::IUnknown,
+        )
+        .add_method("Invoke", signature);
+        let sink = create_sink(
+            &interface,
+            Arc::new(move |_, _, _, output| {
+                assert_eq!(output, CallbackContract::hresult(2));
+                let raw = source_raw as *mut c_void;
+                let object = unsafe { IUnknown::from_raw_borrowed(&raw) }
+                    .expect("retained callback output object")
+                    .clone();
+                SinkCallbackResult::with_outputs(
+                    HRESULT(0),
+                    vec![
+                        Value::WinRt(WinRTValue::Object(object)),
+                        Value::Buffer(ComBufferValue::from_owned_bytes(vec![1, 2, 3], 3)),
+                    ],
+                )
+            }),
+        )
+        .unwrap();
+        let vtable = unsafe { *(sink.as_raw() as *const *const *const c_void) };
+        let invoke: unsafe extern "system" fn(
+            *mut c_void,
+            *mut *mut c_void,
+            *mut *mut u8,
+            *mut u32,
+        ) -> HRESULT = unsafe { std::mem::transmute(*vtable.add(3)) };
+        let mut object = std::ptr::dangling_mut();
+        let mut bytes = std::ptr::dangling_mut();
+        let mut count = u32::MAX;
+        FAIL_NEXT_CALLBACK_COTASKMEM_ALLOC.with(|fail| fail.set(true));
+        assert_eq!(
+            unsafe { invoke(sink.as_raw(), &mut object, &mut bytes, &mut count) },
+            SINK_E_OUTOFMEMORY
+        );
+        let refs_after_failure = probe_ref_count(&source);
+        let leaked_object = object;
+        let leaked_bytes = bytes;
+        if !leaked_object.is_null() {
+            unsafe { drop(IUnknown::from_raw(leaked_object)) };
+        }
+        if !leaked_bytes.is_null() {
+            unsafe { windows::Win32::System::Com::CoTaskMemFree(Some(leaked_bytes.cast())) };
+        }
+        assert!(leaked_object.is_null());
+        assert!(leaked_bytes.is_null());
+        assert_eq!(count, 0);
+        assert_eq!(refs_after_failure, baseline_refs);
+    }
+
+    #[test]
+    fn dynamic_com_sink_libffi_round_trips_handle_values() {
+        let table = MetadataTable::new();
+        let interface = register_interface(
+            &table,
+            "Test.ILibffiHandleSink",
+            IID_TEST_SINK,
+            InterfaceBase::IUnknown,
+        )
+        .add_method(
+            "Invoke",
+            MethodSignature::new(&table)
+                .add_in(Type::pointer())
+                .add_out(Type::pointer()),
+        );
+        let expected_bits = 0x1234usize;
+        let expected = expected_bits as *mut c_void;
+        let sink = create_sink(
+            &interface,
+            Arc::new(move |_, _, values, output| {
+                let expected = expected_bits as *mut c_void;
+                assert_eq!(output, CallbackContract::hresult(1));
+                assert!(matches!(
+                    values,
+                    [Value::WinRt(WinRTValue::RawPtr(value))] if *value == expected
+                ));
+                SinkCallbackResult::with_output(
+                    HRESULT(0),
+                    Value::WinRt(WinRTValue::RawPtr(expected)),
+                )
+            }),
+        )
+        .unwrap();
+        let vtable = unsafe { *(sink.as_raw() as *const *const *const c_void) };
+        let invoke: unsafe extern "system" fn(
+            *mut c_void,
+            *mut c_void,
+            *mut *mut c_void,
+        ) -> HRESULT = unsafe { std::mem::transmute(*vtable.add(3)) };
+        let mut output = std::ptr::null_mut();
+        assert_eq!(
+            unsafe { invoke(sink.as_raw(), expected, &mut output) },
+            HRESULT(0)
+        );
+        assert_eq!(output, expected);
+    }
+
+    #[test]
+    fn dynamic_com_sink_libffi_addrefs_interface_outputs() {
+        let table = MetadataTable::new();
+        let source = create_sink(
+            &sink_interface(IID_TEST_SINK, &[StaticCallbackShape::InterfaceIn1]),
+            Arc::new(|_, _, _, _| SinkCallbackResult::hresult(HRESULT(0))),
+        )
+        .unwrap();
+        let retained = source.as_raw() as usize;
+        let interface = register_interface(
+            &table,
+            "Test.ILibffiInterfaceOutputSink",
+            GUID::from_u128(0xfdd1f02a_03b6_4b49_a3f6_8bba9b013779),
+            InterfaceBase::IUnknown,
+        )
+        .add_method(
+            "Invoke",
+            MethodSignature::new(&table).add_out(Type::winrt(table.interface(IUnknown::IID))),
+        );
+        let sink = create_sink(
+            &interface,
+            Arc::new(move |_, _, values, output| {
+                assert!(values.is_empty());
+                assert_eq!(output, CallbackContract::hresult(1));
+                let raw = retained as *mut c_void;
+                let retained = unsafe { IUnknown::from_raw_borrowed(&raw) }
+                    .expect("retained test COM object")
+                    .clone();
+                SinkCallbackResult::with_output(
+                    HRESULT(0),
+                    Value::WinRt(WinRTValue::Object(retained)),
+                )
+            }),
+        )
+        .unwrap();
+        let vtable = unsafe { *(sink.as_raw() as *const *const *const c_void) };
+        let invoke: unsafe extern "system" fn(*mut c_void, *mut *mut c_void) -> HRESULT =
+            unsafe { std::mem::transmute(*vtable.add(3)) };
+        let mut output = std::ptr::null_mut();
+        assert_eq!(unsafe { invoke(sink.as_raw(), &mut output) }, HRESULT(0));
+        let mut expected = std::ptr::null_mut();
+        unsafe { source.query(&IUnknown::IID, &mut expected) }
+            .ok()
+            .unwrap();
+        assert_eq!(output, expected);
+        unsafe { drop(IUnknown::from_raw(expected)) };
+        unsafe { drop(IUnknown::from_raw(output)) };
+    }
+
+    #[test]
+    fn dynamic_com_sink_libffi_queries_typed_interface_outputs() {
+        const IID_EXPECTED: GUID = GUID::from_u128(0x3381cf13_03ba_4a87_94d3_d684a34e50f7);
+        const IID_RETURNED: GUID = GUID::from_u128(0x124f66d5_7a1c_4d4a_b4c5_a347e8c8980d);
+        let table = MetadataTable::new();
+        let expected = register_interface(
+            &table,
+            "Test.IExpectedCallbackOutput",
+            IID_EXPECTED,
+            InterfaceBase::IUnknown,
+        )
+        .add_method("Invoke", MethodSignature::new(&table));
+        let returned = register_interface(
+            &table,
+            "Test.IReturnedCallbackOutput",
+            IID_RETURNED,
+            InterfaceBase::IUnknown,
+        )
+        .add_method("Invoke", MethodSignature::new(&table));
+        let source = create_object(
+            &[expected, returned],
+            Arc::new(|_, _, _, _| SinkCallbackResult::hresult(HRESULT(0))),
+        )
+        .unwrap();
+        let query = |iid: &GUID| {
+            let mut value = std::ptr::null_mut();
+            unsafe { source.query(iid, &mut value) }.ok().unwrap();
+            unsafe { IUnknown::from_raw(value) }
+        };
+        let expected_view = query(&IID_EXPECTED);
+        let returned_view = query(&IID_RETURNED);
+        assert_ne!(expected_view.as_raw(), returned_view.as_raw());
+
+        let returned_raw = returned_view.as_raw() as usize;
+        let output_interface = register_interface(
+            &table,
+            "Test.ITypedCallbackOutputSink",
+            IID_TEST_SINK,
+            InterfaceBase::IUnknown,
+        )
+        .add_method(
+            "Invoke",
+            MethodSignature::new(&table).add_out(Type::winrt(table.interface(IID_EXPECTED))),
+        );
+        let sink = create_sink(
+            &output_interface,
+            Arc::new(move |_, _, _, _| {
+                let raw = returned_raw as *mut c_void;
+                let returned = unsafe { IUnknown::from_raw_borrowed(&raw) }
+                    .expect("retained returned interface view")
+                    .clone();
+                SinkCallbackResult::with_output(
+                    HRESULT(0),
+                    Value::WinRt(WinRTValue::Object(returned)),
+                )
+            }),
+        )
+        .unwrap();
+        let vtable = unsafe { *(sink.as_raw() as *const *const *const c_void) };
+        let invoke: unsafe extern "system" fn(*mut c_void, *mut *mut c_void) -> HRESULT =
+            unsafe { std::mem::transmute(*vtable.add(3)) };
+        let mut output = std::ptr::null_mut();
+        assert_eq!(unsafe { invoke(sink.as_raw(), &mut output) }, HRESULT(0));
+        assert_eq!(output, expected_view.as_raw());
+        assert_ne!(output, returned_view.as_raw());
+        unsafe { drop(IUnknown::from_raw(output)) };
+
+        let foreign = create_object(
+            &[register_interface(
+                &table,
+                "Test.IForeignCallbackOutput",
+                IID_RETURNED,
+                InterfaceBase::IUnknown,
+            )
+            .add_method("Invoke", MethodSignature::new(&table))],
+            Arc::new(|_, _, _, _| SinkCallbackResult::hresult(HRESULT(0))),
+        )
+        .unwrap();
+        let mut foreign_view = std::ptr::null_mut();
+        unsafe { foreign.query(&IID_RETURNED, &mut foreign_view) }
+            .ok()
+            .unwrap();
+        let foreign_view = unsafe { IUnknown::from_raw(foreign_view) };
+        let foreign_raw = foreign_view.as_raw() as usize;
+        let foreign_sink = create_sink(
+            &output_interface,
+            Arc::new(move |_, _, _, _| {
+                let raw = foreign_raw as *mut c_void;
+                let foreign = unsafe { IUnknown::from_raw_borrowed(&raw) }
+                    .expect("retained foreign interface view")
+                    .clone();
+                SinkCallbackResult::with_output(
+                    HRESULT(0),
+                    Value::WinRt(WinRTValue::Object(foreign)),
+                )
+            }),
+        )
+        .unwrap();
+        let vtable = unsafe { *(foreign_sink.as_raw() as *const *const *const c_void) };
+        let invoke: unsafe extern "system" fn(*mut c_void, *mut *mut c_void) -> HRESULT =
+            unsafe { std::mem::transmute(*vtable.add(3)) };
+        output = std::ptr::dangling_mut();
+        assert_eq!(
+            unsafe { invoke(foreign_sink.as_raw(), &mut output) },
+            SINK_E_NOINTERFACE
+        );
+        assert!(output.is_null());
+
+        let null_sink = create_sink(
+            &output_interface,
+            Arc::new(|_, _, _, _| {
+                SinkCallbackResult::with_output(HRESULT(0), Value::WinRt(WinRTValue::Null))
+            }),
+        )
+        .unwrap();
+        let vtable = unsafe { *(null_sink.as_raw() as *const *const *const c_void) };
+        let invoke: unsafe extern "system" fn(*mut c_void, *mut *mut c_void) -> HRESULT =
+            unsafe { std::mem::transmute(*vtable.add(3)) };
+        output = std::ptr::dangling_mut();
+        assert_eq!(
+            unsafe { invoke(null_sink.as_raw(), &mut output) },
+            SINK_E_FAIL
+        );
+        assert!(output.is_null());
+    }
+
+    #[test]
+    fn dynamic_com_sink_libffi_supports_vtables_larger_than_static_fast_path() {
+        let table = MetadataTable::new();
+        let mut interface = register_interface(
+            &table,
+            "Test.ILargeLibffiSink",
+            IID_TEST_SINK,
+            InterfaceBase::IUnknown,
+        );
+        for index in 0..17 {
+            interface = interface.add_method(
+                &format!("Invoke{index}"),
+                MethodSignature::new(&table).add_in(Type::winrt(table.i32_type())),
+            );
+        }
+        let sink = create_sink(
+            &interface,
+            Arc::new(|_, slot, values, contract| {
+                assert_eq!(slot, 19);
+                assert_eq!(values.len(), 1);
+                assert_eq!(contract, CallbackContract::hresult(0));
+                SinkCallbackResult::hresult(HRESULT(17))
+            }),
+        )
+        .unwrap();
+        let vtable = unsafe { *(sink.as_raw() as *const *const *const c_void) };
+        let invoke: unsafe extern "system" fn(*mut c_void, i32) -> HRESULT =
+            unsafe { std::mem::transmute(*vtable.add(19)) };
+        assert_eq!(unsafe { invoke(sink.as_raw(), 1) }, HRESULT(17));
+    }
+
+    #[test]
+    fn dynamic_com_object_exposes_multiple_interfaces_with_canonical_identity() {
+        const IID_FIRST: GUID = GUID::from_u128(0x8aab87f3_1b12_4494_a664_15157b113f93);
+        const IID_SECOND: GUID = GUID::from_u128(0x506d20b3_30e8_4d7f_94bc_29a0c1a6b5ca);
+        const IID_FIRST_BASE: GUID = GUID::from_u128(0x4f023f97_329f_4d66_969d_0d85629a863d);
+        let table = MetadataTable::new();
+        let first = register_interface(&table, "Test.IFirst", IID_FIRST, InterfaceBase::IUnknown)
+            .add_method(
+                "Invoke",
+                MethodSignature::new(&table).add_in(Type::winrt(table.i32_type())),
+            )
+            .add_base_interface(IID_FIRST_BASE)
+            .unwrap();
+        let second =
+            register_interface(&table, "Test.ISecond", IID_SECOND, InterfaceBase::IUnknown)
+                .add_method("Invoke", MethodSignature::new(&table));
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let retained = calls.clone();
+        let object = create_object(
+            &[first, second],
+            Arc::new(move |iid, slot, values, output| {
+                assert_eq!(slot, 3);
+                assert_eq!(output, CallbackContract::hresult(0));
+                retained.lock().unwrap().push((iid, values.len()));
+                SinkCallbackResult::hresult(HRESULT(0))
+            }),
+        )
+        .unwrap();
+
+        let query = |iid: &GUID| {
+            let mut value = std::ptr::null_mut();
+            unsafe { object.query(iid, &mut value) }.ok().unwrap();
+            unsafe { IUnknown::from_raw(value) }
+        };
+        let first = query(&IID_FIRST);
+        let first_base = query(&IID_FIRST_BASE);
+        let second = query(&IID_SECOND);
+        assert_eq!(first.as_raw(), first_base.as_raw());
+        assert_ne!(first.as_raw(), second.as_raw());
+
+        let first_vtable = unsafe { *(first.as_raw() as *const *const *const c_void) };
+        let first_invoke: unsafe extern "system" fn(*mut c_void, i32) -> HRESULT =
+            unsafe { std::mem::transmute(*first_vtable.add(3)) };
+        assert_eq!(unsafe { first_invoke(first.as_raw(), 5) }, HRESULT(0));
+
+        let second_vtable = unsafe { *(second.as_raw() as *const *const *const c_void) };
+        let second_invoke: unsafe extern "system" fn(*mut c_void) -> HRESULT =
+            unsafe { std::mem::transmute(*second_vtable.add(3)) };
+        assert_eq!(unsafe { second_invoke(second.as_raw()) }, HRESULT(0));
+
+        let mut first_identity = std::ptr::null_mut();
+        let mut second_identity = std::ptr::null_mut();
+        unsafe { first.query(&IUnknown::IID, &mut first_identity) }
+            .ok()
+            .unwrap();
+        unsafe { second.query(&IUnknown::IID, &mut second_identity) }
+            .ok()
+            .unwrap();
+        assert_eq!(first_identity, object.as_raw());
+        assert_eq!(second_identity, object.as_raw());
+        unsafe { drop(IUnknown::from_raw(first_identity)) };
+        unsafe { drop(IUnknown::from_raw(second_identity)) };
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![(IID_FIRST, 1), (IID_SECOND, 0)]
+        );
+    }
     use windows_core::{HSTRING, w};
 
     #[repr(C)]
