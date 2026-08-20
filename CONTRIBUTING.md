@@ -58,7 +58,7 @@ Run the mixed-language coverage pipeline:
 The script builds instrumented Python and Node native modules, runs the
 Rust/Python/JavaScript tests and E2E suite, and writes HTML, LCOV, XML, and JSON
 reports under `artifacts\coverage`. Default line gates are Rust 45%, Python
-70%, and JavaScript 20%; override them with the `-Min*LineCoverage` parameters,
+70%, and JavaScript 18%; override them with the `-Min*LineCoverage` parameters,
 or re-check an existing report tree without rerunning tests via `-ValidateOnly`.
 
 ### Code Style

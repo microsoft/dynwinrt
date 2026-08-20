@@ -37,7 +37,7 @@ Assert-ExpectedFailure {
         -ValidateOnly `
         -MinRustLineCoverage 47 `
         -MinPythonLineCoverage 70 `
-        -MinJavaScriptLineCoverage 20
+        -MinJavaScriptLineCoverage 18
 } "Rust line coverage 46.67% is below the required 47%"
 
 Write-Host "Validating JavaScript threshold failures..."
@@ -47,7 +47,7 @@ Assert-ExpectedFailure {
         -ValidateOnly `
         -MinRustLineCoverage 45 `
         -MinPythonLineCoverage 70 `
-        -MinJavaScriptLineCoverage 23
-} "JavaScript aggregate line coverage 22.19% is below the required 23%"
+        -MinJavaScriptLineCoverage 19
+} "JavaScript aggregate line coverage 18.77% is below the required 19%"
 
 Write-Host "Coverage threshold validation passed."

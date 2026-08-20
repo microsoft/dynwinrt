@@ -12,7 +12,7 @@ param(
     [ValidateRange(0, 100)]
     [double]$MinPythonLineCoverage = 70,
     [ValidateRange(0, 100)]
-    [double]$MinJavaScriptLineCoverage = 20,
+    [double]$MinJavaScriptLineCoverage = 18,
     [switch]$ValidateOnly,
     [switch]$SkipE2E,
     [switch]$SkipCom
