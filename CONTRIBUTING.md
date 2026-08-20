@@ -64,7 +64,7 @@ or re-check an existing report tree without rerunning tests via `-ValidateOnly`.
 ### Code Style
 
 - Run `cargo clippy` before submitting PRs
-- Run `cargo fmt` to format code
+- Run `cargo fmt --all` to format code; CI enforces `cargo fmt --all -- --check`
 - Follow standard Rust conventions
 
 ## Filing Issues

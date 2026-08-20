@@ -11,8 +11,25 @@ on:
     branches: [main]
 
 jobs:
+  format:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Check Rust formatting
+        shell: pwsh
+        run: |
+          cargo fmt --all -- --check
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Rust formatting failed. Run 'cargo fmt --all' and commit the changes."
+            exit 1
+          }
+
   # Tests
   test:
+    needs: format
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4

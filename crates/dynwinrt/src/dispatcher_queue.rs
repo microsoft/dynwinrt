@@ -7,7 +7,7 @@ use windows::System::{
     DispatcherQueueShutdownStartingEventArgs,
 };
 use windows::Win32::System::WinRT::{
-    CreateDispatcherQueueController, DispatcherQueueOptions, DQTAT_COM_STA, DQTYPE_THREAD_CURRENT,
+    CreateDispatcherQueueController, DQTAT_COM_STA, DQTYPE_THREAD_CURRENT, DispatcherQueueOptions,
 };
 
 /// A cloneable handle that can enqueue work from any thread onto a captured
