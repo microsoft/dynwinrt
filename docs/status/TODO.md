@@ -56,9 +56,11 @@ _None currently. Reserved for issues that make v0.1 unshippable (crash on happy 
 
 - [ ] **Codegen: `--class-name` docs vs `--class` CLI**. The CLI derives the flag from the field name (`class_name` → `--class-name`), and docs use `--class-name`. Confirm both are wired consistently and that any lingering `--class` example is updated. (One instance in `main.rs` after_help was fixed in this review round.)
 
-- [ ] **Codegen: snapshot coverage too narrow**. Only `Windows.Foundation.Uri` is snapshotted. Add snapshots for (a) an event-heavy type exercising `on*` / `off*` emission, (b) a parameterized interface / generic instantiation, (c) a class exercising inherited-interface flattening. Otherwise the recent IR refactors have no regression net.
-
-- [ ] **Rust: array typed getter can panic on bad index**. `crates/dynwinrt/src/array.rs:317` — `ArrayBuffer::Values(v) => v[index].as_i32().unwrap()` uses unchecked indexing while the CoTaskMem branch bounds-checks. Unify.
+- [ ] **Codegen: snapshot coverage too narrow**. Python snapshots now cover
+  `Windows.Foundation.Uri` and the method-rich
+  `Windows.Storage.Streams.DataWriter`, but event-heavy types, parameterized
+  interfaces, and inherited-interface flattening still need dedicated
+  snapshots.
 
 - [ ] **Rust: `AppendOnlyBoxArena::stable_ptr` panics on out-of-range**. `crates/dynwinrt/src/metadata_table/append_only_arena.rs:45-49` — trusted internal use, but the invariant is undocumented and callers can drift. Add a documented safety contract and a debug assertion (or return `Option`).
 
@@ -137,6 +139,7 @@ Kept for reference; git history is the source of truth. Grouped by area.
 - [x] `lock_or!` macro returns HRESULT on poisoning instead of panicking across FFI
 - [x] Nested struct recursive Clone/Drop (HString, COM pointers in nested structs)
 - [x] `ArrayData::get()` returns `WinRTValue::Null` for null COM elements instead of `IUnknown::from_raw(null)` (UB fix)
+- [x] `ArrayData::get_i32()` returns checked `Result<i32>` errors for invalid indices/types across Values and CoTaskMem arrays
 - [x] FillArray / ReceiveArray error paths use `ArrayData::drop` for per-element release; `ArrayOutSlot` + `FillArraySlot` have Drop impls
 - [x] FillArray `actual_count` clamped to `capacity` (OOB read prevention)
 - [x] F32 delegate ABI: separate f32/f64 trampolines for 1- and 2-param delegates

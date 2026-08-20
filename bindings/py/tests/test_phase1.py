@@ -44,9 +44,11 @@ from dynwinrt import (
 from dynwinrt.dynwinrt import (
     _DynWinRTAsync,
     _DynWinRTAsyncWithProgress,
+    _dynwinrt_cache_projected,
     _dynwinrt_dispatch_progress,
     _dynwinrt_datetime_to_ticks,
     _dynwinrt_new_vector,
+    _dynwinrt_projected_from_native,
     _dynwinrt_track_projected,
     _dynwinrt_ticks_to_datetime,
     _dynwinrt_ticks_to_timedelta,
@@ -68,6 +70,36 @@ def _setup_module():
 
 
 _setup_module()
+
+
+def _projected_wrapper_type(name):
+    class Wrapper:
+        def __new__(cls, *args, **kwargs):
+            if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):
+                return _dynwinrt_projected_from_native(
+                    cls,
+                    args[0],
+                    "_set_native",
+                )
+            return super().__new__(cls)
+
+        def _set_native(self, obj):
+            self._obj = obj
+            self._dynwinrt_native_ready = True
+            _dynwinrt_track_projected(self, f"Tests.{name}")
+            _dynwinrt_cache_projected(self)
+
+        def __init__(self, obj):
+            if getattr(self, "_dynwinrt_native_ready", False):
+                return
+            type(self)._set_native(self, obj)
+
+        @classmethod
+        def _from_native(cls, obj):
+            return cls(obj)
+
+    Wrapper.__name__ = name
+    return Wrapper
 
 
 # ----------------------------------------------------------------------
@@ -412,6 +444,157 @@ def test_com_identity_and_element_factory_callback_release():
         value.release()
         uri_factory.release()
         factory.release()
+
+
+def test_projected_identity_cache_reuses_live_wrappers_and_skips_released_ones():
+    Wrapper = _projected_wrapper_type("IdentityWrapper")
+
+    with RoApartment(1):
+        raw = DynWinRTValue.activation_factory("Windows.Foundation.Uri")
+        wrapped = Wrapper._from_native(raw)
+        assert weakref.ref(wrapped)() is wrapped
+
+        duplicate = raw.cast(WinGUID.parse(IID_IURI_FACTORY))
+        assert Wrapper._from_native(duplicate) is wrapped
+        assert duplicate.is_null()
+
+        revival = raw.cast(WinGUID.parse(IID_IURI_FACTORY))
+        release_projected(wrapped)
+        assert raw.is_null()
+
+        revived = Wrapper._from_native(revival)
+        assert revived is not wrapped
+        release_projected(revived)
+
+
+def test_projected_identity_cache_is_partitioned_by_lifetime_scope():
+    Wrapper = _projected_wrapper_type("ScopedIdentityWrapper")
+
+    with RoApartment(1):
+        raw = DynWinRTValue.activation_factory("Windows.Foundation.Uri")
+        carried = raw.cast(WinGUID.parse(IID_IURI_FACTORY))
+
+        with projected_lifetime_scope():
+            scoped = Wrapper._from_native(raw)
+            assert Wrapper._from_native(raw) is scoped
+
+        assert scoped._obj.is_null()
+        unscoped = Wrapper._from_native(carried)
+        assert unscoped is not scoped
+        release_projected(unscoped)
+
+
+def test_projected_identity_cache_allows_non_weakrefable_wrappers():
+    class SlottedWrapper:
+        __slots__ = ("_obj", "_dynwinrt_native_ready")
+
+        def __new__(cls, *args, **kwargs):
+            if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):
+                return _dynwinrt_projected_from_native(
+                    cls,
+                    args[0],
+                    "_set_native",
+                )
+            return super().__new__(cls)
+
+        def _set_native(self, obj):
+            self._obj = obj
+            self._dynwinrt_native_ready = True
+            _dynwinrt_track_projected(self, "Tests.SlottedWrapper")
+            _dynwinrt_cache_projected(self)
+
+        def __init__(self, obj):
+            if getattr(self, "_dynwinrt_native_ready", False):
+                return
+            type(self)._set_native(self, obj)
+
+        @classmethod
+        def _from_native(cls, obj):
+            return cls(obj)
+
+    with RoApartment(1):
+        first_raw = DynWinRTValue.activation_factory("Windows.Foundation.Uri")
+        first = SlottedWrapper._from_native(first_raw)
+        second_raw = first_raw.cast(WinGUID.parse(IID_IURI_FACTORY))
+        second = SlottedWrapper._from_native(second_raw)
+
+        assert first is not second
+        release_projected(first)
+        release_projected(second)
+
+
+def test_direct_projected_uri_constructor_registers_final_self_in_identity_cache():
+    factory_iid = WinGUID.parse(IID_IURI_FACTORY)
+    uri_iid = WinGUID.parse(IID_IURI)
+    factory_type = DynWinRTType.register_interface(
+        "ProjectedUriIdentityFactory",
+        factory_iid,
+    ).add_method(
+        "CreateUri",
+        DynWinRTMethodSig()
+        .add_in(DynWinRTType.hstring())
+        .add_out(DynWinRTType.object()),
+    )
+    uri_type = DynWinRTType.register_interface(
+        "ProjectedUriIdentityClass",
+        uri_iid,
+    ).add_method(
+        "get_AbsoluteUri",
+        DynWinRTMethodSig().add_out(DynWinRTType.hstring()),
+    )
+
+    class ProjectedUri:
+        def __new__(cls, *args, **kwargs):
+            if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):
+                return _dynwinrt_projected_from_native(
+                    cls,
+                    args[0],
+                    "_set_native",
+                )
+            return super().__new__(cls)
+
+        def _set_native(self, obj):
+            self._obj = obj.cast(uri_iid)
+            self._dynwinrt_native_ready = True
+            _dynwinrt_track_projected(self, "Windows.Foundation.Uri")
+            _dynwinrt_cache_projected(self)
+
+        def __init__(self, *args, **kwargs):
+            if getattr(self, "_dynwinrt_native_ready", False):
+                return
+            if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):
+                self._set_native(args[0])
+                return
+            if len(args) == 1 and not kwargs and isinstance(args[0], str):
+                self._set_native(type(self).create_uri(args[0])._obj)
+                return
+            raise TypeError("No matching constructor for ProjectedUri")
+
+        @classmethod
+        def _from_native(cls, obj):
+            return cls(obj)
+
+        @staticmethod
+        def create_uri(uri):
+            factory = DynWinRTValue.activation_factory("Windows.Foundation.Uri").cast(
+                factory_iid,
+            )
+            return ProjectedUri._from_native(
+                factory_type.method(6).invoke(
+                    factory,
+                    [DynWinRTValue.from_hstring(uri)],
+                ),
+            )
+
+        @property
+        def absolute_uri(self):
+            return uri_type.method(6).invoke(self._obj, []).to_string()
+
+    with RoApartment(1):
+        uri = ProjectedUri("https://example.com/path")
+        assert ProjectedUri(uri._obj) is uri
+        assert uri.absolute_uri == "https://example.com/path"
+        release_projected(uri)
 
 
 def test_native_override_interface_rejects_unknown_or_unsupported_callback_shapes():
@@ -820,6 +1003,24 @@ def test_from_bytes_accepts_bytearray():
 def test_winrt_datetime_round_trip():
     value = datetime(2024, 1, 2, 3, 4, 5, 678901, tzinfo=timezone.utc)
     assert _dynwinrt_ticks_to_datetime(_dynwinrt_datetime_to_ticks(value)) == value
+
+
+def test_winrt_datetime_normalizes_offsets_and_rejects_naive_values():
+    value = datetime(
+        2024,
+        1,
+        2,
+        11,
+        4,
+        5,
+        678901,
+        tzinfo=timezone(timedelta(hours=8)),
+    )
+    expected = datetime(2024, 1, 2, 3, 4, 5, 678901, tzinfo=timezone.utc)
+    assert _dynwinrt_ticks_to_datetime(_dynwinrt_datetime_to_ticks(value)) == expected
+
+    with pytest.raises(ValueError, match="timezone-aware"):
+        _dynwinrt_datetime_to_ticks(datetime(2024, 1, 2, 3, 4, 5))
 
 
 @pytest.mark.parametrize(

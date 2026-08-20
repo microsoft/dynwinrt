@@ -29,6 +29,83 @@ fn py_runtime_namespaced_symbol(namespace: &str, type_name: &str, symbol_name: &
     )
 }
 
+fn py_enum_instance_guard(name: &str) -> String {
+    format!("isinstance({name}, __import__('enum').Enum)")
+}
+
+fn py_exact_int_guard(name: &str) -> String {
+    format!(
+        "isinstance({name}, int) and not isinstance({name}, bool) and not {}",
+        py_enum_instance_guard(name)
+    )
+}
+
+fn py_real_number_guard(name: &str) -> String {
+    format!(
+        "isinstance({name}, (int, float)) and not isinstance({name}, bool) and not {}",
+        py_enum_instance_guard(name)
+    )
+}
+
+pub(crate) fn py_integer_bounds(typ: &TypeMeta) -> Option<(i128, i128)> {
+    match typ {
+        TypeMeta::I8 => Some((i8::MIN as i128, i8::MAX as i128)),
+        TypeMeta::U8 => Some((u8::MIN as i128, u8::MAX as i128)),
+        TypeMeta::I16 => Some((i16::MIN as i128, i16::MAX as i128)),
+        TypeMeta::U16 => Some((u16::MIN as i128, u16::MAX as i128)),
+        TypeMeta::I32 => Some((i32::MIN as i128, i32::MAX as i128)),
+        TypeMeta::U32 => Some((u32::MIN as i128, u32::MAX as i128)),
+        TypeMeta::I64 => Some((i64::MIN as i128, i64::MAX as i128)),
+        TypeMeta::U64 => Some((u64::MIN as i128, u64::MAX as i128)),
+        _ => None,
+    }
+}
+
+/// Return a stable overload-dispatch sort key for a projected Python argument type.
+///
+/// Python overload dispatch is branch-ordered, so same-arity branches need a
+/// canonical specificity order that does not depend on WinMD declaration order.
+/// We prefer exact bool/char/string shapes first, then narrower integer ranges
+/// (signed before unsigned when widths overlap), and finally float fallbacks.
+/// Enums sort after numeric branches because numeric guards reject `Enum`
+/// instances, so plain ints still prefer numeric overloads while generated
+/// `IntEnum`/`IntFlag` values reach their exact enum branch.
+/// `IReference<T>` sorts just after `T` so concrete values prefer the
+/// non-nullable overload while `None` still resolves to the nullable branch.
+pub(crate) fn py_dispatch_type_sort_key(typ: &TypeMeta) -> (u8, u16, u8, u8, String) {
+    if let Some(inner) = ireference_inner_type(typ) {
+        let (category, width, detail, _, label) = py_dispatch_type_sort_key(inner);
+        let label = if label.is_empty() {
+            "IReference".to_string()
+        } else {
+            format!("IReference<{label}>")
+        };
+        return (category, width, detail, 1, label);
+    }
+
+    match typ {
+        TypeMeta::Bool => (0, 0, 0, 0, String::new()),
+        TypeMeta::Char16 => (1, 0, 0, 0, String::new()),
+        TypeMeta::String => (2, 0, 0, 0, String::new()),
+        TypeMeta::I8 => (3, 8, 0, 0, String::new()),
+        TypeMeta::U8 => (3, 8, 1, 0, String::new()),
+        TypeMeta::I16 => (3, 16, 0, 0, String::new()),
+        TypeMeta::U16 => (3, 16, 1, 0, String::new()),
+        TypeMeta::I32 => (3, 32, 0, 0, String::new()),
+        TypeMeta::U32 => (3, 32, 1, 0, String::new()),
+        TypeMeta::I64 => (3, 64, 0, 0, String::new()),
+        TypeMeta::U64 => (3, 64, 1, 0, String::new()),
+        // Python's native float is a C double, so prefer F64 when both float
+        // widths would otherwise accept the same runtime value.
+        TypeMeta::F64 => (4, 0, 0, 0, String::new()),
+        TypeMeta::F32 => (4, 1, 0, 0, String::new()),
+        TypeMeta::Enum { name, .. } => (5, 0, 0, 0, name.clone()),
+        TypeMeta::Guid => (6, 0, 0, 0, "Guid".to_string()),
+        TypeMeta::Array(_) => (7, 0, 0, 0, format!("{typ:?}")),
+        _ => (8, 0, 0, 0, format!("{typ:?}")),
+    }
+}
+
 // ======================================================================
 // Python type expression
 // ======================================================================
@@ -439,22 +516,15 @@ pub(crate) fn py_type_guard(name: &str, typ: &TypeMeta, known_types: &HashSet<St
             );
         }
     }
+    if let Some((min, max)) = py_integer_bounds(typ) {
+        return format!("{} and {min} <= {name} <= {max}", py_exact_int_guard(name));
+    }
     match typ {
         TypeMeta::Bool => format!("isinstance({name}, bool)"),
-        TypeMeta::I8
-        | TypeMeta::U8
-        | TypeMeta::I16
-        | TypeMeta::U16
-        | TypeMeta::I32
-        | TypeMeta::U32
-        | TypeMeta::I64
-        | TypeMeta::U64 => {
-            format!("isinstance({name}, int) and not isinstance({name}, bool)")
+        TypeMeta::F32 | TypeMeta::F64 => py_real_number_guard(name),
+        TypeMeta::Char16 => {
+            format!("isinstance({name}, str) and len({name}) == 1 and ord({name}) <= 65535")
         }
-        TypeMeta::F32 | TypeMeta::F64 => {
-            format!("isinstance({name}, (int, float)) and not isinstance({name}, bool)")
-        }
-        TypeMeta::Char16 => format!("isinstance({name}, str) and len({name}) == 1"),
         TypeMeta::String => format!("isinstance({name}, str)"),
         TypeMeta::Guid => format!("isinstance({name}, UUID)"),
         TypeMeta::Enum {
@@ -465,9 +535,7 @@ pub(crate) fn py_type_guard(name: &str, typ: &TypeMeta, known_types: &HashSet<St
             "isinstance({name}, {})",
             py_runtime_namespaced_symbol(namespace, type_name, type_name)
         ),
-        TypeMeta::Enum { .. } => {
-            format!("isinstance({name}, int) and not isinstance({name}, bool)")
-        }
+        TypeMeta::Enum { .. } => py_exact_int_guard(name),
         TypeMeta::Array(_) => format!(
             "isinstance({name}, (DynWinRTArray, bytes, bytearray, Sequence)) and not isinstance({name}, str)"
         ),
@@ -768,6 +836,18 @@ pub(crate) fn py_generate_interface_registration(iface: &InterfaceMeta, var_name
 mod tests {
     use super::*;
 
+    fn enum_type(name: &str, is_flags: bool) -> TypeMeta {
+        TypeMeta::Enum {
+            namespace: "Contoso".into(),
+            name: name.into(),
+            underlying: Box::new(TypeMeta::I32),
+            members: Vec::new(),
+            is_flags,
+            doc: None,
+            deprecated: None,
+        }
+    }
+
     fn geometry_type() -> TypeMeta {
         TypeMeta::RuntimeClass {
             namespace: "Microsoft.UI.Xaml.Media".into(),
@@ -795,6 +875,52 @@ mod tests {
                 "IID_ARG_Microsoft_UI_Xaml_Media_Geometry".into(),
                 "dc102dcc-3be2-5414-8599-94b6e76ef39b".into(),
             )]
+        );
+    }
+
+    #[test]
+    fn python_numeric_overload_integer_guards_use_exact_ranges() {
+        let known = HashSet::new();
+        assert_eq!(
+            py_type_guard("value", &TypeMeta::I8, &known),
+            "isinstance(value, int) and not isinstance(value, bool) and not isinstance(value, __import__('enum').Enum) and -128 <= value <= 127"
+        );
+        assert_eq!(
+            py_type_guard("value", &TypeMeta::U8, &known),
+            "isinstance(value, int) and not isinstance(value, bool) and not isinstance(value, __import__('enum').Enum) and 0 <= value <= 255"
+        );
+        assert_eq!(
+            py_type_guard("value", &TypeMeta::U64, &known),
+            format!(
+                "isinstance(value, int) and not isinstance(value, bool) and not isinstance(value, __import__('enum').Enum) and 0 <= value <= {}",
+                u64::MAX
+            )
+        );
+    }
+
+    #[test]
+    fn python_numeric_overload_float_guards_reject_enum_instances() {
+        let known = HashSet::new();
+        assert_eq!(
+            py_type_guard("value", &TypeMeta::F64, &known),
+            "isinstance(value, (int, float)) and not isinstance(value, bool) and not isinstance(value, __import__('enum').Enum)"
+        );
+    }
+
+    #[test]
+    fn python_known_enum_guards_are_precise_and_unknown_enums_fail_closed() {
+        let known = HashSet::from(["Mode".to_string()]);
+        assert_eq!(
+            py_type_guard("value", &enum_type("Mode", false), &known),
+            "isinstance(value, _dynwinrt_symbol('mode', 'Mode'))"
+        );
+        assert_eq!(
+            py_type_guard("value", &enum_type("Mode", false), &HashSet::new()),
+            "isinstance(value, int) and not isinstance(value, bool) and not isinstance(value, __import__('enum').Enum)"
+        );
+        assert_eq!(
+            py_type_guard("value", &enum_type("Options", true), &HashSet::new()),
+            "isinstance(value, int) and not isinstance(value, bool) and not isinstance(value, __import__('enum').Enum)"
         );
     }
 }

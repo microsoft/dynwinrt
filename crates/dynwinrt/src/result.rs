@@ -7,6 +7,11 @@ use crate::metadata_table::TypeKind;
 #[derive(Debug)]
 pub enum Error {
     ExpectObjectTypeError(TypeKind),
+    ExpectStructTypeError(TypeKind),
+    IndexOutOfBounds {
+        index: usize,
+        len: usize,
+    },
     InvalidType(TypeKind, TypeKind),
     InvalidNestedOutType(TypeKind),
     InvalidTypeAbiToWinRT(TypeKind, AbiType),
@@ -30,6 +35,12 @@ impl Error {
         match self {
             Error::ExpectObjectTypeError(actual) => {
                 format!("Expected object type, found {:?}", actual)
+            }
+            Error::ExpectStructTypeError(actual) => {
+                format!("Expected struct type, found {:?}", actual)
+            }
+            Error::IndexOutOfBounds { index, len } => {
+                format!("Index {index} out of bounds (len {len})")
             }
             Error::InvalidType(expected, actual) => {
                 format!("Invalid type: expected {:?}, found {:?}", expected, actual)

@@ -2,6 +2,7 @@
 # Licensed under the MIT License.
 
 import dynwinrt
+import pytest
 from dynwinrt import (
     DynWinRTType,
     DynWinRTMethodSig,
@@ -361,6 +362,42 @@ def test_array_all_types():
     assert DynWinRTArray.from_string_values(["a", "b"]).to_string_list() == ["a", "b"]
 
 
+def test_narrow_array_constructors_enforce_boundaries():
+    assert DynWinRTArray.from_i8_values([-128, 127]).to_i8_list() == [-128, 127]
+    assert DynWinRTArray.from_u8_values([0, 255]).to_u8_list() == bytes([0, 255])
+    assert DynWinRTArray.from_i16_values([-32768, 32767]).to_i16_list() == [
+        -32768,
+        32767,
+    ]
+    assert DynWinRTArray.from_u16_values([0, 0xFFFF]).to_u16_list() == [0, 0xFFFF]
+
+    with pytest.raises(OverflowError):
+        DynWinRTArray.from_i8_values([-129])
+    with pytest.raises(OverflowError):
+        DynWinRTArray.from_i8_values([128])
+    with pytest.raises(OverflowError):
+        DynWinRTArray.from_u8_values([-1])
+    with pytest.raises(OverflowError):
+        DynWinRTArray.from_u8_values([256])
+    with pytest.raises(OverflowError):
+        DynWinRTArray.from_i16_values([-32769])
+    with pytest.raises(OverflowError):
+        DynWinRTArray.from_i16_values([32768])
+    with pytest.raises(OverflowError):
+        DynWinRTArray.from_u16_values([-1])
+    with pytest.raises(OverflowError):
+        DynWinRTArray.from_u16_values([0x1_0000])
+
+
+def test_array_get_invalid_index_raises_index_error():
+    arr = DynWinRTArray.from_i32_values([1, 2, 3])
+
+    with pytest.raises(IndexError):
+        arr.get(-1)
+    with pytest.raises(IndexError):
+        arr.get(3)
+
+
 def test_array_to_value():
     """Array can be wrapped as DynWinRTValue."""
     arr = DynWinRTArray.from_i32_values([10, 20])
@@ -387,6 +424,28 @@ def test_struct_to_value():
     s.set_u32(0, 99)
     val = s.to_value()
     assert val.is_struct()
+
+
+def test_struct_enum_field_uses_underlying_integer_accessor():
+    enum_type = DynWinRTType.enum_type("TestStructEnum", ["A", "B"], [0, 1])
+    typ = DynWinRTType.struct_type("TestStructWithEnum", [enum_type])
+    value = DynWinRTStruct.create(typ)
+
+    value.set_i32(0, 1)
+    assert value.get_i32(0) == 1
+
+
+def test_struct_bool_and_hresult_use_abi_integer_accessors():
+    typ = DynWinRTType.struct_type(
+        "TestStructAbiIntegerAliases",
+        [DynWinRTType.bool_type(), DynWinRTType.hresult()],
+    )
+    value = DynWinRTStruct.create(typ)
+
+    value.set_u8(0, 1)
+    value.set_i32(1, -1)
+    assert value.get_u8(0) == 1
+    assert value.get_i32(1) == -1
 
 
 def test_struct_array_round_trip():
@@ -447,3 +506,106 @@ def test_struct_all_field_types():
     assert s.get_i64(4) == -999999
     s.set_u64(5, 12345678)
     assert s.get_u64(5) == 12345678
+
+
+def test_struct_narrow_setters_enforce_boundaries_and_char16_range():
+    typ = DynWinRTType.struct_type(
+        "TestStructNarrowBounds",
+        [
+            DynWinRTType.i8_type(),
+            DynWinRTType.u8_type(),
+            DynWinRTType.i16_type(),
+            DynWinRTType.u16_type(),
+            DynWinRTType.char16(),
+        ],
+    )
+    value = DynWinRTStruct.create(typ)
+
+    value.set_i8(0, -128)
+    assert value.get_i8(0) == -128
+    value.set_i8(0, 127)
+    assert value.get_i8(0) == 127
+    value.set_u8(1, 255)
+    assert value.get_u8(1) == 255
+    value.set_i16(2, -32768)
+    assert value.get_i16(2) == -32768
+    value.set_i16(2, 32767)
+    assert value.get_i16(2) == 32767
+    value.set_u16(3, 0xFFFF)
+    assert value.get_u16(3) == 0xFFFF
+    value.set_u16(4, 0xFFFF)
+    assert value.get_u16(4) == 0xFFFF
+
+    with pytest.raises(OverflowError):
+        value.set_i8(0, -129)
+    with pytest.raises(OverflowError):
+        value.set_i8(0, 128)
+    with pytest.raises(OverflowError):
+        value.set_u8(1, -1)
+    with pytest.raises(OverflowError):
+        value.set_u8(1, 256)
+    with pytest.raises(OverflowError):
+        value.set_i16(2, -32769)
+    with pytest.raises(OverflowError):
+        value.set_i16(2, 32768)
+    with pytest.raises(OverflowError):
+        value.set_u16(3, -1)
+    with pytest.raises(OverflowError):
+        value.set_u16(3, 0x1_0000)
+    with pytest.raises(OverflowError):
+        value.set_u16(4, 0x1_0000)
+
+
+def test_struct_indexed_accessors_raise_index_error_for_invalid_indices():
+    typ = DynWinRTType.struct_type("TestStructIndexErrors", [DynWinRTType.i32_type()])
+    value = DynWinRTStruct.create(typ)
+    inner = DynWinRTStruct.create(
+        DynWinRTType.struct_type("TestStructIndexErrorsInner", [DynWinRTType.i32_type()])
+    )
+
+    with pytest.raises(IndexError):
+        value.get_i32(-1)
+    with pytest.raises(IndexError):
+        value.get_guid(1)
+    with pytest.raises(IndexError):
+        value.set_hstring(1, "bad")
+    with pytest.raises(IndexError):
+        value.get_struct(1)
+    with pytest.raises(IndexError):
+        value.set_struct(1, inner)
+    with pytest.raises(IndexError):
+        value.get_object(1)
+    with pytest.raises(IndexError):
+        value.set_object(1, DynWinRTValue.null_value())
+
+
+def test_struct_indexed_accessors_raise_runtime_error_for_wrong_field_shape():
+    typ = DynWinRTType.struct_type("TestStructWrongFieldShape", [DynWinRTType.i32_type()])
+    value = DynWinRTStruct.create(typ)
+    inner = DynWinRTStruct.create(
+        DynWinRTType.struct_type("TestStructWrongFieldShapeInner", [DynWinRTType.i32_type()])
+    )
+    guid = WinGUID.parse("9e365e57-48b2-4160-956f-c7385120bbfc")
+
+    with pytest.raises(RuntimeError):
+        value.get_i8(0)
+    with pytest.raises(RuntimeError):
+        value.set_i8(0, 1)
+    with pytest.raises(RuntimeError):
+        value.get_hstring(0)
+    with pytest.raises(RuntimeError):
+        value.set_hstring(0, "bad")
+    with pytest.raises(RuntimeError):
+        value.get_guid(0)
+    with pytest.raises(RuntimeError):
+        value.set_guid(0, guid)
+    with pytest.raises(RuntimeError):
+        value.get_struct(0)
+    with pytest.raises(RuntimeError):
+        value.set_struct(0, inner)
+    with pytest.raises(RuntimeError):
+        value.get_object(0)
+    with pytest.raises(RuntimeError):
+        value.set_object(0, DynWinRTValue.null_value())
+    with pytest.raises(RuntimeError):
+        DynWinRTStruct.create(DynWinRTType.i32_type()).get_i32(0)

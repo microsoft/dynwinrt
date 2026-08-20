@@ -264,6 +264,7 @@ fn element_factory_projects_js_callback_constructor() {
     assert!(py.contains("element = elements.pop(native.identity_raw(), projected_element)"));
     assert!(py.contains("callback_state = [True]"));
     assert!(py.contains("callback_state[0] = False"));
+    assert!(py.contains("factory = IElementFactory._from_native(implementation.to_value())"));
     assert!(
         py.matches("IElementFactory callbacks have been released.")
             .count()

@@ -733,15 +733,40 @@ pub fn generate_class(
         } else {
             out.push_str(&format!("\nclass {}:\n", req_iface.name));
         }
-        out.push_str("    def __init__(self, obj: DynWinRTValue):\n");
+        out.push_str("    def __new__(cls, *args, **kwargs):\n");
+        out.push_str(
+            "        if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):\n\
+             \x20           return _dynwinrt_projected_from_native(cls, args[0], '_set_native')\n\
+             \x20       return super().__new__(cls)\n\n",
+        );
+        out.push_str("    def _set_native(self, obj: DynWinRTValue):\n");
         out.push_str(&format!(
             "        self._obj = obj.cast(IID_{})\n",
             req_iface.name
         ));
+        out.push_str("        self._dynwinrt_native_ready = True\n");
         out.push_str(&format!(
             "        _dynwinrt_track_projected(self, '{}.{}')\n",
             req_iface.namespace, req_iface.name
         ));
+        out.push_str("        _dynwinrt_cache_projected(self)\n");
+        out.push('\n');
+        out.push_str("    def __init__(self, obj: DynWinRTValue):\n");
+        out.push_str(
+            "        if getattr(self, '_dynwinrt_native_ready', False):\n\
+             \x20           return\n",
+        );
+        out.push_str(&format!(
+            "        {}._set_native(self, obj)\n",
+            req_iface.name
+        ));
+        out.push('\n');
+        out.push_str("    @classmethod\n");
+        out.push_str(&format!(
+            "    def _from_native(cls, obj: DynWinRTValue) -> '{}':\n",
+            req_iface.name
+        ));
+        out.push_str("        return cls(obj)\n");
         out.push('\n');
         out.push_str("    @staticmethod\n");
         out.push_str(&format!(
@@ -749,7 +774,7 @@ pub fn generate_class(
             req_iface.name
         ));
         out.push_str(&format!(
-            "        return {}(obj.cast(IID_{}))\n",
+            "        return {}._from_native(obj.cast(IID_{}))\n",
             req_iface.name, req_iface.name
         ));
         for method in reorder_getters_before_setters(&req_iface.methods) {
@@ -1112,6 +1137,69 @@ fn generate_python_constructor(
     supported_override_names.sort();
     supported_override_names.dedup();
     let supported_override_names_expr = python_tuple(&supported_override_names);
+    let factory_methods = class
+        .factory_interfaces
+        .iter()
+        .flat_map(|iface| iface.methods.iter())
+        .collect::<Vec<_>>();
+    let factory_names =
+        crate::codegen::winrt::python::overloads::method_names(factory_methods.iter().copied());
+    let mut candidates = build_ctor_candidates(class, &factory_names, delegate_type_names);
+    candidates.sort_by(|left, right| {
+        crate::codegen::winrt::python::overloads::cmp_python_dispatch_params(
+            &left.public_params,
+            &right.public_params,
+        )
+        .then_with(|| left.call_expr.cmp(&right.call_expr))
+    });
+
+    out.push_str("    def __new__(cls, *args, **kwargs):\n");
+    out.push_str(
+        "        if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):\n\
+         \x20           return _dynwinrt_projected_from_native(cls, args[0], '_set_native')\n",
+    );
+    if !candidates.is_empty() {
+        out.push_str(&format!("        if cls is {}:\n", class.name));
+        for candidate in &candidates {
+            let parameter_names = candidate
+                .public_params
+                .iter()
+                .map(|param| format!("'{}'", to_snake_case(&param.name)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let parameter_names = if parameter_names.is_empty() {
+                "()".to_string()
+            } else {
+                format!("({parameter_names},)")
+            };
+            out.push_str(&format!(
+                "            _bound = _dynwinrt_bind_overload({parameter_names}, args, kwargs)\n"
+            ));
+            let guards = candidate
+                .public_params
+                .iter()
+                .enumerate()
+                .map(|(index, param)| {
+                    py_method_type_guard(
+                        &format!("_bound[{index}]"),
+                        &param.typ,
+                        known_types,
+                        delegate_type_names,
+                    )
+                })
+                .collect::<Vec<_>>();
+            let condition = if guards.is_empty() {
+                "_bound is not None".to_string()
+            } else {
+                format!("_bound is not None and {}", guards.join(" and "))
+            };
+            let call_expr = candidate.call_expr.replace("type(self)", "cls");
+            out.push_str(&format!(
+                "            if {condition}:\n                return {call_expr}\n"
+            ));
+        }
+    }
+    out.push_str("        return super().__new__(cls)\n\n");
 
     if has_public_composition {
         out.push_str(
@@ -1162,16 +1250,16 @@ fn generate_python_constructor(
     {
         out.push_str("        self._closed = False\n");
     }
+    out.push_str("        self._dynwinrt_native_ready = True\n");
     out.push_str(&format!(
         "        _dynwinrt_track_projected(self, '{}')\n",
         class.full_name
     ));
+    out.push_str("        _dynwinrt_cache_projected(self)\n");
     out.push('\n');
     out.push_str("    @classmethod\n");
     out.push_str("    def _from_native(cls, obj: DynWinRTValue):\n");
-    out.push_str("        instance = cls.__new__(cls)\n");
-    out.push_str("        instance._set_native(obj)\n");
-    out.push_str("        return instance\n\n");
+    out.push_str("        return cls(obj)\n\n");
     if let Some(native_override_names) = &native_override_names {
         out.push_str("    @classmethod\n");
         out.push_str(
@@ -1216,20 +1304,15 @@ fn generate_python_constructor(
     }
     out.push_str("    def __init__(self, *args, **kwargs):\n");
     out.push_str(
+        "        if getattr(self, '_dynwinrt_native_ready', False):\n\
+         \x20           return\n",
+    );
+    out.push_str(
         "        if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):\n\
          \x20           self._set_native(args[0])\n\
          \x20           return\n",
     );
 
-    let factory_methods = class
-        .factory_interfaces
-        .iter()
-        .flat_map(|iface| iface.methods.iter())
-        .collect::<Vec<_>>();
-    let factory_names =
-        crate::codegen::winrt::python::overloads::method_names(factory_methods.iter().copied());
-
-    let candidates = build_ctor_candidates(class, &factory_names, delegate_type_names);
     if has_public_composition {
         let native_override_names = native_override_names
             .as_ref()
@@ -1372,4 +1455,208 @@ fn factory_methods_for_name(
             crate::codegen::winrt::python::overloads::method_group_key(method, names) == public_name
         })
         .count()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::meta::ConstructorMeta;
+    use crate::types::{TypeKind, TypeRef};
+    use std::process::Command;
+
+    fn enum_type(name: &str) -> TypeMeta {
+        TypeMeta::Enum {
+            namespace: "Contoso".into(),
+            name: name.into(),
+            underlying: Box::new(TypeMeta::I32),
+            members: Vec::new(),
+            is_flags: false,
+            doc: None,
+            deprecated: None,
+        }
+    }
+
+    fn constructor_method(name: &str, vtable_index: usize, typ: TypeMeta) -> MethodMeta {
+        MethodMeta {
+            name: name.into(),
+            raw_name: name.into(),
+            vtable_index,
+            params: vec![ParamMeta {
+                name: "value".into(),
+                typ,
+                direction: ParamDirection::In,
+            }],
+            return_type: Some(TypeMeta::RuntimeClass {
+                namespace: "Contoso".into(),
+                name: "Widget".into(),
+                default_interface: None,
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn constructor_class(factory_methods: Vec<MethodMeta>) -> ClassMeta {
+        ClassMeta {
+            name: "Widget".into(),
+            namespace: "Contoso".into(),
+            full_name: "Contoso.Widget".into(),
+            factory_interfaces: vec![InterfaceMeta {
+                name: "IWidgetFactory".into(),
+                namespace: "Contoso".into(),
+                methods: factory_methods,
+                ..Default::default()
+            }],
+            constructors: vec![ConstructorMeta {
+                kind: ConstructorKind::FactoryActivation,
+                factory_interface: Some(TypeRef {
+                    namespace: "Contoso".into(),
+                    name: "IWidgetFactory".into(),
+                    kind: TypeKind::Interface,
+                }),
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn run_python(script: &str) -> String {
+        fn invoke(
+            program: &str,
+            args: &[&str],
+            script: &str,
+        ) -> std::io::Result<std::process::Output> {
+            let mut command = Command::new(program);
+            for arg in args {
+                command.arg(arg);
+            }
+            command.arg(script).output()
+        }
+
+        let output = invoke("python", &["-c"], script).or_else(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                invoke("py", &["-3", "-c"], script)
+            } else {
+                Err(error)
+            }
+        });
+        let output = output.unwrap_or_else(|error| panic!("failed to launch Python: {error}"));
+        assert!(
+            output.status.success(),
+            "python script failed\nstdout:\n{}\nstderr:\n{}\nscript:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+            script
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    #[test]
+    fn python_constructor_enum_overload_prefers_enum_over_i32_in_both_orders() {
+        let integer = constructor_method("Create", 6, TypeMeta::I32);
+        let enumeration = constructor_method("Create2", 7, enum_type("Mode"));
+        let known_types = HashSet::from(["Mode".to_string()]);
+
+        let forward = generate_python_constructor(
+            &constructor_class(vec![integer.clone(), enumeration.clone()]),
+            &known_types,
+            &HashSet::new(),
+            None,
+            false,
+        );
+        let reverse = generate_python_constructor(
+            &constructor_class(vec![enumeration, integer]),
+            &known_types,
+            &HashSet::new(),
+            None,
+            false,
+        );
+
+        assert_eq!(forward, reverse);
+        assert!(forward.contains(
+            "isinstance(_bound[0], int) and not isinstance(_bound[0], bool) and not isinstance(_bound[0], __import__('enum').Enum)"
+        ));
+        assert!(forward.contains("isinstance(_bound[0], _dynwinrt_symbol('mode', 'Mode'))"));
+        let forward_script = forward.replace("if cls is Widget:", "if cls is WidgetForward:");
+        let reverse_script = reverse.replace("if cls is Widget:", "if cls is WidgetReverse:");
+
+        let script = format!(
+            r#"from enum import IntEnum
+import json
+
+class DynWinRTValue:
+    pass
+
+def _dynwinrt_bind_overload(parameter_names, args, kwargs):
+    if kwargs:
+        if args:
+            return None
+        if len(kwargs) != len(parameter_names) or any(name not in kwargs for name in parameter_names):
+            return None
+        return tuple(kwargs[name] for name in parameter_names)
+    return args if len(args) == len(parameter_names) else None
+
+def _dynwinrt_projected_from_native(cls, obj, setter_name):
+    return obj
+
+def _dynwinrt_track_projected(obj, name):
+    return None
+
+def _dynwinrt_cache_projected(*args, **kwargs):
+    return None
+
+def _dynwinrt_symbol(module, name):
+    return globals()[name]
+
+class Mode(IntEnum):
+    VALUE = 1
+
+class OtherMode(IntEnum):
+    VALUE = 1
+
+class _CtorResult:
+    def __init__(self, value):
+        self._obj = value
+
+class WidgetForward:
+    @staticmethod
+    def _create_6(value):
+        return _CtorResult("i32")
+
+    @staticmethod
+    def _create_7(value):
+        return _CtorResult("enum")
+
+{forward_script}
+
+class WidgetReverse:
+    @staticmethod
+    def _create_6(value):
+        return _CtorResult("i32")
+
+    @staticmethod
+    def _create_7(value):
+        return _CtorResult("enum")
+
+{reverse_script}
+
+def exercise(widget_type):
+    enum_widget = widget_type(Mode.VALUE)
+    int_widget = widget_type(42)
+    results = [enum_widget._obj, int_widget._obj]
+    try:
+        widget_type(OtherMode.VALUE)
+    except TypeError as error:
+        results.append(type(error).__name__)
+    else:
+        results.append("unexpected")
+    return results
+
+print(json.dumps([exercise(WidgetForward), exercise(WidgetReverse)]))
+"#
+        );
+
+        assert_eq!(
+            run_python(&script),
+            r#"[["enum", "i32", "TypeError"], ["enum", "i32", "TypeError"]]"#
+        );
+    }
 }

@@ -56,7 +56,8 @@ from dynwinrt import (
 from dynwinrt.dynwinrt import (
     _dynwinrt_array, _dynwinrt_bind_overload, _dynwinrt_datetime_to_ticks, _dynwinrt_guid,
     _dynwinrt_map, _dynwinrt_new_vector, _dynwinrt_ticks_to_datetime, _dynwinrt_ticks_to_timedelta,
-    _dynwinrt_timedelta_to_ticks, _dynwinrt_track_projected, _dynwinrt_uuid, _dynwinrt_vector,
+    _dynwinrt_timedelta_to_ticks, _dynwinrt_cache_projected, _dynwinrt_projected_from_native,
+    _dynwinrt_track_projected, _dynwinrt_uuid, _dynwinrt_vector,
 )
 
 

@@ -295,6 +295,22 @@ fn nested_struct_defaults_and_enum_fields_are_python_native() {
     let pyi = python_stub::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
 
     assert!(
+        py.contains("class Inner:\n    __slots__ = ('count',)"),
+        "{py}"
+    );
+    assert!(
+        py.contains("return (self.count,) == (other.count,)"),
+        "{py}"
+    );
+    assert!(
+        py.contains("return f'{type(self).__name__}(count={self.count!r})'"),
+        "{py}"
+    );
+    assert!(
+        py.contains("class Outer:\n    __slots__ = ('mode', 'inner')"),
+        "{py}"
+    );
+    assert!(
         py.contains("def __init__(self, mode: 'Mode' = _dynwinrt_enum('mode', 'Mode', 0), inner: Inner | None = None):"),
         "{py}"
     );
@@ -309,13 +325,71 @@ fn nested_struct_defaults_and_enum_fields_are_python_native() {
     );
     assert!(py.contains("s.set_u32(0, int(v.mode))"), "{py}");
     assert!(py.contains("s.set_struct(1, _pack_inner(v.inner))"), "{py}");
+    assert!(
+        py.contains("return (self.mode, self.inner) == (other.mode, other.inner)"),
+        "{py}"
+    );
+    assert!(
+        py.contains("return f'{type(self).__name__}(mode={self.mode!r}, inner={self.inner!r})'"),
+        "{py}"
+    );
 
+    assert!(
+        pyi.contains("class Inner:\n    __slots__ = ('count',)"),
+        "{pyi}"
+    );
+    assert!(
+        pyi.contains("def __eq__(self, other: object) -> bool: ..."),
+        "{pyi}"
+    );
+    assert!(pyi.contains("def __repr__(self) -> str: ..."), "{pyi}");
+    assert!(
+        pyi.contains("class Outer:\n    __slots__ = ('mode', 'inner')"),
+        "{pyi}"
+    );
     assert!(
         pyi.contains("def __init__(self, mode: 'Mode' = ..., inner: 'Inner' = ...) -> None: ..."),
         "{pyi}"
     );
     assert!(pyi.contains("mode: 'Mode'"), "{pyi}");
     assert!(pyi.contains("inner: 'Inner'"), "{pyi}");
+}
+
+#[test]
+fn empty_structs_emit_slots_and_value_semantics() {
+    let empty = TypeMeta::Struct {
+        namespace: "Synthetic".into(),
+        name: "EmptyMarker".into(),
+        fields: vec![],
+    };
+    let class = class_with_struct("UsesEmptyMarker", empty);
+    let known = HashSet::from(["UsesEmptyMarker".to_string(), "EmptyMarker".to_string()]);
+    let py = python::generate_class(&class, &known, &HashSet::new(), &HashSet::new());
+    let pyi = python_stub::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
+
+    assert!(
+        py.contains(
+            "class EmptyMarker:\n    __slots__ = ()\n\n    def __init__(self):\n        pass"
+        ),
+        "{py}"
+    );
+    assert!(
+        py.contains(
+            "def __eq__(self, other: object) -> bool:\n        if type(other) is not type(self):\n            return NotImplemented\n        return True"
+        ),
+        "{py}"
+    );
+    assert!(
+        py.contains("def __repr__(self) -> str:\n        return f'{type(self).__name__}()'"),
+        "{py}"
+    );
+
+    assert!(
+        pyi.contains(
+            "class EmptyMarker:\n    __slots__ = ()\n    def __init__(self) -> None: ...\n    def __eq__(self, other: object) -> bool: ...\n    def __repr__(self) -> str: ..."
+        ),
+        "{pyi}"
+    );
 }
 
 #[test]
@@ -342,7 +416,7 @@ fn sdk_http_progress_ireference_u64_fields_are_native_optional_values() {
         "s.set_object(2, _dynwinrt_box_reference(v.total_bytes_to_send, DynWinRTType.u64_type(), lambda value: DynWinRTValue.from_u64(value)))"
     ));
     assert!(py.contains(
-        "None if value.is_null() else _dynwinrt_symbol('i_reference_u_int64', 'IReference_UInt64')(value).value"
+        "None if value.is_null() else _dynwinrt_symbol('i_reference_uint64', 'IReference_UInt64')(value).value"
     ));
     assert!(
         dts.contains("totalBytesToSend: bigint | null | IReference_UInt64;")

@@ -5,6 +5,10 @@ use std::cell::Cell;
 use std::future::IntoFuture;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use crate::errors::{
+    map_dynwinrt_error, map_dynwinrt_error_with_context, map_windows_error_with_context,
+};
+use crate::runtime::DynWinRTValue;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use windows::Win32::Foundation::CO_E_NOTINITIALIZED;
@@ -13,11 +17,6 @@ use windows::Win32::System::Com::{
     CoGetApartmentType,
 };
 use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize, RoUninitialize};
-
-use crate::errors::{
-    map_dynwinrt_error, map_dynwinrt_error_with_context, map_windows_error_with_context,
-};
-use crate::runtime::DynWinRTValue;
 
 thread_local! {
     static TOKIO_RO_INITIALIZED: Cell<bool> = const { Cell::new(false) };
@@ -235,6 +234,22 @@ impl AsyncOperation {
     }
 }
 
+pub(crate) fn finish_progress_registration(
+    set_result: dynwinrt::Result<()>,
+    is_started_after: impl FnOnce() -> PyResult<bool>,
+) -> PyResult<()> {
+    match set_result {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            if is_started_after()? {
+                Err(map_dynwinrt_error_with_context(error, "SetProgress failed"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+}
+
 #[pyclass(name = "_DynWinRTAsync")]
 pub struct DynWinRTAsync {
     operation: Option<Arc<AsyncOperation>>,
@@ -407,22 +422,58 @@ impl DynWinRTAsyncWithProgress {
         });
         let handler =
             dynwinrt::create_progress_handler(handler_iid, progress_type, progress_callback);
-        match info.set_progress_handler(&handler) {
-            Ok(()) => Ok(()),
-            Err(error) => {
-                let is_started = info.is_started().map_err(map_dynwinrt_error)?;
-                if is_started {
-                    Err(map_dynwinrt_error_with_context(error, "SetProgress failed"))
-                } else {
-                    // Completion raced with put_Progress; there is no handler
-                    // left to install and no future progress to deliver.
-                    Ok(())
-                }
-            }
-        }
+        finish_progress_registration(info.set_progress_handler(&handler), || {
+            info.is_started().map_err(map_dynwinrt_error)
+        })
     }
 
     fn __repr__(&self) -> &'static str {
         "_DynWinRTAsyncWithProgress(...)"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{
+        Arc, Barrier,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    use super::*;
+
+    fn set_progress_error() -> dynwinrt::Error {
+        dynwinrt::Error::WindowsError(windows::core::Error::from_hresult(windows::core::HRESULT(
+            0x80004005u32 as i32,
+        )))
+    }
+
+    #[test]
+    fn progress_registration_ignores_failure_after_concurrent_completion() {
+        let started = Arc::new(AtomicBool::new(true));
+        let begin_transition = Arc::new(Barrier::new(2));
+        let transition_done = Arc::new(Barrier::new(2));
+        let worker_started = started.clone();
+        let worker_begin = begin_transition.clone();
+        let worker_done = transition_done.clone();
+        let worker = std::thread::spawn(move || {
+            worker_begin.wait();
+            worker_started.store(false, Ordering::SeqCst);
+            worker_done.wait();
+        });
+
+        let result = finish_progress_registration(Err(set_progress_error()), || {
+            begin_transition.wait();
+            transition_done.wait();
+            Ok(started.load(Ordering::SeqCst))
+        });
+
+        worker.join().expect("completion worker failed");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn progress_registration_surfaces_failure_while_operation_is_started() {
+        let result = finish_progress_registration(Err(set_progress_error()), || Ok(true));
+        assert!(result.is_err());
     }
 }

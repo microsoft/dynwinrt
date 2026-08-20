@@ -101,7 +101,7 @@ fn observable_vector_projects_python_mutable_sequence_and_typed_events() {
         "class IObservableVector_Object(_dynwinrt_symbol('i_vector_object', 'IVector_Object')):"
     ));
     assert!(
-        py.contains("_dynwinrt_symbol('i_vector_object', 'IVector_Object').__init__(self, obj)")
+        py.contains("_dynwinrt_symbol('i_vector_object', 'IVector_Object')._set_native(self, obj)")
     );
     assert!(py.contains("self._observable_obj = obj.cast(IID_IObservableVector_Object)"));
     assert!(py.contains("def create(items: Iterable['DynWinRTValue'])"));

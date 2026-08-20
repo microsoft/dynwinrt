@@ -26,11 +26,14 @@ from collections.abc import (
     Sequence as _Sequence,
 )
 from datetime import datetime as _datetime, timedelta as _timedelta, timezone as _timezone
+from itertools import count as _count
 from contextvars import ContextVar as _ContextVar
 from operator import index as _index
+from threading import get_ident as _thread_get_ident
 from typing import Protocol as _Protocol, TypeVar as _TypeVar
 from typing import Awaitable as _Awaitable, Callable as _Callable
 from uuid import UUID as _UUID
+from weakref import WeakValueDictionary as _WeakValueDictionary
 
 _T = _TypeVar('_T', covariant=True)
 _P = _TypeVar('_P', covariant=True)
@@ -48,6 +51,8 @@ _active_projected_lifetime_scope = _ContextVar(
     'dynwinrt_active_projected_lifetime_scope',
     default=None,
 )
+_projected_wrapper_cache = _WeakValueDictionary()
+_projected_scope_serial = _count(1)
 
 def _dynwinrt_projected_native_values(value):
     native_values = []
@@ -68,6 +73,78 @@ def _dynwinrt_projected_native_values(value):
         native_values.append(value)
     return native_values
 
+def _dynwinrt_projection_scope_token():
+    scope = _active_projected_lifetime_scope.get()
+    if scope is None or not scope._active or scope._disposed:
+        return None
+    token = getattr(scope, '_projection_cache_token', None)
+    if token is None:
+        token = next(_projected_scope_serial)
+        scope._projection_cache_token = token
+    return token
+
+def _dynwinrt_projected_cache_key(wrapper_type, native):
+    if not isinstance(native, DynWinRTValue):
+        return None
+    try:
+        identity = native.identity_raw()
+    except RuntimeError:
+        return None
+    return (
+        _thread_get_ident(),
+        _dynwinrt_projection_scope_token(),
+        wrapper_type,
+        identity,
+    )
+
+def _dynwinrt_projected_wrapper_is_live(wrapper):
+    native_values = _dynwinrt_projected_native_values(wrapper)
+    if not native_values:
+        return False
+    for native in native_values:
+        is_null = getattr(native, 'is_null', None)
+        if callable(is_null) and is_null():
+            return False
+    return True
+
+def _dynwinrt_release_redundant_native(native, wrapper):
+    if not callable(getattr(native, 'release', None)):
+        return
+    for existing in _dynwinrt_projected_native_values(wrapper):
+        if existing is native:
+            return
+    native.release()
+
+def _dynwinrt_cache_projected(value):
+    wrapper_type = type(value)
+    for native in _dynwinrt_projected_native_values(value):
+        key = _dynwinrt_projected_cache_key(wrapper_type, native)
+        if key is None:
+            continue
+        try:
+            _projected_wrapper_cache[key] = value
+        except TypeError:
+            pass
+    return value
+
+def _dynwinrt_projected_from_native(wrapper_type, native, initializer_name):
+    key = _dynwinrt_projected_cache_key(wrapper_type, native)
+    if key is not None:
+        cached = _projected_wrapper_cache.get(key)
+        if cached is not None:
+            if _dynwinrt_projected_wrapper_is_live(cached):
+                _dynwinrt_release_redundant_native(native, cached)
+                return cached
+            _projected_wrapper_cache.pop(key, None)
+    wrapper = object.__new__(wrapper_type)
+    getattr(wrapper_type, initializer_name)(wrapper, native)
+    if key is not None:
+        try:
+            _projected_wrapper_cache[key] = wrapper
+        except TypeError:
+            pass
+    return wrapper
+
 class ProjectedLifetimeScope:
     def __init__(self):
         self._registry = {}
@@ -75,6 +152,7 @@ class ProjectedLifetimeScope:
         self._active = False
         self._disposed = False
         self._retry_pending = False
+        self._projection_cache_token = None
 
     @property
     def disposed(self):
@@ -175,6 +253,8 @@ def _dynwinrt_uuid(value):
 def _dynwinrt_datetime_to_ticks(value):
     if not isinstance(value, _datetime):
         raise TypeError('requires datetime.datetime object')
+    if value.utcoffset() is None:
+        raise ValueError('requires a timezone-aware datetime.datetime object')
     value = value.astimezone(_timezone.utc)
     delta = value - _WINRT_EPOCH
     return ((delta.days * 86400 + delta.seconds) * 1_000_000 + delta.microseconds) * 10
@@ -391,7 +471,6 @@ def _dynwinrt_dispatch_progress(callback, converter, value):
             m
         )?)?;
         m.add_function(wrap_pyfunction!(super::runtime::get_computer_name, m)?)?;
-
         m.py().run(
             c"
 __all__ = [name for name in __all__ if not name.startswith('_')]

@@ -31,6 +31,41 @@ def test_unsigned_conversions_preserve_full_range():
         DynWinRTValue.from_u64(0xFFFFFFFFFFFFFFFF).to_i64()
 
 
+@pytest.mark.parametrize(
+    ("factory", "value", "expected"),
+    [
+        (DynWinRTValue.from_i8, -128, -128),
+        (DynWinRTValue.from_i8, 127, 127),
+        (DynWinRTValue.from_u8, 0, 0),
+        (DynWinRTValue.from_u8, 255, 255),
+        (DynWinRTValue.from_i16, -32768, -32768),
+        (DynWinRTValue.from_i16, 32767, 32767),
+        (DynWinRTValue.from_u16, 0, 0),
+        (DynWinRTValue.from_u16, 0xFFFF, 0xFFFF),
+    ],
+)
+def test_narrow_scalar_constructors_accept_boundaries(factory, value, expected):
+    assert factory(value).to_int() == expected
+
+
+@pytest.mark.parametrize(
+    ("factory", "value"),
+    [
+        (DynWinRTValue.from_i8, -129),
+        (DynWinRTValue.from_i8, 128),
+        (DynWinRTValue.from_u8, -1),
+        (DynWinRTValue.from_u8, 256),
+        (DynWinRTValue.from_i16, -32769),
+        (DynWinRTValue.from_i16, 32768),
+        (DynWinRTValue.from_u16, -1),
+        (DynWinRTValue.from_u16, 0x1_0000),
+    ],
+)
+def test_narrow_scalar_constructors_reject_overflow(factory, value):
+    with pytest.raises(OverflowError):
+        factory(value)
+
+
 def test_to_f64():
     assert DynWinRTValue.from_f64(3.14).to_f64() == 3.14
     assert abs(DynWinRTValue.from_f32(1.5).to_f64() - 1.5) < 0.01

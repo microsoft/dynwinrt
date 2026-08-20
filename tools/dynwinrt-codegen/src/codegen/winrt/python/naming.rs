@@ -108,6 +108,29 @@ pub fn python_public_module_name(name: &str) -> String {
     to_snake_case(name)
 }
 
+fn is_winrt_uint_suffix(token: &str) -> bool {
+    matches!(token, "int8" | "int16" | "int32" | "int64")
+}
+
+fn collapse_winrt_uint_tokens(name: &str) -> String {
+    let tokens: Vec<_> = name.split('_').collect();
+    let mut normalized = Vec::with_capacity(tokens.len());
+    let mut index = 0;
+    while index < tokens.len() {
+        if tokens[index] == "u"
+            && index + 1 < tokens.len()
+            && is_winrt_uint_suffix(tokens[index + 1])
+        {
+            normalized.push(format!("u{}", tokens[index + 1]));
+            index += 2;
+        } else {
+            normalized.push(tokens[index].to_string());
+            index += 1;
+        }
+    }
+    normalized.join("_")
+}
+
 /// Convert PascalCase / camelCase to snake_case.
 pub(crate) fn to_snake_case(s: &str) -> String {
     if s.is_empty() {
@@ -130,7 +153,7 @@ pub(crate) fn to_snake_case(s: &str) -> String {
             result.push(c);
         }
     }
-    let result = result.trim_start_matches('_').to_string();
+    let result = collapse_winrt_uint_tokens(result.trim_start_matches('_'));
     if is_py_reserved(&result) {
         format!("{}_", result)
     } else {
@@ -188,4 +211,58 @@ pub fn to_snake_case_filename(name: &str) -> String {
             .and_then(|layout| layout.unique_modules.get(name).cloned())
             .unwrap_or_else(|| to_snake_case(name))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn snake_case_keeps_winrt_uint_tokens_together() {
+        assert_eq!(to_snake_case("UInt8"), "uint8");
+        assert_eq!(to_snake_case("UInt16"), "uint16");
+        assert_eq!(to_snake_case("UInt32"), "uint32");
+        assert_eq!(to_snake_case("UInt64"), "uint64");
+        assert_eq!(to_snake_case("CreateUInt8"), "create_uint8");
+        assert_eq!(to_snake_case("CreateUInt32Value"), "create_uint32_value");
+        assert_eq!(to_snake_case("IReference_UInt32"), "i_reference_uint32");
+        assert_eq!(
+            to_snake_case_filename("IReference_UInt32"),
+            "i_reference_uint32"
+        );
+    }
+
+    #[test]
+    fn snake_case_only_collapses_uint_word_boundaries() {
+        assert_eq!(to_snake_case("MenuInt8"), "menu_int8");
+        assert_eq!(to_snake_case("GpuInt32"), "gpu_int32");
+        assert_eq!(to_snake_case("MenuUInt8"), "menu_uint8");
+    }
+
+    #[test]
+    fn snake_case_preserves_acronym_regressions() {
+        assert_eq!(to_snake_case("GUID"), "guid");
+        assert_eq!(to_snake_case("IIDComponent"), "iid_component");
+        assert_eq!(to_snake_case("HTMLParser"), "html_parser");
+    }
+
+    #[test]
+    fn module_layout_collision_detection_uses_normalized_names() {
+        let err = install_python_module_layout([
+            PythonTypeIdentity {
+                namespace: "Example".into(),
+                name: "UInt32".into(),
+            },
+            PythonTypeIdentity {
+                namespace: "Example".into(),
+                name: "Uint32".into(),
+            },
+        ])
+        .err()
+        .expect("normalized module name collision should fail");
+
+        assert!(err.contains("Example.UInt32"), "{err}");
+        assert!(err.contains("Example.Uint32"), "{err}");
+        assert!(err.contains("example__uint32.py"), "{err}");
+    }
 }

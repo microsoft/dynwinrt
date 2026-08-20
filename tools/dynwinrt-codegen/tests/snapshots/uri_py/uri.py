@@ -18,7 +18,8 @@ from dynwinrt import (
 from dynwinrt.dynwinrt import (
     _dynwinrt_array, _dynwinrt_bind_overload, _dynwinrt_datetime_to_ticks, _dynwinrt_guid,
     _dynwinrt_map, _dynwinrt_new_vector, _dynwinrt_ticks_to_datetime, _dynwinrt_ticks_to_timedelta,
-    _dynwinrt_timedelta_to_ticks, _dynwinrt_track_projected, _dynwinrt_uuid, _dynwinrt_vector,
+    _dynwinrt_timedelta_to_ticks, _dynwinrt_cache_projected, _dynwinrt_projected_from_native,
+    _dynwinrt_track_projected, _dynwinrt_uuid, _dynwinrt_vector,
 )
 
 
@@ -107,17 +108,31 @@ _IStringable = DynWinRTType.register_interface(
 
 
 class Uri:
+    def __new__(cls, *args, **kwargs):
+        if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):
+            return _dynwinrt_projected_from_native(cls, args[0], '_set_native')
+        if cls is Uri:
+            _bound = _dynwinrt_bind_overload(('uri',), args, kwargs)
+            if _bound is not None and isinstance(_bound[0], str):
+                return cls.create_uri(_bound[0])
+            _bound = _dynwinrt_bind_overload(('base_uri', 'relative_uri',), args, kwargs)
+            if _bound is not None and isinstance(_bound[0], str) and isinstance(_bound[1], str):
+                return cls.create_with_relative_uri(_bound[0], _bound[1])
+        return super().__new__(cls)
+
     def _set_native(self, obj: DynWinRTValue):
         self._obj = obj.cast(IID_IUriRuntimeClass)
+        self._dynwinrt_native_ready = True
         _dynwinrt_track_projected(self, 'Windows.Foundation.Uri')
+        _dynwinrt_cache_projected(self)
 
     @classmethod
     def _from_native(cls, obj: DynWinRTValue):
-        instance = cls.__new__(cls)
-        instance._set_native(obj)
-        return instance
+        return cls(obj)
 
     def __init__(self, *args, **kwargs):
+        if getattr(self, '_dynwinrt_native_ready', False):
+            return
         if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):
             self._set_native(args[0])
             return
@@ -244,13 +259,29 @@ class Uri:
 
 
 class IUriRuntimeClassWithAbsoluteCanonicalUri:
-    def __init__(self, obj: DynWinRTValue):
+    def __new__(cls, *args, **kwargs):
+        if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):
+            return _dynwinrt_projected_from_native(cls, args[0], '_set_native')
+        return super().__new__(cls)
+
+    def _set_native(self, obj: DynWinRTValue):
         self._obj = obj.cast(IID_IUriRuntimeClassWithAbsoluteCanonicalUri)
+        self._dynwinrt_native_ready = True
         _dynwinrt_track_projected(self, 'Windows.Foundation.IUriRuntimeClassWithAbsoluteCanonicalUri')
+        _dynwinrt_cache_projected(self)
+
+    def __init__(self, obj: DynWinRTValue):
+        if getattr(self, '_dynwinrt_native_ready', False):
+            return
+        IUriRuntimeClassWithAbsoluteCanonicalUri._set_native(self, obj)
+
+    @classmethod
+    def _from_native(cls, obj: DynWinRTValue) -> 'IUriRuntimeClassWithAbsoluteCanonicalUri':
+        return cls(obj)
 
     @staticmethod
     def from_value(obj: DynWinRTValue) -> 'IUriRuntimeClassWithAbsoluteCanonicalUri':
-        return IUriRuntimeClassWithAbsoluteCanonicalUri(obj.cast(IID_IUriRuntimeClassWithAbsoluteCanonicalUri))
+        return IUriRuntimeClassWithAbsoluteCanonicalUri._from_native(obj.cast(IID_IUriRuntimeClassWithAbsoluteCanonicalUri))
 
     @_property
     def absolute_canonical_uri(self) -> str:
@@ -262,13 +293,29 @@ class IUriRuntimeClassWithAbsoluteCanonicalUri:
 
 
 class IStringable:
-    def __init__(self, obj: DynWinRTValue):
+    def __new__(cls, *args, **kwargs):
+        if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):
+            return _dynwinrt_projected_from_native(cls, args[0], '_set_native')
+        return super().__new__(cls)
+
+    def _set_native(self, obj: DynWinRTValue):
         self._obj = obj.cast(IID_IStringable)
+        self._dynwinrt_native_ready = True
         _dynwinrt_track_projected(self, 'Windows.Foundation.IStringable')
+        _dynwinrt_cache_projected(self)
+
+    def __init__(self, obj: DynWinRTValue):
+        if getattr(self, '_dynwinrt_native_ready', False):
+            return
+        IStringable._set_native(self, obj)
+
+    @classmethod
+    def _from_native(cls, obj: DynWinRTValue) -> 'IStringable':
+        return cls(obj)
 
     @staticmethod
     def from_value(obj: DynWinRTValue) -> 'IStringable':
-        return IStringable(obj.cast(IID_IStringable))
+        return IStringable._from_native(obj.cast(IID_IStringable))
 
     def to_string(self) -> str:
         return _IStringable.method(6).invoke(self._obj, []).to_string()

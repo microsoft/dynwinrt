@@ -102,6 +102,67 @@ fn only_referenced_public_factory_metadata_becomes_a_constructor() {
 }
 
 #[test]
+fn numeric_constructor_overloads_dispatch_by_specificity() {
+    let parameter = |typ| ParamMeta {
+        name: "value".into(),
+        typ,
+        direction: ParamDirection::In,
+    };
+    let factory = InterfaceMeta {
+        name: "ISystemResultFactory".into(),
+        namespace: "Contoso".into(),
+        iid: "11111111-1111-1111-1111-111111111111".into(),
+        methods: vec![
+            MethodMeta {
+                name: "Create2".into(),
+                raw_name: "Create2".into(),
+                vtable_index: 7,
+                params: vec![parameter(TypeMeta::I32)],
+                return_type: Some(runtime_class("SystemResult")),
+                ..Default::default()
+            },
+            MethodMeta {
+                name: "Create".into(),
+                raw_name: "Create".into(),
+                vtable_index: 6,
+                params: vec![parameter(TypeMeta::I8)],
+                return_type: Some(runtime_class("SystemResult")),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let class = ClassMeta {
+        name: "SystemResult".into(),
+        namespace: "Contoso".into(),
+        full_name: "Contoso.SystemResult".into(),
+        factory_interfaces: vec![factory],
+        constructors: vec![ConstructorMeta {
+            kind: ConstructorKind::FactoryActivation,
+            factory_interface: Some(TypeRef {
+                namespace: "Contoso".into(),
+                name: "ISystemResultFactory".into(),
+                kind: TypeKind::Interface,
+            }),
+        }],
+        ..Default::default()
+    };
+    let known = HashSet::from(["SystemResult".into()]);
+
+    let py = python::generate_class(&class, &known, &HashSet::new(), &HashSet::new());
+    let narrow_guard = "-128 <= _bound[0] <= 127";
+    let wide_guard = "-2147483648 <= _bound[0] <= 2147483647";
+    assert!(
+        py.find(narrow_guard).expect("narrow constructor guard")
+            < py.find(wide_guard).expect("wide constructor guard"),
+        "{py}"
+    );
+
+    let pyi = python_stub::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
+    assert_eq!(pyi.matches("    @overload\n").count(), 4, "{pyi}");
+}
+
+#[test]
 fn protected_composition_is_not_public_construction() {
     let class = ClassMeta {
         name: "SystemResult".into(),

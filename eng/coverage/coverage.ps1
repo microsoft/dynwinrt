@@ -7,6 +7,13 @@ param(
     [string]$Python,
     [string]$CargoTarget,
     [string]$Win32Winmd = $env:DYNWINRT_WIN32_WINMD,
+    [ValidateRange(0, 100)]
+    [double]$MinRustLineCoverage = 45,
+    [ValidateRange(0, 100)]
+    [double]$MinPythonLineCoverage = 70,
+    [ValidateRange(0, 100)]
+    [double]$MinJavaScriptLineCoverage = 20,
+    [switch]$ValidateOnly,
     [switch]$SkipE2E,
     [switch]$SkipCom
 )
@@ -124,16 +131,18 @@ foreach ($candidate in ($outputCandidates | Select-Object -Unique)) {
     )) {
         throw "OutputDirectory cannot be a filesystem root: $candidate"
     }
-    foreach ($protectedPath in @($originalLocation, $root)) {
-        if (Test-PathContains $candidate $protectedPath) {
-            throw "OutputDirectory cannot contain protected directory: $protectedPath"
+    if (-not $ValidateOnly) {
+        foreach ($protectedPath in @($originalLocation, $root)) {
+            if (Test-PathContains $candidate $protectedPath) {
+                throw "OutputDirectory cannot contain protected directory: $protectedPath"
+            }
         }
-    }
-    if (
-        (Test-PathContains $root $candidate) -and
-        -not (Test-PathContains $repositoryArtifactRoot $candidate)
-    ) {
-        throw "OutputDirectory inside the repository must be under: $repositoryArtifactRoot"
+        if (
+            (Test-PathContains $root $candidate) -and
+            -not (Test-PathContains $repositoryArtifactRoot $candidate)
+        ) {
+            throw "OutputDirectory inside the repository must be under: $repositoryArtifactRoot"
+        }
     }
 }
 
@@ -146,6 +155,17 @@ function Invoke-Step {
     & $Action
     if ($LASTEXITCODE -ne 0) {
         throw "$Name failed with exit code $LASTEXITCODE"
+    }
+}
+
+function Assert-MinimumCoverage {
+    param(
+        [string]$Name,
+        [double]$Actual,
+        [double]$Minimum
+    )
+    if ($Actual -lt $Minimum) {
+        throw "$Name line coverage $Actual% is below the required $Minimum%"
     }
 }
 
@@ -390,12 +410,13 @@ function Write-Reports {
     }
 }
 
-function Write-CoverageSummary {
+function Get-CoverageSummaryMarkdown {
     $rows = @()
 
     $rustSummary = Join-Path $rustReport "summary.json"
     if (Test-Path -LiteralPath $rustSummary) {
         $totals = (Get-Content -LiteralPath $rustSummary -Raw | ConvertFrom-Json).data[0].totals
+        Assert-MinimumCoverage "Rust" $totals.lines.percent $MinRustLineCoverage
         $rows += "| Rust, including native .pyd/.node | $([math]::Round($totals.lines.percent, 2))% | $([math]::Round($totals.functions.percent, 2))% | $([math]::Round($totals.regions.percent, 2))% regions |"
     }
 
@@ -412,6 +433,7 @@ function Write-CoverageSummary {
         } else {
             100
         }
+        Assert-MinimumCoverage "Generated Python" $linePercent $MinPythonLineCoverage
         $rows += "| Generated Python projections | $linePercent% | n/a | $branchPercent% branches |"
     }
 
@@ -424,19 +446,45 @@ function Write-CoverageSummary {
         $jsSummary = Join-Path $javascriptLayer.Path "coverage-summary.json"
         if (Test-Path -LiteralPath $jsSummary) {
             $totals = (Get-Content -LiteralPath $jsSummary -Raw | ConvertFrom-Json).total
+            if ($javascriptLayer.Name -eq "JavaScript aggregate") {
+                Assert-MinimumCoverage `
+                    $javascriptLayer.Name `
+                    $totals.lines.pct `
+                    $MinJavaScriptLineCoverage
+            }
             $rows += "| $($javascriptLayer.Name) | $($totals.lines.pct)% | $($totals.functions.pct)% | $($totals.branches.pct)% branches |"
         }
     }
 
     if ($rows.Count -gt 0) {
-        $summary = @(
+        return @(
             "# Mixed-language coverage"
             ""
             "| Layer | Lines | Functions | Branches/regions |"
             "| --- | ---: | ---: | ---: |"
         ) + $rows
+    }
+
+    return @()
+}
+
+function Write-CoverageSummary {
+    $summary = @(Get-CoverageSummaryMarkdown)
+    if ($summary.Count -gt 0) {
         Set-Content -LiteralPath (Join-Path $output "summary.md") -Value $summary -Encoding utf8
     }
+}
+
+if ($ValidateOnly) {
+    Set-Location $root
+    $summary = @(Get-CoverageSummaryMarkdown)
+    if ($summary.Count -eq 0) {
+        throw "No coverage summaries were found under $output"
+    }
+    foreach ($line in $summary) {
+        Write-Host $line
+    }
+    return
 }
 
 $scriptError = $null

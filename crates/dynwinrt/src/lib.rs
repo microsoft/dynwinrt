@@ -379,11 +379,11 @@ mod tests {
         // Verify
         let array = results[0].as_array().expect("Expected WinRTValue::Array");
         assert_eq!(array.len(), 5);
-        assert_eq!(array.get_i32(0), 100);
-        assert_eq!(array.get_i32(1), 200);
-        assert_eq!(array.get_i32(2), 300);
-        assert_eq!(array.get_i32(3), 400);
-        assert_eq!(array.get_i32(4), 500);
+        assert_eq!(array.get_i32(0).unwrap(), 100);
+        assert_eq!(array.get_i32(1).unwrap(), 200);
+        assert_eq!(array.get_i32(2).unwrap(), 300);
+        assert_eq!(array.get_i32(3).unwrap(), 400);
+        assert_eq!(array.get_i32(4).unwrap(), 500);
 
         Ok(())
     }

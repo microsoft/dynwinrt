@@ -158,7 +158,7 @@ fn ireference_values_are_projected_as_native_nullable_values() {
 
     assert!(py.contains("def day(self) -> int | None:"));
     assert!(py.contains(
-        "None if value.is_null() else _dynwinrt_symbol('i_reference_u_int32', 'IReference_UInt32')(value).value"
+        "None if value.is_null() else _dynwinrt_symbol('i_reference_uint32', 'IReference_UInt32')(value).value"
     ));
     assert!(py.contains("def day(self, value: int | None | IReference_UInt32):"));
     assert!(py.contains(

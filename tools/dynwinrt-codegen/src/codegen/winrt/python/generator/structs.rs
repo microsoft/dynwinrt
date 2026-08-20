@@ -6,6 +6,7 @@
 use super::*;
 use crate::codegen::winrt::python::native_types::{FoundationType, foundation_type};
 use crate::codegen::winrt::python::type_helpers::py_optional_type;
+use crate::types::FieldMeta;
 
 // ======================================================================
 // Struct helpers: Python dataclass-style + _unpack/_pack functions
@@ -26,11 +27,19 @@ pub(super) fn generate_struct_helpers(s: &TypeMeta) -> String {
     };
     let mut out = String::new();
     let snake_name = to_snake_case(name);
+    let field_names = py_struct_field_names(fields);
+    let slot_names = fields.iter().map(py_struct_slot_name).collect::<Vec<_>>();
 
     // Python class with typed fields
     out.push_str(&format!("\nclass {}:\n", name));
+    out.push_str(&format!(
+        "    __slots__ = {}\n",
+        py_string_tuple_literal(&slot_names)
+    ));
+    out.push('\n');
     if fields.is_empty() {
-        out.push_str("    pass\n");
+        out.push_str("    def __init__(self):\n");
+        out.push_str("        pass\n");
     } else {
         // __init__ with typed fields
         let init_params: Vec<String> = fields
@@ -79,6 +88,25 @@ pub(super) fn generate_struct_helpers(s: &TypeMeta) -> String {
             ));
         }
     }
+    out.push('\n');
+    out.push_str("    def __eq__(self, other: object) -> bool:\n");
+    out.push_str("        if type(other) is not type(self):\n");
+    out.push_str("            return NotImplemented\n");
+    if field_names.is_empty() {
+        out.push_str("        return True\n");
+    } else {
+        out.push_str(&format!(
+            "        return {} == {}\n",
+            py_attribute_tuple_expr("self", &field_names),
+            py_attribute_tuple_expr("other", &field_names),
+        ));
+    }
+    out.push('\n');
+    out.push_str("    def __repr__(self) -> str:\n");
+    out.push_str(&format!(
+        "        return {}\n",
+        py_struct_repr_expr(&field_names)
+    ));
     out.push('\n');
 
     // unpack function
@@ -129,6 +157,65 @@ pub(super) fn generate_struct_helpers(s: &TypeMeta) -> String {
     out.push_str(&format!("_pack_{0} = pack_{0}\n", snake_name));
 
     out
+}
+
+fn py_struct_slot_name(field: &FieldMeta) -> String {
+    let snake = to_snake_case(&field.name);
+    if ireference_inner_type(&field.typ).is_some() {
+        format!("_{snake}")
+    } else {
+        snake
+    }
+}
+
+fn py_struct_field_names(fields: &[FieldMeta]) -> Vec<String> {
+    fields
+        .iter()
+        .map(|field| to_snake_case(&field.name))
+        .collect()
+}
+
+fn py_string_tuple_literal(values: &[String]) -> String {
+    match values {
+        [] => "()".to_string(),
+        [value] => format!("('{value}',)"),
+        _ => format!(
+            "({})",
+            values
+                .iter()
+                .map(|value| format!("'{value}'"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
+fn py_attribute_tuple_expr(receiver: &str, field_names: &[String]) -> String {
+    match field_names {
+        [] => "()".to_string(),
+        [field] => format!("({receiver}.{field},)"),
+        _ => format!(
+            "({})",
+            field_names
+                .iter()
+                .map(|field| format!("{receiver}.{field}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
+fn py_struct_repr_expr(field_names: &[String]) -> String {
+    if field_names.is_empty() {
+        return "f'{type(self).__name__}()'".to_string();
+    }
+
+    let fields = field_names
+        .iter()
+        .map(|field| format!("{field}={{self.{field}!r}}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("f'{{type(self).__name__}}({fields})'")
 }
 
 fn generate_foundation_struct_helpers(s: &TypeMeta, kind: FoundationType) -> String {

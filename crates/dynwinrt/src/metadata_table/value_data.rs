@@ -10,6 +10,9 @@ use super::type_kind::TypeKind;
 /// Release non-blittable fields (HString, COM pointers, nested structs) in a struct buffer.
 /// Called by Drop and before overwriting. Recurses into nested structs.
 unsafe fn release_non_blittable_fields(handle: &TypeHandle, ptr: *const u8) {
+    if !matches!(handle.kind(), TypeKind::Struct(_)) {
+        return;
+    }
     let count = handle.field_count();
     for i in 0..count {
         let kind = handle.table.field_kind(handle.kind, i);
@@ -45,6 +48,9 @@ unsafe fn release_non_blittable_fields(handle: &TypeHandle, ptr: *const u8) {
 /// The source retains its references; the destination gets new ones.
 /// Recurses into nested structs.
 unsafe fn duplicate_non_blittable_fields(handle: &TypeHandle, ptr: *mut u8) {
+    if !matches!(handle.kind(), TypeKind::Struct(_)) {
+        return;
+    }
     let count = handle.field_count();
     for i in 0..count {
         let kind = handle.table.field_kind(handle.kind, i);
@@ -82,6 +88,9 @@ unsafe fn duplicate_non_blittable_fields(handle: &TypeHandle, ptr: *mut u8) {
 
 /// Check if a struct type has any non-blittable fields (recursing into nested structs).
 fn has_non_blittable_fields(handle: &TypeHandle) -> bool {
+    if !matches!(handle.kind(), TypeKind::Struct(_)) {
+        return false;
+    }
     let count = handle.field_count();
     for i in 0..count {
         let kind = handle.table.field_kind(handle.kind, i);
@@ -142,6 +151,34 @@ impl ValueTypeData {
         self.ptr
     }
 
+    fn checked_field_handle(&self, index: usize) -> crate::result::Result<(TypeHandle, usize)> {
+        let kind = self.type_handle.kind();
+        if !matches!(kind, TypeKind::Struct(_)) {
+            return Err(crate::result::Error::ExpectStructTypeError(kind));
+        }
+        let field_count = self.type_handle.field_count();
+        if index >= field_count {
+            return Err(crate::result::Error::IndexOutOfBounds {
+                index,
+                len: field_count,
+            });
+        }
+        Ok((
+            self.type_handle.field_type(index),
+            self.type_handle.field_offset(index),
+        ))
+    }
+
+    pub fn field_type_checked(&self, index: usize) -> crate::result::Result<TypeHandle> {
+        self.checked_field_handle(index)
+            .map(|(field_handle, _)| field_handle)
+    }
+
+    pub fn field_kind_checked(&self, index: usize) -> crate::result::Result<TypeKind> {
+        self.field_type_checked(index)
+            .map(|field_handle| field_handle.kind())
+    }
+
     pub(crate) unsafe fn copy_to_abi(&self, result: *mut c_void) {
         let layout = self.type_handle.layout();
         if layout.size() == 0 {
@@ -181,15 +218,13 @@ impl ValueTypeData {
     }
 
     pub fn get_field_hstring(&self, index: usize) -> crate::result::Result<HSTRING> {
-        let h = &self.type_handle;
-        let field_handle = h.field_type(index);
+        let (field_handle, offset) = self.checked_field_handle(index)?;
         if field_handle.kind() != TypeKind::HString {
             return Err(crate::result::Error::InvalidType(
                 TypeKind::HString,
                 field_handle.kind(),
             ));
         }
-        let offset = h.field_offset(index);
         let raw = unsafe { *(self.ptr.add(offset) as *const *mut c_void) };
         if raw.is_null() {
             Ok(HSTRING::new())
@@ -200,15 +235,13 @@ impl ValueTypeData {
     }
 
     pub fn set_field_hstring(&mut self, index: usize, value: HSTRING) -> crate::result::Result<()> {
-        let h = &self.type_handle;
-        let field_handle = h.field_type(index);
+        let (field_handle, offset) = self.checked_field_handle(index)?;
         if field_handle.kind() != TypeKind::HString {
             return Err(crate::result::Error::InvalidType(
                 TypeKind::HString,
                 field_handle.kind(),
             ));
         }
-        let offset = h.field_offset(index);
         let field = unsafe { &mut *(self.ptr.add(offset) as *mut *mut c_void) };
         let old_raw = std::mem::replace(field, unsafe { std::mem::transmute(value) });
         if !old_raw.is_null() {
@@ -218,14 +251,12 @@ impl ValueTypeData {
     }
 
     pub fn get_field_object(&self, index: usize) -> crate::result::Result<Option<IUnknown>> {
-        let h = &self.type_handle;
-        let field_handle = h.field_type(index);
+        let (field_handle, offset) = self.checked_field_handle(index)?;
         if !field_handle.kind().is_com_pointer() {
             return Err(crate::result::Error::expect_object_type(
                 field_handle.kind(),
             ));
         }
-        let offset = h.field_offset(index);
         let raw = unsafe { *(self.ptr.add(offset) as *const *mut c_void) };
         if raw.is_null() {
             Ok(None)
@@ -239,14 +270,12 @@ impl ValueTypeData {
         index: usize,
         value: Option<&IUnknown>,
     ) -> crate::result::Result<()> {
-        let h = &self.type_handle;
-        let field_handle = h.field_type(index);
+        let (field_handle, offset) = self.checked_field_handle(index)?;
         if !field_handle.kind().is_com_pointer() {
             return Err(crate::result::Error::expect_object_type(
                 field_handle.kind(),
             ));
         }
-        let offset = h.field_offset(index);
         let field = unsafe { &mut *(self.ptr.add(offset) as *mut *mut c_void) };
         let new_raw = if let Some(object) = value {
             let iid = if field_handle.kind() == TypeKind::Object {
@@ -270,9 +299,17 @@ impl ValueTypeData {
     }
 
     pub fn get_field_struct(&self, index: usize) -> ValueTypeData {
-        let h = &self.type_handle;
-        let offset = h.field_offset(index);
-        let field_handle = h.field_type(index);
+        self.get_field_struct_checked(index)
+            .expect("get_field_struct failed")
+    }
+
+    pub fn get_field_struct_checked(&self, index: usize) -> crate::result::Result<ValueTypeData> {
+        let (field_handle, offset) = self.checked_field_handle(index)?;
+        if !matches!(field_handle.kind(), TypeKind::Struct(_)) {
+            return Err(crate::result::Error::ExpectStructTypeError(
+                field_handle.kind(),
+            ));
+        }
         let layout = field_handle.layout();
         let result = field_handle.default_value();
         if layout.size() > 0 {
@@ -284,15 +321,33 @@ impl ValueTypeData {
                 }
             }
         }
-        result
+        Ok(result)
     }
 
     pub fn set_field_struct(&mut self, index: usize, value: &ValueTypeData) {
-        let h = &self.type_handle;
-        let offset = h.field_offset(index);
-        let field_handle = h.field_type(index);
+        self.set_field_struct_checked(index, value)
+            .expect("set_field_struct failed");
+    }
+
+    pub fn set_field_struct_checked(
+        &mut self,
+        index: usize,
+        value: &ValueTypeData,
+    ) -> crate::result::Result<()> {
+        let (field_handle, offset) = self.checked_field_handle(index)?;
+        if !matches!(field_handle.kind(), TypeKind::Struct(_)) {
+            return Err(crate::result::Error::ExpectStructTypeError(
+                field_handle.kind(),
+            ));
+        }
+        if field_handle.kind() != value.type_handle.kind() {
+            return Err(crate::result::Error::InvalidType(
+                field_handle.kind(),
+                value.type_handle.kind(),
+            ));
+        }
         let size = field_handle.size_of();
-        assert_eq!(
+        debug_assert_eq!(
             size,
             value.type_handle.size_of(),
             "set_field_struct size mismatch"
@@ -310,6 +365,7 @@ impl ValueTypeData {
                 }
             }
         }
+        Ok(())
     }
 
     pub fn call_method_struct_to_object(
@@ -395,6 +451,7 @@ impl Clone for ValueTypeData {
 mod tests {
     use super::*;
     use crate::metadata_table::MetadataTable;
+    use crate::metadata_table::TypeKind;
 
     #[test]
     fn hstring_field_round_trips_overwrites_and_clones() {
@@ -421,5 +478,27 @@ mod tests {
 
         assert!(value.get_field_hstring(0).is_err());
         assert!(value.set_field_hstring(0, HSTRING::from("wrong")).is_err());
+    }
+
+    #[test]
+    fn checked_field_access_reports_invalid_indices_and_non_struct_values() {
+        let table = MetadataTable::new();
+        let typ = table.struct_type("Test.CheckedFieldAccess", &[table.i32_type()]);
+        let value = typ.default_value();
+
+        assert!(matches!(
+            value.field_type_checked(1),
+            Err(crate::result::Error::IndexOutOfBounds { index: 1, len: 1 })
+        ));
+        assert!(matches!(
+            value.get_field_struct_checked(0),
+            Err(crate::result::Error::ExpectStructTypeError(TypeKind::I32))
+        ));
+
+        let non_struct = table.i32_type().default_value();
+        assert!(matches!(
+            non_struct.field_type_checked(0),
+            Err(crate::result::Error::ExpectStructTypeError(TypeKind::I32))
+        ));
     }
 }

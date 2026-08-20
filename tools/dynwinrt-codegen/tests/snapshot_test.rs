@@ -296,6 +296,11 @@ fn snapshot_uri_py_class() {
         "Snapshot directory not found: {}",
         snapshot_dir.display()
     );
+    if std::env::var_os("DYNWINRT_UPDATE_PY_SNAPSHOTS").is_some() {
+        for (filename, actual) in &generated {
+            fs::write(snapshot_dir.join(filename), actual).expect("write Python snapshot");
+        }
+    }
 
     let mut mismatches = Vec::new();
     for (filename, actual) in &generated {
@@ -323,6 +328,66 @@ fn snapshot_uri_py_class() {
             mismatches.join("\n")
         );
     }
+}
+
+/// Snapshot a method-rich Python class outside Windows.Foundation.
+#[test]
+fn snapshot_data_writer_py_class() {
+    use dynwinrt_codegen::codegen::python;
+
+    let classes = match meta::parse_class(WINDOWS_WINMD, "Windows.Storage.Streams", "DataWriter") {
+        Some(class) => vec![class],
+        None => {
+            eprintln!("Skipping snapshot test: Windows.winmd not found");
+            return;
+        }
+    };
+    let deps = meta::resolve_dependencies(WINDOWS_WINMD, &classes, &[], &[]);
+    let mut all_classes = classes;
+    all_classes.extend(deps.classes);
+    let interfaces = deps.interfaces;
+    let enums = deps.enums;
+
+    let mut known_types = HashSet::new();
+    known_types.extend(all_classes.iter().map(|class| class.name.clone()));
+    known_types.extend(interfaces.iter().map(|interface| interface.name.clone()));
+    known_types.extend(enums.iter().filter_map(|typ| match typ {
+        TypeMeta::Enum { name, .. } => Some(name.clone()),
+        _ => None,
+    }));
+    let delegate_type_names = interfaces
+        .iter()
+        .filter(|interface| {
+            interface
+                .methods
+                .iter()
+                .any(|method| method.name == ".ctor")
+                && interface
+                    .methods
+                    .iter()
+                    .any(|method| method.name == "Invoke")
+        })
+        .map(|interface| interface.name.clone())
+        .collect::<HashSet<_>>();
+    let class = all_classes
+        .iter()
+        .find(|class| class.name == "DataWriter")
+        .expect("DataWriter class");
+    let actual = python::generate_class(class, &known_types, &delegate_type_names, &HashSet::new());
+
+    let snapshot_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots/data_writer_py");
+    let snapshot_path = snapshot_dir.join("data_writer.py");
+    if std::env::var_os("DYNWINRT_UPDATE_PY_SNAPSHOTS").is_some() {
+        fs::create_dir_all(&snapshot_dir).expect("create DataWriter snapshot directory");
+        fs::write(&snapshot_path, &actual).expect("write DataWriter Python snapshot");
+    }
+    let expected = fs::read_to_string(&snapshot_path).unwrap_or_else(|error| {
+        panic!(
+            "Failed to read snapshot {}: {error}. Set DYNWINRT_UPDATE_PY_SNAPSHOTS=1 to create it.",
+            snapshot_path.display()
+        )
+    });
+    assert_eq!(actual, expected, "DataWriter Python snapshot changed");
 }
 
 /// Verify generated TypeScript for async (and async-with-progress) methods

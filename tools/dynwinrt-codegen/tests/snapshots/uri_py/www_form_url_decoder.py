@@ -18,7 +18,8 @@ from dynwinrt import (
 from dynwinrt.dynwinrt import (
     _dynwinrt_array, _dynwinrt_bind_overload, _dynwinrt_datetime_to_ticks, _dynwinrt_guid,
     _dynwinrt_map, _dynwinrt_new_vector, _dynwinrt_ticks_to_datetime, _dynwinrt_ticks_to_timedelta,
-    _dynwinrt_timedelta_to_ticks, _dynwinrt_track_projected, _dynwinrt_uuid, _dynwinrt_vector,
+    _dynwinrt_timedelta_to_ticks, _dynwinrt_cache_projected, _dynwinrt_projected_from_native,
+    _dynwinrt_track_projected, _dynwinrt_uuid, _dynwinrt_vector,
 )
 
 
@@ -87,18 +88,29 @@ _IIterable_IWwwFormUrlDecoderEntry = DynWinRTType.register_interface(
 
 
 class WwwFormUrlDecoder(_WinRTSequenceMixin):
+    def __new__(cls, *args, **kwargs):
+        if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):
+            return _dynwinrt_projected_from_native(cls, args[0], '_set_native')
+        if cls is WwwFormUrlDecoder:
+            _bound = _dynwinrt_bind_overload(('query',), args, kwargs)
+            if _bound is not None and isinstance(_bound[0], str):
+                return cls.create_www_form_url_decoder(_bound[0])
+        return super().__new__(cls)
+
     def _set_native(self, obj: DynWinRTValue):
         self._obj = obj.cast(IID_IWwwFormUrlDecoderRuntimeClass)
         self._collection_obj = obj.cast(IID_IVectorView_IWwwFormUrlDecoderEntry)
+        self._dynwinrt_native_ready = True
         _dynwinrt_track_projected(self, 'Windows.Foundation.WwwFormUrlDecoder')
+        _dynwinrt_cache_projected(self)
 
     @classmethod
     def _from_native(cls, obj: DynWinRTValue):
-        instance = cls.__new__(cls)
-        instance._set_native(obj)
-        return instance
+        return cls(obj)
 
     def __init__(self, *args, **kwargs):
+        if getattr(self, '_dynwinrt_native_ready', False):
+            return
         if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):
             self._set_native(args[0])
             return
@@ -143,13 +155,29 @@ class WwwFormUrlDecoder(_WinRTSequenceMixin):
 
 
 class IVectorView_IWwwFormUrlDecoderEntry(_WinRTSequenceMixin):
-    def __init__(self, obj: DynWinRTValue):
+    def __new__(cls, *args, **kwargs):
+        if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):
+            return _dynwinrt_projected_from_native(cls, args[0], '_set_native')
+        return super().__new__(cls)
+
+    def _set_native(self, obj: DynWinRTValue):
         self._obj = obj.cast(IID_IVectorView_IWwwFormUrlDecoderEntry)
+        self._dynwinrt_native_ready = True
         _dynwinrt_track_projected(self, 'Windows.Foundation.Collections.IVectorView_IWwwFormUrlDecoderEntry')
+        _dynwinrt_cache_projected(self)
+
+    def __init__(self, obj: DynWinRTValue):
+        if getattr(self, '_dynwinrt_native_ready', False):
+            return
+        IVectorView_IWwwFormUrlDecoderEntry._set_native(self, obj)
+
+    @classmethod
+    def _from_native(cls, obj: DynWinRTValue) -> 'IVectorView_IWwwFormUrlDecoderEntry':
+        return cls(obj)
 
     @staticmethod
     def from_value(obj: DynWinRTValue) -> 'IVectorView_IWwwFormUrlDecoderEntry':
-        return IVectorView_IWwwFormUrlDecoderEntry(obj.cast(IID_IVectorView_IWwwFormUrlDecoderEntry))
+        return IVectorView_IWwwFormUrlDecoderEntry._from_native(obj.cast(IID_IVectorView_IWwwFormUrlDecoderEntry))
 
     @_property
     def size(self) -> int:
@@ -168,13 +196,29 @@ class IVectorView_IWwwFormUrlDecoderEntry(_WinRTSequenceMixin):
 
 
 class IIterable_IWwwFormUrlDecoderEntry(_WinRTIterableMixin):
-    def __init__(self, obj: DynWinRTValue):
+    def __new__(cls, *args, **kwargs):
+        if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):
+            return _dynwinrt_projected_from_native(cls, args[0], '_set_native')
+        return super().__new__(cls)
+
+    def _set_native(self, obj: DynWinRTValue):
         self._obj = obj.cast(IID_IIterable_IWwwFormUrlDecoderEntry)
+        self._dynwinrt_native_ready = True
         _dynwinrt_track_projected(self, 'Windows.Foundation.Collections.IIterable_IWwwFormUrlDecoderEntry')
+        _dynwinrt_cache_projected(self)
+
+    def __init__(self, obj: DynWinRTValue):
+        if getattr(self, '_dynwinrt_native_ready', False):
+            return
+        IIterable_IWwwFormUrlDecoderEntry._set_native(self, obj)
+
+    @classmethod
+    def _from_native(cls, obj: DynWinRTValue) -> 'IIterable_IWwwFormUrlDecoderEntry':
+        return cls(obj)
 
     @staticmethod
     def from_value(obj: DynWinRTValue) -> 'IIterable_IWwwFormUrlDecoderEntry':
-        return IIterable_IWwwFormUrlDecoderEntry(obj.cast(IID_IIterable_IWwwFormUrlDecoderEntry))
+        return IIterable_IWwwFormUrlDecoderEntry._from_native(obj.cast(IID_IIterable_IWwwFormUrlDecoderEntry))
 
     def first(self) -> Iterator[IWwwFormUrlDecoderEntry | None] | None:
         return (lambda value: None if value.is_null() else _dynwinrt_symbol('i_iterator_i_www_form_url_decoder_entry', 'IIterator_IWwwFormUrlDecoderEntry')(value))(_IIterable_IWwwFormUrlDecoderEntry.method(6).invoke(self._obj, []))

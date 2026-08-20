@@ -7,7 +7,7 @@ use std::collections::HashSet;
 
 use crate::codegen::winrt::shared::imports::get_in_params;
 use crate::meta::MethodMeta;
-use crate::types::{TypeKind, TypeMeta};
+use crate::types::{FieldMeta, TypeKind, TypeMeta};
 
 use super::naming::{python_module_name, to_snake_case};
 use super::native_types::{FoundationType, foundation_type};
@@ -74,10 +74,15 @@ pub(super) fn emit_struct_stub(s: &TypeMeta) -> String {
     };
     let mut out = String::new();
     let snake_name = to_snake_case(name);
+    let slot_names = fields.iter().map(py_struct_slot_name).collect::<Vec<_>>();
 
     out.push_str(&format!("\nclass {}:\n", name));
+    out.push_str(&format!(
+        "    __slots__ = {}\n",
+        py_string_tuple_literal(&slot_names)
+    ));
     if fields.is_empty() {
-        out.push_str("    pass\n");
+        out.push_str("    def __init__(self) -> None: ...\n");
     } else {
         let init_params: Vec<String> = fields
             .iter()
@@ -113,6 +118,8 @@ pub(super) fn emit_struct_stub(s: &TypeMeta) -> String {
             }
         }
     }
+    out.push_str("    def __eq__(self, other: object) -> bool: ...\n");
+    out.push_str("    def __repr__(self) -> str: ...\n");
     out.push('\n');
 
     out.push_str(&format!(
@@ -125,6 +132,30 @@ pub(super) fn emit_struct_stub(s: &TypeMeta) -> String {
         snake_name, name
     ));
     out
+}
+
+fn py_struct_slot_name(field: &FieldMeta) -> String {
+    let snake = to_snake_case(&field.name);
+    if ireference_inner_type(&field.typ).is_some() {
+        format!("_{snake}")
+    } else {
+        snake
+    }
+}
+
+fn py_string_tuple_literal(values: &[String]) -> String {
+    match values {
+        [] => "()".to_string(),
+        [value] => format!("('{value}',)"),
+        _ => format!(
+            "({})",
+            values
+                .iter()
+                .map(|value| format!("'{value}'"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
 }
 
 pub(super) fn py_struct_field_stub_type(typ: &TypeMeta) -> String {

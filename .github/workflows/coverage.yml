@@ -35,6 +35,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Verify coverage threshold fixtures
+        shell: pwsh
+        run: .\eng\coverage\coverage.threshold.tests.ps1
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: llvm-tools-preview

@@ -219,10 +219,16 @@ pub fn generate_interface(
             &doc, "    ",
         ));
     }
-    out.push_str("    def __init__(self, obj: DynWinRTValue):\n");
+    out.push_str("    def __new__(cls, *args, **kwargs):\n");
+    out.push_str(
+        "        if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):\n\
+         \x20           return _dynwinrt_projected_from_native(cls, args[0], '_set_native')\n\
+         \x20       return super().__new__(cls)\n\n",
+    );
+    out.push_str("    def _set_native(self, obj: DynWinRTValue):\n");
     if let Some(vector_name) = &observable_vector {
         out.push_str(&format!(
-            "        {}.__init__(self, obj)\n",
+            "        {}._set_native(self, obj)\n",
             py_runtime_symbol(vector_name, vector_name)
         ));
         out.push_str(&format!(
@@ -237,10 +243,26 @@ pub fn generate_interface(
     } else {
         out.push_str("        self._obj = obj\n");
     }
+    out.push_str("        self._dynwinrt_native_ready = True\n");
     out.push_str(&format!(
         "        _dynwinrt_track_projected(self, '{}.{}')\n",
         iface.namespace, iface.name
     ));
+    out.push_str("        _dynwinrt_cache_projected(self)\n");
+    out.push('\n');
+    out.push_str("    def __init__(self, obj: DynWinRTValue):\n");
+    out.push_str(
+        "        if getattr(self, '_dynwinrt_native_ready', False):\n\
+         \x20           return\n",
+    );
+    out.push_str(&format!("        {}._set_native(self, obj)\n", iface.name));
+    out.push('\n');
+    out.push_str("    @classmethod\n");
+    out.push_str(&format!(
+        "    def _from_native(cls, obj: DynWinRTValue) -> '{}':\n",
+        iface.name
+    ));
+    out.push_str("        return cls(obj)\n");
     out.push('\n');
 
     // static from() — QI cast
@@ -251,7 +273,7 @@ pub fn generate_interface(
             iface.name
         ));
         out.push_str(&format!(
-            "        return {}(obj.cast(IID_{}))\n",
+            "        return {}._from_native(obj.cast(IID_{}))\n",
             iface.name, iface.name
         ));
         out.push('\n');
@@ -394,7 +416,7 @@ pub fn generate_interface(
             "        implementation = DynWinRtElementFactory.create(\n\
              \x20           {ui_element_iid}, get_native, recycle_native\n\
              \x20       )\n\
-             \x20       factory = IElementFactory(implementation.to_value())\n\
+             \x20       factory = IElementFactory._from_native(implementation.to_value())\n\
              \x20       factory._element_factory_implementation = implementation\n\
              \x20       factory._element_factory_elements = elements\n\
              \x20       factory._element_factory_callback_state = callback_state\n\

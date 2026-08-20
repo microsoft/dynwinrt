@@ -22,10 +22,32 @@ import os
 import threading
 
 
+_WINRT_UINT_SUFFIXES = {'int8', 'int16', 'int32', 'int64'}
+
+
+def collapse_winrt_uint_tokens(name: str) -> str:
+    tokens = name.split('_')
+    collapsed = []
+    index = 0
+    while index < len(tokens):
+        if (
+            tokens[index] == 'u'
+            and index + 1 < len(tokens)
+            and tokens[index + 1] in _WINRT_UINT_SUFFIXES
+        ):
+            collapsed.append(f'u{tokens[index + 1]}')
+            index += 2
+        else:
+            collapsed.append(tokens[index])
+            index += 1
+    return '_'.join(collapsed)
+
+
 def to_snake_case(name: str) -> str:
     """Convert PascalCase/camelCase to snake_case."""
     value = re.sub(r'(.)([A-Z][a-z]+)', r'\1_\2', name)
-    return re.sub(r'([a-z0-9])([A-Z])', r'\1_\2', value).lstrip('_').lower()
+    value = re.sub(r'([a-z0-9])([A-Z])', r'\1_\2', value).lstrip('_').lower()
+    return collapse_winrt_uint_tokens(value)
 
 
 def to_camel_case(name: str) -> str:
@@ -153,6 +175,8 @@ async def run_check(
     namespace: str,
 ) -> dict:
     """Run a single check. Returns { kind, member, pass, error }."""
+    import dynwinrt as dw
+
     kind = check['kind']
     member = to_snake_case(check['member']) if 'member' in check else ''
     cr = {'kind': kind, 'member': member, 'pass': False, 'error': None}
@@ -289,6 +313,78 @@ async def run_check(
             else:
                 cr['pass'] = True
 
+        elif kind == 'narrow_integer_overflow':
+            cases = (
+                ('create_uint8', (256,)),
+                ('create_int16', (32768,)),
+                ('create_uint16', (65536,)),
+                ('create_char16', ('\U0001f600',)),
+                ('create_uint16_array', ([65536],)),
+                ('create_char16_array', (['\U0001f600'],)),
+            )
+            for method_name, args in cases:
+                try:
+                    getattr(cls, method_name)(*args)
+                except OverflowError:
+                    continue
+                except Exception as error:
+                    cr['error'] = (
+                        f'{method_name} raised {type(error).__name__}, '
+                        'expected OverflowError'
+                    )
+                    return cr
+                cr['error'] = f'{method_name} accepted an out-of-range value'
+                return cr
+            cr['pass'] = True
+
+        elif kind == 'nullable_object_array_roundtrip':
+            uri_cls = generated_type(pkg_name, 'Uri')
+            uri = uri_cls.create_uri('https://example.com/null-array')
+            boxed = getattr(cls, member)(
+                [dw.DynWinRTValue.null_value(), uri._obj]
+            )
+            if boxed is None:
+                cr['error'] = 'CreateInspectableArray returned None'
+                return cr
+            values = boxed.call_0(
+                38,
+                dw.DynWinRTType.array_type(dw.DynWinRTType.object()),
+            ).as_array().to_values()
+            if len(values) != 2:
+                cr['error'] = f'expected 2 inspectable values, got {len(values)}'
+            elif not values[0].is_null():
+                cr['error'] = 'null inspectable array element was not preserved'
+            elif values[1].identity_raw() != uri._obj.identity_raw():
+                cr['error'] = 'inspectable array element lost COM identity'
+            else:
+                cr['pass'] = True
+
+        elif kind == 'projection_identity':
+            import weakref
+
+            iface_cls = generated_type(pkg_name, check['interface_class'])
+            same_class = cls(obj._obj)
+            iface_one = obj.as_interface(iface_cls)
+            iface_two = iface_cls.from_value(obj._obj)
+
+            try:
+                class_ref = weakref.ref(obj)
+                iface_ref = weakref.ref(iface_one)
+            except TypeError as error:
+                cr['error'] = f'projected wrappers must support weak references: {error}'
+                return cr
+
+            if same_class is not obj:
+                cr['error'] = 'runtime-class projection did not preserve wrapper identity'
+            elif iface_one is not iface_two:
+                cr['error'] = 'interface projection did not preserve wrapper identity'
+            elif iface_one is obj:
+                cr['error'] = 'distinct projected wrapper types shared one cache entry'
+            elif class_ref() is not obj or iface_ref() is not iface_one:
+                cr['error'] = 'projected wrappers did not remain weak-referenceable'
+            else:
+                cr['pass'] = True
+
         elif kind == 'property_set_equals':
             set_value = check['set_value']
             setattr(obj, member, set_value)
@@ -363,7 +459,7 @@ async def run_check(
                 return cr
 
             property_value_cls = generated_type(pkg_name, 'PropertyValue')
-            factory = getattr(property_value_cls, check['factory'])
+            factory = getattr(property_value_cls, to_snake_case(check['factory']))
             boxed = factory(check['compatibility_value'])
 
             reference_cls = generated_type(pkg_name, check['reference_class'])
@@ -1050,9 +1146,9 @@ async def run_check(
             writer.write_int16(-1234)
             writer.write_int32(-12345678)
             writer.write_int64(-1234567890123)
-            writer.write_u_int16(54321)
-            writer.write_u_int32(3_000_000_000)
-            writer.write_u_int64(9_000_000_000_000_000_000)
+            writer.write_uint16(54321)
+            writer.write_uint32(3_000_000_000)
+            writer.write_uint64(9_000_000_000_000_000_000)
             writer.write_single(1.25)
             writer.write_double(2.5)
             writer.write_date_time(timestamp)
@@ -1074,9 +1170,9 @@ async def run_check(
                 'i16': reader.read_int16(),
                 'i32': reader.read_int32(),
                 'i64': reader.read_int64(),
-                'u16': reader.read_u_int16(),
-                'u32': reader.read_u_int32(),
-                'u64': reader.read_u_int64(),
+                'u16': reader.read_uint16(),
+                'u32': reader.read_uint32(),
+                'u64': reader.read_uint64(),
                 'f32': reader.read_single(),
                 'f64': reader.read_double(),
                 'datetime': reader.read_date_time(),
@@ -1630,7 +1726,11 @@ async def run_check(
                             f'{module_path.name}: value wrapping branches failed'
                         )
                         return cr
-                    dw.release_projected(wrapped[1])
+                    if wrapped[1] is not uri:
+                        cr['error'] = (
+                            f'{module_path.name}: wrapper identity was not reused'
+                        )
+                        return cr
                     counters['wrap_values'] += 1
 
                 box_reference = getattr(

@@ -18,7 +18,8 @@ from dynwinrt import (
 from dynwinrt.dynwinrt import (
     _dynwinrt_array, _dynwinrt_bind_overload, _dynwinrt_datetime_to_ticks, _dynwinrt_guid,
     _dynwinrt_map, _dynwinrt_new_vector, _dynwinrt_ticks_to_datetime, _dynwinrt_ticks_to_timedelta,
-    _dynwinrt_timedelta_to_ticks, _dynwinrt_track_projected, _dynwinrt_uuid, _dynwinrt_vector,
+    _dynwinrt_timedelta_to_ticks, _dynwinrt_cache_projected, _dynwinrt_projected_from_native,
+    _dynwinrt_track_projected, _dynwinrt_uuid, _dynwinrt_vector,
 )
 
 
@@ -65,13 +66,29 @@ _IUriRuntimeClassWithAbsoluteCanonicalUri = DynWinRTType.register_interface(
 
 
 class IUriRuntimeClassWithAbsoluteCanonicalUri:
-    def __init__(self, obj: DynWinRTValue):
+    def __new__(cls, *args, **kwargs):
+        if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):
+            return _dynwinrt_projected_from_native(cls, args[0], '_set_native')
+        return super().__new__(cls)
+
+    def _set_native(self, obj: DynWinRTValue):
         self._obj = obj
+        self._dynwinrt_native_ready = True
         _dynwinrt_track_projected(self, 'Windows.Foundation.IUriRuntimeClassWithAbsoluteCanonicalUri')
+        _dynwinrt_cache_projected(self)
+
+    def __init__(self, obj: DynWinRTValue):
+        if getattr(self, '_dynwinrt_native_ready', False):
+            return
+        IUriRuntimeClassWithAbsoluteCanonicalUri._set_native(self, obj)
+
+    @classmethod
+    def _from_native(cls, obj: DynWinRTValue) -> 'IUriRuntimeClassWithAbsoluteCanonicalUri':
+        return cls(obj)
 
     @staticmethod
     def from_value(obj: DynWinRTValue) -> 'IUriRuntimeClassWithAbsoluteCanonicalUri':
-        return IUriRuntimeClassWithAbsoluteCanonicalUri(obj.cast(IID_IUriRuntimeClassWithAbsoluteCanonicalUri))
+        return IUriRuntimeClassWithAbsoluteCanonicalUri._from_native(obj.cast(IID_IUriRuntimeClassWithAbsoluteCanonicalUri))
 
 
     @_property

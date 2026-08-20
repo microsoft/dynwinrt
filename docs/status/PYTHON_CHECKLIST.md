@@ -127,7 +127,7 @@ of a dynamic projection.
 - [ ] Document generated-code version compatibility with `dynwinrt`.
 - [ ] Add troubleshooting for metadata, apartment, bootstrap, architecture,
       and wheel compatibility failures.
-- [ ] Add progress-callback tests for worker-thread delivery and operations
+- [x] Add progress-callback tests for worker-thread delivery and operations
       that complete concurrently with callback registration.
 
 ## WinUI milestone
@@ -172,7 +172,7 @@ of a dynamic projection.
 
 ## Later
 
-- [ ] Preserve projected object identity where it affects Python semantics.
+- [x] Preserve projected object identity where it affects Python semantics.
 - [ ] Support delegates with more than two ABI parameters.
 - [ ] Add zero-copy Python buffer protocol integration.
 - [ ] Add performance benchmarks against pywinrt for representative APIs.

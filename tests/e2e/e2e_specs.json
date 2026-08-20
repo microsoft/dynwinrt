@@ -97,7 +97,8 @@
         "args": ["https://example.com"]
       },
       "checks": [
-        { "kind": "interface_cast", "member": "as_interface", "interface_module": "uri", "interface_class": "IStringable", "method": "to_string", "contains": "example.com" }
+        { "kind": "interface_cast", "member": "as_interface", "interface_module": "uri", "interface_class": "IStringable", "method": "to_string", "contains": "example.com" },
+        { "kind": "projection_identity", "member": "as_interface", "langs": ["py"], "interface_class": "IStringable" }
       ]
     },
     {
@@ -160,6 +161,8 @@
         { "kind": "static_not_null", "member": "create_single", "args": [1.5] },
         { "kind": "static_not_null", "member": "create_u_int8", "args": [200] },
         { "kind": "static_not_null", "member": "create_u_int32", "args": [100000] },
+        { "kind": "narrow_integer_overflow", "member": "create_u_int8", "langs": ["py"] },
+        { "kind": "nullable_object_array_roundtrip", "member": "create_inspectable_array", "langs": ["py"] },
         { "kind": "static_uuid_input", "member": "create_guid", "langs": ["py"] },
         { "kind": "static_bytes_input", "member": "create_u_int8_array", "langs": ["py"] },
         { "kind": "static_sequence_input", "member": "create_int32_array", "langs": ["py"] }

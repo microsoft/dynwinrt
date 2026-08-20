@@ -915,6 +915,7 @@ fn emit_constructor_stubs(
         out.push_str("    def __new__(cls, _not_constructible: NoReturn) -> NoReturn: ...\n");
         return out;
     }
+    overloads.sort_by(|left, right| super::overloads::cmp_python_dispatch_params(left, right));
 
     let count = overloads.len();
     for params in &overloads {
@@ -999,9 +1000,13 @@ fn emit_instance_stub_group(
     event_has_remove: bool,
     property_has_getter: bool,
 ) -> String {
-    if methods.len() == 1 {
+    let mut ordered_methods = methods.iter().copied().collect::<Vec<_>>();
+    ordered_methods
+        .sort_by(|left, right| super::overloads::cmp_python_dispatch_methods(left, right));
+
+    if ordered_methods.len() == 1 {
         return emit_method_stub(
-            methods[0],
+            ordered_methods[0],
             known_types,
             delegate_type_names,
             indent_spaces,
@@ -1009,10 +1014,10 @@ fn emit_instance_stub_group(
             property_has_getter,
         );
     }
-    let names = super::overloads::method_names(methods.iter().copied());
-    let public_name = super::overloads::method_group_key(methods[0], &names);
+    let names = super::overloads::method_names(ordered_methods.iter().copied());
+    let public_name = super::overloads::method_group_key(ordered_methods[0], &names);
     let indent = " ".repeat(indent_spaces);
-    methods
+    ordered_methods
         .iter()
         .map(|method| {
             format!(
@@ -1053,8 +1058,13 @@ fn emit_static_stub_group(
     known_types: &HashSet<String>,
     delegate_type_names: &HashSet<String>,
 ) -> String {
-    if methods.len() == 1 {
-        let (method, is_factory) = methods[0];
+    let mut ordered_methods = methods.iter().copied().collect::<Vec<_>>();
+    ordered_methods.sort_by(|(left, _), (right, _)| {
+        super::overloads::cmp_python_dispatch_methods(left, right)
+    });
+
+    if ordered_methods.len() == 1 {
+        let (method, is_factory) = ordered_methods[0];
         return emit_static_method_stub(
             class_name,
             method,
@@ -1063,9 +1073,9 @@ fn emit_static_stub_group(
             delegate_type_names,
         );
     }
-    let names = super::overloads::method_names(methods.iter().map(|(method, _)| *method));
-    let public_name = super::overloads::method_group_key(methods[0].0, &names);
-    methods
+    let names = super::overloads::method_names(ordered_methods.iter().map(|(method, _)| *method));
+    let public_name = super::overloads::method_group_key(ordered_methods[0].0, &names);
+    ordered_methods
         .iter()
         .map(|(method, is_factory)| {
             format!(

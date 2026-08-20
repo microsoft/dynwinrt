@@ -18,7 +18,8 @@ from dynwinrt import (
 from dynwinrt.dynwinrt import (
     _dynwinrt_array, _dynwinrt_bind_overload, _dynwinrt_datetime_to_ticks, _dynwinrt_guid,
     _dynwinrt_map, _dynwinrt_new_vector, _dynwinrt_ticks_to_datetime, _dynwinrt_ticks_to_timedelta,
-    _dynwinrt_timedelta_to_ticks, _dynwinrt_track_projected, _dynwinrt_uuid, _dynwinrt_vector,
+    _dynwinrt_timedelta_to_ticks, _dynwinrt_cache_projected, _dynwinrt_projected_from_native,
+    _dynwinrt_track_projected, _dynwinrt_uuid, _dynwinrt_vector,
 )
 
 
@@ -64,13 +65,29 @@ _IStringable = DynWinRTType.register_interface(
 
 
 class IStringable:
-    def __init__(self, obj: DynWinRTValue):
+    def __new__(cls, *args, **kwargs):
+        if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):
+            return _dynwinrt_projected_from_native(cls, args[0], '_set_native')
+        return super().__new__(cls)
+
+    def _set_native(self, obj: DynWinRTValue):
         self._obj = obj
+        self._dynwinrt_native_ready = True
         _dynwinrt_track_projected(self, 'Windows.Foundation.IStringable')
+        _dynwinrt_cache_projected(self)
+
+    def __init__(self, obj: DynWinRTValue):
+        if getattr(self, '_dynwinrt_native_ready', False):
+            return
+        IStringable._set_native(self, obj)
+
+    @classmethod
+    def _from_native(cls, obj: DynWinRTValue) -> 'IStringable':
+        return cls(obj)
 
     @staticmethod
     def from_value(obj: DynWinRTValue) -> 'IStringable':
-        return IStringable(obj.cast(IID_IStringable))
+        return IStringable._from_native(obj.cast(IID_IStringable))
 
 
     def to_string(self) -> str:

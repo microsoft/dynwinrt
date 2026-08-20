@@ -491,12 +491,18 @@ pub(crate) fn generate_instance_method_group(
         );
     }
 
+    let mut ordered_overloads = overloads.iter().collect::<Vec<_>>();
+    ordered_overloads.sort_by(|left, right| {
+        super::overloads::cmp_python_dispatch_methods(left.method, right.method)
+    });
+
     let overload_names =
-        super::overloads::method_names(overloads.iter().map(|overload| overload.method));
-    let public_name = super::overloads::method_group_key(overloads[0].method, &overload_names);
+        super::overloads::method_names(ordered_overloads.iter().map(|overload| overload.method));
+    let public_name =
+        super::overloads::method_group_key(ordered_overloads[0].method, &overload_names);
     let mut out = String::new();
-    let mut private_names = Vec::with_capacity(overloads.len());
-    for overload in overloads {
+    let mut private_names = Vec::with_capacity(ordered_overloads.len());
+    for overload in &ordered_overloads {
         let private_name = format!("_{}_{}", public_name, overload.method.vtable_index);
         out.push_str(&generate_method_body(
             &overload.iface_var,
@@ -513,7 +519,7 @@ pub(crate) fn generate_instance_method_group(
     }
 
     out.push_str(&format!("    def {public_name}(self, *args, **kwargs):\n"));
-    for (overload, private_name) in overloads.iter().zip(private_names) {
+    for (overload, private_name) in ordered_overloads.iter().zip(private_names) {
         let in_params = get_in_params(overload.method);
         let parameter_names = in_params
             .iter()
@@ -594,12 +600,18 @@ pub(crate) fn generate_static_method_group(
         };
     }
 
+    let mut ordered_overloads = overloads.iter().collect::<Vec<_>>();
+    ordered_overloads.sort_by(|left, right| {
+        super::overloads::cmp_python_dispatch_methods(left.method, right.method)
+    });
+
     let overload_names =
-        super::overloads::method_names(overloads.iter().map(|overload| overload.method));
-    let public_name = super::overloads::method_group_key(overloads[0].method, &overload_names);
+        super::overloads::method_names(ordered_overloads.iter().map(|overload| overload.method));
+    let public_name =
+        super::overloads::method_group_key(ordered_overloads[0].method, &overload_names);
     let mut out = String::new();
-    let mut private_names = Vec::with_capacity(overloads.len());
-    for overload in overloads {
+    let mut private_names = Vec::with_capacity(ordered_overloads.len());
+    for overload in &ordered_overloads {
         let private_name = format!("_{}_{}", public_name, overload.method.vtable_index);
         let code = match overload.kind {
             StaticOverloadKind::Factory => generate_factory_method_invoke_named(
@@ -626,7 +638,7 @@ pub(crate) fn generate_static_method_group(
 
     out.push_str("    @staticmethod\n");
     out.push_str(&format!("    def {public_name}(*args, **kwargs):\n"));
-    for (overload, private_name) in overloads.iter().zip(private_names) {
+    for (overload, private_name) in ordered_overloads.iter().zip(private_names) {
         let in_params = get_in_params(overload.method);
         let parameter_names = in_params
             .iter()
@@ -893,7 +905,104 @@ pub(crate) fn generate_method_body(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::meta::ParamMeta;
+    use crate::meta::{ParamDirection, ParamMeta};
+    use std::process::Command;
+
+    fn overloaded_method(name: &str, vtable_index: usize, typ: TypeMeta) -> MethodMeta {
+        MethodMeta {
+            name: name.into(),
+            raw_name: name.into(),
+            vtable_index,
+            params: vec![ParamMeta {
+                name: "value".into(),
+                typ,
+                direction: ParamDirection::In,
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn instance_overload(method: &MethodMeta) -> InstanceOverload<'_> {
+        InstanceOverload {
+            iface_var: "_IReader".into(),
+            obj_expr: "self._obj".into(),
+            method,
+            sibling_methods: None,
+            property_has_getter: true,
+        }
+    }
+
+    fn static_overload<'a>(
+        class: &'a ClassMeta,
+        iface: &'a InterfaceMeta,
+        method: &'a MethodMeta,
+    ) -> StaticOverload<'a> {
+        StaticOverload {
+            class,
+            iface,
+            method,
+            kind: StaticOverloadKind::Static,
+        }
+    }
+
+    fn enum_type(name: &str, is_flags: bool) -> TypeMeta {
+        TypeMeta::Enum {
+            namespace: "Contoso".into(),
+            name: name.into(),
+            underlying: Box::new(TypeMeta::I32),
+            members: Vec::new(),
+            is_flags,
+            doc: None,
+            deprecated: None,
+        }
+    }
+
+    fn assert_contains_in_order(text: &str, first: &str, second: &str) {
+        let first_index = text
+            .find(first)
+            .unwrap_or_else(|| panic!("missing `{first}` in:\n{text}"));
+        let second_index = text
+            .find(second)
+            .unwrap_or_else(|| panic!("missing `{second}` in:\n{text}"));
+        assert!(first_index < second_index, "{text}");
+    }
+
+    fn extract_generated_block(code: &str, marker: &str) -> String {
+        code.find(marker)
+            .map(|index| code[index..].to_string())
+            .unwrap_or_else(|| panic!("missing `{marker}` in:\n{code}"))
+    }
+
+    fn run_python(script: &str) -> String {
+        fn invoke(
+            program: &str,
+            args: &[&str],
+            script: &str,
+        ) -> std::io::Result<std::process::Output> {
+            let mut command = Command::new(program);
+            for arg in args {
+                command.arg(arg);
+            }
+            command.arg(script).output()
+        }
+
+        let output = invoke("python", &["-c"], script).or_else(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                invoke("py", &["-3", "-c"], script)
+            } else {
+                Err(error)
+            }
+        });
+        let output = output.unwrap_or_else(|error| panic!("failed to launch Python: {error}"));
+        assert!(
+            output.status.success(),
+            "python script failed\nstdout:\n{}\nstderr:\n{}\nscript:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+            script
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
 
     #[test]
     fn static_delegate_return_stays_raw() {
@@ -1046,7 +1155,9 @@ mod tests {
         assert!(code.contains("def _read_7(self, value: int)"));
         assert!(code.contains("def read(self, *args, **kwargs)"));
         assert!(code.contains("isinstance(_bound[0], str)"));
-        assert!(code.contains("isinstance(_bound[0], int)"));
+        assert!(code.contains(
+            "isinstance(_bound[0], int) and not isinstance(_bound[0], bool) and not isinstance(_bound[0], __import__('enum').Enum)"
+        ));
     }
 
     #[test]
@@ -1249,5 +1360,311 @@ mod tests {
         assert!(code.contains("def _create_6()"));
         assert!(code.contains("def _create_7(value: str)"));
         assert!(code.contains("def create(*args, **kwargs)"));
+    }
+
+    #[test]
+    fn python_numeric_overload_instance_dispatch_is_declaration_order_independent() {
+        let wide = overloaded_method("Read2", 7, TypeMeta::I32);
+        let narrow = overloaded_method("Read", 6, TypeMeta::I8);
+
+        let forward = generate_instance_method_group(
+            &[instance_overload(&wide), instance_overload(&narrow)],
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+        let reverse = generate_instance_method_group(
+            &[instance_overload(&narrow), instance_overload(&wide)],
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+
+        assert_eq!(forward, reverse);
+        assert_contains_in_order(
+            &forward,
+            "-128 <= _bound[0] <= 127",
+            "-2147483648 <= _bound[0] <= 2147483647",
+        );
+    }
+
+    #[test]
+    fn python_numeric_overload_dispatch_separates_bool_char16_ranges_and_float() {
+        let float = overloaded_method("Pick6", 11, TypeMeta::F64);
+        let unsigned = overloaded_method("Pick5", 10, TypeMeta::U8);
+        let string = overloaded_method("Pick4", 9, TypeMeta::String);
+        let char16 = overloaded_method("Pick3", 8, TypeMeta::Char16);
+        let boolean = overloaded_method("Pick2", 7, TypeMeta::Bool);
+        let signed = overloaded_method("Pick", 6, TypeMeta::I8);
+        let overloads = vec![
+            instance_overload(&float),
+            instance_overload(&unsigned),
+            instance_overload(&string),
+            instance_overload(&char16),
+            instance_overload(&boolean),
+            instance_overload(&signed),
+        ];
+
+        let code = generate_instance_method_group(&overloads, &HashSet::new(), &HashSet::new());
+
+        assert_contains_in_order(
+            &code,
+            "if _bound is not None and isinstance(_bound[0], bool):",
+            "if _bound is not None and isinstance(_bound[0], int) and not isinstance(_bound[0], bool) and not isinstance(_bound[0], __import__('enum').Enum) and -128 <= _bound[0] <= 127:",
+        );
+        assert_contains_in_order(
+            &code,
+            "if _bound is not None and isinstance(_bound[0], str) and len(_bound[0]) == 1 and ord(_bound[0]) <= 65535:",
+            "if _bound is not None and isinstance(_bound[0], str):",
+        );
+        assert_contains_in_order(
+            &code,
+            "if _bound is not None and isinstance(_bound[0], int) and not isinstance(_bound[0], bool) and not isinstance(_bound[0], __import__('enum').Enum) and -128 <= _bound[0] <= 127:",
+            "if _bound is not None and isinstance(_bound[0], int) and not isinstance(_bound[0], bool) and not isinstance(_bound[0], __import__('enum').Enum) and 0 <= _bound[0] <= 255:",
+        );
+        assert_contains_in_order(
+            &code,
+            "if _bound is not None and isinstance(_bound[0], int) and not isinstance(_bound[0], bool) and not isinstance(_bound[0], __import__('enum').Enum) and 0 <= _bound[0] <= 255:",
+            "if _bound is not None and isinstance(_bound[0], (int, float)) and not isinstance(_bound[0], bool) and not isinstance(_bound[0], __import__('enum').Enum):",
+        );
+        assert!(code.contains("raise TypeError(\"No matching overload for pick\")"));
+        assert!(
+            !code.contains(
+                "if _bound is not None and isinstance(_bound[0], int) and not isinstance(_bound[0], bool) and not isinstance(_bound[0], __import__('enum').Enum):"
+            ),
+            "{code}"
+        );
+    }
+
+    #[test]
+    fn python_numeric_overload_static_dispatch_is_declaration_order_independent() {
+        let class = ClassMeta {
+            name: "Factory".into(),
+            ..Default::default()
+        };
+        let iface = InterfaceMeta {
+            name: "IFactoryStatics".into(),
+            ..Default::default()
+        };
+        let integer = overloaded_method("Create", 6, TypeMeta::I16);
+        let float = overloaded_method("Create2", 7, TypeMeta::F64);
+
+        let forward = generate_static_method_group(
+            &[
+                static_overload(&class, &iface, &float),
+                static_overload(&class, &iface, &integer),
+            ],
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+        let reverse = generate_static_method_group(
+            &[
+                static_overload(&class, &iface, &integer),
+                static_overload(&class, &iface, &float),
+            ],
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+
+        assert_eq!(forward, reverse);
+        assert_contains_in_order(
+            &forward,
+            "-32768 <= _bound[0] <= 32767",
+            "isinstance(_bound[0], (int, float)) and not isinstance(_bound[0], bool) and not isinstance(_bound[0], __import__('enum').Enum)",
+        );
+    }
+
+    #[test]
+    fn python_known_int_enum_instance_overload_prefers_enum_over_i8_in_both_orders() {
+        let integer = overloaded_method("Read", 6, TypeMeta::I8);
+        let enumeration = overloaded_method("Read2", 7, enum_type("Mode", false));
+        let known_types = HashSet::from(["Mode".to_string()]);
+
+        let forward = generate_instance_method_group(
+            &[instance_overload(&integer), instance_overload(&enumeration)],
+            &known_types,
+            &HashSet::new(),
+        );
+        let reverse = generate_instance_method_group(
+            &[instance_overload(&enumeration), instance_overload(&integer)],
+            &known_types,
+            &HashSet::new(),
+        );
+
+        let forward_dispatcher =
+            extract_generated_block(&forward, "    def read(self, *args, **kwargs):\n");
+        let reverse_dispatcher =
+            extract_generated_block(&reverse, "    def read(self, *args, **kwargs):\n");
+        let script = format!(
+            r#"from enum import IntEnum
+import json
+
+class DynWinRTValue:
+    pass
+
+def _dynwinrt_bind_overload(parameter_names, args, kwargs):
+    if kwargs:
+        if args:
+            return None
+        if len(kwargs) != len(parameter_names) or any(name not in kwargs for name in parameter_names):
+            return None
+        return tuple(kwargs[name] for name in parameter_names)
+    return args if len(args) == len(parameter_names) else None
+
+def _dynwinrt_symbol(module, name):
+    return globals()[name]
+
+class Mode(IntEnum):
+    VALUE = 1
+
+class OtherMode(IntEnum):
+    VALUE = 1
+
+class ReaderForward:
+    def _read_6(self, value):
+        return "i8"
+
+    def _read_7(self, value):
+        return "enum"
+
+{forward_dispatcher}
+
+class ReaderReverse:
+    def _read_6(self, value):
+        return "i8"
+
+    def _read_7(self, value):
+        return "enum"
+
+{reverse_dispatcher}
+
+def exercise(reader_type):
+    reader = reader_type()
+    results = [reader.read(Mode.VALUE), reader.read(7)]
+    try:
+        reader.read(OtherMode.VALUE)
+    except TypeError as error:
+        results.append(type(error).__name__)
+    else:
+        results.append("unexpected")
+    return results
+
+print(json.dumps([exercise(ReaderForward), exercise(ReaderReverse)]))
+"#
+        );
+
+        assert_eq!(
+            run_python(&script),
+            r#"[["enum", "i8", "TypeError"], ["enum", "i8", "TypeError"]]"#
+        );
+    }
+
+    #[test]
+    fn python_known_int_flag_static_overload_prefers_enum_over_i32_in_both_orders() {
+        let integer = overloaded_method("Create", 6, TypeMeta::I32);
+        let flags = overloaded_method("Create2", 7, enum_type("Options", true));
+        let known_types = HashSet::from(["Options".to_string()]);
+        let iface = InterfaceMeta {
+            name: "IFactoryStatics".into(),
+            ..Default::default()
+        };
+        let class_forward = ClassMeta {
+            name: "FactoryForward".into(),
+            ..Default::default()
+        };
+        let class_reverse = ClassMeta {
+            name: "FactoryReverse".into(),
+            ..Default::default()
+        };
+
+        let forward = generate_static_method_group(
+            &[
+                static_overload(&class_forward, &iface, &integer),
+                static_overload(&class_forward, &iface, &flags),
+            ],
+            &known_types,
+            &HashSet::new(),
+        );
+        let reverse = generate_static_method_group(
+            &[
+                static_overload(&class_reverse, &iface, &flags),
+                static_overload(&class_reverse, &iface, &integer),
+            ],
+            &known_types,
+            &HashSet::new(),
+        );
+
+        let forward_dispatcher = extract_generated_block(
+            &forward,
+            "    @staticmethod\n    def create(*args, **kwargs):\n",
+        );
+        let reverse_dispatcher = extract_generated_block(
+            &reverse,
+            "    @staticmethod\n    def create(*args, **kwargs):\n",
+        );
+        let script = format!(
+            r#"from enum import IntFlag
+import json
+
+class DynWinRTValue:
+    pass
+
+def _dynwinrt_bind_overload(parameter_names, args, kwargs):
+    if kwargs:
+        if args:
+            return None
+        if len(kwargs) != len(parameter_names) or any(name not in kwargs for name in parameter_names):
+            return None
+        return tuple(kwargs[name] for name in parameter_names)
+    return args if len(args) == len(parameter_names) else None
+
+def _dynwinrt_symbol(module, name):
+    return globals()[name]
+
+class Options(IntFlag):
+    A = 1
+    B = 2
+
+class OtherOptions(IntFlag):
+    A = 1
+
+class FactoryForward:
+    @staticmethod
+    def _create_6(value):
+        return "i32"
+
+    @staticmethod
+    def _create_7(value):
+        return "enum"
+
+{forward_dispatcher}
+
+class FactoryReverse:
+    @staticmethod
+    def _create_6(value):
+        return "i32"
+
+    @staticmethod
+    def _create_7(value):
+        return "enum"
+
+{reverse_dispatcher}
+
+def exercise(factory_type):
+    results = [factory_type.create(Options.A | Options.B), factory_type.create(42)]
+    try:
+        factory_type.create(OtherOptions.A)
+    except TypeError as error:
+        results.append(type(error).__name__)
+    else:
+        results.append("unexpected")
+    return results
+
+print(json.dumps([exercise(FactoryForward), exercise(FactoryReverse)]))
+"#
+        );
+
+        assert_eq!(
+            run_python(&script),
+            r#"[["enum", "i32", "TypeError"], ["enum", "i32", "TypeError"]]"#
+        );
     }
 }

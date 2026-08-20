@@ -1,10 +1,13 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use crate::meta::MethodMeta;
+use crate::codegen::winrt::shared::imports::get_in_params;
+use crate::meta::{MethodMeta, ParamMeta};
+use std::cmp::Ordering;
 use std::collections::HashSet;
 
 use super::naming::to_snake_case;
+use super::signature::py_dispatch_type_sort_key;
 
 pub(crate) fn grouped_methods<'a>(
     methods: impl IntoIterator<Item = &'a MethodMeta>,
@@ -53,5 +56,69 @@ pub(crate) fn method_group_key(method: &MethodMeta, names: &HashSet<String>) -> 
         } else {
             name
         }
+    }
+}
+
+pub(crate) fn cmp_python_dispatch_methods(left: &MethodMeta, right: &MethodMeta) -> Ordering {
+    cmp_python_dispatch_params(&get_in_params(left), &get_in_params(right))
+        .then_with(|| left.raw_name.cmp(&right.raw_name))
+        .then_with(|| left.name.cmp(&right.name))
+        .then_with(|| left.vtable_index.cmp(&right.vtable_index))
+}
+
+pub(crate) fn cmp_python_dispatch_params(left: &[&ParamMeta], right: &[&ParamMeta]) -> Ordering {
+    let sort_key = |params: &[&ParamMeta]| {
+        params
+            .iter()
+            .map(|param| py_dispatch_type_sort_key(&param.typ))
+            .collect::<Vec<_>>()
+    };
+    sort_key(left).cmp(&sort_key(right))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::meta::{ParamDirection, ParamMeta};
+    use crate::types::TypeMeta;
+
+    fn method(name: &str, vtable_index: usize, typ: TypeMeta) -> MethodMeta {
+        MethodMeta {
+            name: name.into(),
+            raw_name: name.into(),
+            vtable_index,
+            params: vec![ParamMeta {
+                name: "value".into(),
+                typ,
+                direction: ParamDirection::In,
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn python_numeric_overload_method_cmp_prefers_narrower_and_signed_ranges() {
+        let i8 = method("Read", 6, TypeMeta::I8);
+        let u8 = method("Read2", 7, TypeMeta::U8);
+        let i16 = method("Read3", 8, TypeMeta::I16);
+
+        assert_eq!(cmp_python_dispatch_methods(&i8, &i16), Ordering::Less);
+        assert_eq!(cmp_python_dispatch_methods(&i8, &u8), Ordering::Less);
+    }
+
+    #[test]
+    fn python_numeric_overload_method_cmp_prefers_char16_integer_and_f64() {
+        let char16 = method("Pick", 6, TypeMeta::Char16);
+        let string = method("Pick2", 7, TypeMeta::String);
+        let int = method("Pick3", 8, TypeMeta::I32);
+        let f64 = method("Pick4", 9, TypeMeta::F64);
+        let f32 = method("Pick5", 10, TypeMeta::F32);
+
+        assert_eq!(
+            cmp_python_dispatch_methods(&char16, &string),
+            Ordering::Less
+        );
+        assert_eq!(cmp_python_dispatch_methods(&int, &f64), Ordering::Less);
+        assert_eq!(cmp_python_dispatch_methods(&f64, &f32), Ordering::Less);
     }
 }
