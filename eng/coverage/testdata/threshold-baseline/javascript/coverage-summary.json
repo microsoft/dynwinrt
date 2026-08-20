@@ -1,0 +1,7 @@
+{
+  "total": {
+    "lines": { "pct": 22.19 },
+    "functions": { "pct": 29.41 },
+    "branches": { "pct": 18.75 }
+  }
+}
