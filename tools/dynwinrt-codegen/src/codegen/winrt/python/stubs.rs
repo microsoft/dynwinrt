@@ -26,8 +26,8 @@ use super::collections::{
     CollectionKind, abc_name, class_interface, interface_kind, observable_vector_name,
 };
 use super::naming::{
-    is_py_reserved, python_module_layout_installed, python_module_name, to_snake_case,
-    to_snake_case_filename,
+    is_py_reserved, python_module_layout_installed, python_module_name,
+    python_public_qualified_module_name, to_snake_case, to_snake_case_filename,
 };
 use super::native_types::foundation_type;
 use super::shared::reorder_getters_before_setters;
@@ -35,7 +35,7 @@ use super::signature::py_dynwinrt_type;
 use super::stub_helpers::{
     emit_method_stub, emit_method_stub_named, emit_static_method_stub,
     emit_static_method_stub_named, emit_struct_stub, format_py_type_import,
-    generate_struct_stub_imports,
+    generate_struct_stub_imports, py_struct_export_names,
 };
 use super::type_helpers::methods_have_async_output;
 
@@ -1312,7 +1312,7 @@ pub fn generate_public_index_stub(
         if seen.insert(class.name.clone()) {
             out.push_str(&format!(
                 "from .{} import {} as {}\n",
-                python_module_name(&class.namespace, &class.name),
+                python_public_qualified_module_name(&class.namespace, &class.name),
                 class.name,
                 class.name
             ));
@@ -1333,7 +1333,7 @@ pub fn generate_public_index_stub(
         if !is_delegate && seen.insert(interface.name.clone()) {
             out.push_str(&format!(
                 "from .{} import {} as {}\n",
-                python_module_name(&interface.namespace, &interface.name),
+                python_public_qualified_module_name(&interface.namespace, &interface.name),
                 interface.name,
                 interface.name
             ));
@@ -1355,7 +1355,7 @@ pub fn generate_public_index_stub(
         if seen.insert(name.clone()) {
             out.push_str(&format!(
                 "from .{} import {} as {}\n",
-                python_module_name(namespace, name),
+                python_public_qualified_module_name(namespace, name),
                 name,
                 name
             ));
@@ -1381,12 +1381,45 @@ pub fn generate_struct_index_stub(structs: &[TypeMeta]) -> String {
         else {
             continue;
         };
+        if !seen.insert((namespace, name)) {
+            continue;
+        }
+        out.push_str(&format!(
+            "from .{} import {}\n",
+            python_module_name(namespace, name),
+            py_struct_export_names(typ)
+                .into_iter()
+                .map(|name| format!("{name} as {name}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    out
+}
+
+pub fn generate_public_struct_index_stub(structs: &[TypeMeta]) -> String {
+    let mut out = String::from(HEADER);
+    let mut seen = HashSet::new();
+    let mut sorted = structs.iter().collect::<Vec<_>>();
+    sorted.sort_by_key(|typ| match typ {
+        TypeMeta::Struct {
+            namespace, name, ..
+        } => format!("{namespace}.{name}"),
+        _ => String::new(),
+    });
+    for typ in sorted {
+        let TypeMeta::Struct {
+            namespace, name, ..
+        } = typ
+        else {
+            continue;
+        };
         if foundation_type(typ).is_some() || !seen.insert((namespace, name)) {
             continue;
         }
         out.push_str(&format!(
             "from .{} import {} as {}\n",
-            python_module_name(namespace, name),
+            python_public_qualified_module_name(namespace, name),
             name,
             name
         ));

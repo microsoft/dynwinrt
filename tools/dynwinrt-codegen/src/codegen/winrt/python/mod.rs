@@ -19,7 +19,7 @@ pub use generator::*;
 pub use naming::{
     PythonModuleLayoutGuard, PythonTypeIdentity, install_python_module_layout,
     python_module_layout_installed, python_module_name, python_namespace_segments,
-    python_public_module_name, to_snake_case_filename,
+    python_public_module_name, python_public_qualified_module_name, to_snake_case_filename,
 };
 
 pub(crate) fn collect_referenced_delegate_names(
@@ -160,4 +160,62 @@ pub fn package_struct_identities(
             _ => None,
         })
         .collect()
+}
+
+pub fn validate_struct_symbol_uniqueness(
+    classes: &[crate::meta::ClassMeta],
+    interfaces: &[crate::meta::InterfaceMeta],
+) -> Result<(), String> {
+    use crate::codegen::winrt::shared::structs::{
+        collect_used_structs_from_class, collect_used_structs_from_iface,
+        collect_used_structs_from_struct,
+    };
+    use crate::types::TypeMeta;
+    use std::collections::BTreeMap;
+
+    fn validate(owner: &str, structs: impl IntoIterator<Item = TypeMeta>) -> Result<(), String> {
+        let mut identities = BTreeMap::<String, String>::new();
+        for typ in structs {
+            let TypeMeta::Struct {
+                namespace, name, ..
+            } = typ
+            else {
+                continue;
+            };
+            let full_name = format!("{namespace}.{name}");
+            if let Some(existing) = identities.insert(name.clone(), full_name.clone())
+                && existing != full_name
+            {
+                return Err(format!(
+                    "Python generation cannot safely emit `{owner}` because `{existing}` and \
+                     `{full_name}` both require the struct symbols `{name}`, `_{name}_TYPE`, \
+                     `_pack_{snake}`, and `_unpack_{snake}`",
+                    snake = to_snake_case_filename(&name),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    for class in classes {
+        validate(&class.full_name, collect_used_structs_from_class(class))?;
+    }
+    for interface in interfaces {
+        validate(
+            &format!("{}.{}", interface.namespace, interface.name),
+            collect_used_structs_from_iface(interface),
+        )?;
+    }
+    for typ in package_structs(classes, interfaces) {
+        let TypeMeta::Struct {
+            namespace, name, ..
+        } = &typ
+        else {
+            continue;
+        };
+        let mut dependencies = vec![typ.clone()];
+        dependencies.extend(collect_used_structs_from_struct(&typ));
+        validate(&format!("{namespace}.{name}"), dependencies)?;
+    }
+    Ok(())
 }

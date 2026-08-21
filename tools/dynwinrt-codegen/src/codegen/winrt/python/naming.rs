@@ -127,6 +127,12 @@ pub fn python_public_module_name(name: &str) -> String {
     to_snake_case(name)
 }
 
+pub fn python_public_qualified_module_name(namespace: &str, name: &str) -> String {
+    let mut segments = python_namespace_segments(namespace);
+    segments.push(python_public_module_name(name));
+    segments.join(".")
+}
+
 fn is_winrt_uint_suffix(token: &str) -> bool {
     matches!(token, "int8" | "int16" | "int32" | "int64")
 }
@@ -248,6 +254,14 @@ mod tests {
         assert_eq!(
             to_snake_case_filename("IReference_UInt32"),
             "i_reference_uint32"
+        );
+    }
+
+    #[test]
+    fn public_qualified_module_uses_namespace_facades() {
+        assert_eq!(
+            python_public_qualified_module_name("Microsoft.UI.Xaml.Controls", "Button"),
+            "microsoft.ui.xaml.controls.button"
         );
     }
 

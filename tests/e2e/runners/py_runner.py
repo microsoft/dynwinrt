@@ -485,9 +485,24 @@ async def run_check(
                 f"{namespace_module_name(pkg_name, namespace)}.{struct_module}"
             )
             struct_cls = getattr(struct_mod, check['struct_class'])
+            pack = getattr(struct_mod, check['pack_fn'])
+            unpack = getattr(struct_mod, check['unpack_fn'])
 
             # Create struct instance with kwargs
             struct_obj = struct_cls(**{to_snake_case(k): v for k, v in check['struct_args'].items()})
+            roundtrip = unpack(pack(struct_obj).to_value())
+            if roundtrip != struct_obj:
+                cr['error'] = (
+                    f'struct helper roundtrip returned {roundtrip!r}, '
+                    f'expected {struct_obj!r}'
+                )
+                return cr
+            if roundtrip.__eq__(object()) is not NotImplemented:
+                cr['error'] = 'struct equality accepted a different type'
+                return cr
+            if check['struct_class'] not in repr(roundtrip):
+                cr['error'] = 'struct repr omitted the projected type name'
+                return cr
 
             # Pass struct directly to static method (generated code handles pack internally)
             static_method = getattr(cls, to_snake_case(check['member']))
@@ -1620,7 +1635,8 @@ async def run_check(
             import dynwinrt as dw
 
             # This spec runs last. Earlier E2E specs validate real generated
-            # call sites; this matrix covers each emitted copy of shared helpers.
+            # call sites; this matrix covers the shared runtime once and each
+            # module-local helper shape that remains after runtime extraction.
             property_type = generated_type(pkg_name, 'PropertyType')
             property_type_module = implementation_module_name(
                 pkg_name, 'Windows.Foundation', 'PropertyType'
@@ -1652,101 +1668,134 @@ async def run_check(
             )
             reference_type = generated_type(pkg_name, 'IReference_UInt32')
             value_type = dw.DynWinRTType.u32_type()
+            runtime_module = importlib.import_module(f'{pkg_name}._runtime')
+            module_paths = [
+                path
+                for path in sorted(Path(generated_dir).glob('*.py'))
+                if path.name not in ('__init__.py', '_runtime.py')
+            ]
+            reference_modules = []
+            shared_definitions = (
+                'def _dynwinrt_enum(',
+                'def _dynwinrt_delegate(',
+                'def _dynwinrt_wrap_values(',
+            )
+            for module_path in module_paths:
+                source = module_path.read_text(encoding='utf-8')
+                if any(definition in source for definition in shared_definitions):
+                    cr['error'] = (
+                        f'{module_path.name}: shared runtime helper was duplicated'
+                    )
+                    return cr
+                if 'def _dynwinrt_box_reference(' in source:
+                    reference_modules.append(module_path)
+
             counters = {
-                'modules': 0,
+                'modules': len(module_paths),
                 'enum': 0,
                 'delegate': 0,
                 'wrap_values': 0,
                 'ireference': 0,
+                'struct_helpers': 0,
             }
 
-            for module_path in sorted(Path(generated_dir).glob('*.py')):
-                if module_path.name == '__init__.py':
-                    continue
+            enum_helper = runtime_module._dynwinrt_enum
+            converted = enum_helper(
+                property_type_module.removeprefix(f'{pkg_name}.'),
+                'PropertyType',
+                int(valid_enum),
+            )
+            unknown = enum_helper(
+                property_type_module.removeprefix(f'{pkg_name}.'),
+                'PropertyType',
+                invalid_enum,
+            )
+            if not isinstance(converted, property_type):
+                cr['error'] = 'shared runtime did not project a valid enum'
+                return cr
+            if type(unknown) is not int or unknown != invalid_enum:
+                cr['error'] = 'shared runtime did not preserve an unknown enum'
+                return cr
+            counters['enum'] = 1
+
+            delegate_helper = runtime_module._dynwinrt_delegate
+            raw = dw.DynWinRTValue.null_value()
+            if delegate_helper(raw, delegate_iid, delegate_params) is not raw:
+                cr['error'] = 'shared runtime did not preserve a raw delegate'
+                return cr
+            try:
+                delegate_helper(17, delegate_iid, delegate_params)
+                cr['error'] = 'shared runtime accepted an invalid delegate'
+                return cr
+            except TypeError:
+                pass
+            callback_value = delegate_helper(
+                lambda *_args: None,
+                delegate_iid,
+                delegate_params,
+            )
+            if not isinstance(callback_value, dw.DynWinRTValue):
+                cr['error'] = 'shared runtime did not wrap a callable delegate'
+                return cr
+            callback_value.release()
+            counters['delegate'] = 1
+
+            wrapped = runtime_module._dynwinrt_wrap_values(
+                uri_module.removeprefix(f'{pkg_name}.'),
+                'Uri',
+                [dw.DynWinRTValue.null_value(), uri._obj],
+            )
+            if wrapped[0] is not None or not isinstance(wrapped[1], uri_type):
+                cr['error'] = 'shared runtime value wrapping branches failed'
+                return cr
+            if wrapped[1] is not uri:
+                cr['error'] = 'shared runtime did not reuse wrapper identity'
+                return cr
+            counters['wrap_values'] = 1
+
+            for namespace, struct_name, values in (
+                (
+                    'Windows.Data.Text',
+                    'TextSegment',
+                    {'start_position': 3, 'length': 5},
+                ),
+                (
+                    'Windows.Foundation',
+                    'EventRegistrationToken',
+                    {'value': 9},
+                ),
+            ):
+                struct_module = importlib.import_module(
+                    f'{namespace_module_name(pkg_name, namespace)}.'
+                    f'{to_snake_case(struct_name)}'
+                )
+                struct_type = getattr(struct_module, struct_name)
+                pack = getattr(
+                    struct_module,
+                    f'pack_{to_snake_case(struct_name)}',
+                )
+                unpack = getattr(
+                    struct_module,
+                    f'unpack_{to_snake_case(struct_name)}',
+                )
+                value = struct_type(**values)
+                roundtrip = unpack(pack(value).to_value())
+                if roundtrip != value or struct_name not in repr(roundtrip):
+                    cr['error'] = (
+                        f'{struct_name}: canonical struct helper roundtrip failed'
+                    )
+                    return cr
+                if roundtrip.__eq__(object()) is not NotImplemented:
+                    cr['error'] = (
+                        f'{struct_name}: struct equality accepted another type'
+                    )
+                    return cr
+                counters['struct_helpers'] += 1
+
+            for module_path in reference_modules:
                 generated_module = importlib.import_module(
                     f'{pkg_name}.{module_path.stem}'
                 )
-                counters['modules'] += 1
-
-                enum_helper = getattr(generated_module, '_dynwinrt_enum', None)
-                if enum_helper is not None:
-                    converted = enum_helper(
-                        property_type_module.removeprefix(f'{pkg_name}.'),
-                        'PropertyType',
-                        int(valid_enum),
-                    )
-                    unknown = enum_helper(
-                        property_type_module.removeprefix(f'{pkg_name}.'),
-                        'PropertyType',
-                        invalid_enum,
-                    )
-                    if not isinstance(converted, property_type):
-                        cr['error'] = (
-                            f'{module_path.name}: valid enum was not projected'
-                        )
-                        return cr
-                    if type(unknown) is not int or unknown != invalid_enum:
-                        cr['error'] = (
-                            f'{module_path.name}: unknown enum was not preserved'
-                        )
-                        return cr
-                    counters['enum'] += 1
-
-                delegate_helper = getattr(
-                    generated_module, '_dynwinrt_delegate', None
-                )
-                if delegate_helper is not None:
-                    raw = dw.DynWinRTValue.null_value()
-                    if delegate_helper(raw, delegate_iid, delegate_params) is not raw:
-                        cr['error'] = (
-                            f'{module_path.name}: raw delegate was not preserved'
-                        )
-                        return cr
-                    try:
-                        delegate_helper(17, delegate_iid, delegate_params)
-                        cr['error'] = (
-                            f'{module_path.name}: invalid delegate was accepted'
-                        )
-                        return cr
-                    except TypeError:
-                        pass
-                    callback_value = delegate_helper(
-                        lambda *_args: None,
-                        delegate_iid,
-                        delegate_params,
-                    )
-                    if not isinstance(callback_value, dw.DynWinRTValue):
-                        cr['error'] = (
-                            f'{module_path.name}: callable delegate was not wrapped'
-                        )
-                        return cr
-                    callback_value.release()
-                    counters['delegate'] += 1
-
-                wrap_values = getattr(
-                    generated_module, '_dynwinrt_wrap_values', None
-                )
-                if wrap_values is not None:
-                    wrapped = wrap_values(
-                        uri_module.removeprefix(f'{pkg_name}.'),
-                        'Uri',
-                        [dw.DynWinRTValue.null_value(), uri._obj],
-                    )
-                    if (
-                        wrapped[0] is not None
-                        or not isinstance(wrapped[1], uri_type)
-                    ):
-                        cr['error'] = (
-                            f'{module_path.name}: value wrapping branches failed'
-                        )
-                        return cr
-                    if wrapped[1] is not uri:
-                        cr['error'] = (
-                            f'{module_path.name}: wrapper identity was not reused'
-                        )
-                        return cr
-                    counters['wrap_values'] += 1
-
                 box_reference = getattr(
                     generated_module, '_dynwinrt_box_reference', None
                 )
@@ -1797,10 +1846,11 @@ async def run_check(
             uri._obj.release()
             if (
                 counters['modules'] < 100
-                or counters['enum'] < 50
-                or counters['delegate'] < 50
-                or counters['wrap_values'] < 50
+                or counters['enum'] != 1
+                or counters['delegate'] != 1
+                or counters['wrap_values'] != 1
                 or counters['ireference'] < 1
+                or counters['struct_helpers'] != 2
             ):
                 cr['error'] = f'generated helper matrix was too small: {counters}'
             else:

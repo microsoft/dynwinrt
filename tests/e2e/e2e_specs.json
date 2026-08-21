@@ -238,6 +238,25 @@
       ]
     },
     {
+      "id": "struct_size_roundtrip",
+      "namespace": "Windows.Foundation",
+      "class": "PropertyValue",
+      "langs": ["py", "ts"],
+      "instantiate": { "kind": "none" },
+      "checks": [
+        {
+          "kind": "struct_roundtrip",
+          "member": "create_size",
+          "struct_module": "property_value",
+          "struct_class": "Size",
+          "struct_args": { "width": 640.0, "height": 480.0 },
+          "pack_fn": "pack_size",
+          "unpack_fn": "unpack_size",
+          "expected_fields": { "width": 640.0, "height": 480.0 }
+        }
+      ]
+    },
+    {
       "id": "array_i32_roundtrip",
       "namespace": "Windows.Foundation",
       "class": "PropertyValue",

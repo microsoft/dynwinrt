@@ -979,6 +979,11 @@ fn generate_for_types(
         .filter(|(_, (_, count))| *count >= 2)
         .map(|(_, (iface, _))| (*iface).clone())
         .collect();
+    if lang == "py" {
+        let mut struct_interfaces = emittable_interfaces.clone();
+        struct_interfaces.extend(shared_interfaces.iter().cloned());
+        python::validate_struct_symbol_uniqueness(&all_classes, &struct_interfaces)?;
+    }
     for iface in &shared_interfaces {
         known_types.insert(iface.name.clone());
     }
@@ -2333,7 +2338,7 @@ fn write_python_package_indexes(
     let mut root_index =
         python::generate_public_index(&root_classes, &root_interfaces, &root_enums);
     root_index.push_str(
-        python::generate_struct_index(&root_structs)
+        python::generate_public_struct_index(&root_structs)
             .strip_prefix(GENERATED_PYTHON_HEADER)
             .unwrap_or_default(),
     );
@@ -2347,7 +2352,7 @@ fn write_python_package_indexes(
         let mut root_stub =
             python_stub::generate_public_index_stub(&root_classes, &root_interfaces, &root_enums);
         root_stub.push_str(
-            python_stub::generate_struct_index_stub(&root_structs)
+            python_stub::generate_public_struct_index_stub(&root_structs)
                 .strip_prefix(GENERATED_PYTHON_HEADER)
                 .unwrap_or_default(),
         );
@@ -3890,18 +3895,88 @@ mod tests {
             .unwrap();
         let point_facade = fs::read_to_string(output.join("windows/foundation/point.py")).unwrap();
         assert!(point_facade.contains("Point.__module__ = __name__"));
+        assert!(point_facade.contains("Point_TYPE"));
+        assert!(point_facade.contains("pack_point"));
+        assert!(point_facade.contains("unpack_point"));
+        let point_stub = fs::read_to_string(output.join("windows/foundation/point.pyi")).unwrap();
+        assert!(point_stub.contains("Point_TYPE as Point_TYPE"));
+        assert!(point_stub.contains("pack_point as pack_point"));
+        assert!(point_stub.contains("unpack_point as unpack_point"));
         let foundation_index =
             fs::read_to_string(output.join("windows/foundation/__init__.py")).unwrap();
         assert!(foundation_index.contains("def __getattr__(name):"));
         assert!(!foundation_index.contains("from .point import"));
         assert!(foundation_index.contains("\"Point\": (\".point\", \"Point\")"));
         assert!(!foundation_index.contains("Point_TYPE"));
+        let root_index = fs::read_to_string(output.join("__init__.py")).unwrap();
+        assert!(root_index.contains("\"Point\": (\".windows.foundation.point\", \"Point\")"));
+        assert!(root_index.contains("\"Widget\": (\".contoso.widget\", \"Widget\")"));
+        assert!(!root_index.contains("windows__foundation__point"));
         assert!(
             !fs::read_to_string(output.join("contoso/widget.py"))
                 .unwrap()
                 .contains("Point")
         );
         fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
+    fn python_generation_rejects_consumer_struct_symbol_collisions() {
+        let point = |namespace: &str| TypeMeta::Struct {
+            namespace: namespace.into(),
+            name: "Point".into(),
+            fields: vec![dynwinrt_codegen::types::FieldMeta {
+                name: "Value".into(),
+                typ: TypeMeta::I32,
+            }],
+        };
+        let class = meta::ClassMeta {
+            name: "Widget".into(),
+            namespace: "Contoso".into(),
+            full_name: "Contoso.Widget".into(),
+            default_interface: Some(meta::InterfaceMeta {
+                name: "IWidget".into(),
+                namespace: "Contoso".into(),
+                iid: "11111111-1111-1111-1111-111111111111".into(),
+                methods: vec![meta::MethodMeta {
+                    name: "Transform".into(),
+                    raw_name: "Transform".into(),
+                    params: vec![
+                        meta::ParamMeta {
+                            name: "source".into(),
+                            typ: point("Contoso.Geometry"),
+                            direction: meta::ParamDirection::In,
+                        },
+                        meta::ParamMeta {
+                            name: "target".into(),
+                            typ: point("Fabrikam.Geometry"),
+                            direction: meta::ParamDirection::In,
+                        },
+                    ],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let error = generate_for_types(
+            "",
+            &test_directory("python-struct-symbol-collision"),
+            vec![class],
+            Vec::new(),
+            Vec::new(),
+            true,
+            "py",
+            true,
+            &DocTable::default(),
+            &[],
+        )
+        .unwrap_err();
+        assert!(error.contains("Contoso.Widget"));
+        assert!(error.contains("Contoso.Geometry.Point"));
+        assert!(error.contains("Fabrikam.Geometry.Point"));
+        assert!(error.contains("_pack_point"));
     }
 
     #[test]
@@ -4073,13 +4148,11 @@ mod tests {
         let root_runtime = fs::read_to_string(output.join("__init__.py")).unwrap();
         assert!(root_runtime.contains("def __getattr__(name):"));
         assert!(
-            root_runtime.contains("\"IWidget\": (\".contoso__foundation__i_widget\", \"IWidget\")")
+            root_runtime.contains("\"IWidget\": (\".contoso.foundation.i_widget\", \"IWidget\")")
         );
-        assert!(!root_runtime.contains("from .contoso__foundation__i_widget import"));
+        assert!(!root_runtime.contains("contoso__foundation__i_widget"));
         let root_stub = fs::read_to_string(output.join("__init__.pyi")).unwrap();
-        assert!(
-            root_stub.contains("from .contoso__foundation__i_widget import IWidget as IWidget")
-        );
+        assert!(root_stub.contains("from .contoso.foundation.i_widget import IWidget as IWidget"));
         assert!(!root_stub.contains("IID_IWidget"));
         let namespace_stub =
             fs::read_to_string(output.join("contoso/foundation/__init__.pyi")).unwrap();

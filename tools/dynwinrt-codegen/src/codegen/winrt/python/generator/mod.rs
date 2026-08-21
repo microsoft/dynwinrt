@@ -27,8 +27,8 @@ use super::method::{
     generate_instance_method_group, generate_static_method_group, py_method_type_guard,
 };
 use super::naming::{
-    is_py_reserved, python_module_layout_installed, python_module_name, to_snake_case,
-    to_snake_case_filename,
+    is_py_reserved, python_module_layout_installed, python_module_name,
+    python_public_qualified_module_name, to_snake_case, to_snake_case_filename,
 };
 use super::shared::reorder_getters_before_setters;
 use super::signature::{
@@ -174,6 +174,9 @@ fn has_ireference_struct_field(structs: &[TypeMeta]) -> bool {
 }
 
 pub use class::generate_class;
-pub use index::{append_to_index, generate_index, generate_public_index, generate_struct_index};
+pub use index::{
+    append_to_index, generate_index, generate_public_index, generate_public_struct_index,
+    generate_struct_index,
+};
 pub use structs::generate_struct;
 pub use types::{generate_enum, generate_interface};
