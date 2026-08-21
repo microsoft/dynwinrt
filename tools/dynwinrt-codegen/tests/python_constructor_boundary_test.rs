@@ -58,7 +58,8 @@ fn system_returned_class_keeps_only_internal_native_wrapping() {
     assert!(py.contains("SystemResult cannot be constructed directly"));
     assert!(!py.contains("self._set_native(type(self).create("));
     assert!(!py.contains("_IActivationFactory ="));
-    assert!(pyi.contains("def __new__(cls, _not_constructible: NoReturn) -> NoReturn: ..."));
+    assert!(pyi.contains("def __init__(self, _not_constructible: NoReturn) -> None: ..."));
+    assert!(pyi.contains("def get_current() -> SystemResult | None: ..."));
     assert!(!pyi.contains("def __init__(self, obj: DynWinRTValue)"));
     assert!(!pyi.contains("def __init__(self)"));
 }
@@ -185,7 +186,7 @@ fn protected_composition_is_not_public_construction() {
     let pyi = python_stub::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
 
     assert!(py.contains("SystemResult cannot be constructed directly"));
-    assert!(pyi.contains("def __new__(cls, _not_constructible: NoReturn) -> NoReturn: ..."));
+    assert!(pyi.contains("def __init__(self, _not_constructible: NoReturn) -> None: ..."));
     assert!(!pyi.contains("def create() -> 'SystemResult'"));
 }
 
@@ -233,7 +234,7 @@ fn unresolved_or_unsupported_constructor_metadata_fails_closed() {
         let pyi = python_stub::generate_class_stub(class, &known, &HashSet::new(), &HashSet::new());
         assert!(py.contains("SystemResult cannot be constructed directly"));
         assert!(pyi.contains("from typing import NoReturn"));
-        assert!(pyi.contains("def __new__(cls, _not_constructible: NoReturn) -> NoReturn: ..."));
-        assert!(!pyi.contains("def __init__(self"));
+        assert!(pyi.contains("def __init__(self, _not_constructible: NoReturn) -> None: ..."));
+        assert_eq!(pyi.matches("def __init__(self").count(), 1);
     }
 }

@@ -647,11 +647,11 @@ mod tests {
         };
         assert_eq!(
             py_convert_return("r", Some(&rt), false, &known),
-            "(lambda value: None if value.is_null() else _dynwinrt_symbol('uri', 'Uri')._from_native(value))(r)"
+            "(lambda value: None if value.is_null() else _dynwinrt_symbol('windows__foundation__uri', 'Uri')._from_native(value))(r)"
         );
         assert_eq!(
             py_convert_array_return("r", &rt, &known),
-            "_dynwinrt_wrap_values('uri', 'Uri', r.to_values())"
+            "_dynwinrt_wrap_values('windows__foundation__uri', 'Uri', r.to_values())"
         );
     }
 
@@ -674,7 +674,7 @@ mod tests {
         let known = HashSet::from(["DayOfWeek".to_string()]);
         assert_eq!(
             py_convert_return("r", Some(&en), false, &known),
-            "_dynwinrt_enum('day_of_week', 'DayOfWeek', r.to_number())"
+            "_dynwinrt_enum('windows__globalization__day_of_week', 'DayOfWeek', r.to_number())"
         );
     }
 

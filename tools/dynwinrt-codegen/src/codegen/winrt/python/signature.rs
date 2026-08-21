@@ -912,7 +912,7 @@ mod tests {
         let known = HashSet::from(["Mode".to_string()]);
         assert_eq!(
             py_type_guard("value", &enum_type("Mode", false), &known),
-            "isinstance(value, _dynwinrt_symbol('mode', 'Mode'))"
+            "isinstance(value, _dynwinrt_symbol('contoso__mode', 'Mode'))"
         );
         assert_eq!(
             py_type_guard("value", &enum_type("Mode", false), &HashSet::new()),

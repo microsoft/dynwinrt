@@ -43,7 +43,7 @@ fn python_numeric_overload_stubs_retain_typing_overload() {
 
     let pyi = python_stub::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
 
-    assert!(pyi.contains("from typing import overload"));
+    assert!(pyi.contains("overload, timedelta"));
     assert_eq!(pyi.matches("    @overload\n").count(), 2);
     assert!(
         pyi.find("def pick(self, value: int)") < pyi.find("def pick(self, value: float)"),

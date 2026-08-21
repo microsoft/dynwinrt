@@ -3,7 +3,7 @@
 
 //! Python package index generation.
 
-use super::structs::py_struct_export_names;
+use super::super::native_types::foundation_type;
 use super::*;
 
 /// Generate a Python `__init__.py` that re-exports all generated types.
@@ -19,25 +19,11 @@ pub fn generate_index(
     sorted_classes.sort_by(|a, b| a.name.cmp(&b.name));
     for class in sorted_classes {
         if seen.insert(class.name.clone()) {
-            let struct_names: Vec<_> = collect_used_structs_from_class(class)
-                .iter()
-                .flat_map(|s| py_struct_export_names(s))
-                .filter(|n| seen.insert(n.clone()))
-                .collect();
             let module = python_module_name(&class.namespace, &class.name);
-            if struct_names.is_empty() {
-                out.push_str(&format!(
-                    "from .{} import {}  # noqa: F401\n",
-                    module, class.name
-                ));
-            } else {
-                out.push_str(&format!(
-                    "from .{} import {}, {}  # noqa: F401\n",
-                    module,
-                    class.name,
-                    struct_names.join(", ")
-                ));
-            }
+            out.push_str(&format!(
+                "from .{} import {}  # noqa: F401\n",
+                module, class.name
+            ));
         }
     }
     let mut sorted_ifaces: Vec<_> = interfaces.iter().collect();
@@ -49,11 +35,6 @@ pub fn generate_index(
         let is_delegate = iface.methods.iter().any(|m| m.name == ".ctor")
             && iface.methods.iter().any(|m| m.name == "Invoke");
         let module = python_module_name(&iface.namespace, &iface.name);
-        let struct_names: Vec<_> = collect_used_structs_from_iface(iface)
-            .iter()
-            .flat_map(|s| py_struct_export_names(s))
-            .filter(|n| seen.insert(n.clone()))
-            .collect();
         if is_delegate {
             out.push_str(&format!(
                 "from .{module} import IID_{iname}, {iname}_PARAM_TYPES  # noqa: F401\n",
@@ -61,20 +42,11 @@ pub fn generate_index(
                 iname = iface.name
             ));
         } else {
-            if struct_names.is_empty() {
-                out.push_str(&format!(
-                    "from .{module} import IID_{iname}, {iname}  # noqa: F401\n",
-                    module = module,
-                    iname = iface.name
-                ));
-            } else {
-                out.push_str(&format!(
-                    "from .{module} import IID_{iname}, {iname}, {structs}  # noqa: F401\n",
-                    module = module,
-                    iname = iface.name,
-                    structs = struct_names.join(", ")
-                ));
-            }
+            out.push_str(&format!(
+                "from .{module} import IID_{iname}, {iname}  # noqa: F401\n",
+                module = module,
+                iname = iface.name
+            ));
         }
     }
     let mut sorted_enums: Vec<_> = enums.iter().collect();
@@ -99,6 +71,98 @@ pub fn generate_index(
                 out.push_str(&format!("from .{} import {}  # noqa: F401\n", module, name));
             }
         }
+    }
+    out
+}
+
+pub fn generate_public_index(
+    classes: &[ClassMeta],
+    interfaces: &[InterfaceMeta],
+    enums: &[TypeMeta],
+) -> String {
+    let mut out = String::from(HEADER);
+    let mut seen = HashSet::new();
+
+    let mut classes = classes.iter().collect::<Vec<_>>();
+    classes.sort_by(|left, right| left.name.cmp(&right.name));
+    for class in classes {
+        if seen.insert(class.name.clone()) {
+            out.push_str(&format!(
+                "from .{} import {}  # noqa: F401\n",
+                python_module_name(&class.namespace, &class.name),
+                class.name
+            ));
+        }
+    }
+
+    let mut interfaces = interfaces.iter().collect::<Vec<_>>();
+    interfaces.sort_by(|left, right| left.name.cmp(&right.name));
+    for interface in interfaces {
+        let is_delegate = interface
+            .methods
+            .iter()
+            .any(|method| method.name == ".ctor")
+            && interface
+                .methods
+                .iter()
+                .any(|method| method.name == "Invoke");
+        if !is_delegate && seen.insert(interface.name.clone()) {
+            out.push_str(&format!(
+                "from .{} import {}  # noqa: F401\n",
+                python_module_name(&interface.namespace, &interface.name),
+                interface.name
+            ));
+        }
+    }
+
+    let mut enums = enums.iter().collect::<Vec<_>>();
+    enums.sort_by_key(|typ| match typ {
+        TypeMeta::Enum { name, .. } => name.as_str(),
+        _ => "",
+    });
+    for typ in enums {
+        let TypeMeta::Enum {
+            namespace, name, ..
+        } = typ
+        else {
+            continue;
+        };
+        if seen.insert(name.clone()) {
+            out.push_str(&format!(
+                "from .{} import {}  # noqa: F401\n",
+                python_module_name(namespace, name),
+                name
+            ));
+        }
+    }
+    out
+}
+
+pub fn generate_struct_index(structs: &[TypeMeta]) -> String {
+    let mut out = String::from(HEADER);
+    let mut seen = HashSet::new();
+    let mut sorted = structs.iter().collect::<Vec<_>>();
+    sorted.sort_by_key(|typ| match typ {
+        TypeMeta::Struct {
+            namespace, name, ..
+        } => format!("{namespace}.{name}"),
+        _ => String::new(),
+    });
+    for typ in sorted {
+        let TypeMeta::Struct {
+            namespace, name, ..
+        } = typ
+        else {
+            continue;
+        };
+        if foundation_type(typ).is_some() || !seen.insert((namespace, name)) {
+            continue;
+        }
+        out.push_str(&format!(
+            "from .{} import {}  # noqa: F401\n",
+            python_module_name(namespace, name),
+            name
+        ));
     }
     out
 }
@@ -150,24 +214,10 @@ pub fn append_to_index(
     for class in sorted_classes {
         let module = python_module_name(&class.namespace, &class.name);
         if !exported_modules.contains(&module) && seen.insert(class.name.clone()) {
-            let struct_names: Vec<_> = collect_used_structs_from_class(class)
-                .iter()
-                .flat_map(|s| py_struct_export_names(s))
-                .filter(|n| seen.insert(n.clone()))
-                .collect();
-            if struct_names.is_empty() {
-                out.push_str(&format!(
-                    "from .{} import {}  # noqa: F401\n",
-                    module, class.name
-                ));
-            } else {
-                out.push_str(&format!(
-                    "from .{} import {}, {}  # noqa: F401\n",
-                    module,
-                    class.name,
-                    struct_names.join(", ")
-                ));
-            }
+            out.push_str(&format!(
+                "from .{} import {}  # noqa: F401\n",
+                module, class.name
+            ));
         }
     }
 
@@ -180,11 +230,6 @@ pub fn append_to_index(
         }
         let is_delegate = iface.methods.iter().any(|m| m.name == ".ctor")
             && iface.methods.iter().any(|m| m.name == "Invoke");
-        let struct_names: Vec<_> = collect_used_structs_from_iface(iface)
-            .iter()
-            .flat_map(|s| py_struct_export_names(s))
-            .filter(|n| seen.insert(n.clone()))
-            .collect();
         if is_delegate {
             out.push_str(&format!(
                 "from .{module} import IID_{iname}, {iname}_PARAM_TYPES  # noqa: F401\n",
@@ -192,20 +237,11 @@ pub fn append_to_index(
                 iname = iface.name
             ));
         } else {
-            if struct_names.is_empty() {
-                out.push_str(&format!(
-                    "from .{module} import IID_{iname}, {iname}  # noqa: F401\n",
-                    module = module,
-                    iname = iface.name
-                ));
-            } else {
-                out.push_str(&format!(
-                    "from .{module} import IID_{iname}, {iname}, {structs}  # noqa: F401\n",
-                    module = module,
-                    iname = iface.name,
-                    structs = struct_names.join(", ")
-                ));
-            }
+            out.push_str(&format!(
+                "from .{module} import IID_{iname}, {iname}  # noqa: F401\n",
+                module = module,
+                iname = iface.name
+            ));
         }
     }
 

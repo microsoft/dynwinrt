@@ -47,6 +47,7 @@ def to_snake_case(name: str) -> str:
     """Convert PascalCase/camelCase to snake_case."""
     value = re.sub(r'(.)([A-Z][a-z]+)', r'\1_\2', name)
     value = re.sub(r'([a-z0-9])([A-Z])', r'\1_\2', value).lstrip('_').lower()
+    value = re.sub(r'_+', '_', value)
     return collapse_winrt_uint_tokens(value)
 
 
@@ -476,8 +477,12 @@ async def run_check(
                 cr['pass'] = True
 
         elif kind == 'struct_roundtrip':
+            struct_module = check.get(
+                'py_struct_module',
+                to_snake_case(check['struct_class']),
+            )
             struct_mod = importlib.import_module(
-                f"{namespace_module_name(pkg_name, namespace)}.{check['struct_module']}"
+                f"{namespace_module_name(pkg_name, namespace)}.{struct_module}"
             )
             struct_cls = getattr(struct_mod, check['struct_class'])
 
@@ -1627,14 +1632,23 @@ async def run_check(
             uri_module = implementation_module_name(
                 pkg_name, 'Windows.Foundation', 'Uri'
             )
-            generated_package = importlib.import_module(pkg_name)
+            delegate_name = (
+                'TypedEventHandler_IMemoryBufferReference_Object'
+            )
+            delegate_module = importlib.import_module(
+                implementation_module_name(
+                    pkg_name,
+                    'Windows.Foundation',
+                    delegate_name,
+                )
+            )
             delegate_iid = getattr(
-                generated_package,
-                'IID_TypedEventHandler_IMemoryBufferReference_Object',
+                delegate_module,
+                f'IID_{delegate_name}',
             )
             delegate_params = getattr(
-                generated_package,
-                'TypedEventHandler_IMemoryBufferReference_Object_PARAM_TYPES',
+                delegate_module,
+                f'{delegate_name}_PARAM_TYPES',
             )
             reference_type = generated_type(pkg_name, 'IReference_UInt32')
             value_type = dw.DynWinRTType.u32_type()

@@ -211,6 +211,11 @@ fn snapshot_uri_pyi_class() {
         "Snapshot directory not found: {}",
         snapshot_dir.display()
     );
+    if std::env::var_os("DYNWINRT_UPDATE_PY_SNAPSHOTS").is_some() {
+        for (filename, actual) in &generated {
+            fs::write(snapshot_dir.join(filename), actual).expect("write Python stub snapshot");
+        }
+    }
 
     let mut mismatches = Vec::new();
     for (filename, actual) in &generated {

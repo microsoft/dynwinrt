@@ -311,7 +311,7 @@ fn nested_struct_defaults_and_enum_fields_are_python_native() {
         "{py}"
     );
     assert!(
-        py.contains("def __init__(self, mode: 'Mode' = _dynwinrt_enum('mode', 'Mode', 0), inner: Inner | None = None):"),
+        py.contains("def __init__(self, mode: 'Mode' = _dynwinrt_enum('synthetic__mode', 'Mode', 0), inner: Inner | None = None):"),
         "{py}"
     );
     assert!(!py.contains("inner: 'Inner' | None"), "{py}");
@@ -320,7 +320,7 @@ fn nested_struct_defaults_and_enum_fields_are_python_native() {
         "{py}"
     );
     assert!(
-        py.contains("mode=_dynwinrt_enum('mode', 'Mode', s.get_u32(0))"),
+        py.contains("mode=_dynwinrt_enum('synthetic__mode', 'Mode', s.get_u32(0))"),
         "{py}"
     );
     assert!(py.contains("s.set_u32(0, int(v.mode))"), "{py}");

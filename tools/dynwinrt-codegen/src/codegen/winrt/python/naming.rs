@@ -32,6 +32,10 @@ impl Drop for PythonModuleLayoutGuard {
     }
 }
 
+pub fn python_module_layout_installed() -> bool {
+    MODULE_LAYOUT.with(|layout| layout.borrow().is_some())
+}
+
 pub fn install_python_module_layout(
     identities: impl IntoIterator<Item = PythonTypeIdentity>,
 ) -> Result<PythonModuleLayoutGuard, String> {
@@ -91,9 +95,24 @@ pub fn python_module_name(namespace: &str, name: &str) -> String {
                         name: name.to_string(),
                     })
                     .cloned()
+                    .or_else(|| layout.unique_modules.get(name).cloned())
             })
-            .unwrap_or_else(|| to_snake_case(name))
+            .unwrap_or_else(|| qualified_module_name(namespace, name))
     })
+}
+
+fn qualified_module_name(namespace: &str, name: &str) -> String {
+    let namespace = namespace
+        .split('.')
+        .filter(|segment| !segment.is_empty())
+        .map(to_snake_case)
+        .collect::<Vec<_>>()
+        .join("__");
+    if namespace.is_empty() {
+        to_snake_case(name)
+    } else {
+        format!("{namespace}__{}", to_snake_case(name))
+    }
 }
 
 pub fn python_namespace_segments(namespace: &str) -> Vec<String> {
@@ -264,5 +283,31 @@ mod tests {
         assert!(err.contains("Example.UInt32"), "{err}");
         assert!(err.contains("Example.Uint32"), "{err}");
         assert!(err.contains("example__uint32.py"), "{err}");
+    }
+
+    #[test]
+    fn missing_layout_identity_keeps_namespace_qualification() {
+        let _layout = install_python_module_layout([PythonTypeIdentity {
+            namespace: "Microsoft.UI.Dispatching".into(),
+            name: "Other".into(),
+        }])
+        .unwrap();
+        assert_eq!(
+            python_module_name("Windows.System", "DispatcherQueue"),
+            "windows__system__dispatcher_queue"
+        );
+    }
+
+    #[test]
+    fn missing_identity_reuses_unique_compatible_name() {
+        let _layout = install_python_module_layout([PythonTypeIdentity {
+            namespace: "Microsoft.Graphics.DirectX".into(),
+            name: "DirectXPixelFormat".into(),
+        }])
+        .unwrap();
+        assert_eq!(
+            python_module_name("Windows.Graphics.DirectX", "DirectXPixelFormat"),
+            "microsoft__graphics__direct_x__direct_x_pixel_format"
+        );
     }
 }

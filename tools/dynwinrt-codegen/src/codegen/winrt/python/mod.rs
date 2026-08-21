@@ -17,8 +17,9 @@ pub(crate) mod type_helpers;
 
 pub use generator::*;
 pub use naming::{
-    PythonTypeIdentity, install_python_module_layout, python_module_name,
-    python_namespace_segments, python_public_module_name, to_snake_case_filename,
+    PythonModuleLayoutGuard, PythonTypeIdentity, install_python_module_layout,
+    python_module_layout_installed, python_module_name, python_namespace_segments,
+    python_public_module_name, to_snake_case_filename,
 };
 
 pub(crate) fn collect_referenced_delegate_names(
@@ -118,17 +119,17 @@ pub(crate) fn collect_runtime_delegate_names(
     result
 }
 
-pub fn package_struct_identities(
+pub fn package_structs(
     classes: &[crate::meta::ClassMeta],
     interfaces: &[crate::meta::InterfaceMeta],
-) -> Vec<(String, String)> {
+) -> Vec<crate::types::TypeMeta> {
     use crate::codegen::winrt::shared::structs::{
         collect_used_structs_from_class, collect_used_structs_from_iface,
     };
     use crate::types::TypeMeta;
-    use std::collections::HashSet;
+    use std::collections::BTreeMap;
 
-    let mut identities = HashSet::new();
+    let mut structs = BTreeMap::new();
     for typ in classes
         .iter()
         .flat_map(collect_used_structs_from_class)
@@ -136,10 +137,27 @@ pub fn package_struct_identities(
     {
         if let TypeMeta::Struct {
             namespace, name, ..
-        } = typ
+        } = &typ
         {
-            identities.insert((namespace, name));
+            structs
+                .entry((namespace.clone(), name.clone()))
+                .or_insert(typ);
         }
     }
-    identities.into_iter().collect()
+    structs.into_values().collect()
+}
+
+pub fn package_struct_identities(
+    classes: &[crate::meta::ClassMeta],
+    interfaces: &[crate::meta::InterfaceMeta],
+) -> Vec<(String, String)> {
+    package_structs(classes, interfaces)
+        .into_iter()
+        .filter_map(|typ| match typ {
+            crate::types::TypeMeta::Struct {
+                namespace, name, ..
+            } => Some((namespace, name)),
+            _ => None,
+        })
+        .collect()
 }

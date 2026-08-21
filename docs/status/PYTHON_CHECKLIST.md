@@ -44,6 +44,10 @@ of a dynamic projection.
 - [x] Add stage/swap generation and remove stale Python output.
 - [x] Emit a consumable Python package manifest with an exact runtime
       dependency.
+- [x] Emit one canonical module and Python class per WinRT struct instead of
+      duplicating incompatible struct classes in every consumer module.
+- [x] Make root and namespace exports lazy, keep ABI helpers in type-specific
+      facades, and expose only Python types from public package indexes.
 
 ## P0: runtime and generated API agreement
 
@@ -62,6 +66,8 @@ of a dynamic projection.
       integers.
 - [x] Make Python stubs part of E2E and run a static type checker.
 - [x] Make `.pyi` generation the default for `--lang py`.
+- [x] Pass full-package `mypy --strict`, including collection overrides and
+      cross-module struct arguments.
 
 ## P0: async semantics
 

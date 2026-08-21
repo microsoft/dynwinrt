@@ -13,8 +13,8 @@ use super::naming::{python_module_name, to_snake_case};
 use super::native_types::{FoundationType, foundation_type};
 use super::structs::{py_struct_field_read_type, py_struct_field_type};
 use super::type_helpers::{
-    py_delegate_callable_type, py_factory_return_type, py_method_return_type, py_output_type,
-    py_param_list, py_param_type_safe,
+    method_pydoc_with_indent, py_delegate_callable_type, py_factory_return_type,
+    py_method_return_type, py_output_type, py_param_list, py_param_type_safe,
 };
 use crate::codegen::winrt::shared::imports::ireference_inner_type;
 
@@ -45,6 +45,28 @@ pub(super) fn py_struct_export_names(s: &TypeMeta) -> Vec<String> {
         }
         _ => vec![],
     }
+}
+
+pub(super) fn generate_struct_stub_imports(structs: &[TypeMeta]) -> String {
+    let mut imports = structs
+        .iter()
+        .filter_map(|typ| {
+            let TypeMeta::Struct {
+                namespace, name, ..
+            } = typ
+            else {
+                return None;
+            };
+            Some(format!(
+                "from .{} import {}  # noqa: F401\n",
+                python_module_name(namespace, name),
+                py_struct_export_names(typ).join(", ")
+            ))
+        })
+        .collect::<Vec<_>>();
+    imports.sort();
+    imports.dedup();
+    imports.concat()
 }
 
 pub(super) fn emit_struct_stub(s: &TypeMeta) -> String {
@@ -193,6 +215,7 @@ pub(super) fn emit_method_stub(
     indent_spaces: usize,
     event_has_remove: bool,
     property_has_getter: bool,
+    overrides_mutable_sequence: bool,
 ) -> String {
     emit_method_stub_named(
         method,
@@ -202,7 +225,18 @@ pub(super) fn emit_method_stub(
         None,
         event_has_remove,
         property_has_getter,
+        overrides_mutable_sequence,
     )
+}
+
+fn emit_documented_stub(out: &mut String, indent: &str, signature: &str, doc: &str, suffix: &str) {
+    if doc.is_empty() {
+        out.push_str(&format!("{indent}{signature}: ...{suffix}\n"));
+    } else {
+        out.push_str(&format!("{indent}{signature}:{suffix}\n"));
+        out.push_str(doc);
+        out.push_str(&format!("{indent}    ...\n"));
+    }
 }
 
 pub(super) fn emit_method_stub_named(
@@ -213,6 +247,7 @@ pub(super) fn emit_method_stub_named(
     name_override: Option<&str>,
     event_has_remove: bool,
     property_has_getter: bool,
+    overrides_mutable_sequence: bool,
 ) -> String {
     let indent = " ".repeat(indent_spaces);
     let in_params = get_in_params(method);
@@ -230,6 +265,8 @@ pub(super) fn emit_method_stub_named(
     };
 
     let mut out = String::new();
+    let body_indent = format!("{indent}    ");
+    let doc = method_pydoc_with_indent(method, &in_params, &body_indent);
 
     // Events
     if method.is_event_add {
@@ -240,10 +277,16 @@ pub(super) fn emit_method_stub_named(
         let callback_sig = delegate_typ
             .map(|typ| py_delegate_callable_type(typ, known_types))
             .unwrap_or_else(|| "Callable[..., object]".to_string());
-        out.push_str(&format!(
-            "{indent}def on_{}(self, callback: {}) -> 'DynWinRTValue': ...\n",
-            event_name, callback_sig
-        ));
+        emit_documented_stub(
+            &mut out,
+            &indent,
+            &format!(
+                "def on_{}(self, callback: {}) -> 'DynWinRTValue'",
+                event_name, callback_sig
+            ),
+            &doc,
+            "",
+        );
         if event_has_remove {
             out.push_str(&format!(
                 "{indent}def subscribe_{}(self, callback: {}) -> Callable[[], None]: ...\n",
@@ -258,10 +301,16 @@ pub(super) fn emit_method_stub_named(
     }
     if method.is_event_remove {
         let event_name = to_snake_case(method.name.strip_prefix("remove_").unwrap_or(&method.name));
-        out.push_str(&format!(
-            "{indent}def off_{}(self, token: 'DynWinRTValue') -> None: ...\n",
-            event_name
-        ));
+        emit_documented_stub(
+            &mut out,
+            &indent,
+            &format!(
+                "def off_{}(self, token: 'DynWinRTValue') -> None",
+                event_name
+            ),
+            &doc,
+            "",
+        );
         return out;
     }
 
@@ -271,10 +320,13 @@ pub(super) fn emit_method_stub_named(
             .map(|typ| py_output_type(typ, known_types, delegate_type_names))
             .unwrap_or_else(|| "None".to_string());
         out.push_str(&format!("{indent}@builtins.property\n"));
-        out.push_str(&format!(
-            "{indent}def {}(self) -> {}: ...\n",
-            prop_name, py_return
-        ));
+        emit_documented_stub(
+            &mut out,
+            &indent,
+            &format!("def {}(self) -> {}", prop_name, py_return),
+            &doc,
+            "",
+        );
     } else if method.is_property_setter {
         let prop_name = to_snake_case(method.name.strip_prefix("put_").unwrap_or(&method.name));
         let param_type = if in_params
@@ -290,15 +342,21 @@ pub(super) fn emit_method_stub_named(
         };
         if property_has_getter {
             out.push_str(&format!("{indent}@{}.setter\n", prop_name));
-            out.push_str(&format!(
-                "{indent}def {}(self, value: {}) -> None: ...\n",
-                prop_name, param_type
-            ));
+            emit_documented_stub(
+                &mut out,
+                &indent,
+                &format!("def {}(self, value: {}) -> None", prop_name, param_type),
+                &doc,
+                "",
+            );
         } else {
-            out.push_str(&format!(
-                "{indent}def set_{}(self, value: {}) -> None: ...\n",
-                prop_name, param_type
-            ));
+            emit_documented_stub(
+                &mut out,
+                &indent,
+                &format!("def set_{}(self, value: {}) -> None", prop_name, param_type),
+                &doc,
+                "",
+            );
         }
     } else {
         let py_params = py_param_list(&in_params, known_types, delegate_type_names);
@@ -311,10 +369,26 @@ pub(super) fn emit_method_stub_named(
         } else {
             format!("self, {}", py_params)
         };
-        out.push_str(&format!(
-            "{indent}def {}({}) -> {}: ...\n",
-            method_name, self_and_params, py_return
-        ));
+        // WinRT vectors may reject null on mutation while returning null
+        // interface elements. That asymmetric native contract cannot satisfy
+        // MutableSequence[T | None]'s append signature exactly.
+        let override_ignore = if overrides_mutable_sequence
+            && method_name == "append"
+            && in_params.first().is_some_and(|param| {
+                py_param_type_safe(&param.typ, known_types)
+                    != super::type_helpers::py_return_type_safe(Some(&param.typ), known_types)
+            }) {
+            "  # type: ignore[override]"
+        } else {
+            ""
+        };
+        emit_documented_stub(
+            &mut out,
+            &indent,
+            &format!("def {}({}) -> {}", method_name, self_and_params, py_return),
+            &doc,
+            override_ignore,
+        );
     }
 
     out
@@ -355,6 +429,7 @@ pub(super) fn emit_static_method_stub_named(
     };
 
     let mut out = String::new();
+    let doc = method_pydoc_with_indent(method, &in_params, "        ");
 
     if is_factory || !method.is_property_getter || !in_params.is_empty() {
         let method_name = name_override
@@ -362,23 +437,32 @@ pub(super) fn emit_static_method_stub_named(
             .unwrap_or_else(|| to_snake_case(&method.name));
         out.push_str("    @staticmethod\n");
         if py_params.is_empty() {
-            out.push_str(&format!(
-                "    def {}() -> {}: ...\n",
-                method_name, py_return
-            ));
+            emit_documented_stub(
+                &mut out,
+                "    ",
+                &format!("def {}() -> {}", method_name, py_return),
+                &doc,
+                "",
+            );
         } else {
-            out.push_str(&format!(
-                "    def {}({}) -> {}: ...\n",
-                method_name, py_params, py_return
-            ));
+            emit_documented_stub(
+                &mut out,
+                "    ",
+                &format!("def {}({}) -> {}", method_name, py_params, py_return),
+                &doc,
+                "",
+            );
         }
     } else {
         let prop_name = to_snake_case(method.name.strip_prefix("get_").unwrap_or(&method.name));
         out.push_str("    @classmethod\n");
-        out.push_str(&format!(
-            "    def get_{}(cls) -> {}: ...\n",
-            prop_name, py_return
-        ));
+        emit_documented_stub(
+            &mut out,
+            "    ",
+            &format!("def get_{}(cls) -> {}", prop_name, py_return),
+            &doc,
+            "",
+        );
     }
     out
 }
@@ -416,6 +500,7 @@ mod tests {
             4,
             true,
             true,
+            false,
         );
         assert!(code.contains("def on_changed("));
         assert!(code.contains("-> 'DynWinRTValue': ..."));
@@ -432,9 +517,49 @@ mod tests {
             4,
             false,
             true,
+            false,
         );
         assert!(code.contains("def on_changed("));
         assert!(!code.contains("subscribe_changed"));
         assert!(!code.contains("once_changed"));
+    }
+
+    #[test]
+    fn append_ignores_only_nullable_reference_override_mismatches() {
+        let append = |typ| MethodMeta {
+            name: "Append".into(),
+            raw_name: "Append".into(),
+            params: vec![ParamMeta {
+                name: "value".into(),
+                typ,
+                direction: ParamDirection::In,
+            }],
+            ..Default::default()
+        };
+        let reference = emit_method_stub(
+            &append(TypeMeta::Interface {
+                namespace: "Contoso".into(),
+                name: "Widget".into(),
+                iid: "11111111-1111-1111-1111-111111111111".into(),
+            }),
+            &HashSet::from(["Widget".into()]),
+            &HashSet::new(),
+            4,
+            false,
+            true,
+            true,
+        );
+        let scalar = emit_method_stub(
+            &append(TypeMeta::I32),
+            &HashSet::new(),
+            &HashSet::new(),
+            4,
+            false,
+            true,
+            true,
+        );
+
+        assert!(reference.contains("type: ignore[override]"));
+        assert!(!scalar.contains("type: ignore[override]"));
     }
 }

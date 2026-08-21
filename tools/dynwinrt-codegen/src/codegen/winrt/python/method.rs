@@ -519,6 +519,8 @@ pub(crate) fn generate_instance_method_group(
     }
 
     out.push_str(&format!("    def {public_name}(self, *args, **kwargs):\n"));
+    let public_params = get_in_params(ordered_overloads[0].method);
+    out.push_str(&method_pydoc(ordered_overloads[0].method, &public_params));
     for (overload, private_name) in ordered_overloads.iter().zip(private_names) {
         let in_params = get_in_params(overload.method);
         let parameter_names = in_params
@@ -638,6 +640,8 @@ pub(crate) fn generate_static_method_group(
 
     out.push_str("    @staticmethod\n");
     out.push_str(&format!("    def {public_name}(*args, **kwargs):\n"));
+    let public_params = get_in_params(ordered_overloads[0].method);
+    out.push_str(&method_pydoc(ordered_overloads[0].method, &public_params));
     for (overload, private_name) in ordered_overloads.iter().zip(private_names) {
         let in_params = get_in_params(overload.method);
         let parameter_names = in_params

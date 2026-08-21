@@ -3,6 +3,7 @@
 
 //! Python struct projection helpers.
 
+use super::imports::{emit_type_checking_imports, format_py_type_import};
 use super::*;
 use crate::codegen::winrt::python::native_types::{FoundationType, foundation_type};
 use crate::codegen::winrt::python::type_helpers::py_optional_type;
@@ -11,6 +12,78 @@ use crate::types::FieldMeta;
 // ======================================================================
 // Struct helpers: Python dataclass-style + _unpack/_pack functions
 // ======================================================================
+
+fn struct_runtime_import_names(s: &TypeMeta) -> Vec<String> {
+    let TypeMeta::Struct { name, .. } = s else {
+        return Vec::new();
+    };
+    let snake = to_snake_case(name);
+    let mut names = py_struct_export_names(s);
+    names.extend([
+        format!("_{name}_TYPE"),
+        format!("_pack_{snake}"),
+        format!("_unpack_{snake}"),
+    ]);
+    names
+}
+
+pub(super) fn generate_struct_imports(structs: &[TypeMeta]) -> String {
+    let mut imports = structs
+        .iter()
+        .filter_map(|typ| {
+            let TypeMeta::Struct {
+                namespace, name, ..
+            } = typ
+            else {
+                return None;
+            };
+            Some(format!(
+                "from .{} import {}  # noqa: F401\n",
+                python_module_name(namespace, name),
+                struct_runtime_import_names(typ).join(", ")
+            ))
+        })
+        .collect::<Vec<_>>();
+    imports.sort();
+    imports.dedup();
+    imports.concat()
+}
+
+pub fn generate_struct(s: &TypeMeta) -> Option<String> {
+    let TypeMeta::Struct { name, .. } = s else {
+        return None;
+    };
+    if name == "HResult" {
+        return None;
+    }
+
+    let mut out = String::new();
+    out.push_str(HEADER);
+    out.push_str(FUTURE_ANNOTATIONS);
+    out.push_str(IMPORT_LINE);
+
+    let dependencies = collect_used_structs_from_struct(s);
+    out.push_str(&generate_struct_imports(&dependencies));
+    if has_ireference_struct_field(std::slice::from_ref(s)) {
+        out.push_str(IREFERENCE_HELPER);
+    }
+    out.push('\n');
+
+    let mut type_checking_imports = collect_struct_field_type_imports(s)
+        .into_iter()
+        .map(|type_ref| format_py_type_import(&type_ref.namespace, &type_ref.name, type_ref.kind))
+        .collect::<Vec<_>>();
+    type_checking_imports.extend(collect_used_generics_from_type(s).into_iter().map(|name| {
+        format!(
+            "from .{} import {}  # noqa: F401\n",
+            to_snake_case_filename(&name),
+            name
+        )
+    }));
+    emit_type_checking_imports(&mut out, type_checking_imports);
+    out.push_str(&generate_struct_helpers(s));
+    Some(out)
+}
 
 pub(super) fn generate_struct_helpers(s: &TypeMeta) -> String {
     if let Some(kind) = foundation_type(s) {

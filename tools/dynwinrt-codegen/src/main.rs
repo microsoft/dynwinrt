@@ -581,7 +581,15 @@ fn run() -> Result<(), String> {
                 winui::add_implicit_classes(&winmd, &mut classes);
                 let mut implicit_interfaces = Vec::new();
                 winui::add_implicit_interfaces(&winmd, &classes, &mut implicit_interfaces);
-                generate_for_types(
+                let existing_python_identities = if lang == "py" && !dry_run {
+                    read_python_type_inventory(output_dir)?
+                        .into_iter()
+                        .map(|typ| typ.identity)
+                        .collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                };
+                let (_, _, _, shared_interfaces) = generate_for_types(
                     &winmd,
                     output_dir,
                     classes.clone(),
@@ -591,6 +599,7 @@ fn run() -> Result<(), String> {
                     &lang,
                     pyi,
                     &doc_table,
+                    &existing_python_identities,
                 )?;
 
                 // Write (or append to) the index file for the output directory
@@ -662,6 +671,7 @@ fn run() -> Result<(), String> {
                             pyi,
                             true,
                         )?;
+                        record_python_supplemental_types(output_dir, &shared_interfaces)?;
                     } else {
                         // JS: index.js + index.d.ts are pure re-exports and identical, so we
                         // round-trip incremental appends by reading back index.d.ts (which
@@ -707,10 +717,9 @@ fn run() -> Result<(), String> {
                     }
                 };
 
-                let mut total_classes = 0usize;
-                let mut total_interfaces = 0usize;
-                let mut total_enums = 0usize;
-
+                let mut selected_classes = Vec::new();
+                let mut selected_interfaces = Vec::new();
+                let mut selected_enums = Vec::new();
                 for ns in &namespaces {
                     if let Some(interface) =
                         com_metadata::first_classic_com_interface_in_namespace(&winmd, ns)
@@ -722,29 +731,25 @@ fn run() -> Result<(), String> {
                              Classic-COM ABI pipeline."
                         ));
                     }
-                    let mut classes = meta::parse_namespace(&winmd, ns);
-                    let mut interfaces = meta::parse_interfaces(&winmd, ns);
-                    let mut enums = meta::parse_enums(&winmd, ns);
-                    winui::add_implicit_classes(&winmd, &mut classes);
-                    winui::add_implicit_interfaces(&winmd, &classes, &mut interfaces);
-                    for c in classes.iter_mut() {
-                        doc_table.apply_to_class(c);
-                    }
-                    for i in interfaces.iter_mut() {
-                        doc_table.apply_to_interface(i);
-                    }
-                    for e in enums.iter_mut() {
-                        doc_table.apply_to_enum(e);
-                    }
-
-                    let (nc, ni, ne) = generate_for_types(
-                        &winmd, output_dir, classes, interfaces, enums, dry_run, &lang, pyi,
-                        &doc_table,
-                    )?;
-                    total_classes += nc;
-                    total_interfaces += ni;
-                    total_enums += ne;
+                    selected_classes.extend(meta::parse_namespace(&winmd, ns));
+                    selected_interfaces.extend(meta::parse_interfaces(&winmd, ns));
+                    selected_enums.extend(meta::parse_enums(&winmd, ns));
                 }
+                winui::add_implicit_classes(&winmd, &mut selected_classes);
+                winui::add_implicit_interfaces(&winmd, &selected_classes, &mut selected_interfaces);
+                let (total_classes, total_interfaces, total_enums, shared_interfaces) =
+                    generate_for_types(
+                        &winmd,
+                        output_dir,
+                        selected_classes,
+                        selected_interfaces,
+                        selected_enums,
+                        dry_run,
+                        &lang,
+                        pyi,
+                        &doc_table,
+                        &[],
+                    )?;
 
                 // Generate index file combining everything
                 if !dry_run
@@ -818,6 +823,7 @@ fn run() -> Result<(), String> {
                             pyi,
                             false,
                         )?;
+                        record_python_supplemental_types(output_dir, &shared_interfaces)?;
                     } else {
                         let index_code =
                             typescript::generate_index(&all_classes, &all_interfaces, &all_enums);
@@ -866,7 +872,8 @@ fn generate_for_types(
     lang: &str,
     pyi: bool,
     doc_table: &DocTable,
-) -> Result<(usize, usize, usize), String> {
+    existing_python_identities: &[python::PythonTypeIdentity],
+) -> Result<(usize, usize, usize, Vec<meta::InterfaceMeta>), String> {
     let deps = meta::resolve_dependencies(winmd, &classes, &interfaces, &enums);
     let mut all_classes = classes;
     let mut all_interfaces = interfaces;
@@ -913,13 +920,6 @@ fn generate_for_types(
         .filter(|i| is_emittable_iface(i))
         .cloned()
         .collect();
-    let python_layout = if lang == "py" {
-        Some(python::install_python_module_layout(
-            python_type_identities(&all_classes, &emittable_interfaces, &all_enums),
-        )?)
-    } else {
-        None
-    };
 
     let mut known_types: HashSet<String> = HashSet::new();
     for c in &all_classes {
@@ -982,6 +982,31 @@ fn generate_for_types(
     for iface in &shared_interfaces {
         known_types.insert(iface.name.clone());
     }
+    if lang == "py" {
+        let mut struct_interfaces = emittable_interfaces.clone();
+        struct_interfaces.extend(shared_interfaces.iter().cloned());
+        for typ in python::package_structs(&all_classes, &struct_interfaces) {
+            if let TypeMeta::Struct {
+                namespace, name, ..
+            } = typ
+            {
+                known_types.insert(name.clone());
+                known_types.insert(format!("{namespace}.{name}"));
+            }
+        }
+    }
+
+    let python_layout = if lang == "py" {
+        Some(install_python_generation_layout(
+            &all_classes,
+            &emittable_interfaces,
+            &all_enums,
+            &shared_interfaces,
+            existing_python_identities,
+        )?)
+    } else {
+        None
+    };
 
     let (delegate_signatures, delegate_sig_refs, delegate_param_wraps) =
         project::build_delegate_signatures(&all_interfaces, &delegate_type_names, &known_types);
@@ -991,7 +1016,7 @@ fn generate_for_types(
             generate_py_files(
                 output_dir,
                 &all_classes,
-                &all_interfaces,
+                &emittable_interfaces,
                 &all_enums,
                 &shared_interfaces,
                 &known_types,
@@ -1017,7 +1042,12 @@ fn generate_for_types(
         drop(python_layout);
     }
 
-    Ok((all_classes.len(), all_interfaces.len(), all_enums.len()))
+    Ok((
+        all_classes.len(),
+        all_interfaces.len(),
+        all_enums.len(),
+        shared_interfaces,
+    ))
 }
 
 fn python_type_identities(
@@ -1050,7 +1080,25 @@ fn python_type_identities(
             name: name.clone(),
         })
     }));
+    identities.extend(
+        python::package_struct_identities(classes, interfaces)
+            .into_iter()
+            .map(|(namespace, name)| python::PythonTypeIdentity { namespace, name }),
+    );
     identities
+}
+
+fn install_python_generation_layout(
+    classes: &[meta::ClassMeta],
+    interfaces: &[meta::InterfaceMeta],
+    enums: &[TypeMeta],
+    supplemental_interfaces: &[meta::InterfaceMeta],
+    existing_identities: &[python::PythonTypeIdentity],
+) -> Result<python::PythonModuleLayoutGuard, String> {
+    let mut identities = python_type_identities(classes, interfaces, enums);
+    identities.extend(python_type_identities(&[], supplemental_interfaces, &[]));
+    identities.extend_from_slice(existing_identities);
+    python::install_python_module_layout(identities)
 }
 
 fn validate_unique_class_output_names(classes: &[meta::ClassMeta]) -> Result<(), String> {
@@ -2085,30 +2133,46 @@ fn generate_py_files(
 ) -> Result<(), String> {
     use dynwinrt_codegen::codegen::python_stub;
 
-    for iface in shared_interfaces {
-        let code = python::generate_interface(iface, known_types, delegate_type_names);
-        let module = python::python_module_name(&iface.namespace, &iface.name);
-        let filepath = output_dir.join(format!("{module}.py"));
-        write_file(&filepath, &code)?;
-        println!("Generated shared {}", filepath.display());
-        if pyi {
-            let stub =
-                python_stub::generate_interface_stub(iface, known_types, delegate_type_names);
-            let p = output_dir.join(format!("{module}.pyi"));
-            write_file(&p, &stub)?;
-        }
+    write_file(
+        &output_dir.join("_runtime.py"),
+        &python::generate_runtime_support_module(),
+    )?;
+    if pyi {
+        write_file(
+            &output_dir.join("_runtime.pyi"),
+            &python_stub::generate_runtime_support_stub(),
+        )?;
+        write_file(
+            &output_dir.join("_typing.pyi"),
+            &python_stub::generate_typing_support_module(),
+        )?;
     }
-    for iface in all_interfaces {
-        let code = python::generate_interface(iface, known_types, delegate_type_names);
-        let module = python::python_module_name(&iface.namespace, &iface.name);
+
+    let mut generated_modules = HashSet::new();
+    let mut struct_interfaces = all_interfaces.to_vec();
+    struct_interfaces.extend_from_slice(shared_interfaces);
+    let structs = python::package_structs(all_classes, &struct_interfaces);
+
+    // A runtime class owns its public identity when metadata also exposes an
+    // interface or enum with the same namespace/name. Generate in precedence
+    // order and render each final module exactly once.
+    for class in all_classes {
+        let module = python::python_module_name(&class.namespace, &class.name);
+        if !generated_modules.insert(module.clone()) {
+            continue;
+        }
+        let code = python::generate_class(class, known_types, delegate_type_names, shared_iids);
         let filepath = output_dir.join(format!("{module}.py"));
         write_file(&filepath, &code)?;
         println!("Generated {}", filepath.display());
         if pyi {
-            let stub =
-                python_stub::generate_interface_stub(iface, known_types, delegate_type_names);
-            let p = output_dir.join(format!("{module}.pyi"));
-            write_file(&p, &stub)?;
+            let stub = python_stub::generate_class_stub(
+                class,
+                known_types,
+                delegate_type_names,
+                shared_iids,
+            );
+            write_file(&output_dir.join(format!("{module}.pyi")), &stub)?;
         }
     }
     for en in all_enums {
@@ -2117,6 +2181,9 @@ fn generate_py_files(
         } = en
         {
             let module = python::python_module_name(namespace, name);
+            if !generated_modules.insert(module.clone()) {
+                continue;
+            }
             if let Some(code) = python::generate_enum(en) {
                 let filepath = output_dir.join(format!("{module}.py"));
                 write_file(&filepath, &code)?;
@@ -2130,21 +2197,43 @@ fn generate_py_files(
             }
         }
     }
-    for class in all_classes {
-        let code = python::generate_class(class, known_types, delegate_type_names, shared_iids);
-        let module = python::python_module_name(&class.namespace, &class.name);
+    for iface in all_interfaces.iter().chain(shared_interfaces) {
+        let module = python::python_module_name(&iface.namespace, &iface.name);
+        if !generated_modules.insert(module.clone()) {
+            continue;
+        }
+        let code = python::generate_interface(iface, known_types, delegate_type_names);
         let filepath = output_dir.join(format!("{module}.py"));
         write_file(&filepath, &code)?;
         println!("Generated {}", filepath.display());
         if pyi {
-            let stub = python_stub::generate_class_stub(
-                class,
-                known_types,
-                delegate_type_names,
-                shared_iids,
-            );
-            let p = output_dir.join(format!("{module}.pyi"));
-            write_file(&p, &stub)?;
+            let stub =
+                python_stub::generate_interface_stub(iface, known_types, delegate_type_names);
+            write_file(&output_dir.join(format!("{module}.pyi")), &stub)?;
+        }
+    }
+    for typ in &structs {
+        let TypeMeta::Struct {
+            namespace, name, ..
+        } = typ
+        else {
+            continue;
+        };
+        let module = python::python_module_name(namespace, name);
+        if !generated_modules.insert(module.clone()) {
+            return Err(format!(
+                "Python struct module `{namespace}.{name}` collides with another generated type"
+            ));
+        }
+        if let Some(code) = python::generate_struct(typ) {
+            let filepath = output_dir.join(format!("{module}.py"));
+            write_file(&filepath, &code)?;
+            println!("Generated {}", filepath.display());
+        }
+        if pyi {
+            if let Some(stub) = python_stub::generate_struct_stub(typ) {
+                write_file(&output_dir.join(format!("{module}.pyi")), &stub)?;
+            }
         }
     }
     if pyi {
@@ -2159,6 +2248,7 @@ struct PythonNamespaceGroup {
     classes: Vec<meta::ClassMeta>,
     interfaces: Vec<meta::InterfaceMeta>,
     enums: Vec<TypeMeta>,
+    structs: Vec<TypeMeta>,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -2177,6 +2267,7 @@ fn write_python_package_indexes(
 ) -> Result<(), String> {
     use dynwinrt_codegen::codegen::python_stub;
 
+    let current_structs = python::package_structs(classes, interfaces);
     let current_types = python_generated_types(classes, interfaces, enums);
     let mut all_types = if append {
         read_python_type_inventory(output_dir)?
@@ -2189,7 +2280,6 @@ fn write_python_package_indexes(
 
     let module_identities = all_types
         .iter()
-        .filter(|typ| typ.kind != "struct")
         .map(|typ| typ.identity.clone())
         .collect::<Vec<_>>();
     let _layout = python::install_python_module_layout(module_identities.clone())?;
@@ -2234,8 +2324,19 @@ fn write_python_package_indexes(
         .filter(|typ| matches!(typ, TypeMeta::Enum { name, .. } if counts[name] == 1))
         .cloned()
         .collect::<Vec<_>>();
+    let root_structs = current_structs
+        .iter()
+        .filter(|typ| matches!(typ, TypeMeta::Struct { name, .. } if counts[name] == 1))
+        .cloned()
+        .collect::<Vec<_>>();
 
-    let root_index = python::generate_index(&root_classes, &root_interfaces, &root_enums);
+    let mut root_index =
+        python::generate_public_index(&root_classes, &root_interfaces, &root_enums);
+    root_index.push_str(
+        python::generate_struct_index(&root_structs)
+            .strip_prefix(GENERATED_PYTHON_HEADER)
+            .unwrap_or_default(),
+    );
     write_python_lazy_root_index(
         &output_dir.join("__init__.py"),
         &root_index,
@@ -2243,8 +2344,13 @@ fn write_python_package_indexes(
         &suppressed_root_names,
     )?;
     if pyi {
-        let root_stub =
-            python_stub::generate_index_stub(&root_classes, &root_interfaces, &root_enums);
+        let mut root_stub =
+            python_stub::generate_public_index_stub(&root_classes, &root_interfaces, &root_enums);
+        root_stub.push_str(
+            python_stub::generate_struct_index_stub(&root_structs)
+                .strip_prefix(GENERATED_PYTHON_HEADER)
+                .unwrap_or_default(),
+        );
         write_python_index(
             &output_dir.join("__init__.pyi"),
             &root_stub,
@@ -2276,6 +2382,15 @@ fn write_python_package_indexes(
                 .or_default()
                 .enums
                 .push(typ.clone());
+        }
+    }
+    for typ in current_structs {
+        if let TypeMeta::Struct { namespace, .. } = &typ {
+            groups
+                .entry(namespace.clone())
+                .or_default()
+                .structs
+                .push(typ);
         }
     }
 
@@ -2398,10 +2513,42 @@ fn write_python_namespace_group(
             )?;
         }
     }
+    for typ in &group.structs {
+        let TypeMeta::Struct { name, .. } = typ else {
+            continue;
+        };
+        if !seen.insert(name.clone()) {
+            continue;
+        }
+        let runtime = python::generate_struct_index(std::slice::from_ref(typ));
+        if runtime.lines().any(|line| line.starts_with("from .")) {
+            write_python_facade(
+                &package_dir,
+                &segments,
+                name,
+                &runtime,
+                "py",
+                &mut runtime_exports,
+            )?;
+        }
+        if pyi {
+            let stub = python_stub::generate_struct_index_stub(std::slice::from_ref(typ));
+            if stub.lines().any(|line| line.starts_with("from .")) {
+                write_python_facade(
+                    &package_dir,
+                    &segments,
+                    name,
+                    &stub,
+                    "pyi",
+                    &mut stub_exports,
+                )?;
+            }
+        }
+    }
 
     let runtime_index = format!("{}{}", GENERATED_PYTHON_HEADER, runtime_exports.join("\n"));
     let suppressed_root_names = HashSet::new();
-    write_python_index(
+    write_python_lazy_root_index(
         &package_dir.join("__init__.py"),
         &runtime_index,
         append,
@@ -2435,6 +2582,14 @@ fn write_python_facade(
         .strip_prefix("from .")
         .and_then(|line| line.split_once(" import "))
         .ok_or_else(|| format!("Generated index import for `{type_name}` is invalid"))?;
+    let exports = exports.split('#').next().unwrap_or(exports).trim();
+    let exported_type = exports.split(',').any(|export| {
+        export
+            .trim()
+            .split_once(" as ")
+            .map_or_else(|| export.trim(), |(_, alias)| alias.trim())
+            == type_name
+    });
     let exports = if extension == "pyi" {
         exports
             .split(',')
@@ -2452,14 +2607,24 @@ fn write_python_facade(
         exports.to_string()
     };
     let relative_root = ".".repeat(namespace_segments.len() + 1);
-    let facade =
+    let mut facade =
         format!("{GENERATED_PYTHON_HEADER}from {relative_root}{source} import {exports}\n");
+    if extension == "py" && exported_type {
+        facade.push_str(&format!("\n{type_name}.__module__ = __name__\n"));
+    }
     let public_module = python::python_public_module_name(type_name);
     write_file(
         &package_dir.join(format!("{public_module}.{extension}")),
         &facade,
     )?;
-    package_exports.push(format!("from .{public_module} import {exports}"));
+    if exported_type {
+        let package_export = if extension == "pyi" {
+            format!("from .{public_module} import {type_name} as {type_name}")
+        } else {
+            format!("from .{public_module} import {type_name}")
+        };
+        package_exports.push(package_export);
+    }
     Ok(())
 }
 
@@ -2746,6 +2911,20 @@ fn write_python_type_inventory(
         &output_dir.join(PYTHON_TYPE_INVENTORY),
         &format!("{}\n", lines.join("\n")),
     )
+}
+
+fn record_python_supplemental_types(
+    output_dir: &Path,
+    interfaces: &[meta::InterfaceMeta],
+) -> Result<(), String> {
+    if interfaces.is_empty() {
+        return Ok(());
+    }
+    let mut types = read_python_type_inventory(output_dir)?;
+    types.extend(python_generated_types(&[], interfaces, &[]));
+    let mut seen = HashSet::new();
+    types.retain(|typ| seen.insert(typ.clone()));
+    write_python_type_inventory(output_dir, &types)
 }
 
 #[cfg(test)]
@@ -3613,6 +3792,162 @@ mod tests {
     }
 
     #[test]
+    fn python_generation_emits_shared_runtime_and_typing_support() {
+        let output = test_directory("python-shared-support");
+        fs::create_dir_all(&output).unwrap();
+
+        generate_py_files(
+            &output,
+            &[],
+            &[],
+            &[],
+            &[],
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            true,
+        )
+        .unwrap();
+
+        assert!(output.join("_runtime.py").is_file());
+        assert!(output.join("_runtime.pyi").is_file());
+        assert!(output.join("_typing.pyi").is_file());
+        assert!(output.join("py.typed").is_file());
+        fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
+    fn python_generation_uses_one_canonical_struct_module() {
+        let output = test_directory("python-canonical-struct");
+        fs::create_dir_all(&output).unwrap();
+        let point = TypeMeta::Struct {
+            namespace: "Windows.Foundation".into(),
+            name: "Point".into(),
+            fields: vec![
+                dynwinrt_codegen::types::FieldMeta {
+                    name: "X".into(),
+                    typ: TypeMeta::F32,
+                },
+                dynwinrt_codegen::types::FieldMeta {
+                    name: "Y".into(),
+                    typ: TypeMeta::F32,
+                },
+            ],
+        };
+        let interface = meta::InterfaceMeta {
+            name: "IWidget".into(),
+            namespace: "Contoso".into(),
+            iid: "11111111-1111-1111-1111-111111111111".into(),
+            methods: vec![meta::MethodMeta {
+                name: "SetPoint".into(),
+                raw_name: "SetPoint".into(),
+                params: vec![meta::ParamMeta {
+                    name: "value".into(),
+                    typ: point,
+                    direction: meta::ParamDirection::In,
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let class = meta::ClassMeta {
+            name: "Widget".into(),
+            namespace: "Contoso".into(),
+            full_name: "Contoso.Widget".into(),
+            default_interface: Some(interface),
+            ..Default::default()
+        };
+        let known_types = HashSet::from(["Point".into(), "Widget".into()]);
+
+        {
+            let _layout =
+                install_python_generation_layout(std::slice::from_ref(&class), &[], &[], &[], &[])
+                    .unwrap();
+            generate_py_files(
+                &output,
+                std::slice::from_ref(&class),
+                &[],
+                &[],
+                &[],
+                &known_types,
+                &HashSet::new(),
+                &HashSet::new(),
+                true,
+            )
+            .unwrap();
+        }
+
+        let class_py = fs::read_to_string(output.join("contoso__widget.py")).unwrap();
+        let class_pyi = fs::read_to_string(output.join("contoso__widget.pyi")).unwrap();
+        let struct_py = fs::read_to_string(output.join("windows__foundation__point.py")).unwrap();
+        assert!(class_py.contains("from .windows__foundation__point import Point"));
+        assert!(class_pyi.contains("from .windows__foundation__point import Point"));
+        assert!(!class_py.contains("\nclass Point:"));
+        assert!(!class_pyi.contains("\nclass Point:"));
+        assert!(struct_py.contains("\nclass Point:"));
+
+        write_python_package_indexes(&output, std::slice::from_ref(&class), &[], &[], true, false)
+            .unwrap();
+        let point_facade = fs::read_to_string(output.join("windows/foundation/point.py")).unwrap();
+        assert!(point_facade.contains("Point.__module__ = __name__"));
+        let foundation_index =
+            fs::read_to_string(output.join("windows/foundation/__init__.py")).unwrap();
+        assert!(foundation_index.contains("def __getattr__(name):"));
+        assert!(!foundation_index.contains("from .point import"));
+        assert!(foundation_index.contains("\"Point\": (\".point\", \"Point\")"));
+        assert!(!foundation_index.contains("Point_TYPE"));
+        assert!(
+            !fs::read_to_string(output.join("contoso/widget.py"))
+                .unwrap()
+                .contains("Point")
+        );
+        fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
+    fn incremental_python_generation_reuses_existing_module_layout() {
+        let existing = [python::PythonTypeIdentity {
+            namespace: "Windows.Foundation.Collections".into(),
+            name: "IIterable_IKeyValuePair_Object_Object".into(),
+        }];
+        let _layout = install_python_generation_layout(&[], &[], &[], &[], &existing).unwrap();
+
+        assert_eq!(
+            python::to_snake_case_filename("IIterable_IKeyValuePair_Object_Object"),
+            "windows__foundation__collections__i_iterable_i_key_value_pair_object_object"
+        );
+    }
+
+    #[test]
+    fn python_generation_layout_and_inventory_include_shared_interfaces() {
+        let output = test_directory("python-shared-interface-layout");
+        fs::create_dir_all(&output).unwrap();
+        let shared = [meta::InterfaceMeta {
+            namespace: "Windows.Foundation.Collections".into(),
+            name: "IIterable_IKeyValuePair_Object_Object".into(),
+            ..Default::default()
+        }];
+
+        {
+            let _layout = install_python_generation_layout(&[], &[], &[], &shared, &[]).unwrap();
+            assert_eq!(
+                python::to_snake_case_filename("IIterable_IKeyValuePair_Object_Object"),
+                "windows__foundation__collections__i_iterable_i_key_value_pair_object_object"
+            );
+        }
+
+        write_python_type_inventory(&output, &[]).unwrap();
+        record_python_supplemental_types(&output, &shared).unwrap();
+        let inventory = read_python_type_inventory(&output).unwrap();
+        assert!(inventory.iter().any(|typ| typ.identity
+            == python::PythonTypeIdentity {
+                namespace: shared[0].namespace.clone(),
+                name: shared[0].name.clone(),
+            }));
+        fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
     fn dropped_python_output_transaction_preserves_existing_output() {
         let output = test_directory("transaction-drop");
         fs::create_dir_all(&output).unwrap();
@@ -3706,7 +4041,7 @@ mod tests {
     }
 
     #[test]
-    fn namespace_stub_facades_explicitly_reexport_all_symbols() {
+    fn type_facades_keep_abi_symbols_while_public_indexes_export_types_only() {
         let output = test_directory("stub-reexports");
         fs::create_dir_all(&output).unwrap();
         let interface = meta::InterfaceMeta {
@@ -3742,9 +4077,14 @@ mod tests {
         );
         assert!(!root_runtime.contains("from .contoso__foundation__i_widget import"));
         let root_stub = fs::read_to_string(output.join("__init__.pyi")).unwrap();
-        assert!(root_stub.contains(
-            "from .contoso__foundation__i_widget import IID_IWidget, IWidget as IWidget"
-        ));
+        assert!(
+            root_stub.contains("from .contoso__foundation__i_widget import IWidget as IWidget")
+        );
+        assert!(!root_stub.contains("IID_IWidget"));
+        let namespace_stub =
+            fs::read_to_string(output.join("contoso/foundation/__init__.pyi")).unwrap();
+        assert!(namespace_stub.contains("from .i_widget import IWidget as IWidget"));
+        assert!(!namespace_stub.contains("IID_IWidget"));
         fs::remove_dir_all(output).unwrap();
     }
 

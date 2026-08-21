@@ -41,39 +41,48 @@ pub(crate) fn collect_used_generics_from_methods(methods: &[MethodMeta]) -> Vec<
     collect_used_generics_from_methods_inner(&refs)
 }
 
+fn visit_used_generics(typ: &TypeMeta, names: &mut HashSet<String>) {
+    match typ {
+        TypeMeta::Parameterized { name, args, .. } => {
+            names.insert(crate::meta::make_parameterized_name(name, args));
+            for arg in args {
+                visit_used_generics(arg, names);
+            }
+        }
+        TypeMeta::AsyncOperation(inner) | TypeMeta::AsyncActionWithProgress(inner) => {
+            visit_used_generics(inner, names)
+        }
+        TypeMeta::AsyncOperationWithProgress(r, p) => {
+            visit_used_generics(r, names);
+            visit_used_generics(p, names);
+        }
+        TypeMeta::Array(inner) => visit_used_generics(inner, names),
+        TypeMeta::Struct { fields, .. } => {
+            for field in fields {
+                visit_used_generics(&field.typ, names);
+            }
+        }
+        _ => {}
+    }
+}
+
+pub(crate) fn collect_used_generics_from_type(typ: &TypeMeta) -> Vec<String> {
+    let mut names = HashSet::new();
+    visit_used_generics(typ, &mut names);
+    let mut sorted = names.into_iter().collect::<Vec<_>>();
+    sorted.sort();
+    sorted
+}
+
 /// Shared implementation for collecting generic names from method references.
 fn collect_used_generics_from_methods_inner(methods: &[&MethodMeta]) -> Vec<String> {
     let mut names: HashSet<String> = HashSet::new();
-    fn visit(typ: &TypeMeta, names: &mut HashSet<String>) {
-        match typ {
-            TypeMeta::Parameterized { name, args, .. } => {
-                names.insert(crate::meta::make_parameterized_name(name, args));
-                for arg in args {
-                    visit(arg, names);
-                }
-            }
-            TypeMeta::AsyncOperation(inner) | TypeMeta::AsyncActionWithProgress(inner) => {
-                visit(inner, names)
-            }
-            TypeMeta::AsyncOperationWithProgress(r, p) => {
-                visit(r, names);
-                visit(p, names);
-            }
-            TypeMeta::Array(inner) => visit(inner, names),
-            TypeMeta::Struct { fields, .. } => {
-                for field in fields {
-                    visit(&field.typ, names);
-                }
-            }
-            _ => {}
-        }
-    }
     for m in methods {
         for p in &m.params {
-            visit(&p.typ, &mut names);
+            visit_used_generics(&p.typ, &mut names);
         }
         if let Some(ref rt) = m.return_type {
-            visit(rt, &mut names);
+            visit_used_generics(rt, &mut names);
         }
     }
     let mut sorted: Vec<String> = names.into_iter().collect();
@@ -188,6 +197,17 @@ pub(crate) fn collect_type_imports(class: &ClassMeta) -> HashSet<TypeRef> {
     let mut imports = HashSet::new();
     for iface in class.all_interfaces() {
         collect_methods_type_imports(&iface.methods, &class.name, true, &mut imports);
+    }
+    imports
+}
+
+pub(crate) fn collect_struct_field_type_imports(typ: &TypeMeta) -> HashSet<TypeRef> {
+    let TypeMeta::Struct { name, fields, .. } = typ else {
+        return HashSet::new();
+    };
+    let mut imports = HashSet::new();
+    for field in fields {
+        visit_type_for_imports(&field.typ, name, false, &mut imports);
     }
     imports
 }

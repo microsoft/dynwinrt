@@ -44,7 +44,7 @@ fn property_named_property_does_not_shadow_the_decorator() {
     let py = python::generate_class(&class, &known, &HashSet::new(), &HashSet::new());
     let pyi = python_stub::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
 
-    assert!(py.contains("from builtins import property as _property"));
+    assert!(py.contains("_property, _weakref_ref,"));
     assert_eq!(py.matches("    @_property\n").count(), 2);
     assert!(py.contains("def property(self)"));
     assert!(py.contains("def old_value(self)"));

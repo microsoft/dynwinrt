@@ -4,7 +4,7 @@
 //! Python enum, interface, and delegate generation.
 
 use super::imports::{emit_type_checking_imports, format_py_type_import};
-use super::structs::generate_struct_helpers;
+use super::structs::{generate_struct_helpers, generate_struct_imports};
 use super::*;
 use crate::codegen::winrt::python::collections::{
     CollectionKind, interface_kind, map_iterable_name, observable_vector_name, runtime_mixin,
@@ -106,6 +106,9 @@ pub fn generate_interface(
     if methods_have_async_output(iface.methods.iter()) {
         out.push_str(ASYNC_IMPORT_LINE);
     }
+    if python_module_layout_installed() {
+        out.push_str(&generate_struct_imports(&used_structs));
+    }
     if has_ireference_input(iface.methods.iter()) || has_ireference_struct_field(&used_structs) {
         out.push_str(IREFERENCE_HELPER);
     }
@@ -126,21 +129,21 @@ pub fn generate_interface(
             type_checking_imports
                 .push(format!("from .{} import {}  # noqa: F401\n", module, cname));
         }
-        if let Some(vector_name) = &observable_vector
-            && !collection_names.contains(vector_name)
-        {
-            let module = to_snake_case_filename(vector_name);
-            type_checking_imports.push(format!(
-                "from .{module} import {vector_name}  # noqa: F401\n"
-            ));
-        }
-        if observable_vector.is_some() {
-            let event_args = "IVectorChangedEventArgs";
-            let module = to_snake_case_filename(event_args);
-            type_checking_imports.push(format!(
-                "from .{module} import {event_args}  # noqa: F401\n"
-            ));
-        }
+    }
+    if let Some(vector_name) = &observable_vector
+        && !collection_names.contains(vector_name)
+    {
+        let module = to_snake_case_filename(vector_name);
+        type_checking_imports.push(format!(
+            "from .{module} import {vector_name}  # noqa: F401\n"
+        ));
+    }
+    if observable_vector.is_some() {
+        let event_args = "IVectorChangedEventArgs";
+        let module = to_snake_case_filename(event_args);
+        type_checking_imports.push(format!(
+            "from .{module} import {event_args}  # noqa: F401\n"
+        ));
     }
 
     // Import delegate IID + PARAM_TYPES
@@ -192,9 +195,11 @@ pub fn generate_interface(
     out.push('\n');
 
     // Struct helpers
-    for s in &used_structs {
-        out.push_str(&generate_struct_helpers(s));
-        out.push('\n');
+    if !python_module_layout_installed() {
+        for s in &used_structs {
+            out.push_str(&generate_struct_helpers(s));
+            out.push('\n');
+        }
     }
 
     // Wrapper class

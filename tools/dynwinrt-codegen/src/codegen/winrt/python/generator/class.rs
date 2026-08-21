@@ -4,7 +4,7 @@
 //! Python runtime class generation.
 
 use super::imports::{emit_type_checking_imports, format_py_type_import};
-use super::structs::generate_struct_helpers;
+use super::structs::{generate_struct_helpers, generate_struct_imports};
 use super::*;
 use crate::codegen::winrt::extensions::winui::{self, WinUiAbiType};
 use crate::codegen::winrt::python::collections::{
@@ -85,6 +85,9 @@ pub fn generate_class(
     ) {
         out.push_str(ASYNC_IMPORT_LINE);
     }
+    if python_module_layout_installed() {
+        out.push_str(&generate_struct_imports(&used_structs));
+    }
     if has_ireference_input(
         class
             .all_interfaces()
@@ -112,12 +115,34 @@ pub fn generate_class(
     }
 
     // Collection generics import (skip delegates)
+    let mut imported_names: HashSet<String> = HashSet::new();
     let collection_names = collect_used_generics_from_class(class);
     for cname in &collection_names {
         if !delegate_names.contains(cname) {
             let module = to_snake_case_filename(cname);
             type_checking_imports
                 .push(format!("from .{} import {}  # noqa: F401\n", module, cname));
+            imported_names.insert(cname.clone());
+        }
+    }
+    for iface in class.all_interfaces() {
+        if iface.generic_piid.as_deref()
+            == Some(crate::codegen::winrt::python::collections::IOBSERVABLE_VECTOR_PIID)
+        {
+            if imported_names.insert(iface.name.clone()) {
+                type_checking_imports.push(format_py_type_import(
+                    &iface.namespace,
+                    &iface.name,
+                    crate::types::TypeKind::Interface,
+                ));
+            }
+            let event_args = "IVectorChangedEventArgs";
+            if imported_names.insert(event_args.into()) {
+                type_checking_imports.push(format!(
+                    "from .{} import {event_args}  # noqa: F401\n",
+                    to_snake_case_filename(event_args)
+                ));
+            }
         }
     }
 
@@ -132,7 +157,6 @@ pub fn generate_class(
     }
 
     // Type imports
-    let mut imported_names: HashSet<String> = HashSet::new();
     let imports = collect_type_imports(class);
     let mut sorted_imports: Vec<_> = imports.iter().collect();
     sorted_imports
@@ -240,9 +264,11 @@ pub fn generate_class(
     }
 
     // Struct helpers
-    for s in &used_structs {
-        out.push_str(&generate_struct_helpers(s));
-        out.push('\n');
+    if !python_module_layout_installed() {
+        for s in &used_structs {
+            out.push_str(&generate_struct_helpers(s));
+            out.push('\n');
+        }
     }
 
     // Class declaration
@@ -1574,7 +1600,9 @@ mod tests {
         assert!(forward.contains(
             "isinstance(_bound[0], int) and not isinstance(_bound[0], bool) and not isinstance(_bound[0], __import__('enum').Enum)"
         ));
-        assert!(forward.contains("isinstance(_bound[0], _dynwinrt_symbol('mode', 'Mode'))"));
+        assert!(
+            forward.contains("isinstance(_bound[0], _dynwinrt_symbol('contoso__mode', 'Mode'))")
+        );
         let forward_script = forward.replace("if cls is Widget:", "if cls is WidgetForward:");
         let reverse_script = reverse.replace("if cls is Widget:", "if cls is WidgetReverse:");
 

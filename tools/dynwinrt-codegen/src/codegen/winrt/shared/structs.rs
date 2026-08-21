@@ -13,7 +13,7 @@ use crate::types::TypeMeta;
 // ======================================================================
 
 /// Recursively collect non-HResult struct types from a type tree.
-fn collect_used_structs_from_type(
+pub(crate) fn collect_used_structs_from_type(
     typ: &TypeMeta,
     seen: &mut HashSet<String>,
     result: &mut Vec<TypeMeta>,
@@ -53,6 +53,23 @@ fn collect_used_structs_from_type(
         }
         _ => {}
     }
+}
+
+pub(crate) fn collect_used_structs_from_struct(typ: &TypeMeta) -> Vec<TypeMeta> {
+    let TypeMeta::Struct {
+        namespace,
+        name,
+        fields,
+    } = typ
+    else {
+        return Vec::new();
+    };
+    let mut seen = HashSet::from([format!("{namespace}.{name}")]);
+    let mut result = Vec::new();
+    for field in fields {
+        collect_used_structs_from_type(&field.typ, &mut seen, &mut result);
+    }
+    result
 }
 
 pub(crate) fn collect_used_structs_from_class(class: &ClassMeta) -> Vec<TypeMeta> {

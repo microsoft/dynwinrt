@@ -22,6 +22,14 @@ use super::native_types::{FoundationType, foundation_type};
 /// doc fields are populated, preserving byte-identity for metadata without
 /// sibling .xml files.
 pub(super) fn method_pydoc(method: &MethodMeta, in_params: &[&crate::meta::ParamMeta]) -> String {
+    method_pydoc_with_indent(method, in_params, "        ")
+}
+
+pub(super) fn method_pydoc_with_indent(
+    method: &MethodMeta,
+    in_params: &[&crate::meta::ParamMeta],
+    indent: &str,
+) -> String {
     if method.doc.is_none()
         && method.deprecated.is_none()
         && method.returns_doc.is_none()
@@ -43,7 +51,7 @@ pub(super) fn method_pydoc(method: &MethodMeta, in_params: &[&crate::meta::Param
         returns: method.returns_doc.as_deref(),
         params: params_refs,
     };
-    format_pydoc(&doc, "        ")
+    format_pydoc(&doc, indent)
 }
 
 // ======================================================================

@@ -1841,7 +1841,7 @@ mod tests {
         );
         assert!(py.contains("def _from_native(cls, obj: DynWinRTValue):"));
         assert!(py.contains("User cannot be constructed directly"));
-        assert!(pyi.contains("def __new__(cls, _not_constructible: NoReturn) -> NoReturn: ..."));
+        assert!(pyi.contains("def __init__(self, _not_constructible: NoReturn) -> None: ..."));
     }
 
     #[test]
@@ -1970,7 +1970,7 @@ mod tests {
         );
         assert!(py.contains("AutomationPeer cannot be constructed directly"));
         assert!(py.contains("def _from_native(cls, obj: DynWinRTValue):"));
-        assert!(pyi.contains("def __new__(cls, _not_constructible: NoReturn) -> NoReturn: ..."));
+        assert!(pyi.contains("def __init__(self, _not_constructible: NoReturn) -> None: ..."));
     }
 
     #[test]
