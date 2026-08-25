@@ -14,6 +14,7 @@ from ._runtime import (
     _dynwinrt_symbol, _dynwinrt_track_projected, _dynwinrt_uuid,
     _dynwinrt_vector, _dynwinrt_wrap_values,
 )
+from ._runtime import _dynwinrt_from_value
 from dynwinrt import WinRTAsync, WinRTAsyncWithProgress
 from dynwinrt.dynwinrt import _DynWinRTAsync, _DynWinRTAsyncWithProgress
 
@@ -120,10 +121,7 @@ class DataWriter:
     def _from_native(cls, obj: DynWinRTValue):
         return cls(obj)
 
-    @classmethod
-    def from_value(cls, obj: DynWinRTValue):
-        from dynwinrt import project_as
-        return project_as(obj, cls)
+    from_value = classmethod(_dynwinrt_from_value)
 
     def __init__(self, *args, **kwargs):
         if getattr(self, '_dynwinrt_native_ready', False):

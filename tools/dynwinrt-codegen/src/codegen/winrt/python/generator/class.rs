@@ -55,6 +55,7 @@ pub fn generate_class(
     out.push_str(HEADER);
     out.push_str(FUTURE_ANNOTATIONS);
     out.push_str(IMPORT_LINE);
+    out.push_str("from ._runtime import _dynwinrt_from_value\n");
     if class
         .default_interface
         .iter()
@@ -1329,10 +1330,7 @@ fn generate_python_constructor(
     out.push_str("    @classmethod\n");
     out.push_str("    def _from_native(cls, obj: DynWinRTValue):\n");
     out.push_str("        return cls(obj)\n\n");
-    out.push_str("    @classmethod\n");
-    out.push_str("    def from_value(cls, obj: DynWinRTValue):\n");
-    out.push_str("        from dynwinrt import project_as\n");
-    out.push_str("        return project_as(obj, cls)\n\n");
+    out.push_str("    from_value = classmethod(_dynwinrt_from_value)\n\n");
     if let Some(native_override_names) = &native_override_names {
         out.push_str("    @classmethod\n");
         out.push_str(
@@ -1677,6 +1675,9 @@ def _dynwinrt_track_projected(obj, name):
 
 def _dynwinrt_cache_projected(*args, **kwargs):
     return None
+
+def _dynwinrt_from_value(cls, obj):
+    return cls(obj)
 
 def _dynwinrt_symbol(module, name):
     return globals()[name]
