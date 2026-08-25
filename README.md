@@ -157,6 +157,10 @@ instructions are in [`bindings/py/README.md`](bindings/py/README.md).
 Python runtime, codegen, packaging, and WinUI readiness are tracked in
 [`docs/status/PYTHON_CHECKLIST.md`](docs/status/PYTHON_CHECKLIST.md).
 
+Python samples cover
+[files, OCR, cryptography, devices, AppLifecycle, text-to-speech, global media
+sessions, app notifications, WinUI, and custom WinMD generation](samples/python/README.md).
+
 Electron samples include:
 
 - [Windows Hello](samples/js/windows-hello/README.md) — WinRT async APIs and

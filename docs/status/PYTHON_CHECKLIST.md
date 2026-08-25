@@ -119,6 +119,10 @@ of a dynamic projection.
 - [x] Add overload-aware runtime dispatch and `typing.overload` stubs.
 - [x] Generate idiomatic constructors such as `Uri(...)` while retaining an
       internal wrapper path for returned native objects.
+- [x] Expose `project_as(value, Type)` for typed, non-consuming projection of
+      raw `Object`/`IInspectable` values, matching JavaScript `projectAs`.
+- [x] Declare non-suppressing runtime and generated context managers as
+      `Literal[False]`.
 - [x] Replace deprecated PyO3 automatic `FromPyObject` behavior explicitly.
 - [x] Document COM apartment ownership and provide a balanced context manager.
 
@@ -128,7 +132,7 @@ of a dynamic projection.
       orchestration command.
 - [x] Generate package names and imports consistently across Windows SDK,
       Windows App SDK, and custom WinMD namespaces.
-- [ ] Add runnable samples for files, notifications, imaging, async, events,
+- [x] Add runnable samples for files, notifications, imaging, async, events,
       collections, and custom WinMD consumption.
 - [ ] Document generated-code version compatibility with `dynwinrt`.
 - [ ] Add troubleshooting for metadata, apartment, bootstrap, architecture,

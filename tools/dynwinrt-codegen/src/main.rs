@@ -1838,6 +1838,11 @@ export declare function castProjectedValueBorrowed<T extends object>(value: T, i
 export interface ProjectedType<T extends object> {\n\
   readonly prototype: T;\n\
 }\n\
+/**\n\
+ * Borrows a raw projected value or wrapper and exposes it as a generated type.\n\
+ * The input remains valid; the returned projection owns its interface view and\n\
+ * must be released independently or retained by a projected lifetime scope.\n\
+ */\n\
 export declare function projectAs<T extends object>(value: unknown, type: ProjectedType<T>): T;\n\
 export declare function releaseProjected(value: object): void;\n\
 export interface ProjectedLifetimeScope {\n\

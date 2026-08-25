@@ -79,9 +79,26 @@ native values strongly for deterministic release; `releaseProjected()` removes
 an individually released wrapper from its scope. Projects that never create a
 scope do not retain projected values. Direct runtime users can release an
 individual `DynWinRtValue` with `value.release()`.
-`projectAs(value, Type)` borrows its input and creates a separately releasable
-interface projection; internal generated `_fromNative()` paths consume native
-return values.
+`projectAs(value, Type)` is the public conversion for APIs whose metadata
+returns `Object`/`IInspectable` even though the application knows the concrete
+runtime class. It accepts either a raw projected value or an existing wrapper,
+borrows the input, and creates a separately releasable projection:
+
+```js
+import { projectAs } from "./generated/lifetime.js";
+import { XamlReader } from "./generated/XamlReader.js";
+import { StackPanel } from "./generated/StackPanel.js";
+
+const raw = XamlReader.load(xaml);
+if (raw === null) throw new Error("XamlReader returned no value");
+const panel = projectAs(raw, StackPanel);
+```
+
+Use `wrapper.as(InterfaceClass)` when converting an existing runtime-class
+wrapper to another interface view. Use `projectAs(raw, RuntimeClass)` when
+converting a raw value to a generated runtime class. A failed QueryInterface is
+reported as an error. Internal generated `_fromNative()` paths consume native
+return values; application code should use `projectAs()` instead.
 
 Generated WinUI `IElementFactory` bindings expose `IElementFactory.create()`.
 It creates a synchronous, UI-thread factory backed by JavaScript

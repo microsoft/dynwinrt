@@ -406,6 +406,10 @@ pub fn generate_class_stub(
             .iter()
             .any(|method| method.is_event_add || method.is_event_remove)
     });
+    let has_closable = class
+        .required_interfaces
+        .iter()
+        .any(|interface| interface.iid == "30d5a829-7fa4-4026-83bb-d75bae4ea99e");
 
     let mut out = String::new();
     out.push_str(HEADER);
@@ -426,6 +430,9 @@ pub fn generate_class_stub(
     }
     if has_events || winui_bootstrap.is_some() {
         out.push_str("from typing import Callable\n");
+    }
+    if has_closable {
+        out.push_str("from typing import Literal\n");
     }
     if !class.required_interfaces.is_empty() {
         out.push_str("from typing import Type, TypeVar\n");
@@ -765,12 +772,7 @@ pub fn generate_class_stub(
         ));
     }
     // IClosable -> close()
-    const ICLOSABLE_IID: &str = "30d5a829-7fa4-4026-83bb-d75bae4ea99e";
-    if class
-        .required_interfaces
-        .iter()
-        .any(|ri| ri.iid == ICLOSABLE_IID)
-    {
+    if has_closable {
         out.push('\n');
         out.push_str("    def close(self) -> None: ...\n");
         out.push_str(&format!(
@@ -778,7 +780,7 @@ pub fn generate_class_stub(
             class.name
         ));
         out.push_str(
-            "    def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> bool: ...\n",
+            "    def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> Literal[False]: ...\n",
         );
     }
 

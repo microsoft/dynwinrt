@@ -124,6 +124,37 @@ composition, raise a class-named `TypeError` on normal construction and their
 stubs expose no public constructor. Native return values still use the internal
 `_from_native`/`DynWinRTValue` wrapping path.
 
+## Raw object projection
+
+Use `project_as(value, Type)` when metadata returns `Object`/`IInspectable` but
+the application knows the concrete generated type. This is common with XAML
+APIs such as `XamlReader.load()` and `FrameworkElement.find_name()`:
+
+```python
+from dynwinrt import project_as
+from generated.microsoft.ui.xaml.controls import Button, StackPanel
+from generated.microsoft.ui.xaml.markup import XamlReader
+
+raw_panel = XamlReader.load(XAML)
+if raw_panel is None:
+    raise RuntimeError("XamlReader returned no value")
+panel = project_as(raw_panel, StackPanel)
+
+raw_button = panel.find_name("Submit")
+if raw_button is None:
+    raise RuntimeError("Submit was not found")
+button = project_as(raw_button, Button)
+```
+
+`project_as()` borrows its input: the raw value or source wrapper remains
+valid. The returned wrapper owns the QueryInterface result, participates in
+the active `projected_lifetime_scope()`, and preserves the projection identity
+cache. Incompatible types raise the ordinary WinRT `OSError`.
+
+Use `wrapper.as_interface(InterfaceClass)` when converting an existing
+runtime-class wrapper to another generated interface. Do not call the internal
+`_from_native()` method from application code.
+
 ## COM apartments and cleanup
 
 Use `RoApartment` to initialize COM for a thread and balance every successful

@@ -33,6 +33,7 @@ from dynwinrt import (
     DynWinRtDelegate,
     DynWinRtElementFactory,
     RoApartment,
+    project_as,
     projected_lifetime_scope,
     release_projected,
     WinRTAsync,
@@ -595,6 +596,37 @@ def test_direct_projected_uri_constructor_registers_final_self_in_identity_cache
         assert ProjectedUri(uri._obj) is uri
         assert uri.absolute_uri == "https://example.com/path"
         release_projected(uri)
+
+
+def test_project_as_borrows_input_and_returns_managed_projection():
+    Wrapper = _projected_wrapper_type("ProjectAsWrapper")
+
+    with RoApartment(1):
+        raw = DynWinRTValue.activation_factory("Windows.Foundation.Uri")
+        identity = raw.identity_raw()
+        projected = project_as(raw, Wrapper)
+
+        assert projected._obj is not raw
+        assert projected._obj.identity_raw() == identity
+        assert raw.identity_raw() == identity
+
+        release_projected(projected)
+        assert raw.identity_raw() == identity
+        raw.release()
+
+
+def test_project_as_rejects_invalid_values_and_types():
+    Wrapper = _projected_wrapper_type("ProjectAsValidationWrapper")
+
+    with pytest.raises(TypeError, match="DynWinRTValue or projected wrapper"):
+        project_as(object(), Wrapper)
+
+    with RoApartment(1):
+        raw = DynWinRTValue.activation_factory("Windows.Foundation.Uri")
+        with pytest.raises(TypeError, match="generated projection type"):
+            project_as(raw, object)
+        assert not raw.is_null()
+        raw.release()
 
 
 def test_native_override_interface_rejects_unknown_or_unsupported_callback_shapes():

@@ -233,6 +233,31 @@ def _dynwinrt_track_projected(value, type_name=None):
         scope.track(value, type_name)
     return value
 
+def project_as(value, wrapper_type):
+    '''Borrow a projected value and expose it as another generated type.
+
+    The input remains valid. The returned wrapper owns its QueryInterface
+    result and participates in the active projected lifetime scope.
+    '''
+    source = getattr(value, '_obj', value)
+    if not isinstance(source, DynWinRTValue):
+        raise TypeError('project_as requires a DynWinRTValue or projected wrapper.')
+    projector = getattr(wrapper_type, '_from_native', None)
+    if not callable(projector):
+        raise TypeError('project_as requires a generated projection type.')
+    borrowed = source.cast(
+        WinGUID.parse('00000000-0000-0000-c000-000000000046')
+    )
+    try:
+        projected = projector(borrowed)
+    except BaseException:
+        borrowed.release()
+        raise
+    if not _dynwinrt_projected_native_values(projected):
+        borrowed.release()
+        raise TypeError('The generated type returned an invalid projection.')
+    return projected
+
 def release_projected(value):
     native_values = _dynwinrt_projected_native_values(value)
     if not native_values:
@@ -479,6 +504,7 @@ for _name in (
    'WinRTAsyncWithProgress',
    'ProjectedLifetimeScope',
    'projected_lifetime_scope',
+   'project_as',
    'release_projected',
 ):
     if _name not in __all__:

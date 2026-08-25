@@ -472,6 +472,32 @@ pub(crate) struct InstanceOverload<'a> {
     pub(crate) property_has_getter: bool,
 }
 
+fn private_overload_names<'a>(
+    public_name: &str,
+    methods: impl IntoIterator<Item = &'a MethodMeta>,
+) -> Vec<String> {
+    let base_names = methods
+        .into_iter()
+        .map(|method| format!("_{public_name}_{}", method.vtable_index))
+        .collect::<Vec<_>>();
+    base_names
+        .iter()
+        .enumerate()
+        .map(|(index, base)| {
+            if base_names
+                .iter()
+                .filter(|candidate| *candidate == base)
+                .count()
+                > 1
+            {
+                format!("{base}_{index}")
+            } else {
+                base.clone()
+            }
+        })
+        .collect()
+}
+
 pub(crate) fn generate_instance_method_group(
     overloads: &[InstanceOverload<'_>],
     known_types: &HashSet<String>,
@@ -501,21 +527,22 @@ pub(crate) fn generate_instance_method_group(
     let public_name =
         super::overloads::method_group_key(ordered_overloads[0].method, &overload_names);
     let mut out = String::new();
-    let mut private_names = Vec::with_capacity(ordered_overloads.len());
-    for overload in &ordered_overloads {
-        let private_name = format!("_{}_{}", public_name, overload.method.vtable_index);
+    let private_names = private_overload_names(
+        &public_name,
+        ordered_overloads.iter().map(|overload| overload.method),
+    );
+    for (overload, private_name) in ordered_overloads.iter().zip(&private_names) {
         out.push_str(&generate_method_body(
             &overload.iface_var,
             &overload.obj_expr,
             overload.method,
             known_types,
             delegate_type_names,
-            Some(&private_name),
+            Some(private_name),
             overload.sibling_methods,
             overload.property_has_getter,
         ));
         out.push('\n');
-        private_names.push(private_name);
     }
 
     out.push_str(&format!("    def {public_name}(self, *args, **kwargs):\n"));
@@ -612,9 +639,11 @@ pub(crate) fn generate_static_method_group(
     let public_name =
         super::overloads::method_group_key(ordered_overloads[0].method, &overload_names);
     let mut out = String::new();
-    let mut private_names = Vec::with_capacity(ordered_overloads.len());
-    for overload in &ordered_overloads {
-        let private_name = format!("_{}_{}", public_name, overload.method.vtable_index);
+    let private_names = private_overload_names(
+        &public_name,
+        ordered_overloads.iter().map(|overload| overload.method),
+    );
+    for (overload, private_name) in ordered_overloads.iter().zip(&private_names) {
         let code = match overload.kind {
             StaticOverloadKind::Factory => generate_factory_method_invoke_named(
                 overload.class,
@@ -622,7 +651,7 @@ pub(crate) fn generate_static_method_group(
                 overload.method,
                 known_types,
                 delegate_type_names,
-                Some(&private_name),
+                Some(private_name),
             ),
             StaticOverloadKind::Static => generate_static_method_invoke_named(
                 overload.class,
@@ -630,12 +659,11 @@ pub(crate) fn generate_static_method_group(
                 overload.method,
                 known_types,
                 delegate_type_names,
-                Some(&private_name),
+                Some(private_name),
             ),
         };
         out.push_str(&code);
         out.push('\n');
-        private_names.push(private_name);
     }
 
     out.push_str("    @staticmethod\n");
@@ -934,6 +962,33 @@ mod tests {
             sibling_methods: None,
             property_has_getter: true,
         }
+    }
+
+    #[test]
+    fn overloads_with_the_same_vtable_slot_get_unique_private_names() {
+        let first = overloaded_method("Register", 6, TypeMeta::String);
+        let second = overloaded_method("Register", 6, TypeMeta::I32);
+        let overloads = [
+            InstanceOverload {
+                iface_var: "_IFirst".into(),
+                obj_expr: "self._obj".into(),
+                method: &first,
+                sibling_methods: None,
+                property_has_getter: true,
+            },
+            InstanceOverload {
+                iface_var: "_ISecond".into(),
+                obj_expr: "self._obj".into(),
+                method: &second,
+                sibling_methods: None,
+                property_has_getter: true,
+            },
+        ];
+
+        let code = generate_instance_method_group(&overloads, &HashSet::new(), &HashSet::new());
+        assert_eq!(code.matches("def _register_6_").count(), 2, "{code}");
+        assert!(code.contains("self._register_6_0(*_bound)"), "{code}");
+        assert!(code.contains("self._register_6_1(*_bound)"), "{code}");
     }
 
     fn static_overload<'a>(
