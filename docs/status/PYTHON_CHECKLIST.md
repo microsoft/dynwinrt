@@ -111,6 +111,8 @@ of a dynamic projection.
 - [x] Document callback threads and require explicit event unsubscription.
 - [x] Preserve token-based `on_*` / `off_*` compatibility and provide
       idempotent `subscribe_*` and reentrancy-safe `once_*` helpers.
+- [x] Add typed `*_events()` async iterators with thread-safe loop handoff,
+      bounded queues, cancellation, and deterministic unsubscription.
 - [x] Convert `TypedEventHandler` / `EventHandler` callback arguments to typed
       projected Python values.
 - [x] Implement Python collection protocols for iterable, vector, and map

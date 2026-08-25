@@ -114,6 +114,20 @@ registration thread or an asyncio event-loop thread. Keep each token returned by
 needed. For callback-style cleanup, `subscribe_*` returns an idempotent
 unsubscribe function. `once_*` subscribes for at most one callback invocation.
 
+Async code can consume a paired event through its generated `*_events()` helper:
+
+```python
+async with watcher.added_events(max_queue_size=256) as events:
+    async for sender, args in events:
+        ...
+```
+
+The context captures the running event loop, transfers callbacks from any WinRT
+thread with `call_soon_threadsafe()`, and unsubscribes on normal exit, early
+break, cancellation, or failure. Its queue is bounded (64 pending events by
+default); overflow unsubscribes and raises `RuntimeError` rather than silently
+dropping events. Event streams must be entered with `async with`.
+
 WinRT flags enums are projected as `enum.IntFlag`. Overloaded methods share one
 Python name with runtime type/arity dispatch and `typing.overload` declarations.
 Activatable runtime classes use normal constructors, for example

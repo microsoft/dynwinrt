@@ -13,8 +13,9 @@ use super::naming::{python_module_name, to_snake_case};
 use super::native_types::{FoundationType, foundation_type};
 use super::structs::{py_struct_field_read_type, py_struct_field_type};
 use super::type_helpers::{
-    method_pydoc_with_indent, py_delegate_callable_type, py_factory_return_type,
-    py_method_return_type, py_output_type, py_param_list, py_param_type_safe,
+    method_pydoc_with_indent, py_delegate_callable_type, py_event_item_type,
+    py_factory_return_type, py_method_return_type, py_output_type, py_param_list,
+    py_param_type_safe,
 };
 use crate::codegen::winrt::shared::imports::ireference_inner_type;
 
@@ -298,6 +299,11 @@ pub(super) fn emit_method_stub_named(
                 "{indent}def once_{}(self, callback: {}) -> Callable[[], None]: ...\n",
                 event_name, callback_sig
             ));
+            out.push_str(&format!(
+                "{indent}def {}_events(self, *, max_queue_size: int = 64) -> _DynWinRTEventStream[{}]: ...\n",
+                event_name,
+                py_event_item_type(delegate_typ, known_types)
+            ));
         }
         return out;
     }
@@ -509,6 +515,9 @@ mod tests {
         assert!(code.contains("-> 'DynWinRTValue': ..."));
         assert!(code.contains("def subscribe_changed("));
         assert!(code.contains("def once_changed("));
+        assert!(code.contains(
+            "def changed_events(self, *, max_queue_size: int = 64) -> _DynWinRTEventStream[tuple[object, DynWinRTValue | None]]:"
+        ));
     }
 
     #[test]
@@ -525,6 +534,7 @@ mod tests {
         assert!(code.contains("def on_changed("));
         assert!(!code.contains("subscribe_changed"));
         assert!(!code.contains("once_changed"));
+        assert!(!code.contains("changed_events"));
     }
 
     #[test]
