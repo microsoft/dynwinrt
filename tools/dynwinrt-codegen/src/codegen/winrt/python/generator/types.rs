@@ -92,7 +92,7 @@ pub fn generate_interface(
     out.push_str(FUTURE_ANNOTATIONS);
     out.push_str(IMPORT_LINE);
     if super::super::has_paired_events(&iface.methods) {
-        out.push_str("from ._runtime import _DynWinRTEventStream\n");
+        out.push_str("from ._runtime import _dynwinrt_event_stream_method\n");
     }
     let is_element_factory =
         iface.namespace == "Microsoft.UI.Xaml" && iface.name == "IElementFactory";

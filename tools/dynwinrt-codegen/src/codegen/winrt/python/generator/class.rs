@@ -61,7 +61,7 @@ pub fn generate_class(
         .chain(class.required_interfaces.iter())
         .any(|interface| super::super::has_paired_events(&interface.methods))
     {
-        out.push_str("from ._runtime import _DynWinRTEventStream\n");
+        out.push_str("from ._runtime import _dynwinrt_event_stream_method\n");
     }
     if has_public_composition {
         out.push_str(

@@ -261,6 +261,13 @@ class _DynWinRTEventStream:
         if error is not None:
             raise error
         raise StopAsyncIteration
+
+
+def _dynwinrt_event_stream_method(subscribe_name, method_name):
+    def events(self, *, max_queue_size=64):
+        return _DynWinRTEventStream(getattr(self, subscribe_name), max_queue_size)
+    events.__name__ = method_name
+    return events
 "#;
 
 pub fn generate_runtime_support_module() -> String {
@@ -347,5 +354,6 @@ mod tests {
         assert!(code.contains("await self.aclose()"));
         assert!(code.contains("self._unsubscribe_now()"));
         assert!(code.contains("WinRT event streams do not support concurrent iteration"));
+        assert!(code.contains("def _dynwinrt_event_stream_method("));
     }
 }

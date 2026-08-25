@@ -800,12 +800,8 @@ pub(crate) fn generate_method_body(
 
             out.push('\n');
             out.push_str(&format!(
-                "    def {}_events(self, *, max_queue_size: int = 64):\n",
-                event_name
-            ));
-            out.push_str(&format!(
-                "        return _DynWinRTEventStream(self.subscribe_{}, max_queue_size)\n",
-                event_name
+                "    {}_events = _dynwinrt_event_stream_method('subscribe_{}', '{}_events')\n",
+                event_name, event_name, event_name
             ));
         }
         return out;
@@ -1320,10 +1316,9 @@ mod tests {
         assert!(code.contains("if not _state[0]:"));
         assert!(code.contains("_state[0] = False"));
         assert!(code.contains("if not _state[0]:\n            _unsubscribe()"));
-        assert!(code.contains("def changed_events(self, *, max_queue_size: int = 64):"));
-        assert!(
-            code.contains("return _DynWinRTEventStream(self.subscribe_changed, max_queue_size)")
-        );
+        assert!(code.contains(
+            "changed_events = _dynwinrt_event_stream_method('subscribe_changed', 'changed_events')"
+        ));
     }
 
     #[test]
