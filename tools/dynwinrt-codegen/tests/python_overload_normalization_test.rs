@@ -82,13 +82,14 @@ fn default_option_method_is_one_python_overload_group_with_legacy_alias() {
     let runtime = python::generate_interface(&interface, &known, &HashSet::new());
     let stub = python_stub::generate_interface_stub(&interface, &known, &HashSet::new());
 
-    assert_eq!(runtime.matches("def create_file_async(self, *args").count(), 1);
+    assert_eq!(
+        runtime.matches("def create_file_async(self, *args").count(),
+        1
+    );
     assert!(runtime.contains("def _create_file_async_6("), "{runtime}");
     assert!(runtime.contains("def _create_file_async_7("), "{runtime}");
     assert!(
-        runtime.contains(
-            "create_file_async_overload_default_options = create_file_async"
-        ),
+        runtime.contains("create_file_async_overload_default_options = create_file_async"),
         "{runtime}"
     );
     assert_eq!(stub.matches("def create_file_async(").count(), 2, "{stub}");
@@ -115,16 +116,15 @@ fn real_storage_folder_default_options_method_is_normalized() {
         "StorageFolder".into(),
     ]);
 
-    let runtime =
-        python::generate_class(&class, &known, &HashSet::new(), &HashSet::new());
-    let stub =
-        python_stub::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
+    let runtime = python::generate_class(&class, &known, &HashSet::new(), &HashSet::new());
+    let stub = python_stub::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
 
-    assert!(runtime.contains("def create_file_async(self, *args"), "{runtime}");
     assert!(
-        runtime.contains(
-            "create_file_async_overload_default_options = create_file_async"
-        ),
+        runtime.contains("def create_file_async(self, *args"),
+        "{runtime}"
+    );
+    assert!(
+        runtime.contains("create_file_async_overload_default_options = create_file_async"),
         "{runtime}"
     );
     assert_eq!(stub.matches("def create_file_async(").count(), 2, "{stub}");
