@@ -437,33 +437,6 @@ fn generate_static_method_invoke_named(
     out
 }
 
-/// Generate an instance method for an interface wrapper class (Python).
-pub(crate) fn generate_iface_instance_method(
-    iface: &InterfaceMeta,
-    iface_var: &str,
-    method: &MethodMeta,
-    known_types: &HashSet<String>,
-    delegate_type_names: &HashSet<String>,
-) -> String {
-    let property_has_getter = !method.is_property_setter
-        || method.name.strip_prefix("put_").is_some_and(|suffix| {
-            iface
-                .methods
-                .iter()
-                .any(|candidate| candidate.name == format!("get_{suffix}"))
-        });
-    generate_method_body(
-        iface_var,
-        "self._obj",
-        method,
-        known_types,
-        delegate_type_names,
-        None,
-        Some(&iface.methods),
-        property_has_getter,
-    )
-}
-
 pub(crate) struct InstanceOverload<'a> {
     pub(crate) iface_var: String,
     pub(crate) obj_expr: String,

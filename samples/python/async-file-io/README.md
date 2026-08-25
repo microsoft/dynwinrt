@@ -4,6 +4,8 @@ This deterministic sample uses generated `Windows.Storage` bindings to create,
 write, append, and read a temporary file. It demonstrates:
 
 - WinRT asynchronous methods with native Python `await`;
+- normalized Python overloads (`create_file_async(name)` or
+  `create_file_async(name, options)`);
 - normal Python temporary-directory management;
 - interface projection from `StorageFile` to `IStorageFile`; and
 - deterministic projected-object cleanup.

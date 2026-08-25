@@ -381,6 +381,13 @@ pub fn generate_interface_stub(
             collection_kind == Some(CollectionKind::MutableSequence),
         ));
     }
+    out.push_str(&emit_instance_compatibility_alias_stubs(
+        iface.methods.iter(),
+        known_types,
+        &delegate_names,
+        4,
+        collection_kind == Some(CollectionKind::MutableSequence),
+    ));
 
     out
 }
@@ -636,6 +643,13 @@ pub fn generate_class_stub(
             delegate_type_names,
         ));
     }
+    out.push_str(&emit_static_compatibility_alias_stubs(
+        &class.name,
+        static_methods.iter().copied(),
+        known_types,
+        delegate_type_names,
+        4,
+    ));
 
     let has_explicit_create_factory = class.factory_interfaces.iter().any(|iface| {
         iface
@@ -771,6 +785,13 @@ pub fn generate_class_stub(
             collection_kind == Some(CollectionKind::MutableSequence),
         ));
     }
+    out.push_str(&emit_instance_compatibility_alias_stubs(
+        original_instance_methods.iter().copied(),
+        known_types,
+        &delegate_names,
+        4,
+        collection_kind == Some(CollectionKind::MutableSequence),
+    ));
     // IClosable -> close()
     if has_closable {
         out.push('\n');
@@ -880,6 +901,13 @@ pub fn generate_class_stub(
                 interface_kind(req_iface) == Some(CollectionKind::MutableSequence),
             ));
         }
+        out.push_str(&emit_instance_compatibility_alias_stubs(
+            req_iface.methods.iter(),
+            known_types,
+            &delegate_names,
+            4,
+            interface_kind(req_iface) == Some(CollectionKind::MutableSequence),
+        ));
     }
 
     let _ = py_dynwinrt_type; // keep import referenced
@@ -1169,6 +1197,76 @@ fn emit_instance_stub_group(
             )
         })
         .collect()
+}
+
+fn emit_instance_compatibility_alias_stubs<'a>(
+    methods: impl IntoIterator<Item = &'a MethodMeta>,
+    known_types: &HashSet<String>,
+    delegate_type_names: &HashSet<String>,
+    indent_spaces: usize,
+    overrides_mutable_sequence: bool,
+) -> String {
+    let methods = methods.into_iter().collect::<Vec<_>>();
+    let aliases = super::overloads::compatibility_aliases(methods.iter().copied());
+    let indent = " ".repeat(indent_spaces);
+    let mut out = String::new();
+    for (legacy, _) in aliases {
+        let matching = methods
+            .iter()
+            .copied()
+            .filter(|method| to_snake_case(&method.name) == legacy)
+            .collect::<Vec<_>>();
+        for method in &matching {
+            if matching.len() > 1 {
+                out.push_str(&format!("{indent}@overload\n"));
+            }
+            out.push_str(&emit_method_stub_named(
+                method,
+                known_types,
+                delegate_type_names,
+                indent_spaces,
+                Some(&legacy),
+                false,
+                true,
+                overrides_mutable_sequence,
+            ));
+        }
+    }
+    out
+}
+
+fn emit_static_compatibility_alias_stubs<'a>(
+    class_name: &str,
+    methods: impl IntoIterator<Item = (&'a MethodMeta, bool)>,
+    known_types: &HashSet<String>,
+    delegate_type_names: &HashSet<String>,
+    indent_spaces: usize,
+) -> String {
+    let methods = methods.into_iter().collect::<Vec<_>>();
+    let aliases =
+        super::overloads::compatibility_aliases(methods.iter().map(|(method, _)| *method));
+    let indent = " ".repeat(indent_spaces);
+    let mut out = String::new();
+    for (legacy, _) in aliases {
+        let matching = methods
+            .iter()
+            .filter(|(method, _)| to_snake_case(&method.name) == legacy)
+            .collect::<Vec<_>>();
+        for (method, is_factory) in &matching {
+            if matching.len() > 1 {
+                out.push_str(&format!("{indent}@overload\n"));
+            }
+            out.push_str(&emit_static_method_stub_named(
+                class_name,
+                method,
+                known_types,
+                *is_factory,
+                delegate_type_names,
+                Some(&legacy),
+            ));
+        }
+    }
+    out
 }
 
 fn grouped_static_stubs<'a>(

@@ -4,7 +4,6 @@ from pathlib import Path
 
 from dynwinrt import RoApartment, projected_lifetime_scope
 from generated.windows.storage import (
-    CreationCollisionOption,
     FileIO,
     IStorageFile,
     StorageFolder,
@@ -20,10 +19,7 @@ async def run() -> None:
             if folder is None:
                 raise RuntimeError("StorageFolder returned no temporary folder")
 
-            file = await folder.create_file_async(
-                "sample.txt",
-                CreationCollisionOption.ReplaceExisting,
-            )
+            file = await folder.create_file_async("sample.txt")
             if file is None:
                 raise RuntimeError("StorageFolder returned no file")
             storage_file = file.as_interface(IStorageFile)

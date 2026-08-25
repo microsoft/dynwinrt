@@ -488,6 +488,11 @@ pub fn generate_interface(
             &delegate_names,
         ));
     }
+    let aliases = generate_compatibility_aliases(iface.methods.iter());
+    if !aliases.is_empty() {
+        out.push('\n');
+        out.push_str(&aliases);
+    }
 
     out
 }

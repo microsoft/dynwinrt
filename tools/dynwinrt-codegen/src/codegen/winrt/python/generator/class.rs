@@ -401,6 +401,11 @@ pub fn generate_class(
             &delegate_names,
         ));
     }
+    let static_aliases = generate_compatibility_aliases(static_methods.iter().copied());
+    if !static_aliases.is_empty() {
+        out.push('\n');
+        out.push_str(&static_aliases);
+    }
 
     // Composable factories commonly expose a no-argument `CreateInstance`
     // method. Add an ergonomic `create()` alias when there is no default
@@ -611,6 +616,15 @@ pub fn generate_class(
             &delegate_names,
         ));
     }
+    let instance_aliases = generate_compatibility_aliases(
+        instance_ifaces
+            .iter()
+            .flat_map(|iface| iface.methods.iter()),
+    );
+    if !instance_aliases.is_empty() {
+        out.push('\n');
+        out.push_str(&instance_aliases);
+    }
 
     if matches!(
         collection_kind,
@@ -803,15 +817,36 @@ pub fn generate_class(
             "        return {}._from_native(obj.cast(IID_{}))\n",
             req_iface.name, req_iface.name
         ));
-        for method in reorder_getters_before_setters(&req_iface.methods) {
+        for methods in crate::codegen::winrt::python::overloads::grouped_methods(
+            reorder_getters_before_setters(&req_iface.methods),
+        ) {
             out.push('\n');
-            out.push_str(&generate_iface_instance_method(
-                req_iface,
-                &reg_var,
-                method,
+            let overloads = methods
+                .into_iter()
+                .map(|method| InstanceOverload {
+                    iface_var: reg_var.clone(),
+                    obj_expr: "self._obj".into(),
+                    method,
+                    sibling_methods: Some(req_iface.methods.as_slice()),
+                    property_has_getter: !method.is_property_setter
+                        || method.name.strip_prefix("put_").is_some_and(|suffix| {
+                            req_iface
+                                .methods
+                                .iter()
+                                .any(|candidate| candidate.name == format!("get_{suffix}"))
+                        }),
+                })
+                .collect::<Vec<_>>();
+            out.push_str(&generate_instance_method_group(
+                &overloads,
                 known_types,
                 &delegate_names,
             ));
+        }
+        let aliases = generate_compatibility_aliases(req_iface.methods.iter());
+        if !aliases.is_empty() {
+            out.push('\n');
+            out.push_str(&aliases);
         }
         if matches!(
             interface_kind(req_iface),

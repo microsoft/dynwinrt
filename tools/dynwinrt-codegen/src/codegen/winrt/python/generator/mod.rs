@@ -23,8 +23,8 @@ use crate::codegen::winrt::shared::structs::{
 };
 
 use super::method::{
-    InstanceOverload, StaticOverload, StaticOverloadKind, generate_iface_instance_method,
-    generate_instance_method_group, generate_static_method_group, py_method_type_guard,
+    InstanceOverload, StaticOverload, StaticOverloadKind, generate_instance_method_group,
+    generate_static_method_group, py_method_type_guard,
 };
 use super::naming::{
     is_py_reserved, python_module_layout_installed, python_module_name,
@@ -171,6 +171,13 @@ fn has_ireference_struct_field(structs: &[TypeMeta]) -> bool {
     }
 
     structs.iter().any(contains)
+}
+
+fn generate_compatibility_aliases<'a>(methods: impl IntoIterator<Item = &'a MethodMeta>) -> String {
+    super::overloads::compatibility_aliases(methods)
+        .into_iter()
+        .map(|(legacy, canonical)| format!("    {legacy} = {canonical}\n"))
+        .collect()
 }
 
 pub use class::generate_class;
