@@ -35,6 +35,8 @@ of a dynamic projection.
       resolution.
 - [x] Keep referenced types visible to static type checkers through
       `TYPE_CHECKING` imports.
+- [x] Model WinRT runtime-class and interface compatibility structurally in
+      input annotations without changing runtime inheritance.
 - [x] Add an import regression for a real cyclic graph such as
       `Windows.Data.Xml.Dom.XmlDocument`.
 - [x] Preserve `Uri` implementation and `.pyi` snapshots.

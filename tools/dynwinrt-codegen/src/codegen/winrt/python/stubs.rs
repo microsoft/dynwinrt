@@ -23,7 +23,7 @@ use crate::codegen::winrt::shared::structs::{
 };
 
 use super::collections::{
-    CollectionKind, abc_name, class_interface, interface_kind, observable_vector_name,
+    CollectionKind, abc_name, class_interface, interface_kind, observable_vector_name, type_kind,
 };
 use super::naming::{
     is_py_reserved, python_module_layout_installed, python_module_name,
@@ -47,6 +47,7 @@ from ._typing import (
     Callable, Iterable, Iterator, Mapping, MutableMapping, MutableSequence, Sequence,
     UUID, WinGUID, datetime, overload, timedelta,
     DynWinRTType, DynWinRTValue, DynWinRTArray, DynWinRTStruct, DynWinRtDelegate,
+    _DynWinRTProjector,
 )\n";
 const ASYNC_IMPORT_LINE: &str = "from dynwinrt import WinRTAsync, WinRTAsyncWithProgress\n";
 
@@ -65,12 +66,37 @@ from dynwinrt import (\n\
     DynWinRTType as DynWinRTType, DynWinRTValue as DynWinRTValue,\n\
     DynWinRTArray as DynWinRTArray, DynWinRTStruct as DynWinRTStruct,\n\
     DynWinRtDelegate as DynWinRtDelegate, WinGUID as WinGUID,\n\
+    _DynWinRTProjector as _DynWinRTProjector,\n\
 )\n"
     )
 }
 
 pub fn generate_runtime_support_stub() -> String {
     format!("{HEADER}{FUTURE_ANNOTATIONS}")
+}
+
+fn interface_type_identity(typ: &TypeMeta) -> Option<(&str, String)> {
+    match typ {
+        TypeMeta::Interface {
+            namespace, name, ..
+        } => Some((namespace, name.clone())),
+        TypeMeta::Parameterized {
+            namespace,
+            name,
+            args,
+            ..
+        } => Some((namespace, crate::meta::make_parameterized_name(name, args))),
+        _ => None,
+    }
+}
+
+fn protocol_base_interfaces(iface: &InterfaceMeta) -> Vec<(&str, String)> {
+    iface
+        .base_interfaces
+        .iter()
+        .filter(|base| type_kind(base).is_none())
+        .filter_map(interface_type_identity)
+        .collect()
 }
 
 pub fn generate_struct_stub(s: &TypeMeta) -> Option<String> {
@@ -180,6 +206,10 @@ pub fn generate_interface_stub(
     out.push_str(FUTURE_ANNOTATIONS);
     out.push_str(IMPORT_LINE);
     let collection_kind = interface_kind(iface);
+    let is_protocol = collection_kind.is_none();
+    if is_protocol {
+        out.push_str("from typing import Protocol, Self\n");
+    }
     if methods_have_async_output(iface.methods.iter()) {
         out.push_str(ASYNC_IMPORT_LINE);
     }
@@ -245,6 +275,10 @@ pub fn generate_interface_stub(
             out.push_str(&format_py_type_import(&r.namespace, &r.name, r.kind));
         }
     }
+    let protocol_bases = protocol_base_interfaces(iface);
+    for (namespace, name) in &protocol_bases {
+        out.push_str(&format_py_type_import(namespace, name, TypeKind::Interface));
+    }
     out.push('\n');
 
     if iface.generic_piid.is_some() || !iface.iid.is_empty() {
@@ -276,10 +310,25 @@ pub fn generate_interface_stub(
                 )),
                 _ => None,
             });
-    if let Some(base) = collection_base {
-        out.push_str(&format!("\nclass {}({base}):\n", iface.name));
+    let mut bases = if is_protocol {
+        protocol_bases
+            .iter()
+            .map(|(_, name)| name.clone())
+            .collect::<Vec<_>>()
     } else {
+        Vec::new()
+    };
+    if is_protocol {
+        bases.push("Protocol".into());
+    } else if let Some(base) = collection_base {
+        bases.push(base);
+    }
+    let mut seen_bases = HashSet::new();
+    bases.retain(|base| seen_bases.insert(base.clone()));
+    if bases.is_empty() {
         out.push_str(&format!("\nclass {}:\n", iface.name));
+    } else {
+        out.push_str(&format!("\nclass {}({}):\n", iface.name, bases.join(", ")));
     }
     out.push_str(&super::docs::format_pydoc(
         &crate::codegen::winrt::shared::docs::DocText {
@@ -289,15 +338,22 @@ pub fn generate_interface_stub(
         },
         "    ",
     ));
-    out.push_str("    def __init__(self, obj: DynWinRTValue) -> None: ...\n");
+    if !is_protocol {
+        out.push_str("    def __init__(self, obj: DynWinRTValue) -> None: ...\n");
+    }
     out.push_str(&collection_protocol_stubs(iface, known_types, 4));
     if !iface.iid.is_empty() || iface.generic_piid.is_some() {
         out.push('\n');
-        out.push_str("    @staticmethod\n");
-        out.push_str(&format!(
-            "    def from_value(obj: DynWinRTValue) -> '{}': ...\n",
-            iface.name
-        ));
+        if is_protocol {
+            out.push_str("    @classmethod\n");
+            out.push_str("    def from_value(cls, obj: DynWinRTValue) -> Self: ...\n");
+        } else {
+            out.push_str("    @staticmethod\n");
+            out.push_str(&format!(
+                "    def from_value(obj: DynWinRTValue) -> '{}': ...\n",
+                iface.name
+            ));
+        }
     }
 
     // IVector<T> / IMap<K,V> create()
@@ -422,6 +478,7 @@ pub fn generate_class_stub(
     out.push_str(HEADER);
     out.push_str(FUTURE_ANNOTATIONS);
     out.push_str(IMPORT_LINE);
+    out.push_str("from typing import Protocol, Self\n");
     if !has_constructor_stub_overload(class) {
         out.push_str("from typing import NoReturn\n");
     }
@@ -442,7 +499,7 @@ pub fn generate_class_stub(
         out.push_str("from typing import Literal\n");
     }
     if !class.required_interfaces.is_empty() {
-        out.push_str("from typing import Type, TypeVar\n");
+        out.push_str("from typing import TypeVar\n");
     } else if winui::is_dispatcher_queue(class) {
         out.push_str("from typing import TypeVar\n");
     }
@@ -584,11 +641,26 @@ pub fn generate_class_stub(
             )),
             _ => None,
         });
-    if let Some(base) = collection_base {
-        out.push_str(&format!("\nclass {}({base}):\n", class.name));
+    let instance_stub_body = emit_class_instance_stubs(
+        class,
+        known_types,
+        &delegate_names,
+        collection_iface,
+        false,
+        has_closable,
+    );
+    out.push_str(&format!("\nclass {}Like(Protocol):\n", class.name));
+    if instance_stub_body.is_empty() {
+        out.push_str("    pass\n");
     } else {
-        out.push_str(&format!("\nclass {}:\n", class.name));
+        out.push_str(&instance_stub_body);
     }
+
+    let bases = collection_base
+        .as_ref()
+        .map(|base| vec![base.clone()])
+        .unwrap_or_else(|| vec![format!("{}Like", class.name)]);
+    out.push_str(&format!("\nclass {}({}):\n", class.name, bases.join(", ")));
     out.push_str(&super::docs::format_pydoc(
         &crate::codegen::winrt::shared::docs::DocText {
             summary: class.doc.as_deref(),
@@ -598,8 +670,19 @@ pub fn generate_class_stub(
         "    ",
     ));
     out.push_str(&emit_constructor_stubs(class, known_types, &delegate_names));
-    if let Some(collection_iface) = collection_iface {
-        out.push_str(&collection_protocol_stubs(collection_iface, known_types, 4));
+    out.push_str(
+        "\n    @classmethod\n\
+         \x20   def from_value(cls, obj: DynWinRTValue) -> Self: ...\n",
+    );
+    if collection_base.is_some() {
+        out.push_str(&emit_class_instance_stubs(
+            class,
+            known_types,
+            &delegate_names,
+            collection_iface,
+            collection_kind == Some(CollectionKind::MutableSequence),
+            has_closable,
+        ));
     }
 
     // Default constructor
@@ -692,146 +775,6 @@ pub fn generate_class_stub(
         ));
     }
 
-    let instance_ifaces = class
-        .default_interface
-        .iter()
-        .chain(class.required_interfaces.iter())
-        .filter(|iface| iface.iid != "30d5a829-7fa4-4026-83bb-d75bae4ea99e")
-        .collect::<Vec<_>>();
-    let paired_events = instance_ifaces
-        .iter()
-        .flat_map(|iface| {
-            iface.methods.iter().filter_map(|method| {
-                let suffix = method.name.strip_prefix("add_")?;
-                iface
-                    .methods
-                    .iter()
-                    .any(|candidate| candidate.name == format!("remove_{suffix}"))
-                    .then_some(suffix.to_string())
-            })
-        })
-        .collect::<HashSet<_>>();
-    let property_getters = instance_ifaces
-        .iter()
-        .flat_map(|iface| iface.methods.iter())
-        .filter(|method| method.is_property_getter)
-        .filter_map(|method| method.name.strip_prefix("get_"))
-        .map(str::to_string)
-        .collect::<HashSet<_>>();
-    let original_instance_methods = instance_ifaces
-        .iter()
-        .flat_map(|iface| reorder_getters_before_setters(&iface.methods))
-        .collect::<Vec<_>>();
-    let mut emitted = HashSet::<*const MethodMeta>::new();
-    let mut instance_methods = Vec::with_capacity(original_instance_methods.len());
-    for method in &original_instance_methods {
-        if emitted.contains(&(*method as *const MethodMeta)) {
-            continue;
-        }
-        if method.is_property_setter
-            && method
-                .name
-                .strip_prefix("put_")
-                .is_some_and(|suffix| property_getters.contains(suffix))
-        {
-            // The paired getter emits this setter immediately after itself so
-            // type checkers recognize the property setter relationship.
-            continue;
-        }
-
-        instance_methods.push(*method);
-        emitted.insert(*method as *const MethodMeta);
-        if let Some(suffix) = method
-            .is_property_getter
-            .then(|| method.name.strip_prefix("get_"))
-            .flatten()
-        {
-            for setter in original_instance_methods
-                .iter()
-                .copied()
-                .filter(|candidate| {
-                    candidate.is_property_setter
-                        && candidate.name.strip_prefix("put_") == Some(suffix)
-                })
-            {
-                if emitted.insert(setter as *const MethodMeta) {
-                    instance_methods.push(setter);
-                }
-            }
-        }
-    }
-    for methods in super::overloads::grouped_methods(instance_methods) {
-        let event_has_remove = methods.first().is_some_and(|method| {
-            method
-                .name
-                .strip_prefix("add_")
-                .is_some_and(|suffix| paired_events.contains(suffix))
-        });
-        let property_has_getter = methods.first().is_none_or(|method| {
-            !method.is_property_setter
-                || method
-                    .name
-                    .strip_prefix("put_")
-                    .is_some_and(|suffix| property_getters.contains(suffix))
-        });
-        out.push('\n');
-        out.push_str(&emit_instance_stub_group(
-            &methods,
-            known_types,
-            &delegate_names,
-            4,
-            event_has_remove,
-            property_has_getter,
-            collection_kind == Some(CollectionKind::MutableSequence),
-        ));
-    }
-    out.push_str(&emit_instance_compatibility_alias_stubs(
-        original_instance_methods.iter().copied(),
-        known_types,
-        &delegate_names,
-        4,
-        collection_kind == Some(CollectionKind::MutableSequence),
-    ));
-    // IClosable -> close()
-    if has_closable {
-        out.push('\n');
-        out.push_str("    def close(self) -> None: ...\n");
-        out.push_str(&format!(
-            "    def __enter__(self) -> '{}': ...\n",
-            class.name
-        ));
-        out.push_str(
-            "    def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> Literal[False]: ...\n",
-        );
-    }
-
-    if !class.required_interfaces.is_empty() {
-        out.push('\n');
-        out.push_str(
-            "    def as_interface(self, interface_class: Type[_InterfaceT]) -> _InterfaceT: ...\n",
-        );
-    }
-
-    if winui::is_dispatcher_queue(class) {
-        out.push_str(
-            "\n    async def enqueue_async(\n\
-             \x20       self,\n\
-             \x20       callback: Callable[..., _DispatchResultT],\n\
-             \x20       *args: object,\n\
-             \x20       **kwargs: object,\n\
-             \x20   ) -> _DispatchResultT: ...\n",
-        );
-        out.push_str(
-            "\n    async def enqueue_with_priority_async(\n\
-             \x20       self,\n\
-             \x20       priority: 'DispatcherQueuePriority',\n\
-             \x20       callback: Callable[..., _DispatchResultT],\n\
-             \x20       *args: object,\n\
-             \x20       **kwargs: object,\n\
-             \x20   ) -> _DispatchResultT: ...\n",
-        );
-    }
-
     // Inline wrapper classes for required interfaces
     for req_iface in &class.required_interfaces {
         if req_iface.iid.is_empty() {
@@ -911,6 +854,159 @@ pub fn generate_class_stub(
     }
 
     let _ = py_dynwinrt_type; // keep import referenced
+    out
+}
+
+fn emit_class_instance_stubs(
+    class: &ClassMeta,
+    known_types: &HashSet<String>,
+    delegate_names: &HashSet<String>,
+    collection_iface: Option<&InterfaceMeta>,
+    mutable_sequence_override: bool,
+    has_closable: bool,
+) -> String {
+    let mut out = String::new();
+    if let Some(collection_iface) = collection_iface {
+        out.push_str(&collection_protocol_stubs(collection_iface, known_types, 4));
+    }
+
+    let instance_ifaces = class
+        .default_interface
+        .iter()
+        .chain(class.required_interfaces.iter())
+        .filter(|iface| iface.iid != "30d5a829-7fa4-4026-83bb-d75bae4ea99e")
+        .collect::<Vec<_>>();
+    let paired_events = instance_ifaces
+        .iter()
+        .flat_map(|iface| {
+            iface.methods.iter().filter_map(|method| {
+                let suffix = method.name.strip_prefix("add_")?;
+                iface
+                    .methods
+                    .iter()
+                    .any(|candidate| candidate.name == format!("remove_{suffix}"))
+                    .then_some(suffix.to_string())
+            })
+        })
+        .collect::<HashSet<_>>();
+    let property_getters = instance_ifaces
+        .iter()
+        .flat_map(|iface| iface.methods.iter())
+        .filter(|method| method.is_property_getter)
+        .filter_map(|method| method.name.strip_prefix("get_"))
+        .map(str::to_string)
+        .collect::<HashSet<_>>();
+    let original_instance_methods = instance_ifaces
+        .iter()
+        .flat_map(|iface| reorder_getters_before_setters(&iface.methods))
+        .collect::<Vec<_>>();
+    let mut emitted = HashSet::<*const MethodMeta>::new();
+    let mut instance_methods = Vec::with_capacity(original_instance_methods.len());
+    for method in &original_instance_methods {
+        if emitted.contains(&(*method as *const MethodMeta)) {
+            continue;
+        }
+        if method.is_property_setter
+            && method
+                .name
+                .strip_prefix("put_")
+                .is_some_and(|suffix| property_getters.contains(suffix))
+        {
+            continue;
+        }
+
+        instance_methods.push(*method);
+        emitted.insert(*method as *const MethodMeta);
+        if let Some(suffix) = method
+            .is_property_getter
+            .then(|| method.name.strip_prefix("get_"))
+            .flatten()
+        {
+            for setter in original_instance_methods
+                .iter()
+                .copied()
+                .filter(|candidate| {
+                    candidate.is_property_setter
+                        && candidate.name.strip_prefix("put_") == Some(suffix)
+                })
+            {
+                if emitted.insert(setter as *const MethodMeta) {
+                    instance_methods.push(setter);
+                }
+            }
+        }
+    }
+    for methods in super::overloads::grouped_methods(instance_methods) {
+        let event_has_remove = methods.first().is_some_and(|method| {
+            method
+                .name
+                .strip_prefix("add_")
+                .is_some_and(|suffix| paired_events.contains(suffix))
+        });
+        let property_has_getter = methods.first().is_none_or(|method| {
+            !method.is_property_setter
+                || method
+                    .name
+                    .strip_prefix("put_")
+                    .is_some_and(|suffix| property_getters.contains(suffix))
+        });
+        out.push('\n');
+        out.push_str(&emit_instance_stub_group(
+            &methods,
+            known_types,
+            delegate_names,
+            4,
+            event_has_remove,
+            property_has_getter,
+            mutable_sequence_override,
+        ));
+    }
+    out.push_str(&emit_instance_compatibility_alias_stubs(
+        original_instance_methods.iter().copied(),
+        known_types,
+        delegate_names,
+        4,
+        mutable_sequence_override,
+    ));
+    if has_closable {
+        out.push('\n');
+        out.push_str("    def close(self) -> None: ...\n");
+        out.push_str(&format!(
+            "    def __enter__(self) -> '{}': ...\n",
+            class.name
+        ));
+        out.push_str(
+            "    def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> Literal[False]: ...\n",
+        );
+    }
+
+    if !class.required_interfaces.is_empty() {
+        out.push('\n');
+        out.push_str(
+            "    def as_interface(self, interface_class: _DynWinRTProjector[_InterfaceT]) -> _InterfaceT: ...\n",
+        );
+    }
+
+    if winui::is_dispatcher_queue(class) {
+        out.push_str(
+            "\n    async def enqueue_async(\n\
+             \x20       self,\n\
+             \x20       callback: Callable[..., _DispatchResultT],\n\
+             \x20       *args: object,\n\
+             \x20       **kwargs: object,\n\
+             \x20   ) -> _DispatchResultT: ...\n",
+        );
+        out.push_str(
+            "\n    async def enqueue_with_priority_async(\n\
+             \x20       self,\n\
+             \x20       priority: 'DispatcherQueuePriority',\n\
+             \x20       callback: Callable[..., _DispatchResultT],\n\
+             \x20       *args: object,\n\
+             \x20       **kwargs: object,\n\
+             \x20   ) -> _DispatchResultT: ...\n",
+        );
+    }
+
     out
 }
 
@@ -1066,10 +1162,9 @@ fn emit_constructor_stubs(
              \x20   # native overrides are registered during construction; unsupported ABI shapes fail closed.\n",
         );
         out.push_str("    @classmethod\n");
-        out.push_str(&format!(
-            "    def register_xaml_runtime_class(cls, runtime_class_name: str, control_type: type[{}]) -> DynWinRTXamlRegistration: ...\n",
-            class.name
-        ));
+        out.push_str(
+            "    def register_xaml_runtime_class(cls, runtime_class_name: str, control_type: type[Self]) -> DynWinRTXamlRegistration: ...\n",
+        );
     }
     if overloads.is_empty() {
         out.push_str("    def __init__(self, _not_constructible: NoReturn) -> None: ...\n");

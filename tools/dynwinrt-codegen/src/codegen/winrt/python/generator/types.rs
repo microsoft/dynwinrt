@@ -611,7 +611,7 @@ mod tests {
             &HashSet::new(),
         );
 
-        assert!(code.contains("def create(items: Iterable['Widget'])"));
-        assert!(!code.contains("def create(items: Iterable[Widget | None])"));
+        assert!(code.contains("def create(items: Iterable['WidgetLike'])"));
+        assert!(!code.contains("def create(items: Iterable[WidgetLike | None])"));
     }
 }

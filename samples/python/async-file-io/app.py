@@ -5,7 +5,6 @@ from pathlib import Path
 from dynwinrt import RoApartment, projected_lifetime_scope
 from generated.windows.storage import (
     FileIO,
-    IStorageFile,
     StorageFolder,
 )
 
@@ -22,14 +21,12 @@ async def run() -> None:
             file = await folder.create_file_async("sample.txt")
             if file is None:
                 raise RuntimeError("StorageFolder returned no file")
-            storage_file = file.as_interface(IStorageFile)
-
-            await FileIO.write_text_async(storage_file, "Hello from dynwinrt.")
+            await FileIO.write_text_async(file, "Hello from dynwinrt.")
             await FileIO.append_text_async(
-                storage_file,
+                file,
                 "\nAsync WinRT file I/O works.",
             )
-            actual = await FileIO.read_text_async(storage_file)
+            actual = await FileIO.read_text_async(file)
             if actual != expected:
                 raise RuntimeError(
                     f"Unexpected file contents: {actual!r}"

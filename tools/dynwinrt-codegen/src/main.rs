@@ -42,6 +42,20 @@ struct Cli {
     command: Commands,
 }
 
+fn resolve_dependencies_for_lang(
+    winmd: &str,
+    classes: &[meta::ClassMeta],
+    interfaces: &[meta::InterfaceMeta],
+    enums: &[TypeMeta],
+    lang: &str,
+) -> meta::ResolvedDeps {
+    if lang == "py" {
+        meta::resolve_python_dependencies(winmd, classes, interfaces, enums)
+    } else {
+        meta::resolve_dependencies(winmd, classes, interfaces, enums)
+    }
+}
+
 #[derive(Subcommand)]
 enum Commands {
     /// Print supported machine-readable capabilities, one per line.
@@ -615,8 +629,13 @@ fn run() -> Result<(), String> {
                         // We pick a sentinel filename `index.js` to detect presence; `.d.ts` is written alongside.
                         (typescript::append_to_index, typescript::generate_index)
                     };
-                    let deps =
-                        meta::resolve_dependencies(&winmd, &classes, &implicit_interfaces, &[]);
+                    let deps = resolve_dependencies_for_lang(
+                        &winmd,
+                        &classes,
+                        &implicit_interfaces,
+                        &[],
+                        &lang,
+                    );
                     let mut all_classes = [classes.as_slice(), deps.classes.as_slice()].concat();
                     let mut all_interfaces =
                         [implicit_interfaces.as_slice(), deps.interfaces.as_slice()].concat();
@@ -766,11 +785,12 @@ fn run() -> Result<(), String> {
                     }
                     winui::add_implicit_classes(&winmd, &mut all_classes);
                     winui::add_implicit_interfaces(&winmd, &all_classes, &mut all_interfaces);
-                    let deps = meta::resolve_dependencies(
+                    let deps = resolve_dependencies_for_lang(
                         &winmd,
                         &all_classes,
                         &all_interfaces,
                         &all_enums,
+                        &lang,
                     );
                     all_classes.extend(deps.classes);
                     all_interfaces.extend(deps.interfaces);
@@ -874,7 +894,7 @@ fn generate_for_types(
     doc_table: &DocTable,
     existing_python_identities: &[python::PythonTypeIdentity],
 ) -> Result<(usize, usize, usize, Vec<meta::InterfaceMeta>), String> {
-    let deps = meta::resolve_dependencies(winmd, &classes, &interfaces, &enums);
+    let deps = resolve_dependencies_for_lang(winmd, &classes, &interfaces, &enums, lang);
     let mut all_classes = classes;
     let mut all_interfaces = interfaces;
     let mut all_enums = enums;

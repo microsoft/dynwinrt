@@ -22,6 +22,8 @@ pub(super) fn format_py_type_import(namespace: &str, name: &str, kind: TypeKind)
     let module = python_module_name(namespace, name);
     if kind == TypeKind::Interface {
         format!("from .{module} import IID_{name}, {name}  # noqa: F401\n")
+    } else if kind == TypeKind::Class {
+        format!("from .{module} import {name}, {name}Like  # noqa: F401\n")
     } else {
         format!("from .{module} import {name}  # noqa: F401\n")
     }
@@ -371,14 +373,15 @@ pub(super) fn emit_method_stub_named(
         };
         // WinRT vectors may reject null on mutation while returning null
         // interface elements. That asymmetric native contract cannot satisfy
-        // MutableSequence[T | None]'s append signature exactly.
+        // MutableSequence[T | None]'s append signature exactly. Empty
+        // structural protocols can make mypy consider the override compatible.
         let override_ignore = if overrides_mutable_sequence
             && method_name == "append"
             && in_params.first().is_some_and(|param| {
                 py_param_type_safe(&param.typ, known_types)
                     != super::type_helpers::py_return_type_safe(Some(&param.typ), known_types)
             }) {
-            "  # type: ignore[override]"
+            "  # type: ignore[override, unused-ignore]"
         } else {
             ""
         };
@@ -559,7 +562,7 @@ mod tests {
             true,
         );
 
-        assert!(reference.contains("type: ignore[override]"));
-        assert!(!scalar.contains("type: ignore[override]"));
+        assert!(reference.contains("type: ignore[override, unused-ignore]"));
+        assert!(!scalar.contains("type: ignore[override"));
     }
 }

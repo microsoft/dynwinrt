@@ -5,17 +5,18 @@ from ._typing import (
     Callable, Iterable, Iterator, Mapping, MutableMapping, MutableSequence, Sequence,
     UUID, WinGUID, datetime, overload, timedelta,
     DynWinRTType, DynWinRTValue, DynWinRTArray, DynWinRTStruct, DynWinRtDelegate,
+    _DynWinRTProjector,
 )
+from typing import Protocol, Self
 
 
 IID_IUriRuntimeClassWithAbsoluteCanonicalUri: WinGUID
 
 
-class IUriRuntimeClassWithAbsoluteCanonicalUri:
-    def __init__(self, obj: DynWinRTValue) -> None: ...
+class IUriRuntimeClassWithAbsoluteCanonicalUri(Protocol):
 
-    @staticmethod
-    def from_value(obj: DynWinRTValue) -> 'IUriRuntimeClassWithAbsoluteCanonicalUri': ...
+    @classmethod
+    def from_value(cls, obj: DynWinRTValue) -> Self: ...
 
     @builtins.property
     def absolute_canonical_uri(self) -> str: ...

@@ -7,7 +7,6 @@ from generated.windows.media.playback import (
     MediaPlayerAudioCategory,
 )
 from generated.windows.media.speech_synthesis import SpeechSynthesizer
-from generated.windows.storage.streams import IRandomAccessStream
 
 
 async def speak(text: str, smoke: bool) -> None:
@@ -41,9 +40,7 @@ async def speak(text: str, smoke: bool) -> None:
                     unsubscribe = player.once_media_ended(on_media_ended)
                     try:
                         player.audio_category = MediaPlayerAudioCategory.Speech
-                        player.set_stream_source(
-                            stream.as_interface(IRandomAccessStream)
-                        )
+                        player.set_stream_source(stream)
                         player.play()
                         await asyncio.wait_for(ended.wait(), timeout=30)
                     finally:

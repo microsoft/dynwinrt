@@ -63,6 +63,8 @@ pub struct InterfaceMeta {
     pub name: String,
     pub namespace: String,
     pub iid: String,
+    /// Direct WinRT interface bases, excluding IInspectable/IUnknown.
+    pub base_interfaces: Vec<TypeMeta>,
     pub methods: Vec<MethodMeta>,
     /// For parameterized interfaces: the PIID (generic IID before instantiation).
     pub generic_piid: Option<String>,
@@ -134,6 +136,8 @@ pub struct ClassMeta {
     pub name: String,
     pub namespace: String,
     pub full_name: String,
+    /// Direct WinRT runtime-class base, excluding System.Object.
+    pub base_class: Option<TypeRef>,
     pub default_interface: Option<InterfaceMeta>,
     /// Supplemental interfaces, including parameterized and versioned interfaces.
     pub required_interfaces: Vec<InterfaceMeta>,
@@ -368,6 +372,38 @@ pub fn resolve_dependencies(
     existing_interfaces: &[InterfaceMeta],
     existing_enums: &[TypeMeta],
 ) -> ResolvedDeps {
+    resolve_dependencies_impl(
+        winmd_paths,
+        classes,
+        existing_interfaces,
+        existing_enums,
+        false,
+    )
+}
+
+/// Resolve dependencies needed by Python's structural class and interface stubs.
+pub fn resolve_python_dependencies(
+    winmd_paths: &str,
+    classes: &[ClassMeta],
+    existing_interfaces: &[InterfaceMeta],
+    existing_enums: &[TypeMeta],
+) -> ResolvedDeps {
+    resolve_dependencies_impl(
+        winmd_paths,
+        classes,
+        existing_interfaces,
+        existing_enums,
+        true,
+    )
+}
+
+fn resolve_dependencies_impl(
+    winmd_paths: &str,
+    classes: &[ClassMeta],
+    existing_interfaces: &[InterfaceMeta],
+    existing_enums: &[TypeMeta],
+    include_inheritance: bool,
+) -> ResolvedDeps {
     let index = match load_index(winmd_paths) {
         Some(idx) => idx,
         None => {
@@ -400,12 +436,19 @@ pub fn resolve_dependencies(
     // Seed the worklist from initial types
     let mut worklist: Vec<TypeRef> = Vec::new();
     let mut param_worklist: Vec<TypeMeta> = Vec::new();
-    collect_all_refs_from_classes(classes, &known, &mut worklist, &mut param_worklist);
+    collect_all_refs_from_classes(
+        classes,
+        &known,
+        &mut worklist,
+        &mut param_worklist,
+        include_inheritance,
+    );
     collect_all_refs_from_interfaces(
         existing_interfaces,
         &known,
         &mut worklist,
         &mut param_worklist,
+        include_inheritance,
     );
 
     // Fixpoint: keep resolving until no new types are discovered
@@ -497,12 +540,19 @@ pub fn resolve_dependencies(
         }
 
         // Discover new references from the newly resolved types
-        collect_all_refs_from_classes(&new_classes, &known, &mut worklist, &mut param_worklist);
+        collect_all_refs_from_classes(
+            &new_classes,
+            &known,
+            &mut worklist,
+            &mut param_worklist,
+            include_inheritance,
+        );
         collect_all_refs_from_interfaces(
             &new_interfaces,
             &known,
             &mut worklist,
             &mut param_worklist,
+            include_inheritance,
         );
 
         dep_classes.extend(new_classes);
@@ -603,6 +653,29 @@ fn collect_all_refs_from_methods(
     }
 }
 
+fn collect_interface_base_ref(
+    base: &TypeMeta,
+    known: &HashSet<String>,
+    named_out: &mut Vec<TypeRef>,
+    param_out: &mut Vec<TypeMeta>,
+) {
+    let mut named = Vec::new();
+    let mut parameterized = Vec::new();
+    visit_type_refs(base, &mut named, &mut parameterized);
+    named_out.extend(
+        named
+            .into_iter()
+            .filter(|reference| !known.contains(&reference.name)),
+    );
+    param_out.extend(parameterized.into_iter().filter(|reference| {
+        matches!(
+            reference,
+            TypeMeta::Parameterized { name, args, .. }
+                if !known.contains(&make_parameterized_name(name, args))
+        )
+    }));
+}
+
 /// Generate a concrete name for a parameterized interface, e.g. "IVector_String", "IMap_String_Object".
 pub fn make_parameterized_name(generic_name: &str, args: &[TypeMeta]) -> String {
     let base = generic_name.split('`').next().unwrap_or(generic_name);
@@ -642,8 +715,15 @@ fn collect_all_refs_from_classes(
     known: &HashSet<String>,
     named_out: &mut Vec<TypeRef>,
     param_out: &mut Vec<TypeMeta>,
+    include_class_bases: bool,
 ) {
     for c in classes {
+        if include_class_bases
+            && let Some(base) = &c.base_class
+            && !known.contains(&base.name)
+        {
+            named_out.push(base.clone());
+        }
         for iface in c.all_interfaces() {
             collect_all_refs_from_methods(&iface.methods, known, named_out, param_out);
         }
@@ -669,9 +749,15 @@ fn collect_all_refs_from_interfaces(
     known: &HashSet<String>,
     named_out: &mut Vec<TypeRef>,
     param_out: &mut Vec<TypeMeta>,
+    include_interface_bases: bool,
 ) {
     for i in interfaces {
         collect_all_refs_from_methods(&i.methods, known, named_out, param_out);
+        if include_interface_bases {
+            for base in &i.base_interfaces {
+                collect_interface_base_ref(base, known, named_out, param_out);
+            }
+        }
         if i.generic_piid.as_deref() == Some(PIID_IOBSERVABLE_VECTOR) && i.generic_args.len() == 1 {
             let vector = TypeMeta::Parameterized {
                 namespace: WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE.into(),
@@ -780,6 +866,15 @@ pub(crate) fn load_index(winmd_paths: &str) -> Option<reader::Index> {
 fn parse_class_from_index(index: &reader::Index, namespace: &str, name: &str) -> Option<ClassMeta> {
     let def = index.get(namespace, name).next()?;
     let full_name = format!("{}.{}", namespace, name);
+    let base_class = def.extends().and_then(|base| {
+        let namespace = base.namespace().to_string();
+        let name = base.name().to_string();
+        (!(namespace == "System" && name == "Object")).then_some(TypeRef {
+            namespace,
+            name,
+            kind: TypeKind::Class,
+        })
+    });
 
     let mut default_interface = None;
     let mut factory_interfaces = Vec::new();
@@ -994,6 +1089,7 @@ fn parse_class_from_index(index: &reader::Index, namespace: &str, name: &str) ->
         name: name.to_string(),
         namespace: namespace.to_string(),
         full_name,
+        base_class,
         default_interface,
         required_interfaces,
         overridable_interfaces,
@@ -1128,6 +1224,56 @@ fn parse_parameterized_interface(
     parse_interface_methods(index, &def, concrete_name, namespace, piid, generic_args)
 }
 
+fn interface_meta_type_identity(typ: &TypeMeta) -> Option<(String, String)> {
+    match typ {
+        TypeMeta::Interface {
+            namespace, name, ..
+        } => Some((namespace.clone(), name.clone())),
+        TypeMeta::Parameterized {
+            namespace,
+            name,
+            args,
+            ..
+        } => Some((namespace.clone(), make_parameterized_name(name, args))),
+        _ => None,
+    }
+}
+
+fn parse_interface_meta_type(index: &reader::Index, typ: &TypeMeta) -> Option<InterfaceMeta> {
+    match typ {
+        TypeMeta::Interface {
+            namespace, name, ..
+        } => parse_interface(index, namespace, name),
+        TypeMeta::Parameterized {
+            namespace,
+            name,
+            piid,
+            args,
+        } => {
+            let concrete_name = make_parameterized_name(name, args);
+            parse_parameterized_interface(index, namespace, name, &concrete_name, piid, args)
+        }
+        _ => None,
+    }
+}
+
+fn collect_interface_base_closure(
+    index: &reader::Index,
+    interface: &InterfaceMeta,
+    identities: &mut HashSet<(String, String)>,
+) {
+    for base in &interface.base_interfaces {
+        let Some(identity) = interface_meta_type_identity(base) else {
+            continue;
+        };
+        if identities.insert(identity)
+            && let Some(base_interface) = parse_interface_meta_type(index, base)
+        {
+            collect_interface_base_closure(index, &base_interface, identities);
+        }
+    }
+}
+
 /// Core interface parsing: extract methods from a TypeDef, optionally substituting generics.
 fn parse_interface_methods(
     index: &reader::Index,
@@ -1221,10 +1367,50 @@ fn parse_interface_methods(
     } else {
         (None, Vec::new())
     };
+    let mut base_interfaces = Vec::new();
+    for interface_impl in def.interface_impls() {
+        let interface_type = interface_impl.interface(&winmd_generics);
+        let reference = match map_winmd_type_with_generics(&interface_type, index, generic_args) {
+            typ @ TypeMeta::Interface { .. } | typ @ TypeMeta::Parameterized { .. } => Some(typ),
+            _ => None,
+        };
+        if let Some(reference) = reference {
+            let name = type_meta_short_name(&reference);
+            if name != output_name
+                && name != "IInspectable"
+                && name != "IUnknown"
+                && !base_interfaces.contains(&reference)
+            {
+                base_interfaces.push(reference);
+            }
+        }
+    }
+    let closures = base_interfaces
+        .iter()
+        .map(|base| {
+            let mut identities = HashSet::new();
+            if let Some(interface) = parse_interface_meta_type(index, base) {
+                collect_interface_base_closure(index, &interface, &mut identities);
+            }
+            identities
+        })
+        .collect::<Vec<_>>();
+    base_interfaces = base_interfaces
+        .into_iter()
+        .enumerate()
+        .filter(|(index, base)| {
+            let identity = interface_meta_type_identity(base);
+            !closures.iter().enumerate().any(|(other, closure)| {
+                other != *index && identity.as_ref().is_some_and(|id| closure.contains(id))
+            })
+        })
+        .map(|(_, base)| base)
+        .collect();
     Some(InterfaceMeta {
         name: output_name.to_string(),
         namespace: namespace.to_string(),
         iid: iid.to_string(),
+        base_interfaces,
         methods,
         generic_piid,
         generic_args: generic_args_vec,
@@ -2205,6 +2391,7 @@ mod iface_tests {
             &HashSet::new(),
             &mut named,
             &mut parameterized,
+            false,
         );
 
         assert!(named.is_empty());

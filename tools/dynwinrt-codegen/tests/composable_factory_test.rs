@@ -163,7 +163,7 @@ fn composable_factory_returns_public_instance() {
         "native overrides are registered during construction; unsupported ABI shapes fail closed"
     ));
     assert!(pyi.contains(
-        "def register_xaml_runtime_class(cls, runtime_class_name: str, control_type: type[Widget]) -> DynWinRTXamlRegistration: ..."
+        "def register_xaml_runtime_class(cls, runtime_class_name: str, control_type: type[Self]) -> DynWinRTXamlRegistration: ..."
     ));
 
     let mut duplicate_signature = class.clone();
@@ -461,7 +461,7 @@ fn parameterized_default_interface_uses_computed_iid() {
     );
     assert!(py.contains("IID_IVector_RowDefinition = DynWinRTType.parameterized("));
     assert!(py.contains("self._obj = obj.cast(IID_IVector_RowDefinition)"));
-    assert!(py.contains("def index_of(self, value: 'RowDefinition') -> tuple[int, bool]:"));
+    assert!(py.contains("def index_of(self, value: 'RowDefinitionLike') -> tuple[int, bool]:"));
     assert!(py.contains("_IVector_RowDefinition.method(9).invoke_all("));
 }
 

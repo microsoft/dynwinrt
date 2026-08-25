@@ -5,10 +5,12 @@ from ._typing import (
     Callable, Iterable, Iterator, Mapping, MutableMapping, MutableSequence, Sequence,
     UUID, WinGUID, datetime, overload, timedelta,
     DynWinRTType, DynWinRTValue, DynWinRTArray, DynWinRTStruct, DynWinRtDelegate,
+    _DynWinRTProjector,
 )
-from typing import Type, TypeVar
+from typing import Protocol, Self
+from typing import TypeVar
 
-from .windows__foundation__www_form_url_decoder import WwwFormUrlDecoder  # noqa: F401
+from .windows__foundation__www_form_url_decoder import WwwFormUrlDecoder, WwwFormUrlDecoderLike  # noqa: F401
 
 _InterfaceT = TypeVar('_InterfaceT')
 
@@ -19,23 +21,7 @@ IID_IUriRuntimeClassWithAbsoluteCanonicalUri: WinGUID
 IID_IStringable: WinGUID
 
 
-class Uri:
-    @overload
-    def __init__(self, uri: str) -> None: ...
-    @overload
-    def __init__(self, base_uri: str, relative_uri: str) -> None: ...
-
-    @staticmethod
-    def create_uri(uri: str) -> 'Uri': ...
-
-    @staticmethod
-    def create_with_relative_uri(base_uri: str, relative_uri: str) -> 'Uri': ...
-
-    @staticmethod
-    def unescape_component(to_unescape: str) -> str: ...
-
-    @staticmethod
-    def escape_component(to_escape: str) -> str: ...
+class UriLike(Protocol):
 
     @builtins.property
     def absolute_uri(self) -> str: ...
@@ -82,7 +68,7 @@ class Uri:
     @builtins.property
     def suspicious(self) -> bool: ...
 
-    def equals(self, p_uri: 'Uri') -> bool: ...
+    def equals(self, p_uri: 'UriLike') -> bool: ...
 
     def combine_uri(self, relative_uri: str) -> Uri | None: ...
 
@@ -94,7 +80,28 @@ class Uri:
 
     def to_string(self) -> str: ...
 
-    def as_interface(self, interface_class: Type[_InterfaceT]) -> _InterfaceT: ...
+    def as_interface(self, interface_class: _DynWinRTProjector[_InterfaceT]) -> _InterfaceT: ...
+
+class Uri(UriLike):
+    @overload
+    def __init__(self, uri: str) -> None: ...
+    @overload
+    def __init__(self, base_uri: str, relative_uri: str) -> None: ...
+
+    @classmethod
+    def from_value(cls, obj: DynWinRTValue) -> Self: ...
+
+    @staticmethod
+    def create_uri(uri: str) -> 'Uri': ...
+
+    @staticmethod
+    def create_with_relative_uri(base_uri: str, relative_uri: str) -> 'Uri': ...
+
+    @staticmethod
+    def unescape_component(to_unescape: str) -> str: ...
+
+    @staticmethod
+    def escape_component(to_escape: str) -> str: ...
 
 
 class IUriRuntimeClassWithAbsoluteCanonicalUri:

@@ -1321,6 +1321,10 @@ fn generate_python_constructor(
     out.push_str("    @classmethod\n");
     out.push_str("    def _from_native(cls, obj: DynWinRTValue):\n");
     out.push_str("        return cls(obj)\n\n");
+    out.push_str("    @classmethod\n");
+    out.push_str("    def from_value(cls, obj: DynWinRTValue):\n");
+    out.push_str("        from dynwinrt import project_as\n");
+    out.push_str("        return project_as(obj, cls)\n\n");
     if let Some(native_override_names) = &native_override_names {
         out.push_str("    @classmethod\n");
         out.push_str(

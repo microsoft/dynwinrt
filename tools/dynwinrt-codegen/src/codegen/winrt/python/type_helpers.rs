@@ -95,9 +95,10 @@ fn py_param_type(typ: &TypeMeta) -> String {
         TypeMeta::String => "str".to_string(),
         TypeMeta::Char16 => "str".to_string(),
         TypeMeta::Guid => "UUID".to_string(),
-        TypeMeta::RuntimeClass { name, .. }
-        | TypeMeta::Enum { name, .. }
-        | TypeMeta::Interface { name, .. } => format!("'{}'", name),
+        TypeMeta::RuntimeClass { name, .. } => format!("'{}Like'", name),
+        TypeMeta::Enum { name, .. } | TypeMeta::Interface { name, .. } => {
+            format!("'{}'", name)
+        }
         TypeMeta::Parameterized { name, args, .. } => {
             format!("'{}'", crate::meta::make_parameterized_name(name, args))
         }
@@ -402,11 +403,20 @@ fn py_native_element_type(inner: &TypeMeta, known_types: &HashSet<String>) -> St
 }
 
 fn py_array_param_type(inner: &TypeMeta, known_types: &HashSet<String>) -> String {
-    let element = py_native_element_type(inner, known_types);
+    let element = py_native_param_element_type(inner, known_types);
     if matches!(inner, TypeMeta::U8) {
         format!("DynWinRTArray | bytes | bytearray | Sequence[{element}]")
     } else {
         format!("DynWinRTArray | Sequence[{element}]")
+    }
+}
+
+fn py_native_param_element_type(inner: &TypeMeta, known_types: &HashSet<String>) -> String {
+    match inner {
+        TypeMeta::RuntimeClass { name, .. } if known_types.contains(name) => {
+            format!("'{name}Like'")
+        }
+        _ => py_native_element_type(inner, known_types),
     }
 }
 
@@ -445,8 +455,8 @@ fn py_collection_param_type(typ: &TypeMeta, known_types: &HashSet<String>) -> Op
         };
         return Some(format!(
             "Mapping[{}, {}]",
-            py_native_element_type(key, known_types),
-            py_native_element_type(value, known_types)
+            py_native_param_element_type(key, known_types),
+            py_native_param_element_type(value, known_types)
         ));
     }
     let element = args.first()?;
@@ -463,7 +473,7 @@ fn py_collection_param_type(typ: &TypeMeta, known_types: &HashSet<String>) -> Op
             } else {
                 "Sequence"
             },
-            py_native_element_type(element, known_types)
+            py_native_param_element_type(element, known_types)
         )),
         _ => None,
     }

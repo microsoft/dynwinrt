@@ -16,7 +16,7 @@ from ._runtime import (
 )
 
 if TYPE_CHECKING:
-    from .windows__foundation__www_form_url_decoder import WwwFormUrlDecoder  # noqa: F401
+    from .windows__foundation__www_form_url_decoder import WwwFormUrlDecoder, WwwFormUrlDecoderLike  # noqa: F401
 
 IID_IUriRuntimeClass = WinGUID.parse('9e365e57-48b2-4160-956f-c7385120bbfc')
 IID_IUriRuntimeClassFactory = WinGUID.parse('44a9796f-723e-4fdf-a218-033e75b0c084')
@@ -87,6 +87,11 @@ class Uri:
     @classmethod
     def _from_native(cls, obj: DynWinRTValue):
         return cls(obj)
+
+    @classmethod
+    def from_value(cls, obj: DynWinRTValue):
+        from dynwinrt import project_as
+        return project_as(obj, cls)
 
     def __init__(self, *args, **kwargs):
         if getattr(self, '_dynwinrt_native_ready', False):
@@ -189,7 +194,7 @@ class Uri:
     def suspicious(self) -> bool:
         return _IUriRuntimeClass.method(20).invoke(self._obj, []).to_bool()
 
-    def equals(self, p_uri: 'Uri') -> bool:
+    def equals(self, p_uri: 'UriLike') -> bool:
         return _IUriRuntimeClass.method(21).invoke(self._obj, [getattr(p_uri, '_obj', p_uri).cast(IID_ARG_Windows_Foundation_Uri)]).to_bool()
 
     def combine_uri(self, relative_uri: str) -> Uri | None:

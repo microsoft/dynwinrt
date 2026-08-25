@@ -7,6 +7,7 @@ Tic-Tac-Toe samples by showing only the setup required to:
 - enter a single-threaded WinRT apartment;
 - load a small XAML fragment;
 - project raw XAML objects with `project_as()`;
+- pass a generated `StackPanel` directly to the base `UIElement` API;
 - create and activate a `Window`;
 - subscribe to `Button.Click`; and
 - release projected objects before leaving the apartment.

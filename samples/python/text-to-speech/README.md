@@ -5,8 +5,8 @@ This sample adapts PyWinRT's
 to generated dynwinrt bindings. It demonstrates:
 
 - native Python `asyncio` over a WinRT asynchronous operation;
-- a generated `SpeechSynthesisStream` passed through its
-  `IRandomAccessStream` interface;
+- structural interface typing that passes `SpeechSynthesisStream` directly
+  where `IRandomAccessStream` is required;
 - a typed `MediaPlayer.MediaEnded` callback; and
 - deterministic COM/WinRT cleanup.
 

@@ -1,7 +1,7 @@
 import argparse
 import os
 from pathlib import Path
-from typing import Callable, cast
+from typing import Callable
 
 ROOT = Path(__file__).resolve().parent
 os.environ["WINAPPSDK_BOOTSTRAP_DLL_PATH"] = str(
@@ -14,7 +14,7 @@ from dynwinrt import (
     project_as,
     projected_lifetime_scope,
 )
-from generated.microsoft.ui.xaml import Application, UIElement, Window
+from generated.microsoft.ui.xaml import Application, Window
 from generated.microsoft.ui.xaml.controls import Button, StackPanel, TextBlock
 from generated.microsoft.ui.xaml.markup import XamlReader
 
@@ -84,7 +84,7 @@ def run(smoke: bool) -> None:
                     window = Window()
                     subscriptions.append(window.subscribe_closed(closed))
                     window.title = "dynwinrt Python Hello World"
-                    window.content = cast(UIElement, panel)
+                    window.content = panel
                     window.activate()
 
                     state.update(

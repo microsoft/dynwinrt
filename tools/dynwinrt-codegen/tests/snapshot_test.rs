@@ -160,7 +160,7 @@ fn snapshot_uri_pyi_class() {
         }
     };
 
-    let deps = meta::resolve_dependencies(winmd, &classes, &[], &[]);
+    let deps = meta::resolve_python_dependencies(winmd, &classes, &[], &[]);
     let mut all_classes = classes;
     all_classes.extend(deps.classes);
     let all_interfaces = deps.interfaces;
@@ -255,7 +255,7 @@ fn snapshot_uri_py_class() {
             return;
         }
     };
-    let deps = meta::resolve_dependencies(winmd, &classes, &[], &[]);
+    let deps = meta::resolve_python_dependencies(winmd, &classes, &[], &[]);
     let mut all_classes = classes;
     all_classes.extend(deps.classes);
     let all_interfaces = deps.interfaces;
@@ -347,7 +347,7 @@ fn snapshot_data_writer_py_class() {
             return;
         }
     };
-    let deps = meta::resolve_dependencies(WINDOWS_WINMD, &classes, &[], &[]);
+    let deps = meta::resolve_python_dependencies(WINDOWS_WINMD, &classes, &[], &[]);
     let mut all_classes = classes;
     all_classes.extend(deps.classes);
     let interfaces = deps.interfaces;

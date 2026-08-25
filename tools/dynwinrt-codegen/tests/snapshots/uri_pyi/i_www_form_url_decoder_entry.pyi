@@ -5,17 +5,18 @@ from ._typing import (
     Callable, Iterable, Iterator, Mapping, MutableMapping, MutableSequence, Sequence,
     UUID, WinGUID, datetime, overload, timedelta,
     DynWinRTType, DynWinRTValue, DynWinRTArray, DynWinRTStruct, DynWinRtDelegate,
+    _DynWinRTProjector,
 )
+from typing import Protocol, Self
 
 
 IID_IWwwFormUrlDecoderEntry: WinGUID
 
 
-class IWwwFormUrlDecoderEntry:
-    def __init__(self, obj: DynWinRTValue) -> None: ...
+class IWwwFormUrlDecoderEntry(Protocol):
 
-    @staticmethod
-    def from_value(obj: DynWinRTValue) -> 'IWwwFormUrlDecoderEntry': ...
+    @classmethod
+    def from_value(cls, obj: DynWinRTValue) -> Self: ...
 
     @builtins.property
     def name(self) -> str: ...

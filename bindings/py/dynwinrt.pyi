@@ -3,6 +3,12 @@ from typing import Awaitable, Callable, List, Literal, Mapping, Optional, Protoc
 _T = TypeVar("_T", covariant=True)
 _P = TypeVar("_P", covariant=True)
 _Tracked = TypeVar("_Tracked")
+_Projected_co = TypeVar("_Projected_co", covariant=True)
+
+
+class _DynWinRTProjector(Protocol[_Projected_co]):
+    @classmethod
+    def from_value(cls, obj: "DynWinRTValue") -> _Projected_co: ...
 
 __all__ = [
     "WinAppSDKContext",
@@ -91,7 +97,9 @@ class ProjectedLifetimeScope:
 
 def projected_lifetime_scope() -> ProjectedLifetimeScope: ...
 
-def project_as(value: object, wrapper_type: type[_Tracked]) -> _Tracked: ...
+def project_as(
+    value: object, wrapper_type: _DynWinRTProjector[_Tracked]
+) -> _Tracked: ...
 
 def release_projected(value: object) -> None: ...
 

@@ -5,6 +5,7 @@ from ._typing import (
     Callable, Iterable, Iterator, Mapping, MutableMapping, MutableSequence, Sequence,
     UUID, WinGUID, datetime, overload, timedelta,
     DynWinRTType, DynWinRTValue, DynWinRTArray, DynWinRTStruct, DynWinRtDelegate,
+    _DynWinRTProjector,
 )
 
 from .windows__foundation__i_www_form_url_decoder_entry import IID_IWwwFormUrlDecoderEntry, IWwwFormUrlDecoderEntry  # noqa: F401

@@ -7,7 +7,8 @@ write, append, and read a temporary file. It demonstrates:
 - normalized Python overloads (`create_file_async(name)` or
   `create_file_async(name, options)`);
 - normal Python temporary-directory management;
-- interface projection from `StorageFile` to `IStorageFile`; and
+- structural interface typing, so `StorageFile` is accepted directly where
+  `IStorageFile` is required; and
 - deterministic projected-object cleanup.
 
 ```powershell

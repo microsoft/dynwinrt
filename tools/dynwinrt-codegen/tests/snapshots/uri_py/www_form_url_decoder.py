@@ -66,6 +66,11 @@ class WwwFormUrlDecoder(_WinRTSequenceMixin):
     def _from_native(cls, obj: DynWinRTValue):
         return cls(obj)
 
+    @classmethod
+    def from_value(cls, obj: DynWinRTValue):
+        from dynwinrt import project_as
+        return project_as(obj, cls)
+
     def __init__(self, *args, **kwargs):
         if getattr(self, '_dynwinrt_native_ready', False):
             return

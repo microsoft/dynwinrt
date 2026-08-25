@@ -5,16 +5,17 @@ from ._typing import (
     Callable, Iterable, Iterator, Mapping, MutableMapping, MutableSequence, Sequence,
     UUID, WinGUID, datetime, overload, timedelta,
     DynWinRTType, DynWinRTValue, DynWinRTArray, DynWinRTStruct, DynWinRtDelegate,
+    _DynWinRTProjector,
 )
+from typing import Protocol, Self
 
 
 IID_IStringable: WinGUID
 
 
-class IStringable:
-    def __init__(self, obj: DynWinRTValue) -> None: ...
+class IStringable(Protocol):
 
-    @staticmethod
-    def from_value(obj: DynWinRTValue) -> 'IStringable': ...
+    @classmethod
+    def from_value(cls, obj: DynWinRTValue) -> Self: ...
 
     def to_string(self) -> str: ...
