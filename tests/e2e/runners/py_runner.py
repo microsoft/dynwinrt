@@ -1700,7 +1700,10 @@ async def run_check(
             valid_enum = next(iter(property_type))
             invalid_enum = 2_000_000_000
             uri_type = generated_type(pkg_name, 'Uri')
-            uri = uri_type('https://example.com/helper-matrix')
+            uri = uri_type(
+                'https://example.com:8443/'
+                'path/file.txt?name=value#fragment'
+            )
             uri_module = implementation_module_name(
                 pkg_name, 'Windows.Foundation', 'Uri'
             )
@@ -1753,7 +1756,105 @@ async def run_check(
                 'wrap_values': 0,
                 'ireference': 0,
                 'struct_helpers': 0,
+                'projection': 0,
             }
+
+            uri_impl = importlib.import_module(uri_module)
+            projected_uri = uri_type.from_value(uri._obj)
+            query = uri.query_parsed
+            if query is None:
+                cr['error'] = 'Uri query projection returned None'
+                return cr
+            decoder_impl = importlib.import_module(
+                implementation_module_name(
+                    pkg_name,
+                    'Windows.Foundation',
+                    'WwwFormUrlDecoder',
+                )
+            )
+            entry = query[0]
+            entry_index = query.index_of(entry)
+            entries = query.get_many(0, [entry])
+            iterator = query.first()
+            iterated_entry = next(iterator) if iterator is not None else None
+            view = query.as_interface(
+                getattr(
+                    decoder_impl,
+                    'IVectorView_IWwwFormUrlDecoderEntry',
+                )
+            )
+            view_entry = view.get_at(0)
+            view_index = view.index_of(entry)
+            view_entries = view.get_many(0, [entry])
+            iterable = query.as_interface(
+                getattr(
+                    decoder_impl,
+                    'IIterable_IWwwFormUrlDecoderEntry',
+                )
+            )
+            iterable_iterator = iterable.first()
+            iterable_entry = (
+                next(iterable_iterator)
+                if iterable_iterator is not None
+                else None
+            )
+            combined = uri.combine_uri('child.txt')
+            canonical = uri.as_interface(
+                getattr(
+                    uri_impl,
+                    'IUriRuntimeClassWithAbsoluteCanonicalUri',
+                )
+            )
+            stringable = uri.as_interface(getattr(uri_impl, 'IStringable'))
+            uri_strings = (
+                uri.absolute_uri,
+                uri.display_uri,
+                uri.domain,
+                uri.extension,
+                uri.fragment,
+                uri.host,
+                uri.password,
+                uri.path,
+                uri.query,
+                uri.raw_uri,
+                uri.scheme_name,
+                uri.user_name,
+                uri.absolute_canonical_uri,
+                uri.display_iri,
+                uri.to_string(),
+                str(uri),
+                repr(uri),
+                canonical.absolute_canonical_uri,
+                canonical.display_iri,
+                stringable.to_string(),
+            )
+            if (
+                projected_uri is not uri
+                or len(query) != 1
+                or query.get_first_value_by_name('name') != 'value'
+                or entry.name != 'name'
+                or entry.value != 'value'
+                or entry_index != (0, True)
+                or len(entries) != 1
+                or iterated_entry is None
+                or iterated_entry.value != 'value'
+                or view.size != 1
+                or view_entry is None
+                or view_entry.name != 'name'
+                or view_index != (0, True)
+                or len(view_entries) != 1
+                or iterable_entry is None
+                or iterable_entry.value != 'value'
+                or combined is None
+                or not combined.path.endswith('/path/child.txt')
+                or not uri.equals(uri)
+                or uri.port != 8443
+                or uri.suspicious
+                or not all(isinstance(value, str) for value in uri_strings)
+            ):
+                cr['error'] = 'generated projection helper matrix failed'
+                return cr
+            counters['projection'] = 1
 
             enum_helper = runtime_module._dynwinrt_enum
             converted = enum_helper(
@@ -1907,6 +2008,7 @@ async def run_check(
                 or counters['wrap_values'] != 1
                 or counters['ireference'] < 1
                 or counters['struct_helpers'] != 2
+                or counters['projection'] != 1
             ):
                 cr['error'] = f'generated helper matrix was too small: {counters}'
             else:
