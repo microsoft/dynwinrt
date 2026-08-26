@@ -219,11 +219,8 @@ fn real_windows_metadata_exposes_xaml_and_stream_typing_relationships() {
         .iter()
         .map(|interface| interface.name.clone())
         .collect::<HashSet<_>>();
-    let with_content_stub = python_stub::generate_interface_stub(
-        with_content_type,
-        &known_interfaces,
-        &HashSet::new(),
-    );
+    let with_content_stub =
+        python_stub::generate_interface_stub(with_content_type, &known_interfaces, &HashSet::new());
     let with_content_runtime =
         python::generate_interface(with_content_type, &known_interfaces, &HashSet::new());
     assert!(
