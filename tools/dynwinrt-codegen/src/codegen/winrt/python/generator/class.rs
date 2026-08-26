@@ -685,8 +685,13 @@ pub fn generate_class(
         out.push_str("        return f'{type(self).__name__}({self.__str__()!r})'\n");
     }
 
-    // .as_interface() method for accessing non-default interfaces
-    if !class.required_interfaces.is_empty() {
+    // .as_interface() method for explicit, IID-checked interface projection.
+    if class
+        .default_interface
+        .as_ref()
+        .is_some_and(|interface| !interface.iid.is_empty() || interface.generic_piid.is_some())
+        || !class.required_interfaces.is_empty()
+    {
         out.push('\n');
         out.push_str("    def as_interface(self, interface_class):\n");
         out.push_str("        return interface_class.from_value(self._obj)\n");

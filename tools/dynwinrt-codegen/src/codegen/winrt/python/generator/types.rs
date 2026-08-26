@@ -224,6 +224,15 @@ pub fn generate_interface(
             &doc, "    ",
         ));
     }
+    out.push_str("    _dynwinrt_interface_type = True\n");
+    if !iface.iid.is_empty() || iface.generic_piid.is_some() {
+        out.push_str(&format!(
+            "    _dynwinrt_interface_iid = IID_{}\n",
+            iface.name
+        ));
+    } else {
+        out.push_str("    _dynwinrt_interface_iid = None\n");
+    }
     out.push_str("    def __new__(cls, *args, **kwargs):\n");
     out.push_str(
         "        if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):\n\
@@ -281,6 +290,9 @@ pub fn generate_interface(
             "        return {}._from_native(obj.cast(IID_{}))\n",
             iface.name, iface.name
         ));
+        out.push('\n');
+        out.push_str("    def as_interface(self, interface_class):\n");
+        out.push_str("        return interface_class.from_value(self._obj)\n");
         out.push('\n');
     }
 
@@ -590,6 +602,20 @@ mod tests {
         let code = generate_enum(&value).unwrap();
         assert!(code.contains("from enum import IntFlag"));
         assert!(code.contains("class Options(IntFlag):"));
+    }
+
+    #[test]
+    fn interface_projection_exposes_its_target_iid() {
+        let iface = InterfaceMeta {
+            name: "IWidget".into(),
+            namespace: "Contoso".into(),
+            iid: "11111111-1111-1111-1111-111111111111".into(),
+            ..Default::default()
+        };
+        let code = generate_interface(&iface, &HashSet::new(), &HashSet::new());
+        assert!(code.contains("_dynwinrt_interface_type = True"));
+        assert!(code.contains("_dynwinrt_interface_iid = IID_IWidget"));
+        assert!(code.contains("return IWidget._from_native(obj.cast(IID_IWidget))"));
     }
 
     #[test]

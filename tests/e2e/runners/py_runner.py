@@ -1743,11 +1743,12 @@ async def run_check(
                 else None
             )
             combined = uri.combine_uri('child.txt')
-            canonical = uri.as_interface(
+            canonical = dw.project_as(
+                uri._obj,
                 getattr(
                     uri_impl,
                     'IUriRuntimeClassWithAbsoluteCanonicalUri',
-                )
+                ),
             )
             stringable = uri.as_interface(getattr(uri_impl, 'IStringable'))
             uri_strings = (

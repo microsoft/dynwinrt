@@ -7,13 +7,19 @@ from ._typing import (
     DynWinRTType, DynWinRTValue, DynWinRTArray, DynWinRTStruct, DynWinRtDelegate,
     _DynWinRTProjector,
 )
+from typing import Protocol, TypeVar
+
+_InterfaceT = TypeVar('_InterfaceT')
 
 from .windows__foundation__i_www_form_url_decoder_entry import IID_IWwwFormUrlDecoderEntry, IWwwFormUrlDecoderEntry  # noqa: F401
 
 IID_IIterator_IWwwFormUrlDecoderEntry: WinGUID
 
 
-class IIterator_IWwwFormUrlDecoderEntry(Iterator[IWwwFormUrlDecoderEntry | None]):
+class _IIterator_IWwwFormUrlDecoderEntryIdentity(Protocol):
+    def _dynwinrt_iid_windows_foundation_collections_iiterator_iwwwformurldecoderentry(self) -> None: ...
+
+class IIterator_IWwwFormUrlDecoderEntry(_IIterator_IWwwFormUrlDecoderEntryIdentity, Iterator[IWwwFormUrlDecoderEntry | None]):
     def __init__(self, obj: DynWinRTValue) -> None: ...
 
     def __iter__(self) -> Iterator[IWwwFormUrlDecoderEntry | None]: ...
@@ -21,6 +27,7 @@ class IIterator_IWwwFormUrlDecoderEntry(Iterator[IWwwFormUrlDecoderEntry | None]
 
     @staticmethod
     def from_value(obj: DynWinRTValue) -> 'IIterator_IWwwFormUrlDecoderEntry': ...
+    def as_interface(self, interface_class: _DynWinRTProjector[_InterfaceT]) -> _InterfaceT: ...
 
     @builtins.property
     def current(self) -> IWwwFormUrlDecoderEntry | None: ...

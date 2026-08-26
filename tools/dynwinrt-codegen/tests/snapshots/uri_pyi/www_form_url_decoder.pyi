@@ -21,7 +21,13 @@ IID_IVectorView_IWwwFormUrlDecoderEntry: WinGUID
 IID_IIterable_IWwwFormUrlDecoderEntry: WinGUID
 
 
-class WwwFormUrlDecoderLike(Protocol):
+class _WwwFormUrlDecoderIdentity(Protocol):
+    def _dynwinrt_class_windows_foundation_wwwformurldecoder(self) -> None: ...
+    def _dynwinrt_iid_windows_foundation_collections_iiterable_iwwwformurldecoderentry(self) -> None: ...
+    def _dynwinrt_iid_windows_foundation_collections_ivectorview_iwwwformurldecoderentry(self) -> None: ...
+    def _dynwinrt_iid_windows_foundation_iwwwformurldecoderruntimeclass(self) -> None: ...
+
+class WwwFormUrlDecoderLike(_WwwFormUrlDecoderIdentity, Protocol):
 
     def __len__(self) -> int: ...
     @overload
@@ -44,7 +50,7 @@ class WwwFormUrlDecoderLike(Protocol):
 
     def as_interface(self, interface_class: _DynWinRTProjector[_InterfaceT]) -> _InterfaceT: ...
 
-class WwwFormUrlDecoder(Sequence[IWwwFormUrlDecoderEntry | None]):
+class WwwFormUrlDecoder(_WwwFormUrlDecoderIdentity, Sequence[IWwwFormUrlDecoderEntry | None]):
     def __init__(self, query: str) -> None: ...
 
     @classmethod

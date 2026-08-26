@@ -115,7 +115,9 @@ fn observable_vector_projects_python_mutable_sequence_and_typed_events() {
 
     let pyi = python_stub::generate_interface_stub(&interface, &known_types, &delegate_types);
     assert!(
-        pyi.contains("class IObservableVector_Object(MutableSequence[DynWinRTValue | None]):"),
+        pyi.contains(
+            "class IObservableVector_Object(_IObservableVector_ObjectIdentity, MutableSequence[DynWinRTValue | None]):"
+        ),
         "{pyi}"
     );
     assert!(pyi.contains("from .i_vector_changed_event_args import IVectorChangedEventArgs"));

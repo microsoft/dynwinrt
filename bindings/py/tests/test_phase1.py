@@ -629,6 +629,19 @@ def test_project_as_rejects_invalid_values_and_types():
         raw.release()
 
 
+def test_project_as_uses_interface_target_iid():
+    InterfaceWrapper = _projected_wrapper_type("ProjectAsInterfaceWrapper")
+    InterfaceWrapper._dynwinrt_interface_type = True
+    InterfaceWrapper._dynwinrt_interface_iid = WinGUID.parse(IID_IURI)
+
+    with RoApartment(1):
+        factory = DynWinRTValue.activation_factory("Windows.Foundation.Uri")
+        with pytest.raises(OSError):
+            project_as(factory, InterfaceWrapper)
+        assert not factory.is_null()
+        factory.release()
+
+
 def test_native_override_interface_rejects_unknown_or_unsupported_callback_shapes():
     iid = WinGUID.parse("FFC6FD98-F38C-5904-9CE4-97A3427CF4BA")
     with pytest.raises(RuntimeError, match="unsupported native override ABI shape"):

@@ -7,16 +7,22 @@ from ._typing import (
     DynWinRTType, DynWinRTValue, DynWinRTArray, DynWinRTStruct, DynWinRtDelegate,
     _DynWinRTProjector,
 )
-from typing import Protocol, Self
+from typing import Protocol, Self, TypeVar
+
+_InterfaceT = TypeVar('_InterfaceT')
 
 
 IID_IUriRuntimeClassWithAbsoluteCanonicalUri: WinGUID
 
 
-class IUriRuntimeClassWithAbsoluteCanonicalUri(Protocol):
+class _IUriRuntimeClassWithAbsoluteCanonicalUriIdentity(Protocol):
+    def _dynwinrt_iid_windows_foundation_iuriruntimeclasswithabsolutecanonicaluri(self) -> None: ...
+
+class IUriRuntimeClassWithAbsoluteCanonicalUri(_IUriRuntimeClassWithAbsoluteCanonicalUriIdentity, Protocol):
 
     @classmethod
     def from_value(cls, obj: DynWinRTValue) -> Self: ...
+    def as_interface(self, interface_class: _DynWinRTProjector[_InterfaceT]) -> _InterfaceT: ...
 
     @builtins.property
     def absolute_canonical_uri(self) -> str: ...

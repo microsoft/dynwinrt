@@ -24,6 +24,8 @@ _IUriRuntimeClassWithAbsoluteCanonicalUri = DynWinRTType.register_interface(
 
 
 class IUriRuntimeClassWithAbsoluteCanonicalUri:
+    _dynwinrt_interface_type = True
+    _dynwinrt_interface_iid = IID_IUriRuntimeClassWithAbsoluteCanonicalUri
     def __new__(cls, *args, **kwargs):
         if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):
             return _dynwinrt_projected_from_native(cls, args[0], '_set_native')
@@ -47,6 +49,9 @@ class IUriRuntimeClassWithAbsoluteCanonicalUri:
     @staticmethod
     def from_value(obj: DynWinRTValue) -> 'IUriRuntimeClassWithAbsoluteCanonicalUri':
         return IUriRuntimeClassWithAbsoluteCanonicalUri._from_native(obj.cast(IID_IUriRuntimeClassWithAbsoluteCanonicalUri))
+
+    def as_interface(self, interface_class):
+        return interface_class.from_value(self._obj)
 
 
     @_property

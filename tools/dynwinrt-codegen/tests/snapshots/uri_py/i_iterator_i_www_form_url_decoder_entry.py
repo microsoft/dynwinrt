@@ -30,6 +30,8 @@ _IIterator_IWwwFormUrlDecoderEntry = DynWinRTType.register_interface(
 
 
 class IIterator_IWwwFormUrlDecoderEntry(_WinRTIteratorMixin):
+    _dynwinrt_interface_type = True
+    _dynwinrt_interface_iid = IID_IIterator_IWwwFormUrlDecoderEntry
     def __new__(cls, *args, **kwargs):
         if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):
             return _dynwinrt_projected_from_native(cls, args[0], '_set_native')
@@ -53,6 +55,9 @@ class IIterator_IWwwFormUrlDecoderEntry(_WinRTIteratorMixin):
     @staticmethod
     def from_value(obj: DynWinRTValue) -> 'IIterator_IWwwFormUrlDecoderEntry':
         return IIterator_IWwwFormUrlDecoderEntry._from_native(obj.cast(IID_IIterator_IWwwFormUrlDecoderEntry))
+
+    def as_interface(self, interface_class):
+        return interface_class.from_value(self._obj)
 
 
     @_property

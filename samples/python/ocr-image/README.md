@@ -1,9 +1,9 @@
 # Python OCR image
 
 This sample reads an image with `Windows.Storage`, decodes it with
-`BitmapDecoder`, and recognizes its text with `Windows.Media.Ocr`. Generated
-structural typing accepts the returned storage stream directly as the decoder's
-`IRandomAccessStream` input.
+`BitmapDecoder`, and recognizes its text with `Windows.Media.Ocr`. It explicitly
+projects the returned content-type stream to `IRandomAccessStream`, so the
+required interface IID is validated before decoding.
 
 The default run creates a local PNG containing `DYNWINRT OCR 42`, so the sample
 does not require a camera, network access, or external image asset.

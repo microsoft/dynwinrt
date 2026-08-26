@@ -147,9 +147,10 @@ button = project_as(raw_button, Button)
 ```
 
 `project_as()` borrows its input: the raw value or source wrapper remains
-valid. The returned wrapper owns the QueryInterface result, participates in
-the active `projected_lifetime_scope()`, and preserves the projection identity
-cache. Incompatible types raise the ordinary WinRT `OSError`.
+valid. For an interface target it queries that interface's IID before creating
+the wrapper. The returned wrapper owns the QueryInterface result, participates
+in the active `projected_lifetime_scope()`, and preserves the projection
+identity cache. Incompatible types raise the ordinary WinRT `OSError`.
 
 Use `wrapper.as_interface(InterfaceClass)` when converting an existing
 runtime-class wrapper to another generated interface. Do not call the internal

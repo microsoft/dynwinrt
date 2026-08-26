@@ -23,7 +23,7 @@ use crate::codegen::winrt::shared::structs::{
 };
 
 use super::collections::{
-    CollectionKind, abc_name, class_interface, interface_kind, observable_vector_name, type_kind,
+    CollectionKind, abc_name, class_interface, interface_kind, observable_vector_name,
 };
 use super::naming::{
     is_py_reserved, python_module_layout_installed, python_module_name,
@@ -75,28 +75,26 @@ pub fn generate_runtime_support_stub() -> String {
     format!("{HEADER}{FUTURE_ANNOTATIONS}")
 }
 
-fn interface_type_identity(typ: &TypeMeta) -> Option<(&str, String)> {
-    match typ {
-        TypeMeta::Interface {
-            namespace, name, ..
-        } => Some((namespace, name.clone())),
-        TypeMeta::Parameterized {
-            namespace,
-            name,
-            args,
-            ..
-        } => Some((namespace, crate::meta::make_parameterized_name(name, args))),
-        _ => None,
-    }
+fn identity_marker(prefix: &str, namespace: &str, name: &str) -> String {
+    let identity = format!("{namespace}_{name}")
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    format!("_dynwinrt_{prefix}_{identity}")
 }
 
-fn protocol_base_interfaces(iface: &InterfaceMeta) -> Vec<(&str, String)> {
-    iface
-        .base_interfaces
-        .iter()
-        .filter(|base| type_kind(base).is_none())
-        .filter_map(interface_type_identity)
-        .collect()
+fn interface_marker(interface: &InterfaceMeta) -> String {
+    identity_marker("iid", &interface.namespace, &interface.name)
+}
+
+fn class_marker(class: &ClassMeta) -> String {
+    identity_marker("class", &class.namespace, &class.name)
 }
 
 pub fn generate_struct_stub(s: &TypeMeta) -> Option<String> {
@@ -208,7 +206,9 @@ pub fn generate_interface_stub(
     let collection_kind = interface_kind(iface);
     let is_protocol = collection_kind.is_none();
     if is_protocol {
-        out.push_str("from typing import Protocol, Self\n");
+        out.push_str("from typing import Protocol, Self, TypeVar\n");
+    } else {
+        out.push_str("from typing import Protocol, TypeVar\n");
     }
     if methods_have_async_output(iface.methods.iter()) {
         out.push_str(ASYNC_IMPORT_LINE);
@@ -224,6 +224,9 @@ pub fn generate_interface_stub(
         out.push_str(&generate_struct_stub_imports(&used_structs));
     }
     out.push('\n');
+    if !iface.iid.is_empty() || iface.generic_piid.is_some() {
+        out.push_str("_InterfaceT = TypeVar('_InterfaceT')\n\n");
+    }
 
     let delegate_names =
         super::collect_referenced_delegate_names(&iface.methods, delegate_type_names);
@@ -275,10 +278,6 @@ pub fn generate_interface_stub(
             out.push_str(&format_py_type_import(&r.namespace, &r.name, r.kind));
         }
     }
-    let protocol_bases = protocol_base_interfaces(iface);
-    for (namespace, name) in &protocol_bases {
-        out.push_str(&format_py_type_import(namespace, name, TypeKind::Interface));
-    }
     out.push('\n');
 
     if iface.generic_piid.is_some() || !iface.iid.is_empty() {
@@ -310,14 +309,14 @@ pub fn generate_interface_stub(
                 )),
                 _ => None,
             });
-    let mut bases = if is_protocol {
-        protocol_bases
-            .iter()
-            .map(|(_, name)| name.clone())
-            .collect::<Vec<_>>()
-    } else {
-        Vec::new()
-    };
+    let identity_name = format!("_{}Identity", iface.name);
+    out.push_str(&format!("\nclass {identity_name}(Protocol):\n"));
+    out.push_str(&format!(
+        "    def {}(self) -> None: ...\n",
+        interface_marker(iface)
+    ));
+
+    let mut bases = vec![identity_name];
     if is_protocol {
         bases.push("Protocol".into());
     } else if let Some(base) = collection_base {
@@ -354,6 +353,9 @@ pub fn generate_interface_stub(
                 iface.name
             ));
         }
+        out.push_str(
+            "    def as_interface(self, interface_class: _DynWinRTProjector[_InterfaceT]) -> _InterfaceT: ...\n",
+        );
     }
 
     // IVector<T> / IMap<K,V> create()
@@ -473,6 +475,11 @@ pub fn generate_class_stub(
         .required_interfaces
         .iter()
         .any(|interface| interface.iid == "30d5a829-7fa4-4026-83bb-d75bae4ea99e");
+    let supports_interface_projection = class
+        .default_interface
+        .as_ref()
+        .is_some_and(|interface| !interface.iid.is_empty() || interface.generic_piid.is_some())
+        || !class.required_interfaces.is_empty();
 
     let mut out = String::new();
     out.push_str(HEADER);
@@ -498,7 +505,7 @@ pub fn generate_class_stub(
     if has_closable {
         out.push_str("from typing import Literal\n");
     }
-    if !class.required_interfaces.is_empty() {
+    if supports_interface_projection {
         out.push_str("from typing import TypeVar\n");
     } else if winui::is_dispatcher_queue(class) {
         out.push_str("from typing import TypeVar\n");
@@ -577,6 +584,18 @@ pub fn generate_class_stub(
             }
         }
     }
+    let base_identity = class
+        .base_class
+        .as_ref()
+        .filter(|base| known_types.contains(&base.name))
+        .map(|base| {
+            out.push_str(&format!(
+                "from .{} import _{}Identity  # noqa: F401\n",
+                python_module_name(&base.namespace, &base.name),
+                base.name
+            ));
+            format!("_{}Identity", base.name)
+        });
     for req_iface in &class.required_interfaces {
         if req_iface.generic_piid.is_none()
             && !req_iface.iid.is_empty()
@@ -601,7 +620,7 @@ pub fn generate_class_stub(
         ));
     }
     out.push('\n');
-    if !class.required_interfaces.is_empty() {
+    if supports_interface_projection {
         out.push_str("_InterfaceT = TypeVar('_InterfaceT')\n\n");
     }
 
@@ -649,7 +668,33 @@ pub fn generate_class_stub(
         false,
         has_closable,
     );
-    out.push_str(&format!("\nclass {}Like(Protocol):\n", class.name));
+    let identity_name = format!("_{}Identity", class.name);
+    let mut identity_bases = base_identity.into_iter().collect::<Vec<_>>();
+    identity_bases.push("Protocol".into());
+    out.push_str(&format!(
+        "\nclass {identity_name}({}):\n",
+        identity_bases.join(", ")
+    ));
+    out.push_str(&format!(
+        "    def {}(self) -> None: ...\n",
+        class_marker(class)
+    ));
+    let mut interface_markers = class
+        .default_interface
+        .iter()
+        .chain(class.required_interfaces.iter())
+        .map(interface_marker)
+        .collect::<Vec<_>>();
+    interface_markers.sort();
+    interface_markers.dedup();
+    for marker in interface_markers {
+        out.push_str(&format!("    def {marker}(self) -> None: ...\n"));
+    }
+
+    out.push_str(&format!(
+        "\nclass {}Like({identity_name}, Protocol):\n",
+        class.name
+    ));
     if instance_stub_body.is_empty() {
         out.push_str("    pass\n");
     } else {
@@ -658,7 +703,7 @@ pub fn generate_class_stub(
 
     let bases = collection_base
         .as_ref()
-        .map(|base| vec![base.clone()])
+        .map(|base| vec![identity_name, base.clone()])
         .unwrap_or_else(|| vec![format!("{}Like", class.name)]);
     out.push_str(&format!("\nclass {}({}):\n", class.name, bases.join(", ")));
     out.push_str(&super::docs::format_pydoc(
@@ -980,7 +1025,12 @@ fn emit_class_instance_stubs(
         );
     }
 
-    if !class.required_interfaces.is_empty() {
+    if class
+        .default_interface
+        .as_ref()
+        .is_some_and(|interface| !interface.iid.is_empty() || interface.generic_piid.is_some())
+        || !class.required_interfaces.is_empty()
+    {
         out.push('\n');
         out.push_str(
             "    def as_interface(self, interface_class: _DynWinRTProjector[_InterfaceT]) -> _InterfaceT: ...\n",

@@ -7,6 +7,7 @@ from dynwinrt import RoApartment, projected_lifetime_scope
 from generated.windows.graphics.imaging import BitmapDecoder
 from generated.windows.media.ocr import OcrEngine
 from generated.windows.storage import StorageFile
+from generated.windows.storage.streams import IRandomAccessStream
 
 
 def normalized_words(value: str) -> set[str]:
@@ -22,7 +23,9 @@ async def recognize(path: Path) -> str:
         if stream is None:
             raise RuntimeError("StorageFile returned no image stream")
 
-        decoder = await BitmapDecoder.create_async(stream)
+        decoder = await BitmapDecoder.create_async(
+            stream.as_interface(IRandomAccessStream)
+        )
         if decoder is None:
             raise RuntimeError("BitmapDecoder returned no decoder")
         bitmap = await decoder.get_software_bitmap_async()

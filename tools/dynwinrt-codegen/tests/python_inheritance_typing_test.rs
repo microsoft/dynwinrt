@@ -4,7 +4,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use dynwinrt_codegen::codegen::python_stub;
+use dynwinrt_codegen::codegen::{python, python_stub};
 use dynwinrt_codegen::meta::{
     self, ClassMeta, InterfaceMeta, MethodMeta, ParamDirection, ParamMeta,
 };
@@ -56,7 +56,7 @@ fn stubs_model_runtime_class_and_interface_bases_without_runtime_inheritance() {
     let interface_stub =
         python_stub::generate_interface_stub(&interface, &HashSet::new(), &HashSet::new());
     assert!(
-        interface_stub.contains("from .contoso__i_base import IID_IBase, IBase"),
+        !interface_stub.contains("from .contoso__i_base import"),
         "{interface_stub}"
     );
     assert!(
@@ -64,7 +64,15 @@ fn stubs_model_runtime_class_and_interface_bases_without_runtime_inheritance() {
         "{interface_stub}"
     );
     assert!(
-        interface_stub.contains("class IDerived(IBase, Protocol):"),
+        interface_stub.contains("class _IDerivedIdentity(Protocol):"),
+        "{interface_stub}"
+    );
+    assert!(
+        interface_stub.contains("def _dynwinrt_iid_contoso_iderived(self) -> None:"),
+        "{interface_stub}"
+    );
+    assert!(
+        interface_stub.contains("class IDerived(_IDerivedIdentity, Protocol):"),
         "{interface_stub}"
     );
 
@@ -93,7 +101,27 @@ fn stubs_model_runtime_class_and_interface_bases_without_runtime_inheritance() {
         &HashSet::new(),
     );
     assert!(
-        class_stub.contains("class DerivedLike(Protocol):"),
+        class_stub.contains("from .contoso__base import _BaseIdentity"),
+        "{class_stub}"
+    );
+    assert!(
+        class_stub.contains("class _DerivedIdentity(_BaseIdentity, Protocol):"),
+        "{class_stub}"
+    );
+    assert!(
+        class_stub.contains("def _dynwinrt_class_contoso_derived(self) -> None:"),
+        "{class_stub}"
+    );
+    assert!(
+        class_stub.contains("def _dynwinrt_iid_contoso_iderived(self) -> None:"),
+        "{class_stub}"
+    );
+    assert!(
+        class_stub.contains("def _dynwinrt_iid_contoso_iextra(self) -> None:"),
+        "{class_stub}"
+    );
+    assert!(
+        class_stub.contains("class DerivedLike(_DerivedIdentity, Protocol):"),
         "{class_stub}"
     );
     assert!(
@@ -155,7 +183,8 @@ fn real_windows_metadata_exposes_xaml_and_stream_typing_relationships() {
     let stream_stub =
         python_stub::generate_class_stub(&stream, &known, &HashSet::new(), &HashSet::new());
     assert!(
-        stream_stub.contains("class SpeechSynthesisStreamLike(Protocol):"),
+        stream_stub
+            .contains("class SpeechSynthesisStreamLike(_SpeechSynthesisStreamIdentity, Protocol):"),
         "{stream_stub}"
     );
     assert!(
@@ -185,6 +214,38 @@ fn real_windows_metadata_exposes_xaml_and_stream_typing_relationships() {
     assert!(!base_names.contains("IClosable"));
     assert!(!base_names.contains("IInputStream"));
     assert!(!base_names.contains("IOutputStream"));
+
+    let known_interfaces = stream_interfaces
+        .iter()
+        .map(|interface| interface.name.clone())
+        .collect::<HashSet<_>>();
+    let with_content_stub = python_stub::generate_interface_stub(
+        with_content_type,
+        &known_interfaces,
+        &HashSet::new(),
+    );
+    let with_content_runtime =
+        python::generate_interface(with_content_type, &known_interfaces, &HashSet::new());
+    assert!(
+        with_content_stub
+            .contains("class IRandomAccessStreamWithContentType(_IRandomAccessStreamWithContentTypeIdentity, Protocol):"),
+        "{with_content_stub}"
+    );
+    assert!(
+        !with_content_stub.contains(
+            "class IRandomAccessStreamWithContentType(IRandomAccessStream, IContentTypeProvider"
+        ),
+        "{with_content_stub}"
+    );
+    assert!(
+        with_content_runtime.contains("def as_interface(self, interface_class):"),
+        "{with_content_runtime}"
+    );
+    assert!(
+        !with_content_runtime.contains("def seek(")
+            && !with_content_runtime.contains("def content_type("),
+        "{with_content_runtime}"
+    );
 
     let random_access = stream_interfaces
         .iter()

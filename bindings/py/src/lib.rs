@@ -245,9 +245,17 @@ def project_as(value, wrapper_type):
     projector = getattr(wrapper_type, '_from_native', None)
     if not callable(projector):
         raise TypeError('project_as requires a generated projection type.')
-    borrowed = source.cast(
-        WinGUID.parse('00000000-0000-0000-c000-000000000046')
-    )
+    if getattr(wrapper_type, '_dynwinrt_interface_type', False):
+        interface_iid = getattr(wrapper_type, '_dynwinrt_interface_iid', None)
+        if interface_iid is None:
+            raise TypeError(
+                'project_as cannot project an interface without a resolvable IID.'
+            )
+        borrowed = source.cast(interface_iid)
+    else:
+        borrowed = source.cast(
+            WinGUID.parse('00000000-0000-0000-c000-000000000046')
+        )
     try:
         projected = projector(borrowed)
     except BaseException:

@@ -7,15 +7,21 @@ from ._typing import (
     DynWinRTType, DynWinRTValue, DynWinRTArray, DynWinRTStruct, DynWinRtDelegate,
     _DynWinRTProjector,
 )
-from typing import Protocol, Self
+from typing import Protocol, Self, TypeVar
+
+_InterfaceT = TypeVar('_InterfaceT')
 
 
 IID_IStringable: WinGUID
 
 
-class IStringable(Protocol):
+class _IStringableIdentity(Protocol):
+    def _dynwinrt_iid_windows_foundation_istringable(self) -> None: ...
+
+class IStringable(_IStringableIdentity, Protocol):
 
     @classmethod
     def from_value(cls, obj: DynWinRTValue) -> Self: ...
+    def as_interface(self, interface_class: _DynWinRTProjector[_InterfaceT]) -> _InterfaceT: ...
 
     def to_string(self) -> str: ...
