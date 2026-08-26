@@ -1,7 +1,9 @@
 #!/usr/bin/env pwsh
 
 param(
-    [string]$Python = "python"
+    [string]$Python = "python",
+    [int]$Major = 2,
+    [int]$Minor = 3
 )
 
 $ErrorActionPreference = "Stop"
@@ -18,7 +20,10 @@ if (-not [System.IO.Path]::IsPathRooted($Python)) {
     }
 }
 
-& $Python (Join-Path $PSScriptRoot "app.py") --loopback
+& $Python (Join-Path $PSScriptRoot "app.py") `
+    --loopback `
+    --major $Major `
+    --minor $Minor
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }

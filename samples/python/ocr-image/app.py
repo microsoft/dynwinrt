@@ -50,7 +50,7 @@ def main() -> None:
     parser.add_argument(
         "--expect",
         nargs="*",
-        default=["DYNWINRT", "OCR", "42"],
+        default=[],
     )
     args = parser.parse_args()
 

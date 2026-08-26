@@ -19,5 +19,8 @@ Recognize another image:
 .\run.ps1 -Python C:\path\to\python.exe -Image C:\path\to\image.png
 ```
 
+Custom images are accepted without assuming their contents. Use
+`-Expect WORD1,WORD2` to require specific recognized words.
+
 Windows must have an OCR language matching one of the current user's profile
 languages.

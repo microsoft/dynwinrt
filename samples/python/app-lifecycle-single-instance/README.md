@@ -24,8 +24,12 @@ This Windows App SDK sample launches two Python processes and demonstrates:
   -BootstrapDll C:\fixtures\x64\Microsoft.WindowsAppRuntime.Bootstrap.dll `
   -Codegen ..\..\..\target\release\dynwinrt-codegen.exe
 
-.\run.ps1 -Python C:\path\to\python.exe
+.\run.ps1 -Python C:\path\to\python.exe -Major 2 -Minor 3
 ```
+
+`Major` and `Minor` default to `2` and `3`. They must exactly match the Windows
+App SDK product version represented by the metadata, bootstrap DLL, and
+installed runtime.
 
 The loopback succeeds only after the secondary process redirects its launch
 activation and the primary receives it. It prints `python-app-lifecycle-ok`.

@@ -33,11 +33,17 @@ custom `comtypes` local server or manual registry keys.
   -BootstrapDll C:\fixtures\x64\Microsoft.WindowsAppRuntime.Bootstrap.dll `
   -Codegen ..\..\..\target\release\dynwinrt-codegen.exe
 
-.\run.ps1 -Python C:\path\to\python.exe
+.\run.ps1 -Python C:\path\to\python.exe -Major 2 -Minor 3
 ```
 
+`Major` and `Minor` default to `2` and `3`. They must exactly match the Windows
+App SDK product version represented by the metadata, bootstrap DLL, and
+installed runtime.
+
 The sample subscribes before registration, displays the notification, waits
-for activation, removes the notification, and unregisters before exiting.
+for activation, removes the notification, and clears all sample registration
+data before exiting. Registration cleanup still runs if notification removal
+fails.
 
 Use `-Smoke` to validate support and build the notification payload without
 registering or displaying it.

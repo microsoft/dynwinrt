@@ -36,8 +36,12 @@ The inputs are the same as the other Python WinUI samples:
   -BootstrapDll C:\fixtures\winappsdk\x64\Microsoft.WindowsAppRuntime.Bootstrap.dll `
   -Codegen ..\..\..\target\release\dynwinrt-codegen.exe
 
-.\run.ps1 -Python C:\path\to\python.exe
+.\run.ps1 -Python C:\path\to\python.exe -Major 2 -Minor 3
 ```
+
+`Major` and `Minor` default to `2` and `3`. They must exactly match the Windows
+App SDK product version represented by the metadata, bootstrap DLL, and
+installed runtime.
 
 Use `-Smoke` to create the window and controls, update the text once, print
 `python-winui-hello-ok`, and exit automatically.

@@ -11,7 +11,6 @@ Run each sample's `generate.ps1` before `run.ps1`.
 | [`cryptography`](cryptography/) | SHA-256, `IBuffer`, text encoding, and hex conversion |
 | [`device-watcher`](device-watcher/) | Device enumeration and thread-safe typed event subscriptions |
 | [`text-to-speech`](text-to-speech/) | `asyncio`, speech synthesis, media playback, and typed events |
-| [`global-media-session`](global-media-session/) | GSMTC session discovery, collections, media properties, and change events |
 | [`app-notification`](app-notification/) | Windows App SDK bootstrap, notification builder, display, activation, and cleanup |
 | [`winui-hello-world`](winui-hello-world/) | Minimal WinUI 3 XAML, controls, events, STA, and projected lifetime management |
 | [`custom-winmd-codegen`](custom-winmd-codegen/) | Generate, type, and import a Python package from an external WinMD |

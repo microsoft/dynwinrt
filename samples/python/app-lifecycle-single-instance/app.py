@@ -18,8 +18,14 @@ from generated.microsoft.windows.app_lifecycle import (
 )
 
 
-async def run_primary(key: str, ready: Path, timeout: int) -> None:
-    runtime = init_winappsdk(2, 3)
+async def run_primary(
+    key: str,
+    ready: Path,
+    timeout: int,
+    major: int,
+    minor: int,
+) -> None:
+    runtime = init_winappsdk(major, minor)
     try:
         with RoApartment(1), projected_lifetime_scope():
             instance = AppInstance.find_or_register_for_key(key)
@@ -55,8 +61,8 @@ async def run_primary(key: str, ready: Path, timeout: int) -> None:
         del runtime
 
 
-async def redirect_to_primary(key: str) -> None:
-    runtime = init_winappsdk(2, 3)
+async def redirect_to_primary(key: str, major: int, minor: int) -> None:
+    runtime = init_winappsdk(major, minor)
     try:
         with RoApartment(1), projected_lifetime_scope():
             current = AppInstance.get_current()
@@ -75,7 +81,7 @@ async def redirect_to_primary(key: str) -> None:
         del runtime
 
 
-async def run_loopback(timeout: int) -> None:
+async def run_loopback(timeout: int, major: int, minor: int) -> None:
     key = f"dynwinrt-python-{uuid.uuid4()}"
     with tempfile.TemporaryDirectory(prefix="dynwinrt-app-lifecycle-") as temp:
         ready = Path(temp) / "ready.txt"
@@ -89,6 +95,10 @@ async def run_loopback(timeout: int) -> None:
             str(ready),
             "--timeout",
             str(timeout),
+            "--major",
+            str(major),
+            "--minor",
+            str(minor),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -113,6 +123,10 @@ async def run_loopback(timeout: int) -> None:
                 "--redirect",
                 "--key",
                 key,
+                "--major",
+                str(major),
+                "--minor",
+                str(minor),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -152,18 +166,28 @@ def main() -> None:
     parser.add_argument("--key")
     parser.add_argument("--ready", type=Path)
     parser.add_argument("--timeout", type=int, default=15)
+    parser.add_argument("--major", type=int, default=2)
+    parser.add_argument("--minor", type=int, default=3)
     args = parser.parse_args()
 
     if args.loopback:
-        asyncio.run(run_loopback(args.timeout))
+        asyncio.run(run_loopback(args.timeout, args.major, args.minor))
     elif args.primary:
         if not args.key or args.ready is None:
             parser.error("--primary requires --key and --ready")
-        asyncio.run(run_primary(args.key, args.ready, args.timeout))
+        asyncio.run(
+            run_primary(
+                args.key,
+                args.ready,
+                args.timeout,
+                args.major,
+                args.minor,
+            )
+        )
     else:
         if not args.key:
             parser.error("--redirect requires --key")
-        asyncio.run(redirect_to_primary(args.key))
+        asyncio.run(redirect_to_primary(args.key, args.major, args.minor))
 
 
 if __name__ == "__main__":

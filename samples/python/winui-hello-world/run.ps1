@@ -2,7 +2,9 @@
 
 param(
     [string]$Python = "python",
-    [switch]$Smoke
+    [switch]$Smoke,
+    [int]$Major = 2,
+    [int]$Minor = 3
 )
 
 $ErrorActionPreference = "Stop"
@@ -19,7 +21,13 @@ if (-not [System.IO.Path]::IsPathRooted($Python)) {
     }
 }
 
-$arguments = @((Join-Path $PSScriptRoot "app.py"))
+$arguments = @(
+    (Join-Path $PSScriptRoot "app.py"),
+    "--major",
+    $Major,
+    "--minor",
+    $Minor
+)
 if ($Smoke) {
     $arguments += "--smoke"
 }

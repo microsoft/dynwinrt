@@ -34,8 +34,13 @@ def build_notification() -> AppNotification:
     return notification
 
 
-async def run(smoke: bool, timeout: int) -> None:
-    runtime = init_winappsdk(2, 3)
+async def run(
+    smoke: bool,
+    timeout: int,
+    major: int,
+    minor: int,
+) -> None:
+    runtime = init_winappsdk(major, minor)
     try:
         with RoApartment(1), projected_lifetime_scope():
             supported = AppNotificationManager.is_supported()
@@ -79,10 +84,14 @@ async def run(smoke: bool, timeout: int) -> None:
                 except TimeoutError:
                     print("No activation was received before the timeout.")
             finally:
-                unsubscribe()
-                if registered:
-                    await manager.remove_by_tag_async(TAG)
-                    manager.unregister()
+                try:
+                    unsubscribe()
+                finally:
+                    if registered:
+                        try:
+                            await manager.remove_by_tag_async(TAG)
+                        finally:
+                            manager.unregister_all()
     finally:
         del runtime
 
@@ -95,8 +104,10 @@ def main() -> None:
         help="Build the notification without registering or displaying it.",
     )
     parser.add_argument("--timeout", type=int, default=30)
+    parser.add_argument("--major", type=int, default=2)
+    parser.add_argument("--minor", type=int, default=3)
     args = parser.parse_args()
-    asyncio.run(run(args.smoke, args.timeout))
+    asyncio.run(run(args.smoke, args.timeout, args.major, args.minor))
 
 
 if __name__ == "__main__":

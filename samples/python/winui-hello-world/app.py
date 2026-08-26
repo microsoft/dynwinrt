@@ -42,8 +42,8 @@ XAML = """
 """
 
 
-def run(smoke: bool) -> None:
-    runtime = init_winappsdk(2, 3)
+def run(smoke: bool, major: int, minor: int) -> None:
+    runtime = init_winappsdk(major, minor)
     state: dict[str, object] = {}
     subscriptions: list[Callable[[], None]] = []
 
@@ -117,8 +117,10 @@ def main() -> None:
         action="store_true",
         help="Create the UI, update it once, and exit immediately.",
     )
+    parser.add_argument("--major", type=int, default=2)
+    parser.add_argument("--minor", type=int, default=3)
     args = parser.parse_args()
-    run(args.smoke)
+    run(args.smoke, args.major, args.minor)
 
 
 if __name__ == "__main__":

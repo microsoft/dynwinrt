@@ -3,7 +3,9 @@
 param(
     [string]$Python = "python",
     [switch]$Smoke,
-    [int]$TimeoutSeconds = 30
+    [int]$TimeoutSeconds = 30,
+    [int]$Major = 2,
+    [int]$Minor = 3
 )
 
 $ErrorActionPreference = "Stop"
@@ -23,7 +25,11 @@ if (-not [System.IO.Path]::IsPathRooted($Python)) {
 $arguments = @(
     (Join-Path $PSScriptRoot "app.py"),
     "--timeout",
-    $TimeoutSeconds
+    $TimeoutSeconds,
+    "--major",
+    $Major,
+    "--minor",
+    $Minor
 )
 if ($Smoke) {
     $arguments += "--smoke"
