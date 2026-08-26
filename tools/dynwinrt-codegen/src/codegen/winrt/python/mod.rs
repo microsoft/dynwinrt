@@ -22,21 +22,6 @@ pub use naming::{
     python_public_module_name, python_public_qualified_module_name, to_snake_case_filename,
 };
 
-pub(crate) fn has_paired_events(methods: &[crate::meta::MethodMeta]) -> bool {
-    methods.iter().any(|method| {
-        let Some(suffix) = method
-            .is_event_add
-            .then(|| method.name.strip_prefix("add_"))
-            .flatten()
-        else {
-            return false;
-        };
-        methods
-            .iter()
-            .any(|candidate| candidate.name == format!("remove_{suffix}"))
-    })
-}
-
 pub(crate) fn collect_referenced_delegate_names(
     methods: &[crate::meta::MethodMeta],
     known_delegate_names: &std::collections::HashSet<String>,

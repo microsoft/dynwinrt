@@ -60,7 +60,6 @@ from ._runtime import (
 ";
 
 const RUNTIME_SUPPORT_BODY: &str = "\
-import asyncio as _asyncio
 from builtins import property as _property
 from contextvars import copy_context as _copy_context
 from functools import lru_cache
@@ -123,160 +122,8 @@ def _dynwinrt_from_value(cls, obj):
     return _dynwinrt_project_as(obj, cls)
 \n";
 
-const EVENT_STREAM_SUPPORT: &str = r#"
-_DYNWINRT_EVENT_STREAM_END = object()
-
-
-class _DynWinRTEventStream:
-    def __init__(self, subscribe, max_queue_size):
-        if isinstance(max_queue_size, bool) or not isinstance(max_queue_size, int):
-            raise TypeError('max_queue_size must be an int')
-        if max_queue_size < 1:
-            raise ValueError('max_queue_size must be at least 1')
-        self._subscribe = subscribe
-        self._max_queue_size = max_queue_size
-        self._loop = None
-        self._queue = None
-        self._unsubscribe = None
-        self._terminal_error = None
-        self._entered = False
-        self._closed = False
-        self._waiting = False
-
-    @property
-    def closed(self):
-        return self._closed
-
-    @property
-    def max_queue_size(self):
-        return self._max_queue_size
-
-    async def __aenter__(self):
-        if self._entered:
-            raise RuntimeError('WinRT event stream has already been entered')
-        if self._closed:
-            raise RuntimeError('WinRT event stream is closed')
-        self._loop = _asyncio.get_running_loop()
-        self._queue = _asyncio.Queue(maxsize=self._max_queue_size)
-        self._entered = True
-        try:
-            self._unsubscribe = self._subscribe(self._on_event)
-        except BaseException:
-            self._entered = False
-            self._loop = None
-            self._queue = None
-            raise
-        return self
-
-    async def __aexit__(self, exc_type, exc_value, traceback):
-        await self.aclose()
-        return False
-
-    def __aiter__(self):
-        if not self._entered:
-            raise RuntimeError(
-                "WinRT event streams must be entered with 'async with' before iteration"
-            )
-        return self
-
-    async def __anext__(self):
-        if not self._entered:
-            raise RuntimeError(
-                "WinRT event streams must be entered with 'async with' before iteration"
-            )
-        if self._closed:
-            self._raise_terminal()
-        if self._waiting:
-            raise RuntimeError('WinRT event streams do not support concurrent iteration')
-        self._waiting = True
-        try:
-            try:
-                item = await self._queue.get()
-            except _asyncio.CancelledError:
-                await self.aclose()
-                raise
-        finally:
-            self._waiting = False
-        if item is _DYNWINRT_EVENT_STREAM_END:
-            self._raise_terminal()
-        return item
-
-    async def aclose(self):
-        if self._loop is not None and _asyncio.get_running_loop() is not self._loop:
-            raise RuntimeError('WinRT event stream must be closed on its owning event loop')
-        self._closed = True
-        try:
-            self._unsubscribe_now()
-        finally:
-            if self._unsubscribe is None:
-                self._subscribe = None
-            self._wake_terminal()
-
-    def _on_event(self, *args):
-        if self._closed:
-            return None
-        loop = self._loop
-        if loop is None:
-            return None
-        loop.call_soon_threadsafe(self._enqueue, tuple(args))
-        return None
-
-    def _enqueue(self, item):
-        if self._closed:
-            return
-        if self._queue.full():
-            self._terminal_error = RuntimeError(
-                f'WinRT event stream exceeded max_queue_size={self._max_queue_size}'
-            )
-            self._closed = True
-            try:
-                self._unsubscribe_now()
-            except BaseException as error:
-                self._loop.call_exception_handler({
-                    'message': 'Failed to unsubscribe an overflowing WinRT event stream',
-                    'exception': error,
-                    'event_stream': self,
-                })
-            finally:
-                self._wake_terminal()
-            return
-        self._queue.put_nowait(item)
-
-    def _unsubscribe_now(self):
-        unsubscribe = self._unsubscribe
-        if unsubscribe is None:
-            return
-        unsubscribe()
-        self._unsubscribe = None
-
-    def _wake_terminal(self):
-        queue = self._queue
-        if queue is None:
-            return
-        while True:
-            try:
-                queue.get_nowait()
-            except _asyncio.QueueEmpty:
-                break
-        queue.put_nowait(_DYNWINRT_EVENT_STREAM_END)
-
-    def _raise_terminal(self):
-        error = self._terminal_error
-        self._terminal_error = None
-        if error is not None:
-            raise error
-        raise StopAsyncIteration
-
-
-def _dynwinrt_event_stream_method(subscribe_name, method_name):
-    def events(self, *, max_queue_size=64):
-        return _DynWinRTEventStream(getattr(self, subscribe_name), max_queue_size)
-    events.__name__ = method_name
-    return events
-"#;
-
 pub fn generate_runtime_support_module() -> String {
-    format!("{HEADER}{FUTURE_ANNOTATIONS}{RUNTIME_SUPPORT_BODY}{EVENT_STREAM_SUPPORT}")
+    format!("{HEADER}{FUTURE_ANNOTATIONS}{RUNTIME_SUPPORT_BODY}")
 }
 
 const ASYNC_IMPORT_LINE: &str = "\
@@ -345,21 +192,3 @@ pub use index::{
 };
 pub use structs::generate_struct;
 pub use types::{generate_enum, generate_interface};
-
-#[cfg(test)]
-mod tests {
-    use super::generate_runtime_support_module;
-
-    #[test]
-    fn event_stream_runtime_is_bounded_thread_safe_and_closable() {
-        let code = generate_runtime_support_module();
-        assert!(code.contains("class _DynWinRTEventStream:"));
-        assert!(code.contains("loop.call_soon_threadsafe(self._enqueue, tuple(args))"));
-        assert!(code.contains("if self._queue.full():"));
-        assert!(code.contains("await self.aclose()"));
-        assert!(code.contains("self._unsubscribe_now()"));
-        assert!(code.contains("WinRT event streams do not support concurrent iteration"));
-        assert!(code.contains("def _dynwinrt_event_stream_method("));
-        assert!(code.contains("def _dynwinrt_from_value(cls, obj):"));
-    }
-}

@@ -797,12 +797,6 @@ pub(crate) fn generate_method_body(
             out.push_str("        if not _state[0]:\n");
             out.push_str("            _unsubscribe()\n");
             out.push_str("        return _unsubscribe\n");
-
-            out.push('\n');
-            out.push_str(&format!(
-                "    {}_events = _dynwinrt_event_stream_method('subscribe_{}', '{}_events')\n",
-                event_name, event_name, event_name
-            ));
         }
         return out;
     }
@@ -1316,9 +1310,6 @@ mod tests {
         assert!(code.contains("if not _state[0]:"));
         assert!(code.contains("_state[0] = False"));
         assert!(code.contains("if not _state[0]:\n            _unsubscribe()"));
-        assert!(code.contains(
-            "changed_events = _dynwinrt_event_stream_method('subscribe_changed', 'changed_events')"
-        ));
     }
 
     #[test]

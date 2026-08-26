@@ -51,43 +51,23 @@ from ._typing import (
 )\n";
 const ASYNC_IMPORT_LINE: &str = "from dynwinrt import WinRTAsync, WinRTAsyncWithProgress\n";
 
-const EVENT_STREAM_TYPING_SUPPORT: &str = r#"
-_EventT_co = TypeVar('_EventT_co', covariant=True)
-
-
-class _DynWinRTEventStream(AsyncIterator[_EventT_co], Generic[_EventT_co]):
-    @property
-    def closed(self) -> bool: ...
-    @property
-    def max_queue_size(self) -> int: ...
-    def __aiter__(self) -> '_DynWinRTEventStream[_EventT_co]': ...
-    async def __anext__(self) -> _EventT_co: ...
-    async def __aenter__(self) -> '_DynWinRTEventStream[_EventT_co]': ...
-    async def __aexit__(
-        self, exc_type: object, exc_value: object, traceback: object
-    ) -> Literal[False]: ...
-    async def aclose(self) -> None: ...
-"#;
-
 pub fn generate_typing_support_module() -> String {
     format!(
         "{HEADER}\
 from collections.abc import (\n\
-    AsyncIterator as AsyncIterator, Callable as Callable,\n\
-    Iterable as Iterable, Iterator as Iterator,\n\
+    Callable as Callable, Iterable as Iterable, Iterator as Iterator,\n\
     Mapping as Mapping, MutableMapping as MutableMapping,\n\
     MutableSequence as MutableSequence, Sequence as Sequence,\n\
 )\n\
 from datetime import datetime as datetime, timedelta as timedelta\n\
-from typing import Generic as Generic, Literal as Literal, TypeVar as TypeVar, overload as overload\n\
+from typing import overload as overload\n\
 from uuid import UUID as UUID\n\
 from dynwinrt import (\n\
     DynWinRTType as DynWinRTType, DynWinRTValue as DynWinRTValue,\n\
     DynWinRTArray as DynWinRTArray, DynWinRTStruct as DynWinRTStruct,\n\
     DynWinRtDelegate as DynWinRtDelegate, WinGUID as WinGUID,\n\
     _DynWinRTProjector as _DynWinRTProjector,\n\
-)\n\
-{EVENT_STREAM_TYPING_SUPPORT}"
+)\n"
     )
 }
 
@@ -225,9 +205,6 @@ pub fn generate_interface_stub(
     out.push_str(HEADER);
     out.push_str(FUTURE_ANNOTATIONS);
     out.push_str(IMPORT_LINE);
-    if super::has_paired_events(&iface.methods) {
-        out.push_str("from ._typing import _DynWinRTEventStream\n");
-    }
     let collection_kind = interface_kind(iface);
     let is_protocol = collection_kind.is_none();
     if is_protocol {
@@ -501,14 +478,6 @@ pub fn generate_class_stub(
     out.push_str(HEADER);
     out.push_str(FUTURE_ANNOTATIONS);
     out.push_str(IMPORT_LINE);
-    if class
-        .default_interface
-        .iter()
-        .chain(class.required_interfaces.iter())
-        .any(|interface| super::has_paired_events(&interface.methods))
-    {
-        out.push_str("from ._typing import _DynWinRTEventStream\n");
-    }
     out.push_str("from typing import Protocol, Self\n");
     if !has_constructor_stub_overload(class) {
         out.push_str("from typing import NoReturn\n");

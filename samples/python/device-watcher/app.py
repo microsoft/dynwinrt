@@ -2,11 +2,13 @@ import argparse
 import asyncio
 import json
 from collections import Counter
+from collections.abc import Callable
 
-from dynwinrt import RoApartment, projected_lifetime_scope
+from dynwinrt import DynWinRTValue, RoApartment, projected_lifetime_scope
 from generated.windows.devices.enumeration import (
     DeviceInformation,
     DeviceInformationUpdate,
+    DeviceWatcher,
 )
 
 
@@ -16,13 +18,21 @@ async def enumerate_devices(timeout: int, show_names: bool) -> None:
         if watcher is None:
             raise RuntimeError("DeviceInformation returned no watcher")
 
+        loop = asyncio.get_running_loop()
+        enumeration_completed = asyncio.Event()
+        stopped = asyncio.Event()
         devices: dict[str, dict[str, object]] = {}
 
-        def add_device(info: DeviceInformation) -> None:
-            devices[info.id] = {
-                "name": info.name,
-                "enabled": info.is_enabled,
-                "kind": info.kind.name,
+        def add_device(
+            device_id: str,
+            name: str,
+            enabled: bool,
+            kind: str,
+        ) -> None:
+            devices[device_id] = {
+                "name": name,
+                "enabled": enabled,
+                "kind": kind,
             }
 
         def mark_updated(device_id: str) -> None:
@@ -30,51 +40,68 @@ async def enumerate_devices(timeout: int, show_names: bool) -> None:
             if current is not None:
                 current["updated"] = True
 
-        def remove_device(update: DeviceInformationUpdate) -> None:
-            devices.pop(update.id, None)
+        def remove_device(device_id: str) -> None:
+            devices.pop(device_id, None)
 
-        async with (
-            watcher.added_events(max_queue_size=256) as added_events,
-            watcher.updated_events() as updated_events,
-            watcher.removed_events() as removed_events,
-            watcher.enumeration_completed_events(
-                max_queue_size=1
-            ) as completed_events,
-            watcher.stopped_events(max_queue_size=1) as stopped_events,
-        ):
+        def on_added(
+            _sender: DeviceWatcher | None,
+            info: DeviceInformation | None,
+        ) -> None:
+            if info is not None:
+                loop.call_soon_threadsafe(
+                    add_device,
+                    info.id,
+                    info.name,
+                    info.is_enabled,
+                    info.kind.name,
+                )
 
-            async def consume_added() -> None:
-                async for _sender, info in added_events:
-                    if info is not None:
-                        add_device(info)
+        def on_updated(
+            _sender: DeviceWatcher | None,
+            update: DeviceInformationUpdate | None,
+        ) -> None:
+            if update is not None:
+                loop.call_soon_threadsafe(mark_updated, update.id)
 
-            async def consume_updated() -> None:
-                async for _sender, update in updated_events:
-                    if update is not None:
-                        mark_updated(update.id)
+        def on_removed(
+            _sender: DeviceWatcher | None,
+            update: DeviceInformationUpdate | None,
+        ) -> None:
+            if update is not None:
+                loop.call_soon_threadsafe(remove_device, update.id)
 
-            async def consume_removed() -> None:
-                async for _sender, update in removed_events:
-                    if update is not None:
-                        remove_device(update)
+        def on_enumeration_completed(
+            _sender: DeviceWatcher | None,
+            _args: DynWinRTValue | None,
+        ) -> None:
+            loop.call_soon_threadsafe(enumeration_completed.set)
 
-            async with asyncio.TaskGroup() as group:
-                consumers = [
-                    group.create_task(consume_added()),
-                    group.create_task(consume_updated()),
-                    group.create_task(consume_removed()),
-                ]
-                try:
-                    watcher.start()
-                    await asyncio.wait_for(
-                        anext(completed_events),
-                        timeout=timeout,
-                    )
-                    watcher.stop()
-                    await asyncio.wait_for(anext(stopped_events), timeout=5)
-                finally:
-                    for consumer in consumers:
-                        consumer.cancel()
+        def on_stopped(
+            _sender: DeviceWatcher | None,
+            _args: DynWinRTValue | None,
+        ) -> None:
+            loop.call_soon_threadsafe(stopped.set)
+
+        unsubscribers: list[Callable[[], None]] = [
+            watcher.subscribe_added(on_added),
+            watcher.subscribe_updated(on_updated),
+            watcher.subscribe_removed(on_removed),
+            watcher.subscribe_enumeration_completed(
+                on_enumeration_completed
+            ),
+            watcher.subscribe_stopped(on_stopped),
+        ]
+        try:
+            watcher.start()
+            await asyncio.wait_for(
+                enumeration_completed.wait(),
+                timeout=timeout,
+            )
+            watcher.stop()
+            await asyncio.wait_for(stopped.wait(), timeout=5)
+        finally:
+            for unsubscribe in reversed(unsubscribers):
+                unsubscribe()
 
         values = sorted(
             devices.values(),

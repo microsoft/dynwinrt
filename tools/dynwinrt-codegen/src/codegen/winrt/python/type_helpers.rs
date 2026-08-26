@@ -557,35 +557,6 @@ pub(crate) fn py_delegate_callable_type(typ: &TypeMeta, known_types: &HashSet<St
     }
 }
 
-pub(crate) fn py_event_item_type(typ: Option<&TypeMeta>, known_types: &HashSet<String>) -> String {
-    match typ {
-        Some(TypeMeta::Parameterized { name, args, .. })
-            if name.split('`').next() == Some("TypedEventHandler") && args.len() == 2 =>
-        {
-            format!(
-                "tuple[{}, {}]",
-                py_return_type_safe(Some(&args[0]), known_types),
-                py_return_type_safe(Some(&args[1]), known_types)
-            )
-        }
-        Some(TypeMeta::Parameterized { name, args, .. })
-            if name.split('`').next() == Some("EventHandler") && args.len() == 1 =>
-        {
-            format!(
-                "tuple[object, {}]",
-                py_return_type_safe(Some(&args[0]), known_types)
-            )
-        }
-        Some(TypeMeta::Parameterized { name, args, .. })
-            if name.split('`').next() == Some("VectorChangedEventHandler") && args.len() == 1 =>
-        {
-            let observable = crate::meta::make_parameterized_name("IObservableVector", args);
-            format!("tuple['{}', 'IVectorChangedEventArgs']", observable)
-        }
-        _ => "tuple[object, ...]".to_string(),
-    }
-}
-
 fn py_delegate_param_type(typ: &TypeMeta, known_types: &HashSet<String>) -> String {
     let sig = py_delegate_callable_type(typ, known_types);
     format!("{sig} | 'DynWinRTValue'")
@@ -747,26 +718,5 @@ mod tests {
             "int | None | IReference_UInt32"
         );
         assert_eq!(py_optional_type("'DayOfWeek'".into()), "DayOfWeek | None");
-    }
-
-    #[test]
-    fn event_items_preserve_typed_handler_arguments() {
-        let handler = TypeMeta::Parameterized {
-            namespace: "Windows.Foundation".into(),
-            name: "TypedEventHandler`2".into(),
-            piid: "11111111-1111-1111-1111-111111111111".into(),
-            args: vec![
-                TypeMeta::RuntimeClass {
-                    namespace: "Contoso".into(),
-                    name: "Widget".into(),
-                    default_interface: None,
-                },
-                TypeMeta::Object,
-            ],
-        };
-        assert_eq!(
-            py_event_item_type(Some(&handler), &HashSet::from(["Widget".into()])),
-            "tuple[Widget | None, DynWinRTValue | None]"
-        );
     }
 }

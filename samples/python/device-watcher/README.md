@@ -2,11 +2,11 @@
 
 This sample enumerates devices with `DeviceInformation.create_watcher()` and
 demonstrates typed `Added`, `Updated`, `Removed`, `EnumerationCompleted`, and
-`Stopped` async event iterators.
+`Stopped` event subscriptions.
 
-Each iterator uses a bounded queue and safely transfers callbacks onto the
-owning `asyncio` loop. Its `async with` scope removes the subscription on normal
-exit, cancellation, or failure before the apartment exits.
+Callbacks read WinRT objects on the callback apartment, then safely schedule
+only Python-native values back onto the `asyncio` loop. The watcher is stopped
+and every subscription is removed before the apartment exits.
 
 ```powershell
 .\generate.ps1 -Codegen ..\..\..\target\release\dynwinrt-codegen.exe

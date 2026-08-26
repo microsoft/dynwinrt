@@ -56,14 +56,6 @@ pub fn generate_class(
     out.push_str(FUTURE_ANNOTATIONS);
     out.push_str(IMPORT_LINE);
     out.push_str("from ._runtime import _dynwinrt_from_value\n");
-    if class
-        .default_interface
-        .iter()
-        .chain(class.required_interfaces.iter())
-        .any(|interface| super::super::has_paired_events(&interface.methods))
-    {
-        out.push_str("from ._runtime import _dynwinrt_event_stream_method\n");
-    }
     if has_public_composition {
         out.push_str(
             "from dynwinrt import register_xaml_runtime_class as _dynwinrt_register_xaml_runtime_class\n",
