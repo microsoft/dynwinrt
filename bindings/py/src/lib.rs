@@ -234,7 +234,7 @@ def _dynwinrt_track_projected(value, type_name=None):
     return value
 
 def project_as(value, wrapper_type):
-    '''Borrow a projected value and expose it as another generated type.
+    '''Borrow a projected value and expose it as a generated runtime class.
 
     The input remains valid. The returned wrapper owns its QueryInterface
     result and participates in the active projected lifetime scope.
@@ -242,20 +242,17 @@ def project_as(value, wrapper_type):
     source = getattr(value, '_obj', value)
     if not isinstance(source, DynWinRTValue):
         raise TypeError('project_as requires a DynWinRTValue or projected wrapper.')
+    if getattr(wrapper_type, '_dynwinrt_interface_type', False):
+        raise TypeError(
+            'project_as only accepts generated runtime classes; use '
+            'Interface.from_value(raw) or wrapper.as_interface(Interface).'
+        )
     projector = getattr(wrapper_type, '_from_native', None)
     if not callable(projector):
-        raise TypeError('project_as requires a generated projection type.')
-    if getattr(wrapper_type, '_dynwinrt_interface_type', False):
-        interface_iid = getattr(wrapper_type, '_dynwinrt_interface_iid', None)
-        if interface_iid is None:
-            raise TypeError(
-                'project_as cannot project an interface without a resolvable IID.'
-            )
-        borrowed = source.cast(interface_iid)
-    else:
-        borrowed = source.cast(
-            WinGUID.parse('00000000-0000-0000-c000-000000000046')
-        )
+        raise TypeError('project_as requires a generated runtime class type.')
+    borrowed = source.cast(
+        WinGUID.parse('00000000-0000-0000-c000-000000000046')
+    )
     try:
         projected = projector(borrowed)
     except BaseException:

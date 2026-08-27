@@ -10,6 +10,7 @@ class _DynWinRTProjector(Protocol[_Projected_co]):
     @classmethod
     def from_value(cls, obj: "DynWinRTValue") -> _Projected_co: ...
 
+
 __all__ = [
     "WinAppSDKContext",
     "RoApartment",
@@ -97,9 +98,7 @@ class ProjectedLifetimeScope:
 
 def projected_lifetime_scope() -> ProjectedLifetimeScope: ...
 
-def project_as(
-    value: object, wrapper_type: _DynWinRTProjector[_Tracked]
-) -> _Tracked: ...
+def project_as(value: object, wrapper_type: type[_Tracked]) -> _Tracked: ...
 
 def release_projected(value: object) -> None: ...
 

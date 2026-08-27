@@ -64,12 +64,14 @@ fn system_returned_class_keeps_only_internal_native_wrapping() {
     let pyi = python_stub::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
 
     assert!(py.contains("def _from_native(cls, obj: DynWinRTValue):"));
+    assert!(!py.contains("from_value = classmethod"), "{py}");
     assert!(py.contains("isinstance(args[0], DynWinRTValue)"));
     assert!(py.contains("SystemResult cannot be constructed directly"));
     assert!(!py.contains("self._set_native(type(self).create("));
     assert!(!py.contains("_IActivationFactory ="));
     assert!(pyi.contains("def __init__(self, _not_constructible: NoReturn) -> None: ..."));
     assert!(pyi.contains("def get_current() -> SystemResult | None: ..."));
+    assert!(!pyi.contains("def from_value("), "{pyi}");
     assert!(!pyi.contains("def __init__(self, obj: DynWinRTValue)"));
     assert!(!pyi.contains("def __init__(self)"));
 }

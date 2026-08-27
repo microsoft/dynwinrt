@@ -14,7 +14,6 @@ from ._runtime import (
     _dynwinrt_symbol, _dynwinrt_track_projected, _dynwinrt_uuid,
     _dynwinrt_vector, _dynwinrt_wrap_values,
 )
-from ._runtime import _dynwinrt_from_value
 
 if TYPE_CHECKING:
     from .windows__foundation__www_form_url_decoder import WwwFormUrlDecoder, WwwFormUrlDecoderLike  # noqa: F401
@@ -88,8 +87,6 @@ class Uri:
     @classmethod
     def _from_native(cls, obj: DynWinRTValue):
         return cls(obj)
-
-    from_value = classmethod(_dynwinrt_from_value)
 
     def __init__(self, *args, **kwargs):
         if getattr(self, '_dynwinrt_native_ready', False):

@@ -122,7 +122,8 @@ of a dynamic projection.
 - [x] Generate idiomatic constructors such as `Uri(...)` while retaining an
       internal wrapper path for returned native objects.
 - [x] Expose `project_as(value, Type)` for typed, non-consuming projection of
-      raw `Object`/`IInspectable` values, matching JavaScript `projectAs`.
+      raw `Object`/`IInspectable` values to RuntimeClasses, matching JavaScript
+      `projectAs`; use `as_interface()` / interface `from_value()` for QI views.
 - [x] Declare non-suppressing runtime and generated context managers as
       `Literal[False]`.
 - [x] Replace deprecated PyO3 automatic `FromPyObject` behavior explicitly.

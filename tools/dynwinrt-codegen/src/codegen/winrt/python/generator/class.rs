@@ -48,17 +48,12 @@ pub fn generate_class(
     } else {
         "self._collection_obj"
     };
-    let projectable = super::super::has_projectable_default_interface(class);
-
     let mut out = String::new();
 
     // Header
     out.push_str(HEADER);
     out.push_str(FUTURE_ANNOTATIONS);
     out.push_str(IMPORT_LINE);
-    if projectable {
-        out.push_str("from ._runtime import _dynwinrt_from_value\n");
-    }
     if has_public_composition {
         out.push_str(
             "from dynwinrt import register_xaml_runtime_class as _dynwinrt_register_xaml_runtime_class\n",
@@ -1368,7 +1363,6 @@ fn generate_python_constructor(
         out.push_str("    @classmethod\n");
         out.push_str("    def _from_native(cls, obj: DynWinRTValue):\n");
         out.push_str("        return cls(obj)\n\n");
-        out.push_str("    from_value = classmethod(_dynwinrt_from_value)\n\n");
     }
     if let Some(native_override_names) = &native_override_names {
         out.push_str("    @classmethod\n");

@@ -623,20 +623,23 @@ def test_project_as_rejects_invalid_values_and_types():
 
     with RoApartment(1):
         raw = DynWinRTValue.activation_factory("Windows.Foundation.Uri")
-        with pytest.raises(TypeError, match="generated projection type"):
+        with pytest.raises(TypeError, match="generated runtime class type"):
             project_as(raw, object)
         assert not raw.is_null()
         raw.release()
 
 
-def test_project_as_uses_interface_target_iid():
+def test_project_as_rejects_interface_targets():
     InterfaceWrapper = _projected_wrapper_type("ProjectAsInterfaceWrapper")
     InterfaceWrapper._dynwinrt_interface_type = True
     InterfaceWrapper._dynwinrt_interface_iid = WinGUID.parse(IID_IURI)
 
     with RoApartment(1):
         factory = DynWinRTValue.activation_factory("Windows.Foundation.Uri")
-        with pytest.raises(OSError):
+        with pytest.raises(
+            TypeError,
+            match="only accepts generated runtime classes",
+        ):
             project_as(factory, InterfaceWrapper)
         assert not factory.is_null()
         factory.release()

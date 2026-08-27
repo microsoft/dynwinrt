@@ -94,9 +94,6 @@ class Uri(UriLike):
     @overload
     def __init__(self, base_uri: str, relative_uri: str) -> None: ...
 
-    @classmethod
-    def from_value(cls, obj: DynWinRTValue) -> Self: ...
-
     @staticmethod
     def create_uri(uri: str) -> 'Uri': ...
 

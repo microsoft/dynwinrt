@@ -1704,7 +1704,7 @@ async def run_check(
             }
 
             uri_impl = importlib.import_module(uri_module)
-            projected_uri = uri_type.from_value(uri._obj)
+            projected_uri = dw.project_as(uri._obj, uri_type)
             query = uri.query_parsed
             if query is None:
                 cr['error'] = 'Uri query projection returned None'
@@ -1743,12 +1743,11 @@ async def run_check(
                 else None
             )
             combined = uri.combine_uri('child.txt')
-            canonical = dw.project_as(
+            canonical = getattr(
+                uri_impl,
+                'IUriRuntimeClassWithAbsoluteCanonicalUri',
+            ).from_value(
                 uri._obj,
-                getattr(
-                    uri_impl,
-                    'IUriRuntimeClassWithAbsoluteCanonicalUri',
-                ),
             )
             stringable = uri.as_interface(getattr(uri_impl, 'IStringable'))
             uri_strings = (

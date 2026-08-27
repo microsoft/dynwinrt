@@ -703,12 +703,6 @@ pub fn generate_class_stub(
         "    ",
     ));
     out.push_str(&emit_constructor_stubs(class, known_types, &delegate_names));
-    if super::has_projectable_default_interface(class) {
-        out.push_str(
-            "\n    @classmethod\n\
-             \x20   def from_value(cls, obj: DynWinRTValue) -> Self: ...\n",
-        );
-    }
     if collection_base.is_some() {
         out.push_str(&emit_class_instance_stubs(
             class,

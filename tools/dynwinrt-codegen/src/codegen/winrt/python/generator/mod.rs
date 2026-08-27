@@ -74,7 +74,6 @@ from weakref import ref as _weakref_ref
 from dynwinrt import (
     DynWinRTType, DynWinRTMethodSig, DynWinRTValue, DynWinRTArray,
     DynWinRTStruct, DynWinRtDelegate, DynWinRTOverrideInterface, WinGUID,
-    project_as as _dynwinrt_project_as,
 )
 from dynwinrt.dynwinrt import (
     _dynwinrt_array, _dynwinrt_bind_overload, _dynwinrt_datetime_to_ticks, _dynwinrt_guid,
@@ -116,12 +115,6 @@ def _dynwinrt_delegate(value, iid, parameter_types):
     if not callable(value):
         raise TypeError('delegate value must be callable or a DynWinRTValue')
     return _dynwinrt_create_delegate(iid, parameter_types, value).to_value()
-
-
-def _dynwinrt_from_value(cls, obj):
-    return _dynwinrt_project_as(obj, cls)
-
-
 def _dynwinrt_can_cast(value, iid):
     raw = getattr(value, '_obj', value)
     if not isinstance(raw, DynWinRTValue):
