@@ -3,7 +3,7 @@
 
 use std::collections::HashSet;
 
-use dynwinrt_codegen::codegen::python;
+use dynwinrt_codegen::codegen::{python, python_stub};
 use dynwinrt_codegen::meta::{
     ClassMeta, ConstructorKind, ConstructorMeta, InterfaceMeta, MethodMeta, ParamDirection,
     ParamMeta,
@@ -164,5 +164,61 @@ fn interface_generation_uses_projected_identity_cache() {
     assert!(
         py.contains("return cls._from_native(obj.cast(IID_IWidget))"),
         "from_value should reuse the cached wrapper path:\n{py}"
+    );
+}
+
+#[test]
+fn embedded_interface_projection_preserves_subclasses_and_qi_helpers() {
+    let class = ClassMeta {
+        name: "Widget".into(),
+        namespace: "Contoso".into(),
+        full_name: "Contoso.Widget".into(),
+        default_interface: Some(InterfaceMeta {
+            name: "IWidget".into(),
+            namespace: "Contoso".into(),
+            iid: "11111111-1111-1111-1111-111111111111".into(),
+            ..Default::default()
+        }),
+        required_interfaces: vec![InterfaceMeta {
+            name: "IExtra".into(),
+            namespace: "Contoso".into(),
+            iid: "22222222-2222-2222-2222-222222222222".into(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let known = HashSet::from(["Widget".to_string()]);
+    let py = python::generate_class(&class, &known, &HashSet::new(), &HashSet::new());
+    let pyi = python_stub::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
+    let inline = py
+        .split("\nclass IExtra:")
+        .nth(1)
+        .expect("embedded runtime interface");
+    let inline_stub = pyi
+        .split("\nclass IExtra:")
+        .nth(1)
+        .expect("embedded stub interface");
+
+    assert!(
+        inline.contains("@classmethod\n    def from_value(cls, obj: DynWinRTValue)"),
+        "{inline}"
+    );
+    assert!(
+        inline.contains("return cls._from_native(obj.cast(IID_IExtra))"),
+        "{inline}"
+    );
+    assert!(
+        inline.contains("def as_interface(self, interface_class):"),
+        "{inline}"
+    );
+    assert!(
+        inline_stub.contains("@classmethod\n    def from_value(cls, obj: DynWinRTValue) -> Self:"),
+        "{inline_stub}"
+    );
+    assert!(
+        inline_stub.contains(
+            "def as_interface(self, interface_class: _DynWinRTProjector[_InterfaceT]) -> _InterfaceT:"
+        ),
+        "{inline_stub}"
     );
 }

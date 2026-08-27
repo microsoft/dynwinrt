@@ -136,9 +136,12 @@ class IVectorView_IWwwFormUrlDecoderEntry(_WinRTSequenceMixin):
     def _from_native(cls, obj: DynWinRTValue) -> 'IVectorView_IWwwFormUrlDecoderEntry':
         return cls(obj)
 
-    @staticmethod
-    def from_value(obj: DynWinRTValue) -> 'IVectorView_IWwwFormUrlDecoderEntry':
-        return IVectorView_IWwwFormUrlDecoderEntry._from_native(obj.cast(IID_IVectorView_IWwwFormUrlDecoderEntry))
+    @classmethod
+    def from_value(cls, obj: DynWinRTValue) -> 'IVectorView_IWwwFormUrlDecoderEntry':
+        return cls._from_native(obj.cast(IID_IVectorView_IWwwFormUrlDecoderEntry))
+
+    def as_interface(self, interface_class):
+        return interface_class.from_value(self._obj)
 
     @_property
     def size(self) -> int:
@@ -177,9 +180,12 @@ class IIterable_IWwwFormUrlDecoderEntry(_WinRTIterableMixin):
     def _from_native(cls, obj: DynWinRTValue) -> 'IIterable_IWwwFormUrlDecoderEntry':
         return cls(obj)
 
-    @staticmethod
-    def from_value(obj: DynWinRTValue) -> 'IIterable_IWwwFormUrlDecoderEntry':
-        return IIterable_IWwwFormUrlDecoderEntry._from_native(obj.cast(IID_IIterable_IWwwFormUrlDecoderEntry))
+    @classmethod
+    def from_value(cls, obj: DynWinRTValue) -> 'IIterable_IWwwFormUrlDecoderEntry':
+        return cls._from_native(obj.cast(IID_IIterable_IWwwFormUrlDecoderEntry))
+
+    def as_interface(self, interface_class):
+        return interface_class.from_value(self._obj)
 
     def first(self) -> Iterator[IWwwFormUrlDecoderEntry | None] | None:
         return (lambda value: None if value.is_null() else _dynwinrt_symbol('i_iterator_i_www_form_url_decoder_entry', 'IIterator_IWwwFormUrlDecoderEntry')(value))(_IIterable_IWwwFormUrlDecoderEntry.method(6).invoke(self._obj, []))

@@ -843,11 +843,11 @@ pub fn generate_class_stub(
         out.push_str("    def __init__(self, obj: DynWinRTValue) -> None: ...\n");
         out.push_str(&collection_protocol_stubs(req_iface, known_types, 4));
         out.push('\n');
-        out.push_str("    @staticmethod\n");
-        out.push_str(&format!(
-            "    def from_value(obj: DynWinRTValue) -> '{}': ...\n",
-            req_iface.name
-        ));
+        out.push_str("    @classmethod\n");
+        out.push_str("    def from_value(cls, obj: DynWinRTValue) -> Self: ...\n");
+        out.push_str(
+            "    def as_interface(self, interface_class: _DynWinRTProjector[_InterfaceT]) -> _InterfaceT: ...\n",
+        );
         for methods in
             super::overloads::grouped_methods(reorder_getters_before_setters(&req_iface.methods))
         {

@@ -240,9 +240,12 @@ class IUriRuntimeClassWithAbsoluteCanonicalUri:
     def _from_native(cls, obj: DynWinRTValue) -> 'IUriRuntimeClassWithAbsoluteCanonicalUri':
         return cls(obj)
 
-    @staticmethod
-    def from_value(obj: DynWinRTValue) -> 'IUriRuntimeClassWithAbsoluteCanonicalUri':
-        return IUriRuntimeClassWithAbsoluteCanonicalUri._from_native(obj.cast(IID_IUriRuntimeClassWithAbsoluteCanonicalUri))
+    @classmethod
+    def from_value(cls, obj: DynWinRTValue) -> 'IUriRuntimeClassWithAbsoluteCanonicalUri':
+        return cls._from_native(obj.cast(IID_IUriRuntimeClassWithAbsoluteCanonicalUri))
+
+    def as_interface(self, interface_class):
+        return interface_class.from_value(self._obj)
 
     @_property
     def absolute_canonical_uri(self) -> str:
@@ -274,9 +277,12 @@ class IStringable:
     def _from_native(cls, obj: DynWinRTValue) -> 'IStringable':
         return cls(obj)
 
-    @staticmethod
-    def from_value(obj: DynWinRTValue) -> 'IStringable':
-        return IStringable._from_native(obj.cast(IID_IStringable))
+    @classmethod
+    def from_value(cls, obj: DynWinRTValue) -> 'IStringable':
+        return cls._from_native(obj.cast(IID_IStringable))
+
+    def as_interface(self, interface_class):
+        return interface_class.from_value(self._obj)
 
     def to_string(self) -> str:
         return _IStringable.method(6).invoke(self._obj, []).to_string()

@@ -817,15 +817,18 @@ pub fn generate_class(
         ));
         out.push_str("        return cls(obj)\n");
         out.push('\n');
-        out.push_str("    @staticmethod\n");
+        out.push_str("    @classmethod\n");
         out.push_str(&format!(
-            "    def from_value(obj: DynWinRTValue) -> '{}':\n",
+            "    def from_value(cls, obj: DynWinRTValue) -> '{}':\n",
             req_iface.name
         ));
         out.push_str(&format!(
-            "        return {}._from_native(obj.cast(IID_{}))\n",
-            req_iface.name, req_iface.name
+            "        return cls._from_native(obj.cast(IID_{}))\n",
+            req_iface.name
         ));
+        out.push('\n');
+        out.push_str("    def as_interface(self, interface_class):\n");
+        out.push_str("        return interface_class.from_value(self._obj)\n");
         for methods in crate::codegen::winrt::python::overloads::grouped_methods(
             reorder_getters_before_setters(&req_iface.methods),
         ) {

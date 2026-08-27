@@ -278,9 +278,12 @@ class IClosable:
     def _from_native(cls, obj: DynWinRTValue) -> 'IClosable':
         return cls(obj)
 
-    @staticmethod
-    def from_value(obj: DynWinRTValue) -> 'IClosable':
-        return IClosable._from_native(obj.cast(IID_IClosable))
+    @classmethod
+    def from_value(cls, obj: DynWinRTValue) -> 'IClosable':
+        return cls._from_native(obj.cast(IID_IClosable))
+
+    def as_interface(self, interface_class):
+        return interface_class.from_value(self._obj)
 
     def close(self) -> None:
         _IClosable.method(6).invoke(self._obj, [])
