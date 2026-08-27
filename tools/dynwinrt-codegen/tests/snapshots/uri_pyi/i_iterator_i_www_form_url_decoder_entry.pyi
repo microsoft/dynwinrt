@@ -7,7 +7,7 @@ from ._typing import (
     DynWinRTType, DynWinRTValue, DynWinRTArray, DynWinRTStruct, DynWinRtDelegate,
     _DynWinRTProjector,
 )
-from typing import Protocol, TypeVar
+from typing import Protocol, Self, TypeVar
 
 _InterfaceT = TypeVar('_InterfaceT')
 
@@ -25,8 +25,8 @@ class IIterator_IWwwFormUrlDecoderEntry(_IIterator_IWwwFormUrlDecoderEntryIdenti
     def __iter__(self) -> Iterator[IWwwFormUrlDecoderEntry | None]: ...
     def __next__(self) -> IWwwFormUrlDecoderEntry | None: ...
 
-    @staticmethod
-    def from_value(obj: DynWinRTValue) -> 'IIterator_IWwwFormUrlDecoderEntry': ...
+    @classmethod
+    def from_value(cls, obj: DynWinRTValue) -> Self: ...
     def as_interface(self, interface_class: _DynWinRTProjector[_InterfaceT]) -> _InterfaceT: ...
 
     @builtins.property

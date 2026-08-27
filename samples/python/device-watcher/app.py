@@ -91,17 +91,29 @@ async def enumerate_devices(timeout: int, show_names: bool) -> None:
             ),
             watcher.subscribe_stopped(on_stopped),
         ]
+        started = False
+        stop_requested = False
         try:
             watcher.start()
+            started = True
             await asyncio.wait_for(
                 enumeration_completed.wait(),
                 timeout=timeout,
             )
             watcher.stop()
+            stop_requested = True
             await asyncio.wait_for(stopped.wait(), timeout=5)
+            started = False
         finally:
-            for unsubscribe in reversed(unsubscribers):
-                unsubscribe()
+            try:
+                if started and not stop_requested:
+                    watcher.stop()
+                    stop_requested = True
+                if started:
+                    await asyncio.wait_for(stopped.wait(), timeout=5)
+            finally:
+                for unsubscribe in reversed(unsubscribers):
+                    unsubscribe()
 
         values = sorted(
             devices.values(),

@@ -22,6 +22,13 @@ pub use naming::{
     python_public_module_name, python_public_qualified_module_name, to_snake_case_filename,
 };
 
+pub(crate) fn has_projectable_default_interface(class: &crate::meta::ClassMeta) -> bool {
+    class
+        .default_interface
+        .as_ref()
+        .is_some_and(|interface| !interface.iid.is_empty() || interface.generic_piid.is_some())
+}
+
 pub(crate) fn collect_referenced_delegate_names(
     methods: &[crate::meta::MethodMeta],
     known_delegate_names: &std::collections::HashSet<String>,

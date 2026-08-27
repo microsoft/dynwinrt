@@ -205,11 +205,7 @@ pub fn generate_interface_stub(
     out.push_str(IMPORT_LINE);
     let collection_kind = interface_kind(iface);
     let is_protocol = collection_kind.is_none();
-    if is_protocol {
-        out.push_str("from typing import Protocol, Self, TypeVar\n");
-    } else {
-        out.push_str("from typing import Protocol, TypeVar\n");
-    }
+    out.push_str("from typing import Protocol, Self, TypeVar\n");
     if methods_have_async_output(iface.methods.iter()) {
         out.push_str(ASYNC_IMPORT_LINE);
     }
@@ -343,16 +339,8 @@ pub fn generate_interface_stub(
     out.push_str(&collection_protocol_stubs(iface, known_types, 4));
     if !iface.iid.is_empty() || iface.generic_piid.is_some() {
         out.push('\n');
-        if is_protocol {
-            out.push_str("    @classmethod\n");
-            out.push_str("    def from_value(cls, obj: DynWinRTValue) -> Self: ...\n");
-        } else {
-            out.push_str("    @staticmethod\n");
-            out.push_str(&format!(
-                "    def from_value(obj: DynWinRTValue) -> '{}': ...\n",
-                iface.name
-            ));
-        }
+        out.push_str("    @classmethod\n");
+        out.push_str("    def from_value(cls, obj: DynWinRTValue) -> Self: ...\n");
         out.push_str(
             "    def as_interface(self, interface_class: _DynWinRTProjector[_InterfaceT]) -> _InterfaceT: ...\n",
         );
@@ -715,10 +703,12 @@ pub fn generate_class_stub(
         "    ",
     ));
     out.push_str(&emit_constructor_stubs(class, known_types, &delegate_names));
-    out.push_str(
-        "\n    @classmethod\n\
-         \x20   def from_value(cls, obj: DynWinRTValue) -> Self: ...\n",
-    );
+    if super::has_projectable_default_interface(class) {
+        out.push_str(
+            "\n    @classmethod\n\
+             \x20   def from_value(cls, obj: DynWinRTValue) -> Self: ...\n",
+        );
+    }
     if collection_base.is_some() {
         out.push_str(&emit_class_instance_stubs(
             class,

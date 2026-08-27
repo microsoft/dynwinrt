@@ -2,13 +2,17 @@
 // Licensed under the MIT License.
 
 use std::collections::HashSet;
+use std::path::Path;
 
 use dynwinrt_codegen::codegen::{python, python_stub};
 use dynwinrt_codegen::meta::{
-    ClassMeta, ConstructorKind, ConstructorMeta, InterfaceMeta, MethodMeta, ParamDirection,
+    self, ClassMeta, ConstructorKind, ConstructorMeta, InterfaceMeta, MethodMeta, ParamDirection,
     ParamMeta,
 };
 use dynwinrt_codegen::types::{TypeKind, TypeMeta, TypeRef};
+
+const WINDOWS_WINMD: &str =
+    r"C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd";
 
 fn runtime_class(name: &str) -> TypeMeta {
     TypeMeta::RuntimeClass {
@@ -41,6 +45,12 @@ fn system_returned_class_keeps_only_internal_native_wrapping() {
         name: "SystemResult".into(),
         namespace: "Contoso".into(),
         full_name: "Contoso.SystemResult".into(),
+        default_interface: Some(InterfaceMeta {
+            name: "ISystemResult".into(),
+            namespace: "Contoso".into(),
+            iid: "22222222-2222-2222-2222-222222222222".into(),
+            ..Default::default()
+        }),
         // Deliberately contradictory legacy state and an unrelated factory:
         // neither is authoritative without a ConstructorMeta declaration.
         has_default_constructor: true,
@@ -62,6 +72,88 @@ fn system_returned_class_keeps_only_internal_native_wrapping() {
     assert!(pyi.contains("def get_current() -> SystemResult | None: ..."));
     assert!(!pyi.contains("def __init__(self, obj: DynWinRTValue)"));
     assert!(!pyi.contains("def __init__(self)"));
+}
+
+#[test]
+fn static_only_class_has_no_native_projection_entry() {
+    let class = ClassMeta {
+        name: "ApiInformation".into(),
+        namespace: "Windows.Foundation.Metadata".into(),
+        full_name: "Windows.Foundation.Metadata.ApiInformation".into(),
+        static_interfaces: vec![factory("IApiInformationStatics", "IsTypePresent", None)],
+        ..Default::default()
+    };
+    let known = HashSet::from(["ApiInformation".into()]);
+
+    let py = python::generate_class(&class, &known, &HashSet::new(), &HashSet::new());
+    let pyi = python_stub::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
+
+    assert!(
+        !py.contains("def _from_native(cls, obj: DynWinRTValue):"),
+        "{py}"
+    );
+    assert!(!py.contains("from_value = classmethod"), "{py}");
+    assert!(!py.contains("isinstance(args[0], DynWinRTValue)"), "{py}");
+    assert!(!pyi.contains("def from_value("), "{pyi}");
+
+    if Path::new(WINDOWS_WINMD).exists() {
+        let api_information = meta::parse_class(
+            WINDOWS_WINMD,
+            "Windows.Foundation.Metadata",
+            "ApiInformation",
+        )
+        .expect("ApiInformation metadata");
+        assert!(api_information.default_interface.is_none());
+        let known = HashSet::from(["ApiInformation".into()]);
+        let py = python::generate_class(&api_information, &known, &HashSet::new(), &HashSet::new());
+        let pyi = python_stub::generate_class_stub(
+            &api_information,
+            &known,
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+        assert!(!py.contains("from_value = classmethod"), "{py}");
+        assert!(!pyi.contains("def from_value("), "{pyi}");
+    }
+}
+
+#[test]
+fn real_factory_constructors_reference_generated_private_helpers() {
+    if !Path::new(WINDOWS_WINMD).exists() {
+        eprintln!("Skipping: Windows.winmd not found");
+        return;
+    }
+
+    let mut checked = 0;
+    for (namespace, name) in [
+        ("Windows.ApplicationModel.Email", "EmailAttachment"),
+        ("Windows.Foundation.Diagnostics", "LoggingChannel"),
+        ("Windows.Management.Update", "WindowsUpdateManager"),
+    ] {
+        let Some(class) = meta::parse_class(WINDOWS_WINMD, namespace, name) else {
+            continue;
+        };
+        checked += 1;
+        let code = python::generate_class(
+            &class,
+            &HashSet::from([name.into()]),
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+        for line in code.lines() {
+            let Some(call) = line.trim().strip_prefix("return type(self).") else {
+                continue;
+            };
+            let helper = call.split('(').next().expect("constructor helper call");
+            if helper.starts_with('_') {
+                assert!(
+                    code.contains(&format!("def {helper}(")),
+                    "{namespace}.{name} constructor references missing {helper}:\n{code}"
+                );
+            }
+        }
+    }
+    assert!(checked >= 2, "expected real constructor metadata");
 }
 
 #[test]

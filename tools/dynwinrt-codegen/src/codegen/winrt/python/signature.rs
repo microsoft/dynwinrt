@@ -548,12 +548,19 @@ pub(crate) fn py_type_guard(name: &str, typ: &TypeMeta, known_types: &HashSet<St
         TypeMeta::Struct {
             name: type_name, ..
         } => format!("isinstance({name}, {type_name})"),
+        typ @ TypeMeta::RuntimeClass { .. } if py_runtime_class_iid_const(typ).is_some() => {
+            let (iid, _) = py_runtime_class_iid_const(typ).expect("checked above");
+            format!("_dynwinrt_can_cast({name}, {iid})")
+        }
         TypeMeta::RuntimeClass {
             namespace,
             name: type_name,
             ..
-        }
-        | TypeMeta::Interface {
+        } if known_types.contains(type_name) => format!(
+            "isinstance({name}, {})",
+            py_runtime_namespaced_symbol(namespace, type_name, type_name)
+        ),
+        TypeMeta::Interface {
             namespace,
             name: type_name,
             ..
@@ -863,6 +870,10 @@ mod tests {
     #[test]
     fn runtime_class_inputs_cast_to_the_expected_interface() {
         let geometry = geometry_type();
+        assert_eq!(
+            py_type_guard("value", &geometry, &HashSet::from(["Geometry".into()])),
+            "_dynwinrt_can_cast(value, IID_ARG_Microsoft_UI_Xaml_Media_Geometry)"
+        );
         assert_eq!(
             py_wrap_native_value("value", &geometry),
             "getattr(value, '_obj', value).cast(IID_ARG_Microsoft_UI_Xaml_Media_Geometry)"

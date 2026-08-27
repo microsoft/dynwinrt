@@ -6,7 +6,7 @@ from ._runtime import (
     DynWinRTType, DynWinRTMethodSig, DynWinRTValue, DynWinRTArray,
     DynWinRTStruct, DynWinRtDelegate, DynWinRTOverrideInterface,
     _property, _weakref_ref,
-    _dynwinrt_array, _dynwinrt_bind_overload, _dynwinrt_create_delegate,
+    _dynwinrt_array, _dynwinrt_bind_overload, _dynwinrt_can_cast, _dynwinrt_create_delegate,
     _dynwinrt_datetime_to_ticks, _dynwinrt_delegate, _dynwinrt_enum, _dynwinrt_guid,
     _dynwinrt_map, _dynwinrt_new_vector, _dynwinrt_ticks_to_datetime,
     _dynwinrt_ticks_to_timedelta, _dynwinrt_timedelta_to_ticks,
@@ -52,9 +52,9 @@ class IIterator_IWwwFormUrlDecoderEntry(_WinRTIteratorMixin):
     def _from_native(cls, obj: DynWinRTValue) -> 'IIterator_IWwwFormUrlDecoderEntry':
         return cls(obj)
 
-    @staticmethod
-    def from_value(obj: DynWinRTValue) -> 'IIterator_IWwwFormUrlDecoderEntry':
-        return IIterator_IWwwFormUrlDecoderEntry._from_native(obj.cast(IID_IIterator_IWwwFormUrlDecoderEntry))
+    @classmethod
+    def from_value(cls, obj: DynWinRTValue) -> 'IIterator_IWwwFormUrlDecoderEntry':
+        return cls._from_native(obj.cast(IID_IIterator_IWwwFormUrlDecoderEntry))
 
     def as_interface(self, interface_class):
         return interface_class.from_value(self._obj)

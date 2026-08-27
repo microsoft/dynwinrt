@@ -49,7 +49,7 @@ from ._runtime import (
     DynWinRTType, DynWinRTMethodSig, DynWinRTValue, DynWinRTArray,
     DynWinRTStruct, DynWinRtDelegate, DynWinRTOverrideInterface,
     _property, _weakref_ref,
-    _dynwinrt_array, _dynwinrt_bind_overload, _dynwinrt_create_delegate,
+    _dynwinrt_array, _dynwinrt_bind_overload, _dynwinrt_can_cast, _dynwinrt_create_delegate,
     _dynwinrt_datetime_to_ticks, _dynwinrt_delegate, _dynwinrt_enum, _dynwinrt_guid,
     _dynwinrt_map, _dynwinrt_new_vector, _dynwinrt_ticks_to_datetime,
     _dynwinrt_ticks_to_timedelta, _dynwinrt_timedelta_to_ticks,
@@ -120,6 +120,18 @@ def _dynwinrt_delegate(value, iid, parameter_types):
 
 def _dynwinrt_from_value(cls, obj):
     return _dynwinrt_project_as(obj, cls)
+
+
+def _dynwinrt_can_cast(value, iid):
+    raw = getattr(value, '_obj', value)
+    if not isinstance(raw, DynWinRTValue):
+        return False
+    try:
+        projected = raw.cast(iid)
+    except OSError:
+        return False
+    projected.release()
+    return True
 \n";
 
 pub fn generate_runtime_support_module() -> String {

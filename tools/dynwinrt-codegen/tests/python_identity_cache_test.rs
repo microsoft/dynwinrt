@@ -162,7 +162,7 @@ fn interface_generation_uses_projected_identity_cache() {
         "missing cached _from_native helper:\n{py}"
     );
     assert!(
-        py.contains("return IWidget._from_native(obj.cast(IID_IWidget))"),
+        py.contains("return cls._from_native(obj.cast(IID_IWidget))"),
         "from_value should reuse the cached wrapper path:\n{py}"
     );
 }

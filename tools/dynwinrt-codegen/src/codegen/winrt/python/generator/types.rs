@@ -281,14 +281,14 @@ pub fn generate_interface(
 
     // static from() — QI cast
     if !iface.iid.is_empty() || iface.generic_piid.is_some() {
-        out.push_str("    @staticmethod\n");
+        out.push_str("    @classmethod\n");
         out.push_str(&format!(
-            "    def from_value(obj: DynWinRTValue) -> '{}':\n",
+            "    def from_value(cls, obj: DynWinRTValue) -> '{}':\n",
             iface.name
         ));
         out.push_str(&format!(
-            "        return {}._from_native(obj.cast(IID_{}))\n",
-            iface.name, iface.name
+            "        return cls._from_native(obj.cast(IID_{}))\n",
+            iface.name
         ));
         out.push('\n');
         out.push_str("    def as_interface(self, interface_class):\n");
@@ -615,7 +615,8 @@ mod tests {
         let code = generate_interface(&iface, &HashSet::new(), &HashSet::new());
         assert!(code.contains("_dynwinrt_interface_type = True"));
         assert!(code.contains("_dynwinrt_interface_iid = IID_IWidget"));
-        assert!(code.contains("return IWidget._from_native(obj.cast(IID_IWidget))"));
+        assert!(code.contains("@classmethod\n    def from_value(cls, obj: DynWinRTValue)"));
+        assert!(code.contains("return cls._from_native(obj.cast(IID_IWidget))"));
     }
 
     #[test]

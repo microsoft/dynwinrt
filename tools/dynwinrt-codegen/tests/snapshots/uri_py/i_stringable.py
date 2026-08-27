@@ -6,7 +6,7 @@ from ._runtime import (
     DynWinRTType, DynWinRTMethodSig, DynWinRTValue, DynWinRTArray,
     DynWinRTStruct, DynWinRtDelegate, DynWinRTOverrideInterface,
     _property, _weakref_ref,
-    _dynwinrt_array, _dynwinrt_bind_overload, _dynwinrt_create_delegate,
+    _dynwinrt_array, _dynwinrt_bind_overload, _dynwinrt_can_cast, _dynwinrt_create_delegate,
     _dynwinrt_datetime_to_ticks, _dynwinrt_delegate, _dynwinrt_enum, _dynwinrt_guid,
     _dynwinrt_map, _dynwinrt_new_vector, _dynwinrt_ticks_to_datetime,
     _dynwinrt_ticks_to_timedelta, _dynwinrt_timedelta_to_ticks,
@@ -45,9 +45,9 @@ class IStringable:
     def _from_native(cls, obj: DynWinRTValue) -> 'IStringable':
         return cls(obj)
 
-    @staticmethod
-    def from_value(obj: DynWinRTValue) -> 'IStringable':
-        return IStringable._from_native(obj.cast(IID_IStringable))
+    @classmethod
+    def from_value(cls, obj: DynWinRTValue) -> 'IStringable':
+        return cls._from_native(obj.cast(IID_IStringable))
 
     def as_interface(self, interface_class):
         return interface_class.from_value(self._obj)

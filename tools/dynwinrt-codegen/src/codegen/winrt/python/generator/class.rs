@@ -48,6 +48,7 @@ pub fn generate_class(
     } else {
         "self._collection_obj"
     };
+    let projectable = super::super::has_projectable_default_interface(class);
 
     let mut out = String::new();
 
@@ -55,7 +56,9 @@ pub fn generate_class(
     out.push_str(HEADER);
     out.push_str(FUTURE_ANNOTATIONS);
     out.push_str(IMPORT_LINE);
-    out.push_str("from ._runtime import _dynwinrt_from_value\n");
+    if projectable {
+        out.push_str("from ._runtime import _dynwinrt_from_value\n");
+    }
     if has_public_composition {
         out.push_str(
             "from dynwinrt import register_xaml_runtime_class as _dynwinrt_register_xaml_runtime_class\n",
@@ -1073,9 +1076,34 @@ fn build_factory_call_expr(
 ) -> String {
     let public_name =
         crate::codegen::winrt::python::overloads::method_group_key(method, factory_names);
-    let overload_count = factory_methods_for_name(class, factory_names, &public_name);
-    let call_name = if overload_count > 1 {
-        format!("_{public_name}_{}", method.vtable_index)
+    let mut overloads = class
+        .factory_interfaces
+        .iter()
+        .flat_map(|interface| interface.methods.iter())
+        .chain(
+            class
+                .static_interfaces
+                .iter()
+                .flat_map(|interface| interface.methods.iter()),
+        )
+        .filter(|candidate| {
+            crate::codegen::winrt::python::overloads::method_group_key(candidate, factory_names)
+                == public_name
+        })
+        .collect::<Vec<_>>();
+    let call_name = if overloads.len() > 1 {
+        overloads.sort_by(|left, right| {
+            crate::codegen::winrt::python::overloads::cmp_python_dispatch_methods(left, right)
+        });
+        let private_names = crate::codegen::winrt::python::method::private_overload_names(
+            &public_name,
+            overloads.iter().copied(),
+        );
+        let index = overloads
+            .iter()
+            .position(|candidate| std::ptr::eq(*candidate, method))
+            .expect("constructor method must be present in its static overload group");
+        private_names[index].clone()
     } else {
         to_snake_case(&method.name)
     };
@@ -1161,6 +1189,7 @@ fn generate_python_constructor(
     collection_uses_default: bool,
 ) -> String {
     let mut out = String::new();
+    let projectable = super::super::has_projectable_default_interface(class);
     let has_public_composition = class
         .constructors
         .iter()
@@ -1204,13 +1233,19 @@ fn generate_python_constructor(
     supported_override_names.sort();
     supported_override_names.dedup();
     let supported_override_names_expr = python_tuple(&supported_override_names);
-    let factory_methods = class
+    let static_methods = class
         .factory_interfaces
         .iter()
         .flat_map(|iface| iface.methods.iter())
+        .chain(
+            class
+                .static_interfaces
+                .iter()
+                .flat_map(|iface| iface.methods.iter()),
+        )
         .collect::<Vec<_>>();
     let factory_names =
-        crate::codegen::winrt::python::overloads::method_names(factory_methods.iter().copied());
+        crate::codegen::winrt::python::overloads::method_names(static_methods.iter().copied());
     let mut candidates = build_ctor_candidates(class, &factory_names, delegate_type_names);
     candidates.sort_by(|left, right| {
         crate::codegen::winrt::python::overloads::cmp_python_dispatch_params(
@@ -1221,10 +1256,12 @@ fn generate_python_constructor(
     });
 
     out.push_str("    def __new__(cls, *args, **kwargs):\n");
-    out.push_str(
-        "        if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):\n\
-         \x20           return _dynwinrt_projected_from_native(cls, args[0], '_set_native')\n",
-    );
+    if projectable {
+        out.push_str(
+            "        if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):\n\
+             \x20           return _dynwinrt_projected_from_native(cls, args[0], '_set_native')\n",
+        );
+    }
     if !candidates.is_empty() {
         out.push_str(&format!("        if cls is {}:\n", class.name));
         for candidate in &candidates {
@@ -1324,10 +1361,12 @@ fn generate_python_constructor(
     ));
     out.push_str("        _dynwinrt_cache_projected(self)\n");
     out.push('\n');
-    out.push_str("    @classmethod\n");
-    out.push_str("    def _from_native(cls, obj: DynWinRTValue):\n");
-    out.push_str("        return cls(obj)\n\n");
-    out.push_str("    from_value = classmethod(_dynwinrt_from_value)\n\n");
+    if projectable {
+        out.push_str("    @classmethod\n");
+        out.push_str("    def _from_native(cls, obj: DynWinRTValue):\n");
+        out.push_str("        return cls(obj)\n\n");
+        out.push_str("    from_value = classmethod(_dynwinrt_from_value)\n\n");
+    }
     if let Some(native_override_names) = &native_override_names {
         out.push_str("    @classmethod\n");
         out.push_str(
@@ -1375,11 +1414,13 @@ fn generate_python_constructor(
         "        if getattr(self, '_dynwinrt_native_ready', False):\n\
          \x20           return\n",
     );
-    out.push_str(
-        "        if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):\n\
-         \x20           self._set_native(args[0])\n\
-         \x20           return\n",
-    );
+    if projectable {
+        out.push_str(
+            "        if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):\n\
+             \x20           self._set_native(args[0])\n\
+             \x20           return\n",
+        );
+    }
 
     if has_public_composition {
         let native_override_names = native_override_names
@@ -1510,21 +1551,6 @@ fn generate_python_constructor(
     out
 }
 
-fn factory_methods_for_name(
-    class: &ClassMeta,
-    names: &HashSet<String>,
-    public_name: &str,
-) -> usize {
-    class
-        .factory_interfaces
-        .iter()
-        .flat_map(|iface| iface.methods.iter())
-        .filter(|method| {
-            crate::codegen::winrt::python::overloads::method_group_key(method, names) == public_name
-        })
-        .count()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1584,6 +1610,53 @@ mod tests {
             }],
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn constructor_reuses_duplicate_slot_private_overload_names() {
+        let integer = constructor_method("Create", 6, TypeMeta::I32);
+        let text = constructor_method("Create", 6, TypeMeta::String);
+        let factory = |name: &str, method| InterfaceMeta {
+            name: name.into(),
+            namespace: "Contoso".into(),
+            methods: vec![method],
+            ..Default::default()
+        };
+        let class = ClassMeta {
+            name: "Widget".into(),
+            namespace: "Contoso".into(),
+            full_name: "Contoso.Widget".into(),
+            factory_interfaces: vec![
+                factory("IWidgetFactory", integer),
+                factory("IWidgetFactory2", text),
+            ],
+            constructors: vec![
+                ConstructorMeta {
+                    kind: ConstructorKind::FactoryActivation,
+                    factory_interface: Some(TypeRef {
+                        namespace: "Contoso".into(),
+                        name: "IWidgetFactory".into(),
+                        kind: TypeKind::Interface,
+                    }),
+                },
+                ConstructorMeta {
+                    kind: ConstructorKind::FactoryActivation,
+                    factory_interface: Some(TypeRef {
+                        namespace: "Contoso".into(),
+                        name: "IWidgetFactory2".into(),
+                        kind: TypeKind::Interface,
+                    }),
+                },
+            ],
+            ..Default::default()
+        };
+
+        let code = generate_class(&class, &HashSet::new(), &HashSet::new(), &HashSet::new());
+        assert!(code.contains("def _create_6_0("), "{code}");
+        assert!(code.contains("def _create_6_1("), "{code}");
+        assert!(code.contains("type(self)._create_6_0(_bound[0])"), "{code}");
+        assert!(code.contains("type(self)._create_6_1(_bound[0])"), "{code}");
+        assert!(!code.contains("type(self)._create_6(_bound[0])"), "{code}");
     }
 
     fn run_python(script: &str) -> String {

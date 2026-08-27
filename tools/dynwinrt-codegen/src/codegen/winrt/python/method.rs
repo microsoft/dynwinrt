@@ -445,7 +445,7 @@ pub(crate) struct InstanceOverload<'a> {
     pub(crate) property_has_getter: bool,
 }
 
-fn private_overload_names<'a>(
+pub(crate) fn private_overload_names<'a>(
     public_name: &str,
     methods: impl IntoIterator<Item = &'a MethodMeta>,
 ) -> Vec<String> {
