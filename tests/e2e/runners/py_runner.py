@@ -1705,6 +1705,18 @@ async def run_check(
 
             uri_impl = importlib.import_module(uri_module)
             projected_uri = dw.project_as(uri._obj, uri_type)
+            can_cast = runtime_module._dynwinrt_can_cast
+            uri_iid = getattr(uri_impl, 'IID_IUriRuntimeClass')
+            unsupported_iid = dw.WinGUID.parse(
+                '11111111-1111-1111-1111-111111111111'
+            )
+            if (
+                not can_cast(uri, uri_iid)
+                or can_cast(object(), uri_iid)
+                or can_cast(uri, unsupported_iid)
+            ):
+                cr['error'] = 'RuntimeClass overload QI guard failed'
+                return cr
             query = uri.query_parsed
             if query is None:
                 cr['error'] = 'Uri query projection returned None'
