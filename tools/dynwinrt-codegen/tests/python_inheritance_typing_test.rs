@@ -137,7 +137,7 @@ fn stubs_model_runtime_class_and_interface_bases_without_runtime_inheritance() {
         "{class_stub}"
     );
     assert!(
-        class_stub.contains("class Derived(DerivedLike):"),
+        class_stub.contains("class Derived(DerivedLike, _DynWinRTRuntimeClass):"),
         "{class_stub}"
     );
     assert!(
@@ -192,7 +192,9 @@ fn real_windows_metadata_exposes_xaml_and_stream_typing_relationships() {
         "{stream_stub}"
     );
     assert!(
-        stream_stub.contains("class SpeechSynthesisStream(SpeechSynthesisStreamLike):"),
+        stream_stub.contains(
+            "class SpeechSynthesisStream(SpeechSynthesisStreamLike, _DynWinRTRuntimeClass):"
+        ),
         "{stream_stub}"
     );
     let stream_interfaces = meta::parse_interfaces(WINDOWS_WINMD, "Windows.Storage.Streams");

@@ -204,6 +204,11 @@ fn embedded_interface_projection_preserves_subclasses_and_qi_helpers() {
         "{inline}"
     );
     assert!(
+        inline.contains("_dynwinrt_interface_type = True")
+            && inline.contains("_dynwinrt_interface_iid = IID_IExtra"),
+        "{inline}"
+    );
+    assert!(
         inline.contains("return cls._from_native(obj.cast(IID_IExtra))"),
         "{inline}"
     );

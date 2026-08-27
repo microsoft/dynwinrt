@@ -75,6 +75,8 @@ _setup_module()
 
 def _projected_wrapper_type(name):
     class Wrapper:
+        _dynwinrt_runtime_class_type = True
+
         def __new__(cls, *args, **kwargs):
             if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):
                 return _dynwinrt_projected_from_native(
@@ -625,6 +627,8 @@ def test_project_as_rejects_invalid_values_and_types():
         raw = DynWinRTValue.activation_factory("Windows.Foundation.Uri")
         with pytest.raises(TypeError, match="generated runtime class type"):
             project_as(raw, object)
+        with pytest.raises(TypeError, match="generated runtime class type"):
+            project_as(raw, int)
         assert not raw.is_null()
         raw.release()
 

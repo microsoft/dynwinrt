@@ -48,6 +48,7 @@ pub fn generate_class(
     } else {
         "self._collection_obj"
     };
+    let projectable = super::super::has_projectable_default_interface(class);
     let mut out = String::new();
 
     // Header
@@ -285,6 +286,9 @@ pub fn generate_class(
         out.push_str(&crate::codegen::winrt::python::docs::format_pydoc(
             &doc, "    ",
         ));
+    }
+    if projectable {
+        out.push_str("    _dynwinrt_runtime_class_type = True\n");
     }
 
     out.push_str(&generate_python_constructor(
@@ -777,6 +781,11 @@ pub fn generate_class(
         } else {
             out.push_str(&format!("\nclass {}:\n", req_iface.name));
         }
+        out.push_str("    _dynwinrt_interface_type = True\n");
+        out.push_str(&format!(
+            "    _dynwinrt_interface_iid = IID_{}\n",
+            req_iface.name
+        ));
         out.push_str("    def __new__(cls, *args, **kwargs):\n");
         out.push_str(
             "        if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):\n\

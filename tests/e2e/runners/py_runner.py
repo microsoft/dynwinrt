@@ -1755,12 +1755,17 @@ async def run_check(
                 else None
             )
             combined = uri.combine_uri('child.txt')
-            canonical = getattr(
+            canonical_type = getattr(
                 uri_impl,
                 'IUriRuntimeClassWithAbsoluteCanonicalUri',
-            ).from_value(
-                uri._obj,
             )
+            try:
+                dw.project_as(uri._obj, canonical_type)
+                cr['error'] = 'project_as accepted an embedded interface'
+                return cr
+            except TypeError:
+                pass
+            canonical = canonical_type.from_value(uri._obj)
             stringable = uri.as_interface(getattr(uri_impl, 'IStringable'))
             uri_strings = (
                 uri.absolute_uri,

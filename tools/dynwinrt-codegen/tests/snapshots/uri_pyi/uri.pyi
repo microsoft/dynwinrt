@@ -7,6 +7,7 @@ from ._typing import (
     DynWinRTType, DynWinRTValue, DynWinRTArray, DynWinRTStruct, DynWinRtDelegate,
     _DynWinRTProjector,
 )
+from ._typing import _DynWinRTRuntimeClass
 from typing import Protocol, Self
 from typing import TypeVar
 
@@ -88,7 +89,7 @@ class UriLike(_UriIdentity, Protocol):
 
     def as_interface(self, interface_class: _DynWinRTProjector[_InterfaceT]) -> _InterfaceT: ...
 
-class Uri(UriLike):
+class Uri(UriLike, _DynWinRTRuntimeClass):
     @overload
     def __init__(self, uri: str) -> None: ...
     @overload

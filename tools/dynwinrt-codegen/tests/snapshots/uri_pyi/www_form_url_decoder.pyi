@@ -7,6 +7,7 @@ from ._typing import (
     DynWinRTType, DynWinRTValue, DynWinRTArray, DynWinRTStruct, DynWinRtDelegate,
     _DynWinRTProjector,
 )
+from ._typing import _DynWinRTRuntimeClass
 from typing import Protocol, Self
 from typing import TypeVar
 
@@ -50,7 +51,7 @@ class WwwFormUrlDecoderLike(_WwwFormUrlDecoderIdentity, Protocol):
 
     def as_interface(self, interface_class: _DynWinRTProjector[_InterfaceT]) -> _InterfaceT: ...
 
-class WwwFormUrlDecoder(_WwwFormUrlDecoderIdentity, Sequence[IWwwFormUrlDecoderEntry | None]):
+class WwwFormUrlDecoder(_WwwFormUrlDecoderIdentity, Sequence[IWwwFormUrlDecoderEntry | None], _DynWinRTRuntimeClass):
     def __init__(self, query: str) -> None: ...
 
     def __len__(self) -> int: ...

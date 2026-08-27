@@ -97,6 +97,7 @@ _pack_time_span = pack_time_span
 
 
 class DataWriter:
+    _dynwinrt_runtime_class_type = True
     def __new__(cls, *args, **kwargs):
         if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):
             return _dynwinrt_projected_from_native(cls, args[0], '_set_native')
@@ -255,6 +256,8 @@ class DataWriter:
 
 
 class IClosable:
+    _dynwinrt_interface_type = True
+    _dynwinrt_interface_iid = IID_IClosable
     def __new__(cls, *args, **kwargs):
         if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):
             return _dynwinrt_projected_from_native(cls, args[0], '_set_native')

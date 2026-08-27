@@ -4,11 +4,15 @@ _T = TypeVar("_T", covariant=True)
 _P = TypeVar("_P", covariant=True)
 _Tracked = TypeVar("_Tracked")
 _Projected_co = TypeVar("_Projected_co", covariant=True)
+_RuntimeClass = TypeVar("_RuntimeClass", bound="_DynWinRTRuntimeClass")
 
 
 class _DynWinRTProjector(Protocol[_Projected_co]):
     @classmethod
     def from_value(cls, obj: "DynWinRTValue") -> _Projected_co: ...
+
+
+class _DynWinRTRuntimeClass: ...
 
 
 __all__ = [
@@ -98,7 +102,9 @@ class ProjectedLifetimeScope:
 
 def projected_lifetime_scope() -> ProjectedLifetimeScope: ...
 
-def project_as(value: object, wrapper_type: type[_Tracked]) -> _Tracked: ...
+def project_as(
+    value: object, wrapper_type: type[_RuntimeClass]
+) -> _RuntimeClass: ...
 
 def release_projected(value: object) -> None: ...
 

@@ -46,6 +46,7 @@ _IIterable_IWwwFormUrlDecoderEntry = DynWinRTType.register_interface(
 
 
 class WwwFormUrlDecoder(_WinRTSequenceMixin):
+    _dynwinrt_runtime_class_type = True
     def __new__(cls, *args, **kwargs):
         if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):
             return _dynwinrt_projected_from_native(cls, args[0], '_set_native')
@@ -113,6 +114,8 @@ class WwwFormUrlDecoder(_WinRTSequenceMixin):
 
 
 class IVectorView_IWwwFormUrlDecoderEntry(_WinRTSequenceMixin):
+    _dynwinrt_interface_type = True
+    _dynwinrt_interface_iid = IID_IVectorView_IWwwFormUrlDecoderEntry
     def __new__(cls, *args, **kwargs):
         if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):
             return _dynwinrt_projected_from_native(cls, args[0], '_set_native')
@@ -157,6 +160,8 @@ class IVectorView_IWwwFormUrlDecoderEntry(_WinRTSequenceMixin):
 
 
 class IIterable_IWwwFormUrlDecoderEntry(_WinRTIterableMixin):
+    _dynwinrt_interface_type = True
+    _dynwinrt_interface_iid = IID_IIterable_IWwwFormUrlDecoderEntry
     def __new__(cls, *args, **kwargs):
         if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):
             return _dynwinrt_projected_from_native(cls, args[0], '_set_native')

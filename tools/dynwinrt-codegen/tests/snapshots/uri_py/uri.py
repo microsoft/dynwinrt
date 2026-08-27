@@ -66,6 +66,7 @@ _IStringable = DynWinRTType.register_interface(
 
 
 class Uri:
+    _dynwinrt_runtime_class_type = True
     def __new__(cls, *args, **kwargs):
         if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):
             return _dynwinrt_projected_from_native(cls, args[0], '_set_native')
@@ -217,6 +218,8 @@ class Uri:
 
 
 class IUriRuntimeClassWithAbsoluteCanonicalUri:
+    _dynwinrt_interface_type = True
+    _dynwinrt_interface_iid = IID_IUriRuntimeClassWithAbsoluteCanonicalUri
     def __new__(cls, *args, **kwargs):
         if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):
             return _dynwinrt_projected_from_native(cls, args[0], '_set_native')
@@ -254,6 +257,8 @@ class IUriRuntimeClassWithAbsoluteCanonicalUri:
 
 
 class IStringable:
+    _dynwinrt_interface_type = True
+    _dynwinrt_interface_iid = IID_IStringable
     def __new__(cls, *args, **kwargs):
         if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):
             return _dynwinrt_projected_from_native(cls, args[0], '_set_native')
