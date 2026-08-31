@@ -16,12 +16,10 @@ import asyncio
 import importlib
 import inspect
 import json
-import http.server
 import re
 import sys
 import os
 import threading
-import time
 
 
 _WINRT_UINT_SUFFIXES = {'int8', 'int16', 'int32', 'int64'}
@@ -113,34 +111,6 @@ def wrap_arg(val):
     if hasattr(val, '_obj'):
         return val._obj
     return val
-
-
-def start_progress_server():
-    payload = ('dynwinrt-struct-progress-' * 16_384).encode('utf-8')
-
-    class Handler(http.server.BaseHTTPRequestHandler):
-        protocol_version = 'HTTP/1.1'
-
-        def do_GET(self):
-            self.send_response(200)
-            self.send_header('Content-Length', str(len(payload)))
-            self.send_header('Content-Type', 'text/plain; charset=utf-8')
-            self.send_header('Connection', 'close')
-            self.end_headers()
-            for offset in range(0, len(payload), 8_192):
-                self.wfile.write(payload[offset:offset + 8_192])
-                self.wfile.flush()
-                time.sleep(0.005)
-            self.close_connection = True
-
-        def log_message(self, _format, *_args):
-            pass
-
-    server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    host, port = server.server_address
-    return server, thread, payload.decode('utf-8'), f'http://{host}:{port}/progress'
 
 
 async def run_spec(spec: dict, generated_dir: str, pkg_name: str) -> dict:
@@ -2005,74 +1975,6 @@ async def run_check(
             else:
                 print(f'  generated helper matrix: {counters}')
                 cr['pass'] = True
-
-        elif kind == 'async_struct_progress':
-            server, thread, payload, url = start_progress_server()
-            try:
-                uri_type = generated_type(pkg_name, 'Uri')
-                uri = uri_type(url)
-                progress_values = []
-                operation = getattr(obj, member)(uri)
-                operation.progress(progress_values.append)
-                body = await operation
-                await asyncio.sleep(0.05)
-
-                if body != payload:
-                    cr['error'] = (
-                        f'loopback response mismatch: expected {len(payload)} '
-                        f'characters, got {len(str(body))}'
-                    )
-                    return cr
-                expected_type = check.get('expected_type')
-                if (
-                    not progress_values
-                    or any(
-                        value is None
-                        or (
-                            expected_type
-                            and type(value).__name__ != expected_type
-                        )
-                        for value in progress_values
-                    )
-                ):
-                    actual_types = ', '.join(
-                        type(value).__name__ for value in progress_values
-                    ) or 'none'
-                    cr['error'] = (
-                        f'expected projected {expected_type} progress values, '
-                        f'got {actual_types}'
-                    )
-                    return cr
-                received = next(
-                    (
-                        value
-                        for value in progress_values
-                        if value.bytes_received > 0
-                        and value.total_bytes_to_receive == len(payload)
-                    ),
-                    None,
-                )
-                if received is None:
-                    totals = ', '.join(
-                        f'{value.bytes_received}/{value.total_bytes_to_receive}'
-                        for value in progress_values
-                    )
-                    cr['error'] = (
-                        'progress did not retain expected receive totals: '
-                        f'{totals}'
-                    )
-                    return cr
-                if (
-                    not isinstance(received.retries, int)
-                    or not hasattr(received.stage, 'value')
-                ):
-                    cr['error'] = 'projected progress scalar fields were invalid'
-                    return cr
-                cr['pass'] = True
-            finally:
-                server.shutdown()
-                server.server_close()
-                thread.join(timeout=5)
 
         else:
             cr['error'] = f'unknown check kind: {kind}'

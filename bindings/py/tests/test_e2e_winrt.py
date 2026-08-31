@@ -13,6 +13,11 @@ verifies the results against known expected values.
 Requires: Windows 10/11 with standard SDK (no extra installs needed).
 """
 
+import asyncio
+import http.server
+import threading
+import time
+
 from dynwinrt import (
     DynWinRTType,
     DynWinRTMethodSig,
@@ -22,6 +27,7 @@ from dynwinrt import (
     WinGUID,
     ro_initialize,
 )
+from dynwinrt.dynwinrt import _DynWinRTAsyncWithProgress
 
 # Initialize WinRT once for the entire module
 ro_initialize(1)
@@ -51,6 +57,34 @@ def _register(name, iid_str, methods):
     for mname, _, _ in methods:
         handles[mname] = itype.method_by_name(mname)
     return itype, iid, handles
+
+
+def _start_progress_server():
+    payload = ("dynwinrt-struct-progress-" * 16_384).encode()
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            for offset in range(0, len(payload), 8_192):
+                self.wfile.write(payload[offset : offset + 8_192])
+                self.wfile.flush()
+                time.sleep(0.005)
+            self.close_connection = True
+
+        def log_message(self, _format, *_args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address
+    return server, thread, payload.decode(), f"http://{host}:{port}/progress"
 
 
 # ======================================================================
@@ -422,7 +456,143 @@ class TestBuffer:
 
 
 # ======================================================================
-# 5. Uri (extended) — more thorough string/int/bool coverage
+# 5. HttpClient — struct-valued async progress with nested IReference
+# ======================================================================
+
+class TestHttpProgress:
+    def test_struct_progress_survives_asyncio_dispatch(self):
+        u64 = DynWinRTType.u64_type()
+        progress_stage = DynWinRTType.enum_type("Windows.Web.Http.HttpProgressStage")
+        reference_u64 = DynWinRTType.parameterized(
+            WinGUID.parse("61c17706-2d65-11e0-9ae8-d48564015472"),
+            [u64],
+        )
+        http_progress = DynWinRTType.struct_type(
+            "Windows.Web.Http.HttpProgress",
+            [
+                progress_stage,
+                u64,
+                reference_u64,
+                u64,
+                reference_u64,
+                DynWinRTType.u32_type(),
+            ],
+        )
+        reference = DynWinRTType.register_interface(
+            "IReference_UInt64_StructProgressTest",
+            reference_u64.iid(),
+        ).add_method("get_Value", DynWinRTMethodSig().add_out(u64))
+
+        activation_iid = WinGUID.parse("00000035-0000-0000-c000-000000000046")
+        activation = DynWinRTType.register_interface(
+            "IActivationFactoryStructProgressTest",
+            activation_iid,
+        ).add_method(
+            "ActivateInstance",
+            DynWinRTMethodSig().add_out(DynWinRTType.object()),
+        )
+        client = activation.method(6).invoke(
+            DynWinRTValue.activation_factory("Windows.Web.Http.HttpClient").cast(
+                activation_iid
+            ),
+            [],
+        )
+
+        client_iid = WinGUID.parse("7fda1151-3574-4880-a8ba-e6b1e0061f3d")
+        client_type = DynWinRTType.register_interface(
+            "IHttpClientStructProgressTest",
+            client_iid,
+        )
+        for name in (
+            "DeleteAsync",
+            "GetAsync",
+            "GetWithOptionAsync",
+            "GetBufferAsync",
+            "GetInputStreamAsync",
+        ):
+            client_type = client_type.add_method(name, DynWinRTMethodSig())
+        client_type = client_type.add_method(
+            "GetStringAsync",
+            DynWinRTMethodSig()
+            .add_in(DynWinRTType.object())
+            .add_out(
+                DynWinRTType.i_async_operation_with_progress(
+                    DynWinRTType.hstring(),
+                    http_progress,
+                )
+            ),
+        )
+
+        uri_factory_iid = WinGUID.parse("44a9796f-723e-4fdf-a218-033e75b0c084")
+        uri_factory = DynWinRTType.register_interface(
+            "IUriRuntimeClassFactoryStructProgressTest",
+            uri_factory_iid,
+        ).add_method(
+            "CreateUri",
+            DynWinRTMethodSig()
+            .add_in(DynWinRTType.hstring())
+            .add_out(DynWinRTType.object()),
+        )
+
+        server, thread, payload, url = _start_progress_server()
+        try:
+            uri = uri_factory.method(6).invoke(
+                DynWinRTValue.activation_factory("Windows.Foundation.Uri").cast(
+                    uri_factory_iid
+                ),
+                [DynWinRTValue.from_hstring(url)],
+            )
+            operation = client_type.method(11).invoke(client.cast(client_iid), [uri])
+
+            async def run_operation():
+                snapshots = []
+
+                def convert_progress(value):
+                    progress = value.as_struct()
+                    total_value = progress.get_object(4)
+                    total = (
+                        None
+                        if total_value.is_null()
+                        else reference.method(6).invoke(total_value, []).to_u64()
+                    )
+                    return {
+                        "stage": progress.get_i32(0),
+                        "bytes_received": progress.get_u64(3),
+                        "total_bytes_to_receive": total,
+                        "retries": progress.get_u32(5),
+                    }
+
+                projected = _DynWinRTAsyncWithProgress(
+                    operation,
+                    lambda value: value.to_string(),
+                    convert_progress,
+                )
+                projected.progress(snapshots.append)
+                body = await projected
+                await asyncio.sleep(0.05)
+                return body, snapshots
+
+            body, snapshots = asyncio.run(run_operation())
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+        assert body == payload
+        assert any(
+            progress["bytes_received"] > 0
+            and progress["total_bytes_to_receive"] == len(payload)
+            for progress in snapshots
+        )
+        assert all(
+            isinstance(progress["stage"], int)
+            and isinstance(progress["retries"], int)
+            for progress in snapshots
+        )
+
+
+# ======================================================================
+# 6. Uri (extended) — more thorough string/int/bool coverage
 # ======================================================================
 
 class TestUriExtended:

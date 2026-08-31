@@ -16,8 +16,13 @@ use crate::native_callback::{CallbackAbiType, CallbackSignature};
 use crate::value::{AsyncInfo, WinRTValue};
 
 const E_FAIL: HRESULT = HRESULT(0x80004005u32 as i32);
+const E_INVALIDARG: HRESULT = HRESULT(0x80070057u32 as i32);
 const E_NOTIMPL: HRESULT = HRESULT(0x80004001u32 as i32);
 const E_POINTER: HRESULT = HRESULT(0x80004003u32 as i32);
+
+fn delegate_creation_error(code: HRESULT, message: impl AsRef<str>) -> crate::result::Error {
+    crate::result::Error::WindowsError(windows_core::Error::new(code, message.as_ref()))
+}
 
 // ======================================================================
 // DynamicDelegate — general-purpose WinRT delegate COM object
@@ -141,16 +146,20 @@ impl DynamicDelegate {
     /// - `delegate_iid`: the IID of the delegate interface (for QueryInterface)
     /// - `param_types`: types of the Invoke method's parameters (excluding `this`)
     /// - `callback`: function called when WinRT invokes the delegate
-    pub fn create(
+    fn try_create(
         delegate_iid: GUID,
         param_types: Vec<TypeHandle>,
         callback: DelegateCallback,
-    ) -> IUnknown {
-        assert!(
-            param_types.len() <= 2,
-            "DynamicDelegate currently supports up to 2 parameters, got {}",
-            param_types.len()
-        );
+    ) -> crate::result::Result<IUnknown> {
+        if param_types.len() > 2 {
+            return Err(delegate_creation_error(
+                E_INVALIDARG,
+                format!(
+                    "DynamicDelegate supports up to 2 parameters, got {}",
+                    param_types.len()
+                ),
+            ));
+        }
 
         use crate::metadata_table::TypeKind;
 
@@ -158,10 +167,19 @@ impl DynamicDelegate {
             .iter()
             .any(|typ| matches!(typ.kind(), TypeKind::Struct(_)))
         {
-            let signature = Self::libffi_signature(&param_types)
-                .expect("unsupported WinRT delegate parameter type used with a struct");
+            let signature = Self::libffi_signature(&param_types).ok_or_else(|| {
+                delegate_creation_error(
+                    E_NOTIMPL,
+                    "WinRT delegate struct callbacks do not support one or more parameter types",
+                )
+            })?;
             let invoke = crate::native_callback::callback_code(3, signature, Self::invoke_libffi)
-                .expect("failed to create the WinRT delegate callback closure");
+                .map_err(|error| {
+                delegate_creation_error(
+                    E_FAIL,
+                    format!("failed to create the WinRT delegate callback closure: {error}"),
+                )
+            })?;
             Some(Box::new(DynamicDelegateVtbl {
                 base: windows_core::IUnknown_Vtbl {
                     QueryInterface: Self::qi,
@@ -203,7 +221,7 @@ impl DynamicDelegate {
             callback,
             _owned_vtable: owned_vtable,
         });
-        unsafe { IUnknown::from_raw(Box::into_raw(delegate) as *mut c_void) }
+        Ok(unsafe { IUnknown::from_raw(Box::into_raw(delegate) as *mut c_void) })
     }
 
     fn libffi_signature(param_types: &[TypeHandle]) -> Option<CallbackSignature> {
@@ -243,7 +261,9 @@ impl DynamicDelegate {
             // the process-wide closure cache. Dispatch still recovers the
             // table-qualified TypeHandle from the delegate instance.
             TypeKind::Struct(_) => Some(CallbackAbiType::NativeStruct(
-                typ.signature_string(),
+                typ.table()
+                    .try_closed_signature_string_kind(typ.kind())
+                    .ok()?,
                 typ.size_of(),
             )),
             TypeKind::ArrayOfIUnknown
@@ -561,12 +581,34 @@ unsafe fn marshal_libffi_arg(
 /// # Returns
 /// An `IUnknown` smart pointer to the delegate COM object.
 /// Pass this to WinRT methods that accept the delegate (e.g. event subscriptions).
+pub fn try_create_delegate(
+    delegate_iid: GUID,
+    param_types: Vec<TypeHandle>,
+    callback: DelegateCallback,
+) -> crate::result::Result<IUnknown> {
+    DynamicDelegate::try_create(delegate_iid, param_types, callback)
+}
+
+/// Create a dynamic WinRT delegate, panicking if its callback backend cannot be created.
+///
+/// Language bindings should use [`try_create_delegate`] so closure allocation
+/// failures become language exceptions.
 pub fn create_delegate(
     delegate_iid: GUID,
     param_types: Vec<TypeHandle>,
     callback: DelegateCallback,
 ) -> IUnknown {
-    DynamicDelegate::create(delegate_iid, param_types, callback)
+    try_create_delegate(delegate_iid, param_types, callback)
+        .expect("failed to create dynamic WinRT delegate")
+}
+
+/// Fallible convenience wrapper around [`try_create_delegate`].
+pub fn try_create_delegate_value(
+    delegate_iid: GUID,
+    param_types: Vec<TypeHandle>,
+    callback: DelegateCallback,
+) -> crate::result::Result<WinRTValue> {
+    try_create_delegate(delegate_iid, param_types, callback).map(WinRTValue::Object)
 }
 
 /// Convenience: create a delegate and wrap as WinRTValue::Object.
@@ -575,7 +617,8 @@ pub fn create_delegate_value(
     param_types: Vec<TypeHandle>,
     callback: DelegateCallback,
 ) -> WinRTValue {
-    WinRTValue::Object(create_delegate(delegate_iid, param_types, callback))
+    try_create_delegate_value(delegate_iid, param_types, callback)
+        .expect("failed to create dynamic WinRT delegate value")
 }
 
 // ======================================================================
@@ -691,6 +734,33 @@ mod tests {
         let hr = unsafe { ((*vtbl).invoke)(raw, 1.5f32) };
         assert_eq!(hr, HRESULT(0));
         assert!(called.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn try_create_delegate_reports_unsupported_struct_callback_signature() {
+        let table = MetadataTable::new();
+        let element_type = table.u32_type();
+        let unsupported_field = table.out_value(&element_type);
+        let progress_type = table.struct_type(
+            "Test.FallibleProgress",
+            std::slice::from_ref(&unsupported_field),
+        );
+
+        let result = try_create_delegate(
+            GUID::from_u128(0x66666666_6666_6666_6666_666666666666),
+            vec![table.object(), progress_type],
+            Box::new(|_| HRESULT(0)),
+        );
+
+        let error = match result {
+            Ok(_) => panic!("unsupported struct callback signature unexpectedly succeeded"),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .message()
+                .contains("do not support one or more parameter types")
+        );
     }
 
     #[test]

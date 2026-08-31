@@ -1392,7 +1392,13 @@ impl DynWinRTValue {
         }
       });
     let handler =
-      dynwinrt::create_progress_handler_with_result(handler_iid, progress_type, progress_cb);
+      dynwinrt::try_create_progress_handler_with_result(handler_iid, progress_type, progress_cb)
+        .map_err(|error| {
+          napi::Error::from_reason(format!(
+            "onProgress: failed to create progress handler: {}",
+            error.message()
+          ))
+        })?;
 
     async_info
       .set_progress_handler(&handler)
@@ -2818,7 +2824,11 @@ impl DynWinRtDelegate {
         }
       });
 
-    let value = dynwinrt::delegate::create_delegate_value(iid.0, type_handles, delegate_callback);
+    let value =
+      dynwinrt::delegate::try_create_delegate_value(iid.0, type_handles, delegate_callback)
+        .map_err(|error| {
+          napi::Error::from_reason(format!("DynWinRtDelegate.create: {}", error.message()))
+        })?;
     Ok(DynWinRtDelegate(value))
   }
 

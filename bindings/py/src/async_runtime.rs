@@ -444,7 +444,13 @@ impl DynWinRTAsyncWithProgress {
             });
         });
         let handler =
-            dynwinrt::create_progress_handler(handler_iid, progress_type, progress_callback);
+            dynwinrt::try_create_progress_handler(handler_iid, progress_type, progress_callback)
+                .map_err(|error| {
+                    map_dynwinrt_error_with_context(
+                        error,
+                        "failed to create WinRT progress handler",
+                    )
+                })?;
         finish_progress_registration(info.set_progress_handler(&handler), || {
             info.is_started().map_err(map_dynwinrt_error)
         })

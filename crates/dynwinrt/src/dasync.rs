@@ -398,7 +398,17 @@ pub fn create_progress_handler(
     progress_type: TypeHandle,
     callback: ProgressCallback,
 ) -> IUnknown {
-    create_progress_handler_with_result(
+    try_create_progress_handler(handler_iid, progress_type, callback)
+        .expect("failed to create WinRT progress handler")
+}
+
+/// Fallible progress-handler creation for language bindings.
+pub fn try_create_progress_handler(
+    handler_iid: GUID,
+    progress_type: TypeHandle,
+    callback: ProgressCallback,
+) -> Result<IUnknown> {
+    try_create_progress_handler_with_result(
         handler_iid,
         progress_type,
         Box::new(move |value| {
@@ -414,6 +424,16 @@ pub fn create_progress_handler_with_result(
     progress_type: TypeHandle,
     callback: ProgressResultCallback,
 ) -> IUnknown {
+    try_create_progress_handler_with_result(handler_iid, progress_type, callback)
+        .expect("failed to create WinRT progress handler")
+}
+
+/// Fallible progress-handler creation for callbacks that return an HRESULT.
+pub fn try_create_progress_handler_with_result(
+    handler_iid: GUID,
+    progress_type: TypeHandle,
+    callback: ProgressResultCallback,
+) -> Result<IUnknown> {
     // Progress handler Invoke signature: (sender: Object, progress: TProgress)
     let sender_type = progress_type
         .table()
@@ -430,7 +450,7 @@ pub fn create_progress_handler_with_result(
             }
         });
 
-    crate::delegate::create_delegate(handler_iid, param_types, delegate_callback)
+    crate::delegate::try_create_delegate(handler_iid, param_types, delegate_callback)
 }
 
 // ---------------------------------------------------------------------------
