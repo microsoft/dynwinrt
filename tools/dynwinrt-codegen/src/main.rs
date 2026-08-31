@@ -5045,7 +5045,7 @@ mod tests {
     fn generate_test_javascript_stage(
         output: &Path,
         native_classes: &[meta::ClassMeta],
-    ) -> Result<(), String> {
+    ) -> Result<Vec<javascript::JavaScriptTypeLayoutRecord>, String> {
         generate_test_javascript_stage_with_previous(output, native_classes, None)
     }
 
@@ -5053,7 +5053,7 @@ mod tests {
         output: &Path,
         native_classes: &[meta::ClassMeta],
         previous_records: Option<&[javascript::JavaScriptTypeLayoutRecord]>,
-    ) -> Result<(), String> {
+    ) -> Result<Vec<javascript::JavaScriptTypeLayoutRecord>, String> {
         fs::create_dir_all(output)
             .map_err(|error| format!("Failed to create {}: {error}", output.display()))?;
         let previous_records = previous_records.map_or_else(
@@ -5118,7 +5118,8 @@ mod tests {
         let emitted =
             emitted_javascript_type_records(&context, output, &previous_records, &current_records)?;
         write_javascript_type_inventory(output, &emitted)?;
-        write_js_barrel_and_manifest(output, &mut plan)
+        write_js_barrel_and_manifest(output, &mut plan)?;
+        Ok(retained_renames)
     }
 
     #[test]
@@ -5629,7 +5630,11 @@ mod tests {
         let phased = test_directory("javascript-phased-collision");
         let clean = test_directory("javascript-clean-collision");
 
-        generate_test_javascript_stage(&phased, &[windows.clone(), contoso.clone()]).unwrap();
+        assert!(
+            generate_test_javascript_stage(&phased, &[windows.clone(), contoso.clone()])
+                .unwrap()
+                .is_empty()
+        );
         let phase_one_inventory = read_javascript_type_inventory(&phased).unwrap();
         assert_eq!(phase_one_inventory.records.len(), 2);
         let phase_one_windows = phase_one_inventory
@@ -5637,7 +5642,7 @@ mod tests {
             .iter()
             .find(|record| record.identity.namespace == "Windows.Foundation")
             .unwrap();
-        assert_ne!(phase_one_windows.projected_name, "Widget");
+        assert_eq!(phase_one_windows.projected_name, "FoundationWidget");
         assert!(phase_one_windows.compatibility_aliases.is_empty());
         let phase_one_projected_name = phase_one_windows.projected_name.clone();
         let phase_one_root = fs::read_to_string(phased.join("index.d.ts")).unwrap();
@@ -5651,30 +5656,32 @@ mod tests {
         assert!(phase_one_package.contains("\"./contoso/Widget\""));
         assert!(!phase_one_package.contains("\"./microsoft/ui/foundation/Widget\""));
 
+        let phase_one_files = collect_test_file_tree(&phased);
         let phase_one_index = fs::read(phased.join("index.d.ts")).unwrap();
         fs::remove_file(phased.join("index.d.ts")).unwrap();
-        let context = javascript::create_javascript_projection_context(
-            phase_one_inventory
-                .records
-                .iter()
-                .map(|record| record.identity.clone()),
-        )
-        .unwrap();
-        let error = match load_effective_generation_plan(&context, &phased, &HashSet::new()) {
+        let error = match generate_test_javascript_stage(&phased, std::slice::from_ref(&microsoft))
+        {
             Ok(_) => panic!("retained modules without root metadata must fail closed"),
             Err(error) => error,
         };
         assert!(error.contains("require root export metadata"), "{error}");
         fs::write(phased.join("index.d.ts"), phase_one_index).unwrap();
+        assert_eq!(collect_test_file_tree(&phased), phase_one_files);
 
-        let full = [windows, contoso, microsoft];
-        generate_test_javascript_stage(&phased, &full).unwrap();
-        generate_test_javascript_stage_with_previous(
-            &clean,
-            &full,
-            Some(&phase_one_inventory.records),
-        )
-        .unwrap();
+        let retained_renames =
+            generate_test_javascript_stage(&phased, std::slice::from_ref(&microsoft)).unwrap();
+        assert_eq!(retained_renames.len(), 1);
+        assert_eq!(retained_renames[0].identity.namespace, "Windows.Foundation");
+        assert_eq!(retained_renames[0].projected_name, phase_one_projected_name);
+
+        assert!(
+            generate_test_javascript_stage(&clean, &[windows, contoso])
+                .unwrap()
+                .is_empty()
+        );
+        let clean_renames =
+            generate_test_javascript_stage(&clean, std::slice::from_ref(&microsoft)).unwrap();
+        assert_eq!(clean_renames, retained_renames);
 
         let final_inventory = read_javascript_type_inventory(&phased).unwrap();
         let windows_record = final_inventory
@@ -5692,25 +5699,32 @@ mod tests {
             .iter()
             .find(|record| record.identity.namespace == "Microsoft.UI.Foundation")
             .unwrap();
-        assert_ne!(windows_record.projected_name, "Widget");
-        assert_ne!(contoso_record.projected_name, "Widget");
-        assert_ne!(
-            windows_record.projected_name,
-            phase_one_windows.projected_name
+        assert_eq!(
+            (
+                windows_record.projected_name.as_str(),
+                contoso_record.projected_name.as_str(),
+                microsoft_record.projected_name.as_str(),
+            ),
+            (
+                "WindowsFoundationWidgetClass",
+                "ContosoWidget",
+                "FoundationWidget",
+            )
         );
-        assert!(
-            windows_record
-                .compatibility_aliases
-                .contains(&phase_one_projected_name),
+        assert_eq!(
+            windows_record.compatibility_aliases,
+            BTreeSet::from([phase_one_projected_name.clone()]),
             "{windows_record:?}"
         );
+        assert!(contoso_record.compatibility_aliases.is_empty());
+        assert!(microsoft_record.compatibility_aliases.is_empty());
 
         let windows_js = fs::read_to_string(phased.join("windows/foundation/Widget.js")).unwrap();
         assert_eq!(
             windows_js
                 .matches(&format!(
-                    "exports.Widget = {};",
-                    windows_record.projected_name
+                    "exports.{} = exports.{};",
+                    windows_record.projected_name, phase_one_projected_name
                 ))
                 .count(),
             1,
@@ -5719,8 +5733,7 @@ mod tests {
         assert_eq!(
             windows_js
                 .matches(&format!(
-                    "exports.{phase_one_projected_name} = {};",
-                    windows_record.projected_name
+                    "exports.{phase_one_projected_name} = {phase_one_projected_name};"
                 ))
                 .count(),
             1,
@@ -5730,52 +5743,69 @@ mod tests {
         let root_exports = root
             .lines()
             .filter_map(parse_root_export_metadata)
-            .collect::<Vec<_>>();
-        for projected in [
-            &windows_record.projected_name,
-            &contoso_record.projected_name,
-            &microsoft_record.projected_name,
-        ] {
-            assert_eq!(
-                root_exports
-                    .iter()
-                    .flat_map(|(names, _)| names)
-                    .filter(|name| *name == projected)
-                    .count(),
-                1,
-                "{root}"
-            );
-        }
-        assert!(!root.contains("export { Widget"), "{root}");
-        assert!(
-            root.contains(&format!(
-                "export {{ {} }} from './microsoft/ui/foundation/Widget.js';",
-                microsoft_record.projected_name
-            )),
+            .map(|(names, module)| (module, names.into_iter().collect::<BTreeSet<_>>()))
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(
+            root_exports,
+            BTreeMap::from([
+                (
+                    "contoso/Widget".into(),
+                    BTreeSet::from(["ContosoWidget".into()])
+                ),
+                (
+                    "lifetime".into(),
+                    BTreeSet::from([
+                        "createProjectedLifetimeScope".into(),
+                        "projectAs".into(),
+                        "releaseProjected".into(),
+                    ])
+                ),
+                (
+                    "microsoft/ui/foundation/Widget".into(),
+                    BTreeSet::from(["FoundationWidget".into()])
+                ),
+                (
+                    "windows/foundation/Widget".into(),
+                    BTreeSet::from(["WindowsFoundationWidgetClass".into()])
+                ),
+            ]),
             "{root}"
-        );
-        assert!(
-            !root_exports.iter().any(|(names, module)| {
-                module == "windows/foundation/Widget" && names.contains(&phase_one_projected_name)
-            }),
-            "compatibility alias leaked from its retained module: {root}"
         );
 
         let package = fs::read_to_string(phased.join("package.json")).unwrap();
+        let package: serde_json::Value = serde_json::from_str(&package).unwrap();
+        let exports = package["exports"].as_object().unwrap();
+        assert_eq!(
+            exports.keys().cloned().collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                ".".into(),
+                "./proxy".into(),
+                "./lifetime".into(),
+                "./contoso/Widget".into(),
+                "./microsoft/ui/foundation/Widget".into(),
+                "./windows/foundation/Widget".into(),
+            ])
+        );
         for canonical in [
+            "lifetime",
             "windows/foundation/Widget",
             "contoso/Widget",
             "microsoft/ui/foundation/Widget",
         ] {
             assert_eq!(
-                package.matches(&format!("\"./{canonical}\"")).count(),
-                1,
-                "{package}"
+                exports[&format!("./{canonical}")]["types"],
+                format!("./{canonical}.d.ts")
+            );
+            assert_eq!(
+                exports[&format!("./{canonical}")]["default"],
+                format!("./{canonical}.js")
             );
         }
-        assert!(!package.contains(&format!("\"./{}\"", windows_record.projected_name)));
-        assert!(!package.contains(&format!("\"./{}\"", contoso_record.projected_name)));
-        assert!(!package.contains(&format!("\"./{}\"", microsoft_record.projected_name)));
+        assert_eq!(exports["."]["types"], "./index.d.ts");
+        assert_eq!(exports["."]["import"], "./index.mjs");
+        assert_eq!(exports["."]["require"], "./index.js");
+        assert_eq!(exports["./proxy"]["types"], "./index.d.ts");
+        assert_eq!(exports["./proxy"]["require"], "./index.proxy.js");
 
         let phased_files = collect_test_file_tree(&phased);
         let clean_files = collect_test_file_tree(&clean);
@@ -5790,7 +5820,11 @@ mod tests {
             );
         }
 
-        generate_test_javascript_stage(&phased, &full).unwrap();
+        assert!(
+            generate_test_javascript_stage(&phased, std::slice::from_ref(&microsoft))
+                .unwrap()
+                .is_empty()
+        );
         assert_eq!(collect_test_file_tree(&phased), phased_files);
 
         fs::remove_dir_all(phased).unwrap();
