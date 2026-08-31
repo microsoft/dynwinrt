@@ -14,6 +14,7 @@
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
 import * as fs from "node:fs";
+import { createServer } from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -85,6 +86,50 @@ function toCamelCase(name: string): string {
 function toPascalCase(name: string): string {
   const camel = toCamelCase(name);
   return camel.charAt(0).toUpperCase() + camel.slice(1);
+}
+
+async function startProgressServer(): Promise<{
+  payload: string;
+  url: string;
+  close: () => Promise<void>;
+}> {
+  const payload = "dynwinrt-struct-progress-".repeat(16_384);
+  const server = createServer((_request, response) => {
+    response.writeHead(200, {
+      "Content-Length": Buffer.byteLength(payload),
+      "Content-Type": "text/plain; charset=utf-8",
+      Connection: "close",
+    });
+    let offset = 0;
+    const writeNext = () => {
+      if (offset >= payload.length) {
+        response.end();
+        return;
+      }
+      const end = Math.min(offset + 8_192, payload.length);
+      response.write(payload.slice(offset, end));
+      offset = end;
+      setTimeout(writeNext, 5);
+    };
+    writeNext();
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    server.close();
+    throw new Error("loopback HTTP server did not publish a TCP port");
+  }
+  return {
+    payload,
+    url: `http://127.0.0.1:${address.port}/progress`,
+    close: () =>
+      new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      }),
+  };
 }
 
 async function runSpec(
@@ -937,6 +982,53 @@ async function runCheck(
         cr.error = `${kind} child exited with ${child.code}: ${child.stderr || child.stdout}`;
       } else {
         cr.pass = true;
+      }
+    } else if (kind === "async_struct_progress") {
+      const server = await startProgressServer();
+      try {
+        const uriClass = await importClass(generatedDir, "Uri");
+        const uri = uriClass.createUri(server.url);
+        const progressValues: any[] = [];
+        const operation = obj[member](uri);
+        operation.progress((value: any) => progressValues.push(value));
+        const body = await operation;
+        await new Promise<void>((resolve) => setImmediate(resolve));
+
+        if (body !== server.payload) {
+          cr.error = `loopback response mismatch: expected ${server.payload.length} characters, got ${String(body).length}`;
+          return cr;
+        }
+        if (
+          progressValues.length === 0 ||
+          progressValues.some(
+            (value) =>
+              value == null ||
+              typeof value !== "object" ||
+              !("stage" in value) ||
+              !("bytesReceived" in value) ||
+              !("totalBytesToReceive" in value) ||
+              !("retries" in value),
+          )
+        ) {
+          cr.error = `expected projected HttpProgress objects, got ${progressValues.map((value) => typeof value).join(", ") || "none"}`;
+          return cr;
+        }
+        const received = progressValues.find(
+          (value) =>
+            value.bytesReceived > 0n &&
+            value.totalBytesToReceive === BigInt(server.payload.length),
+        );
+        if (!received) {
+          cr.error = `progress did not retain expected receive totals: ${progressValues
+            .map((value) => `${value.bytesReceived}/${value.totalBytesToReceive}`)
+            .join(", ")}`;
+          return cr;
+        }
+        assert.equal(typeof received.stage, "number");
+        assert.equal(typeof received.retries, "number");
+        cr.pass = true;
+      } finally {
+        await server.close();
       }
     } else {
       cr.error = `unknown check kind: ${kind}`;

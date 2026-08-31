@@ -75,6 +75,7 @@
              "cross_class_chain",
              "async_memory_roundtrip",
              "async_cancellation",
+             "async_struct_progress",
              "property_set_equals",
              "vector_view_access",
              "vector_index_of",

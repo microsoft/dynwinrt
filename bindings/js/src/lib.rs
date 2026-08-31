@@ -33,6 +33,44 @@ mod tsfn_test_hooks;
 static TABLE: std::sync::LazyLock<Arc<dynwinrt::MetadataTable>> =
   std::sync::LazyLock::new(|| dynwinrt::MetadataTable::new());
 
+fn ensure_progress_type_supported(progress_type: &dynwinrt::TypeHandle) -> napi::Result<()> {
+  match progress_type.kind() {
+    dynwinrt::TypeKind::Guid
+    | dynwinrt::TypeKind::ArrayOfIUnknown
+    | dynwinrt::TypeKind::Generic { .. }
+    | dynwinrt::TypeKind::OutValue(_)
+    | dynwinrt::TypeKind::Array(_) => Err(napi::Error::from_reason(format!(
+      "onProgress: progress callbacks do not support {:?} values",
+      progress_type.kind()
+    ))),
+    dynwinrt::TypeKind::Bool
+    | dynwinrt::TypeKind::I8
+    | dynwinrt::TypeKind::U8
+    | dynwinrt::TypeKind::I16
+    | dynwinrt::TypeKind::U16
+    | dynwinrt::TypeKind::Char16
+    | dynwinrt::TypeKind::I32
+    | dynwinrt::TypeKind::U32
+    | dynwinrt::TypeKind::I64
+    | dynwinrt::TypeKind::U64
+    | dynwinrt::TypeKind::F32
+    | dynwinrt::TypeKind::F64
+    | dynwinrt::TypeKind::HString
+    | dynwinrt::TypeKind::Object
+    | dynwinrt::TypeKind::HResult
+    | dynwinrt::TypeKind::Interface(_)
+    | dynwinrt::TypeKind::Delegate(_)
+    | dynwinrt::TypeKind::IAsyncAction
+    | dynwinrt::TypeKind::IAsyncActionWithProgress(_)
+    | dynwinrt::TypeKind::IAsyncOperation(_)
+    | dynwinrt::TypeKind::IAsyncOperationWithProgress(_)
+    | dynwinrt::TypeKind::RuntimeClass(_)
+    | dynwinrt::TypeKind::Parameterized(_)
+    | dynwinrt::TypeKind::Enum(_)
+    | dynwinrt::TypeKind::Struct(_) => Ok(()),
+  }
+}
+
 // ======================================================================
 // Runtime initialization
 // ======================================================================
@@ -1319,6 +1357,7 @@ impl DynWinRTValue {
     let progress_type = async_info
       .progress_type()
       .ok_or_else(|| napi::Error::from_reason("onProgress: not a WithProgress async type"))?;
+    ensure_progress_type_supported(&progress_type)?;
 
     let handler_iid = async_info
       .progress_handler_iid()
@@ -1913,6 +1952,26 @@ mod js_boundary_tests {
       array.to_i32_vec().expect("HRESULT array conversion"),
       [0x80004005u32 as i32],
     );
+  }
+
+  #[test]
+  fn progress_type_validation_allows_structs_and_rejects_unsupported_shapes() {
+    let progress = TABLE.struct_type("Test.JsStructProgress", &[TABLE.u64_type()]);
+    assert!(ensure_progress_type_supported(&progress).is_ok());
+
+    let value_type = TABLE.u32_type();
+    for unsupported in [
+      TABLE.guid_type(),
+      TABLE.array_of_iunknown(),
+      TABLE.generic(
+        windows::core::GUID::from_u128(0x11111111_2222_3333_4444_555555555555),
+        1,
+      ),
+      TABLE.out_value(&value_type),
+      TABLE.array(&value_type),
+    ] {
+      assert!(ensure_progress_type_supported(&unsupported).is_err());
+    }
   }
 }
 

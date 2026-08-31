@@ -11,8 +11,13 @@ use core::ffi::c_void;
 use windows_core::{GUID, HRESULT, IUnknown, Interface};
 use windows_future::IAsyncInfo;
 
-use crate::metadata_table::TypeHandle;
+use crate::metadata_table::{TypeHandle, ValueTypeData};
+use crate::native_callback::{CallbackAbiType, CallbackSignature};
 use crate::value::{AsyncInfo, WinRTValue};
+
+const E_FAIL: HRESULT = HRESULT(0x80004005u32 as i32);
+const E_NOTIMPL: HRESULT = HRESULT(0x80004001u32 as i32);
+const E_POINTER: HRESULT = HRESULT(0x80004003u32 as i32);
 
 // ======================================================================
 // DynamicDelegate — general-purpose WinRT delegate COM object
@@ -21,7 +26,7 @@ use crate::value::{AsyncInfo, WinRTValue};
 /// Callback type: receives marshalled Invoke arguments, returns HRESULT.
 pub type DelegateCallback = Box<dyn Fn(&[WinRTValue]) -> HRESULT + Send + Sync>;
 
-/// Vtable for a delegate with 2 pointer-sized ABI params (covers ~95% of delegates).
+/// Static vtable for a delegate with two general-purpose-register parameters.
 #[repr(C)]
 struct Delegate2Vtbl {
     base: windows_core::IUnknown_Vtbl,
@@ -58,18 +63,27 @@ struct Delegate1F32Vtbl {
     invoke: unsafe extern "system" fn(*mut c_void, f32) -> HRESULT,
 }
 
+#[repr(C)]
+struct DynamicDelegateVtbl {
+    base: windows_core::IUnknown_Vtbl,
+    invoke: *const c_void,
+}
+
 /// A dynamically-constructed WinRT delegate COM object.
 ///
-/// Supports delegates with up to 2 ABI parameters (pointer-sized).
+/// Supports delegates with up to 2 ABI parameters. Struct parameters use an
+/// ABI-aware libffi closure; established scalar and float shapes keep their
+/// static trampolines.
 /// This covers TypedEventHandler<T,U>, AsyncOperationCompletedHandler<T>,
 /// EventHandler<T>, and most other standard delegates.
 #[repr(C)]
 struct DynamicDelegate {
-    vtable: *const Delegate2Vtbl,
+    vtable: *const c_void,
     ref_count: windows_core::imp::RefCount,
     delegate_iid: GUID,
     param_types: Vec<TypeHandle>,
     callback: DelegateCallback,
+    _owned_vtable: Option<Box<DynamicDelegateVtbl>>,
 }
 
 // Safety: DynamicDelegate is ref-counted and the callback is Send+Sync.
@@ -140,21 +154,45 @@ impl DynamicDelegate {
 
         use crate::metadata_table::TypeKind;
 
+        let owned_vtable = if param_types
+            .iter()
+            .any(|typ| matches!(typ.kind(), TypeKind::Struct(_)))
+        {
+            let signature = Self::libffi_signature(&param_types)
+                .expect("unsupported WinRT delegate parameter type used with a struct");
+            let invoke = crate::native_callback::callback_code(3, signature, Self::invoke_libffi)
+                .expect("failed to create the WinRT delegate callback closure");
+            Some(Box::new(DynamicDelegateVtbl {
+                base: windows_core::IUnknown_Vtbl {
+                    QueryInterface: Self::qi,
+                    AddRef: Self::add_ref,
+                    Release: Self::release,
+                },
+                invoke,
+            }))
+        } else {
+            None
+        };
+
         // Pick the right vtable based on parameter types.
         // Float types go in float registers on ARM64/x64, so each distinct
         // float signature needs its own trampoline with the correct ABI.
-        let vtable: *const Delegate2Vtbl = match param_types.len() {
-            1 => match param_types[0].kind() {
-                TypeKind::F64 => &Self::VTBL_1_F64 as *const _ as *const Delegate2Vtbl,
-                TypeKind::F32 => &Self::VTBL_1_F32 as *const _ as *const Delegate2Vtbl,
-                _ => &Self::VTBL,
-            },
-            2 => match param_types[1].kind() {
-                TypeKind::F64 => &Self::VTBL_PTR_F64 as *const _ as *const Delegate2Vtbl,
-                TypeKind::F32 => &Self::VTBL_PTR_F32 as *const _ as *const Delegate2Vtbl,
-                _ => &Self::VTBL,
-            },
-            _ => &Self::VTBL,
+        let vtable = if let Some(vtable) = owned_vtable.as_deref() {
+            vtable as *const DynamicDelegateVtbl as *const c_void
+        } else {
+            match param_types.len() {
+                1 => match param_types[0].kind() {
+                    TypeKind::F64 => &Self::VTBL_1_F64 as *const _ as *const c_void,
+                    TypeKind::F32 => &Self::VTBL_1_F32 as *const _ as *const c_void,
+                    _ => &Self::VTBL as *const _ as *const c_void,
+                },
+                2 => match param_types[1].kind() {
+                    TypeKind::F64 => &Self::VTBL_PTR_F64 as *const _ as *const c_void,
+                    TypeKind::F32 => &Self::VTBL_PTR_F32 as *const _ as *const c_void,
+                    _ => &Self::VTBL as *const _ as *const c_void,
+                },
+                _ => &Self::VTBL as *const _ as *const c_void,
+            }
         };
 
         let delegate = Box::new(Self {
@@ -163,8 +201,56 @@ impl DynamicDelegate {
             delegate_iid,
             param_types,
             callback,
+            _owned_vtable: owned_vtable,
         });
         unsafe { IUnknown::from_raw(Box::into_raw(delegate) as *mut c_void) }
+    }
+
+    fn libffi_signature(param_types: &[TypeHandle]) -> Option<CallbackSignature> {
+        let parameters = param_types
+            .iter()
+            .map(|typ| Some((Self::callback_abi_type(typ)?, typ.libffi_type())))
+            .collect::<Option<Vec<_>>>()?;
+        Some(CallbackSignature::hresult(parameters))
+    }
+
+    fn callback_abi_type(typ: &TypeHandle) -> Option<CallbackAbiType> {
+        use crate::metadata_table::TypeKind;
+
+        match typ.kind() {
+            TypeKind::I8 => Some(CallbackAbiType::I8),
+            TypeKind::Bool | TypeKind::U8 => Some(CallbackAbiType::U8),
+            TypeKind::I16 => Some(CallbackAbiType::I16),
+            TypeKind::U16 | TypeKind::Char16 => Some(CallbackAbiType::U16),
+            TypeKind::I32 | TypeKind::HResult | TypeKind::Enum(_) => Some(CallbackAbiType::I32),
+            TypeKind::U32 => Some(CallbackAbiType::U32),
+            TypeKind::I64 => Some(CallbackAbiType::I64),
+            TypeKind::U64 => Some(CallbackAbiType::U64),
+            TypeKind::F32 => Some(CallbackAbiType::F32),
+            TypeKind::F64 => Some(CallbackAbiType::F64),
+            TypeKind::Guid => Some(CallbackAbiType::Guid),
+            TypeKind::HString
+            | TypeKind::Object
+            | TypeKind::Interface(_)
+            | TypeKind::Delegate(_)
+            | TypeKind::RuntimeClass(_)
+            | TypeKind::Parameterized(_)
+            | TypeKind::IAsyncAction
+            | TypeKind::IAsyncActionWithProgress(_)
+            | TypeKind::IAsyncOperation(_)
+            | TypeKind::IAsyncOperationWithProgress(_) => Some(CallbackAbiType::Pointer),
+            // The full recursive WinRT signature identifies the ABI layout in
+            // the process-wide closure cache. Dispatch still recovers the
+            // table-qualified TypeHandle from the delegate instance.
+            TypeKind::Struct(_) => Some(CallbackAbiType::NativeStruct(
+                typ.signature_string(),
+                typ.size_of(),
+            )),
+            TypeKind::ArrayOfIUnknown
+            | TypeKind::Generic { .. }
+            | TypeKind::OutValue(_)
+            | TypeKind::Array(_) => None,
+        }
     }
 
     // ------------------------------------------------------------------
@@ -295,6 +381,43 @@ impl DynamicDelegate {
         let delegate = unsafe { &*(this as *const Self) };
         (delegate.callback)(&[WinRTValue::F32(arg0)])
     }
+
+    unsafe fn invoke_libffi(
+        _slot: usize,
+        signature: &CallbackSignature,
+        args: *const *const c_void,
+        result: *mut c_void,
+    ) {
+        if result.is_null() {
+            return;
+        }
+        unsafe { signature.initialize_failure_result(result, E_FAIL) };
+        let invocation = (|| -> Result<HRESULT, HRESULT> {
+            if args.is_null() {
+                return Err(E_POINTER);
+            }
+            let this_storage = unsafe { *args };
+            if this_storage.is_null() {
+                return Err(E_POINTER);
+            }
+            let this = unsafe { *this_storage.cast::<*mut c_void>() };
+            if this.is_null() {
+                return Err(E_POINTER);
+            }
+            let delegate = unsafe { &*(this.cast::<Self>()) };
+            if signature.parameters().len() != delegate.param_types.len() {
+                return Err(E_FAIL);
+            }
+            let mut values = Vec::with_capacity(delegate.param_types.len());
+            for (index, typ) in delegate.param_types.iter().enumerate() {
+                let storage = unsafe { *args.add(index + 1) };
+                values.push(unsafe { marshal_libffi_arg(storage, typ)? });
+            }
+            Ok((delegate.callback)(&values))
+        })();
+        let hresult = invocation.unwrap_or_else(|error| error);
+        unsafe { result.cast::<i32>().write(hresult.0) };
+    }
 }
 
 /// Convert a raw ABI pointer-sized argument to WinRTValue, based on type.
@@ -367,6 +490,63 @@ fn marshal_abi_ptr(raw: *mut c_void, typ: &TypeHandle) -> Result<WinRTValue, HRE
     }
 }
 
+/// Convert libffi callback argument storage to an owned WinRT value.
+///
+/// # Safety
+///
+/// `storage` must point to a readable ABI value matching `typ`.
+unsafe fn marshal_libffi_arg(
+    storage: *const c_void,
+    typ: &TypeHandle,
+) -> Result<WinRTValue, HRESULT> {
+    use crate::metadata_table::TypeKind;
+
+    if storage.is_null() {
+        return Err(E_POINTER);
+    }
+    match typ.kind() {
+        TypeKind::Bool => Ok(WinRTValue::Bool(unsafe { *storage.cast::<u8>() } != 0)),
+        TypeKind::I8 => Ok(WinRTValue::I8(unsafe { *storage.cast::<i8>() })),
+        TypeKind::U8 => Ok(WinRTValue::U8(unsafe { *storage.cast::<u8>() })),
+        TypeKind::I16 => Ok(WinRTValue::I16(unsafe { *storage.cast::<i16>() })),
+        TypeKind::U16 | TypeKind::Char16 => Ok(WinRTValue::U16(unsafe { *storage.cast::<u16>() })),
+        TypeKind::I32 => Ok(WinRTValue::I32(unsafe { *storage.cast::<i32>() })),
+        TypeKind::Enum(_) => Ok(WinRTValue::Enum {
+            value: unsafe { *storage.cast::<i32>() },
+            type_handle: typ.clone(),
+        }),
+        TypeKind::U32 => Ok(WinRTValue::U32(unsafe { *storage.cast::<u32>() })),
+        TypeKind::HResult => Ok(WinRTValue::HResult(HRESULT(unsafe {
+            *storage.cast::<i32>()
+        }))),
+        TypeKind::I64 => Ok(WinRTValue::I64(unsafe { *storage.cast::<i64>() })),
+        TypeKind::U64 => Ok(WinRTValue::U64(unsafe { *storage.cast::<u64>() })),
+        TypeKind::F32 => Ok(WinRTValue::F32(unsafe { *storage.cast::<f32>() })),
+        TypeKind::F64 => Ok(WinRTValue::F64(unsafe { *storage.cast::<f64>() })),
+        TypeKind::Guid => Ok(WinRTValue::Guid(unsafe { *storage.cast::<GUID>() })),
+        TypeKind::Struct(_) => Ok(WinRTValue::Struct(unsafe {
+            ValueTypeData::from_borrowed_abi(typ, storage)
+        })),
+        TypeKind::HString
+        | TypeKind::Object
+        | TypeKind::Interface(_)
+        | TypeKind::Delegate(_)
+        | TypeKind::RuntimeClass(_)
+        | TypeKind::Parameterized(_)
+        | TypeKind::IAsyncAction
+        | TypeKind::IAsyncActionWithProgress(_)
+        | TypeKind::IAsyncOperation(_)
+        | TypeKind::IAsyncOperationWithProgress(_) => {
+            let raw = unsafe { *storage.cast::<*mut c_void>() };
+            marshal_abi_ptr(raw, typ)
+        }
+        TypeKind::ArrayOfIUnknown
+        | TypeKind::Generic { .. }
+        | TypeKind::OutValue(_)
+        | TypeKind::Array(_) => Err(E_NOTIMPL),
+    }
+}
+
 // ======================================================================
 // Public API
 // ======================================================================
@@ -410,6 +590,13 @@ mod tests {
         Arc,
         atomic::{AtomicBool, Ordering},
     };
+    use windows_core::IUnknown_Vtbl;
+
+    #[repr(C)]
+    struct StructProgressHandlerVtbl<T> {
+        base: IUnknown_Vtbl,
+        invoke: unsafe extern "system" fn(*mut c_void, *mut c_void, T) -> HRESULT,
+    }
 
     /// P2: Verify that a 2-param delegate with f32 second param
     /// correctly receives F32 (not F64) via the f32 trampoline.
@@ -504,5 +691,133 @@ mod tests {
         let hr = unsafe { ((*vtbl).invoke)(raw, 1.5f32) };
         assert_eq!(hr, HRESULT(0));
         assert!(called.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_delegate_struct_trampoline_marshals_wide_value() {
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct WideProgress {
+            completed: u64,
+            total: u64,
+            stage: u32,
+        }
+
+        let table = MetadataTable::new();
+        let progress_type = table.struct_type(
+            "Test.WideProgress",
+            &[table.u64_type(), table.u64_type(), table.u32_type()],
+        );
+        assert!(progress_type.size_of() > std::mem::size_of::<usize>());
+
+        let received = Arc::new(std::sync::Mutex::new(None));
+        let received_callback = received.clone();
+        let handler = create_delegate(
+            GUID::from_u128(0x44444444_4444_4444_4444_444444444444),
+            vec![table.object(), progress_type.clone()],
+            Box::new(move |args| {
+                *received_callback.lock().unwrap() = Some(args[1].clone());
+                HRESULT(0)
+            }),
+        );
+
+        let vtable = unsafe {
+            &**(handler.as_raw() as *const *const StructProgressHandlerVtbl<WideProgress>)
+        };
+        let result = unsafe {
+            (vtable.invoke)(
+                handler.as_raw(),
+                std::ptr::null_mut(),
+                WideProgress {
+                    completed: 17,
+                    total: 42,
+                    stage: 3,
+                },
+            )
+        };
+        assert_eq!(result, HRESULT(0));
+
+        let received = received.lock().unwrap().take().unwrap();
+        let data = received.as_struct().unwrap();
+        assert_eq!(data.type_handle(), &progress_type);
+        assert_eq!(data.get_field::<u64>(0), 17);
+        assert_eq!(data.get_field::<u64>(1), 42);
+        assert_eq!(data.get_field::<u32>(2), 3);
+    }
+
+    #[test]
+    fn test_delegate_struct_trampoline_owns_nested_non_blittable_fields() {
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct ReferenceProgress {
+            label: *mut c_void,
+            total: *mut c_void,
+        }
+
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct NestedProgress {
+            sequence: u64,
+            reference: ReferenceProgress,
+        }
+
+        let table = MetadataTable::new();
+        let value_type = table.u64_type();
+        let generic = table.generic(crate::metadata_table::IREFERENCE, 1);
+        let reference_type = table.parameterized(&generic, std::slice::from_ref(&value_type));
+        let reference_progress =
+            table.struct_type("Test.ReferenceProgress", &[table.hstring(), reference_type]);
+        let progress_type = table.struct_type(
+            "Test.NestedReferenceProgress",
+            &[table.u64_type(), reference_progress],
+        );
+
+        let label = windows_core::HSTRING::from("retained progress");
+        let label_raw: *mut c_void = unsafe { std::mem::transmute_copy(&label) };
+        let boxed = crate::box_ireference(WinRTValue::U64(99), value_type).unwrap();
+        let boxed_object = boxed.as_object().unwrap();
+
+        let received = Arc::new(std::sync::Mutex::new(None));
+        let received_callback = received.clone();
+        let handler = create_delegate(
+            GUID::from_u128(0x55555555_5555_5555_5555_555555555555),
+            vec![table.object(), progress_type.clone()],
+            Box::new(move |args| {
+                *received_callback.lock().unwrap() = Some(args[1].clone());
+                HRESULT(0)
+            }),
+        );
+
+        let vtable = unsafe {
+            &**(handler.as_raw() as *const *const StructProgressHandlerVtbl<NestedProgress>)
+        };
+        let result = unsafe {
+            (vtable.invoke)(
+                handler.as_raw(),
+                std::ptr::null_mut(),
+                NestedProgress {
+                    sequence: 7,
+                    reference: ReferenceProgress {
+                        label: label_raw,
+                        total: boxed_object.as_raw(),
+                    },
+                },
+            )
+        };
+        assert_eq!(result, HRESULT(0));
+
+        drop(boxed);
+        drop(boxed_object);
+        drop(label);
+
+        let received = received.lock().unwrap().take().unwrap();
+        let data = received.as_struct().unwrap();
+        assert_eq!(data.type_handle(), &progress_type);
+        assert_eq!(data.get_field::<u64>(0), 7);
+        let reference = data.get_field_struct(1);
+        assert_eq!(reference.get_field_hstring(0).unwrap(), "retained progress");
+        let total = reference.get_field_object(1).unwrap().unwrap();
+        let total: windows::Foundation::IReference<u64> = total.cast().unwrap();
+        assert_eq!(total.Value().unwrap(), 99);
     }
 }

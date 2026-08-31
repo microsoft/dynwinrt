@@ -431,4 +431,14 @@ fn sdk_http_progress_ireference_u64_fields_are_native_optional_values() {
             ),
         "{js}"
     );
+    assert!(
+        js.contains("_unpackHttpProgress(_p)")
+            && dts.contains("WinRTAsyncWithProgress<string, HttpProgress>"),
+        "JavaScript struct progress projection was not preserved:\n{js}\n{dts}"
+    );
+    assert!(
+        py.contains("lambda value: _unpack_http_progress(value)")
+            && pyi.contains("WinRTAsyncWithProgress[str, 'HttpProgress']"),
+        "Python struct progress projection was not preserved:\n{py}\n{pyi}"
+    );
 }

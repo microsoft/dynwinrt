@@ -613,6 +613,20 @@
       ]
     },
     {
+      "id": "http_client_struct_progress",
+      "namespace": "Windows.Web.Http",
+      "class": "HttpClient",
+      "langs": ["py", "ts"],
+      "instantiate": { "kind": "static_factory", "method": "create_default" },
+      "checks": [
+        {
+          "kind": "async_struct_progress",
+          "member": "get_string_async",
+          "expected_type": "HttpProgress"
+        }
+      ]
+    },
+    {
       "id": "python_generated_helper_matrix",
       "namespace": "Windows.Foundation",
       "class": "Uri",
