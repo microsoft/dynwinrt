@@ -27,12 +27,14 @@ fn delegate_callback_return_imports_dynwinrt_value() {
     };
     let delegate_names = HashSet::from([delegate.name.clone()]);
     let (signatures, references, _) = project::build_delegate_signatures(
+        &Default::default(),
         std::slice::from_ref(&delegate),
         &delegate_names,
         &delegate_names,
     );
 
-    let projected = project::project_delegate(&delegate, &signatures, &references);
+    let projected =
+        project::project_delegate(&Default::default(), &delegate, &signatures, &references);
     let dts = render_dts::render(&projected);
 
     assert!(
@@ -81,6 +83,7 @@ fn imported_collection_interface_is_not_redeclared_inline() {
     let known_types = HashSet::from(["ResourceDictionary".into(), "IMap_Object_Object".into()]);
 
     let projected = project::project_class(
+        &Default::default(),
         &class,
         &known_types,
         &HashSet::new(),
@@ -154,6 +157,7 @@ fn imported_required_interface_contributes_method_overloads() {
         ..Default::default()
     };
     let projected = project::project_class(
+        &Default::default(),
         &class,
         &HashSet::from(["Rewriter".into(), "IRewriter2".into(), "Tone".into()]),
         &HashSet::new(),

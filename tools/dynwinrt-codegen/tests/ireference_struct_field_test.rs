@@ -95,6 +95,7 @@ fn class_with_struct(name: &str, structure: TypeMeta) -> ClassMeta {
 
 fn generate_javascript(class: &ClassMeta, known: &HashSet<String>) -> (String, String) {
     let projected = project::project_class(
+        &Default::default(),
         class,
         known,
         &HashSet::new(),

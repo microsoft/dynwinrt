@@ -634,7 +634,11 @@ mod tests {
             "DynWinRTMethodSig().add_in(DynWinRTType.u32_type()).add_out_fill(DynWinRTType.array_type(DynWinRTType.hstring())).add_out(DynWinRTType.u32_type())"
         );
         assert_eq!(
-            crate::codegen::winrt::javascript::signature::build_method_sig(&method),
+            crate::codegen::winrt::javascript::signature::build_method_sig(
+                &crate::codegen::winrt::javascript::create_javascript_projection_context([])
+                    .unwrap(),
+                &method,
+            ),
             "new DynWinRtMethodSig().addIn(DynWinRtType.u32()).addOutFill(DynWinRtType.arrayType(DynWinRtType.hstring())).addOut(DynWinRtType.u32())"
         );
     }

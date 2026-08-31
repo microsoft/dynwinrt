@@ -4,6 +4,7 @@
 //! Runtime class method projection.
 
 use super::*;
+use crate::codegen::winrt::javascript::JavaScriptProjectionContext;
 
 fn projected_method_outputs(method: &MethodMeta) -> Vec<(usize, &TypeMeta)> {
     let mut result_index = 0;
@@ -25,7 +26,11 @@ fn projected_method_outputs(method: &MethodMeta) -> Vec<(usize, &TypeMeta)> {
     outputs
 }
 
-fn is_projected_delegate_type(typ: Option<&TypeMeta>, delegate_names: &HashSet<String>) -> bool {
+fn is_projected_delegate_type(
+    context: &JavaScriptProjectionContext,
+    typ: Option<&TypeMeta>,
+    delegate_names: &HashSet<String>,
+) -> bool {
     match typ {
         Some(TypeMeta::Delegate { .. }) => true,
         Some(TypeMeta::Interface { name, .. }) => delegate_names.contains(name),
@@ -34,16 +39,14 @@ fn is_projected_delegate_type(typ: Option<&TypeMeta>, delegate_names: &HashSet<S
             name,
             piid,
             args,
-        }) => delegate_names.contains(
-            &crate::codegen::winrt::javascript::projected_parameterized_name(
-                namespace, name, piid, args,
-            ),
-        ),
+        }) => delegate_names
+            .contains(&context.projected_parameterized_name(namespace, name, piid, args)),
         _ => false,
     }
 }
 
 fn projected_ts_return_type(
+    context: &JavaScriptProjectionContext,
     typ: Option<&TypeMeta>,
     is_async: bool,
     known_types: &HashSet<String>,
@@ -52,50 +55,57 @@ fn projected_ts_return_type(
     match typ {
         Some(TypeMeta::AsyncOperation(inner)) => format!(
             "Promise<{}>",
-            projected_ts_return_type(Some(inner), false, known_types, delegate_names)
+            projected_ts_return_type(context, Some(inner), false, known_types, delegate_names)
         ),
         Some(TypeMeta::AsyncOperationWithProgress(result, _)) => {
-            let inner = projected_ts_return_type(Some(result), false, known_types, delegate_names);
+            let inner =
+                projected_ts_return_type(context, Some(result), false, known_types, delegate_names);
             format!(
                 "Promise<{i}> & {{ progress(cb: (value: unknown) => void): Promise<{i}> & {{ progress: any; toPromise(): Promise<{i}>; cancel(): void; }}; toPromise(): Promise<{i}>; cancel(): void; }}",
                 i = inner
             )
         }
-        Some(TypeMeta::Array(inner)) if is_projected_delegate_type(Some(inner), delegate_names) => {
+        Some(TypeMeta::Array(inner))
+            if is_projected_delegate_type(context, Some(inner), delegate_names) =>
+        {
             "Array<DynWinRtValue | null>".into()
         }
-        _ if is_projected_delegate_type(typ, delegate_names) => {
+        _ if is_projected_delegate_type(context, typ, delegate_names) => {
             if is_async {
                 "Promise<DynWinRtValue | null>".into()
             } else {
                 "DynWinRtValue | null".into()
             }
         }
-        _ => ts_return_type_safe(typ, is_async, known_types),
+        _ => ts_return_type_safe(context, typ, is_async, known_types),
     }
 }
 
 fn convert_projected_return(
+    context: &JavaScriptProjectionContext,
     expr: &str,
     typ: Option<&TypeMeta>,
     known_types: &HashSet<String>,
     delegate_names: &HashSet<String>,
 ) -> String {
     match typ {
-        Some(TypeMeta::Array(inner)) if is_projected_delegate_type(Some(inner), delegate_names) => {
+        Some(TypeMeta::Array(inner))
+            if is_projected_delegate_type(context, Some(inner), delegate_names) =>
+        {
             format!(
                 "{}.asArray().toValues().map(v => v.isNull() ? null : v)",
                 expr
             )
         }
-        _ if is_projected_delegate_type(typ, delegate_names) => {
+        _ if is_projected_delegate_type(context, typ, delegate_names) => {
             format!("((v) => v.isNull() ? null : v)({})", expr)
         }
-        _ => convert_return(expr, typ, false, known_types, &NO_DEFERRED),
+        _ => convert_return(context, expr, typ, false, known_types, &NO_DEFERRED),
     }
 }
 
 fn fast_getter_expression(
+    context: &JavaScriptProjectionContext,
     iface_var: &str,
     vtable_index: usize,
     obj_expr: &str,
@@ -117,7 +127,7 @@ fn fast_getter_expression(
         ) => "getObj",
         _ => return None,
     };
-    let fallback = convert_projected_return(invoke_expr, typ, known_types, delegate_names);
+    let fallback = convert_projected_return(context, invoke_expr, typ, known_types, delegate_names);
     if method != "getObj" {
         return Some(format!(
             "(() => {{ const _m = {iface}.method({index}); return typeof _m.{method} === 'function' ? _m.{method}({obj}) : {fallback}; }})()",
@@ -134,6 +144,7 @@ fn fast_getter_expression(
         obj = obj_expr,
     );
     Some(convert_projected_return(
+        context,
         &fast_value,
         typ,
         known_types,
@@ -142,13 +153,14 @@ fn fast_getter_expression(
 }
 
 fn setter_line(
+    context: &JavaScriptProjectionContext,
     iface_var: &str,
     vtable_index: usize,
     obj_expr: &str,
     typ: Option<&TypeMeta>,
 ) -> String {
     let wrapped = typ
-        .map(|typ| wrap_arg("value", typ))
+        .map(|typ| wrap_arg(context, "value", typ))
         .unwrap_or_else(|| "value".into());
     let fallback = format!("_m.invoke({}, [{}]);", obj_expr, wrapped);
     let Some(method) = (match typ {
@@ -174,20 +186,24 @@ fn setter_line(
 }
 
 fn output_ts_type(
+    context: &JavaScriptProjectionContext,
     typ: &TypeMeta,
     known_types: &HashSet<String>,
     delegate_names: &HashSet<String>,
 ) -> String {
     match typ {
-        TypeMeta::Array(inner) if is_projected_delegate_type(Some(inner), delegate_names) => {
+        TypeMeta::Array(inner)
+            if is_projected_delegate_type(context, Some(inner), delegate_names) =>
+        {
             "Array<DynWinRtValue | null>".into()
         }
         TypeMeta::Array(inner) => ts_array_element_type(inner, known_types),
-        _ => projected_ts_return_type(Some(typ), false, known_types, delegate_names),
+        _ => projected_ts_return_type(context, Some(typ), false, known_types, delegate_names),
     }
 }
 
 fn convert_output(
+    context: &JavaScriptProjectionContext,
     expr: &str,
     typ: &TypeMeta,
     known_types: &HashSet<String>,
@@ -195,23 +211,30 @@ fn convert_output(
     deferred: &HashSet<String>,
 ) -> String {
     match typ {
-        TypeMeta::Array(inner) if is_projected_delegate_type(Some(inner), delegate_names) => {
+        TypeMeta::Array(inner)
+            if is_projected_delegate_type(context, Some(inner), delegate_names) =>
+        {
             format!(
                 "{}.asArray().toValues().map(v => v.isNull() ? null : v)",
                 expr
             )
         }
-        TypeMeta::Array(inner) => {
-            convert_array_return(&format!("{}.asArray()", expr), inner, known_types, deferred)
-        }
-        _ if is_projected_delegate_type(Some(typ), delegate_names) => {
+        TypeMeta::Array(inner) => convert_array_return(
+            context,
+            &format!("{}.asArray()", expr),
+            inner,
+            known_types,
+            deferred,
+        ),
+        _ if is_projected_delegate_type(context, Some(typ), delegate_names) => {
             format!("((v) => v.isNull() ? null : v)({})", expr)
         }
-        _ => convert_return(expr, Some(typ), false, known_types, deferred),
+        _ => convert_return(context, expr, Some(typ), false, known_types, deferred),
     }
 }
 
 fn project_multi_output(
+    context: &JavaScriptProjectionContext,
     method: &MethodMeta,
     invoke_expr: &str,
     known_types: &HashSet<String>,
@@ -219,12 +242,12 @@ fn project_multi_output(
 ) -> (String, String) {
     let outputs = projected_method_outputs(method);
     let return_type = match outputs.as_slice() {
-        [(_, typ)] => output_ts_type(typ, known_types, delegate_names),
+        [(_, typ)] => output_ts_type(context, typ, known_types, delegate_names),
         _ => format!(
             "[{}]",
             outputs
                 .iter()
-                .map(|(_, typ)| output_ts_type(typ, known_types, delegate_names))
+                .map(|(_, typ)| output_ts_type(context, typ, known_types, delegate_names))
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
@@ -234,6 +257,7 @@ fn project_multi_output(
         .iter()
         .map(|(index, typ)| {
             let converted = convert_output(
+                context,
                 &format!("_r[{}]", index),
                 typ,
                 known_types,
@@ -272,6 +296,7 @@ fn project_multi_output(
 // ======================================================================
 
 pub(super) fn project_factory_method(
+    context: &JavaScriptProjectionContext,
     class: &ClassMeta,
     iface: &InterfaceMeta,
     method: &MethodMeta,
@@ -282,6 +307,7 @@ pub(super) fn project_factory_method(
 ) -> ProjectedMember {
     let in_params = get_in_params(method);
     let params = project_params(
+        context,
         &in_params,
         known_types,
         delegate_names,
@@ -292,7 +318,7 @@ pub(super) fn project_factory_method(
         .iter()
         .map(|param| js_argument_kind(&param.typ))
         .collect::<Vec<_>>();
-    let args_expr = build_args_expr(&in_params);
+    let args_expr = build_args_expr(context, &in_params);
     let out_count = method
         .params
         .iter()
@@ -390,6 +416,7 @@ pub(super) fn project_factory_method(
 }
 
 pub(super) fn project_static_method(
+    context: &JavaScriptProjectionContext,
     class: &ClassMeta,
     iface: &InterfaceMeta,
     method: &MethodMeta,
@@ -443,13 +470,19 @@ pub(super) fn project_static_method(
     // Static property getter
     if method.is_property_getter && in_params.is_empty() {
         let prop_name = to_camel_case(method.name.strip_prefix("get_").unwrap_or(&method.name));
-        let ts_return =
-            projected_ts_return_type(return_type_meta, false, known_types, delegate_names);
+        let ts_return = projected_ts_return_type(
+            context,
+            return_type_meta,
+            false,
+            known_types,
+            delegate_names,
+        );
         let invoke_expr = format!(
             "_{}.method({}).invoke({}, [])",
             iface.name, method.vtable_index, statics_call
         );
         let converted = fast_getter_expression(
+            context,
             &format!("_{}", iface.name),
             method.vtable_index,
             &statics_call,
@@ -459,7 +492,13 @@ pub(super) fn project_static_method(
             delegate_names,
         )
         .unwrap_or_else(|| {
-            convert_projected_return(&invoke_expr, return_type_meta, known_types, delegate_names)
+            convert_projected_return(
+                context,
+                &invoke_expr,
+                return_type_meta,
+                known_types,
+                delegate_names,
+            )
         });
         let doc = build_method_doc(method, &in_params);
         return ProjectedMember::Property(ProjectedProperty {
@@ -475,17 +514,24 @@ pub(super) fn project_static_method(
     }
 
     let mut ts_return = if let Some(elem) = array_out_elem {
-        if is_projected_delegate_type(Some(elem), delegate_names) {
+        if is_projected_delegate_type(context, Some(elem), delegate_names) {
             "Array<DynWinRtValue | null>".into()
         } else {
             ts_array_element_type(elem, known_types)
         }
     } else if let Some(output) = single_out {
-        output_ts_type(output, known_types, delegate_names)
+        output_ts_type(context, output, known_types, delegate_names)
     } else {
-        projected_ts_return_type(return_type_meta, is_async, known_types, delegate_names)
+        projected_ts_return_type(
+            context,
+            return_type_meta,
+            is_async,
+            known_types,
+            delegate_names,
+        )
     };
     let params = project_params(
+        context,
         &in_params,
         known_types,
         delegate_names,
@@ -496,7 +542,7 @@ pub(super) fn project_static_method(
         .iter()
         .map(|param| js_argument_kind(&param.typ))
         .collect::<Vec<_>>();
-    let args_expr = build_args_expr(&in_params);
+    let args_expr = build_args_expr(context, &in_params);
     let invoke = if is_multi_output {
         "invokeAll"
     } else {
@@ -525,19 +571,22 @@ pub(super) fn project_static_method(
             _ => None,
         };
         let progress_ts = progress_type
-            .map(|p| projected_ts_return_type(Some(p), false, known_types, delegate_names))
+            .map(|p| projected_ts_return_type(context, Some(p), false, known_types, delegate_names))
             .unwrap_or_else(|| "unknown".to_string());
         // Build conversion expression for progress value
-        let p_convert = convert_projected_return("_p", progress_type, known_types, delegate_names);
+        let p_convert =
+            convert_projected_return(context, "_p", progress_type, known_types, delegate_names);
         if p_convert != "_p" {
             progress_convert = Some(p_convert);
         }
         let is_action = matches!(return_type_meta, Some(TypeMeta::AsyncActionWithProgress(_)));
-        let inner_convert = convert_projected_return("_v", inner_type, known_types, delegate_names);
+        let inner_convert =
+            convert_projected_return(context, "_v", inner_type, known_types, delegate_names);
         if is_action {
             async_kind = AsyncKind::ActionWithProgress(progress_ts);
         } else {
-            let inner_ts = projected_ts_return_type(inner_type, false, known_types, delegate_names);
+            let inner_ts =
+                projected_ts_return_type(context, inner_type, false, known_types, delegate_names);
             async_kind = AsyncKind::OperationWithProgress(inner_ts, progress_ts);
         }
         sync_return_expr = None;
@@ -550,8 +599,10 @@ pub(super) fn project_static_method(
             async_kind = AsyncKind::Action;
             async_convert_v = None;
         } else {
-            let convert_v = convert_projected_return("_v", inner_type, known_types, delegate_names);
-            let inner_ts = projected_ts_return_type(inner_type, false, known_types, delegate_names);
+            let convert_v =
+                convert_projected_return(context, "_v", inner_type, known_types, delegate_names);
+            let inner_ts =
+                projected_ts_return_type(context, inner_type, false, known_types, delegate_names);
             async_kind = AsyncKind::Operation(inner_ts);
             async_convert_v = Some(convert_v);
         }
@@ -560,7 +611,7 @@ pub(super) fn project_static_method(
     } else if is_multi_output {
         async_kind = AsyncKind::None;
         let (multi_return, multi_expr) =
-            project_multi_output(method, &invoke_expr, known_types, delegate_names);
+            project_multi_output(context, method, &invoke_expr, known_types, delegate_names);
         ts_return = multi_return;
         sync_return_expr = Some(multi_expr);
         async_convert_v = None;
@@ -575,10 +626,10 @@ pub(super) fn project_static_method(
         } else {
             format!("{}.asArray()", invoke_expr)
         };
-        let converted = if is_projected_delegate_type(Some(elem), delegate_names) {
+        let converted = if is_projected_delegate_type(context, Some(elem), delegate_names) {
             format!("{}.toValues().map(v => v.isNull() ? null : v)", arr_expr)
         } else {
-            convert_array_return(&arr_expr, elem, known_types, &NO_DEFERRED)
+            convert_array_return(context, &arr_expr, elem, known_types, &NO_DEFERRED)
         };
         sync_return_expr = None;
         async_convert_v = None;
@@ -595,6 +646,7 @@ pub(super) fn project_static_method(
     } else if let Some(output) = single_out {
         async_kind = AsyncKind::None;
         sync_return_expr = Some(convert_output(
+            context,
             &invoke_expr,
             output,
             known_types,
@@ -605,8 +657,13 @@ pub(super) fn project_static_method(
         array_return_expr = None;
     } else {
         async_kind = AsyncKind::None;
-        let converted =
-            convert_projected_return(&invoke_expr, return_type_meta, known_types, delegate_names);
+        let converted = convert_projected_return(
+            context,
+            &invoke_expr,
+            return_type_meta,
+            known_types,
+            delegate_names,
+        );
         sync_return_expr = if return_type_meta.is_some() {
             Some(converted)
         } else {
@@ -667,6 +724,7 @@ pub(super) fn project_static_method(
 }
 
 pub(super) fn project_instance_method(
+    context: &JavaScriptProjectionContext,
     iface_var: &str,
     obj_expr: &str,
     method: &MethodMeta,
@@ -693,13 +751,14 @@ pub(super) fn project_instance_method(
     let has_return = method_abi_output_count(method) > 0;
 
     let is_delegate_type =
-        |typ: Option<&TypeMeta>| is_projected_delegate_type(typ, delegate_type_names);
+        |typ: Option<&TypeMeta>| is_projected_delegate_type(context, typ, delegate_type_names);
 
     let mut doc = build_method_doc(method, &in_params);
 
     // Event add
     if method.is_event_add {
         return Some(project_event_add(
+            context,
             iface_var,
             obj_expr,
             method,
@@ -733,13 +792,19 @@ pub(super) fn project_instance_method(
     // Property getter
     if method.is_property_getter && in_params.is_empty() {
         let prop_name = to_camel_case(method.name.strip_prefix("get_").unwrap_or(&method.name));
-        let ts_return =
-            projected_ts_return_type(return_type_meta, false, known_types, delegate_type_names);
+        let ts_return = projected_ts_return_type(
+            context,
+            return_type_meta,
+            false,
+            known_types,
+            delegate_type_names,
+        );
         let invoke_expr = format!(
             "{}.method({}).invoke({}, [])",
             iface_var, method.vtable_index, obj_expr
         );
         let converted = fast_getter_expression(
+            context,
             iface_var,
             method.vtable_index,
             obj_expr,
@@ -750,6 +815,7 @@ pub(super) fn project_instance_method(
         )
         .unwrap_or_else(|| {
             convert_projected_return(
+                context,
                 &invoke_expr,
                 return_type_meta,
                 known_types,
@@ -758,8 +824,14 @@ pub(super) fn project_instance_method(
         });
 
         // Check if there's a corresponding setter
-        let setter =
-            find_setter_for_property(method, iface_var, obj_expr, iface_methods, known_types);
+        let setter = find_setter_for_property(
+            context,
+            method,
+            iface_var,
+            obj_expr,
+            iface_methods,
+            known_types,
+        );
         let (setter_line, setter_ts_type) = match setter {
             Some((line, ts_type)) => (Some(line), ts_type),
             None => (None, None),
@@ -788,10 +860,11 @@ pub(super) fn project_instance_method(
         } else {
             in_params
                 .first()
-                .map(|p| ts_param_type_safe(&p.typ, known_types))
+                .map(|p| ts_param_type_safe(context, &p.typ, known_types))
                 .unwrap_or_else(|| "any".to_string())
         };
         let setter_line = setter_line(
+            context,
             iface_var,
             method.vtable_index,
             obj_expr,
@@ -827,6 +900,7 @@ pub(super) fn project_instance_method(
 
     // Normal method
     let params = project_params(
+        context,
         &in_params,
         known_types,
         delegate_type_names,
@@ -863,18 +937,24 @@ pub(super) fn project_instance_method(
     };
 
     let mut ts_return = if let Some(elem) = array_out_elem {
-        if is_projected_delegate_type(Some(elem), delegate_type_names) {
+        if is_projected_delegate_type(context, Some(elem), delegate_type_names) {
             "Array<DynWinRtValue | null>".into()
         } else {
             ts_array_element_type(elem, known_types)
         }
     } else if let Some(output) = single_out {
-        output_ts_type(output, known_types, delegate_type_names)
+        output_ts_type(context, output, known_types, delegate_type_names)
     } else {
-        projected_ts_return_type(return_type_meta, is_async, known_types, delegate_type_names)
+        projected_ts_return_type(
+            context,
+            return_type_meta,
+            is_async,
+            known_types,
+            delegate_type_names,
+        )
     };
 
-    let args_expr = build_args_expr(&in_params);
+    let args_expr = build_args_expr(context, &in_params);
     let invoke = if is_multi_output {
         "invokeAll"
     } else {
@@ -903,21 +983,33 @@ pub(super) fn project_instance_method(
             _ => None,
         };
         let progress_ts = progress_type
-            .map(|p| projected_ts_return_type(Some(p), false, known_types, delegate_type_names))
+            .map(|p| {
+                projected_ts_return_type(context, Some(p), false, known_types, delegate_type_names)
+            })
             .unwrap_or_else(|| "unknown".to_string());
-        let p_convert =
-            convert_projected_return("_p", progress_type, known_types, delegate_type_names);
+        let p_convert = convert_projected_return(
+            context,
+            "_p",
+            progress_type,
+            known_types,
+            delegate_type_names,
+        );
         if p_convert != "_p" {
             progress_convert = Some(p_convert);
         }
         let is_action = matches!(return_type_meta, Some(TypeMeta::AsyncActionWithProgress(_)));
         let inner_convert =
-            convert_projected_return("_v", inner_type, known_types, delegate_type_names);
+            convert_projected_return(context, "_v", inner_type, known_types, delegate_type_names);
         if is_action {
             async_kind = AsyncKind::ActionWithProgress(progress_ts);
         } else {
-            let inner_ts =
-                projected_ts_return_type(inner_type, false, known_types, delegate_type_names);
+            let inner_ts = projected_ts_return_type(
+                context,
+                inner_type,
+                false,
+                known_types,
+                delegate_type_names,
+            );
             async_kind = AsyncKind::OperationWithProgress(inner_ts, progress_ts);
         }
         sync_return_expr = None;
@@ -930,10 +1022,20 @@ pub(super) fn project_instance_method(
             async_kind = AsyncKind::Action;
             async_convert_v = None;
         } else {
-            let convert_v =
-                convert_projected_return("_v", inner_type, known_types, delegate_type_names);
-            let inner_ts =
-                projected_ts_return_type(inner_type, false, known_types, delegate_type_names);
+            let convert_v = convert_projected_return(
+                context,
+                "_v",
+                inner_type,
+                known_types,
+                delegate_type_names,
+            );
+            let inner_ts = projected_ts_return_type(
+                context,
+                inner_type,
+                false,
+                known_types,
+                delegate_type_names,
+            );
             async_kind = AsyncKind::Operation(inner_ts);
             async_convert_v = Some(convert_v);
         }
@@ -941,8 +1043,13 @@ pub(super) fn project_instance_method(
         array_return_expr = None;
     } else if is_multi_output && !fill_array_uses_retval_count(method) {
         async_kind = AsyncKind::None;
-        let (multi_return, multi_expr) =
-            project_multi_output(method, &invoke_expr, known_types, delegate_type_names);
+        let (multi_return, multi_expr) = project_multi_output(
+            context,
+            method,
+            &invoke_expr,
+            known_types,
+            delegate_type_names,
+        );
         ts_return = multi_return;
         sync_return_expr = Some(multi_expr);
         async_convert_v = None;
@@ -957,10 +1064,10 @@ pub(super) fn project_instance_method(
         } else {
             format!("{}.asArray()", invoke_expr)
         };
-        let converted = if is_projected_delegate_type(Some(elem), delegate_type_names) {
+        let converted = if is_projected_delegate_type(context, Some(elem), delegate_type_names) {
             format!("{}.toValues().map(v => v.isNull() ? null : v)", arr_expr)
         } else {
-            convert_array_return(&arr_expr, elem, known_types, &NO_DEFERRED)
+            convert_array_return(context, &arr_expr, elem, known_types, &NO_DEFERRED)
         };
         sync_return_expr = None;
         async_convert_v = None;
@@ -977,6 +1084,7 @@ pub(super) fn project_instance_method(
     } else if let Some(output) = single_out {
         async_kind = AsyncKind::None;
         sync_return_expr = Some(convert_output(
+            context,
             &invoke_expr,
             output,
             known_types,
@@ -989,6 +1097,7 @@ pub(super) fn project_instance_method(
         async_kind = AsyncKind::None;
         if has_return {
             let converted = convert_projected_return(
+                context,
                 &invoke_expr,
                 return_type_meta,
                 known_types,
@@ -1053,6 +1162,7 @@ pub(super) fn project_instance_method(
 }
 
 fn project_event_add(
+    context: &JavaScriptProjectionContext,
     iface_var: &str,
     obj_expr: &str,
     method: &MethodMeta,
@@ -1070,11 +1180,7 @@ fn project_event_add(
             name,
             piid,
             args,
-        } => Some(
-            crate::codegen::winrt::javascript::projected_parameterized_name(
-                namespace, name, piid, args,
-            ),
-        ),
+        } => Some(context.projected_parameterized_name(namespace, name, piid, args)),
         TypeMeta::Delegate { name, .. } => Some(name.clone()),
         TypeMeta::Interface { name, .. } => Some(name.clone()),
         _ => None,
@@ -1092,8 +1198,8 @@ fn project_event_add(
         Some(TypeMeta::Parameterized { name, args, .. })
             if name.split('`').next() == Some("TypedEventHandler") && args.len() == 2 =>
         {
-            let s_ts = ts_return_type_safe(Some(&args[0]), false, known_types);
-            let a_ts = ts_return_type_safe(Some(&args[1]), false, known_types);
+            let s_ts = ts_return_type_safe(context, Some(&args[0]), false, known_types);
+            let a_ts = ts_return_type_safe(context, Some(&args[1]), false, known_types);
             // Map DynWinRtValue → unknown for event callback params (more TS-idiomatic)
             let s_ts_pub = if s_ts == "DynWinRtValue" {
                 "unknown".to_string()
@@ -1105,8 +1211,22 @@ fn project_event_add(
             } else {
                 a_ts
             };
-            let s_wrap = convert_return("__a0__", Some(&args[0]), false, known_types, &NO_DEFERRED);
-            let a_wrap = convert_return("__a1__", Some(&args[1]), false, known_types, &NO_DEFERRED);
+            let s_wrap = convert_return(
+                context,
+                "__a0__",
+                Some(&args[0]),
+                false,
+                known_types,
+                &NO_DEFERRED,
+            );
+            let a_wrap = convert_return(
+                context,
+                "__a1__",
+                Some(&args[1]),
+                false,
+                known_types,
+                &NO_DEFERRED,
+            );
             (
                 format!("(sender: {}, args: {}) => void", s_ts_pub, a_ts_pub),
                 Some(s_wrap),
@@ -1116,13 +1236,20 @@ fn project_event_add(
         Some(TypeMeta::Parameterized { name, args, .. })
             if name.split('`').next() == Some("EventHandler") && args.len() == 1 =>
         {
-            let a_ts = ts_return_type_safe(Some(&args[0]), false, known_types);
+            let a_ts = ts_return_type_safe(context, Some(&args[0]), false, known_types);
             let a_ts_pub = if a_ts == "DynWinRtValue" {
                 "unknown".to_string()
             } else {
                 a_ts
             };
-            let a_wrap = convert_return("__a1__", Some(&args[0]), false, known_types, &NO_DEFERRED);
+            let a_wrap = convert_return(
+                context,
+                "__a1__",
+                Some(&args[0]),
+                false,
+                known_types,
+                &NO_DEFERRED,
+            );
             (
                 format!("(sender: unknown, args: {}) => void", a_ts_pub),
                 None,
@@ -1154,6 +1281,7 @@ fn project_event_add(
 }
 
 fn find_setter_for_property(
+    context: &JavaScriptProjectionContext,
     getter: &MethodMeta,
     iface_var: &str,
     obj_expr: &str,
@@ -1170,10 +1298,11 @@ fn find_setter_for_property(
     let setter_ts_type = setter_in_params.first().and_then(|param| {
         ireference_inner_type(&param.typ)
             .is_some()
-            .then(|| ts_param_type_safe(&param.typ, known_types))
+            .then(|| ts_param_type_safe(context, &param.typ, known_types))
     });
     Some((
         setter_line(
+            context,
             iface_var,
             setter.vtable_index,
             obj_expr,
@@ -1187,6 +1316,59 @@ fn find_setter_for_property(
 mod tests {
     use super::*;
     use crate::meta::ParamMeta;
+    use std::sync::LazyLock;
+
+    fn context() -> &'static JavaScriptProjectionContext {
+        static CONTEXT: LazyLock<JavaScriptProjectionContext> = LazyLock::new(|| {
+            crate::codegen::winrt::javascript::create_javascript_projection_context([])
+                .expect("empty test projection context")
+        });
+        &CONTEXT
+    }
+
+    fn project_instance_method(
+        iface_var: &str,
+        obj_expr: &str,
+        method: &MethodMeta,
+        known_types: &HashSet<String>,
+        delegate_type_names: &HashSet<String>,
+        iface_methods: Option<&[MethodMeta]>,
+        delegate_sigs: &HashMap<String, String>,
+        delegate_param_wraps: &HashMap<String, Vec<String>>,
+    ) -> Option<ProjectedMember> {
+        super::project_instance_method(
+            context(),
+            iface_var,
+            obj_expr,
+            method,
+            known_types,
+            delegate_type_names,
+            iface_methods,
+            delegate_sigs,
+            delegate_param_wraps,
+        )
+    }
+
+    fn project_static_method(
+        class: &ClassMeta,
+        iface: &InterfaceMeta,
+        method: &MethodMeta,
+        known_types: &HashSet<String>,
+        delegate_names: &HashSet<String>,
+        delegate_sigs: &HashMap<String, String>,
+        delegate_param_wraps: &HashMap<String, Vec<String>>,
+    ) -> ProjectedMember {
+        super::project_static_method(
+            context(),
+            class,
+            iface,
+            method,
+            known_types,
+            delegate_names,
+            delegate_sigs,
+            delegate_param_wraps,
+        )
+    }
 
     fn fill_array_with_boolean_result() -> MethodMeta {
         MethodMeta {

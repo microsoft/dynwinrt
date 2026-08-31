@@ -11,8 +11,6 @@ pub use super::python::naming::to_snake_case_filename;
 #[cfg(test)]
 mod tests {
     use crate::codegen::winrt::javascript::naming::*;
-    use crate::codegen::winrt::javascript::signature::*;
-    use crate::codegen::winrt::javascript::structs::*;
     use crate::codegen::winrt::python::naming::*;
     use crate::codegen::winrt::python::signature::*;
     use crate::codegen::winrt::python::structs::*;
@@ -20,6 +18,62 @@ mod tests {
     use crate::meta::{MethodMeta, ParamDirection, ParamMeta};
     use crate::types::TypeMeta;
     use std::collections::HashSet;
+    use std::sync::LazyLock;
+
+    fn js_context() -> &'static crate::codegen::winrt::javascript::JavaScriptProjectionContext {
+        static CONTEXT: LazyLock<crate::codegen::winrt::javascript::JavaScriptProjectionContext> =
+            LazyLock::new(|| {
+                crate::codegen::winrt::javascript::create_javascript_projection_context([])
+                    .expect("empty test projection context")
+            });
+        &CONTEXT
+    }
+
+    fn ts_struct_field_type(typ: &TypeMeta) -> String {
+        crate::codegen::winrt::javascript::structs::ts_struct_field_type(js_context(), typ)
+    }
+
+    fn struct_field_getter(typ: &TypeMeta, index: usize) -> String {
+        crate::codegen::winrt::javascript::structs::struct_field_getter(js_context(), typ, index)
+    }
+
+    fn struct_field_setter(typ: &TypeMeta, index: usize, value: &str) -> String {
+        crate::codegen::winrt::javascript::structs::struct_field_setter(
+            js_context(),
+            typ,
+            index,
+            value,
+        )
+    }
+
+    fn ts_dynwinrt_type(typ: &TypeMeta) -> String {
+        crate::codegen::winrt::javascript::signature::ts_dynwinrt_type(js_context(), typ)
+    }
+
+    fn build_method_sig(method: &MethodMeta) -> String {
+        crate::codegen::winrt::javascript::signature::build_method_sig(js_context(), method)
+    }
+
+    fn wrap_arg(name: &str, typ: &TypeMeta) -> String {
+        crate::codegen::winrt::javascript::signature::wrap_arg(js_context(), name, typ)
+    }
+
+    fn convert_return(
+        expr: &str,
+        typ: Option<&TypeMeta>,
+        is_async: bool,
+        known: &HashSet<String>,
+        deferred: &HashSet<String>,
+    ) -> String {
+        crate::codegen::winrt::javascript::signature::convert_return(
+            js_context(),
+            expr,
+            typ,
+            is_async,
+            known,
+            deferred,
+        )
+    }
 
     #[test]
     fn to_camel_case_basic() {

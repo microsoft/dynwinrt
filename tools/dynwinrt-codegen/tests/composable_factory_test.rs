@@ -80,6 +80,7 @@ fn composable_factory_returns_public_instance() {
     };
 
     let projected = project::project_class(
+        &Default::default(),
         &class,
         &HashSet::from(["Widget".into()]),
         &HashSet::new(),
@@ -208,6 +209,7 @@ fn composable_factory_returns_public_instance() {
     let mut protected = class.clone();
     protected.constructors[0].kind = ConstructorKind::ProtectedComposition;
     let projected = project::project_class(
+        &Default::default(),
         &protected,
         &HashSet::from(["Widget".into()]),
         &HashSet::new(),
@@ -301,6 +303,7 @@ fn class_without_default_interface_tracks_each_ownership_path_once() {
         ..Default::default()
     };
     let projected = project::project_class(
+        &Default::default(),
         &class,
         &HashSet::from(["Opaque".into()]),
         &HashSet::new(),
@@ -428,6 +431,7 @@ fn parameterized_default_interface_uses_computed_iid() {
     };
 
     let projected = project::project_class(
+        &Default::default(),
         &class,
         &HashSet::from([
             "RowDefinition".into(),
@@ -527,6 +531,7 @@ fn winui_application_projects_fluent_bootstrap_helpers() {
     )]);
 
     let projected = project::project_class(
+        &Default::default(),
         &application,
         &known_types,
         &delegate_names,
@@ -604,6 +609,7 @@ fn winui_application_without_extension_dependencies_has_no_bootstrap_helpers() {
     };
     let known_types = HashSet::from(["Application".into()]);
     let projected = project::project_class(
+        &Default::default(),
         &application,
         &known_types,
         &HashSet::new(),

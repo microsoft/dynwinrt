@@ -4,6 +4,7 @@
 //! WinRT collection convenience projections.
 
 use super::*;
+use crate::codegen::winrt::javascript::JavaScriptProjectionContext;
 
 // ======================================================================
 // Collection helpers
@@ -76,6 +77,7 @@ fn ts_array_from_items(items_var: &str, elem: &TypeMeta) -> Option<String> {
 }
 
 pub(super) fn project_collection_helpers(
+    context: &JavaScriptProjectionContext,
     iface: &InterfaceMeta,
     known_types: &HashSet<String>,
     members: &mut Vec<ProjectedMember>,
@@ -90,7 +92,7 @@ pub(super) fn project_collection_helpers(
     // for the IterableIterator<T> / T[] type annotations in DTS
     if !iface.generic_args.is_empty() {
         for arg in &iface.generic_args {
-            let type_name = ts_param_type_safe(arg, known_types);
+            let type_name = ts_param_type_safe(context, arg, known_types);
             // Primitive types (string, number, boolean, DynWinRtValue, any) don't need import
             if ![
                 "string",
@@ -108,7 +110,7 @@ pub(super) fn project_collection_helpers(
                 if !already_imported {
                     imports.push(ProjectedImport {
                         symbols: vec![type_name],
-                        from: format!("./{}.js", ts_param_type_safe(arg, known_types)),
+                        from: format!("./{}.js", ts_param_type_safe(context, arg, known_types)),
                         runtime_only: false,
                         dts_only: false,
                         is_runtime_package: false,
@@ -120,7 +122,7 @@ pub(super) fn project_collection_helpers(
 
     match piid {
         PIID_IVECTOR | PIID_IVECTOR_VIEW if iface.generic_args.len() == 1 => {
-            let elem_ts = ts_param_type_safe(&iface.generic_args[0], known_types);
+            let elem_ts = ts_param_type_safe(context, &iface.generic_args[0], known_types);
             members.push(ProjectedMember::Symbol(ProjectedSymbol {
                 kind: SymbolKind::CollectionLength,
                 doc: Some(
@@ -156,7 +158,7 @@ pub(super) fn project_collection_helpers(
                 .map(|m| m.vtable_index);
             let iface_var_ref = format!("_{}", iface.name);
             if let Some(idx) = index_of_vtable {
-                let wrap_value = wrap_arg("value", &iface.generic_args[0]);
+                let wrap_value = wrap_arg(context, "value", &iface.generic_args[0]);
                 members.push(ProjectedMember::Method(ProjectedMethod {
                     name: "indexOf".into(),
                     doc: Some(DocInfo {
@@ -200,6 +202,7 @@ pub(super) fn project_collection_helpers(
                         get_many_idx = get_many.vtable_index
                     );
                     let arr_convert = convert_array_return(
+                        context,
                         &format!("_r[{fill_index}].asArray()"),
                         elem,
                         known_types,
@@ -301,7 +304,7 @@ pub(super) fn project_collection_helpers(
             }
         }
         PIID_IITERATOR if iface.generic_args.len() == 1 => {
-            let elem_ts = ts_param_type_safe(&iface.generic_args[0], known_types);
+            let elem_ts = ts_param_type_safe(context, &iface.generic_args[0], known_types);
             members.push(ProjectedMember::Symbol(ProjectedSymbol {
                 kind: SymbolKind::IteratorNext {
                     element_type: elem_ts.clone(),
@@ -318,7 +321,7 @@ pub(super) fn project_collection_helpers(
             }));
         }
         PIID_IITERABLE if iface.generic_args.len() == 1 => {
-            let elem_ts = ts_param_type_safe(&iface.generic_args[0], known_types);
+            let elem_ts = ts_param_type_safe(context, &iface.generic_args[0], known_types);
             members.push(ProjectedMember::Symbol(ProjectedSymbol {
                 kind: SymbolKind::Iterator {
                     element_type: elem_ts,
@@ -328,8 +331,8 @@ pub(super) fn project_collection_helpers(
             }));
         }
         PIID_IMAP | PIID_IMAP_VIEW if iface.generic_args.len() == 2 => {
-            let key_ts = ts_param_type_safe(&iface.generic_args[0], known_types);
-            let val_ts = ts_param_type_safe(&iface.generic_args[1], known_types);
+            let key_ts = ts_param_type_safe(context, &iface.generic_args[0], known_types);
+            let val_ts = ts_param_type_safe(context, &iface.generic_args[1], known_types);
             let key_ts = if key_ts == "DynWinRtValue" {
                 "unknown".to_string()
             } else {
@@ -349,8 +352,9 @@ pub(super) fn project_collection_helpers(
                 .find(|m| m.name == "Lookup")
                 .map(|m| m.vtable_index)
             {
-                let key_wrap = wrap_arg("key", &iface.generic_args[0]);
+                let key_wrap = wrap_arg(context, "key", &iface.generic_args[0]);
                 let return_convert = convert_return(
+                    context,
                     &format!(
                         "{iface_var}.method({lookup_idx}).invoke({object_expr}, [{key_wrap}])"
                     ),
@@ -398,7 +402,7 @@ pub(super) fn project_collection_helpers(
                 .find(|m| m.name == "HasKey")
                 .map(|m| m.vtable_index)
             {
-                let key_wrap = wrap_arg("key", &iface.generic_args[0]);
+                let key_wrap = wrap_arg(context, "key", &iface.generic_args[0]);
                 members.push(ProjectedMember::Method(ProjectedMethod {
                     name: "has".into(),
                     doc: Some(DocInfo {
@@ -442,8 +446,8 @@ pub(super) fn project_collection_helpers(
                     .find(|m| m.name == "Insert")
                     .map(|m| m.vtable_index)
                 {
-                    let key_wrap = wrap_arg("key", &iface.generic_args[0]);
-                    let val_wrap = wrap_arg("value", &iface.generic_args[1]);
+                    let key_wrap = wrap_arg(context, "key", &iface.generic_args[0]);
+                    let val_wrap = wrap_arg(context, "value", &iface.generic_args[1]);
                     members.push(ProjectedMember::Method(ProjectedMethod {
                         name: "set".into(),
                         doc: Some(DocInfo {
@@ -470,7 +474,7 @@ pub(super) fn project_collection_helpers(
                     .find(|m| m.name == "Remove")
                     .map(|m| m.vtable_index)
                 {
-                    let key_wrap = wrap_arg("key", &iface.generic_args[0]);
+                    let key_wrap = wrap_arg(context, "key", &iface.generic_args[0]);
                     members.push(ProjectedMember::Method(ProjectedMethod {
                         name: "delete".into(),
                         doc: Some(DocInfo {
@@ -514,6 +518,7 @@ pub(super) fn project_collection_helpers(
 }
 
 pub(super) fn project_collection_create(
+    context: &JavaScriptProjectionContext,
     iface: &InterfaceMeta,
     known_types: &HashSet<String>,
     members: &mut Vec<ProjectedMember>,
@@ -523,8 +528,8 @@ pub(super) fn project_collection_create(
         return;
     };
     if piid == PIID_IVECTOR && iface.generic_args.len() == 1 {
-        let elem_type = ts_dynwinrt_type(&iface.generic_args[0]);
-        let elem_ts = ts_param_type_safe(&iface.generic_args[0], known_types);
+        let elem_type = ts_dynwinrt_type(context, &iface.generic_args[0]);
+        let elem_ts = ts_param_type_safe(context, &iface.generic_args[0], known_types);
         members.push(ProjectedMember::Method(ProjectedMethod {
             name: "create".into(),
             doc: Some(DocInfo {
@@ -557,9 +562,9 @@ pub(super) fn project_collection_create(
             overload_of: None,
         }));
     } else if piid == PIID_IOBSERVABLE_VECTOR && iface.generic_args.len() == 1 {
-        let elem_type = ts_dynwinrt_type(&iface.generic_args[0]);
-        let elem_ts = ts_param_type_safe(&iface.generic_args[0], known_types);
-        let vector_name = super::super::projected_parameterized_name(
+        let elem_type = ts_dynwinrt_type(context, &iface.generic_args[0]);
+        let elem_ts = ts_param_type_safe(context, &iface.generic_args[0], known_types);
+        let vector_name = context.projected_parameterized_name(
             crate::meta::WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE,
             "IVector",
             PIID_IVECTOR,
@@ -639,15 +644,15 @@ pub(super) fn project_collection_create(
             overload_of: None,
         }));
     } else if piid == PIID_IMAP && iface.generic_args.len() == 2 {
-        let key_type = ts_dynwinrt_type(&iface.generic_args[0]);
-        let val_type = ts_dynwinrt_type(&iface.generic_args[1]);
-        let key_ts = ts_param_type_safe(&iface.generic_args[0], known_types);
+        let key_type = ts_dynwinrt_type(context, &iface.generic_args[0]);
+        let val_type = ts_dynwinrt_type(context, &iface.generic_args[1]);
+        let key_ts = ts_param_type_safe(context, &iface.generic_args[0], known_types);
         let key_ts = if key_ts == "DynWinRtValue" {
             "unknown".to_string()
         } else {
             key_ts
         };
-        let val_ts = ts_param_type_safe(&iface.generic_args[1], known_types);
+        let val_ts = ts_param_type_safe(context, &iface.generic_args[1], known_types);
         let val_ts = if val_ts == "DynWinRtValue" {
             "unknown".to_string()
         } else {

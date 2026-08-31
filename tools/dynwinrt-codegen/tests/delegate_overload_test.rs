@@ -58,13 +58,19 @@ fn delegate_overloads_emit_local_delegate_values() {
         .map(|interface| interface.name.clone())
         .collect();
     let (delegate_sigs, delegate_sig_refs, delegate_param_wraps) =
-        project::build_delegate_signatures(&interfaces, &delegate_type_names, &known_types);
+        project::build_delegate_signatures(
+            &Default::default(),
+            &interfaces,
+            &delegate_type_names,
+            &known_types,
+        );
 
     let class = classes
         .iter()
         .find(|class| class.name == "DispatcherQueue")
         .expect("DispatcherQueue missing after dependency resolution");
     let projected = project::project_class(
+        &Default::default(),
         class,
         &known_types,
         &delegate_type_names,

@@ -53,7 +53,11 @@ use super::signature::{
     generate_interface_registration, js_argument_kind, ref_marker, ts_dynwinrt_type, wrap_arg,
 };
 
-fn visit_projected_generics(typ: &TypeMeta, names: &mut HashSet<String>) {
+fn visit_projected_generics(
+    context: &JavaScriptProjectionContext,
+    typ: &TypeMeta,
+    names: &mut HashSet<String>,
+) {
     match typ {
         TypeMeta::Parameterized {
             namespace,
@@ -61,37 +65,38 @@ fn visit_projected_generics(typ: &TypeMeta, names: &mut HashSet<String>) {
             piid,
             args,
         } => {
-            names.insert(super::projected_parameterized_name(
-                namespace, name, piid, args,
-            ));
+            names.insert(context.projected_parameterized_name(namespace, name, piid, args));
             for argument in args {
-                visit_projected_generics(argument, names);
+                visit_projected_generics(context, argument, names);
             }
         }
         TypeMeta::AsyncOperation(inner)
         | TypeMeta::AsyncActionWithProgress(inner)
-        | TypeMeta::Array(inner) => visit_projected_generics(inner, names),
+        | TypeMeta::Array(inner) => visit_projected_generics(context, inner, names),
         TypeMeta::AsyncOperationWithProgress(result, progress) => {
-            visit_projected_generics(result, names);
-            visit_projected_generics(progress, names);
+            visit_projected_generics(context, result, names);
+            visit_projected_generics(context, progress, names);
         }
         TypeMeta::Struct { fields, .. } => {
             for field in fields {
-                visit_projected_generics(&field.typ, names);
+                visit_projected_generics(context, &field.typ, names);
             }
         }
         _ => {}
     }
 }
 
-fn collect_used_generics_from_methods(methods: &[MethodMeta]) -> Vec<String> {
+fn collect_used_generics_from_methods(
+    context: &JavaScriptProjectionContext,
+    methods: &[MethodMeta],
+) -> Vec<String> {
     let mut names = HashSet::new();
     for method in methods {
         for parameter in &method.params {
-            visit_projected_generics(&parameter.typ, &mut names);
+            visit_projected_generics(context, &parameter.typ, &mut names);
         }
         if let Some(return_type) = &method.return_type {
-            visit_projected_generics(return_type, &mut names);
+            visit_projected_generics(context, return_type, &mut names);
         }
     }
     let mut names = names.into_iter().collect::<Vec<_>>();
@@ -99,23 +104,27 @@ fn collect_used_generics_from_methods(methods: &[MethodMeta]) -> Vec<String> {
     names
 }
 
-fn collect_used_generics_from_class(class: &ClassMeta) -> Vec<String> {
+fn collect_used_generics_from_class(
+    context: &JavaScriptProjectionContext,
+    class: &ClassMeta,
+) -> Vec<String> {
     let mut names = HashSet::new();
     for method in class
         .all_interfaces()
         .flat_map(|interface| &interface.methods)
     {
         for parameter in &method.params {
-            visit_projected_generics(&parameter.typ, &mut names);
+            visit_projected_generics(context, &parameter.typ, &mut names);
         }
         if let Some(return_type) = &method.return_type {
-            visit_projected_generics(return_type, &mut names);
+            visit_projected_generics(context, return_type, &mut names);
         }
     }
     let mut names = names.into_iter().collect::<Vec<_>>();
     names.sort();
     names
 }
+use super::JavaScriptProjectionContext;
 use super::structs::{struct_field_getter, struct_field_setter, ts_struct_field_type};
 
 use collections::{
@@ -146,12 +155,15 @@ fn project_winui_abi_types(types: &[WinUiAbiType]) -> String {
         .join(", ")
 }
 
-fn interface_iid_rhs(iface: &InterfaceMeta) -> Option<String> {
+fn interface_iid_rhs(
+    context: &JavaScriptProjectionContext,
+    iface: &InterfaceMeta,
+) -> Option<String> {
     if let Some(ref piid) = iface.generic_piid {
         let args = iface
             .generic_args
             .iter()
-            .map(ts_dynwinrt_type)
+            .map(|typ| ts_dynwinrt_type(context, typ))
             .collect::<Vec<_>>()
             .join(", ");
         Some(format!(
@@ -173,6 +185,7 @@ fn interface_iid_rhs(iface: &InterfaceMeta) -> Option<String> {
 ///
 /// For example, `StreamedFileDataRequestedHandler` → `("(streamedFileDataRequest: StreamedFileDataRequest) => void", ["StreamedFileDataRequest"])`.
 pub fn build_delegate_signatures(
+    context: &JavaScriptProjectionContext,
     all_interfaces: &[InterfaceMeta],
     delegate_type_names: &HashSet<String>,
     known_types: &HashSet<String>,
@@ -201,7 +214,7 @@ pub fn build_delegate_signatures(
             .iter()
             .enumerate()
             .map(|(idx, p)| {
-                let ts = ts_param_type_safe(&p.typ, known_types);
+                let ts = ts_param_type_safe(context, &p.typ, known_types);
                 let arg_var = format!("__a{}__", idx);
                 // If the type is a known delegate, use DynWinRtValue (avoid recursion)
                 let ts_clean = if delegate_type_names.contains(&ts) {
@@ -212,8 +225,14 @@ pub fn build_delegate_signatures(
                         ref_types.push(ts.clone());
                     }
                     // Build wrapping expression: new Type(argN) for known types, argN.toString() for string, etc.
-                    let wrap =
-                        convert_return(&arg_var, Some(&p.typ), false, known_types, &NO_DEFERRED);
+                    let wrap = convert_return(
+                        context,
+                        &arg_var,
+                        Some(&p.typ),
+                        false,
+                        known_types,
+                        &NO_DEFERRED,
+                    );
                     param_wraps.push(wrap);
                     ts
                 };
@@ -237,6 +256,7 @@ pub fn build_delegate_signatures(
 
 /// Project a single RuntimeClass into a ProjectedFile.
 pub fn project_class(
+    context: &JavaScriptProjectionContext,
     class: &ClassMeta,
     known_types: &HashSet<String>,
     delegate_type_names: &HashSet<String>,
@@ -257,11 +277,13 @@ pub fn project_class(
     let all_ifaces: Vec<&InterfaceMeta> = class.all_interfaces().collect();
     for iface in &all_ifaces {
         collect_known_delegate_names_from_methods(
+            context,
             &iface.methods,
             delegate_type_names,
             &mut delegate_names,
         );
         collect_runtime_delegate_names_from_methods(
+            context,
             &iface.methods,
             delegate_type_names,
             &mut runtime_delegate_names,
@@ -277,7 +299,7 @@ pub fn project_class(
 
     // Runtime import
     let has_structs = !used_structs.is_empty();
-    let mut runtime_import = build_runtime_import(has_structs);
+    let mut runtime_import = build_runtime_import(context, has_structs);
     if supports_unpackaged_xaml {
         runtime_import.symbols.extend([
             "getWinappsdkResourcePriPath".into(),
@@ -288,7 +310,7 @@ pub fn project_class(
 
     // Collection generics imports
     let mut imported_names: HashSet<String> = HashSet::new();
-    let collection_names = collect_used_generics_from_class(class);
+    let collection_names = collect_used_generics_from_class(context, class);
     for cname in &collection_names {
         if !all_delegate_names.contains(cname) {
             imports.push(ProjectedImport {
@@ -427,7 +449,7 @@ pub fn project_class(
     let mut declared_iids: HashSet<String> = HashSet::new();
     for iface in &all_class_ifaces {
         let iid_name = format!("IID_{}", iface.name);
-        let Some(rhs_expr) = interface_iid_rhs(iface) else {
+        let Some(rhs_expr) = interface_iid_rhs(context, iface) else {
             continue;
         };
         if declared_iids.contains(&iid_name) {
@@ -452,7 +474,7 @@ pub fn project_class(
     if let Some(ref di) = class.default_interface {
         if di.name != class.name {
             let alias_name = format!("IID_{}", class.name);
-            if let Some(rhs_expr) = interface_iid_rhs(di)
+            if let Some(rhs_expr) = interface_iid_rhs(context, di)
                 && !declared_iids.contains(&alias_name)
                 && !imported_names.contains(&alias_name)
             {
@@ -471,7 +493,7 @@ pub fn project_class(
         for method in &iface.methods {
             for parameter in &method.params {
                 if parameter.direction == ParamDirection::In {
-                    collect_runtime_class_iid_consts(&parameter.typ, &mut argument_iids);
+                    collect_runtime_class_iid_consts(context, &parameter.typ, &mut argument_iids);
                 }
             }
         }
@@ -503,7 +525,7 @@ pub fn project_class(
             if !emitted.insert(var_name.clone()) {
                 return;
             }
-            registrations.push(generate_interface_registration(iface, &var_name));
+            registrations.push(generate_interface_registration(context, iface, &var_name));
         };
     if let Some(ref iface) = class.default_interface {
         push_registration(&mut registrations, &mut emitted_reg_vars, iface);
@@ -523,13 +545,14 @@ pub fn project_class(
         push_registration(&mut registrations, &mut emitted_reg_vars, iface);
     }
     // Struct helpers
-    let structs = project_struct_helpers(&used_structs);
+    let structs = project_struct_helpers(context, &used_structs);
 
     // Build class members
     let mut members = Vec::new();
 
     // Public activation constructor, or an inaccessible constructor for system-returned classes.
     members.push(ProjectedMember::Constructor(project_constructor(
+        context,
         class,
         known_types,
         &delegate_names,
@@ -653,6 +676,7 @@ pub fn project_class(
     for iface in &class.factory_interfaces {
         for method in &iface.methods {
             let projected = project_factory_method(
+                context,
                 class,
                 iface,
                 method,
@@ -797,6 +821,7 @@ pub fn project_class(
     for iface in &class.static_interfaces {
         for method in &iface.methods {
             let projected = project_static_method(
+                context,
                 class,
                 iface,
                 method,
@@ -839,6 +864,7 @@ pub fn project_class(
                 continue;
             }
             if let Some(m) = project_instance_method(
+                context,
                 &iface_var,
                 "this._obj",
                 method,
@@ -852,6 +878,7 @@ pub fn project_class(
             }
         }
         project_collection_helpers(
+            context,
             default_iface,
             known_types,
             &mut members,
@@ -990,6 +1017,7 @@ pub fn project_class(
                 continue;
             }
             if let Some(m) = project_instance_method(
+                context,
                 &reg_var,
                 &cast_obj,
                 method,
@@ -1003,6 +1031,7 @@ pub fn project_class(
             }
         }
         project_collection_helpers(
+            context,
             req_iface,
             known_types,
             &mut ri_members,
@@ -1019,6 +1048,7 @@ pub fn project_class(
                     continue;
                 }
                 if let Some(m) = project_instance_method(
+                    context,
                     &reg_var,
                     "this._obj",
                     method,
@@ -1032,6 +1062,7 @@ pub fn project_class(
                 }
             }
             project_collection_helpers(
+                context,
                 req_iface,
                 known_types,
                 &mut ri_own_members,
@@ -1121,6 +1152,7 @@ pub fn project_class(
 
 /// Project a single interface into a ProjectedFile.
 pub fn project_interface(
+    context: &JavaScriptProjectionContext,
     iface: &InterfaceMeta,
     known_types: &HashSet<String>,
     delegate_type_names: &HashSet<String>,
@@ -1132,7 +1164,7 @@ pub fn project_interface(
     let is_delegate = iface.methods.iter().any(|m| m.name == ".ctor")
         && iface.methods.iter().any(|m| m.name == "Invoke");
     if is_delegate {
-        return project_delegate(iface, delegate_sigs, delegate_sig_refs);
+        return project_delegate(context, iface, delegate_sigs, delegate_sig_refs);
     }
 
     let used_structs = collect_used_structs_from_iface(iface);
@@ -1141,11 +1173,13 @@ pub fn project_interface(
     let mut delegate_names: HashSet<String> = HashSet::new();
     let mut runtime_delegate_names: HashSet<String> = HashSet::new();
     collect_known_delegate_names_from_methods(
+        context,
         &iface.methods,
         delegate_type_names,
         &mut delegate_names,
     );
     collect_runtime_delegate_names_from_methods(
+        context,
         &iface.methods,
         delegate_type_names,
         &mut runtime_delegate_names,
@@ -1153,9 +1187,9 @@ pub fn project_interface(
 
     // Build imports
     let mut imports = Vec::new();
-    imports.push(build_runtime_import(has_structs));
+    imports.push(build_runtime_import(context, has_structs));
 
-    let collection_names = collect_used_generics_from_methods(&iface.methods);
+    let collection_names = collect_used_generics_from_methods(context, &iface.methods);
     for cname in &collection_names {
         if cname != &iface.name && !delegate_names.contains(cname) {
             imports.push(ProjectedImport {
@@ -1207,7 +1241,7 @@ pub fn project_interface(
 
     // IID const
     let mut iid_consts = Vec::new();
-    if let Some(rhs) = interface_iid_rhs(iface) {
+    if let Some(rhs) = interface_iid_rhs(context, iface) {
         let ty = infer_const_type(&format!("IID_{}", iface.name), &rhs);
         iid_consts.push(ProjectedIidConst {
             name: format!("IID_{}", iface.name),
@@ -1220,7 +1254,7 @@ pub fn project_interface(
     for method in &iface.methods {
         for parameter in &method.params {
             if parameter.direction == ParamDirection::In {
-                collect_runtime_class_iid_consts(&parameter.typ, &mut argument_iids);
+                collect_runtime_class_iid_consts(context, &parameter.typ, &mut argument_iids);
             }
         }
     }
@@ -1243,12 +1277,13 @@ pub fn project_interface(
 
     // Registration
     let registrations = vec![generate_interface_registration(
+        context,
         iface,
         &format!("_{}", iface.name),
     )];
 
     // Struct helpers
-    let structs = project_struct_helpers(&used_structs);
+    let structs = project_struct_helpers(context, &used_structs);
 
     // Members
     let iface_var = format!("_{}", iface.name);
@@ -1258,6 +1293,7 @@ pub fn project_interface(
             continue;
         }
         if let Some(m) = project_instance_method(
+            context,
             &iface_var,
             "this._obj",
             method,
@@ -1272,13 +1308,20 @@ pub fn project_interface(
     }
 
     // Collection helpers
-    project_collection_helpers(iface, known_types, &mut members, &mut imports, "this._obj");
+    project_collection_helpers(
+        context,
+        iface,
+        known_types,
+        &mut members,
+        &mut imports,
+        "this._obj",
+    );
 
     // Static create() for IVector / IMap
-    project_collection_create(iface, known_types, &mut members, &mut imports);
+    project_collection_create(context, iface, known_types, &mut members, &mut imports);
 
     if iface.namespace == "Microsoft.UI.Xaml"
-        && super::metadata_type_name(&iface.namespace, &iface.name) == "IElementFactory"
+        && context.metadata_type_name(&iface.namespace, &iface.name) == "IElementFactory"
     {
         imports[0].symbols.push("DynWinRtElementFactory".into());
         members.push(ProjectedMember::Method(ProjectedMethod {
@@ -1404,6 +1447,7 @@ pub fn project_enum(en: &TypeMeta) -> Option<ProjectedFile> {
 
 /// Project a delegate interface into a ProjectedFile.
 pub fn project_delegate(
+    context: &JavaScriptProjectionContext,
     iface: &InterfaceMeta,
     delegate_sigs: &HashMap<String, String>,
     delegate_sig_refs: &HashMap<String, Vec<String>>,
@@ -1414,14 +1458,18 @@ pub fn project_delegate(
             inv.params
                 .iter()
                 .filter(|p| p.direction == ParamDirection::In)
-                .map(|p| ts_dynwinrt_type(&p.typ))
+                .map(|p| ts_dynwinrt_type(context, &p.typ))
                 .collect()
         })
         .unwrap_or_default();
     let iid_arg_exprs: Vec<String> = if iface.generic_args.is_empty() {
         param_exprs.clone()
     } else {
-        iface.generic_args.iter().map(ts_dynwinrt_type).collect()
+        iface
+            .generic_args
+            .iter()
+            .map(|typ| ts_dynwinrt_type(context, typ))
+            .collect()
     };
 
     let iid_rhs =
@@ -1456,7 +1504,7 @@ pub fn project_delegate(
     }
     let mut imports = vec![ProjectedImport {
         symbols: runtime_symbols,
-        from: get_import_name(),
+        from: context.runtime_import_name().into(),
         runtime_only: false,
         dts_only: false,
         is_runtime_package: true,
@@ -1514,7 +1562,10 @@ pub fn symbol_dedup_key(kind: &SymbolKind) -> String {
     }
 }
 
-fn build_runtime_import(has_structs: bool) -> ProjectedImport {
+fn build_runtime_import(
+    context: &JavaScriptProjectionContext,
+    has_structs: bool,
+) -> ProjectedImport {
     let mut symbols = vec![
         "DynWinRtType".into(),
         "DynWinRtMethodSig".into(),
@@ -1528,7 +1579,7 @@ fn build_runtime_import(has_structs: bool) -> ProjectedImport {
     symbols.push("WinGuid".into());
     ProjectedImport {
         symbols,
-        from: get_import_name(),
+        from: context.runtime_import_name().into(),
         runtime_only: false,
         dts_only: false,
         is_runtime_package: true,
@@ -1556,6 +1607,7 @@ fn format_type_import_projected(name: &str, kind: TypeKind) -> ProjectedImport {
 }
 
 fn collect_runtime_delegate_names_from_methods(
+    context: &JavaScriptProjectionContext,
     methods: &[MethodMeta],
     known_delegate_names: &HashSet<String>,
     delegate_names: &mut HashSet<String>,
@@ -1578,7 +1630,8 @@ fn collect_runtime_delegate_names_from_methods(
                     piid,
                     args,
                 } => {
-                    let concrete = super::projected_parameterized_name(namespace, name, piid, args);
+                    let concrete =
+                        context.projected_parameterized_name(namespace, name, piid, args);
                     if known_delegate_names.contains(&concrete) {
                         delegate_names.insert(concrete);
                     }
@@ -1590,6 +1643,7 @@ fn collect_runtime_delegate_names_from_methods(
 }
 
 fn collect_known_delegate_names_from_methods(
+    context: &JavaScriptProjectionContext,
     methods: &[MethodMeta],
     known_delegate_names: &HashSet<String>,
     delegate_names: &mut HashSet<String>,
@@ -1597,6 +1651,7 @@ fn collect_known_delegate_names_from_methods(
     for method in methods {
         for parameter in &method.params {
             collect_known_delegate_names_from_type(
+                context,
                 &parameter.typ,
                 known_delegate_names,
                 delegate_names,
@@ -1604,6 +1659,7 @@ fn collect_known_delegate_names_from_methods(
         }
         if let Some(return_type) = &method.return_type {
             collect_known_delegate_names_from_type(
+                context,
                 return_type,
                 known_delegate_names,
                 delegate_names,
@@ -1613,6 +1669,7 @@ fn collect_known_delegate_names_from_methods(
 }
 
 fn collect_known_delegate_names_from_type(
+    context: &JavaScriptProjectionContext,
     typ: &TypeMeta,
     known_delegate_names: &HashSet<String>,
     delegate_names: &mut HashSet<String>,
@@ -1629,11 +1686,26 @@ fn collect_known_delegate_names_from_type(
         TypeMeta::AsyncActionWithProgress(inner)
         | TypeMeta::AsyncOperation(inner)
         | TypeMeta::Array(inner) => {
-            collect_known_delegate_names_from_type(inner, known_delegate_names, delegate_names);
+            collect_known_delegate_names_from_type(
+                context,
+                inner,
+                known_delegate_names,
+                delegate_names,
+            );
         }
         TypeMeta::AsyncOperationWithProgress(result, progress) => {
-            collect_known_delegate_names_from_type(result, known_delegate_names, delegate_names);
-            collect_known_delegate_names_from_type(progress, known_delegate_names, delegate_names);
+            collect_known_delegate_names_from_type(
+                context,
+                result,
+                known_delegate_names,
+                delegate_names,
+            );
+            collect_known_delegate_names_from_type(
+                context,
+                progress,
+                known_delegate_names,
+                delegate_names,
+            );
         }
         TypeMeta::Parameterized {
             namespace,
@@ -1641,12 +1713,13 @@ fn collect_known_delegate_names_from_type(
             piid,
             args,
         } => {
-            let concrete = super::projected_parameterized_name(namespace, name, piid, args);
+            let concrete = context.projected_parameterized_name(namespace, name, piid, args);
             if known_delegate_names.contains(&concrete) {
                 delegate_names.insert(concrete);
             }
             for argument in args {
                 collect_known_delegate_names_from_type(
+                    context,
                     argument,
                     known_delegate_names,
                     delegate_names,
@@ -1657,11 +1730,17 @@ fn collect_known_delegate_names_from_type(
             default_interface: Some(interface),
             ..
         } => {
-            collect_known_delegate_names_from_type(interface, known_delegate_names, delegate_names);
+            collect_known_delegate_names_from_type(
+                context,
+                interface,
+                known_delegate_names,
+                delegate_names,
+            );
         }
         TypeMeta::Struct { fields, .. } => {
             for field in fields {
                 collect_known_delegate_names_from_type(
+                    context,
                     &field.typ,
                     known_delegate_names,
                     delegate_names,
@@ -1673,6 +1752,7 @@ fn collect_known_delegate_names_from_type(
 }
 
 fn project_params(
+    context: &JavaScriptProjectionContext,
     in_params: &[&crate::meta::ParamMeta],
     known_types: &HashSet<String>,
     delegate_names: &HashSet<String>,
@@ -1682,7 +1762,7 @@ fn project_params(
     in_params
         .iter()
         .map(|p| {
-            let mut ts = ts_param_type_dts(&p.typ, known_types);
+            let mut ts = ts_param_type_dts(context, &p.typ, known_types);
             let mut delegate_wrap = None;
             if delegate_names.contains(&ts) {
                 let orig_name = ts.clone();

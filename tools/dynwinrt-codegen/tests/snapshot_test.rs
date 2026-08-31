@@ -90,8 +90,9 @@ fn snapshot_uri_class() {
             ))
         }))
         .collect::<Vec<_>>();
-    let _layout = javascript::install_javascript_module_layout(identities).unwrap();
+    let context = javascript::create_javascript_projection_context(identities).unwrap();
     javascript::apply_javascript_projected_names(
+        &context,
         &mut all_classes,
         &mut all_interfaces,
         &mut all_enums,
@@ -125,12 +126,18 @@ fn snapshot_uri_class() {
         .map(|interface| interface.iid.clone())
         .collect::<HashSet<_>>();
     let (delegate_sigs, delegate_sig_refs, delegate_param_wraps) =
-        project::build_delegate_signatures(&all_interfaces, &delegate_type_names, &known_types);
+        project::build_delegate_signatures(
+            &context,
+            &all_interfaces,
+            &delegate_type_names,
+            &known_types,
+        );
 
     // Generate all files into a map (.js + .d.ts pair per type)
     let mut generated: HashMap<String, String> = HashMap::new();
     for iface in &all_interfaces {
         let mut projected = project::project_interface(
+            &context,
             iface,
             &known_types,
             &delegate_type_names,
@@ -138,7 +145,7 @@ fn snapshot_uri_class() {
             &delegate_sig_refs,
             &delegate_param_wraps,
         );
-        let target = javascript::configure_projected_file(&mut projected).unwrap();
+        let target = context.configure_projected_file(&mut projected).unwrap();
         let mut js = render_js::render(&projected);
         let lifetime = javascript::root_relative_module(&target.canonical_module, "lifetime");
         js = js.replace(
@@ -151,6 +158,7 @@ fn snapshot_uri_class() {
     }
     for class in &all_classes {
         let mut projected = project::project_class(
+            &context,
             class,
             &known_types,
             &delegate_type_names,
@@ -159,7 +167,7 @@ fn snapshot_uri_class() {
             &delegate_sig_refs,
             &delegate_param_wraps,
         );
-        let target = javascript::configure_projected_file(&mut projected).unwrap();
+        let target = context.configure_projected_file(&mut projected).unwrap();
         let mut js = render_js::render(&projected);
         let lifetime = javascript::root_relative_module(&target.canonical_module, "lifetime");
         js = js.replace(
@@ -542,13 +550,14 @@ fn ts_async_methods_emit_abort_signal_scaffolding() {
         .collect();
     let shared: HashSet<String> = HashSet::new();
     let (dw_delegate_sigs, dw_delegate_sig_refs, dw_delegate_param_wraps) =
-        project::build_delegate_signatures(&dw_ifaces, &delegates, &known);
+        project::build_delegate_signatures(&Default::default(), &dw_ifaces, &delegates, &known);
 
     let dw_class = dw_all_classes
         .iter()
         .find(|c| c.name == "DataWriter")
         .expect("DataWriter class");
     let dw_projected = project::project_class(
+        &Default::default(),
         dw_class,
         &known,
         &delegates,
@@ -617,13 +626,19 @@ fn ts_async_methods_emit_abort_signal_scaffolding() {
         .map(|i| i.name.clone())
         .collect();
     let (hc_delegate_sigs, hc_delegate_sig_refs, hc_delegate_param_wraps) =
-        project::build_delegate_signatures(&hc_ifaces, &hc_delegates, &hc_known);
+        project::build_delegate_signatures(
+            &Default::default(),
+            &hc_ifaces,
+            &hc_delegates,
+            &hc_known,
+        );
 
     let hc_class = hc_all_classes
         .iter()
         .find(|c| c.name == "HttpClient")
         .expect("HttpClient class");
     let hc_projected = project::project_class(
+        &Default::default(),
         hc_class,
         &hc_known,
         &hc_delegates,
@@ -705,6 +720,7 @@ fn ts_async_methods_emit_abort_signal_scaffolding() {
     // and IIterator_Certificate via TLS/cookie deps.
     if let Some(iv) = hc_ifaces.iter().find(|i| i.name == "IVector_String") {
         let projected = project::project_interface(
+            &Default::default(),
             iv,
             &hc_known,
             &hc_delegates,
@@ -738,6 +754,7 @@ fn ts_async_methods_emit_abort_signal_scaffolding() {
         .find(|i| i.name.starts_with("IVectorView_"))
     {
         let projected = project::project_interface(
+            &Default::default(),
             iv,
             &hc_known,
             &hc_delegates,
@@ -760,6 +777,7 @@ fn ts_async_methods_emit_abort_signal_scaffolding() {
 
     if let Some(it) = hc_ifaces.iter().find(|i| i.name.starts_with("IIterator_")) {
         let projected = project::project_interface(
+            &Default::default(),
             it,
             &hc_known,
             &hc_delegates,
@@ -782,6 +800,7 @@ fn ts_async_methods_emit_abort_signal_scaffolding() {
 
     if let Some(it) = hc_ifaces.iter().find(|i| i.name.starts_with("IIterable_")) {
         let projected = project::project_interface(
+            &Default::default(),
             it,
             &hc_known,
             &hc_delegates,
@@ -828,6 +847,7 @@ fn ts_async_methods_emit_abort_signal_scaffolding() {
         .find(|c| c.name == "Uri")
         .expect("Uri class");
     let uri_projected = project::project_class(
+        &Default::default(),
         uri_class,
         &uri_known,
         &HashSet::new(),
@@ -897,12 +917,13 @@ fn data_package_view_projects_text_async_overloads_and_hstring_results() {
         .collect();
     let shared = HashSet::new();
     let (delegate_sigs, delegate_sig_refs, delegate_param_wraps) =
-        project::build_delegate_signatures(&interfaces, &delegates, &known);
+        project::build_delegate_signatures(&Default::default(), &interfaces, &delegates, &known);
     let class = all_classes
         .iter()
         .find(|class| class.name == "DataPackageView")
         .expect("DataPackageView class");
     let projected = project::project_class(
+        &Default::default(),
         class,
         &known,
         &delegates,

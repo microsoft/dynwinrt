@@ -58,13 +58,19 @@ fn nullable_runtime_class_returns_are_guarded_without_type_changes() {
         .map(|interface| interface.name.clone())
         .collect();
     let (delegate_sigs, delegate_sig_refs, delegate_param_wraps) =
-        project::build_delegate_signatures(&interfaces, &delegate_type_names, &known_types);
+        project::build_delegate_signatures(
+            &Default::default(),
+            &interfaces,
+            &delegate_type_names,
+            &known_types,
+        );
 
     let class = classes
         .iter()
         .find(|class| class.name == "Accelerometer")
         .expect("Accelerometer class missing after dependency resolution");
     let projected = project::project_class(
+        &Default::default(),
         class,
         &known_types,
         &delegate_type_names,
@@ -136,8 +142,14 @@ fn ireference_values_are_projected_as_native_nullable_values() {
         .find(|class| class.name == "ContactDate")
         .expect("ContactDate class missing after dependency resolution");
     let (delegate_sigs, delegate_sig_refs, delegate_param_wraps) =
-        project::build_delegate_signatures(&interfaces, &delegate_type_names, &known_types);
+        project::build_delegate_signatures(
+            &Default::default(),
+            &interfaces,
+            &delegate_type_names,
+            &known_types,
+        );
     let projected = project::project_class(
+        &Default::default(),
         class,
         &known_types,
         &delegate_type_names,

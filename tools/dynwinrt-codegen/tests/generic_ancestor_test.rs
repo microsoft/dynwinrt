@@ -40,8 +40,14 @@ fn sdk_color_palette_resources_projects_inherited_generic_map_interfaces() {
     let known_types = HashSet::from(["ColorPaletteResources".to_string()]);
     let interfaces: Vec<InterfaceMeta> = Vec::new();
     let (delegate_sigs, delegate_sig_refs, delegate_param_wraps) =
-        project::build_delegate_signatures(&interfaces, &HashSet::new(), &known_types);
+        project::build_delegate_signatures(
+            &Default::default(),
+            &interfaces,
+            &HashSet::new(),
+            &known_types,
+        );
     let projected = project::project_class(
+        &Default::default(),
         &class,
         &known_types,
         &HashSet::new(),

@@ -3,6 +3,7 @@
 
 use std::collections::HashSet;
 
+use super::JavaScriptProjectionContext;
 use crate::codegen::winrt::shared::imports::ireference_inner_type;
 use crate::types::TypeMeta;
 
@@ -10,7 +11,7 @@ use crate::types::TypeMeta;
 // TypeScript type annotation helpers
 // ======================================================================
 
-fn ts_param_type(typ: &TypeMeta) -> String {
+fn ts_param_type(context: &JavaScriptProjectionContext, typ: &TypeMeta) -> String {
     match typ {
         TypeMeta::Bool => "boolean".to_string(),
         TypeMeta::I8
@@ -32,7 +33,7 @@ fn ts_param_type(typ: &TypeMeta) -> String {
             name,
             piid,
             args,
-        } => super::projected_parameterized_name(namespace, name, piid, args),
+        } => context.projected_parameterized_name(namespace, name, piid, args),
         TypeMeta::Array(_) => "DynWinRtArray".to_string(),
         TypeMeta::Object => "unknown".to_string(),
         TypeMeta::Delegate { .. } => "DynWinRtValue".to_string(),
@@ -42,16 +43,20 @@ fn ts_param_type(typ: &TypeMeta) -> String {
     }
 }
 
-pub(crate) fn ts_param_type_safe(typ: &TypeMeta, known: &HashSet<String>) -> String {
+pub(crate) fn ts_param_type_safe(
+    context: &JavaScriptProjectionContext,
+    typ: &TypeMeta,
+    known: &HashSet<String>,
+) -> String {
     if let Some(inner) = ireference_inner_type(typ) {
-        let native = ts_return_type_safe(Some(inner), false, known);
+        let native = ts_return_type_safe(context, Some(inner), false, known);
         let wrapper = match typ {
             TypeMeta::Parameterized {
                 namespace,
                 name,
                 piid,
                 args,
-            } => super::projected_parameterized_name(namespace, name, piid, args),
+            } => context.projected_parameterized_name(namespace, name, piid, args),
             _ => unreachable!(),
         };
         return format!("{} | null | {}", native, wrapper);
@@ -65,13 +70,17 @@ pub(crate) fn ts_param_type_safe(typ: &TypeMeta, known: &HashSet<String>) -> Str
         {
             "DynWinRtValue".to_string()
         }
-        _ => ts_param_type(typ),
+        _ => ts_param_type(context, typ),
     }
 }
 
 /// DTS-specific parameter type: for collection types, also accept the JS-native equivalent.
 /// e.g. `IVectorView_Foo | Foo[]`, `IMap_String_Bar | Map<string, Bar>`
-pub(crate) fn ts_param_type_dts(typ: &TypeMeta, known: &HashSet<String>) -> String {
+pub(crate) fn ts_param_type_dts(
+    context: &JavaScriptProjectionContext,
+    typ: &TypeMeta,
+    known: &HashSet<String>,
+) -> String {
     // Array params: show as T[] in DTS (runtime uses DynWinRtArray but users pass arrays).
     // For byte[] (U8) also advertise Uint8Array — far more memory-efficient than
     // a boxed `Array<number>` of length N for large pixel buffers.
@@ -79,32 +88,32 @@ pub(crate) fn ts_param_type_dts(typ: &TypeMeta, known: &HashSet<String>) -> Stri
         if matches!(inner.as_ref(), TypeMeta::U8) {
             return "Uint8Array | number[]".to_string();
         }
-        let elem_ts = ts_param_type_safe(inner, known);
+        let elem_ts = ts_param_type_safe(context, inner, known);
         return format!("{}[]", elem_ts);
     }
     if let TypeMeta::Parameterized {
         name, piid, args, ..
     } = typ
     {
-        let base = ts_param_type_safe(typ, known);
+        let base = ts_param_type_safe(context, typ, known);
         // IVector<T>, IVectorView<T>, IIterable<T> → also accept T[]
         if is_vector_like_piid(piid) || is_vector_like_name(name) {
             if let Some(elem) = args.first() {
-                let elem_ts = ts_param_type_safe(elem, known);
+                let elem_ts = ts_param_type_safe(context, elem, known);
                 return format!("{} | {}[]", base, elem_ts);
             }
         }
         // IMap<K,V>, IMapView<K,V> → also accept Map<K,V>
         if is_map_like_piid(piid) || is_map_like_name(name) {
             if args.len() == 2 {
-                let k_ts = ts_param_type_safe(&args[0], known);
-                let v_ts = ts_param_type_safe(&args[1], known);
+                let k_ts = ts_param_type_safe(context, &args[0], known);
+                let v_ts = ts_param_type_safe(context, &args[1], known);
                 return format!("{} | Map<{}, {}>", base, k_ts, v_ts);
             }
         }
         return base;
     }
-    ts_param_type_safe(typ, known)
+    ts_param_type_safe(context, typ, known)
 }
 
 const PIID_IVECTOR: &str = "913337e9-11a1-4345-a3a2-4e7f956e222d";
@@ -130,12 +139,16 @@ fn is_map_like_name(name: &str) -> bool {
 }
 
 pub(crate) fn ts_return_type_safe(
+    context: &JavaScriptProjectionContext,
     typ: Option<&TypeMeta>,
     is_async: bool,
     known: &HashSet<String>,
 ) -> String {
     if let Some(inner) = typ.and_then(ireference_inner_type) {
-        let native = format!("{} | null", ts_return_type_safe(Some(inner), false, known));
+        let native = format!(
+            "{} | null",
+            ts_return_type_safe(context, Some(inner), false, known)
+        );
         return if is_async {
             format!("Promise<{}>", native)
         } else {
@@ -158,11 +171,11 @@ pub(crate) fn ts_return_type_safe(
         Some(TypeMeta::AsyncOperation(inner)) => {
             format!(
                 "Promise<{}>",
-                ts_return_type_safe(Some(inner), false, known)
+                ts_return_type_safe(context, Some(inner), false, known)
             )
         }
         Some(TypeMeta::AsyncOperationWithProgress(result, _)) => {
-            let inner = ts_return_type_safe(Some(result), false, known);
+            let inner = ts_return_type_safe(context, Some(result), false, known);
             format!(
                 "Promise<{i}> & {{ progress(cb: (value: unknown) => void): Promise<{i}> & {{ progress: any; toPromise(): Promise<{i}>; cancel(): void; }}; toPromise(): Promise<{i}>; cancel(): void; }}",
                 i = inner
@@ -176,11 +189,15 @@ pub(crate) fn ts_return_type_safe(
                 s
             }
         }
-        _ => ts_return_type(typ, is_async),
+        _ => ts_return_type(context, typ, is_async),
     }
 }
 
-fn ts_return_type(typ: Option<&TypeMeta>, is_async: bool) -> String {
+fn ts_return_type(
+    context: &JavaScriptProjectionContext,
+    typ: Option<&TypeMeta>,
+    is_async: bool,
+) -> String {
     let inner = match typ {
         Some(TypeMeta::String) | Some(TypeMeta::Guid) => "string",
         Some(TypeMeta::Bool) => "boolean",
@@ -223,7 +240,7 @@ fn ts_return_type(typ: Option<&TypeMeta>, is_async: bool) -> String {
             piid,
             args,
         }) => {
-            let s = super::projected_parameterized_name(namespace, name, piid, args);
+            let s = context.projected_parameterized_name(namespace, name, piid, args);
             return if is_async {
                 format!("Promise<{}>", s)
             } else {
@@ -231,10 +248,10 @@ fn ts_return_type(typ: Option<&TypeMeta>, is_async: bool) -> String {
             };
         }
         Some(TypeMeta::AsyncOperation(inner)) => {
-            return format!("Promise<{}>", ts_return_type(Some(inner), false));
+            return format!("Promise<{}>", ts_return_type(context, Some(inner), false));
         }
         Some(TypeMeta::AsyncOperationWithProgress(result, _)) => {
-            let inner = ts_return_type(Some(result), false);
+            let inner = ts_return_type(context, Some(result), false);
             return format!(
                 "Promise<{i}> & {{ progress(cb: (value: unknown) => void): Promise<{i}> & {{ progress: any; toPromise(): Promise<{i}>; cancel(): void; }}; toPromise(): Promise<{i}>; cancel(): void; }}",
                 i = inner

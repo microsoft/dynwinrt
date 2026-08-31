@@ -33,6 +33,7 @@ pub(super) fn default_activation_method_name(class: &ClassMeta) -> &'static str 
 }
 
 pub(super) fn project_constructor(
+    context: &JavaScriptProjectionContext,
     class: &ClassMeta,
     known_types: &HashSet<String>,
     delegate_names: &HashSet<String>,
@@ -67,6 +68,7 @@ pub(super) fn project_constructor(
                     }
                     let in_params = get_in_params(method);
                     candidates.push(factory_candidate(
+                        context,
                         class,
                         method,
                         &in_params,
@@ -94,6 +96,7 @@ pub(super) fn project_constructor(
                         continue;
                     };
                     candidates.push(factory_candidate(
+                        context,
                         class,
                         method,
                         &public_params,
@@ -186,6 +189,7 @@ fn split_composable_params<'a>(
 
 #[allow(clippy::too_many_arguments)]
 fn factory_candidate(
+    context: &JavaScriptProjectionContext,
     class: &ClassMeta,
     method: &MethodMeta,
     public_params: &[&ParamMeta],
@@ -198,6 +202,7 @@ fn factory_candidate(
 ) -> ConstructorCandidate {
     ConstructorCandidate {
         params: project_params(
+            context,
             public_params,
             known_types,
             delegate_names,

@@ -11,7 +11,6 @@ pub mod render;
 pub(crate) mod signature;
 pub(crate) mod structs;
 
-use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Component, Path, PathBuf};
 
@@ -176,19 +175,134 @@ struct JavaScriptModuleLayout {
     by_projected_name: HashMap<String, JavaScriptTypeIdentity>,
 }
 
-thread_local! {
-    static MODULE_LAYOUT: RefCell<Option<JavaScriptModuleLayout>> = const { RefCell::new(None) };
+/// Immutable naming and import configuration for one JavaScript WinRT projection.
+///
+/// A context owns the complete native-identity-to-module mapping. Keeping it
+/// explicit makes independent projections deterministic and prevents nested or
+/// concurrent generation from observing process-global layout state.
+pub struct JavaScriptProjectionContext {
+    layout: JavaScriptModuleLayout,
+    runtime_import_name: String,
 }
 
-pub struct JavaScriptModuleLayoutGuard {
-    previous: Option<JavaScriptModuleLayout>,
+impl Default for JavaScriptProjectionContext {
+    fn default() -> Self {
+        create_javascript_projection_context([])
+            .expect("an empty JavaScript projection context is valid")
+    }
 }
 
-impl Drop for JavaScriptModuleLayoutGuard {
-    fn drop(&mut self) {
-        MODULE_LAYOUT.with(|layout| {
-            *layout.borrow_mut() = self.previous.take();
-        });
+impl JavaScriptProjectionContext {
+    pub fn runtime_import_name(&self) -> &str {
+        &self.runtime_import_name
+    }
+
+    pub fn identities(&self) -> impl Iterator<Item = &JavaScriptTypeIdentity> {
+        self.layout.targets.keys()
+    }
+
+    pub fn output_targets(&self) -> impl Iterator<Item = &JavaScriptOutputTarget> {
+        self.layout.targets.values()
+    }
+
+    pub fn target_for_identity(
+        &self,
+        identity: &JavaScriptTypeIdentity,
+    ) -> Option<&JavaScriptOutputTarget> {
+        self.layout.targets.get(identity)
+    }
+
+    pub fn output_target(&self, projected_name: &str) -> Option<&JavaScriptOutputTarget> {
+        let identity = self.layout.by_projected_name.get(projected_name)?;
+        self.layout.targets.get(identity)
+    }
+
+    pub fn metadata_type_name<'a>(&'a self, namespace: &str, output_name: &'a str) -> &'a str {
+        self.layout
+            .by_projected_name
+            .get(output_name)
+            .filter(|identity| identity.namespace == namespace)
+            .map_or(output_name, |identity| identity.name.as_str())
+    }
+
+    pub fn projected_name(&self, namespace: &str, name: &str, kind: JavaScriptTypeKind) -> String {
+        self.target_for_identity(&JavaScriptTypeIdentity::new(namespace, name, kind))
+            .or_else(|| {
+                (kind == JavaScriptTypeKind::Interface)
+                    .then(|| {
+                        self.target_for_identity(&JavaScriptTypeIdentity::new(
+                            namespace,
+                            name,
+                            JavaScriptTypeKind::Delegate,
+                        ))
+                    })
+                    .flatten()
+            })
+            .map_or_else(|| name.into(), |target| target.projected_name.clone())
+    }
+
+    pub fn projected_parameterized_name(
+        &self,
+        namespace: &str,
+        generic_name: &str,
+        piid: &str,
+        args: &[TypeMeta],
+    ) -> String {
+        let output_name =
+            parameterized_name_with_context(self, namespace, generic_name, piid, args);
+        let variant = parameterized_reference_identity_with_context(self, piid, args);
+        self.target_for_identity(&JavaScriptTypeIdentity::with_variant(
+            namespace,
+            &output_name,
+            JavaScriptTypeKind::Interface,
+            &variant,
+        ))
+        .or_else(|| {
+            self.target_for_identity(&JavaScriptTypeIdentity::with_variant(
+                namespace,
+                &output_name,
+                JavaScriptTypeKind::Delegate,
+                &variant,
+            ))
+        })
+        .map_or(output_name, |target| target.projected_name.clone())
+    }
+
+    pub fn configure_projected_file(
+        &self,
+        file: &mut ProjectedFile,
+    ) -> Option<JavaScriptOutputTarget> {
+        let target = self.output_target(&file.name)?.clone();
+        for import in &mut file.imports {
+            if import.is_runtime_package {
+                if (import.from.starts_with("./") || import.from.starts_with("../"))
+                    && let Some(module) = import
+                        .from
+                        .strip_suffix(".js")
+                        .or(Some(import.from.as_str()))
+                {
+                    import.from =
+                        format!("{}.js", relative_module(&target.canonical_module, module));
+                }
+                continue;
+            }
+            let Some(module) = import
+                .from
+                .strip_prefix("./")
+                .and_then(|path| path.strip_suffix(".js"))
+            else {
+                continue;
+            };
+            let target_module = self.output_target(module).map_or_else(
+                || module.to_string(),
+                |target| target.canonical_module.clone(),
+            );
+            import.from = format!(
+                "{}.js",
+                relative_module(&target.canonical_module, &target_module)
+            );
+        }
+        Some(target)
     }
 }
 
@@ -265,276 +379,478 @@ fn bounded_identifier(candidate: String, identity: &JavaScriptTypeIdentity) -> S
     )
 }
 
-fn named_identity_token(namespace: &str, name: &str) -> String {
-    let native_name = metadata_type_name(namespace, name);
-    let namespace_token = namespace
-        .split('.')
-        .filter(|segment| !segment.is_empty())
-        .map(pascal_segment)
-        .collect::<String>();
-    format!("{namespace_token}{native_name}")
-}
-
-fn generic_type_token(typ: &TypeMeta) -> String {
-    match typ {
-        TypeMeta::Bool => "Boolean".into(),
-        TypeMeta::I8 => "Int8".into(),
-        TypeMeta::U8 => "UInt8".into(),
-        TypeMeta::I16 => "Int16".into(),
-        TypeMeta::U16 => "UInt16".into(),
-        TypeMeta::I32 => "Int32".into(),
-        TypeMeta::U32 => "UInt32".into(),
-        TypeMeta::I64 => "Int64".into(),
-        TypeMeta::U64 => "UInt64".into(),
-        TypeMeta::F32 => "Single".into(),
-        TypeMeta::F64 => "Double".into(),
-        TypeMeta::String => "String".into(),
-        TypeMeta::Char16 => "Char16".into(),
-        TypeMeta::Guid => "Guid".into(),
-        TypeMeta::Object => "Object".into(),
-        TypeMeta::Interface {
-            namespace, name, ..
-        }
-        | TypeMeta::RuntimeClass {
-            namespace, name, ..
-        }
-        | TypeMeta::Delegate {
-            namespace, name, ..
-        }
-        | TypeMeta::Struct {
-            namespace, name, ..
-        }
-        | TypeMeta::Enum {
-            namespace, name, ..
-        } => named_identity_token(namespace, name),
-        TypeMeta::Parameterized {
-            namespace,
-            name,
-            piid,
-            args,
-            ..
-        } => format!(
-            "{}{}",
-            namespace
-                .split('.')
-                .filter(|segment| !segment.is_empty())
-                .map(pascal_segment)
-                .collect::<String>(),
-            parameterized_name(namespace, name, piid, args)
-        ),
-        TypeMeta::Array(inner) => format!("Array{}", generic_type_token(inner)),
-        TypeMeta::AsyncAction => "AsyncAction".into(),
-        TypeMeta::AsyncActionWithProgress(progress) => {
-            format!("AsyncActionWithProgress{}", generic_type_token(progress))
-        }
-        TypeMeta::AsyncOperation(result) => {
-            format!("AsyncOperation{}", generic_type_token(result))
-        }
-        TypeMeta::AsyncOperationWithProgress(result, progress) => format!(
-            "AsyncOperationWithProgress{}{}",
-            generic_type_token(result),
-            generic_type_token(progress)
-        ),
-    }
-}
-
-fn generic_identity_signature(typ: &TypeMeta) -> String {
-    match typ {
-        TypeMeta::Bool => "bool".into(),
-        TypeMeta::I8 => "i8".into(),
-        TypeMeta::U8 => "u8".into(),
-        TypeMeta::I16 => "i16".into(),
-        TypeMeta::U16 => "u16".into(),
-        TypeMeta::I32 => "i32".into(),
-        TypeMeta::U32 => "u32".into(),
-        TypeMeta::I64 => "i64".into(),
-        TypeMeta::U64 => "u64".into(),
-        TypeMeta::F32 => "f32".into(),
-        TypeMeta::F64 => "f64".into(),
-        TypeMeta::String => "string".into(),
-        TypeMeta::Char16 => "char16".into(),
-        TypeMeta::Guid => "guid".into(),
-        TypeMeta::Object => "object".into(),
-        TypeMeta::Interface {
-            namespace, name, ..
-        } => format!(
-            "interface:{namespace}.{}",
-            metadata_type_name(namespace, name)
-        ),
-        TypeMeta::RuntimeClass {
-            namespace, name, ..
-        } => format!("class:{namespace}.{}", metadata_type_name(namespace, name)),
-        TypeMeta::Delegate {
-            namespace, name, ..
-        } => format!(
-            "delegate:{namespace}.{}",
-            metadata_type_name(namespace, name)
-        ),
-        TypeMeta::Struct {
-            namespace, name, ..
-        } => format!("struct:{namespace}.{}", metadata_type_name(namespace, name)),
-        TypeMeta::Enum {
-            namespace, name, ..
-        } => format!("enum:{namespace}.{}", metadata_type_name(namespace, name)),
-        TypeMeta::Parameterized {
-            namespace,
-            name,
-            args,
-            ..
-        } => format!(
-            "generic:{namespace}.{name}<{}>",
-            args.iter()
-                .map(generic_identity_signature)
-                .collect::<Vec<_>>()
-                .join(",")
-        ),
-        TypeMeta::Array(inner) => format!("array:{}", generic_identity_signature(inner)),
-        TypeMeta::AsyncAction => "async-action".into(),
-        TypeMeta::AsyncActionWithProgress(progress) => {
-            format!(
-                "async-action-progress:{}",
-                generic_identity_signature(progress)
-            )
-        }
-        TypeMeta::AsyncOperation(result) => {
-            format!("async-operation:{}", generic_identity_signature(result))
-        }
-        TypeMeta::AsyncOperationWithProgress(result, progress) => format!(
-            "async-operation-progress:{},{}",
-            generic_identity_signature(result),
-            generic_identity_signature(progress)
-        ),
-    }
-}
-
 fn normalized_guid(value: &str) -> String {
     value
         .trim_matches(|character| character == '{' || character == '}')
         .to_ascii_lowercase()
 }
 
-fn type_abi_signature(typ: &TypeMeta) -> String {
-    match typ {
-        TypeMeta::Bool => "bool".into(),
-        TypeMeta::I8 => "i8".into(),
-        TypeMeta::U8 => "u8".into(),
-        TypeMeta::I16 => "i16".into(),
-        TypeMeta::U16 => "u16".into(),
-        TypeMeta::I32 => "i32".into(),
-        TypeMeta::U32 => "u32".into(),
-        TypeMeta::I64 => "i64".into(),
-        TypeMeta::U64 => "u64".into(),
-        TypeMeta::F32 => "f32".into(),
-        TypeMeta::F64 => "f64".into(),
-        TypeMeta::Char16 => "char16".into(),
-        TypeMeta::String => "string".into(),
-        TypeMeta::Guid => "guid".into(),
-        TypeMeta::Object => "object".into(),
-        TypeMeta::Interface {
-            namespace,
-            name,
+#[derive(Clone, Copy)]
+enum SemanticPrimitive {
+    Bool,
+    I8,
+    U8,
+    I16,
+    U16,
+    I32,
+    U32,
+    I64,
+    U64,
+    F32,
+    F64,
+    String,
+    Char16,
+    Guid,
+    Object,
+}
+
+#[derive(Clone, Copy)]
+enum SemanticNamedKind {
+    Interface,
+    RuntimeClass,
+    Delegate,
+    Struct,
+    Enum,
+}
+
+#[derive(Clone)]
+enum JavaScriptSemanticTypeIdentity {
+    Primitive(SemanticPrimitive),
+    Named {
+        kind: SemanticNamedKind,
+        namespace: String,
+        native_name: String,
+        iid: Option<String>,
+        default_interface: Option<Box<Self>>,
+        fields: Vec<(String, Self)>,
+        enum_underlying: Option<Box<Self>>,
+    },
+    Parameterized {
+        namespace: String,
+        native_name: String,
+        piid: String,
+        args: Vec<Self>,
+    },
+    Array(Box<Self>),
+    AsyncAction,
+    AsyncActionWithProgress(Box<Self>),
+    AsyncOperation(Box<Self>),
+    AsyncOperationWithProgress(Box<Self>, Box<Self>),
+}
+
+#[derive(Clone, Copy)]
+enum SemanticFormat {
+    ReadableToken,
+    StableIdentity,
+    AbiIdentity,
+}
+
+impl JavaScriptSemanticTypeIdentity {
+    fn from_type(typ: &TypeMeta, context: Option<&JavaScriptProjectionContext>) -> Self {
+        let native = |namespace: &str, name: &str| {
+            context
+                .map(|context| context.metadata_type_name(namespace, name))
+                .unwrap_or(name)
+                .to_string()
+        };
+        match typ {
+            TypeMeta::Bool => Self::Primitive(SemanticPrimitive::Bool),
+            TypeMeta::I8 => Self::Primitive(SemanticPrimitive::I8),
+            TypeMeta::U8 => Self::Primitive(SemanticPrimitive::U8),
+            TypeMeta::I16 => Self::Primitive(SemanticPrimitive::I16),
+            TypeMeta::U16 => Self::Primitive(SemanticPrimitive::U16),
+            TypeMeta::I32 => Self::Primitive(SemanticPrimitive::I32),
+            TypeMeta::U32 => Self::Primitive(SemanticPrimitive::U32),
+            TypeMeta::I64 => Self::Primitive(SemanticPrimitive::I64),
+            TypeMeta::U64 => Self::Primitive(SemanticPrimitive::U64),
+            TypeMeta::F32 => Self::Primitive(SemanticPrimitive::F32),
+            TypeMeta::F64 => Self::Primitive(SemanticPrimitive::F64),
+            TypeMeta::String => Self::Primitive(SemanticPrimitive::String),
+            TypeMeta::Char16 => Self::Primitive(SemanticPrimitive::Char16),
+            TypeMeta::Guid => Self::Primitive(SemanticPrimitive::Guid),
+            TypeMeta::Object => Self::Primitive(SemanticPrimitive::Object),
+            TypeMeta::Interface {
+                namespace,
+                name,
+                iid,
+            } => Self::named(
+                SemanticNamedKind::Interface,
+                namespace,
+                native(namespace, name),
+                Some(iid.clone()),
+                None,
+                Vec::new(),
+                None,
+            ),
+            TypeMeta::RuntimeClass {
+                namespace,
+                name,
+                default_interface,
+            } => Self::named(
+                SemanticNamedKind::RuntimeClass,
+                namespace,
+                native(namespace, name),
+                None,
+                default_interface
+                    .as_deref()
+                    .map(|typ| Box::new(Self::from_type(typ, context))),
+                Vec::new(),
+                None,
+            ),
+            TypeMeta::Delegate {
+                namespace,
+                name,
+                iid,
+            } => Self::named(
+                SemanticNamedKind::Delegate,
+                namespace,
+                native(namespace, name),
+                Some(iid.clone()),
+                None,
+                Vec::new(),
+                None,
+            ),
+            TypeMeta::Struct {
+                namespace,
+                name,
+                fields,
+            } => Self::named(
+                SemanticNamedKind::Struct,
+                namespace,
+                native(namespace, name),
+                None,
+                None,
+                fields
+                    .iter()
+                    .map(|field| (field.name.clone(), Self::from_type(&field.typ, context)))
+                    .collect(),
+                None,
+            ),
+            TypeMeta::Enum {
+                namespace,
+                name,
+                underlying,
+                ..
+            } => Self::named(
+                SemanticNamedKind::Enum,
+                namespace,
+                native(namespace, name),
+                None,
+                None,
+                Vec::new(),
+                Some(Box::new(Self::from_type(underlying, context))),
+            ),
+            TypeMeta::Parameterized {
+                namespace,
+                name,
+                piid,
+                args,
+            } => Self::Parameterized {
+                namespace: namespace.clone(),
+                native_name: name.clone(),
+                piid: piid.clone(),
+                args: args
+                    .iter()
+                    .map(|typ| Self::from_type(typ, context))
+                    .collect(),
+            },
+            TypeMeta::Array(inner) => Self::Array(Box::new(Self::from_type(inner, context))),
+            TypeMeta::AsyncAction => Self::AsyncAction,
+            TypeMeta::AsyncActionWithProgress(inner) => {
+                Self::AsyncActionWithProgress(Box::new(Self::from_type(inner, context)))
+            }
+            TypeMeta::AsyncOperation(inner) => {
+                Self::AsyncOperation(Box::new(Self::from_type(inner, context)))
+            }
+            TypeMeta::AsyncOperationWithProgress(result, progress) => {
+                Self::AsyncOperationWithProgress(
+                    Box::new(Self::from_type(result, context)),
+                    Box::new(Self::from_type(progress, context)),
+                )
+            }
+        }
+    }
+
+    fn named(
+        kind: SemanticNamedKind,
+        namespace: &str,
+        native_name: String,
+        iid: Option<String>,
+        default_interface: Option<Box<Self>>,
+        fields: Vec<(String, Self)>,
+        enum_underlying: Option<Box<Self>>,
+    ) -> Self {
+        Self::Named {
+            kind,
+            namespace: namespace.into(),
+            native_name,
             iid,
-        } => format!(
-            "interface({namespace}.{},{})",
-            metadata_type_name(namespace, name),
-            normalized_guid(iid)
-        ),
-        TypeMeta::RuntimeClass {
-            namespace,
-            name,
             default_interface,
-        } => format!(
-            "class({namespace}.{};default={})",
-            metadata_type_name(namespace, name),
-            default_interface
-                .as_deref()
-                .map(type_abi_signature)
-                .unwrap_or_else(|| "none".into())
-        ),
-        TypeMeta::Delegate {
-            namespace,
-            name,
-            iid,
-        } => format!(
-            "delegate({namespace}.{},{})",
-            metadata_type_name(namespace, name),
-            normalized_guid(iid)
-        ),
-        TypeMeta::AsyncAction => "async-action".into(),
-        TypeMeta::AsyncActionWithProgress(progress) => {
-            format!(
-                "async-action-with-progress({})",
-                type_abi_signature(progress)
-            )
-        }
-        TypeMeta::AsyncOperation(result) => {
-            format!("async-operation({})", type_abi_signature(result))
-        }
-        TypeMeta::AsyncOperationWithProgress(result, progress) => format!(
-            "async-operation-with-progress({},{})",
-            type_abi_signature(result),
-            type_abi_signature(progress)
-        ),
-        TypeMeta::Parameterized {
-            namespace,
-            name,
-            piid,
-            args,
-        } => format!(
-            "parameterized({namespace}.{name},{},[{}])",
-            normalized_guid(piid),
-            args.iter()
-                .map(type_abi_signature)
-                .collect::<Vec<_>>()
-                .join(",")
-        ),
-        TypeMeta::Array(element) => format!("array({})", type_abi_signature(element)),
-        TypeMeta::Struct {
-            namespace,
-            name,
             fields,
-        } => format!(
-            "struct({namespace}.{};fields=[{}])",
-            metadata_type_name(namespace, name),
-            fields
-                .iter()
-                .map(|field| format!("{}:{}", field.name, type_abi_signature(&field.typ)))
-                .collect::<Vec<_>>()
-                .join(",")
-        ),
-        TypeMeta::Enum {
-            namespace,
-            name,
-            underlying,
-            ..
-        } => format!(
-            "enum({namespace}.{};underlying={})",
-            metadata_type_name(namespace, name),
-            type_abi_signature(underlying)
-        ),
+            enum_underlying,
+        }
+    }
+
+    fn is_primitive(&self) -> bool {
+        matches!(self, Self::Primitive(_))
+    }
+
+    fn format(&self, format: SemanticFormat) -> String {
+        match self {
+            Self::Primitive(primitive) => match format {
+                SemanticFormat::ReadableToken => match primitive {
+                    SemanticPrimitive::Bool => "Boolean",
+                    SemanticPrimitive::I8 => "Int8",
+                    SemanticPrimitive::U8 => "UInt8",
+                    SemanticPrimitive::I16 => "Int16",
+                    SemanticPrimitive::U16 => "UInt16",
+                    SemanticPrimitive::I32 => "Int32",
+                    SemanticPrimitive::U32 => "UInt32",
+                    SemanticPrimitive::I64 => "Int64",
+                    SemanticPrimitive::U64 => "UInt64",
+                    SemanticPrimitive::F32 => "Single",
+                    SemanticPrimitive::F64 => "Double",
+                    SemanticPrimitive::String => "String",
+                    SemanticPrimitive::Char16 => "Char16",
+                    SemanticPrimitive::Guid => "Guid",
+                    SemanticPrimitive::Object => "Object",
+                }
+                .into(),
+                SemanticFormat::StableIdentity | SemanticFormat::AbiIdentity => match primitive {
+                    SemanticPrimitive::Bool => "bool",
+                    SemanticPrimitive::I8 => "i8",
+                    SemanticPrimitive::U8 => "u8",
+                    SemanticPrimitive::I16 => "i16",
+                    SemanticPrimitive::U16 => "u16",
+                    SemanticPrimitive::I32 => "i32",
+                    SemanticPrimitive::U32 => "u32",
+                    SemanticPrimitive::I64 => "i64",
+                    SemanticPrimitive::U64 => "u64",
+                    SemanticPrimitive::F32 => "f32",
+                    SemanticPrimitive::F64 => "f64",
+                    SemanticPrimitive::String => "string",
+                    SemanticPrimitive::Char16 => "char16",
+                    SemanticPrimitive::Guid => "guid",
+                    SemanticPrimitive::Object => "object",
+                }
+                .into(),
+            },
+            Self::Named {
+                kind,
+                namespace,
+                native_name,
+                iid,
+                default_interface,
+                fields,
+                enum_underlying,
+            } => match format {
+                SemanticFormat::ReadableToken => format!(
+                    "{}{}",
+                    namespace
+                        .split('.')
+                        .filter(|segment| !segment.is_empty())
+                        .map(pascal_segment)
+                        .collect::<String>(),
+                    native_name
+                ),
+                SemanticFormat::StableIdentity => format!(
+                    "{}:{namespace}.{native_name}",
+                    match kind {
+                        SemanticNamedKind::Interface => "interface",
+                        SemanticNamedKind::RuntimeClass => "class",
+                        SemanticNamedKind::Delegate => "delegate",
+                        SemanticNamedKind::Struct => "struct",
+                        SemanticNamedKind::Enum => "enum",
+                    }
+                ),
+                SemanticFormat::AbiIdentity => match kind {
+                    SemanticNamedKind::Interface => format!(
+                        "interface({namespace}.{native_name},{})",
+                        normalized_guid(iid.as_deref().unwrap_or_default())
+                    ),
+                    SemanticNamedKind::RuntimeClass => format!(
+                        "class({namespace}.{native_name};default={})",
+                        default_interface.as_deref().map_or_else(
+                            || "none".into(),
+                            |typ| typ.format(SemanticFormat::AbiIdentity)
+                        )
+                    ),
+                    SemanticNamedKind::Delegate => format!(
+                        "delegate({namespace}.{native_name},{})",
+                        normalized_guid(iid.as_deref().unwrap_or_default())
+                    ),
+                    SemanticNamedKind::Struct => format!(
+                        "struct({namespace}.{native_name};fields=[{}])",
+                        fields
+                            .iter()
+                            .map(|(name, typ)| format!(
+                                "{name}:{}",
+                                typ.format(SemanticFormat::AbiIdentity)
+                            ))
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    ),
+                    SemanticNamedKind::Enum => format!(
+                        "enum({namespace}.{native_name};underlying={})",
+                        enum_underlying
+                            .as_deref()
+                            .expect("canonical enum identity always has an underlying type")
+                            .format(SemanticFormat::AbiIdentity)
+                    ),
+                },
+            },
+            Self::Parameterized {
+                namespace,
+                native_name,
+                piid,
+                args,
+            } => match format {
+                SemanticFormat::ReadableToken => format!(
+                    "{}{}",
+                    namespace
+                        .split('.')
+                        .filter(|segment| !segment.is_empty())
+                        .map(pascal_segment)
+                        .collect::<String>(),
+                    parameterized_name_for_identity(namespace, native_name, piid, args)
+                ),
+                SemanticFormat::StableIdentity => format!(
+                    "generic:{namespace}.{native_name}<{}>",
+                    Self::format_list(args, SemanticFormat::StableIdentity)
+                ),
+                SemanticFormat::AbiIdentity => format!(
+                    "parameterized({namespace}.{native_name},{},[{}])",
+                    normalized_guid(piid),
+                    Self::format_list(args, SemanticFormat::AbiIdentity)
+                ),
+            },
+            Self::Array(inner) => match format {
+                SemanticFormat::ReadableToken => {
+                    format!("Array{}", inner.format(SemanticFormat::ReadableToken))
+                }
+                SemanticFormat::StableIdentity => {
+                    format!("array:{}", inner.format(SemanticFormat::StableIdentity))
+                }
+                SemanticFormat::AbiIdentity => {
+                    format!("array({})", inner.format(SemanticFormat::AbiIdentity))
+                }
+            },
+            Self::AsyncAction => match format {
+                SemanticFormat::ReadableToken => "AsyncAction",
+                SemanticFormat::StableIdentity | SemanticFormat::AbiIdentity => "async-action",
+            }
+            .into(),
+            Self::AsyncActionWithProgress(progress) => match format {
+                SemanticFormat::ReadableToken => format!(
+                    "AsyncActionWithProgress{}",
+                    progress.format(SemanticFormat::ReadableToken)
+                ),
+                SemanticFormat::StableIdentity => format!(
+                    "async-action-progress:{}",
+                    progress.format(SemanticFormat::StableIdentity)
+                ),
+                SemanticFormat::AbiIdentity => format!(
+                    "async-action-with-progress({})",
+                    progress.format(SemanticFormat::AbiIdentity)
+                ),
+            },
+            Self::AsyncOperation(result) => match format {
+                SemanticFormat::ReadableToken => format!(
+                    "AsyncOperation{}",
+                    result.format(SemanticFormat::ReadableToken)
+                ),
+                SemanticFormat::StableIdentity => format!(
+                    "async-operation:{}",
+                    result.format(SemanticFormat::StableIdentity)
+                ),
+                SemanticFormat::AbiIdentity => format!(
+                    "async-operation({})",
+                    result.format(SemanticFormat::AbiIdentity)
+                ),
+            },
+            Self::AsyncOperationWithProgress(result, progress) => match format {
+                SemanticFormat::ReadableToken => format!(
+                    "AsyncOperationWithProgress{}{}",
+                    result.format(SemanticFormat::ReadableToken),
+                    progress.format(SemanticFormat::ReadableToken)
+                ),
+                SemanticFormat::StableIdentity => format!(
+                    "async-operation-progress:{},{}",
+                    result.format(SemanticFormat::StableIdentity),
+                    progress.format(SemanticFormat::StableIdentity)
+                ),
+                SemanticFormat::AbiIdentity => format!(
+                    "async-operation-with-progress({},{})",
+                    result.format(SemanticFormat::AbiIdentity),
+                    progress.format(SemanticFormat::AbiIdentity)
+                ),
+            },
+        }
+    }
+
+    fn format_list(values: &[Self], format: SemanticFormat) -> String {
+        values
+            .iter()
+            .map(|value| value.format(format))
+            .collect::<Vec<_>>()
+            .join(",")
     }
 }
 
+fn canonical_types(
+    args: &[TypeMeta],
+    context: Option<&JavaScriptProjectionContext>,
+) -> Vec<JavaScriptSemanticTypeIdentity> {
+    args.iter()
+        .map(|typ| JavaScriptSemanticTypeIdentity::from_type(typ, context))
+        .collect()
+}
+
 pub fn parameterized_abi_identity(piid: &str, iid: &str, args: &[TypeMeta]) -> String {
+    parameterized_abi_identity_impl(None, piid, iid, args)
+}
+
+fn parameterized_abi_identity_impl(
+    context: Option<&JavaScriptProjectionContext>,
+    piid: &str,
+    iid: &str,
+    args: &[TypeMeta],
+) -> String {
     format!(
         "piid:{}:iid:{}:args:[{}]",
         normalized_guid(piid),
         normalized_guid(iid),
-        args.iter()
-            .map(type_abi_signature)
-            .collect::<Vec<_>>()
-            .join(",")
+        JavaScriptSemanticTypeIdentity::format_list(
+            &canonical_types(args, context),
+            SemanticFormat::AbiIdentity,
+        )
     )
 }
 
 pub fn parameterized_reference_identity(piid: &str, args: &[TypeMeta]) -> String {
+    parameterized_reference_identity_impl(None, piid, args)
+}
+
+fn parameterized_reference_identity_with_context(
+    context: &JavaScriptProjectionContext,
+    piid: &str,
+    args: &[TypeMeta],
+) -> String {
+    parameterized_reference_identity_impl(Some(context), piid, args)
+}
+
+fn parameterized_reference_identity_impl(
+    context: Option<&JavaScriptProjectionContext>,
+    piid: &str,
+    args: &[TypeMeta],
+) -> String {
     format!(
         "piid:{}:args:[{}]",
         normalized_guid(piid),
-        args.iter()
-            .map(type_abi_signature)
-            .collect::<Vec<_>>()
-            .join(",")
+        JavaScriptSemanticTypeIdentity::format_list(
+            &canonical_types(args, context),
+            SemanticFormat::AbiIdentity,
+        )
     )
 }
 
@@ -551,12 +867,42 @@ pub fn parameterized_name(
     piid: &str,
     args: &[TypeMeta],
 ) -> String {
+    parameterized_name_impl(None, namespace, generic_name, piid, args)
+}
+
+fn parameterized_name_with_context(
+    context: &JavaScriptProjectionContext,
+    namespace: &str,
+    generic_name: &str,
+    piid: &str,
+    args: &[TypeMeta],
+) -> String {
+    parameterized_name_impl(Some(context), namespace, generic_name, piid, args)
+}
+
+fn parameterized_name_impl(
+    context: Option<&JavaScriptProjectionContext>,
+    namespace: &str,
+    generic_name: &str,
+    piid: &str,
+    args: &[TypeMeta],
+) -> String {
+    let identities = canonical_types(args, context);
+    parameterized_name_for_identity(namespace, generic_name, piid, &identities)
+}
+
+fn parameterized_name_for_identity(
+    namespace: &str,
+    generic_name: &str,
+    piid: &str,
+    args: &[JavaScriptSemanticTypeIdentity],
+) -> String {
     let base = generic_name.split('`').next().unwrap_or(generic_name);
     let readable = format!(
         "{}_{}",
         base,
         args.iter()
-            .map(generic_type_token)
+            .map(|typ| typ.format(SemanticFormat::ReadableToken))
             .collect::<Vec<_>>()
             .join("_")
     );
@@ -564,33 +910,14 @@ pub fn parameterized_name(
         "{namespace}.{base}:{}<{}>",
         normalized_guid(piid),
         args.iter()
-            .map(generic_identity_signature)
+            .map(|typ| typ.format(SemanticFormat::StableIdentity))
             .collect::<Vec<_>>()
             .join(",")
     );
     let requires_identity_suffix = !matches!(
         namespace,
         "Windows.Foundation" | "Windows.Foundation.Collections"
-    ) || args.iter().any(|argument| {
-        !matches!(
-            argument,
-            TypeMeta::Bool
-                | TypeMeta::I8
-                | TypeMeta::U8
-                | TypeMeta::I16
-                | TypeMeta::U16
-                | TypeMeta::I32
-                | TypeMeta::U32
-                | TypeMeta::I64
-                | TypeMeta::U64
-                | TypeMeta::F32
-                | TypeMeta::F64
-                | TypeMeta::String
-                | TypeMeta::Char16
-                | TypeMeta::Guid
-                | TypeMeta::Object
-        )
-    });
+    ) || args.iter().any(|argument| !argument.is_primitive());
     if !requires_identity_suffix {
         return readable;
     }
@@ -627,29 +954,30 @@ pub fn parameterized_interface_name(
     )
 }
 
+fn parameterized_interface_name_with_context(
+    context: &JavaScriptProjectionContext,
+    namespace: &str,
+    interface_name: &str,
+    piid: &str,
+    args: &[TypeMeta],
+) -> String {
+    parameterized_name_with_context(
+        context,
+        namespace,
+        &parameterized_interface_base_name(interface_name, args),
+        piid,
+        args,
+    )
+}
+
 pub fn projected_parameterized_name(
+    context: &JavaScriptProjectionContext,
     namespace: &str,
     generic_name: &str,
     piid: &str,
     args: &[TypeMeta],
 ) -> String {
-    let output_name = parameterized_name(namespace, generic_name, piid, args);
-    let variant = parameterized_reference_identity(piid, args);
-    target_for_identity(&JavaScriptTypeIdentity::with_variant(
-        namespace,
-        &output_name,
-        JavaScriptTypeKind::Interface,
-        &variant,
-    ))
-    .or_else(|| {
-        target_for_identity(&JavaScriptTypeIdentity::with_variant(
-            namespace,
-            &output_name,
-            JavaScriptTypeKind::Delegate,
-            &variant,
-        ))
-    })
-    .map_or(output_name, |target| target.projected_name)
+    context.projected_parameterized_name(namespace, generic_name, piid, args)
 }
 
 fn namespace_path(namespace: &str) -> String {
@@ -735,19 +1063,21 @@ fn hashed_projected_name(candidate: String, identity: &JavaScriptTypeIdentity) -
     )
 }
 
-pub fn install_javascript_module_layout(
+pub fn create_javascript_projection_context(
     identities: impl IntoIterator<Item = JavaScriptTypeIdentity>,
-) -> Result<JavaScriptModuleLayoutGuard, String> {
-    install_javascript_module_layout_with_records(
+) -> Result<JavaScriptProjectionContext, String> {
+    create_javascript_projection_context_with_records(
         identities,
         std::iter::empty::<JavaScriptTypeLayoutRecord>(),
+        "@microsoft/dynwinrt",
     )
 }
 
-pub fn install_javascript_module_layout_with_records(
+pub fn create_javascript_projection_context_with_records(
     identities: impl IntoIterator<Item = JavaScriptTypeIdentity>,
     previous_records: impl IntoIterator<Item = JavaScriptTypeLayoutRecord>,
-) -> Result<JavaScriptModuleLayoutGuard, String> {
+    runtime_import_name: impl Into<String>,
+) -> Result<JavaScriptProjectionContext, String> {
     let identities = identities.into_iter().collect::<BTreeSet<_>>();
     if let Some(identity) = identities.iter().find(|identity| !identity.is_safe()) {
         return Err(format!(
@@ -858,119 +1188,48 @@ pub fn install_javascript_module_layout_with_records(
         .map(|(identity, projected)| (projected, identity))
         .collect();
 
-    let previous = MODULE_LAYOUT.with(|layout| {
-        layout.borrow_mut().replace(JavaScriptModuleLayout {
+    Ok(JavaScriptProjectionContext {
+        layout: JavaScriptModuleLayout {
             targets,
             by_projected_name: projected_owners,
-        })
-    });
-    Ok(JavaScriptModuleLayoutGuard { previous })
-}
-
-pub fn javascript_module_layout_installed() -> bool {
-    MODULE_LAYOUT.with(|layout| layout.borrow().is_some())
-}
-
-pub fn javascript_layout_identities() -> Vec<JavaScriptTypeIdentity> {
-    MODULE_LAYOUT.with(|layout| {
-        layout
-            .borrow()
-            .as_ref()
-            .map(|layout| layout.targets.keys().cloned().collect())
-            .unwrap_or_default()
+        },
+        runtime_import_name: runtime_import_name.into(),
     })
 }
 
-pub fn javascript_output_targets() -> Vec<JavaScriptOutputTarget> {
-    MODULE_LAYOUT.with(|layout| {
-        layout
-            .borrow()
-            .as_ref()
-            .map(|layout| layout.targets.values().cloned().collect())
-            .unwrap_or_default()
-    })
-}
-
-fn target_for_identity(identity: &JavaScriptTypeIdentity) -> Option<JavaScriptOutputTarget> {
-    MODULE_LAYOUT.with(|layout| {
-        layout
-            .borrow()
-            .as_ref()
-            .and_then(|layout| layout.targets.get(identity).cloned())
-    })
-}
-
-pub fn javascript_output_target(projected_name: &str) -> Option<JavaScriptOutputTarget> {
-    MODULE_LAYOUT.with(|layout| {
-        let layout = layout.borrow();
-        let layout = layout.as_ref()?;
-        let identity = layout.by_projected_name.get(projected_name)?;
-        layout.targets.get(identity).cloned()
-    })
-}
-
-fn projected_name(namespace: &str, name: &str, kind: JavaScriptTypeKind) -> String {
-    target_for_identity(&JavaScriptTypeIdentity::new(namespace, name, kind))
-        .or_else(|| {
-            if kind == JavaScriptTypeKind::Interface {
-                target_for_identity(&JavaScriptTypeIdentity::new(
-                    namespace,
-                    name,
-                    JavaScriptTypeKind::Delegate,
-                ))
-            } else {
-                None
-            }
-        })
-        .map_or_else(|| name.into(), |target| target.projected_name)
-}
-
-pub(crate) fn metadata_type_name(namespace: &str, output_name: &str) -> String {
-    MODULE_LAYOUT.with(|layout| {
-        layout
-            .borrow()
-            .as_ref()
-            .and_then(|layout| {
-                let identity = layout.by_projected_name.get(output_name)?;
-                (identity.namespace == namespace).then(|| identity.name.clone())
-            })
-            .unwrap_or_else(|| output_name.into())
-    })
-}
-
-fn apply_projected_type_names(typ: &mut TypeMeta) {
+fn apply_projected_type_names(context: &JavaScriptProjectionContext, typ: &mut TypeMeta) {
     match typ {
         TypeMeta::Interface {
             namespace, name, ..
-        } => *name = projected_name(namespace, name, JavaScriptTypeKind::Interface),
+        } => *name = context.projected_name(namespace, name, JavaScriptTypeKind::Interface),
         TypeMeta::Delegate {
             namespace, name, ..
-        } => *name = projected_name(namespace, name, JavaScriptTypeKind::Delegate),
+        } => *name = context.projected_name(namespace, name, JavaScriptTypeKind::Delegate),
         TypeMeta::RuntimeClass {
             namespace,
             name,
             default_interface,
         } => {
-            *name = projected_name(namespace, name, JavaScriptTypeKind::Class);
+            *name = context.projected_name(namespace, name, JavaScriptTypeKind::Class);
             if let Some(default_interface) = default_interface {
-                apply_projected_type_names(default_interface);
+                apply_projected_type_names(context, default_interface);
             }
         }
         TypeMeta::AsyncActionWithProgress(inner)
         | TypeMeta::AsyncOperation(inner)
-        | TypeMeta::Array(inner) => apply_projected_type_names(inner),
+        | TypeMeta::Array(inner) => apply_projected_type_names(context, inner),
         TypeMeta::AsyncOperationWithProgress(result, progress) => {
-            apply_projected_type_names(result);
-            apply_projected_type_names(progress);
+            apply_projected_type_names(context, result);
+            apply_projected_type_names(context, progress);
         }
         TypeMeta::Parameterized { args, .. } => {
             for argument in args {
-                apply_projected_type_names(argument);
+                apply_projected_type_names(context, argument);
             }
         }
         TypeMeta::Struct { fields, .. } => {
             for field in fields {
-                apply_projected_type_names(&mut field.typ);
+                apply_projected_type_names(context, &mut field.typ);
             }
         }
         TypeMeta::Enum {
@@ -979,23 +1238,26 @@ fn apply_projected_type_names(typ: &mut TypeMeta) {
             underlying,
             ..
         } => {
-            *name = projected_name(namespace, name, JavaScriptTypeKind::Enum);
-            apply_projected_type_names(underlying);
+            *name = context.projected_name(namespace, name, JavaScriptTypeKind::Enum);
+            apply_projected_type_names(context, underlying);
         }
         _ => {}
     }
 }
 
-fn apply_projected_method_names(method: &mut MethodMeta) {
+fn apply_projected_method_names(context: &JavaScriptProjectionContext, method: &mut MethodMeta) {
     for parameter in &mut method.params {
-        apply_projected_type_names(&mut parameter.typ);
+        apply_projected_type_names(context, &mut parameter.typ);
     }
     if let Some(return_type) = &mut method.return_type {
-        apply_projected_type_names(return_type);
+        apply_projected_type_names(context, return_type);
     }
 }
 
-fn apply_projected_interface_names(interface: &mut InterfaceMeta) {
+fn apply_projected_interface_names(
+    context: &JavaScriptProjectionContext,
+    interface: &mut InterfaceMeta,
+) {
     let kind = if interface
         .methods
         .iter()
@@ -1010,45 +1272,49 @@ fn apply_projected_interface_names(interface: &mut InterfaceMeta) {
         JavaScriptTypeKind::Interface
     };
     interface.name = if let Some(piid) = &interface.generic_piid {
-        let output_name = parameterized_interface_name(
+        let output_name = parameterized_interface_name_with_context(
+            context,
             &interface.namespace,
             &interface.name,
             piid,
             &interface.generic_args,
         );
-        let variant = parameterized_reference_identity(piid, &interface.generic_args);
-        target_for_identity(&JavaScriptTypeIdentity::with_variant(
-            &interface.namespace,
-            &output_name,
-            kind,
-            &variant,
-        ))
-        .map_or(output_name, |target| target.projected_name)
+        let variant =
+            parameterized_reference_identity_with_context(context, piid, &interface.generic_args);
+        context
+            .target_for_identity(&JavaScriptTypeIdentity::with_variant(
+                &interface.namespace,
+                &output_name,
+                kind,
+                &variant,
+            ))
+            .map_or(output_name, |target| target.projected_name.clone())
     } else {
-        projected_name(&interface.namespace, &interface.name, kind)
+        context.projected_name(&interface.namespace, &interface.name, kind)
     };
     for base in &mut interface.base_interfaces {
-        apply_projected_type_names(base);
+        apply_projected_type_names(context, base);
     }
     for argument in &mut interface.generic_args {
-        apply_projected_type_names(argument);
+        apply_projected_type_names(context, argument);
     }
     for method in &mut interface.methods {
-        apply_projected_method_names(method);
+        apply_projected_method_names(context, method);
     }
 }
 
-fn apply_projected_type_ref_name(reference: &mut TypeRef) {
-    reference.name = projected_name(&reference.namespace, &reference.name, reference.kind.into());
+fn apply_projected_type_ref_name(context: &JavaScriptProjectionContext, reference: &mut TypeRef) {
+    reference.name =
+        context.projected_name(&reference.namespace, &reference.name, reference.kind.into());
 }
 
-fn apply_projected_class_names(class: &mut ClassMeta) {
-    class.name = projected_name(&class.namespace, &class.name, JavaScriptTypeKind::Class);
+fn apply_projected_class_names(context: &JavaScriptProjectionContext, class: &mut ClassMeta) {
+    class.name = context.projected_name(&class.namespace, &class.name, JavaScriptTypeKind::Class);
     if let Some(base_class) = &mut class.base_class {
-        apply_projected_type_ref_name(base_class);
+        apply_projected_type_ref_name(context, base_class);
     }
     if let Some(default_interface) = &mut class.default_interface {
-        apply_projected_interface_names(default_interface);
+        apply_projected_interface_names(context, default_interface);
     }
     for interface in class
         .required_interfaces
@@ -1057,28 +1323,29 @@ fn apply_projected_class_names(class: &mut ClassMeta) {
         .chain(class.factory_interfaces.iter_mut())
         .chain(class.static_interfaces.iter_mut())
     {
-        apply_projected_interface_names(interface);
+        apply_projected_interface_names(context, interface);
     }
     for constructor in &mut class.constructors {
         if let Some(factory_interface) = &mut constructor.factory_interface {
-            apply_projected_type_ref_name(factory_interface);
+            apply_projected_type_ref_name(context, factory_interface);
         }
     }
 }
 
 pub fn apply_javascript_projected_names(
+    context: &JavaScriptProjectionContext,
     classes: &mut [ClassMeta],
     interfaces: &mut [InterfaceMeta],
     enums: &mut [TypeMeta],
 ) {
     for class in classes {
-        apply_projected_class_names(class);
+        apply_projected_class_names(context, class);
     }
     for interface in interfaces {
-        apply_projected_interface_names(interface);
+        apply_projected_interface_names(context, interface);
     }
     for en in enums {
-        apply_projected_type_names(en);
+        apply_projected_type_names(context, en);
     }
 }
 
@@ -1165,37 +1432,6 @@ fn relative_module(from_module: &str, to_module: &str) -> String {
     }
 }
 
-pub fn configure_projected_file(file: &mut ProjectedFile) -> Option<JavaScriptOutputTarget> {
-    let target = javascript_output_target(&file.name)?;
-    for import in &mut file.imports {
-        if import.is_runtime_package {
-            if (import.from.starts_with("./") || import.from.starts_with("../"))
-                && let Some(module) = import
-                    .from
-                    .strip_suffix(".js")
-                    .or(Some(import.from.as_str()))
-            {
-                import.from = format!("{}.js", relative_module(&target.canonical_module, module));
-            }
-            continue;
-        }
-        let Some(module) = import
-            .from
-            .strip_prefix("./")
-            .and_then(|path| path.strip_suffix(".js"))
-        else {
-            continue;
-        };
-        let target_module = javascript_output_target(module)
-            .map_or_else(|| module.to_string(), |target| target.canonical_module);
-        import.from = format!(
-            "{}.js",
-            relative_module(&target.canonical_module, &target_module)
-        );
-    }
-    Some(target)
-}
-
 pub fn root_relative_module(from_module: &str, root_module: &str) -> String {
     relative_module(from_module, root_module)
 }
@@ -1241,7 +1477,7 @@ mod tests {
                 JavaScriptTypeKind::Enum,
             ),
         ];
-        let _layout = install_javascript_module_layout(identities).unwrap();
+        let context = create_javascript_projection_context(identities).unwrap();
         let mut classes = vec![
             ClassMeta {
                 namespace: "Microsoft.UI.Input.DragDrop".into(),
@@ -1278,7 +1514,7 @@ mod tests {
             deprecated: None,
         }];
 
-        apply_javascript_projected_names(&mut classes, &mut [], &mut enums);
+        apply_javascript_projected_names(&context, &mut classes, &mut [], &mut enums);
 
         assert_eq!(classes[0].name, "InputDragDropDragUIOverride");
         assert_eq!(classes[1].name, "XamlDragUIOverride");
@@ -1292,7 +1528,7 @@ mod tests {
             TypeMeta::RuntimeClass { name, .. } if name == "InputDragDropDragUIOverride"
         ));
         assert!(
-            signature::ts_dynwinrt_type(parameter)
+            signature::ts_dynwinrt_type(&context, parameter)
                 .contains("Microsoft.UI.Input.DragDrop.DragUIOverride")
         );
         assert!(matches!(
@@ -1300,7 +1536,8 @@ mod tests {
             TypeMeta::Enum { ref name, .. } if name == "XamlControlsPrimitivesAnimationDirection"
         ));
         assert_eq!(
-            metadata_type_name("Microsoft.UI.Input.DragDrop", "InputDragDropDragUIOverride"),
+            context
+                .metadata_type_name("Microsoft.UI.Input.DragDrop", "InputDragDropDragUIOverride"),
             "DragUIOverride"
         );
     }
@@ -1312,8 +1549,8 @@ mod tests {
             "Button",
             JavaScriptTypeKind::Class,
         );
-        let _layout = install_javascript_module_layout([identity.clone()]).unwrap();
-        let target = target_for_identity(&identity).unwrap();
+        let context = create_javascript_projection_context([identity.clone()]).unwrap();
+        let target = context.target_for_identity(&identity).unwrap();
 
         assert_eq!(target.projected_name, "Button");
         assert_eq!(target.canonical_module, "microsoft/ui/xaml/controls/Button");
@@ -1321,7 +1558,7 @@ mod tests {
     }
 
     #[test]
-    fn nested_layout_guard_restores_previous_layout() {
+    fn independent_contexts_do_not_share_layout_state() {
         let button = JavaScriptTypeIdentity::new(
             "Microsoft.UI.Xaml.Controls",
             "Button",
@@ -1329,15 +1566,12 @@ mod tests {
         );
         let uri =
             JavaScriptTypeIdentity::new("Windows.Foundation", "Uri", JavaScriptTypeKind::Class);
-        let _outer = install_javascript_module_layout([button.clone()]).unwrap();
-        assert!(target_for_identity(&button).is_some());
-        {
-            let _inner = install_javascript_module_layout([uri.clone()]).unwrap();
-            assert!(target_for_identity(&button).is_none());
-            assert!(target_for_identity(&uri).is_some());
-        }
-        assert!(target_for_identity(&button).is_some());
-        assert!(target_for_identity(&uri).is_none());
+        let outer = create_javascript_projection_context([button.clone()]).unwrap();
+        let inner = create_javascript_projection_context([uri.clone()]).unwrap();
+        assert!(outer.target_for_identity(&button).is_some());
+        assert!(outer.target_for_identity(&uri).is_none());
+        assert!(inner.target_for_identity(&button).is_none());
+        assert!(inner.target_for_identity(&uri).is_some());
     }
 
     #[test]
@@ -1382,6 +1616,21 @@ mod tests {
                 &[TypeMeta::String, TypeMeta::Object],
             ),
             "IMap_String_Object"
+        );
+        assert_eq!(
+            windows_name,
+            "IVector_WindowsUIInputPointerPoint_gc328f0b29477ee07"
+        );
+        assert_eq!(
+            parameterized_reference_identity(
+                "vector",
+                &[TypeMeta::RuntimeClass {
+                    namespace: "Windows.UI.Input".into(),
+                    name: "PointerPoint".into(),
+                    default_interface: None,
+                }],
+            ),
+            "piid:vector:args:[class(Windows.UI.Input.PointerPoint;default=none)]"
         );
     }
 
@@ -1475,15 +1724,19 @@ mod tests {
         let windows =
             JavaScriptTypeIdentity::new("Windows.Foundation", "Widget", JavaScriptTypeKind::Class);
         let contoso = JavaScriptTypeIdentity::new("Contoso", "Widget", JavaScriptTypeKind::Class);
-        let old_layout =
-            install_javascript_module_layout([windows.clone(), contoso.clone()]).unwrap();
-        let records = javascript_output_targets()
+        let old_context =
+            create_javascript_projection_context([windows.clone(), contoso.clone()]).unwrap();
+        let records = old_context
+            .output_targets()
             .into_iter()
             .map(|target| {
-                JavaScriptTypeLayoutRecord::new(target.identity, target.projected_name, "type")
+                JavaScriptTypeLayoutRecord::new(
+                    target.identity.clone(),
+                    target.projected_name.clone(),
+                    "type",
+                )
             })
             .collect::<Vec<_>>();
-        drop(old_layout);
 
         let microsoft = JavaScriptTypeIdentity::new(
             "Microsoft.UI.Foundation",
@@ -1491,10 +1744,15 @@ mod tests {
             JavaScriptTypeKind::Class,
         );
         let identities = [windows.clone(), contoso.clone(), microsoft.clone()];
-        let incremental_layout =
-            install_javascript_module_layout_with_records(identities.clone(), records).unwrap();
+        let incremental_context = create_javascript_projection_context_with_records(
+            identities.clone(),
+            records,
+            "@microsoft/dynwinrt",
+        )
+        .unwrap();
         assert!(
-            target_for_identity(&windows)
+            incremental_context
+                .target_for_identity(&windows)
                 .unwrap()
                 .compatibility_aliases
                 .contains("FoundationWidget")
@@ -1504,19 +1762,25 @@ mod tests {
             .map(|identity| {
                 (
                     identity.clone(),
-                    target_for_identity(identity).unwrap().projected_name,
+                    incremental_context
+                        .target_for_identity(identity)
+                        .unwrap()
+                        .projected_name
+                        .clone(),
                 )
             })
             .collect::<BTreeMap<_, _>>();
-        drop(incremental_layout);
-
-        let _clean_layout = install_javascript_module_layout(identities.clone()).unwrap();
+        let clean_context = create_javascript_projection_context(identities.clone()).unwrap();
         let clean = identities
             .iter()
             .map(|identity| {
                 (
                     identity.clone(),
-                    target_for_identity(identity).unwrap().projected_name,
+                    clean_context
+                        .target_for_identity(identity)
+                        .unwrap()
+                        .projected_name
+                        .clone(),
                 )
             })
             .collect::<BTreeMap<_, _>>();
@@ -1620,7 +1884,7 @@ mod tests {
         let identity =
             JavaScriptTypeIdentity::new("Contoso", "../outside/Widget", JavaScriptTypeKind::Class);
 
-        let error = install_javascript_module_layout([identity])
+        let error = create_javascript_projection_context([identity])
             .err()
             .expect("path-like metadata names must be rejected");
 

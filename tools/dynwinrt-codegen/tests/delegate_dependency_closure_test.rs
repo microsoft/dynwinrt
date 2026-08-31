@@ -100,6 +100,7 @@ fn generated_interfaces_import_only_runtime_delegates() {
         ("UnrelatedHandler".into(), "() => void".into()),
     ]);
     let projected = project::project_interface(
+        &Default::default(),
         &interface,
         &known_types,
         &delegates,
@@ -222,6 +223,7 @@ fn generated_classes_do_not_import_output_only_delegates() {
         ("OutputHandler".into(), "() => void".into()),
     ]);
     let projected = project::project_class(
+        &Default::default(),
         &class,
         &known_types,
         &delegates,
@@ -264,6 +266,7 @@ fn delegate_free_interfaces_do_not_import_global_delegates() {
     let known_types = HashSet::from(["IValue".into(), "UnrelatedHandler".into()]);
     let delegates = HashSet::from(["UnrelatedHandler".into()]);
     let projected = project::project_interface(
+        &Default::default(),
         &interface,
         &known_types,
         &delegates,

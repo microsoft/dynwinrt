@@ -6,6 +6,7 @@
 use crate::codegen::winrt::shared::imports::ireference_inner_type;
 use crate::types::TypeMeta;
 
+use super::JavaScriptProjectionContext;
 use super::signature::{ref_marker, wrap_arg};
 
 // ======================================================================
@@ -13,7 +14,10 @@ use super::signature::{ref_marker, wrap_arg};
 // ======================================================================
 
 /// Map a struct field type to its TypeScript type annotation.
-pub(crate) fn ts_struct_field_type(typ: &TypeMeta) -> String {
+pub(crate) fn ts_struct_field_type(
+    context: &JavaScriptProjectionContext,
+    typ: &TypeMeta,
+) -> String {
     if let Some(inner) = ireference_inner_type(typ) {
         let TypeMeta::Parameterized {
             namespace,
@@ -24,7 +28,7 @@ pub(crate) fn ts_struct_field_type(typ: &TypeMeta) -> String {
         else {
             unreachable!()
         };
-        let wrapper = super::projected_parameterized_name(namespace, name, piid, args);
+        let wrapper = context.projected_parameterized_name(namespace, name, piid, args);
         return format!("{} | null | {}", ts_ireference_inner_type(inner), wrapper);
     }
 
@@ -61,7 +65,11 @@ fn ts_struct_field_read_type(typ: &TypeMeta) -> String {
 }
 
 /// Generate a `DynWinRtStruct.getXxx(index)` expression for a struct field.
-pub(crate) fn struct_field_getter(typ: &TypeMeta, index: usize) -> String {
+pub(crate) fn struct_field_getter(
+    context: &JavaScriptProjectionContext,
+    typ: &TypeMeta,
+    index: usize,
+) -> String {
     if ireference_inner_type(typ).is_some() {
         let TypeMeta::Parameterized {
             namespace,
@@ -72,9 +80,8 @@ pub(crate) fn struct_field_getter(typ: &TypeMeta, index: usize) -> String {
         else {
             unreachable!()
         };
-        let wrapper = ref_marker(&super::projected_parameterized_name(
-            namespace, name, piid, args,
-        ));
+        let wrapper =
+            ref_marker(&context.projected_parameterized_name(namespace, name, piid, args));
         return format!(
             "((value) => value.isNull() ? null : new {}(value).value)(s.getObject({}))",
             wrapper, index
@@ -104,9 +111,18 @@ pub(crate) fn struct_field_getter(typ: &TypeMeta, index: usize) -> String {
 }
 
 /// Generate a `s.setXxx(index, expr)` statement for a struct field.
-pub(crate) fn struct_field_setter(typ: &TypeMeta, index: usize, value_expr: &str) -> String {
+pub(crate) fn struct_field_setter(
+    context: &JavaScriptProjectionContext,
+    typ: &TypeMeta,
+    index: usize,
+    value_expr: &str,
+) -> String {
     if ireference_inner_type(typ).is_some() {
-        return format!("s.setObject({}, {})", index, wrap_arg(value_expr, typ));
+        return format!(
+            "s.setObject({}, {})",
+            index,
+            wrap_arg(context, value_expr, typ)
+        );
     }
 
     match typ {

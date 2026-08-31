@@ -4,12 +4,16 @@
 //! JavaScript struct projection.
 
 use super::*;
+use crate::codegen::winrt::javascript::JavaScriptProjectionContext;
 
 // ======================================================================
 // Struct projection
 // ======================================================================
 
-pub(super) fn project_struct_helpers(used_structs: &[TypeMeta]) -> Vec<ProjectedStruct> {
+pub(super) fn project_struct_helpers(
+    context: &JavaScriptProjectionContext,
+    used_structs: &[TypeMeta],
+) -> Vec<ProjectedStruct> {
     used_structs
         .iter()
         .filter_map(|s| {
@@ -22,8 +26,10 @@ pub(super) fn project_struct_helpers(used_structs: &[TypeMeta]) -> Vec<Projected
                 _ => return None,
             };
             let full_name = format!("{}.{}", namespace, name);
-            let field_types: Vec<String> =
-                fields.iter().map(|f| ts_dynwinrt_type(&f.typ)).collect();
+            let field_types: Vec<String> = fields
+                .iter()
+                .map(|f| ts_dynwinrt_type(context, &f.typ))
+                .collect();
             let type_expr = format!(
                 "DynWinRtType.structType('{}', [{}])",
                 full_name,
@@ -32,7 +38,12 @@ pub(super) fn project_struct_helpers(used_structs: &[TypeMeta]) -> Vec<Projected
 
             let ts_fields: Vec<(String, String)> = fields
                 .iter()
-                .map(|f| (to_camel_case(&f.name), ts_struct_field_type(&f.typ)))
+                .map(|f| {
+                    (
+                        to_camel_case(&f.name),
+                        ts_struct_field_type(context, &f.typ),
+                    )
+                })
                 .collect();
 
             let unpack_body = {
@@ -43,7 +54,7 @@ pub(super) fn project_struct_helpers(used_structs: &[TypeMeta]) -> Vec<Projected
                         format!(
                             "{}: {}",
                             to_camel_case(&f.name),
-                            struct_field_getter(&f.typ, i)
+                            struct_field_getter(context, &f.typ, i)
                         )
                     })
                     .collect();
@@ -58,7 +69,12 @@ pub(super) fn project_struct_helpers(used_structs: &[TypeMeta]) -> Vec<Projected
                 for (i, f) in fields.iter().enumerate() {
                     lines.push(format!(
                         "{};",
-                        struct_field_setter(&f.typ, i, &format!("v.{}", to_camel_case(&f.name)))
+                        struct_field_setter(
+                            context,
+                            &f.typ,
+                            i,
+                            &format!("v.{}", to_camel_case(&f.name)),
+                        )
                     ));
                 }
                 lines.push("return s;".into());

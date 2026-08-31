@@ -657,6 +657,7 @@ fn run() -> Result<(), String> {
                     Vec::new(),
                     dry_run,
                     &lang,
+                    &import_name,
                     pyi,
                     &doc_table,
                     &existing_python_identities,
@@ -664,17 +665,6 @@ fn run() -> Result<(), String> {
 
                 // Write (or append to) the index file for the output directory
                 if !dry_run {
-                    type AppendFn =
-                        fn(&str, &[meta::ClassMeta], &[meta::InterfaceMeta], &[TypeMeta]) -> String;
-                    type GenerateFn =
-                        fn(&[meta::ClassMeta], &[meta::InterfaceMeta], &[TypeMeta]) -> String;
-                    let (append_fn, generate_fn): (AppendFn, GenerateFn) = if lang == "py" {
-                        (python::append_to_index, python::generate_index)
-                    } else {
-                        // For JS lang, we use an in-memory `.ts` index then split into .js + .d.ts.
-                        // We pick a sentinel filename `index.js` to detect presence; `.d.ts` is written alongside.
-                        (typescript::append_to_index, typescript::generate_index)
-                    };
                     let deps = resolve_dependencies_for_lang(
                         &winmd,
                         &classes,
@@ -737,20 +727,6 @@ fn run() -> Result<(), String> {
                             true,
                         )?;
                         record_python_supplemental_types(output_dir, &shared_interfaces)?;
-                    } else {
-                        // JS: index.js + index.d.ts are pure re-exports and identical, so we
-                        // round-trip incremental appends by reading back index.d.ts (which
-                        // still uses ESM syntax and drives the append-diff logic).
-                        let dts_path = output_dir.join("index.d.ts");
-                        let index_content = if dts_path.exists() {
-                            let existing = fs::read_to_string(&dts_path).map_err(|e| {
-                                format!("Failed to read {}: {}", dts_path.display(), e)
-                            })?;
-                            append_fn(&existing, &all_classes, &all_interfaces, &all_enums)
-                        } else {
-                            generate_fn(&all_classes, &all_interfaces, &all_enums)
-                        };
-                        write_js_barrel_and_manifest(output_dir, &index_content)?;
                     }
                 }
             } else {
@@ -811,6 +787,7 @@ fn run() -> Result<(), String> {
                         selected_enums,
                         dry_run,
                         &lang,
+                        &import_name,
                         pyi,
                         &doc_table,
                         &[],
@@ -890,10 +867,6 @@ fn run() -> Result<(), String> {
                             false,
                         )?;
                         record_python_supplemental_types(output_dir, &shared_interfaces)?;
-                    } else {
-                        let index_code =
-                            typescript::generate_index(&all_classes, &all_interfaces, &all_enums);
-                        write_js_barrel_and_manifest(output_dir, &index_code)?;
                     }
                 }
 
@@ -935,6 +908,7 @@ fn generate_for_types(
     enums: Vec<TypeMeta>,
     dry_run: bool,
     lang: &str,
+    runtime_import_name: &str,
     pyi: bool,
     doc_table: &DocTable,
     existing_python_identities: &[python::PythonTypeIdentity],
@@ -976,7 +950,7 @@ fn generate_for_types(
         Vec::new()
     };
     let mut retained_javascript_renames = Vec::new();
-    let _javascript_layout = if lang != "py" {
+    let javascript_context = if lang != "py" {
         validate_javascript_type_layout_records(
             &previous_javascript_records,
             &current_javascript_records,
@@ -985,13 +959,15 @@ fn generate_for_types(
             .iter()
             .chain(current_javascript_records.iter())
             .map(|record| record.identity.clone());
-        let layout = javascript::install_javascript_module_layout_with_records(
+        let context = javascript::create_javascript_projection_context_with_records(
             identities,
             previous_javascript_records.iter().cloned(),
+            runtime_import_name,
         )?;
-        let projected_names = javascript::javascript_output_targets()
+        let projected_names = context
+            .output_targets()
             .into_iter()
-            .map(|target| (target.identity, target.projected_name))
+            .map(|target| (target.identity.clone(), target.projected_name.clone()))
             .collect::<HashMap<_, _>>();
         let current_identities = current_javascript_records
             .iter()
@@ -1009,17 +985,22 @@ fn generate_for_types(
             .collect::<Vec<_>>();
         let current_struct_helpers =
             javascript::validate_struct_helper_identities(&all_classes, &all_interfaces)?;
-        validate_generated_struct_helper_identities_against(output_dir, &current_struct_helpers)?;
+        validate_generated_struct_helper_identities_against(
+            &context,
+            output_dir,
+            &current_struct_helpers,
+        )?;
         if !output_dir.join(JAVASCRIPT_TYPE_INVENTORY).is_file() {
-            ensure_uninventoried_javascript_targets_absent(output_dir)?;
+            ensure_uninventoried_javascript_targets_absent(&context, output_dir)?;
         }
         javascript::apply_javascript_projected_names(
+            &context,
             &mut all_classes,
             &mut all_interfaces,
             &mut all_enums,
         );
         validate_unique_class_output_names(&all_classes)?;
-        Some(layout)
+        Some(context)
     } else {
         None
     };
@@ -1073,8 +1054,12 @@ fn generate_for_types(
         }
     }
     if lang != "py" {
-        for target in javascript::javascript_output_targets() {
-            known_types.insert(target.projected_name);
+        for target in javascript_context
+            .as_ref()
+            .expect("JavaScript context")
+            .output_targets()
+        {
+            known_types.insert(target.projected_name.clone());
             known_types.insert(format!(
                 "{}.{}",
                 target.identity.namespace, target.identity.name
@@ -1164,7 +1149,16 @@ fn generate_for_types(
     };
 
     let (delegate_signatures, delegate_sig_refs, delegate_param_wraps) =
-        project::build_delegate_signatures(&all_interfaces, &delegate_type_names, &known_types);
+        if let Some(context) = javascript_context.as_ref() {
+            project::build_delegate_signatures(
+                context,
+                &all_interfaces,
+                &delegate_type_names,
+                &known_types,
+            )
+        } else {
+            Default::default()
+        };
 
     if !dry_run {
         if lang == "py" {
@@ -1180,7 +1174,8 @@ fn generate_for_types(
                 pyi,
             )?;
         } else {
-            generate_js_files(
+            let mut plan = generate_js_files(
+                javascript_context.as_ref().expect("JavaScript context"),
                 output_dir,
                 &all_classes,
                 &all_interfaces,
@@ -1193,16 +1188,23 @@ fn generate_for_types(
                 &delegate_sig_refs,
                 &delegate_param_wraps,
             )?;
-            write_retained_javascript_projected_aliases(output_dir, &retained_javascript_renames)?;
-            validate_generated_struct_helper_identities(output_dir)?;
+            let context = javascript_context.as_ref().expect("JavaScript context");
+            write_retained_javascript_projected_aliases(
+                context,
+                output_dir,
+                &retained_javascript_renames,
+            )?;
+            validate_generated_struct_helper_identities(context, output_dir)?;
             write_javascript_type_inventory(
                 output_dir,
                 &emitted_javascript_type_records(
+                    context,
                     output_dir,
                     &previous_javascript_records,
                     &current_javascript_records,
                 )?,
             )?;
+            write_js_barrel_and_manifest(output_dir, &mut plan)?;
         }
         drop(python_layout);
     }
@@ -1521,11 +1523,12 @@ fn validate_javascript_inventory_files(
     output_dir: &Path,
     records: &[javascript::JavaScriptTypeLayoutRecord],
 ) -> Result<(), String> {
-    let _layout = javascript::install_javascript_module_layout_with_records(
+    let context = javascript::create_javascript_projection_context_with_records(
         records.iter().map(|record| record.identity.clone()),
         records.iter().cloned(),
+        "@microsoft/dynwinrt",
     )?;
-    let targets = javascript::javascript_output_targets();
+    let targets = context.output_targets().cloned().collect::<Vec<_>>();
     let target_layout = targets
         .iter()
         .map(|target| {
@@ -1685,8 +1688,11 @@ fn validate_javascript_inventory_files(
     Ok(())
 }
 
-fn ensure_uninventoried_javascript_targets_absent(output_dir: &Path) -> Result<(), String> {
-    for target in javascript::javascript_output_targets() {
+fn ensure_uninventoried_javascript_targets_absent(
+    context: &javascript::JavaScriptProjectionContext,
+    output_dir: &Path,
+) -> Result<(), String> {
+    for target in context.output_targets() {
         for suffix in ["js", "d.ts"] {
             let path = output_dir.join(format!("{}.{suffix}", target.canonical_module));
             if path.exists() {
@@ -1740,12 +1746,14 @@ fn validate_javascript_type_layout_records(
 }
 
 fn write_retained_javascript_projected_aliases(
+    context: &javascript::JavaScriptProjectionContext,
     output_dir: &Path,
     renamed: &[javascript::JavaScriptTypeLayoutRecord],
 ) -> Result<(), String> {
-    let targets = javascript::javascript_output_targets()
+    let targets = context
+        .output_targets()
         .into_iter()
-        .map(|target| (target.identity.clone(), target))
+        .map(|target| (target.identity.clone(), target.clone()))
         .collect::<HashMap<_, _>>();
     let append = |content: &mut String, line: String| {
         if !content.contains(&line) {
@@ -1847,6 +1855,7 @@ fn write_javascript_type_inventory(
 }
 
 fn emitted_javascript_type_records(
+    context: &javascript::JavaScriptProjectionContext,
     output_dir: &Path,
     previous: &[javascript::JavaScriptTypeLayoutRecord],
     current: &[javascript::JavaScriptTypeLayoutRecord],
@@ -1864,7 +1873,8 @@ fn emitted_javascript_type_records(
         .iter()
         .map(|record| record.identity.clone())
         .collect::<HashSet<_>>();
-    javascript::javascript_output_targets()
+    context
+        .output_targets()
         .into_iter()
         .filter(|target| {
             output_dir
@@ -1896,8 +1906,8 @@ fn emitted_javascript_type_records(
                     })?
             };
             Ok(javascript::JavaScriptTypeLayoutRecord::new(
-                target.identity,
-                target.projected_name,
+                target.identity.clone(),
+                target.projected_name.clone(),
                 abi_identity,
             )
             .with_implementation_name(implementation_name)
@@ -1920,6 +1930,7 @@ fn generated_struct_helper_identities(content: &str) -> Vec<(String, String)> {
 }
 
 fn validate_generated_struct_helper_identities_against(
+    context: &javascript::JavaScriptProjectionContext,
     output_dir: &Path,
     current: &BTreeMap<String, String>,
 ) -> Result<(), String> {
@@ -1932,7 +1943,7 @@ fn validate_generated_struct_helper_identities_against(
             )
         })
         .collect::<HashMap<_, _>>();
-    for target in javascript::javascript_output_targets() {
+    for target in context.output_targets() {
         let path = output_dir.join(format!("{}.js", target.canonical_module));
         if !path.is_file() {
             continue;
@@ -1957,8 +1968,11 @@ fn validate_generated_struct_helper_identities_against(
     Ok(())
 }
 
-fn validate_generated_struct_helper_identities(output_dir: &Path) -> Result<(), String> {
-    validate_generated_struct_helper_identities_against(output_dir, &BTreeMap::new())
+fn validate_generated_struct_helper_identities(
+    context: &javascript::JavaScriptProjectionContext,
+    output_dir: &Path,
+) -> Result<(), String> {
+    validate_generated_struct_helper_identities_against(context, output_dir, &BTreeMap::new())
 }
 
 fn validate_unique_class_output_names(classes: &[meta::ClassMeta]) -> Result<(), String> {
@@ -1981,16 +1995,172 @@ fn validate_unique_class_output_names(classes: &[meta::ClassMeta]) -> Result<(),
     Ok(())
 }
 
-fn emit_javascript_projected_file(
+fn load_effective_generation_plan(
+    context: &javascript::JavaScriptProjectionContext,
     output_dir: &Path,
-    mut projected: dynwinrt_codegen::codegen::projected::ProjectedFile,
+) -> Result<dynwinrt_codegen::codegen::projected::GenerationPlan, String> {
+    use dynwinrt_codegen::codegen::projected::{GeneratedModule, GenerationPlan};
+
+    let mut plan = GenerationPlan::default();
+    let mut retained_public_modules = BTreeSet::new();
+    for target in context.output_targets() {
+        if output_dir
+            .join(format!("{}.js", target.canonical_module))
+            .is_file()
+            && output_dir
+                .join(format!("{}.d.ts", target.canonical_module))
+                .is_file()
+        {
+            plan.insert(GeneratedModule::retained(&target.canonical_module))?;
+            if target.identity.kind != javascript::JavaScriptTypeKind::Delegate {
+                retained_public_modules.insert(target.canonical_module.clone());
+            }
+        }
+    }
+
+    // Incremental generation may retain modules from the previous inventory.
+    // Their user-facing exports are loaded only from the previous root metadata;
+    // newly rendered JavaScript is never parsed.
+    let index_path = output_dir.join("index.d.ts");
+    let mut indexed_modules = BTreeSet::new();
+    if index_path.is_file() {
+        let index = fs::read_to_string(&index_path)
+            .map_err(|error| format!("Failed to read {}: {error}", index_path.display()))?;
+        for line in index.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with("//") {
+                continue;
+            }
+            let (names, module) = parse_root_export_metadata(line).ok_or_else(|| {
+                format!(
+                    "Invalid retained JavaScript root export metadata in {}: `{line}`",
+                    index_path.display()
+                )
+            })?;
+            indexed_modules.insert(module.clone());
+            if module == "lifetime" {
+                let mut retained = GeneratedModule::retained("lifetime");
+                retained.public_exports.extend(names);
+                plan.insert(retained)?;
+            } else if let Some(retained) = plan.modules.get_mut(&module) {
+                retained.public_exports.extend(names);
+            } else {
+                return Err(format!(
+                    "Retained JavaScript root export metadata references missing canonical module `{module}`"
+                ));
+            }
+        }
+    } else if !retained_public_modules.is_empty() {
+        return Err(format!(
+            "Retained JavaScript modules require root export metadata in {}",
+            index_path.display()
+        ));
+    }
+    if let Some(module) = retained_public_modules.difference(&indexed_modules).next() {
+        return Err(format!(
+            "Retained JavaScript module `{module}` is missing root export metadata in {}",
+            index_path.display()
+        ));
+    }
+    for target in context.output_targets() {
+        let Some(module) = plan.modules.get_mut(&target.canonical_module) else {
+            continue;
+        };
+        if target.collides {
+            module.public_exports.remove(&target.identity.name);
+        }
+        let retained_projected_alias = target
+            .compatibility_aliases
+            .iter()
+            .any(|alias| module.public_exports.contains(alias));
+        for alias in &target.compatibility_aliases {
+            module.public_exports.remove(alias);
+        }
+        if target.identity.kind != javascript::JavaScriptTypeKind::Delegate {
+            if retained_projected_alias {
+                module.public_exports.insert(target.projected_name.clone());
+            }
+            if !module.public_exports.contains(&target.projected_name) {
+                return Err(format!(
+                    "Retained JavaScript module `{}` does not export its projected type `{}` in {}",
+                    target.canonical_module,
+                    target.projected_name,
+                    index_path.display()
+                ));
+            }
+            module.primary_export = Some(target.projected_name.clone());
+        }
+        module.compatibility_aliases = target.compatibility_aliases.clone();
+    }
+    Ok(plan)
+}
+
+fn parse_root_export_metadata(line: &str) -> Option<(Vec<String>, String)> {
+    let line = line.trim().trim_end_matches(';');
+    let rest = line.strip_prefix("export {")?;
+    let (names, source) = rest.split_once("} from './")?;
+    let module = source.strip_suffix(".js'")?.to_string();
+    let names = names
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    (!names.is_empty()).then_some((names, module))
+}
+
+fn write_generation_plan_modules(
+    output_dir: &Path,
+    plan: &dynwinrt_codegen::codegen::projected::GenerationPlan,
 ) -> Result<(), String> {
-    let target = javascript::configure_projected_file(&mut projected).ok_or_else(|| {
-        format!(
-            "JavaScript module layout does not contain projected type `{}`",
-            projected.name
-        )
-    })?;
+    for module in plan.modules.values() {
+        let (Some(js), Some(dts)) = (&module.javascript, &module.declarations) else {
+            continue;
+        };
+        let js_path = output_dir.join(format!("{}.js", module.canonical_module));
+        let dts_path = output_dir.join(format!("{}.d.ts", module.canonical_module));
+        write_generated_javascript_file(output_dir, &js_path, js)?;
+        write_generated_javascript_file(output_dir, &dts_path, dts)?;
+        println!("Generated {}", js_path.display());
+    }
+    Ok(())
+}
+
+fn emit_javascript_projected_file(
+    context: &javascript::JavaScriptProjectionContext,
+    mut projected: dynwinrt_codegen::codegen::projected::ProjectedFile,
+) -> Result<dynwinrt_codegen::codegen::projected::GeneratedModule, String> {
+    use dynwinrt_codegen::codegen::projected::{GeneratedModule, PlannedImport};
+
+    let public_exports = projected.public_exports();
+    let internal_exports = projected.internal_exports();
+    let dependencies = projected
+        .imports
+        .iter()
+        .map(|import| {
+            if import.is_runtime_package {
+                return None;
+            }
+            import
+                .from
+                .strip_prefix("./")
+                .and_then(|source| source.strip_suffix(".js"))
+                .map(|name| {
+                    context.output_target(name).map_or_else(
+                        || name.to_string(),
+                        |target| target.canonical_module.clone(),
+                    )
+                })
+        })
+        .collect::<Vec<_>>();
+    let target = context
+        .configure_projected_file(&mut projected)
+        .ok_or_else(|| {
+            format!(
+                "JavaScript module layout does not contain projected type `{}`",
+                projected.name
+            )
+        })?;
     let mut js = render_js::render(&projected);
     let mut dts = render_dts::render(&projected);
     let lifetime = javascript::root_relative_module(&target.canonical_module, "lifetime");
@@ -2081,13 +2251,31 @@ fn emit_javascript_projected_file(
             }
         }
     }
-
-    let js_path = output_dir.join(format!("{}.js", target.canonical_module));
-    let dts_path = output_dir.join(format!("{}.d.ts", target.canonical_module));
-    write_generated_javascript_file(output_dir, &js_path, &js)?;
-    write_generated_javascript_file(output_dir, &dts_path, &dts)?;
-    println!("Generated {}", js_path.display());
-    Ok(())
+    let imports = projected
+        .imports
+        .iter()
+        .zip(dependencies)
+        .map(|(import, canonical_dependency)| PlannedImport {
+            source: import.from.clone(),
+            symbols: import.symbols.iter().cloned().collect(),
+            runtime_only: import.runtime_only,
+            dts_only: import.dts_only,
+            is_runtime_package: import.is_runtime_package,
+            canonical_dependency,
+        })
+        .collect();
+    Ok(GeneratedModule {
+        canonical_module: target.canonical_module.clone(),
+        package_subpath: target.canonical_module,
+        javascript: Some(js),
+        declarations: Some(dts),
+        imports,
+        public_exports,
+        primary_export: (target.identity.kind != javascript::JavaScriptTypeKind::Delegate)
+            .then(|| target.projected_name.clone()),
+        internal_exports,
+        compatibility_aliases: target.compatibility_aliases,
+    })
 }
 
 fn ensure_safe_generated_parent(output_dir: &Path, destination: &Path) -> Result<(), String> {
@@ -2222,6 +2410,7 @@ fn write_generated_javascript_file(
 }
 
 fn generate_js_files(
+    context: &javascript::JavaScriptProjectionContext,
     output_dir: &Path,
     all_classes: &[meta::ClassMeta],
     all_interfaces: &[meta::InterfaceMeta],
@@ -2233,7 +2422,8 @@ fn generate_js_files(
     delegate_sigs: &HashMap<String, String>,
     delegate_sig_refs: &HashMap<String, Vec<String>>,
     delegate_param_wraps: &HashMap<String, Vec<String>>,
-) -> Result<(), String> {
+) -> Result<dynwinrt_codegen::codegen::projected::GenerationPlan, String> {
+    let mut plan = load_effective_generation_plan(context, output_dir)?;
     // Exclusive interfaces paired with a runtime class are implementation
     // details. The projected layout already qualifies genuine cross-namespace
     // collisions, so this name check only removes those class-owned entries.
@@ -2249,6 +2439,15 @@ fn generate_js_files(
         !iface.iid.is_empty()
     }
 
+    let all_interface_modules = all_interfaces
+        .iter()
+        .filter(|iface| !class_names.contains(iface.name.as_str()) && is_emittable_interface(iface))
+        .filter_map(|iface| {
+            context
+                .output_target(&iface.name)
+                .map(|target| target.canonical_module.clone())
+        })
+        .collect::<HashSet<_>>();
     for iface in shared_interfaces {
         if class_names.contains(iface.name.as_str()) {
             continue;
@@ -2256,7 +2455,14 @@ fn generate_js_files(
         if !is_emittable_interface(iface) {
             continue;
         }
+        if context
+            .output_target(&iface.name)
+            .is_some_and(|target| all_interface_modules.contains(&target.canonical_module))
+        {
+            continue;
+        }
         let projected = project::project_interface(
+            context,
             iface,
             known_types,
             delegate_type_names,
@@ -2264,7 +2470,7 @@ fn generate_js_files(
             delegate_sig_refs,
             delegate_param_wraps,
         );
-        emit_javascript_projected_file(output_dir, projected)?;
+        plan.insert(emit_javascript_projected_file(context, projected)?)?;
     }
     for iface in all_interfaces {
         if class_names.contains(iface.name.as_str()) {
@@ -2274,6 +2480,7 @@ fn generate_js_files(
             continue;
         }
         let projected = project::project_interface(
+            context,
             iface,
             known_types,
             delegate_type_names,
@@ -2281,7 +2488,7 @@ fn generate_js_files(
             delegate_sig_refs,
             delegate_param_wraps,
         );
-        emit_javascript_projected_file(output_dir, projected)?;
+        plan.insert(emit_javascript_projected_file(context, projected)?)?;
     }
     for en in all_enums {
         if let TypeMeta::Enum { name, .. } = en {
@@ -2292,7 +2499,7 @@ fn generate_js_files(
                 continue;
             }
             if let Some(projected) = project::project_enum(en) {
-                emit_javascript_projected_file(output_dir, projected)?;
+                plan.insert(emit_javascript_projected_file(context, projected)?)?;
             }
         }
     }
@@ -2323,6 +2530,7 @@ fn generate_js_files(
             continue;
         }
         let projected = project::project_class(
+            context,
             class,
             known_types,
             delegate_type_names,
@@ -2331,7 +2539,7 @@ fn generate_js_files(
             delegate_sig_refs,
             delegate_param_wraps,
         );
-        emit_javascript_projected_file(output_dir, projected)?;
+        plan.insert(emit_javascript_projected_file(context, projected)?)?;
         emitted_class_names.insert(class.name.clone());
     }
     // Second pass: emit stubs for genuinely empty class shells (parameterized
@@ -2362,7 +2570,7 @@ fn generate_js_files(
              export declare class {name} {{ private constructor(); }}\n",
             name = class.name,
         );
-        let target = javascript::javascript_output_target(&class.name).ok_or_else(|| {
+        let target = context.output_target(&class.name).ok_or_else(|| {
             format!(
                 "JavaScript module layout does not contain projected type `{}`",
                 class.name
@@ -2390,24 +2598,23 @@ fn generate_js_files(
                 projected = target.projected_name,
             ));
         }
-        let js_path = output_dir.join(format!("{}.js", target.canonical_module));
-        let dts_path = output_dir.join(format!("{}.d.ts", target.canonical_module));
-        write_generated_javascript_file(output_dir, &js_path, &stub_js)?;
-        write_generated_javascript_file(output_dir, &dts_path, &stub_dts)?;
-        println!("Generated {}", js_path.display());
+        plan.insert(dynwinrt_codegen::codegen::projected::GeneratedModule {
+            canonical_module: target.canonical_module.clone(),
+            package_subpath: target.canonical_module.clone(),
+            javascript: Some(stub_js),
+            declarations: Some(stub_dts),
+            imports: Vec::new(),
+            public_exports: [target.projected_name.clone()].into_iter().collect(),
+            primary_export: Some(target.projected_name.clone()),
+            internal_exports: BTreeSet::new(),
+            compatibility_aliases: target.compatibility_aliases.clone(),
+        })?;
         emitted_class_names.insert(class.name.clone());
     }
 
-    // Post-process: strip imports that reference non-existent sibling files.
-    // This handles cases where a class pulls in a type reference (e.g. WinUI XAML
-    // classes referencing Microsoft.UI.Composition types whose winmd was removed
-    // in later Windows App SDK versions) but the target file was never emitted.
-    // Rather than leave the entire binding set broken at load time, we drop the
-    // import — any methods that depended on that type will surface as runtime
-    // ReferenceErrors when actually called, but the module loads.
-    strip_broken_imports(output_dir)?;
-
-    Ok(())
+    plan.validate_dependencies()?;
+    write_generation_plan_modules(output_dir, &plan)?;
+    Ok(plan)
 }
 
 /// Write the four root barrel entries plus `package.json` alongside canonical
@@ -2425,13 +2632,30 @@ fn generate_js_files(
 ///
 /// Root barrels point directly at canonical modules. Package subpaths expose
 /// only canonical namespace paths.
-fn write_js_barrel_and_manifest(output_dir: &Path, index_content: &str) -> Result<(), String> {
+fn write_js_barrel_and_manifest(
+    output_dir: &Path,
+    plan: &mut dynwinrt_codegen::codegen::projected::GenerationPlan,
+) -> Result<(), String> {
+    use dynwinrt_codegen::codegen::projected::GeneratedModule;
+
     let js_path = output_dir.join("index.js");
     let mjs_path = output_dir.join("index.mjs");
     let proxy_path = output_dir.join("index.proxy.js");
     let dts_path = output_dir.join("index.d.ts");
-    let _ = index_content;
     write_lifetime_module(output_dir)?;
+    let lifetime = plan
+        .modules
+        .entry("lifetime".into())
+        .or_insert_with(|| GeneratedModule::retained("lifetime"));
+    lifetime.public_exports.extend(
+        [
+            "createProjectedLifetimeScope",
+            "projectAs",
+            "releaseProjected",
+        ]
+        .into_iter()
+        .map(str::to_string),
+    );
 
     // Clean up any stale `.index.ts` cache from older codegen versions.
     let stale = output_dir.join(".index.ts");
@@ -2451,15 +2675,8 @@ fn write_js_barrel_and_manifest(output_dir: &Path, index_content: &str) -> Resul
             .map_err(|error| format!("Failed to remove {}: {error}", stale_getter.display()))?;
     }
 
-    // Sweep index.js and any other files that still reference sibling modules
-    // that were skipped by class/interface filters during emission.
-    strip_broken_imports(output_dir)?;
-
-    // Build the barrel from what actually landed on disk rather than from raw
-    // metadata. This avoids root ESM/CJS barrels referencing files or helper
-    // exports that were filtered out (for example ref-only WinUI controls such
-    // as CompositionTarget).
-    let index_content = render_index_from_existing_js_files(output_dir)?;
+    plan.validate_dependencies()?;
+    let index_content = plan.render_root_index();
 
     let js_content = typescript::esm_index_to_cjs_getter(&index_content);
     ensure_safe_generated_destination(output_dir, &js_path)?;
@@ -2480,7 +2697,7 @@ fn write_js_barrel_and_manifest(output_dir: &Path, index_content: &str) -> Resul
     fs::write(&dts_path, &index_content)
         .map_err(|e| format!("Failed to write {}: {}", dts_path.display(), e))?;
 
-    write_bindings_manifest(output_dir)?;
+    write_bindings_manifest_with_plan(output_dir, Some(plan))?;
 
     println!("Generated {}", js_path.display());
     Ok(())
@@ -2819,8 +3036,17 @@ fn has_winrt_root(output_dir: &Path) -> bool {
 }
 
 fn write_bindings_manifest(output_dir: &Path) -> Result<(), String> {
+    write_bindings_manifest_with_plan(output_dir, None)
+}
+
+fn write_bindings_manifest_with_plan(
+    output_dir: &Path,
+    plan: Option<&dynwinrt_codegen::codegen::projected::GenerationPlan>,
+) -> Result<(), String> {
     let has_winrt_root = has_winrt_root(output_dir);
-    let winrt_subpath_names = if has_winrt_root {
+    let winrt_subpath_names = if let Some(plan) = plan {
+        plan.package_subpaths()
+    } else if has_winrt_root {
         collect_subpath_names_from_dir(output_dir)?
     } else {
         BTreeSet::new()
@@ -2998,118 +3224,6 @@ export declare function createProjectedLifetimeScope(): ProjectedLifetimeScope;\
     Ok(())
 }
 
-fn render_index_from_existing_js_files(output_dir: &Path) -> Result<String, String> {
-    let mut out = String::from("// Generated by dynwinrt-codegen \u{2014} do not edit\n");
-    let records = read_javascript_type_inventory(output_dir)?.records;
-    let _layout = javascript::install_javascript_module_layout_with_records(
-        records.iter().map(|record| record.identity.clone()),
-        records.iter().cloned(),
-    )?;
-    let mut targets = javascript::javascript_output_targets();
-    targets.sort_by(|left, right| left.canonical_module.cmp(&right.canonical_module));
-    let primary_owners = targets
-        .iter()
-        .map(|target| {
-            (
-                target.projected_name.clone(),
-                target.canonical_module.clone(),
-            )
-        })
-        .collect::<HashMap<_, _>>();
-    let mut candidates: Vec<(String, Vec<String>)> = Vec::new();
-    for target in targets {
-        let path = output_dir.join(format!("{}.js", target.canonical_module));
-        if !path.is_file() {
-            continue;
-        }
-        let content = fs::read_to_string(&path)
-            .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
-        let mut names = collect_public_exports_from_js(&content);
-        if target.collides {
-            names.retain(|name| name != &target.identity.name);
-        }
-        names.retain(|name| !target.compatibility_aliases.contains(name));
-        names.sort();
-        names.dedup();
-        if names.is_empty() {
-            continue;
-        }
-        candidates.push((target.canonical_module, names));
-    }
-    let lifetime_path = output_dir.join("lifetime.js");
-    if lifetime_path.is_file() {
-        let lifetime = fs::read_to_string(&lifetime_path)
-            .map_err(|error| format!("Failed to read {}: {error}", lifetime_path.display()))?;
-        let mut names = collect_public_exports_from_js(&lifetime);
-        names.sort();
-        names.dedup();
-        if !names.is_empty() {
-            candidates.push(("lifetime".into(), names));
-        }
-    }
-    let mut seen_exports: BTreeSet<String> = BTreeSet::new();
-    let mut modules: Vec<(String, Vec<String>)> = Vec::new();
-    for (module, names) in candidates {
-        let filtered: Vec<String> = names
-            .into_iter()
-            .filter(|name| {
-                if primary_owners
-                    .get(name)
-                    .is_some_and(|owner| owner != &module)
-                {
-                    return false;
-                }
-                seen_exports.insert(name.clone())
-            })
-            .collect();
-        if filtered.is_empty() {
-            continue;
-        }
-        modules.push((module, filtered));
-    }
-    for (module, names) in modules {
-        out.push_str(&format!(
-            "export {{ {} }} from './{}.js';\n",
-            names.join(", "),
-            module
-        ));
-    }
-    Ok(out)
-}
-
-fn collect_public_exports_from_js(content: &str) -> Vec<String> {
-    let mut names = Vec::new();
-    for line in content.lines() {
-        let line = line.trim_start();
-        let Some(rest) = line.strip_prefix("exports.") else {
-            continue;
-        };
-        let name: String = rest
-            .chars()
-            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '$')
-            .collect();
-        if name.is_empty() {
-            continue;
-        }
-        // Keep IIDs, parameter type arrays, and struct type descriptors scoped
-        // to their per-type modules. Root barrels should expose user-facing
-        // classes, enums, pack/unpack helpers, and interfaces only.
-        if name == "trackProjectedValue"
-            || name == "castProjectedValue"
-            || name == "castProjectedValueOwned"
-            || name == "castProjectedValueBorrowed"
-            || name.starts_with("__")
-            || name.starts_with("IID_")
-            || name.ends_with("_PARAM_TYPES")
-            || name.ends_with("_Type")
-        {
-            continue;
-        }
-        names.push(name);
-    }
-    names
-}
-
 /// Enumerate generated `.js` modules recursively and return package subpaths
 /// without extensions. Excludes root/nested barrels and the domain-specific
 /// Classic COM tree, which is added separately.
@@ -3117,13 +3231,15 @@ fn collect_subpath_names_from_dir(output_dir: &Path) -> Result<BTreeSet<String>,
     const BARREL_STEMS: &[&str] = &["index", "index.getter", "index.proxy"];
     if output_dir.join(JAVASCRIPT_TYPE_INVENTORY).is_file() {
         let records = read_javascript_type_inventory(output_dir)?.records;
-        let _layout = javascript::install_javascript_module_layout_with_records(
+        let context = javascript::create_javascript_projection_context_with_records(
             records.iter().map(|record| record.identity.clone()),
             records.iter().cloned(),
+            "@microsoft/dynwinrt",
         )?;
-        let mut names = javascript::javascript_output_targets()
+        let mut names = context
+            .output_targets()
             .into_iter()
-            .map(|target| target.canonical_module)
+            .map(|target| target.canonical_module.clone())
             .collect::<BTreeSet<_>>();
         if output_dir.join("lifetime.js").is_file() {
             names.insert("lifetime".into());
@@ -3162,145 +3278,6 @@ fn collect_subpath_names_from_dir(output_dir: &Path) -> Result<BTreeSet<String>,
         }
     }
     Ok(names)
-}
-
-fn strip_broken_imports(output_dir: &Path) -> Result<(), String> {
-    use dynwinrt_codegen::codegen::project::get_import_name;
-
-    // If `--import-name ./runtime.js` was used, that stem is not one of the
-    // emitted modules but must not be stripped.
-    let runtime_name = get_import_name();
-    let runtime_stem = (runtime_name.starts_with("./") || runtime_name.starts_with("../"))
-        .then(|| {
-            Path::new(&runtime_name)
-                .file_stem()
-                .and_then(|stem| stem.to_str())
-                .map(str::to_string)
-        })
-        .flatten();
-
-    let target_exists = |source: &Path, target: &str| {
-        let target_stem = target.rsplit('/').next().unwrap_or(target);
-        if target_stem == "lifetime" || runtime_stem.as_deref() == Some(target_stem) {
-            return true;
-        }
-        source
-            .parent()
-            .unwrap_or(output_dir)
-            .join(format!("{target}.js"))
-            .is_file()
-    };
-
-    // Three patterns to strip when the target sibling doesn't exist:
-    //
-    // 1. Legacy ESM import (in case render_esm output leaks through):
-    //      import { X } from './Foo.js';
-    //
-    // 2. CJS lazy loader triplet emitted by convert_to_cjs_with_lazy (class files):
-    //      let __m_Foo;
-    //      const __load_Foo = () => (__m_Foo ??= require('./Foo.js'));
-    //      const X = __lazy(__load_Foo, 'X');   // one per imported symbol
-    //
-    // 3. Index-level lazy exports emitted by esm_index_to_cjs_lazy:
-    //      exports.X = undefined;
-    //      Object.defineProperty(exports, 'X', { ... get() { return require('./Foo.js').X; } });
-    //      Both lines reference the same missing target and must go together.
-    let esm_import_re =
-        regex::Regex::new(r#"(?m)^import \{[^}]*\} from '((?:\./|\.\./)[^']+)\.js';\r?\n"#)
-            .map_err(|e| format!("regex error: {}", e))?;
-
-    // Class-file lazy loader block. New shape:
-    //   let __m_Foo;
-    //   const __load_Foo = () => (__m_Foo ??= require('./Foo.js'));
-    //   const __get_X = () => __load_Foo().X;   // one per imported symbol
-    let cjs_lazy_re = regex::Regex::new(
-        r"(?ms)^let __m_[A-Za-z0-9_]+;\r?\nconst __load_[A-Za-z0-9_]+ = \(\) => \(__m_[A-Za-z0-9_]+ \?\?= require\('((?:\./|\.\./)[^']+)\.js'\)\);\r?\n(?:const __get_[A-Za-z0-9_]+ = \(\) => __load_[A-Za-z0-9_]+\(\)\.[A-Za-z0-9_]+;\r?\n)*",
-    )
-    .map_err(|e| format!("regex error: {}", e))?;
-
-    // Class-file eager destructured require:
-    //   const { IID_X, X_PARAM_TYPES } = require('./Foo.js');
-    // Emitted alongside the lazy block for symbols the native runtime needs
-    // as concrete values (IIDs, DynWinRtType arrays, struct type descriptors).
-    let cjs_eager_re =
-        regex::Regex::new(r"(?m)^const \{[^}]+\} = require\('((?:\./|\.\./)[^']+)\.js'\);\r?\n")
-            .map_err(|e| format!("regex error: {}", e))?;
-
-    // Index-file lazy export line emitted by `esm_index_to_cjs_lazy`:
-    //   { let _m; exports.NAME = __lazy(() => (_m ??= require('./Foo.js')).NAME); }
-    // captures the module basename in group 1.
-    let index_dp_re = regex::Regex::new(
-        r"(?m)^\{ let _m; exports\.[A-Za-z0-9_]+ = __lazy\(\(\) => \(_m \?\?= require\('((?:\./|\.\./)[^']+)\.js'\)\)\.[A-Za-z0-9_]+\); \}\r?\n",
-    )
-    .map_err(|e| format!("regex error: {}", e))?;
-
-    let javascript_files = javascript::javascript_output_targets()
-        .into_iter()
-        .map(|target| output_dir.join(format!("{}.js", target.canonical_module)))
-        .filter(|path| path.is_file())
-        .collect::<Vec<_>>();
-    for path in javascript_files {
-        ensure_safe_generated_destination(output_dir, &path)?;
-        let content = match fs::read_to_string(&path) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-        if !content.starts_with("// Generated by dynwinrt-codegen") {
-            continue;
-        }
-        let mut changed = false;
-
-        // 1. CJS lazy loaders for missing targets (class files).
-        let filtered = cjs_lazy_re.replace_all(&content, |caps: &regex::Captures| {
-            let target = &caps[1];
-            if target_exists(&path, target) {
-                caps[0].to_string()
-            } else {
-                changed = true;
-                String::new()
-            }
-        });
-
-        // 1b. CJS eager destructured requires for missing sibling modules.
-        let filtered = cjs_eager_re.replace_all(&filtered, |caps: &regex::Captures| {
-            let target = &caps[1];
-            if target_exists(&path, target) {
-                caps[0].to_string()
-            } else {
-                changed = true;
-                String::new()
-            }
-        });
-
-        // 2. Index lazy-export lines. The new form has a single `{ let _m; ... }`
-        // block per export; captures the module basename.
-        let filtered = index_dp_re.replace_all(&filtered, |caps: &regex::Captures| {
-            let target = &caps[1];
-            if target_exists(&path, target) {
-                caps[0].to_string()
-            } else {
-                changed = true;
-                String::new()
-            }
-        });
-
-        // 3. Legacy ESM imports (defence-in-depth if pipeline ever emits ESM).
-        let filtered = esm_import_re.replace_all(&filtered, |caps: &regex::Captures| {
-            let target = &caps[1];
-            if target_exists(&path, target) {
-                caps[0].to_string()
-            } else {
-                changed = true;
-                String::new()
-            }
-        });
-        if changed {
-            ensure_safe_generated_destination(output_dir, &path)?;
-            fs::write(&path, filtered.as_bytes())
-                .map_err(|e| format!("Failed to write {}: {}", path.display(), e))?;
-        }
-    }
-    Ok(())
 }
 
 fn generate_py_files(
@@ -5198,8 +5175,8 @@ mod tests {
         ];
         let records = javascript_type_layout_records(&classes, &[], &[]).unwrap();
         let identities = records.iter().map(|record| record.identity.clone());
-        let _layout = javascript::install_javascript_module_layout(identities).unwrap();
-        javascript::apply_javascript_projected_names(&mut classes, &mut [], &mut []);
+        let context = javascript::create_javascript_projection_context(identities).unwrap();
+        javascript::apply_javascript_projected_names(&context, &mut classes, &mut [], &mut []);
         let known_types = classes
             .iter()
             .map(|class| class.name.clone())
@@ -5207,7 +5184,8 @@ mod tests {
         let output = test_directory("javascript-namespace-layout");
         fs::create_dir_all(&output).unwrap();
 
-        generate_js_files(
+        let mut plan = generate_js_files(
+            &context,
             &output,
             &classes,
             &[],
@@ -5223,10 +5201,10 @@ mod tests {
         .unwrap();
         write_javascript_type_inventory(
             &output,
-            &emitted_javascript_type_records(&output, &[], &records).unwrap(),
+            &emitted_javascript_type_records(&context, &output, &[], &records).unwrap(),
         )
         .unwrap();
-        write_js_barrel_and_manifest(&output, "").unwrap();
+        write_js_barrel_and_manifest(&output, &mut plan).unwrap();
 
         assert!(output.join("contoso/alpha/Widget.js").is_file());
         assert!(output.join("fabrikam/beta/Widget.js").is_file());
@@ -5240,6 +5218,55 @@ mod tests {
         let package = fs::read_to_string(output.join("package.json")).unwrap();
         assert!(!package.contains("\"./ContosoAlphaWidget\""));
         assert!(package.contains("\"./contoso/alpha/Widget\""));
+
+        fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
+    fn all_interface_projection_supersedes_shared_interface_duplicate() {
+        let interface = |method_name: &str| meta::InterfaceMeta {
+            name: "IWidget".into(),
+            namespace: "Contoso".into(),
+            iid: "11111111-1111-1111-1111-111111111111".into(),
+            methods: vec![meta::MethodMeta {
+                name: method_name.into(),
+                return_type: Some(TypeMeta::I32),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let all_interface = interface("NewValue");
+        let shared_interface = interface("OldValue");
+        let records =
+            javascript_type_layout_records(&[], std::slice::from_ref(&all_interface), &[]).unwrap();
+        let context = javascript::create_javascript_projection_context(
+            records.iter().map(|record| record.identity.clone()),
+        )
+        .unwrap();
+        let output = test_directory("javascript-shared-interface-dedup");
+        fs::create_dir_all(&output).unwrap();
+
+        let plan = generate_js_files(
+            &context,
+            &output,
+            &[],
+            std::slice::from_ref(&all_interface),
+            &[],
+            std::slice::from_ref(&shared_interface),
+            &HashSet::from(["IWidget".into()]),
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .unwrap();
+        let generated = plan.modules["contoso/IWidget"]
+            .javascript
+            .as_deref()
+            .unwrap();
+        assert!(generated.contains("newValue()"), "{generated}");
+        assert!(!generated.contains("oldValue()"), "{generated}");
 
         fs::remove_dir_all(output).unwrap();
     }
@@ -5264,6 +5291,54 @@ mod tests {
     }
 
     #[test]
+    fn retained_javascript_modules_require_complete_root_export_metadata() {
+        let identity = javascript::JavaScriptTypeIdentity::new(
+            "Contoso",
+            "Widget",
+            javascript::JavaScriptTypeKind::Class,
+        );
+        let context = javascript::create_javascript_projection_context([identity]).unwrap();
+        let output = test_directory("javascript-retained-root-metadata");
+        let js = output.join("contoso/Widget.js");
+        let dts = output.join("contoso/Widget.d.ts");
+        fs::create_dir_all(js.parent().unwrap()).unwrap();
+        fs::write(
+            &js,
+            "// Generated by dynwinrt-codegen — do not edit\nexports.Widget = Widget;\n",
+        )
+        .unwrap();
+        fs::write(
+            &dts,
+            "// Generated by dynwinrt-codegen — do not edit\nexport declare class Widget {}\n",
+        )
+        .unwrap();
+
+        let error = match load_effective_generation_plan(&context, &output) {
+            Ok(_) => panic!("retained public modules without root metadata must fail closed"),
+            Err(error) => error,
+        };
+        assert!(error.contains("require root export metadata"), "{error}");
+
+        fs::write(
+            output.join("index.d.ts"),
+            "// Generated by dynwinrt-codegen — do not edit\n\
+             export { Widget, packPoint, unpackPoint } from './contoso/Widget.js';\n",
+        )
+        .unwrap();
+        let plan = load_effective_generation_plan(&context, &output).unwrap();
+        let retained = &plan.modules["contoso/Widget"];
+        assert_eq!(
+            retained.public_exports,
+            ["Widget", "packPoint", "unpackPoint"]
+                .into_iter()
+                .map(str::to_string)
+                .collect()
+        );
+
+        fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
     fn generated_struct_helper_scan_rejects_cross_module_identity_collisions() {
         let identities = [
             javascript::JavaScriptTypeIdentity::new(
@@ -5277,7 +5352,7 @@ mod tests {
                 javascript::JavaScriptTypeKind::Class,
             ),
         ];
-        let _layout = javascript::install_javascript_module_layout(identities).unwrap();
+        let context = javascript::create_javascript_projection_context(identities).unwrap();
         let output = test_directory("javascript-cross-module-struct-helper");
         for (module, struct_identity) in [
             ("contoso/alpha/First", "Alpha.Payload"),
@@ -5295,7 +5370,7 @@ mod tests {
             .unwrap();
         }
 
-        let error = validate_generated_struct_helper_identities(&output)
+        let error = validate_generated_struct_helper_identities(&context, &output)
             .expect_err("cross-module helper identity collision must fail closed");
 
         assert!(error.contains("Alpha.Payload"), "{error}");
@@ -5316,22 +5391,22 @@ mod tests {
             "Widget",
             javascript::JavaScriptTypeKind::Class,
         );
-        let old_layout =
-            javascript::install_javascript_module_layout([windows.clone(), contoso.clone()])
+        let old_context =
+            javascript::create_javascript_projection_context([windows.clone(), contoso.clone()])
                 .unwrap();
-        let previous = javascript::javascript_output_targets()
+        let previous = old_context
+            .output_targets()
             .into_iter()
             .find(|target| target.identity == windows)
             .map(|target| {
                 javascript::JavaScriptTypeLayoutRecord::new(
-                    target.identity,
-                    target.projected_name,
+                    target.identity.clone(),
+                    target.projected_name.clone(),
                     "type",
                 )
             })
             .unwrap();
-        drop(old_layout);
-        let _layout = javascript::install_javascript_module_layout_with_records(
+        let context = javascript::create_javascript_projection_context_with_records(
             [
                 windows.clone(),
                 contoso,
@@ -5342,6 +5417,7 @@ mod tests {
                 ),
             ],
             [previous.clone()],
+            "@microsoft/dynwinrt",
         )
         .unwrap();
         let output = test_directory("javascript-retained-projected-alias");
@@ -5358,8 +5434,15 @@ mod tests {
             "// Generated by dynwinrt-codegen — do not edit\nexport class FoundationWidget {}\n",
         )
         .unwrap();
+        fs::write(
+            output.join("index.d.ts"),
+            "// Generated by dynwinrt-codegen — do not edit\n\
+             export { FoundationWidget } from './windows/foundation/Widget.js';\n",
+        )
+        .unwrap();
 
-        write_retained_javascript_projected_aliases(&output, &[previous]).unwrap();
+        let plan = load_effective_generation_plan(&context, &output).unwrap();
+        write_retained_javascript_projected_aliases(&context, &output, &[previous]).unwrap();
 
         assert!(
             fs::read_to_string(&js)
@@ -5370,6 +5453,13 @@ mod tests {
             fs::read_to_string(&dts)
                 .unwrap()
                 .contains("export { FoundationWidget as WindowsFoundationWidgetClass };")
+        );
+        assert_eq!(
+            plan.modules["windows/foundation/Widget"].public_exports,
+            ["WindowsFoundationWidgetClass"]
+                .into_iter()
+                .map(str::to_string)
+                .collect()
         );
         fs::remove_dir_all(output).unwrap();
     }
@@ -5384,7 +5474,7 @@ mod tests {
         let previous =
             javascript::JavaScriptTypeLayoutRecord::new(contoso.clone(), "ContosoWidget", "type")
                 .with_implementation_name("Widget");
-        let _layout = javascript::install_javascript_module_layout_with_records(
+        let context = javascript::create_javascript_projection_context_with_records(
             [
                 contoso,
                 javascript::JavaScriptTypeIdentity::new(
@@ -5399,6 +5489,7 @@ mod tests {
                 ),
             ],
             [previous.clone()],
+            "@microsoft/dynwinrt",
         )
         .unwrap();
         let output = test_directory("javascript-repeated-retained-alias");
@@ -5421,7 +5512,7 @@ mod tests {
         )
         .unwrap();
 
-        write_retained_javascript_projected_aliases(&output, &[previous]).unwrap();
+        write_retained_javascript_projected_aliases(&context, &output, &[previous]).unwrap();
 
         let js = fs::read_to_string(js).unwrap();
         let dts = fs::read_to_string(dts).unwrap();
@@ -5450,9 +5541,10 @@ mod tests {
         let previous =
             javascript::JavaScriptTypeLayoutRecord::new(identity.clone(), "ContosoWidget", "type")
                 .with_implementation_name("Widget");
-        let _layout = javascript::install_javascript_module_layout_with_records(
+        let context = javascript::create_javascript_projection_context_with_records(
             [identity],
             [previous.clone()],
+            "@microsoft/dynwinrt",
         )
         .unwrap();
         let output = test_directory("javascript-retained-name-cycle");
@@ -5470,7 +5562,7 @@ mod tests {
         )
         .unwrap();
 
-        write_retained_javascript_projected_aliases(&output, &[previous]).unwrap();
+        write_retained_javascript_projected_aliases(&context, &output, &[previous]).unwrap();
 
         assert!(
             !fs::read_to_string(js)
@@ -5516,9 +5608,9 @@ mod tests {
             "Widget",
             javascript::JavaScriptTypeKind::Class,
         );
-        let _layout = javascript::install_javascript_module_layout([identity]).unwrap();
+        let context = javascript::create_javascript_projection_context([identity]).unwrap();
 
-        let error = ensure_uninventoried_javascript_targets_absent(&output)
+        let error = ensure_uninventoried_javascript_targets_absent(&context, &output)
             .expect_err("canonical output without inventory must fail closed");
 
         assert!(error.contains("has no type inventory"), "{error}");
@@ -5543,8 +5635,8 @@ mod tests {
             },
         ];
         let identities = javascript_type_identities(&classes, &[], &[]).unwrap();
-        let _layout = javascript::install_javascript_module_layout(identities).unwrap();
-        javascript::apply_javascript_projected_names(&mut classes, &mut [], &mut []);
+        let context = javascript::create_javascript_projection_context(identities).unwrap();
+        javascript::apply_javascript_projected_names(&context, &mut classes, &mut [], &mut []);
         let known_types = classes
             .iter()
             .map(|class| class.name.clone())
@@ -5553,6 +5645,7 @@ mod tests {
         fs::create_dir_all(&output).unwrap();
 
         generate_js_files(
+            &context,
             &output,
             &classes,
             &[],
@@ -5634,18 +5727,23 @@ mod tests {
             delegate("Fabrikam.Beta", "22222222-2222-2222-2222-222222222222"),
         ];
         let identities = javascript_type_identities(&[], &interfaces, &[]).unwrap();
-        let _layout = javascript::install_javascript_module_layout(identities).unwrap();
-        javascript::apply_javascript_projected_names(&mut [], &mut interfaces, &mut []);
+        let context = javascript::create_javascript_projection_context(identities).unwrap();
+        javascript::apply_javascript_projected_names(&context, &mut [], &mut interfaces, &mut []);
         let delegate_names = interfaces
             .iter()
             .map(|interface| interface.name.clone())
             .collect::<HashSet<_>>();
-        let (signatures, references, wraps) =
-            project::build_delegate_signatures(&interfaces, &delegate_names, &delegate_names);
+        let (signatures, references, wraps) = project::build_delegate_signatures(
+            &context,
+            &interfaces,
+            &delegate_names,
+            &delegate_names,
+        );
         let output = test_directory("javascript-delegate-layout");
         fs::create_dir_all(&output).unwrap();
 
         generate_js_files(
+            &context,
             &output,
             &[],
             &interfaces,
@@ -5688,8 +5786,8 @@ mod tests {
             interface("Fabrikam.Beta", "22222222-2222-2222-2222-222222222222"),
         ];
         let identities = javascript_type_identities(&[], &interfaces, &[]).unwrap();
-        let _layout = javascript::install_javascript_module_layout(identities).unwrap();
-        javascript::apply_javascript_projected_names(&mut [], &mut interfaces, &mut []);
+        let context = javascript::create_javascript_projection_context(identities).unwrap();
+        javascript::apply_javascript_projected_names(&context, &mut [], &mut interfaces, &mut []);
         let known_types = interfaces
             .iter()
             .map(|interface| interface.name.clone())
@@ -5698,6 +5796,7 @@ mod tests {
         fs::create_dir_all(&output).unwrap();
 
         generate_js_files(
+            &context,
             &output,
             &[],
             &interfaces,
@@ -5768,8 +5867,13 @@ mod tests {
             },
         ];
         let identities = javascript_type_identities(&classes, &interfaces, &[]).unwrap();
-        let _layout = javascript::install_javascript_module_layout(identities).unwrap();
-        javascript::apply_javascript_projected_names(&mut classes, &mut interfaces, &mut []);
+        let context = javascript::create_javascript_projection_context(identities).unwrap();
+        javascript::apply_javascript_projected_names(
+            &context,
+            &mut classes,
+            &mut interfaces,
+            &mut [],
+        );
         let projected_closable = classes[0].required_interfaces[0].name.clone();
         assert_ne!(projected_closable, "IClosable");
         let known = HashSet::from([
@@ -5778,6 +5882,7 @@ mod tests {
             interfaces[1].name.clone(),
         ]);
         let projected = project::project_class(
+            &context,
             &classes[0],
             &known,
             &HashSet::new(),
@@ -5812,13 +5917,14 @@ mod tests {
             },
         ];
         let identities = javascript_type_identities(&[], &interfaces, &[]).unwrap();
-        let _layout = javascript::install_javascript_module_layout(identities).unwrap();
-        javascript::apply_javascript_projected_names(&mut [], &mut interfaces, &mut []);
+        let context = javascript::create_javascript_projection_context(identities).unwrap();
+        javascript::apply_javascript_projected_names(&context, &mut [], &mut interfaces, &mut []);
         let known = interfaces
             .iter()
             .map(|interface| interface.name.clone())
             .collect::<HashSet<_>>();
         let projected = project::project_interface(
+            &context,
             &interfaces[0],
             &known,
             &HashSet::new(),
@@ -5875,21 +5981,23 @@ mod tests {
         let same_run_records = javascript_type_layout_records(&[], &interfaces, &[]).unwrap();
         validate_javascript_type_layout_records(&[], &same_run_records)
             .expect("same-run generic identities must coexist");
-        let _layout = javascript::install_javascript_module_layout_with_records(
+        let context = javascript::create_javascript_projection_context_with_records(
             same_run_records
                 .iter()
                 .map(|record| record.identity.clone()),
             same_run_records.iter().cloned(),
+            "@microsoft/dynwinrt",
         )
         .unwrap();
-        let modules = javascript::javascript_output_targets()
+        let modules = context
+            .output_targets()
             .into_iter()
-            .map(|target| target.canonical_module)
+            .map(|target| target.canonical_module.clone())
             .collect::<BTreeSet<_>>();
         assert!(modules.contains(&format!("windows/foundation/collections/{first_name}")));
         assert!(modules.contains(&format!("windows/foundation/collections/{second_name}")));
 
-        javascript::apply_javascript_projected_names(&mut [], &mut interfaces, &mut []);
+        javascript::apply_javascript_projected_names(&context, &mut [], &mut interfaces, &mut []);
         assert_eq!(interfaces[0].name, first_name);
         assert_eq!(interfaces[1].name, second_name);
         let known_types = interfaces
@@ -5899,6 +6007,7 @@ mod tests {
         let output = test_directory("javascript-complete-generic-identities");
         fs::create_dir_all(&output).unwrap();
         generate_js_files(
+            &context,
             &output,
             &[],
             &interfaces,
@@ -6375,6 +6484,7 @@ mod tests {
             Vec::new(),
             true,
             "py",
+            "@microsoft/dynwinrt",
             true,
             &DocTable::default(),
             &[],

@@ -9,6 +9,7 @@ use crate::codegen::winrt::shared::imports::ireference_inner_type;
 use crate::meta::{InterfaceMeta, MethodMeta, ParamDirection};
 use crate::types::TypeMeta;
 
+use super::JavaScriptProjectionContext;
 use super::ir::JsArgumentKind;
 use super::naming::to_camel_case;
 
@@ -17,28 +18,40 @@ use super::naming::to_camel_case;
 // ======================================================================
 
 /// Build a `new DynWinRtMethodSig().addIn(...)...addOut(...)` expression.
-pub(crate) fn build_method_sig(method: &MethodMeta) -> String {
+pub(crate) fn build_method_sig(
+    context: &JavaScriptProjectionContext,
+    method: &MethodMeta,
+) -> String {
     let mut parts = Vec::new();
 
     // In params
     for param in &method.params {
         if param.direction == ParamDirection::In {
-            parts.push(format!(".addIn({})", ts_dynwinrt_type(&param.typ)));
+            parts.push(format!(".addIn({})", ts_dynwinrt_type(context, &param.typ)));
         }
     }
 
     // Out params (explicit [out] parameters in method signature)
     for param in &method.params {
         if param.direction == ParamDirection::Out {
-            parts.push(format!(".addOut({})", ts_dynwinrt_type(&param.typ)));
+            parts.push(format!(
+                ".addOut({})",
+                ts_dynwinrt_type(context, &param.typ)
+            ));
         } else if param.direction == ParamDirection::OutFill {
-            parts.push(format!(".addOutFill({})", ts_dynwinrt_type(&param.typ)));
+            parts.push(format!(
+                ".addOutFill({})",
+                ts_dynwinrt_type(context, &param.typ)
+            ));
         }
     }
 
     // Return type (WinRT return value = [out, retval])
     if let Some(ref return_type) = method.return_type {
-        parts.push(format!(".addOut({})", ts_dynwinrt_type(return_type)));
+        parts.push(format!(
+            ".addOut({})",
+            ts_dynwinrt_type(context, return_type)
+        ));
     }
 
     if parts.is_empty() {
@@ -52,19 +65,19 @@ pub(crate) fn build_method_sig(method: &MethodMeta) -> String {
 // Type expression: recursive expansion (TypeScript)
 // ======================================================================
 
-fn ts_interface_iid(typ: &TypeMeta) -> Option<String> {
+fn ts_interface_iid(context: &JavaScriptProjectionContext, typ: &TypeMeta) -> Option<String> {
     match typ {
         TypeMeta::Interface { iid, .. } if !iid.is_empty() => {
             Some(format!("WinGuid.parse('{}')", iid))
         }
-        TypeMeta::Parameterized { .. } => Some(format!("{}.iid()", ts_dynwinrt_type(typ))),
+        TypeMeta::Parameterized { .. } => Some(format!("{}.iid()", ts_dynwinrt_type(context, typ))),
         _ => None,
     }
 }
 
 /// Map a TypeMeta to a fully-expanded `DynWinRtType.*()` expression.
 /// Recursively expands all compound types to leaf primitives.
-pub(crate) fn ts_dynwinrt_type(typ: &TypeMeta) -> String {
+pub(crate) fn ts_dynwinrt_type(context: &JavaScriptProjectionContext, typ: &TypeMeta) -> String {
     match typ {
         // Primitives
         TypeMeta::Bool => "DynWinRtType.boolType()".to_string(),
@@ -104,13 +117,13 @@ pub(crate) fn ts_dynwinrt_type(typ: &TypeMeta) -> String {
             let full_name = format!(
                 "{}.{}",
                 namespace,
-                super::metadata_type_name(namespace, name)
+                context.metadata_type_name(namespace, name)
             );
             match default_interface.as_deref() {
                 Some(default) => format!(
                     "DynWinRtType.runtimeClass('{}', {})",
                     full_name,
-                    ts_dynwinrt_type(default)
+                    ts_dynwinrt_type(context, default)
                 ),
                 None => "DynWinRtType.object()".to_string(),
             }
@@ -121,20 +134,23 @@ pub(crate) fn ts_dynwinrt_type(typ: &TypeMeta) -> String {
 
         // Async patterns — recursively expand inner types
         TypeMeta::AsyncOperation(inner) => {
-            format!("DynWinRtType.iAsyncOperation({})", ts_dynwinrt_type(inner))
+            format!(
+                "DynWinRtType.iAsyncOperation({})",
+                ts_dynwinrt_type(context, inner)
+            )
         }
         TypeMeta::AsyncOperationWithProgress(result, progress) => {
             format!(
                 "DynWinRtType.iAsyncOperationWithProgress({}, {})",
-                ts_dynwinrt_type(result),
-                ts_dynwinrt_type(progress)
+                ts_dynwinrt_type(context, result),
+                ts_dynwinrt_type(context, progress)
             )
         }
         TypeMeta::AsyncAction => "DynWinRtType.iAsyncAction()".to_string(),
         TypeMeta::AsyncActionWithProgress(progress) => {
             format!(
                 "DynWinRtType.iAsyncActionWithProgress({})",
-                ts_dynwinrt_type(progress)
+                ts_dynwinrt_type(context, progress)
             )
         }
 
@@ -151,8 +167,10 @@ pub(crate) fn ts_dynwinrt_type(typ: &TypeMeta) -> String {
             fields,
         } => {
             let full_name = format!("{}.{}", namespace, name);
-            let field_types: Vec<String> =
-                fields.iter().map(|f| ts_dynwinrt_type(&f.typ)).collect();
+            let field_types: Vec<String> = fields
+                .iter()
+                .map(|f| ts_dynwinrt_type(context, &f.typ))
+                .collect();
             format!(
                 "DynWinRtType.structType('{}', [{}])",
                 full_name,
@@ -162,7 +180,10 @@ pub(crate) fn ts_dynwinrt_type(typ: &TypeMeta) -> String {
 
         // Array — recursively expand element type
         TypeMeta::Array(inner) => {
-            format!("DynWinRtType.arrayType({})", ts_dynwinrt_type(inner))
+            format!(
+                "DynWinRtType.arrayType({})",
+                ts_dynwinrt_type(context, inner)
+            )
         }
 
         // Enum — named for correct IID signature, with member values
@@ -175,7 +196,7 @@ pub(crate) fn ts_dynwinrt_type(typ: &TypeMeta) -> String {
             let full_name = format!(
                 "{}.{}",
                 namespace,
-                super::metadata_type_name(namespace, name)
+                context.metadata_type_name(namespace, name)
             );
             if members.is_empty() {
                 format!("DynWinRtType.enumType('{}')", full_name)
@@ -196,7 +217,8 @@ pub(crate) fn ts_dynwinrt_type(typ: &TypeMeta) -> String {
             if piid.is_empty() {
                 "DynWinRtType.object()".to_string()
             } else {
-                let arg_types: Vec<String> = args.iter().map(|a| ts_dynwinrt_type(a)).collect();
+                let arg_types: Vec<String> =
+                    args.iter().map(|a| ts_dynwinrt_type(context, a)).collect();
                 format!(
                     "DynWinRtType.parameterized(WinGuid.parse('{}'), [{}])",
                     piid,
@@ -211,10 +233,13 @@ pub(crate) fn ts_dynwinrt_type(typ: &TypeMeta) -> String {
 // Argument wrapping (TypeScript)
 // ======================================================================
 
-pub(crate) fn build_args_expr(in_params: &[&crate::meta::ParamMeta]) -> String {
+pub(crate) fn build_args_expr(
+    context: &JavaScriptProjectionContext,
+    in_params: &[&crate::meta::ParamMeta],
+) -> String {
     in_params
         .iter()
-        .map(|p| wrap_arg(&to_camel_case(&p.name), &p.typ))
+        .map(|p| wrap_arg(context, &to_camel_case(&p.name), &p.typ))
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -251,7 +276,10 @@ pub(crate) fn js_argument_kind(typ: &TypeMeta) -> Option<JsArgumentKind> {
     }
 }
 
-pub(crate) fn runtime_class_iid_const(typ: &TypeMeta) -> Option<(String, String)> {
+pub(crate) fn runtime_class_iid_const(
+    context: &JavaScriptProjectionContext,
+    typ: &TypeMeta,
+) -> Option<(String, String)> {
     let TypeMeta::RuntimeClass {
         namespace,
         name,
@@ -260,7 +288,9 @@ pub(crate) fn runtime_class_iid_const(typ: &TypeMeta) -> Option<(String, String)
     else {
         return None;
     };
-    let iid = default_interface.as_deref().and_then(ts_interface_iid)?;
+    let iid = default_interface
+        .as_deref()
+        .and_then(|typ| ts_interface_iid(context, typ))?;
     let qualified = format!("{}_{}", namespace, name)
         .chars()
         .map(|character| {
@@ -274,33 +304,41 @@ pub(crate) fn runtime_class_iid_const(typ: &TypeMeta) -> Option<(String, String)
     Some((format!("IID_ARG_{}", qualified), iid))
 }
 
-pub(crate) fn collect_runtime_class_iid_consts(typ: &TypeMeta, output: &mut Vec<(String, String)>) {
-    if let Some(value) = runtime_class_iid_const(typ) {
+pub(crate) fn collect_runtime_class_iid_consts(
+    context: &JavaScriptProjectionContext,
+    typ: &TypeMeta,
+    output: &mut Vec<(String, String)>,
+) {
+    if let Some(value) = runtime_class_iid_const(context, typ) {
         output.push(value);
     }
     match typ {
         TypeMeta::Parameterized { args, .. } => {
             for argument in args {
-                collect_runtime_class_iid_consts(argument, output);
+                collect_runtime_class_iid_consts(context, argument, output);
             }
         }
         TypeMeta::Array(inner)
         | TypeMeta::AsyncActionWithProgress(inner)
         | TypeMeta::AsyncOperation(inner) => {
-            collect_runtime_class_iid_consts(inner, output);
+            collect_runtime_class_iid_consts(context, inner, output);
         }
         TypeMeta::AsyncOperationWithProgress(result, progress) => {
-            collect_runtime_class_iid_consts(result, output);
-            collect_runtime_class_iid_consts(progress, output);
+            collect_runtime_class_iid_consts(context, result, output);
+            collect_runtime_class_iid_consts(context, progress, output);
         }
         _ => {}
     }
 }
 
-pub(crate) fn wrap_arg(name: &str, typ: &TypeMeta) -> String {
+pub(crate) fn wrap_arg(
+    context: &JavaScriptProjectionContext,
+    name: &str,
+    typ: &TypeMeta,
+) -> String {
     if let Some(inner) = ireference_inner_type(typ) {
-        let value_type = ts_dynwinrt_type(inner);
-        let wrapped = wrap_reference_value("value", inner);
+        let value_type = ts_dynwinrt_type(context, inner);
+        let wrapped = wrap_reference_value(context, "value", inner);
         return format!(
             "((value) => value == null ? DynWinRtValue.nullValue() : value instanceof DynWinRtValue ? value : value?._obj ?? DynWinRtValue.boxReference({}, {}))({})",
             wrapped, value_type, name
@@ -322,7 +360,7 @@ pub(crate) fn wrap_arg(name: &str, typ: &TypeMeta) -> String {
         TypeMeta::F64 => format!("DynWinRtValue.f64({})", name),
         TypeMeta::Guid => format!("DynWinRtValue.guid(WinGuid.parse({}))", name),
         TypeMeta::RuntimeClass { .. } => {
-            let value = runtime_class_wrap_expr(name, typ);
+            let value = runtime_class_wrap_expr(context, name, typ);
             format!(
                 "({0} == null ? DynWinRtValue.nullValue() : {1})",
                 name, value
@@ -350,9 +388,9 @@ pub(crate) fn wrap_arg(name: &str, typ: &TypeMeta) -> String {
             // reads the wrong vtable slots and the renderer crashes natively.
             if is_vector_like(piid, pname) {
                 if let Some(elem) = args.first() {
-                    let elem_type = ts_dynwinrt_type(elem);
-                    let item_wrap = vector_item_wrap_expr("_i", elem);
-                    let target_iid_expr = format!("{}.iid()", ts_dynwinrt_type(typ));
+                    let elem_type = ts_dynwinrt_type(context, elem);
+                    let item_wrap = vector_item_wrap_expr(context, "_i", elem);
+                    let target_iid_expr = format!("{}.iid()", ts_dynwinrt_type(context, typ));
                     return format!(
                         "(Array.isArray({name}) ? DynWinRtValue.createVector({name}.map(_i => {item_wrap}), {elem_type}).cast({target_iid_expr}) : _unwrap({name}).cast({target_iid_expr}))"
                     );
@@ -365,11 +403,11 @@ pub(crate) fn wrap_arg(name: &str, typ: &TypeMeta) -> String {
             // <IKeyValuePair<K,V>>; we must QI to IMap<K,V> or IMapView<K,V>.
             if is_map_like(piid, pname) {
                 if args.len() == 2 {
-                    let key_type = ts_dynwinrt_type(&args[0]);
-                    let val_type = ts_dynwinrt_type(&args[1]);
-                    let k_wrap = vector_item_wrap_expr("_k", &args[0]);
-                    let v_wrap = vector_item_wrap_expr("_v", &args[1]);
-                    let target_iid_expr = format!("{}.iid()", ts_dynwinrt_type(typ));
+                    let key_type = ts_dynwinrt_type(context, &args[0]);
+                    let val_type = ts_dynwinrt_type(context, &args[1]);
+                    let k_wrap = vector_item_wrap_expr(context, "_k", &args[0]);
+                    let v_wrap = vector_item_wrap_expr(context, "_v", &args[1]);
+                    let target_iid_expr = format!("{}.iid()", ts_dynwinrt_type(context, typ));
                     return format!(
                         "({name} instanceof Map ? DynWinRtValue.createMap([...{name}.keys()].map(_k => {k_wrap}), [...{name}.values()].map(_v => {v_wrap}), {key_type}, {val_type}).cast({target_iid_expr}) : _unwrap({name}).cast({target_iid_expr}))"
                     );
@@ -407,8 +445,8 @@ pub(crate) fn wrap_arg(name: &str, typ: &TypeMeta) -> String {
                     // ABI receives a native WinRTValue::Array (PassArray) rather
                     // than an IVector COM object. Required for `T[]` in-params
                     // where T is a runtime class or interface.
-                    let elem_type = ts_dynwinrt_type(inner);
-                    let item_wrap = vector_item_wrap_expr("_i", inner);
+                    let elem_type = ts_dynwinrt_type(context, inner);
+                    let item_wrap = vector_item_wrap_expr(context, "_i", inner);
                     return format!(
                         "(Array.isArray({name}) ? DynWinRtArray.fromObjectValues({name}.map(_i => {item_wrap}), {elem_type}).toValue() : _unwrap({name}))"
                     );
@@ -430,7 +468,11 @@ pub(crate) fn wrap_arg(name: &str, typ: &TypeMeta) -> String {
     }
 }
 
-fn wrap_reference_value(name: &str, typ: &TypeMeta) -> String {
+fn wrap_reference_value(
+    context: &JavaScriptProjectionContext,
+    name: &str,
+    typ: &TypeMeta,
+) -> String {
     match typ {
         TypeMeta::Bool => format!("DynWinRtValue.boolValue({})", name),
         TypeMeta::I8 => format!("DynWinRtValue.i8Value({})", name),
@@ -447,7 +489,7 @@ fn wrap_reference_value(name: &str, typ: &TypeMeta) -> String {
         TypeMeta::Guid => format!("DynWinRtValue.guid(WinGuid.parse({}))", name),
         TypeMeta::Enum { .. } => format!(
             "DynWinRtValue.enumValue({}, {})",
-            ts_dynwinrt_type(typ),
+            ts_dynwinrt_type(context, typ),
             name
         ),
         TypeMeta::Struct {
@@ -478,15 +520,23 @@ fn is_map_like(piid: &str, name: &str) -> bool {
     piid == PIID_IMAP || piid == PIID_IMAP_VIEW || name == "IMap" || name == "IMapView"
 }
 
-fn runtime_class_wrap_expr(name: &str, typ: &TypeMeta) -> String {
-    runtime_class_iid_const(typ)
+fn runtime_class_wrap_expr(
+    context: &JavaScriptProjectionContext,
+    name: &str,
+    typ: &TypeMeta,
+) -> String {
+    runtime_class_iid_const(context, typ)
         .map(|(iid, _)| format!("_unwrap({}).cast({})", name, iid))
         .unwrap_or_else(|| format!("_unwrap({})", name))
 }
 
 /// Generate the JS expression to wrap a single element for createVector/createMap.
 /// For structs, uses pack function; for primitives, wraps as DynWinRtValue; for objects, _unwrap.
-fn vector_item_wrap_expr(var: &str, elem: &TypeMeta) -> String {
+fn vector_item_wrap_expr(
+    context: &JavaScriptProjectionContext,
+    var: &str,
+    elem: &TypeMeta,
+) -> String {
     match elem {
         TypeMeta::Struct { name, .. } if name != "HResult" => {
             format!("_pack{}({}).toValue()", name, var)
@@ -503,7 +553,7 @@ fn vector_item_wrap_expr(var: &str, elem: &TypeMeta) -> String {
         TypeMeta::U64 => format!("DynWinRtValue.u64({})", var),
         TypeMeta::F32 => format!("DynWinRtValue.f32({})", var),
         TypeMeta::F64 => format!("DynWinRtValue.f64({})", var),
-        TypeMeta::RuntimeClass { .. } => runtime_class_wrap_expr(var, elem),
+        TypeMeta::RuntimeClass { .. } => runtime_class_wrap_expr(context, var, elem),
         _ => format!("_unwrap({})", var),
     }
 }
@@ -564,6 +614,7 @@ fn unwrap_nullable_reference_return(expr: &str, wrapper: &str) -> String {
 
 /// Convert an array return expression to the appropriate JS array type.
 pub(crate) fn convert_array_return(
+    context: &JavaScriptProjectionContext,
     arr_expr: &str,
     inner: &TypeMeta,
     known_types: &HashSet<String>,
@@ -611,7 +662,7 @@ pub(crate) fn convert_array_return(
             piid,
             args,
         } => {
-            let concrete = super::projected_parameterized_name(namespace, name, piid, args);
+            let concrete = context.projected_parameterized_name(namespace, name, piid, args);
             if known_types.contains(&concrete) {
                 let r = resolve_type_name(&concrete, deferred);
                 format!(
@@ -633,6 +684,7 @@ pub(crate) fn convert_array_return(
 }
 
 pub(crate) fn convert_return(
+    context: &JavaScriptProjectionContext,
     expr: &str,
     return_type: Option<&TypeMeta>,
     is_async: bool,
@@ -646,7 +698,7 @@ pub(crate) fn convert_return(
             _ => None,
         };
         let awaited = format!("(await {}.toPromise())", expr);
-        return convert_return(&awaited, inner_type, false, known_types, deferred);
+        return convert_return(context, &awaited, inner_type, false, known_types, deferred);
     }
     match return_type {
         Some(TypeMeta::String) | Some(TypeMeta::Guid) => format!("{}.toString()", expr),
@@ -672,7 +724,7 @@ pub(crate) fn convert_return(
                 args,
             },
         ) if ireference_inner_type(typ).is_some() => {
-            let concrete = super::projected_parameterized_name(namespace, name, piid, args);
+            let concrete = context.projected_parameterized_name(namespace, name, piid, args);
             let wrapper = resolve_type_name(&concrete, deferred);
             unwrap_nullable_reference_return(expr, &wrapper)
         }
@@ -693,7 +745,7 @@ pub(crate) fn convert_return(
             piid,
             args,
         }) => {
-            let concrete = super::projected_parameterized_name(namespace, name, piid, args);
+            let concrete = context.projected_parameterized_name(namespace, name, piid, args);
             if known_types.contains(&concrete) {
                 let r = resolve_type_name(&concrete, deferred);
                 wrap_nullable_interface_return(expr, &r)
@@ -706,7 +758,7 @@ pub(crate) fn convert_return(
         }
         Some(TypeMeta::Array(inner)) => {
             let arr_expr = format!("{}.asArray()", expr);
-            convert_array_return(&arr_expr, inner, known_types, deferred)
+            convert_array_return(context, &arr_expr, inner, known_types, deferred)
         }
         _ => expr.to_string(),
     }
@@ -718,7 +770,11 @@ pub(crate) fn convert_return(
 
 /// Generate a `const <var_name> = DynWinRtType.registerInterface(...)` block.
 /// `var_name` controls the JS variable name (e.g. `"_IFoo"` for class-internal use).
-pub(crate) fn generate_interface_registration(iface: &InterfaceMeta, var_name: &str) -> String {
+pub(crate) fn generate_interface_registration(
+    context: &JavaScriptProjectionContext,
+    iface: &InterfaceMeta,
+    var_name: &str,
+) -> String {
     let cache_name = format!("{}Cache", var_name);
     let mut registration = String::new();
     registration.push_str("DynWinRtType.registerInterface(\n");
@@ -730,7 +786,7 @@ pub(crate) fn generate_interface_registration(iface: &InterfaceMeta, var_name: &
         registration.push_str(&format!(
             "        .addMethod(\"{}\", {})\n",
             method.name,
-            build_method_sig(method)
+            build_method_sig(context, method)
         ));
     }
     if registration.ends_with('\n') {
