@@ -4,25 +4,15 @@
 const path = require("node:path");
 const {
   GlobalSystemMediaTransportControlsSessionManager,
-} = require("./generated/GlobalSystemMediaTransportControlsSessionManager.js");
-const {
   MediaPlaybackAutoRepeatMode,
-} = require("./generated/MediaPlaybackAutoRepeatMode.js");
-const { MediaPlaybackStatus } = require("./generated/MediaPlaybackStatus.js");
-const { MediaPlaybackType } = require("./generated/MediaPlaybackType.js");
-const {
+  MediaPlaybackStatus,
+  MediaPlaybackType,
   RandomAccessStreamReference,
-} = require("./generated/RandomAccessStreamReference.js");
-const { StorageFile } = require("./generated/StorageFile.js");
-const {
+  StorageFile,
   SystemMediaTransportControls,
-} = require("./generated/SystemMediaTransportControls.js");
-const {
   SystemMediaTransportControlsButton,
-} = require("./generated/SystemMediaTransportControlsButton.js");
-const {
   SystemMediaTransportControlsTimelineProperties,
-} = require("./generated/SystemMediaTransportControlsTimelineProperties.js");
+} = require("./generated/index.js");
 const {
   ISystemMediaTransportControlsInterop,
 } = require("./generated/com/ISystemMediaTransportControlsInterop.js");

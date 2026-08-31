@@ -6,7 +6,7 @@ import { app, BrowserWindow, ipcMain } from 'electron'
 import { is } from '@electron-toolkit/utils'
 import { initializeCom } from '@microsoft/dynwinrt/com'
 import { roInitialize } from '@microsoft/dynwinrt'
-import { DataTransferManager } from '../../generated/DataTransferManager.js'
+import { DataTransferManager } from '../../generated/windows/application-model/data-transfer/DataTransferManager.js'
 import { projectAs, releaseProjected } from '../../generated/lifetime.js'
 import { IDataTransferManagerInterop } from '../../generated/com/IDataTransferManagerInterop.js'
 

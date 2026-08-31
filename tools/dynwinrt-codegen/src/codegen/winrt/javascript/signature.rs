@@ -101,7 +101,11 @@ pub(crate) fn ts_dynwinrt_type(typ: &TypeMeta) -> String {
             name,
             default_interface,
         } => {
-            let full_name = format!("{}.{}", namespace, name);
+            let full_name = format!(
+                "{}.{}",
+                namespace,
+                super::metadata_type_name(namespace, name)
+            );
             match default_interface.as_deref() {
                 Some(default) => format!(
                     "DynWinRtType.runtimeClass('{}', {})",
@@ -168,7 +172,11 @@ pub(crate) fn ts_dynwinrt_type(typ: &TypeMeta) -> String {
             members,
             ..
         } => {
-            let full_name = format!("{}.{}", namespace, name);
+            let full_name = format!(
+                "{}.{}",
+                namespace,
+                super::metadata_type_name(namespace, name)
+            );
             if members.is_empty() {
                 format!("DynWinRtType.enumType('{}')", full_name)
             } else {
@@ -597,8 +605,13 @@ pub(crate) fn convert_array_return(
                 arr_expr, r
             )
         }
-        TypeMeta::Parameterized { name, args, .. } => {
-            let concrete = crate::meta::make_parameterized_name(name, args);
+        TypeMeta::Parameterized {
+            namespace,
+            name,
+            piid,
+            args,
+        } => {
+            let concrete = super::projected_parameterized_name(namespace, name, piid, args);
             if known_types.contains(&concrete) {
                 let r = resolve_type_name(&concrete, deferred);
                 format!(
@@ -651,10 +664,15 @@ pub(crate) fn convert_return(
         Some(TypeMeta::F32 | TypeMeta::F64) => format!("{}.toF64()", expr),
         Some(TypeMeta::Bool) => format!("{}.toBool()", expr),
         Some(TypeMeta::Enum { .. }) => format!("{}.toNumber()", expr),
-        Some(typ @ TypeMeta::Parameterized { name, args, .. })
-            if ireference_inner_type(typ).is_some() =>
-        {
-            let concrete = crate::meta::make_parameterized_name(name, args);
+        Some(
+            typ @ TypeMeta::Parameterized {
+                namespace,
+                name,
+                piid,
+                args,
+            },
+        ) if ireference_inner_type(typ).is_some() => {
+            let concrete = super::projected_parameterized_name(namespace, name, piid, args);
             let wrapper = resolve_type_name(&concrete, deferred);
             unwrap_nullable_reference_return(expr, &wrapper)
         }
@@ -669,8 +687,13 @@ pub(crate) fn convert_return(
             let r = resolve_type_name(name, deferred);
             wrap_nullable_interface_return(expr, &r)
         }
-        Some(TypeMeta::Parameterized { name, args, .. }) => {
-            let concrete = crate::meta::make_parameterized_name(name, args);
+        Some(TypeMeta::Parameterized {
+            namespace,
+            name,
+            piid,
+            args,
+        }) => {
+            let concrete = super::projected_parameterized_name(namespace, name, piid, args);
             if known_types.contains(&concrete) {
                 let r = resolve_type_name(&concrete, deferred);
                 wrap_nullable_interface_return(expr, &r)

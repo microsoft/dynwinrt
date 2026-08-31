@@ -1,9 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Regression test: the JS code generator must only write public artifacts
-//! (`.js` + `.d.ts`) into the output directory. No hidden cache files
-//! (e.g. `.index.ts`), no temp files, no raw `.ts` sources.
+//! Regression test: the JS code generator writes public modules plus its
+//! generated type-identity inventory. No transient cache files
+//! (e.g. `.index.ts`), temp files, or raw `.ts` sources may leak.
 
 use std::fs;
 use std::path::Path;
@@ -65,17 +65,28 @@ fn output_dir_contains_no_internal_cache_files() {
     );
     assert!(tmp.join("lifetime.js").exists());
     assert!(tmp.join("lifetime.d.ts").exists());
+    assert!(
+        tmp.join("windows")
+            .join("foundation")
+            .join("Uri.js")
+            .exists()
+    );
+    assert!(!tmp.join("Uri.js").exists());
     let index = fs::read_to_string(tmp.join("index.d.ts")).expect("read index.d.ts");
+    assert!(index.contains("export { Uri } from './windows/foundation/Uri.js';"));
     assert!(index.contains("createProjectedLifetimeScope"));
     assert!(index.contains("projectAs"));
     assert!(index.contains("releaseProjected"));
+    let package = fs::read_to_string(tmp.join("package.json")).expect("read package.json");
+    assert!(!package.contains("\"./Uri\""));
+    assert!(package.contains("\"./windows/foundation/Uri\""));
 
     let mut violations: Vec<String> = Vec::new();
     for entry in fs::read_dir(&tmp).expect("read tmp dir") {
         let e = entry.expect("dir entry");
         let name = e.file_name().to_string_lossy().to_string();
-        // No dotfiles in the public output dir.
-        if name.starts_with('.') {
+        // Only the generated JavaScript type inventory is allowed.
+        if name.starts_with('.') && name != ".dynwinrt-js-types" {
             violations.push(format!("hidden file leaked: {}", name));
         }
         // No raw .ts sources — only .d.ts ambient declarations are allowed.
@@ -132,7 +143,41 @@ fn output_dir_clean_full_namespace_mode() {
     );
     assert!(tmp.join("lifetime.js").exists());
     assert!(tmp.join("lifetime.d.ts").exists());
+    assert!(
+        tmp.join("windows")
+            .join("foundation")
+            .join("Uri.js")
+            .exists()
+    );
+    let uri_js_path = tmp.join("windows/foundation/Uri.js");
+    let uri_dts_path = tmp.join("windows/foundation/Uri.d.ts");
+    let uri_js_before = fs::read(&uri_js_path).unwrap();
+    let uri_dts_before = fs::read(&uri_dts_path).unwrap();
+    let incremental = Command::new(exe)
+        .args([
+            "generate",
+            "--namespace",
+            "Windows.Foundation",
+            "--class-name",
+            "Uri",
+            "--lang",
+            "js",
+            "--output",
+        ])
+        .arg(&tmp)
+        .status()
+        .expect("spawn incremental Uri generation");
+    assert!(incremental.success());
+    assert_eq!(fs::read(&uri_js_path).unwrap(), uri_js_before);
+    assert_eq!(fs::read(&uri_dts_path).unwrap(), uri_dts_before);
+    assert!(!tmp.join("IIterable_IWwwFormUrlDecoderEntry.js").exists());
+    let decoder = fs::read_to_string(tmp.join("windows/foundation/WwwFormUrlDecoder.js")).unwrap();
+    assert!(
+        decoder.contains("exports.IIterable_WindowsFoundationIWwwFormUrlDecoderEntry"),
+        "{decoder}"
+    );
     let index = fs::read_to_string(tmp.join("index.d.ts")).expect("read index.d.ts");
+    assert!(index.contains("export { Uri } from './windows/foundation/Uri.js';"));
     assert!(index.contains("createProjectedLifetimeScope"));
     assert!(index.contains("projectAs"));
     assert!(index.contains("releaseProjected"));
@@ -142,7 +187,7 @@ fn output_dir_clean_full_namespace_mode() {
     for entry in fs::read_dir(&tmp).expect("read tmp dir") {
         let e = entry.expect("dir entry");
         let name = e.file_name().to_string_lossy().to_string();
-        if name.starts_with('.') {
+        if name.starts_with('.') && name != ".dynwinrt-js-types" {
             violations.push(format!("hidden file leaked: {}", name));
         }
         if name.ends_with(".ts") && !name.ends_with(".d.ts") {
@@ -157,6 +202,117 @@ fn output_dir_clean_full_namespace_mode() {
         "full-namespace output dir contains internal artifacts: {:?}",
         violations
     );
+}
+
+#[test]
+fn generated_languages_reject_current_directory_output_before_writing() {
+    if !Path::new(WINDOWS_WINMD).exists() {
+        eprintln!("Skipping: Windows.winmd not found");
+        return;
+    }
+
+    let exe = env!("CARGO_BIN_EXE_dynwinrt-codegen");
+    let output = std::env::temp_dir().join(format!(
+        "dynwinrt-codegen-current-dir-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&output);
+    fs::create_dir_all(&output).unwrap();
+    fs::write(
+        output.join("application.js"),
+        "exports.UnrelatedApplicationValue = 1;\n",
+    )
+    .unwrap();
+    let status = Command::new(exe)
+        .current_dir(&output)
+        .args([
+            "generate",
+            "--namespace",
+            "Windows.Foundation",
+            "--class-name",
+            "Uri",
+            "--lang",
+            "js",
+            "--output",
+            ".",
+        ])
+        .status()
+        .expect("spawn dynwinrt-codegen with current-directory output");
+    assert!(!status.success());
+    assert!(!output.join("Uri.js").exists());
+    assert!(!output.join("windows/foundation/Uri.js").exists());
+    assert_eq!(
+        fs::read_to_string(output.join("application.js")).unwrap(),
+        "exports.UnrelatedApplicationValue = 1;\n"
+    );
+    assert!(!output.join("package.json").exists());
+    assert!(!output.join("index.js").exists());
+    let python_status = Command::new(exe)
+        .current_dir(&output)
+        .args([
+            "generate",
+            "--namespace",
+            "Windows.Foundation",
+            "--class-name",
+            "Uri",
+            "--lang",
+            "py",
+            "--output",
+            ".",
+        ])
+        .status()
+        .expect("spawn Python codegen with current-directory output");
+    assert!(!python_status.success());
+    assert!(!output.join("__init__.py").exists());
+    assert!(!output.join("pyproject.toml").exists());
+    fs::remove_dir_all(output).unwrap();
+}
+
+#[test]
+fn public_winrt_interface_request_keeps_interface_members_and_struct_helpers() {
+    if !Path::new(WINDOWS_WINMD).exists() {
+        eprintln!("Skipping: Windows.winmd not found");
+        return;
+    }
+
+    let exe = env!("CARGO_BIN_EXE_dynwinrt-codegen");
+    let output = std::env::temp_dir().join(format!(
+        "dynwinrt-codegen-public-interface-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&output);
+    let status = Command::new(exe)
+        .args([
+            "generate",
+            "--namespace",
+            "Windows.Graphics.DirectX.Direct3D11",
+            "--class-name",
+            "IDirect3DSurface",
+            "--lang",
+            "js",
+            "--output",
+        ])
+        .arg(&output)
+        .status()
+        .expect("spawn dynwinrt-codegen for public WinRT interface");
+    assert!(status.success());
+
+    let canonical = fs::read_to_string(
+        output
+            .join("windows")
+            .join("graphics")
+            .join("direct-x")
+            .join("direct3-d11")
+            .join("IDirect3DSurface.js"),
+    )
+    .expect("read canonical IDirect3DSurface");
+    assert!(canonical.contains("get description()"), "{canonical}");
+    assert!(
+        canonical.contains("packDirect3DSurfaceDescription"),
+        "{canonical}"
+    );
+    assert!(!output.join("IDirect3DSurface.js").exists());
+    fs::remove_dir_all(output).unwrap();
 }
 
 #[test]

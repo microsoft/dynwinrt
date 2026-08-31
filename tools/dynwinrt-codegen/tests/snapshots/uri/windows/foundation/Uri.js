@@ -3,8 +3,16 @@ const { DynWinRtType, DynWinRtMethodSig, DynWinRtValue, DynWinRtArray, DynWinRtD
 let __m_WwwFormUrlDecoder;
 const __load_WwwFormUrlDecoder = () => (__m_WwwFormUrlDecoder ??= require('./WwwFormUrlDecoder.js'));
 const __get_WwwFormUrlDecoder = () => __load_WwwFormUrlDecoder().WwwFormUrlDecoder;
+const { IID_IUriRuntimeClassWithAbsoluteCanonicalUri } = require('./IUriRuntimeClassWithAbsoluteCanonicalUri.js');
+let __m_IUriRuntimeClassWithAbsoluteCanonicalUri;
+const __load_IUriRuntimeClassWithAbsoluteCanonicalUri = () => (__m_IUriRuntimeClassWithAbsoluteCanonicalUri ??= require('./IUriRuntimeClassWithAbsoluteCanonicalUri.js'));
+const __get_IUriRuntimeClassWithAbsoluteCanonicalUri = () => __load_IUriRuntimeClassWithAbsoluteCanonicalUri().IUriRuntimeClassWithAbsoluteCanonicalUri;
+const { IID_IStringable } = require('./IStringable.js');
+let __m_IStringable;
+const __load_IStringable = () => (__m_IStringable ??= require('./IStringable.js'));
+const __get_IStringable = () => __load_IStringable().IStringable;
 let __m_lifetime;
-const __load_lifetime = () => (__m_lifetime ??= require('./lifetime.js'));
+const __load_lifetime = () => (__m_lifetime ??= require('../../lifetime.js'));
 const __get_castProjectedValueBorrowed = () => __load_lifetime().castProjectedValueBorrowed;
 const __get_castProjectedValueOwned = () => __load_lifetime().castProjectedValueOwned;
 const __get_trackProjectedValue = () => __load_lifetime().trackProjectedValue;
@@ -14,8 +22,6 @@ const _unwrap = (x) => x?._obj ?? x;
 const IID_IUriRuntimeClass = WinGuid.parse('9e365e57-48b2-4160-956f-c7385120bbfc');
 const IID_IUriRuntimeClassFactory = WinGuid.parse('44a9796f-723e-4fdf-a218-033e75b0c084');
 const IID_IUriEscapeStatics = WinGuid.parse('c1d432ba-c824-4452-a7fd-512bc3bbe9a1');
-const IID_IUriRuntimeClassWithAbsoluteCanonicalUri = WinGuid.parse('758d9661-221c-480f-a339-50656673f46f');
-const IID_IStringable = WinGuid.parse('96369f54-8eb6-48f0-abce-c1b211e627c3');
 const IID_Uri = WinGuid.parse('9e365e57-48b2-4160-956f-c7385120bbfc');
 const IID_ARG_Windows_Foundation_Uri = WinGuid.parse('9e365e57-48b2-4160-956f-c7385120bbfc');
 
@@ -181,7 +187,7 @@ class Uri {
         return ((v) => v.isNull() ? null : Uri._fromNative(v))(_IUriRuntimeClass.method(22).invoke(this._obj, [DynWinRtValue.hstring(relativeUri)]));
     }
     toString() {
-        return IStringable.from(this._obj).toString();
+        return (__get_IStringable()).from(this._obj).toString();
     }
     [Symbol.toPrimitive](_hint) {
         return this.toString();
@@ -197,43 +203,5 @@ class Uri {
         return (() => { const _m = _IUriRuntimeClassWithAbsoluteCanonicalUri.method(7); return typeof _m.getString === 'function' ? _m.getString(this._obj.cast(IID_IUriRuntimeClassWithAbsoluteCanonicalUri)) : _IUriRuntimeClassWithAbsoluteCanonicalUri.method(7).invoke(this._obj.cast(IID_IUriRuntimeClassWithAbsoluteCanonicalUri), []).toString(); })();
     }
 }
-
-class IUriRuntimeClassWithAbsoluteCanonicalUri {
-    _obj;
-
-    constructor(obj) {
-        this._obj = obj;
-    }
-
-    static from(obj) {
-        return new IUriRuntimeClassWithAbsoluteCanonicalUri(obj.cast(IID_IUriRuntimeClassWithAbsoluteCanonicalUri));
-    }
-
-    get absoluteCanonicalUri() {
-        return (() => { const _m = _IUriRuntimeClassWithAbsoluteCanonicalUri.method(6); return typeof _m.getString === 'function' ? _m.getString(this._obj) : _IUriRuntimeClassWithAbsoluteCanonicalUri.method(6).invoke(this._obj, []).toString(); })();
-    }
-
-    get displayIri() {
-        return (() => { const _m = _IUriRuntimeClassWithAbsoluteCanonicalUri.method(7); return typeof _m.getString === 'function' ? _m.getString(this._obj) : _IUriRuntimeClassWithAbsoluteCanonicalUri.method(7).invoke(this._obj, []).toString(); })();
-    }
-}
-
-class IStringable {
-    _obj;
-
-    constructor(obj) {
-        this._obj = obj;
-    }
-
-    static from(obj) {
-        return new IStringable(obj.cast(IID_IStringable));
-    }
-
-    toString() {
-        return _IStringable.method(6).invoke(this._obj, []).toString();
-    }
-}
 exports.IID_Uri = IID_Uri;
 exports.Uri = Uri;
-exports.IUriRuntimeClassWithAbsoluteCanonicalUri = IUriRuntimeClassWithAbsoluteCanonicalUri;
-exports.IStringable = IStringable;

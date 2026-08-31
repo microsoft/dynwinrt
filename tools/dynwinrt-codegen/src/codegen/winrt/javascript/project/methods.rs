@@ -29,9 +29,16 @@ fn is_projected_delegate_type(typ: Option<&TypeMeta>, delegate_names: &HashSet<S
     match typ {
         Some(TypeMeta::Delegate { .. }) => true,
         Some(TypeMeta::Interface { name, .. }) => delegate_names.contains(name),
-        Some(TypeMeta::Parameterized { name, args, .. }) => {
-            delegate_names.contains(&crate::meta::make_parameterized_name(name, args))
-        }
+        Some(TypeMeta::Parameterized {
+            namespace,
+            name,
+            piid,
+            args,
+        }) => delegate_names.contains(
+            &crate::codegen::winrt::javascript::projected_parameterized_name(
+                namespace, name, piid, args,
+            ),
+        ),
         _ => false,
     }
 }
@@ -1058,9 +1065,16 @@ fn project_event_add(
     let cap = capitalize(&event_name);
     let delegate_first_param = in_params.first().map(|p| &p.typ);
     let delegate_name = delegate_first_param.and_then(|t| match t {
-        TypeMeta::Parameterized { name, args, .. } => {
-            Some(crate::meta::make_parameterized_name(name, args))
-        }
+        TypeMeta::Parameterized {
+            namespace,
+            name,
+            piid,
+            args,
+        } => Some(
+            crate::codegen::winrt::javascript::projected_parameterized_name(
+                namespace, name, piid, args,
+            ),
+        ),
         TypeMeta::Delegate { name, .. } => Some(name.clone()),
         TypeMeta::Interface { name, .. } => Some(name.clone()),
         _ => None,

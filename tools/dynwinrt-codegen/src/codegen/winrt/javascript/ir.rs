@@ -65,8 +65,10 @@ pub enum ProjectedMember {
     Symbol(ProjectedSymbol),
     /// `.as<T>()` generic cast
     AsCast,
-    /// `.close()` from IClosable
-    Close,
+    /// `.close()` from the projected IClosable interface.
+    Close {
+        interface_name: String,
+    },
 }
 
 #[derive(Clone)]

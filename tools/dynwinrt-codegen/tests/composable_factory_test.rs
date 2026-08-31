@@ -3,7 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use dynwinrt_codegen::codegen::{project, python, python_stub, render_dts, render_js};
+use dynwinrt_codegen::codegen::{javascript, project, python, python_stub, render_dts, render_js};
 use dynwinrt_codegen::meta::{
     ClassMeta, ConstructorKind, ConstructorMeta, InterfaceMeta, MethodMeta, ParamDirection,
     ParamMeta,
@@ -332,6 +332,12 @@ fn parameterized_default_interface_uses_computed_iid() {
             iid: "fe870f2f-89ef-5dac-9f33-968d0dc577c3".into(),
         })),
     };
+    let vector_view_name = javascript::parameterized_name(
+        "Windows.Foundation.Collections",
+        "IVectorView",
+        "bbe1fa4c-b0e3-4583-baef-1f1b2e483e56",
+        std::slice::from_ref(&row_type),
+    );
     let class = ClassMeta {
         name: "RowDefinitionCollection".into(),
         namespace: "Microsoft.UI.Xaml.Controls".into(),
@@ -426,7 +432,7 @@ fn parameterized_default_interface_uses_computed_iid() {
         &HashSet::from([
             "RowDefinition".into(),
             "RowDefinitionCollection".into(),
-            "IVectorView_RowDefinition".into(),
+            vector_view_name.clone(),
         ]),
         &HashSet::new(),
         &HashSet::new(),
@@ -442,7 +448,7 @@ fn parameterized_default_interface_uses_computed_iid() {
     assert!(js.contains(&format!("const IID_RowDefinitionCollection = {expected};")));
     assert!(js.contains("exports.IID_RowDefinitionCollection = IID_RowDefinitionCollection;"));
     assert!(!js.contains("require('./IVector_RowDefinition.js')"));
-    assert!(js.contains("require('./IVectorView_RowDefinition.js')"));
+    assert!(js.contains(&format!("require('./{vector_view_name}.js')")));
     assert!(js.contains("_IVector_RowDefinition.method(9).invokeAll(this._obj"));
     assert!(dts.contains("indexOf(value: RowDefinition): number;"));
     assert!(dts.contains("append(value: RowDefinition): void;"));

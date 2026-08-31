@@ -536,7 +536,7 @@ fn render_member_dts(out: &mut String, member: &ProjectedMember) {
             out.push_str("    /** Cast this object to another WinRT interface. */\n");
             out.push_str("    as<T>(InterfaceClass: { from(obj: any): T }): T;\n");
         }
-        ProjectedMember::Close => {
+        ProjectedMember::Close { .. } => {
             out.push_str("    /** Release underlying WinRT resources (IClosable). */\n");
             out.push_str("    close(): void;\n");
         }

@@ -3,7 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use dynwinrt_codegen::codegen::winrt::javascript::project;
+use dynwinrt_codegen::codegen::winrt::javascript::{self, project};
 use dynwinrt_codegen::codegen::winrt::python;
 use dynwinrt_codegen::codegen::{python_stub, render_dts, render_js};
 use dynwinrt_codegen::meta::{
@@ -112,6 +112,12 @@ fn generate_javascript(class: &ClassMeta, known: &HashSet<String>) -> (String, S
 #[test]
 fn synthetic_ireference_point_field_uses_native_optional_projection() {
     let class = synthetic_class();
+    let js_reference_name = javascript::parameterized_name(
+        "Windows.Foundation",
+        "IReference",
+        PIID_IREFERENCE,
+        std::slice::from_ref(&point()),
+    );
     let known = HashSet::from([
         "UsesOptionalPoint".to_string(),
         "Point".to_string(),
@@ -148,7 +154,7 @@ fn synthetic_ireference_point_field_uses_native_optional_projection() {
     assert!(!pyi.contains("value(self) -> DynWinRTValue"));
 
     assert!(
-        dts.contains("value: Point | null | IReference_Point;"),
+        dts.contains(&format!("value: Point | null | {js_reference_name};")),
         "{dts}"
     );
     assert!(
@@ -166,7 +172,9 @@ fn synthetic_ireference_point_field_uses_native_optional_projection() {
         "{js}"
     );
     assert!(
-        dts.contains("import { IReference_Point } from './IReference_Point.js';"),
+        dts.contains(&format!(
+            "import {{ {js_reference_name} }} from './{js_reference_name}.js';"
+        )),
         "{dts}"
     );
 
@@ -198,6 +206,12 @@ fn scalar_ireference_fields_preserve_native_python_types() {
         doc: None,
         deprecated: None,
     };
+    let js_mode_reference_name = javascript::parameterized_name(
+        "Windows.Foundation",
+        "IReference",
+        PIID_IREFERENCE,
+        std::slice::from_ref(&mode),
+    );
     let holder = TypeMeta::Struct {
         namespace: "Synthetic".into(),
         name: "OptionalScalars".into(),
@@ -243,7 +257,7 @@ fn scalar_ireference_fields_preserve_native_python_types() {
     assert!(
         dts.contains("count: number | null | IReference_UInt32;")
             && dts.contains("label: string | null | IReference_String;")
-            && dts.contains("mode: Mode | null | IReference_Mode;"),
+            && dts.contains(&format!("mode: Mode | null | {js_mode_reference_name};")),
         "{dts}"
     );
     assert!(js.contains("DynWinRtValue.u32(value)"), "{js}");

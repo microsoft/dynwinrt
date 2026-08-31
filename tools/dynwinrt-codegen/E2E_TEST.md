@@ -78,8 +78,8 @@ Create `test_picker.ts` in the test project (TypeScript here — the same import
 
 ```typescript
 import { initWinappsdk, roInitialize, DynWinRtValue } from '@microsoft/dynwinrt'
-import { FileOpenPicker } from './generated/FileOpenPicker.js'
-import { PickerViewMode } from './generated/PickerViewMode.js'
+import { FileOpenPicker } from './generated/windows/storage/pickers/FileOpenPicker.js'
+import { PickerViewMode } from './generated/windows/storage/pickers/PickerViewMode.js'
 
 async function main() {
     initWinappsdk(1, 8)

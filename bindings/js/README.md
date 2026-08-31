@@ -41,6 +41,29 @@ console.log(uri.host);                                // "example.com"
 console.log(uri.port);                                // 443
 ```
 
+### Generated module layout
+
+Generated WinRT implementations use canonical namespace paths. Prefer the root
+barrel for concise imports:
+
+```js
+const { Uri, Button } = require('./generated');
+```
+
+Use the canonical path when a deep import is needed:
+
+```js
+const { Uri } = require('./generated/windows/foundation/Uri.js');
+const { Button } = require(
+  './generated/microsoft/ui/xaml/controls/Button.js'
+);
+```
+
+Legacy flat paths such as `./generated/Uri.js` are not generated. When metadata
+contains duplicate short names, each canonical module keeps its native symbol
+name while the root barrel uses a namespace-qualified name, such as
+`AIFoundationEmbeddingVector` or `SemanticSearchEmbeddingVector`.
+
 Classic COM uses a separate subpath from the same package, keeping the WinRT
 root API unchanged:
 
@@ -85,9 +108,11 @@ runtime class. It accepts either a raw projected value or an existing wrapper,
 borrows the input, and creates a separately releasable projection:
 
 ```js
-import { projectAs } from "./generated/lifetime.js";
-import { XamlReader } from "./generated/XamlReader.js";
-import { StackPanel } from "./generated/StackPanel.js";
+import {
+  projectAs,
+  StackPanel,
+  XamlReader,
+} from "./generated/index.mjs";
 
 const raw = XamlReader.load(xaml);
 if (raw === null) throw new Error("XamlReader returned no value");

@@ -364,6 +364,14 @@ pub struct ResolvedDeps {
     pub enums: Vec<TypeMeta>,
 }
 
+#[derive(Clone)]
+pub struct ParameterizedInterfaceRequest {
+    pub namespace: String,
+    pub generic_name: String,
+    pub piid: String,
+    pub args: Vec<TypeMeta>,
+}
+
 /// Resolve all referenced types that don't have generated files yet.
 /// Uses fixpoint iteration to recursively discover transitive dependencies.
 pub fn resolve_dependencies(
@@ -378,6 +386,7 @@ pub fn resolve_dependencies(
         existing_interfaces,
         existing_enums,
         false,
+        true,
     )
 }
 
@@ -394,6 +403,7 @@ pub fn resolve_python_dependencies(
         existing_interfaces,
         existing_enums,
         true,
+        false,
     )
 }
 
@@ -403,6 +413,7 @@ fn resolve_dependencies_impl(
     existing_interfaces: &[InterfaceMeta],
     existing_enums: &[TypeMeta],
     include_inheritance: bool,
+    fully_qualified_identity: bool,
 ) -> ResolvedDeps {
     let index = match load_index(winmd_paths) {
         Some(idx) => idx,
@@ -428,6 +439,48 @@ fn resolve_dependencies_impl(
             known.insert(name.clone());
         }
     }
+    let mut known_named = HashSet::new();
+    known_named.extend(classes.iter().map(|class| TypeRef {
+        namespace: class.namespace.clone(),
+        name: class.name.clone(),
+        kind: TypeKind::Class,
+    }));
+    known_named.extend(existing_interfaces.iter().map(|interface| TypeRef {
+        namespace: interface.namespace.clone(),
+        name: interface.name.clone(),
+        kind: TypeKind::Interface,
+    }));
+    known_named.extend(existing_enums.iter().filter_map(|typ| {
+        let TypeMeta::Enum {
+            namespace, name, ..
+        } = typ
+        else {
+            return None;
+        };
+        Some(TypeRef {
+            namespace: namespace.clone(),
+            name: name.clone(),
+            kind: TypeKind::Enum,
+        })
+    }));
+    let mut known_parameterized = existing_interfaces
+        .iter()
+        .filter_map(|interface| {
+            interface.generic_piid.as_ref().map(|piid| {
+                let suffix = make_parameterized_name("", &interface.generic_args);
+                let generic_name = interface
+                    .name
+                    .strip_suffix(&suffix)
+                    .unwrap_or(&interface.name);
+                parameterized_dependency_key(
+                    &interface.namespace,
+                    generic_name,
+                    piid,
+                    &interface.generic_args,
+                )
+            })
+        })
+        .collect::<HashSet<_>>();
 
     let mut dep_classes: Vec<ClassMeta> = Vec::new();
     let mut dep_interfaces: Vec<InterfaceMeta> = Vec::new();
@@ -464,7 +517,11 @@ fn resolve_dependencies_impl(
         let mut new_interfaces = Vec::new();
 
         for r in &batch {
-            if known.contains(&r.name) {
+            if fully_qualified_identity {
+                if !known_named.insert(r.clone()) {
+                    continue;
+                }
+            } else if known.contains(&r.name) {
                 continue;
             }
             known.insert(r.name.clone());
@@ -515,8 +572,30 @@ fn resolve_dependencies_impl(
                 args,
             } = param_type
             {
-                let concrete_name = make_parameterized_name(name, args);
-                if known.contains(&concrete_name) {
+                let resolved_args = args
+                    .iter()
+                    .map(|argument| {
+                        map_winmd_type_with_generics(
+                            &type_meta_to_winmd_type(argument),
+                            &index,
+                            &[],
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                if resolved_args
+                    .iter()
+                    .any(|argument| !is_resolved_generic_arg(argument))
+                {
+                    continue;
+                }
+                let concrete_name = make_parameterized_name(name, &resolved_args);
+                if fully_qualified_identity {
+                    let identity =
+                        parameterized_dependency_key(namespace, name, piid, &resolved_args);
+                    if !known_parameterized.insert(identity) {
+                        continue;
+                    }
+                } else if known.contains(&concrete_name) {
                     continue;
                 }
                 known.insert(concrete_name.clone());
@@ -527,7 +606,7 @@ fn resolve_dependencies_impl(
                     name,
                     &concrete_name,
                     piid,
-                    args,
+                    &resolved_args,
                 ) {
                     new_interfaces.push(iface);
                 } else {
@@ -624,7 +703,7 @@ fn visit_type_refs(typ: &TypeMeta, named: &mut Vec<TypeRef>, parameterized: &mut
 /// Collect all type references from methods: both named and parameterized.
 fn collect_all_refs_from_methods(
     methods: &[MethodMeta],
-    known: &HashSet<String>,
+    _known: &HashSet<String>,
     named_out: &mut Vec<TypeRef>,
     param_out: &mut Vec<TypeMeta>,
 ) {
@@ -638,42 +717,90 @@ fn collect_all_refs_from_methods(
             visit_type_refs(rt, &mut named, &mut parameterized);
         }
     }
-    for r in named {
-        if !known.contains(&r.name) {
-            named_out.push(r);
-        }
-    }
-    for r in parameterized {
-        if let TypeMeta::Parameterized { name, args, .. } = &r {
-            let concrete = make_parameterized_name(name, args);
-            if !known.contains(&concrete) {
-                param_out.push(r);
-            }
-        }
-    }
+    named_out.extend(named);
+    param_out.extend(parameterized);
 }
 
 fn collect_interface_base_ref(
     base: &TypeMeta,
-    known: &HashSet<String>,
+    _known: &HashSet<String>,
     named_out: &mut Vec<TypeRef>,
     param_out: &mut Vec<TypeMeta>,
 ) {
     let mut named = Vec::new();
     let mut parameterized = Vec::new();
     visit_type_refs(base, &mut named, &mut parameterized);
-    named_out.extend(
-        named
-            .into_iter()
-            .filter(|reference| !known.contains(&reference.name)),
-    );
-    param_out.extend(parameterized.into_iter().filter(|reference| {
-        matches!(
-            reference,
-            TypeMeta::Parameterized { name, args, .. }
-                if !known.contains(&make_parameterized_name(name, args))
-        )
-    }));
+    named_out.extend(named);
+    param_out.extend(parameterized);
+}
+
+fn type_dependency_key(typ: &TypeMeta) -> String {
+    match typ {
+        TypeMeta::Bool => "bool".into(),
+        TypeMeta::I8 => "i8".into(),
+        TypeMeta::U8 => "u8".into(),
+        TypeMeta::I16 => "i16".into(),
+        TypeMeta::U16 => "u16".into(),
+        TypeMeta::I32 => "i32".into(),
+        TypeMeta::U32 => "u32".into(),
+        TypeMeta::I64 => "i64".into(),
+        TypeMeta::U64 => "u64".into(),
+        TypeMeta::F32 => "f32".into(),
+        TypeMeta::F64 => "f64".into(),
+        TypeMeta::Char16 => "char16".into(),
+        TypeMeta::String => "string".into(),
+        TypeMeta::Guid => "guid".into(),
+        TypeMeta::Object => "object".into(),
+        TypeMeta::Interface {
+            namespace, name, ..
+        } => format!("interface:{namespace}.{name}"),
+        TypeMeta::RuntimeClass {
+            namespace, name, ..
+        } => format!("class:{namespace}.{name}"),
+        TypeMeta::Delegate {
+            namespace, name, ..
+        } => format!("delegate:{namespace}.{name}"),
+        TypeMeta::Parameterized {
+            namespace,
+            name,
+            piid,
+            args,
+        } => parameterized_dependency_key(namespace, name, piid, args),
+        TypeMeta::Array(inner) => format!("array:{}", type_dependency_key(inner)),
+        TypeMeta::Struct {
+            namespace, name, ..
+        } => format!("struct:{namespace}.{name}"),
+        TypeMeta::Enum {
+            namespace, name, ..
+        } => format!("enum:{namespace}.{name}"),
+        TypeMeta::AsyncAction => "async-action".into(),
+        TypeMeta::AsyncActionWithProgress(progress) => {
+            format!("async-action-progress:{}", type_dependency_key(progress))
+        }
+        TypeMeta::AsyncOperation(result) => {
+            format!("async-operation:{}", type_dependency_key(result))
+        }
+        TypeMeta::AsyncOperationWithProgress(result, progress) => format!(
+            "async-operation-progress:{},{}",
+            type_dependency_key(result),
+            type_dependency_key(progress)
+        ),
+    }
+}
+
+fn parameterized_dependency_key(
+    namespace: &str,
+    name: &str,
+    piid: &str,
+    args: &[TypeMeta],
+) -> String {
+    format!(
+        "generic:{namespace}.{name}:{piid}<{}>",
+        args.iter()
+            .map(type_dependency_key)
+            .collect::<Vec<_>>()
+            .join(",")
+    )
 }
 
 /// Generate a concrete name for a parameterized interface, e.g. "IVector_String", "IMap_String_Object".
@@ -718,10 +845,7 @@ fn collect_all_refs_from_classes(
     include_class_bases: bool,
 ) {
     for c in classes {
-        if include_class_bases
-            && let Some(base) = &c.base_class
-            && !known.contains(&base.name)
-        {
+        if include_class_bases && let Some(base) = &c.base_class {
             named_out.push(base.clone());
         }
         for iface in c.all_interfaces() {
@@ -729,10 +853,7 @@ fn collect_all_refs_from_classes(
         }
         // Required interfaces themselves may need to be resolved
         for iface in &c.required_interfaces {
-            if iface.generic_piid.is_none()
-                && !iface.name.is_empty()
-                && !known.contains(&iface.name)
-            {
+            if iface.generic_piid.is_none() && !iface.name.is_empty() {
                 named_out.push(TypeRef {
                     namespace: iface.namespace.clone(),
                     name: iface.name.clone(),
@@ -765,10 +886,7 @@ fn collect_all_refs_from_interfaces(
                 piid: PIID_IVECTOR.into(),
                 args: i.generic_args.clone(),
             };
-            let concrete_name = make_parameterized_name("IVector", &i.generic_args);
-            if !known.contains(&concrete_name) {
-                param_out.push(vector);
-            }
+            param_out.push(vector);
         }
     }
 }
@@ -1132,6 +1250,92 @@ fn parse_interface(index: &reader::Index, namespace: &str, name: &str) -> Option
     let def = index.get(namespace, name).next()?;
     let iid = extract_iid(&def);
     parse_interface_methods(index, &def, name, namespace, &iid, &[])
+}
+
+/// Parse a concrete non-generic interface or delegate by metadata name.
+pub fn parse_interface_by_name(
+    winmd_paths: &str,
+    namespace: &str,
+    name: &str,
+) -> Option<InterfaceMeta> {
+    let index = load_index(winmd_paths)?;
+    parse_interface(&index, namespace, name)
+}
+
+/// Reconstruct a closed generic interface from its open metadata definition.
+pub fn parse_parameterized_interface_by_name(
+    winmd_paths: &str,
+    namespace: &str,
+    generic_name: &str,
+    piid: &str,
+    args: &[TypeMeta],
+) -> Option<InterfaceMeta> {
+    let index = load_index(winmd_paths)?;
+    parse_parameterized_interface_request(&index, namespace, generic_name, piid, args)
+}
+
+pub fn parse_parameterized_interfaces_by_name(
+    winmd_paths: &str,
+    requests: &[ParameterizedInterfaceRequest],
+) -> Vec<Option<InterfaceMeta>> {
+    let Some(index) = load_index(winmd_paths) else {
+        return requests.iter().map(|_| None).collect();
+    };
+    requests
+        .iter()
+        .map(|request| {
+            parse_parameterized_interface_request(
+                &index,
+                &request.namespace,
+                &request.generic_name,
+                &request.piid,
+                &request.args,
+            )
+        })
+        .collect()
+}
+
+fn parse_parameterized_interface_request(
+    index: &reader::Index,
+    namespace: &str,
+    generic_name: &str,
+    piid: &str,
+    args: &[TypeMeta],
+) -> Option<InterfaceMeta> {
+    let lookup_name = generic_name.split('`').next().unwrap_or(generic_name);
+    let definition = index.get(namespace, lookup_name).next()?;
+    let current_piid = extract_iid(&definition);
+    let normalize_guid = |value: &str| {
+        value
+            .trim_matches(|character| character == '{' || character == '}')
+            .to_ascii_lowercase()
+    };
+    if normalize_guid(&current_piid) != normalize_guid(piid)
+        || definition.generic_params().count() != args.len()
+    {
+        return None;
+    }
+    let refreshed_args = args
+        .iter()
+        .map(|argument| {
+            map_winmd_type_with_generics(&type_meta_to_winmd_type(argument), index, &[])
+        })
+        .collect::<Vec<_>>();
+    if refreshed_args
+        .iter()
+        .any(|arg| !is_resolved_generic_arg(arg))
+    {
+        return None;
+    }
+    let concrete_name = make_parameterized_name(generic_name, &refreshed_args);
+    parse_parameterized_interface(
+        index,
+        namespace,
+        generic_name,
+        &concrete_name,
+        &current_piid,
+        &refreshed_args,
+    )
 }
 
 fn parse_interface_type(
@@ -1852,6 +2056,24 @@ mod tests {
         push_unique_interface(&mut interfaces, interface(TypeMeta::U64));
         push_unique_interface(&mut interfaces, interface(TypeMeta::U32));
         assert_eq!(interfaces.len(), 2);
+    }
+
+    #[test]
+    fn parameterized_dependency_identity_includes_argument_namespace() {
+        let key = |namespace: &str| {
+            parameterized_dependency_key(
+                WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE,
+                "IVector",
+                PIID_IVECTOR,
+                &[TypeMeta::RuntimeClass {
+                    namespace: namespace.into(),
+                    name: "PointerPoint".into(),
+                    default_interface: None,
+                }],
+            )
+        };
+
+        assert_ne!(key("Windows.UI.Input"), key("Microsoft.UI.Input"));
     }
 
     #[test]

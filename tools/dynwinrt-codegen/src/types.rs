@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use serde::{Deserialize, Serialize};
+
 /// The kind of a named WinRT type reference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum TypeKind {
@@ -19,7 +21,7 @@ pub struct TypeRef {
 }
 
 /// Describes a WinRT type as extracted from WinMD metadata.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TypeMeta {
     // Primitives
     Bool,
@@ -89,13 +91,13 @@ pub enum TypeMeta {
     },
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FieldMeta {
     pub name: String,
     pub typ: TypeMeta,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EnumMember {
     pub name: String,
     pub value: i32,

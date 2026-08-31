@@ -37,23 +37,3 @@ export declare class Uri {
     get absoluteCanonicalUri(): string;
     get displayIri(): string;
 }
-
-export declare class IUriRuntimeClassWithAbsoluteCanonicalUri {
-    private constructor();
-
-    /** @internal Cast a raw WinRT object to this interface. */
-    static from(obj: any): IUriRuntimeClassWithAbsoluteCanonicalUri;
-
-    get absoluteCanonicalUri(): string;
-
-    get displayIri(): string;
-}
-
-export declare class IStringable {
-    private constructor();
-
-    /** @internal Cast a raw WinRT object to this interface. */
-    static from(obj: any): IStringable;
-
-    toString(): string;
-}

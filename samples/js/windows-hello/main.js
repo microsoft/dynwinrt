@@ -8,13 +8,11 @@ const {
   DynWinRtValue,
 } = require('@microsoft/dynwinrt')
 const { DynCom } = require('@microsoft/dynwinrt/com/unsafe')
-const { UserConsentVerifier } = require('./generated/UserConsentVerifier.js')
 const {
+  UserConsentVerifier,
   UserConsentVerifierAvailability,
-} = require('./generated/UserConsentVerifierAvailability.js')
-const {
   UserConsentVerificationResult,
-} = require('./generated/UserConsentVerificationResult.js')
+} = require('./generated/index.js')
 const {
   IUserConsentVerifierInterop,
 } = require('./generated/com/IUserConsentVerifierInterop.js')

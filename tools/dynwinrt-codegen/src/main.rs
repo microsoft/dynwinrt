@@ -9,6 +9,7 @@ use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 
 use dynwinrt_codegen::codegen::com;
+use dynwinrt_codegen::codegen::javascript;
 use dynwinrt_codegen::codegen::package;
 use dynwinrt_codegen::codegen::python;
 use dynwinrt_codegen::codegen::typescript;
@@ -371,13 +372,26 @@ fn run() -> Result<(), String> {
             // Load built-in docs as fallback (sibling .xml takes priority).
             doc_table.load_builtin_docs();
 
+            if output.trim().is_empty() {
+                return Err("JavaScript/Python output directory cannot be empty.".into());
+            }
             let final_output_dir = Path::new(&output);
-            let mut python_output = if lang == "py" && !dry_run {
-                Some(PythonOutputTransaction::begin(final_output_dir)?)
-            } else {
-                None
-            };
-            let effective_output_dir = python_output
+            let output_contains_cwd = output_contains_current_directory(final_output_dir)?;
+            if matches!(lang.as_str(), "js" | "py") && !dry_run && output_contains_cwd {
+                return Err(format!(
+                    "Generated output directory '{}' contains the current working directory. \
+                     Choose a dedicated child or sibling output directory so generation can be \
+                     committed atomically.",
+                    final_output_dir.display()
+                ));
+            }
+            let mut output_transaction =
+                if matches!(lang.as_str(), "js" | "py") && !dry_run && !output_contains_cwd {
+                    Some(OutputTransaction::begin(final_output_dir)?)
+                } else {
+                    None
+                };
+            let effective_output_dir = output_transaction
                 .as_ref()
                 .map(|transaction| transaction.stage_dir().to_path_buf())
                 .unwrap_or_else(|| final_output_dir.to_path_buf());
@@ -402,6 +416,7 @@ fn run() -> Result<(), String> {
 
                 // First: partition into WinRT classes and classic-COM interfaces.
                 let mut classes = Vec::new();
+                let mut requested_winrt_interfaces = Vec::new();
                 let mut com_interfaces: Vec<com_metadata::ComInterfaceMeta> = Vec::new();
                 let mut com_coclasses: Vec<com_metadata::ComCoclassMeta> = Vec::new();
                 for (ns, cls) in &class_requests {
@@ -415,25 +430,36 @@ fn run() -> Result<(), String> {
                             com_interfaces.push(com_iface);
                             continue;
                         }
-                        // The type exists as an interface but is IInspectable-rooted and
-                        // not `*Interop` — it's a plain WinRT interface. Those still need
-                        // to go through the WinRT projection pipeline via `parse_class`,
-                        // which will find it if it's the projected surface of a runtime
-                        // class. If not, give a targeted error rather than the misleading
-                        // "Class not found".
-                        if meta::parse_class(&winmd, ns, cls).is_none() {
+                        // Public IInspectable-rooted interfaces use the WinRT projection
+                        // pipeline directly. `parse_class` intentionally accepts a raw
+                        // TypeDef and cannot distinguish this case on its own.
+                        let is_runtime_class = meta::parse_namespace(&winmd, ns)
+                            .iter()
+                            .any(|class| class.name == cls.as_str());
+                        if !is_runtime_class {
+                            if let Some(interface) = meta::parse_interfaces(&winmd, ns)
+                                .into_iter()
+                                .find(|interface| interface.name == cls.as_str())
+                            {
+                                requested_winrt_interfaces.push(interface);
+                                continue;
+                            }
                             return Err(format!(
-                                "{}.{} is an IInspectable-rooted WinRT interface, not a runtime class \
-                                 or classic-COM interface. `--class-name` expects a WinRT runtime class, \
-                                 an IUnknown-rooted classic COM interface, or a `*Interop` bridge. \
-                                 If you meant to project a WinRT interface directly, use the full \
-                                 namespace-projection mode (no `--class-name`).",
+                                "{}.{} is an exclusive IInspectable interface, not a public runtime \
+                                 class or standalone WinRT interface.",
                                 ns, cls
                             ));
                         }
                     }
                     if let Some(coclass) = com_metadata::parse_com_coclass(&winmd, ns, cls)? {
                         com_coclasses.push(coclass);
+                        continue;
+                    }
+                    if let Some(interface) = meta::parse_interfaces(&winmd, ns)
+                        .into_iter()
+                        .find(|interface| interface.name == cls.as_str())
+                    {
+                        requested_winrt_interfaces.push(interface);
                         continue;
                     }
                     match meta::parse_class(&winmd, ns, cls) {
@@ -553,17 +579,16 @@ fn run() -> Result<(), String> {
                     }
 
                     if !dry_run {
-                        fs::create_dir_all(&com_output_dir).map_err(|e| {
-                            format!(
-                                "Failed to create COM output directory '{}': {}",
-                                com_output_dir.display(),
-                                e
-                            )
-                        })?;
+                        ensure_safe_generated_parent(
+                            output_dir,
+                            &com_output_dir.join(".dynwinrt-write-check"),
+                        )?;
                         let manifest_update =
                             prepare_com_generation_manifest(&com_output_dir, &root_files)?;
                         for (file_name, content) in &planned_files {
-                            fs::write(com_output_dir.join(file_name), content)
+                            let path = com_output_dir.join(file_name);
+                            ensure_safe_generated_destination(output_dir, &path)?;
+                            fs::write(&path, content)
                                 .map_err(|e| format!("Failed to write {}: {}", file_name, e))?;
                         }
                         apply_com_generation_manifest(&com_output_dir, manifest_update)?;
@@ -584,16 +609,19 @@ fn run() -> Result<(), String> {
                         write_com_js_barrel(&com_output_dir)?;
                     }
 
-                    if classes.is_empty() {
+                    if classes.is_empty() && requested_winrt_interfaces.is_empty() {
                         if !dry_run {
                             finalize_com_generation(output_dir)?;
+                        }
+                        if let Some(transaction) = output_transaction.take() {
+                            transaction.commit()?;
                         }
                         return Ok(());
                     }
                 }
 
                 winui::add_implicit_classes(&winmd, &mut classes);
-                let mut implicit_interfaces = Vec::new();
+                let mut implicit_interfaces = requested_winrt_interfaces;
                 winui::add_implicit_interfaces(&winmd, &classes, &mut implicit_interfaces);
                 let existing_python_identities = if lang == "py" && !dry_run {
                     read_python_type_inventory(output_dir)?
@@ -870,10 +898,9 @@ fn run() -> Result<(), String> {
             if lang == "py" && !dry_run {
                 write_python_package_manifest(output_dir, final_output_dir)?;
                 write_python_generated_inventory(output_dir, pyi)?;
-                python_output
-                    .take()
-                    .expect("Python output transaction must exist")
-                    .commit()?;
+            }
+            if let Some(transaction) = output_transaction.take() {
+                transaction.commit()?;
             }
         }
     }
@@ -901,8 +928,30 @@ fn generate_for_types(
     all_classes.extend(deps.classes);
     all_interfaces.extend(deps.interfaces);
     all_enums.extend(deps.enums);
+    let previous_javascript_records = if lang != "py" {
+        if dry_run {
+            check_javascript_layout_inventory(output_dir)?;
+        } else {
+            ensure_javascript_layout_inventory(output_dir)?;
+        }
+        read_javascript_type_inventory(output_dir)?
+    } else {
+        Vec::new()
+    };
     if lang != "py" {
-        validate_unique_class_output_names(&all_classes)?;
+        validate_retained_javascript_generics(winmd, &previous_javascript_records)?;
+        restore_incremental_javascript_collision_members(
+            winmd,
+            &previous_javascript_records,
+            &mut all_classes,
+            &mut all_interfaces,
+            &mut all_enums,
+        )?;
+        let restored_deps =
+            resolve_dependencies_for_lang(winmd, &all_classes, &all_interfaces, &all_enums, lang);
+        all_classes.extend(restored_deps.classes);
+        all_interfaces.extend(restored_deps.interfaces);
+        all_enums.extend(restored_deps.enums);
     }
 
     // Newly-merged dependency types haven't been doc-annotated yet. Apply doc table
@@ -917,6 +966,37 @@ fn generate_for_types(
     for e in all_enums.iter_mut() {
         doc_table.apply_to_enum(e);
     }
+    let current_javascript_records = if lang != "py" {
+        javascript_type_layout_records(&all_classes, &all_interfaces, &all_enums)?
+    } else {
+        Vec::new()
+    };
+    let _javascript_layout = if lang != "py" {
+        validate_javascript_type_layout_records(
+            &previous_javascript_records,
+            &current_javascript_records,
+        )?;
+        let identities = previous_javascript_records
+            .iter()
+            .chain(current_javascript_records.iter())
+            .map(|record| record.identity.clone());
+        let _layout = javascript::install_javascript_module_layout_with_records(
+            identities,
+            previous_javascript_records.iter().cloned(),
+        )?;
+        if !output_dir.join(JAVASCRIPT_TYPE_INVENTORY).is_file() {
+            ensure_uninventoried_javascript_targets_absent(output_dir)?;
+        }
+        javascript::apply_javascript_projected_names(
+            &mut all_classes,
+            &mut all_interfaces,
+            &mut all_enums,
+        );
+        validate_unique_class_output_names(&all_classes)?;
+        Some(_layout)
+    } else {
+        None
+    };
 
     // Compute the set of interfaces `generate_js_files` will actually emit
     // (matches the class-name-collision + no-IID filter there). Everything
@@ -966,6 +1046,15 @@ fn generate_for_types(
             }
         }
     }
+    if lang != "py" {
+        for target in javascript::javascript_output_targets() {
+            known_types.insert(target.projected_name);
+            known_types.insert(format!(
+                "{}.{}",
+                target.identity.namespace, target.identity.name
+            ));
+        }
+    }
 
     let delegate_type_names: HashSet<String> = all_interfaces
         .iter()
@@ -979,7 +1068,7 @@ fn generate_for_types(
     let mut req_iface_count: HashMap<String, (&meta::InterfaceMeta, usize)> = HashMap::new();
     for class in &all_classes {
         for ri in &class.required_interfaces {
-            if ri.iid.is_empty() {
+            if ri.iid.is_empty() || ri.generic_piid.is_some() {
                 continue;
             }
             req_iface_count
@@ -988,11 +1077,26 @@ fn generate_for_types(
                 .or_insert((ri, 1));
         }
     }
-    let shared_iids: HashSet<String> = req_iface_count
+    let mut shared_iids: HashSet<String> = req_iface_count
         .iter()
         .filter(|(_, (_, count))| *count >= 2)
         .map(|(iid, _)| iid.clone())
         .collect();
+    if lang != "py" {
+        shared_iids.extend(
+            all_interfaces
+                .iter()
+                .filter(|interface| interface.generic_piid.is_none())
+                .map(|interface| interface.iid.clone()),
+        );
+        shared_iids.extend(previous_javascript_records.iter().filter_map(|record| {
+            (record.identity.kind == javascript::JavaScriptTypeKind::Interface
+                && record.generic_spec.is_empty())
+            .then(|| record.abi_identity.strip_prefix("iid:"))
+            .flatten()
+            .map(str::to_string)
+        }));
+    }
 
     let shared_interfaces: Vec<meta::InterfaceMeta> = req_iface_count
         .iter()
@@ -1063,6 +1167,14 @@ fn generate_for_types(
                 &delegate_sig_refs,
                 &delegate_param_wraps,
             )?;
+            write_javascript_type_inventory(
+                output_dir,
+                &emitted_javascript_type_records(
+                    output_dir,
+                    &previous_javascript_records,
+                    &current_javascript_records,
+                )?,
+            )?;
         }
         drop(python_layout);
     }
@@ -1126,6 +1238,827 @@ fn install_python_generation_layout(
     python::install_python_module_layout(identities)
 }
 
+const JAVASCRIPT_TYPE_INVENTORY: &str = ".dynwinrt-js-types";
+const JAVASCRIPT_TYPE_INVENTORY_VERSION: u32 = 5;
+const JAVASCRIPT_FORWARDER_HEADER: &str =
+    "// Generated by dynwinrt-codegen — compatibility forwarder\n";
+
+#[derive(Serialize, Deserialize)]
+struct JavaScriptGenericSpec {
+    generic_name: String,
+    piid: String,
+    iid: String,
+    args: Vec<TypeMeta>,
+}
+
+fn encode_javascript_generic_spec(interface: &meta::InterfaceMeta) -> Result<String, String> {
+    let Some(piid) = &interface.generic_piid else {
+        return Ok(String::new());
+    };
+    let spec = JavaScriptGenericSpec {
+        generic_name: javascript::parameterized_interface_base_name(
+            &interface.name,
+            &interface.generic_args,
+        ),
+        piid: piid.clone(),
+        iid: interface.iid.clone(),
+        args: interface.generic_args.clone(),
+    };
+    let json = serde_json::to_vec(&spec)
+        .map_err(|error| format!("Failed to serialize JavaScript generic identity: {error}"))?;
+    Ok(json.into_iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+fn decode_javascript_generic_spec(encoded: &str) -> Result<JavaScriptGenericSpec, String> {
+    if encoded.len() % 2 != 0 || !encoded.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("Invalid JavaScript generic identity encoding".into());
+    }
+    let bytes = encoded
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let value = std::str::from_utf8(pair)
+                .map_err(|error| format!("Invalid JavaScript generic identity: {error}"))?;
+            u8::from_str_radix(value, 16)
+                .map_err(|error| format!("Invalid JavaScript generic identity: {error}"))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    serde_json::from_slice(&bytes)
+        .map_err(|error| format!("Invalid JavaScript generic identity JSON: {error}"))
+}
+
+fn validate_javascript_generic_spec(
+    record: &javascript::JavaScriptTypeLayoutRecord,
+) -> Result<(), String> {
+    if record.abi_identity.starts_with("piid:") {
+        if record.generic_spec.is_empty() {
+            return Err(format!(
+                "JavaScript generic inventory record `{}.{}` has no reconstruction metadata",
+                record.identity.namespace, record.identity.name
+            ));
+        }
+        let spec = decode_javascript_generic_spec(&record.generic_spec)?;
+        let expected_name = javascript::parameterized_name(
+            &record.identity.namespace,
+            &spec.generic_name,
+            &spec.piid,
+            &spec.args,
+        );
+        let expected_abi =
+            javascript::parameterized_abi_identity(&spec.piid, &spec.iid, &spec.args);
+        let expected_variant = javascript::parameterized_reference_identity(&spec.piid, &spec.args);
+        if record.identity.name != expected_name
+            || record.abi_identity != expected_abi
+            || record.identity.variant != expected_variant
+        {
+            return Err(format!(
+                "JavaScript generic inventory record `{}.{}` is inconsistent",
+                record.identity.namespace, record.identity.name
+            ));
+        }
+    } else if !record.generic_spec.is_empty() {
+        return Err(format!(
+            "Non-generic JavaScript inventory record `{}.{}` has generic reconstruction metadata",
+            record.identity.namespace, record.identity.name
+        ));
+    }
+    Ok(())
+}
+
+fn javascript_inventory_checksum(lines: &BTreeSet<String>) -> u64 {
+    lines
+        .iter()
+        .flat_map(|line| line.bytes().chain(std::iter::once(b'\n')))
+        .fold(0xcbf29ce484222325, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+        })
+}
+
+fn recover_javascript_type_inventory(output_dir: &Path) -> Result<(), String> {
+    let path = output_dir.join(JAVASCRIPT_TYPE_INVENTORY);
+    let backup = output_dir.join(format!("{JAVASCRIPT_TYPE_INVENTORY}.backup"));
+    let temporary = output_dir.join(format!("{JAVASCRIPT_TYPE_INVENTORY}.tmp"));
+    if path.is_file() && backup.is_file() {
+        fs::remove_file(&backup)
+            .map_err(|error| format!("Failed to remove {}: {error}", backup.display()))?;
+    } else if !path.exists() && backup.is_file() {
+        fs::rename(&backup, &path).map_err(|error| {
+            format!(
+                "Failed to recover JavaScript type inventory {}: {error}",
+                path.display()
+            )
+        })?;
+    }
+    if temporary.is_file() {
+        fs::remove_file(&temporary)
+            .map_err(|error| format!("Failed to remove {}: {error}", temporary.display()))?;
+    }
+    Ok(())
+}
+
+fn ensure_javascript_layout_inventory(output_dir: &Path) -> Result<(), String> {
+    if !output_dir.is_dir() {
+        return Ok(());
+    }
+    recover_javascript_type_inventory(output_dir)?;
+    check_javascript_layout_inventory(output_dir)
+}
+
+fn check_javascript_layout_inventory(output_dir: &Path) -> Result<(), String> {
+    if !output_dir.is_dir() {
+        return Ok(());
+    }
+    if output_dir.join(JAVASCRIPT_TYPE_INVENTORY).is_file() {
+        return Ok(());
+    }
+    for suffix in [".backup", ".tmp"] {
+        let pending = output_dir.join(format!("{JAVASCRIPT_TYPE_INVENTORY}{suffix}"));
+        if pending.is_file() {
+            return Err(format!(
+                "JavaScript type inventory recovery is pending in '{}'; run generation without \
+                 --dry-run to recover it.",
+                output_dir.display()
+            ));
+        }
+    }
+    fn contains_generated_implementation(root: &Path, current: &Path) -> bool {
+        let Ok(entries) = fs::read_dir(current) else {
+            return false;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(metadata) = fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if is_link_or_reparse_point(&metadata) {
+                continue;
+            }
+            if metadata.is_dir() {
+                if current == root && path.file_name().is_some_and(|name| name == "com") {
+                    continue;
+                }
+                if contains_generated_implementation(root, &path) {
+                    return true;
+                }
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if matches!(
+                name,
+                "index.js"
+                    | "index.mjs"
+                    | "index.d.ts"
+                    | "index.proxy.js"
+                    | "index.getter.js"
+                    | "lifetime.js"
+                    | "lifetime.d.ts"
+                    | "package.json"
+            ) {
+                continue;
+            }
+            if (name.ends_with(".js") || name.ends_with(".d.ts"))
+                && fs::read_to_string(&path)
+                    .map(|content| {
+                        content.starts_with("// Generated by dynwinrt-codegen")
+                            && !content.contains("compatibility forwarder")
+                    })
+                    .unwrap_or(false)
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    if contains_generated_implementation(output_dir, output_dir) {
+        return Err(format!(
+            "Existing JavaScript bindings in '{}' use the legacy flat layout and cannot be \
+             updated incrementally without type identities. Remove that generated directory \
+             and regenerate it once to migrate to the namespace layout.",
+            output_dir.display()
+        ));
+    }
+    Ok(())
+}
+
+fn javascript_type_identities(
+    classes: &[meta::ClassMeta],
+    interfaces: &[meta::InterfaceMeta],
+    enums: &[TypeMeta],
+) -> Result<Vec<javascript::JavaScriptTypeIdentity>, String> {
+    Ok(javascript_type_layout_records(classes, interfaces, enums)?
+        .into_iter()
+        .map(|record| record.identity)
+        .collect())
+}
+
+fn javascript_interface_abi_identity(interface: &meta::InterfaceMeta) -> String {
+    javascript::interface_abi_identity(interface)
+}
+
+fn javascript_type_layout_records(
+    classes: &[meta::ClassMeta],
+    interfaces: &[meta::InterfaceMeta],
+    enums: &[TypeMeta],
+) -> Result<Vec<javascript::JavaScriptTypeLayoutRecord>, String> {
+    let record = |identity: javascript::JavaScriptTypeIdentity, abi_identity: String| {
+        javascript::JavaScriptTypeLayoutRecord::new(
+            identity.clone(),
+            identity.name.clone(),
+            abi_identity,
+        )
+    };
+    let interface_record = |interface: &meta::InterfaceMeta| -> Result<_, String> {
+        let abi_identity = javascript_interface_abi_identity(interface);
+        let kind = javascript_interface_kind(interface);
+        let identity = if interface.generic_piid.is_some() {
+            javascript::JavaScriptTypeIdentity::with_variant(
+                &interface.namespace,
+                &javascript::parameterized_interface_name(
+                    &interface.namespace,
+                    &interface.name,
+                    interface.generic_piid.as_deref().unwrap_or_default(),
+                    &interface.generic_args,
+                ),
+                kind,
+                &javascript::parameterized_reference_identity(
+                    interface.generic_piid.as_deref().unwrap_or_default(),
+                    &interface.generic_args,
+                ),
+            )
+        } else {
+            javascript::JavaScriptTypeIdentity::new(&interface.namespace, &interface.name, kind)
+        };
+        Ok(record(identity, abi_identity)
+            .with_generic_spec(encode_javascript_generic_spec(interface)?))
+    };
+    let class_identities = classes
+        .iter()
+        .map(|class| (class.namespace.as_str(), class.name.as_str()))
+        .collect::<HashSet<_>>();
+    let mut required_iid_counts = HashMap::<&str, usize>::new();
+    for interface in classes
+        .iter()
+        .flat_map(|class| class.required_interfaces.iter())
+        .filter(|interface| interface.generic_piid.is_none() && !interface.iid.is_empty())
+    {
+        *required_iid_counts
+            .entry(interface.iid.as_str())
+            .or_default() += 1;
+    }
+    let mut records = classes
+        .iter()
+        .map(|class| {
+            record(
+                javascript::JavaScriptTypeIdentity::new(
+                    &class.namespace,
+                    &class.name,
+                    javascript::JavaScriptTypeKind::Class,
+                ),
+                "type".into(),
+            )
+        })
+        .collect::<Vec<_>>();
+    records.extend(
+        classes
+            .iter()
+            .flat_map(|class| class.required_interfaces.iter())
+            .filter(|interface| {
+                !interface.iid.is_empty()
+                    && interface.generic_piid.is_none()
+                    && required_iid_counts
+                        .get(interface.iid.as_str())
+                        .is_some_and(|count| *count >= 2)
+                    && !class_identities
+                        .contains(&(interface.namespace.as_str(), interface.name.as_str()))
+            })
+            .map(interface_record)
+            .collect::<Result<Vec<_>, String>>()?,
+    );
+    records.extend(
+        interfaces
+            .iter()
+            .filter(|interface| {
+                !interface.iid.is_empty()
+                    && !class_identities
+                        .contains(&(interface.namespace.as_str(), interface.name.as_str()))
+            })
+            .map(interface_record)
+            .collect::<Result<Vec<_>, String>>()?,
+    );
+    records.extend(enums.iter().filter_map(|typ| {
+        let TypeMeta::Enum {
+            namespace, name, ..
+        } = typ
+        else {
+            return None;
+        };
+        (!class_identities.contains(&(namespace.as_str(), name.as_str()))).then(|| {
+            record(
+                javascript::JavaScriptTypeIdentity::new(
+                    namespace,
+                    name,
+                    javascript::JavaScriptTypeKind::Enum,
+                ),
+                "type".into(),
+            )
+        })
+    }));
+    Ok(records)
+}
+
+fn javascript_interface_kind(interface: &meta::InterfaceMeta) -> javascript::JavaScriptTypeKind {
+    if interface
+        .methods
+        .iter()
+        .any(|method| method.name == ".ctor")
+        && interface
+            .methods
+            .iter()
+            .any(|method| method.name == "Invoke")
+    {
+        javascript::JavaScriptTypeKind::Delegate
+    } else {
+        javascript::JavaScriptTypeKind::Interface
+    }
+}
+
+fn read_javascript_type_inventory(
+    output_dir: &Path,
+) -> Result<Vec<javascript::JavaScriptTypeLayoutRecord>, String> {
+    if output_dir.is_dir() && !output_contains_current_directory(output_dir)? {
+        ensure_generated_tree_has_no_links(output_dir)?;
+    }
+    let path = output_dir.join(JAVASCRIPT_TYPE_INVENTORY);
+    if !path.is_file() {
+        return Ok(Vec::new());
+    }
+    let content = fs::read_to_string(&path)
+        .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
+    let mut source_lines = content.lines();
+    let header = source_lines
+        .next()
+        .ok_or_else(|| format!("Empty JavaScript type inventory {}", path.display()))?;
+    let mut header_parts = header.split('|');
+    let version = header_parts
+        .next()
+        .and_then(|value| value.strip_prefix("version="))
+        .and_then(|value| value.parse::<u32>().ok());
+    let count = header_parts
+        .next()
+        .and_then(|value| value.strip_prefix("count="))
+        .and_then(|value| value.parse::<usize>().ok());
+    let checksum = header_parts
+        .next()
+        .and_then(|value| value.strip_prefix("checksum="))
+        .and_then(|value| u64::from_str_radix(value, 16).ok());
+    if version != Some(JAVASCRIPT_TYPE_INVENTORY_VERSION)
+        || count.is_none()
+        || checksum.is_none()
+        || header_parts.next().is_some()
+    {
+        return Err(format!(
+            "Invalid JavaScript type inventory header in {}",
+            path.display()
+        ));
+    }
+    let lines = source_lines
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect::<BTreeSet<_>>();
+    if count != Some(lines.len()) || checksum != Some(javascript_inventory_checksum(&lines)) {
+        return Err(format!(
+            "JavaScript type inventory {} is incomplete or corrupted",
+            path.display()
+        ));
+    }
+    let records = lines
+        .iter()
+        .map(|line| {
+            javascript::JavaScriptTypeLayoutRecord::from_inventory_line(line).ok_or_else(|| {
+                format!(
+                    "Invalid JavaScript generated type inventory entry `{line}` in {}",
+                    path.display()
+                )
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    for record in &records {
+        validate_javascript_generic_spec(record)?;
+    }
+    validate_javascript_inventory_files(output_dir, &records)?;
+    Ok(records)
+}
+
+fn validate_javascript_inventory_files(
+    output_dir: &Path,
+    records: &[javascript::JavaScriptTypeLayoutRecord],
+) -> Result<(), String> {
+    let _layout = javascript::install_javascript_module_layout_with_records(
+        records.iter().map(|record| record.identity.clone()),
+        records.iter().cloned(),
+    )?;
+    let targets = javascript::javascript_output_targets();
+    let expected_canonical = targets
+        .iter()
+        .map(|target| target.canonical_module.clone())
+        .collect::<BTreeSet<_>>();
+    let shared_output = output_contains_current_directory(output_dir)?;
+    let expected_namespace_roots = expected_canonical
+        .iter()
+        .filter_map(|module| module.split('/').next().map(str::to_string))
+        .collect::<BTreeSet<_>>();
+    let mut actual_canonical = BTreeSet::new();
+
+    fn visit(
+        root: &Path,
+        current: &Path,
+        actual_canonical: &mut BTreeSet<String>,
+        shared_output: bool,
+        expected_namespace_roots: &BTreeSet<String>,
+    ) {
+        let Ok(entries) = fs::read_dir(current) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if path == root.join("com") {
+                    continue;
+                }
+                if shared_output
+                    && current == root
+                    && path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_none_or(|name| !expected_namespace_roots.contains(name))
+                {
+                    continue;
+                }
+                visit(
+                    root,
+                    &path,
+                    actual_canonical,
+                    shared_output,
+                    expected_namespace_roots,
+                );
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if !name.ends_with(".js")
+                || matches!(
+                    name,
+                    "index.js" | "index.proxy.js" | "index.getter.js" | "lifetime.js"
+                )
+            {
+                continue;
+            }
+            let Ok(content) = fs::read_to_string(&path) else {
+                continue;
+            };
+            if !content.starts_with(JAVASCRIPT_FORWARDER_HEADER)
+                && content.starts_with("// Generated by dynwinrt-codegen")
+                && let Ok(relative) = path.strip_prefix(root)
+            {
+                actual_canonical.insert(
+                    relative
+                        .with_extension("")
+                        .to_string_lossy()
+                        .replace('\\', "/"),
+                );
+            }
+        }
+    }
+    visit(
+        output_dir,
+        output_dir,
+        &mut actual_canonical,
+        shared_output,
+        &expected_namespace_roots,
+    );
+
+    if actual_canonical != expected_canonical {
+        let summarize =
+            |values: BTreeSet<String>| values.into_iter().take(5).collect::<Vec<_>>().join(", ");
+        return Err(format!(
+            "JavaScript generated type inventory does not match '{}' (missing canonical: [{}]; \
+             unexpected canonical: [{}])",
+            output_dir.display(),
+            summarize(
+                expected_canonical
+                    .difference(&actual_canonical)
+                    .cloned()
+                    .collect()
+            ),
+            summarize(
+                actual_canonical
+                    .difference(&expected_canonical)
+                    .cloned()
+                    .collect()
+            ),
+        ));
+    }
+    for target in targets {
+        for suffix in ["js", "d.ts"] {
+            let canonical = output_dir.join(format!("{}.{suffix}", target.canonical_module));
+            if !canonical.is_file() {
+                return Err(format!(
+                    "JavaScript generated type inventory references missing files for `{}.{}`",
+                    target.identity.namespace, target.identity.name
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn ensure_uninventoried_javascript_targets_absent(output_dir: &Path) -> Result<(), String> {
+    for target in javascript::javascript_output_targets() {
+        for suffix in ["js", "d.ts"] {
+            let path = output_dir.join(format!("{}.{suffix}", target.canonical_module));
+            if path.exists() {
+                return Err(format!(
+                    "Existing JavaScript canonical module '{}' has no type inventory. Remove the \
+                     incomplete generated output and regenerate it.",
+                    path.display()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_javascript_type_layout_records(
+    previous: &[javascript::JavaScriptTypeLayoutRecord],
+    current: &[javascript::JavaScriptTypeLayoutRecord],
+) -> Result<(), String> {
+    for record in previous.iter().chain(current) {
+        validate_javascript_generic_spec(record)?;
+    }
+    let mut previous_by_identity = HashMap::new();
+    for record in previous {
+        if previous_by_identity
+            .insert(record.identity.clone(), record)
+            .is_some()
+        {
+            return Err(format!(
+                "JavaScript type inventory contains duplicate layout records for `{}.{}`",
+                record.identity.namespace, record.identity.name
+            ));
+        }
+    }
+
+    let mut abi_by_identity = previous
+        .iter()
+        .map(|record| (record.identity.clone(), record.abi_identity.as_str()))
+        .collect::<HashMap<_, _>>();
+    for record in current {
+        if let Some(existing) = abi_by_identity.get(&record.identity) {
+            if *existing != record.abi_identity {
+                return Err(format!(
+                    "JavaScript output identity `{}.{}` maps to multiple WinRT ABI identities \
+                     (`{existing}` and `{}`). Closed generic interfaces with identical generated \
+                     names are not supported; generation stopped before either module was overwritten.",
+                    record.identity.namespace, record.identity.name, record.abi_identity,
+                ));
+            }
+        } else {
+            abi_by_identity.insert(record.identity.clone(), &record.abi_identity);
+        }
+    }
+    Ok(())
+}
+
+fn restore_javascript_interface(
+    winmd: &str,
+    record: &javascript::JavaScriptTypeLayoutRecord,
+) -> Result<meta::InterfaceMeta, String> {
+    let interface = if record.generic_spec.is_empty() {
+        meta::parse_interface_by_name(winmd, &record.identity.namespace, &record.identity.name)
+    } else {
+        let spec = decode_javascript_generic_spec(&record.generic_spec)?;
+        meta::parse_parameterized_interface_by_name(
+            winmd,
+            &record.identity.namespace,
+            &spec.generic_name,
+            &spec.piid,
+            &spec.args,
+        )
+    }
+    .ok_or_else(|| {
+        format!(
+            "Cannot restore prior JavaScript collision member `{}.{}` from the current metadata",
+            record.identity.namespace, record.identity.name
+        )
+    })?;
+    let abi_identity = javascript_interface_abi_identity(&interface);
+    if abi_identity != record.abi_identity
+        || javascript_interface_kind(&interface) != record.identity.kind
+    {
+        return Err(format!(
+            "Cannot restore prior JavaScript collision member `{}.{}` with ABI identity `{}`",
+            record.identity.namespace, record.identity.name, record.abi_identity
+        ));
+    }
+    Ok(interface)
+}
+
+fn validate_retained_javascript_generics(
+    winmd: &str,
+    records: &[javascript::JavaScriptTypeLayoutRecord],
+) -> Result<(), String> {
+    let generic_records = records
+        .iter()
+        .filter(|record| !record.generic_spec.is_empty())
+        .collect::<Vec<_>>();
+    let requests = generic_records
+        .iter()
+        .map(|record| {
+            let spec = decode_javascript_generic_spec(&record.generic_spec)?;
+            Ok(meta::ParameterizedInterfaceRequest {
+                namespace: record.identity.namespace.clone(),
+                generic_name: spec.generic_name,
+                piid: spec.piid,
+                args: spec.args,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let interfaces = meta::parse_parameterized_interfaces_by_name(winmd, &requests);
+    for (record, interface) in generic_records.into_iter().zip(interfaces) {
+        let interface = interface.ok_or_else(|| {
+            format!(
+                "Cannot validate retained JavaScript generic `{}.{}` against current metadata",
+                record.identity.namespace, record.identity.name
+            )
+        })?;
+        if javascript_interface_kind(&interface) != record.identity.kind
+            || javascript_interface_abi_identity(&interface) != record.abi_identity
+        {
+            return Err(format!(
+                "Retained JavaScript generic `{}.{}` changed ABI in current metadata",
+                record.identity.namespace, record.identity.name
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn restore_incremental_javascript_collision_members(
+    winmd: &str,
+    previous: &[javascript::JavaScriptTypeLayoutRecord],
+    classes: &mut Vec<meta::ClassMeta>,
+    interfaces: &mut Vec<meta::InterfaceMeta>,
+    enums: &mut Vec<TypeMeta>,
+) -> Result<(), String> {
+    let current = javascript_type_identities(classes, interfaces, enums)?
+        .into_iter()
+        .collect::<HashSet<_>>();
+    let known = previous
+        .iter()
+        .map(|record| record.identity.clone())
+        .chain(current.iter().cloned())
+        .collect::<BTreeSet<_>>();
+    let mut counts = HashMap::<String, usize>::new();
+    for identity in &known {
+        *counts.entry(identity.name.clone()).or_default() += 1;
+    }
+    let mut enum_namespaces = HashMap::<String, Vec<TypeMeta>>::new();
+
+    for record in previous {
+        let identity = &record.identity;
+        if current.contains(identity) || counts[&identity.name] < 2 {
+            continue;
+        }
+        match identity.kind {
+            javascript::JavaScriptTypeKind::Class => {
+                if let Some(class) = meta::parse_class(winmd, &identity.namespace, &identity.name) {
+                    classes.push(class);
+                } else {
+                    return Err(format!(
+                        "Cannot restore prior JavaScript collision member `{}.{}` from the current metadata",
+                        identity.namespace, identity.name
+                    ));
+                }
+            }
+            javascript::JavaScriptTypeKind::Interface
+            | javascript::JavaScriptTypeKind::Delegate => {
+                interfaces.push(restore_javascript_interface(winmd, record)?);
+            }
+            javascript::JavaScriptTypeKind::Enum => {
+                let candidates = enum_namespaces
+                    .entry(identity.namespace.clone())
+                    .or_insert_with(|| meta::parse_enums(winmd, &identity.namespace));
+                if let Some(en) = candidates.iter().find(
+                    |typ| matches!(typ, TypeMeta::Enum { name, .. } if name == &identity.name),
+                ) {
+                    enums.push(en.clone());
+                } else {
+                    return Err(format!(
+                        "Cannot restore prior JavaScript collision member `{}.{}` from the current metadata",
+                        identity.namespace, identity.name
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn write_javascript_type_inventory(
+    output_dir: &Path,
+    records: &[javascript::JavaScriptTypeLayoutRecord],
+) -> Result<(), String> {
+    let lines = records
+        .iter()
+        .map(javascript::JavaScriptTypeLayoutRecord::to_inventory_line)
+        .collect::<BTreeSet<_>>();
+    let content = format!(
+        "version={}|count={}|checksum={:016x}\n{}\n",
+        JAVASCRIPT_TYPE_INVENTORY_VERSION,
+        lines.len(),
+        javascript_inventory_checksum(&lines),
+        lines.iter().cloned().collect::<Vec<_>>().join("\n")
+    );
+    let path = output_dir.join(JAVASCRIPT_TYPE_INVENTORY);
+    let backup = output_dir.join(format!("{JAVASCRIPT_TYPE_INVENTORY}.backup"));
+    let temporary = output_dir.join(format!("{JAVASCRIPT_TYPE_INVENTORY}.tmp"));
+    recover_javascript_type_inventory(output_dir)?;
+    ensure_safe_generated_destination(output_dir, &temporary)?;
+    ensure_safe_generated_destination(output_dir, &path)?;
+    ensure_safe_generated_destination(output_dir, &backup)?;
+    write_file(&temporary, &content)?;
+    let had_existing = path.is_file();
+    if had_existing {
+        fs::rename(&path, &backup).map_err(|error| {
+            format!(
+                "Failed to stage JavaScript type inventory {}: {error}",
+                path.display()
+            )
+        })?;
+    }
+    if let Err(error) = fs::rename(&temporary, &path) {
+        if had_existing {
+            let _ = fs::rename(&backup, &path);
+        }
+        return Err(format!(
+            "Failed to replace JavaScript type inventory {}: {error}",
+            path.display()
+        ));
+    }
+    if had_existing {
+        fs::remove_file(&backup)
+            .map_err(|error| format!("Failed to remove {}: {error}", backup.display()))?;
+    }
+    Ok(())
+}
+
+fn emitted_javascript_type_records(
+    output_dir: &Path,
+    previous: &[javascript::JavaScriptTypeLayoutRecord],
+    current: &[javascript::JavaScriptTypeLayoutRecord],
+) -> Result<Vec<javascript::JavaScriptTypeLayoutRecord>, String> {
+    let identities = previous
+        .iter()
+        .chain(current)
+        .map(|record| {
+            (
+                record.identity.clone(),
+                (record.abi_identity.clone(), record.generic_spec.clone()),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    javascript::javascript_output_targets()
+        .into_iter()
+        .filter(|target| {
+            output_dir
+                .join(format!("{}.js", target.canonical_module))
+                .is_file()
+                && output_dir
+                    .join(format!("{}.d.ts", target.canonical_module))
+                    .is_file()
+        })
+        .map(|target| {
+            let (abi_identity, generic_spec) =
+                identities.get(&target.identity).cloned().ok_or_else(|| {
+                    format!(
+                        "Missing WinRT ABI identity for JavaScript output `{}.{}`",
+                        target.identity.namespace, target.identity.name
+                    )
+                })?;
+            Ok(javascript::JavaScriptTypeLayoutRecord::new(
+                target.identity,
+                target.projected_name,
+                abi_identity,
+            )
+            .with_generic_spec(generic_spec))
+        })
+        .collect()
+}
+
 fn validate_unique_class_output_names(classes: &[meta::ClassMeta]) -> Result<(), String> {
     let mut full_name_by_short_name: HashMap<&str, &str> = HashMap::new();
     for class in classes {
@@ -1146,6 +2079,244 @@ fn validate_unique_class_output_names(classes: &[meta::ClassMeta]) -> Result<(),
     Ok(())
 }
 
+fn emit_javascript_projected_file(
+    output_dir: &Path,
+    mut projected: dynwinrt_codegen::codegen::projected::ProjectedFile,
+) -> Result<(), String> {
+    let target = javascript::configure_projected_file(&mut projected).ok_or_else(|| {
+        format!(
+            "JavaScript module layout does not contain projected type `{}`",
+            projected.name
+        )
+    })?;
+    let mut js = render_js::render(&projected);
+    let mut dts = render_dts::render(&projected);
+    let lifetime = javascript::root_relative_module(&target.canonical_module, "lifetime");
+    js = js.replace(
+        "require('./lifetime.js')",
+        &format!("require('{lifetime}.js')"),
+    );
+    if target.collides {
+        if target.identity.kind == javascript::JavaScriptTypeKind::Delegate {
+            js.push_str(&format!(
+                "exports.IID_{native} = exports.IID_{projected};\n\
+                 exports.{native}_PARAM_TYPES = exports.{projected}_PARAM_TYPES;\n",
+                native = target.identity.name,
+                projected = target.projected_name,
+            ));
+            dts.push_str(&format!(
+                "\nexport {{ IID_{projected} as IID_{native}, \
+                 {projected}_PARAM_TYPES as {native}_PARAM_TYPES }};\n\
+                 export type {native} = {projected};\n",
+                projected = target.projected_name,
+                native = target.identity.name,
+            ));
+        } else {
+            if js.contains(&format!("exports.{} =", target.projected_name)) {
+                js.push_str(&format!(
+                    "exports.{native} = {projected};\n",
+                    native = target.identity.name,
+                    projected = target.projected_name,
+                ));
+            }
+            let projected_iid = format!("exports.IID_{} =", target.projected_name);
+            if js.contains(&projected_iid) {
+                js.push_str(&format!(
+                    "exports.IID_{native} = exports.IID_{projected};\n",
+                    native = target.identity.name,
+                    projected = target.projected_name,
+                ));
+            }
+            dts.push_str(&format!(
+                "\nexport {{ {projected} as {native} }};\n",
+                projected = target.projected_name,
+                native = target.identity.name,
+            ));
+            if dts.contains(&format!("IID_{}", target.projected_name)) {
+                dts.push_str(&format!(
+                    "export {{ IID_{projected} as IID_{native} }};\n",
+                    projected = target.projected_name,
+                    native = target.identity.name,
+                ));
+            }
+        }
+    }
+
+    let js_path = output_dir.join(format!("{}.js", target.canonical_module));
+    let dts_path = output_dir.join(format!("{}.d.ts", target.canonical_module));
+    write_generated_javascript_file(output_dir, &js_path, &js)?;
+    write_generated_javascript_file(output_dir, &dts_path, &dts)?;
+    println!("Generated {}", js_path.display());
+    Ok(())
+}
+
+fn ensure_safe_generated_parent(output_dir: &Path, destination: &Path) -> Result<(), String> {
+    if !output_dir.exists() {
+        fs::create_dir_all(output_dir).map_err(|error| {
+            format!(
+                "Failed to create JavaScript output directory {}: {error}",
+                output_dir.display()
+            )
+        })?;
+    }
+    let relative = destination.strip_prefix(output_dir).map_err(|_| {
+        format!(
+            "Generated JavaScript path '{}' is outside output directory '{}'",
+            destination.display(),
+            output_dir.display()
+        )
+    })?;
+    let relative_parent = relative.parent().unwrap_or_else(|| Path::new(""));
+    let mut current = output_dir.to_path_buf();
+    for component in relative_parent.components() {
+        let std::path::Component::Normal(segment) = component else {
+            return Err(format!(
+                "Generated JavaScript path '{}' contains an unsafe component",
+                destination.display()
+            ));
+        };
+        current.push(segment);
+        if current.exists() {
+            let metadata = fs::symlink_metadata(&current)
+                .map_err(|error| format!("Failed to inspect {}: {error}", current.display()))?;
+            if is_link_or_reparse_point(&metadata) {
+                return Err(format!(
+                    "Refusing to write generated JavaScript through linked directory '{}'",
+                    current.display()
+                ));
+            }
+            if !metadata.is_dir() {
+                return Err(format!(
+                    "Generated JavaScript parent '{}' is not a directory",
+                    current.display()
+                ));
+            }
+        } else {
+            fs::create_dir(&current)
+                .map_err(|error| format!("Failed to create {}: {error}", current.display()))?;
+        }
+    }
+    let resolved_root = fs::canonicalize(output_dir)
+        .map_err(|error| format!("Failed to resolve {}: {error}", output_dir.display()))?;
+    let resolved_parent = fs::canonicalize(&current)
+        .map_err(|error| format!("Failed to resolve {}: {error}", current.display()))?;
+    if !resolved_parent.starts_with(&resolved_root) {
+        return Err(format!(
+            "Resolved JavaScript parent '{}' escapes output directory '{}'",
+            resolved_parent.display(),
+            resolved_root.display()
+        ));
+    }
+    Ok(())
+}
+
+fn is_link_or_reparse_point(metadata: &fs::Metadata) -> bool {
+    let mut is_link = metadata.file_type().is_symlink();
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        is_link |= metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0;
+    }
+    is_link
+}
+
+fn ensure_generated_tree_has_no_links(output_dir: &Path) -> Result<(), String> {
+    fn visit(current: &Path) -> Result<(), String> {
+        let entries = fs::read_dir(current)
+            .map_err(|error| format!("Failed to read {}: {error}", current.display()))?;
+        for entry in entries {
+            let entry =
+                entry.map_err(|error| format!("Failed to read directory entry: {error}"))?;
+            let path = entry.path();
+            let metadata = fs::symlink_metadata(&path)
+                .map_err(|error| format!("Failed to inspect {}: {error}", path.display()))?;
+            if is_link_or_reparse_point(&metadata) {
+                return Err(format!(
+                    "Generated JavaScript output contains linked path '{}'",
+                    path.display()
+                ));
+            }
+            if metadata.is_dir() {
+                visit(&path)?;
+            }
+        }
+        Ok(())
+    }
+    visit(output_dir)
+}
+
+fn ensure_safe_generated_destination(output_dir: &Path, destination: &Path) -> Result<(), String> {
+    ensure_safe_generated_parent(output_dir, destination)?;
+    match fs::symlink_metadata(destination) {
+        Ok(metadata) if is_link_or_reparse_point(&metadata) => Err(format!(
+            "Refusing to write generated JavaScript through linked file '{}'",
+            destination.display()
+        )),
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!(
+            "Failed to inspect generated JavaScript destination {}: {error}",
+            destination.display()
+        )),
+    }
+}
+
+fn write_generated_javascript_file(
+    output_dir: &Path,
+    path: &Path,
+    content: &str,
+) -> Result<(), String> {
+    ensure_safe_generated_destination(output_dir, path)?;
+    if path.is_file()
+        && !fs::read_to_string(path)
+            .map(|existing| existing.starts_with("// Generated by dynwinrt-codegen"))
+            .unwrap_or(false)
+    {
+        return Err(format!(
+            "Refusing to overwrite non-generated JavaScript binding '{}'",
+            path.display()
+        ));
+    }
+    write_file(path, content)
+}
+
+fn remove_flat_javascript_forwarders(output_dir: &Path) -> Result<(), String> {
+    let entries = fs::read_dir(output_dir)
+        .map_err(|error| format!("Failed to read {}: {error}", output_dir.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("Failed to read directory entry: {error}"))?;
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path)
+            .map_err(|error| format!("Failed to inspect {}: {error}", path.display()))?;
+        if is_link_or_reparse_point(&metadata) || !metadata.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if matches!(
+            name,
+            ".dynwinrt-js-forwarders" | ".dynwinrt-js-export-forwarders"
+        ) {
+            fs::remove_file(&path)
+                .map_err(|error| format!("Failed to remove {}: {error}", path.display()))?;
+            continue;
+        }
+        if !(name.ends_with(".js") || name.ends_with(".d.ts")) {
+            continue;
+        }
+        let generated_forwarder = fs::read_to_string(&path)
+            .map(|content| content.starts_with(JAVASCRIPT_FORWARDER_HEADER))
+            .unwrap_or(false);
+        if generated_forwarder {
+            fs::remove_file(&path)
+                .map_err(|error| format!("Failed to remove {}: {error}", path.display()))?;
+        }
+    }
+    Ok(())
+}
+
 fn generate_js_files(
     output_dir: &Path,
     all_classes: &[meta::ClassMeta],
@@ -1159,19 +2330,9 @@ fn generate_js_files(
     delegate_sig_refs: &HashMap<String, Vec<String>>,
     delegate_param_wraps: &HashMap<String, Vec<String>>,
 ) -> Result<(), String> {
-    let emit = |name: &str, js_code: &str, dts_code: &str| -> Result<(), String> {
-        let js_path = output_dir.join(format!("{}.js", name));
-        let dts_path = output_dir.join(format!("{}.d.ts", name));
-        write_file(&js_path, js_code)?;
-        write_file(&dts_path, dts_code)?;
-        println!("Generated {}", js_path.display());
-        Ok(())
-    };
-
-    // Interfaces whose short name collides with a class in this batch would
-    // overwrite the class's UIElement.js / Button.js etc. Skip them; the
-    // parameterized instantiations that produce these entries are not
-    // themselves useful runtime bindings.
+    // Exclusive interfaces paired with a runtime class are implementation
+    // details. The projected layout already qualifies genuine cross-namespace
+    // collisions, so this name check only removes those class-owned entries.
     let class_names: HashSet<&str> = all_classes.iter().map(|c| c.name.as_str()).collect();
 
     // Interface entries with no IID and no generic PIID are synthesized stubs
@@ -1199,9 +2360,7 @@ fn generate_js_files(
             delegate_sig_refs,
             delegate_param_wraps,
         );
-        let js = render_js::render(&projected);
-        let dts = render_dts::render(&projected);
-        emit(&iface.name, &js, &dts)?;
+        emit_javascript_projected_file(output_dir, projected)?;
     }
     for iface in all_interfaces {
         if class_names.contains(iface.name.as_str()) {
@@ -1218,9 +2377,7 @@ fn generate_js_files(
             delegate_sig_refs,
             delegate_param_wraps,
         );
-        let js = render_js::render(&projected);
-        let dts = render_dts::render(&projected);
-        emit(&iface.name, &js, &dts)?;
+        emit_javascript_projected_file(output_dir, projected)?;
     }
     for en in all_enums {
         if let TypeMeta::Enum { name, .. } = en {
@@ -1231,9 +2388,7 @@ fn generate_js_files(
                 continue;
             }
             if let Some(projected) = project::project_enum(en) {
-                let js = render_js::render(&projected);
-                let dts = render_dts::render(&projected);
-                emit(name, &js, &dts)?;
+                emit_javascript_projected_file(output_dir, projected)?;
             }
         }
     }
@@ -1272,9 +2427,7 @@ fn generate_js_files(
             delegate_sig_refs,
             delegate_param_wraps,
         );
-        let js = render_js::render(&projected);
-        let dts = render_dts::render(&projected);
-        emit(&class.name, &js, &dts)?;
+        emit_javascript_projected_file(output_dir, projected)?;
         emitted_class_names.insert(class.name.clone());
     }
     // Second pass: emit stubs for genuinely empty class shells (parameterized
@@ -1288,7 +2441,7 @@ fn generate_js_files(
         if emitted_class_names.contains(&class.name) {
             continue;
         }
-        let stub_js = format!(
+        let mut stub_js = format!(
             "// Generated by dynwinrt-codegen \u{2014} do not edit\n\
              // Placeholder for a class whose default interface has no IID in\n\
              // the loaded winmd graph. Any attempt to use it will throw.\n\
@@ -1297,7 +2450,7 @@ fn generate_js_files(
              exports.{name} = {name};\n",
             name = class.name,
         );
-        let stub_dts = format!(
+        let mut stub_dts = format!(
             "// Generated by dynwinrt-codegen \u{2014} do not edit\n\
              // Placeholder: throwing at construction. Typed as a class so
              // other .d.ts files can still use `{name}` as a parameter /
@@ -1305,9 +2458,33 @@ fn generate_js_files(
              export declare class {name} {{ private constructor(); }}\n",
             name = class.name,
         );
-        emit(&class.name, &stub_js, &stub_dts)?;
+        let target = javascript::javascript_output_target(&class.name).ok_or_else(|| {
+            format!(
+                "JavaScript module layout does not contain projected type `{}`",
+                class.name
+            )
+        })?;
+        if target.collides {
+            stub_js.push_str(&format!(
+                "exports.{native} = {projected};\n",
+                native = target.identity.name,
+                projected = target.projected_name,
+            ));
+            stub_dts.push_str(&format!(
+                "export {{ {projected} as {native} }};\n",
+                projected = target.projected_name,
+                native = target.identity.name,
+            ));
+        }
+        let js_path = output_dir.join(format!("{}.js", target.canonical_module));
+        let dts_path = output_dir.join(format!("{}.d.ts", target.canonical_module));
+        write_generated_javascript_file(output_dir, &js_path, &stub_js)?;
+        write_generated_javascript_file(output_dir, &dts_path, &stub_dts)?;
+        println!("Generated {}", js_path.display());
         emitted_class_names.insert(class.name.clone());
     }
+
+    remove_flat_javascript_forwarders(output_dir)?;
 
     // Post-process: strip imports that reference non-existent sibling files.
     // This handles cases where a class pulls in a type reference (e.g. WinUI XAML
@@ -1321,8 +2498,8 @@ fn generate_js_files(
     Ok(())
 }
 
-/// Write the four barrel entries plus `package.json` alongside the per-type
-/// files already emitted into `output_dir`.
+/// Write the four root barrel entries plus `package.json` alongside canonical
+/// namespaced implementations.
 ///
 /// The four barrels are:
 ///   * `index.js`         — CJS `Object.defineProperty` getter barrel — real
@@ -1334,11 +2511,8 @@ fn generate_js_files(
 ///                          compatibility via `@winapp/bindings/proxy`.
 ///   * `index.d.ts`       — TypeScript declarations shared across every path.
 ///
-/// After the barrels are on disk we run `strip_broken_imports` so any lazy
-/// getters referencing sibling modules that were filtered out during emission
-/// are removed cleanly. Then we scan the directory for real `.js` files (each
-/// one corresponds to a subpath consumer can deep-import) and emit a
-/// `package.json` with the conditional-exports map.
+/// Root barrels point directly at canonical modules. Package subpaths expose
+/// only canonical namespace paths.
 fn write_js_barrel_and_manifest(output_dir: &Path, index_content: &str) -> Result<(), String> {
     let js_path = output_dir.join("index.js");
     let mjs_path = output_dir.join("index.mjs");
@@ -1350,7 +2524,9 @@ fn write_js_barrel_and_manifest(output_dir: &Path, index_content: &str) -> Resul
     // Clean up any stale `.index.ts` cache from older codegen versions.
     let stale = output_dir.join(".index.ts");
     if stale.exists() {
-        let _ = fs::remove_file(&stale);
+        ensure_safe_generated_destination(output_dir, &stale)?;
+        fs::remove_file(&stale)
+            .map_err(|error| format!("Failed to remove {}: {error}", stale.display()))?;
     }
 
     // Remove the previous opt-in getter barrel name if it exists from older
@@ -1358,7 +2534,9 @@ fn write_js_barrel_and_manifest(output_dir: &Path, index_content: &str) -> Resul
     // `index.proxy.js` is the explicit compatibility path.
     let stale_getter = output_dir.join("index.getter.js");
     if stale_getter.exists() {
-        let _ = fs::remove_file(&stale_getter);
+        ensure_safe_generated_destination(output_dir, &stale_getter)?;
+        fs::remove_file(&stale_getter)
+            .map_err(|error| format!("Failed to remove {}: {error}", stale_getter.display()))?;
     }
 
     // Sweep index.js and any other files that still reference sibling modules
@@ -1372,17 +2550,21 @@ fn write_js_barrel_and_manifest(output_dir: &Path, index_content: &str) -> Resul
     let index_content = render_index_from_existing_js_files(output_dir)?;
 
     let js_content = typescript::esm_index_to_cjs_getter(&index_content);
+    ensure_safe_generated_destination(output_dir, &js_path)?;
     fs::write(&js_path, &js_content)
         .map_err(|e| format!("Failed to write {}: {}", js_path.display(), e))?;
 
     let mjs_content = typescript::esm_index_to_esm(&index_content);
+    ensure_safe_generated_destination(output_dir, &mjs_path)?;
     fs::write(&mjs_path, &mjs_content)
         .map_err(|e| format!("Failed to write {}: {}", mjs_path.display(), e))?;
 
     let proxy_content = typescript::esm_index_to_cjs_lazy(&index_content);
+    ensure_safe_generated_destination(output_dir, &proxy_path)?;
     fs::write(&proxy_path, &proxy_content)
         .map_err(|e| format!("Failed to write {}: {}", proxy_path.display(), e))?;
 
+    ensure_safe_generated_destination(output_dir, &dts_path)?;
     fs::write(&dts_path, &index_content)
         .map_err(|e| format!("Failed to write {}: {}", dts_path.display(), e))?;
 
@@ -1460,9 +2642,11 @@ fn apply_com_generation_manifest(
     com_output_dir: &Path,
     update: ComManifestUpdate,
 ) -> Result<(), String> {
+    let output_dir = com_output_dir.parent().unwrap_or(com_output_dir);
     let path = com_output_dir.join(COM_MANIFEST_FILE);
     for stale in &update.stale_files {
         let stale_path = com_output_dir.join(stale);
+        ensure_safe_generated_destination(output_dir, &stale_path)?;
         if stale_path.exists() {
             fs::remove_file(&stale_path)
                 .map_err(|error| format!("Failed to remove {}: {error}", stale_path.display()))?;
@@ -1470,11 +2654,14 @@ fn apply_com_generation_manifest(
     }
     let content = serde_json::to_string_pretty(&update.manifest)
         .map_err(|error| format!("Failed to serialize COM generation manifest: {error}"))?;
+    ensure_safe_generated_destination(output_dir, &path)?;
     fs::write(&path, format!("{content}\n"))
         .map_err(|error| format!("Failed to write {}: {error}", path.display()))
 }
 
 fn write_com_js_barrel(com_output_dir: &Path) -> Result<(), String> {
+    let output_dir = com_output_dir.parent().unwrap_or(com_output_dir);
+    ensure_safe_generated_parent(output_dir, &com_output_dir.join(".dynwinrt-write-check"))?;
     let mut modules: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut contents: BTreeMap<String, String> = BTreeMap::new();
     let entries = fs::read_dir(com_output_dir).map_err(|error| {
@@ -1513,15 +2700,22 @@ fn write_com_js_barrel(com_output_dir: &Path) -> Result<(), String> {
     }
     let cjs_index = typescript::esm_index_to_cjs_getter(&index);
     let esm_index = typescript::esm_index_to_esm(&index);
-    fs::write(com_output_dir.join("index.js"), &cjs_index)
+    let index_js = com_output_dir.join("index.js");
+    let index_mjs = com_output_dir.join("index.mjs");
+    let index_dts = com_output_dir.join("index.d.ts");
+    let package_json = com_output_dir.join("package.json");
+    for path in [&index_js, &index_mjs, &index_dts, &package_json] {
+        ensure_safe_generated_destination(output_dir, path)?;
+    }
+    fs::write(&index_js, &cjs_index)
         .map_err(|error| format!("Failed to write COM index.js: {error}"))?;
-    fs::write(com_output_dir.join("index.mjs"), &esm_index)
+    fs::write(&index_mjs, &esm_index)
         .map_err(|error| format!("Failed to write COM index.mjs: {error}"))?;
-    fs::write(com_output_dir.join("index.d.ts"), &index)
+    fs::write(&index_dts, &index)
         .map_err(|error| format!("Failed to write COM index.d.ts: {error}"))?;
 
     let package = "{\n  \"type\": \"commonjs\",\n  \"sideEffects\": false\n}\n";
-    fs::write(com_output_dir.join("package.json"), package)
+    fs::write(&package_json, package)
         .map_err(|error| format!("Failed to write COM package boundary: {error}"))?;
     Ok(())
 }
@@ -1582,15 +2776,21 @@ fn write_com_root_compatibility_barrels(output_dir: &Path) -> Result<(), String>
     let com_dir = output_dir.join("com");
     let com_js_path = com_dir.join("index.js");
     let com_dts_path = com_dir.join("index.d.ts");
+    ensure_safe_generated_destination(output_dir, &com_js_path)?;
+    ensure_safe_generated_destination(output_dir, &com_dts_path)?;
     let com_js = fs::read_to_string(&com_js_path)
         .map_err(|error| format!("Failed to read {}: {error}", com_js_path.display()))?;
     let com_dts = fs::read_to_string(&com_dts_path)
         .map_err(|error| format!("Failed to read {}: {error}", com_dts_path.display()))?;
     let root_js = com_js.replace(", './", ", './com/");
     let root_dts = com_dts.replace("from './", "from './com/");
-    fs::write(output_dir.join("index.js"), &root_js)
+    let index_js = output_dir.join("index.js");
+    let index_dts = output_dir.join("index.d.ts");
+    ensure_safe_generated_destination(output_dir, &index_js)?;
+    ensure_safe_generated_destination(output_dir, &index_dts)?;
+    fs::write(&index_js, &root_js)
         .map_err(|error| format!("Failed to write COM compatibility index.js: {error}"))?;
-    fs::write(output_dir.join("index.d.ts"), root_dts)
+    fs::write(&index_dts, root_dts)
         .map_err(|error| format!("Failed to write COM compatibility index.d.ts: {error}"))?;
     Ok(())
 }
@@ -1623,15 +2823,14 @@ fn migrate_legacy_com_only_package(output_dir: &Path) -> Result<(), String> {
     }
 
     let com_output_dir = output_dir.join("com");
-    fs::create_dir_all(&com_output_dir).map_err(|error| {
-        format!(
-            "Failed to create COM output directory '{}': {error}",
-            com_output_dir.display()
-        )
-    })?;
+    ensure_safe_generated_parent(
+        output_dir,
+        &com_output_dir.join(".dynwinrt-migration-check"),
+    )?;
     for module in modules {
         for suffix in [".js", ".d.ts"] {
             move_legacy_com_file(
+                output_dir,
                 &output_dir.join(format!("{module}{suffix}")),
                 &com_output_dir.join(format!("{module}{suffix}")),
             )?;
@@ -1645,6 +2844,7 @@ fn migrate_legacy_com_only_package(output_dir: &Path) -> Result<(), String> {
         package_path,
     ] {
         if path.exists() {
+            ensure_safe_generated_destination(output_dir, &path)?;
             fs::remove_file(&path)
                 .map_err(|error| format!("Failed to remove {}: {error}", path.display()))?;
         }
@@ -1664,10 +2864,16 @@ fn collect_com_index_modules(index: &str) -> BTreeSet<String> {
         .collect()
 }
 
-fn move_legacy_com_file(source: &Path, destination: &Path) -> Result<(), String> {
+fn move_legacy_com_file(
+    output_dir: &Path,
+    source: &Path,
+    destination: &Path,
+) -> Result<(), String> {
     if !source.exists() {
         return Ok(());
     }
+    ensure_safe_generated_destination(output_dir, source)?;
+    ensure_safe_generated_destination(output_dir, destination)?;
     if destination.exists() {
         let source_content = fs::read(source)
             .map_err(|error| format!("Failed to read {}: {error}", source.display()))?;
@@ -1703,7 +2909,7 @@ fn has_winrt_root(output_dir: &Path) -> bool {
 fn write_bindings_manifest(output_dir: &Path) -> Result<(), String> {
     let has_winrt_root = has_winrt_root(output_dir);
     let winrt_subpath_names = if has_winrt_root {
-        collect_subpath_names_from_dir(output_dir)
+        collect_subpath_names_from_dir(output_dir)?
     } else {
         BTreeSet::new()
     };
@@ -1714,6 +2920,7 @@ fn write_bindings_manifest(output_dir: &Path) -> Result<(), String> {
         com_subpath_names: &com_subpath_names,
     });
     let path = output_dir.join("package.json");
+    ensure_safe_generated_destination(output_dir, &path)?;
     fs::write(&path, content)
         .map_err(|error| format!("Failed to write {}: {error}", path.display()))
 }
@@ -1870,66 +3077,73 @@ export interface ProjectedLifetimeScope {\n\
   dispose(): void;\n\
 }\n\
 export declare function createProjectedLifetimeScope(): ProjectedLifetimeScope;\n";
-    fs::write(output_dir.join("lifetime.js"), js)
-        .map_err(|e| format!("Failed to write lifetime.js: {e}"))?;
-    fs::write(output_dir.join("lifetime.d.ts"), dts)
-        .map_err(|e| format!("Failed to write lifetime.d.ts: {e}"))?;
+    let js_path = output_dir.join("lifetime.js");
+    let dts_path = output_dir.join("lifetime.d.ts");
+    ensure_safe_generated_destination(output_dir, &js_path)?;
+    ensure_safe_generated_destination(output_dir, &dts_path)?;
+    fs::write(&js_path, js).map_err(|e| format!("Failed to write lifetime.js: {e}"))?;
+    fs::write(&dts_path, dts).map_err(|e| format!("Failed to write lifetime.d.ts: {e}"))?;
     Ok(())
 }
 
 fn render_index_from_existing_js_files(output_dir: &Path) -> Result<String, String> {
     let mut out = String::from("// Generated by dynwinrt-codegen \u{2014} do not edit\n");
-    // Two-pass so dedup is deterministic regardless of fs::read_dir order:
-    // pass 1 collects (stem, exports) and sorts by stem; pass 2 dedupes so
-    // the alphabetically-first module wins each shared symbol (interface
-    // files like `IStringable.js` win over classes that re-export the IID).
+    let records = read_javascript_type_inventory(output_dir)?;
+    let _layout = javascript::install_javascript_module_layout_with_records(
+        records.iter().map(|record| record.identity.clone()),
+        records.iter().cloned(),
+    )?;
+    let mut targets = javascript::javascript_output_targets();
+    targets.sort_by(|left, right| left.canonical_module.cmp(&right.canonical_module));
+    let primary_owners = targets
+        .iter()
+        .map(|target| {
+            (
+                target.projected_name.clone(),
+                target.canonical_module.clone(),
+            )
+        })
+        .collect::<HashMap<_, _>>();
     let mut candidates: Vec<(String, Vec<String>)> = Vec::new();
-    let entries = fs::read_dir(output_dir).map_err(|e| {
-        format!(
-            "Failed to read output directory {}: {}",
-            output_dir.display(),
-            e
-        )
-    })?;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let Some(fname) = path.file_name().and_then(|s| s.to_str()) else {
-            continue;
-        };
-        let Some(stem) = fname.strip_suffix(".js") else {
-            continue;
-        };
-        if matches!(stem, "index" | "index.proxy" | "index.getter") {
+    for target in targets {
+        let path = output_dir.join(format!("{}.js", target.canonical_module));
+        if !path.is_file() {
             continue;
         }
-        let content = match fs::read_to_string(&path) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
+        let content = fs::read_to_string(&path)
+            .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
         let mut names = collect_public_exports_from_js(&content);
+        if target.collides {
+            names.retain(|name| name != &target.identity.name);
+        }
         names.sort();
         names.dedup();
         if names.is_empty() {
             continue;
         }
-        candidates.push((stem.to_string(), names));
+        candidates.push((target.canonical_module, names));
     }
-    // Prefer the canonical owner (module stem == export name) so shared
-    // symbols like `IMemoryBuffer` come from `IMemoryBuffer.js`, not from an
-    // alphabetically earlier consumer like `BitmapBuffer.js`.
-    let canonical: BTreeSet<String> = candidates
-        .iter()
-        .filter(|(stem, names)| names.iter().any(|n| n == stem))
-        .map(|(stem, _)| stem.clone())
-        .collect();
-    candidates.sort_by(|a, b| a.0.cmp(&b.0));
+    let lifetime_path = output_dir.join("lifetime.js");
+    if lifetime_path.is_file() {
+        let lifetime = fs::read_to_string(&lifetime_path)
+            .map_err(|error| format!("Failed to read {}: {error}", lifetime_path.display()))?;
+        let mut names = collect_public_exports_from_js(&lifetime);
+        names.sort();
+        names.dedup();
+        if !names.is_empty() {
+            candidates.push(("lifetime".into(), names));
+        }
+    }
     let mut seen_exports: BTreeSet<String> = BTreeSet::new();
     let mut modules: Vec<(String, Vec<String>)> = Vec::new();
-    for (stem, names) in candidates {
+    for (module, names) in candidates {
         let filtered: Vec<String> = names
             .into_iter()
             .filter(|name| {
-                if canonical.contains(name) && name != &stem {
+                if primary_owners
+                    .get(name)
+                    .is_some_and(|owner| owner != &module)
+                {
                     return false;
                 }
                 seen_exports.insert(name.clone())
@@ -1938,7 +3152,7 @@ fn render_index_from_existing_js_files(output_dir: &Path) -> Result<String, Stri
         if filtered.is_empty() {
             continue;
         }
-        modules.push((stem, filtered));
+        modules.push((module, filtered));
     }
     for (module, names) in modules {
         out.push_str(&format!(
@@ -1983,59 +3197,86 @@ fn collect_public_exports_from_js(content: &str) -> Vec<String> {
     names
 }
 
-/// Enumerate the per-type `.js` files in `output_dir` and return their
-/// basenames (without extension) sorted alphabetically. Excludes barrel files
-/// (`index.js`, `index.mjs`, `index.proxy.js`, and legacy `index.getter.js`).
-/// Non-existent or unreadable
-/// directories return an empty set — the caller decides what to do.
-fn collect_subpath_names_from_dir(output_dir: &Path) -> BTreeSet<String> {
+/// Enumerate generated `.js` modules recursively and return package subpaths
+/// without extensions. Excludes root/nested barrels and the domain-specific
+/// Classic COM tree, which is added separately.
+fn collect_subpath_names_from_dir(output_dir: &Path) -> Result<BTreeSet<String>, String> {
     const BARREL_STEMS: &[&str] = &["index", "index.getter", "index.proxy"];
-    let mut names: BTreeSet<String> = BTreeSet::new();
-    let Ok(entries) = fs::read_dir(output_dir) else {
-        return names;
-    };
-    for entry in entries.flatten() {
+    if output_dir.join(JAVASCRIPT_TYPE_INVENTORY).is_file() {
+        let records = read_javascript_type_inventory(output_dir)?;
+        let _layout = javascript::install_javascript_module_layout_with_records(
+            records.iter().map(|record| record.identity.clone()),
+            records.iter().cloned(),
+        )?;
+        let mut names = javascript::javascript_output_targets()
+            .into_iter()
+            .map(|target| target.canonical_module)
+            .collect::<BTreeSet<_>>();
+        if output_dir.join("lifetime.js").is_file() {
+            names.insert("lifetime".into());
+        }
+        return Ok(names);
+    }
+
+    // Legacy flat output has no identity inventory. Only inspect generated
+    // root files; never recurse into an application tree or dependencies when
+    // `--output .` is used.
+    let mut names = BTreeSet::new();
+    let entries = fs::read_dir(output_dir)
+        .map_err(|error| format!("Failed to read {}: {error}", output_dir.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("Failed to read directory entry: {error}"))?;
         let path = entry.path();
-        let Some(fname) = path.file_name().and_then(|s| s.to_str()) else {
+        let metadata = fs::symlink_metadata(&path)
+            .map_err(|error| format!("Failed to inspect {}: {error}", path.display()))?;
+        if is_link_or_reparse_point(&metadata) || !metadata.is_file() {
+            continue;
+        }
+        let Some(fname) = path.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
-        // Match `Foo.js` but NOT `Foo.d.ts` or `Foo.mjs`.
         let Some(stem) = fname.strip_suffix(".js") else {
             continue;
         };
-        if BARREL_STEMS.iter().any(|b| stem == *b) {
+        if BARREL_STEMS.iter().any(|barrel| stem == *barrel) {
             continue;
         }
-        names.insert(stem.to_string());
+        let generated = fs::read_to_string(&path)
+            .map(|content| content.starts_with("// Generated by dynwinrt-codegen"))
+            .unwrap_or(false);
+        if generated || stem == "lifetime" {
+            names.insert(stem.into());
+        }
     }
-    names
+    Ok(names)
 }
 
 fn strip_broken_imports(output_dir: &Path) -> Result<(), String> {
     use dynwinrt_codegen::codegen::project::get_import_name;
-    use std::collections::HashSet as StdHashSet;
-
-    let mut existing: StdHashSet<String> = StdHashSet::new();
-    if let Ok(read_dir) = fs::read_dir(output_dir) {
-        for entry in read_dir.flatten() {
-            if let Some(name) = entry.file_name().to_str() {
-                if let Some(stem) = name.strip_suffix(".js") {
-                    existing.insert(stem.to_string());
-                }
-            }
-        }
-    }
 
     // If `--import-name ./runtime.js` was used, that stem is not one of the
     // emitted modules but must not be stripped.
     let runtime_name = get_import_name();
-    if let Some(runtime_stem) = runtime_name
-        .strip_prefix("./")
-        .and_then(|s| s.strip_suffix(".js").or(Some(s)))
-    {
-        existing.insert(runtime_stem.to_string());
-    }
-    existing.insert("lifetime".to_string());
+    let runtime_stem = (runtime_name.starts_with("./") || runtime_name.starts_with("../"))
+        .then(|| {
+            Path::new(&runtime_name)
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .map(str::to_string)
+        })
+        .flatten();
+
+    let target_exists = |source: &Path, target: &str| {
+        let target_stem = target.rsplit('/').next().unwrap_or(target);
+        if target_stem == "lifetime" || runtime_stem.as_deref() == Some(target_stem) {
+            return true;
+        }
+        source
+            .parent()
+            .unwrap_or(output_dir)
+            .join(format!("{target}.js"))
+            .is_file()
+    };
 
     // Three patterns to strip when the target sibling doesn't exist:
     //
@@ -2051,15 +3292,16 @@ fn strip_broken_imports(output_dir: &Path) -> Result<(), String> {
     //      exports.X = undefined;
     //      Object.defineProperty(exports, 'X', { ... get() { return require('./Foo.js').X; } });
     //      Both lines reference the same missing target and must go together.
-    let esm_import_re = regex::Regex::new(r#"(?m)^import \{[^}]*\} from '\./([^']+)\.js';\r?\n"#)
-        .map_err(|e| format!("regex error: {}", e))?;
+    let esm_import_re =
+        regex::Regex::new(r#"(?m)^import \{[^}]*\} from '((?:\./|\.\./)[^']+)\.js';\r?\n"#)
+            .map_err(|e| format!("regex error: {}", e))?;
 
     // Class-file lazy loader block. New shape:
     //   let __m_Foo;
     //   const __load_Foo = () => (__m_Foo ??= require('./Foo.js'));
     //   const __get_X = () => __load_Foo().X;   // one per imported symbol
     let cjs_lazy_re = regex::Regex::new(
-        r"(?ms)^let __m_[A-Za-z0-9_]+;\r?\nconst __load_[A-Za-z0-9_]+ = \(\) => \(__m_[A-Za-z0-9_]+ \?\?= require\('\./([^']+)\.js'\)\);\r?\n(?:const __get_[A-Za-z0-9_]+ = \(\) => __load_[A-Za-z0-9_]+\(\)\.[A-Za-z0-9_]+;\r?\n)*",
+        r"(?ms)^let __m_[A-Za-z0-9_]+;\r?\nconst __load_[A-Za-z0-9_]+ = \(\) => \(__m_[A-Za-z0-9_]+ \?\?= require\('((?:\./|\.\./)[^']+)\.js'\)\);\r?\n(?:const __get_[A-Za-z0-9_]+ = \(\) => __load_[A-Za-z0-9_]+\(\)\.[A-Za-z0-9_]+;\r?\n)*",
     )
     .map_err(|e| format!("regex error: {}", e))?;
 
@@ -2068,40 +3310,40 @@ fn strip_broken_imports(output_dir: &Path) -> Result<(), String> {
     // Emitted alongside the lazy block for symbols the native runtime needs
     // as concrete values (IIDs, DynWinRtType arrays, struct type descriptors).
     let cjs_eager_re =
-        regex::Regex::new(r"(?m)^const \{[^}]+\} = require\('\./([^']+)\.js'\);\r?\n")
+        regex::Regex::new(r"(?m)^const \{[^}]+\} = require\('((?:\./|\.\./)[^']+)\.js'\);\r?\n")
             .map_err(|e| format!("regex error: {}", e))?;
 
     // Index-file lazy export line emitted by `esm_index_to_cjs_lazy`:
     //   { let _m; exports.NAME = __lazy(() => (_m ??= require('./Foo.js')).NAME); }
     // captures the module basename in group 1.
     let index_dp_re = regex::Regex::new(
-        r"(?m)^\{ let _m; exports\.[A-Za-z0-9_]+ = __lazy\(\(\) => \(_m \?\?= require\('\./([^']+)\.js'\)\)\.[A-Za-z0-9_]+\); \}\r?\n",
+        r"(?m)^\{ let _m; exports\.[A-Za-z0-9_]+ = __lazy\(\(\) => \(_m \?\?= require\('((?:\./|\.\./)[^']+)\.js'\)\)\.[A-Za-z0-9_]+\); \}\r?\n",
     )
     .map_err(|e| format!("regex error: {}", e))?;
 
-    let read_dir = match fs::read_dir(output_dir) {
-        Ok(r) => r,
-        Err(_) => return Ok(()),
-    };
-    for entry in read_dir.flatten() {
-        let path = entry.path();
-        let name = match path.file_name().and_then(|s| s.to_str()) {
-            Some(n) => n,
-            None => continue,
-        };
-        if !name.ends_with(".js") {
-            continue;
-        }
+    let javascript_files = javascript::javascript_output_targets()
+        .into_iter()
+        .map(|target| output_dir.join(format!("{}.js", target.canonical_module)))
+        .filter(|path| path.is_file())
+        .collect::<Vec<_>>();
+    for path in javascript_files {
+        ensure_safe_generated_destination(output_dir, &path)?;
         let content = match fs::read_to_string(&path) {
             Ok(c) => c,
             Err(_) => continue,
         };
+        if !content.starts_with("// Generated by dynwinrt-codegen") {
+            continue;
+        }
+        if content.starts_with("// Generated by dynwinrt-codegen — compatibility forwarder") {
+            continue;
+        }
         let mut changed = false;
 
         // 1. CJS lazy loaders for missing targets (class files).
         let filtered = cjs_lazy_re.replace_all(&content, |caps: &regex::Captures| {
             let target = &caps[1];
-            if existing.contains(target) {
+            if target_exists(&path, target) {
                 caps[0].to_string()
             } else {
                 changed = true;
@@ -2112,7 +3354,7 @@ fn strip_broken_imports(output_dir: &Path) -> Result<(), String> {
         // 1b. CJS eager destructured requires for missing sibling modules.
         let filtered = cjs_eager_re.replace_all(&filtered, |caps: &regex::Captures| {
             let target = &caps[1];
-            if existing.contains(target) {
+            if target_exists(&path, target) {
                 caps[0].to_string()
             } else {
                 changed = true;
@@ -2124,7 +3366,7 @@ fn strip_broken_imports(output_dir: &Path) -> Result<(), String> {
         // block per export; captures the module basename.
         let filtered = index_dp_re.replace_all(&filtered, |caps: &regex::Captures| {
             let target = &caps[1];
-            if existing.contains(target) {
+            if target_exists(&path, target) {
                 caps[0].to_string()
             } else {
                 changed = true;
@@ -2135,7 +3377,7 @@ fn strip_broken_imports(output_dir: &Path) -> Result<(), String> {
         // 3. Legacy ESM imports (defence-in-depth if pipeline ever emits ESM).
         let filtered = esm_import_re.replace_all(&filtered, |caps: &regex::Captures| {
             let target = &caps[1];
-            if existing.contains(target) {
+            if target_exists(&path, target) {
                 caps[0].to_string()
             } else {
                 changed = true;
@@ -2143,6 +3385,7 @@ fn strip_broken_imports(output_dir: &Path) -> Result<(), String> {
             }
         });
         if changed {
+            ensure_safe_generated_destination(output_dir, &path)?;
             fs::write(&path, filtered.as_bytes())
                 .map_err(|e| format!("Failed to write {}: {}", path.display(), e))?;
         }
@@ -3013,46 +4256,187 @@ fn validate_python_public_identities(
     Ok(())
 }
 
-struct PythonOutputTransaction {
+fn output_contains_current_directory(output_dir: &Path) -> Result<bool, String> {
+    if output_dir.as_os_str().is_empty() {
+        return Err("Generated output directory cannot be empty.".into());
+    }
+    let current = std::env::current_dir()
+        .and_then(fs::canonicalize)
+        .map_err(|error| format!("Failed to resolve current directory: {error}"))?;
+    let absolute = if output_dir.is_absolute() {
+        output_dir.to_path_buf()
+    } else {
+        current.join(output_dir)
+    };
+    let output = if absolute.exists() {
+        fs::canonicalize(&absolute)
+            .map_err(|error| format!("Failed to resolve {}: {error}", absolute.display()))?
+    } else {
+        let mut ancestor = absolute.as_path();
+        let mut missing = Vec::new();
+        while !ancestor.exists() {
+            let leaf = ancestor.file_name().ok_or_else(|| {
+                format!(
+                    "Invalid generated output directory '{}'",
+                    output_dir.display()
+                )
+            })?;
+            missing.push(leaf.to_os_string());
+            ancestor = ancestor.parent().ok_or_else(|| {
+                format!(
+                    "Invalid generated output directory '{}'",
+                    output_dir.display()
+                )
+            })?;
+        }
+        let mut resolved = fs::canonicalize(ancestor)
+            .map_err(|error| format!("Failed to resolve {}: {error}", ancestor.display()))?;
+        for component in missing.into_iter().rev() {
+            resolved.push(component);
+        }
+        resolved
+    };
+    Ok(current.starts_with(output))
+}
+
+struct OutputTransaction {
     final_dir: PathBuf,
     stage_dir: PathBuf,
     backup_dir: PathBuf,
+    lock_file: Option<fs::File>,
     committed: bool,
 }
 
-impl PythonOutputTransaction {
-    fn begin(final_dir: &Path) -> Result<Self, String> {
+impl OutputTransaction {
+    fn begin(requested_final_dir: &Path) -> Result<Self, String> {
+        let absolute = if requested_final_dir.is_absolute() {
+            requested_final_dir.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .map_err(|e| format!("Failed to resolve current directory: {e}"))?
+                .join(requested_final_dir)
+        };
+        let final_dir = if absolute.exists() {
+            let metadata = fs::symlink_metadata(&absolute)
+                .map_err(|e| format!("Failed to inspect {}: {}", absolute.display(), e))?;
+            if is_link_or_reparse_point(&metadata) {
+                return Err(format!(
+                    "Generated output path '{}' cannot be a linked directory",
+                    requested_final_dir.display()
+                ));
+            }
+            fs::canonicalize(&absolute)
+                .map_err(|e| format!("Failed to resolve {}: {}", absolute.display(), e))?
+        } else {
+            let leaf = absolute.file_name().ok_or_else(|| {
+                format!(
+                    "Invalid generated output directory '{}'",
+                    requested_final_dir.display()
+                )
+            })?;
+            let parent = absolute.parent().unwrap_or_else(|| Path::new("."));
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create {}: {}", parent.display(), e))?;
+            fs::canonicalize(parent)
+                .map_err(|e| format!("Failed to resolve {}: {}", parent.display(), e))?
+                .join(leaf)
+        };
         let parent = final_dir.parent().unwrap_or_else(|| Path::new("."));
         let leaf = final_dir
             .file_name()
             .and_then(|name| name.to_str())
-            .ok_or_else(|| format!("Invalid Python output directory '{}'", final_dir.display()))?;
+            .ok_or_else(|| {
+                format!(
+                    "Invalid generated output directory '{}'",
+                    requested_final_dir.display()
+                )
+            })?;
         fs::create_dir_all(parent)
             .map_err(|e| format!("Failed to create {}: {}", parent.display(), e))?;
 
+        let lock_path = parent.join(format!(".{}.dynwinrt-lock", leaf));
+        if lock_path.exists() {
+            let metadata = fs::symlink_metadata(&lock_path)
+                .map_err(|error| format!("Failed to inspect {}: {error}", lock_path.display()))?;
+            if is_link_or_reparse_point(&metadata) || !metadata.is_file() {
+                return Err(format!(
+                    "Invalid generated output lock '{}'",
+                    lock_path.display()
+                ));
+            }
+        }
+        let lock_file = fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .map_err(|error| {
+                format!(
+                    "Failed to open generated output lock '{}': {error}",
+                    lock_path.display()
+                )
+            })?;
+        lock_file.try_lock().map_err(|error| {
+            format!(
+                "Another generation is already using output directory '{}': {error}",
+                final_dir.display()
+            )
+        })?;
+
         let suffix = std::process::id();
         let stage_dir = parent.join(format!(".{}.dynwinrt-stage-{}", leaf, suffix));
-        let backup_dir = parent.join(format!(".{}.dynwinrt-backup-{}", leaf, suffix));
+        let backup_dir = parent.join(format!(".{}.dynwinrt-backup", leaf));
+        if backup_dir.exists() {
+            let metadata = fs::symlink_metadata(&backup_dir)
+                .map_err(|e| format!("Failed to inspect {}: {}", backup_dir.display(), e))?;
+            if is_link_or_reparse_point(&metadata) || !metadata.is_dir() {
+                return Err(format!(
+                    "Invalid generated output backup '{}'",
+                    backup_dir.display()
+                ));
+            }
+            if final_dir.exists() {
+                remove_transaction_dir(&backup_dir)?;
+            } else {
+                fs::rename(&backup_dir, &final_dir).map_err(|error| {
+                    format!(
+                        "Failed to recover generated output '{}' from '{}': {}",
+                        final_dir.display(),
+                        backup_dir.display(),
+                        error
+                    )
+                })?;
+            }
+        }
         remove_transaction_dir(&stage_dir)?;
-        remove_transaction_dir(&backup_dir)?;
 
         if final_dir.exists() {
             if !final_dir.is_dir() {
                 return Err(format!(
-                    "Python output path '{}' is not a directory",
+                    "Generated output path '{}' is not a directory",
                     final_dir.display()
                 ));
             }
-            copy_directory(final_dir, &stage_dir)?;
+            if let Err(error) = copy_directory(&final_dir, &stage_dir) {
+                let _ = remove_transaction_dir(&stage_dir);
+                return Err(error);
+            }
         } else {
-            fs::create_dir_all(&stage_dir)
-                .map_err(|e| format!("Failed to create {}: {}", stage_dir.display(), e))?;
+            if let Err(error) = fs::create_dir_all(&stage_dir) {
+                let _ = remove_transaction_dir(&stage_dir);
+                return Err(format!(
+                    "Failed to create {}: {}",
+                    stage_dir.display(),
+                    error
+                ));
+            }
         }
 
         Ok(Self {
-            final_dir: final_dir.to_path_buf(),
+            final_dir,
             stage_dir,
             backup_dir,
+            lock_file: Some(lock_file),
             committed: false,
         })
     }
@@ -3063,21 +4447,56 @@ impl PythonOutputTransaction {
 
     fn commit(mut self) -> Result<(), String> {
         let had_existing_output = self.final_dir.exists();
-        if had_existing_output {
-            fs::rename(&self.final_dir, &self.backup_dir).map_err(|e| {
+        let cwd_relative = std::env::current_dir()
+            .ok()
+            .and_then(|cwd| fs::canonicalize(cwd).ok())
+            .and_then(|cwd| {
+                cwd.strip_prefix(&self.final_dir)
+                    .ok()
+                    .map(Path::to_path_buf)
+            });
+        if cwd_relative.is_some() {
+            let parent = self.final_dir.parent().unwrap_or_else(|| Path::new("."));
+            std::env::set_current_dir(parent).map_err(|e| {
                 format!(
-                    "Failed to stage existing output '{}' for replacement: {}",
+                    "Failed to leave generated output directory '{}' before replacement: {}",
                     self.final_dir.display(),
                     e
                 )
             })?;
+        }
+        let cwd_output_dir = self.final_dir.clone();
+        let restore_cwd = |relative: &Option<PathBuf>| -> Result<(), String> {
+            if let Some(relative) = relative {
+                let destination = cwd_output_dir.join(relative);
+                std::env::set_current_dir(&destination).map_err(|e| {
+                    format!(
+                        "Failed to restore current directory '{}': {}",
+                        destination.display(),
+                        e
+                    )
+                })?;
+            }
+            Ok(())
+        };
+        if had_existing_output {
+            if let Err(error) = fs::rename(&self.final_dir, &self.backup_dir) {
+                let restore_error = restore_cwd(&cwd_relative).err();
+                return Err(format!(
+                    "Failed to stage existing output '{}' for replacement: {}",
+                    self.final_dir.display(),
+                    error
+                ) + &restore_error
+                    .map(|error| format!(". {error}"))
+                    .unwrap_or_default());
+            }
         }
 
         if let Err(error) = fs::rename(&self.stage_dir, &self.final_dir) {
             if had_existing_output {
                 if let Err(rollback_error) = fs::rename(&self.backup_dir, &self.final_dir) {
                     return Err(format!(
-                        "Failed to replace Python output directory '{}': {}. Rollback also failed: \
+                        "Failed to replace generated output directory '{}': {}. Rollback also failed: \
                          {}. The original output remains at '{}'",
                         self.final_dir.display(),
                         error,
@@ -3086,18 +4505,22 @@ impl PythonOutputTransaction {
                     ));
                 }
             }
+            let restore_error = restore_cwd(&cwd_relative).err();
             return Err(format!(
-                "Failed to replace Python output directory '{}': {}",
+                "Failed to replace generated output directory '{}': {}",
                 self.final_dir.display(),
                 error
-            ));
+            ) + &restore_error
+                .map(|error| format!(". {error}"))
+                .unwrap_or_default());
         }
 
         self.committed = true;
+        restore_cwd(&cwd_relative)?;
         if had_existing_output {
             fs::remove_dir_all(&self.backup_dir).map_err(|e| {
                 format!(
-                    "Replaced Python output but failed to remove backup '{}': {}",
+                    "Replaced generated output but failed to remove backup '{}': {}",
                     self.backup_dir.display(),
                     e
                 )
@@ -3107,11 +4530,12 @@ impl PythonOutputTransaction {
     }
 }
 
-impl Drop for PythonOutputTransaction {
+impl Drop for OutputTransaction {
     fn drop(&mut self) {
         if !self.committed && self.stage_dir.exists() {
             let _ = fs::remove_dir_all(&self.stage_dir);
         }
+        drop(self.lock_file.take());
     }
 }
 
@@ -3133,12 +4557,17 @@ fn copy_directory(source: &Path, destination: &Path) -> Result<(), String> {
             entry.map_err(|e| format!("Failed to read entry in {}: {}", source.display(), e))?;
         let source_path = entry.path();
         let destination_path = destination.join(entry.file_name());
-        let file_type = entry
-            .file_type()
+        let metadata = fs::symlink_metadata(&source_path)
             .map_err(|e| format!("Failed to inspect {}: {}", source_path.display(), e))?;
-        if file_type.is_dir() {
+        if is_link_or_reparse_point(&metadata) {
+            return Err(format!(
+                "Unsupported linked filesystem entry in generated output: {}",
+                source_path.display()
+            ));
+        }
+        if metadata.is_dir() {
             copy_directory(&source_path, &destination_path)?;
-        } else if file_type.is_file() {
+        } else if metadata.is_file() {
             fs::copy(&source_path, &destination_path).map_err(|e| {
                 format!(
                     "Failed to copy {} to {}: {}",
@@ -3149,7 +4578,7 @@ fn copy_directory(source: &Path, destination: &Path) -> Result<(), String> {
             })?;
         } else {
             return Err(format!(
-                "Unsupported filesystem entry in Python output: {}",
+                "Unsupported filesystem entry in generated output: {}",
                 source_path.display()
             ));
         }
@@ -3664,6 +5093,742 @@ mod tests {
             .expect("identical metadata does not create an ambiguous output");
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn generated_javascript_rejects_linked_namespace_directories() {
+        use std::os::windows::fs::{symlink_dir, symlink_file};
+
+        let output = test_directory("javascript-linked-namespace");
+        let outside = test_directory("javascript-linked-namespace-outside");
+        fs::create_dir_all(&output).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        let link = output.join("contoso");
+        if let Err(error) = symlink_dir(&outside, &link) {
+            eprintln!("Skipping linked-directory test: {error}");
+            fs::remove_dir_all(output).unwrap();
+            fs::remove_dir_all(outside).unwrap();
+            return;
+        }
+
+        let error = ensure_safe_generated_parent(&output, &link.join("Widget.js"))
+            .expect_err("linked namespace components must be rejected");
+
+        assert!(error.contains("linked directory"), "{error}");
+        assert!(!outside.join("Widget.js").exists());
+        fs::remove_dir(link).unwrap();
+
+        let external_file = outside.join("Widget.js");
+        fs::write(
+            &external_file,
+            "// Generated by dynwinrt-codegen — do not edit\n",
+        )
+        .unwrap();
+        let linked_file = output.join("Widget.js");
+        if symlink_file(&external_file, &linked_file).is_ok() {
+            let error = write_generated_javascript_file(
+                &output,
+                &linked_file,
+                "// Generated by dynwinrt-codegen — do not edit\nexports.Widget = Widget;\n",
+            )
+            .expect_err("linked destination files must be rejected");
+            assert!(error.contains("linked file"), "{error}");
+            assert_eq!(
+                fs::read_to_string(&external_file).unwrap(),
+                "// Generated by dynwinrt-codegen — do not edit\n"
+            );
+            fs::remove_file(linked_file).unwrap();
+        }
+        let external_lifetime = outside.join("lifetime.js");
+        fs::write(&external_lifetime, "outside lifetime").unwrap();
+        let linked_lifetime = output.join("lifetime.js");
+        if symlink_file(&external_lifetime, &linked_lifetime).is_ok() {
+            let error =
+                write_lifetime_module(&output).expect_err("linked root artifacts must be rejected");
+            assert!(error.contains("linked file"), "{error}");
+            assert_eq!(
+                fs::read_to_string(&external_lifetime).unwrap(),
+                "outside lifetime"
+            );
+            fs::remove_file(linked_lifetime).unwrap();
+        }
+        fs::remove_dir_all(output).unwrap();
+        fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[test]
+    fn javascript_namespace_layout_emits_canonical_modules_and_qualified_root_exports() {
+        let class = |namespace: &str, iid: &str| meta::ClassMeta {
+            name: "Widget".into(),
+            namespace: namespace.into(),
+            full_name: format!("{namespace}.Widget"),
+            default_interface: Some(meta::InterfaceMeta {
+                name: "IWidget".into(),
+                namespace: namespace.into(),
+                iid: iid.into(),
+                methods: vec![meta::MethodMeta {
+                    name: "GetPoint".into(),
+                    return_type: Some(TypeMeta::Struct {
+                        namespace: "Windows.Foundation".into(),
+                        name: "Point".into(),
+                        fields: vec![
+                            dynwinrt_codegen::types::FieldMeta {
+                                name: "X".into(),
+                                typ: TypeMeta::F32,
+                            },
+                            dynwinrt_codegen::types::FieldMeta {
+                                name: "Y".into(),
+                                typ: TypeMeta::F32,
+                            },
+                        ],
+                    }),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut classes = vec![
+            class("Contoso.Alpha", "11111111-1111-1111-1111-111111111111"),
+            class("Fabrikam.Beta", "22222222-2222-2222-2222-222222222222"),
+        ];
+        let records = javascript_type_layout_records(&classes, &[], &[]).unwrap();
+        let identities = records.iter().map(|record| record.identity.clone());
+        let _layout = javascript::install_javascript_module_layout(identities).unwrap();
+        javascript::apply_javascript_projected_names(&mut classes, &mut [], &mut []);
+        let known_types = classes
+            .iter()
+            .map(|class| class.name.clone())
+            .collect::<HashSet<_>>();
+        let output = test_directory("javascript-namespace-layout");
+        fs::create_dir_all(&output).unwrap();
+
+        generate_js_files(
+            &output,
+            &classes,
+            &[],
+            &[],
+            &[],
+            &known_types,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .unwrap();
+        write_javascript_type_inventory(
+            &output,
+            &emitted_javascript_type_records(&output, &[], &records).unwrap(),
+        )
+        .unwrap();
+        write_js_barrel_and_manifest(&output, "").unwrap();
+
+        assert!(output.join("contoso/alpha/Widget.js").is_file());
+        assert!(output.join("fabrikam/beta/Widget.js").is_file());
+        assert!(!output.join("ContosoAlphaWidget.js").exists());
+        assert!(!output.join("FabrikamBetaWidget.js").exists());
+        assert!(!output.join("Widget.js").exists());
+        let index = fs::read_to_string(output.join("index.d.ts")).unwrap();
+        assert!(index.contains("ContosoAlphaWidget"));
+        assert!(index.contains("FabrikamBetaWidget"));
+        assert!(index.contains("packPoint"));
+        let package = fs::read_to_string(output.join("package.json")).unwrap();
+        assert!(!package.contains("\"./ContosoAlphaWidget\""));
+        assert!(package.contains("\"./contoso/alpha/Widget\""));
+
+        fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
+    fn legacy_javascript_output_requires_one_time_clean_regeneration() {
+        let output = test_directory("javascript-legacy-layout");
+        fs::create_dir_all(&output).unwrap();
+        fs::write(
+            output.join("Widget.js"),
+            "// Generated by dynwinrt-codegen — do not edit\nexports.Widget = Widget;\n",
+        )
+        .unwrap();
+
+        let error = ensure_javascript_layout_inventory(&output)
+            .expect_err("legacy generated files without identities must fail closed");
+
+        assert!(error.contains("legacy flat layout"), "{error}");
+        assert!(error.contains("regenerate it once"), "{error}");
+        assert!(output.join("Widget.js").is_file());
+        fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
+    fn com_subtree_does_not_trigger_legacy_winrt_detection() {
+        let output = test_directory("javascript-ignore-com-subtree");
+        fs::create_dir_all(output.join("com")).unwrap();
+        fs::write(
+            output.join("com").join("IWidget.js"),
+            "// Generated by dynwinrt-codegen - do not edit\nexports.IWidget = IWidget;\n",
+        )
+        .unwrap();
+
+        check_javascript_layout_inventory(&output)
+            .expect("Classic COM modules are isolated from WinRT inventory detection");
+
+        fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
+    fn canonical_layout_removes_generated_flat_forwarders() {
+        let output = test_directory("javascript-remove-flat-forwarders");
+        fs::create_dir_all(&output).unwrap();
+        fs::write(
+            output.join("Widget.js"),
+            format!(
+                "{JAVASCRIPT_FORWARDER_HEADER}module.exports = require('./contoso/Widget.js');\n"
+            ),
+        )
+        .unwrap();
+        fs::write(
+            output.join("Widget.d.ts"),
+            format!("{JAVASCRIPT_FORWARDER_HEADER}export * from './contoso/Widget.js';\n"),
+        )
+        .unwrap();
+        fs::write(output.join(".dynwinrt-js-forwarders"), "Widget.js\n").unwrap();
+        fs::write(
+            output.join(".dynwinrt-js-export-forwarders"),
+            "version=1|count=0|checksum=0000000000000000\n",
+        )
+        .unwrap();
+        fs::write(output.join("manual.js"), "exports.manual = true;\n").unwrap();
+
+        remove_flat_javascript_forwarders(&output).unwrap();
+
+        assert!(!output.join("Widget.js").exists());
+        assert!(!output.join("Widget.d.ts").exists());
+        assert!(!output.join(".dynwinrt-js-forwarders").exists());
+        assert!(!output.join(".dynwinrt-js-export-forwarders").exists());
+        assert!(output.join("manual.js").is_file());
+        fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
+    fn uninventoried_canonical_targets_fail_closed() {
+        let output = test_directory("javascript-uninventoried-canonical");
+        let canonical = output.join("contoso").join("Widget.js");
+        fs::create_dir_all(canonical.parent().unwrap()).unwrap();
+        fs::write(
+            &canonical,
+            "// Generated by dynwinrt-codegen — do not edit\nexports.Widget = Widget;\n",
+        )
+        .unwrap();
+        let identity = javascript::JavaScriptTypeIdentity::new(
+            "Contoso",
+            "Widget",
+            javascript::JavaScriptTypeKind::Class,
+        );
+        let _layout = javascript::install_javascript_module_layout([identity]).unwrap();
+
+        let error = ensure_uninventoried_javascript_targets_absent(&output)
+            .expect_err("canonical output without inventory must fail closed");
+
+        assert!(error.contains("has no type inventory"), "{error}");
+        assert!(canonical.is_file());
+        fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
+    fn unresolved_prior_collision_members_fail_closed() {
+        let previous = vec![javascript::JavaScriptTypeLayoutRecord::new(
+            javascript::JavaScriptTypeIdentity::new(
+                "Contoso.Alpha",
+                "Widget",
+                javascript::JavaScriptTypeKind::Class,
+            ),
+            "AlphaWidget",
+            "type",
+        )];
+        let mut classes = vec![meta::ClassMeta {
+            name: "Widget".into(),
+            namespace: "Fabrikam.Beta".into(),
+            full_name: "Fabrikam.Beta.Widget".into(),
+            ..Default::default()
+        }];
+
+        let error = restore_incremental_javascript_collision_members(
+            "",
+            &previous,
+            &mut classes,
+            &mut Vec::new(),
+            &mut Vec::new(),
+        )
+        .expect_err("missing prior collision metadata must fail closed");
+
+        assert!(
+            error.contains("Cannot restore prior JavaScript collision member"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn generic_inventory_reconstructs_closed_interface_metadata() {
+        let winmd =
+            r"C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd";
+        if !Path::new(winmd).is_file() {
+            eprintln!("Skipping generic inventory reconstruction: Windows.winmd not found");
+            return;
+        }
+        let class = meta::parse_class(winmd, "Windows.Foundation", "Uri").unwrap();
+        let dependencies = meta::resolve_dependencies(winmd, &[class], &[], &[]);
+        let interface = dependencies
+            .interfaces
+            .iter()
+            .find(|interface| interface.generic_piid.is_some())
+            .expect("Uri dependency closure must contain a closed generic interface");
+        let record = javascript_type_layout_records(&[], std::slice::from_ref(interface), &[])
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
+
+        assert!(!record.generic_spec.is_empty());
+        let spec = decode_javascript_generic_spec(&record.generic_spec).unwrap();
+        assert!(
+            meta::parse_parameterized_interface_by_name(
+                winmd,
+                &record.identity.namespace,
+                &spec.generic_name,
+                "00000000-0000-0000-0000-000000000000",
+                &spec.args,
+            )
+            .is_none()
+        );
+        assert!(
+            meta::parse_parameterized_interface_by_name(
+                winmd,
+                &record.identity.namespace,
+                &spec.generic_name,
+                &spec.piid,
+                &[],
+            )
+            .is_none()
+        );
+        let restored = restore_javascript_interface(winmd, &record).unwrap();
+        assert_eq!(
+            javascript_interface_abi_identity(&restored),
+            record.abi_identity
+        );
+        assert_eq!(restored.generic_args, interface.generic_args);
+        validate_retained_javascript_generics(winmd, std::slice::from_ref(&record)).unwrap();
+    }
+
+    #[test]
+    fn dry_run_inventory_check_does_not_recover_files() {
+        let output = test_directory("javascript-dry-run-inventory");
+        fs::create_dir_all(&output).unwrap();
+        let backup = output.join(format!("{JAVASCRIPT_TYPE_INVENTORY}.backup"));
+        let temporary = output.join(format!("{JAVASCRIPT_TYPE_INVENTORY}.tmp"));
+        fs::write(&backup, "backup").unwrap();
+        fs::write(&temporary, "temporary").unwrap();
+
+        let error = check_javascript_layout_inventory(&output)
+            .expect_err("dry-run check must report pending recovery");
+
+        assert!(error.contains("recovery is pending"), "{error}");
+        assert_eq!(fs::read_to_string(backup).unwrap(), "backup");
+        assert_eq!(fs::read_to_string(temporary).unwrap(), "temporary");
+        assert!(!output.join(JAVASCRIPT_TYPE_INVENTORY).exists());
+        fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
+    fn colliding_empty_class_stubs_keep_native_canonical_aliases() {
+        let mut classes = vec![
+            meta::ClassMeta {
+                name: "Widget".into(),
+                namespace: "Contoso.Alpha".into(),
+                full_name: "Contoso.Alpha.Widget".into(),
+                ..Default::default()
+            },
+            meta::ClassMeta {
+                name: "Widget".into(),
+                namespace: "Fabrikam.Beta".into(),
+                full_name: "Fabrikam.Beta.Widget".into(),
+                ..Default::default()
+            },
+        ];
+        let identities = javascript_type_identities(&classes, &[], &[]).unwrap();
+        let _layout = javascript::install_javascript_module_layout(identities).unwrap();
+        javascript::apply_javascript_projected_names(&mut classes, &mut [], &mut []);
+        let known_types = classes
+            .iter()
+            .map(|class| class.name.clone())
+            .collect::<HashSet<_>>();
+        let output = test_directory("javascript-colliding-stubs");
+        fs::create_dir_all(&output).unwrap();
+
+        generate_js_files(
+            &output,
+            &classes,
+            &[],
+            &[],
+            &[],
+            &known_types,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .unwrap();
+
+        let js = fs::read_to_string(output.join("contoso/alpha/Widget.js")).unwrap();
+        assert!(js.contains("exports.Widget = ContosoAlphaWidget;"), "{js}");
+        let dts = fs::read_to_string(output.join("contoso/alpha/Widget.d.ts")).unwrap();
+        assert!(
+            dts.contains("export { ContosoAlphaWidget as Widget };"),
+            "{dts}"
+        );
+        fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
+    fn truncated_javascript_inventory_is_rejected() {
+        let output = test_directory("javascript-truncated-inventory");
+        let canonical = output.join("contoso").join("Widget.js");
+        fs::create_dir_all(canonical.parent().unwrap()).unwrap();
+        fs::write(
+            &canonical,
+            "// Generated by dynwinrt-codegen — do not edit\nexports.Widget = Widget;\n",
+        )
+        .unwrap();
+        fs::write(
+            output.join("Widget.js"),
+            "// Generated by dynwinrt-codegen — compatibility forwarder\n\
+             module.exports = require('./contoso/Widget.js');\n",
+        )
+        .unwrap();
+        write_javascript_type_inventory(&output, &[]).unwrap();
+
+        let error = read_javascript_type_inventory(&output)
+            .expect_err("inventory missing an existing canonical type must fail closed");
+
+        assert!(error.contains("does not match"), "{error}");
+        assert!(canonical.is_file());
+        fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
+    fn javascript_namespace_layout_handles_colliding_delegates_without_flat_files() {
+        let delegate = |namespace: &str, iid: &str| meta::InterfaceMeta {
+            name: "Handler".into(),
+            namespace: namespace.into(),
+            iid: iid.into(),
+            methods: vec![
+                meta::MethodMeta {
+                    name: ".ctor".into(),
+                    ..Default::default()
+                },
+                meta::MethodMeta {
+                    name: "Invoke".into(),
+                    return_type: Some(TypeMeta::Object),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let mut interfaces = vec![
+            delegate("Contoso.Alpha", "11111111-1111-1111-1111-111111111111"),
+            delegate("Fabrikam.Beta", "22222222-2222-2222-2222-222222222222"),
+        ];
+        let identities = javascript_type_identities(&[], &interfaces, &[]).unwrap();
+        let _layout = javascript::install_javascript_module_layout(identities).unwrap();
+        javascript::apply_javascript_projected_names(&mut [], &mut interfaces, &mut []);
+        let delegate_names = interfaces
+            .iter()
+            .map(|interface| interface.name.clone())
+            .collect::<HashSet<_>>();
+        let (signatures, references, wraps) =
+            project::build_delegate_signatures(&interfaces, &delegate_names, &delegate_names);
+        let output = test_directory("javascript-delegate-layout");
+        fs::create_dir_all(&output).unwrap();
+
+        generate_js_files(
+            &output,
+            &[],
+            &interfaces,
+            &[],
+            &[],
+            &delegate_names,
+            &delegate_names,
+            &HashSet::new(),
+            &signatures,
+            &references,
+            &wraps,
+        )
+        .unwrap();
+
+        for name in ["ContosoAlphaHandler", "FabrikamBetaHandler"] {
+            assert!(!output.join(format!("{name}.js")).exists());
+        }
+        let contoso = fs::read_to_string(output.join("contoso/alpha/Handler.d.ts")).unwrap();
+        assert!(contoso.contains("export type ContosoAlphaHandler"));
+        assert!(contoso.contains("export type Handler = ContosoAlphaHandler"));
+
+        fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
+    fn colliding_interfaces_preserve_native_iid_exports() {
+        let interface = |namespace: &str, iid: &str| meta::InterfaceMeta {
+            name: "IWidget".into(),
+            namespace: namespace.into(),
+            iid: iid.into(),
+            methods: vec![meta::MethodMeta {
+                name: "GetValue".into(),
+                return_type: Some(TypeMeta::I32),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut interfaces = vec![
+            interface("Contoso.Alpha", "11111111-1111-1111-1111-111111111111"),
+            interface("Fabrikam.Beta", "22222222-2222-2222-2222-222222222222"),
+        ];
+        let identities = javascript_type_identities(&[], &interfaces, &[]).unwrap();
+        let _layout = javascript::install_javascript_module_layout(identities).unwrap();
+        javascript::apply_javascript_projected_names(&mut [], &mut interfaces, &mut []);
+        let known_types = interfaces
+            .iter()
+            .map(|interface| interface.name.clone())
+            .collect::<HashSet<_>>();
+        let output = test_directory("javascript-interface-iid-aliases");
+        fs::create_dir_all(&output).unwrap();
+
+        generate_js_files(
+            &output,
+            &[],
+            &interfaces,
+            &[],
+            &[],
+            &known_types,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .unwrap();
+
+        let js = fs::read_to_string(output.join("contoso/alpha/IWidget.js")).unwrap();
+        assert!(js.contains("exports.IID_ContosoAlphaIWidget ="), "{js}");
+        assert!(
+            js.contains("exports.IID_IWidget = exports.IID_ContosoAlphaIWidget"),
+            "{js}"
+        );
+        let dts = fs::read_to_string(output.join("contoso/alpha/IWidget.d.ts")).unwrap();
+        assert!(
+            dts.contains("IID_ContosoAlphaIWidget as IID_IWidget"),
+            "{dts}"
+        );
+        assert_eq!(
+            dts.matches("export { ContosoAlphaIWidget as IWidget };")
+                .count(),
+            1,
+            "{dts}"
+        );
+
+        fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
+    fn collision_renamed_iclosable_uses_projected_import() {
+        let closable = meta::InterfaceMeta {
+            name: "IClosable".into(),
+            namespace: "Windows.Foundation".into(),
+            iid: "30d5a829-7fa4-4026-83bb-d75bae4ea99e".into(),
+            methods: vec![meta::MethodMeta {
+                name: "Close".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut classes = vec![meta::ClassMeta {
+            name: "Resource".into(),
+            namespace: "Contoso".into(),
+            full_name: "Contoso.Resource".into(),
+            default_interface: Some(meta::InterfaceMeta {
+                name: "IResource".into(),
+                namespace: "Contoso".into(),
+                iid: "11111111-1111-1111-1111-111111111111".into(),
+                ..Default::default()
+            }),
+            required_interfaces: vec![closable.clone()],
+            ..Default::default()
+        }];
+        let mut interfaces = vec![
+            closable,
+            meta::InterfaceMeta {
+                name: "IClosable".into(),
+                namespace: "Contoso".into(),
+                iid: "22222222-2222-2222-2222-222222222222".into(),
+                ..Default::default()
+            },
+        ];
+        let identities = javascript_type_identities(&classes, &interfaces, &[]).unwrap();
+        let _layout = javascript::install_javascript_module_layout(identities).unwrap();
+        javascript::apply_javascript_projected_names(&mut classes, &mut interfaces, &mut []);
+        let projected_closable = classes[0].required_interfaces[0].name.clone();
+        assert_ne!(projected_closable, "IClosable");
+        let known = HashSet::from([
+            classes[0].name.clone(),
+            projected_closable.clone(),
+            interfaces[1].name.clone(),
+        ]);
+        let projected = project::project_class(
+            &classes[0],
+            &known,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        let js = render_js::render(&projected);
+
+        assert!(
+            js.contains(&format!("__get_{projected_closable}()")),
+            "{js}"
+        );
+        assert!(!js.contains("__get_IClosable()"), "{js}");
+    }
+
+    #[test]
+    fn collision_renamed_element_factory_keeps_special_projection() {
+        let mut interfaces = vec![
+            meta::InterfaceMeta {
+                name: "IElementFactory".into(),
+                namespace: "Microsoft.UI.Xaml".into(),
+                iid: "11111111-1111-1111-1111-111111111111".into(),
+                ..Default::default()
+            },
+            meta::InterfaceMeta {
+                name: "IElementFactory".into(),
+                namespace: "Contoso".into(),
+                iid: "22222222-2222-2222-2222-222222222222".into(),
+                ..Default::default()
+            },
+        ];
+        let identities = javascript_type_identities(&[], &interfaces, &[]).unwrap();
+        let _layout = javascript::install_javascript_module_layout(identities).unwrap();
+        javascript::apply_javascript_projected_names(&mut [], &mut interfaces, &mut []);
+        let known = interfaces
+            .iter()
+            .map(|interface| interface.name.clone())
+            .collect::<HashSet<_>>();
+        let projected = project::project_interface(
+            &interfaces[0],
+            &known,
+            &HashSet::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        let dts = render_dts::render(&projected);
+
+        assert_ne!(interfaces[0].name, "IElementFactory");
+        assert!(dts.contains("static create(getElement:"), "{dts}");
+    }
+
+    #[test]
+    fn closed_generics_use_complete_argument_identity() {
+        let interface = |argument_namespace: &str, iid: &str| meta::InterfaceMeta {
+            name: "IVector_Widget".into(),
+            namespace: "Windows.Foundation.Collections".into(),
+            iid: iid.into(),
+            generic_piid: Some(meta::PIID_IVECTOR.into()),
+            generic_args: vec![TypeMeta::RuntimeClass {
+                namespace: argument_namespace.into(),
+                name: "Widget".into(),
+                default_interface: None,
+            }],
+            ..Default::default()
+        };
+        let first = interface("Contoso.Alpha", meta::PIID_IVECTOR);
+        let second = interface("Fabrikam.Beta", meta::PIID_IVECTOR);
+        let first_records =
+            javascript_type_layout_records(&[], std::slice::from_ref(&first), &[]).unwrap();
+        let second_records =
+            javascript_type_layout_records(&[], std::slice::from_ref(&second), &[]).unwrap();
+        let first_name = javascript::parameterized_interface_name(
+            &first.namespace,
+            &first.name,
+            first.generic_piid.as_deref().unwrap(),
+            &first.generic_args,
+        );
+        let second_name = javascript::parameterized_interface_name(
+            &second.namespace,
+            &second.name,
+            second.generic_piid.as_deref().unwrap(),
+            &second.generic_args,
+        );
+
+        assert_eq!(first_records[0].identity.name, first_name);
+        assert_eq!(second_records[0].identity.name, second_name);
+        assert_ne!(first_name, second_name);
+        validate_javascript_type_layout_records(&first_records, &second_records)
+            .expect("incremental generic identities must coexist");
+
+        let mut interfaces = vec![first, second];
+        let same_run_records = javascript_type_layout_records(&[], &interfaces, &[]).unwrap();
+        validate_javascript_type_layout_records(&[], &same_run_records)
+            .expect("same-run generic identities must coexist");
+        let _layout = javascript::install_javascript_module_layout_with_records(
+            same_run_records
+                .iter()
+                .map(|record| record.identity.clone()),
+            same_run_records.iter().cloned(),
+        )
+        .unwrap();
+        let modules = javascript::javascript_output_targets()
+            .into_iter()
+            .map(|target| target.canonical_module)
+            .collect::<BTreeSet<_>>();
+        assert!(modules.contains(&format!("windows/foundation/collections/{first_name}")));
+        assert!(modules.contains(&format!("windows/foundation/collections/{second_name}")));
+
+        javascript::apply_javascript_projected_names(&mut [], &mut interfaces, &mut []);
+        assert_eq!(interfaces[0].name, first_name);
+        assert_eq!(interfaces[1].name, second_name);
+        let known_types = interfaces
+            .iter()
+            .map(|interface| interface.name.clone())
+            .collect::<HashSet<_>>();
+        let output = test_directory("javascript-complete-generic-identities");
+        fs::create_dir_all(&output).unwrap();
+        generate_js_files(
+            &output,
+            &[],
+            &interfaces,
+            &[],
+            &[],
+            &known_types,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .unwrap();
+        assert!(
+            output
+                .join(format!("windows/foundation/collections/{first_name}.js"))
+                .is_file()
+        );
+        assert!(
+            output
+                .join(format!("windows/foundation/collections/{second_name}.js"))
+                .is_file()
+        );
+        fs::remove_dir_all(output).unwrap();
+    }
+
     #[test]
     fn python_duplicate_short_names_use_namespace_facades() {
         let output = test_directory("namespace-facades");
@@ -3800,12 +5965,12 @@ mod tests {
     }
 
     #[test]
-    fn python_output_transaction_commits_complete_tree() {
+    fn output_transaction_commits_complete_tree() {
         let output = test_directory("transaction-commit");
         fs::create_dir_all(&output).unwrap();
         fs::write(output.join("existing.py"), "old").unwrap();
 
-        let transaction = PythonOutputTransaction::begin(&output).unwrap();
+        let transaction = OutputTransaction::begin(&output).unwrap();
         fs::write(transaction.stage_dir().join("existing.py"), "new").unwrap();
         fs::write(transaction.stage_dir().join("added.py"), "added").unwrap();
         transaction.commit().unwrap();
@@ -3819,6 +5984,97 @@ mod tests {
             "added"
         );
         fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
+    fn output_transaction_recovers_interrupted_backup_swap() {
+        let output = test_directory("transaction-recovery");
+        fs::create_dir_all(&output).unwrap();
+        fs::write(output.join("existing.js"), "original").unwrap();
+        let parent = output.parent().unwrap();
+        let leaf = output.file_name().unwrap().to_string_lossy();
+        let backup = parent.join(format!(".{leaf}.dynwinrt-backup"));
+        remove_transaction_dir(&backup).unwrap();
+        fs::rename(&output, &backup).unwrap();
+
+        let transaction = OutputTransaction::begin(&output).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(output.join("existing.js")).unwrap(),
+            "original"
+        );
+        assert_eq!(
+            fs::read_to_string(transaction.stage_dir().join("existing.js")).unwrap(),
+            "original"
+        );
+        drop(transaction);
+        assert!(!backup.exists());
+        fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
+    fn output_transaction_excludes_concurrent_generation() {
+        let output = test_directory("transaction-lock");
+        fs::create_dir_all(&output).unwrap();
+        let first = OutputTransaction::begin(&output).unwrap();
+
+        let error = OutputTransaction::begin(&output)
+            .err()
+            .expect("a second transaction must not share the output");
+
+        assert!(
+            error.contains("Another generation is already using"),
+            "{error}"
+        );
+        drop(first);
+        let next = OutputTransaction::begin(&output)
+            .expect("the lock must be released when the transaction drops");
+        drop(next);
+        fs::remove_dir_all(output).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn output_transaction_rejects_linked_root_and_cleans_failed_stage() {
+        use std::os::windows::fs::{symlink_dir, symlink_file};
+
+        let output = test_directory("transaction-linked-root");
+        let target = test_directory("transaction-linked-root-target");
+        fs::create_dir_all(&target).unwrap();
+        if let Err(error) = symlink_dir(&target, &output) {
+            eprintln!("Skipping transaction link test: {error}");
+            fs::remove_dir_all(target).unwrap();
+            return;
+        }
+        let error = OutputTransaction::begin(&output)
+            .err()
+            .expect("a linked transaction root must be rejected");
+        assert!(error.contains("linked directory"), "{error}");
+        fs::remove_dir(&output).unwrap();
+
+        fs::create_dir_all(&output).unwrap();
+        let external = target.join("external.js");
+        fs::write(&external, "outside").unwrap();
+        symlink_file(&external, output.join("linked.js")).unwrap();
+        let error = OutputTransaction::begin(&output)
+            .err()
+            .expect("a linked child must fail staging");
+        assert!(error.contains("linked filesystem entry"), "{error}");
+        let parent = output.parent().unwrap();
+        let leaf = output.file_name().unwrap().to_string_lossy();
+        assert!(
+            fs::read_dir(parent).unwrap().flatten().all(|entry| {
+                !entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(&format!(".{leaf}.dynwinrt-stage-"))
+            }),
+            "failed begin must not leak a staging directory"
+        );
+
+        fs::remove_file(output.join("linked.js")).unwrap();
+        fs::remove_dir_all(output).unwrap();
+        fs::remove_dir_all(target).unwrap();
     }
 
     #[test]
@@ -4048,13 +6304,13 @@ mod tests {
     }
 
     #[test]
-    fn dropped_python_output_transaction_preserves_existing_output() {
+    fn dropped_output_transaction_preserves_existing_output() {
         let output = test_directory("transaction-drop");
         fs::create_dir_all(&output).unwrap();
         fs::write(output.join("existing.py"), "old").unwrap();
 
         {
-            let transaction = PythonOutputTransaction::begin(&output).unwrap();
+            let transaction = OutputTransaction::begin(&output).unwrap();
             fs::write(transaction.stage_dir().join("existing.py"), "new").unwrap();
         }
 

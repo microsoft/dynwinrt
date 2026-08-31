@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 import * as path from 'node:path'
+import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
 
 const [name, generatedDir, runtimePath] = process.argv.slice(2)
@@ -10,12 +11,13 @@ if (!name || !generatedDir || !runtimePath) {
   throw new Error('Usage: ts_issue_regression_child.mjs <name> <generated> <runtime>')
 }
 
+const require = createRequire(import.meta.url)
+const generatedRoot = require(path.resolve(generatedDir, 'index.js'))
+
 const importGenerated = async (className) => {
-  const moduleUrl = pathToFileURL(path.resolve(generatedDir, `${className}.js`)).href
-  const module = await import(moduleUrl)
-  const cls = module[className]
+  const cls = generatedRoot[className]
   if (!cls) {
-    throw new Error(`${className} was not exported by ${moduleUrl}`)
+    throw new Error(`${className} was not exported by the generated root`)
   }
   return cls
 }

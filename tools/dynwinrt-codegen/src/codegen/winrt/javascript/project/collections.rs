@@ -559,7 +559,12 @@ pub(super) fn project_collection_create(
     } else if piid == PIID_IOBSERVABLE_VECTOR && iface.generic_args.len() == 1 {
         let elem_type = ts_dynwinrt_type(&iface.generic_args[0]);
         let elem_ts = ts_param_type_safe(&iface.generic_args[0], known_types);
-        let vector_name = iface.name.replacen("IObservableVector", "IVector", 1);
+        let vector_name = super::super::projected_parameterized_name(
+            crate::meta::WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE,
+            "IVector",
+            PIID_IVECTOR,
+            &iface.generic_args,
+        );
         imports.push(ProjectedImport {
             symbols: vec![vector_name.clone()],
             from: format!("./{}.js", vector_name),
@@ -584,8 +589,8 @@ pub(super) fn project_collection_create(
             is_static: false,
             invoke_expr: String::new(),
             sync_return_expr: Some(format!(
-                "new ((__load_{vector}()).{vector})(this._obj)",
-                vector = vector_name,
+                "new {vector}(this._obj)",
+                vector = ref_marker(&vector_name),
             )),
             async_convert_v: None,
             is_void: false,
@@ -621,9 +626,9 @@ pub(super) fn project_collection_create(
             is_static: true,
             invoke_expr: String::new(),
             sync_return_expr: Some(format!(
-                "(() => {{ const value = DynWinRtValue.createVector(items.map(i => _unwrap(i)), {elem_type}); const observable = new {observable}(value); const vector = new ((__load_{vector}()).{vector})(value); Object.defineProperties(vector, {{ asVector: {{ value: observable.asVector.bind(observable) }}, onVectorChanged: {{ value: observable.onVectorChanged.bind(observable) }}, onceVectorChanged: {{ value: observable.onceVectorChanged.bind(observable) }}, offVectorChanged: {{ value: observable.offVectorChanged.bind(observable) }} }}); return vector; }})()",
+                "(() => {{ const value = DynWinRtValue.createVector(items.map(i => _unwrap(i)), {elem_type}); const observable = new {observable}(value); const vector = new {vector}(value); Object.defineProperties(vector, {{ asVector: {{ value: observable.asVector.bind(observable) }}, onVectorChanged: {{ value: observable.onVectorChanged.bind(observable) }}, onceVectorChanged: {{ value: observable.onceVectorChanged.bind(observable) }}, offVectorChanged: {{ value: observable.offVectorChanged.bind(observable) }} }}); return vector; }})()",
                 observable = iface.name,
-                vector = vector_name,
+                vector = ref_marker(&vector_name),
             )),
             async_convert_v: None,
             is_void: false,

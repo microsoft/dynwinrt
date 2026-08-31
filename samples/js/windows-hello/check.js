@@ -2,10 +2,10 @@
 // Licensed under the MIT License.
 
 const { roInitialize } = require('@microsoft/dynwinrt')
-const { UserConsentVerifier } = require('./generated/UserConsentVerifier.js')
 const {
+  UserConsentVerifier,
   UserConsentVerifierAvailability,
-} = require('./generated/UserConsentVerifierAvailability.js')
+} = require('./generated/index.js')
 
 function enumName(values, value) {
   return Object.entries(values).find(([, candidate]) => candidate === value)?.[0] ?? `Unknown (${value})`

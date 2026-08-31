@@ -226,7 +226,7 @@ fn render_class_js(out: &mut String, class: &ProjectedClass) {
                 crate::codegen::winrt::javascript::project::symbol_dedup_key(&s.kind),
                 0,
             )),
-            ProjectedMember::Close => Some(("close".into(), 0)),
+            ProjectedMember::Close { .. } => Some(("close".into(), 0)),
             ProjectedMember::AsCast => Some(("as".into(), 0)),
             ProjectedMember::Property(p) => Some((p.name.clone(), 0)),
             _ => None,
@@ -548,7 +548,10 @@ fn render_member_js(out: &mut String, member: &ProjectedMember, _class_name: &st
         ProjectedMember::Symbol(symbol) => {
             match &symbol.kind {
                 SymbolKind::ToString { iface_name } => {
-                    out.push_str(&format!("    toString() {{\n        return {}.from(this._obj).toString();\n    }}\n", iface_name));
+                    out.push_str(&format!(
+                        "    toString() {{\n        return {}.from(this._obj).toString();\n    }}\n",
+                        ref_marker(iface_name)
+                    ));
                 }
                 SymbolKind::ToPrimitive => {
                     out.push_str("    [Symbol.toPrimitive](_hint) {\n        return this.toString();\n    }\n");
@@ -626,13 +629,11 @@ fn render_member_js(out: &mut String, member: &ProjectedMember, _class_name: &st
             out.push_str("        return InterfaceClass.from(this._obj);\n");
             out.push_str("    }\n");
         }
-        ProjectedMember::Close => {
-            // Use ref_marker so the resolver picks bare `IClosable` (inline
-            // same-file) or `(__get_IClosable())` (lazy sibling).
+        ProjectedMember::Close { interface_name } => {
             out.push_str("    close() {\n");
             out.push_str(&format!(
                 "        {}.from(this._obj).close();\n",
-                ref_marker("IClosable")
+                ref_marker(interface_name)
             ));
             out.push_str("    }\n");
         }

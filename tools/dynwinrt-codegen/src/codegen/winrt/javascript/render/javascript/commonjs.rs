@@ -50,7 +50,7 @@ pub(super) fn convert_to_cjs_with_lazy(
                 // `--import-name ./runtime.js` overrides.
                 if runtime_sources.contains(&source) {
                     runtime_imports.push((symbols, source));
-                } else if !source.starts_with("./") {
+                } else if !source.starts_with("./") && !source.starts_with("../") {
                     runtime_imports.push((symbols, source));
                 } else {
                     let module = source
@@ -218,7 +218,9 @@ pub(crate) fn convert_to_cjs_with_eager(
                 continue;
             }
             if let Some((symbols, source)) = parse_import_line(trimmed) {
-                if runtime_sources.contains(&source) || !source.starts_with("./") {
+                if runtime_sources.contains(&source)
+                    || (!source.starts_with("./") && !source.starts_with("../"))
+                {
                     imports.push((symbols, source));
                 } else {
                     if !relative_symbols.contains_key(&source) {
@@ -277,7 +279,7 @@ pub(crate) fn convert_to_cjs_with_eager(
 
 #[cfg(test)]
 mod tests {
-    use super::{convert_to_cjs_with_eager, convert_to_cjs_with_lazy};
+    use super::{convert_to_cjs_with_eager, convert_to_cjs_with_lazy, sanitize_ident};
     use std::collections::HashSet;
 
     #[test]
@@ -329,6 +331,18 @@ export class Thing extends IThing4 {\n\
         assert!(cjs.contains("exports.Thing = Thing;"));
         assert!(!cjs.contains("__get_IThing4"));
     }
+
+    #[test]
+    fn namespace_paths_get_distinct_loader_identifiers() {
+        let segmented = sanitize_ident("../../microsoft/ui/drag/drop/Widget");
+        let kebab = sanitize_ident("../../microsoft/ui/drag-drop/Widget");
+
+        assert_ne!(segmented, kebab);
+        assert_eq!(
+            segmented,
+            sanitize_ident("../../microsoft/ui/drag/drop/Widget")
+        );
+    }
 }
 
 /// Parse `import { A, B } from 'source';` (single-line). Returns Some(symbols, source)
@@ -367,7 +381,8 @@ fn parse_import_line(line: &str) -> Option<(Vec<String>, String)> {
 /// Turn a module basename into a valid JS identifier stem. WinRT type names use
 /// only [A-Za-z0-9_], so this is defensive against any future codegen additions.
 fn sanitize_ident(name: &str) -> String {
-    name.chars()
+    let sanitized = name
+        .chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '_' {
                 c
@@ -375,7 +390,15 @@ fn sanitize_ident(name: &str) -> String {
                 '_'
             }
         })
-        .collect()
+        .collect::<String>();
+    if sanitized == name {
+        sanitized
+    } else {
+        let hash = name.as_bytes().iter().fold(0x811c9dc5u32, |hash, byte| {
+            (hash ^ u32::from(*byte)).wrapping_mul(0x01000193)
+        });
+        format!("{sanitized}_{hash:08x}")
+    }
 }
 
 fn dedupe_preserving_order(v: &[String]) -> Vec<String> {

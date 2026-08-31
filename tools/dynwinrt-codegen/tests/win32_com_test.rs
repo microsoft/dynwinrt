@@ -958,7 +958,8 @@ fn run_codegen_command(
 }
 
 fn assert_mixed_package_shape(output_dir: &Path) {
-    assert!(output_dir.join("Uri.js").is_file());
+    assert!(output_dir.join("windows/foundation/Uri.js").is_file());
+    assert!(!output_dir.join("Uri.js").exists());
     assert!(output_dir.join("com").join("ITaskbarList3.js").is_file());
     assert!(output_dir.join("com").join("package.json").is_file());
 
@@ -974,7 +975,7 @@ fn assert_mixed_package_shape(output_dir: &Path) {
 
     let package = fs::read_to_string(output_dir.join("package.json")).unwrap();
     assert!(package.contains("\"type\": \"commonjs\""));
-    assert!(package.contains("\"./Uri\""));
+    assert!(package.contains("\"./windows/foundation/Uri\""));
     assert!(package.contains("\"./com\""));
     assert!(package.contains("\"./com/*\""));
     assert!(package.contains("\"types\": \"./com/*.d.ts\""));
@@ -4720,10 +4721,17 @@ fn mixed_generation_supports_one_command_and_both_incremental_orders() {
     run_codegen_command(
         &metadata,
         None,
-        "Windows.Foundation.Uri,Windows.Win32.UI.Shell.ITaskbarList3",
+        "Windows.Foundation.Uri,Windows.Graphics.DirectX.Direct3D11.IDirect3DSurface,Windows.Win32.UI.Shell.ITaskbarList3",
         &mixed,
     );
     assert_mixed_package_shape(&mixed);
+    assert!(
+        mixed
+            .join("windows/graphics/direct-x/direct3-d11/IDirect3DSurface.js")
+            .is_file(),
+        "mixed COM/WinRT interface request must emit the WinRT interface"
+    );
+    assert!(!mixed.join("IDirect3DSurface.js").exists());
 
     run_codegen_command(&metadata, Some("Windows.Foundation"), "Uri", &winrt_first);
     run_codegen_command(

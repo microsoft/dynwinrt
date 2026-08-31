@@ -27,9 +27,12 @@ fn ts_param_type(typ: &TypeMeta) -> String {
         TypeMeta::RuntimeClass { name, .. }
         | TypeMeta::Enum { name, .. }
         | TypeMeta::Interface { name, .. } => name.clone(),
-        TypeMeta::Parameterized { name, args, .. } => {
-            crate::meta::make_parameterized_name(name, args)
-        }
+        TypeMeta::Parameterized {
+            namespace,
+            name,
+            piid,
+            args,
+        } => super::projected_parameterized_name(namespace, name, piid, args),
         TypeMeta::Array(_) => "DynWinRtArray".to_string(),
         TypeMeta::Object => "unknown".to_string(),
         TypeMeta::Delegate { .. } => "DynWinRtValue".to_string(),
@@ -43,9 +46,12 @@ pub(crate) fn ts_param_type_safe(typ: &TypeMeta, known: &HashSet<String>) -> Str
     if let Some(inner) = ireference_inner_type(typ) {
         let native = ts_return_type_safe(Some(inner), false, known);
         let wrapper = match typ {
-            TypeMeta::Parameterized { name, args, .. } => {
-                crate::meta::make_parameterized_name(name, args)
-            }
+            TypeMeta::Parameterized {
+                namespace,
+                name,
+                piid,
+                args,
+            } => super::projected_parameterized_name(namespace, name, piid, args),
             _ => unreachable!(),
         };
         return format!("{} | null | {}", native, wrapper);
@@ -211,8 +217,13 @@ fn ts_return_type(typ: Option<&TypeMeta>, is_async: bool) -> String {
                 name.clone()
             };
         }
-        Some(TypeMeta::Parameterized { name, args, .. }) => {
-            let s = crate::meta::make_parameterized_name(name, args);
+        Some(TypeMeta::Parameterized {
+            namespace,
+            name,
+            piid,
+            args,
+        }) => {
+            let s = super::projected_parameterized_name(namespace, name, piid, args);
             return if is_async {
                 format!("Promise<{}>", s)
             } else {

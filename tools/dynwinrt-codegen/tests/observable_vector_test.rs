@@ -29,18 +29,13 @@ fn observable_vector_projects_mutable_create_helper() {
     let dts = render_dts::render(&projected);
 
     assert!(js.contains("DynWinRtValue.createVector"));
-    assert!(
-        js.contains("new ((__load_IVector_Object()).IVector_Object)(value)",),
-        "{js}",
-    );
+    assert!(js.contains("new (__get_IVector_Object())(value)",), "{js}",);
     assert!(js.contains("onVectorChanged"));
     assert!(
         js.contains("asVector: { value: observable.asVector.bind(observable) }"),
         "{js}",
     );
-    assert!(js.contains(
-        "asVector() {\n        return new ((__load_IVector_Object()).IVector_Object)(this._obj);",
-    ));
+    assert!(js.contains("asVector() {\n        return new (__get_IVector_Object())(this._obj);",));
     assert!(dts.contains("asVector(): IVector_Object;"));
     assert!(dts.contains(
         "static create(items: unknown[]): IObservableVector_Object & IVector_Object;",

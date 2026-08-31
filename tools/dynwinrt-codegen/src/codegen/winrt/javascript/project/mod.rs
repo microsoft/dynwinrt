@@ -36,8 +36,7 @@ pub fn get_import_name() -> String {
 }
 
 use crate::codegen::winrt::shared::imports::{
-    NO_DEFERRED, collect_iface_type_imports, collect_type_imports,
-    collect_used_generics_from_class, collect_used_generics_from_methods, fill_array_output_index,
+    NO_DEFERRED, collect_iface_type_imports, collect_type_imports, fill_array_output_index,
     fill_array_uses_retval_count, get_in_params, ireference_inner_type, method_abi_output_count,
 };
 use crate::codegen::winrt::shared::structs::{
@@ -53,6 +52,70 @@ use super::signature::{
     build_args_expr, collect_runtime_class_iid_consts, convert_array_return, convert_return,
     generate_interface_registration, js_argument_kind, ref_marker, ts_dynwinrt_type, wrap_arg,
 };
+
+fn visit_projected_generics(typ: &TypeMeta, names: &mut HashSet<String>) {
+    match typ {
+        TypeMeta::Parameterized {
+            namespace,
+            name,
+            piid,
+            args,
+        } => {
+            names.insert(super::projected_parameterized_name(
+                namespace, name, piid, args,
+            ));
+            for argument in args {
+                visit_projected_generics(argument, names);
+            }
+        }
+        TypeMeta::AsyncOperation(inner)
+        | TypeMeta::AsyncActionWithProgress(inner)
+        | TypeMeta::Array(inner) => visit_projected_generics(inner, names),
+        TypeMeta::AsyncOperationWithProgress(result, progress) => {
+            visit_projected_generics(result, names);
+            visit_projected_generics(progress, names);
+        }
+        TypeMeta::Struct { fields, .. } => {
+            for field in fields {
+                visit_projected_generics(&field.typ, names);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_used_generics_from_methods(methods: &[MethodMeta]) -> Vec<String> {
+    let mut names = HashSet::new();
+    for method in methods {
+        for parameter in &method.params {
+            visit_projected_generics(&parameter.typ, &mut names);
+        }
+        if let Some(return_type) = &method.return_type {
+            visit_projected_generics(return_type, &mut names);
+        }
+    }
+    let mut names = names.into_iter().collect::<Vec<_>>();
+    names.sort();
+    names
+}
+
+fn collect_used_generics_from_class(class: &ClassMeta) -> Vec<String> {
+    let mut names = HashSet::new();
+    for method in class
+        .all_interfaces()
+        .flat_map(|interface| &interface.methods)
+    {
+        for parameter in &method.params {
+            visit_projected_generics(&parameter.typ, &mut names);
+        }
+        if let Some(return_type) = &method.return_type {
+            visit_projected_generics(return_type, &mut names);
+        }
+    }
+    let mut names = names.into_iter().collect::<Vec<_>>();
+    names.sort();
+    names
+}
 use super::structs::{struct_field_getter, struct_field_setter, ts_struct_field_type};
 
 use collections::{
@@ -224,6 +287,7 @@ pub fn project_class(
     imports.push(runtime_import);
 
     // Collection generics imports
+    let mut imported_names: HashSet<String> = HashSet::new();
     let collection_names = collect_used_generics_from_class(class);
     for cname in &collection_names {
         if !all_delegate_names.contains(cname) {
@@ -234,6 +298,7 @@ pub fn project_class(
                 dts_only: false,
                 is_runtime_package: false,
             });
+            imported_names.insert(cname.clone());
         }
     }
 
@@ -261,7 +326,6 @@ pub fn project_class(
     }
 
     // Type imports
-    let mut imported_names: HashSet<String> = HashSet::new();
     let type_imports = collect_type_imports(class);
     let mut sorted_imports: Vec<_> = type_imports.iter().collect();
     sorted_imports
@@ -343,18 +407,18 @@ pub fn project_class(
     // IClosable by name. Register the import here so the IID-const loop below
     // sees `IID_IClosable` in `imported_names` and skips declaring it,
     // avoiding a duplicate identifier in single-class emission.
-    let needs_iclosable = class.name != "IClosable"
-        && class
-            .required_interfaces
-            .iter()
-            .any(|ri| ri.iid == ICLOSABLE_IID);
-    if needs_iclosable && !imported_names.contains("IClosable") {
-        imports.push(format_type_import_projected(
-            "IClosable",
-            TypeKind::Interface,
-        ));
-        imported_names.insert("IClosable".into());
-        imported_names.insert("IID_IClosable".into());
+    let iclosable_name = class
+        .required_interfaces
+        .iter()
+        .find(|interface| interface.iid == ICLOSABLE_IID)
+        .map(|interface| interface.name.clone());
+    if let Some(name) = &iclosable_name
+        && class.name != *name
+        && !imported_names.contains(name)
+    {
+        imports.push(format_type_import_projected(name, TypeKind::Interface));
+        imported_names.insert(name.clone());
+        imported_names.insert(format!("IID_{name}"));
     }
 
     // IID consts(private, for class-internal use)
@@ -800,12 +864,8 @@ pub fn project_class(
     merge_overload_names(&mut members);
 
     // IClosable → close()  (import already registered pre-emptively above)
-    if class
-        .required_interfaces
-        .iter()
-        .any(|ri| ri.iid == ICLOSABLE_IID)
-    {
-        members.push(ProjectedMember::Close);
+    if let Some(interface_name) = iclosable_name {
+        members.push(ProjectedMember::Close { interface_name });
     }
 
     // IStringable → toString, toPrimitive, toStringTag
@@ -878,19 +938,41 @@ pub fn project_class(
 
     // Required interface inline wrappers
     let mut required_ifaces = Vec::new();
-    // Track names already on the main class to avoid conflicts
+    // Non-method members reserve their plain names. Methods are deduplicated
+    // by signature so overloads contributed by required interfaces survive.
     let mut main_member_names: HashSet<String> = members
         .iter()
         .filter_map(|m| match m {
-            ProjectedMember::Method(pm) => Some(pm.name.clone()),
+            ProjectedMember::Method(_) => None,
             ProjectedMember::Property(pp) => Some(pp.name.clone()),
             ProjectedMember::Event(pe) => Some(pe.subscribe_name.clone()),
             ProjectedMember::Symbol(ps) => Some(symbol_dedup_key(&ps.kind)),
-            ProjectedMember::Close => Some("close".into()),
+            ProjectedMember::Close { .. } => Some("close".into()),
             ProjectedMember::AsCast => Some("as".into()),
             _ => None,
         })
         .collect();
+    let method_signature = |method: &ProjectedMethod| {
+        format!(
+            "{}({})",
+            method.name,
+            method
+                .params
+                .iter()
+                .map(|param| format!("{}:{}:{}", param.name, param.ts_type, param.optional))
+                .collect::<Vec<_>>()
+                .join(",")
+        )
+    };
+    let mut main_method_signatures = members
+        .iter()
+        .filter_map(|member| {
+            let ProjectedMember::Method(method) = member else {
+                return None;
+            };
+            Some(method_signature(method))
+        })
+        .collect::<HashSet<_>>();
 
     for req_iface in &class.required_interfaces {
         if req_iface.iid.is_empty() {
@@ -974,18 +1056,15 @@ pub fn project_class(
                 ProjectedMember::Property(pp) => pp.name.clone(),
                 ProjectedMember::Event(pe) => pe.subscribe_name.clone(),
                 ProjectedMember::Symbol(ps) => symbol_dedup_key(&ps.kind),
-                ProjectedMember::Close => "close".into(),
+                ProjectedMember::Close { .. } => "close".into(),
                 ProjectedMember::AsCast => "as".into(),
                 _ => continue,
             };
-            // For methods: allow same name (overloads), dedup by name+param count.
-            // Also check plain name to prevent duplicating Symbol-based members (e.g. toString).
             if let ProjectedMember::Method(pm) = member {
                 if main_member_names.contains(&name) {
-                    continue; // already exists as a Symbol or other member
+                    continue;
                 }
-                let sig_key = format!("{}#{}", name, pm.params.len());
-                if main_member_names.insert(sig_key) {
+                if main_method_signatures.insert(method_signature(pm)) {
                     members.push(member.clone());
                 }
             } else if main_member_names.insert(name) {
@@ -1198,7 +1277,9 @@ pub fn project_interface(
     // Static create() for IVector / IMap
     project_collection_create(iface, known_types, &mut members, &mut imports);
 
-    if iface.name == "IElementFactory" {
+    if iface.namespace == "Microsoft.UI.Xaml"
+        && super::metadata_type_name(&iface.namespace, &iface.name) == "IElementFactory"
+    {
         imports[0].symbols.push("DynWinRtElementFactory".into());
         members.push(ProjectedMember::Method(ProjectedMethod {
             name: "create".into(),
@@ -1366,12 +1447,19 @@ pub fn project_delegate(
 
     let callback_type = delegate_sigs.get(&iface.name).cloned();
 
+    let mut runtime_symbols = vec!["DynWinRtType".into(), "WinGuid".into()];
+    if callback_type
+        .as_deref()
+        .is_some_and(|callback| callback.contains("DynWinRtValue"))
+    {
+        runtime_symbols.push("DynWinRtValue".into());
+    }
     let mut imports = vec![ProjectedImport {
-        symbols: vec!["DynWinRtType".into(), "WinGuid".into()],
+        symbols: runtime_symbols,
         from: get_import_name(),
         runtime_only: false,
         dts_only: false,
-        is_runtime_package: false,
+        is_runtime_package: true,
     }];
     if let Some(ref_types) = delegate_sig_refs.get(&iface.name) {
         for rt in ref_types {
@@ -1484,8 +1572,13 @@ fn collect_runtime_delegate_names_from_methods(
                 TypeMeta::Interface { name, .. } if known_delegate_names.contains(name) => {
                     delegate_names.insert(name.clone());
                 }
-                TypeMeta::Parameterized { name, args, .. } => {
-                    let concrete = crate::meta::make_parameterized_name(name, args);
+                TypeMeta::Parameterized {
+                    namespace,
+                    name,
+                    piid,
+                    args,
+                } => {
+                    let concrete = super::projected_parameterized_name(namespace, name, piid, args);
                     if known_delegate_names.contains(&concrete) {
                         delegate_names.insert(concrete);
                     }
@@ -1542,8 +1635,13 @@ fn collect_known_delegate_names_from_type(
             collect_known_delegate_names_from_type(result, known_delegate_names, delegate_names);
             collect_known_delegate_names_from_type(progress, known_delegate_names, delegate_names);
         }
-        TypeMeta::Parameterized { name, args, .. } => {
-            let concrete = crate::meta::make_parameterized_name(name, args);
+        TypeMeta::Parameterized {
+            namespace,
+            name,
+            piid,
+            args,
+        } => {
+            let concrete = super::projected_parameterized_name(namespace, name, piid, args);
             if known_delegate_names.contains(&concrete) {
                 delegate_names.insert(concrete);
             }

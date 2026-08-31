@@ -13,7 +13,7 @@ use std::path::Path;
 
 use dynwinrt_codegen::codegen::common::to_snake_case_filename;
 use dynwinrt_codegen::codegen::python_stub;
-use dynwinrt_codegen::codegen::{project, render_dts, render_js};
+use dynwinrt_codegen::codegen::{javascript, project, render_dts, render_js};
 use dynwinrt_codegen::meta;
 use dynwinrt_codegen::types::TypeMeta;
 
@@ -35,8 +35,67 @@ fn snapshot_uri_class() {
     let deps = meta::resolve_dependencies(winmd, &classes, &[], &[]);
     let mut all_classes = classes;
     all_classes.extend(deps.classes);
-    let all_interfaces = deps.interfaces;
-    let all_enums = deps.enums;
+    let mut all_interfaces = deps.interfaces;
+    let mut all_enums = deps.enums;
+    let identities = all_classes
+        .iter()
+        .map(|class| {
+            javascript::JavaScriptTypeIdentity::new(
+                &class.namespace,
+                &class.name,
+                javascript::JavaScriptTypeKind::Class,
+            )
+        })
+        .chain(all_interfaces.iter().map(|interface| {
+            let kind = if interface
+                .methods
+                .iter()
+                .any(|method| method.name == ".ctor")
+                && interface
+                    .methods
+                    .iter()
+                    .any(|method| method.name == "Invoke")
+            {
+                javascript::JavaScriptTypeKind::Delegate
+            } else {
+                javascript::JavaScriptTypeKind::Interface
+            };
+            if let Some(piid) = &interface.generic_piid {
+                javascript::JavaScriptTypeIdentity::with_variant(
+                    &interface.namespace,
+                    &javascript::parameterized_interface_name(
+                        &interface.namespace,
+                        &interface.name,
+                        piid,
+                        &interface.generic_args,
+                    ),
+                    kind,
+                    &javascript::parameterized_reference_identity(piid, &interface.generic_args),
+                )
+            } else {
+                javascript::JavaScriptTypeIdentity::new(&interface.namespace, &interface.name, kind)
+            }
+        }))
+        .chain(all_enums.iter().filter_map(|typ| {
+            let TypeMeta::Enum {
+                namespace, name, ..
+            } = typ
+            else {
+                return None;
+            };
+            Some(javascript::JavaScriptTypeIdentity::new(
+                namespace,
+                name,
+                javascript::JavaScriptTypeKind::Enum,
+            ))
+        }))
+        .collect::<Vec<_>>();
+    let _layout = javascript::install_javascript_module_layout(identities).unwrap();
+    javascript::apply_javascript_projected_names(
+        &mut all_classes,
+        &mut all_interfaces,
+        &mut all_enums,
+    );
 
     let mut known_types: HashSet<String> = HashSet::new();
     for c in &all_classes {
@@ -60,14 +119,18 @@ fn snapshot_uri_class() {
         .map(|i| i.name.clone())
         .collect();
 
-    let shared_iids: HashSet<String> = HashSet::new();
+    let shared_iids = all_interfaces
+        .iter()
+        .filter(|interface| interface.generic_piid.is_none())
+        .map(|interface| interface.iid.clone())
+        .collect::<HashSet<_>>();
     let (delegate_sigs, delegate_sig_refs, delegate_param_wraps) =
         project::build_delegate_signatures(&all_interfaces, &delegate_type_names, &known_types);
 
     // Generate all files into a map (.js + .d.ts pair per type)
     let mut generated: HashMap<String, String> = HashMap::new();
     for iface in &all_interfaces {
-        let projected = project::project_interface(
+        let mut projected = project::project_interface(
             iface,
             &known_types,
             &delegate_type_names,
@@ -75,13 +138,19 @@ fn snapshot_uri_class() {
             &delegate_sig_refs,
             &delegate_param_wraps,
         );
-        let js = render_js::render(&projected);
+        let target = javascript::configure_projected_file(&mut projected).unwrap();
+        let mut js = render_js::render(&projected);
+        let lifetime = javascript::root_relative_module(&target.canonical_module, "lifetime");
+        js = js.replace(
+            "require('./lifetime.js')",
+            &format!("require('{lifetime}.js')"),
+        );
         let dts = render_dts::render(&projected);
-        generated.insert(format!("{}.js", iface.name), js);
-        generated.insert(format!("{}.d.ts", iface.name), dts);
+        generated.insert(format!("{}.js", target.canonical_module), js);
+        generated.insert(format!("{}.d.ts", target.canonical_module), dts);
     }
     for class in &all_classes {
-        let projected = project::project_class(
+        let mut projected = project::project_class(
             class,
             &known_types,
             &delegate_type_names,
@@ -90,12 +159,20 @@ fn snapshot_uri_class() {
             &delegate_sig_refs,
             &delegate_param_wraps,
         );
-        let js = render_js::render(&projected);
+        let target = javascript::configure_projected_file(&mut projected).unwrap();
+        let mut js = render_js::render(&projected);
+        let lifetime = javascript::root_relative_module(&target.canonical_module, "lifetime");
+        js = js.replace(
+            "require('./lifetime.js')",
+            &format!("require('{lifetime}.js')"),
+        );
         let dts = render_dts::render(&projected);
-        generated.insert(format!("{}.js", class.name), js);
-        generated.insert(format!("{}.d.ts", class.name), dts);
+        generated.insert(format!("{}.js", target.canonical_module), js);
+        generated.insert(format!("{}.d.ts", target.canonical_module), dts);
     }
-    let uri_js = generated.get("Uri.js").expect("generated Uri.js");
+    let uri_js = generated
+        .get("windows/foundation/Uri.js")
+        .expect("generated Uri.js");
     assert!(uri_js.contains(
         "const IID_ARG_Windows_Foundation_Uri = WinGuid.parse('9e365e57-48b2-4160-956f-c7385120bbfc');"
     ));
@@ -111,6 +188,14 @@ fn snapshot_uri_class() {
         "Snapshot directory not found: {}",
         snapshot_dir.display()
     );
+    if std::env::var_os("DYNWINRT_UPDATE_SNAPSHOTS").is_some() {
+        for (filename, actual) in &generated {
+            let path = snapshot_dir.join(filename);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, actual)
+                .unwrap_or_else(|error| panic!("Failed to update {filename}: {error}"));
+        }
+    }
 
     let mut mismatches = Vec::new();
     for (filename, actual) in &generated {
@@ -127,14 +212,29 @@ fn snapshot_uri_class() {
         }
     }
 
-    // Check for extra snapshot files not in generated output
-    if let Ok(entries) = fs::read_dir(&snapshot_dir) {
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if (name.ends_with(".js") || name.ends_with(".d.ts")) && !generated.contains_key(&name)
+    // Check for extra snapshot files not in generated output.
+    let mut snapshot_files = Vec::new();
+    let mut directories = vec![snapshot_dir.clone()];
+    while let Some(directory) = directories.pop() {
+        for entry in fs::read_dir(directory).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                directories.push(path);
+            } else if path.extension().is_some_and(|extension| extension == "js")
+                || path.to_string_lossy().ends_with(".d.ts")
             {
-                mismatches.push(format!("  extra snapshot not generated: {}", name));
+                snapshot_files.push(path);
             }
+        }
+    }
+    for path in snapshot_files {
+        let relative = path
+            .strip_prefix(&snapshot_dir)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        if !generated.contains_key(&relative) {
+            mismatches.push(format!("  extra snapshot not generated: {relative}"));
         }
     }
 

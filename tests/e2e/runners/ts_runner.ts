@@ -14,6 +14,7 @@
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
 import * as fs from "node:fs";
+import { createRequire } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -71,6 +72,18 @@ interface SpecResult {
   error: string | null;
 }
 
+const require = createRequire(import.meta.url);
+const generatedRoots = new Map<string, any>();
+
+function generatedRoot(generatedDir: string): any {
+  let root = generatedRoots.get(generatedDir);
+  if (!root) {
+    root = require(path.resolve(generatedDir, "index.js"));
+    generatedRoots.set(generatedDir, root);
+  }
+  return root;
+}
+
 function toSnakeCase(name: string): string {
   return name
     .replace(/([A-Z])/g, "_$1")
@@ -105,9 +118,8 @@ async function runSpec(
   };
 
   try {
-    // Import the generated module
-    const modulePath = path.resolve(generatedDir, `${spec.class}.js`);
-    const mod = await import(`file://${modulePath.replace(/\\/g, "/")}`);
+    const modulePath = path.resolve(generatedDir, "index.js");
+    const mod = generatedRoot(generatedDir);
     const cls = mod[spec.class];
     if (!cls) throw new Error(`Class ${spec.class} not found in ${modulePath}`);
 
@@ -178,17 +190,10 @@ async function importClass(
   generatedDir: string,
   className: string,
 ): Promise<any> {
-  const candidates = [
-    path.resolve(generatedDir, `${className}.js`),
-    path.resolve(generatedDir, `${toPascalCase(className)}.js`),
-  ];
-  for (const p of candidates) {
-    if (fs.existsSync(p)) {
-      const mod = await import(`file://${p.replace(/\\/g, "/")}`);
-      if (mod[className]) return mod[className];
-    }
-  }
-  throw new Error(`Class ${className} not found in: ${candidates.join(", ")}`);
+  const root = generatedRoot(generatedDir);
+  const cls = root[className] ?? root[toPascalCase(className)];
+  if (cls) return cls;
+  throw new Error(`Class ${className} not found in generated root`);
 }
 
 async function runIssueRegression(
@@ -442,13 +447,9 @@ async function runCheck(
         return cr;
       }
 
-      const propertyValueMod = await import(
-        `file://${path.resolve(generatedDir, "PropertyValue.js").replace(/\\/g, "/")}`
-      );
+      const propertyValueMod = generatedRoot(generatedDir);
       const referenceModule = (check as any).reference_class;
-      const referenceMod = await import(
-        `file://${path.resolve(generatedDir, `${referenceModule}.js`).replace(/\\/g, "/")}`
-      );
+      const referenceMod = generatedRoot(generatedDir);
       const factory =
         propertyValueMod.PropertyValue[
           (check as any).factory.replace(/_([a-z])/g, (_: string, c: string) =>
@@ -654,8 +655,7 @@ async function runCheck(
         cr.pass = true;
       }
     } else if (kind === "nested_struct_runtime") {
-      const modulePath = path.resolve(generatedDir, `${clsName}.js`);
-      const mod = await import(`file://${modulePath.replace(/\\/g, "/")}`);
+      const mod = generatedRoot(generatedDir);
       const DirectXPixelFormat = await importClass(
         generatedDir,
         "DirectXPixelFormat",
@@ -720,18 +720,7 @@ async function runCheck(
       }
     } else if (kind === "struct_roundtrip") {
       const structClass = check.struct_class as string;
-      const structModule = check.struct_module as string;
-      // In TS, structs are interfaces + packFn. Find the module file.
-      const candidates = [
-        path.resolve(generatedDir, `${toPascalCase(structModule)}.js`),
-        path.resolve(generatedDir, `${structModule}.js`),
-      ];
-      let modPath = candidates.find((p) => fs.existsSync(p));
-      if (!modPath)
-        throw new Error(
-          `Struct module not found: tried ${candidates.join(", ")}`,
-        );
-      const structMod = await import(`file://${modPath.replace(/\\/g, "/")}`);
+      const structMod = generatedRoot(generatedDir);
 
       // TS structs are plain objects (interfaces), create one directly
       const structArgs = check.struct_args as Record<string, any>;
@@ -795,12 +784,8 @@ async function runCheck(
       const stream =
         typeof cls.create === "function" ? cls.create() : cls.createDefault();
 
-      const writerMod = await import(
-        `file://${path.resolve(generatedDir, "DataWriter.js").replace(/\\/g, "/")}`
-      );
-      const readerMod = await import(
-        `file://${path.resolve(generatedDir, "DataReader.js").replace(/\\/g, "/")}`
-      );
+      const writerMod = generatedRoot(generatedDir);
+      const readerMod = generatedRoot(generatedDir);
       const DataWriter = writerMod.DataWriter;
       const DataReader = readerMod.DataReader;
 
@@ -891,10 +876,7 @@ async function runCheck(
       let chainOk = true;
       for (const step of (check as any).steps) {
         const stepClsName = step.class;
-        const stepModPath = path.resolve(generatedDir, `${stepClsName}.js`);
-        const stepMod = await import(
-          `file://${stepModPath.replace(/\\/g, "/")}`
-        );
+        const stepMod = generatedRoot(generatedDir);
         const stepCls = stepMod[stepClsName];
         const stepMethodName = toCamelCase(step.method);
         const stepMethod =
@@ -971,11 +953,17 @@ async function main() {
 
   // Fix imports in generated files (both ESM `import ... from` and CJS `require`)
   const absRuntime = path.resolve(runtimePath).replace(/\\/g, "/");
-  const tsFiles = fs
-    .readdirSync(generatedDir)
-    .filter((f) => f.endsWith(".js") || f.endsWith(".mjs"));
-  for (const f of tsFiles) {
-    const filePath = path.join(generatedDir, f);
+  const generatedModules: string[] = [];
+  const collectGeneratedModules = (directory: string): void => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const entryPath = path.join(directory, entry.name);
+      if (entry.isDirectory()) collectGeneratedModules(entryPath);
+      else if (entry.name.endsWith(".js") || entry.name.endsWith(".mjs"))
+        generatedModules.push(entryPath);
+    }
+  };
+  collectGeneratedModules(generatedDir);
+  for (const filePath of generatedModules) {
     let content = fs.readFileSync(filePath, "utf8");
     content = content.replace(
       /from '@microsoft\/dynwinrt'/g,

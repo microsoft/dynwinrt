@@ -15,10 +15,16 @@ use super::signature::{ref_marker, wrap_arg};
 /// Map a struct field type to its TypeScript type annotation.
 pub(crate) fn ts_struct_field_type(typ: &TypeMeta) -> String {
     if let Some(inner) = ireference_inner_type(typ) {
-        let TypeMeta::Parameterized { name, args, .. } = typ else {
+        let TypeMeta::Parameterized {
+            namespace,
+            name,
+            piid,
+            args,
+        } = typ
+        else {
             unreachable!()
         };
-        let wrapper = crate::meta::make_parameterized_name(name, args);
+        let wrapper = super::projected_parameterized_name(namespace, name, piid, args);
         return format!("{} | null | {}", ts_ireference_inner_type(inner), wrapper);
     }
 
@@ -57,10 +63,18 @@ fn ts_struct_field_read_type(typ: &TypeMeta) -> String {
 /// Generate a `DynWinRtStruct.getXxx(index)` expression for a struct field.
 pub(crate) fn struct_field_getter(typ: &TypeMeta, index: usize) -> String {
     if ireference_inner_type(typ).is_some() {
-        let TypeMeta::Parameterized { name, args, .. } = typ else {
+        let TypeMeta::Parameterized {
+            namespace,
+            name,
+            piid,
+            args,
+        } = typ
+        else {
             unreachable!()
         };
-        let wrapper = ref_marker(&crate::meta::make_parameterized_name(name, args));
+        let wrapper = ref_marker(&super::projected_parameterized_name(
+            namespace, name, piid, args,
+        ));
         return format!(
             "((value) => value.isNull() ? null : new {}(value).value)(s.getObject({}))",
             wrapper, index
