@@ -1267,7 +1267,7 @@ fn install_python_generation_layout(
 }
 
 const JAVASCRIPT_TYPE_INVENTORY: &str = ".dynwinrt-js-types";
-const JAVASCRIPT_TYPE_INVENTORY_VERSION: u32 = 10;
+const JAVASCRIPT_TYPE_INVENTORY_VERSION: u32 = 1;
 
 #[derive(Debug, Default, Deserialize, Serialize)]
 struct JavaScriptTypeInventory {
@@ -5574,6 +5574,19 @@ mod tests {
             dts.contains("export { ContosoAlphaWidget as Widget };"),
             "{dts}"
         );
+        fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
+    fn javascript_inventory_uses_initial_schema_version() {
+        let output = test_directory("javascript-inventory-version");
+        fs::create_dir_all(&output).unwrap();
+        write_javascript_type_inventory(&output, &[]).unwrap();
+
+        let content = fs::read_to_string(output.join(JAVASCRIPT_TYPE_INVENTORY)).unwrap();
+        let inventory: serde_json::Value = serde_json::from_str(&content).unwrap();
+
+        assert_eq!(inventory["version"], 1);
         fs::remove_dir_all(output).unwrap();
     }
 
