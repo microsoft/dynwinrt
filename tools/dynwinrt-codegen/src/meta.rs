@@ -364,14 +364,6 @@ pub struct ResolvedDeps {
     pub enums: Vec<TypeMeta>,
 }
 
-#[derive(Clone)]
-pub struct ParameterizedInterfaceRequest {
-    pub namespace: String,
-    pub generic_name: String,
-    pub piid: String,
-    pub args: Vec<TypeMeta>,
-}
-
 /// Resolve all referenced types that don't have generated files yet.
 /// Uses fixpoint iteration to recursively discover transitive dependencies.
 pub fn resolve_dependencies(
@@ -925,20 +917,29 @@ pub fn expand_winmd_paths(winmd_paths: &str) -> String {
                 continue;
             }
             if let Ok(entries) = std::fs::read_dir(parent) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path
-                        .extension()
-                        .map_or(false, |ext| ext.eq_ignore_ascii_case("winmd"))
-                    {
-                        let canonical = path
-                            .canonicalize()
-                            .map(|c| c.to_string_lossy().to_string())
-                            .unwrap_or_else(|_| path.to_string_lossy().to_string());
-                        if seen.insert(canonical) {
-                            eprintln!("Auto-discovered sibling winmd: {}", path.display());
-                            all_paths.push(path.to_string_lossy().to_string());
-                        }
+                let mut siblings = entries
+                    .flatten()
+                    .map(|entry| entry.path())
+                    .filter(|path| {
+                        path.extension()
+                            .map_or(false, |ext| ext.eq_ignore_ascii_case("winmd"))
+                    })
+                    .collect::<Vec<_>>();
+                siblings.sort_by(|left, right| {
+                    let left = left.to_string_lossy();
+                    let right = right.to_string_lossy();
+                    left.to_ascii_lowercase()
+                        .cmp(&right.to_ascii_lowercase())
+                        .then_with(|| left.cmp(&right))
+                });
+                for path in siblings {
+                    let canonical = path
+                        .canonicalize()
+                        .map(|c| c.to_string_lossy().to_string())
+                        .unwrap_or_else(|_| path.to_string_lossy().to_string());
+                    if seen.insert(canonical) {
+                        eprintln!("Auto-discovered sibling winmd: {}", path.display());
+                        all_paths.push(path.to_string_lossy().to_string());
                     }
                 }
             }
@@ -1250,92 +1251,6 @@ fn parse_interface(index: &reader::Index, namespace: &str, name: &str) -> Option
     let def = index.get(namespace, name).next()?;
     let iid = extract_iid(&def);
     parse_interface_methods(index, &def, name, namespace, &iid, &[])
-}
-
-/// Parse a concrete non-generic interface or delegate by metadata name.
-pub fn parse_interface_by_name(
-    winmd_paths: &str,
-    namespace: &str,
-    name: &str,
-) -> Option<InterfaceMeta> {
-    let index = load_index(winmd_paths)?;
-    parse_interface(&index, namespace, name)
-}
-
-/// Reconstruct a closed generic interface from its open metadata definition.
-pub fn parse_parameterized_interface_by_name(
-    winmd_paths: &str,
-    namespace: &str,
-    generic_name: &str,
-    piid: &str,
-    args: &[TypeMeta],
-) -> Option<InterfaceMeta> {
-    let index = load_index(winmd_paths)?;
-    parse_parameterized_interface_request(&index, namespace, generic_name, piid, args)
-}
-
-pub fn parse_parameterized_interfaces_by_name(
-    winmd_paths: &str,
-    requests: &[ParameterizedInterfaceRequest],
-) -> Vec<Option<InterfaceMeta>> {
-    let Some(index) = load_index(winmd_paths) else {
-        return requests.iter().map(|_| None).collect();
-    };
-    requests
-        .iter()
-        .map(|request| {
-            parse_parameterized_interface_request(
-                &index,
-                &request.namespace,
-                &request.generic_name,
-                &request.piid,
-                &request.args,
-            )
-        })
-        .collect()
-}
-
-fn parse_parameterized_interface_request(
-    index: &reader::Index,
-    namespace: &str,
-    generic_name: &str,
-    piid: &str,
-    args: &[TypeMeta],
-) -> Option<InterfaceMeta> {
-    let lookup_name = generic_name.split('`').next().unwrap_or(generic_name);
-    let definition = index.get(namespace, lookup_name).next()?;
-    let current_piid = extract_iid(&definition);
-    let normalize_guid = |value: &str| {
-        value
-            .trim_matches(|character| character == '{' || character == '}')
-            .to_ascii_lowercase()
-    };
-    if normalize_guid(&current_piid) != normalize_guid(piid)
-        || definition.generic_params().count() != args.len()
-    {
-        return None;
-    }
-    let refreshed_args = args
-        .iter()
-        .map(|argument| {
-            map_winmd_type_with_generics(&type_meta_to_winmd_type(argument), index, &[])
-        })
-        .collect::<Vec<_>>();
-    if refreshed_args
-        .iter()
-        .any(|arg| !is_resolved_generic_arg(arg))
-    {
-        return None;
-    }
-    let concrete_name = make_parameterized_name(generic_name, &refreshed_args);
-    parse_parameterized_interface(
-        index,
-        namespace,
-        generic_name,
-        &concrete_name,
-        &current_piid,
-        &refreshed_args,
-    )
 }
 
 fn parse_interface_type(

@@ -42,6 +42,11 @@ npx dynwinrt-codegen generate [OPTIONS]
 
 With `--lang js` (default), the tool emits plain ESM JavaScript (`.js`) plus matching ambient TypeScript declarations (`.d.ts`). No TypeScript compiler is needed — the output works for both JS and TS consumers. JSDoc comments are preserved so VS Code IntelliSense shows API descriptions.
 
+Repeated commands may append bindings to the same output directory when they
+use the same restored metadata version. After changing WinMD files, SDK
+versions, or reference inputs, delete the codegen-owned output directory and
+run all generation commands again.
+
 > **Note:** Legacy flags `--lang ts`, `--lang cjs`, `--source-map`, `--declaration`, and `--no-declaration` are accepted by the npm CLI wrapper for backwards compatibility but are silently mapped to `--lang js` behavior.
 
 ### Examples

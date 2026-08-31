@@ -17,11 +17,13 @@ use std::path::{Component, Path, PathBuf};
 
 use crate::meta::{ClassMeta, InterfaceMeta, MethodMeta};
 use crate::types::{TypeKind, TypeMeta, TypeRef};
+use serde::{Deserialize, Serialize};
 
 use self::ir::ProjectedFile;
 use super::shared::structs::{collect_used_structs_from_class, collect_used_structs_from_iface};
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum JavaScriptTypeKind {
     Class,
     Interface,
@@ -38,16 +40,6 @@ impl JavaScriptTypeKind {
             Self::Enum => "enum",
         }
     }
-
-    pub fn parse(value: &str) -> Option<Self> {
-        match value {
-            "class" => Some(Self::Class),
-            "interface" => Some(Self::Interface),
-            "delegate" => Some(Self::Delegate),
-            "enum" => Some(Self::Enum),
-            _ => None,
-        }
-    }
 }
 
 impl From<TypeKind> for JavaScriptTypeKind {
@@ -60,7 +52,7 @@ impl From<TypeKind> for JavaScriptTypeKind {
     }
 }
 
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct JavaScriptTypeIdentity {
     pub namespace: String,
     pub name: String,
@@ -110,13 +102,14 @@ impl JavaScriptTypeIdentity {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct JavaScriptTypeLayoutRecord {
     pub identity: JavaScriptTypeIdentity,
     pub projected_name: String,
+    pub implementation_name: String,
     pub abi_identity: String,
-    pub generic_spec: String,
-    pub generation_roots: BTreeSet<String>,
+    #[serde(default)]
+    pub compatibility_aliases: BTreeSet<String>,
 }
 
 impl JavaScriptTypeLayoutRecord {
@@ -125,121 +118,40 @@ impl JavaScriptTypeLayoutRecord {
         projected_name: impl Into<String>,
         abi_identity: impl Into<String>,
     ) -> Self {
+        let projected_name = projected_name.into();
         Self {
             identity,
-            projected_name: projected_name.into(),
+            implementation_name: projected_name.clone(),
+            projected_name,
             abi_identity: abi_identity.into(),
-            generic_spec: String::new(),
-            generation_roots: BTreeSet::new(),
+            compatibility_aliases: BTreeSet::new(),
         }
     }
 
-    pub fn with_generic_spec(mut self, generic_spec: impl Into<String>) -> Self {
-        self.generic_spec = generic_spec.into();
+    pub fn with_compatibility_aliases(mut self, aliases: impl IntoIterator<Item = String>) -> Self {
+        self.compatibility_aliases.extend(aliases);
         self
     }
 
-    pub fn with_generation_root(mut self, generation_root: impl Into<String>) -> Self {
-        self.generation_roots.insert(generation_root.into());
+    pub fn with_implementation_name(mut self, implementation_name: impl Into<String>) -> Self {
+        self.implementation_name = implementation_name.into();
         self
-    }
-
-    pub fn with_generation_roots(
-        mut self,
-        generation_roots: impl IntoIterator<Item = String>,
-    ) -> Self {
-        self.generation_roots.extend(generation_roots);
-        self
-    }
-
-    pub fn to_inventory_line(&self) -> String {
-        format!(
-            "{}|{}|{}|{}|{}|{}|{}|{}",
-            self.identity.kind.as_str(),
-            self.identity.namespace,
-            self.identity.name,
-            self.projected_name,
-            self.identity.variant,
-            self.abi_identity,
-            self.generic_spec,
-            encode_generation_roots(&self.generation_roots),
-        )
-    }
-
-    pub fn from_inventory_line(line: &str) -> Option<Self> {
-        let parts = line.split('|').collect::<Vec<_>>();
-        if parts.len() != 8 {
-            return None;
-        }
-        let variant = parts[4];
-        let abi_identity = parts[5];
-        let kind = JavaScriptTypeKind::parse(parts[0])?;
-        let identity = if variant.is_empty() {
-            JavaScriptTypeIdentity::new(parts[1], parts[2], kind)
-        } else {
-            JavaScriptTypeIdentity::with_variant(parts[1], parts[2], kind, variant)
-        };
-        let generation_roots = decode_generation_roots(parts[7])?;
-        let record = Self::new(identity, parts[3], abi_identity)
-            .with_generic_spec(parts[6])
-            .with_generation_roots(generation_roots);
-        (record.is_safe() && !record.generation_roots.is_empty()).then_some(record)
     }
 
     fn is_safe(&self) -> bool {
         self.identity.is_safe()
             && is_metadata_identifier(&self.projected_name)
+            && is_metadata_identifier(&self.implementation_name)
             && !self.abi_identity.is_empty()
             && self
                 .abi_identity
                 .chars()
                 .all(|character| character.is_ascii_graphic() && character != '|')
             && self
-                .generic_spec
-                .chars()
-                .all(|character| character.is_ascii_hexdigit())
-            && self.generation_roots.iter().all(|root| {
-                !root.is_empty()
-                    && root
-                        .chars()
-                        .all(|character| character.is_ascii_graphic() && character != '|')
-            })
-    }
-}
-
-pub fn encode_generation_roots(roots: &BTreeSet<String>) -> String {
-    roots
-        .iter()
-        .map(|root| {
-            root.as_bytes()
+                .compatibility_aliases
                 .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect::<String>()
-        })
-        .collect::<Vec<_>>()
-        .join(",")
-}
-
-pub fn decode_generation_roots(encoded: &str) -> Option<BTreeSet<String>> {
-    encoded
-        .split(',')
-        .filter(|root| !root.is_empty())
-        .map(|root| {
-            if root.len() % 2 != 0 || !root.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-                return None;
-            }
-            let bytes = root
-                .as_bytes()
-                .chunks_exact(2)
-                .map(|pair| {
-                    std::str::from_utf8(pair)
-                        .ok()
-                        .and_then(|value| u8::from_str_radix(value, 16).ok())
-                })
-                .collect::<Option<Vec<_>>>()?;
-            String::from_utf8(bytes).ok()
-        })
-        .collect()
+                .all(|alias| is_metadata_identifier(alias))
+    }
 }
 
 fn is_metadata_identifier(value: &str) -> bool {
@@ -255,6 +167,7 @@ pub struct JavaScriptOutputTarget {
     pub projected_name: String,
     pub canonical_module: String,
     pub collides: bool,
+    pub compatibility_aliases: BTreeSet<String>,
 }
 
 #[derive(Default)]
@@ -773,15 +686,6 @@ fn namespace_path(namespace: &str) -> String {
         .join("/")
 }
 
-pub fn canonical_module_for_identity(identity: &JavaScriptTypeIdentity) -> String {
-    let namespace = namespace_path(&identity.namespace);
-    if namespace.is_empty() {
-        identity.name.clone()
-    } else {
-        format!("{namespace}/{}", identity.name)
-    }
-}
-
 fn qualified_projected_name(identity: &JavaScriptTypeIdentity) -> String {
     let qualifier = namespace_qualifier(&identity.namespace);
     let candidate = if qualifier.is_empty() {
@@ -856,18 +760,22 @@ pub fn install_javascript_module_layout_with_records(
         *counts.entry(identity.name.clone()).or_default() += 1;
     }
 
-    let mut previous_identities = BTreeSet::new();
+    let mut previous_by_identity = BTreeMap::new();
     for record in previous_records {
         if !record.is_safe() || !identities.contains(&record.identity) {
             return Err(format!(
-                "Invalid previous JavaScript module layout record `{}`",
-                record.to_inventory_line()
+                "Invalid previous JavaScript module layout record `{:?}`",
+                record
             ));
         }
-        if !previous_identities.insert(record.identity.clone()) {
+        let identity = record.identity.clone();
+        if previous_by_identity
+            .insert(identity.clone(), record)
+            .is_some()
+        {
             return Err(format!(
                 "Duplicate previous JavaScript module layout record for `{}.{}`",
-                record.identity.namespace, record.identity.name,
+                identity.namespace, identity.name,
             ));
         }
     }
@@ -912,7 +820,12 @@ pub fn install_javascript_module_layout_with_records(
     let mut module_owners = HashMap::<String, JavaScriptTypeIdentity>::new();
     for identity in identities {
         let projected_name = projected_names[&identity].clone();
-        let canonical_module = canonical_module_for_identity(&identity);
+        let namespace = namespace_path(&identity.namespace);
+        let canonical_module = if namespace.is_empty() {
+            identity.name.clone()
+        } else {
+            format!("{namespace}/{}", identity.name)
+        };
         let normalized_module = canonical_module.to_ascii_lowercase();
         if let Some(existing) = module_owners.insert(normalized_module, identity.clone()) {
             return Err(format!(
@@ -920,11 +833,23 @@ pub fn install_javascript_module_layout_with_records(
                 existing.namespace, existing.name, identity.namespace, identity.name
             ));
         }
+        let mut compatibility_aliases = previous_by_identity
+            .get(&identity)
+            .map(|record| record.compatibility_aliases.clone())
+            .unwrap_or_default();
+        if let Some(previous) = previous_by_identity.get(&identity)
+            && previous.projected_name != projected_name
+        {
+            compatibility_aliases.insert(previous.projected_name.clone());
+        }
+        compatibility_aliases.remove(&projected_name);
+        compatibility_aliases.remove(&identity.name);
         let target = JavaScriptOutputTarget {
             identity: identity.clone(),
             projected_name: projected_name.clone(),
             canonical_module,
             collides: counts[&identity.name] > 1 || projected_name != identity.name,
+            compatibility_aliases,
         };
         targets.insert(identity, target);
     }
@@ -1160,7 +1085,7 @@ pub fn apply_javascript_projected_names(
 pub fn validate_struct_helper_identities(
     classes: &[ClassMeta],
     interfaces: &[InterfaceMeta],
-) -> Result<(), String> {
+) -> Result<BTreeMap<String, String>, String> {
     fn validate(
         owner: &str,
         structs: Vec<TypeMeta>,
@@ -1181,7 +1106,7 @@ pub fn validate_struct_helper_identities(
                 return Err(format!(
                     "JavaScript struct helper collision: `{existing}` from `{existing_owner}` and \
                      `{identity}` from `{owner}` both require `{name}_Type`/`pack{name}`. \
-                     Generation stopped before either ABI helper was emitted."
+                     Generate these bindings into separate output directories."
                 ));
             }
         }
@@ -1203,7 +1128,10 @@ pub fn validate_struct_helper_identities(
             &mut identities,
         )?;
     }
-    Ok(())
+    Ok(identities
+        .into_iter()
+        .map(|(name, (identity, _))| (name, identity))
+        .collect())
 }
 
 fn relative_module(from_module: &str, to_module: &str) -> String {
@@ -1544,9 +1472,11 @@ mod tests {
 
     #[test]
     fn clean_and_incremental_layouts_use_the_same_second_order_collision_owner() {
-        let existing =
-            JavaScriptTypeIdentity::new("Z", "FoundationWidget", JavaScriptTypeKind::Class);
-        let old_layout = install_javascript_module_layout([existing.clone()]).unwrap();
+        let windows =
+            JavaScriptTypeIdentity::new("Windows.Foundation", "Widget", JavaScriptTypeKind::Class);
+        let contoso = JavaScriptTypeIdentity::new("Contoso", "Widget", JavaScriptTypeKind::Class);
+        let old_layout =
+            install_javascript_module_layout([windows.clone(), contoso.clone()]).unwrap();
         let records = javascript_output_targets()
             .into_iter()
             .map(|target| {
@@ -1555,12 +1485,20 @@ mod tests {
             .collect::<Vec<_>>();
         drop(old_layout);
 
-        let foundation =
-            JavaScriptTypeIdentity::new("Windows.Foundation", "Widget", JavaScriptTypeKind::Class);
-        let contoso = JavaScriptTypeIdentity::new("Contoso", "Widget", JavaScriptTypeKind::Class);
-        let identities = [existing.clone(), foundation.clone(), contoso.clone()];
+        let microsoft = JavaScriptTypeIdentity::new(
+            "Microsoft.UI.Foundation",
+            "Widget",
+            JavaScriptTypeKind::Class,
+        );
+        let identities = [windows.clone(), contoso.clone(), microsoft.clone()];
         let incremental_layout =
             install_javascript_module_layout_with_records(identities.clone(), records).unwrap();
+        assert!(
+            target_for_identity(&windows)
+                .unwrap()
+                .compatibility_aliases
+                .contains("FoundationWidget")
+        );
         let incremental = identities
             .iter()
             .map(|identity| {
@@ -1584,22 +1522,8 @@ mod tests {
             .collect::<BTreeMap<_, _>>();
 
         assert_eq!(incremental, clean);
-        assert_eq!(clean[&foundation], "FoundationWidget");
-        assert_eq!(clean[&existing], "ZFoundationWidgetClass");
-    }
-
-    #[test]
-    fn inventory_records_round_trip_generation_roots() {
-        let identity =
-            JavaScriptTypeIdentity::new("Windows.Foundation", "Uri", JavaScriptTypeKind::Class);
-        let record = JavaScriptTypeLayoutRecord::new(identity, "Uri", "type")
-            .with_generation_root("namespace:Windows.Foundation")
-            .with_generation_root("types:Windows.Foundation.Uri");
-
-        assert_eq!(
-            JavaScriptTypeLayoutRecord::from_inventory_line(&record.to_inventory_line()),
-            Some(record)
-        );
+        assert_eq!(clean[&microsoft], "FoundationWidget");
+        assert_eq!(clean[&windows], "WindowsFoundationWidgetClass");
     }
 
     #[test]
