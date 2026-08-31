@@ -1998,6 +1998,7 @@ fn validate_unique_class_output_names(classes: &[meta::ClassMeta]) -> Result<(),
 fn load_effective_generation_plan(
     context: &javascript::JavaScriptProjectionContext,
     output_dir: &Path,
+    regenerated_modules: &HashSet<String>,
 ) -> Result<dynwinrt_codegen::codegen::projected::GenerationPlan, String> {
     use dynwinrt_codegen::codegen::projected::{GeneratedModule, GenerationPlan};
 
@@ -2012,7 +2013,9 @@ fn load_effective_generation_plan(
                 .is_file()
         {
             plan.insert(GeneratedModule::retained(&target.canonical_module))?;
-            if target.identity.kind != javascript::JavaScriptTypeKind::Delegate {
+            if target.identity.kind != javascript::JavaScriptTypeKind::Delegate
+                && !regenerated_modules.contains(&target.canonical_module)
+            {
                 retained_public_modules.insert(target.canonical_module.clone());
             }
         }
@@ -2063,6 +2066,9 @@ fn load_effective_generation_plan(
         ));
     }
     for target in context.output_targets() {
+        if regenerated_modules.contains(&target.canonical_module) {
+            continue;
+        }
         let Some(module) = plan.modules.get_mut(&target.canonical_module) else {
             continue;
         };
@@ -2423,7 +2429,6 @@ fn generate_js_files(
     delegate_sig_refs: &HashMap<String, Vec<String>>,
     delegate_param_wraps: &HashMap<String, Vec<String>>,
 ) -> Result<dynwinrt_codegen::codegen::projected::GenerationPlan, String> {
-    let mut plan = load_effective_generation_plan(context, output_dir)?;
     // Exclusive interfaces paired with a runtime class are implementation
     // details. The projected layout already qualifies genuine cross-namespace
     // collisions, so this name check only removes those class-owned entries.
@@ -2448,6 +2453,31 @@ fn generate_js_files(
                 .map(|target| target.canonical_module.clone())
         })
         .collect::<HashSet<_>>();
+    let mut regenerated_modules = all_classes
+        .iter()
+        .filter_map(|class| {
+            context
+                .output_target(&class.name)
+                .map(|target| target.canonical_module.clone())
+        })
+        .chain(all_interface_modules.iter().cloned())
+        .collect::<HashSet<_>>();
+    regenerated_modules.extend(shared_interfaces.iter().filter_map(|iface| {
+        (!class_names.contains(iface.name.as_str()) && is_emittable_interface(iface))
+            .then(|| context.output_target(&iface.name))
+            .flatten()
+            .map(|target| target.canonical_module.clone())
+    }));
+    regenerated_modules.extend(all_enums.iter().filter_map(|en| {
+        let TypeMeta::Enum { name, .. } = en else {
+            return None;
+        };
+        (!name.contains('<') && !class_names.contains(name.as_str()))
+            .then(|| context.output_target(name))
+            .flatten()
+            .map(|target| target.canonical_module.clone())
+    }));
+    let mut plan = load_effective_generation_plan(context, output_dir, &regenerated_modules)?;
     for iface in shared_interfaces {
         if class_names.contains(iface.name.as_str()) {
             continue;
@@ -4970,6 +5000,127 @@ mod tests {
         ))
     }
 
+    fn collect_test_file_tree(root: &Path) -> BTreeMap<String, Vec<u8>> {
+        fn visit(root: &Path, current: &Path, files: &mut BTreeMap<String, Vec<u8>>) {
+            for entry in fs::read_dir(current).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    visit(root, &path, files);
+                } else {
+                    let relative = path
+                        .strip_prefix(root)
+                        .unwrap()
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    files.insert(relative, fs::read(path).unwrap());
+                }
+            }
+        }
+
+        let mut files = BTreeMap::new();
+        visit(root, root, &mut files);
+        files
+    }
+
+    fn synthetic_javascript_class(namespace: &str, iid: &str) -> meta::ClassMeta {
+        meta::ClassMeta {
+            name: "Widget".into(),
+            namespace: namespace.into(),
+            full_name: format!("{namespace}.Widget"),
+            default_interface: Some(meta::InterfaceMeta {
+                name: "IWidget".into(),
+                namespace: namespace.into(),
+                iid: iid.into(),
+                methods: vec![meta::MethodMeta {
+                    name: "GetValue".into(),
+                    return_type: Some(TypeMeta::I32),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn generate_test_javascript_stage(
+        output: &Path,
+        native_classes: &[meta::ClassMeta],
+    ) -> Result<(), String> {
+        generate_test_javascript_stage_with_previous(output, native_classes, None)
+    }
+
+    fn generate_test_javascript_stage_with_previous(
+        output: &Path,
+        native_classes: &[meta::ClassMeta],
+        previous_records: Option<&[javascript::JavaScriptTypeLayoutRecord]>,
+    ) -> Result<(), String> {
+        fs::create_dir_all(output)
+            .map_err(|error| format!("Failed to create {}: {error}", output.display()))?;
+        let previous_records = previous_records.map_or_else(
+            || read_javascript_type_inventory(output).map(|inventory| inventory.records),
+            |records| Ok(records.to_vec()),
+        )?;
+        let current_records = javascript_type_layout_records(native_classes, &[], &[])?;
+        validate_javascript_type_layout_records(&previous_records, &current_records)?;
+        let context = javascript::create_javascript_projection_context_with_records(
+            previous_records
+                .iter()
+                .chain(&current_records)
+                .map(|record| record.identity.clone()),
+            previous_records.iter().cloned(),
+            "@microsoft/dynwinrt",
+        )?;
+        let projected_names = context
+            .output_targets()
+            .map(|target| (target.identity.clone(), target.projected_name.clone()))
+            .collect::<HashMap<_, _>>();
+        let current_identities = current_records
+            .iter()
+            .map(|record| record.identity.clone())
+            .collect::<HashSet<_>>();
+        let retained_renames = previous_records
+            .iter()
+            .filter(|record| {
+                projected_names
+                    .get(&record.identity)
+                    .is_some_and(|projected| projected != &record.projected_name)
+                    && !current_identities.contains(&record.identity)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+
+        let mut classes = native_classes.to_vec();
+        javascript::apply_javascript_projected_names(&context, &mut classes, &mut [], &mut []);
+        let mut known_types = context
+            .output_targets()
+            .map(|target| target.projected_name.clone())
+            .collect::<HashSet<_>>();
+        for class in &classes {
+            known_types.insert(class.name.clone());
+            known_types.insert(class.full_name.clone());
+        }
+        let mut plan = generate_js_files(
+            &context,
+            output,
+            &classes,
+            &[],
+            &[],
+            &[],
+            &known_types,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        )?;
+        write_retained_javascript_projected_aliases(&context, output, &retained_renames)?;
+        validate_generated_struct_helper_identities(&context, output)?;
+        let emitted =
+            emitted_javascript_type_records(&context, output, &previous_records, &current_records)?;
+        write_javascript_type_inventory(output, &emitted)?;
+        write_js_barrel_and_manifest(output, &mut plan)
+    }
+
     #[test]
     fn com_barrel_deduplicates_only_identical_pod_factories() {
         let descriptor =
@@ -5313,7 +5464,7 @@ mod tests {
         )
         .unwrap();
 
-        let error = match load_effective_generation_plan(&context, &output) {
+        let error = match load_effective_generation_plan(&context, &output, &HashSet::new()) {
             Ok(_) => panic!("retained public modules without root metadata must fail closed"),
             Err(error) => error,
         };
@@ -5325,7 +5476,7 @@ mod tests {
              export { Widget, packPoint, unpackPoint } from './contoso/Widget.js';\n",
         )
         .unwrap();
-        let plan = load_effective_generation_plan(&context, &output).unwrap();
+        let plan = load_effective_generation_plan(&context, &output, &HashSet::new()).unwrap();
         let retained = &plan.modules["contoso/Widget"];
         assert_eq!(
             retained.public_exports,
@@ -5441,7 +5592,7 @@ mod tests {
         )
         .unwrap();
 
-        let plan = load_effective_generation_plan(&context, &output).unwrap();
+        let plan = load_effective_generation_plan(&context, &output, &HashSet::new()).unwrap();
         write_retained_javascript_projected_aliases(&context, &output, &[previous]).unwrap();
 
         assert!(
@@ -5462,6 +5613,188 @@ mod tests {
                 .collect()
         );
         fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
+    fn incremental_javascript_collision_matches_clean_full_generation() {
+        let windows = synthetic_javascript_class(
+            "Windows.Foundation",
+            "11111111-1111-1111-1111-111111111111",
+        );
+        let contoso = synthetic_javascript_class("Contoso", "22222222-2222-2222-2222-222222222222");
+        let microsoft = synthetic_javascript_class(
+            "Microsoft.UI.Foundation",
+            "33333333-3333-3333-3333-333333333333",
+        );
+        let phased = test_directory("javascript-phased-collision");
+        let clean = test_directory("javascript-clean-collision");
+
+        generate_test_javascript_stage(&phased, &[windows.clone(), contoso.clone()]).unwrap();
+        let phase_one_inventory = read_javascript_type_inventory(&phased).unwrap();
+        assert_eq!(phase_one_inventory.records.len(), 2);
+        let phase_one_windows = phase_one_inventory
+            .records
+            .iter()
+            .find(|record| record.identity.namespace == "Windows.Foundation")
+            .unwrap();
+        assert_ne!(phase_one_windows.projected_name, "Widget");
+        assert!(phase_one_windows.compatibility_aliases.is_empty());
+        let phase_one_projected_name = phase_one_windows.projected_name.clone();
+        let phase_one_root = fs::read_to_string(phased.join("index.d.ts")).unwrap();
+        assert_eq!(
+            phase_one_root.matches(&phase_one_projected_name).count(),
+            1,
+            "{phase_one_root}"
+        );
+        let phase_one_package = fs::read_to_string(phased.join("package.json")).unwrap();
+        assert!(phase_one_package.contains("\"./windows/foundation/Widget\""));
+        assert!(phase_one_package.contains("\"./contoso/Widget\""));
+        assert!(!phase_one_package.contains("\"./microsoft/ui/foundation/Widget\""));
+
+        let phase_one_index = fs::read(phased.join("index.d.ts")).unwrap();
+        fs::remove_file(phased.join("index.d.ts")).unwrap();
+        let context = javascript::create_javascript_projection_context(
+            phase_one_inventory
+                .records
+                .iter()
+                .map(|record| record.identity.clone()),
+        )
+        .unwrap();
+        let error = match load_effective_generation_plan(&context, &phased, &HashSet::new()) {
+            Ok(_) => panic!("retained modules without root metadata must fail closed"),
+            Err(error) => error,
+        };
+        assert!(error.contains("require root export metadata"), "{error}");
+        fs::write(phased.join("index.d.ts"), phase_one_index).unwrap();
+
+        let full = [windows, contoso, microsoft];
+        generate_test_javascript_stage(&phased, &full).unwrap();
+        generate_test_javascript_stage_with_previous(
+            &clean,
+            &full,
+            Some(&phase_one_inventory.records),
+        )
+        .unwrap();
+
+        let final_inventory = read_javascript_type_inventory(&phased).unwrap();
+        let windows_record = final_inventory
+            .records
+            .iter()
+            .find(|record| record.identity.namespace == "Windows.Foundation")
+            .unwrap();
+        let contoso_record = final_inventory
+            .records
+            .iter()
+            .find(|record| record.identity.namespace == "Contoso")
+            .unwrap();
+        let microsoft_record = final_inventory
+            .records
+            .iter()
+            .find(|record| record.identity.namespace == "Microsoft.UI.Foundation")
+            .unwrap();
+        assert_ne!(windows_record.projected_name, "Widget");
+        assert_ne!(contoso_record.projected_name, "Widget");
+        assert_ne!(
+            windows_record.projected_name,
+            phase_one_windows.projected_name
+        );
+        assert!(
+            windows_record
+                .compatibility_aliases
+                .contains(&phase_one_projected_name),
+            "{windows_record:?}"
+        );
+
+        let windows_js = fs::read_to_string(phased.join("windows/foundation/Widget.js")).unwrap();
+        assert_eq!(
+            windows_js
+                .matches(&format!(
+                    "exports.Widget = {};",
+                    windows_record.projected_name
+                ))
+                .count(),
+            1,
+            "{windows_js}"
+        );
+        assert_eq!(
+            windows_js
+                .matches(&format!(
+                    "exports.{phase_one_projected_name} = {};",
+                    windows_record.projected_name
+                ))
+                .count(),
+            1,
+            "{windows_js}"
+        );
+        let root = fs::read_to_string(phased.join("index.d.ts")).unwrap();
+        let root_exports = root
+            .lines()
+            .filter_map(parse_root_export_metadata)
+            .collect::<Vec<_>>();
+        for projected in [
+            &windows_record.projected_name,
+            &contoso_record.projected_name,
+            &microsoft_record.projected_name,
+        ] {
+            assert_eq!(
+                root_exports
+                    .iter()
+                    .flat_map(|(names, _)| names)
+                    .filter(|name| *name == projected)
+                    .count(),
+                1,
+                "{root}"
+            );
+        }
+        assert!(!root.contains("export { Widget"), "{root}");
+        assert!(
+            root.contains(&format!(
+                "export {{ {} }} from './microsoft/ui/foundation/Widget.js';",
+                microsoft_record.projected_name
+            )),
+            "{root}"
+        );
+        assert!(
+            !root_exports.iter().any(|(names, module)| {
+                module == "windows/foundation/Widget" && names.contains(&phase_one_projected_name)
+            }),
+            "compatibility alias leaked from its retained module: {root}"
+        );
+
+        let package = fs::read_to_string(phased.join("package.json")).unwrap();
+        for canonical in [
+            "windows/foundation/Widget",
+            "contoso/Widget",
+            "microsoft/ui/foundation/Widget",
+        ] {
+            assert_eq!(
+                package.matches(&format!("\"./{canonical}\"")).count(),
+                1,
+                "{package}"
+            );
+        }
+        assert!(!package.contains(&format!("\"./{}\"", windows_record.projected_name)));
+        assert!(!package.contains(&format!("\"./{}\"", contoso_record.projected_name)));
+        assert!(!package.contains(&format!("\"./{}\"", microsoft_record.projected_name)));
+
+        let phased_files = collect_test_file_tree(&phased);
+        let clean_files = collect_test_file_tree(&clean);
+        assert_eq!(
+            phased_files.keys().collect::<Vec<_>>(),
+            clean_files.keys().collect::<Vec<_>>()
+        );
+        for (path, phased_content) in &phased_files {
+            assert_eq!(
+                phased_content, &clean_files[path],
+                "phased and clean output differ at {path}"
+            );
+        }
+
+        generate_test_javascript_stage(&phased, &full).unwrap();
+        assert_eq!(collect_test_file_tree(&phased), phased_files);
+
+        fs::remove_dir_all(phased).unwrap();
+        fs::remove_dir_all(clean).unwrap();
     }
 
     #[test]
