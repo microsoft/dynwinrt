@@ -8,26 +8,56 @@
 
 use std::fs;
 use std::path::Path;
+use std::path::PathBuf;
 use std::process::Command;
 
-const WINDOWS_WINMD: &str =
+const DEFAULT_WINDOWS_WINMD: &str =
     r"C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd";
 
 #[test]
 fn generated_dts_passes_tsc_no_emit() {
-    if !Path::new(WINDOWS_WINMD).exists() {
+    let require_tsc = std::env::var("DYNWINRT_REQUIRE_TSC").as_deref() == Ok("1");
+    let windows_winmd = std::env::var_os("DYNWINRT_WINDOWS_WINMD")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_WINDOWS_WINMD));
+    if !windows_winmd.is_file() {
+        assert!(
+            !require_tsc,
+            "DYNWINRT_REQUIRE_TSC=1 but Windows metadata is missing at {}",
+            windows_winmd.display()
+        );
         eprintln!("Skipping: Windows.winmd not found");
         return;
     }
 
-    // Check npx is available
-    let npx_check = Command::new("cmd")
-        .args(["/c", "npx", "tsc", "--version"])
-        .output();
-    match npx_check {
-        Ok(o) if o.status.success() => {}
-        _ => {
-            eprintln!("Skipping: npx tsc not available");
+    let tsc = std::env::var_os("DYNWINRT_TSC")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../bindings/js/node_modules/typescript/bin/tsc")
+        });
+    if !tsc.is_file() {
+        assert!(
+            !require_tsc,
+            "DYNWINRT_REQUIRE_TSC=1 but TypeScript compiler is missing at {}",
+            tsc.display()
+        );
+        eprintln!(
+            "Skipping: TypeScript compiler is missing at {}",
+            tsc.display()
+        );
+        return;
+    }
+    let tsc_check = Command::new("node").arg(&tsc).arg("--version").output();
+    match tsc_check {
+        Ok(output) if output.status.success() => {}
+        result => {
+            assert!(
+                !require_tsc,
+                "DYNWINRT_REQUIRE_TSC=1 but node could not run {}: {result:?}",
+                tsc.display()
+            );
+            eprintln!("Skipping: node could not run {}", tsc.display());
             return;
         }
     }
@@ -51,6 +81,8 @@ fn generated_dts_passes_tsc_no_emit() {
             "--output",
         ])
         .arg(&tmp)
+        .arg("--winmd")
+        .arg(&windows_winmd)
         .status()
         .expect("spawn dynwinrt-codegen");
     assert!(status.success(), "codegen failed (Uri): {:?}", status);
@@ -68,6 +100,8 @@ fn generated_dts_passes_tsc_no_emit() {
             "--output",
         ])
         .arg(&tmp)
+        .arg("--winmd")
+        .arg(&windows_winmd)
         .status()
         .expect("spawn dynwinrt-codegen");
     assert!(
@@ -89,6 +123,8 @@ fn generated_dts_passes_tsc_no_emit() {
             "--output",
         ])
         .arg(&tmp)
+        .arg("--winmd")
+        .arg(&windows_winmd)
         .status()
         .expect("spawn dynwinrt-codegen");
     assert!(status3.success(), "codegen failed (User): {:?}", status3);
@@ -105,6 +141,8 @@ fn generated_dts_passes_tsc_no_emit() {
             "--output",
         ])
         .arg(&tmp)
+        .arg("--winmd")
+        .arg(&windows_winmd)
         .status()
         .expect("spawn dynwinrt-codegen");
     assert!(
@@ -115,10 +153,10 @@ fn generated_dts_passes_tsc_no_emit() {
 
     fs::write(
         tmp.join("constructor-usage.ts"),
-        r#"import { Uri } from "./Uri.js";
-import { User } from "./User.js";
-import { ContactDate } from "./ContactDate.js";
-import { IReference_UInt32 } from "./IReference_UInt32.js";
+        r#"import { Uri } from "./windows/foundation/Uri.js";
+import { User } from "./windows/system/User.js";
+import { ContactDate } from "./windows/application-model/contacts/ContactDate.js";
+import { IReference_UInt32 } from "./windows/foundation/IReference_UInt32.js";
 
 new Uri("https://example.com");
 new Uri("https://example.com/base/", "child");
@@ -239,16 +277,9 @@ export declare class WinGuid {
 }
 "#).expect("write stub index.d.ts");
 
-    // Run tsc --noEmit (use cmd /c npx since npx is a .cmd on Windows)
-    let tsc_output = Command::new("cmd")
-        .args([
-            "/c",
-            "npx",
-            "tsc",
-            "--noEmit",
-            "-p",
-            tsconfig.to_str().unwrap(),
-        ])
+    let tsc_output = Command::new("node")
+        .arg(&tsc)
+        .args(["--noEmit", "-p", tsconfig.to_str().unwrap()])
         .current_dir(&tmp)
         .output()
         .expect("spawn tsc");

@@ -3,7 +3,10 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
+use std::hash::{BuildHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
@@ -4257,8 +4260,107 @@ struct OutputTransaction {
     final_dir: PathBuf,
     stage_dir: PathBuf,
     backup_dir: PathBuf,
+    nonce: String,
+    had_existing_output: bool,
     lock_file: Option<fs::File>,
     committed: bool,
+}
+
+const OUTPUT_TRANSACTION_OWNER: &str = ".dynwinrt-transaction-owner";
+
+fn transaction_nonce(final_dir: &Path) -> String {
+    static NEXT_NONCE: AtomicU64 = AtomicU64::new(0);
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let sequence = NEXT_NONCE.fetch_add(1, Ordering::Relaxed);
+    let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+    final_dir.hash(&mut hasher);
+    timestamp.hash(&mut hasher);
+    std::process::id().hash(&mut hasher);
+    sequence.hash(&mut hasher);
+    format!("{timestamp:032x}{:016x}", hasher.finish())
+}
+
+fn transaction_owner_path(directory: &Path) -> PathBuf {
+    directory.join(OUTPUT_TRANSACTION_OWNER)
+}
+
+fn write_transaction_owner(directory: &Path, nonce: &str) -> Result<(), String> {
+    let marker = transaction_owner_path(directory);
+    let mut file = fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&marker)
+        .map_err(|error| format!("Failed to create {}: {error}", marker.display()))?;
+    use std::io::Write;
+    file.write_all(nonce.as_bytes())
+        .map_err(|error| format!("Failed to write {}: {error}", marker.display()))
+}
+
+fn validate_transaction_owner(directory: &Path, nonce: &str) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(directory)
+        .map_err(|error| format!("Failed to inspect {}: {error}", directory.display()))?;
+    if is_link_or_reparse_point(&metadata) || !metadata.is_dir() {
+        return Err(format!(
+            "Invalid generated output transaction directory '{}'",
+            directory.display()
+        ));
+    }
+    let marker = transaction_owner_path(directory);
+    let metadata = fs::symlink_metadata(&marker)
+        .map_err(|error| format!("Missing ownership marker '{}': {error}", marker.display()))?;
+    if is_link_or_reparse_point(&metadata) || !metadata.is_file() {
+        return Err(format!(
+            "Invalid transaction ownership marker '{}'",
+            marker.display()
+        ));
+    }
+    let actual = fs::read_to_string(&marker)
+        .map_err(|error| format!("Failed to read {}: {error}", marker.display()))?;
+    if actual != nonce {
+        return Err(format!(
+            "Transaction ownership marker '{}' does not match the active transaction",
+            marker.display()
+        ));
+    }
+    Ok(())
+}
+
+fn remove_transaction_owner(directory: &Path, nonce: &str) -> Result<(), String> {
+    validate_transaction_owner(directory, nonce)?;
+    let marker = transaction_owner_path(directory);
+    fs::remove_file(&marker)
+        .map_err(|error| format!("Failed to remove {}: {error}", marker.display()))
+}
+
+fn remove_owned_transaction_dir(directory: &Path, nonce: &str) -> Result<(), String> {
+    if !directory.exists() {
+        return Ok(());
+    }
+    validate_transaction_owner(directory, nonce)?;
+    fs::remove_dir_all(directory)
+        .map_err(|error| format!("Failed to remove {}: {error}", directory.display()))
+}
+
+fn ensure_no_orphaned_transaction_artifacts(parent: &Path, leaf: &str) -> Result<(), String> {
+    let stage_prefix = format!(".{leaf}.dynwinrt-stage-").to_ascii_lowercase();
+    let backup_prefix = format!(".{leaf}.dynwinrt-backup-").to_ascii_lowercase();
+    for entry in fs::read_dir(parent)
+        .map_err(|error| format!("Failed to inspect {}: {error}", parent.display()))?
+    {
+        let entry =
+            entry.map_err(|error| format!("Failed to inspect transaction entry: {error}"))?;
+        let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+        if name.starts_with(&stage_prefix) || name.starts_with(&backup_prefix) {
+            return Err(format!(
+                "Incomplete generated output transaction artifact '{}' must be recovered or removed manually",
+                entry.path().display()
+            ));
+        }
+    }
+    Ok(())
 }
 
 impl OutputTransaction {
@@ -4337,52 +4439,38 @@ impl OutputTransaction {
             )
         })?;
 
-        let suffix = std::process::id();
-        let stage_dir = parent.join(format!(".{}.dynwinrt-stage-{}", leaf, suffix));
-        let backup_dir = parent.join(format!(".{}.dynwinrt-backup", leaf));
-        if backup_dir.exists() {
-            let metadata = fs::symlink_metadata(&backup_dir)
-                .map_err(|e| format!("Failed to inspect {}: {}", backup_dir.display(), e))?;
-            if is_link_or_reparse_point(&metadata) || !metadata.is_dir() {
-                return Err(format!(
-                    "Invalid generated output backup '{}'",
-                    backup_dir.display()
-                ));
-            }
-            if final_dir.exists() {
-                remove_transaction_dir(&backup_dir)?;
-            } else {
-                fs::rename(&backup_dir, &final_dir).map_err(|error| {
-                    format!(
-                        "Failed to recover generated output '{}' from '{}': {}",
-                        final_dir.display(),
-                        backup_dir.display(),
-                        error
-                    )
-                })?;
-            }
+        ensure_no_orphaned_transaction_artifacts(parent, leaf)?;
+        let nonce = transaction_nonce(&final_dir);
+        let stage_dir = parent.join(format!(".{leaf}.dynwinrt-stage-{nonce}"));
+        let backup_dir = parent.join(format!(".{leaf}.dynwinrt-backup-{nonce}"));
+        if stage_dir.exists() || backup_dir.exists() {
+            return Err("Generated output transaction nonce collision".into());
         }
-        remove_transaction_dir(&stage_dir)?;
-
-        if final_dir.exists() {
+        fs::create_dir(&stage_dir)
+            .map_err(|error| format!("Failed to create {}: {error}", stage_dir.display()))?;
+        if let Err(error) = write_transaction_owner(&stage_dir, &nonce) {
+            let _ = fs::remove_dir(&stage_dir);
+            return Err(error);
+        }
+        let had_existing_output = final_dir.exists();
+        if had_existing_output {
             if !final_dir.is_dir() {
+                let _ = remove_owned_transaction_dir(&stage_dir, &nonce);
                 return Err(format!(
                     "Generated output path '{}' is not a directory",
                     final_dir.display()
                 ));
             }
-            if let Err(error) = copy_directory(&final_dir, &stage_dir) {
-                let _ = remove_transaction_dir(&stage_dir);
-                return Err(error);
-            }
-        } else {
-            if let Err(error) = fs::create_dir_all(&stage_dir) {
-                let _ = remove_transaction_dir(&stage_dir);
+            if transaction_owner_path(&final_dir).exists() {
+                let _ = remove_owned_transaction_dir(&stage_dir, &nonce);
                 return Err(format!(
-                    "Failed to create {}: {}",
-                    stage_dir.display(),
-                    error
+                    "Generated output '{}' contains a reserved transaction ownership marker",
+                    final_dir.display()
                 ));
+            }
+            if let Err(error) = copy_directory(&final_dir, &stage_dir) {
+                let _ = remove_owned_transaction_dir(&stage_dir, &nonce);
+                return Err(error);
             }
         }
 
@@ -4390,6 +4478,8 @@ impl OutputTransaction {
             final_dir,
             stage_dir,
             backup_dir,
+            nonce,
+            had_existing_output,
             lock_file: Some(lock_file),
             committed: false,
         })
@@ -4400,7 +4490,8 @@ impl OutputTransaction {
     }
 
     fn commit(mut self) -> Result<(), String> {
-        let had_existing_output = self.final_dir.exists();
+        validate_transaction_owner(&self.stage_dir, &self.nonce)?;
+        let had_existing_output = self.had_existing_output;
         let cwd_relative = std::env::current_dir()
             .ok()
             .and_then(|cwd| fs::canonicalize(cwd).ok())
@@ -4434,7 +4525,9 @@ impl OutputTransaction {
             Ok(())
         };
         if had_existing_output {
+            write_transaction_owner(&self.final_dir, &self.nonce)?;
             if let Err(error) = fs::rename(&self.final_dir, &self.backup_dir) {
+                let _ = remove_transaction_owner(&self.final_dir, &self.nonce);
                 let restore_error = restore_cwd(&cwd_relative).err();
                 return Err(format!(
                     "Failed to stage existing output '{}' for replacement: {}",
@@ -4458,6 +4551,7 @@ impl OutputTransaction {
                         self.backup_dir.display()
                     ));
                 }
+                let _ = remove_transaction_owner(&self.final_dir, &self.nonce);
             }
             let restore_error = restore_cwd(&cwd_relative).err();
             return Err(format!(
@@ -4469,36 +4563,40 @@ impl OutputTransaction {
                 .unwrap_or_default());
         }
 
-        self.committed = true;
         restore_cwd(&cwd_relative)?;
         if had_existing_output {
-            fs::remove_dir_all(&self.backup_dir).map_err(|e| {
-                format!(
-                    "Replaced generated output but failed to remove backup '{}': {}",
-                    self.backup_dir.display(),
-                    e
-                )
-            })?;
+            validate_transaction_owner(&self.final_dir, &self.nonce)?;
+            remove_owned_transaction_dir(&self.backup_dir, &self.nonce)?;
         }
+        remove_transaction_owner(&self.final_dir, &self.nonce)?;
+        self.committed = true;
         Ok(())
     }
 }
 
 impl Drop for OutputTransaction {
     fn drop(&mut self) {
-        if !self.committed && self.stage_dir.exists() {
-            let _ = fs::remove_dir_all(&self.stage_dir);
+        if !self.committed {
+            if self.backup_dir.exists() {
+                if self.final_dir.exists() {
+                    if validate_transaction_owner(&self.final_dir, &self.nonce).is_ok()
+                        && validate_transaction_owner(&self.backup_dir, &self.nonce).is_ok()
+                    {
+                        let _ = remove_owned_transaction_dir(&self.backup_dir, &self.nonce);
+                        let _ = remove_transaction_owner(&self.final_dir, &self.nonce);
+                    }
+                } else if validate_transaction_owner(&self.backup_dir, &self.nonce).is_ok()
+                    && fs::rename(&self.backup_dir, &self.final_dir).is_ok()
+                {
+                    let _ = remove_transaction_owner(&self.final_dir, &self.nonce);
+                }
+            }
+            if self.stage_dir.exists() {
+                let _ = remove_owned_transaction_dir(&self.stage_dir, &self.nonce);
+            }
         }
         drop(self.lock_file.take());
     }
-}
-
-fn remove_transaction_dir(path: &Path) -> Result<(), String> {
-    if path.exists() {
-        fs::remove_dir_all(path)
-            .map_err(|e| format!("Failed to remove stale {}: {}", path.display(), e))?;
-    }
-    Ok(())
 }
 
 fn copy_directory(source: &Path, destination: &Path) -> Result<(), String> {
@@ -6059,29 +6157,59 @@ mod tests {
     }
 
     #[test]
-    fn output_transaction_recovers_interrupted_backup_swap() {
-        let output = test_directory("transaction-recovery");
+    fn output_transaction_preserves_unrelated_legacy_backup_directory() {
+        let output = test_directory("transaction-unrelated-backup");
         fs::create_dir_all(&output).unwrap();
         fs::write(output.join("existing.js"), "original").unwrap();
         let parent = output.parent().unwrap();
         let leaf = output.file_name().unwrap().to_string_lossy();
         let backup = parent.join(format!(".{leaf}.dynwinrt-backup"));
-        remove_transaction_dir(&backup).unwrap();
-        fs::rename(&output, &backup).unwrap();
+        fs::create_dir_all(&backup).unwrap();
+        fs::write(backup.join("unrelated.txt"), "keep").unwrap();
 
         let transaction = OutputTransaction::begin(&output).unwrap();
+        fs::write(transaction.stage_dir().join("existing.js"), "updated").unwrap();
+        transaction.commit().unwrap();
 
         assert_eq!(
             fs::read_to_string(output.join("existing.js")).unwrap(),
-            "original"
+            "updated"
         );
         assert_eq!(
-            fs::read_to_string(transaction.stage_dir().join("existing.js")).unwrap(),
-            "original"
+            fs::read_to_string(backup.join("unrelated.txt")).unwrap(),
+            "keep"
         );
-        drop(transaction);
-        assert!(!backup.exists());
         fs::remove_dir_all(output).unwrap();
+        fs::remove_dir_all(backup).unwrap();
+    }
+
+    #[test]
+    fn output_transaction_refuses_orphaned_nonce_artifacts() {
+        let output = test_directory("transaction-orphan");
+        fs::create_dir_all(&output).unwrap();
+        let parent = output.parent().unwrap();
+        let leaf = output.file_name().unwrap().to_string_lossy();
+        let orphan = parent.join(format!(
+            ".{}.dynwinrt-backup-orphan",
+            leaf.to_ascii_uppercase()
+        ));
+        fs::create_dir_all(&orphan).unwrap();
+        fs::write(orphan.join("unrelated.txt"), "keep").unwrap();
+
+        let error = OutputTransaction::begin(&output)
+            .err()
+            .expect("orphaned nonce artifacts must fail closed");
+
+        assert!(
+            error.contains("Incomplete generated output transaction"),
+            "{error}"
+        );
+        assert_eq!(
+            fs::read_to_string(orphan.join("unrelated.txt")).unwrap(),
+            "keep"
+        );
+        fs::remove_dir_all(output).unwrap();
+        fs::remove_dir_all(orphan).unwrap();
     }
 
     #[test]

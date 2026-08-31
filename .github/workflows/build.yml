@@ -36,6 +36,24 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: i686-pc-windows-msvc
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install declaration test compiler
+        shell: pwsh
+        run: |
+          npm install --prefix target/tsc --no-save --ignore-scripts --no-package-lock typescript@5.9.3
+          $tsc = (Resolve-Path target/tsc/node_modules/typescript/bin/tsc).Path
+          $windowsWinmd = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\UnionMetadata' `
+            -Filter Windows.winmd -File -Recurse |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+          if (-not $windowsWinmd) {
+            throw 'Windows SDK metadata is required for declaration tests'
+          }
+          "DYNWINRT_TSC=$tsc" >> $env:GITHUB_ENV
+          "DYNWINRT_WINDOWS_WINMD=$($windowsWinmd.FullName)" >> $env:GITHUB_ENV
+          "DYNWINRT_REQUIRE_TSC=1" >> $env:GITHUB_ENV
       - uses: NuGet/setup-nuget@v2
       - name: Install Win32 metadata
         shell: pwsh
