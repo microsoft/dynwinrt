@@ -19,6 +19,7 @@ use crate::meta::{ClassMeta, InterfaceMeta, MethodMeta};
 use crate::types::{TypeKind, TypeMeta, TypeRef};
 
 use self::ir::ProjectedFile;
+use super::shared::structs::{collect_used_structs_from_class, collect_used_structs_from_iface};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum JavaScriptTypeKind {
@@ -115,6 +116,7 @@ pub struct JavaScriptTypeLayoutRecord {
     pub projected_name: String,
     pub abi_identity: String,
     pub generic_spec: String,
+    pub generation_roots: BTreeSet<String>,
 }
 
 impl JavaScriptTypeLayoutRecord {
@@ -128,6 +130,7 @@ impl JavaScriptTypeLayoutRecord {
             projected_name: projected_name.into(),
             abi_identity: abi_identity.into(),
             generic_spec: String::new(),
+            generation_roots: BTreeSet::new(),
         }
     }
 
@@ -136,9 +139,22 @@ impl JavaScriptTypeLayoutRecord {
         self
     }
 
+    pub fn with_generation_root(mut self, generation_root: impl Into<String>) -> Self {
+        self.generation_roots.insert(generation_root.into());
+        self
+    }
+
+    pub fn with_generation_roots(
+        mut self,
+        generation_roots: impl IntoIterator<Item = String>,
+    ) -> Self {
+        self.generation_roots.extend(generation_roots);
+        self
+    }
+
     pub fn to_inventory_line(&self) -> String {
         format!(
-            "{}|{}|{}|{}|{}|{}|{}",
+            "{}|{}|{}|{}|{}|{}|{}|{}",
             self.identity.kind.as_str(),
             self.identity.namespace,
             self.identity.name,
@@ -146,12 +162,13 @@ impl JavaScriptTypeLayoutRecord {
             self.identity.variant,
             self.abi_identity,
             self.generic_spec,
+            encode_generation_roots(&self.generation_roots),
         )
     }
 
     pub fn from_inventory_line(line: &str) -> Option<Self> {
         let parts = line.split('|').collect::<Vec<_>>();
-        if parts.len() != 7 {
+        if parts.len() != 8 {
             return None;
         }
         let variant = parts[4];
@@ -162,8 +179,11 @@ impl JavaScriptTypeLayoutRecord {
         } else {
             JavaScriptTypeIdentity::with_variant(parts[1], parts[2], kind, variant)
         };
-        let record = Self::new(identity, parts[3], abi_identity).with_generic_spec(parts[6]);
-        record.is_safe().then_some(record)
+        let generation_roots = decode_generation_roots(parts[7])?;
+        let record = Self::new(identity, parts[3], abi_identity)
+            .with_generic_spec(parts[6])
+            .with_generation_roots(generation_roots);
+        (record.is_safe() && !record.generation_roots.is_empty()).then_some(record)
     }
 
     fn is_safe(&self) -> bool {
@@ -178,7 +198,48 @@ impl JavaScriptTypeLayoutRecord {
                 .generic_spec
                 .chars()
                 .all(|character| character.is_ascii_hexdigit())
+            && self.generation_roots.iter().all(|root| {
+                !root.is_empty()
+                    && root
+                        .chars()
+                        .all(|character| character.is_ascii_graphic() && character != '|')
+            })
     }
+}
+
+pub fn encode_generation_roots(roots: &BTreeSet<String>) -> String {
+    roots
+        .iter()
+        .map(|root| {
+            root.as_bytes()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+pub fn decode_generation_roots(encoded: &str) -> Option<BTreeSet<String>> {
+    encoded
+        .split(',')
+        .filter(|root| !root.is_empty())
+        .map(|root| {
+            if root.len() % 2 != 0 || !root.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return None;
+            }
+            let bytes = root
+                .as_bytes()
+                .chunks_exact(2)
+                .map(|pair| {
+                    std::str::from_utf8(pair)
+                        .ok()
+                        .and_then(|value| u8::from_str_radix(value, 16).ok())
+                })
+                .collect::<Option<Vec<_>>>()?;
+            String::from_utf8(bytes).ok()
+        })
+        .collect()
 }
 
 fn is_metadata_identifier(value: &str) -> bool {
@@ -712,6 +773,15 @@ fn namespace_path(namespace: &str) -> String {
         .join("/")
 }
 
+pub fn canonical_module_for_identity(identity: &JavaScriptTypeIdentity) -> String {
+    let namespace = namespace_path(&identity.namespace);
+    if namespace.is_empty() {
+        identity.name.clone()
+    } else {
+        format!("{namespace}/{}", identity.name)
+    }
+}
+
 fn qualified_projected_name(identity: &JavaScriptTypeIdentity) -> String {
     let qualifier = namespace_qualifier(&identity.namespace);
     let candidate = if qualifier.is_empty() {
@@ -786,9 +856,7 @@ pub fn install_javascript_module_layout_with_records(
         *counts.entry(identity.name.clone()).or_default() += 1;
     }
 
-    let mut projected_names = BTreeMap::new();
-    let mut normalized_projected_owners = HashMap::<String, JavaScriptTypeIdentity>::new();
-
+    let mut previous_identities = BTreeSet::new();
     for record in previous_records {
         if !record.is_safe() || !identities.contains(&record.identity) {
             return Err(format!(
@@ -796,27 +864,16 @@ pub fn install_javascript_module_layout_with_records(
                 record.to_inventory_line()
             ));
         }
-        // A formerly unique short name must be relinquished when a same-name
-        // type appears. Stable qualified names remain pinned to their owners.
-        if counts[&record.identity.name] > 1 && record.projected_name == record.identity.name {
-            continue;
-        }
-        let normalized = record.projected_name.to_ascii_lowercase();
-        if let Some(existing) =
-            normalized_projected_owners.insert(normalized, record.identity.clone())
-            && existing != record.identity
-        {
+        if !previous_identities.insert(record.identity.clone()) {
             return Err(format!(
-                "JavaScript projected name `{}` is owned by both `{}.{}` and `{}.{}`",
-                record.projected_name,
-                existing.namespace,
-                existing.name,
-                record.identity.namespace,
-                record.identity.name,
+                "Duplicate previous JavaScript module layout record for `{}.{}`",
+                record.identity.namespace, record.identity.name,
             ));
         }
-        projected_names.insert(record.identity, record.projected_name);
     }
+
+    let mut projected_names = BTreeMap::new();
+    let mut normalized_projected_owners = HashMap::<String, JavaScriptTypeIdentity>::new();
 
     // Assign collision-derived names first so a unique native short name can
     // never claim another type's natural qualified name in a fresh layout.
@@ -855,12 +912,7 @@ pub fn install_javascript_module_layout_with_records(
     let mut module_owners = HashMap::<String, JavaScriptTypeIdentity>::new();
     for identity in identities {
         let projected_name = projected_names[&identity].clone();
-        let namespace = namespace_path(&identity.namespace);
-        let canonical_module = if namespace.is_empty() {
-            identity.name.clone()
-        } else {
-            format!("{namespace}/{}", identity.name)
-        };
+        let canonical_module = canonical_module_for_identity(&identity);
         let normalized_module = canonical_module.to_ascii_lowercase();
         if let Some(existing) = module_owners.insert(normalized_module, identity.clone()) {
             return Err(format!(
@@ -1103,6 +1155,55 @@ pub fn apply_javascript_projected_names(
     for en in enums {
         apply_projected_type_names(en);
     }
+}
+
+pub fn validate_struct_helper_identities(
+    classes: &[ClassMeta],
+    interfaces: &[InterfaceMeta],
+) -> Result<(), String> {
+    fn validate(
+        owner: &str,
+        structs: Vec<TypeMeta>,
+        identities: &mut HashMap<String, (String, String)>,
+    ) -> Result<(), String> {
+        for structure in structs {
+            let TypeMeta::Struct {
+                namespace, name, ..
+            } = structure
+            else {
+                continue;
+            };
+            let identity = format!("{namespace}.{name}");
+            if let Some((existing, existing_owner)) =
+                identities.insert(name.clone(), (identity.clone(), owner.to_string()))
+                && existing != identity
+            {
+                return Err(format!(
+                    "JavaScript struct helper collision: `{existing}` from `{existing_owner}` and \
+                     `{identity}` from `{owner}` both require `{name}_Type`/`pack{name}`. \
+                     Generation stopped before either ABI helper was emitted."
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    let mut identities = HashMap::new();
+    for class in classes {
+        validate(
+            &class.full_name,
+            collect_used_structs_from_class(class),
+            &mut identities,
+        )?;
+    }
+    for interface in interfaces {
+        validate(
+            &format!("{}.{}", interface.namespace, interface.name),
+            collect_used_structs_from_iface(interface),
+            &mut identities,
+        )?;
+    }
+    Ok(())
 }
 
 fn relative_module(from_module: &str, to_module: &str) -> String {
@@ -1442,38 +1543,110 @@ mod tests {
     }
 
     #[test]
-    fn prior_qualified_name_ownership_survives_new_short_name() {
-        let alpha =
-            JavaScriptTypeIdentity::new("Windows.Alpha", "Widget", JavaScriptTypeKind::Class);
-        let beta = JavaScriptTypeIdentity::new("Windows.Beta", "Widget", JavaScriptTypeKind::Class);
-        let old_layout = install_javascript_module_layout([alpha.clone(), beta.clone()]).unwrap();
+    fn clean_and_incremental_layouts_use_the_same_second_order_collision_owner() {
+        let existing =
+            JavaScriptTypeIdentity::new("Z", "FoundationWidget", JavaScriptTypeKind::Class);
+        let old_layout = install_javascript_module_layout([existing.clone()]).unwrap();
         let records = javascript_output_targets()
             .into_iter()
             .map(|target| {
                 JavaScriptTypeLayoutRecord::new(target.identity, target.projected_name, "type")
             })
             .collect::<Vec<_>>();
-        assert_eq!(
-            target_for_identity(&alpha).unwrap().projected_name,
-            "AlphaWidget"
-        );
         drop(old_layout);
 
-        let newcomer =
-            JavaScriptTypeIdentity::new("Aardvark", "AlphaWidget", JavaScriptTypeKind::Class);
-        let _layout = install_javascript_module_layout_with_records(
-            [alpha.clone(), beta, newcomer.clone()],
-            records,
-        )
-        .unwrap();
+        let foundation =
+            JavaScriptTypeIdentity::new("Windows.Foundation", "Widget", JavaScriptTypeKind::Class);
+        let contoso = JavaScriptTypeIdentity::new("Contoso", "Widget", JavaScriptTypeKind::Class);
+        let identities = [existing.clone(), foundation.clone(), contoso.clone()];
+        let incremental_layout =
+            install_javascript_module_layout_with_records(identities.clone(), records).unwrap();
+        let incremental = identities
+            .iter()
+            .map(|identity| {
+                (
+                    identity.clone(),
+                    target_for_identity(identity).unwrap().projected_name,
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        drop(incremental_layout);
+
+        let _clean_layout = install_javascript_module_layout(identities.clone()).unwrap();
+        let clean = identities
+            .iter()
+            .map(|identity| {
+                (
+                    identity.clone(),
+                    target_for_identity(identity).unwrap().projected_name,
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+
+        assert_eq!(incremental, clean);
+        assert_eq!(clean[&foundation], "FoundationWidget");
+        assert_eq!(clean[&existing], "ZFoundationWidgetClass");
+    }
+
+    #[test]
+    fn inventory_records_round_trip_generation_roots() {
+        let identity =
+            JavaScriptTypeIdentity::new("Windows.Foundation", "Uri", JavaScriptTypeKind::Class);
+        let record = JavaScriptTypeLayoutRecord::new(identity, "Uri", "type")
+            .with_generation_root("namespace:Windows.Foundation")
+            .with_generation_root("types:Windows.Foundation.Uri");
 
         assert_eq!(
-            target_for_identity(&alpha).unwrap().projected_name,
-            "AlphaWidget"
+            JavaScriptTypeLayoutRecord::from_inventory_line(&record.to_inventory_line()),
+            Some(record)
         );
-        let newcomer_target = target_for_identity(&newcomer).unwrap();
-        assert_eq!(newcomer_target.projected_name, "AardvarkAlphaWidgetClass");
-        assert!(newcomer_target.collides);
+    }
+
+    #[test]
+    fn namespace_distinct_struct_helpers_fail_closed_before_projection() {
+        let structure = |namespace: &str, typ| TypeMeta::Struct {
+            namespace: namespace.into(),
+            name: "Payload".into(),
+            fields: vec![crate::types::FieldMeta {
+                name: "Value".into(),
+                typ,
+            }],
+        };
+        let class = ClassMeta {
+            name: "Widget".into(),
+            namespace: "Contoso".into(),
+            full_name: "Contoso.Widget".into(),
+            default_interface: Some(InterfaceMeta {
+                name: "IWidget".into(),
+                namespace: "Contoso".into(),
+                iid: "11111111-1111-1111-1111-111111111111".into(),
+                methods: vec![MethodMeta {
+                    name: "UsePayloads".into(),
+                    params: vec![
+                        ParamMeta {
+                            name: "alpha".into(),
+                            typ: structure("Alpha", TypeMeta::I32),
+                            direction: ParamDirection::In,
+                        },
+                        ParamMeta {
+                            name: "beta".into(),
+                            typ: structure("Beta", TypeMeta::I64),
+                            direction: ParamDirection::In,
+                        },
+                    ],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let error = validate_struct_helper_identities(&[class], &[])
+            .expect_err("namespace-distinct short struct names must fail closed");
+
+        assert!(error.contains("Alpha.Payload"), "{error}");
+        assert!(error.contains("Beta.Payload"), "{error}");
+        assert!(error.contains("packPayload"), "{error}");
     }
 
     #[test]

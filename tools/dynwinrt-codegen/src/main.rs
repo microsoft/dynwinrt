@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
+use windows_metadata::reader;
 
 use dynwinrt_codegen::codegen::com;
 use dynwinrt_codegen::codegen::javascript;
@@ -131,7 +132,8 @@ enum Commands {
         #[arg(long, default_value = "js", value_parser = ["js", "py"])]
         lang: String,
 
-        /// Output directory for generated files
+        /// Dedicated codegen-owned output directory.
+        /// Existing contents may be replaced or removed; do not store handwritten files here.
         #[arg(long, default_value = "./generated", value_name = "DIR")]
         output: String,
 
@@ -251,6 +253,26 @@ fn parse_class_requests(
         .collect()
 }
 
+fn javascript_type_generation_root(requests: &[(String, String)]) -> String {
+    let mut roots = requests
+        .iter()
+        .map(|(namespace, name)| format!("{namespace}.{name}"))
+        .collect::<Vec<_>>();
+    roots.sort();
+    roots.dedup();
+    format!("types:{}", roots.join(","))
+}
+
+fn javascript_namespace_generation_root(namespaces: &[String], explicit: bool) -> String {
+    if !explicit {
+        return "all-non-windows".into();
+    }
+    let mut namespaces = namespaces.to_vec();
+    namespaces.sort();
+    namespaces.dedup();
+    format!("namespaces:{}", namespaces.join(","))
+}
+
 fn run() -> Result<(), String> {
     let cli = Cli::parse();
 
@@ -368,6 +390,7 @@ fn run() -> Result<(), String> {
                 .filter(|s| !s.is_empty())
                 .map(String::from)
                 .collect();
+            validate_loadable_winmd_paths(&expanded_parts)?;
             let mut doc_table = DocTable::load_from_winmd_paths(&expanded_parts);
             // Load built-in docs as fallback (sibling .xml takes priority).
             doc_table.load_builtin_docs();
@@ -413,6 +436,7 @@ fn run() -> Result<(), String> {
 
             if let Some(ref cls_arg) = class_name {
                 let class_requests = parse_class_requests(cls_arg, namespace.as_deref())?;
+                let javascript_generation_root = javascript_type_generation_root(&class_requests);
 
                 // First: partition into WinRT classes and classic-COM interfaces.
                 let mut classes = Vec::new();
@@ -642,6 +666,7 @@ fn run() -> Result<(), String> {
                     pyi,
                     &doc_table,
                     &existing_python_identities,
+                    Some(&javascript_generation_root),
                 )?;
 
                 // Write (or append to) the index file for the output directory
@@ -751,10 +776,16 @@ fn run() -> Result<(), String> {
                             })
                             .collect();
                         if filtered.is_empty() {
-                            return Err(
-                                "No non-Windows namespaces found. Use --namespace to specify one."
-                                    .into(),
-                            );
+                            let refreshes_existing_root = lang == "js"
+                                && read_javascript_type_inventory(output_dir)?
+                                    .generation_roots
+                                    .contains("all-non-windows");
+                            if !refreshes_existing_root {
+                                return Err(
+                                    "No non-Windows namespaces found. Use --namespace to specify one."
+                                        .into(),
+                                );
+                            }
                         }
                         eprintln!("Discovered {} namespace(s) to generate:", filtered.len());
                         for ns in &filtered {
@@ -763,6 +794,8 @@ fn run() -> Result<(), String> {
                         filtered
                     }
                 };
+                let javascript_generation_root =
+                    javascript_namespace_generation_root(&namespaces, namespace.is_some());
 
                 let mut selected_classes = Vec::new();
                 let mut selected_interfaces = Vec::new();
@@ -796,12 +829,14 @@ fn run() -> Result<(), String> {
                         pyi,
                         &doc_table,
                         &[],
+                        Some(&javascript_generation_root),
                     )?;
 
                 // Generate index file combining everything
                 if !dry_run
-                    && namespaces.len() >= 1
-                    && (total_classes + total_interfaces + total_enums) > 0
+                    && (lang == "js"
+                        || (!namespaces.is_empty()
+                            && (total_classes + total_interfaces + total_enums) > 0))
                 {
                     let mut all_classes = Vec::new();
                     let mut all_interfaces = Vec::new();
@@ -920,6 +955,7 @@ fn generate_for_types(
     pyi: bool,
     doc_table: &DocTable,
     existing_python_identities: &[python::PythonTypeIdentity],
+    javascript_generation_root: Option<&str>,
 ) -> Result<(usize, usize, usize, Vec<meta::InterfaceMeta>), String> {
     let deps = resolve_dependencies_for_lang(winmd, &classes, &interfaces, &enums, lang);
     let mut all_classes = classes;
@@ -928,35 +964,6 @@ fn generate_for_types(
     all_classes.extend(deps.classes);
     all_interfaces.extend(deps.interfaces);
     all_enums.extend(deps.enums);
-    let previous_javascript_records = if lang != "py" {
-        if dry_run {
-            check_javascript_layout_inventory(output_dir)?;
-        } else {
-            ensure_javascript_layout_inventory(output_dir)?;
-        }
-        read_javascript_type_inventory(output_dir)?
-    } else {
-        Vec::new()
-    };
-    if lang != "py" {
-        validate_retained_javascript_generics(winmd, &previous_javascript_records)?;
-        restore_incremental_javascript_collision_members(
-            winmd,
-            &previous_javascript_records,
-            &mut all_classes,
-            &mut all_interfaces,
-            &mut all_enums,
-        )?;
-        let restored_deps =
-            resolve_dependencies_for_lang(winmd, &all_classes, &all_interfaces, &all_enums, lang);
-        all_classes.extend(restored_deps.classes);
-        all_interfaces.extend(restored_deps.interfaces);
-        all_enums.extend(restored_deps.enums);
-    }
-
-    // Newly-merged dependency types haven't been doc-annotated yet. Apply doc table
-    // uniformly so dependency classes/interfaces/enums carry the same XML docs as
-    // the primary types.
     for c in all_classes.iter_mut() {
         doc_table.apply_to_class(c);
     }
@@ -966,24 +973,97 @@ fn generate_for_types(
     for e in all_enums.iter_mut() {
         doc_table.apply_to_enum(e);
     }
-    let current_javascript_records = if lang != "py" {
-        javascript_type_layout_records(&all_classes, &all_interfaces, &all_enums)?
+    let previous_javascript_inventory = if lang != "py" {
+        if dry_run {
+            check_javascript_layout_inventory(output_dir)?;
+        } else {
+            ensure_javascript_layout_inventory(output_dir)?;
+        }
+        read_javascript_type_inventory(output_dir)?
     } else {
-        Vec::new()
+        JavaScriptTypeInventory::default()
     };
+    let previous_javascript_records = &previous_javascript_inventory.records;
+    let mut final_javascript_records = Vec::new();
+    let mut final_javascript_generation_roots = BTreeSet::new();
+    let mut retained_javascript_identities = HashSet::new();
+    let mut stale_javascript_records = Vec::new();
     let _javascript_layout = if lang != "py" {
-        validate_javascript_type_layout_records(
-            &previous_javascript_records,
+        let generation_root = javascript_generation_root
+            .ok_or_else(|| "JavaScript generation requires a stable generation root".to_string())?;
+        let current_javascript_records =
+            javascript_type_layout_records(&all_classes, &all_interfaces, &all_enums)?;
+        let update = reconcile_javascript_generation_records(
+            previous_javascript_records,
             &current_javascript_records,
+            &previous_javascript_inventory.generation_roots,
+            generation_root,
         )?;
-        let identities = previous_javascript_records
+        retained_javascript_identities.extend(
+            update
+                .retained_previous
+                .iter()
+                .map(|record| record.identity.clone()),
+        );
+        validate_retained_javascript_generics(winmd, &update.retained_previous)?;
+        let identities = update.records.iter().map(|record| record.identity.clone());
+        let _layout = javascript::install_javascript_module_layout(identities)?;
+        let mut records = update.records;
+        apply_javascript_layout_to_records(&mut records)?;
+        let projected_names = records
             .iter()
-            .chain(current_javascript_records.iter())
-            .map(|record| record.identity.clone());
-        let _layout = javascript::install_javascript_module_layout_with_records(
-            identities,
-            previous_javascript_records.iter().cloned(),
-        )?;
+            .map(|record| (record.identity.clone(), record.projected_name.as_str()))
+            .collect::<HashMap<_, _>>();
+        let layout_changed = previous_javascript_records.iter().any(|record| {
+            projected_names
+                .get(&record.identity)
+                .is_some_and(|projected| *projected != record.projected_name)
+        });
+        if layout_changed {
+            restore_javascript_layout_records(
+                winmd,
+                &records,
+                &mut all_classes,
+                &mut all_interfaces,
+                &mut all_enums,
+            )?;
+            let restored_deps = resolve_dependencies_for_lang(
+                winmd,
+                &all_classes,
+                &all_interfaces,
+                &all_enums,
+                lang,
+            );
+            all_classes.extend(restored_deps.classes);
+            all_interfaces.extend(restored_deps.interfaces);
+            all_enums.extend(restored_deps.enums);
+            for c in all_classes.iter_mut() {
+                doc_table.apply_to_class(c);
+            }
+            for i in all_interfaces.iter_mut() {
+                doc_table.apply_to_interface(i);
+            }
+            for e in all_enums.iter_mut() {
+                doc_table.apply_to_enum(e);
+            }
+            let restored_records =
+                javascript_type_layout_records(&all_classes, &all_interfaces, &all_enums)?;
+            let known = records
+                .iter()
+                .map(|record| record.identity.clone())
+                .collect::<HashSet<_>>();
+            if let Some(unowned) = restored_records
+                .iter()
+                .find(|record| !known.contains(&record.identity))
+            {
+                return Err(format!(
+                    "Retained JavaScript type `{}.{}` gained an unowned metadata dependency; \
+                     regenerate the owning root before combining outputs",
+                    unowned.identity.namespace, unowned.identity.name
+                ));
+            }
+        }
+        javascript::validate_struct_helper_identities(&all_classes, &all_interfaces)?;
         if !output_dir.join(JAVASCRIPT_TYPE_INVENTORY).is_file() {
             ensure_uninventoried_javascript_targets_absent(output_dir)?;
         }
@@ -993,6 +1073,9 @@ fn generate_for_types(
             &mut all_enums,
         );
         validate_unique_class_output_names(&all_classes)?;
+        stale_javascript_records = update.stale;
+        final_javascript_generation_roots = update.generation_roots;
+        final_javascript_records = records;
         Some(_layout)
     } else {
         None
@@ -1154,6 +1237,11 @@ fn generate_for_types(
                 pyi,
             )?;
         } else {
+            let retained_dependency_snapshot = snapshot_javascript_module_dependencies(
+                output_dir,
+                &retained_javascript_identities,
+            )?;
+            remove_stale_javascript_type_files(output_dir, &stale_javascript_records)?;
             generate_js_files(
                 output_dir,
                 &all_classes,
@@ -1167,13 +1255,12 @@ fn generate_for_types(
                 &delegate_sig_refs,
                 &delegate_param_wraps,
             )?;
+            validate_javascript_module_dependencies_unchanged(&retained_dependency_snapshot)?;
+            validate_generated_struct_helper_identities(output_dir)?;
             write_javascript_type_inventory(
                 output_dir,
-                &emitted_javascript_type_records(
-                    output_dir,
-                    &previous_javascript_records,
-                    &current_javascript_records,
-                )?,
+                &emitted_javascript_type_records(output_dir, &final_javascript_records)?,
+                &final_javascript_generation_roots,
             )?;
         }
         drop(python_layout);
@@ -1239,9 +1326,15 @@ fn install_python_generation_layout(
 }
 
 const JAVASCRIPT_TYPE_INVENTORY: &str = ".dynwinrt-js-types";
-const JAVASCRIPT_TYPE_INVENTORY_VERSION: u32 = 5;
+const JAVASCRIPT_TYPE_INVENTORY_VERSION: u32 = 6;
 const JAVASCRIPT_FORWARDER_HEADER: &str =
     "// Generated by dynwinrt-codegen — compatibility forwarder\n";
+
+#[derive(Debug, Default)]
+struct JavaScriptTypeInventory {
+    records: Vec<javascript::JavaScriptTypeLayoutRecord>,
+    generation_roots: BTreeSet<String>,
+}
 
 #[derive(Serialize, Deserialize)]
 struct JavaScriptGenericSpec {
@@ -1325,9 +1418,17 @@ fn validate_javascript_generic_spec(
     Ok(())
 }
 
-fn javascript_inventory_checksum(lines: &BTreeSet<String>) -> u64 {
+fn javascript_inventory_checksum(
+    lines: &BTreeSet<String>,
+    generation_roots: &BTreeSet<String>,
+) -> u64 {
+    let roots = format!(
+        "roots={}",
+        javascript::encode_generation_roots(generation_roots)
+    );
     lines
         .iter()
+        .chain(std::iter::once(&roots))
         .flat_map(|line| line.bytes().chain(std::iter::once(b'\n')))
         .fold(0xcbf29ce484222325, |hash, byte| {
             (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
@@ -1585,15 +1686,13 @@ fn javascript_interface_kind(interface: &meta::InterfaceMeta) -> javascript::Jav
     }
 }
 
-fn read_javascript_type_inventory(
-    output_dir: &Path,
-) -> Result<Vec<javascript::JavaScriptTypeLayoutRecord>, String> {
+fn read_javascript_type_inventory(output_dir: &Path) -> Result<JavaScriptTypeInventory, String> {
     if output_dir.is_dir() && !output_contains_current_directory(output_dir)? {
         ensure_generated_tree_has_no_links(output_dir)?;
     }
     let path = output_dir.join(JAVASCRIPT_TYPE_INVENTORY);
     if !path.is_file() {
-        return Ok(Vec::new());
+        return Ok(JavaScriptTypeInventory::default());
     }
     let content = fs::read_to_string(&path)
         .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
@@ -1614,9 +1713,14 @@ fn read_javascript_type_inventory(
         .next()
         .and_then(|value| value.strip_prefix("checksum="))
         .and_then(|value| u64::from_str_radix(value, 16).ok());
+    let generation_roots = header_parts
+        .next()
+        .and_then(|value| value.strip_prefix("roots="))
+        .and_then(javascript::decode_generation_roots);
     if version != Some(JAVASCRIPT_TYPE_INVENTORY_VERSION)
         || count.is_none()
         || checksum.is_none()
+        || generation_roots.is_none()
         || header_parts.next().is_some()
     {
         return Err(format!(
@@ -1628,7 +1732,10 @@ fn read_javascript_type_inventory(
         .filter(|line| !line.is_empty())
         .map(str::to_string)
         .collect::<BTreeSet<_>>();
-    if count != Some(lines.len()) || checksum != Some(javascript_inventory_checksum(&lines)) {
+    let generation_roots = generation_roots.unwrap();
+    if count != Some(lines.len())
+        || checksum != Some(javascript_inventory_checksum(&lines, &generation_roots))
+    {
         return Err(format!(
             "JavaScript type inventory {} is incomplete or corrupted",
             path.display()
@@ -1647,9 +1754,18 @@ fn read_javascript_type_inventory(
         .collect::<Result<Vec<_>, String>>()?;
     for record in &records {
         validate_javascript_generic_spec(record)?;
+        if !record.generation_roots.is_subset(&generation_roots) {
+            return Err(format!(
+                "JavaScript generated type `{}.{}` references an unknown generation root",
+                record.identity.namespace, record.identity.name
+            ));
+        }
     }
     validate_javascript_inventory_files(output_dir, &records)?;
-    Ok(records)
+    Ok(JavaScriptTypeInventory {
+        records,
+        generation_roots,
+    })
 }
 
 fn validate_javascript_inventory_files(
@@ -1661,6 +1777,20 @@ fn validate_javascript_inventory_files(
         records.iter().cloned(),
     )?;
     let targets = javascript::javascript_output_targets();
+    let target_names = targets
+        .iter()
+        .map(|target| (&target.identity, target.projected_name.as_str()))
+        .collect::<HashMap<_, _>>();
+    if let Some(record) = records.iter().find(|record| {
+        target_names
+            .get(&record.identity)
+            .is_none_or(|projected| *projected != record.projected_name)
+    }) {
+        return Err(format!(
+            "JavaScript type inventory has non-deterministic projected name `{}` for `{}.{}`",
+            record.projected_name, record.identity.namespace, record.identity.name
+        ));
+    }
     let expected_canonical = targets
         .iter()
         .map(|target| target.canonical_module.clone())
@@ -1833,6 +1963,149 @@ fn validate_javascript_type_layout_records(
     Ok(())
 }
 
+struct JavaScriptRecordUpdate {
+    retained_previous: Vec<javascript::JavaScriptTypeLayoutRecord>,
+    records: Vec<javascript::JavaScriptTypeLayoutRecord>,
+    stale: Vec<javascript::JavaScriptTypeLayoutRecord>,
+    generation_roots: BTreeSet<String>,
+}
+
+fn reconcile_javascript_generation_records(
+    previous: &[javascript::JavaScriptTypeLayoutRecord],
+    current: &[javascript::JavaScriptTypeLayoutRecord],
+    previous_generation_roots: &BTreeSet<String>,
+    generation_root: &str,
+) -> Result<JavaScriptRecordUpdate, String> {
+    if generation_root.is_empty()
+        || !generation_root
+            .chars()
+            .all(|character| character.is_ascii_graphic() && character != '|')
+    {
+        return Err(format!(
+            "Invalid JavaScript generation root `{generation_root}`"
+        ));
+    }
+    validate_javascript_type_layout_records(previous, current)?;
+
+    let mut current_modules = HashMap::<String, javascript::JavaScriptTypeIdentity>::new();
+    for record in current {
+        let module =
+            javascript::canonical_module_for_identity(&record.identity).to_ascii_lowercase();
+        if let Some(existing) = current_modules.insert(module.clone(), record.identity.clone())
+            && existing != record.identity
+        {
+            return Err(format!(
+                "JavaScript metadata contains `{}.{}` and `{}.{}` for the same canonical module `{module}`",
+                existing.namespace, existing.name, record.identity.namespace, record.identity.name
+            ));
+        }
+    }
+
+    let mut retained_previous = Vec::new();
+    let mut records = BTreeMap::<
+        javascript::JavaScriptTypeIdentity,
+        javascript::JavaScriptTypeLayoutRecord,
+    >::new();
+    for previous_record in previous {
+        let mut record = previous_record.clone();
+        record.generation_roots.remove(generation_root);
+        let module =
+            javascript::canonical_module_for_identity(&record.identity).to_ascii_lowercase();
+        if let Some(replacement) = current_modules.get(&module)
+            && replacement != &record.identity
+        {
+            if replacement.namespace != record.identity.namespace
+                || replacement.name != record.identity.name
+            {
+                return Err(format!(
+                    "JavaScript canonical module collision: `{}.{}` and `{}.{}` both map to `{module}`",
+                    record.identity.namespace,
+                    record.identity.name,
+                    replacement.namespace,
+                    replacement.name
+                ));
+            }
+            if !record.generation_roots.is_empty() {
+                return Err(format!(
+                    "JavaScript canonical module `{module}` changed kind or generic variant while \
+                     still owned by another generation root. Remove the generated output and \
+                     regenerate it cleanly."
+                ));
+            }
+            continue;
+        }
+        if record.generation_roots.is_empty() {
+            continue;
+        }
+        retained_previous.push(record.clone());
+        if records.insert(record.identity.clone(), record).is_some() {
+            return Err("JavaScript type inventory contains duplicate identities".into());
+        }
+    }
+
+    for current_record in current {
+        let mut current_record = current_record.clone();
+        current_record.generation_roots.clear();
+        current_record
+            .generation_roots
+            .insert(generation_root.to_string());
+        match records.get_mut(&current_record.identity) {
+            Some(existing) => {
+                if existing.abi_identity != current_record.abi_identity
+                    || existing.generic_spec != current_record.generic_spec
+                {
+                    return Err(format!(
+                        "JavaScript output identity `{}.{}` changed ABI while reconciling generation roots",
+                        current_record.identity.namespace, current_record.identity.name,
+                    ));
+                }
+                existing
+                    .generation_roots
+                    .append(&mut current_record.generation_roots);
+            }
+            None => {
+                records.insert(current_record.identity.clone(), current_record);
+            }
+        }
+    }
+
+    let stale = previous
+        .iter()
+        .filter(|record| !records.contains_key(&record.identity))
+        .cloned()
+        .collect();
+    let mut generation_roots = previous_generation_roots.clone();
+    generation_roots.insert(generation_root.to_string());
+    Ok(JavaScriptRecordUpdate {
+        retained_previous,
+        records: records.into_values().collect(),
+        stale,
+        generation_roots,
+    })
+}
+
+fn apply_javascript_layout_to_records(
+    records: &mut [javascript::JavaScriptTypeLayoutRecord],
+) -> Result<(), String> {
+    let projected_names = javascript::javascript_output_targets()
+        .into_iter()
+        .map(|target| (target.identity, target.projected_name))
+        .collect::<HashMap<_, _>>();
+    for record in records {
+        record.projected_name =
+            projected_names
+                .get(&record.identity)
+                .cloned()
+                .ok_or_else(|| {
+                    format!(
+                        "JavaScript module layout does not contain `{}.{}`",
+                        record.identity.namespace, record.identity.name
+                    )
+                })?;
+    }
+    Ok(())
+}
+
 fn restore_javascript_interface(
     winmd: &str,
     record: &javascript::JavaScriptTypeLayoutRecord,
@@ -1907,9 +2180,9 @@ fn validate_retained_javascript_generics(
     Ok(())
 }
 
-fn restore_incremental_javascript_collision_members(
+fn restore_javascript_layout_records(
     winmd: &str,
-    previous: &[javascript::JavaScriptTypeLayoutRecord],
+    records: &[javascript::JavaScriptTypeLayoutRecord],
     classes: &mut Vec<meta::ClassMeta>,
     interfaces: &mut Vec<meta::InterfaceMeta>,
     enums: &mut Vec<TypeMeta>,
@@ -1917,20 +2190,11 @@ fn restore_incremental_javascript_collision_members(
     let current = javascript_type_identities(classes, interfaces, enums)?
         .into_iter()
         .collect::<HashSet<_>>();
-    let known = previous
-        .iter()
-        .map(|record| record.identity.clone())
-        .chain(current.iter().cloned())
-        .collect::<BTreeSet<_>>();
-    let mut counts = HashMap::<String, usize>::new();
-    for identity in &known {
-        *counts.entry(identity.name.clone()).or_default() += 1;
-    }
     let mut enum_namespaces = HashMap::<String, Vec<TypeMeta>>::new();
 
-    for record in previous {
+    for record in records {
         let identity = &record.identity;
-        if current.contains(identity) || counts[&identity.name] < 2 {
+        if current.contains(identity) {
             continue;
         }
         match identity.kind {
@@ -1939,7 +2203,7 @@ fn restore_incremental_javascript_collision_members(
                     classes.push(class);
                 } else {
                     return Err(format!(
-                        "Cannot restore prior JavaScript collision member `{}.{}` from the current metadata",
+                        "Cannot restore prior JavaScript layout member `{}.{}` from the current metadata",
                         identity.namespace, identity.name
                     ));
                 }
@@ -1958,7 +2222,7 @@ fn restore_incremental_javascript_collision_members(
                     enums.push(en.clone());
                 } else {
                     return Err(format!(
-                        "Cannot restore prior JavaScript collision member `{}.{}` from the current metadata",
+                        "Cannot restore prior JavaScript layout member `{}.{}` from the current metadata",
                         identity.namespace, identity.name
                     ));
                 }
@@ -1971,16 +2235,36 @@ fn restore_incremental_javascript_collision_members(
 fn write_javascript_type_inventory(
     output_dir: &Path,
     records: &[javascript::JavaScriptTypeLayoutRecord],
+    generation_roots: &BTreeSet<String>,
 ) -> Result<(), String> {
+    if let Some(record) = records
+        .iter()
+        .find(|record| record.generation_roots.is_empty())
+    {
+        return Err(format!(
+            "JavaScript generated type `{}.{}` has no generation root",
+            record.identity.namespace, record.identity.name
+        ));
+    }
+    if let Some(record) = records
+        .iter()
+        .find(|record| !record.generation_roots.is_subset(generation_roots))
+    {
+        return Err(format!(
+            "JavaScript generated type `{}.{}` references an unknown generation root",
+            record.identity.namespace, record.identity.name
+        ));
+    }
     let lines = records
         .iter()
         .map(javascript::JavaScriptTypeLayoutRecord::to_inventory_line)
         .collect::<BTreeSet<_>>();
     let content = format!(
-        "version={}|count={}|checksum={:016x}\n{}\n",
+        "version={}|count={}|checksum={:016x}|roots={}\n{}\n",
         JAVASCRIPT_TYPE_INVENTORY_VERSION,
         lines.len(),
-        javascript_inventory_checksum(&lines),
+        javascript_inventory_checksum(&lines, generation_roots),
+        javascript::encode_generation_roots(generation_roots),
         lines.iter().cloned().collect::<Vec<_>>().join("\n")
     );
     let path = output_dir.join(JAVASCRIPT_TYPE_INVENTORY);
@@ -2018,18 +2302,11 @@ fn write_javascript_type_inventory(
 
 fn emitted_javascript_type_records(
     output_dir: &Path,
-    previous: &[javascript::JavaScriptTypeLayoutRecord],
-    current: &[javascript::JavaScriptTypeLayoutRecord],
+    records: &[javascript::JavaScriptTypeLayoutRecord],
 ) -> Result<Vec<javascript::JavaScriptTypeLayoutRecord>, String> {
-    let identities = previous
+    let records = records
         .iter()
-        .chain(current)
-        .map(|record| {
-            (
-                record.identity.clone(),
-                (record.abi_identity.clone(), record.generic_spec.clone()),
-            )
-        })
+        .map(|record| (record.identity.clone(), record))
         .collect::<HashMap<_, _>>();
     javascript::javascript_output_targets()
         .into_iter()
@@ -2042,21 +2319,132 @@ fn emitted_javascript_type_records(
                     .is_file()
         })
         .map(|target| {
-            let (abi_identity, generic_spec) =
-                identities.get(&target.identity).cloned().ok_or_else(|| {
-                    format!(
-                        "Missing WinRT ABI identity for JavaScript output `{}.{}`",
-                        target.identity.namespace, target.identity.name
-                    )
-                })?;
+            let record = records.get(&target.identity).ok_or_else(|| {
+                format!(
+                    "Missing WinRT ABI identity for JavaScript output `{}.{}`",
+                    target.identity.namespace, target.identity.name
+                )
+            })?;
             Ok(javascript::JavaScriptTypeLayoutRecord::new(
                 target.identity,
                 target.projected_name,
-                abi_identity,
+                record.abi_identity.clone(),
             )
-            .with_generic_spec(generic_spec))
+            .with_generic_spec(record.generic_spec.clone())
+            .with_generation_roots(record.generation_roots.iter().cloned()))
         })
         .collect()
+}
+
+fn remove_stale_javascript_type_files(
+    output_dir: &Path,
+    stale: &[javascript::JavaScriptTypeLayoutRecord],
+) -> Result<(), String> {
+    for record in stale {
+        let module = javascript::canonical_module_for_identity(&record.identity);
+        for suffix in ["js", "d.ts"] {
+            let path = output_dir.join(format!("{module}.{suffix}"));
+            if !path.exists() {
+                continue;
+            }
+            ensure_safe_generated_destination(output_dir, &path)?;
+            let content = fs::read_to_string(&path)
+                .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
+            if !content.starts_with("// Generated by dynwinrt-codegen") {
+                return Err(format!(
+                    "Refusing to remove unowned JavaScript file '{}'",
+                    path.display()
+                ));
+            }
+            fs::remove_file(&path)
+                .map_err(|error| format!("Failed to remove {}: {error}", path.display()))?;
+        }
+    }
+    Ok(())
+}
+
+fn generated_struct_helper_identities(content: &str) -> Vec<(String, String)> {
+    content
+        .lines()
+        .filter_map(|line| {
+            let declaration = line.trim_start().strip_prefix("const ")?;
+            let (name, value) = declaration.split_once("_Type = DynWinRtType.structType('")?;
+            let (identity, _) = value.split_once('\'')?;
+            (!name.is_empty() && !identity.is_empty())
+                .then(|| (name.to_string(), identity.to_string()))
+        })
+        .collect()
+}
+
+fn validate_generated_struct_helper_identities(output_dir: &Path) -> Result<(), String> {
+    let mut owners = HashMap::<String, (String, String)>::new();
+    for target in javascript::javascript_output_targets() {
+        let path = output_dir.join(format!("{}.js", target.canonical_module));
+        if !path.is_file() {
+            continue;
+        }
+        let content = fs::read_to_string(&path)
+            .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
+        for (name, identity) in generated_struct_helper_identities(&content) {
+            if let Some((existing, existing_module)) = owners.insert(
+                name.clone(),
+                (identity.clone(), target.canonical_module.clone()),
+            ) && existing != identity
+            {
+                return Err(format!(
+                    "JavaScript struct helper collision: `{existing}` from `{existing_module}` and \
+                     `{identity}` from `{}` both export `pack{name}`. Generate these bindings into \
+                     separate output directories.",
+                    target.canonical_module
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn javascript_module_dependencies(content: &str) -> Result<BTreeSet<String>, String> {
+    let import = regex::Regex::new(r#"['"]((?:\./|\.\./)[^'"]+\.js)['"]"#)
+        .map_err(|error| format!("Failed to build JavaScript import matcher: {error}"))?;
+    Ok(import
+        .captures_iter(content)
+        .filter_map(|capture| capture.get(1).map(|value| value.as_str().to_string()))
+        .collect())
+}
+
+fn snapshot_javascript_module_dependencies(
+    output_dir: &Path,
+    identities: &HashSet<javascript::JavaScriptTypeIdentity>,
+) -> Result<BTreeMap<PathBuf, BTreeSet<String>>, String> {
+    let mut files = BTreeMap::new();
+    for identity in identities {
+        let module = javascript::canonical_module_for_identity(identity);
+        for suffix in ["js", "d.ts"] {
+            let path = output_dir.join(format!("{module}.{suffix}"));
+            let content = fs::read_to_string(&path).map_err(|error| {
+                format!("Failed to read shared module {}: {error}", path.display())
+            })?;
+            files.insert(path, javascript_module_dependencies(&content)?);
+        }
+    }
+    Ok(files)
+}
+
+fn validate_javascript_module_dependencies_unchanged(
+    files: &BTreeMap<PathBuf, BTreeSet<String>>,
+) -> Result<(), String> {
+    for (path, previous) in files {
+        let current = fs::read_to_string(path)
+            .map_err(|error| format!("Failed to read shared module {}: {error}", path.display()))?;
+        if &javascript_module_dependencies(&current)? != previous {
+            return Err(format!(
+                "JavaScript module '{}' changed dependencies while it is still owned by another \
+                 generation root. Remove the generated output and regenerate it cleanly.",
+                path.display()
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn validate_unique_class_output_names(classes: &[meta::ClassMeta]) -> Result<(), String> {
@@ -3088,7 +3476,8 @@ export declare function createProjectedLifetimeScope(): ProjectedLifetimeScope;\
 
 fn render_index_from_existing_js_files(output_dir: &Path) -> Result<String, String> {
     let mut out = String::from("// Generated by dynwinrt-codegen \u{2014} do not edit\n");
-    let records = read_javascript_type_inventory(output_dir)?;
+    let inventory = read_javascript_type_inventory(output_dir)?;
+    let records = inventory.records;
     let _layout = javascript::install_javascript_module_layout_with_records(
         records.iter().map(|record| record.identity.clone()),
         records.iter().cloned(),
@@ -3203,7 +3592,8 @@ fn collect_public_exports_from_js(content: &str) -> Vec<String> {
 fn collect_subpath_names_from_dir(output_dir: &Path) -> Result<BTreeSet<String>, String> {
     const BARREL_STEMS: &[&str] = &["index", "index.getter", "index.proxy"];
     if output_dir.join(JAVASCRIPT_TYPE_INVENTORY).is_file() {
-        let records = read_javascript_type_inventory(output_dir)?;
+        let inventory = read_javascript_type_inventory(output_dir)?;
+        let records = inventory.records;
         let _layout = javascript::install_javascript_module_layout_with_records(
             records.iter().map(|record| record.identity.clone()),
             records.iter().cloned(),
@@ -4937,6 +5327,18 @@ fn validate_winmd_paths(paths: &[String], label: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_loadable_winmd_paths(paths: &[String]) -> Result<(), String> {
+    for path in paths {
+        if reader::File::read(path).is_none() {
+            return Err(format!(
+                "Failed to load metadata file '{}'; generation stopped before updating output",
+                path
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn list_namespaces_for_paths(paths: &[String]) -> Vec<String> {
     if paths.is_empty() {
         Vec::new()
@@ -5191,7 +5593,11 @@ mod tests {
             class("Contoso.Alpha", "11111111-1111-1111-1111-111111111111"),
             class("Fabrikam.Beta", "22222222-2222-2222-2222-222222222222"),
         ];
-        let records = javascript_type_layout_records(&classes, &[], &[]).unwrap();
+        let records = javascript_type_layout_records(&classes, &[], &[])
+            .unwrap()
+            .into_iter()
+            .map(|record| record.with_generation_root("types:Contoso.Widget"))
+            .collect::<Vec<_>>();
         let identities = records.iter().map(|record| record.identity.clone());
         let _layout = javascript::install_javascript_module_layout(identities).unwrap();
         javascript::apply_javascript_projected_names(&mut classes, &mut [], &mut []);
@@ -5218,7 +5624,8 @@ mod tests {
         .unwrap();
         write_javascript_type_inventory(
             &output,
-            &emitted_javascript_type_records(&output, &[], &records).unwrap(),
+            &emitted_javascript_type_records(&output, &records).unwrap(),
+            &BTreeSet::from(["types:Contoso.Widget".to_string()]),
         )
         .unwrap();
         write_js_barrel_and_manifest(&output, "").unwrap();
@@ -5255,6 +5662,277 @@ mod tests {
         assert!(error.contains("legacy flat layout"), "{error}");
         assert!(error.contains("regenerate it once"), "{error}");
         assert!(output.join("Widget.js").is_file());
+        fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
+    fn generation_roots_remove_stale_namespace_types_but_preserve_shared_dependencies() {
+        let record = |namespace: &str, name: &str, roots: &[&str]| {
+            javascript::JavaScriptTypeLayoutRecord::new(
+                javascript::JavaScriptTypeIdentity::new(
+                    namespace,
+                    name,
+                    javascript::JavaScriptTypeKind::Class,
+                ),
+                name,
+                "type",
+            )
+            .with_generation_roots(roots.iter().map(|root| (*root).to_string()))
+        };
+        let root = "namespaces:Contoso";
+        let previous = vec![
+            record("Contoso", "A", &[root]),
+            record("Contoso", "B", &[root]),
+            record(
+                "Windows.Foundation",
+                "Shared",
+                &[root, "types:Fabrikam.Consumer"],
+            ),
+        ];
+        let current = vec![record("Contoso", "A", &[])];
+
+        let previous_roots =
+            BTreeSet::from([root.to_string(), "types:Fabrikam.Consumer".to_string()]);
+        let update =
+            reconcile_javascript_generation_records(&previous, &current, &previous_roots, root)
+                .unwrap();
+        let identities = update
+            .records
+            .iter()
+            .map(|record| {
+                (
+                    record.identity.namespace.as_str(),
+                    record.identity.name.as_str(),
+                )
+            })
+            .collect::<BTreeSet<_>>();
+
+        assert!(identities.contains(&("Contoso", "A")));
+        assert!(!identities.contains(&("Contoso", "B")));
+        assert!(identities.contains(&("Windows.Foundation", "Shared")));
+        assert_eq!(update.stale.len(), 1);
+        assert_eq!(update.stale[0].identity.name, "B");
+        let shared = update
+            .records
+            .iter()
+            .find(|record| record.identity.name == "Shared")
+            .unwrap();
+        assert_eq!(
+            shared.generation_roots,
+            BTreeSet::from(["types:Fabrikam.Consumer".to_string()])
+        );
+    }
+
+    #[test]
+    fn shared_canonical_module_replacements_fail_closed() {
+        let namespace_root = "namespaces:Contoso";
+        let consumer_root = "types:Fabrikam.Consumer";
+        let previous = vec![
+            javascript::JavaScriptTypeLayoutRecord::new(
+                javascript::JavaScriptTypeIdentity::new(
+                    "Contoso",
+                    "Widget",
+                    javascript::JavaScriptTypeKind::Class,
+                ),
+                "Widget",
+                "type",
+            )
+            .with_generation_root(namespace_root)
+            .with_generation_root(consumer_root),
+        ];
+        let current = vec![javascript::JavaScriptTypeLayoutRecord::new(
+            javascript::JavaScriptTypeIdentity::new(
+                "Contoso",
+                "Widget",
+                javascript::JavaScriptTypeKind::Enum,
+            ),
+            "Widget",
+            "type",
+        )];
+        let roots = BTreeSet::from([namespace_root.to_string(), consumer_root.to_string()]);
+
+        let error =
+            reconcile_javascript_generation_records(&previous, &current, &roots, namespace_root)
+                .err()
+                .expect("shared kind replacement must require clean regeneration");
+
+        assert!(
+            error.contains("still owned by another generation root"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn single_root_canonical_module_replacements_are_atomic() {
+        let root = "namespaces:Contoso";
+        let previous = vec![
+            javascript::JavaScriptTypeLayoutRecord::new(
+                javascript::JavaScriptTypeIdentity::new(
+                    "Contoso",
+                    "Widget",
+                    javascript::JavaScriptTypeKind::Class,
+                ),
+                "Widget",
+                "type",
+            )
+            .with_generation_root(root),
+        ];
+        let current = vec![javascript::JavaScriptTypeLayoutRecord::new(
+            javascript::JavaScriptTypeIdentity::new(
+                "Contoso",
+                "Widget",
+                javascript::JavaScriptTypeKind::Enum,
+            ),
+            "Widget",
+            "type",
+        )];
+        let roots = BTreeSet::from([root.to_string()]);
+
+        let update =
+            reconcile_javascript_generation_records(&previous, &current, &roots, root).unwrap();
+
+        assert_eq!(update.records.len(), 1);
+        assert_eq!(
+            update.records[0].identity.kind,
+            javascript::JavaScriptTypeKind::Enum
+        );
+        assert_eq!(update.records[0].generation_roots, roots);
+        assert_eq!(update.stale.len(), 1);
+    }
+
+    #[test]
+    fn normalized_namespace_collisions_are_not_treated_as_type_replacements() {
+        let root = "all-non-windows";
+        let previous = vec![
+            javascript::JavaScriptTypeLayoutRecord::new(
+                javascript::JavaScriptTypeIdentity::new(
+                    "Contoso.FooBar",
+                    "Widget",
+                    javascript::JavaScriptTypeKind::Class,
+                ),
+                "Widget",
+                "type",
+            )
+            .with_generation_root(root),
+        ];
+        let current = vec![javascript::JavaScriptTypeLayoutRecord::new(
+            javascript::JavaScriptTypeIdentity::new(
+                "Contoso.Foo_Bar",
+                "Widget",
+                javascript::JavaScriptTypeKind::Class,
+            ),
+            "Widget",
+            "type",
+        )];
+
+        let error = reconcile_javascript_generation_records(
+            &previous,
+            &current,
+            &BTreeSet::from([root.to_string()]),
+            root,
+        )
+        .err()
+        .expect("different metadata identities must retain the canonical collision");
+        assert!(error.contains("canonical module collision"), "{error}");
+    }
+
+    #[test]
+    fn stale_inventory_records_remove_only_owned_generated_modules() {
+        let output = test_directory("javascript-stale-owned-module");
+        let identity = javascript::JavaScriptTypeIdentity::new(
+            "Contoso.Models",
+            "Removed",
+            javascript::JavaScriptTypeKind::Class,
+        );
+        let record =
+            javascript::JavaScriptTypeLayoutRecord::new(identity.clone(), "Removed", "type")
+                .with_generation_root("namespaces:Contoso.Models");
+        let module = javascript::canonical_module_for_identity(&identity);
+        let js = output.join(format!("{module}.js"));
+        let dts = output.join(format!("{module}.d.ts"));
+        fs::create_dir_all(js.parent().unwrap()).unwrap();
+        fs::write(
+            &js,
+            "// Generated by dynwinrt-codegen — do not edit\nexports.Removed = Removed;\n",
+        )
+        .unwrap();
+        fs::write(
+            &dts,
+            "// Generated by dynwinrt-codegen — do not edit\nexport class Removed {}\n",
+        )
+        .unwrap();
+
+        remove_stale_javascript_type_files(&output, &[record]).unwrap();
+
+        assert!(!js.exists());
+        assert!(!dts.exists());
+        fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
+    fn generated_struct_helper_scan_rejects_cross_module_identity_collisions() {
+        let alpha = javascript::JavaScriptTypeIdentity::new(
+            "Contoso.Alpha",
+            "First",
+            javascript::JavaScriptTypeKind::Class,
+        );
+        let beta = javascript::JavaScriptTypeIdentity::new(
+            "Contoso.Beta",
+            "Second",
+            javascript::JavaScriptTypeKind::Class,
+        );
+        let _layout =
+            javascript::install_javascript_module_layout([alpha.clone(), beta.clone()]).unwrap();
+        let output = test_directory("javascript-cross-module-struct-helper");
+        for (identity, struct_identity) in [(alpha, "Alpha.Payload"), (beta, "Beta.Payload")] {
+            let module = javascript::canonical_module_for_identity(&identity);
+            let path = output.join(format!("{module}.js"));
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(
+                path,
+                format!(
+                    "// Generated by dynwinrt-codegen — do not edit\n\
+                     const Payload_Type = DynWinRtType.structType('{struct_identity}', []);\n"
+                ),
+            )
+            .unwrap();
+        }
+
+        let error = validate_generated_struct_helper_identities(&output)
+            .expect_err("cross-module helper identity collision must fail closed");
+
+        assert!(error.contains("Alpha.Payload"), "{error}");
+        assert!(error.contains("Beta.Payload"), "{error}");
+        assert!(error.contains("packPayload"), "{error}");
+        fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
+    fn retained_module_snapshot_rejects_dependency_closure_changes() {
+        let identity = javascript::JavaScriptTypeIdentity::new(
+            "Contoso",
+            "Shared",
+            javascript::JavaScriptTypeKind::Class,
+        );
+        let output = test_directory("javascript-shared-module-change");
+        let module = javascript::canonical_module_for_identity(&identity);
+        let js = output.join(format!("{module}.js"));
+        let dts = output.join(format!("{module}.d.ts"));
+        fs::create_dir_all(js.parent().unwrap()).unwrap();
+        fs::write(&js, "exports.Shared = Shared;\n").unwrap();
+        fs::write(&dts, "export class Shared {}\n").unwrap();
+        let snapshot =
+            snapshot_javascript_module_dependencies(&output, &HashSet::from([identity])).unwrap();
+        fs::write(
+            &js,
+            "const D = require('./D.js');\nexports.Shared = Shared;\n",
+        )
+        .unwrap();
+
+        let error = validate_javascript_module_dependencies_unchanged(&snapshot)
+            .expect_err("a shared module must not acquire an unowned dependency");
+
+        assert!(error.contains("another generation root"), "{error}");
         fs::remove_dir_all(output).unwrap();
     }
 
@@ -5351,7 +6029,7 @@ mod tests {
             ..Default::default()
         }];
 
-        let error = restore_incremental_javascript_collision_members(
+        let error = restore_javascript_layout_records(
             "",
             &previous,
             &mut classes,
@@ -5361,7 +6039,7 @@ mod tests {
         .expect_err("missing prior collision metadata must fail closed");
 
         assert!(
-            error.contains("Cannot restore prior JavaScript collision member"),
+            error.contains("Cannot restore prior JavaScript layout member"),
             "{error}"
         );
     }
@@ -5504,7 +6182,7 @@ mod tests {
              module.exports = require('./contoso/Widget.js');\n",
         )
         .unwrap();
-        write_javascript_type_inventory(&output, &[]).unwrap();
+        write_javascript_type_inventory(&output, &[], &BTreeSet::new()).unwrap();
 
         let error = read_javascript_type_inventory(&output)
             .expect_err("inventory missing an existing canonical type must fail closed");
@@ -6252,6 +6930,7 @@ mod tests {
             true,
             &DocTable::default(),
             &[],
+            None,
         )
         .unwrap_err();
         assert!(error.contains("Contoso.Widget"));
