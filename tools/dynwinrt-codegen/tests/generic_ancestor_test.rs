@@ -1,11 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+mod common;
+
 use std::collections::HashSet;
 
 use dynwinrt_codegen::codegen::render_js;
 use dynwinrt_codegen::codegen::winrt::javascript::project;
-use dynwinrt_codegen::codegen::winrt::python;
 use dynwinrt_codegen::meta::{InterfaceMeta, parse_class};
 use dynwinrt_codegen::types::TypeMeta;
 
@@ -51,7 +52,7 @@ fn sdk_color_palette_resources_projects_inherited_generic_map_interfaces() {
         &delegate_param_wraps,
     );
     let js = render_js::render(&projected);
-    let py = python::generate_class(&class, &known_types, &HashSet::new(), &HashSet::new());
+    let py = common::generate_class(&class, &known_types, &HashSet::new(), &HashSet::new());
     assert!(js.contains("lookup(") && js.contains("insert("), "{js}");
     assert!(
         py.contains("class ColorPaletteResources(_WinRTMutableMappingMixin):")

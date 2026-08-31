@@ -1,9 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+mod common;
+
 use std::collections::HashSet;
 
-use dynwinrt_codegen::codegen::{python, python_stub};
 use dynwinrt_codegen::meta::{ClassMeta, InterfaceMeta, MethodMeta};
 use dynwinrt_codegen::types::TypeMeta;
 
@@ -41,8 +42,8 @@ fn property_named_property_does_not_shadow_the_decorator() {
     };
     let known = HashSet::from(["ChangedEventArgs".into()]);
 
-    let py = python::generate_class(&class, &known, &HashSet::new(), &HashSet::new());
-    let pyi = python_stub::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
+    let py = common::generate_class(&class, &known, &HashSet::new(), &HashSet::new());
+    let pyi = common::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
 
     assert!(py.contains("_property, _weakref_ref,"));
     assert_eq!(py.matches("    @_property\n").count(), 2);

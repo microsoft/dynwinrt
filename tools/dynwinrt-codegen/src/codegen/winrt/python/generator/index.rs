@@ -9,6 +9,7 @@ use super::*;
 
 /// Generate a Python `__init__.py` that re-exports all generated types.
 pub fn generate_index(
+    context: &PythonProjectionContext,
     classes: &[ClassMeta],
     interfaces: &[InterfaceMeta],
     enums: &[TypeMeta],
@@ -20,11 +21,14 @@ pub fn generate_index(
     sorted_classes.sort_by(|a, b| a.name.cmp(&b.name));
     for class in sorted_classes {
         if seen.insert(class.name.clone()) {
-            let module = python_module_name(&class.namespace, &class.name);
-            out.push_str(&format!(
-                "from .{} import {}  # noqa: F401\n",
-                module, class.name
-            ));
+            let identity = crate::types::TypeIdentity::named(
+                crate::types::TypeIdentityKind::Class,
+                class.namespace.clone(),
+                class.name.clone(),
+            );
+            let module = context.implementation_module(&identity);
+            let name = context.projected_name(&identity);
+            out.push_str(&format!("from .{} import {}  # noqa: F401\n", module, name));
         }
     }
     let mut sorted_ifaces: Vec<_> = interfaces.iter().collect();
@@ -33,20 +37,21 @@ pub fn generate_index(
         if !seen.insert(iface.name.clone()) {
             continue;
         }
-        let is_delegate = iface.methods.iter().any(|m| m.name == ".ctor")
-            && iface.methods.iter().any(|m| m.name == "Invoke");
-        let module = python_module_name(&iface.namespace, &iface.name);
+        let is_delegate = iface.is_delegate();
+        let identity = iface.type_identity();
+        let module = context.implementation_module(&identity);
+        let name = context.projected_name(&identity);
         if is_delegate {
             out.push_str(&format!(
                 "from .{module} import IID_{iname}, {iname}_PARAM_TYPES  # noqa: F401\n",
                 module = module,
-                iname = iface.name
+                iname = name
             ));
         } else {
             out.push_str(&format!(
                 "from .{module} import IID_{iname}, {iname}  # noqa: F401\n",
                 module = module,
-                iname = iface.name
+                iname = name
             ));
         }
     }
@@ -63,12 +68,11 @@ pub fn generate_index(
         name_a.cmp(name_b)
     });
     for en in sorted_enums {
-        if let TypeMeta::Enum {
-            namespace, name, ..
-        } = en
-        {
+        if let TypeMeta::Enum { name, .. } = en {
             if seen.insert(name.clone()) {
-                let module = python_module_name(namespace, name);
+                let identity = en.type_identity();
+                let module = context.implementation_module(&identity);
+                let name = context.projected_name(&identity);
                 out.push_str(&format!("from .{} import {}  # noqa: F401\n", module, name));
             }
         }
@@ -77,6 +81,7 @@ pub fn generate_index(
 }
 
 pub fn generate_public_index(
+    context: &PythonProjectionContext,
     classes: &[ClassMeta],
     interfaces: &[InterfaceMeta],
     enums: &[TypeMeta],
@@ -88,10 +93,16 @@ pub fn generate_public_index(
     classes.sort_by(|left, right| left.name.cmp(&right.name));
     for class in classes {
         if seen.insert(class.name.clone()) {
+            let identity = crate::types::TypeIdentity::named(
+                crate::types::TypeIdentityKind::Class,
+                class.namespace.clone(),
+                class.name.clone(),
+            );
+            let name = context.projected_name(&identity);
             out.push_str(&format!(
                 "from .{} import {}  # noqa: F401\n",
-                python_public_qualified_module_name(&class.namespace, &class.name),
-                class.name
+                context.public_qualified_module(&identity),
+                name
             ));
         }
     }
@@ -99,19 +110,14 @@ pub fn generate_public_index(
     let mut interfaces = interfaces.iter().collect::<Vec<_>>();
     interfaces.sort_by(|left, right| left.name.cmp(&right.name));
     for interface in interfaces {
-        let is_delegate = interface
-            .methods
-            .iter()
-            .any(|method| method.name == ".ctor")
-            && interface
-                .methods
-                .iter()
-                .any(|method| method.name == "Invoke");
+        let is_delegate = interface.is_delegate();
         if !is_delegate && seen.insert(interface.name.clone()) {
+            let identity = interface.type_identity();
+            let name = context.projected_name(&identity);
             out.push_str(&format!(
                 "from .{} import {}  # noqa: F401\n",
-                python_public_qualified_module_name(&interface.namespace, &interface.name),
-                interface.name
+                context.public_qualified_module(&identity),
+                name
             ));
         }
     }
@@ -122,16 +128,15 @@ pub fn generate_public_index(
         _ => "",
     });
     for typ in enums {
-        let TypeMeta::Enum {
-            namespace, name, ..
-        } = typ
-        else {
+        let TypeMeta::Enum { name, .. } = typ else {
             continue;
         };
         if seen.insert(name.clone()) {
+            let identity = typ.type_identity();
+            let name = context.projected_name(&identity);
             out.push_str(&format!(
                 "from .{} import {}  # noqa: F401\n",
-                python_public_qualified_module_name(namespace, name),
+                context.public_qualified_module(&identity),
                 name
             ));
         }
@@ -139,7 +144,7 @@ pub fn generate_public_index(
     out
 }
 
-pub fn generate_struct_index(structs: &[TypeMeta]) -> String {
+pub fn generate_struct_index(context: &PythonProjectionContext, structs: &[TypeMeta]) -> String {
     let mut out = String::from(HEADER);
     let mut seen = HashSet::new();
     let mut sorted = structs.iter().collect::<Vec<_>>();
@@ -161,14 +166,17 @@ pub fn generate_struct_index(structs: &[TypeMeta]) -> String {
         }
         out.push_str(&format!(
             "from .{} import {}  # noqa: F401\n",
-            python_module_name(namespace, name),
+            context.implementation_module_for_type(typ),
             py_struct_export_names(typ).join(", ")
         ));
     }
     out
 }
 
-pub fn generate_public_struct_index(structs: &[TypeMeta]) -> String {
+pub fn generate_public_struct_index(
+    context: &PythonProjectionContext,
+    structs: &[TypeMeta],
+) -> String {
     let mut out = String::from(HEADER);
     let mut seen = HashSet::new();
     let mut sorted = structs.iter().collect::<Vec<_>>();
@@ -190,7 +198,7 @@ pub fn generate_public_struct_index(structs: &[TypeMeta]) -> String {
         }
         out.push_str(&format!(
             "from .{} import {}  # noqa: F401\n",
-            python_public_qualified_module_name(namespace, name),
+            context.public_qualified_module(&typ.type_identity()),
             name
         ));
     }
@@ -199,6 +207,7 @@ pub fn generate_public_struct_index(structs: &[TypeMeta]) -> String {
 
 /// Append new types to an existing `__init__.py`.
 pub fn append_to_index(
+    context: &PythonProjectionContext,
     existing: &str,
     classes: &[ClassMeta],
     interfaces: &[InterfaceMeta],
@@ -242,35 +251,39 @@ pub fn append_to_index(
     let mut sorted_classes: Vec<_> = classes.iter().collect();
     sorted_classes.sort_by(|a, b| a.name.cmp(&b.name));
     for class in sorted_classes {
-        let module = python_module_name(&class.namespace, &class.name);
+        let identity = crate::types::TypeIdentity::named(
+            crate::types::TypeIdentityKind::Class,
+            class.namespace.clone(),
+            class.name.clone(),
+        );
+        let module = context.implementation_module(&identity);
+        let name = context.projected_name(&identity);
         if !exported_modules.contains(&module) && seen.insert(class.name.clone()) {
-            out.push_str(&format!(
-                "from .{} import {}  # noqa: F401\n",
-                module, class.name
-            ));
+            out.push_str(&format!("from .{} import {}  # noqa: F401\n", module, name));
         }
     }
 
     let mut sorted_ifaces: Vec<_> = interfaces.iter().collect();
     sorted_ifaces.sort_by(|a, b| a.name.cmp(&b.name));
     for iface in sorted_ifaces {
-        let module = python_module_name(&iface.namespace, &iface.name);
+        let identity = iface.type_identity();
+        let module = context.implementation_module(&identity);
+        let name = context.projected_name(&identity);
         if exported_modules.contains(&module) || !seen.insert(iface.name.clone()) {
             continue;
         }
-        let is_delegate = iface.methods.iter().any(|m| m.name == ".ctor")
-            && iface.methods.iter().any(|m| m.name == "Invoke");
+        let is_delegate = iface.is_delegate();
         if is_delegate {
             out.push_str(&format!(
                 "from .{module} import IID_{iname}, {iname}_PARAM_TYPES  # noqa: F401\n",
                 module = module,
-                iname = iface.name
+                iname = name
             ));
         } else {
             out.push_str(&format!(
                 "from .{module} import IID_{iname}, {iname}  # noqa: F401\n",
                 module = module,
-                iname = iface.name
+                iname = name
             ));
         }
     }
@@ -288,13 +301,15 @@ pub fn append_to_index(
         name_a.cmp(name_b)
     });
     for en in sorted_enums {
-        if let TypeMeta::Enum {
-            namespace, name, ..
-        } = en
-        {
-            let module = python_module_name(namespace, name);
+        if let TypeMeta::Enum { name, .. } = en {
+            let identity = en.type_identity();
+            let module = context.implementation_module(&identity);
+            let projected_name = context.projected_name(&identity);
             if !exported_modules.contains(&module) && seen.insert(name.clone()) {
-                out.push_str(&format!("from .{} import {}  # noqa: F401\n", module, name));
+                out.push_str(&format!(
+                    "from .{} import {}  # noqa: F401\n",
+                    module, projected_name
+                ));
             }
         }
     }

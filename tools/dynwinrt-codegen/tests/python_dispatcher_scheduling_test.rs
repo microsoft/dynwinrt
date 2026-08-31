@@ -1,10 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+mod common;
+
 use std::collections::HashSet;
 
-use dynwinrt_codegen::codegen::python;
-use dynwinrt_codegen::codegen::python_stub;
 use dynwinrt_codegen::meta::ClassMeta;
 
 #[test]
@@ -19,7 +19,7 @@ fn dispatcher_queue_emits_awaitable_scheduling_helpers() {
     let delegate_types = HashSet::new();
     let shared_iids = HashSet::new();
 
-    let runtime = python::generate_class(&class, &known_types, &delegate_types, &shared_iids);
+    let runtime = common::generate_class(&class, &known_types, &delegate_types, &shared_iids);
     assert!(runtime.contains("import asyncio"));
     assert!(runtime.contains("async def enqueue_async(self, callback, *args, **kwargs):"));
     assert!(runtime.contains(
@@ -29,8 +29,7 @@ fn dispatcher_queue_emits_awaitable_scheduling_helpers() {
     assert!(runtime.contains("except RuntimeError:"));
     assert!(runtime.contains("DispatcherQueue rejected the callback."));
 
-    let stub =
-        python_stub::generate_class_stub(&class, &known_types, &delegate_types, &shared_iids);
+    let stub = common::generate_class_stub(&class, &known_types, &delegate_types, &shared_iids);
     assert!(stub.contains("_DispatchResultT = TypeVar('_DispatchResultT')"));
     assert!(stub.contains("async def enqueue_async("));
     assert!(stub.contains("Callable[..., _DispatchResultT]"));

@@ -1,10 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+mod common;
+
 use std::collections::HashSet;
 use std::path::Path;
 
-use dynwinrt_codegen::codegen::{python, python_stub};
 use dynwinrt_codegen::meta::{
     self, ClassMeta, ConstructorKind, ConstructorMeta, InterfaceMeta, MethodMeta, ParamDirection,
     ParamMeta,
@@ -60,8 +61,8 @@ fn system_returned_class_keeps_only_internal_native_wrapping() {
     };
     let known = HashSet::from(["SystemResult".into()]);
 
-    let py = python::generate_class(&class, &known, &HashSet::new(), &HashSet::new());
-    let pyi = python_stub::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
+    let py = common::generate_class(&class, &known, &HashSet::new(), &HashSet::new());
+    let pyi = common::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
 
     assert!(py.contains("def _from_native(cls, obj: DynWinRTValue):"));
     assert!(py.contains("_dynwinrt_runtime_class_type = True"));
@@ -94,8 +95,8 @@ fn static_only_class_has_only_qi_checked_projection_entry() {
     };
     let known = HashSet::from(["ApiInformation".into()]);
 
-    let py = python::generate_class(&class, &known, &HashSet::new(), &HashSet::new());
-    let pyi = python_stub::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
+    let py = common::generate_class(&class, &known, &HashSet::new(), &HashSet::new());
+    let pyi = common::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
 
     assert!(
         py.contains("def _from_native(cls, obj: DynWinRTValue):"),
@@ -140,9 +141,8 @@ fn static_only_class_has_only_qi_checked_projection_entry() {
                 .is_some_and(|interface| !interface.iid.is_empty());
             checked += 1;
             let known = HashSet::from([name.into()]);
-            let py = python::generate_class(&class, &known, &HashSet::new(), &HashSet::new());
-            let pyi =
-                python_stub::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
+            let py = common::generate_class(&class, &known, &HashSet::new(), &HashSet::new());
+            let pyi = common::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
             assert!(
                 !py.contains("from_value = classmethod"),
                 "{namespace}.{name}:\n{py}"
@@ -200,7 +200,7 @@ fn real_factory_constructors_reference_generated_private_helpers() {
             continue;
         };
         checked += 1;
-        let code = python::generate_class(
+        let code = common::generate_class(
             &class,
             &HashSet::from([name.into()]),
             &HashSet::new(),
@@ -243,8 +243,8 @@ fn externally_returned_empty_class_keeps_native_projection() {
     )));
     class.is_referenced_as_value = true;
     let known = HashSet::from(["DeviceWatcherTrigger".into()]);
-    let py = python::generate_class(&class, &known, &HashSet::new(), &HashSet::new());
-    let pyi = python_stub::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
+    let py = common::generate_class(&class, &known, &HashSet::new(), &HashSet::new());
+    let pyi = common::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
 
     assert!(py.contains("_dynwinrt_runtime_class_type = True"), "{py}");
     assert!(
@@ -282,8 +282,8 @@ fn externally_returned_empty_class_with_static_interface_keeps_native_projection
     };
     let known = HashSet::from(["ExternallyReturned".into()]);
 
-    let py = python::generate_class(&class, &known, &HashSet::new(), &HashSet::new());
-    let pyi = python_stub::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
+    let py = common::generate_class(&class, &known, &HashSet::new(), &HashSet::new());
+    let pyi = common::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
     assert!(
         py.contains("def _from_native(cls, obj: DynWinRTValue):"),
         "{py}"
@@ -292,7 +292,7 @@ fn externally_returned_empty_class_with_static_interface_keeps_native_projection
     assert!(pyi.contains("_DynWinRTRuntimeClass"), "{pyi}");
 
     class.is_referenced_as_value = false;
-    let static_only = python::generate_class(&class, &known, &HashSet::new(), &HashSet::new());
+    let static_only = common::generate_class(&class, &known, &HashSet::new(), &HashSet::new());
     assert!(static_only.contains("def _from_native("), "{static_only}");
     assert!(
         static_only.contains("_dynwinrt_projectable_class_type = True"),
@@ -333,8 +333,8 @@ fn only_referenced_public_factory_metadata_becomes_a_constructor() {
     };
     let known = HashSet::from(["SystemResult".into()]);
 
-    let py = python::generate_class(&class, &known, &HashSet::new(), &HashSet::new());
-    let pyi = python_stub::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
+    let py = common::generate_class(&class, &known, &HashSet::new(), &HashSet::new());
+    let pyi = common::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
 
     assert!(py.contains("type(self).create_result(_bound[0])"));
     assert!(!py.contains("self._set_native(type(self).create()._obj)"));
@@ -390,7 +390,7 @@ fn numeric_constructor_overloads_dispatch_by_specificity() {
     };
     let known = HashSet::from(["SystemResult".into()]);
 
-    let py = python::generate_class(&class, &known, &HashSet::new(), &HashSet::new());
+    let py = common::generate_class(&class, &known, &HashSet::new(), &HashSet::new());
     let narrow_guard = "-128 <= _bound[0] <= 127";
     let wide_guard = "-2147483648 <= _bound[0] <= 2147483647";
     assert!(
@@ -399,7 +399,7 @@ fn numeric_constructor_overloads_dispatch_by_specificity() {
         "{py}"
     );
 
-    let pyi = python_stub::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
+    let pyi = common::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
     assert_eq!(pyi.matches("    @overload\n").count(), 4, "{pyi}");
 }
 
@@ -422,8 +422,8 @@ fn protected_composition_is_not_public_construction() {
     };
     let known = HashSet::from(["SystemResult".into()]);
 
-    let py = python::generate_class(&class, &known, &HashSet::new(), &HashSet::new());
-    let pyi = python_stub::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
+    let py = common::generate_class(&class, &known, &HashSet::new(), &HashSet::new());
+    let pyi = common::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
 
     assert!(py.contains("SystemResult cannot be constructed directly"));
     assert!(pyi.contains("def __init__(self, _not_constructible: NoReturn) -> None: ..."));
@@ -470,8 +470,8 @@ fn unresolved_or_unsupported_constructor_metadata_fails_closed() {
     };
 
     for class in [&missing_dependency, &malformed_composition] {
-        let py = python::generate_class(class, &known, &HashSet::new(), &HashSet::new());
-        let pyi = python_stub::generate_class_stub(class, &known, &HashSet::new(), &HashSet::new());
+        let py = common::generate_class(class, &known, &HashSet::new(), &HashSet::new());
+        let pyi = common::generate_class_stub(class, &known, &HashSet::new(), &HashSet::new());
         assert!(py.contains("SystemResult cannot be constructed directly"));
         assert!(pyi.contains("from typing import NoReturn"));
         assert!(pyi.contains("def __init__(self, _not_constructible: NoReturn) -> None: ..."));

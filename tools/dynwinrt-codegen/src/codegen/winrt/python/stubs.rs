@@ -14,8 +14,8 @@ use crate::types::{TypeKind, TypeMeta};
 use crate::codegen::winrt::extensions::winui;
 use crate::codegen::winrt::shared::imports::{
     collect_iface_type_imports, collect_struct_field_type_imports, collect_type_imports,
-    collect_used_generics_from_class, collect_used_generics_from_methods,
-    collect_used_generics_from_type,
+    collect_used_generic_identities_from_class, collect_used_generic_identities_from_methods,
+    collect_used_generic_identities_from_type,
 };
 use crate::codegen::winrt::shared::structs::{
     collect_used_structs_from_class, collect_used_structs_from_iface,
@@ -23,12 +23,9 @@ use crate::codegen::winrt::shared::structs::{
 };
 
 use super::collections::{
-    CollectionKind, abc_name, class_interface, interface_kind, observable_vector_name,
+    CollectionKind, abc_name, class_interface, interface_kind, observable_vector_identity,
 };
-use super::naming::{
-    is_py_reserved, python_module_layout_installed, python_module_name,
-    python_public_qualified_module_name, to_snake_case, to_snake_case_filename,
-};
+use super::naming::{PythonProjectionContext, is_py_reserved, to_snake_case};
 use super::native_types::foundation_type;
 use super::shared::reorder_getters_before_setters;
 use super::signature::py_dynwinrt_type;
@@ -95,11 +92,15 @@ fn interface_marker(interface: &InterfaceMeta) -> String {
     identity_marker("iid", &interface.namespace, &interface.name)
 }
 
+fn interface_symbol(context: &PythonProjectionContext, interface: &InterfaceMeta) -> String {
+    context.reference_name(&interface.type_identity())
+}
+
 fn class_marker(class: &ClassMeta) -> String {
     identity_marker("class", &class.namespace, &class.name)
 }
 
-pub fn generate_struct_stub(s: &TypeMeta) -> Option<String> {
+pub fn generate_struct_stub(context: &PythonProjectionContext, s: &TypeMeta) -> Option<String> {
     let TypeMeta::Struct { name, .. } = s else {
         return None;
     };
@@ -112,29 +113,43 @@ pub fn generate_struct_stub(s: &TypeMeta) -> Option<String> {
     out.push_str(FUTURE_ANNOTATIONS);
     out.push_str(IMPORT_LINE);
     out.push_str(&generate_struct_stub_imports(
+        context,
         &collect_used_structs_from_struct(s),
     ));
 
     let mut imports = collect_struct_field_type_imports(s)
         .into_iter()
-        .map(|type_ref| format_py_type_import(&type_ref.namespace, &type_ref.name, type_ref.kind))
+        .map(|type_ref| {
+            format_py_type_import(context, &type_ref.namespace, &type_ref.name, type_ref.kind)
+        })
         .collect::<Vec<_>>();
-    imports.extend(collect_used_generics_from_type(s).into_iter().map(|name| {
-        format!(
-            "from .{} import {}  # noqa: F401\n",
-            to_snake_case_filename(&name),
-            name
-        )
-    }));
+    imports.extend(
+        collect_used_generic_identities_from_type(s)
+            .into_iter()
+            .map(|identity| {
+                let identity = context.normalize_identity(&identity);
+                let name = context.projected_name(&identity);
+                let reference_name = context.reference_name(&identity);
+                let import = if name == reference_name {
+                    name
+                } else {
+                    format!("{name} as {reference_name}")
+                };
+                format!(
+                    "from .{} import {import}  # noqa: F401\n",
+                    context.implementation_module(&identity),
+                )
+            }),
+    );
     imports.sort();
     imports.dedup();
     out.push_str(&imports.concat());
-    out.push_str(&emit_struct_stub(s));
+    out.push_str(&emit_struct_stub(context, s));
     Some(out)
 }
 
 /// Generate a `.pyi` stub for an enum. Returns `None` for non-enum TypeMeta.
-pub fn generate_enum_stub(en: &TypeMeta) -> Option<String> {
+pub fn generate_enum_stub(_context: &PythonProjectionContext, en: &TypeMeta) -> Option<String> {
     let (name, members, is_flags, doc, deprecated) = match en {
         TypeMeta::Enum {
             name,
@@ -181,13 +196,11 @@ pub fn generate_enum_stub(en: &TypeMeta) -> Option<String> {
 }
 
 /// Generate a `.pyi` stub for an interface (or a delegate).
-pub fn generate_interface_stub(
-    iface: &InterfaceMeta,
-    known_types: &HashSet<String>,
-    delegate_type_names: &HashSet<String>,
-) -> String {
-    let is_delegate = iface.methods.iter().any(|m| m.name == ".ctor")
-        && iface.methods.iter().any(|m| m.name == "Invoke");
+pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &InterfaceMeta) -> String {
+    let mut projected_iface = iface.clone();
+    projected_iface.name = context.projected_name_for_interface(iface);
+    let iface = &projected_iface;
+    let is_delegate = iface.is_delegate();
     if is_delegate {
         // Delegate stub: only IID + PARAM_TYPES declarations
         let mut out = String::new();
@@ -218,41 +231,63 @@ pub fn generate_interface_stub(
     {
         out.push_str("from typing import Callable\n");
     }
-    if python_module_layout_installed() {
-        out.push_str(&generate_struct_stub_imports(&used_structs));
+    if context.is_packaged() {
+        out.push_str(&generate_struct_stub_imports(context, &used_structs));
     }
     out.push('\n');
     if !iface.iid.is_empty() || iface.generic_piid.is_some() {
         out.push_str("_InterfaceT = TypeVar('_InterfaceT')\n\n");
     }
 
-    let delegate_names =
-        super::collect_referenced_delegate_names(&iface.methods, delegate_type_names);
-    let runtime_delegate_names =
-        super::collect_runtime_delegate_names(&iface.methods, delegate_type_names);
+    let delegate_names = super::collect_referenced_delegate_names(&iface.methods, context);
+    let runtime_delegate_names = super::collect_runtime_delegate_names(&iface.methods, context);
 
-    let collection_names = collect_used_generics_from_methods(&iface.methods);
-    let observable_vector = observable_vector_name(iface);
-    for cname in &collection_names {
-        if cname != &iface.name && !delegate_names.contains(cname) {
-            let module = to_snake_case_filename(cname);
-            out.push_str(&format!(
-                "from .{} import {}  # noqa: F401\n",
-                module, cname
-            ));
+    let collection_identities = collect_used_generic_identities_from_methods(&iface.methods);
+    let observable_vector = observable_vector_identity(iface);
+    for identity in &collection_identities {
+        let identity = context.normalize_identity(identity);
+        if identity != iface.type_identity() && !delegate_names.contains(&identity) {
+            let module = context.implementation_module(&identity);
+            let name = context.projected_name(&identity);
+            let reference_name = context.reference_name(&identity);
+            let import = if name == reference_name {
+                name
+            } else {
+                format!("{name} as {reference_name}")
+            };
+            out.push_str(&format!("from .{module} import {import}  # noqa: F401\n"));
         }
     }
-    if let Some(vector_name) = &observable_vector
-        && !collection_names.contains(vector_name)
-    {
-        let module = to_snake_case_filename(vector_name);
-        out.push_str(&format!(
-            "from .{module} import {vector_name}  # noqa: F401\n"
-        ));
+    if observable_vector.is_some() {
+        let identity = crate::types::TypeIdentity::closed_generic(
+            crate::types::TypeIdentityKind::Interface,
+            crate::meta::WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE,
+            "IVector",
+            iface.generic_args.iter().map(TypeMeta::type_identity),
+        );
+        if !collection_identities
+            .iter()
+            .any(|candidate| context.normalize_identity(candidate) == identity)
+        {
+            let module = context.implementation_module(&identity);
+            let vector_name = context.projected_name(&identity);
+            let reference_name = context.reference_name(&identity);
+            let import = if vector_name == reference_name {
+                vector_name
+            } else {
+                format!("{vector_name} as {reference_name}")
+            };
+            out.push_str(&format!("from .{module} import {import}  # noqa: F401\n"));
+        }
     }
     if observable_vector.is_some() {
         let event_args = "IVectorChangedEventArgs";
-        let module = to_snake_case_filename(event_args);
+        let identity = crate::types::TypeIdentity::named(
+            crate::types::TypeIdentityKind::Interface,
+            crate::meta::WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE,
+            event_args,
+        );
+        let module = context.implementation_module(&identity);
         out.push_str(&format!(
             "from .{module} import {event_args}  # noqa: F401\n"
         ));
@@ -260,11 +295,19 @@ pub fn generate_interface_stub(
 
     let mut sorted_delegates: Vec<_> = runtime_delegate_names.iter().collect();
     sorted_delegates.sort();
-    for dname in &sorted_delegates {
-        let module = to_snake_case_filename(dname);
-        out.push_str(&format!(
-            "from .{module} import IID_{dname}, {dname}_PARAM_TYPES  # noqa: F401\n",
-        ));
+    for identity in &sorted_delegates {
+        let module = context.implementation_module(identity);
+        let dname = context.projected_name(identity);
+        let reference_name = context.reference_name(identity);
+        let imports = if dname == reference_name {
+            format!("IID_{dname}, {dname}_PARAM_TYPES")
+        } else {
+            format!(
+                "IID_{dname} as IID_{reference_name}, \
+                 {dname}_PARAM_TYPES as {reference_name}_PARAM_TYPES"
+            )
+        };
+        out.push_str(&format!("from .{module} import {imports}  # noqa: F401\n",));
     }
 
     let type_imports = collect_iface_type_imports(iface);
@@ -272,8 +315,23 @@ pub fn generate_interface_stub(
     sorted_type_imports
         .sort_by(|a, b| (&a.namespace, &a.name, &a.kind).cmp(&(&b.namespace, &b.name, &b.kind)));
     for r in &sorted_type_imports {
-        if known_types.contains(&r.name) && !delegate_names.contains(&r.name) {
-            out.push_str(&format_py_type_import(&r.namespace, &r.name, r.kind));
+        let identity_kind = match r.kind {
+            TypeKind::Class => crate::types::TypeIdentityKind::Class,
+            TypeKind::Enum => crate::types::TypeIdentityKind::Enum,
+            TypeKind::Interface => crate::types::TypeIdentityKind::Interface,
+        };
+        let identity = context.normalize_identity(&crate::types::TypeIdentity::named(
+            identity_kind,
+            r.namespace.clone(),
+            r.name.clone(),
+        ));
+        if context.is_known_ref(r) && !delegate_names.contains(&identity) {
+            out.push_str(&format_py_type_import(
+                context,
+                &r.namespace,
+                &r.name,
+                r.kind,
+            ));
         }
     }
     out.push('\n');
@@ -283,9 +341,9 @@ pub fn generate_interface_stub(
     }
     out.push('\n');
 
-    if !python_module_layout_installed() {
+    if !context.is_packaged() {
         for s in &used_structs {
-            out.push_str(&emit_struct_stub(s));
+            out.push_str(&emit_struct_stub(context, s));
             out.push('\n');
         }
     }
@@ -297,13 +355,13 @@ pub fn generate_interface_stub(
                 [element] => Some(format!(
                     "{}[{}]",
                     abc,
-                    super::type_helpers::py_return_type_safe(Some(element), known_types)
+                    super::type_helpers::py_return_type_safe(Some(element), context)
                 )),
                 [key, value] => Some(format!(
                     "{}[{}, {}]",
                     abc,
-                    super::type_helpers::py_return_type_safe(Some(key), known_types),
-                    super::type_helpers::py_return_type_safe(Some(value), known_types)
+                    super::type_helpers::py_return_type_safe(Some(key), context),
+                    super::type_helpers::py_return_type_safe(Some(value), context)
                 )),
                 _ => None,
             });
@@ -338,7 +396,7 @@ pub fn generate_interface_stub(
     if !is_protocol {
         out.push_str("    def __init__(self, obj: DynWinRTValue) -> None: ...\n");
     }
-    out.push_str(&collection_protocol_stubs(iface, known_types, 4));
+    out.push_str(&collection_protocol_stubs(iface, context, 4));
     if !iface.iid.is_empty() || iface.generic_piid.is_some() {
         out.push('\n');
         out.push_str("    @classmethod\n");
@@ -351,11 +409,12 @@ pub fn generate_interface_stub(
     // IVector<T> / IMap<K,V> create()
     if let Some(ref piid) = iface.generic_piid {
         if piid == "5917eb53-50b4-4a0d-b309-65862b3f1dbc" && iface.generic_args.len() == 1 {
-            let element =
-                super::type_helpers::py_param_type_safe(&iface.generic_args[0], known_types);
-            let vector_name = observable_vector
-                .as_ref()
-                .expect("observable vector companion");
+            let element = super::type_helpers::py_param_type_safe(&iface.generic_args[0], context);
+            let vector_name = context.projected_name(
+                observable_vector
+                    .as_ref()
+                    .expect("observable vector companion"),
+            );
             out.push('\n');
             out.push_str("    @staticmethod\n");
             out.push_str(&format!(
@@ -367,8 +426,7 @@ pub fn generate_interface_stub(
                 vector_name
             ));
         } else if piid == "913337e9-11a1-4345-a3a2-4e7f956e222d" && iface.generic_args.len() == 1 {
-            let element =
-                super::type_helpers::py_param_type_safe(&iface.generic_args[0], known_types);
+            let element = super::type_helpers::py_param_type_safe(&iface.generic_args[0], context);
             out.push('\n');
             out.push_str("    @staticmethod\n");
             out.push_str(&format!(
@@ -376,9 +434,8 @@ pub fn generate_interface_stub(
                 element, iface.name
             ));
         } else if piid == "3c2925fe-8519-45c1-aa79-197b6718c1c1" && iface.generic_args.len() == 2 {
-            let key = super::type_helpers::py_param_type_safe(&iface.generic_args[0], known_types);
-            let value =
-                super::type_helpers::py_param_type_safe(&iface.generic_args[1], known_types);
+            let key = super::type_helpers::py_param_type_safe(&iface.generic_args[0], context);
+            let value = super::type_helpers::py_param_type_safe(&iface.generic_args[1], context);
             out.push('\n');
             out.push_str("    @staticmethod\n");
             out.push_str(&format!(
@@ -421,8 +478,7 @@ pub fn generate_interface_stub(
         out.push('\n');
         out.push_str(&emit_instance_stub_group(
             &methods,
-            known_types,
-            &delegate_names,
+            context,
             4,
             event_has_remove,
             property_has_getter,
@@ -431,8 +487,7 @@ pub fn generate_interface_stub(
     }
     out.push_str(&emit_instance_compatibility_alias_stubs(
         iface.methods.iter(),
-        known_types,
-        &delegate_names,
+        context,
         4,
         collection_kind == Some(CollectionKind::MutableSequence),
     ));
@@ -442,15 +497,15 @@ pub fn generate_interface_stub(
 
 /// Generate a `.pyi` stub for a runtime class.
 pub fn generate_class_stub(
+    context: &PythonProjectionContext,
     class: &ClassMeta,
-    known_types: &HashSet<String>,
-    delegate_type_names: &HashSet<String>,
     shared_iids: &HashSet<String>,
 ) -> String {
     let used_structs = collect_used_structs_from_class(class);
     let collection_iface = class_interface(class);
     let collection_kind = collection_iface.and_then(interface_kind);
-    let winui_bootstrap = winui::resolve_application_bootstrap(class, known_types);
+    let known_full_names = context.known_full_names();
+    let winui_bootstrap = winui::resolve_application_bootstrap(class, &known_full_names);
     let has_public_composition = class
         .constructors
         .iter()
@@ -503,8 +558,8 @@ pub fn generate_class_stub(
     } else if winui::is_dispatcher_queue(class) {
         out.push_str("from typing import TypeVar\n");
     }
-    if python_module_layout_installed() {
-        out.push_str(&generate_struct_stub_imports(&used_structs));
+    if context.is_packaged() {
+        out.push_str(&generate_struct_stub_imports(context, &used_structs));
     }
     out.push('\n');
     if winui::is_dispatcher_queue(class) {
@@ -516,38 +571,49 @@ pub fn generate_class_stub(
     for iface in class.all_interfaces() {
         delegate_names.extend(super::collect_referenced_delegate_names(
             &iface.methods,
-            delegate_type_names,
+            context,
         ));
         runtime_delegate_names.extend(super::collect_runtime_delegate_names(
             &iface.methods,
-            delegate_type_names,
+            context,
         ));
     }
 
     let mut imported_names: HashSet<String> = HashSet::new();
-    let collection_names = collect_used_generics_from_class(class);
-    for cname in &collection_names {
-        if !delegate_names.contains(cname) {
-            let module = to_snake_case_filename(cname);
-            out.push_str(&format!(
-                "from .{} import {}  # noqa: F401\n",
-                module, cname
-            ));
-            imported_names.insert(cname.clone());
+    let collection_identities = collect_used_generic_identities_from_class(class);
+    for identity in &collection_identities {
+        let identity = context.normalize_identity(identity);
+        if !delegate_names.contains(&identity) {
+            let module = context.implementation_module(&identity);
+            let name = context.projected_name(&identity);
+            let reference_name = context.reference_name(&identity);
+            let import = if name == reference_name {
+                name
+            } else {
+                format!("{name} as {reference_name}")
+            };
+            out.push_str(&format!("from .{module} import {import}  # noqa: F401\n"));
+            imported_names.insert(reference_name);
         }
     }
     for iface in class.all_interfaces() {
         if iface.generic_piid.as_deref() == Some(super::collections::IOBSERVABLE_VECTOR_PIID) {
-            if imported_names.insert(iface.name.clone()) {
-                let module = to_snake_case_filename(&iface.name);
+            let identity = iface.type_identity();
+            let projected_name = context.projected_name(&identity);
+            if imported_names.insert(projected_name.clone()) {
+                let module = context.implementation_module(&identity);
                 out.push_str(&format!(
-                    "from .{module} import {}  # noqa: F401\n",
-                    iface.name
+                    "from .{module} import {projected_name}  # noqa: F401\n"
                 ));
             }
             let event_args = "IVectorChangedEventArgs";
             if imported_names.insert(event_args.into()) {
-                let module = to_snake_case_filename(event_args);
+                let identity = crate::types::TypeIdentity::named(
+                    crate::types::TypeIdentityKind::Interface,
+                    crate::meta::WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE,
+                    event_args,
+                );
+                let module = context.implementation_module(&identity);
                 out.push_str(&format!(
                     "from .{module} import {event_args}  # noqa: F401\n"
                 ));
@@ -557,11 +623,19 @@ pub fn generate_class_stub(
 
     let mut sorted_delegates: Vec<_> = runtime_delegate_names.iter().collect();
     sorted_delegates.sort();
-    for dname in &sorted_delegates {
-        let module = to_snake_case_filename(dname);
-        out.push_str(&format!(
-            "from .{module} import IID_{dname}, {dname}_PARAM_TYPES  # noqa: F401\n",
-        ));
+    for identity in &sorted_delegates {
+        let module = context.implementation_module(identity);
+        let dname = context.projected_name(identity);
+        let reference_name = context.reference_name(identity);
+        let imports = if dname == reference_name {
+            format!("IID_{dname}, {dname}_PARAM_TYPES")
+        } else {
+            format!(
+                "IID_{dname} as IID_{reference_name}, \
+                 {dname}_PARAM_TYPES as {reference_name}_PARAM_TYPES"
+            )
+        };
+        out.push_str(&format!("from .{module} import {imports}  # noqa: F401\n",));
     }
 
     let imports = collect_type_imports(class);
@@ -569,46 +643,74 @@ pub fn generate_class_stub(
     sorted_imports
         .sort_by(|a, b| (&a.namespace, &a.name, &a.kind).cmp(&(&b.namespace, &b.name, &b.kind)));
     for r in &sorted_imports {
-        if known_types.contains(&r.name) && !delegate_names.contains(&r.name) {
-            out.push_str(&format_py_type_import(&r.namespace, &r.name, r.kind));
-            imported_names.insert(r.name.clone());
+        let identity_kind = match r.kind {
+            TypeKind::Class => crate::types::TypeIdentityKind::Class,
+            TypeKind::Enum => crate::types::TypeIdentityKind::Enum,
+            TypeKind::Interface => crate::types::TypeIdentityKind::Interface,
+        };
+        let identity = context.normalize_identity(&crate::types::TypeIdentity::named(
+            identity_kind,
+            r.namespace.clone(),
+            r.name.clone(),
+        ));
+        if context.is_known_ref(r) && !delegate_names.contains(&identity) {
+            out.push_str(&format_py_type_import(
+                context,
+                &r.namespace,
+                &r.name,
+                r.kind,
+            ));
+            let reference_name = context.reference_name(&identity);
+            imported_names.insert(reference_name.clone());
             if r.kind == TypeKind::Interface {
-                imported_names.insert(format!("IID_{}", r.name));
+                imported_names.insert(format!("IID_{reference_name}"));
             }
         }
     }
     let base_identity = class
         .base_class
         .as_ref()
-        .filter(|base| known_types.contains(&base.name))
+        .filter(|base| context.is_known_ref(base))
         .map(|base| {
+            let identity = crate::types::TypeIdentity::named(
+                crate::types::TypeIdentityKind::Class,
+                base.namespace.clone(),
+                base.name.clone(),
+            );
+            let name = context.reference_name(&identity);
             out.push_str(&format!(
                 "from .{} import _{}Identity  # noqa: F401\n",
-                python_module_name(&base.namespace, &base.name),
-                base.name
+                context.implementation_module(&identity),
+                name
             ));
-            format!("_{}Identity", base.name)
+            format!("_{name}Identity")
         });
     for req_iface in &class.required_interfaces {
+        let symbol = interface_symbol(context, req_iface);
         if req_iface.generic_piid.is_none()
             && !req_iface.iid.is_empty()
             && shared_iids.contains(&req_iface.iid)
-            && !imported_names.contains(&req_iface.name)
+            && !imported_names.contains(&symbol)
         {
             out.push_str(&format_py_type_import(
+                context,
                 &req_iface.namespace,
                 &req_iface.name,
                 TypeKind::Interface,
             ));
-            imported_names.insert(req_iface.name.clone());
-            imported_names.insert(format!("IID_{}", req_iface.name));
+            imported_names.insert(symbol.clone());
+            imported_names.insert(format!("IID_{symbol}"));
         }
     }
     if let Some(bootstrap) = winui_bootstrap {
         let metadata_provider = bootstrap.spec.metadata_provider;
         out.push_str(&format!(
             "from .{} import {}  # noqa: F401\n",
-            python_module_name(metadata_provider.namespace, metadata_provider.name),
+            context.implementation_module_for_named(
+                crate::types::TypeIdentityKind::Class,
+                metadata_provider.namespace,
+                metadata_provider.name,
+            ),
             metadata_provider.name,
         ));
     }
@@ -620,7 +722,7 @@ pub fn generate_class_stub(
     // IID constants (declarations only)
     let mut declared_iids = HashSet::new();
     for iface in class.all_interfaces() {
-        let iid_name = format!("IID_{}", iface.name);
+        let iid_name = format!("IID_{}", interface_symbol(context, iface));
         if !iface.iid.is_empty()
             && !imported_names.contains(&iid_name)
             && declared_iids.insert(iid_name.clone())
@@ -630,9 +732,9 @@ pub fn generate_class_stub(
     }
     out.push('\n');
 
-    if !python_module_layout_installed() {
+    if !context.is_packaged() {
         for s in &used_structs {
-            out.push_str(&emit_struct_stub(s));
+            out.push_str(&emit_struct_stub(context, s));
             out.push('\n');
         }
     }
@@ -643,24 +745,18 @@ pub fn generate_class_stub(
             [element] => Some(format!(
                 "{}[{}]",
                 abc,
-                super::type_helpers::py_return_type_safe(Some(element), known_types)
+                super::type_helpers::py_return_type_safe(Some(element), context)
             )),
             [key, value] => Some(format!(
                 "{}[{}, {}]",
                 abc,
-                super::type_helpers::py_return_type_safe(Some(key), known_types),
-                super::type_helpers::py_return_type_safe(Some(value), known_types)
+                super::type_helpers::py_return_type_safe(Some(key), context),
+                super::type_helpers::py_return_type_safe(Some(value), context)
             )),
             _ => None,
         });
-    let instance_stub_body = emit_class_instance_stubs(
-        class,
-        known_types,
-        &delegate_names,
-        collection_iface,
-        false,
-        has_closable,
-    );
+    let instance_stub_body =
+        emit_class_instance_stubs(class, context, collection_iface, false, has_closable);
     let identity_name = format!("_{}Identity", class.name);
     let mut identity_bases = base_identity.into_iter().collect::<Vec<_>>();
     identity_bases.push("Protocol".into());
@@ -713,12 +809,11 @@ pub fn generate_class_stub(
         },
         "    ",
     ));
-    out.push_str(&emit_constructor_stubs(class, known_types, &delegate_names));
+    out.push_str(&emit_constructor_stubs(class, context));
     if collection_base.is_some() {
         out.push_str(&emit_class_instance_stubs(
             class,
-            known_types,
-            &delegate_names,
+            context,
             collection_iface,
             collection_kind == Some(CollectionKind::MutableSequence),
             has_closable,
@@ -759,18 +854,12 @@ pub fn generate_class_stub(
         .collect::<Vec<_>>();
     for group in grouped_static_stubs(&static_methods) {
         out.push('\n');
-        out.push_str(&emit_static_stub_group(
-            &class.name,
-            &group,
-            known_types,
-            delegate_type_names,
-        ));
+        out.push_str(&emit_static_stub_group(&class.name, &group, context));
     }
     out.push_str(&emit_static_compatibility_alias_stubs(
         &class.name,
         static_methods.iter().copied(),
-        known_types,
-        delegate_type_names,
+        context,
         4,
     ));
 
@@ -820,7 +909,8 @@ pub fn generate_class_stub(
         if req_iface.iid.is_empty() {
             continue;
         }
-        if imported_names.contains(&req_iface.name) {
+        let symbol = interface_symbol(context, req_iface);
+        if imported_names.contains(&symbol) {
             continue;
         }
         out.push('\n');
@@ -830,23 +920,23 @@ pub fn generate_class_stub(
                 [element] => Some(format!(
                     "{}[{}]",
                     abc,
-                    super::type_helpers::py_return_type_safe(Some(element), known_types)
+                    super::type_helpers::py_return_type_safe(Some(element), context)
                 )),
                 [key, value] => Some(format!(
                     "{}[{}, {}]",
                     abc,
-                    super::type_helpers::py_return_type_safe(Some(key), known_types),
-                    super::type_helpers::py_return_type_safe(Some(value), known_types)
+                    super::type_helpers::py_return_type_safe(Some(key), context),
+                    super::type_helpers::py_return_type_safe(Some(value), context)
                 )),
                 _ => None,
             });
         if let Some(base) = required_base {
-            out.push_str(&format!("\nclass {}({base}):\n", req_iface.name));
+            out.push_str(&format!("\nclass {symbol}({base}):\n"));
         } else {
-            out.push_str(&format!("\nclass {}:\n", req_iface.name));
+            out.push_str(&format!("\nclass {symbol}:\n"));
         }
         out.push_str("    def __init__(self, obj: DynWinRTValue) -> None: ...\n");
-        out.push_str(&collection_protocol_stubs(req_iface, known_types, 4));
+        out.push_str(&collection_protocol_stubs(req_iface, context, 4));
         out.push('\n');
         out.push_str("    @classmethod\n");
         out.push_str("    def from_value(cls, obj: DynWinRTValue) -> Self: ...\n");
@@ -876,8 +966,7 @@ pub fn generate_class_stub(
             out.push('\n');
             out.push_str(&emit_instance_stub_group(
                 &methods,
-                known_types,
-                &delegate_names,
+                context,
                 4,
                 event_has_remove,
                 property_has_getter,
@@ -886,8 +975,7 @@ pub fn generate_class_stub(
         }
         out.push_str(&emit_instance_compatibility_alias_stubs(
             req_iface.methods.iter(),
-            known_types,
-            &delegate_names,
+            context,
             4,
             interface_kind(req_iface) == Some(CollectionKind::MutableSequence),
         ));
@@ -899,15 +987,14 @@ pub fn generate_class_stub(
 
 fn emit_class_instance_stubs(
     class: &ClassMeta,
-    known_types: &HashSet<String>,
-    delegate_names: &HashSet<String>,
+    context: &PythonProjectionContext,
     collection_iface: Option<&InterfaceMeta>,
     mutable_sequence_override: bool,
     has_closable: bool,
 ) -> String {
     let mut out = String::new();
     if let Some(collection_iface) = collection_iface {
-        out.push_str(&collection_protocol_stubs(collection_iface, known_types, 4));
+        out.push_str(&collection_protocol_stubs(collection_iface, context, 4));
     }
 
     let instance_ifaces = class
@@ -993,8 +1080,7 @@ fn emit_class_instance_stubs(
         out.push('\n');
         out.push_str(&emit_instance_stub_group(
             &methods,
-            known_types,
-            delegate_names,
+            context,
             4,
             event_has_remove,
             property_has_getter,
@@ -1003,8 +1089,7 @@ fn emit_class_instance_stubs(
     }
     out.push_str(&emit_instance_compatibility_alias_stubs(
         original_instance_methods.iter().copied(),
-        known_types,
-        delegate_names,
+        context,
         4,
         mutable_sequence_override,
     ));
@@ -1052,7 +1137,7 @@ fn emit_class_instance_stubs(
 
 fn collection_protocol_stubs(
     iface: &InterfaceMeta,
-    known_types: &HashSet<String>,
+    context: &PythonProjectionContext,
     indent_spaces: usize,
 ) -> String {
     let Some(kind) = interface_kind(iface) else {
@@ -1062,7 +1147,7 @@ fn collection_protocol_stubs(
     let item_type = iface
         .generic_args
         .first()
-        .map(|typ| super::type_helpers::py_return_type_safe(Some(typ), known_types))
+        .map(|typ| super::type_helpers::py_return_type_safe(Some(typ), context))
         .unwrap_or_else(|| "object".to_string());
     match kind {
         super::collections::CollectionKind::Iterable => {
@@ -1097,7 +1182,7 @@ fn collection_protocol_stubs(
             let value_type = iface
                 .generic_args
                 .get(1)
-                .map(|typ| super::type_helpers::py_return_type_safe(Some(typ), known_types))
+                .map(|typ| super::type_helpers::py_return_type_safe(Some(typ), context))
                 .unwrap_or_else(|| "object".to_string());
             let mut result = format!(
                 "\n{indent}def __len__(self) -> int: ...\n\
@@ -1116,11 +1201,7 @@ fn collection_protocol_stubs(
     }
 }
 
-fn emit_constructor_stubs(
-    class: &ClassMeta,
-    known_types: &HashSet<String>,
-    delegate_type_names: &HashSet<String>,
-) -> String {
+fn emit_constructor_stubs(class: &ClassMeta, context: &PythonProjectionContext) -> String {
     // Collect (public_params_only, ...) for each accessible constructor.
     // Composable factories: strip trailing outer + skip ProtectedComposition.
     let mut overloads: Vec<Vec<&crate::meta::ParamMeta>> = Vec::new();
@@ -1217,8 +1298,7 @@ fn emit_constructor_stubs(
         if count > 1 {
             out.push_str("    @overload\n");
         }
-        let param_str =
-            super::type_helpers::py_param_list(params, known_types, delegate_type_names);
+        let param_str = super::type_helpers::py_param_list(params, context);
         if param_str.is_empty() {
             out.push_str("    def __init__(self) -> None: ...\n");
         } else {
@@ -1289,8 +1369,7 @@ fn has_constructor_stub_overload(class: &ClassMeta) -> bool {
 
 fn emit_instance_stub_group(
     methods: &[&MethodMeta],
-    known_types: &HashSet<String>,
-    delegate_type_names: &HashSet<String>,
+    context: &PythonProjectionContext,
     indent_spaces: usize,
     event_has_remove: bool,
     property_has_getter: bool,
@@ -1303,8 +1382,7 @@ fn emit_instance_stub_group(
     if ordered_methods.len() == 1 {
         return emit_method_stub(
             ordered_methods[0],
-            known_types,
-            delegate_type_names,
+            context,
             indent_spaces,
             event_has_remove,
             property_has_getter,
@@ -1321,8 +1399,7 @@ fn emit_instance_stub_group(
                 "{indent}@overload\n{}",
                 emit_method_stub_named(
                     method,
-                    known_types,
-                    delegate_type_names,
+                    context,
                     indent_spaces,
                     Some(&public_name),
                     event_has_remove,
@@ -1336,8 +1413,7 @@ fn emit_instance_stub_group(
 
 fn emit_instance_compatibility_alias_stubs<'a>(
     methods: impl IntoIterator<Item = &'a MethodMeta>,
-    known_types: &HashSet<String>,
-    delegate_type_names: &HashSet<String>,
+    context: &PythonProjectionContext,
     indent_spaces: usize,
     overrides_mutable_sequence: bool,
 ) -> String {
@@ -1357,8 +1433,7 @@ fn emit_instance_compatibility_alias_stubs<'a>(
             }
             out.push_str(&emit_method_stub_named(
                 method,
-                known_types,
-                delegate_type_names,
+                context,
                 indent_spaces,
                 Some(&legacy),
                 false,
@@ -1373,8 +1448,7 @@ fn emit_instance_compatibility_alias_stubs<'a>(
 fn emit_static_compatibility_alias_stubs<'a>(
     class_name: &str,
     methods: impl IntoIterator<Item = (&'a MethodMeta, bool)>,
-    known_types: &HashSet<String>,
-    delegate_type_names: &HashSet<String>,
+    context: &PythonProjectionContext,
     indent_spaces: usize,
 ) -> String {
     let methods = methods.into_iter().collect::<Vec<_>>();
@@ -1394,9 +1468,8 @@ fn emit_static_compatibility_alias_stubs<'a>(
             out.push_str(&emit_static_method_stub_named(
                 class_name,
                 method,
-                known_types,
+                context,
                 *is_factory,
-                delegate_type_names,
                 Some(&legacy),
             ));
         }
@@ -1423,8 +1496,7 @@ fn grouped_static_stubs<'a>(
 fn emit_static_stub_group(
     class_name: &str,
     methods: &[(&MethodMeta, bool)],
-    known_types: &HashSet<String>,
-    delegate_type_names: &HashSet<String>,
+    context: &PythonProjectionContext,
 ) -> String {
     let mut ordered_methods = methods.iter().copied().collect::<Vec<_>>();
     ordered_methods.sort_by(|(left, _), (right, _)| {
@@ -1433,13 +1505,7 @@ fn emit_static_stub_group(
 
     if ordered_methods.len() == 1 {
         let (method, is_factory) = ordered_methods[0];
-        return emit_static_method_stub(
-            class_name,
-            method,
-            known_types,
-            is_factory,
-            delegate_type_names,
-        );
+        return emit_static_method_stub(class_name, method, context, is_factory);
     }
     let names = super::overloads::method_names(ordered_methods.iter().map(|(method, _)| *method));
     let public_name = super::overloads::method_group_key(ordered_methods[0].0, &names);
@@ -1451,9 +1517,8 @@ fn emit_static_stub_group(
                 emit_static_method_stub_named(
                     class_name,
                     method,
-                    known_types,
+                    context,
                     *is_factory,
-                    delegate_type_names,
                     Some(&public_name),
                 )
             )
@@ -1463,6 +1528,7 @@ fn emit_static_stub_group(
 
 /// Generate an `__init__.pyi` index stub.
 pub fn generate_index_stub(
+    context: &PythonProjectionContext,
     classes: &[ClassMeta],
     interfaces: &[InterfaceMeta],
     enums: &[TypeMeta],
@@ -1475,11 +1541,14 @@ pub fn generate_index_stub(
     sorted_classes.sort_by(|a, b| a.name.cmp(&b.name));
     for class in sorted_classes {
         if seen.insert(class.name.clone()) {
-            let module = python_module_name(&class.namespace, &class.name);
-            out.push_str(&format!(
-                "from .{} import {} as {}\n",
-                module, class.name, class.name
-            ));
+            let identity = crate::types::TypeIdentity::named(
+                crate::types::TypeIdentityKind::Class,
+                class.namespace.clone(),
+                class.name.clone(),
+            );
+            let module = context.implementation_module(&identity);
+            let name = context.projected_name(&identity);
+            out.push_str(&format!("from .{} import {} as {}\n", module, name, name));
         }
     }
 
@@ -1489,20 +1558,21 @@ pub fn generate_index_stub(
         if !seen.insert(iface.name.clone()) {
             continue;
         }
-        let is_delegate = iface.methods.iter().any(|m| m.name == ".ctor")
-            && iface.methods.iter().any(|m| m.name == "Invoke");
-        let module = python_module_name(&iface.namespace, &iface.name);
+        let is_delegate = iface.is_delegate();
+        let identity = iface.type_identity();
+        let module = context.implementation_module(&identity);
+        let name = context.projected_name(&identity);
         if is_delegate {
             out.push_str(&format!(
                 "from .{module} import IID_{iname}, {iname}_PARAM_TYPES\n",
                 module = module,
-                iname = iface.name
+                iname = name
             ));
         } else {
             out.push_str(&format!(
                 "from .{module} import IID_{iname}, {iname} as {iname}\n",
                 module = module,
-                iname = iface.name
+                iname = name
             ));
         }
     }
@@ -1520,12 +1590,11 @@ pub fn generate_index_stub(
         na.cmp(nb)
     });
     for en in sorted_enums {
-        if let TypeMeta::Enum {
-            namespace, name, ..
-        } = en
-        {
+        if let TypeMeta::Enum { name, .. } = en {
             if seen.insert(name.clone()) {
-                let module = python_module_name(namespace, name);
+                let identity = en.type_identity();
+                let module = context.implementation_module(&identity);
+                let name = context.projected_name(&identity);
                 out.push_str(&format!("from .{} import {} as {}\n", module, name, name));
             }
         }
@@ -1534,6 +1603,7 @@ pub fn generate_index_stub(
 }
 
 pub fn generate_public_index_stub(
+    context: &PythonProjectionContext,
     classes: &[ClassMeta],
     interfaces: &[InterfaceMeta],
     enums: &[TypeMeta],
@@ -1545,11 +1615,17 @@ pub fn generate_public_index_stub(
     classes.sort_by(|left, right| left.name.cmp(&right.name));
     for class in classes {
         if seen.insert(class.name.clone()) {
+            let identity = crate::types::TypeIdentity::named(
+                crate::types::TypeIdentityKind::Class,
+                class.namespace.clone(),
+                class.name.clone(),
+            );
+            let name = context.projected_name(&identity);
             out.push_str(&format!(
                 "from .{} import {} as {}\n",
-                python_public_qualified_module_name(&class.namespace, &class.name),
-                class.name,
-                class.name
+                context.public_qualified_module(&identity),
+                name,
+                name
             ));
         }
     }
@@ -1557,20 +1633,15 @@ pub fn generate_public_index_stub(
     let mut interfaces = interfaces.iter().collect::<Vec<_>>();
     interfaces.sort_by(|left, right| left.name.cmp(&right.name));
     for interface in interfaces {
-        let is_delegate = interface
-            .methods
-            .iter()
-            .any(|method| method.name == ".ctor")
-            && interface
-                .methods
-                .iter()
-                .any(|method| method.name == "Invoke");
+        let is_delegate = interface.is_delegate();
         if !is_delegate && seen.insert(interface.name.clone()) {
+            let identity = interface.type_identity();
+            let name = context.projected_name(&identity);
             out.push_str(&format!(
                 "from .{} import {} as {}\n",
-                python_public_qualified_module_name(&interface.namespace, &interface.name),
-                interface.name,
-                interface.name
+                context.public_qualified_module(&identity),
+                name,
+                name
             ));
         }
     }
@@ -1581,25 +1652,27 @@ pub fn generate_public_index_stub(
         _ => "",
     });
     for typ in enums {
-        let TypeMeta::Enum {
-            namespace, name, ..
-        } = typ
-        else {
+        let TypeMeta::Enum { name, .. } = typ else {
             continue;
         };
         if seen.insert(name.clone()) {
+            let identity = typ.type_identity();
+            let name = context.projected_name(&identity);
             out.push_str(&format!(
                 "from .{} import {} as {}\n",
-                python_public_qualified_module_name(namespace, name),
+                context.public_qualified_module(&identity),
                 name,
-                name
+                name,
             ));
         }
     }
     out
 }
 
-pub fn generate_struct_index_stub(structs: &[TypeMeta]) -> String {
+pub fn generate_struct_index_stub(
+    context: &PythonProjectionContext,
+    structs: &[TypeMeta],
+) -> String {
     let mut out = String::from(HEADER);
     let mut seen = HashSet::new();
     let mut sorted = structs.iter().collect::<Vec<_>>();
@@ -1621,7 +1694,7 @@ pub fn generate_struct_index_stub(structs: &[TypeMeta]) -> String {
         }
         out.push_str(&format!(
             "from .{} import {}\n",
-            python_module_name(namespace, name),
+            context.implementation_module_for_type(typ),
             py_struct_export_names(typ)
                 .into_iter()
                 .map(|name| format!("{name} as {name}"))
@@ -1632,7 +1705,10 @@ pub fn generate_struct_index_stub(structs: &[TypeMeta]) -> String {
     out
 }
 
-pub fn generate_public_struct_index_stub(structs: &[TypeMeta]) -> String {
+pub fn generate_public_struct_index_stub(
+    context: &PythonProjectionContext,
+    structs: &[TypeMeta],
+) -> String {
     let mut out = String::from(HEADER);
     let mut seen = HashSet::new();
     let mut sorted = structs.iter().collect::<Vec<_>>();
@@ -1654,7 +1730,7 @@ pub fn generate_public_struct_index_stub(structs: &[TypeMeta]) -> String {
         }
         out.push_str(&format!(
             "from .{} import {} as {}\n",
-            python_public_qualified_module_name(namespace, name),
+            context.public_qualified_module(&typ.type_identity()),
             name,
             name
         ));

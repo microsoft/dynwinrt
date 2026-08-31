@@ -27,19 +27,19 @@ fn struct_runtime_import_names(s: &TypeMeta) -> Vec<String> {
     names
 }
 
-pub(super) fn generate_struct_imports(structs: &[TypeMeta]) -> String {
+pub(super) fn generate_struct_imports(
+    context: &PythonProjectionContext,
+    structs: &[TypeMeta],
+) -> String {
     let mut imports = structs
         .iter()
         .filter_map(|typ| {
-            let TypeMeta::Struct {
-                namespace, name, ..
-            } = typ
-            else {
+            let TypeMeta::Struct { .. } = typ else {
                 return None;
             };
             Some(format!(
                 "from .{} import {}  # noqa: F401\n",
-                python_module_name(namespace, name),
+                context.implementation_module_for_type(typ),
                 struct_runtime_import_names(typ).join(", ")
             ))
         })
@@ -49,7 +49,7 @@ pub(super) fn generate_struct_imports(structs: &[TypeMeta]) -> String {
     imports.concat()
 }
 
-pub fn generate_struct(s: &TypeMeta) -> Option<String> {
+pub fn generate_struct(context: &PythonProjectionContext, s: &TypeMeta) -> Option<String> {
     let TypeMeta::Struct { name, .. } = s else {
         return None;
     };
@@ -63,7 +63,7 @@ pub fn generate_struct(s: &TypeMeta) -> Option<String> {
     out.push_str(IMPORT_LINE);
 
     let dependencies = collect_used_structs_from_struct(s);
-    out.push_str(&generate_struct_imports(&dependencies));
+    out.push_str(&generate_struct_imports(context, &dependencies));
     if has_ireference_struct_field(std::slice::from_ref(s)) {
         out.push_str(IREFERENCE_HELPER);
     }
@@ -71,21 +71,34 @@ pub fn generate_struct(s: &TypeMeta) -> Option<String> {
 
     let mut type_checking_imports = collect_struct_field_type_imports(s)
         .into_iter()
-        .map(|type_ref| format_py_type_import(&type_ref.namespace, &type_ref.name, type_ref.kind))
+        .map(|type_ref| {
+            format_py_type_import(context, &type_ref.namespace, &type_ref.name, type_ref.kind)
+        })
         .collect::<Vec<_>>();
-    type_checking_imports.extend(collect_used_generics_from_type(s).into_iter().map(|name| {
-        format!(
-            "from .{} import {}  # noqa: F401\n",
-            to_snake_case_filename(&name),
-            name
-        )
-    }));
+    type_checking_imports.extend(
+        collect_used_generic_identities_from_type(s)
+            .into_iter()
+            .map(|identity| {
+                let identity = context.normalize_identity(&identity);
+                let name = context.projected_name(&identity);
+                let reference_name = context.reference_name(&identity);
+                let import = if name == reference_name {
+                    name
+                } else {
+                    format!("{name} as {reference_name}")
+                };
+                format!(
+                    "from .{} import {import}  # noqa: F401\n",
+                    context.implementation_module(&identity),
+                )
+            }),
+    );
     emit_type_checking_imports(&mut out, type_checking_imports);
-    out.push_str(&generate_struct_helpers(s));
+    out.push_str(&generate_struct_helpers(context, s));
     Some(out)
 }
 
-pub(super) fn generate_struct_helpers(s: &TypeMeta) -> String {
+pub(super) fn generate_struct_helpers(context: &PythonProjectionContext, s: &TypeMeta) -> String {
     if let Some(kind) = foundation_type(s) {
         return generate_foundation_struct_helpers(s, kind);
     }
@@ -121,8 +134,8 @@ pub(super) fn generate_struct_helpers(s: &TypeMeta) -> String {
                 format!(
                     "{}: {} = {}",
                     to_snake_case(&f.name),
-                    py_struct_constructor_field_type(&f.typ),
-                    py_default_value(&f.typ)
+                    py_struct_constructor_field_type(context, &f.typ),
+                    py_default_value(context, &f.typ)
                 )
             })
             .collect();
@@ -156,8 +169,8 @@ pub(super) fn generate_struct_helpers(s: &TypeMeta) -> String {
                  \x20   @{snake}.setter\n\
                  \x20   def {snake}(self, value: {write_type}) -> None:\n\
                  \x20       self._{snake} = _dynwinrt_unbox_reference(value)\n",
-                read_type = py_struct_field_read_type(&f.typ),
-                write_type = py_struct_field_type(&f.typ),
+                read_type = py_struct_field_read_type(context, &f.typ),
+                write_type = py_struct_field_type(context, &f.typ),
             ));
         }
     }
@@ -195,7 +208,7 @@ pub(super) fn generate_struct_helpers(s: &TypeMeta) -> String {
             format!(
                 "{}={}",
                 to_snake_case(&f.name),
-                py_struct_field_getter(&f.typ, i)
+                py_struct_field_getter(context, &f.typ, i)
             )
         })
         .collect();
@@ -334,7 +347,7 @@ fn generate_foundation_struct_helpers(s: &TypeMeta, kind: FoundationType) -> Str
 }
 
 /// Python default value for struct field initialization.
-pub(super) fn py_default_value(typ: &TypeMeta) -> String {
+pub(super) fn py_default_value(context: &PythonProjectionContext, typ: &TypeMeta) -> String {
     match foundation_type(typ) {
         Some(FoundationType::DateTime) => return "_dynwinrt_ticks_to_datetime(0)".to_string(),
         Some(FoundationType::TimeSpan) => return "timedelta(0)".to_string(),
@@ -351,11 +364,9 @@ pub(super) fn py_default_value(typ: &TypeMeta) -> String {
         | TypeMeta::U32
         | TypeMeta::I64
         | TypeMeta::U64 => "0".to_string(),
-        TypeMeta::Enum {
-            namespace, name, ..
-        } => format!(
+        TypeMeta::Enum { name, .. } => format!(
             "_dynwinrt_enum('{}', '{}', 0)",
-            python_module_name(namespace, name),
+            context.implementation_module_for_type(typ),
             name
         ),
         TypeMeta::Char16 => "'\\0'".to_string(),
@@ -367,12 +378,12 @@ pub(super) fn py_default_value(typ: &TypeMeta) -> String {
     }
 }
 
-fn py_struct_constructor_field_type(typ: &TypeMeta) -> String {
+fn py_struct_constructor_field_type(context: &PythonProjectionContext, typ: &TypeMeta) -> String {
     match typ {
         TypeMeta::Struct { name, .. } if foundation_type(typ).is_none() && name != "HResult" => {
-            py_optional_type(py_struct_field_type(typ))
+            py_optional_type(py_struct_field_type(context, typ))
         }
-        _ => py_struct_field_type(typ),
+        _ => py_struct_field_type(context, typ),
     }
 }
 

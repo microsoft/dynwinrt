@@ -1,9 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+mod common;
+
 use std::collections::HashSet;
 
-use dynwinrt_codegen::codegen::python_stub;
 use dynwinrt_codegen::meta::{ClassMeta, InterfaceMeta};
 
 #[test]
@@ -21,7 +22,7 @@ fn closable_context_manager_never_suppresses_exceptions() {
         ..Default::default()
     };
 
-    let stub = python_stub::generate_class_stub(
+    let stub = common::generate_class_stub(
         &class,
         &HashSet::from(["IClosable".into(), "Resource".into()]),
         &HashSet::new(),

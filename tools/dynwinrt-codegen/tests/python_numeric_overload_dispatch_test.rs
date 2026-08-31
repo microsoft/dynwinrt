@@ -1,9 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+mod common;
+
 use std::collections::HashSet;
 
-use dynwinrt_codegen::codegen::python_stub;
 use dynwinrt_codegen::meta::{ClassMeta, InterfaceMeta, MethodMeta, ParamDirection, ParamMeta};
 use dynwinrt_codegen::types::TypeMeta;
 
@@ -41,7 +42,7 @@ fn python_numeric_overload_stubs_retain_typing_overload() {
     };
     let known = HashSet::from(["Reader".into()]);
 
-    let pyi = python_stub::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
+    let pyi = common::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
 
     assert!(pyi.contains("overload, timedelta"));
     assert_eq!(pyi.matches("    @overload\n").count(), 2);

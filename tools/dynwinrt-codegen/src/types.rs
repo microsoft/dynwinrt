@@ -2,11 +2,207 @@
 // Licensed under the MIT License.
 
 /// The kind of a named WinRT type reference.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Deserialize, serde::Serialize,
+)]
+#[serde(rename_all = "snake_case")]
 pub enum TypeKind {
     Class,
     Enum,
     Interface,
+}
+
+/// The semantic kind of a projected WinRT type.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Deserialize, serde::Serialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum TypeIdentityKind {
+    Class,
+    Delegate,
+    Enum,
+    Interface,
+    Struct,
+}
+
+/// Canonical identity for a WinRT type, including recursively closed generics.
+///
+/// Projection names are deliberately not part of this model. Language
+/// projections may derive readable symbols and paths from this identity without
+/// weakening the namespace, kind, or nested generic argument identity used for
+/// lookup and collision handling.
+#[derive(
+    Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Deserialize, serde::Serialize,
+)]
+#[serde(tag = "shape", rename_all = "snake_case")]
+pub enum TypeIdentity {
+    Primitive {
+        name: String,
+    },
+    Named {
+        kind: TypeIdentityKind,
+        namespace: String,
+        name: String,
+    },
+    ClosedGeneric {
+        kind: TypeIdentityKind,
+        namespace: String,
+        name: String,
+        arguments: Vec<TypeIdentity>,
+    },
+    Array {
+        element: Box<TypeIdentity>,
+    },
+    AsyncAction,
+    AsyncActionWithProgress {
+        progress: Box<TypeIdentity>,
+    },
+    AsyncOperation {
+        result: Box<TypeIdentity>,
+    },
+    AsyncOperationWithProgress {
+        result: Box<TypeIdentity>,
+        progress: Box<TypeIdentity>,
+    },
+}
+
+impl TypeIdentity {
+    pub fn named(
+        kind: TypeIdentityKind,
+        namespace: impl Into<String>,
+        name: impl Into<String>,
+    ) -> Self {
+        Self::Named {
+            kind,
+            namespace: namespace.into(),
+            name: name.into(),
+        }
+    }
+
+    pub fn closed_generic(
+        kind: TypeIdentityKind,
+        namespace: impl Into<String>,
+        name: impl Into<String>,
+        arguments: impl IntoIterator<Item = TypeIdentity>,
+    ) -> Self {
+        Self::ClosedGeneric {
+            kind,
+            namespace: namespace.into(),
+            name: name
+                .into()
+                .split('`')
+                .next()
+                .unwrap_or_default()
+                .to_string(),
+            arguments: arguments.into_iter().collect(),
+        }
+    }
+
+    pub fn kind(&self) -> Option<TypeIdentityKind> {
+        match self {
+            Self::Named { kind, .. } | Self::ClosedGeneric { kind, .. } => Some(*kind),
+            _ => None,
+        }
+    }
+
+    pub fn namespace(&self) -> Option<&str> {
+        match self {
+            Self::Named { namespace, .. } | Self::ClosedGeneric { namespace, .. } => {
+                Some(namespace)
+            }
+            _ => None,
+        }
+    }
+
+    pub fn definition_name(&self) -> Option<&str> {
+        match self {
+            Self::Named { name, .. } | Self::ClosedGeneric { name, .. } => Some(name),
+            _ => None,
+        }
+    }
+
+    pub fn with_kind(&self, kind: TypeIdentityKind) -> Self {
+        match self {
+            Self::Named {
+                namespace, name, ..
+            } => Self::named(kind, namespace.clone(), name.clone()),
+            Self::ClosedGeneric {
+                namespace,
+                name,
+                arguments,
+                ..
+            } => Self::closed_generic(
+                kind,
+                namespace.clone(),
+                name.clone(),
+                arguments.iter().cloned(),
+            ),
+            _ => self.clone(),
+        }
+    }
+
+    /// Stable, unambiguous text used only as hash input and diagnostics.
+    pub fn canonical_key(&self) -> String {
+        fn atom(value: &str) -> String {
+            format!("{}:{value}", value.len())
+        }
+
+        fn append(identity: &TypeIdentity, out: &mut String) {
+            match identity {
+                TypeIdentity::Primitive { name } => {
+                    out.push_str("p");
+                    out.push_str(&atom(name));
+                }
+                TypeIdentity::Named {
+                    kind,
+                    namespace,
+                    name,
+                } => {
+                    out.push_str("n");
+                    out.push_str(&format!("{kind:?}:"));
+                    out.push_str(&atom(namespace));
+                    out.push_str(&atom(name));
+                }
+                TypeIdentity::ClosedGeneric {
+                    kind,
+                    namespace,
+                    name,
+                    arguments,
+                } => {
+                    out.push_str("g");
+                    out.push_str(&format!("{kind:?}:"));
+                    out.push_str(&atom(namespace));
+                    out.push_str(&atom(name));
+                    out.push_str(&format!("{}:", arguments.len()));
+                    for argument in arguments {
+                        append(argument, out);
+                    }
+                }
+                TypeIdentity::Array { element } => {
+                    out.push('a');
+                    append(element, out);
+                }
+                TypeIdentity::AsyncAction => out.push_str("async-action"),
+                TypeIdentity::AsyncActionWithProgress { progress } => {
+                    out.push_str("async-action-progress");
+                    append(progress, out);
+                }
+                TypeIdentity::AsyncOperation { result } => {
+                    out.push_str("async-operation");
+                    append(result, out);
+                }
+                TypeIdentity::AsyncOperationWithProgress { result, progress } => {
+                    out.push_str("async-operation-progress");
+                    append(result, out);
+                    append(progress, out);
+                }
+            }
+        }
+
+        let mut result = String::new();
+        append(self, &mut result);
+        result
+    }
 }
 
 /// A reference to a named WinRT type (namespace + name + kind).
@@ -104,6 +300,72 @@ pub struct EnumMember {
 }
 
 impl TypeMeta {
+    /// Return the canonical semantic identity represented by this metadata type.
+    pub fn type_identity(&self) -> TypeIdentity {
+        let primitive = |name: &str| TypeIdentity::Primitive {
+            name: name.to_string(),
+        };
+        match self {
+            Self::Bool => primitive("Boolean"),
+            Self::I8 => primitive("Int8"),
+            Self::U8 => primitive("UInt8"),
+            Self::I16 => primitive("Int16"),
+            Self::U16 => primitive("UInt16"),
+            Self::I32 => primitive("Int32"),
+            Self::U32 => primitive("UInt32"),
+            Self::I64 => primitive("Int64"),
+            Self::U64 => primitive("UInt64"),
+            Self::F32 => primitive("Single"),
+            Self::F64 => primitive("Double"),
+            Self::Char16 => primitive("Char16"),
+            Self::String => primitive("String"),
+            Self::Guid => primitive("Guid"),
+            Self::Object => primitive("Object"),
+            Self::Interface {
+                namespace, name, ..
+            } => TypeIdentity::named(TypeIdentityKind::Interface, namespace, name),
+            Self::RuntimeClass {
+                namespace, name, ..
+            } => TypeIdentity::named(TypeIdentityKind::Class, namespace, name),
+            Self::Delegate {
+                namespace, name, ..
+            } => TypeIdentity::named(TypeIdentityKind::Delegate, namespace, name),
+            Self::Parameterized {
+                namespace,
+                name,
+                args,
+                ..
+            } => TypeIdentity::closed_generic(
+                TypeIdentityKind::Interface,
+                namespace,
+                name,
+                args.iter().map(TypeMeta::type_identity),
+            ),
+            Self::Array(element) => TypeIdentity::Array {
+                element: Box::new(element.type_identity()),
+            },
+            Self::Struct {
+                namespace, name, ..
+            } => TypeIdentity::named(TypeIdentityKind::Struct, namespace, name),
+            Self::Enum {
+                namespace, name, ..
+            } => TypeIdentity::named(TypeIdentityKind::Enum, namespace, name),
+            Self::AsyncAction => TypeIdentity::AsyncAction,
+            Self::AsyncActionWithProgress(progress) => TypeIdentity::AsyncActionWithProgress {
+                progress: Box::new(progress.type_identity()),
+            },
+            Self::AsyncOperation(result) => TypeIdentity::AsyncOperation {
+                result: Box::new(result.type_identity()),
+            },
+            Self::AsyncOperationWithProgress(result, progress) => {
+                TypeIdentity::AsyncOperationWithProgress {
+                    result: Box::new(result.type_identity()),
+                    progress: Box::new(progress.type_identity()),
+                }
+            }
+        }
+    }
+
     /// Returns true if this type represents an async operation.
     pub fn is_async(&self) -> bool {
         matches!(

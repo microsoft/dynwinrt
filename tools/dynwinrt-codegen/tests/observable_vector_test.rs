@@ -1,9 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+mod common;
+
 use std::collections::{HashMap, HashSet};
 
-use dynwinrt_codegen::codegen::{project, python, python_stub, render_dts, render_js};
+use dynwinrt_codegen::codegen::{project, render_dts, render_js};
 use dynwinrt_codegen::meta::{InterfaceMeta, MethodMeta, ParamDirection, ParamMeta};
 use dynwinrt_codegen::types::TypeMeta;
 
@@ -91,7 +93,7 @@ fn observable_vector_projects_python_mutable_sequence_and_typed_events() {
     ]);
     let delegate_types = HashSet::from(["VectorChangedEventHandler_Object".into()]);
 
-    let py = python::generate_interface(&interface, &known_types, &delegate_types);
+    let py = common::generate_interface(&interface, &known_types, &delegate_types);
     assert!(py.contains(
         "class IObservableVector_Object(_dynwinrt_symbol('i_vector_object', 'IVector_Object')):"
     ));
@@ -108,14 +110,16 @@ fn observable_vector_projects_python_mutable_sequence_and_typed_events() {
     assert!(py.contains("_dynwinrt_create_delegate("));
     assert!(py.contains("_IObservableVector_Object.method(6).invoke(self._observable_obj"));
 
-    let pyi = python_stub::generate_interface_stub(&interface, &known_types, &delegate_types);
+    let pyi = common::generate_interface_stub(&interface, &known_types, &delegate_types);
     assert!(
         pyi.contains(
             "class IObservableVector_Object(_IObservableVector_ObjectIdentity, MutableSequence[DynWinRTValue | None]):"
         ),
         "{pyi}"
     );
-    assert!(pyi.contains("from .i_vector_changed_event_args import IVectorChangedEventArgs"));
+    assert!(pyi.contains(
+        "from .windows__foundation__collections__i_vector_changed_event_args import IVectorChangedEventArgs"
+    ));
     assert!(pyi.contains("def as_vector(self) -> 'IVector_Object': ..."));
     assert!(pyi.contains("def on_vector_changed(self, callback: Callable[["));
 }
@@ -161,7 +165,7 @@ fn generic_delegate_iid_uses_declared_type_arguments() {
     };
     let projected = project::project_delegate(&interface, &HashMap::new(), &HashMap::new());
     let js = render_js::render(&projected);
-    let py = python::generate_interface(
+    let py = common::generate_interface(
         &interface,
         &HashSet::new(),
         &HashSet::from(["VectorChangedEventHandler_Object".into()]),

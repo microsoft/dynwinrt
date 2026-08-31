@@ -1,9 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+mod common;
+
 use std::collections::HashSet;
 
-use dynwinrt_codegen::codegen::{python, python_stub};
 use dynwinrt_codegen::meta::{ClassMeta, InterfaceMeta, MethodMeta, ParamDirection, ParamMeta};
 use dynwinrt_codegen::types::TypeMeta;
 
@@ -51,8 +52,8 @@ fn versioned_setter_uses_main_property_but_standalone_set_method() {
     };
     let known = HashSet::from(["Widget".into()]);
 
-    let py = python::generate_class(&class, &known, &HashSet::new(), &HashSet::new());
-    let pyi = python_stub::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
+    let py = common::generate_class(&class, &known, &HashSet::new(), &HashSet::new());
+    let pyi = common::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
 
     let inline_py = py
         .split("class IWidget2:")
@@ -115,8 +116,8 @@ fn cross_interface_getter_is_emitted_before_an_earlier_setter() {
     };
     let known = HashSet::from(["Widget".into()]);
 
-    let py = python::generate_class(&class, &known, &HashSet::new(), &HashSet::new());
-    let pyi = python_stub::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
+    let py = common::generate_class(&class, &known, &HashSet::new(), &HashSet::new());
+    let pyi = common::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
 
     assert!(
         py.find("    @_property\n    def value")

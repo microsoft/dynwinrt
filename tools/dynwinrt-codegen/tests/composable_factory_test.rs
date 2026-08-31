@@ -1,9 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+mod common;
+
 use std::collections::{HashMap, HashSet};
 
-use dynwinrt_codegen::codegen::{javascript, project, python, python_stub, render_dts, render_js};
+use dynwinrt_codegen::codegen::{javascript, project, render_dts, render_js};
 use dynwinrt_codegen::meta::{
     ClassMeta, ConstructorKind, ConstructorMeta, InterfaceMeta, MethodMeta, ParamDirection,
     ParamMeta,
@@ -109,13 +111,13 @@ fn composable_factory_returns_public_instance() {
         "factory declaration must return the runtime class:\n{dts}"
     );
 
-    let py = python::generate_class(
+    let py = common::generate_class(
         &class,
         &HashSet::from(["Widget".into()]),
         &HashSet::new(),
         &HashSet::new(),
     );
-    let pyi = python_stub::generate_class_stub(
+    let pyi = common::generate_class_stub(
         &class,
         &HashSet::from(["Widget".into()]),
         &HashSet::new(),
@@ -174,7 +176,7 @@ fn composable_factory_returns_public_instance() {
             factory_interface: None,
         },
     );
-    let duplicate_py = python::generate_class(
+    let duplicate_py = common::generate_class(
         &duplicate_signature,
         &HashSet::from(["Widget".into()]),
         &HashSet::new(),
@@ -195,7 +197,7 @@ fn composable_factory_returns_public_instance() {
             typ: TypeMeta::Object,
             direction: ParamDirection::In,
         });
-    let unsupported_py = python::generate_class(
+    let unsupported_py = common::generate_class(
         &unsupported_override,
         &HashSet::from(["Widget".into()]),
         &HashSet::new(),
@@ -222,13 +224,13 @@ fn composable_factory_returns_public_instance() {
     assert!(protected_dts.contains("private constructor();"));
     assert!(protected_dts.contains("static createInstance(outer: unknown): Widget;"));
 
-    let protected_py = python::generate_class(
+    let protected_py = common::generate_class(
         &protected,
         &HashSet::from(["Widget".into()]),
         &HashSet::new(),
         &HashSet::new(),
     );
-    let protected_pyi = python_stub::generate_class_stub(
+    let protected_pyi = common::generate_class_stub(
         &protected,
         &HashSet::from(["Widget".into()]),
         &HashSet::new(),
@@ -284,8 +286,8 @@ fn python_zero_arg_create_instance_gets_typed_create_alias() {
     };
     let known = HashSet::from(["Widget".into()]);
 
-    let py = python::generate_class(&class, &known, &HashSet::new(), &HashSet::new());
-    let pyi = python_stub::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
+    let py = common::generate_class(&class, &known, &HashSet::new(), &HashSet::new());
+    let pyi = common::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
 
     assert!(py.contains("def create() -> 'Widget':"));
     assert!(py.contains("return Widget.create_instance()"));
@@ -455,7 +457,7 @@ fn parameterized_default_interface_uses_computed_iid() {
     assert!(dts.contains("getMany(startIndex: number, items: RowDefinition[]): RowDefinition[];"));
     assert!(dts.contains("replaceAll(items: RowDefinition[]): void;"));
 
-    let py = python::generate_class(
+    let py = common::generate_class(
         &class,
         &HashSet::from([
             "RowDefinition".into(),
@@ -569,13 +571,9 @@ fn winui_application_projects_fluent_bootstrap_helpers() {
     assert!(dts.contains("static create(onLaunched?: () => void): Application;"));
     assert!(dts.contains("private constructor();"));
 
-    let py = python::generate_class(&application, &known_types, &delegate_names, &HashSet::new());
-    let pyi = python_stub::generate_class_stub(
-        &application,
-        &known_types,
-        &delegate_names,
-        &HashSet::new(),
-    );
+    let py = common::generate_class(&application, &known_types, &delegate_names, &HashSet::new());
+    let pyi =
+        common::generate_class_stub(&application, &known_types, &delegate_names, &HashSet::new());
     assert!(py.contains("def create_with_metadata_provider("));
     assert!(py.contains("def create(on_launched: Callable[[], object] | None = None)"));
     assert!(
@@ -614,13 +612,9 @@ fn winui_application_without_extension_dependencies_has_no_bootstrap_helpers() {
     );
     let js = render_js::render(&projected);
     let dts = render_dts::render(&projected);
-    let py = python::generate_class(&application, &known_types, &HashSet::new(), &HashSet::new());
-    let pyi = python_stub::generate_class_stub(
-        &application,
-        &known_types,
-        &HashSet::new(),
-        &HashSet::new(),
-    );
+    let py = common::generate_class(&application, &known_types, &HashSet::new(), &HashSet::new());
+    let pyi =
+        common::generate_class_stub(&application, &known_types, &HashSet::new(), &HashSet::new());
 
     assert!(!js.contains("createWithMetadataProvider"));
     assert!(!dts.contains("createWithMetadataProvider"));

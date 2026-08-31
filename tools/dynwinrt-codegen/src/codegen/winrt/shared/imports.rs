@@ -8,7 +8,7 @@ use std::collections::HashSet;
 use std::sync::LazyLock;
 
 use crate::meta::{ClassMeta, InterfaceMeta, MethodMeta, ParamDirection};
-use crate::types::{TypeKind, TypeMeta, TypeRef};
+use crate::types::{TypeIdentity, TypeKind, TypeMeta, TypeRef};
 
 /// Empty set passed as `deferred` for codegen (no circular dep handling needed).
 pub(crate) static NO_DEFERRED: LazyLock<HashSet<String>> = LazyLock::new(HashSet::new);
@@ -34,70 +34,69 @@ pub(crate) fn ireference_inner_type(typ: &TypeMeta) -> Option<&TypeMeta> {
     }
 }
 
-/// Collect the set of known generic collection names used in method signatures.
-/// Returns e.g. ["IVectorView", "IMap"] for import generation.
-pub(crate) fn collect_used_generics_from_methods(methods: &[MethodMeta]) -> Vec<String> {
-    let refs: Vec<&MethodMeta> = methods.iter().collect();
-    collect_used_generics_from_methods_inner(&refs)
-}
-
-fn visit_used_generics(typ: &TypeMeta, names: &mut HashSet<String>) {
+fn visit_used_generic_identities(typ: &TypeMeta, identities: &mut HashSet<TypeIdentity>) {
     match typ {
-        TypeMeta::Parameterized { name, args, .. } => {
-            names.insert(crate::meta::make_parameterized_name(name, args));
-            for arg in args {
-                visit_used_generics(arg, names);
+        TypeMeta::Parameterized { args, .. } => {
+            identities.insert(typ.type_identity());
+            for argument in args {
+                visit_used_generic_identities(argument, identities);
             }
         }
         TypeMeta::AsyncOperation(inner) | TypeMeta::AsyncActionWithProgress(inner) => {
-            visit_used_generics(inner, names)
+            visit_used_generic_identities(inner, identities)
         }
-        TypeMeta::AsyncOperationWithProgress(r, p) => {
-            visit_used_generics(r, names);
-            visit_used_generics(p, names);
+        TypeMeta::AsyncOperationWithProgress(result, progress) => {
+            visit_used_generic_identities(result, identities);
+            visit_used_generic_identities(progress, identities);
         }
-        TypeMeta::Array(inner) => visit_used_generics(inner, names),
+        TypeMeta::Array(inner) => visit_used_generic_identities(inner, identities),
         TypeMeta::Struct { fields, .. } => {
             for field in fields {
-                visit_used_generics(&field.typ, names);
+                visit_used_generic_identities(&field.typ, identities);
             }
         }
         _ => {}
     }
 }
 
-pub(crate) fn collect_used_generics_from_type(typ: &TypeMeta) -> Vec<String> {
-    let mut names = HashSet::new();
-    visit_used_generics(typ, &mut names);
-    let mut sorted = names.into_iter().collect::<Vec<_>>();
+pub(crate) fn collect_used_generic_identities_from_type(typ: &TypeMeta) -> Vec<TypeIdentity> {
+    let mut identities = HashSet::new();
+    visit_used_generic_identities(typ, &mut identities);
+    let mut sorted = identities.into_iter().collect::<Vec<_>>();
     sorted.sort();
     sorted
 }
 
-/// Shared implementation for collecting generic names from method references.
-fn collect_used_generics_from_methods_inner(methods: &[&MethodMeta]) -> Vec<String> {
-    let mut names: HashSet<String> = HashSet::new();
-    for m in methods {
-        for p in &m.params {
-            visit_used_generics(&p.typ, &mut names);
+fn collect_used_generic_identities_from_methods_inner(
+    methods: &[&MethodMeta],
+) -> Vec<TypeIdentity> {
+    let mut identities = HashSet::new();
+    for method in methods {
+        for parameter in &method.params {
+            visit_used_generic_identities(&parameter.typ, &mut identities);
         }
-        if let Some(ref rt) = m.return_type {
-            visit_used_generics(rt, &mut names);
+        if let Some(return_type) = &method.return_type {
+            visit_used_generic_identities(return_type, &mut identities);
         }
     }
-    let mut sorted: Vec<String> = names.into_iter().collect();
+    let mut sorted = identities.into_iter().collect::<Vec<_>>();
     sorted.sort();
     sorted
 }
 
-/// Collect all used generic names from a class (all its interfaces).
-pub(crate) fn collect_used_generics_from_class(class: &ClassMeta) -> Vec<String> {
-    let all_methods: Vec<&MethodMeta> = class
+pub(crate) fn collect_used_generic_identities_from_methods(
+    methods: &[MethodMeta],
+) -> Vec<TypeIdentity> {
+    let methods = methods.iter().collect::<Vec<_>>();
+    collect_used_generic_identities_from_methods_inner(&methods)
+}
+
+pub(crate) fn collect_used_generic_identities_from_class(class: &ClassMeta) -> Vec<TypeIdentity> {
+    let methods = class
         .all_interfaces()
-        .flat_map(|iface| &iface.methods)
-        .collect();
-    // Reuse the same visitor logic as collect_used_generics_from_methods
-    collect_used_generics_from_methods_inner(&all_methods)
+        .flat_map(|interface| interface.methods.iter())
+        .collect::<Vec<_>>();
+    collect_used_generic_identities_from_methods_inner(&methods)
 }
 
 // ======================================================================

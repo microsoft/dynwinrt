@@ -7,13 +7,14 @@
 //! To update snapshots after an intentional output change, run:
 //!   cargo run -p dynwinrt-codegen -- generate --namespace Windows.Foundation --class-name Uri --output tests/snapshots/uri
 
+mod common;
+
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
 use dynwinrt_codegen::codegen::common::to_snake_case_filename;
-use dynwinrt_codegen::codegen::python_stub;
-use dynwinrt_codegen::codegen::{javascript, project, render_dts, render_js};
+use dynwinrt_codegen::codegen::{javascript, project, python, python_stub, render_dts, render_js};
 use dynwinrt_codegen::meta;
 use dynwinrt_codegen::types::TypeMeta;
 
@@ -287,22 +288,30 @@ fn snapshot_uri_pyi_class() {
         .map(|i| i.name.clone())
         .collect();
     let shared_iids: HashSet<String> = HashSet::new();
+    let context = common::projection_context(
+        &all_classes,
+        &all_interfaces,
+        &known_types,
+        &delegate_type_names,
+    );
 
     let mut generated: HashMap<String, String> = HashMap::new();
     for iface in &all_interfaces {
-        let code = python_stub::generate_interface_stub(iface, &known_types, &delegate_type_names);
+        let code = python_stub::generate_interface_stub(&context, iface);
         generated.insert(format!("{}.pyi", to_snake_case_filename(&iface.name)), code);
     }
     for class in &all_classes {
-        let code = python_stub::generate_class_stub(
-            class,
-            &known_types,
-            &delegate_type_names,
-            &shared_iids,
-        );
+        let code = python_stub::generate_class_stub(&context, class, &shared_iids);
         generated.insert(format!("{}.pyi", to_snake_case_filename(&class.name)), code);
     }
-    let index = python_stub::generate_index_stub(&all_classes, &all_interfaces, &all_enums);
+    let index_context = common::packaged_projection_context(
+        &all_classes,
+        &all_interfaces,
+        &known_types,
+        &delegate_type_names,
+    );
+    let index =
+        python_stub::generate_index_stub(&index_context, &all_classes, &all_interfaces, &all_enums);
     generated.insert("__init__.pyi".to_string(), index);
 
     let snapshot_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots/uri_pyi");
@@ -346,7 +355,6 @@ fn snapshot_uri_pyi_class() {
 /// Guards Phase 3 refactor (common.rs split + Lang trait) from drifting output.
 #[test]
 fn snapshot_uri_py_class() {
-    use dynwinrt_codegen::codegen::python;
     let winmd = WINDOWS_WINMD;
     let classes = match meta::parse_class(winmd, "Windows.Foundation", "Uri") {
         Some(c) => vec![c],
@@ -382,17 +390,29 @@ fn snapshot_uri_py_class() {
         .map(|i| i.name.clone())
         .collect();
     let shared_iids: HashSet<String> = HashSet::new();
+    let context = common::projection_context(
+        &all_classes,
+        &all_interfaces,
+        &known_types,
+        &delegate_type_names,
+    );
 
     let mut generated: HashMap<String, String> = HashMap::new();
     for iface in &all_interfaces {
-        let code = python::generate_interface(iface, &known_types, &delegate_type_names);
+        let code = python::generate_interface(&context, iface);
         generated.insert(format!("{}.py", to_snake_case_filename(&iface.name)), code);
     }
     for class in &all_classes {
-        let code = python::generate_class(class, &known_types, &delegate_type_names, &shared_iids);
+        let code = python::generate_class(&context, class, &shared_iids);
         generated.insert(format!("{}.py", to_snake_case_filename(&class.name)), code);
     }
-    let index = python::generate_index(&all_classes, &all_interfaces, &all_enums);
+    let index_context = common::packaged_projection_context(
+        &all_classes,
+        &all_interfaces,
+        &known_types,
+        &delegate_type_names,
+    );
+    let index = python::generate_index(&index_context, &all_classes, &all_interfaces, &all_enums);
     generated.insert("__init__.py".to_string(), index);
 
     let snapshot_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots/uri_py");
@@ -438,8 +458,6 @@ fn snapshot_uri_py_class() {
 /// Snapshot a method-rich Python class outside Windows.Foundation.
 #[test]
 fn snapshot_data_writer_py_class() {
-    use dynwinrt_codegen::codegen::python;
-
     let classes = match meta::parse_class(WINDOWS_WINMD, "Windows.Storage.Streams", "DataWriter") {
         Some(class) => vec![class],
         None => {
@@ -478,7 +496,7 @@ fn snapshot_data_writer_py_class() {
         .iter()
         .find(|class| class.name == "DataWriter")
         .expect("DataWriter class");
-    let actual = python::generate_class(class, &known_types, &delegate_type_names, &HashSet::new());
+    let actual = common::generate_class(class, &known_types, &delegate_type_names, &HashSet::new());
 
     let snapshot_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots/data_writer_py");
     let snapshot_path = snapshot_dir.join("data_writer.py");

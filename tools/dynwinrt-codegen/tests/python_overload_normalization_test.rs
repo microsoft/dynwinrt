@@ -1,10 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+mod common;
+
 use std::collections::HashSet;
 use std::path::Path;
 
-use dynwinrt_codegen::codegen::{python, python_stub};
 use dynwinrt_codegen::meta::{self, InterfaceMeta, MethodMeta, ParamDirection, ParamMeta};
 use dynwinrt_codegen::types::{TypeMeta, TypeMeta::AsyncOperation};
 
@@ -79,8 +80,8 @@ fn default_option_method_is_one_python_overload_group_with_legacy_alias() {
         "StorageFile".into(),
     ]);
 
-    let runtime = python::generate_interface(&interface, &known, &HashSet::new());
-    let stub = python_stub::generate_interface_stub(&interface, &known, &HashSet::new());
+    let runtime = common::generate_interface(&interface, &known, &HashSet::new());
+    let stub = common::generate_interface_stub(&interface, &known, &HashSet::new());
 
     assert_eq!(
         runtime.matches("def create_file_async(self, *args").count(),
@@ -116,8 +117,8 @@ fn real_storage_folder_default_options_method_is_normalized() {
         "StorageFolder".into(),
     ]);
 
-    let runtime = python::generate_class(&class, &known, &HashSet::new(), &HashSet::new());
-    let stub = python_stub::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
+    let runtime = common::generate_class(&class, &known, &HashSet::new(), &HashSet::new());
+    let stub = common::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
 
     assert!(
         runtime.contains("def create_file_async(self, *args"),

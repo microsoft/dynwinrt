@@ -14,8 +14,8 @@ use crate::types::{TypeKind, TypeMeta};
 
 use crate::codegen::winrt::shared::imports::{
     collect_iface_type_imports, collect_struct_field_type_imports, collect_type_imports,
-    collect_used_generics_from_class, collect_used_generics_from_methods,
-    collect_used_generics_from_type, ireference_inner_type,
+    collect_used_generic_identities_from_class, collect_used_generic_identities_from_methods,
+    collect_used_generic_identities_from_type, ireference_inner_type,
 };
 use crate::codegen::winrt::shared::structs::{
     collect_used_structs_from_class, collect_used_structs_from_iface,
@@ -26,14 +26,11 @@ use super::method::{
     InstanceOverload, StaticOverload, StaticOverloadKind, generate_instance_method_group,
     generate_static_method_group, py_method_type_guard,
 };
-use super::naming::{
-    is_py_reserved, python_module_layout_installed, python_module_name,
-    python_public_qualified_module_name, to_snake_case, to_snake_case_filename,
-};
+use super::naming::{PythonProjectionContext, is_py_reserved, to_snake_case};
 use super::shared::reorder_getters_before_setters;
 use super::signature::{
     py_collect_runtime_class_iid_consts, py_dynwinrt_type, py_generate_interface_registration,
-    py_interface_iid_expr, py_runtime_symbol, py_wrap_native_value,
+    py_interface_iid_expr, py_runtime_named_symbol, py_runtime_symbol, py_wrap_native_value,
 };
 use super::structs::{
     py_struct_field_getter, py_struct_field_read_type, py_struct_field_setter, py_struct_field_type,

@@ -1,39 +1,34 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use std::collections::HashSet;
-
 use crate::meta::{ClassMeta, InterfaceMeta, MethodMeta};
-use crate::types::TypeMeta;
+use crate::types::{TypeIdentity, TypeIdentityKind, TypeMeta};
 
 use crate::codegen::winrt::extensions::winui::{self, WinUiCallBehavior};
 use crate::codegen::winrt::shared::imports::{
     fill_array_output_index, fill_array_uses_retval_count, get_in_params,
 };
 
-use super::naming::to_snake_case;
+use super::naming::{PythonProjectionContext, PythonTypeIdentity, to_snake_case};
 use super::signature::{
-    py_convert_return, py_runtime_symbol, py_type_guard, py_wrap_arg, py_wrap_async,
-    py_wrap_async_with_converters,
+    py_convert_return, py_runtime_named_symbol, py_runtime_symbol, py_type_guard, py_wrap_arg,
+    py_wrap_async, py_wrap_async_with_converters,
 };
 use super::type_helpers::{
     method_pydoc, py_delegate_callable_type, py_factory_return_type, py_method_abi_output_count,
     py_method_outputs, py_method_return_type, py_output_type, py_param_list,
 };
 
-fn is_delegate_type(typ: &TypeMeta, delegate_type_names: &HashSet<String>) -> bool {
-    delegate_name(typ, delegate_type_names).is_some()
+fn is_delegate_type(typ: &TypeMeta, context: &PythonProjectionContext) -> bool {
+    context.is_delegate_type(typ)
 }
 
-fn delegate_value_converter(
-    typ: &TypeMeta,
-    delegate_type_names: &HashSet<String>,
-) -> Option<String> {
-    if is_delegate_type(typ, delegate_type_names) {
+fn delegate_value_converter(typ: &TypeMeta, context: &PythonProjectionContext) -> Option<String> {
+    if is_delegate_type(typ, context) {
         return Some("lambda value: None if value.is_null() else value".into());
     }
     if let TypeMeta::Array(inner) = typ
-        && is_delegate_type(inner, delegate_type_names)
+        && is_delegate_type(inner, context)
     {
         return Some(
             "lambda value: [None if item.is_null() else item for item in value.as_array().to_values()]"
@@ -52,14 +47,17 @@ fn delegate_value_converter(
 ///   invoking the user's `callback`.
 ///
 /// The wrapper falls back to a passthrough (`callback`) for unknown delegate shapes.
-fn build_event_wrapper(typ: Option<&TypeMeta>, known_types: &HashSet<String>) -> (String, String) {
+fn build_event_wrapper(
+    typ: Option<&TypeMeta>,
+    context: &PythonProjectionContext,
+) -> (String, String) {
     match typ {
         Some(typ @ TypeMeta::Parameterized { name, args, .. })
             if name.split('`').next() == Some("TypedEventHandler") && args.len() == 2 =>
         {
-            let sender_conv = py_convert_return("__sender__", Some(&args[0]), false, known_types);
-            let args_conv = py_convert_return("__args__", Some(&args[1]), false, known_types);
-            let sig = py_delegate_callable_type(typ, known_types);
+            let sender_conv = py_convert_return("__sender__", Some(&args[0]), false, context);
+            let args_conv = py_convert_return("__args__", Some(&args[1]), false, context);
+            let sig = py_delegate_callable_type(typ, context);
             let wrapper = format!(
                 "(lambda callback=callback: (lambda __sender__, __args__: callback({}, {})))()",
                 sender_conv, args_conv
@@ -69,8 +67,8 @@ fn build_event_wrapper(typ: Option<&TypeMeta>, known_types: &HashSet<String>) ->
         Some(typ @ TypeMeta::Parameterized { name, args, .. })
             if name.split('`').next() == Some("EventHandler") && args.len() == 1 =>
         {
-            let args_conv = py_convert_return("__args__", Some(&args[0]), false, known_types);
-            let sig = py_delegate_callable_type(typ, known_types);
+            let args_conv = py_convert_return("__args__", Some(&args[0]), false, context);
+            let sig = py_delegate_callable_type(typ, context);
             let wrapper = format!(
                 "(lambda callback=callback: (lambda __sender__, __args__: callback(__sender__, {})))()",
                 args_conv
@@ -80,16 +78,28 @@ fn build_event_wrapper(typ: Option<&TypeMeta>, known_types: &HashSet<String>) ->
         Some(typ @ TypeMeta::Parameterized { name, args, .. })
             if name.split('`').next() == Some("VectorChangedEventHandler") && args.len() == 1 =>
         {
-            let observable_name = crate::meta::make_parameterized_name("IObservableVector", args);
+            let observable_identity = TypeIdentity::closed_generic(
+                TypeIdentityKind::Interface,
+                crate::meta::WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE,
+                "IObservableVector",
+                args.iter().map(TypeMeta::type_identity),
+            );
+            let observable_name = context.projected_name(&observable_identity);
             let sender = format!(
                 "(lambda value: None if value.is_null() else {}(value))(__sender__)",
-                py_runtime_symbol(&observable_name, &observable_name)
+                py_runtime_symbol(context, &observable_identity, &observable_name)
             );
             let event_args = format!(
                 "(lambda value: None if value.is_null() else {}(value))(__args__)",
-                py_runtime_symbol("IVectorChangedEventArgs", "IVectorChangedEventArgs")
+                py_runtime_named_symbol(
+                    context,
+                    TypeIdentityKind::Interface,
+                    crate::meta::WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE,
+                    "IVectorChangedEventArgs",
+                    "IVectorChangedEventArgs",
+                )
             );
-            let sig = py_delegate_callable_type(typ, known_types);
+            let sig = py_delegate_callable_type(typ, context);
             let wrapper = format!(
                 "(lambda callback=callback: (lambda __sender__, __args__: callback({}, {})))()",
                 sender, event_args
@@ -100,30 +110,26 @@ fn build_event_wrapper(typ: Option<&TypeMeta>, known_types: &HashSet<String>) ->
     }
 }
 
-fn delegate_name(typ: &TypeMeta, delegate_type_names: &HashSet<String>) -> Option<String> {
-    match typ {
-        TypeMeta::Delegate { name, .. } => Some(name.clone()),
-        TypeMeta::Interface { name, .. } if delegate_type_names.contains(name) => {
-            Some(name.clone())
-        }
-        TypeMeta::Parameterized { name, args, .. } => {
-            let concrete = crate::meta::make_parameterized_name(name, args);
-            delegate_type_names.contains(&concrete).then_some(concrete)
-        }
-        _ => None,
-    }
+fn delegate_identity(
+    typ: &TypeMeta,
+    context: &PythonProjectionContext,
+) -> Option<PythonTypeIdentity> {
+    context
+        .is_delegate_type(typ)
+        .then(|| context.identity_for_type(typ))
 }
 
 pub(crate) fn py_wrap_method_arg(
     name: &str,
     typ: &TypeMeta,
-    delegate_type_names: &HashSet<String>,
+    context: &PythonProjectionContext,
 ) -> String {
-    if let Some(delegate) = delegate_name(typ, delegate_type_names) {
+    if let Some(delegate) = delegate_identity(typ, context) {
+        let projected_name = context.projected_name(&delegate);
         return format!(
             "_dynwinrt_delegate({name}, {}, {})",
-            py_runtime_symbol(&delegate, &format!("IID_{delegate}")),
-            py_runtime_symbol(&delegate, &format!("{delegate}_PARAM_TYPES"))
+            py_runtime_symbol(context, &delegate, &format!("IID_{projected_name}")),
+            py_runtime_symbol(context, &delegate, &format!("{projected_name}_PARAM_TYPES"))
         );
     }
     py_wrap_arg(name, typ)
@@ -131,13 +137,11 @@ pub(crate) fn py_wrap_method_arg(
 
 fn py_build_method_args_expr(
     in_params: &[&crate::meta::ParamMeta],
-    delegate_type_names: &HashSet<String>,
+    context: &PythonProjectionContext,
 ) -> String {
     in_params
         .iter()
-        .map(|param| {
-            py_wrap_method_arg(&to_snake_case(&param.name), &param.typ, delegate_type_names)
-        })
+        .map(|param| py_wrap_method_arg(&to_snake_case(&param.name), &param.typ, context))
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -145,24 +149,18 @@ fn py_build_method_args_expr(
 pub(crate) fn py_method_type_guard(
     name: &str,
     typ: &TypeMeta,
-    known_types: &HashSet<String>,
-    delegate_type_names: &HashSet<String>,
+    context: &PythonProjectionContext,
 ) -> String {
-    if is_delegate_type(typ, delegate_type_names) {
+    if is_delegate_type(typ, context) {
         return format!(
             "(callable({name}) or isinstance(getattr({name}, '_obj', {name}), DynWinRTValue))"
         );
     }
-    py_type_guard(name, typ, known_types)
+    py_type_guard(name, typ, context)
 }
 
-fn convert_method_output(
-    expr: &str,
-    typ: &TypeMeta,
-    known_types: &HashSet<String>,
-    delegate_type_names: &HashSet<String>,
-) -> String {
-    if let Some(converter) = delegate_value_converter(typ, delegate_type_names) {
+fn convert_method_output(expr: &str, typ: &TypeMeta, context: &PythonProjectionContext) -> String {
+    if let Some(converter) = delegate_value_converter(typ, context) {
         return format!("({converter})({expr})");
     }
     match typ {
@@ -170,9 +168,9 @@ fn convert_method_output(
             return py_wrap_async_with_converters(
                 expr,
                 typ,
-                delegate_value_converter(result, delegate_type_names),
+                delegate_value_converter(result, context),
                 None,
-                known_types,
+                context,
             );
         }
         TypeMeta::AsyncActionWithProgress(progress) => {
@@ -180,22 +178,22 @@ fn convert_method_output(
                 expr,
                 typ,
                 None,
-                delegate_value_converter(progress, delegate_type_names),
-                known_types,
+                delegate_value_converter(progress, context),
+                context,
             );
         }
         TypeMeta::AsyncOperationWithProgress(result, progress) => {
             return py_wrap_async_with_converters(
                 expr,
                 typ,
-                delegate_value_converter(result, delegate_type_names),
-                delegate_value_converter(progress, delegate_type_names),
-                known_types,
+                delegate_value_converter(result, context),
+                delegate_value_converter(progress, context),
+                context,
             );
         }
         _ => {}
     }
-    py_convert_return(expr, Some(typ), typ.is_async(), known_types)
+    py_convert_return(expr, Some(typ), typ.is_async(), context)
 }
 
 fn method_call_expr(
@@ -223,8 +221,7 @@ fn emit_method_result(
     out: &mut String,
     call_expr: &str,
     method: &MethodMeta,
-    known_types: &HashSet<String>,
-    delegate_type_names: &HashSet<String>,
+    context: &PythonProjectionContext,
 ) {
     let outputs = py_method_outputs(method);
     if outputs.is_empty() {
@@ -233,8 +230,7 @@ fn emit_method_result(
     }
 
     if py_method_abi_output_count(method) == 1 {
-        let converted =
-            convert_method_output(call_expr, outputs[0].1, known_types, delegate_type_names);
+        let converted = convert_method_output(call_expr, outputs[0].1, context);
         out.push_str(&format!("        return {}\n", converted));
         return;
     }
@@ -243,12 +239,7 @@ fn emit_method_result(
     let converted = outputs
         .iter()
         .map(|(index, typ)| {
-            let converted = convert_method_output(
-                &format!("_results[{}]", index),
-                typ,
-                known_types,
-                delegate_type_names,
-            );
+            let converted = convert_method_output(&format!("_results[{}]", index), typ, context);
             if fill_array_uses_retval_count(method)
                 && fill_array_output_index(method) == Some(*index)
             {
@@ -275,31 +266,22 @@ pub(crate) fn generate_factory_method_invoke(
     class: &ClassMeta,
     iface: &InterfaceMeta,
     method: &MethodMeta,
-    known_types: &HashSet<String>,
-    delegate_type_names: &HashSet<String>,
+    context: &PythonProjectionContext,
 ) -> String {
-    generate_factory_method_invoke_named(
-        class,
-        iface,
-        method,
-        known_types,
-        delegate_type_names,
-        None,
-    )
+    generate_factory_method_invoke_named(class, iface, method, context, None)
 }
 
 fn generate_factory_method_invoke_named(
     class: &ClassMeta,
     iface: &InterfaceMeta,
     method: &MethodMeta,
-    known_types: &HashSet<String>,
-    delegate_type_names: &HashSet<String>,
+    context: &PythonProjectionContext,
     name_override: Option<&str>,
 ) -> String {
     let in_params = get_in_params(method);
-    let py_params = py_param_list(&in_params, known_types, delegate_type_names);
+    let py_params = py_param_list(&in_params, context);
 
-    let return_py_type = py_factory_return_type(&class.name, method, known_types);
+    let return_py_type = py_factory_return_type(&class.name, method, context);
 
     let mut out = String::new();
     let method_name = name_override
@@ -320,11 +302,12 @@ fn generate_factory_method_invoke_named(
     }
     out.push_str(&method_pydoc(method, &in_params));
 
-    let args_expr = py_build_method_args_expr(&in_params, delegate_type_names);
+    let args_expr = py_build_method_args_expr(&in_params, context);
+    let iface_symbol = context.reference_name(&iface.type_identity());
     let call_expr = method_call_expr(
-        &format!("_{}", iface.name),
+        &format!("_{iface_symbol}"),
         method,
-        &format!("{}._get_f_{}()", class.name, iface.name),
+        &format!("{}._get_f_{iface_symbol}()", class.name),
         &args_expr,
     );
     let result_expr = if py_method_abi_output_count(method) > 1 {
@@ -341,7 +324,7 @@ fn generate_factory_method_invoke_named(
                 }
                 _ => None,
             };
-            py_wrap_async(&result_expr, async_type, result_converter, known_types)
+            py_wrap_async(&result_expr, async_type, result_converter, context)
         } else {
             format!("{}._from_native({})", class.name, result_expr)
         };
@@ -353,38 +336,30 @@ pub(crate) fn generate_static_method_invoke(
     class: &ClassMeta,
     iface: &InterfaceMeta,
     method: &MethodMeta,
-    known_types: &HashSet<String>,
-    delegate_type_names: &HashSet<String>,
+    context: &PythonProjectionContext,
 ) -> String {
-    generate_static_method_invoke_named(
-        class,
-        iface,
-        method,
-        known_types,
-        delegate_type_names,
-        None,
-    )
+    generate_static_method_invoke_named(class, iface, method, context, None)
 }
 
 fn generate_static_method_invoke_named(
     class: &ClassMeta,
     iface: &InterfaceMeta,
     method: &MethodMeta,
-    known_types: &HashSet<String>,
-    delegate_type_names: &HashSet<String>,
+    context: &PythonProjectionContext,
     name_override: Option<&str>,
 ) -> String {
     let in_params = get_in_params(method);
-    let py_params = py_param_list(&in_params, known_types, delegate_type_names);
+    let py_params = py_param_list(&in_params, context);
 
-    let py_return = py_method_return_type(method, known_types, delegate_type_names);
+    let py_return = py_method_return_type(method, context);
 
     let mut out = String::new();
+    let iface_symbol = context.reference_name(&iface.type_identity());
 
     let statics_call = format!(
         "{cls}._get_s_{iface}()",
         cls = class.name,
-        iface = iface.name
+        iface = iface_symbol
     );
 
     // Static property getter
@@ -397,14 +372,8 @@ fn generate_static_method_invoke_named(
             prop_name, py_return
         ));
         out.push_str(&method_pydoc(method, &in_params));
-        let call_expr = method_call_expr(&format!("_{}", iface.name), method, &statics_call, "");
-        emit_method_result(
-            &mut out,
-            &call_expr,
-            method,
-            known_types,
-            delegate_type_names,
-        );
+        let call_expr = method_call_expr(&format!("_{iface_symbol}"), method, &statics_call, "");
+        emit_method_result(&mut out, &call_expr, method, context);
     } else {
         out.push_str("    @staticmethod\n");
         let method_name = name_override
@@ -419,20 +388,14 @@ fn generate_static_method_invoke_named(
             ));
         }
         out.push_str(&method_pydoc(method, &in_params));
-        let args_expr = py_build_method_args_expr(&in_params, delegate_type_names);
+        let args_expr = py_build_method_args_expr(&in_params, context);
         let call_expr = method_call_expr(
-            &format!("_{}", iface.name),
+            &format!("_{iface_symbol}"),
             method,
             &statics_call,
             &args_expr,
         );
-        emit_method_result(
-            &mut out,
-            &call_expr,
-            method,
-            known_types,
-            delegate_type_names,
-        );
+        emit_method_result(&mut out, &call_expr, method, context);
     }
     out
 }
@@ -473,8 +436,7 @@ pub(crate) fn private_overload_names<'a>(
 
 pub(crate) fn generate_instance_method_group(
     overloads: &[InstanceOverload<'_>],
-    known_types: &HashSet<String>,
-    delegate_type_names: &HashSet<String>,
+    context: &PythonProjectionContext,
 ) -> String {
     if overloads.len() == 1 {
         let overload = &overloads[0];
@@ -482,8 +444,7 @@ pub(crate) fn generate_instance_method_group(
             &overload.iface_var,
             &overload.obj_expr,
             overload.method,
-            known_types,
-            delegate_type_names,
+            context,
             None,
             overload.sibling_methods,
             overload.property_has_getter,
@@ -509,8 +470,7 @@ pub(crate) fn generate_instance_method_group(
             &overload.iface_var,
             &overload.obj_expr,
             overload.method,
-            known_types,
-            delegate_type_names,
+            context,
             Some(private_name),
             overload.sibling_methods,
             overload.property_has_getter,
@@ -541,12 +501,7 @@ pub(crate) fn generate_instance_method_group(
             .iter()
             .enumerate()
             .map(|(index, param)| {
-                py_method_type_guard(
-                    &format!("_bound[{index}]"),
-                    &param.typ,
-                    known_types,
-                    delegate_type_names,
-                )
+                py_method_type_guard(&format!("_bound[{index}]"), &param.typ, context)
             })
             .collect::<Vec<_>>();
         let condition = if guards.is_empty() {
@@ -579,8 +534,7 @@ pub(crate) struct StaticOverload<'a> {
 
 pub(crate) fn generate_static_method_group(
     overloads: &[StaticOverload<'_>],
-    known_types: &HashSet<String>,
-    delegate_type_names: &HashSet<String>,
+    context: &PythonProjectionContext,
 ) -> String {
     if overloads.len() == 1 {
         let overload = &overloads[0];
@@ -589,15 +543,13 @@ pub(crate) fn generate_static_method_group(
                 overload.class,
                 overload.iface,
                 overload.method,
-                known_types,
-                delegate_type_names,
+                context,
             ),
             StaticOverloadKind::Static => generate_static_method_invoke(
                 overload.class,
                 overload.iface,
                 overload.method,
-                known_types,
-                delegate_type_names,
+                context,
             ),
         };
     }
@@ -622,16 +574,14 @@ pub(crate) fn generate_static_method_group(
                 overload.class,
                 overload.iface,
                 overload.method,
-                known_types,
-                delegate_type_names,
+                context,
                 Some(private_name),
             ),
             StaticOverloadKind::Static => generate_static_method_invoke_named(
                 overload.class,
                 overload.iface,
                 overload.method,
-                known_types,
-                delegate_type_names,
+                context,
                 Some(private_name),
             ),
         };
@@ -662,12 +612,7 @@ pub(crate) fn generate_static_method_group(
             .iter()
             .enumerate()
             .map(|(index, param)| {
-                py_method_type_guard(
-                    &format!("_bound[{index}]"),
-                    &param.typ,
-                    known_types,
-                    delegate_type_names,
-                )
+                py_method_type_guard(&format!("_bound[{index}]"), &param.typ, context)
             })
             .collect::<Vec<_>>();
         let condition = if guards.is_empty() {
@@ -690,8 +635,7 @@ pub(crate) fn generate_method_body(
     iface_var: &str,
     obj_expr: &str,
     method: &MethodMeta,
-    known_types: &HashSet<String>,
-    delegate_type_names: &HashSet<String>,
+    context: &PythonProjectionContext,
     name_override: Option<&str>,
     sibling_methods: Option<&[MethodMeta]>,
     property_has_getter: bool,
@@ -708,7 +652,7 @@ pub(crate) fn generate_method_body(
         let suffix = method.name.strip_prefix("add_").unwrap_or(&method.name);
         let event_name = to_snake_case(suffix);
         let delegate_typ = in_params.first().map(|p| &p.typ);
-        let delegate_name = delegate_typ.and_then(|typ| delegate_name(typ, delegate_type_names));
+        let delegate_identity = delegate_typ.and_then(|typ| delegate_identity(typ, context));
         // Find matching remove_<Suffix> in the same interface to know its vtable index.
         let remove_target = format!("remove_{}", suffix);
         let remove_idx = sibling_methods.and_then(|methods| {
@@ -720,7 +664,7 @@ pub(crate) fn generate_method_body(
 
         // Compute callback wrapper: for TypedEventHandler<S, A> / EventHandler<A>,
         // wrap raw ABI args back into projected values before invoking the user callback.
-        let (callback_signature, wrapper) = build_event_wrapper(delegate_typ, known_types);
+        let (callback_signature, wrapper) = build_event_wrapper(delegate_typ, context);
 
         out.push_str(&format!(
             "    def on_{}(self, callback: {}):\n",
@@ -729,9 +673,11 @@ pub(crate) fn generate_method_body(
         out.push_str(&method_pydoc(method, &in_params));
         // Wrapping expression bound to `_wrapped` before delegate construction.
         out.push_str(&format!("        _wrapped = {}\n", wrapper));
-        if let Some(ref dname) = delegate_name {
-            let iid = py_runtime_symbol(dname, &format!("IID_{}", dname));
-            let param_types = py_runtime_symbol(dname, &format!("{}_PARAM_TYPES", dname));
+        if let Some(ref identity) = delegate_identity {
+            let delegate_name = context.projected_name(identity);
+            let iid = py_runtime_symbol(context, identity, &format!("IID_{delegate_name}"));
+            let param_types =
+                py_runtime_symbol(context, identity, &format!("{delegate_name}_PARAM_TYPES"));
             out.push_str(&format!(
                 "        _handler = _dynwinrt_create_delegate({}, {}, _wrapped)\n",
                 iid, param_types
@@ -818,31 +764,22 @@ pub(crate) fn generate_method_body(
     if method.is_property_getter && in_params.is_empty() {
         let prop_name = to_snake_case(method.name.strip_prefix("get_").unwrap_or(&method.name));
         let py_return = return_type
-            .map(|typ| py_output_type(typ, known_types, delegate_type_names))
+            .map(|typ| py_output_type(typ, context))
             .unwrap_or_else(|| "None".to_string());
         out.push_str("    @_property\n");
         out.push_str(&format!("    def {}(self) -> {}:\n", prop_name, py_return));
         out.push_str(&method_pydoc(method, &in_params));
         let call_expr = method_call_expr(iface_var, method, obj_expr, "");
-        emit_method_result(
-            &mut out,
-            &call_expr,
-            method,
-            known_types,
-            delegate_type_names,
-        );
+        emit_method_result(&mut out, &call_expr, method, context);
     } else if method.is_property_setter {
         let prop_name = to_snake_case(method.name.strip_prefix("put_").unwrap_or(&method.name));
         let param_type = in_params
             .first()
             .map(|p| {
-                if is_delegate_type(&p.typ, delegate_type_names) {
+                if is_delegate_type(&p.typ, context) {
                     // Reuse py_delegate_param_type via a temporary param_list call.
-                    let params = super::type_helpers::py_param_list(
-                        std::slice::from_ref(p),
-                        known_types,
-                        delegate_type_names,
-                    );
+                    let params =
+                        super::type_helpers::py_param_list(std::slice::from_ref(p), context);
                     // params is "name: Type" — extract the "Type" part.
                     params
                         .splitn(2, ": ")
@@ -850,7 +787,7 @@ pub(crate) fn generate_method_body(
                         .map(|s| s.to_string())
                         .unwrap_or_else(|| "Callable[..., object] | 'DynWinRTValue'".to_string())
                 } else {
-                    super::type_helpers::py_param_type_safe(&p.typ, known_types)
+                    super::type_helpers::py_param_type_safe(&p.typ, context)
                 }
             })
             .unwrap_or_else(|| "object".to_string());
@@ -869,15 +806,15 @@ pub(crate) fn generate_method_body(
         out.push_str(&method_pydoc(method, &in_params));
         let arg = in_params
             .first()
-            .map(|p| py_wrap_method_arg("value", &p.typ, delegate_type_names))
+            .map(|p| py_wrap_method_arg("value", &p.typ, context))
             .unwrap_or_else(|| "value".to_string());
         out.push_str(&format!(
             "        {}.method({}).invoke({}, [{}])\n",
             iface_var, method.vtable_index, obj_expr, arg
         ));
     } else {
-        let py_params = py_param_list(&in_params, known_types, delegate_type_names);
-        let py_return = py_method_return_type(method, known_types, delegate_type_names);
+        let py_params = py_param_list(&in_params, context);
+        let py_return = py_method_return_type(method, context);
         let method_name = name_override
             .map(|s| s.to_string())
             .unwrap_or_else(|| to_snake_case(&method.name));
@@ -893,15 +830,9 @@ pub(crate) fn generate_method_body(
         ));
         out.push_str(&method_pydoc(method, &in_params));
 
-        let args_expr = py_build_method_args_expr(&in_params, delegate_type_names);
+        let args_expr = py_build_method_args_expr(&in_params, context);
         let call_expr = method_call_expr(iface_var, method, obj_expr, &args_expr);
-        emit_method_result(
-            &mut out,
-            &call_expr,
-            method,
-            known_types,
-            delegate_type_names,
-        );
+        emit_method_result(&mut out, &call_expr, method, context);
     }
 
     out
@@ -958,7 +889,7 @@ mod tests {
             },
         ];
 
-        let code = generate_instance_method_group(&overloads, &HashSet::new(), &HashSet::new());
+        let code = generate_instance_method_group(&overloads, &PythonProjectionContext::default());
         assert_eq!(code.matches("def _register_6_").count(), 2, "{code}");
         assert!(code.contains("self._register_6_0(*_bound)"), "{code}");
         assert!(code.contains("self._register_6_1(*_bound)"), "{code}");
@@ -1058,13 +989,14 @@ mod tests {
             name: "Widget".into(),
             ..Default::default()
         };
-        let code = generate_static_method_invoke(
-            &class,
-            &iface,
-            &method,
-            &HashSet::from(["Handler".into()]),
-            &HashSet::from(["Handler".into()]),
-        );
+        let delegate_identity = method
+            .return_type
+            .as_ref()
+            .unwrap()
+            .type_identity()
+            .with_kind(TypeIdentityKind::Delegate);
+        let context = PythonProjectionContext::standalone([delegate_identity]).unwrap();
+        let code = generate_static_method_invoke(&class, &iface, &method, &context);
 
         assert!(
             code.contains("def get_handler() -> DynWinRTValue | None:"),
@@ -1088,8 +1020,7 @@ mod tests {
             "_IReader",
             "self._obj",
             &method,
-            &HashSet::new(),
-            &HashSet::new(),
+            &PythonProjectionContext::default(),
             None,
             None,
             true,
@@ -1124,8 +1055,7 @@ mod tests {
             "_IOutputStream",
             "self._obj",
             &method,
-            &HashSet::new(),
-            &HashSet::new(),
+            &PythonProjectionContext::default(),
             None,
             None,
             true,
@@ -1182,7 +1112,7 @@ mod tests {
             },
         ];
 
-        let code = generate_instance_method_group(&overloads, &HashSet::new(), &HashSet::new());
+        let code = generate_instance_method_group(&overloads, &PythonProjectionContext::default());
         assert!(code.contains("def _read_6(self, value: str)"));
         assert!(code.contains("def _read_7(self, value: int)"));
         assert!(code.contains("def read(self, *args, **kwargs)"));
@@ -1237,11 +1167,9 @@ mod tests {
             },
         ];
 
-        let code = generate_instance_method_group(
-            &overloads,
-            &HashSet::new(),
-            &HashSet::from(["WorkItemHandler".into()]),
-        );
+        let context =
+            PythonProjectionContext::standalone([callback.params[0].typ.type_identity()]).unwrap();
+        let code = generate_instance_method_group(&overloads, &context);
         assert!(code.contains("callable(_bound[0])"));
         assert!(code.contains("_dynwinrt_delegate(handler,"));
         assert!(code.contains("'work_item_handler', 'IID_WorkItemHandler'"));
@@ -1263,6 +1191,13 @@ mod tests {
                 TypeMeta::Object,
             ],
         };
+        let context = PythonProjectionContext::standalone([
+            handler_type
+                .type_identity()
+                .with_kind(TypeIdentityKind::Delegate),
+            TypeIdentity::named(TypeIdentityKind::Class, "Contoso", "Widget"),
+        ])
+        .unwrap();
         let add = MethodMeta {
             name: "add_Changed".into(),
             raw_name: "add_Changed".into(),
@@ -1292,8 +1227,7 @@ mod tests {
             "_IWidget",
             "self._obj",
             &add,
-            &HashSet::from(["Widget".into()]),
-            &HashSet::from(["TypedEventHandler_Widget_Object".into()]),
+            &context,
             None,
             Some(&siblings),
             true,
@@ -1330,12 +1264,16 @@ mod tests {
             is_event_add: true,
             ..Default::default()
         };
+        let delegate_identity = add.params[0]
+            .typ
+            .type_identity()
+            .with_kind(TypeIdentityKind::Delegate);
+        let context = PythonProjectionContext::standalone([delegate_identity]).unwrap();
         let code = generate_method_body(
             "_IButton",
             "self._obj",
             &add,
-            &HashSet::new(),
-            &HashSet::from(["RoutedEventHandler".into()]),
+            &context,
             None,
             Some(std::slice::from_ref(&add)),
             true,
@@ -1388,7 +1326,7 @@ mod tests {
             },
         ];
 
-        let code = generate_static_method_group(&overloads, &HashSet::new(), &HashSet::new());
+        let code = generate_static_method_group(&overloads, &PythonProjectionContext::default());
         assert!(code.contains("def _create_6()"));
         assert!(code.contains("def _create_7(value: str)"));
         assert!(code.contains("def create(*args, **kwargs)"));
@@ -1401,13 +1339,11 @@ mod tests {
 
         let forward = generate_instance_method_group(
             &[instance_overload(&wide), instance_overload(&narrow)],
-            &HashSet::new(),
-            &HashSet::new(),
+            &PythonProjectionContext::default(),
         );
         let reverse = generate_instance_method_group(
             &[instance_overload(&narrow), instance_overload(&wide)],
-            &HashSet::new(),
-            &HashSet::new(),
+            &PythonProjectionContext::default(),
         );
 
         assert_eq!(forward, reverse);
@@ -1435,7 +1371,7 @@ mod tests {
             instance_overload(&signed),
         ];
 
-        let code = generate_instance_method_group(&overloads, &HashSet::new(), &HashSet::new());
+        let code = generate_instance_method_group(&overloads, &PythonProjectionContext::default());
 
         assert_contains_in_order(
             &code,
@@ -1484,16 +1420,14 @@ mod tests {
                 static_overload(&class, &iface, &float),
                 static_overload(&class, &iface, &integer),
             ],
-            &HashSet::new(),
-            &HashSet::new(),
+            &PythonProjectionContext::default(),
         );
         let reverse = generate_static_method_group(
             &[
                 static_overload(&class, &iface, &integer),
                 static_overload(&class, &iface, &float),
             ],
-            &HashSet::new(),
-            &HashSet::new(),
+            &PythonProjectionContext::default(),
         );
 
         assert_eq!(forward, reverse);
@@ -1508,17 +1442,17 @@ mod tests {
     fn python_known_int_enum_instance_overload_prefers_enum_over_i8_in_both_orders() {
         let integer = overloaded_method("Read", 6, TypeMeta::I8);
         let enumeration = overloaded_method("Read2", 7, enum_type("Mode", false));
-        let known_types = HashSet::from(["Mode".to_string()]);
+        let context =
+            PythonProjectionContext::standalone([enum_type("Mode", false).type_identity()])
+                .unwrap();
 
         let forward = generate_instance_method_group(
             &[instance_overload(&integer), instance_overload(&enumeration)],
-            &known_types,
-            &HashSet::new(),
+            &context,
         );
         let reverse = generate_instance_method_group(
             &[instance_overload(&enumeration), instance_overload(&integer)],
-            &known_types,
-            &HashSet::new(),
+            &context,
         );
 
         let forward_dispatcher =
@@ -1593,7 +1527,9 @@ print(json.dumps([exercise(ReaderForward), exercise(ReaderReverse)]))
     fn python_known_int_flag_static_overload_prefers_enum_over_i32_in_both_orders() {
         let integer = overloaded_method("Create", 6, TypeMeta::I32);
         let flags = overloaded_method("Create2", 7, enum_type("Options", true));
-        let known_types = HashSet::from(["Options".to_string()]);
+        let context =
+            PythonProjectionContext::standalone([enum_type("Options", true).type_identity()])
+                .unwrap();
         let iface = InterfaceMeta {
             name: "IFactoryStatics".into(),
             ..Default::default()
@@ -1612,16 +1548,14 @@ print(json.dumps([exercise(ReaderForward), exercise(ReaderReverse)]))
                 static_overload(&class_forward, &iface, &integer),
                 static_overload(&class_forward, &iface, &flags),
             ],
-            &known_types,
-            &HashSet::new(),
+            &context,
         );
         let reverse = generate_static_method_group(
             &[
                 static_overload(&class_reverse, &iface, &flags),
                 static_overload(&class_reverse, &iface, &integer),
             ],
-            &known_types,
-            &HashSet::new(),
+            &context,
         );
 
         let forward_dispatcher = extract_generated_block(
