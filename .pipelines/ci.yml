@@ -26,6 +26,27 @@ extends:
     stages:
     - stage: Build
       jobs:
+      - job: ProbeArm64
+        displayName: Probe hosted Windows ARM64
+        pool:
+          name: Azure-Pipelines-1ESPT-ExDShared
+          image: windows-latest
+          os: windows
+          hostArchitecture: arm64
+        steps:
+          - checkout: none
+          - task: PowerShell@2
+            displayName: Verify native ARM64 host
+            inputs:
+              targetType: inline
+              script: |
+                $architecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+                Write-Host "OS architecture: $architecture"
+                Write-Host "PROCESSOR_ARCHITECTURE: $env:PROCESSOR_ARCHITECTURE"
+                if ($architecture -ne [System.Runtime.InteropServices.Architecture]::Arm64) {
+                  throw "Expected an ARM64 host, got $architecture"
+                }
+
       - job: Build
         pool:
           name: Azure-Pipelines-1ESPT-ExDShared
