@@ -20,6 +20,10 @@ parameters:
     displayName: Sign and release the packages (DoEsrp)
     type: boolean
     default: true
+  - name: PublishPyPI
+    displayName: Publish Python packages to PyPI
+    type: boolean
+    default: false
   - name: signingIdentity
     type: object
     default:
@@ -531,6 +535,7 @@ extends:
                 mainpublisher: 'ESRPRELPACMAN'
                 domaintenantid: ${{ parameters.signingIdentity.tenantId }}
 
+    - ${{ if and(eq(parameters.DoEsrp, 'true'), eq(parameters.PublishPyPI, 'true')) }}:
       - stage: Release_PyPI
         displayName: Publish to PyPI
         dependsOn:

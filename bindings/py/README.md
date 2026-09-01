@@ -53,9 +53,11 @@ To release:
 3. The ADO pipeline waits for the complete wheel set, downloads it through the
    repository's GitHub service connection, and revalidates every filename,
    platform tag, Python ABI tag, metadata record, type stub, and native payload.
-4. ADO publishes the eight `dynwinrt` wheels first and the two
-   `dynwinrt-codegen` wheels second through the Microsoft ESRP release identity.
-   PyPI publication is not available from GitHub Actions.
+4. PyPI publication is opt-in: the ADO `PublishPyPI` parameter is disabled by
+   default. When explicitly enabled with `DoEsrp`, ADO publishes the eight
+   `dynwinrt` wheels first and the two `dynwinrt-codegen` wheels second through
+   the Microsoft ESRP release identity. PyPI publication is not available from
+   GitHub Actions.
 
 Before the first release, onboard both PyPI project names to the configured ESRP
 service connection and confirm the signing identity, owners, and approvers.
