@@ -107,6 +107,7 @@ extends:
                 $root = Join-Path "$(Agent.TempDirectory)" "win32metadata"
                 nuget install Microsoft.Windows.SDK.Win32Metadata `
                   -Version 71.0.14-preview `
+                  -Source https://packagefeedproxy.microsoft.io/nuget/v3/index.json `
                   -OutputDirectory $root `
                   -DirectDownload `
                   -NonInteractive
