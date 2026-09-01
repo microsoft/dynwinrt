@@ -5924,7 +5924,7 @@ mod tests {
         let clean_inventory = read_javascript_type_inventory(&clean).unwrap();
         assert_eq!(phased_inventory.version, JAVASCRIPT_TYPE_INVENTORY_VERSION);
         assert_eq!(clean_inventory.version, JAVASCRIPT_TYPE_INVENTORY_VERSION);
-        assert_eq!(JAVASCRIPT_TYPE_INVENTORY_VERSION, 10);
+        assert_eq!(JAVASCRIPT_TYPE_INVENTORY_VERSION, 1);
         let windows_record = phased_inventory
             .records
             .iter()
