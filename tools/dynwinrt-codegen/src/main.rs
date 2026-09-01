@@ -1750,6 +1750,8 @@ fn write_retained_javascript_projected_aliases(
     output_dir: &Path,
     renamed: &[javascript::JavaScriptTypeLayoutRecord],
 ) -> Result<(), String> {
+    // Retained modules have no metadata to re-render, so their historical
+    // implementation symbols remain internal details while public aliases advance.
     let targets = context
         .output_targets()
         .into_iter()
@@ -5022,6 +5024,169 @@ mod tests {
         files
     }
 
+    fn parse_javascript_export_assignments(source: &str) -> BTreeMap<String, String> {
+        let mut assignments = BTreeMap::new();
+        for line in source.lines().map(str::trim) {
+            let Some(export) = line.strip_prefix("exports.") else {
+                continue;
+            };
+            let (name, rhs) = export
+                .strip_suffix(';')
+                .and_then(|assignment| assignment.split_once(" = "))
+                .unwrap_or_else(|| panic!("invalid export assignment: {line}"));
+            assert!(
+                !name.is_empty() && !rhs.is_empty(),
+                "invalid export assignment: {line}"
+            );
+            assert!(
+                assignments
+                    .insert(name.to_string(), rhs.to_string())
+                    .is_none(),
+                "duplicate JavaScript export assignment for `{name}`"
+            );
+        }
+        assignments
+    }
+
+    fn resolve_javascript_export(
+        assignments: &BTreeMap<String, String>,
+        exported_name: &str,
+    ) -> String {
+        let mut rhs = assignments
+            .get(exported_name)
+            .unwrap_or_else(|| panic!("missing JavaScript export `{exported_name}`"))
+            .as_str();
+        let mut visited = BTreeSet::new();
+        while let Some(alias) = rhs.strip_prefix("exports.") {
+            assert!(
+                visited.insert(alias.to_string()),
+                "cyclic JavaScript export alias for `{exported_name}`"
+            );
+            rhs = assignments
+                .get(alias)
+                .unwrap_or_else(|| panic!("missing JavaScript alias target `{alias}`"));
+        }
+        rhs.to_string()
+    }
+
+    fn parse_dts_export_surface(source: &str) -> BTreeMap<String, String> {
+        fn insert_unique(map: &mut BTreeMap<String, String>, name: String, value: String) {
+            assert!(
+                map.insert(name.clone(), value).is_none(),
+                "duplicate declaration or alias for `{name}`"
+            );
+        }
+
+        let lines = source.lines().collect::<Vec<_>>();
+        let mut declarations = BTreeMap::new();
+        let mut aliases = BTreeMap::new();
+        let mut index = 0;
+        while index < lines.len() {
+            let line = lines[index].trim();
+            if let Some(rest) = line.strip_prefix("export declare class ") {
+                let name = rest
+                    .strip_suffix(" {")
+                    .unwrap_or_else(|| panic!("invalid exported class declaration: {line}"));
+                let mut declaration = Vec::new();
+                let mut brace_depth = 0isize;
+                loop {
+                    let declaration_line = lines[index];
+                    brace_depth += declaration_line.matches('{').count() as isize;
+                    brace_depth -= declaration_line.matches('}').count() as isize;
+                    declaration.push(declaration_line);
+                    index += 1;
+                    if brace_depth == 0 {
+                        break;
+                    }
+                    assert!(index < lines.len(), "unterminated declaration for `{name}`");
+                }
+                insert_unique(
+                    &mut declarations,
+                    name.to_string(),
+                    format!("class:{}", declaration.join("\n").replace(name, "$TYPE")),
+                );
+                continue;
+            }
+            if let Some(rest) = line.strip_prefix("export declare const ") {
+                let (name, ty) = rest
+                    .strip_suffix(';')
+                    .and_then(|declaration| declaration.split_once(": "))
+                    .unwrap_or_else(|| panic!("invalid exported const declaration: {line}"));
+                insert_unique(&mut declarations, name.to_string(), format!("const:{ty}"));
+            } else if let Some(rest) = line
+                .strip_prefix("export {")
+                .and_then(|rest| rest.strip_suffix("};"))
+            {
+                for alias in rest.split(',') {
+                    let alias = alias.trim();
+                    let (source, exported) = alias.split_once(" as ").unwrap_or((alias, alias));
+                    assert!(
+                        aliases
+                            .insert(exported.to_string(), (source.to_string(), false))
+                            .is_none(),
+                        "duplicate declaration alias for `{exported}`"
+                    );
+                }
+            } else if let Some(rest) = line.strip_prefix("export type ") {
+                let (exported, source) = rest
+                    .strip_suffix(';')
+                    .and_then(|alias| alias.split_once(" = "))
+                    .unwrap_or_else(|| panic!("invalid exported type alias: {line}"));
+                assert!(
+                    aliases
+                        .insert(exported.to_string(), (source.to_string(), true))
+                        .is_none(),
+                    "duplicate type alias for `{exported}`"
+                );
+            } else {
+                assert!(
+                    !line.starts_with("export "),
+                    "unrecognized exported declaration: {line}"
+                );
+            }
+            index += 1;
+        }
+
+        let classify = |declaration: &str, type_only: bool| {
+            if type_only {
+                format!("type-only:{declaration}")
+            } else if declaration.starts_with("class:") {
+                format!("type+value:{declaration}")
+            } else {
+                format!("value:{declaration}")
+            }
+        };
+        let mut surface = declarations
+            .iter()
+            .map(|(name, declaration)| (name.clone(), classify(declaration, false)))
+            .collect::<BTreeMap<_, _>>();
+        for exported in aliases.keys() {
+            let mut target = exported.as_str();
+            let mut type_only = false;
+            let mut visited = BTreeSet::new();
+            let declaration = loop {
+                assert!(
+                    visited.insert(target.to_string()),
+                    "cyclic declaration alias for `{exported}`"
+                );
+                if let Some(declaration) = declarations.get(target) {
+                    break declaration.clone();
+                }
+                let (source, alias_is_type_only) = aliases
+                    .get(target)
+                    .unwrap_or_else(|| panic!("missing declaration alias target `{target}`"));
+                type_only |= alias_is_type_only;
+                target = source;
+            };
+            insert_unique(
+                &mut surface,
+                exported.clone(),
+                classify(&declaration, type_only),
+            );
+        }
+        surface
+    }
+
     fn synthetic_javascript_class(namespace: &str, iid: &str) -> meta::ClassMeta {
         meta::ClassMeta {
             name: "Widget".into(),
@@ -5054,6 +5219,21 @@ mod tests {
         native_classes: &[meta::ClassMeta],
         previous_records: Option<&[javascript::JavaScriptTypeLayoutRecord]>,
     ) -> Result<Vec<javascript::JavaScriptTypeLayoutRecord>, String> {
+        generate_test_javascript_stage_observed(output, native_classes, previous_records)
+            .map(|stage| stage.retained_renames)
+    }
+
+    struct TestJavaScriptStage {
+        retained_renames: Vec<javascript::JavaScriptTypeLayoutRecord>,
+        current_identities: BTreeSet<javascript::JavaScriptTypeIdentity>,
+        freshly_generated_modules: BTreeSet<String>,
+    }
+
+    fn generate_test_javascript_stage_observed(
+        output: &Path,
+        native_classes: &[meta::ClassMeta],
+        previous_records: Option<&[javascript::JavaScriptTypeLayoutRecord]>,
+    ) -> Result<TestJavaScriptStage, String> {
         fs::create_dir_all(output)
             .map_err(|error| format!("Failed to create {}: {error}", output.display()))?;
         let previous_records = previous_records.map_or_else(
@@ -5077,7 +5257,7 @@ mod tests {
         let current_identities = current_records
             .iter()
             .map(|record| record.identity.clone())
-            .collect::<HashSet<_>>();
+            .collect::<BTreeSet<_>>();
         let retained_renames = previous_records
             .iter()
             .filter(|record| {
@@ -5113,13 +5293,18 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
         )?;
+        let freshly_generated_modules = plan.modules.keys().cloned().collect();
         write_retained_javascript_projected_aliases(&context, output, &retained_renames)?;
         validate_generated_struct_helper_identities(&context, output)?;
         let emitted =
             emitted_javascript_type_records(&context, output, &previous_records, &current_records)?;
         write_javascript_type_inventory(output, &emitted)?;
         write_js_barrel_and_manifest(output, &mut plan)?;
-        Ok(retained_renames)
+        Ok(TestJavaScriptStage {
+            retained_renames,
+            current_identities,
+            freshly_generated_modules,
+        })
     }
 
     #[test]
@@ -5617,7 +5802,7 @@ mod tests {
     }
 
     #[test]
-    fn incremental_javascript_collision_matches_clean_full_generation() {
+    fn incremental_javascript_collision_preserves_semantic_history_equivalence() {
         let windows = synthetic_javascript_class(
             "Windows.Foundation",
             "11111111-1111-1111-1111-111111111111",
@@ -5657,14 +5842,24 @@ mod tests {
         assert!(!phase_one_package.contains("\"./microsoft/ui/foundation/Widget\""));
 
         let phase_one_files = collect_test_file_tree(&phased);
+        let phase_one_windows_js =
+            fs::read_to_string(phased.join("windows/foundation/Widget.js")).unwrap();
+        let phase_one_windows_dts =
+            fs::read_to_string(phased.join("windows/foundation/Widget.d.ts")).unwrap();
         let phase_one_index = fs::read(phased.join("index.d.ts")).unwrap();
         fs::remove_file(phased.join("index.d.ts")).unwrap();
+        let files_without_root = collect_test_file_tree(&phased);
         let error = match generate_test_javascript_stage(&phased, std::slice::from_ref(&microsoft))
         {
             Ok(_) => panic!("retained modules without root metadata must fail closed"),
             Err(error) => error,
         };
         assert!(error.contains("require root export metadata"), "{error}");
+        assert_eq!(
+            collect_test_file_tree(&phased),
+            files_without_root,
+            "failed generation must not partially write output"
+        );
         fs::write(phased.join("index.d.ts"), phase_one_index).unwrap();
         assert_eq!(collect_test_file_tree(&phased), phase_one_files);
 
@@ -5674,27 +5869,73 @@ mod tests {
         assert_eq!(retained_renames[0].identity.namespace, "Windows.Foundation");
         assert_eq!(retained_renames[0].projected_name, phase_one_projected_name);
 
-        assert!(
-            generate_test_javascript_stage(&clean, &[windows, contoso])
-                .unwrap()
-                .is_empty()
-        );
-        let clean_renames =
-            generate_test_javascript_stage(&clean, std::slice::from_ref(&microsoft)).unwrap();
-        assert_eq!(clean_renames, retained_renames);
+        let phase_two_windows_js =
+            fs::read_to_string(phased.join("windows/foundation/Widget.js")).unwrap();
+        let phase_two_windows_dts =
+            fs::read_to_string(phased.join("windows/foundation/Widget.d.ts")).unwrap();
+        let mut expected_windows_js = phase_one_windows_js.clone();
+        expected_windows_js
+            .push_str("exports.WindowsFoundationWidgetClass = exports.FoundationWidget;\n");
+        let mut expected_windows_dts = phase_one_windows_dts.clone();
+        expected_windows_dts
+            .push_str("export { FoundationWidget as WindowsFoundationWidgetClass };\n");
+        if phase_one_windows_js.contains("exports.IID_FoundationWidget =") {
+            expected_windows_js.push_str(
+                "exports.IID_WindowsFoundationWidgetClass = \
+                 exports.IID_FoundationWidget;\n",
+            );
+            expected_windows_dts
+                .push_str("export { IID_FoundationWidget as IID_WindowsFoundationWidgetClass };\n");
+        }
+        assert_eq!(phase_two_windows_js, expected_windows_js);
+        assert_eq!(phase_two_windows_dts, expected_windows_dts);
 
-        let final_inventory = read_javascript_type_inventory(&phased).unwrap();
-        let windows_record = final_inventory
+        assert!(!clean.exists());
+        let full_current_records = javascript_type_layout_records(
+            &[windows.clone(), contoso.clone(), microsoft.clone()],
+            &[],
+            &[],
+        )
+        .unwrap();
+        let clean_stage = generate_test_javascript_stage_observed(
+            &clean,
+            &[windows, contoso, microsoft.clone()],
+            Some(&phase_one_inventory.records),
+        )
+        .unwrap();
+        assert!(clean_stage.retained_renames.is_empty());
+        assert_eq!(
+            clean_stage.current_identities,
+            full_current_records
+                .iter()
+                .map(|record| record.identity.clone())
+                .collect()
+        );
+        assert_eq!(
+            clean_stage.freshly_generated_modules,
+            BTreeSet::from([
+                "contoso/Widget".into(),
+                "microsoft/ui/foundation/Widget".into(),
+                "windows/foundation/Widget".into(),
+            ])
+        );
+
+        let phased_inventory = read_javascript_type_inventory(&phased).unwrap();
+        let clean_inventory = read_javascript_type_inventory(&clean).unwrap();
+        assert_eq!(phased_inventory.version, JAVASCRIPT_TYPE_INVENTORY_VERSION);
+        assert_eq!(clean_inventory.version, JAVASCRIPT_TYPE_INVENTORY_VERSION);
+        assert_eq!(JAVASCRIPT_TYPE_INVENTORY_VERSION, 10);
+        let windows_record = phased_inventory
             .records
             .iter()
             .find(|record| record.identity.namespace == "Windows.Foundation")
             .unwrap();
-        let contoso_record = final_inventory
+        let contoso_record = phased_inventory
             .records
             .iter()
             .find(|record| record.identity.namespace == "Contoso")
             .unwrap();
-        let microsoft_record = final_inventory
+        let microsoft_record = phased_inventory
             .records
             .iter()
             .find(|record| record.identity.namespace == "Microsoft.UI.Foundation")
@@ -5719,26 +5960,113 @@ mod tests {
         assert!(contoso_record.compatibility_aliases.is_empty());
         assert!(microsoft_record.compatibility_aliases.is_empty());
 
-        let windows_js = fs::read_to_string(phased.join("windows/foundation/Widget.js")).unwrap();
+        let phased_records = phased_inventory
+            .records
+            .iter()
+            .map(|record| (record.identity.clone(), record))
+            .collect::<BTreeMap<_, _>>();
+        let clean_records = clean_inventory
+            .records
+            .iter()
+            .map(|record| (record.identity.clone(), record))
+            .collect::<BTreeMap<_, _>>();
         assert_eq!(
-            windows_js
-                .matches(&format!(
-                    "exports.{} = exports.{};",
-                    windows_record.projected_name, phase_one_projected_name
-                ))
-                .count(),
-            1,
-            "{windows_js}"
+            phased_records.keys().collect::<Vec<_>>(),
+            clean_records.keys().collect::<Vec<_>>()
         );
+        for (identity, phased_record) in &phased_records {
+            let clean_record = clean_records[identity];
+            assert_eq!(phased_record.identity, clean_record.identity);
+            assert_eq!(phased_record.projected_name, clean_record.projected_name);
+            assert_eq!(phased_record.abi_identity, clean_record.abi_identity);
+            assert_eq!(
+                phased_record.compatibility_aliases,
+                clean_record.compatibility_aliases
+            );
+            if identity.namespace == "Windows.Foundation" {
+                assert_eq!(phased_record.implementation_name, "FoundationWidget");
+                assert_eq!(
+                    clean_record.implementation_name,
+                    "WindowsFoundationWidgetClass"
+                );
+            } else {
+                assert_eq!(
+                    phased_record.implementation_name,
+                    clean_record.implementation_name
+                );
+            }
+        }
+
+        let clean_windows_js =
+            fs::read_to_string(clean.join("windows/foundation/Widget.js")).unwrap();
+        let phased_assignments = parse_javascript_export_assignments(&phase_two_windows_js);
+        let clean_assignments = parse_javascript_export_assignments(&clean_windows_js);
         assert_eq!(
-            windows_js
-                .matches(&format!(
-                    "exports.{phase_one_projected_name} = {phase_one_projected_name};"
-                ))
-                .count(),
-            1,
-            "{windows_js}"
+            phased_assignments.keys().collect::<BTreeSet<_>>(),
+            clean_assignments.keys().collect::<BTreeSet<_>>()
         );
+        let required_windows_exports = [
+            "Widget",
+            windows_record.projected_name.as_str(),
+            phase_one_projected_name.as_str(),
+        ];
+        let phased_implementation =
+            resolve_javascript_export(&phased_assignments, required_windows_exports[0]);
+        let clean_implementation =
+            resolve_javascript_export(&clean_assignments, required_windows_exports[0]);
+        let phased_iid = resolve_javascript_export(&phased_assignments, "IID_Widget");
+        let clean_iid = resolve_javascript_export(&clean_assignments, "IID_Widget");
+        for exported_name in required_windows_exports {
+            assert_eq!(
+                resolve_javascript_export(&phased_assignments, exported_name),
+                phased_implementation
+            );
+            assert_eq!(
+                resolve_javascript_export(&clean_assignments, exported_name),
+                clean_implementation
+            );
+        }
+        for exported_name in [
+            "IID_Widget",
+            "IID_FoundationWidget",
+            "IID_WindowsFoundationWidgetClass",
+        ] {
+            assert_eq!(
+                resolve_javascript_export(&phased_assignments, exported_name),
+                phased_iid
+            );
+            assert_eq!(
+                resolve_javascript_export(&clean_assignments, exported_name),
+                clean_iid
+            );
+        }
+        for exported_name in phased_assignments.keys() {
+            let phased_target = resolve_javascript_export(&phased_assignments, exported_name);
+            let clean_target = resolve_javascript_export(&clean_assignments, exported_name);
+            if phased_target == phased_implementation && clean_target == clean_implementation {
+                continue;
+            }
+            if phased_target == phased_iid && clean_target == clean_iid {
+                continue;
+            }
+            assert_eq!(
+                phased_target, clean_target,
+                "JavaScript export `{exported_name}` resolves differently"
+            );
+        }
+
+        let clean_windows_dts =
+            fs::read_to_string(clean.join("windows/foundation/Widget.d.ts")).unwrap();
+        let phased_dts_surface = parse_dts_export_surface(&phase_two_windows_dts);
+        let clean_dts_surface = parse_dts_export_surface(&clean_windows_dts);
+        assert_eq!(phased_dts_surface, clean_dts_surface);
+        for exported_name in required_windows_exports {
+            assert!(
+                phased_dts_surface.contains_key(exported_name),
+                "missing consumer-visible declaration `{exported_name}`"
+            );
+        }
+
         let root = fs::read_to_string(phased.join("index.d.ts")).unwrap();
         let root_exports = root
             .lines()
@@ -5774,49 +6102,75 @@ mod tests {
 
         let package = fs::read_to_string(phased.join("package.json")).unwrap();
         let package: serde_json::Value = serde_json::from_str(&package).unwrap();
-        let exports = package["exports"].as_object().unwrap();
         assert_eq!(
-            exports.keys().cloned().collect::<BTreeSet<_>>(),
-            BTreeSet::from([
-                ".".into(),
-                "./proxy".into(),
-                "./lifetime".into(),
-                "./contoso/Widget".into(),
-                "./microsoft/ui/foundation/Widget".into(),
-                "./windows/foundation/Widget".into(),
-            ])
+            package["exports"],
+            serde_json::json!({
+                ".": {
+                    "types": "./index.d.ts",
+                    "import": "./index.mjs",
+                    "require": "./index.js"
+                },
+                "./proxy": {
+                    "types": "./index.d.ts",
+                    "require": "./index.proxy.js"
+                },
+                "./contoso/Widget": {
+                    "types": "./contoso/Widget.d.ts",
+                    "default": "./contoso/Widget.js"
+                },
+                "./lifetime": {
+                    "types": "./lifetime.d.ts",
+                    "default": "./lifetime.js"
+                },
+                "./microsoft/ui/foundation/Widget": {
+                    "types": "./microsoft/ui/foundation/Widget.d.ts",
+                    "default": "./microsoft/ui/foundation/Widget.js"
+                },
+                "./windows/foundation/Widget": {
+                    "types": "./windows/foundation/Widget.d.ts",
+                    "default": "./windows/foundation/Widget.js"
+                }
+            })
         );
-        for canonical in [
-            "lifetime",
-            "windows/foundation/Widget",
-            "contoso/Widget",
-            "microsoft/ui/foundation/Widget",
-        ] {
-            assert_eq!(
-                exports[&format!("./{canonical}")]["types"],
-                format!("./{canonical}.d.ts")
-            );
-            assert_eq!(
-                exports[&format!("./{canonical}")]["default"],
-                format!("./{canonical}.js")
-            );
-        }
-        assert_eq!(exports["."]["types"], "./index.d.ts");
-        assert_eq!(exports["."]["import"], "./index.mjs");
-        assert_eq!(exports["."]["require"], "./index.js");
-        assert_eq!(exports["./proxy"]["types"], "./index.d.ts");
-        assert_eq!(exports["./proxy"]["require"], "./index.proxy.js");
 
         let phased_files = collect_test_file_tree(&phased);
         let clean_files = collect_test_file_tree(&clean);
+        let all_paths = phased_files
+            .keys()
+            .chain(clean_files.keys())
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let differing_paths = all_paths
+            .iter()
+            .filter(|path| phased_files.get(*path) != clean_files.get(*path))
+            .cloned()
+            .collect::<BTreeSet<_>>();
         assert_eq!(
-            phased_files.keys().collect::<Vec<_>>(),
-            clean_files.keys().collect::<Vec<_>>()
+            differing_paths,
+            BTreeSet::from([
+                JAVASCRIPT_TYPE_INVENTORY.into(),
+                "windows/foundation/Widget.d.ts".into(),
+                "windows/foundation/Widget.js".into(),
+            ])
         );
-        for (path, phased_content) in &phased_files {
+        for path in all_paths.difference(&differing_paths) {
             assert_eq!(
-                phased_content, &clean_files[path],
+                phased_files.get(path),
+                clean_files.get(path),
                 "phased and clean output differ at {path}"
+            );
+        }
+        for path in [
+            "index.js",
+            "index.mjs",
+            "index.proxy.js",
+            "index.d.ts",
+            "package.json",
+        ] {
+            assert_eq!(
+                phased_files.get(path),
+                clean_files.get(path),
+                "root output differs at {path}"
             );
         }
 
