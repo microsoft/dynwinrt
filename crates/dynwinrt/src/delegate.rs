@@ -260,12 +260,18 @@ impl DynamicDelegate {
             // The full recursive WinRT signature identifies the ABI layout in
             // the process-wide closure cache. Dispatch still recovers the
             // table-qualified TypeHandle from the delegate instance.
-            TypeKind::Struct(_) => Some(CallbackAbiType::NativeStruct(
-                typ.table()
-                    .try_closed_signature_string_kind(typ.kind())
-                    .ok()?,
-                typ.size_of(),
-            )),
+            TypeKind::Struct(_) => {
+                let size = typ.size_of();
+                if size == 0 {
+                    return None;
+                }
+                Some(CallbackAbiType::NativeStruct(
+                    typ.table()
+                        .try_closed_signature_string_kind(typ.kind())
+                        .ok()?,
+                    size,
+                ))
+            }
             TypeKind::ArrayOfIUnknown
             | TypeKind::Generic { .. }
             | TypeKind::OutValue(_)
@@ -539,10 +545,16 @@ unsafe fn marshal_libffi_arg(
         TypeKind::HResult => Ok(WinRTValue::HResult(HRESULT(unsafe {
             *storage.cast::<i32>()
         }))),
-        TypeKind::I64 => Ok(WinRTValue::I64(unsafe { *storage.cast::<i64>() })),
-        TypeKind::U64 => Ok(WinRTValue::U64(unsafe { *storage.cast::<u64>() })),
+        TypeKind::I64 => Ok(WinRTValue::I64(unsafe {
+            std::ptr::read_unaligned(storage.cast::<i64>())
+        })),
+        TypeKind::U64 => Ok(WinRTValue::U64(unsafe {
+            std::ptr::read_unaligned(storage.cast::<u64>())
+        })),
         TypeKind::F32 => Ok(WinRTValue::F32(unsafe { *storage.cast::<f32>() })),
-        TypeKind::F64 => Ok(WinRTValue::F64(unsafe { *storage.cast::<f64>() })),
+        TypeKind::F64 => Ok(WinRTValue::F64(unsafe {
+            std::ptr::read_unaligned(storage.cast::<f64>())
+        })),
         TypeKind::Guid => Ok(WinRTValue::Guid(unsafe { *storage.cast::<GUID>() })),
         TypeKind::Struct(_) => Ok(WinRTValue::Struct(unsafe {
             ValueTypeData::from_borrowed_abi(typ, storage)
@@ -761,6 +773,61 @@ mod tests {
                 .message()
                 .contains("do not support one or more parameter types")
         );
+    }
+
+    #[test]
+    fn try_create_delegate_rejects_zero_sized_struct_without_panicking() {
+        let table = MetadataTable::new();
+        let progress_type = table.struct_type("Test.EmptyProgress", &[]);
+
+        let result = try_create_delegate(
+            GUID::from_u128(0x77777777_7777_7777_7777_777777777777),
+            vec![table.object(), progress_type],
+            Box::new(|_| HRESULT(0)),
+        );
+
+        let error = match result {
+            Ok(_) => panic!("zero-sized struct callback unexpectedly succeeded"),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .message()
+                .contains("do not support one or more parameter types")
+        );
+    }
+
+    #[test]
+    fn marshal_libffi_arg_reads_eight_byte_scalars_from_four_byte_alignment() {
+        #[repr(align(8))]
+        struct AlignedStorage([u8; 16]);
+
+        let table = MetadataTable::new();
+        let mut storage = AlignedStorage([0; 16]);
+        let pointer = unsafe { storage.0.as_mut_ptr().add(4).cast::<c_void>() };
+        assert_eq!(pointer as usize % 4, 0);
+        assert_ne!(pointer as usize % 8, 0);
+
+        let expected_i64 = -0x1020_3040_5060_708i64;
+        storage.0[4..12].copy_from_slice(&expected_i64.to_ne_bytes());
+        assert!(matches!(
+            unsafe { marshal_libffi_arg(pointer, &table.i64_type()) },
+            Ok(WinRTValue::I64(value)) if value == expected_i64
+        ));
+
+        let expected_u64 = 0xfedc_ba98_7654_3210u64;
+        storage.0[4..12].copy_from_slice(&expected_u64.to_ne_bytes());
+        assert!(matches!(
+            unsafe { marshal_libffi_arg(pointer, &table.u64_type()) },
+            Ok(WinRTValue::U64(value)) if value == expected_u64
+        ));
+
+        let expected_f64 = -12345.625f64;
+        storage.0[4..12].copy_from_slice(&expected_f64.to_ne_bytes());
+        assert!(matches!(
+            unsafe { marshal_libffi_arg(pointer, &table.f64_type()) },
+            Ok(WinRTValue::F64(value)) if value.to_bits() == expected_f64.to_bits()
+        ));
     }
 
     #[test]

@@ -713,6 +713,17 @@ test('delegate creation failures are reported as JavaScript errors', (t) => {
       ),
     { message: /supports up to 2 parameters/ },
   )
+
+  const emptyStruct = DynWinRtType.structType('DynWinRT.Tests.EmptyDelegateArgument', [])
+  t.throws(
+      () =>
+        DynWinRtDelegate.create(
+          WinGuid.parse('f1662550-78fd-4bf1-9022-0a2c85168380'),
+          [objectType, emptyStruct],
+          () => {},
+        ),
+      { message: /struct callbacks do not support/ },
+  )
 })
 
 test('invoke WinRT through dynamic metadata', (t) => {

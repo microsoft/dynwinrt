@@ -29,6 +29,17 @@ def test_delegate_creation_failures_are_python_exceptions():
             lambda *_args: None,
         )
 
+    empty_struct = DynWinRTType.struct_type(
+        "DynWinRT.Tests.EmptyDelegateArgument",
+        [],
+    )
+    with pytest.raises(OSError, match="struct callbacks do not support"):
+        DynWinRtDelegate.create(
+            WinGUID.parse("f1662550-78fd-4bf1-9022-0a2c85168380"),
+            [object_type, empty_struct],
+            lambda *_args: None,
+        )
+
 
 def test_primitive_types():
     """All primitive type factories should return DynWinRTType instances."""

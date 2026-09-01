@@ -2053,10 +2053,10 @@ impl PreparedNativeCallbackOutput {
             Self::U16(value) => unsafe { target.cast::<u16>().write(value) },
             Self::I32(value) => unsafe { target.cast::<i32>().write(value) },
             Self::U32(value) => unsafe { target.cast::<u32>().write(value) },
-            Self::I64(value) => unsafe { target.cast::<i64>().write(value) },
-            Self::U64(value) => unsafe { target.cast::<u64>().write(value) },
+            Self::I64(value) => unsafe { target.cast::<i64>().write_unaligned(value) },
+            Self::U64(value) => unsafe { target.cast::<u64>().write_unaligned(value) },
             Self::F32(value) => unsafe { target.cast::<f32>().write(value) },
-            Self::F64(value) => unsafe { target.cast::<f64>().write(value) },
+            Self::F64(value) => unsafe { target.cast::<f64>().write_unaligned(value) },
             Self::Guid(value) => unsafe { target.cast::<GUID>().write(value) },
             Self::Pointer(value) => unsafe { target.cast::<*mut c_void>().write(value) },
             Self::Bstr(value) => unsafe {
@@ -2675,10 +2675,16 @@ impl CallbackMethodPlan {
                 }
                 TypeKind::I32 => winrt(WinRTValue::I32(unsafe { *value.cast::<i32>() })),
                 TypeKind::U32 => winrt(WinRTValue::U32(unsafe { *value.cast::<u32>() })),
-                TypeKind::I64 => winrt(WinRTValue::I64(unsafe { *value.cast::<i64>() })),
-                TypeKind::U64 => winrt(WinRTValue::U64(unsafe { *value.cast::<u64>() })),
+                TypeKind::I64 => winrt(WinRTValue::I64(unsafe {
+                    std::ptr::read_unaligned(value.cast::<i64>())
+                })),
+                TypeKind::U64 => winrt(WinRTValue::U64(unsafe {
+                    std::ptr::read_unaligned(value.cast::<u64>())
+                })),
                 TypeKind::F32 => winrt(WinRTValue::F32(unsafe { *value.cast::<f32>() })),
-                TypeKind::F64 => winrt(WinRTValue::F64(unsafe { *value.cast::<f64>() })),
+                TypeKind::F64 => winrt(WinRTValue::F64(unsafe {
+                    std::ptr::read_unaligned(value.cast::<f64>())
+                })),
                 TypeKind::Guid => winrt(WinRTValue::Guid(unsafe { *value.cast::<GUID>() })),
                 TypeKind::HString => {
                     let raw = unsafe { *value.cast::<*mut c_void>() };
@@ -7215,6 +7221,61 @@ mod tests {
         assert_eq!(invoke!(10, u64), 18_000_000_000);
         assert_eq!(invoke!(11, f32), 1.5);
         assert_eq!(invoke!(12, f64), -2.25);
+    }
+
+    #[test]
+    fn callback_eight_byte_scalars_support_four_byte_aligned_storage() {
+        #[repr(align(8))]
+        struct AlignedStorage([u8; 16]);
+
+        let table = MetadataTable::new();
+        let mut storage = AlignedStorage([0; 16]);
+        let pointer = unsafe { storage.0.as_mut_ptr().add(4).cast::<c_void>() };
+        assert_eq!(pointer as usize % 4, 0);
+        assert_ne!(pointer as usize % 8, 0);
+
+        let expected_i64 = -0x1020_3040_5060_708i64;
+        storage.0[4..12].copy_from_slice(&expected_i64.to_ne_bytes());
+        assert!(matches!(
+            unsafe {
+                CallbackMethodPlan::read_callback_input(
+                    &ParameterType::WinRT(table.i64_type()),
+                    pointer,
+                )
+            },
+            Ok(Value::WinRt(WinRTValue::I64(value))) if value == expected_i64
+        ));
+        unsafe { PreparedNativeCallbackOutput::I64(expected_i64).commit(pointer) };
+        assert_eq!(&storage.0[4..12], &expected_i64.to_ne_bytes());
+
+        let expected_u64 = 0xfedc_ba98_7654_3210u64;
+        storage.0[4..12].copy_from_slice(&expected_u64.to_ne_bytes());
+        assert!(matches!(
+            unsafe {
+                CallbackMethodPlan::read_callback_input(
+                    &ParameterType::WinRT(table.u64_type()),
+                    pointer,
+                )
+            },
+            Ok(Value::WinRt(WinRTValue::U64(value))) if value == expected_u64
+        ));
+        unsafe { PreparedNativeCallbackOutput::U64(expected_u64).commit(pointer) };
+        assert_eq!(&storage.0[4..12], &expected_u64.to_ne_bytes());
+
+        let expected_f64 = -12345.625f64;
+        storage.0[4..12].copy_from_slice(&expected_f64.to_ne_bytes());
+        assert!(matches!(
+            unsafe {
+                CallbackMethodPlan::read_callback_input(
+                    &ParameterType::WinRT(table.f64_type()),
+                    pointer,
+                )
+            },
+            Ok(Value::WinRt(WinRTValue::F64(value)))
+                if value.to_bits() == expected_f64.to_bits()
+        ));
+        unsafe { PreparedNativeCallbackOutput::F64(expected_f64).commit(pointer) };
+        assert_eq!(&storage.0[4..12], &expected_f64.to_ne_bytes());
     }
 
     #[test]

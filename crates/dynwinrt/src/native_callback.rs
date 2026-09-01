@@ -12,8 +12,6 @@ use std::{
 use libffi::{low, middle::Type};
 use windows_core::HRESULT;
 
-use crate::native_call::system_cif;
-
 const E_FAIL: HRESULT = HRESULT(0x80004005u32 as i32);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -125,6 +123,21 @@ impl CallbackSignature {
         &self.return_abi
     }
 
+    fn validate(&self) -> Result<(), String> {
+        let zero_sized_parameter = self
+            .parameters
+            .iter()
+            .any(|parameter| matches!(parameter, CallbackAbiType::NativeStruct(_, 0)));
+        let zero_sized_result = matches!(
+            &self.return_abi,
+            CallbackReturnAbi::Value(CallbackAbiType::NativeStruct(_, 0))
+        );
+        if zero_sized_parameter || zero_sized_result {
+            return Err("libffi callbacks do not support zero-sized native structs".into());
+        }
+        Ok(())
+    }
+
     pub(crate) unsafe fn initialize_failure_result(&self, result: *mut c_void, error: HRESULT) {
         if result.is_null() {
             return;
@@ -172,8 +185,58 @@ struct CallbackContext {
     dispatch: CallbackDispatch,
 }
 
+struct PreparedCallbackCif {
+    cif: Box<low::ffi_cif>,
+    _argument_types: Vec<Type>,
+    _argument_type_ptrs: Vec<*mut low::ffi_type>,
+    _result_type: Type,
+}
+
+impl PreparedCallbackCif {
+    fn new(argument_types: Vec<Type>, result_type: Type) -> Result<Self, String> {
+        #[cfg(all(windows, target_arch = "x86"))]
+        let abi = libffi_sys::ffi_abi_FFI_STDCALL;
+        #[cfg(not(all(windows, target_arch = "x86")))]
+        let abi = libffi_sys::ffi_abi_FFI_DEFAULT_ABI;
+
+        Self::new_with_abi(argument_types, result_type, abi)
+    }
+
+    fn new_with_abi(
+        argument_types: Vec<Type>,
+        result_type: Type,
+        abi: libffi_sys::ffi_abi,
+    ) -> Result<Self, String> {
+        let mut argument_type_ptrs = argument_types
+            .iter()
+            .map(Type::as_raw_ptr)
+            .collect::<Vec<_>>();
+        let mut cif = Box::new(low::ffi_cif::default());
+        unsafe {
+            low::prep_cif(
+                cif.as_mut(),
+                abi,
+                argument_type_ptrs.len(),
+                result_type.as_raw_ptr(),
+                argument_type_ptrs.as_mut_ptr(),
+            )
+        }
+        .map_err(|error| format!("libffi could not prepare callback CIF: {error:?}"))?;
+        Ok(Self {
+            cif,
+            _argument_types: argument_types,
+            _argument_type_ptrs: argument_type_ptrs,
+            _result_type: result_type,
+        })
+    }
+
+    fn as_raw_ptr(&self) -> *mut low::ffi_cif {
+        self.cif.as_ref() as *const low::ffi_cif as *mut low::ffi_cif
+    }
+}
+
 struct OwnedCallbackClosure {
-    _cif: Box<libffi::middle::Cif>,
+    _cif: PreparedCallbackCif,
     closure: *mut low::ffi_closure,
     code: *const c_void,
     _context: Box<CallbackContext>,
@@ -190,17 +253,26 @@ impl OwnedCallbackClosure {
         signature: CallbackSignature,
         dispatch: CallbackDispatch,
     ) -> Result<Self, String> {
-        let cif = Box::new(system_cif(
-            signature.argument_types(),
-            signature.result_type(),
-        ));
+        Self::new_with_allocator(slot, signature, dispatch, |code| unsafe {
+            libffi_sys::ffi_closure_alloc(size_of::<low::ffi_closure>(), code).cast()
+        })
+    }
+
+    fn new_with_allocator(
+        slot: usize,
+        signature: CallbackSignature,
+        dispatch: CallbackDispatch,
+        allocate: impl FnOnce(*mut *mut c_void) -> *mut low::ffi_closure,
+    ) -> Result<Self, String> {
+        let cif = PreparedCallbackCif::new(signature.argument_types(), signature.result_type())?;
         let context = Box::new(CallbackContext {
             slot,
             signature,
             dispatch,
         });
-        let (closure, code) = low::closure_alloc();
-        if closure.is_null() || code.as_ptr().is_null() {
+        let mut code = std::ptr::null_mut();
+        let closure = allocate(&mut code);
+        if closure.is_null() || code.is_null() {
             if !closure.is_null() {
                 unsafe { low::closure_free(closure) };
             }
@@ -212,7 +284,7 @@ impl OwnedCallbackClosure {
                 cif.as_raw_ptr(),
                 Some(invoke_callback),
                 context.as_ref() as *const CallbackContext as *mut c_void,
-                code.as_mut_ptr(),
+                code,
             )
         };
         if status != libffi_sys::ffi_status_FFI_OK {
@@ -224,7 +296,7 @@ impl OwnedCallbackClosure {
         Ok(Self {
             _cif: cif,
             closure,
-            code: code.as_ptr(),
+            code,
             _context: context,
         })
     }
@@ -267,6 +339,7 @@ pub(crate) fn callback_code(
     signature: CallbackSignature,
     dispatch: CallbackDispatch,
 ) -> Result<*const c_void, String> {
+    signature.validate()?;
     let key = ClosureKey {
         slot,
         signature: signature.clone(),
@@ -309,5 +382,49 @@ mod tests {
         let callback: unsafe extern "system" fn(*mut c_void, i32) -> HRESULT =
             unsafe { std::mem::transmute(first) };
         assert_eq!(unsafe { callback(std::ptr::null_mut(), 27) }, HRESULT(27));
+    }
+
+    #[test]
+    fn callback_cif_preparation_failure_is_returned() {
+        let result = PreparedCallbackCif::new_with_abi(
+            vec![Type::pointer()],
+            Type::i32(),
+            u32::MAX as libffi_sys::ffi_abi,
+        );
+        let error = match result {
+            Ok(_) => panic!("invalid callback ABI unexpectedly prepared a CIF"),
+            Err(error) => error,
+        };
+        assert!(error.contains("could not prepare callback CIF"));
+    }
+
+    #[test]
+    fn zero_sized_callback_struct_is_rejected_before_cif_preparation() {
+        let signature = CallbackSignature {
+            parameters: vec![CallbackAbiType::NativeStruct("Test.Empty".into(), 0)],
+            libffi_parameters: vec![Type::void()],
+            return_abi: CallbackReturnAbi::HResult,
+            libffi_return: Type::i32(),
+        };
+        let result = callback_code(3, signature, test_dispatch);
+        let error = match result {
+            Ok(_) => panic!("zero-sized callback struct unexpectedly created a closure"),
+            Err(error) => error,
+        };
+        assert!(error.contains("zero-sized native structs"));
+    }
+
+    #[test]
+    fn callback_closure_allocation_failure_is_returned() {
+        let signature = CallbackSignature::hresult(vec![(CallbackAbiType::I32, Type::i32())]);
+        let result =
+            OwnedCallbackClosure::new_with_allocator(3, signature, test_dispatch, |_code| {
+                std::ptr::null_mut()
+            });
+        let error = match result {
+            Ok(_) => panic!("failed callback allocation unexpectedly succeeded"),
+            Err(error) => error,
+        };
+        assert!(error.contains("could not allocate executable callback memory"));
     }
 }
