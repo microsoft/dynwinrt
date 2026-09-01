@@ -148,6 +148,8 @@ pub struct ClassMeta {
     pub static_interfaces: Vec<InterfaceMeta>,
     pub has_default_constructor: bool,
     pub constructors: Vec<ConstructorMeta>,
+    /// The runtime class appears as a value in a loaded WinRT method signature.
+    pub is_referenced_as_value: bool,
     /// The runtime class declares MarshalingBehavior(Agile).
     pub is_agile: bool,
     /// XML doc summary (populated from sibling .xml).
@@ -186,6 +188,63 @@ impl ClassMeta {
                     })
         })
     }
+}
+
+/// Collect every named type that appears in a WinRT method signature, including
+/// types nested inside arrays and parameterized types.
+pub fn method_signature_type_names(winmd_paths: &str) -> Result<HashSet<(String, String)>, String> {
+    fn collect(typ: &windows_metadata::Type, names: &mut HashSet<(String, String)>) {
+        match typ {
+            windows_metadata::Type::Name(name) => {
+                names.insert((name.namespace.clone(), name.name.clone()));
+                for generic in &name.generics {
+                    collect(generic, names);
+                }
+            }
+            windows_metadata::Type::Array(inner)
+            | windows_metadata::Type::ArrayRef(inner)
+            | windows_metadata::Type::ConstRef(inner)
+            | windows_metadata::Type::PtrMut(inner, _)
+            | windows_metadata::Type::PtrConst(inner, _)
+            | windows_metadata::Type::ArrayFixed(inner, _) => collect(inner, names),
+            _ => {}
+        }
+    }
+
+    let index = load_index(winmd_paths)
+        .ok_or_else(|| "Failed to load metadata method signatures".to_string())?;
+    let mut names = HashSet::new();
+    for def in index.all() {
+        if !def
+            .flags()
+            .contains(windows_metadata::TypeAttributes::WindowsRuntime)
+        {
+            continue;
+        }
+        let generics = def
+            .generic_params()
+            .enumerate()
+            .map(|(index, _)| {
+                u16::try_from(index)
+                    .map(windows_metadata::Type::Generic)
+                    .map_err(|_| {
+                        format!(
+                            "Generic parameter index exceeds u16 for {}.{}",
+                            def.namespace(),
+                            def.name()
+                        )
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        for method in def.methods() {
+            let signature = method.signature(&generics);
+            collect(&signature.return_type, &mut names);
+            for typ in &signature.types {
+                collect(typ, &mut names);
+            }
+        }
+    }
+    Ok(names)
 }
 
 /// List all unique namespaces found in the given winmd files.
@@ -1216,6 +1275,7 @@ fn parse_class_from_index(index: &reader::Index, namespace: &str, name: &str) ->
         static_interfaces,
         has_default_constructor,
         constructors,
+        is_referenced_as_value: false,
         is_agile,
         doc: None,
         deprecated: None,

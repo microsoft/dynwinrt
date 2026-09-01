@@ -22,6 +22,32 @@ thread_local! {
     static MODULE_LAYOUT: RefCell<Option<PythonModuleLayout>> = const { RefCell::new(None) };
 }
 
+const MAX_PYTHON_MODULE_COMPONENT_LENGTH: usize = 120;
+const MODULE_HASH_HEX_LENGTH: usize = 16;
+
+fn stable_module_hash(value: &str) -> u64 {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in value.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+fn shorten_module_component(value: &str) -> String {
+    if value.chars().count() <= MAX_PYTHON_MODULE_COMPONENT_LENGTH {
+        return value.to_string();
+    }
+    let prefix_length = MAX_PYTHON_MODULE_COMPONENT_LENGTH - MODULE_HASH_HEX_LENGTH - 1;
+    let prefix = value
+        .chars()
+        .take(prefix_length)
+        .collect::<String>()
+        .trim_end_matches('_')
+        .to_string();
+    format!("{prefix}_{:016x}", stable_module_hash(value))
+}
+
 pub struct PythonModuleLayoutGuard;
 
 impl Drop for PythonModuleLayoutGuard {
@@ -49,18 +75,7 @@ pub fn install_python_module_layout(
     let mut unique_modules = HashMap::new();
     let mut owners = HashMap::<String, PythonTypeIdentity>::new();
     for identity in identities {
-        let namespace = identity
-            .namespace
-            .split('.')
-            .filter(|segment| !segment.is_empty())
-            .map(to_snake_case)
-            .collect::<Vec<_>>()
-            .join("__");
-        let module = if namespace.is_empty() {
-            to_snake_case(&identity.name)
-        } else {
-            format!("{namespace}__{}", to_snake_case(&identity.name))
-        };
+        let module = qualified_module_name(&identity.namespace, &identity.name);
         if let Some(existing) = owners.insert(module.clone(), identity.clone()) {
             return Err(format!(
                 "Python module name collision: `{}.{}` and `{}.{}` both normalize to `{module}.py`",
@@ -102,29 +117,24 @@ pub fn python_module_name(namespace: &str, name: &str) -> String {
 }
 
 fn qualified_module_name(namespace: &str, name: &str) -> String {
-    let namespace = namespace
-        .split('.')
-        .filter(|segment| !segment.is_empty())
-        .map(to_snake_case)
-        .collect::<Vec<_>>()
-        .join("__");
-    if namespace.is_empty() {
+    let namespace = python_namespace_segments(namespace).join("__");
+    shorten_module_component(&if namespace.is_empty() {
         to_snake_case(name)
     } else {
         format!("{namespace}__{}", to_snake_case(name))
-    }
+    })
 }
 
 pub fn python_namespace_segments(namespace: &str) -> Vec<String> {
     namespace
         .split('.')
         .filter(|segment| !segment.is_empty())
-        .map(to_snake_case)
+        .map(|segment| shorten_module_component(&to_snake_case(segment)))
         .collect()
 }
 
 pub fn python_public_module_name(name: &str) -> String {
-    to_snake_case(name)
+    shorten_module_component(&to_snake_case(name))
 }
 
 pub fn python_public_qualified_module_name(namespace: &str, name: &str) -> String {
@@ -234,7 +244,7 @@ pub fn to_snake_case_filename(name: &str) -> String {
             .borrow()
             .as_ref()
             .and_then(|layout| layout.unique_modules.get(name).cloned())
-            .unwrap_or_else(|| to_snake_case(name))
+            .unwrap_or_else(|| shorten_module_component(&to_snake_case(name)))
     })
 }
 
@@ -262,6 +272,36 @@ mod tests {
         assert_eq!(
             python_public_qualified_module_name("Microsoft.UI.Xaml.Controls", "Button"),
             "microsoft.ui.xaml.controls.button"
+        );
+    }
+
+    #[test]
+    fn long_module_names_use_stable_hash_suffixes() {
+        let name = "TypedEventHandler_MediaPlaybackCommandManager_MediaPlaybackCommandManagerAutoRepeatModeReceivedEventArgsAdditionalCompatibilitySuffix";
+        let other = format!("{name}2");
+        let shortened = python_public_module_name(name);
+        assert_eq!(
+            shortened.chars().count(),
+            MAX_PYTHON_MODULE_COMPONENT_LENGTH
+        );
+        assert_eq!(shortened, python_public_module_name(name));
+        assert_ne!(shortened, python_public_module_name(&other));
+        assert!(shortened.starts_with("typed_event_handler_media_playback_command_manager"));
+    }
+
+    #[test]
+    fn installed_layout_shortens_implementation_and_public_modules_consistently() {
+        let name = "TypedEventHandler_MediaPlaybackCommandManager_MediaPlaybackCommandManagerAutoRepeatModeReceivedEventArgsAdditionalCompatibilitySuffix";
+        let _guard = install_python_module_layout([PythonTypeIdentity {
+            namespace: "Windows.Foundation".into(),
+            name: name.into(),
+        }])
+        .unwrap();
+        let implementation = python_module_name("Windows.Foundation", name);
+        assert!(implementation.chars().count() <= MAX_PYTHON_MODULE_COMPONENT_LENGTH);
+        assert_eq!(to_snake_case_filename(name), implementation);
+        assert!(
+            python_public_module_name(name).chars().count() <= MAX_PYTHON_MODULE_COMPONENT_LENGTH
         );
     }
 

@@ -1024,6 +1024,14 @@ fn generate_for_types(
         None
     };
 
+    if lang == "py" && !dry_run {
+        let signature_types = meta::method_signature_type_names(winmd)?;
+        for class in &mut all_classes {
+            class.is_referenced_as_value =
+                signature_types.contains(&(class.namespace.clone(), class.name.clone()));
+        }
+    }
+
     // Compute the set of interfaces `generate_js_files` will actually emit
     // (matches the class-name-collision + no-IID filter there). Everything
     // downstream — `known_types`, the barrel index, generated imports — must
@@ -1162,7 +1170,6 @@ fn generate_for_types(
     } else {
         None
     };
-
     let (delegate_signatures, delegate_sig_refs, delegate_param_wraps) =
         project::build_delegate_signatures(&all_interfaces, &delegate_type_names, &known_types);
 
@@ -3848,8 +3855,8 @@ fn merge_python_lazy_root_indexes(
     suppressed_names: &HashSet<String>,
 ) -> String {
     let mut exports = BTreeMap::<String, (String, String)>::new();
-    collect_python_root_exports(existing, suppressed_names, &mut exports);
     collect_python_root_exports(generated, suppressed_names, &mut exports);
+    collect_python_root_exports(existing, suppressed_names, &mut exports);
 
     let mut out = String::from(GENERATED_PYTHON_HEADER);
     out.push_str("from importlib import import_module as _import_module\n\n");
@@ -3956,7 +3963,7 @@ fn merge_python_indexes(
 ) -> String {
     let mut imports = BTreeSet::new();
     let mut exported_symbols = HashSet::new();
-    for line in existing.lines().chain(generated.lines()) {
+    for line in generated.lines().chain(existing.lines()) {
         if line.starts_with("from .") {
             let (line, comment) = line
                 .split_once("  #")
@@ -4593,13 +4600,17 @@ fn copy_directory(source: &Path, destination: &Path) -> Result<(), String> {
 
 fn write_python_package_manifest(output_dir: &Path, final_output_dir: &Path) -> Result<(), String> {
     let manifest_path = output_dir.join("pyproject.toml");
-    if manifest_path.exists()
-        && !python_inventory_contains(output_dir, Path::new("pyproject.toml"))?
-    {
-        return Err(format!(
-            "Refusing to overwrite existing non-generated manifest '{}'",
-            final_output_dir.join("pyproject.toml").display()
-        ));
+    let setup_path = output_dir.join("setup.cfg");
+    for (path, name) in [
+        (&manifest_path, "pyproject.toml"),
+        (&setup_path, "setup.cfg"),
+    ] {
+        if path.exists() && !python_inventory_contains(output_dir, Path::new(name))? {
+            return Err(format!(
+                "Refusing to overwrite existing non-generated manifest '{}'",
+                final_output_dir.join(name).display()
+            ));
+        }
     }
     let leaf = final_output_dir
         .file_name()
@@ -4621,7 +4632,35 @@ fn write_python_package_manifest(output_dir: &Path, final_output_dir: &Path) -> 
         runtime_version: version,
         namespace_packages: &namespace_packages,
     });
-    write_file(&manifest_path, &manifest)
+    let build_cache_key = python_build_cache_key(output_dir, &import_name)?;
+    let setup = package::render_python_setup_cfg(&build_cache_key);
+    write_file(&manifest_path, &manifest)?;
+    write_file(&setup_path, &setup)
+}
+
+fn python_build_cache_key(output_dir: &Path, import_name: &str) -> Result<String, String> {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in b"package\0"
+        .iter()
+        .copied()
+        .chain(import_name.bytes())
+        .chain(std::iter::once(b'\n'))
+    {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    for path in collect_generated_python_files(output_dir, false, false)? {
+        let normalized = path
+            .components()
+            .map(|component| component.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/");
+        for byte in normalized.bytes().chain(std::iter::once(b'\n')) {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+    }
+    Ok(format!("{hash:016x}"))
 }
 
 const PYTHON_GENERATED_INVENTORY: &str = ".dynwinrt-generated-files";
@@ -4658,8 +4697,11 @@ fn remove_all_generated_python_stubs(output_dir: &Path) -> Result<(), String> {
                 .extension()
                 .is_some_and(|extension| extension == "pyi")
                 || relative.file_name().is_some_and(|name| name == "py.typed");
-            let path = output_dir.join(relative);
-            if is_stub && path.is_file() {
+            let path = output_dir.join(&relative);
+            if is_stub
+                && path.is_file()
+                && is_generator_owned_python_source_file(output_dir, &relative)?
+            {
                 fs::remove_file(&path)
                     .map_err(|e| format!("Failed to remove {}: {}", path.display(), e))?;
             }
@@ -4678,7 +4720,9 @@ fn remove_all_generated_python_stubs(output_dir: &Path) -> Result<(), String> {
                 .file_type()
                 .map_err(|e| format!("Failed to inspect {}: {}", path.display(), e))?;
             if file_type.is_dir() {
-                visit(&path)?;
+                if is_generated_python_namespace(&path)? {
+                    visit(&path)?;
+                }
             } else if file_type.is_file()
                 && path.extension().is_some_and(|extension| extension == "pyi")
             {
@@ -4708,14 +4752,25 @@ fn clean_python_generated_output(output_dir: &Path) -> Result<(), String> {
         collect_generated_python_files(output_dir, false, false)?
     };
 
+    let files = files
+        .into_iter()
+        .map(|relative| {
+            if !is_safe_relative_path(&relative) {
+                return Err(format!(
+                    "Invalid path `{}` in {}",
+                    relative.display(),
+                    inventory_path.display()
+                ));
+            }
+            let owned = is_generator_owned_python_source_file(output_dir, &relative)?;
+            Ok((relative, owned))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+
     let mut parent_dirs = HashSet::new();
-    for relative in files {
-        if !is_safe_relative_path(&relative) {
-            return Err(format!(
-                "Invalid path `{}` in {}",
-                relative.display(),
-                inventory_path.display()
-            ));
+    for (relative, owned) in files {
+        if !owned {
+            continue;
         }
         let path = output_dir.join(&relative);
         if path.is_file() {
@@ -4794,13 +4849,15 @@ fn collect_generated_python_files(
                 .file_type()
                 .map_err(|e| format!("Failed to inspect {}: {}", path.display(), e))?;
             if file_type.is_dir() {
-                visit(
-                    root,
-                    &path,
-                    include_root_manifest,
-                    include_root_marker,
-                    files,
-                )?;
+                if is_generated_python_namespace(&path)? {
+                    visit(
+                        root,
+                        &path,
+                        include_root_manifest,
+                        include_root_marker,
+                        files,
+                    )?;
+                }
                 continue;
             }
             if !file_type.is_file() || entry.file_name() == PYTHON_GENERATED_INVENTORY {
@@ -4809,7 +4866,7 @@ fn collect_generated_python_files(
 
             let generated = match entry.file_name().to_str() {
                 Some("py.typed") => include_root_marker && current == root,
-                Some("pyproject.toml") => include_root_manifest && current == root,
+                Some("pyproject.toml" | "setup.cfg") => include_root_manifest && current == root,
                 Some(name) if name.ends_with(".py") || name.ends_with(".pyi") => {
                     fs::read_to_string(&path)
                         .map_err(|e| format!("Failed to inspect {}: {}", path.display(), e))?
@@ -4843,6 +4900,65 @@ fn is_safe_relative_path(path: &Path) -> bool {
             .all(|component| matches!(component, std::path::Component::Normal(_)))
 }
 
+fn is_generated_python_namespace(path: &Path) -> Result<bool, String> {
+    let init = path.join("__init__.py");
+    if !init.is_file() {
+        return Ok(false);
+    }
+    Ok(fs::read_to_string(&init)
+        .map_err(|error| format!("Failed to inspect {}: {error}", init.display()))?
+        .starts_with(GENERATED_PYTHON_HEADER))
+}
+
+fn is_generator_owned_python_source_file(
+    output_dir: &Path,
+    relative: &Path,
+) -> Result<bool, String> {
+    if !is_safe_relative_path(relative) {
+        return Ok(false);
+    }
+    let path = output_dir.join(relative);
+    if !path.is_file() {
+        return Ok(false);
+    }
+    let parent = relative
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty());
+    if parent.is_none()
+        && relative.file_name().is_some_and(|name| {
+            matches!(
+                name.to_str(),
+                Some("pyproject.toml" | "setup.cfg" | "py.typed")
+            )
+        })
+    {
+        return Ok(true);
+    }
+    if !relative
+        .extension()
+        .is_some_and(|extension| extension == "py" || extension == "pyi")
+        || !fs::read_to_string(&path)
+            .map_err(|error| format!("Failed to inspect {}: {error}", path.display()))?
+            .starts_with(GENERATED_PYTHON_HEADER)
+    {
+        return Ok(false);
+    }
+    let Some(parent) = parent else {
+        return Ok(true);
+    };
+    let mut current = output_dir.to_path_buf();
+    for component in parent.components() {
+        let std::path::Component::Normal(component) = component else {
+            return Ok(false);
+        };
+        current.push(component);
+        if !is_generated_python_namespace(&current)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 fn collect_python_namespace_packages(output_dir: &Path) -> Result<Vec<String>, String> {
     fn visit(root: &Path, current: &Path, packages: &mut Vec<String>) -> Result<(), String> {
         for entry in fs::read_dir(current)
@@ -4858,18 +4974,19 @@ fn collect_python_namespace_packages(output_dir: &Path) -> Result<Vec<String>, S
                 continue;
             }
             let path = entry.path();
-            if path.join("__init__.py").is_file() {
-                let relative = path.strip_prefix(root).map_err(|e| {
-                    format!("Failed to normalize package path {}: {}", path.display(), e)
-                })?;
-                packages.push(
-                    relative
-                        .components()
-                        .map(|component| component.as_os_str().to_string_lossy())
-                        .collect::<Vec<_>>()
-                        .join("."),
-                );
+            if !is_generated_python_namespace(&path)? {
+                continue;
             }
+            let relative = path.strip_prefix(root).map_err(|e| {
+                format!("Failed to normalize package path {}: {}", path.display(), e)
+            })?;
+            packages.push(
+                relative
+                    .components()
+                    .map(|component| component.as_os_str().to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join("."),
+            );
             visit(root, &path, packages)?;
         }
         Ok(())
@@ -6454,6 +6571,56 @@ mod tests {
     }
 
     #[test]
+    fn python_build_cache_key_ignores_user_directories() {
+        let output = test_directory("python-build-cache-key");
+        fs::create_dir_all(&output).unwrap();
+        fs::write(
+            output.join("generated.py"),
+            format!("{GENERATED_PYTHON_HEADER}VALUE = True\n"),
+        )
+        .unwrap();
+        let import_name = normalize_python_package_name(
+            output
+                .file_name()
+                .and_then(|name| name.to_str())
+                .expect("test output name"),
+        );
+        let initial = python_build_cache_key(&output, &import_name).unwrap();
+        let cached = output
+            .join(".venv")
+            .join("Lib")
+            .join("site-packages")
+            .join("generated_bindings");
+        fs::create_dir_all(&cached).unwrap();
+        fs::write(
+            cached.join("legacy.py"),
+            format!("{GENERATED_PYTHON_HEADER}VALUE = True\n"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            python_build_cache_key(&output, &import_name).unwrap(),
+            initial
+        );
+        assert_ne!(
+            python_build_cache_key(&output, "renamed_bindings").unwrap(),
+            initial
+        );
+
+        write_python_package_manifest(&output, &output).unwrap();
+        write_python_generated_inventory(&output, true).unwrap();
+        assert!(
+            fs::read_to_string(output.join("setup.cfg"))
+                .unwrap()
+                .contains(&format!("build-base = .dynwinrt-build/{initial}"))
+        );
+        let inventory = fs::read_to_string(output.join(PYTHON_GENERATED_INVENTORY)).unwrap();
+        assert!(inventory.lines().any(|line| line == "setup.cfg"));
+        assert!(!inventory.contains(".venv"));
+        fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
     fn stale_cleanup_removes_only_inventory_files() {
         let output = test_directory("stale-cleanup");
         fs::create_dir_all(output.join("old_namespace")).unwrap();
@@ -6483,6 +6650,47 @@ mod tests {
     }
 
     #[test]
+    fn python_output_transaction_preserves_user_directories() {
+        let output = test_directory("python-packaging-artifacts");
+        let user_directories = [
+            PathBuf::from("build").join("lib"),
+            PathBuf::from("dist"),
+            PathBuf::from("venv"),
+            PathBuf::from(".venv"),
+            PathBuf::from("env"),
+            PathBuf::from(".tox"),
+            PathBuf::from(".nox"),
+            PathBuf::from("__pycache__"),
+            PathBuf::from("generated_bindings.egg-info"),
+            PathBuf::from("generated_bindings.dist-info"),
+        ];
+        fs::create_dir_all(&output).unwrap();
+        for relative in &user_directories {
+            fs::create_dir_all(output.join(relative)).unwrap();
+            fs::write(output.join(relative).join("cached.py"), "cached\n").unwrap();
+        }
+        fs::write(output.join("existing.py"), "existing\n").unwrap();
+
+        let transaction = OutputTransaction::begin(&output).unwrap();
+        assert!(transaction.stage_dir().join("existing.py").exists());
+        for relative in &user_directories {
+            assert!(
+                transaction
+                    .stage_dir()
+                    .join(relative)
+                    .join("cached.py")
+                    .exists()
+            );
+        }
+        transaction.commit().unwrap();
+
+        for relative in &user_directories {
+            assert!(output.join(relative).join("cached.py").exists());
+        }
+        fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
     fn manual_python_manifest_is_not_overwritten() {
         let output = test_directory("manual-manifest");
         fs::create_dir_all(&output).unwrap();
@@ -6500,6 +6708,24 @@ mod tests {
             fs::read_to_string(output.join("pyproject.toml"))
                 .unwrap()
                 .contains("name = \"manual\"")
+        );
+        fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
+    fn manual_python_build_config_is_not_overwritten() {
+        let output = test_directory("manual-build-config");
+        fs::create_dir_all(&output).unwrap();
+        fs::write(output.join("setup.cfg"), "[build]\nbuild-base = custom\n").unwrap();
+
+        let error = write_python_package_manifest(&output, &output)
+            .expect_err("manual build config must be preserved");
+
+        assert!(error.contains("Refusing to overwrite"));
+        assert!(
+            fs::read_to_string(output.join("setup.cfg"))
+                .unwrap()
+                .contains("build-base = custom")
         );
         fs::remove_dir_all(output).unwrap();
     }
@@ -6592,8 +6818,10 @@ mod tests {
 
         let merged = merge_python_indexes(&existing, &generated, &HashSet::new());
 
-        assert!(merged.contains("from .contoso__first import First, EventRegistrationToken, pack_event_registration_token"));
-        assert!(merged.contains("from .contoso__second import Second, TextSegment"));
+        assert!(merged.contains("from .contoso__first import First"));
+        assert!(merged.contains(
+            "from .contoso__second import Second, EventRegistrationToken, pack_event_registration_token, TextSegment"
+        ));
         assert_eq!(merged.matches("EventRegistrationToken").count(), 1);
         assert_eq!(merged.matches("pack_event_registration_token").count(), 1);
     }
@@ -6610,7 +6838,7 @@ mod tests {
         assert!(merged.contains("from importlib import import_module as _import_module"));
         assert!(merged.contains("\"First\": (\".contoso__first\", \"First\")"));
         assert!(merged.contains("\"Second\": (\".contoso__second\", \"Second\")"));
-        assert!(merged.contains("\"Shared\": (\".contoso__first\", \"Shared\")"));
+        assert!(merged.contains("\"Shared\": (\".contoso__second\", \"Shared\")"));
         assert_eq!(merged.matches("\"Shared\": (").count(), 1);
         assert!(!merged.contains("from .contoso__first import"));
         assert!(merged.contains("def __getattr__(name):"));
@@ -6630,13 +6858,38 @@ mod tests {
     fn generated_inventory_does_not_claim_nested_manual_metadata() {
         let output = test_directory("manual-metadata");
         let nested = output.join("manual_package");
+        let namespace = output.join("windows").join("foundation");
+        let cached = output
+            .join("venv")
+            .join("Lib")
+            .join("site-packages")
+            .join("generated_bindings");
         fs::create_dir_all(&nested).unwrap();
+        fs::create_dir_all(&namespace).unwrap();
+        fs::create_dir_all(&cached).unwrap();
         fs::write(
             nested.join("pyproject.toml"),
             "[project]\nname = \"manual\"\n",
         )
         .unwrap();
         fs::write(nested.join("py.typed"), "").unwrap();
+        fs::write(
+            output.join("windows").join("__init__.py"),
+            GENERATED_PYTHON_HEADER,
+        )
+        .unwrap();
+        fs::write(namespace.join("__init__.py"), GENERATED_PYTHON_HEADER).unwrap();
+        fs::write(
+            namespace.join("uri.py"),
+            format!("{GENERATED_PYTHON_HEADER}class Uri: ...\n"),
+        )
+        .unwrap();
+        fs::write(cached.join("__init__.py"), GENERATED_PYTHON_HEADER).unwrap();
+        fs::write(
+            cached.join("legacy.py"),
+            format!("{GENERATED_PYTHON_HEADER}class Legacy: ...\n"),
+        )
+        .unwrap();
         fs::write(
             output.join("generated.py"),
             format!("{GENERATED_PYTHON_HEADER}VALUE = True\n"),
@@ -6647,8 +6900,52 @@ mod tests {
         let inventory = fs::read_to_string(output.join(PYTHON_GENERATED_INVENTORY)).unwrap();
 
         assert!(inventory.contains("generated.py"));
+        assert!(
+            inventory
+                .lines()
+                .map(Path::new)
+                .any(|path| path == Path::new("windows").join("foundation").join("uri.py"))
+        );
+        assert!(!inventory.contains("venv"));
         assert!(!inventory.contains("pyproject.toml"));
         assert!(!inventory.contains("py.typed"));
+
+        let polluted_inventory = [
+            PathBuf::from("generated.py"),
+            PathBuf::from("windows").join("__init__.py"),
+            PathBuf::from("windows")
+                .join("foundation")
+                .join("__init__.py"),
+            PathBuf::from("windows").join("foundation").join("uri.py"),
+            PathBuf::from("venv")
+                .join("Lib")
+                .join("site-packages")
+                .join("generated_bindings")
+                .join("__init__.py"),
+            PathBuf::from("venv")
+                .join("Lib")
+                .join("site-packages")
+                .join("generated_bindings")
+                .join("legacy.py"),
+        ];
+        fs::write(
+            output.join(PYTHON_GENERATED_INVENTORY),
+            format!(
+                "{}\n",
+                polluted_inventory
+                    .iter()
+                    .map(|path| path.to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ),
+        )
+        .unwrap();
+        clean_python_generated_output(&output).unwrap();
+        assert!(!output.join("generated.py").exists());
+        assert!(!output.join("windows").exists());
+        assert!(cached.join("__init__.py").exists());
+        assert!(cached.join("legacy.py").exists());
+        assert!(nested.join("pyproject.toml").exists());
         fs::remove_dir_all(output).unwrap();
     }
 }

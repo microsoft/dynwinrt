@@ -67,6 +67,7 @@ from dynwinrt import (\n\
     DynWinRTArray as DynWinRTArray, DynWinRTStruct as DynWinRTStruct,\n\
     DynWinRtDelegate as DynWinRtDelegate, WinGUID as WinGUID,\n\
     _DynWinRTProjector as _DynWinRTProjector,\n\
+    _DynWinRTProjectableClass as _DynWinRTProjectableClass,\n\
     _DynWinRTRuntimeClass as _DynWinRTRuntimeClass,\n\
 )\n"
     )
@@ -464,12 +465,9 @@ pub fn generate_class_stub(
         .required_interfaces
         .iter()
         .any(|interface| interface.iid == "30d5a829-7fa4-4026-83bb-d75bae4ea99e");
-    let supports_interface_projection = class
-        .default_interface
-        .as_ref()
-        .is_some_and(|interface| !interface.iid.is_empty() || interface.generic_piid.is_some())
-        || !class.required_interfaces.is_empty();
     let projectable = super::has_projectable_default_interface(class);
+    let native_projectable = super::has_native_projector(class);
+    let supports_interface_projection = projectable || !class.required_interfaces.is_empty();
 
     let mut out = String::new();
     out.push_str(HEADER);
@@ -477,6 +475,8 @@ pub fn generate_class_stub(
     out.push_str(IMPORT_LINE);
     if projectable {
         out.push_str("from ._typing import _DynWinRTRuntimeClass\n");
+    } else if native_projectable {
+        out.push_str("from ._typing import _DynWinRTProjectableClass\n");
     }
     out.push_str("from typing import Protocol, Self\n");
     if !has_constructor_stub_overload(class) {
@@ -701,6 +701,8 @@ pub fn generate_class_stub(
     let mut bases = bases;
     if projectable {
         bases.push("_DynWinRTRuntimeClass".into());
+    } else if native_projectable {
+        bases.push("_DynWinRTProjectableClass".into());
     }
     out.push_str(&format!("\nclass {}({}):\n", class.name, bases.join(", ")));
     out.push_str(&super::docs::format_pydoc(
@@ -1018,12 +1020,7 @@ fn emit_class_instance_stubs(
         );
     }
 
-    if class
-        .default_interface
-        .as_ref()
-        .is_some_and(|interface| !interface.iid.is_empty() || interface.generic_piid.is_some())
-        || !class.required_interfaces.is_empty()
-    {
+    if super::has_projectable_default_interface(class) || !class.required_interfaces.is_empty() {
         out.push('\n');
         out.push_str(
             "    def as_interface(self, interface_class: _DynWinRTProjector[_InterfaceT]) -> _InterfaceT: ...\n",

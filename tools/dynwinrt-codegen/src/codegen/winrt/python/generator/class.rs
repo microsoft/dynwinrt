@@ -49,6 +49,7 @@ pub fn generate_class(
         "self._collection_obj"
     };
     let projectable = super::super::has_projectable_default_interface(class);
+    let native_projectable = super::super::has_native_projector(class);
     let mut out = String::new();
 
     // Header
@@ -289,6 +290,8 @@ pub fn generate_class(
     }
     if projectable {
         out.push_str("    _dynwinrt_runtime_class_type = True\n");
+    } else if native_projectable {
+        out.push_str("    _dynwinrt_projectable_class_type = True\n");
     }
 
     out.push_str(&generate_python_constructor(
@@ -688,10 +691,7 @@ pub fn generate_class(
     }
 
     // .as_interface() method for explicit, IID-checked interface projection.
-    if class
-        .default_interface
-        .as_ref()
-        .is_some_and(|interface| !interface.iid.is_empty() || interface.generic_piid.is_some())
+    if super::super::has_projectable_default_interface(class)
         || !class.required_interfaces.is_empty()
     {
         out.push('\n');
@@ -1196,7 +1196,7 @@ fn generate_python_constructor(
     collection_uses_default: bool,
 ) -> String {
     let mut out = String::new();
-    let projectable = super::super::has_projectable_default_interface(class);
+    let native_projectable = super::super::has_native_projector(class);
     let has_public_composition = class
         .constructors
         .iter()
@@ -1263,7 +1263,7 @@ fn generate_python_constructor(
     });
 
     out.push_str("    def __new__(cls, *args, **kwargs):\n");
-    if projectable {
+    if native_projectable {
         out.push_str(
             "        if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):\n\
              \x20           return _dynwinrt_projected_from_native(cls, args[0], '_set_native')\n",
@@ -1368,7 +1368,7 @@ fn generate_python_constructor(
     ));
     out.push_str("        _dynwinrt_cache_projected(self)\n");
     out.push('\n');
-    if projectable {
+    if native_projectable {
         out.push_str("    @classmethod\n");
         out.push_str("    def _from_native(cls, obj: DynWinRTValue):\n");
         out.push_str("        return cls(obj)\n\n");
@@ -1420,7 +1420,7 @@ fn generate_python_constructor(
         "        if getattr(self, '_dynwinrt_native_ready', False):\n\
          \x20           return\n",
     );
-    if projectable {
+    if native_projectable {
         out.push_str(
             "        if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):\n\
              \x20           self._set_native(args[0])\n\

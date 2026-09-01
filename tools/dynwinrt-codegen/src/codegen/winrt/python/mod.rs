@@ -23,10 +23,42 @@ pub use naming::{
 };
 
 pub(crate) fn has_projectable_default_interface(class: &crate::meta::ClassMeta) -> bool {
-    class
-        .default_interface
-        .as_ref()
-        .is_some_and(|interface| !interface.iid.is_empty() || interface.generic_piid.is_some())
+    let Some(default_interface) = class.default_interface.as_ref() else {
+        return false;
+    };
+    if default_interface.iid.is_empty() && default_interface.generic_piid.is_none() {
+        return false;
+    }
+    !default_interface.methods.is_empty()
+        || !class.required_interfaces.is_empty()
+        || !class.overridable_interfaces.is_empty()
+        || class.base_class.is_some()
+        || !class.constructors.is_empty()
+        || class.is_referenced_as_value
+        || class
+            .factory_interfaces
+            .iter()
+            .chain(class.static_interfaces.iter())
+            .any(|interface| {
+                interface.methods.iter().any(|method| {
+                    matches!(
+                        method.return_type.as_ref(),
+                        Some(crate::types::TypeMeta::RuntimeClass {
+                            namespace,
+                            name,
+                            ..
+                        }) if namespace == &class.namespace && name == &class.name
+                    )
+                })
+            })
+}
+
+pub(crate) fn has_native_projector(class: &crate::meta::ClassMeta) -> bool {
+    has_projectable_default_interface(class)
+        || class
+            .default_interface
+            .as_ref()
+            .is_some_and(|interface| !interface.iid.is_empty())
 }
 
 pub(crate) fn collect_referenced_delegate_names(

@@ -21,6 +21,10 @@ The Python distribution contains only the executable. Its wheels are
 do not install or invoke Cargo/Rust. Generated Python packages require CPython
 3.11–3.14 and pin `dynwinrt` to the exact codegen version.
 
+Generated Python module components longer than 120 characters use a stable
+readable-prefix plus hash suffix. This keeps wheel build and installation paths
+within practical Windows limits; public namespace imports remain unchanged.
+
 ## Usage
 
 ```bash

@@ -247,7 +247,10 @@ def project_as(value, wrapper_type):
             'project_as only accepts generated runtime classes; use '
             'Interface.from_value(raw) or wrapper.as_interface(Interface).'
         )
-    if not getattr(wrapper_type, '_dynwinrt_runtime_class_type', False):
+    if not (
+        getattr(wrapper_type, '_dynwinrt_runtime_class_type', False)
+        or getattr(wrapper_type, '_dynwinrt_projectable_class_type', False)
+    ):
         raise TypeError('project_as requires a generated runtime class type.')
     projector = getattr(wrapper_type, '_from_native', None)
     if not callable(projector):

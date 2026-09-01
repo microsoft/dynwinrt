@@ -64,6 +64,7 @@ fn system_returned_class_keeps_only_internal_native_wrapping() {
     let pyi = python_stub::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
 
     assert!(py.contains("def _from_native(cls, obj: DynWinRTValue):"));
+    assert!(py.contains("_dynwinrt_runtime_class_type = True"));
     assert!(!py.contains("from_value = classmethod"), "{py}");
     assert!(py.contains("isinstance(args[0], DynWinRTValue)"));
     assert!(py.contains("SystemResult cannot be constructed directly"));
@@ -77,11 +78,17 @@ fn system_returned_class_keeps_only_internal_native_wrapping() {
 }
 
 #[test]
-fn static_only_class_has_no_native_projection_entry() {
+fn static_only_class_has_only_qi_checked_projection_entry() {
     let class = ClassMeta {
         name: "ApiInformation".into(),
         namespace: "Windows.Foundation.Metadata".into(),
         full_name: "Windows.Foundation.Metadata.ApiInformation".into(),
+        default_interface: Some(InterfaceMeta {
+            name: "IApiInformation".into(),
+            namespace: "Windows.Foundation.Metadata".into(),
+            iid: "22222222-2222-2222-2222-222222222222".into(),
+            ..Default::default()
+        }),
         static_interfaces: vec![factory("IApiInformationStatics", "IsTypePresent", None)],
         ..Default::default()
     };
@@ -91,31 +98,88 @@ fn static_only_class_has_no_native_projection_entry() {
     let pyi = python_stub::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
 
     assert!(
-        !py.contains("def _from_native(cls, obj: DynWinRTValue):"),
+        py.contains("def _from_native(cls, obj: DynWinRTValue):"),
         "{py}"
     );
+    assert!(
+        py.contains("_dynwinrt_projectable_class_type = True"),
+        "{py}"
+    );
+    assert!(py.contains("self._obj = obj.cast(IID_IApiInformation)"));
+    assert!(!py.contains("_dynwinrt_runtime_class_type = True"), "{py}");
     assert!(!py.contains("from_value = classmethod"), "{py}");
-    assert!(!py.contains("isinstance(args[0], DynWinRTValue)"), "{py}");
+    assert!(py.contains("isinstance(args[0], DynWinRTValue)"), "{py}");
+    assert!(!py.contains("def as_interface("), "{py}");
     assert!(!pyi.contains("def from_value("), "{pyi}");
+    assert!(!pyi.contains("_DynWinRTRuntimeClass"), "{pyi}");
+    assert!(pyi.contains("_DynWinRTProjectableClass"), "{pyi}");
+    assert!(!pyi.contains("def as_interface("), "{pyi}");
 
     if Path::new(WINDOWS_WINMD).exists() {
-        let api_information = meta::parse_class(
-            WINDOWS_WINMD,
-            "Windows.Foundation.Metadata",
-            "ApiInformation",
-        )
-        .expect("ApiInformation metadata");
-        assert!(api_information.default_interface.is_none());
-        let known = HashSet::from(["ApiInformation".into()]);
-        let py = python::generate_class(&api_information, &known, &HashSet::new(), &HashSet::new());
-        let pyi = python_stub::generate_class_stub(
-            &api_information,
-            &known,
-            &HashSet::new(),
-            &HashSet::new(),
-        );
-        assert!(!py.contains("from_value = classmethod"), "{py}");
-        assert!(!pyi.contains("def from_value("), "{pyi}");
+        let signature_types =
+            meta::method_signature_type_names(WINDOWS_WINMD).expect("method signature metadata");
+        let mut checked = 0;
+        for (namespace, name) in [
+            ("Windows.Foundation.Metadata", "ApiInformation"),
+            ("Windows.System.Profile", "AnalyticsInfo"),
+            ("Windows.UI", "Colors"),
+            ("Windows.UI", "ColorHelper"),
+        ] {
+            let Some(mut class) = meta::parse_class(WINDOWS_WINMD, namespace, name) else {
+                continue;
+            };
+            class.is_referenced_as_value =
+                signature_types.contains(&(namespace.to_string(), name.to_string()));
+            assert!(
+                !class.is_referenced_as_value,
+                "{namespace}.{name} is not static-only"
+            );
+            let has_qi_default = class
+                .default_interface
+                .as_ref()
+                .is_some_and(|interface| !interface.iid.is_empty());
+            checked += 1;
+            let known = HashSet::from([name.into()]);
+            let py = python::generate_class(&class, &known, &HashSet::new(), &HashSet::new());
+            let pyi =
+                python_stub::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
+            assert!(
+                !py.contains("from_value = classmethod"),
+                "{namespace}.{name}:\n{py}"
+            );
+            assert!(
+                !py.contains("_dynwinrt_runtime_class_type = True"),
+                "{namespace}.{name}:\n{py}"
+            );
+            assert_eq!(
+                py.contains("_dynwinrt_projectable_class_type = True"),
+                has_qi_default,
+                "{namespace}.{name}:\n{py}"
+            );
+            assert_eq!(
+                py.contains("def _from_native(cls, obj: DynWinRTValue):"),
+                has_qi_default,
+                "{namespace}.{name}:\n{py}"
+            );
+            assert!(
+                !py.contains("def as_interface("),
+                "{namespace}.{name}:\n{py}"
+            );
+            assert!(
+                !pyi.contains("_DynWinRTRuntimeClass"),
+                "{namespace}.{name}:\n{pyi}"
+            );
+            assert_eq!(
+                pyi.contains("_DynWinRTProjectableClass"),
+                has_qi_default,
+                "{namespace}.{name}:\n{pyi}"
+            );
+            assert!(
+                !pyi.contains("def as_interface("),
+                "{namespace}.{name}:\n{pyi}"
+            );
+        }
+        assert!(checked >= 2, "expected stock Windows static-only classes");
     }
 }
 
@@ -156,6 +220,88 @@ fn real_factory_constructors_reference_generated_private_helpers() {
         }
     }
     assert!(checked >= 2, "expected real constructor metadata");
+}
+
+#[test]
+fn externally_returned_empty_class_keeps_native_projection() {
+    if !Path::new(WINDOWS_WINMD).exists() {
+        eprintln!("Skipping: Windows.winmd not found");
+        return;
+    }
+    let mut class = meta::parse_class(
+        WINDOWS_WINMD,
+        "Windows.ApplicationModel.Background",
+        "DeviceWatcherTrigger",
+    )
+    .expect("DeviceWatcherTrigger metadata");
+    assert!(class.static_interfaces.is_empty());
+    let signature_types =
+        meta::method_signature_type_names(WINDOWS_WINMD).expect("method signature metadata");
+    assert!(signature_types.contains(&(
+        "Windows.ApplicationModel.Background".into(),
+        "DeviceWatcherTrigger".into()
+    )));
+    class.is_referenced_as_value = true;
+    let known = HashSet::from(["DeviceWatcherTrigger".into()]);
+    let py = python::generate_class(&class, &known, &HashSet::new(), &HashSet::new());
+    let pyi = python_stub::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
+
+    assert!(py.contains("_dynwinrt_runtime_class_type = True"), "{py}");
+    assert!(
+        py.contains("def _from_native(cls, obj: DynWinRTValue):"),
+        "{py}"
+    );
+    assert!(pyi.contains("_DynWinRTRuntimeClass"), "{pyi}");
+}
+
+#[test]
+fn externally_returned_empty_class_with_static_interface_keeps_native_projection() {
+    let mut class = ClassMeta {
+        name: "ExternallyReturned".into(),
+        namespace: "Contoso".into(),
+        full_name: "Contoso.ExternallyReturned".into(),
+        default_interface: Some(InterfaceMeta {
+            name: "IExternallyReturned".into(),
+            namespace: "Contoso".into(),
+            iid: "22222222-2222-2222-2222-222222222222".into(),
+            ..Default::default()
+        }),
+        static_interfaces: vec![InterfaceMeta {
+            name: "IExternallyReturnedStatics".into(),
+            namespace: "Contoso".into(),
+            iid: "33333333-3333-3333-3333-333333333333".into(),
+            methods: vec![MethodMeta {
+                name: "IsSupported".into(),
+                return_type: Some(TypeMeta::Bool),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+        is_referenced_as_value: true,
+        ..Default::default()
+    };
+    let known = HashSet::from(["ExternallyReturned".into()]);
+
+    let py = python::generate_class(&class, &known, &HashSet::new(), &HashSet::new());
+    let pyi = python_stub::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
+    assert!(
+        py.contains("def _from_native(cls, obj: DynWinRTValue):"),
+        "{py}"
+    );
+    assert!(py.contains("_dynwinrt_runtime_class_type = True"), "{py}");
+    assert!(pyi.contains("_DynWinRTRuntimeClass"), "{pyi}");
+
+    class.is_referenced_as_value = false;
+    let static_only = python::generate_class(&class, &known, &HashSet::new(), &HashSet::new());
+    assert!(static_only.contains("def _from_native("), "{static_only}");
+    assert!(
+        static_only.contains("_dynwinrt_projectable_class_type = True"),
+        "{static_only}"
+    );
+    assert!(
+        !static_only.contains("_dynwinrt_runtime_class_type"),
+        "{static_only}"
+    );
 }
 
 #[test]

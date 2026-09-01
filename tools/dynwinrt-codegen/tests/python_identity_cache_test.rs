@@ -20,6 +20,14 @@ fn runtime_class_generation_uses_projected_identity_cache() {
             name: "IWidget".into(),
             namespace: "Contoso".into(),
             iid: "11111111-1111-1111-1111-111111111111".into(),
+            methods: vec![MethodMeta {
+                name: "get_Name".into(),
+                raw_name: "get_Name".into(),
+                vtable_index: 6,
+                return_type: Some(TypeMeta::String),
+                is_property_getter: true,
+                ..Default::default()
+            }],
             ..Default::default()
         }),
         ..Default::default()

@@ -150,7 +150,12 @@ button = project_as(raw_button, Button)
 the raw value or source wrapper remains valid. The returned wrapper owns the
 QueryInterface result, participates in the active
 `projected_lifetime_scope()`, and preserves the projection identity cache.
-Incompatible types raise the ordinary WinRT `OSError`.
+Classes with a verifiable default-interface IID remain valid projection
+targets even when metadata exposes them only through `Object`/`IInspectable`.
+Projection always performs QueryInterface, so a static-only declaration cannot
+produce a wrapper unless the input actually implements that default interface.
+Incompatible types raise the ordinary WinRT `OSError`. Static-only metadata
+classes with no instance surface are not projection targets.
 
 Use `wrapper.as_interface(InterfaceClass)` when converting an existing
 wrapper to an interface view. Use `InterfaceClass.from_value(raw)` for a raw
