@@ -427,4 +427,12 @@ mod tests {
         };
         assert!(error.contains("could not allocate executable callback memory"));
     }
+
+    #[test]
+    fn callback_storage_is_safe_to_share_after_initialization() {
+        fn assert_send_sync<T: Send + Sync>() {}
+
+        assert_send_sync::<CallbackSignature>();
+        assert_send_sync::<OwnedCallbackClosure>();
+    }
 }

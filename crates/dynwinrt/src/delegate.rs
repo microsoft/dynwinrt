@@ -261,15 +261,14 @@ impl DynamicDelegate {
             // the process-wide closure cache. Dispatch still recovers the
             // table-qualified TypeHandle from the delegate instance.
             TypeKind::Struct(_) => {
-                let size = typ.size_of();
-                if size == 0 {
+                if !Self::supports_callback_struct(typ) {
                     return None;
                 }
                 Some(CallbackAbiType::NativeStruct(
                     typ.table()
                         .try_closed_signature_string_kind(typ.kind())
                         .ok()?,
-                    size,
+                    typ.size_of(),
                 ))
             }
             TypeKind::ArrayOfIUnknown
@@ -277,6 +276,15 @@ impl DynamicDelegate {
             | TypeKind::OutValue(_)
             | TypeKind::Array(_) => None,
         }
+    }
+
+    fn supports_callback_struct(typ: &TypeHandle) -> bool {
+        let field_count = typ.field_count();
+        field_count != 0
+            && (0..field_count).all(|index| {
+                let field = typ.field_type(index);
+                Self::callback_abi_type(&field).is_some()
+            })
     }
 
     // ------------------------------------------------------------------
@@ -776,25 +784,31 @@ mod tests {
     }
 
     #[test]
-    fn try_create_delegate_rejects_zero_sized_struct_without_panicking() {
+    fn try_create_delegate_rejects_zero_field_struct_callback_signature() {
         let table = MetadataTable::new();
-        let progress_type = table.struct_type("Test.EmptyProgress", &[]);
-
-        let result = try_create_delegate(
-            GUID::from_u128(0x77777777_7777_7777_7777_777777777777),
-            vec![table.object(), progress_type],
-            Box::new(|_| HRESULT(0)),
+        let empty = table.struct_type("Test.EmptyProgress", &[]);
+        let nested = table.struct_type(
+            "Test.NestedEmptyProgress",
+            &[empty.clone(), table.u32_type()],
         );
 
-        let error = match result {
-            Ok(_) => panic!("zero-sized struct callback unexpectedly succeeded"),
-            Err(error) => error,
-        };
-        assert!(
-            error
-                .message()
-                .contains("do not support one or more parameter types")
-        );
+        for progress_type in [empty, nested] {
+            let result = try_create_delegate(
+                GUID::from_u128(0x77777777_7777_7777_7777_777777777777),
+                vec![table.object(), progress_type],
+                Box::new(|_| HRESULT(0)),
+            );
+
+            let error = match result {
+                Ok(_) => panic!("empty struct callback signature unexpectedly succeeded"),
+                Err(error) => error,
+            };
+            assert!(
+                error
+                    .message()
+                    .contains("do not support one or more parameter types")
+            );
+        }
     }
 
     #[test]
