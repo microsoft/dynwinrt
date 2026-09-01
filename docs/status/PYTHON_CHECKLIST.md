@@ -93,17 +93,18 @@ of a dynamic projection.
 
 - [x] Execute all tests under `bindings/py/tests` in CI.
 - [x] Build and install wheels before running Python E2E.
-- [ ] Complete the first live CPython 3.11–3.14 x64/ARM64 release-matrix run.
-      The native ARM64 jobs are configured on the existing self-hosted WinUI
-      runner and fail closed; local x64 validation does not count as ARM64
-      validation.
+- [x] Complete the first live CPython 3.11–3.14 x64/ARM64 release-matrix run.
+      Native ARM64 builds and isolated consumers run on GitHub-hosted Windows
+      ARM64 runners.
 - [x] Remove unverified PyPy metadata.
 - [x] Derive Python artifact versions from ordinary `v<version>` release tags,
       inject them only into ephemeral CI workspaces, and attach the complete
       wheel set to the shared JavaScript GitHub release.
 - [ ] Publish signed/provenanced wheels to an approved internal Python feed.
-- [x] Add a protected-environment, OIDC trusted-publishing path that requires
-      manual opt-in from an existing release tag.
+- [x] Route production PyPI publication through the official 1ES ADO release
+      pipeline and Microsoft ESRP identity.
+- [ ] Complete one-time ESRP/PyPI onboarding for `dynwinrt` and
+      `dynwinrt-codegen`, including release owners and approvers.
 - [x] Add complete tested Python wheel assets and installation notes to GitHub
       releases.
 - [x] Provide a Python-native codegen CLI wheel using maturin binary bindings.

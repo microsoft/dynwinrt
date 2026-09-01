@@ -36,11 +36,9 @@ The wheel includes `__init__.pyi` and `py.typed` for static type checking.
 installed command with Rust removed from `PATH`.
 
 Pull requests run the x64 matrix. ARM64 jobs run only for manual dispatches and
-`v*` release tags on the repository's existing
-`[self-hosted, Windows, ARM64, winui]` runner. This avoids executing untrusted
-pull-request code on a self-hosted machine. A release remains blocked rather
-than producing ARM64 artifacts if that runner or one of its native CPython
-versions is unavailable.
+`v*` release tags on GitHub-hosted `windows-11-vs2026-arm` runners. A release
+remains blocked rather than producing ARM64 artifacts if one of its native
+CPython versions cannot build or pass its isolated consumer test.
 
 To release:
 
@@ -48,17 +46,19 @@ To release:
    `v0.1.0-preview.20`). The workflow derives the Python package version from
    the tag and updates its build workspaces without modifying the repository.
    PEP 440 normalizes `preview.N` wheel versions to `rcN`.
-2. The JavaScript release pipeline creates the GitHub release. After all ten
-   Python wheels pass their consumption tests, this workflow waits for that
-   release and uploads the wheels alongside the npm tarballs. It never creates
-   a separate Python GitHub release.
-3. Configure the protected `pypi` GitHub environment with required reviewers
-   and PyPI trusted publishers for `dynwinrt` and `dynwinrt-codegen`. To
-   publish, manually dispatch the workflow **from that existing tag** with
-   `publish_pypi` enabled and `release_version` set. OIDC trusted publishing is
-   used; no API token is stored in the repository.
+2. The official 1ES ADO release pipeline creates the shared GitHub release and
+   publishes the npm packages. After all ten Python wheels pass their
+   consumption tests, the GitHub workflow uploads them alongside the npm
+   tarballs. It never creates a separate Python GitHub release.
+3. The ADO pipeline waits for the complete wheel set, downloads it through the
+   repository's GitHub service connection, and revalidates every filename,
+   platform tag, Python ABI tag, metadata record, type stub, and native payload.
+4. ADO publishes the eight `dynwinrt` wheels first and the two
+   `dynwinrt-codegen` wheels second through the Microsoft ESRP release identity.
+   PyPI publication is not available from GitHub Actions.
 
-Do not enable publication from a branch, pull request, or ordinary push.
+Before the first release, onboard both PyPI project names to the configured ESRP
+service connection and confirm the signing identity, owners, and approvers.
 
 Generated `IReference<T>` values are projected as `T | None`; native values,
 `None`, and generated `IReference_*` wrappers are accepted as inputs.

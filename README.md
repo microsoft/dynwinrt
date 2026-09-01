@@ -141,7 +141,7 @@ cargo test  -p dynwinrt
 # JS bindings (napi-rs)
 cd bindings/js && npm install && npm run build
 
-# Python bindings (PyO3 + maturin) — experimental, not published to PyPI
+# Python bindings (PyO3 + maturin)
 cd bindings/py && maturin develop && pytest
 
 # Codegen tool
@@ -151,7 +151,7 @@ cargo run   -p dynwinrt-codegen -- generate --namespace Windows.Foundation --cla
 
 Python runtime wheels target CPython 3.11–3.14 on Windows x64 and ARM64. The
 standalone `dynwinrt-codegen` Python wheel targets CPython 3.8–3.14 and needs no
-Rust installation at consumption time. Release and trusted-publishing
+Rust installation at consumption time. Release and ESRP publishing
 instructions are in [`bindings/py/README.md`](bindings/py/README.md).
 
 Python runtime, codegen, packaging, and WinUI readiness are tracked in

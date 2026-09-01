@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[3]
 RUNTIME_REQUIRES = ">=3.11,<3.15"
 CODEGEN_REQUIRES = ">=3.8,<3.15"
 RUNTIME_MINORS = tuple(f"3.{minor}" for minor in range(11, 15))
+PLATFORM_TAGS = ("win_amd64", "win_arm64")
 
 
 def load_toml(path: Path) -> dict:
@@ -127,6 +128,63 @@ def verify_wheel(args: argparse.Namespace) -> None:
     print(f"wheel metadata OK: {wheel.name}")
 
 
+def release_wheels(version: str) -> list[tuple[str, str, str, str, str]]:
+    normalized_version = str(Version(version))
+    wheels = []
+    for platform_tag in PLATFORM_TAGS:
+        for minor in RUNTIME_MINORS:
+            python_tag = f"cp{minor.replace('.', '')}"
+            wheels.append(
+                (
+                    f"dynwinrt-{normalized_version}-{python_tag}-{python_tag}-{platform_tag}.whl",
+                    "dynwinrt",
+                    python_tag,
+                    python_tag,
+                    platform_tag,
+                )
+            )
+        wheels.append(
+            (
+                f"dynwinrt_codegen-{normalized_version}-py3-none-{platform_tag}.whl",
+                "dynwinrt-codegen",
+                "py3",
+                "none",
+                platform_tag,
+            )
+        )
+    return wheels
+
+
+def verify_release_set(args: argparse.Namespace) -> None:
+    directory = Path(args.directory).resolve()
+    wheels = list(directory.rglob("*.whl"))
+    actual_names = [wheel.name for wheel in wheels]
+    assert len(actual_names) == len(set(actual_names)), (
+        f"Release wheel filenames must be unique: {actual_names}"
+    )
+
+    expected = release_wheels(args.version)
+    expected_names = {wheel[0] for wheel in expected}
+    assert set(actual_names) == expected_names, (
+        f"Release wheel set mismatch; missing={sorted(expected_names - set(actual_names))}, "
+        f"unexpected={sorted(set(actual_names) - expected_names)}"
+    )
+
+    wheels_by_name = {wheel.name: wheel for wheel in wheels}
+    for name, package, python_tag, abi_tag, platform_tag in expected:
+        verify_wheel(
+            argparse.Namespace(
+                wheel=wheels_by_name[name],
+                package=package,
+                version=args.version,
+                python_tag=python_tag,
+                abi_tag=abi_tag,
+                platform_tag=platform_tag,
+            )
+        )
+    print(f"complete Python release set OK: {len(wheels)} wheels")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -143,11 +201,17 @@ def main() -> None:
     wheel.add_argument("--abi-tag", required=True)
     wheel.add_argument("--platform-tag", required=True)
 
+    release_set = subparsers.add_parser("release-set")
+    release_set.add_argument("--directory", required=True)
+    release_set.add_argument("--version", required=True)
+
     args = parser.parse_args()
     if args.command == "source":
         verify_source(args.tag, args.release_version)
-    else:
+    elif args.command == "wheel":
         verify_wheel(args)
+    else:
+        verify_release_set(args)
 
 
 if __name__ == "__main__":

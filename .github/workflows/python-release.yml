@@ -1,4 +1,4 @@
-name: Python wheels
+name: Python release artifacts
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -21,14 +21,9 @@ on:
   workflow_dispatch:
     inputs:
       release_version:
-        description: Version to build; required as confirmation when publishing to PyPI
+        description: Version to build
         required: false
         type: string
-      publish_pypi:
-        description: Publish through the protected pypi environment (tag refs only)
-        required: true
-        default: false
-        type: boolean
 
 permissions:
   contents: read
@@ -53,7 +48,6 @@ jobs:
         shell: pwsh
         env:
           RELEASE_VERSION: ${{ inputs.release_version }}
-          PUBLISH_PYPI: ${{ inputs.publish_pypi }}
           REF_NAME: ${{ github.ref_name }}
           REF_TYPE: ${{ github.ref_type }}
         run: |
@@ -85,13 +79,6 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Write-Host "Effective Python version: $pythonVersion"
 
-          if ($env:PUBLISH_PYPI -eq 'true' -and
-              ($env:REF_TYPE -ne 'tag' -or $env:REF_NAME -notlike 'v*')) {
-            throw 'PyPI publication requires dispatching an existing v<version> tag'
-          }
-          if ($env:PUBLISH_PYPI -eq 'true' -and -not $env:RELEASE_VERSION) {
-            throw 'PyPI publication requires an explicit release_version confirmation'
-          }
           "version=$version" >> $env:GITHUB_OUTPUT
           "python_version=$pythonVersion" >> $env:GITHUB_OUTPUT
 
@@ -472,61 +459,3 @@ jobs:
           $arguments += $wheels
           & gh @arguments
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-  publish-runtime:
-    if: >-
-      github.event_name == 'workflow_dispatch' &&
-      inputs.publish_pypi &&
-      github.ref_type == 'tag' &&
-      startsWith(github.ref_name, 'v')
-    needs: [validate, assemble-release]
-    runs-on: ubuntu-latest
-    environment: pypi
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: python-release-${{ needs.validate.outputs.version }}
-          path: dist
-      - name: Stage runtime wheels only
-        shell: bash
-        run: |
-          mkdir -p publish/runtime
-          find dist -type f -name 'dynwinrt-*.whl' -exec cp '{}' publish/runtime/ \;
-          test "$(find publish/runtime -type f -name '*.whl' | wc -l)" -eq 8
-      - uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          packages-dir: publish/runtime
-          attestations: true
-          skip-existing: true
-
-  publish-codegen:
-    if: >-
-      github.event_name == 'workflow_dispatch' &&
-      inputs.publish_pypi &&
-      github.ref_type == 'tag' &&
-      startsWith(github.ref_name, 'v')
-    needs: [validate, assemble-release, publish-runtime]
-    runs-on: ubuntu-latest
-    environment: pypi
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: python-release-${{ needs.validate.outputs.version }}
-          path: dist
-      - name: Stage codegen wheels only
-        shell: bash
-        run: |
-          mkdir -p publish/codegen
-          find dist -type f -name 'dynwinrt_codegen-*.whl' -exec cp '{}' publish/codegen/ \;
-          test "$(find publish/codegen -type f -name '*.whl' | wc -l)" -eq 2
-      - uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          packages-dir: publish/codegen
-          attestations: true
-          skip-existing: true
