@@ -15,12 +15,14 @@ from dynwinrt import (
     init_winappsdk,
     projected_lifetime_scope,
 )
-from generated.microsoft.ui.windowing import SizeInt32
 from generated.microsoft.ui.xaml import (
     Application,
     ApplicationTheme,
+    CornerRadius,
     GridUnitType,
+    GridLength,
     HorizontalAlignment,
+    Thickness,
     VerticalAlignment,
     Window,
 )
@@ -28,16 +30,14 @@ from generated.microsoft.ui.xaml.automation import AutomationProperties
 from generated.microsoft.ui.xaml.controls import (
     Button,
     ColumnDefinition,
-    CornerRadius,
-    FontWeight,
     Grid,
-    GridLength,
     RowDefinition,
     StackPanel,
     TextBlock,
-    Thickness,
 )
 from generated.microsoft.ui.xaml.media import SystemBackdrop
+from generated.windows.graphics import SizeInt32
+from generated.windows.ui.text import FontWeight
 
 
 WINNING_LINES = (

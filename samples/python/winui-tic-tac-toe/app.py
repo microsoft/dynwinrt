@@ -8,10 +8,11 @@ os.environ["WINAPPSDK_BOOTSTRAP_DLL_PATH"] = str(
 )
 
 from dynwinrt import RoApartment, init_winappsdk, projected_lifetime_scope
-from generated.microsoft.ui.windowing import SizeInt32
 from generated.microsoft.ui.xaml import Application, ApplicationTheme, Window
-from generated.microsoft.ui.xaml.controls import Button, Size, StackPanel, TextBlock
+from generated.microsoft.ui.xaml.controls import Button, StackPanel, TextBlock
 from generated.microsoft.ui.xaml.markup import XamlReader
+from generated.windows.foundation import Size
+from generated.windows.graphics import SizeInt32
 
 
 class TicTacToePanel(StackPanel):

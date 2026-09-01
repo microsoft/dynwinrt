@@ -14,6 +14,7 @@
 import {
   DynWinRtValue,
   DynWinRtType,
+  DynWinRtMethodSig,
   DynWinRtArray,
   DynWinRtStruct,
   WinGuid,
@@ -22,6 +23,20 @@ import {
 
 // Initialize WinRT (MTA)
 roInitialize(1)
+
+function registerMethodAt(
+  name: string,
+  iid: WinGuid,
+  vtableIndex: number,
+  methodName: string,
+  signature: DynWinRtMethodSig,
+) {
+  const iface = DynWinRtType.registerInterface(name, iid)
+  for (let index = 6; index < vtableIndex; index++) {
+    iface.addMethod(`Reserved${index}`, new DynWinRtMethodSig())
+  }
+  return iface.addMethod(methodName, signature)
+}
 
 // ======================================================================
 // 1. PassArray: PropertyValue.CreateInt32Array
@@ -34,30 +49,29 @@ function testPassArray() {
 
   const factory = DynWinRtValue.activationFactory('Windows.Foundation.PropertyValue')
   const statics = factory.cast(staticsIid)
-
-  // Build method signature for CreateInt32Array(uint32 length, int32* data, IInspectable** out)
-  // vtable index 29 (6 IInspectable + 23 scalar Create methods)
-  const arr = DynWinRtArray.fromI32Values([10, 20, 30])
-  const result = statics.call(
+  const propertyValueStatics = registerMethodAt(
+    'IPropertyValueStatics',
+    staticsIid,
     29,
-    DynWinRtType.object(),        // return type: IInspectable
-    [DynWinRtType.arrayType(DynWinRtType.i32())],  // in types: array<i32>
-    [arr.toValue()],              // args
+    'CreateInt32Array',
+    new DynWinRtMethodSig().addIn(DynWinRtType.arrayType(DynWinRtType.i32())).addOut(DynWinRtType.object()),
   )
+
+  const arr = DynWinRtArray.fromI32Values([10, 20, 30])
+  const result = propertyValueStatics.method(29).invoke(statics, [arr.toValue()])
   console.log('  CreateInt32Array result:', result.toString())
 
   // Verify by reading back: cast to IPropertyValue, call GetInt32Array
   const ipvIid = WinGuid.parse('4BD682DD-7554-40E9-9A9B-82654EDE7E62')
   const ipv = result.cast(ipvIid)
-
-  // GetInt32Array is at vtable index 29 of IPropertyValue
-  // Signature: fn(UINT32* length, INT32** data) -> HRESULT  (ReceiveArray out)
-  const readback = ipv.call(
+  const propertyValue = registerMethodAt(
+    'IPropertyValue',
+    ipvIid,
     29,
-    DynWinRtType.arrayType(DynWinRtType.i32()),  // return: out array<i32>
-    [],
-    [],
+    'GetInt32Array',
+    new DynWinRtMethodSig().addOut(DynWinRtType.arrayType(DynWinRtType.i32())),
   )
+  const readback = propertyValue.method(29).invoke(ipv, [])
 
   const arrayResult = readback.asArray()
   const ints = arrayResult.toI32Vec()
@@ -79,25 +93,28 @@ function testReceiveArray() {
   const staticsIid = WinGuid.parse('629BDBC8-D932-4FF4-96B9-8D96C5C1E858')
   const factory = DynWinRtValue.activationFactory('Windows.Foundation.PropertyValue')
   const statics = factory.cast(staticsIid)
+  const propertyValueStatics = registerMethodAt(
+    'IPropertyValueStatics',
+    staticsIid,
+    29,
+    'CreateInt32Array',
+    new DynWinRtMethodSig().addIn(DynWinRtType.arrayType(DynWinRtType.i32())).addOut(DynWinRtType.object()),
+  )
 
   const arr = DynWinRtArray.fromI32Values([100, 200, 300, 400, 500])
-  const pv = statics.call(
-    29,
-    DynWinRtType.object(),
-    [DynWinRtType.arrayType(DynWinRtType.i32())],
-    [arr.toValue()],
-  )
+  const pv = propertyValueStatics.method(29).invoke(statics, [arr.toValue()])
 
   // Cast to IPropertyValue and call GetInt32Array
   const ipvIid = WinGuid.parse('4BD682DD-7554-40E9-9A9B-82654EDE7E62')
   const ipv = pv.cast(ipvIid)
-
-  const result = ipv.call(
+  const propertyValue = registerMethodAt(
+    'IPropertyValue',
+    ipvIid,
     29,
-    DynWinRtType.arrayType(DynWinRtType.i32()),
-    [],
-    [],
+    'GetInt32Array',
+    new DynWinRtMethodSig().addOut(DynWinRtType.arrayType(DynWinRtType.i32())),
   )
+  const result = propertyValue.method(29).invoke(ipv, [])
 
   const array = result.asArray()
   console.log('  Array length:', array.len())
@@ -131,11 +148,10 @@ function testStructIn() {
   ])
 
   const pos = DynWinRtStruct.create(geoposType)
-  pos.setF64(0, 47.643)   // Latitude
+  pos.setF64(0, 47.643) // Latitude
   pos.setF64(1, -122.131) // Longitude
-  pos.setF64(2, 100.0)    // Altitude
-  console.log('  Created struct: lat=%d lon=%d alt=%d',
-    pos.getF64(0), pos.getF64(1), pos.getF64(2))
+  pos.setF64(2, 100.0) // Altitude
+  console.log('  Created struct: lat=%d lon=%d alt=%d', pos.getF64(0), pos.getF64(1), pos.getF64(2))
 
   // Get IGeopointFactory
   const factory = DynWinRtValue.activationFactory('Windows.Devices.Geolocation.Geopoint')
@@ -143,14 +159,13 @@ function testStructIn() {
   // IGeopointFactory: {DB6B8D33-76BD-4E30-8AF7-A844DC37B7A0}
   const factoryIid = WinGuid.parse('DB6B8D33-76BD-4E30-8AF7-A844DC37B7A0')
   const gpFactory = factory.cast(factoryIid)
+  const geopointFactory = DynWinRtType.registerInterface('IGeopointFactory', factoryIid).addMethod(
+    'Create',
+    new DynWinRtMethodSig().addIn(geoposType).addOut(DynWinRtType.object()),
+  )
 
   // IGeopointFactory.Create(BasicGeoposition) at vtable index 6
-  const geopoint = gpFactory.call(
-    6,
-    DynWinRtType.object(),
-    [geoposType],
-    [pos.toValue()],
-  )
+  const geopoint = geopointFactory.method(6).invoke(gpFactory, [pos.toValue()])
   console.log('  Geopoint created:', geopoint.toString())
   console.log('  PASS')
 }
@@ -176,23 +191,20 @@ function testStructOut() {
   const factory = DynWinRtValue.activationFactory('Windows.Devices.Geolocation.Geopoint')
   const factoryIid = WinGuid.parse('DB6B8D33-76BD-4E30-8AF7-A844DC37B7A0')
   const gpFactory = factory.cast(factoryIid)
-  const geopoint = gpFactory.call(
-    6,
-    DynWinRtType.object(),
-    [geoposType],
-    [pos.toValue()],
+  const geopointFactory = DynWinRtType.registerInterface('IGeopointFactory', factoryIid).addMethod(
+    'Create',
+    new DynWinRtMethodSig().addIn(geoposType).addOut(DynWinRtType.object()),
   )
+  const geopoint = geopointFactory.method(6).invoke(gpFactory, [pos.toValue()])
 
   // IGeopoint: {6BFA00EB-E56E-49BB-9CAF-CBAA78A8BCEF} — .Position at vtable 6
   const igeopointIid = WinGuid.parse('6BFA00EB-E56E-49BB-9CAF-CBAA78A8BCEF')
   const igeopoint = geopoint.cast(igeopointIid)
-
-  const posResult = igeopoint.call(
-    6,
-    geoposType,
-    [],
-    [],
+  const geopointInterface = DynWinRtType.registerInterface('IGeopoint', igeopointIid).addMethod(
+    'get_Position',
+    new DynWinRtMethodSig().addOut(geoposType),
   )
+  const posResult = geopointInterface.method(6).invoke(igeopoint, [])
 
   const s = posResult.asStruct()
   const lat = s.getF64(0)
@@ -200,7 +212,7 @@ function testStructOut() {
   const alt = s.getF64(2)
   console.log('  Position: lat=%d lon=%d alt=%d', lat, lon, alt)
   console.assert(Math.abs(lat - 47.643) < 1e-6, `Latitude mismatch: ${lat}`)
-  console.assert(Math.abs(lon - (-122.131)) < 1e-6, `Longitude mismatch: ${lon}`)
+  console.assert(Math.abs(lon - -122.131) < 1e-6, `Longitude mismatch: ${lon}`)
   console.assert(Math.abs(alt - 100.0) < 1e-6, `Altitude mismatch: ${alt}`)
   console.log('  PASS')
 }

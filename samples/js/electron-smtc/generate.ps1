@@ -6,6 +6,19 @@ $ErrorActionPreference = "Stop"
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..")).Path
 $output = Join-Path $PSScriptRoot "generated"
 
+function Remove-GeneratedOutput([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return
+    }
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    $extendedPath = if ($fullPath.StartsWith("\\")) {
+        "\\?\UNC\" + $fullPath.TrimStart("\")
+    } else {
+        "\\?\$fullPath"
+    }
+    [System.IO.Directory]::Delete($extendedPath, $true)
+}
+
 $windowsWinmd = Get-ChildItem `
     "C:\Program Files (x86)\Windows Kits\10\UnionMetadata" `
     -Filter Windows.winmd `
@@ -34,7 +47,7 @@ if (-not $win32Winmd) {
 }
 
 if (Test-Path $output) {
-    Remove-Item $output -Recurse -Force
+    Remove-GeneratedOutput $output
 }
 
 & cargo run --quiet --manifest-path (Join-Path $repoRoot "Cargo.toml") `

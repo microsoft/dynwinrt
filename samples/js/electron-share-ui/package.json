@@ -9,7 +9,8 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
-    "start": "electron-vite dev"
+    "start": "electron-vite dev",
+    "postinstall": "install-electron"
   },
   "dependencies": {
     "@microsoft/dynwinrt": "file:../../../bindings/js",

@@ -434,6 +434,7 @@ target
 **/mutants.out*/
 
 **/generated
+**/.*.dynwinrt-lock
 **/node_modules
 tools/dynwinrt-codegen/npm/bin/**/*.exe
 !benchmarks/electron/out/
