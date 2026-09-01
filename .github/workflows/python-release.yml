@@ -148,7 +148,7 @@ jobs:
   runtime-arm64:
     if: github.event_name != 'pull_request'
     needs: validate
-    runs-on: [self-hosted, Windows, ARM64, winui]
+    runs-on: windows-11-vs2026-arm
     strategy:
       fail-fast: false
       matrix:
@@ -239,7 +239,7 @@ jobs:
   codegen-arm64:
     if: github.event_name != 'pull_request'
     needs: validate
-    runs-on: [self-hosted, Windows, ARM64, winui]
+    runs-on: windows-11-vs2026-arm
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -306,7 +306,7 @@ jobs:
   consume-codegen-arm64:
     if: github.event_name != 'pull_request'
     needs: [validate, codegen-arm64]
-    runs-on: [self-hosted, Windows, ARM64, winui]
+    runs-on: windows-11-vs2026-arm
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -363,7 +363,7 @@ jobs:
   consume-runtime-arm64:
     if: github.event_name != 'pull_request'
     needs: [validate, runtime-arm64, codegen-arm64]
-    runs-on: [self-hosted, Windows, ARM64, winui]
+    runs-on: windows-11-vs2026-arm
     strategy:
       fail-fast: false
       matrix:
