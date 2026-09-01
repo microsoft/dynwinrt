@@ -1,12 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use windows_metadata::{HasAttributes, reader};
 
-use crate::types::{EnumMember, TypeKind, TypeMeta, TypeRef};
+use crate::types::{EnumMember, TypeIdentity, TypeIdentityKind, TypeKind, TypeMeta, TypeRef};
 
 pub const WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE: &str = "Windows.Foundation.Collections";
 pub const PIID_IVECTOR: &str = "913337e9-11a1-4345-a3a2-4e7f956e222d";
@@ -68,12 +68,43 @@ pub struct InterfaceMeta {
     pub methods: Vec<MethodMeta>,
     /// For parameterized interfaces: the PIID (generic IID before instantiation).
     pub generic_piid: Option<String>,
+    /// Metadata name of the generic definition before projection name mangling.
+    pub generic_name: Option<String>,
     /// For parameterized interfaces: the type arguments used to instantiate.
     pub generic_args: Vec<TypeMeta>,
     /// XML doc summary (populated from sibling .xml).
     pub doc: Option<String>,
     /// XML `<deprecated>` text.
     pub deprecated: Option<String>,
+}
+
+impl InterfaceMeta {
+    pub fn is_delegate(&self) -> bool {
+        self.methods.iter().any(|method| method.name == ".ctor")
+            && self.methods.iter().any(|method| method.name == "Invoke")
+    }
+
+    pub fn type_identity(&self) -> TypeIdentity {
+        let kind = if self.is_delegate() {
+            TypeIdentityKind::Delegate
+        } else {
+            TypeIdentityKind::Interface
+        };
+        if self.generic_piid.is_some() {
+            let generic_name = self
+                .generic_name
+                .as_deref()
+                .unwrap_or_else(|| self.name.split('_').next().unwrap_or(self.name.as_str()));
+            TypeIdentity::closed_generic(
+                kind,
+                self.namespace.clone(),
+                generic_name,
+                self.generic_args.iter().map(TypeMeta::type_identity),
+            )
+        } else {
+            TypeIdentity::named(kind, self.namespace.clone(), self.name.clone())
+        }
+    }
 }
 
 fn same_interface_identity(left: &InterfaceMeta, right: &InterfaceMeta) -> bool {
@@ -148,6 +179,8 @@ pub struct ClassMeta {
     pub static_interfaces: Vec<InterfaceMeta>,
     pub has_default_constructor: bool,
     pub constructors: Vec<ConstructorMeta>,
+    /// The runtime class appears as a value in a loaded WinRT method signature.
+    pub is_referenced_as_value: bool,
     /// The runtime class declares MarshalingBehavior(Agile).
     pub is_agile: bool,
     /// XML doc summary (populated from sibling .xml).
@@ -188,6 +221,63 @@ impl ClassMeta {
     }
 }
 
+/// Collect every named type that appears in a WinRT method signature, including
+/// types nested inside arrays and parameterized types.
+pub fn method_signature_type_names(winmd_paths: &str) -> Result<HashSet<(String, String)>, String> {
+    fn collect(typ: &windows_metadata::Type, names: &mut HashSet<(String, String)>) {
+        match typ {
+            windows_metadata::Type::Name(name) => {
+                names.insert((name.namespace.clone(), name.name.clone()));
+                for generic in &name.generics {
+                    collect(generic, names);
+                }
+            }
+            windows_metadata::Type::Array(inner)
+            | windows_metadata::Type::ArrayRef(inner)
+            | windows_metadata::Type::ConstRef(inner)
+            | windows_metadata::Type::PtrMut(inner, _)
+            | windows_metadata::Type::PtrConst(inner, _)
+            | windows_metadata::Type::ArrayFixed(inner, _) => collect(inner, names),
+            _ => {}
+        }
+    }
+
+    let index = load_index(winmd_paths)
+        .ok_or_else(|| "Failed to load metadata method signatures".to_string())?;
+    let mut names = HashSet::new();
+    for def in index.all() {
+        if !def
+            .flags()
+            .contains(windows_metadata::TypeAttributes::WindowsRuntime)
+        {
+            continue;
+        }
+        let generics = def
+            .generic_params()
+            .enumerate()
+            .map(|(index, _)| {
+                u16::try_from(index)
+                    .map(windows_metadata::Type::Generic)
+                    .map_err(|_| {
+                        format!(
+                            "Generic parameter index exceeds u16 for {}.{}",
+                            def.namespace(),
+                            def.name()
+                        )
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        for method in def.methods() {
+            let signature = method.signature(&generics);
+            collect(&signature.return_type, &mut names);
+            for typ in &signature.types {
+                collect(typ, &mut names);
+            }
+        }
+    }
+    Ok(names)
+}
+
 /// List all unique namespaces found in the given winmd files.
 pub fn list_namespaces(winmd_paths: &str) -> Vec<String> {
     let index = match load_index(winmd_paths) {
@@ -204,6 +294,47 @@ pub fn list_namespaces(winmd_paths: &str) -> Vec<String> {
     let mut sorted: Vec<String> = namespaces.into_iter().collect();
     sorted.sort();
     sorted
+}
+
+/// Return named type short names that identify more than one semantic type in
+/// the loaded metadata graph.
+pub fn ambiguous_named_type_names(winmd_paths: &str) -> HashSet<String> {
+    let Some(index) = load_index(winmd_paths) else {
+        return HashSet::new();
+    };
+    let mut identities = HashMap::<String, HashSet<(String, TypeIdentityKind)>>::new();
+    for def in index.all() {
+        let namespace = def.namespace();
+        if namespace.is_empty() {
+            continue;
+        }
+        let name = def.name().split('`').next().unwrap_or(def.name());
+        let kind = match def.extends() {
+            Some(base) if base.namespace() == "System" && base.name() == "Enum" => {
+                TypeIdentityKind::Enum
+            }
+            Some(base) if base.namespace() == "System" && base.name() == "ValueType" => {
+                TypeIdentityKind::Struct
+            }
+            Some(base)
+                if base.namespace() == "System"
+                    && matches!(base.name(), "Delegate" | "MulticastDelegate") =>
+            {
+                TypeIdentityKind::Delegate
+            }
+            Some(_) => TypeIdentityKind::Class,
+            None => TypeIdentityKind::Interface,
+        };
+        identities
+            .entry(name.to_string())
+            .or_default()
+            .insert((namespace.to_string(), kind));
+    }
+    identities
+        .into_iter()
+        .filter(|(_, identities)| identities.len() > 1)
+        .map(|(name, _)| name)
+        .collect()
 }
 
 /// Parse a WinMD file and extract metadata for a single RuntimeClass.
@@ -395,7 +526,7 @@ pub fn resolve_python_dependencies(
         existing_interfaces,
         existing_enums,
         true,
-        false,
+        true,
     )
 }
 
@@ -405,7 +536,7 @@ fn resolve_dependencies_impl(
     existing_interfaces: &[InterfaceMeta],
     existing_enums: &[TypeMeta],
     include_inheritance: bool,
-    fully_qualified_identity: bool,
+    preserve_semantic_identity: bool,
 ) -> ResolvedDeps {
     let index = match load_index(winmd_paths) {
         Some(idx) => idx,
@@ -418,62 +549,26 @@ fn resolve_dependencies_impl(
         }
     };
 
-    // Track all known type names (already generated or discovered)
-    let mut known: HashSet<String> = HashSet::new();
+    // Preserve semantic identities so namespace-distinct and closed generic
+    // dependencies cannot collapse before either language projects a name.
+    let mut known: HashSet<TypeIdentity> = HashSet::new();
     for c in classes {
-        known.insert(c.name.clone());
+        known.insert(dependency_identity(
+            TypeIdentity::named(TypeIdentityKind::Class, c.namespace.clone(), c.name.clone()),
+            &c.name,
+            preserve_semantic_identity,
+        ));
     }
     for i in existing_interfaces {
-        known.insert(i.name.clone());
+        known.insert(dependency_identity(
+            i.type_identity(),
+            &i.name,
+            preserve_semantic_identity,
+        ));
     }
-    for e in existing_enums {
-        if let TypeMeta::Enum { name, .. } = e {
-            known.insert(name.clone());
-        }
+    for typ in existing_enums {
+        known.insert(type_dependency_identity(typ, preserve_semantic_identity));
     }
-    let mut known_named = HashSet::new();
-    known_named.extend(classes.iter().map(|class| TypeRef {
-        namespace: class.namespace.clone(),
-        name: class.name.clone(),
-        kind: TypeKind::Class,
-    }));
-    known_named.extend(existing_interfaces.iter().map(|interface| TypeRef {
-        namespace: interface.namespace.clone(),
-        name: interface.name.clone(),
-        kind: TypeKind::Interface,
-    }));
-    known_named.extend(existing_enums.iter().filter_map(|typ| {
-        let TypeMeta::Enum {
-            namespace, name, ..
-        } = typ
-        else {
-            return None;
-        };
-        Some(TypeRef {
-            namespace: namespace.clone(),
-            name: name.clone(),
-            kind: TypeKind::Enum,
-        })
-    }));
-    let mut known_parameterized = existing_interfaces
-        .iter()
-        .filter_map(|interface| {
-            interface.generic_piid.as_ref().map(|piid| {
-                let suffix = make_parameterized_name("", &interface.generic_args);
-                let generic_name = interface
-                    .name
-                    .strip_suffix(&suffix)
-                    .unwrap_or(&interface.name);
-                parameterized_dependency_key(
-                    &interface.namespace,
-                    generic_name,
-                    piid,
-                    &interface.generic_args,
-                )
-            })
-        })
-        .collect::<HashSet<_>>();
-
     let mut dep_classes: Vec<ClassMeta> = Vec::new();
     let mut dep_interfaces: Vec<InterfaceMeta> = Vec::new();
     let mut dep_enums: Vec<TypeMeta> = Vec::new();
@@ -487,6 +582,7 @@ fn resolve_dependencies_impl(
         &mut worklist,
         &mut param_worklist,
         include_inheritance,
+        preserve_semantic_identity,
     );
     collect_all_refs_from_interfaces(
         existing_interfaces,
@@ -494,6 +590,7 @@ fn resolve_dependencies_impl(
         &mut worklist,
         &mut param_worklist,
         include_inheritance,
+        preserve_semantic_identity,
     );
 
     // Fixpoint: keep resolving until no new types are discovered
@@ -509,14 +606,11 @@ fn resolve_dependencies_impl(
         let mut new_interfaces = Vec::new();
 
         for r in &batch {
-            if fully_qualified_identity {
-                if !known_named.insert(r.clone()) {
-                    continue;
-                }
-            } else if known.contains(&r.name) {
+            let identity = type_ref_dependency_identity(r, preserve_semantic_identity);
+            if known.contains(&identity) {
                 continue;
             }
-            known.insert(r.name.clone());
+            known.insert(identity);
 
             match r.kind {
                 TypeKind::Interface => {
@@ -581,16 +675,17 @@ fn resolve_dependencies_impl(
                     continue;
                 }
                 let concrete_name = make_parameterized_name(name, &resolved_args);
-                if fully_qualified_identity {
-                    let identity =
-                        parameterized_dependency_key(namespace, name, piid, &resolved_args);
-                    if !known_parameterized.insert(identity) {
-                        continue;
-                    }
-                } else if known.contains(&concrete_name) {
+                let resolved_type = TypeMeta::Parameterized {
+                    namespace: namespace.clone(),
+                    name: name.clone(),
+                    piid: piid.clone(),
+                    args: resolved_args.clone(),
+                };
+                let identity = type_dependency_identity(&resolved_type, preserve_semantic_identity);
+                if known.contains(&identity) {
                     continue;
                 }
-                known.insert(concrete_name.clone());
+                known.insert(identity);
 
                 if let Some(iface) = parse_parameterized_interface(
                     &index,
@@ -617,6 +712,7 @@ fn resolve_dependencies_impl(
             &mut worklist,
             &mut param_worklist,
             include_inheritance,
+            preserve_semantic_identity,
         );
         collect_all_refs_from_interfaces(
             &new_interfaces,
@@ -624,6 +720,7 @@ fn resolve_dependencies_impl(
             &mut worklist,
             &mut param_worklist,
             include_inheritance,
+            preserve_semantic_identity,
         );
 
         dep_classes.extend(new_classes);
@@ -695,9 +792,10 @@ fn visit_type_refs(typ: &TypeMeta, named: &mut Vec<TypeRef>, parameterized: &mut
 /// Collect all type references from methods: both named and parameterized.
 fn collect_all_refs_from_methods(
     methods: &[MethodMeta],
-    _known: &HashSet<String>,
+    known: &HashSet<TypeIdentity>,
     named_out: &mut Vec<TypeRef>,
     param_out: &mut Vec<TypeMeta>,
+    preserve_semantic_identity: bool,
 ) {
     let mut named = Vec::new();
     let mut parameterized = Vec::new();
@@ -709,89 +807,80 @@ fn collect_all_refs_from_methods(
             visit_type_refs(rt, &mut named, &mut parameterized);
         }
     }
-    named_out.extend(named);
-    param_out.extend(parameterized);
+    for r in named {
+        if !known.contains(&type_ref_dependency_identity(
+            &r,
+            preserve_semantic_identity,
+        )) {
+            named_out.push(r);
+        }
+    }
+    for r in parameterized {
+        if !known.contains(&type_dependency_identity(&r, preserve_semantic_identity)) {
+            param_out.push(r);
+        }
+    }
 }
 
 fn collect_interface_base_ref(
     base: &TypeMeta,
-    _known: &HashSet<String>,
+    known: &HashSet<TypeIdentity>,
     named_out: &mut Vec<TypeRef>,
     param_out: &mut Vec<TypeMeta>,
+    preserve_semantic_identity: bool,
 ) {
     let mut named = Vec::new();
     let mut parameterized = Vec::new();
     visit_type_refs(base, &mut named, &mut parameterized);
-    named_out.extend(named);
-    param_out.extend(parameterized);
+    named_out.extend(named.into_iter().filter(|reference| {
+        !known.contains(&type_ref_dependency_identity(
+            reference,
+            preserve_semantic_identity,
+        ))
+    }));
+    param_out.extend(parameterized.into_iter().filter(|reference| {
+        !known.contains(&type_dependency_identity(
+            reference,
+            preserve_semantic_identity,
+        ))
+    }));
 }
 
-fn type_dependency_key(typ: &TypeMeta) -> String {
-    match typ {
-        TypeMeta::Bool => "bool".into(),
-        TypeMeta::I8 => "i8".into(),
-        TypeMeta::U8 => "u8".into(),
-        TypeMeta::I16 => "i16".into(),
-        TypeMeta::U16 => "u16".into(),
-        TypeMeta::I32 => "i32".into(),
-        TypeMeta::U32 => "u32".into(),
-        TypeMeta::I64 => "i64".into(),
-        TypeMeta::U64 => "u64".into(),
-        TypeMeta::F32 => "f32".into(),
-        TypeMeta::F64 => "f64".into(),
-        TypeMeta::Char16 => "char16".into(),
-        TypeMeta::String => "string".into(),
-        TypeMeta::Guid => "guid".into(),
-        TypeMeta::Object => "object".into(),
-        TypeMeta::Interface {
-            namespace, name, ..
-        } => format!("interface:{namespace}.{name}"),
-        TypeMeta::RuntimeClass {
-            namespace, name, ..
-        } => format!("class:{namespace}.{name}"),
-        TypeMeta::Delegate {
-            namespace, name, ..
-        } => format!("delegate:{namespace}.{name}"),
-        TypeMeta::Parameterized {
-            namespace,
-            name,
-            piid,
-            args,
-        } => parameterized_dependency_key(namespace, name, piid, args),
-        TypeMeta::Array(inner) => format!("array:{}", type_dependency_key(inner)),
-        TypeMeta::Struct {
-            namespace, name, ..
-        } => format!("struct:{namespace}.{name}"),
-        TypeMeta::Enum {
-            namespace, name, ..
-        } => format!("enum:{namespace}.{name}"),
-        TypeMeta::AsyncAction => "async-action".into(),
-        TypeMeta::AsyncActionWithProgress(progress) => {
-            format!("async-action-progress:{}", type_dependency_key(progress))
+fn dependency_identity(
+    semantic: TypeIdentity,
+    legacy_name: &str,
+    preserve_semantic_identity: bool,
+) -> TypeIdentity {
+    if preserve_semantic_identity {
+        semantic
+    } else {
+        TypeIdentity::Primitive {
+            name: format!("legacy:{legacy_name}"),
         }
-        TypeMeta::AsyncOperation(result) => {
-            format!("async-operation:{}", type_dependency_key(result))
-        }
-        TypeMeta::AsyncOperationWithProgress(result, progress) => format!(
-            "async-operation-progress:{},{}",
-            type_dependency_key(result),
-            type_dependency_key(progress)
-        ),
     }
 }
 
-fn parameterized_dependency_key(
-    namespace: &str,
-    name: &str,
-    piid: &str,
-    args: &[TypeMeta],
-) -> String {
-    format!(
-        "generic:{namespace}.{name}:{piid}<{}>",
-        args.iter()
-            .map(type_dependency_key)
-            .collect::<Vec<_>>()
-            .join(",")
+fn type_dependency_identity(typ: &TypeMeta, preserve_semantic_identity: bool) -> TypeIdentity {
+    dependency_identity(
+        typ.type_identity(),
+        &type_meta_short_name(typ),
+        preserve_semantic_identity,
+    )
+}
+
+fn type_ref_dependency_identity(
+    reference: &TypeRef,
+    preserve_semantic_identity: bool,
+) -> TypeIdentity {
+    let kind = match reference.kind {
+        TypeKind::Class => TypeIdentityKind::Class,
+        TypeKind::Enum => TypeIdentityKind::Enum,
+        TypeKind::Interface => TypeIdentityKind::Interface,
+    };
+    dependency_identity(
+        TypeIdentity::named(kind, reference.namespace.clone(), reference.name.clone()),
+        &reference.name,
+        preserve_semantic_identity,
     )
 }
 
@@ -831,21 +920,41 @@ fn type_meta_short_name(typ: &TypeMeta) -> String {
 /// Collect all refs from a list of classes (iterates all interface methods).
 fn collect_all_refs_from_classes(
     classes: &[ClassMeta],
-    known: &HashSet<String>,
+    known: &HashSet<TypeIdentity>,
     named_out: &mut Vec<TypeRef>,
     param_out: &mut Vec<TypeMeta>,
     include_class_bases: bool,
+    preserve_semantic_identity: bool,
 ) {
     for c in classes {
-        if include_class_bases && let Some(base) = &c.base_class {
+        if include_class_bases
+            && let Some(base) = &c.base_class
+            && !known.contains(&type_ref_dependency_identity(
+                base,
+                preserve_semantic_identity,
+            ))
+        {
             named_out.push(base.clone());
         }
         for iface in c.all_interfaces() {
-            collect_all_refs_from_methods(&iface.methods, known, named_out, param_out);
+            collect_all_refs_from_methods(
+                &iface.methods,
+                known,
+                named_out,
+                param_out,
+                preserve_semantic_identity,
+            );
         }
         // Required interfaces themselves may need to be resolved
         for iface in &c.required_interfaces {
-            if iface.generic_piid.is_none() && !iface.name.is_empty() {
+            if iface.generic_piid.is_none()
+                && !iface.name.is_empty()
+                && !known.contains(&dependency_identity(
+                    iface.type_identity(),
+                    &iface.name,
+                    preserve_semantic_identity,
+                ))
+            {
                 named_out.push(TypeRef {
                     namespace: iface.namespace.clone(),
                     name: iface.name.clone(),
@@ -859,16 +968,29 @@ fn collect_all_refs_from_classes(
 /// Collect all refs from a list of standalone interfaces.
 fn collect_all_refs_from_interfaces(
     interfaces: &[InterfaceMeta],
-    known: &HashSet<String>,
+    known: &HashSet<TypeIdentity>,
     named_out: &mut Vec<TypeRef>,
     param_out: &mut Vec<TypeMeta>,
     include_interface_bases: bool,
+    preserve_semantic_identity: bool,
 ) {
     for i in interfaces {
-        collect_all_refs_from_methods(&i.methods, known, named_out, param_out);
+        collect_all_refs_from_methods(
+            &i.methods,
+            known,
+            named_out,
+            param_out,
+            preserve_semantic_identity,
+        );
         if include_interface_bases {
             for base in &i.base_interfaces {
-                collect_interface_base_ref(base, known, named_out, param_out);
+                collect_interface_base_ref(
+                    base,
+                    known,
+                    named_out,
+                    param_out,
+                    preserve_semantic_identity,
+                );
             }
         }
         if i.generic_piid.as_deref() == Some(PIID_IOBSERVABLE_VECTOR) && i.generic_args.len() == 1 {
@@ -878,7 +1000,12 @@ fn collect_all_refs_from_interfaces(
                 piid: PIID_IVECTOR.into(),
                 args: i.generic_args.clone(),
             };
-            param_out.push(vector);
+            if !known.contains(&type_dependency_identity(
+                &vector,
+                preserve_semantic_identity,
+            )) {
+                param_out.push(vector);
+            }
         }
     }
 }
@@ -1216,6 +1343,7 @@ fn parse_class_from_index(index: &reader::Index, namespace: &str, name: &str) ->
         static_interfaces,
         has_default_constructor,
         constructors,
+        is_referenced_as_value: false,
         is_agile,
         doc: None,
         deprecated: None,
@@ -1340,7 +1468,10 @@ fn parse_parameterized_interface(
 ) -> Option<InterfaceMeta> {
     let trimmed_name = generic_name.split('`').next().unwrap_or(generic_name);
     let def = index.get(namespace, trimmed_name).next()?;
-    parse_interface_methods(index, &def, concrete_name, namespace, piid, generic_args)
+    let mut interface =
+        parse_interface_methods(index, &def, concrete_name, namespace, piid, generic_args)?;
+    interface.generic_name = Some(generic_name.to_string());
+    Some(interface)
 }
 
 fn interface_meta_type_identity(typ: &TypeMeta) -> Option<(String, String)> {
@@ -1532,6 +1663,7 @@ fn parse_interface_methods(
         base_interfaces,
         methods,
         generic_piid,
+        generic_name: None,
         generic_args: generic_args_vec,
         doc: None,
         deprecated: None,
@@ -1957,6 +2089,61 @@ mod tests {
     }
 
     #[test]
+    fn dependency_identity_preserves_namespace_inside_closed_generics() {
+        let point = |namespace: &str| TypeMeta::Struct {
+            namespace: namespace.into(),
+            name: "Point".into(),
+            fields: vec![],
+        };
+        let closed = |argument| TypeMeta::Parameterized {
+            namespace: "Example.Collections".into(),
+            name: "IBox`1".into(),
+            piid: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa".into(),
+            args: vec![argument],
+        };
+        let left = closed(point("Example.Left"));
+        let right = closed(point("Example.Right"));
+
+        let projected_name = |typ: &TypeMeta| match typ {
+            TypeMeta::Parameterized { name, args, .. } => make_parameterized_name(name, args),
+            _ => unreachable!(),
+        };
+        assert_eq!(projected_name(&left), projected_name(&right));
+        assert_ne!(left.type_identity(), right.type_identity());
+    }
+
+    #[test]
+    fn dependency_collection_keeps_same_short_named_references() {
+        let left = TypeMeta::Interface {
+            namespace: "Example.Left".into(),
+            name: "IValue".into(),
+            iid: "11111111-1111-1111-1111-111111111111".into(),
+        };
+        let right = TypeMeta::Interface {
+            namespace: "Example.Right".into(),
+            name: "IValue".into(),
+            iid: "22222222-2222-2222-2222-222222222222".into(),
+        };
+        let known = HashSet::from([left.type_identity()]);
+        let method = MethodMeta {
+            params: vec![ParamMeta {
+                name: "value".into(),
+                typ: right,
+                direction: ParamDirection::In,
+            }],
+            ..Default::default()
+        };
+        let mut named = Vec::new();
+        let mut parameterized = Vec::new();
+
+        collect_all_refs_from_methods(&[method], &known, &mut named, &mut parameterized, true);
+
+        assert_eq!(named.len(), 1);
+        assert_eq!(named[0].namespace, "Example.Right");
+        assert!(parameterized.is_empty());
+    }
+
+    #[test]
     fn instantiated_interface_identity_includes_generic_arguments() {
         let interface = |arg| InterfaceMeta {
             name: "ISameShortName".into(),
@@ -1976,16 +2163,17 @@ mod tests {
     #[test]
     fn parameterized_dependency_identity_includes_argument_namespace() {
         let key = |namespace: &str| {
-            parameterized_dependency_key(
-                WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE,
-                "IVector",
-                PIID_IVECTOR,
-                &[TypeMeta::RuntimeClass {
+            TypeMeta::Parameterized {
+                namespace: WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE.into(),
+                name: "IVector".into(),
+                piid: PIID_IVECTOR.into(),
+                args: vec![TypeMeta::RuntimeClass {
                     namespace: namespace.into(),
                     name: "PointerPoint".into(),
                     default_interface: None,
                 }],
-            )
+            }
+            .type_identity()
         };
 
         assert_ne!(key("Windows.UI.Input"), key("Microsoft.UI.Input"));
@@ -2149,19 +2337,18 @@ mod tests {
             "versioned User interfaces must remain available"
         );
 
-        let known_types = HashSet::from(["User".to_string()]);
-        let py = crate::codegen::winrt::python::generate_class(
-            &class,
-            &known_types,
-            &HashSet::new(),
-            &HashSet::new(),
-        );
-        let pyi = crate::codegen::python_stub::generate_class_stub(
-            &class,
-            &known_types,
-            &HashSet::new(),
-            &HashSet::new(),
-        );
+        let context = crate::codegen::python::PythonProjectionContext::standalone(
+            std::iter::once(TypeIdentity::named(
+                TypeIdentityKind::Class,
+                class.namespace.clone(),
+                class.name.clone(),
+            ))
+            .chain(class.all_interfaces().map(InterfaceMeta::type_identity)),
+        )
+        .unwrap();
+        let py = crate::codegen::winrt::python::generate_class(&context, &class, &HashSet::new());
+        let pyi =
+            crate::codegen::python_stub::generate_class_stub(&context, &class, &HashSet::new());
         assert!(py.contains("def _from_native(cls, obj: DynWinRTValue):"));
         assert!(py.contains("User cannot be constructed directly"));
         assert!(pyi.contains("def __init__(self, _not_constructible: NoReturn) -> None: ..."));
@@ -2278,17 +2465,27 @@ mod tests {
                 .iter()
                 .any(|interface| interface.name == "IAutomationPeerOverrides")
         );
-        let known_types = HashSet::from(["AutomationPeer".to_string()]);
+        let context = crate::codegen::python::PythonProjectionContext::standalone(
+            std::iter::once(TypeIdentity::named(
+                TypeIdentityKind::Class,
+                automation_peer.namespace.clone(),
+                automation_peer.name.clone(),
+            ))
+            .chain(
+                automation_peer
+                    .all_interfaces()
+                    .map(InterfaceMeta::type_identity),
+            ),
+        )
+        .unwrap();
         let py = crate::codegen::winrt::python::generate_class(
+            &context,
             &automation_peer,
-            &known_types,
-            &HashSet::new(),
             &HashSet::new(),
         );
         let pyi = crate::codegen::python_stub::generate_class_stub(
+            &context,
             &automation_peer,
-            &known_types,
-            &HashSet::new(),
             &HashSet::new(),
         );
         assert!(py.contains("AutomationPeer cannot be constructed directly"));
@@ -2529,6 +2726,7 @@ mod iface_tests {
             &mut named,
             &mut parameterized,
             false,
+            true,
         );
 
         assert!(named.is_empty());

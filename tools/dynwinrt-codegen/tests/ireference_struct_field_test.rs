@@ -1,11 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+mod common;
+
 use std::collections::{HashMap, HashSet};
 
 use dynwinrt_codegen::codegen::winrt::javascript::{self, project};
-use dynwinrt_codegen::codegen::winrt::python;
-use dynwinrt_codegen::codegen::{python_stub, render_dts, render_js};
+use dynwinrt_codegen::codegen::{render_dts, render_js};
 use dynwinrt_codegen::meta::{
     ClassMeta, InterfaceMeta, MethodMeta, parse_class, resolve_dependencies,
 };
@@ -124,8 +125,8 @@ fn synthetic_ireference_point_field_uses_native_optional_projection() {
         "Point".to_string(),
         "IReference_Point".to_string(),
     ]);
-    let py = python::generate_class(&class, &known, &HashSet::new(), &HashSet::new());
-    let pyi = python_stub::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
+    let py = common::generate_class(&class, &known, &HashSet::new(), &HashSet::new());
+    let pyi = common::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
     let (js, dts) = generate_javascript(&class, &known);
 
     let constructor = "def __init__(self, value: Point | None | IReference_Point = None):";
@@ -239,8 +240,8 @@ fn scalar_ireference_fields_preserve_native_python_types() {
         "IReference_String".to_string(),
         "IReference_Mode".to_string(),
     ]);
-    let py = python::generate_class(&class, &known, &HashSet::new(), &HashSet::new());
-    let pyi = python_stub::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
+    let py = common::generate_class(&class, &known, &HashSet::new(), &HashSet::new());
+    let pyi = common::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
     let (js, dts) = generate_javascript(&class, &known);
 
     for output in [&py, &pyi] {
@@ -306,8 +307,8 @@ fn nested_struct_defaults_and_enum_fields_are_python_native() {
         "Inner".to_string(),
         "Outer".to_string(),
     ]);
-    let py = python::generate_class(&class, &known, &HashSet::new(), &HashSet::new());
-    let pyi = python_stub::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
+    let py = common::generate_class(&class, &known, &HashSet::new(), &HashSet::new());
+    let pyi = common::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
 
     assert!(
         py.contains("class Inner:\n    __slots__ = ('count',)"),
@@ -379,8 +380,8 @@ fn empty_structs_emit_slots_and_value_semantics() {
     };
     let class = class_with_struct("UsesEmptyMarker", empty);
     let known = HashSet::from(["UsesEmptyMarker".to_string(), "EmptyMarker".to_string()]);
-    let py = python::generate_class(&class, &known, &HashSet::new(), &HashSet::new());
-    let pyi = python_stub::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
+    let py = common::generate_class(&class, &known, &HashSet::new(), &HashSet::new());
+    let pyi = common::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
 
     assert!(
         py.contains(
@@ -416,8 +417,8 @@ fn sdk_http_progress_ireference_u64_fields_are_native_optional_values() {
 
     let class = parse_class(WINDOWS_WINMD, "Windows.Web.Http", "HttpClient").unwrap();
     let known = HashSet::from(["HttpClient".to_string(), "HttpProgressStage".to_string()]);
-    let py = python::generate_class(&class, &known, &HashSet::new(), &HashSet::new());
-    let pyi = python_stub::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
+    let py = common::generate_class(&class, &known, &HashSet::new(), &HashSet::new());
+    let pyi = common::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
     let (js, dts) = generate_javascript(&class, &known);
 
     for output in [&py, &pyi] {
@@ -445,5 +446,15 @@ fn sdk_http_progress_ireference_u64_fields_are_native_optional_values() {
                 "DynWinRtValue.boxReference(DynWinRtValue.u64(value), DynWinRtType.u64())"
             ),
         "{js}"
+    );
+    assert!(
+        js.contains("_unpackHttpProgress(_p)")
+            && dts.contains("WinRTAsyncWithProgress<string, HttpProgress>"),
+        "JavaScript struct progress projection was not preserved:\n{js}\n{dts}"
+    );
+    assert!(
+        py.contains("lambda value: _unpack_http_progress(value)")
+            && pyi.contains("WinRTAsyncWithProgress[str, 'HttpProgress']"),
+        "Python struct progress projection was not preserved:\n{py}\n{pyi}"
     );
 }

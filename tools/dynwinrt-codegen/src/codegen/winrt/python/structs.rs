@@ -5,7 +5,7 @@
 
 use crate::types::TypeMeta;
 
-use super::naming::{python_module_name, to_snake_case};
+use super::naming::{PythonProjectionContext, to_snake_case};
 use super::native_types::{FoundationType, foundation_type};
 use super::signature::{py_runtime_symbol, py_wrap_arg};
 use super::type_helpers::py_optional_type;
@@ -16,15 +16,16 @@ use crate::codegen::winrt::shared::imports::ireference_inner_type;
 // ======================================================================
 
 /// Python struct field getter expression.
-pub(crate) fn py_struct_field_getter(typ: &TypeMeta, index: usize) -> String {
+pub(crate) fn py_struct_field_getter(
+    context: &PythonProjectionContext,
+    typ: &TypeMeta,
+    index: usize,
+) -> String {
     if let Some(_inner) = ireference_inner_type(typ) {
-        let TypeMeta::Parameterized { name, args, .. } = typ else {
-            unreachable!()
-        };
-        let concrete = crate::meta::make_parameterized_name(name, args);
+        let concrete = context.projected_name_for_type(typ);
         return format!(
             "(lambda value: None if value.is_null() else {}(value).value)(s.get_object({}))",
-            py_runtime_symbol(&concrete, &concrete),
+            py_runtime_symbol(context, &context.identity_for_type(typ), &concrete),
             index
         );
     }
@@ -45,15 +46,12 @@ pub(crate) fn py_struct_field_getter(typ: &TypeMeta, index: usize) -> String {
         TypeMeta::String => format!("s.get_hstring({})", index),
         TypeMeta::Guid => format!("_dynwinrt_uuid(s.get_guid({}))", index),
         TypeMeta::Enum {
-            namespace,
-            name,
-            underlying,
-            ..
+            name, underlying, ..
         } => format!(
             "_dynwinrt_enum('{}', '{}', {})",
-            python_module_name(namespace, name),
+            context.implementation_module_for_type(typ),
             name,
-            py_struct_field_getter(underlying, index)
+            py_struct_field_getter(context, underlying, index)
         ),
         TypeMeta::Struct { name, .. } if name == "HResult" => format!("s.get_i32({})", index),
         TypeMeta::Struct { name, .. } => format!(
@@ -103,23 +101,23 @@ pub(crate) fn py_struct_field_setter(typ: &TypeMeta, index: usize, value_expr: &
 }
 
 /// Python type annotation for a struct field.
-pub(crate) fn py_struct_field_type(typ: &TypeMeta) -> String {
+pub(crate) fn py_struct_field_type(context: &PythonProjectionContext, typ: &TypeMeta) -> String {
     if let Some(inner) = ireference_inner_type(typ) {
-        let TypeMeta::Parameterized { name, args, .. } = typ else {
-            unreachable!()
-        };
-        let native = py_optional_type(py_struct_field_read_type(inner));
-        let wrapper = crate::meta::make_parameterized_name(name, args);
+        let native = py_optional_type(py_struct_field_read_type(context, inner));
+        let wrapper = context.reference_name_for_type(typ);
         return format!("{native} | {wrapper}");
     }
 
-    py_struct_field_read_type(typ)
+    py_struct_field_read_type(context, typ)
 }
 
 /// Python read annotation for a struct field.
-pub(crate) fn py_struct_field_read_type(typ: &TypeMeta) -> String {
+pub(crate) fn py_struct_field_read_type(
+    context: &PythonProjectionContext,
+    typ: &TypeMeta,
+) -> String {
     if let Some(inner) = ireference_inner_type(typ) {
-        return py_optional_type(py_struct_field_read_type(inner));
+        return py_optional_type(py_struct_field_read_type(context, inner));
     }
 
     match typ {
@@ -136,7 +134,7 @@ pub(crate) fn py_struct_field_read_type(typ: &TypeMeta) -> String {
         | TypeMeta::U64 => "int".to_string(),
         TypeMeta::Char16 => "str".to_string(),
         TypeMeta::F32 | TypeMeta::F64 => "float".to_string(),
-        TypeMeta::Enum { name, .. } => format!("'{}'", name),
+        TypeMeta::Enum { .. } => format!("'{}'", context.reference_name_for_type(typ)),
         TypeMeta::Struct { name, .. } if name == "HResult" => "int".to_string(),
         typ if foundation_type(typ) == Some(FoundationType::DateTime) => "datetime".to_string(),
         typ if foundation_type(typ) == Some(FoundationType::TimeSpan) => "timedelta".to_string(),

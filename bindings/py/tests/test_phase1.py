@@ -617,6 +617,20 @@ def test_project_as_borrows_input_and_returns_managed_projection():
         raw.release()
 
 
+def test_project_as_accepts_qi_only_generated_class():
+    Wrapper = _projected_wrapper_type("ProjectAsQiOnlyWrapper")
+    del Wrapper._dynwinrt_runtime_class_type
+    Wrapper._dynwinrt_projectable_class_type = True
+
+    with RoApartment(1):
+        raw = DynWinRTValue.activation_factory("Windows.Foundation.Uri")
+        projected = project_as(raw, Wrapper)
+
+        assert projected._obj.identity_raw() == raw.identity_raw()
+        release_projected(projected)
+        raw.release()
+
+
 def test_project_as_rejects_invalid_values_and_types():
     Wrapper = _projected_wrapper_type("ProjectAsValidationWrapper")
 

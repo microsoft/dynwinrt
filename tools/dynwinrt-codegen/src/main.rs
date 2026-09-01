@@ -20,7 +20,7 @@ use dynwinrt_codegen::codegen::winrt::extensions::winui;
 use dynwinrt_codegen::codegen::{project, render_dts, render_js};
 use dynwinrt_codegen::com_metadata;
 use dynwinrt_codegen::meta;
-use dynwinrt_codegen::types::TypeMeta;
+use dynwinrt_codegen::types::{TypeIdentity, TypeIdentityKind, TypeMeta};
 use dynwinrt_codegen::xml_doc::DocTable;
 
 #[derive(Parser)]
@@ -723,6 +723,7 @@ fn run() -> Result<(), String> {
                             &all_classes,
                             &all_interfaces,
                             &all_enums,
+                            &meta::ambiguous_named_type_names(&winmd),
                             pyi,
                             true,
                         )?;
@@ -863,6 +864,7 @@ fn run() -> Result<(), String> {
                             &all_classes,
                             &all_interfaces,
                             &all_enums,
+                            &meta::ambiguous_named_type_names(&winmd),
                             pyi,
                             false,
                         )?;
@@ -1005,6 +1007,14 @@ fn generate_for_types(
         None
     };
 
+    if lang == "py" && !dry_run {
+        let signature_types = meta::method_signature_type_names(winmd)?;
+        for class in &mut all_classes {
+            class.is_referenced_as_value =
+                signature_types.contains(&(class.namespace.clone(), class.name.clone()));
+        }
+    }
+
     // Compute the set of interfaces `generate_js_files` will actually emit
     // (matches the class-name-collision + no-IID filter there). Everything
     // downstream — `known_types`, the barrel index, generated imports — must
@@ -1118,6 +1128,7 @@ fn generate_for_types(
         let mut struct_interfaces = emittable_interfaces.clone();
         struct_interfaces.extend(shared_interfaces.iter().cloned());
         python::validate_struct_symbol_uniqueness(&all_classes, &struct_interfaces)?;
+        validate_python_interface_abi_identities(&struct_interfaces)?;
     }
     for iface in &shared_interfaces {
         known_types.insert(iface.name.clone());
@@ -1136,8 +1147,9 @@ fn generate_for_types(
         }
     }
 
-    let python_layout = if lang == "py" {
-        Some(install_python_generation_layout(
+    let python_context = if lang == "py" {
+        Some(python_generation_context(
+            winmd,
             &all_classes,
             &emittable_interfaces,
             &all_enums,
@@ -1147,7 +1159,6 @@ fn generate_for_types(
     } else {
         None
     };
-
     let (delegate_signatures, delegate_sig_refs, delegate_param_wraps) =
         if let Some(context) = javascript_context.as_ref() {
             project::build_delegate_signatures(
@@ -1163,13 +1174,14 @@ fn generate_for_types(
     if !dry_run {
         if lang == "py" {
             generate_py_files(
+                python_context
+                    .as_ref()
+                    .expect("Python generation context must be available"),
                 output_dir,
                 &all_classes,
                 &emittable_interfaces,
                 &all_enums,
                 &shared_interfaces,
-                &known_types,
-                &delegate_type_names,
                 &shared_iids,
                 pyi,
             )?;
@@ -1206,7 +1218,6 @@ fn generate_for_types(
             )?;
             write_js_barrel_and_manifest(output_dir, &mut plan)?;
         }
-        drop(python_layout);
     }
 
     Ok((
@@ -1223,49 +1234,67 @@ fn python_type_identities(
     enums: &[TypeMeta],
 ) -> Vec<python::PythonTypeIdentity> {
     let mut identities = Vec::new();
-    identities.extend(classes.iter().map(|class| python::PythonTypeIdentity {
-        namespace: class.namespace.clone(),
-        name: class.name.clone(),
+    identities.extend(classes.iter().map(|class| {
+        TypeIdentity::named(
+            TypeIdentityKind::Class,
+            class.namespace.clone(),
+            class.name.clone(),
+        )
     }));
+    identities.extend(interfaces.iter().map(meta::InterfaceMeta::type_identity));
     identities.extend(
-        interfaces
+        enums
             .iter()
-            .map(|interface| python::PythonTypeIdentity {
-                namespace: interface.namespace.clone(),
-                name: interface.name.clone(),
-            }),
+            .filter(|typ| matches!(typ, TypeMeta::Enum { .. }))
+            .map(TypeMeta::type_identity),
     );
-    identities.extend(enums.iter().filter_map(|typ| {
-        let TypeMeta::Enum {
-            namespace, name, ..
-        } = typ
-        else {
-            return None;
-        };
-        Some(python::PythonTypeIdentity {
-            namespace: namespace.clone(),
-            name: name.clone(),
-        })
-    }));
     identities.extend(
-        python::package_struct_identities(classes, interfaces)
-            .into_iter()
-            .map(|(namespace, name)| python::PythonTypeIdentity { namespace, name }),
+        python::package_structs(classes, interfaces)
+            .iter()
+            .map(TypeMeta::type_identity),
     );
     identities
 }
 
-fn install_python_generation_layout(
+fn python_generation_context(
+    winmd: &str,
     classes: &[meta::ClassMeta],
     interfaces: &[meta::InterfaceMeta],
     enums: &[TypeMeta],
     supplemental_interfaces: &[meta::InterfaceMeta],
     existing_identities: &[python::PythonTypeIdentity],
-) -> Result<python::PythonModuleLayoutGuard, String> {
+) -> Result<python::PythonProjectionContext, String> {
     let mut identities = python_type_identities(classes, interfaces, enums);
     identities.extend(python_type_identities(&[], supplemental_interfaces, &[]));
     identities.extend_from_slice(existing_identities);
-    python::install_python_module_layout(identities)
+    python::PythonProjectionContext::packaged_with_ambiguities(
+        identities,
+        meta::ambiguous_named_type_names(winmd),
+    )
+}
+
+fn validate_python_interface_abi_identities(
+    interfaces: &[meta::InterfaceMeta],
+) -> Result<(), String> {
+    let mut abi_by_identity = HashMap::<TypeIdentity, String>::new();
+    for interface in interfaces {
+        let identity = interface.type_identity();
+        let abi = interface
+            .generic_piid
+            .as_ref()
+            .map(|piid| format!("piid:{piid}"))
+            .unwrap_or_else(|| format!("iid:{}", interface.iid));
+        if let Some(existing) = abi_by_identity.insert(identity.clone(), abi.clone())
+            && existing != abi
+        {
+            return Err(format!(
+                "Python semantic identity `{}` has conflicting ABI identities `{existing}` and \
+                 `{abi}`",
+                python::python_identity_display_name(&identity)
+            ));
+        }
+    }
+    Ok(())
 }
 
 const JAVASCRIPT_TYPE_INVENTORY: &str = ".dynwinrt-js-types";
@@ -3331,13 +3360,12 @@ fn collect_subpath_names_from_dir(output_dir: &Path) -> Result<BTreeSet<String>,
 }
 
 fn generate_py_files(
+    context: &python::PythonProjectionContext,
     output_dir: &Path,
     all_classes: &[meta::ClassMeta],
     all_interfaces: &[meta::InterfaceMeta],
     all_enums: &[TypeMeta],
     shared_interfaces: &[meta::InterfaceMeta],
-    known_types: &HashSet<String>,
-    delegate_type_names: &HashSet<String>,
     shared_iids: &HashSet<String>,
     pyi: bool,
 ) -> Result<(), String> {
@@ -3367,40 +3395,37 @@ fn generate_py_files(
     // interface or enum with the same namespace/name. Generate in precedence
     // order and render each final module exactly once.
     for class in all_classes {
-        let module = python::python_module_name(&class.namespace, &class.name);
+        let identity = TypeIdentity::named(
+            TypeIdentityKind::Class,
+            class.namespace.clone(),
+            class.name.clone(),
+        );
+        let module = context.implementation_module(&identity);
         if !generated_modules.insert(module.clone()) {
             continue;
         }
-        let code = python::generate_class(class, known_types, delegate_type_names, shared_iids);
+        let code = python::generate_class(context, class, shared_iids);
         let filepath = output_dir.join(format!("{module}.py"));
         write_file(&filepath, &code)?;
         println!("Generated {}", filepath.display());
         if pyi {
-            let stub = python_stub::generate_class_stub(
-                class,
-                known_types,
-                delegate_type_names,
-                shared_iids,
-            );
+            let stub = python_stub::generate_class_stub(context, class, shared_iids);
             write_file(&output_dir.join(format!("{module}.pyi")), &stub)?;
         }
     }
     for en in all_enums {
-        if let TypeMeta::Enum {
-            namespace, name, ..
-        } = en
-        {
-            let module = python::python_module_name(namespace, name);
+        if let TypeMeta::Enum { .. } = en {
+            let module = context.implementation_module_for_type(en);
             if !generated_modules.insert(module.clone()) {
                 continue;
             }
-            if let Some(code) = python::generate_enum(en) {
+            if let Some(code) = python::generate_enum(context, en) {
                 let filepath = output_dir.join(format!("{module}.py"));
                 write_file(&filepath, &code)?;
                 println!("Generated {}", filepath.display());
             }
             if pyi {
-                if let Some(stub) = python_stub::generate_enum_stub(en) {
+                if let Some(stub) = python_stub::generate_enum_stub(context, en) {
                     let p = output_dir.join(format!("{module}.pyi"));
                     write_file(&p, &stub)?;
                 }
@@ -3408,17 +3433,16 @@ fn generate_py_files(
         }
     }
     for iface in all_interfaces.iter().chain(shared_interfaces) {
-        let module = python::python_module_name(&iface.namespace, &iface.name);
+        let module = context.implementation_module_for_interface(iface);
         if !generated_modules.insert(module.clone()) {
             continue;
         }
-        let code = python::generate_interface(iface, known_types, delegate_type_names);
+        let code = python::generate_interface(context, iface);
         let filepath = output_dir.join(format!("{module}.py"));
         write_file(&filepath, &code)?;
         println!("Generated {}", filepath.display());
         if pyi {
-            let stub =
-                python_stub::generate_interface_stub(iface, known_types, delegate_type_names);
+            let stub = python_stub::generate_interface_stub(context, iface);
             write_file(&output_dir.join(format!("{module}.pyi")), &stub)?;
         }
     }
@@ -3429,19 +3453,19 @@ fn generate_py_files(
         else {
             continue;
         };
-        let module = python::python_module_name(namespace, name);
+        let module = context.implementation_module_for_type(typ);
         if !generated_modules.insert(module.clone()) {
             return Err(format!(
                 "Python struct module `{namespace}.{name}` collides with another generated type"
             ));
         }
-        if let Some(code) = python::generate_struct(typ) {
+        if let Some(code) = python::generate_struct(context, typ) {
             let filepath = output_dir.join(format!("{module}.py"));
             write_file(&filepath, &code)?;
             println!("Generated {}", filepath.display());
         }
         if pyi {
-            if let Some(stub) = python_stub::generate_struct_stub(typ) {
+            if let Some(stub) = python_stub::generate_struct_stub(context, typ) {
                 write_file(&output_dir.join(format!("{module}.pyi")), &stub)?;
             }
         }
@@ -3461,7 +3485,7 @@ struct PythonNamespaceGroup {
     structs: Vec<TypeMeta>,
 }
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 struct PythonGeneratedType {
     kind: String,
     identity: python::PythonTypeIdentity,
@@ -3472,11 +3496,13 @@ fn write_python_package_indexes(
     classes: &[meta::ClassMeta],
     interfaces: &[meta::InterfaceMeta],
     enums: &[TypeMeta],
+    ambiguous_named_types: &HashSet<String>,
     pyi: bool,
     append: bool,
 ) -> Result<(), String> {
     use dynwinrt_codegen::codegen::python_stub;
 
+    validate_python_interface_abi_identities(interfaces)?;
     let current_structs = python::package_structs(classes, interfaces);
     let current_types = python_generated_types(classes, interfaces, enums);
     let mut all_types = if append {
@@ -3492,58 +3518,60 @@ fn write_python_package_indexes(
         .iter()
         .map(|typ| typ.identity.clone())
         .collect::<Vec<_>>();
-    let _layout = python::install_python_module_layout(module_identities.clone())?;
-    validate_python_public_identities(&module_identities)?;
+    let context = python::PythonProjectionContext::packaged_with_ambiguities(
+        module_identities.clone(),
+        ambiguous_named_types.iter().cloned(),
+    )?;
+    validate_python_public_identities(&context, &module_identities)?;
 
-    let mut interface_counts = HashMap::<String, usize>::new();
-    for typ in &all_types {
-        if typ.kind == "interface" {
-            *interface_counts
-                .entry(typ.identity.name.clone())
-                .or_default() += 1;
-        }
-    }
-    if let Some((name, _)) = interface_counts.iter().find(|(_, count)| **count > 1) {
-        return Err(format!(
-            "Python generation cannot safely project multiple interfaces named `{name}`; \
-             their delegate and generic runtime symbols are ambiguous"
-        ));
-    }
-
-    let mut counts = HashMap::<String, usize>::new();
-    for typ in &all_types {
-        *counts.entry(typ.identity.name.clone()).or_default() += 1;
-    }
-    let suppressed_root_names = counts
+    let suppressed_root_names = module_identities
         .iter()
-        .filter(|(_, count)| **count > 1)
-        .map(|(name, _)| name.clone())
+        .filter(|identity| !context.root_name_is_unambiguous(identity))
+        .flat_map(|identity| {
+            [
+                context.compatibility_name(identity),
+                context.projected_name(identity),
+                context.reference_name(identity),
+            ]
+        })
         .collect::<HashSet<_>>();
     let root_classes = classes
         .iter()
-        .filter(|class| counts[&class.name] == 1)
+        .filter(|class| {
+            context.root_name_is_unambiguous(&TypeIdentity::named(
+                TypeIdentityKind::Class,
+                class.namespace.clone(),
+                class.name.clone(),
+            ))
+        })
         .cloned()
         .collect::<Vec<_>>();
     let root_interfaces = interfaces
         .iter()
-        .filter(|interface| counts[&interface.name] == 1)
+        .filter(|interface| context.root_name_is_unambiguous(&interface.type_identity()))
         .cloned()
         .collect::<Vec<_>>();
     let root_enums = enums
         .iter()
-        .filter(|typ| matches!(typ, TypeMeta::Enum { name, .. } if counts[name] == 1))
+        .filter(|typ| {
+            matches!(typ, TypeMeta::Enum { .. })
+                && context.root_name_is_unambiguous(&typ.type_identity())
+        })
         .cloned()
         .collect::<Vec<_>>();
     let root_structs = current_structs
         .iter()
-        .filter(|typ| matches!(typ, TypeMeta::Struct { name, .. } if counts[name] == 1))
+        .filter(|typ| {
+            matches!(typ, TypeMeta::Struct { .. })
+                && context.root_name_is_unambiguous(&typ.type_identity())
+        })
         .cloned()
         .collect::<Vec<_>>();
 
     let mut root_index =
-        python::generate_public_index(&root_classes, &root_interfaces, &root_enums);
+        python::generate_public_index(&context, &root_classes, &root_interfaces, &root_enums);
     root_index.push_str(
-        python::generate_public_struct_index(&root_structs)
+        python::generate_public_struct_index(&context, &root_structs)
             .strip_prefix(GENERATED_PYTHON_HEADER)
             .unwrap_or_default(),
     );
@@ -3554,10 +3582,14 @@ fn write_python_package_indexes(
         &suppressed_root_names,
     )?;
     if pyi {
-        let mut root_stub =
-            python_stub::generate_public_index_stub(&root_classes, &root_interfaces, &root_enums);
+        let mut root_stub = python_stub::generate_public_index_stub(
+            &context,
+            &root_classes,
+            &root_interfaces,
+            &root_enums,
+        );
         root_stub.push_str(
-            python_stub::generate_public_struct_index_stub(&root_structs)
+            python_stub::generate_public_struct_index_stub(&context, &root_structs)
                 .strip_prefix(GENERATED_PYTHON_HEADER)
                 .unwrap_or_default(),
         );
@@ -3605,13 +3637,14 @@ fn write_python_package_indexes(
     }
 
     for (namespace, group) in groups {
-        write_python_namespace_group(output_dir, &namespace, &group, pyi, append)?;
+        write_python_namespace_group(&context, output_dir, &namespace, &group, pyi, append)?;
     }
     write_python_type_inventory(output_dir, &all_types)?;
     Ok(())
 }
 
 fn write_python_namespace_group(
+    context: &python::PythonProjectionContext,
     output_dir: &Path,
     namespace: &str,
     group: &PythonNamespaceGroup,
@@ -3646,24 +3679,35 @@ fn write_python_namespace_group(
     let mut seen = HashSet::new();
 
     for class in &group.classes {
-        if !seen.insert(class.name.clone()) {
+        let identity = TypeIdentity::named(
+            TypeIdentityKind::Class,
+            class.namespace.clone(),
+            class.name.clone(),
+        );
+        if !seen.insert(identity.clone()) {
             continue;
         }
-        let runtime = python::generate_index(std::slice::from_ref(class), &[], &[]);
+        let type_name = context.projected_name(&identity);
+        let runtime = python::generate_index(context, std::slice::from_ref(class), &[], &[]);
         write_python_facade(
+            context,
             &package_dir,
             &segments,
-            &class.name,
+            &identity,
+            &type_name,
             &runtime,
             "py",
             &mut runtime_exports,
         )?;
         if pyi {
-            let stub = python_stub::generate_index_stub(std::slice::from_ref(class), &[], &[]);
+            let stub =
+                python_stub::generate_index_stub(context, std::slice::from_ref(class), &[], &[]);
             write_python_facade(
+                context,
                 &package_dir,
                 &segments,
-                &class.name,
+                &identity,
+                &type_name,
                 &stub,
                 "pyi",
                 &mut stub_exports,
@@ -3671,24 +3715,35 @@ fn write_python_namespace_group(
         }
     }
     for interface in &group.interfaces {
-        if !seen.insert(interface.name.clone()) {
+        let identity = interface.type_identity();
+        if !seen.insert(identity.clone()) {
             continue;
         }
-        let runtime = python::generate_index(&[], std::slice::from_ref(interface), &[]);
+        let type_name = context.projected_name(&identity);
+        let runtime = python::generate_index(context, &[], std::slice::from_ref(interface), &[]);
         write_python_facade(
+            context,
             &package_dir,
             &segments,
-            &interface.name,
+            &identity,
+            &type_name,
             &runtime,
             "py",
             &mut runtime_exports,
         )?;
         if pyi {
-            let stub = python_stub::generate_index_stub(&[], std::slice::from_ref(interface), &[]);
+            let stub = python_stub::generate_index_stub(
+                context,
+                &[],
+                std::slice::from_ref(interface),
+                &[],
+            );
             write_python_facade(
+                context,
                 &package_dir,
                 &segments,
-                &interface.name,
+                &identity,
+                &type_name,
                 &stub,
                 "pyi",
                 &mut stub_exports,
@@ -3696,27 +3751,34 @@ fn write_python_namespace_group(
         }
     }
     for typ in &group.enums {
-        let TypeMeta::Enum { name, .. } = typ else {
+        let TypeMeta::Enum { .. } = typ else {
             continue;
         };
-        if !seen.insert(name.clone()) {
+        let identity = typ.type_identity();
+        if !seen.insert(identity.clone()) {
             continue;
         }
-        let runtime = python::generate_index(&[], &[], std::slice::from_ref(typ));
+        let type_name = context.projected_name(&identity);
+        let runtime = python::generate_index(context, &[], &[], std::slice::from_ref(typ));
         write_python_facade(
+            context,
             &package_dir,
             &segments,
-            name,
+            &identity,
+            &type_name,
             &runtime,
             "py",
             &mut runtime_exports,
         )?;
         if pyi {
-            let stub = python_stub::generate_index_stub(&[], &[], std::slice::from_ref(typ));
+            let stub =
+                python_stub::generate_index_stub(context, &[], &[], std::slice::from_ref(typ));
             write_python_facade(
+                context,
                 &package_dir,
                 &segments,
-                name,
+                &identity,
+                &type_name,
                 &stub,
                 "pyi",
                 &mut stub_exports,
@@ -3724,30 +3786,36 @@ fn write_python_namespace_group(
         }
     }
     for typ in &group.structs {
-        let TypeMeta::Struct { name, .. } = typ else {
+        let TypeMeta::Struct { .. } = typ else {
             continue;
         };
-        if !seen.insert(name.clone()) {
+        let identity = typ.type_identity();
+        if !seen.insert(identity.clone()) {
             continue;
         }
-        let runtime = python::generate_struct_index(std::slice::from_ref(typ));
+        let type_name = context.projected_name(&identity);
+        let runtime = python::generate_struct_index(context, std::slice::from_ref(typ));
         if runtime.lines().any(|line| line.starts_with("from .")) {
             write_python_facade(
+                context,
                 &package_dir,
                 &segments,
-                name,
+                &identity,
+                &type_name,
                 &runtime,
                 "py",
                 &mut runtime_exports,
             )?;
         }
         if pyi {
-            let stub = python_stub::generate_struct_index_stub(std::slice::from_ref(typ));
+            let stub = python_stub::generate_struct_index_stub(context, std::slice::from_ref(typ));
             if stub.lines().any(|line| line.starts_with("from .")) {
                 write_python_facade(
+                    context,
                     &package_dir,
                     &segments,
-                    name,
+                    &identity,
+                    &type_name,
                     &stub,
                     "pyi",
                     &mut stub_exports,
@@ -3777,8 +3845,10 @@ fn write_python_namespace_group(
 }
 
 fn write_python_facade(
+    context: &python::PythonProjectionContext,
     package_dir: &Path,
     namespace_segments: &[String],
+    identity: &python::PythonTypeIdentity,
     type_name: &str,
     implementation_index: &str,
     extension: &str,
@@ -3822,7 +3892,7 @@ fn write_python_facade(
     if extension == "py" && exported_type {
         facade.push_str(&format!("\n{type_name}.__module__ = __name__\n"));
     }
-    let public_module = python::python_public_module_name(type_name);
+    let public_module = context.public_module(identity);
     write_file(
         &package_dir.join(format!("{public_module}.{extension}")),
         &facade,
@@ -3834,6 +3904,8 @@ fn write_python_facade(
             format!("from .{public_module} import {type_name}")
         };
         package_exports.push(package_export);
+    } else if !exports.is_empty() {
+        package_exports.push(format!("from .{public_module} import {exports}"));
     }
     Ok(())
 }
@@ -3875,8 +3947,8 @@ fn merge_python_lazy_root_indexes(
     suppressed_names: &HashSet<String>,
 ) -> String {
     let mut exports = BTreeMap::<String, (String, String)>::new();
-    collect_python_root_exports(existing, suppressed_names, &mut exports);
     collect_python_root_exports(generated, suppressed_names, &mut exports);
+    collect_python_root_exports(existing, suppressed_names, &mut exports);
 
     let mut out = String::from(GENERATED_PYTHON_HEADER);
     out.push_str("from importlib import import_module as _import_module\n\n");
@@ -3983,7 +4055,7 @@ fn merge_python_indexes(
 ) -> String {
     let mut imports = BTreeSet::new();
     let mut exported_symbols = HashSet::new();
-    for line in existing.lines().chain(generated.lines()) {
+    for line in generated.lines().chain(existing.lines()) {
         if line.starts_with("from .") {
             let (line, comment) = line
                 .split_once("  #")
@@ -4033,39 +4105,31 @@ fn python_generated_types(
     let mut types = Vec::new();
     types.extend(classes.iter().map(|class| PythonGeneratedType {
         kind: "class".into(),
-        identity: python::PythonTypeIdentity {
-            namespace: class.namespace.clone(),
-            name: class.name.clone(),
-        },
+        identity: TypeIdentity::named(
+            TypeIdentityKind::Class,
+            class.namespace.clone(),
+            class.name.clone(),
+        ),
     }));
     types.extend(interfaces.iter().map(|interface| PythonGeneratedType {
         kind: "interface".into(),
-        identity: python::PythonTypeIdentity {
-            namespace: interface.namespace.clone(),
-            name: interface.name.clone(),
-        },
+        identity: interface.type_identity(),
     }));
     types.extend(enums.iter().filter_map(|typ| {
-        let TypeMeta::Enum {
-            namespace, name, ..
-        } = typ
-        else {
+        let TypeMeta::Enum { .. } = typ else {
             return None;
         };
         Some(PythonGeneratedType {
             kind: "enum".into(),
-            identity: python::PythonTypeIdentity {
-                namespace: namespace.clone(),
-                name: name.clone(),
-            },
+            identity: typ.type_identity(),
         })
     }));
     types.extend(
-        python::package_struct_identities(classes, interfaces)
+        python::package_structs(classes, interfaces)
             .into_iter()
-            .map(|(namespace, name)| PythonGeneratedType {
+            .map(|typ| PythonGeneratedType {
                 kind: "struct".into(),
-                identity: python::PythonTypeIdentity { namespace, name },
+                identity: typ.type_identity(),
             }),
     );
     types
@@ -4081,23 +4145,15 @@ fn read_python_type_inventory(output_dir: &Path) -> Result<Vec<PythonGeneratedTy
         .lines()
         .filter(|line| !line.is_empty())
         .map(|line| {
-            let mut parts = line.splitn(3, '|');
-            let kind = parts.next().unwrap_or_default();
-            let namespace = parts.next().unwrap_or_default();
-            let name = parts.next().unwrap_or_default();
-            if !matches!(kind, "class" | "interface" | "enum" | "struct")
-                || namespace.is_empty()
-                || name.is_empty()
-            {
-                return Err(format!("Invalid generated type inventory entry `{line}`"));
+            let typ: PythonGeneratedType = serde_json::from_str(line)
+                .map_err(|error| format!("Invalid generated type inventory entry: {error}"))?;
+            if !matches!(typ.kind.as_str(), "class" | "interface" | "enum" | "struct") {
+                return Err(format!(
+                    "Invalid generated type inventory kind `{}`",
+                    typ.kind
+                ));
             }
-            Ok(PythonGeneratedType {
-                kind: kind.into(),
-                identity: python::PythonTypeIdentity {
-                    namespace: namespace.into(),
-                    name: name.into(),
-                },
-            })
+            Ok(typ)
         })
         .collect()
 }
@@ -4109,12 +4165,10 @@ fn write_python_type_inventory(
     let mut lines = types
         .iter()
         .map(|typ| {
-            format!(
-                "{}|{}|{}",
-                typ.kind, typ.identity.namespace, typ.identity.name
-            )
+            serde_json::to_string(typ)
+                .map_err(|error| format!("Failed to serialize Python type inventory: {error}"))
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, _>>()?;
     lines.sort();
     lines.dedup();
     write_file(
@@ -4144,24 +4198,30 @@ fn validate_python_public_paths(
     enums: &[TypeMeta],
 ) -> Result<(), String> {
     let identities = python_type_identities(classes, interfaces, enums);
-    validate_python_public_identities(&identities)
+    let context = python::PythonProjectionContext::packaged(identities.clone())?;
+    validate_python_public_identities(&context, &identities)
 }
 
 fn validate_python_public_identities(
+    context: &python::PythonProjectionContext,
     identities: &[python::PythonTypeIdentity],
 ) -> Result<(), String> {
     let mut namespace_owners = HashMap::<String, String>::new();
     let mut namespace_paths = HashSet::new();
     for identity in identities {
-        let segments = python::python_namespace_segments(&identity.namespace);
+        let namespace = identity.namespace().ok_or_else(|| {
+            format!(
+                "Python public type identity must be named: {}",
+                python::python_identity_display_name(identity)
+            )
+        })?;
+        let segments = python::python_namespace_segments(namespace);
         let normalized = segments.join("/");
-        if let Some(existing) =
-            namespace_owners.insert(normalized.clone(), identity.namespace.clone())
-        {
-            if existing != identity.namespace {
+        if let Some(existing) = namespace_owners.insert(normalized.clone(), namespace.to_string()) {
+            if existing != namespace {
                 return Err(format!(
                     "Python namespace collision: `{existing}` and `{}` both normalize to `{normalized}`",
-                    identity.namespace
+                    namespace
                 ));
             }
         }
@@ -4172,20 +4232,22 @@ fn validate_python_public_identities(
 
     let mut module_owners = HashMap::<String, python::PythonTypeIdentity>::new();
     for identity in identities {
-        let mut segments = python::python_namespace_segments(&identity.namespace);
-        segments.push(python::python_public_module_name(&identity.name));
+        let namespace = identity.namespace().expect("validated named identity");
+        let mut segments = python::python_namespace_segments(namespace);
+        segments.push(context.public_module(identity));
         let module_path = segments.join("/");
         if namespace_paths.contains(&module_path) {
             return Err(format!(
-                "Python package/module collision: `{}.{}` normalizes to package path `{module_path}`",
-                identity.namespace, identity.name
+                "Python package/module collision: `{}` normalizes to package path `{module_path}`",
+                python::python_identity_display_name(identity)
             ));
         }
         if let Some(existing) = module_owners.insert(module_path.clone(), identity.clone()) {
             if existing != *identity {
                 return Err(format!(
-                    "Python module collision: `{}.{}` and `{}.{}` both normalize to `{module_path}.py`",
-                    existing.namespace, existing.name, identity.namespace, identity.name
+                    "Python module collision: `{}` and `{}` both normalize to `{module_path}.py`",
+                    python::python_identity_display_name(&existing),
+                    python::python_identity_display_name(identity)
                 ));
             }
         }
@@ -4620,13 +4682,17 @@ fn copy_directory(source: &Path, destination: &Path) -> Result<(), String> {
 
 fn write_python_package_manifest(output_dir: &Path, final_output_dir: &Path) -> Result<(), String> {
     let manifest_path = output_dir.join("pyproject.toml");
-    if manifest_path.exists()
-        && !python_inventory_contains(output_dir, Path::new("pyproject.toml"))?
-    {
-        return Err(format!(
-            "Refusing to overwrite existing non-generated manifest '{}'",
-            final_output_dir.join("pyproject.toml").display()
-        ));
+    let setup_path = output_dir.join("setup.cfg");
+    for (path, name) in [
+        (&manifest_path, "pyproject.toml"),
+        (&setup_path, "setup.cfg"),
+    ] {
+        if path.exists() && !python_inventory_contains(output_dir, Path::new(name))? {
+            return Err(format!(
+                "Refusing to overwrite existing non-generated manifest '{}'",
+                final_output_dir.join(name).display()
+            ));
+        }
     }
     let leaf = final_output_dir
         .file_name()
@@ -4648,7 +4714,35 @@ fn write_python_package_manifest(output_dir: &Path, final_output_dir: &Path) -> 
         runtime_version: version,
         namespace_packages: &namespace_packages,
     });
-    write_file(&manifest_path, &manifest)
+    let build_cache_key = python_build_cache_key(output_dir, &import_name)?;
+    let setup = package::render_python_setup_cfg(&build_cache_key);
+    write_file(&manifest_path, &manifest)?;
+    write_file(&setup_path, &setup)
+}
+
+fn python_build_cache_key(output_dir: &Path, import_name: &str) -> Result<String, String> {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in b"package\0"
+        .iter()
+        .copied()
+        .chain(import_name.bytes())
+        .chain(std::iter::once(b'\n'))
+    {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    for path in collect_generated_python_files(output_dir, false, false)? {
+        let normalized = path
+            .components()
+            .map(|component| component.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/");
+        for byte in normalized.bytes().chain(std::iter::once(b'\n')) {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+    }
+    Ok(format!("{hash:016x}"))
 }
 
 const PYTHON_GENERATED_INVENTORY: &str = ".dynwinrt-generated-files";
@@ -4685,8 +4779,11 @@ fn remove_all_generated_python_stubs(output_dir: &Path) -> Result<(), String> {
                 .extension()
                 .is_some_and(|extension| extension == "pyi")
                 || relative.file_name().is_some_and(|name| name == "py.typed");
-            let path = output_dir.join(relative);
-            if is_stub && path.is_file() {
+            let path = output_dir.join(&relative);
+            if is_stub
+                && path.is_file()
+                && is_generator_owned_python_source_file(output_dir, &relative)?
+            {
                 fs::remove_file(&path)
                     .map_err(|e| format!("Failed to remove {}: {}", path.display(), e))?;
             }
@@ -4705,7 +4802,9 @@ fn remove_all_generated_python_stubs(output_dir: &Path) -> Result<(), String> {
                 .file_type()
                 .map_err(|e| format!("Failed to inspect {}: {}", path.display(), e))?;
             if file_type.is_dir() {
-                visit(&path)?;
+                if is_generated_python_namespace(&path)? {
+                    visit(&path)?;
+                }
             } else if file_type.is_file()
                 && path.extension().is_some_and(|extension| extension == "pyi")
             {
@@ -4735,14 +4834,25 @@ fn clean_python_generated_output(output_dir: &Path) -> Result<(), String> {
         collect_generated_python_files(output_dir, false, false)?
     };
 
+    let files = files
+        .into_iter()
+        .map(|relative| {
+            if !is_safe_relative_path(&relative) {
+                return Err(format!(
+                    "Invalid path `{}` in {}",
+                    relative.display(),
+                    inventory_path.display()
+                ));
+            }
+            let owned = is_generator_owned_python_source_file(output_dir, &relative)?;
+            Ok((relative, owned))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+
     let mut parent_dirs = HashSet::new();
-    for relative in files {
-        if !is_safe_relative_path(&relative) {
-            return Err(format!(
-                "Invalid path `{}` in {}",
-                relative.display(),
-                inventory_path.display()
-            ));
+    for (relative, owned) in files {
+        if !owned {
+            continue;
         }
         let path = output_dir.join(&relative);
         if path.is_file() {
@@ -4821,13 +4931,15 @@ fn collect_generated_python_files(
                 .file_type()
                 .map_err(|e| format!("Failed to inspect {}: {}", path.display(), e))?;
             if file_type.is_dir() {
-                visit(
-                    root,
-                    &path,
-                    include_root_manifest,
-                    include_root_marker,
-                    files,
-                )?;
+                if is_generated_python_namespace(&path)? {
+                    visit(
+                        root,
+                        &path,
+                        include_root_manifest,
+                        include_root_marker,
+                        files,
+                    )?;
+                }
                 continue;
             }
             if !file_type.is_file() || entry.file_name() == PYTHON_GENERATED_INVENTORY {
@@ -4836,7 +4948,7 @@ fn collect_generated_python_files(
 
             let generated = match entry.file_name().to_str() {
                 Some("py.typed") => include_root_marker && current == root,
-                Some("pyproject.toml") => include_root_manifest && current == root,
+                Some("pyproject.toml" | "setup.cfg") => include_root_manifest && current == root,
                 Some(name) if name.ends_with(".py") || name.ends_with(".pyi") => {
                     fs::read_to_string(&path)
                         .map_err(|e| format!("Failed to inspect {}: {}", path.display(), e))?
@@ -4870,6 +4982,65 @@ fn is_safe_relative_path(path: &Path) -> bool {
             .all(|component| matches!(component, std::path::Component::Normal(_)))
 }
 
+fn is_generated_python_namespace(path: &Path) -> Result<bool, String> {
+    let init = path.join("__init__.py");
+    if !init.is_file() {
+        return Ok(false);
+    }
+    Ok(fs::read_to_string(&init)
+        .map_err(|error| format!("Failed to inspect {}: {error}", init.display()))?
+        .starts_with(GENERATED_PYTHON_HEADER))
+}
+
+fn is_generator_owned_python_source_file(
+    output_dir: &Path,
+    relative: &Path,
+) -> Result<bool, String> {
+    if !is_safe_relative_path(relative) {
+        return Ok(false);
+    }
+    let path = output_dir.join(relative);
+    if !path.is_file() {
+        return Ok(false);
+    }
+    let parent = relative
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty());
+    if parent.is_none()
+        && relative.file_name().is_some_and(|name| {
+            matches!(
+                name.to_str(),
+                Some("pyproject.toml" | "setup.cfg" | "py.typed")
+            )
+        })
+    {
+        return Ok(true);
+    }
+    if !relative
+        .extension()
+        .is_some_and(|extension| extension == "py" || extension == "pyi")
+        || !fs::read_to_string(&path)
+            .map_err(|error| format!("Failed to inspect {}: {error}", path.display()))?
+            .starts_with(GENERATED_PYTHON_HEADER)
+    {
+        return Ok(false);
+    }
+    let Some(parent) = parent else {
+        return Ok(true);
+    };
+    let mut current = output_dir.to_path_buf();
+    for component in parent.components() {
+        let std::path::Component::Normal(component) = component else {
+            return Ok(false);
+        };
+        current.push(component);
+        if !is_generated_python_namespace(&current)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 fn collect_python_namespace_packages(output_dir: &Path) -> Result<Vec<String>, String> {
     fn visit(root: &Path, current: &Path, packages: &mut Vec<String>) -> Result<(), String> {
         for entry in fs::read_dir(current)
@@ -4885,18 +5056,19 @@ fn collect_python_namespace_packages(output_dir: &Path) -> Result<Vec<String>, S
                 continue;
             }
             let path = entry.path();
-            if path.join("__init__.py").is_file() {
-                let relative = path.strip_prefix(root).map_err(|e| {
-                    format!("Failed to normalize package path {}: {}", path.display(), e)
-                })?;
-                packages.push(
-                    relative
-                        .components()
-                        .map(|component| component.as_os_str().to_string_lossy())
-                        .collect::<Vec<_>>()
-                        .join("."),
-                );
+            if !is_generated_python_namespace(&path)? {
+                continue;
             }
+            let relative = path.strip_prefix(root).map_err(|e| {
+                format!("Failed to normalize package path {}: {}", path.display(), e)
+            })?;
+            packages.push(
+                relative
+                    .components()
+                    .map(|component| component.as_os_str().to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join("."),
+            );
             visit(root, &path, packages)?;
         }
         Ok(())
@@ -6821,7 +6993,8 @@ mod tests {
             },
         ];
 
-        write_python_package_indexes(&output, &classes, &[], &[], true, false).unwrap();
+        write_python_package_indexes(&output, &classes, &[], &[], &HashSet::new(), true, false)
+            .unwrap();
 
         let root = fs::read_to_string(output.join("__init__.py")).unwrap();
         assert!(!root.contains("ResourceManager"));
@@ -6872,6 +7045,7 @@ mod tests {
             std::slice::from_ref(&contoso),
             &[],
             &[],
+            &HashSet::new(),
             true,
             true,
         )
@@ -6887,6 +7061,7 @@ mod tests {
             std::slice::from_ref(&fabrikam),
             &[],
             &[],
+            &HashSet::new(),
             true,
             true,
         )
@@ -6912,6 +7087,389 @@ mod tests {
         );
 
         fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
+    fn incremental_python_generation_removes_disambiguated_generic_root_export() {
+        let output = test_directory("incremental-generic-root");
+        fs::create_dir_all(&output).unwrap();
+        let interface = |namespace: &str| meta::InterfaceMeta {
+            name: "IBox_Point".into(),
+            namespace: "Example.Collections".into(),
+            iid: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa".into(),
+            generic_piid: Some("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa".into()),
+            generic_name: Some("IBox`1".into()),
+            generic_args: vec![TypeMeta::Struct {
+                namespace: namespace.into(),
+                name: "Point".into(),
+                fields: vec![],
+            }],
+            ..Default::default()
+        };
+        let left = interface("Example.Left");
+        let right = interface("Example.Right");
+        let ambiguity = HashSet::from(["Point".into()]);
+
+        write_python_package_indexes(
+            &output,
+            &[],
+            std::slice::from_ref(&left),
+            &[],
+            &ambiguity,
+            true,
+            true,
+        )
+        .unwrap();
+        let first_root = fs::read_to_string(output.join("__init__.py")).unwrap();
+        assert!(
+            first_root.contains("IBox_Example_Left_Point_struct"),
+            "{first_root}"
+        );
+
+        write_python_package_indexes(
+            &output,
+            &[],
+            std::slice::from_ref(&right),
+            &[],
+            &ambiguity,
+            true,
+            true,
+        )
+        .unwrap();
+        let final_root = fs::read_to_string(output.join("__init__.py")).unwrap();
+        assert!(!final_root.contains("IBox_"), "{final_root}");
+
+        fs::remove_dir_all(output).unwrap();
+    }
+
+    fn colliding_delegate(namespace: &str, iid: &str) -> meta::InterfaceMeta {
+        meta::InterfaceMeta {
+            name: "ChangedHandler".into(),
+            namespace: namespace.into(),
+            iid: iid.into(),
+            methods: vec![
+                meta::MethodMeta {
+                    name: ".ctor".into(),
+                    ..Default::default()
+                },
+                meta::MethodMeta {
+                    name: "Invoke".into(),
+                    params: vec![meta::ParamMeta {
+                        name: "value".into(),
+                        typ: TypeMeta::String,
+                        direction: meta::ParamDirection::In,
+                    }],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }
+    }
+
+    fn colliding_interface(namespace: &str, iid: &str, delegate_iid: &str) -> meta::InterfaceMeta {
+        meta::InterfaceMeta {
+            name: "IValue".into(),
+            namespace: namespace.into(),
+            iid: iid.into(),
+            methods: vec![meta::MethodMeta {
+                name: "SetHandler".into(),
+                params: vec![meta::ParamMeta {
+                    name: "handler".into(),
+                    typ: TypeMeta::Interface {
+                        namespace: namespace.into(),
+                        name: "ChangedHandler".into(),
+                        iid: delegate_iid.into(),
+                    },
+                    direction: meta::ParamDirection::In,
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn python_output_tree(root: &Path) -> BTreeMap<String, String> {
+        fn visit(root: &Path, directory: &Path, output: &mut BTreeMap<String, String>) {
+            for entry in fs::read_dir(directory).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    visit(root, &path, output);
+                } else {
+                    output.insert(
+                        path.strip_prefix(root)
+                            .unwrap()
+                            .to_string_lossy()
+                            .replace('\\', "/"),
+                        fs::read_to_string(path).unwrap(),
+                    );
+                }
+            }
+        }
+
+        let mut output = BTreeMap::new();
+        visit(root, root, &mut output);
+        output
+    }
+
+    #[test]
+    fn same_short_interfaces_and_delegates_use_semantic_identity() {
+        let output = test_directory("same-short-python-identities");
+        fs::create_dir_all(&output).unwrap();
+        let left_delegate =
+            colliding_delegate("Example.Left", "11111111-1111-1111-1111-111111111111");
+        let right_delegate =
+            colliding_delegate("Example.Right", "22222222-2222-2222-2222-222222222222");
+        let left_interface = colliding_interface(
+            "Example.Left",
+            "33333333-3333-3333-3333-333333333333",
+            &left_delegate.iid,
+        );
+        let right_interface = colliding_interface(
+            "Example.Right",
+            "44444444-4444-4444-4444-444444444444",
+            &right_delegate.iid,
+        );
+        let classes = vec![meta::ClassMeta {
+            name: "Combined".into(),
+            namespace: "Example.Cross".into(),
+            full_name: "Example.Cross.Combined".into(),
+            default_interface: Some(left_interface.clone()),
+            required_interfaces: vec![right_interface.clone()],
+            ..Default::default()
+        }];
+        let interfaces = vec![
+            left_interface,
+            right_interface,
+            meta::InterfaceMeta {
+                name: "ICrossNamespace".into(),
+                namespace: "Example.Cross".into(),
+                iid: "55555555-5555-5555-5555-555555555555".into(),
+                methods: vec![meta::MethodMeta {
+                    name: "UseValues".into(),
+                    params: vec![
+                        meta::ParamMeta {
+                            name: "left".into(),
+                            typ: TypeMeta::Interface {
+                                namespace: "Example.Left".into(),
+                                name: "IValue".into(),
+                                iid: "33333333-3333-3333-3333-333333333333".into(),
+                            },
+                            direction: meta::ParamDirection::In,
+                        },
+                        meta::ParamMeta {
+                            name: "right".into(),
+                            typ: TypeMeta::Interface {
+                                namespace: "Example.Right".into(),
+                                name: "IValue".into(),
+                                iid: "44444444-4444-4444-4444-444444444444".into(),
+                            },
+                            direction: meta::ParamDirection::In,
+                        },
+                    ],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            left_delegate,
+            right_delegate,
+        ];
+        let ambiguity = HashSet::from(["IValue".into(), "ChangedHandler".into()]);
+        let context = python::PythonProjectionContext::packaged_with_ambiguities(
+            python_type_identities(&classes, &interfaces, &[]),
+            ambiguity.iter().cloned(),
+        )
+        .unwrap();
+
+        generate_py_files(
+            &context,
+            &output,
+            &classes,
+            &interfaces,
+            &[],
+            &[],
+            &HashSet::new(),
+            true,
+        )
+        .unwrap();
+        write_python_package_indexes(&output, &classes, &interfaces, &[], &ambiguity, true, false)
+            .unwrap();
+
+        let left = fs::read_to_string(output.join("example__left__i_value.py")).unwrap();
+        let right = fs::read_to_string(output.join("example__right__i_value.py")).unwrap();
+        assert!(
+            left.contains(
+                "_dynwinrt_symbol('example__left__changed_handler', 'IID_ChangedHandler')"
+            )
+        );
+        assert!(
+            right.contains(
+                "_dynwinrt_symbol('example__right__changed_handler', 'IID_ChangedHandler')"
+            )
+        );
+        let cross =
+            fs::read_to_string(output.join("example__cross__i_cross_namespace.py")).unwrap();
+        assert!(
+            cross.contains("IValue as Example_Left_IValue_interface"),
+            "{cross}"
+        );
+        assert!(
+            cross.contains("IValue as Example_Right_IValue_interface"),
+            "{cross}"
+        );
+        assert!(
+            cross.contains(
+                "left: 'Example_Left_IValue_interface', right: 'Example_Right_IValue_interface'"
+            ),
+            "{cross}"
+        );
+        assert!(
+            cross.contains("33333333-3333-3333-3333-333333333333"),
+            "{cross}"
+        );
+        assert!(
+            cross.contains("44444444-4444-4444-4444-444444444444"),
+            "{cross}"
+        );
+        let combined = fs::read_to_string(output.join("example__cross__combined.py")).unwrap();
+        assert!(
+            combined.contains("IID_Example_Left_IValue_interface"),
+            "{combined}"
+        );
+        assert!(
+            combined.contains("IID_Example_Right_IValue_interface"),
+            "{combined}"
+        );
+        assert!(
+            combined.contains("_Example_Left_IValue_interface = DynWinRTType.register_interface"),
+            "{combined}"
+        );
+        assert!(
+            combined.contains("_Example_Right_IValue_interface = DynWinRTType.register_interface"),
+            "{combined}"
+        );
+        let root = fs::read_to_string(output.join("__init__.py")).unwrap();
+        assert!(!root.contains("IValue"), "{root}");
+        assert!(!root.contains("ChangedHandler"), "{root}");
+        for namespace in ["left", "right"] {
+            let facade =
+                fs::read_to_string(output.join("example").join(namespace).join("__init__.py"))
+                    .unwrap();
+            assert!(facade.contains("\"IValue\""), "{facade}");
+            assert!(facade.contains("\"IID_ChangedHandler\""), "{facade}");
+            assert!(
+                facade.contains("\"ChangedHandler_PARAM_TYPES\""),
+                "{facade}"
+            );
+            assert!(facade.contains("(\".i_value\", \"IValue\")"), "{facade}");
+            assert!(
+                facade.contains("(\".changed_handler\", \"IID_ChangedHandler\")"),
+                "{facade}"
+            );
+        }
+        fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
+    fn conflicting_abi_for_one_python_semantic_identity_fails_closed() {
+        let interfaces = [
+            meta::InterfaceMeta {
+                name: "IValue".into(),
+                namespace: "Example".into(),
+                iid: "11111111-1111-1111-1111-111111111111".into(),
+                ..Default::default()
+            },
+            meta::InterfaceMeta {
+                name: "IValue".into(),
+                namespace: "Example".into(),
+                iid: "22222222-2222-2222-2222-222222222222".into(),
+                ..Default::default()
+            },
+        ];
+
+        let error = validate_python_interface_abi_identities(&interfaces).unwrap_err();
+        assert!(error.contains("Example.IValue"), "{error}");
+        assert!(error.contains("conflicting ABI identities"), "{error}");
+    }
+
+    #[test]
+    fn same_short_python_generation_is_incrementally_byte_stable() {
+        let one_shot = test_directory("same-short-one-shot");
+        let phased = test_directory("same-short-phased");
+        fs::create_dir_all(&one_shot).unwrap();
+        fs::create_dir_all(&phased).unwrap();
+        let left_delegate =
+            colliding_delegate("Example.Left", "11111111-1111-1111-1111-111111111111");
+        let right_delegate =
+            colliding_delegate("Example.Right", "22222222-2222-2222-2222-222222222222");
+        let left = vec![
+            colliding_interface(
+                "Example.Left",
+                "33333333-3333-3333-3333-333333333333",
+                &left_delegate.iid,
+            ),
+            left_delegate,
+        ];
+        let right = vec![
+            colliding_interface(
+                "Example.Right",
+                "44444444-4444-4444-4444-444444444444",
+                &right_delegate.iid,
+            ),
+            right_delegate,
+        ];
+        let all = [left.as_slice(), right.as_slice()].concat();
+        let ambiguity = HashSet::from(["IValue".into(), "ChangedHandler".into()]);
+
+        let one_shot_context = python::PythonProjectionContext::packaged_with_ambiguities(
+            python_type_identities(&[], &all, &[]),
+            ambiguity.iter().cloned(),
+        )
+        .unwrap();
+        generate_py_files(
+            &one_shot_context,
+            &one_shot,
+            &[],
+            &all,
+            &[],
+            &[],
+            &HashSet::new(),
+            true,
+        )
+        .unwrap();
+        write_python_package_indexes(&one_shot, &[], &all, &[], &ambiguity, true, false).unwrap();
+
+        for phase in [&left, &right] {
+            let existing = read_python_type_inventory(&phased)
+                .unwrap()
+                .into_iter()
+                .map(|typ| typ.identity)
+                .collect::<Vec<_>>();
+            let mut identities = python_type_identities(&[], phase, &[]);
+            identities.extend(existing);
+            let context = python::PythonProjectionContext::packaged_with_ambiguities(
+                identities,
+                ambiguity.iter().cloned(),
+            )
+            .unwrap();
+            generate_py_files(
+                &context,
+                &phased,
+                &[],
+                phase,
+                &[],
+                &[],
+                &HashSet::new(),
+                true,
+            )
+            .unwrap();
+            write_python_package_indexes(&phased, &[], phase, &[], &ambiguity, true, true).unwrap();
+        }
+
+        assert_eq!(python_output_tree(&one_shot), python_output_tree(&phased));
+        write_python_package_indexes(&phased, &[], &right, &[], &ambiguity, true, true).unwrap();
+        assert_eq!(python_output_tree(&one_shot), python_output_tree(&phased));
+        fs::remove_dir_all(one_shot).unwrap();
+        fs::remove_dir_all(phased).unwrap();
     }
 
     #[test]
@@ -7084,19 +7642,9 @@ mod tests {
     fn python_generation_emits_shared_runtime_and_typing_support() {
         let output = test_directory("python-shared-support");
         fs::create_dir_all(&output).unwrap();
+        let context = python::PythonProjectionContext::packaged([]).unwrap();
 
-        generate_py_files(
-            &output,
-            &[],
-            &[],
-            &[],
-            &[],
-            &HashSet::new(),
-            &HashSet::new(),
-            &HashSet::new(),
-            true,
-        )
-        .unwrap();
+        generate_py_files(&context, &output, &[], &[], &[], &[], &HashSet::new(), true).unwrap();
 
         assert!(output.join("_runtime.py").is_file());
         assert!(output.join("_runtime.pyi").is_file());
@@ -7146,25 +7694,20 @@ mod tests {
             default_interface: Some(interface),
             ..Default::default()
         };
-        let known_types = HashSet::from(["Point".into(), "Widget".into()]);
-
-        {
-            let _layout =
-                install_python_generation_layout(std::slice::from_ref(&class), &[], &[], &[], &[])
-                    .unwrap();
-            generate_py_files(
-                &output,
-                std::slice::from_ref(&class),
-                &[],
-                &[],
-                &[],
-                &known_types,
-                &HashSet::new(),
-                &HashSet::new(),
-                true,
-            )
-            .unwrap();
-        }
+        let context =
+            python_generation_context("", std::slice::from_ref(&class), &[], &[], &[], &[])
+                .unwrap();
+        generate_py_files(
+            &context,
+            &output,
+            std::slice::from_ref(&class),
+            &[],
+            &[],
+            &[],
+            &HashSet::new(),
+            true,
+        )
+        .unwrap();
 
         let class_py = fs::read_to_string(output.join("contoso__widget.py")).unwrap();
         let class_pyi = fs::read_to_string(output.join("contoso__widget.pyi")).unwrap();
@@ -7175,8 +7718,16 @@ mod tests {
         assert!(!class_pyi.contains("\nclass Point:"));
         assert!(struct_py.contains("\nclass Point:"));
 
-        write_python_package_indexes(&output, std::slice::from_ref(&class), &[], &[], true, false)
-            .unwrap();
+        write_python_package_indexes(
+            &output,
+            std::slice::from_ref(&class),
+            &[],
+            &[],
+            &HashSet::new(),
+            true,
+            false,
+        )
+        .unwrap();
         let point_facade = fs::read_to_string(output.join("windows/foundation/point.py")).unwrap();
         assert!(point_facade.contains("Point.__module__ = __name__"));
         assert!(point_facade.contains("Point_TYPE"));
@@ -7266,14 +7817,15 @@ mod tests {
 
     #[test]
     fn incremental_python_generation_reuses_existing_module_layout() {
-        let existing = [python::PythonTypeIdentity {
-            namespace: "Windows.Foundation.Collections".into(),
-            name: "IIterable_IKeyValuePair_Object_Object".into(),
-        }];
-        let _layout = install_python_generation_layout(&[], &[], &[], &[], &existing).unwrap();
+        let existing = [TypeIdentity::named(
+            TypeIdentityKind::Interface,
+            "Windows.Foundation.Collections",
+            "IIterable_IKeyValuePair_Object_Object",
+        )];
+        let context = python_generation_context("", &[], &[], &[], &[], &existing).unwrap();
 
         assert_eq!(
-            python::to_snake_case_filename("IIterable_IKeyValuePair_Object_Object"),
+            context.implementation_module(&existing[0]),
             "windows__foundation__collections__i_iterable_i_key_value_pair_object_object"
         );
     }
@@ -7288,22 +7840,20 @@ mod tests {
             ..Default::default()
         }];
 
-        {
-            let _layout = install_python_generation_layout(&[], &[], &[], &shared, &[]).unwrap();
-            assert_eq!(
-                python::to_snake_case_filename("IIterable_IKeyValuePair_Object_Object"),
-                "windows__foundation__collections__i_iterable_i_key_value_pair_object_object"
-            );
-        }
+        let context = python_generation_context("", &[], &[], &[], &shared, &[]).unwrap();
+        assert_eq!(
+            context.implementation_module_for_interface(&shared[0]),
+            "windows__foundation__collections__i_iterable_i_key_value_pair_object_object"
+        );
 
         write_python_type_inventory(&output, &[]).unwrap();
         record_python_supplemental_types(&output, &shared).unwrap();
         let inventory = read_python_type_inventory(&output).unwrap();
-        assert!(inventory.iter().any(|typ| typ.identity
-            == python::PythonTypeIdentity {
-                namespace: shared[0].namespace.clone(),
-                name: shared[0].name.clone(),
-            }));
+        assert!(
+            inventory
+                .iter()
+                .any(|typ| typ.identity == shared[0].type_identity())
+        );
         fs::remove_dir_all(output).unwrap();
     }
 
@@ -7329,6 +7879,56 @@ mod tests {
     fn python_package_names_are_normalized() {
         assert_eq!(normalize_python_package_name("My Bindings"), "my_bindings");
         assert_eq!(normalize_python_package_name("123"), "_123");
+    }
+
+    #[test]
+    fn python_build_cache_key_ignores_user_directories() {
+        let output = test_directory("python-build-cache-key");
+        fs::create_dir_all(&output).unwrap();
+        fs::write(
+            output.join("generated.py"),
+            format!("{GENERATED_PYTHON_HEADER}VALUE = True\n"),
+        )
+        .unwrap();
+        let import_name = normalize_python_package_name(
+            output
+                .file_name()
+                .and_then(|name| name.to_str())
+                .expect("test output name"),
+        );
+        let initial = python_build_cache_key(&output, &import_name).unwrap();
+        let cached = output
+            .join(".venv")
+            .join("Lib")
+            .join("site-packages")
+            .join("generated_bindings");
+        fs::create_dir_all(&cached).unwrap();
+        fs::write(
+            cached.join("legacy.py"),
+            format!("{GENERATED_PYTHON_HEADER}VALUE = True\n"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            python_build_cache_key(&output, &import_name).unwrap(),
+            initial
+        );
+        assert_ne!(
+            python_build_cache_key(&output, "renamed_bindings").unwrap(),
+            initial
+        );
+
+        write_python_package_manifest(&output, &output).unwrap();
+        write_python_generated_inventory(&output, true).unwrap();
+        assert!(
+            fs::read_to_string(output.join("setup.cfg"))
+                .unwrap()
+                .contains(&format!("build-base = .dynwinrt-build/{initial}"))
+        );
+        let inventory = fs::read_to_string(output.join(PYTHON_GENERATED_INVENTORY)).unwrap();
+        assert!(inventory.lines().any(|line| line == "setup.cfg"));
+        assert!(!inventory.contains(".venv"));
+        fs::remove_dir_all(output).unwrap();
     }
 
     #[test]
@@ -7361,6 +7961,47 @@ mod tests {
     }
 
     #[test]
+    fn python_output_transaction_preserves_user_directories() {
+        let output = test_directory("python-packaging-artifacts");
+        let user_directories = [
+            PathBuf::from("build").join("lib"),
+            PathBuf::from("dist"),
+            PathBuf::from("venv"),
+            PathBuf::from(".venv"),
+            PathBuf::from("env"),
+            PathBuf::from(".tox"),
+            PathBuf::from(".nox"),
+            PathBuf::from("__pycache__"),
+            PathBuf::from("generated_bindings.egg-info"),
+            PathBuf::from("generated_bindings.dist-info"),
+        ];
+        fs::create_dir_all(&output).unwrap();
+        for relative in &user_directories {
+            fs::create_dir_all(output.join(relative)).unwrap();
+            fs::write(output.join(relative).join("cached.py"), "cached\n").unwrap();
+        }
+        fs::write(output.join("existing.py"), "existing\n").unwrap();
+
+        let transaction = OutputTransaction::begin(&output).unwrap();
+        assert!(transaction.stage_dir().join("existing.py").exists());
+        for relative in &user_directories {
+            assert!(
+                transaction
+                    .stage_dir()
+                    .join(relative)
+                    .join("cached.py")
+                    .exists()
+            );
+        }
+        transaction.commit().unwrap();
+
+        for relative in &user_directories {
+            assert!(output.join(relative).join("cached.py").exists());
+        }
+        fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
     fn manual_python_manifest_is_not_overwritten() {
         let output = test_directory("manual-manifest");
         fs::create_dir_all(&output).unwrap();
@@ -7378,6 +8019,24 @@ mod tests {
             fs::read_to_string(output.join("pyproject.toml"))
                 .unwrap()
                 .contains("name = \"manual\"")
+        );
+        fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
+    fn manual_python_build_config_is_not_overwritten() {
+        let output = test_directory("manual-build-config");
+        fs::create_dir_all(&output).unwrap();
+        fs::write(output.join("setup.cfg"), "[build]\nbuild-base = custom\n").unwrap();
+
+        let error = write_python_package_manifest(&output, &output)
+            .expect_err("manual build config must be preserved");
+
+        assert!(error.contains("Refusing to overwrite"));
+        assert!(
+            fs::read_to_string(output.join("setup.cfg"))
+                .unwrap()
+                .contains("build-base = custom")
         );
         fs::remove_dir_all(output).unwrap();
     }
@@ -7416,6 +8075,7 @@ mod tests {
             &[],
             std::slice::from_ref(&interface),
             &[],
+            &HashSet::new(),
             true,
             false,
         )
@@ -7470,8 +8130,10 @@ mod tests {
 
         let merged = merge_python_indexes(&existing, &generated, &HashSet::new());
 
-        assert!(merged.contains("from .contoso__first import First, EventRegistrationToken, pack_event_registration_token"));
-        assert!(merged.contains("from .contoso__second import Second, TextSegment"));
+        assert!(merged.contains("from .contoso__first import First"));
+        assert!(merged.contains(
+            "from .contoso__second import Second, EventRegistrationToken, pack_event_registration_token, TextSegment"
+        ));
         assert_eq!(merged.matches("EventRegistrationToken").count(), 1);
         assert_eq!(merged.matches("pack_event_registration_token").count(), 1);
     }
@@ -7488,7 +8150,7 @@ mod tests {
         assert!(merged.contains("from importlib import import_module as _import_module"));
         assert!(merged.contains("\"First\": (\".contoso__first\", \"First\")"));
         assert!(merged.contains("\"Second\": (\".contoso__second\", \"Second\")"));
-        assert!(merged.contains("\"Shared\": (\".contoso__first\", \"Shared\")"));
+        assert!(merged.contains("\"Shared\": (\".contoso__second\", \"Shared\")"));
         assert_eq!(merged.matches("\"Shared\": (").count(), 1);
         assert!(!merged.contains("from .contoso__first import"));
         assert!(merged.contains("def __getattr__(name):"));
@@ -7508,13 +8170,38 @@ mod tests {
     fn generated_inventory_does_not_claim_nested_manual_metadata() {
         let output = test_directory("manual-metadata");
         let nested = output.join("manual_package");
+        let namespace = output.join("windows").join("foundation");
+        let cached = output
+            .join("venv")
+            .join("Lib")
+            .join("site-packages")
+            .join("generated_bindings");
         fs::create_dir_all(&nested).unwrap();
+        fs::create_dir_all(&namespace).unwrap();
+        fs::create_dir_all(&cached).unwrap();
         fs::write(
             nested.join("pyproject.toml"),
             "[project]\nname = \"manual\"\n",
         )
         .unwrap();
         fs::write(nested.join("py.typed"), "").unwrap();
+        fs::write(
+            output.join("windows").join("__init__.py"),
+            GENERATED_PYTHON_HEADER,
+        )
+        .unwrap();
+        fs::write(namespace.join("__init__.py"), GENERATED_PYTHON_HEADER).unwrap();
+        fs::write(
+            namespace.join("uri.py"),
+            format!("{GENERATED_PYTHON_HEADER}class Uri: ...\n"),
+        )
+        .unwrap();
+        fs::write(cached.join("__init__.py"), GENERATED_PYTHON_HEADER).unwrap();
+        fs::write(
+            cached.join("legacy.py"),
+            format!("{GENERATED_PYTHON_HEADER}class Legacy: ...\n"),
+        )
+        .unwrap();
         fs::write(
             output.join("generated.py"),
             format!("{GENERATED_PYTHON_HEADER}VALUE = True\n"),
@@ -7525,8 +8212,52 @@ mod tests {
         let inventory = fs::read_to_string(output.join(PYTHON_GENERATED_INVENTORY)).unwrap();
 
         assert!(inventory.contains("generated.py"));
+        assert!(
+            inventory
+                .lines()
+                .map(Path::new)
+                .any(|path| path == Path::new("windows").join("foundation").join("uri.py"))
+        );
+        assert!(!inventory.contains("venv"));
         assert!(!inventory.contains("pyproject.toml"));
         assert!(!inventory.contains("py.typed"));
+
+        let polluted_inventory = [
+            PathBuf::from("generated.py"),
+            PathBuf::from("windows").join("__init__.py"),
+            PathBuf::from("windows")
+                .join("foundation")
+                .join("__init__.py"),
+            PathBuf::from("windows").join("foundation").join("uri.py"),
+            PathBuf::from("venv")
+                .join("Lib")
+                .join("site-packages")
+                .join("generated_bindings")
+                .join("__init__.py"),
+            PathBuf::from("venv")
+                .join("Lib")
+                .join("site-packages")
+                .join("generated_bindings")
+                .join("legacy.py"),
+        ];
+        fs::write(
+            output.join(PYTHON_GENERATED_INVENTORY),
+            format!(
+                "{}\n",
+                polluted_inventory
+                    .iter()
+                    .map(|path| path.to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ),
+        )
+        .unwrap();
+        clean_python_generated_output(&output).unwrap();
+        assert!(!output.join("generated.py").exists());
+        assert!(!output.join("windows").exists());
+        assert!(cached.join("__init__.py").exists());
+        assert!(cached.join("legacy.py").exists());
+        assert!(nested.join("pyproject.toml").exists());
         fs::remove_dir_all(output).unwrap();
     }
 }

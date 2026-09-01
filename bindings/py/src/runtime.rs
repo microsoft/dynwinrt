@@ -1304,7 +1304,14 @@ impl DynWinRTValue {
                 }
             });
         });
-        let handler = dynwinrt::create_progress_handler(handler_iid, progress_type, progress_cb);
+        let handler =
+            dynwinrt::try_create_progress_handler(handler_iid, progress_type, progress_cb)
+                .map_err(|error| {
+                    map_dynwinrt_error_with_context(
+                        error,
+                        "on_progress: failed to create progress handler",
+                    )
+                })?;
 
         super::async_runtime::finish_progress_registration(
             async_info.set_progress_handler(&handler),
@@ -2138,7 +2145,7 @@ fn create_python_delegate(
     iid: GUID,
     type_handles: Vec<dynwinrt::TypeHandle>,
     callback: Py<PyAny>,
-) -> dynwinrt::WinRTValue {
+) -> PyResult<dynwinrt::WinRTValue> {
     let delegate_callback: dynwinrt::delegate::DelegateCallback =
         Box::new(move |args: &[dynwinrt::WinRTValue]| {
             Python::attach(|py| {
@@ -2165,7 +2172,8 @@ fn create_python_delegate(
                 }
             })
         });
-    dynwinrt::delegate::create_delegate_value(iid, type_handles, delegate_callback)
+    dynwinrt::delegate::try_create_delegate_value(iid, type_handles, delegate_callback)
+        .map_err(|error| map_dynwinrt_error_with_context(error, "DynWinRtDelegate.create failed"))
 }
 
 #[pymethods]
@@ -2183,7 +2191,7 @@ impl DynWinRtDelegate {
     ) -> PyResult<DynWinRtDelegate> {
         let type_handles: Vec<dynwinrt::TypeHandle> =
             param_types.iter().map(|t| t.0.clone()).collect();
-        let value = create_python_delegate(iid.0, type_handles, callback);
+        let value = create_python_delegate(iid.0, type_handles, callback)?;
         Ok(DynWinRtDelegate(value))
     }
 
@@ -2439,7 +2447,8 @@ mod tests {
                 GUID::zeroed(),
                 Vec::new(),
                 locals.get_item("success").unwrap().unwrap().unbind(),
-            );
+            )
+            .unwrap();
             let failure = create_python_delegate(
                 GUID::zeroed(),
                 Vec::new(),
@@ -2449,12 +2458,14 @@ mod tests {
                     .unwrap()
                     .clone()
                     .unbind(),
-            );
+            )
+            .unwrap();
             let cross_thread_failure = create_python_delegate(
                 GUID::zeroed(),
                 Vec::new(),
                 locals.get_item("failure").unwrap().unwrap().unbind(),
-            );
+            )
+            .unwrap();
 
             let success_result = unsafe { invoke_delegate(&success) };
             let failure_result = unsafe { invoke_delegate(&failure) };

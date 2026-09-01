@@ -1,8 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use crate::meta::{ClassMeta, InterfaceMeta, make_parameterized_name};
-use crate::types::TypeMeta;
+use crate::meta::{ClassMeta, InterfaceMeta, WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE};
+use crate::types::{TypeIdentity, TypeIdentityKind, TypeMeta};
 
 pub(crate) const IITERABLE_PIID: &str = "faa585ea-6214-4217-afda-7f46de5869b3";
 pub(crate) const IITERATOR_PIID: &str = "6a79e863-4300-459a-9966-cbb660963ee1";
@@ -95,18 +95,35 @@ pub(crate) fn abc_name(kind: CollectionKind) -> Option<&'static str> {
     }
 }
 
-pub(crate) fn map_iterable_name(args: &[TypeMeta]) -> Option<String> {
+pub(crate) fn map_iterable_identity(args: &[TypeMeta]) -> Option<TypeIdentity> {
     if args.len() != 2 {
         return None;
     }
-    let pair = make_parameterized_name("IKeyValuePair", args);
-    Some(format!("IIterable_{pair}"))
+    let pair = TypeIdentity::closed_generic(
+        TypeIdentityKind::Interface,
+        WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE,
+        "IKeyValuePair",
+        args.iter().map(TypeMeta::type_identity),
+    );
+    Some(TypeIdentity::closed_generic(
+        TypeIdentityKind::Interface,
+        WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE,
+        "IIterable",
+        [pair],
+    ))
 }
 
-pub(crate) fn observable_vector_name(iface: &InterfaceMeta) -> Option<String> {
+pub(crate) fn observable_vector_identity(iface: &InterfaceMeta) -> Option<TypeIdentity> {
     (iface.generic_piid.as_deref() == Some(IOBSERVABLE_VECTOR_PIID)
         && iface.generic_args.len() == 1)
-        .then(|| iface.name.replacen("IObservableVector", "IVector", 1))
+        .then(|| {
+            TypeIdentity::closed_generic(
+                TypeIdentityKind::Interface,
+                WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE,
+                "IVector",
+                iface.generic_args.iter().map(TypeMeta::type_identity),
+            )
+        })
 }
 
 pub(crate) fn is_mapping_input(kind: CollectionKind, args: &[TypeMeta]) -> bool {

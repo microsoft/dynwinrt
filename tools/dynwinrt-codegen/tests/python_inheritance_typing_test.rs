@@ -1,10 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+mod common;
+
 use std::collections::HashSet;
 use std::path::Path;
 
-use dynwinrt_codegen::codegen::{python, python_stub};
 use dynwinrt_codegen::meta::{
     self, ClassMeta, InterfaceMeta, MethodMeta, ParamDirection, ParamMeta,
 };
@@ -54,7 +55,7 @@ fn stubs_model_runtime_class_and_interface_bases_without_runtime_inheritance() {
         ..Default::default()
     };
     let interface_stub =
-        python_stub::generate_interface_stub(&interface, &HashSet::new(), &HashSet::new());
+        common::generate_interface_stub(&interface, &HashSet::new(), &HashSet::new());
     assert!(
         !interface_stub.contains("from .contoso__i_base import"),
         "{interface_stub}"
@@ -94,7 +95,7 @@ fn stubs_model_runtime_class_and_interface_bases_without_runtime_inheritance() {
         }],
         ..Default::default()
     };
-    let class_stub = python_stub::generate_class_stub(
+    let class_stub = common::generate_class_stub(
         &class,
         &HashSet::from(["Base".into(), "Derived".into(), "IDerived".into()]),
         &HashSet::new(),
@@ -181,7 +182,7 @@ fn real_windows_metadata_exposes_xaml_and_stream_typing_relationships() {
         .chain(["SpeechSynthesisStream".into()])
         .collect::<HashSet<_>>();
     let stream_stub =
-        python_stub::generate_class_stub(&stream, &known, &HashSet::new(), &HashSet::new());
+        common::generate_class_stub(&stream, &known, &HashSet::new(), &HashSet::new());
     assert!(
         stream_stub
             .contains("class SpeechSynthesisStreamLike(_SpeechSynthesisStreamIdentity, Protocol):"),
@@ -222,9 +223,9 @@ fn real_windows_metadata_exposes_xaml_and_stream_typing_relationships() {
         .map(|interface| interface.name.clone())
         .collect::<HashSet<_>>();
     let with_content_stub =
-        python_stub::generate_interface_stub(with_content_type, &known_interfaces, &HashSet::new());
+        common::generate_interface_stub(with_content_type, &known_interfaces, &HashSet::new());
     let with_content_runtime =
-        python::generate_interface(with_content_type, &known_interfaces, &HashSet::new());
+        common::generate_interface(with_content_type, &known_interfaces, &HashSet::new());
     assert!(
         with_content_stub
             .contains("class IRandomAccessStreamWithContentType(_IRandomAccessStreamWithContentTypeIdentity, Protocol):"),

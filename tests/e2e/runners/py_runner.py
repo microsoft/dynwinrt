@@ -1582,7 +1582,9 @@ async def run_check(
             from typing import get_type_hints
 
             module = importlib.import_module(
-                implementation_module_name(pkg_name, namespace, cls.__name__)
+                implementation_module_name(
+                    pkg_name, namespace, 'Direct3DSurfaceDescription'
+                )
             )
             descriptor_type = getattr(module, 'Direct3DSurfaceDescription')
             nested_type = getattr(module, 'Direct3DMultisampleDescription')

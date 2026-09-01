@@ -53,12 +53,35 @@ pub(crate) fn ensure_progress_type_supported(progress_type: &dynwinrt::TypeHandl
         | dynwinrt::TypeKind::ArrayOfIUnknown
         | dynwinrt::TypeKind::Generic { .. }
         | dynwinrt::TypeKind::OutValue(_)
-        | dynwinrt::TypeKind::Struct(_)
         | dynwinrt::TypeKind::Array(_) => Err(PyRuntimeError::new_err(format!(
-            "progress callbacks do not yet support {:?} values",
+            "progress callbacks do not support {:?} values",
             progress_type.kind()
         ))),
-        _ => Ok(()),
+        dynwinrt::TypeKind::Bool
+        | dynwinrt::TypeKind::I8
+        | dynwinrt::TypeKind::U8
+        | dynwinrt::TypeKind::I16
+        | dynwinrt::TypeKind::U16
+        | dynwinrt::TypeKind::Char16
+        | dynwinrt::TypeKind::I32
+        | dynwinrt::TypeKind::U32
+        | dynwinrt::TypeKind::I64
+        | dynwinrt::TypeKind::U64
+        | dynwinrt::TypeKind::F32
+        | dynwinrt::TypeKind::F64
+        | dynwinrt::TypeKind::HString
+        | dynwinrt::TypeKind::Object
+        | dynwinrt::TypeKind::HResult
+        | dynwinrt::TypeKind::Interface(_)
+        | dynwinrt::TypeKind::Delegate(_)
+        | dynwinrt::TypeKind::IAsyncAction
+        | dynwinrt::TypeKind::IAsyncActionWithProgress(_)
+        | dynwinrt::TypeKind::IAsyncOperation(_)
+        | dynwinrt::TypeKind::IAsyncOperationWithProgress(_)
+        | dynwinrt::TypeKind::RuntimeClass(_)
+        | dynwinrt::TypeKind::Parameterized(_)
+        | dynwinrt::TypeKind::Enum(_)
+        | dynwinrt::TypeKind::Struct(_) => Ok(()),
     }
 }
 
@@ -421,7 +444,13 @@ impl DynWinRTAsyncWithProgress {
             });
         });
         let handler =
-            dynwinrt::create_progress_handler(handler_iid, progress_type, progress_callback);
+            dynwinrt::try_create_progress_handler(handler_iid, progress_type, progress_callback)
+                .map_err(|error| {
+                    map_dynwinrt_error_with_context(
+                        error,
+                        "failed to create WinRT progress handler",
+                    )
+                })?;
         finish_progress_registration(info.set_progress_handler(&handler), || {
             info.is_started().map_err(map_dynwinrt_error)
         })
@@ -475,5 +504,26 @@ mod tests {
     fn progress_registration_surfaces_failure_while_operation_is_started() {
         let result = finish_progress_registration(Err(set_progress_error()), || Ok(true));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn progress_type_validation_allows_structs_and_rejects_unsupported_shapes() {
+        let table = dynwinrt::MetadataTable::new();
+        let progress = table.struct_type("Test.PythonStructProgress", &[table.u64_type()]);
+        assert!(ensure_progress_type_supported(&progress).is_ok());
+
+        let value_type = table.u32_type();
+        for unsupported in [
+            table.guid_type(),
+            table.array_of_iunknown(),
+            table.generic(
+                windows::core::GUID::from_u128(0xaaaaaaaa_bbbb_cccc_dddd_eeeeeeeeeeee),
+                1,
+            ),
+            table.out_value(&value_type),
+            table.array(&value_type),
+        ] {
+            assert!(ensure_progress_type_supported(&unsupported).is_err());
+        }
     }
 }

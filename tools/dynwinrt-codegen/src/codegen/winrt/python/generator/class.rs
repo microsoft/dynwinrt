@@ -8,9 +8,10 @@ use super::structs::{generate_struct_helpers, generate_struct_imports};
 use super::*;
 use crate::codegen::winrt::extensions::winui::{self, WinUiAbiType};
 use crate::codegen::winrt::python::collections::{
-    CollectionKind, class_interface, interface_kind, map_iterable_name, runtime_mixin,
+    CollectionKind, class_interface, interface_kind, map_iterable_identity, runtime_mixin,
 };
 use crate::meta::{ConstructorKind, ParamMeta};
+use crate::types::{TypeIdentity, TypeIdentityKind};
 
 fn project_winui_abi_types(types: &[WinUiAbiType]) -> String {
     types
@@ -22,17 +23,21 @@ fn project_winui_abi_types(types: &[WinUiAbiType]) -> String {
         .join(", ")
 }
 
+fn interface_symbol(context: &PythonProjectionContext, interface: &InterfaceMeta) -> String {
+    context.reference_name(&interface.type_identity())
+}
+
 /// Generate a Python file for a single RuntimeClass.
 pub fn generate_class(
+    context: &PythonProjectionContext,
     class: &ClassMeta,
-    known_types: &HashSet<String>,
-    delegate_type_names: &HashSet<String>,
     shared_iids: &HashSet<String>,
 ) -> String {
     let used_structs = collect_used_structs_from_class(class);
     let collection_iface = class_interface(class);
     let collection_kind = collection_iface.and_then(interface_kind);
-    let winui_bootstrap = winui::resolve_application_bootstrap(class, known_types);
+    let known_full_names = context.known_full_names();
+    let winui_bootstrap = winui::resolve_application_bootstrap(class, &known_full_names);
     let has_public_composition = class
         .constructors
         .iter()
@@ -41,7 +46,9 @@ pub fn generate_class(
         class
             .default_interface
             .as_ref()
-            .is_some_and(|default_iface| default_iface.name == collection_iface.name)
+            .is_some_and(|default_iface| {
+                default_iface.type_identity() == collection_iface.type_identity()
+            })
     });
     let collection_obj_expr = if collection_uses_default {
         "self._obj"
@@ -49,6 +56,7 @@ pub fn generate_class(
         "self._collection_obj"
     };
     let projectable = super::super::has_projectable_default_interface(class);
+    let native_projectable = super::super::has_native_projector(class);
     let mut out = String::new();
 
     // Header
@@ -85,8 +93,8 @@ pub fn generate_class(
     ) {
         out.push_str(ASYNC_IMPORT_LINE);
     }
-    if python_module_layout_installed() {
-        out.push_str(&generate_struct_imports(&used_structs));
+    if context.is_packaged() {
+        out.push_str(&generate_struct_imports(context, &used_structs));
     }
     if has_ireference_input(
         class
@@ -106,31 +114,41 @@ pub fn generate_class(
     for iface in &all_ifaces {
         delegate_names.extend(super::super::collect_referenced_delegate_names(
             &iface.methods,
-            delegate_type_names,
+            context,
         ));
         runtime_delegate_names.extend(super::super::collect_runtime_delegate_names(
             &iface.methods,
-            delegate_type_names,
+            context,
         ));
     }
 
     // Collection generics import (skip delegates)
     let mut imported_names: HashSet<String> = HashSet::new();
-    let collection_names = collect_used_generics_from_class(class);
-    for cname in &collection_names {
-        if !delegate_names.contains(cname) {
-            let module = to_snake_case_filename(cname);
-            type_checking_imports
-                .push(format!("from .{} import {}  # noqa: F401\n", module, cname));
-            imported_names.insert(cname.clone());
+    let collection_identities = collect_used_generic_identities_from_class(class);
+    for identity in &collection_identities {
+        let identity = context.normalize_identity(identity);
+        if !delegate_names.contains(&identity) {
+            let module = context.implementation_module(&identity);
+            let name = context.projected_name(&identity);
+            let reference_name = context.reference_name(&identity);
+            let import = if name == reference_name {
+                name
+            } else {
+                format!("{name} as {reference_name}")
+            };
+            type_checking_imports.push(format!("from .{module} import {import}  # noqa: F401\n"));
+            imported_names.insert(reference_name);
         }
     }
     for iface in class.all_interfaces() {
         if iface.generic_piid.as_deref()
             == Some(crate::codegen::winrt::python::collections::IOBSERVABLE_VECTOR_PIID)
         {
-            if imported_names.insert(iface.name.clone()) {
+            let identity = iface.type_identity();
+            let reference_name = context.reference_name(&identity);
+            if imported_names.insert(reference_name) {
                 type_checking_imports.push(format_py_type_import(
+                    context,
                     &iface.namespace,
                     &iface.name,
                     crate::types::TypeKind::Interface,
@@ -138,9 +156,14 @@ pub fn generate_class(
             }
             let event_args = "IVectorChangedEventArgs";
             if imported_names.insert(event_args.into()) {
+                let identity = TypeIdentity::named(
+                    TypeIdentityKind::Interface,
+                    crate::meta::WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE,
+                    event_args,
+                );
                 type_checking_imports.push(format!(
                     "from .{} import {event_args}  # noqa: F401\n",
-                    to_snake_case_filename(event_args)
+                    context.implementation_module(&identity)
                 ));
             }
         }
@@ -149,11 +172,19 @@ pub fn generate_class(
     // Import delegate IID + PARAM_TYPES
     let mut sorted_delegates: Vec<_> = runtime_delegate_names.iter().collect();
     sorted_delegates.sort();
-    for dname in &sorted_delegates {
-        let module = to_snake_case_filename(dname);
-        type_checking_imports.push(format!(
-            "from .{module} import IID_{dname}, {dname}_PARAM_TYPES  # noqa: F401\n",
-        ));
+    for identity in &sorted_delegates {
+        let module = context.implementation_module(identity);
+        let dname = context.projected_name(identity);
+        let reference_name = context.reference_name(identity);
+        let imports = if dname == reference_name {
+            format!("IID_{dname}, {dname}_PARAM_TYPES")
+        } else {
+            format!(
+                "IID_{dname} as IID_{reference_name}, \
+                 {dname}_PARAM_TYPES as {reference_name}_PARAM_TYPES"
+            )
+        };
+        type_checking_imports.push(format!("from .{module} import {imports}  # noqa: F401\n",));
     }
 
     // Type imports
@@ -162,29 +193,47 @@ pub fn generate_class(
     sorted_imports
         .sort_by(|a, b| (&a.namespace, &a.name, &a.kind).cmp(&(&b.namespace, &b.name, &b.kind)));
     for r in &sorted_imports {
-        if known_types.contains(&r.name) && !delegate_names.contains(&r.name) {
-            type_checking_imports.push(format_py_type_import(&r.namespace, &r.name, r.kind));
-            imported_names.insert(r.name.clone());
+        let identity_kind = match r.kind {
+            TypeKind::Class => TypeIdentityKind::Class,
+            TypeKind::Enum => TypeIdentityKind::Enum,
+            TypeKind::Interface => TypeIdentityKind::Interface,
+        };
+        let identity = context.normalize_identity(&TypeIdentity::named(
+            identity_kind,
+            r.namespace.clone(),
+            r.name.clone(),
+        ));
+        if context.is_known_ref(r) && !delegate_names.contains(&identity) {
+            type_checking_imports.push(format_py_type_import(
+                context,
+                &r.namespace,
+                &r.name,
+                r.kind,
+            ));
+            let reference_name = context.reference_name(&identity);
+            imported_names.insert(reference_name.clone());
             if r.kind == TypeKind::Interface {
-                imported_names.insert(format!("IID_{}", r.name));
+                imported_names.insert(format!("IID_{reference_name}"));
             }
         }
     }
 
     // Import shared required interfaces
     for req_iface in &class.required_interfaces {
+        let symbol = interface_symbol(context, req_iface);
         if req_iface.generic_piid.is_none()
             && !req_iface.iid.is_empty()
             && shared_iids.contains(&req_iface.iid)
-            && !imported_names.contains(&req_iface.name)
+            && !imported_names.contains(&symbol)
         {
             type_checking_imports.push(format_py_type_import(
+                context,
                 &req_iface.namespace,
                 &req_iface.name,
                 TypeKind::Interface,
             ));
-            imported_names.insert(req_iface.name.clone());
-            imported_names.insert(format!("IID_{}", req_iface.name));
+            imported_names.insert(symbol.clone());
+            imported_names.insert(format!("IID_{symbol}"));
         }
     }
     emit_type_checking_imports(&mut out, type_checking_imports);
@@ -198,7 +247,7 @@ pub fn generate_class(
         .chain(class.overridable_interfaces.iter())
         .collect();
     for iface in &all_class_ifaces {
-        let iid_name = format!("IID_{}", iface.name);
+        let iid_name = format!("IID_{}", interface_symbol(context, iface));
         if declared_iids.insert(iid_name.clone()) {
             if let Some(iid_expr) = py_interface_iid_expr(iface) {
                 out.push_str(&format!("{} = {}\n", iid_name, iid_expr));
@@ -226,30 +275,38 @@ pub fn generate_class(
 
     // Interface registrations
     if let Some(ref iface) = class.default_interface {
+        let symbol = interface_symbol(context, iface);
         out.push_str(&py_generate_interface_registration(
             iface,
-            &format!("_{}", iface.name),
+            &format!("_{symbol}"),
+            &symbol,
         ));
         out.push('\n');
     }
     for iface in &class.factory_interfaces {
+        let symbol = interface_symbol(context, iface);
         out.push_str(&py_generate_interface_registration(
             iface,
-            &format!("_{}", iface.name),
+            &format!("_{symbol}"),
+            &symbol,
         ));
         out.push('\n');
     }
     for iface in &class.static_interfaces {
+        let symbol = interface_symbol(context, iface);
         out.push_str(&py_generate_interface_registration(
             iface,
-            &format!("_{}", iface.name),
+            &format!("_{symbol}"),
+            &symbol,
         ));
         out.push('\n');
     }
     for iface in &class.required_interfaces {
+        let symbol = interface_symbol(context, iface);
         out.push_str(&py_generate_interface_registration(
             iface,
-            &format!("_{}", iface.name),
+            &format!("_{symbol}"),
+            &symbol,
         ));
         out.push('\n');
     }
@@ -264,9 +321,9 @@ pub fn generate_class(
     }
 
     // Struct helpers
-    if !python_module_layout_installed() {
+    if !context.is_packaged() {
         for s in &used_structs {
-            out.push_str(&generate_struct_helpers(s));
+            out.push_str(&generate_struct_helpers(context, s));
             out.push('\n');
         }
     }
@@ -289,12 +346,13 @@ pub fn generate_class(
     }
     if projectable {
         out.push_str("    _dynwinrt_runtime_class_type = True\n");
+    } else if native_projectable {
+        out.push_str("    _dynwinrt_projectable_class_type = True\n");
     }
 
     out.push_str(&generate_python_constructor(
+        context,
         class,
-        known_types,
-        delegate_type_names,
         collection_iface,
         collection_uses_default,
     ));
@@ -304,26 +362,28 @@ pub fn generate_class(
     // during interpreter shutdown when WinUI releases them after RoUninitialize.
     let mut declared: HashSet<String> = HashSet::new();
     for iface in &class.factory_interfaces {
-        let key = format!("f_{}", iface.name);
+        let symbol = interface_symbol(context, iface);
+        let key = format!("f_{symbol}");
         if !iface.iid.is_empty() && declared.insert(key.clone()) {
             out.push_str("    @staticmethod\n");
             out.push_str(&format!("    def _get_{}():\n", key));
             out.push_str(&format!(
                 "        return DynWinRTValue.activation_factory('{full}').cast(IID_{iface})\n",
-                iface = iface.name,
+                iface = symbol,
                 full = class.full_name,
             ));
             out.push('\n');
         }
     }
     for iface in &class.static_interfaces {
-        let key = format!("s_{}", iface.name);
+        let symbol = interface_symbol(context, iface);
+        let key = format!("s_{symbol}");
         if !iface.iid.is_empty() && declared.insert(key.clone()) {
             out.push_str("    @staticmethod\n");
             out.push_str(&format!("    def _get_{}():\n", key));
             out.push_str(&format!(
                 "        return DynWinRTValue.activation_factory('{full}').cast(IID_{iface})\n",
-                iface = iface.name,
+                iface = symbol,
                 full = class.full_name,
             ));
             out.push('\n');
@@ -377,7 +437,7 @@ pub fn generate_class(
                     || method.is_event_add
                     || method.is_event_remove
                 {
-                    key = format!("{}#{key}", iface.name);
+                    key = format!("{}#{key}", interface_symbol(context, iface));
                 }
                 let overload = StaticOverload {
                     class,
@@ -398,11 +458,7 @@ pub fn generate_class(
     }
     for (_, overloads) in static_groups {
         out.push('\n');
-        out.push_str(&generate_static_method_group(
-            &overloads,
-            known_types,
-            &delegate_names,
-        ));
+        out.push_str(&generate_static_method_group(&overloads, context));
     }
     let static_aliases = generate_compatibility_aliases(static_methods.iter().copied());
     if !static_aliases.is_empty() {
@@ -449,12 +505,21 @@ pub fn generate_class(
         let controls_resources = spec.controls_resources;
         let resource_manager = spec.resource_manager;
         let callback_types = project_winui_abi_types(spec.launched_callback_params);
-        let metadata_module =
-            python_module_name(metadata_provider.namespace, metadata_provider.name);
-        let resources_module =
-            python_module_name(controls_resources.namespace, controls_resources.name);
-        let resource_manager_module =
-            python_module_name(resource_manager.namespace, resource_manager.name);
+        let metadata_module = context.implementation_module_for_named(
+            TypeIdentityKind::Class,
+            metadata_provider.namespace,
+            metadata_provider.name,
+        );
+        let resources_module = context.implementation_module_for_named(
+            TypeIdentityKind::Class,
+            controls_resources.namespace,
+            controls_resources.name,
+        );
+        let resource_manager_module = context.implementation_module_for_named(
+            TypeIdentityKind::Class,
+            resource_manager.namespace,
+            resource_manager.name,
+        );
         let metadata_provider = metadata_provider.name;
         let controls_resources = controls_resources.name;
         let resource_manager = resource_manager.name;
@@ -564,20 +629,22 @@ pub fn generate_class(
     // before any cross-interface setter that references it.
     for setter_phase in [false, true] {
         for iface in &instance_ifaces {
-            let obj_expr =
-                if collection_iface.is_some_and(|collection| collection.name == iface.name) {
-                    collection_obj_expr
-                } else if class
-                    .default_interface
-                    .as_ref()
-                    .is_some_and(|default_iface| default_iface.name == iface.name)
-                {
-                    "self._obj"
-                } else {
-                    ""
-                };
+            let obj_expr = if collection_iface
+                .is_some_and(|collection| collection.type_identity() == iface.type_identity())
+            {
+                collection_obj_expr
+            } else if class
+                .default_interface
+                .as_ref()
+                .is_some_and(|default_iface| default_iface.type_identity() == iface.type_identity())
+            {
+                "self._obj"
+            } else {
+                ""
+            };
+            let iface_symbol = interface_symbol(context, iface);
             let obj_expr = if obj_expr.is_empty() {
-                format!("self._obj.cast(IID_{})", iface.name)
+                format!("self._obj.cast(IID_{iface_symbol})")
             } else {
                 obj_expr.to_string()
             };
@@ -590,7 +657,7 @@ pub fn generate_class(
                     &instance_method_names,
                 );
                 let overload = InstanceOverload {
-                    iface_var: format!("_{}", iface.name),
+                    iface_var: format!("_{iface_symbol}"),
                     obj_expr: obj_expr.clone(),
                     method,
                     sibling_methods: Some(iface.methods.as_slice()),
@@ -613,11 +680,7 @@ pub fn generate_class(
     }
     for (_, overloads) in method_groups {
         out.push('\n');
-        out.push_str(&generate_instance_method_group(
-            &overloads,
-            known_types,
-            &delegate_names,
-        ));
+        out.push_str(&generate_instance_method_group(&overloads, context));
     }
     let instance_aliases = generate_compatibility_aliases(
         instance_ifaces
@@ -632,14 +695,15 @@ pub fn generate_class(
     if matches!(
         collection_kind,
         Some(CollectionKind::Mapping | CollectionKind::MutableMapping)
-    ) && let Some(iterable_name) =
-        collection_iface.and_then(|iface| map_iterable_name(&iface.generic_args))
+    ) && let Some(iterable_identity) =
+        collection_iface.and_then(|iface| map_iterable_identity(&iface.generic_args))
     {
+        let iterable_name = context.projected_name(&iterable_identity);
         out.push('\n');
         out.push_str("    def _iter_pairs(self):\n");
         out.push_str(&format!(
             "        return iter({}({}))\n",
-            py_runtime_symbol(&iterable_name, &iterable_name),
+            py_runtime_symbol(context, &iterable_identity, &iterable_name),
             collection_obj_expr
         ));
     }
@@ -656,7 +720,13 @@ pub fn generate_class(
         out.push_str("        if self._closed:\n            return\n");
         out.push_str(&format!(
             "        {}.from_value(self._obj).close()\n",
-            py_runtime_symbol("IClosable", "IClosable")
+            py_runtime_named_symbol(
+                context,
+                TypeIdentityKind::Interface,
+                "Windows.Foundation",
+                "IClosable",
+                "IClosable",
+            )
         ));
         out.push_str("        self._closed = True\n\n");
         out.push_str("    def __enter__(self):\n");
@@ -688,10 +758,7 @@ pub fn generate_class(
     }
 
     // .as_interface() method for explicit, IID-checked interface projection.
-    if class
-        .default_interface
-        .as_ref()
-        .is_some_and(|interface| !interface.iid.is_empty() || interface.generic_piid.is_some())
+    if super::super::has_projectable_default_interface(class)
         || !class.required_interfaces.is_empty()
     {
         out.push('\n');
@@ -771,21 +838,19 @@ pub fn generate_class(
         if req_iface.iid.is_empty() {
             continue;
         }
-        if imported_names.contains(&req_iface.name) {
+        let symbol = interface_symbol(context, req_iface);
+        if imported_names.contains(&symbol) {
             continue;
         }
-        let reg_var = format!("_{}", req_iface.name);
+        let reg_var = format!("_{symbol}");
         out.push('\n');
         if let Some(mixin) = interface_kind(req_iface).and_then(runtime_mixin) {
-            out.push_str(&format!("\nclass {}({mixin}):\n", req_iface.name));
+            out.push_str(&format!("\nclass {symbol}({mixin}):\n"));
         } else {
-            out.push_str(&format!("\nclass {}:\n", req_iface.name));
+            out.push_str(&format!("\nclass {symbol}:\n"));
         }
         out.push_str("    _dynwinrt_interface_type = True\n");
-        out.push_str(&format!(
-            "    _dynwinrt_interface_iid = IID_{}\n",
-            req_iface.name
-        ));
+        out.push_str(&format!("    _dynwinrt_interface_iid = IID_{symbol}\n"));
         out.push_str("    def __new__(cls, *args, **kwargs):\n");
         out.push_str(
             "        if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):\n\
@@ -793,10 +858,7 @@ pub fn generate_class(
              \x20       return super().__new__(cls)\n\n",
         );
         out.push_str("    def _set_native(self, obj: DynWinRTValue):\n");
-        out.push_str(&format!(
-            "        self._obj = obj.cast(IID_{})\n",
-            req_iface.name
-        ));
+        out.push_str(&format!("        self._obj = obj.cast(IID_{symbol})\n"));
         out.push_str("        self._dynwinrt_native_ready = True\n");
         out.push_str(&format!(
             "        _dynwinrt_track_projected(self, '{}.{}')\n",
@@ -809,26 +871,22 @@ pub fn generate_class(
             "        if getattr(self, '_dynwinrt_native_ready', False):\n\
              \x20           return\n",
         );
-        out.push_str(&format!(
-            "        {}._set_native(self, obj)\n",
-            req_iface.name
-        ));
+        out.push_str(&format!("        {symbol}._set_native(self, obj)\n"));
         out.push('\n');
         out.push_str("    @classmethod\n");
         out.push_str(&format!(
             "    def _from_native(cls, obj: DynWinRTValue) -> '{}':\n",
-            req_iface.name
+            symbol
         ));
         out.push_str("        return cls(obj)\n");
         out.push('\n');
         out.push_str("    @classmethod\n");
         out.push_str(&format!(
             "    def from_value(cls, obj: DynWinRTValue) -> '{}':\n",
-            req_iface.name
+            symbol
         ));
         out.push_str(&format!(
-            "        return cls._from_native(obj.cast(IID_{}))\n",
-            req_iface.name
+            "        return cls._from_native(obj.cast(IID_{symbol}))\n"
         ));
         out.push('\n');
         out.push_str("    def as_interface(self, interface_class):\n");
@@ -853,11 +911,7 @@ pub fn generate_class(
                         }),
                 })
                 .collect::<Vec<_>>();
-            out.push_str(&generate_instance_method_group(
-                &overloads,
-                known_types,
-                &delegate_names,
-            ));
+            out.push_str(&generate_instance_method_group(&overloads, context));
         }
         let aliases = generate_compatibility_aliases(req_iface.methods.iter());
         if !aliases.is_empty() {
@@ -867,13 +921,14 @@ pub fn generate_class(
         if matches!(
             interface_kind(req_iface),
             Some(CollectionKind::Mapping | CollectionKind::MutableMapping)
-        ) && let Some(iterable_name) = map_iterable_name(&req_iface.generic_args)
+        ) && let Some(iterable_identity) = map_iterable_identity(&req_iface.generic_args)
         {
+            let iterable_name = context.projected_name(&iterable_identity);
             out.push('\n');
             out.push_str("    def _iter_pairs(self):\n");
             out.push_str(&format!(
                 "        return iter({}(self._obj))\n",
-                py_runtime_symbol(&iterable_name, &iterable_name)
+                py_runtime_symbol(context, &iterable_identity, &iterable_name)
             ));
         }
     }
@@ -932,9 +987,9 @@ struct PyCtorCandidate<'a> {
 }
 
 fn build_ctor_candidates<'a>(
+    context: &PythonProjectionContext,
     class: &'a ClassMeta,
     factory_names: &HashSet<String>,
-    delegate_type_names: &HashSet<String>,
 ) -> Vec<PyCtorCandidate<'a>> {
     fn push_unique<'a>(candidates: &mut Vec<PyCtorCandidate<'a>>, candidate: PyCtorCandidate<'a>) {
         if let Some(existing) = candidates.iter_mut().find(|existing| {
@@ -1044,14 +1099,14 @@ fn build_ctor_candidates<'a>(
                             crate::codegen::winrt::python::method::py_wrap_method_arg(
                                 &format!("_bound[{index}]"),
                                 &param.typ,
-                                delegate_type_names,
+                                context,
                             )
                         })
                         .collect::<Vec<_>>()
                         .join(", ");
                     let composed_call_expr = format!(
                         "_{factory}.method({vtable}).invoke_composed_with_overrides({class}._get_f_{factory}(), [{wrapped_args}], {outer_index}, {inner_output_index}, {instance_output_index}, {agile}, _override_interfaces)",
-                        factory = factory.name,
+                        factory = interface_symbol(context, factory),
                         class = class.name,
                         vtable = method.vtable_index,
                         agile = if class.is_agile { "True" } else { "False" },
@@ -1189,14 +1244,13 @@ fn python_tuple(values: &[String]) -> String {
 }
 
 fn generate_python_constructor(
+    context: &PythonProjectionContext,
     class: &ClassMeta,
-    known_types: &HashSet<String>,
-    delegate_type_names: &HashSet<String>,
     collection_iface: Option<&InterfaceMeta>,
     collection_uses_default: bool,
 ) -> String {
     let mut out = String::new();
-    let projectable = super::super::has_projectable_default_interface(class);
+    let native_projectable = super::super::has_native_projector(class);
     let has_public_composition = class
         .constructors
         .iter()
@@ -1253,7 +1307,7 @@ fn generate_python_constructor(
         .collect::<Vec<_>>();
     let factory_names =
         crate::codegen::winrt::python::overloads::method_names(static_methods.iter().copied());
-    let mut candidates = build_ctor_candidates(class, &factory_names, delegate_type_names);
+    let mut candidates = build_ctor_candidates(context, class, &factory_names);
     candidates.sort_by(|left, right| {
         crate::codegen::winrt::python::overloads::cmp_python_dispatch_params(
             &left.public_params,
@@ -1263,7 +1317,7 @@ fn generate_python_constructor(
     });
 
     out.push_str("    def __new__(cls, *args, **kwargs):\n");
-    if projectable {
+    if native_projectable {
         out.push_str(
             "        if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):\n\
              \x20           return _dynwinrt_projected_from_native(cls, args[0], '_set_native')\n",
@@ -1291,12 +1345,7 @@ fn generate_python_constructor(
                 .iter()
                 .enumerate()
                 .map(|(index, param)| {
-                    py_method_type_guard(
-                        &format!("_bound[{index}]"),
-                        &param.typ,
-                        known_types,
-                        delegate_type_names,
-                    )
+                    py_method_type_guard(&format!("_bound[{index}]"), &param.typ, context)
                 })
                 .collect::<Vec<_>>();
             let condition = if guards.is_empty() {
@@ -1338,10 +1387,8 @@ fn generate_python_constructor(
         if default_iface.iid.is_empty() {
             out.push_str("        self._obj = obj\n");
         } else {
-            out.push_str(&format!(
-                "        self._obj = obj.cast(IID_{})\n",
-                default_iface.name
-            ));
+            let symbol = interface_symbol(context, default_iface);
+            out.push_str(&format!("        self._obj = obj.cast(IID_{symbol})\n"));
         }
     } else {
         out.push_str("        self._obj = obj\n");
@@ -1349,9 +1396,9 @@ fn generate_python_constructor(
     if let Some(collection_iface) = collection_iface
         && !collection_uses_default
     {
+        let symbol = interface_symbol(context, collection_iface);
         out.push_str(&format!(
-            "        self._collection_obj = obj.cast(IID_{})\n",
-            collection_iface.name
+            "        self._collection_obj = obj.cast(IID_{symbol})\n"
         ));
     }
     if class
@@ -1368,7 +1415,7 @@ fn generate_python_constructor(
     ));
     out.push_str("        _dynwinrt_cache_projected(self)\n");
     out.push('\n');
-    if projectable {
+    if native_projectable {
         out.push_str("    @classmethod\n");
         out.push_str("    def _from_native(cls, obj: DynWinRTValue):\n");
         out.push_str("        return cls(obj)\n\n");
@@ -1408,7 +1455,7 @@ fn generate_python_constructor(
         let default_iid = class
             .default_interface
             .as_ref()
-            .map(|interface| format!("IID_{}", interface.name))
+            .map(|interface| format!("IID_{}", interface_symbol(context, interface)))
             .expect("public composable runtime class has a default interface");
         out.push_str(&format!(
             "        return _dynwinrt_register_xaml_runtime_class(runtime_class_name, '{}', {default_iid}, control_type, _native_overrides)\n\n",
@@ -1420,7 +1467,7 @@ fn generate_python_constructor(
         "        if getattr(self, '_dynwinrt_native_ready', False):\n\
          \x20           return\n",
     );
-    if projectable {
+    if native_projectable {
         out.push_str(
             "        if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):\n\
              \x20           self._set_native(args[0])\n\
@@ -1479,9 +1526,9 @@ fn generate_python_constructor(
                 ));
             }
             out.push_str("            if _override_callbacks:\n");
+            let symbol = interface_symbol(context, interface);
             out.push_str(&format!(
-                "                _override_interfaces.append(DynWinRTOverrideInterface(IID_{}, [{}], _override_callbacks))\n",
-                interface.name,
+                "                _override_interfaces.append(DynWinRTOverrideInterface(IID_{symbol}, [{}], _override_callbacks))\n",
                 shapes
                     .iter()
                     .map(|shape| format!("'{shape}'"))
@@ -1510,12 +1557,7 @@ fn generate_python_constructor(
             .iter()
             .enumerate()
             .map(|(index, param)| {
-                py_method_type_guard(
-                    &format!("_bound[{index}]"),
-                    &param.typ,
-                    known_types,
-                    delegate_type_names,
-                )
+                py_method_type_guard(&format!("_bound[{index}]"), &param.typ, context)
             })
             .collect::<Vec<_>>();
         let condition = if guards.is_empty() {
@@ -1657,7 +1699,7 @@ mod tests {
             ..Default::default()
         };
 
-        let code = generate_class(&class, &HashSet::new(), &HashSet::new(), &HashSet::new());
+        let code = generate_class(&PythonProjectionContext::default(), &class, &HashSet::new());
         assert!(code.contains("def _create_6_0("), "{code}");
         assert!(code.contains("def _create_6_1("), "{code}");
         assert!(code.contains("type(self)._create_6_0(_bound[0])"), "{code}");
@@ -1700,19 +1742,18 @@ mod tests {
     fn python_constructor_enum_overload_prefers_enum_over_i32_in_both_orders() {
         let integer = constructor_method("Create", 6, TypeMeta::I32);
         let enumeration = constructor_method("Create2", 7, enum_type("Mode"));
-        let known_types = HashSet::from(["Mode".to_string()]);
+        let context =
+            PythonProjectionContext::packaged([enum_type("Mode").type_identity()]).unwrap();
 
         let forward = generate_python_constructor(
+            &context,
             &constructor_class(vec![integer.clone(), enumeration.clone()]),
-            &known_types,
-            &HashSet::new(),
             None,
             false,
         );
         let reverse = generate_python_constructor(
+            &context,
             &constructor_class(vec![enumeration, integer]),
-            &known_types,
-            &HashSet::new(),
             None,
             false,
         );

@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url'
 
 import {
   DynWinRtArray,
+  DynWinRtDelegate,
   DynWinRtMethodSig,
   DynWinRtStruct,
   DynWinRtType,
@@ -701,6 +702,30 @@ test('build WinRT types', (t) => {
   t.truthy(DynWinRtType.iAsyncOperation(DynWinRtType.object()))
 })
 
+test('delegate creation failures are reported as JavaScript errors', (t) => {
+  const objectType = DynWinRtType.object()
+  t.throws(
+    () =>
+      DynWinRtDelegate.create(
+        WinGuid.parse('699a62d5-a8a5-431c-9c00-a75c70b30524'),
+        [objectType, objectType, objectType],
+        () => {},
+      ),
+    { message: /supports up to 2 parameters/ },
+  )
+
+  const emptyStruct = DynWinRtType.structType('DynWinRT.Tests.EmptyDelegateArgument', [])
+  t.throws(
+      () =>
+        DynWinRtDelegate.create(
+          WinGuid.parse('f1662550-78fd-4bf1-9022-0a2c85168380'),
+          [objectType, emptyStruct],
+          () => {},
+        ),
+      { message: /struct callbacks do not support/ },
+  )
+})
+
 test('invoke WinRT through dynamic metadata', (t) => {
   roInitialize(1)
   const factoryIid = WinGuid.parse('44a9796f-723e-4fdf-a218-033e75b0c084')
@@ -1161,4 +1186,44 @@ test('progress callbacks do not keep Node alive after completion', async (t) => 
   t.false(timedOut, 'child process remained alive after the progress operation completed')
   t.is(code, 0, stderr)
   t.regex(stdout, /progress-exit-ok/)
+})
+
+test('struct progress callbacks retain nested interface values', async (t) => {
+  const child = spawn(process.execPath, [fileURLToPath(new URL('./struct-progress-child.mjs', import.meta.url))], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
+  })
+
+  let stdout = ''
+  let stderr = ''
+  child.stdout.setEncoding('utf8')
+  child.stderr.setEncoding('utf8')
+  child.stdout.on('data', (chunk) => {
+    stdout += chunk
+  })
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk
+  })
+
+  let timedOut = false
+  const timeout = setTimeout(() => {
+    timedOut = true
+    child.kill()
+  }, 20_000)
+  t.teardown(() => {
+    clearTimeout(timeout)
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill()
+    }
+  })
+
+  const code = await new Promise<number | null>((resolve, reject) => {
+    child.once('error', reject)
+    child.once('close', resolve)
+  })
+  clearTimeout(timeout)
+
+  t.false(timedOut, 'struct progress child timed out')
+  t.is(code, 0, stderr)
+  t.regex(stdout, /struct-progress-ok/)
 })

@@ -139,6 +139,36 @@ impl ValueTypeData {
         }
     }
 
+    /// Copies a borrowed ABI struct into owned storage, retaining every
+    /// non-blittable field so the result can outlive the native callback.
+    ///
+    /// # Safety
+    ///
+    /// `source` must point to a readable ABI value matching `handle` for the
+    /// duration of this call.
+    pub(crate) unsafe fn from_borrowed_abi(handle: &TypeHandle, source: *const c_void) -> Self {
+        assert!(
+            matches!(handle.kind(), TypeKind::Struct(_)),
+            "from_borrowed_abi requires a struct type"
+        );
+        let result = Self::new(handle);
+        let size = handle.size_of();
+        if size == 0 {
+            return result;
+        }
+        assert!(
+            !source.is_null(),
+            "from_borrowed_abi requires non-null storage for a non-empty struct"
+        );
+        unsafe {
+            std::ptr::copy_nonoverlapping(source.cast::<u8>(), result.ptr, size);
+            if has_non_blittable_fields(handle) {
+                duplicate_non_blittable_fields(handle, result.ptr);
+            }
+        }
+        result
+    }
+
     pub fn type_handle(&self) -> &TypeHandle {
         &self.type_handle
     }

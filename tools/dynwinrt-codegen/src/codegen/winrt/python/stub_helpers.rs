@@ -3,13 +3,11 @@
 
 //! Rendering helpers for Python type stubs.
 
-use std::collections::HashSet;
-
 use crate::codegen::winrt::shared::imports::get_in_params;
 use crate::meta::MethodMeta;
-use crate::types::{FieldMeta, TypeKind, TypeMeta};
+use crate::types::{FieldMeta, TypeIdentity, TypeIdentityKind, TypeKind, TypeMeta};
 
-use super::naming::{python_module_name, to_snake_case};
+use super::naming::{PythonProjectionContext, to_snake_case};
 use super::native_types::{FoundationType, foundation_type};
 use super::structs::{py_struct_field_read_type, py_struct_field_type};
 use super::type_helpers::{
@@ -18,14 +16,51 @@ use super::type_helpers::{
 };
 use crate::codegen::winrt::shared::imports::ireference_inner_type;
 
-pub(super) fn format_py_type_import(namespace: &str, name: &str, kind: TypeKind) -> String {
-    let module = python_module_name(namespace, name);
+pub(super) fn format_py_type_import(
+    context: &PythonProjectionContext,
+    namespace: &str,
+    name: &str,
+    kind: TypeKind,
+) -> String {
+    let identity_kind = match kind {
+        TypeKind::Class => TypeIdentityKind::Class,
+        TypeKind::Enum => TypeIdentityKind::Enum,
+        TypeKind::Interface => TypeIdentityKind::Interface,
+    };
+    let identity = TypeIdentity::named(identity_kind, namespace, name);
+    let module = context.implementation_module(&identity);
+    let projected_name = context.projected_name(&identity);
+    let reference_name = context.reference_name(&identity);
+    let imported = |name: &str, alias: &str| {
+        if name == alias {
+            name.to_string()
+        } else {
+            format!("{name} as {alias}")
+        }
+    };
     if kind == TypeKind::Interface {
-        format!("from .{module} import IID_{name}, {name}  # noqa: F401\n")
+        format!(
+            "from .{module} import {}, {}  # noqa: F401\n",
+            imported(
+                &format!("IID_{projected_name}"),
+                &format!("IID_{reference_name}")
+            ),
+            imported(&projected_name, &reference_name)
+        )
     } else if kind == TypeKind::Class {
-        format!("from .{module} import {name}, {name}Like  # noqa: F401\n")
+        format!(
+            "from .{module} import {}, {}  # noqa: F401\n",
+            imported(&projected_name, &reference_name),
+            imported(
+                &format!("{projected_name}Like"),
+                &format!("{reference_name}Like")
+            )
+        )
     } else {
-        format!("from .{module} import {name}  # noqa: F401\n")
+        format!(
+            "from .{module} import {}  # noqa: F401\n",
+            imported(&projected_name, &reference_name)
+        )
     }
 }
 
@@ -49,19 +84,19 @@ pub(super) fn py_struct_export_names(s: &TypeMeta) -> Vec<String> {
     }
 }
 
-pub(super) fn generate_struct_stub_imports(structs: &[TypeMeta]) -> String {
+pub(super) fn generate_struct_stub_imports(
+    context: &PythonProjectionContext,
+    structs: &[TypeMeta],
+) -> String {
     let mut imports = structs
         .iter()
         .filter_map(|typ| {
-            let TypeMeta::Struct {
-                namespace, name, ..
-            } = typ
-            else {
+            let TypeMeta::Struct { .. } = typ else {
                 return None;
             };
             Some(format!(
                 "from .{} import {}  # noqa: F401\n",
-                python_module_name(namespace, name),
+                context.implementation_module_for_type(typ),
                 py_struct_export_names(typ).join(", ")
             ))
         })
@@ -71,7 +106,7 @@ pub(super) fn generate_struct_stub_imports(structs: &[TypeMeta]) -> String {
     imports.concat()
 }
 
-pub(super) fn emit_struct_stub(s: &TypeMeta) -> String {
+pub(super) fn emit_struct_stub(context: &PythonProjectionContext, s: &TypeMeta) -> String {
     if let Some(kind) = foundation_type(s) {
         let TypeMeta::Struct { name, .. } = s else {
             unreachable!()
@@ -114,7 +149,7 @@ pub(super) fn emit_struct_stub(s: &TypeMeta) -> String {
                 format!(
                     "{}: {} = ...",
                     to_snake_case(&f.name),
-                    py_struct_field_stub_type(&f.typ)
+                    py_struct_field_stub_type(context, &f.typ)
                 )
             })
             .collect();
@@ -130,14 +165,14 @@ pub(super) fn emit_struct_stub(s: &TypeMeta) -> String {
                      \x20   def {snake}(self) -> {read_type}: ...\n\
                      \x20   @{snake}.setter\n\
                      \x20   def {snake}(self, value: {write_type}) -> None: ...\n",
-                    read_type = py_struct_field_read_type(&f.typ),
-                    write_type = py_struct_field_type(&f.typ),
+                    read_type = py_struct_field_read_type(context, &f.typ),
+                    write_type = py_struct_field_type(context, &f.typ),
                 ));
             } else {
                 out.push_str(&format!(
                     "    {}: {}\n",
                     snake,
-                    py_struct_field_stub_type(&f.typ)
+                    py_struct_field_stub_type(context, &f.typ)
                 ));
             }
         }
@@ -182,9 +217,12 @@ fn py_string_tuple_literal(values: &[String]) -> String {
     }
 }
 
-pub(super) fn py_struct_field_stub_type(typ: &TypeMeta) -> String {
+pub(super) fn py_struct_field_stub_type(
+    context: &PythonProjectionContext,
+    typ: &TypeMeta,
+) -> String {
     if ireference_inner_type(typ).is_some() {
-        return py_struct_field_type(typ);
+        return py_struct_field_type(context, typ);
     }
 
     match typ {
@@ -197,7 +235,7 @@ pub(super) fn py_struct_field_stub_type(typ: &TypeMeta) -> String {
         | TypeMeta::U32
         | TypeMeta::I64
         | TypeMeta::U64 => "int".to_string(),
-        TypeMeta::Enum { name, .. } => format!("'{}'", name),
+        TypeMeta::Enum { .. } => format!("'{}'", context.reference_name_for_type(typ)),
         TypeMeta::Char16 => "str".to_string(),
         TypeMeta::F32 | TypeMeta::F64 => "float".to_string(),
         TypeMeta::String => "str".to_string(),
@@ -212,8 +250,7 @@ pub(super) fn py_struct_field_stub_type(typ: &TypeMeta) -> String {
 
 pub(super) fn emit_method_stub(
     method: &MethodMeta,
-    known_types: &HashSet<String>,
-    delegate_type_names: &HashSet<String>,
+    context: &PythonProjectionContext,
     indent_spaces: usize,
     event_has_remove: bool,
     property_has_getter: bool,
@@ -221,8 +258,7 @@ pub(super) fn emit_method_stub(
 ) -> String {
     emit_method_stub_named(
         method,
-        known_types,
-        delegate_type_names,
+        context,
         indent_spaces,
         None,
         event_has_remove,
@@ -243,8 +279,7 @@ fn emit_documented_stub(out: &mut String, indent: &str, signature: &str, doc: &s
 
 pub(super) fn emit_method_stub_named(
     method: &MethodMeta,
-    known_types: &HashSet<String>,
-    delegate_type_names: &HashSet<String>,
+    context: &PythonProjectionContext,
     indent_spaces: usize,
     name_override: Option<&str>,
     event_has_remove: bool,
@@ -255,16 +290,8 @@ pub(super) fn emit_method_stub_named(
     let in_params = get_in_params(method);
     let return_type = method.return_type.as_ref();
 
-    let is_delegate_type = |typ: Option<&TypeMeta>| -> bool {
-        match typ {
-            Some(TypeMeta::Delegate { .. }) => true,
-            Some(TypeMeta::Interface { name, .. }) => delegate_type_names.contains(name),
-            Some(TypeMeta::Parameterized { name, args, .. }) => {
-                delegate_type_names.contains(&crate::meta::make_parameterized_name(name, args))
-            }
-            _ => false,
-        }
-    };
+    let is_delegate_type =
+        |typ: Option<&TypeMeta>| -> bool { typ.is_some_and(|typ| context.is_delegate_type(typ)) };
 
     let mut out = String::new();
     let body_indent = format!("{indent}    ");
@@ -277,7 +304,7 @@ pub(super) fn emit_method_stub_named(
         // Build a typed callback signature matching the runtime .py side.
         let delegate_typ = in_params.first().map(|p| &p.typ);
         let callback_sig = delegate_typ
-            .map(|typ| py_delegate_callable_type(typ, known_types))
+            .map(|typ| py_delegate_callable_type(typ, context))
             .unwrap_or_else(|| "Callable[..., object]".to_string());
         emit_documented_stub(
             &mut out,
@@ -319,7 +346,7 @@ pub(super) fn emit_method_stub_named(
     if method.is_property_getter && in_params.is_empty() {
         let prop_name = to_snake_case(method.name.strip_prefix("get_").unwrap_or(&method.name));
         let py_return = return_type
-            .map(|typ| py_output_type(typ, known_types, delegate_type_names))
+            .map(|typ| py_output_type(typ, context))
             .unwrap_or_else(|| "None".to_string());
         out.push_str(&format!("{indent}@builtins.property\n"));
         emit_documented_stub(
@@ -339,7 +366,7 @@ pub(super) fn emit_method_stub_named(
         } else {
             in_params
                 .first()
-                .map(|p| py_param_type_safe(&p.typ, known_types))
+                .map(|p| py_param_type_safe(&p.typ, context))
                 .unwrap_or_else(|| "object".to_string())
         };
         if property_has_getter {
@@ -361,8 +388,8 @@ pub(super) fn emit_method_stub_named(
             );
         }
     } else {
-        let py_params = py_param_list(&in_params, known_types, delegate_type_names);
-        let py_return = py_method_return_type(method, known_types, delegate_type_names);
+        let py_params = py_param_list(&in_params, context);
+        let py_return = py_method_return_type(method, context);
         let method_name = name_override
             .map(str::to_string)
             .unwrap_or_else(|| to_snake_case(&method.name));
@@ -378,8 +405,8 @@ pub(super) fn emit_method_stub_named(
         let override_ignore = if overrides_mutable_sequence
             && method_name == "append"
             && in_params.first().is_some_and(|param| {
-                py_param_type_safe(&param.typ, known_types)
-                    != super::type_helpers::py_return_type_safe(Some(&param.typ), known_types)
+                py_param_type_safe(&param.typ, context)
+                    != super::type_helpers::py_return_type_safe(Some(&param.typ), context)
             }) {
             "  # type: ignore[override, unused-ignore]"
         } else {
@@ -400,35 +427,26 @@ pub(super) fn emit_method_stub_named(
 pub(super) fn emit_static_method_stub(
     class_name: &str,
     method: &MethodMeta,
-    known_types: &HashSet<String>,
+    context: &PythonProjectionContext,
     is_factory: bool,
-    delegate_type_names: &HashSet<String>,
 ) -> String {
-    emit_static_method_stub_named(
-        class_name,
-        method,
-        known_types,
-        is_factory,
-        delegate_type_names,
-        None,
-    )
+    emit_static_method_stub_named(class_name, method, context, is_factory, None)
 }
 
 pub(super) fn emit_static_method_stub_named(
     class_name: &str,
     method: &MethodMeta,
-    known_types: &HashSet<String>,
+    context: &PythonProjectionContext,
     is_factory: bool,
-    delegate_type_names: &HashSet<String>,
     name_override: Option<&str>,
 ) -> String {
     let in_params = get_in_params(method);
-    let py_params = py_param_list(&in_params, known_types, delegate_type_names);
+    let py_params = py_param_list(&in_params, context);
 
     let py_return = if is_factory {
-        py_factory_return_type(class_name, method, known_types)
+        py_factory_return_type(class_name, method, context)
     } else {
-        py_method_return_type(method, known_types, delegate_type_names)
+        py_method_return_type(method, context)
     };
 
     let mut out = String::new();
@@ -498,8 +516,7 @@ mod tests {
     fn paired_event_stubs_preserve_token_api_and_add_helpers() {
         let code = emit_method_stub(
             &event_add(),
-            &HashSet::new(),
-            &HashSet::new(),
+            &PythonProjectionContext::default(),
             4,
             true,
             true,
@@ -515,8 +532,7 @@ mod tests {
     fn add_only_event_stub_does_not_advertise_unavailable_helpers() {
         let code = emit_method_stub(
             &event_add(),
-            &HashSet::new(),
-            &HashSet::new(),
+            &PythonProjectionContext::default(),
             4,
             false,
             true,
@@ -539,23 +555,17 @@ mod tests {
             }],
             ..Default::default()
         };
-        let reference = emit_method_stub(
-            &append(TypeMeta::Interface {
-                namespace: "Contoso".into(),
-                name: "Widget".into(),
-                iid: "11111111-1111-1111-1111-111111111111".into(),
-            }),
-            &HashSet::from(["Widget".into()]),
-            &HashSet::new(),
-            4,
-            false,
-            true,
-            true,
-        );
+        let reference_type = TypeMeta::Interface {
+            namespace: "Contoso".into(),
+            name: "Widget".into(),
+            iid: "11111111-1111-1111-1111-111111111111".into(),
+        };
+        let context =
+            PythonProjectionContext::standalone([reference_type.type_identity()]).unwrap();
+        let reference = emit_method_stub(&append(reference_type), &context, 4, false, true, true);
         let scalar = emit_method_stub(
             &append(TypeMeta::I32),
-            &HashSet::new(),
-            &HashSet::new(),
+            &PythonProjectionContext::default(),
             4,
             false,
             true,
@@ -564,5 +574,32 @@ mod tests {
 
         assert!(reference.contains("type: ignore[override, unused-ignore]"));
         assert!(!scalar.contains("type: ignore[override"));
+    }
+
+    #[test]
+    fn ambiguous_enum_struct_fields_use_semantic_reference_aliases() {
+        let enumeration = |namespace: &str| TypeMeta::Enum {
+            namespace: namespace.into(),
+            name: "Mode".into(),
+            underlying: Box::new(TypeMeta::I32),
+            members: vec![],
+            is_flags: false,
+            doc: None,
+            deprecated: None,
+        };
+        let left = enumeration("Example.Left");
+        let right = enumeration("Example.Right");
+        let context =
+            PythonProjectionContext::packaged([left.type_identity(), right.type_identity()])
+                .unwrap();
+
+        assert_eq!(
+            py_struct_field_stub_type(&context, &left),
+            "'Example_Left_Mode_enum'"
+        );
+        assert_eq!(
+            py_struct_field_read_type(&context, &right),
+            "'Example_Right_Mode_enum'"
+        );
     }
 }

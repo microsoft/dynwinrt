@@ -1,9 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+mod common;
+
 use std::collections::{HashMap, HashSet};
 
-use dynwinrt_codegen::codegen::{project, python, python_stub, render_dts, render_js};
+use dynwinrt_codegen::codegen::{project, render_dts, render_js};
 use dynwinrt_codegen::meta::{ClassMeta, InterfaceMeta, MethodMeta, ParamDirection, ParamMeta};
 use dynwinrt_codegen::types::TypeMeta;
 
@@ -110,8 +112,8 @@ fn generated_interfaces_import_only_runtime_delegates() {
     );
     let js = render_js::render(&projected);
     let dts = render_dts::render(&projected);
-    let py = python::generate_interface(&interface, &known_types, &delegates);
-    let pyi = python_stub::generate_interface_stub(&interface, &known_types, &delegates);
+    let py = common::generate_interface(&interface, &known_types, &delegates);
+    let pyi = common::generate_interface_stub(&interface, &known_types, &delegates);
 
     assert_eq!(
         js.matches("require('./DataProviderHandler.js')").count(),
@@ -234,8 +236,8 @@ fn generated_classes_do_not_import_output_only_delegates() {
     );
     let js = render_js::render(&projected);
     let dts = render_dts::render(&projected);
-    let py = python::generate_class(&class, &known_types, &delegates, &HashSet::new());
-    let pyi = python_stub::generate_class_stub(&class, &known_types, &delegates, &HashSet::new());
+    let py = common::generate_class(&class, &known_types, &delegates, &HashSet::new());
+    let pyi = common::generate_class_stub(&class, &known_types, &delegates, &HashSet::new());
 
     assert!(
         js.contains("require('./InputHandler.js')")
@@ -277,11 +279,11 @@ fn delegate_free_interfaces_do_not_import_global_delegates() {
 
     assert!(!render_js::render(&projected).contains("UnrelatedHandler"),);
     assert!(
-        !python::generate_interface(&interface, &known_types, &delegates,)
+        !common::generate_interface(&interface, &known_types, &delegates,)
             .contains("unrelated_handler"),
     );
     assert!(
-        !python_stub::generate_interface_stub(&interface, &known_types, &delegates,)
+        !common::generate_interface_stub(&interface, &known_types, &delegates,)
             .contains("unrelated_handler"),
     );
 }

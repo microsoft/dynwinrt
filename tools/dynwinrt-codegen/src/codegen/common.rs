@@ -662,34 +662,32 @@ mod tests {
 
     #[test]
     fn py_convert_return_basic() {
-        let known = HashSet::new();
+        let context = PythonProjectionContext::default();
         assert_eq!(
-            py_convert_return("r", Some(&TypeMeta::String), false, &known),
+            py_convert_return("r", Some(&TypeMeta::String), false, &context),
             "r.to_string()"
         );
         assert_eq!(
-            py_convert_return("r", Some(&TypeMeta::I32), false, &known),
+            py_convert_return("r", Some(&TypeMeta::I32), false, &context),
             "r.to_number()"
         );
         assert_eq!(
-            py_convert_return("r", Some(&TypeMeta::U32), false, &known),
+            py_convert_return("r", Some(&TypeMeta::U32), false, &context),
             "r.to_u32()"
         );
         assert_eq!(
-            py_convert_return("r", Some(&TypeMeta::U64), false, &known),
+            py_convert_return("r", Some(&TypeMeta::U64), false, &context),
             "r.to_u64()"
         );
         assert_eq!(
-            py_convert_return("r", Some(&TypeMeta::Bool), false, &known),
+            py_convert_return("r", Some(&TypeMeta::Bool), false, &context),
             "r.to_bool()"
         );
-        assert_eq!(py_convert_return("r", None, false, &known), "r");
+        assert_eq!(py_convert_return("r", None, false, &context), "r");
     }
 
     #[test]
     fn py_convert_return_with_known_class() {
-        let mut known = HashSet::new();
-        known.insert("Uri".to_string());
         let rt = TypeMeta::RuntimeClass {
             namespace: "Windows.Foundation".into(),
             name: "Uri".into(),
@@ -699,12 +697,13 @@ mod tests {
                 iid: "abc".into(),
             })),
         };
+        let context = PythonProjectionContext::packaged([rt.type_identity()]).unwrap();
         assert_eq!(
-            py_convert_return("r", Some(&rt), false, &known),
+            py_convert_return("r", Some(&rt), false, &context),
             "(lambda value: None if value.is_null() else _dynwinrt_symbol('windows__foundation__uri', 'Uri')._from_native(value))(r)"
         );
         assert_eq!(
-            py_convert_array_return("r", &rt, &known),
+            py_convert_array_return("r", &rt, &context),
             "_dynwinrt_wrap_values('windows__foundation__uri', 'Uri', r.to_values())"
         );
     }
@@ -721,13 +720,13 @@ mod tests {
             deprecated: None,
         };
         assert_eq!(
-            py_convert_return("r", Some(&en), false, &HashSet::new()),
+            py_convert_return("r", Some(&en), false, &PythonProjectionContext::default()),
             "r.to_number()"
         );
 
-        let known = HashSet::from(["DayOfWeek".to_string()]);
+        let context = PythonProjectionContext::packaged([en.type_identity()]).unwrap();
         assert_eq!(
-            py_convert_return("r", Some(&en), false, &known),
+            py_convert_return("r", Some(&en), false, &context),
             "_dynwinrt_enum('windows__globalization__day_of_week', 'DayOfWeek', r.to_number())"
         );
     }
@@ -772,16 +771,23 @@ mod tests {
 
     #[test]
     fn py_struct_field_getter_expressions() {
+        let context = PythonProjectionContext::default();
         assert_eq!(
-            py_struct_field_getter(&TypeMeta::Bool, 0),
+            py_struct_field_getter(&context, &TypeMeta::Bool, 0),
             "s.get_u8(0) != 0"
         );
-        assert_eq!(py_struct_field_getter(&TypeMeta::I32, 2), "s.get_i32(2)");
         assert_eq!(
-            py_struct_field_getter(&TypeMeta::String, 1),
+            py_struct_field_getter(&context, &TypeMeta::I32, 2),
+            "s.get_i32(2)"
+        );
+        assert_eq!(
+            py_struct_field_getter(&context, &TypeMeta::String, 1),
             "s.get_hstring(1)"
         );
-        assert_eq!(py_struct_field_getter(&TypeMeta::F64, 3), "s.get_f64(3)");
+        assert_eq!(
+            py_struct_field_getter(&context, &TypeMeta::F64, 3),
+            "s.get_f64(3)"
+        );
     }
 
     #[test]
@@ -802,9 +808,10 @@ mod tests {
 
     #[test]
     fn py_struct_field_type_mappings() {
-        assert_eq!(py_struct_field_type(&TypeMeta::Bool), "bool");
-        assert_eq!(py_struct_field_type(&TypeMeta::String), "str");
-        assert_eq!(py_struct_field_type(&TypeMeta::I32), "int");
-        assert_eq!(py_struct_field_type(&TypeMeta::F64), "float");
+        let context = PythonProjectionContext::default();
+        assert_eq!(py_struct_field_type(&context, &TypeMeta::Bool), "bool");
+        assert_eq!(py_struct_field_type(&context, &TypeMeta::String), "str");
+        assert_eq!(py_struct_field_type(&context, &TypeMeta::I32), "int");
+        assert_eq!(py_struct_field_type(&context, &TypeMeta::F64), "float");
     }
 }

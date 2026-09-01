@@ -3,29 +3,45 @@
 
 //! Python method signatures, argument wrapping, and return conversion.
 
-use std::collections::HashSet;
-
 use crate::meta::{InterfaceMeta, MethodMeta, ParamDirection};
-use crate::types::TypeMeta;
+use crate::types::{TypeIdentity, TypeIdentityKind, TypeMeta};
 
-use super::naming::{python_module_name, to_snake_case, to_snake_case_filename};
+use super::naming::{PythonProjectionContext, to_snake_case};
 use crate::codegen::winrt::python::collections::{CollectionKind, is_mapping_input, type_kind};
 use crate::codegen::winrt::python::native_types::{FoundationType, foundation_type};
 use crate::codegen::winrt::shared::imports::ireference_inner_type;
 
-pub(crate) fn py_runtime_symbol(type_name: &str, symbol_name: &str) -> String {
+pub(crate) fn py_runtime_symbol(
+    context: &PythonProjectionContext,
+    identity: &TypeIdentity,
+    symbol_name: &str,
+) -> String {
     format!(
         "_dynwinrt_symbol('{}', '{}')",
-        to_snake_case_filename(type_name),
+        context.implementation_module(identity),
         symbol_name
     )
 }
 
-fn py_runtime_namespaced_symbol(namespace: &str, type_name: &str, symbol_name: &str) -> String {
-    format!(
-        "_dynwinrt_symbol('{}', '{}')",
-        python_module_name(namespace, type_name),
-        symbol_name
+pub(crate) fn py_runtime_type_symbol(
+    context: &PythonProjectionContext,
+    typ: &TypeMeta,
+    symbol_name: &str,
+) -> String {
+    py_runtime_symbol(context, &context.identity_for_type(typ), symbol_name)
+}
+
+pub(crate) fn py_runtime_named_symbol(
+    context: &PythonProjectionContext,
+    kind: TypeIdentityKind,
+    namespace: &str,
+    type_name: &str,
+    symbol_name: &str,
+) -> String {
+    py_runtime_symbol(
+        context,
+        &TypeIdentity::named(kind, namespace, type_name),
+        symbol_name,
     )
 }
 
@@ -490,11 +506,15 @@ fn py_wrap_collection(name: &str, typ: &TypeMeta) -> Option<String> {
     None
 }
 
-pub(crate) fn py_type_guard(name: &str, typ: &TypeMeta, known_types: &HashSet<String>) -> String {
+pub(crate) fn py_type_guard(
+    name: &str,
+    typ: &TypeMeta,
+    context: &PythonProjectionContext,
+) -> String {
     if let Some(inner) = ireference_inner_type(typ) {
         return format!(
             "({name} is None or {})",
-            py_type_guard(name, inner, known_types)
+            py_type_guard(name, inner, context)
         );
     }
 
@@ -531,9 +551,15 @@ pub(crate) fn py_type_guard(name: &str, typ: &TypeMeta, known_types: &HashSet<St
             namespace,
             name: type_name,
             ..
-        } if known_types.contains(type_name) => format!(
+        } if context.is_known_type(typ) => format!(
             "isinstance({name}, {})",
-            py_runtime_namespaced_symbol(namespace, type_name, type_name)
+            py_runtime_named_symbol(
+                context,
+                TypeIdentityKind::Enum,
+                namespace,
+                type_name,
+                type_name
+            )
         ),
         TypeMeta::Enum { .. } => py_exact_int_guard(name),
         TypeMeta::Array(_) => format!(
@@ -545,9 +571,10 @@ pub(crate) fn py_type_guard(name: &str, typ: &TypeMeta, known_types: &HashSet<St
         typ if foundation_type(typ) == Some(FoundationType::TimeSpan) => {
             format!("isinstance({name}, timedelta)")
         }
-        TypeMeta::Struct {
-            name: type_name, ..
-        } => format!("isinstance({name}, {type_name})"),
+        TypeMeta::Struct { .. } => format!(
+            "isinstance({name}, {})",
+            context.reference_name_for_type(typ)
+        ),
         typ @ TypeMeta::RuntimeClass { .. } if py_runtime_class_iid_const(typ).is_some() => {
             let (iid, _) = py_runtime_class_iid_const(typ).expect("checked above");
             format!("_dynwinrt_can_cast({name}, {iid})")
@@ -556,17 +583,29 @@ pub(crate) fn py_type_guard(name: &str, typ: &TypeMeta, known_types: &HashSet<St
             namespace,
             name: type_name,
             ..
-        } if known_types.contains(type_name) => format!(
+        } if context.is_known_type(typ) => format!(
             "isinstance({name}, {})",
-            py_runtime_namespaced_symbol(namespace, type_name, type_name)
+            py_runtime_named_symbol(
+                context,
+                TypeIdentityKind::Class,
+                namespace,
+                type_name,
+                type_name
+            )
         ),
         TypeMeta::Interface {
             namespace,
             name: type_name,
             ..
-        } if known_types.contains(type_name) => format!(
+        } if context.is_known_type(typ) => format!(
             "isinstance({name}, {})",
-            py_runtime_namespaced_symbol(namespace, type_name, type_name)
+            py_runtime_named_symbol(
+                context,
+                TypeIdentityKind::Interface,
+                namespace,
+                type_name,
+                type_name
+            )
         ),
         TypeMeta::Object
         | TypeMeta::Delegate { .. }
@@ -584,14 +623,14 @@ pub(crate) fn py_convert_return(
     expr: &str,
     return_type: Option<&TypeMeta>,
     is_async: bool,
-    known_types: &HashSet<String>,
+    context: &PythonProjectionContext,
 ) -> String {
     if is_async {
         return py_wrap_async(
             expr,
             return_type.expect("async conversion requires a return type"),
             None,
-            known_types,
+            context,
         );
     }
     match return_type {
@@ -606,32 +645,32 @@ pub(crate) fn py_convert_return(
         Some(TypeMeta::U64) => format!("{}.to_u64()", expr),
         Some(TypeMeta::F32 | TypeMeta::F64) => format!("{}.to_f64()", expr),
         Some(TypeMeta::Bool) => format!("{}.to_bool()", expr),
-        Some(TypeMeta::Enum {
-            namespace, name, ..
-        }) if known_types.contains(name) => {
+        Some(typ @ TypeMeta::Enum { name, .. }) if context.is_known_type(typ) => {
+            let TypeMeta::Enum { name, .. } = typ else {
+                unreachable!()
+            };
             format!(
                 "_dynwinrt_enum('{}', '{}', {}.to_number())",
-                python_module_name(namespace, name),
+                context.implementation_module_for_type(typ),
                 name,
                 expr
             )
         }
 
         Some(TypeMeta::Enum { .. }) => format!("{}.to_number()", expr),
-        Some(typ @ TypeMeta::Parameterized { name, args, .. })
-            if ireference_inner_type(typ).is_some() =>
-        {
-            let concrete = crate::meta::make_parameterized_name(name, args);
-            let wrapper = py_runtime_symbol(&concrete, &concrete);
+        Some(typ @ TypeMeta::Parameterized { .. }) if ireference_inner_type(typ).is_some() => {
+            let concrete = context.projected_name_for_type(typ);
+            let wrapper = py_runtime_type_symbol(context, typ, &concrete);
             format!(
                 "(lambda value: None if value.is_null() else {}(value).value)({})",
                 wrapper, expr
             )
         }
-        Some(TypeMeta::RuntimeClass {
-            namespace, name, ..
-        }) if known_types.contains(name) => {
-            let wrapper = py_runtime_namespaced_symbol(namespace, name, name);
+        Some(typ @ TypeMeta::RuntimeClass { name, .. }) if context.is_known_type(typ) => {
+            let TypeMeta::RuntimeClass { name, .. } = typ else {
+                unreachable!()
+            };
+            let wrapper = py_runtime_type_symbol(context, typ, name);
             format!(
                 "(lambda value: None if value.is_null() else {}._from_native(value))({})",
                 wrapper, expr
@@ -645,10 +684,9 @@ pub(crate) fn py_convert_return(
                 expr
             )
         }
-        Some(TypeMeta::Interface {
-            namespace, name, ..
-        }) if known_types.contains(name) => {
-            let wrapper = py_runtime_namespaced_symbol(namespace, name, name);
+        Some(typ @ TypeMeta::Interface { .. }) if context.is_known_type(typ) => {
+            let projected_name = context.projected_name_for_type(typ);
+            let wrapper = py_runtime_type_symbol(context, typ, &projected_name);
             format!(
                 "(lambda value: None if value.is_null() else {}(value))({})",
                 wrapper, expr
@@ -660,10 +698,10 @@ pub(crate) fn py_convert_return(
                 expr
             )
         }
-        Some(TypeMeta::Parameterized { name, args, .. }) => {
-            let concrete = crate::meta::make_parameterized_name(name, args);
-            if known_types.contains(&concrete) {
-                let wrapper = py_runtime_symbol(&concrete, &concrete);
+        Some(typ @ TypeMeta::Parameterized { .. }) => {
+            let concrete = context.projected_name_for_type(typ);
+            if context.is_known_type(typ) {
+                let wrapper = py_runtime_type_symbol(context, typ, &concrete);
                 format!(
                     "(lambda value: None if value.is_null() else {}(value))({})",
                     wrapper, expr
@@ -677,16 +715,16 @@ pub(crate) fn py_convert_return(
         }
         Some(TypeMeta::Array(inner)) => {
             let arr_expr = format!("{}.as_array()", expr);
-            py_convert_array_return(&arr_expr, inner, known_types)
+            py_convert_array_return(&arr_expr, inner, context)
         }
         _ => expr.to_string(),
     }
 }
 
-fn py_value_converter(typ: &TypeMeta, known_types: &HashSet<String>) -> String {
+fn py_value_converter(typ: &TypeMeta, context: &PythonProjectionContext) -> String {
     format!(
         "lambda value: {}",
-        py_convert_return("value", Some(typ), false, known_types)
+        py_convert_return("value", Some(typ), false, context)
     )
 }
 
@@ -694,9 +732,9 @@ pub(crate) fn py_wrap_async(
     expr: &str,
     async_type: &TypeMeta,
     result_converter: Option<String>,
-    known_types: &HashSet<String>,
+    context: &PythonProjectionContext,
 ) -> String {
-    py_wrap_async_with_converters(expr, async_type, result_converter, None, known_types)
+    py_wrap_async_with_converters(expr, async_type, result_converter, None, context)
 }
 
 pub(crate) fn py_wrap_async_with_converters(
@@ -704,7 +742,7 @@ pub(crate) fn py_wrap_async_with_converters(
     async_type: &TypeMeta,
     result_converter: Option<String>,
     progress_converter: Option<String>,
-    known_types: &HashSet<String>,
+    context: &PythonProjectionContext,
 ) -> String {
     match async_type {
         TypeMeta::AsyncAction => format!(
@@ -715,19 +753,19 @@ pub(crate) fn py_wrap_async_with_converters(
         TypeMeta::AsyncOperation(result) => format!(
             "_dynwinrt_track_projected(_DynWinRTAsync({}, {}), 'WinRTAsync')",
             expr,
-            result_converter.unwrap_or_else(|| py_value_converter(result, known_types))
+            result_converter.unwrap_or_else(|| py_value_converter(result, context))
         ),
         TypeMeta::AsyncActionWithProgress(progress) => format!(
             "_dynwinrt_track_projected(_DynWinRTAsyncWithProgress({}, {}, {}), 'WinRTAsyncWithProgress')",
             expr,
             result_converter.unwrap_or_else(|| "lambda _value: None".to_string()),
-            progress_converter.unwrap_or_else(|| py_value_converter(progress, known_types))
+            progress_converter.unwrap_or_else(|| py_value_converter(progress, context))
         ),
         TypeMeta::AsyncOperationWithProgress(result, progress) => format!(
             "_dynwinrt_track_projected(_DynWinRTAsyncWithProgress({}, {}, {}), 'WinRTAsyncWithProgress')",
             expr,
-            result_converter.unwrap_or_else(|| py_value_converter(result, known_types)),
-            progress_converter.unwrap_or_else(|| py_value_converter(progress, known_types))
+            result_converter.unwrap_or_else(|| py_value_converter(result, context)),
+            progress_converter.unwrap_or_else(|| py_value_converter(progress, context))
         ),
         _ => panic!("py_wrap_async requires an async type: {:?}", async_type),
     }
@@ -737,7 +775,7 @@ pub(crate) fn py_wrap_async_with_converters(
 pub(crate) fn py_convert_array_return(
     arr_expr: &str,
     inner: &TypeMeta,
-    known_types: &HashSet<String>,
+    context: &PythonProjectionContext,
 ) -> String {
     match inner {
         TypeMeta::I8 => format!("{}.to_i8_list()", arr_expr),
@@ -745,11 +783,9 @@ pub(crate) fn py_convert_array_return(
         TypeMeta::I16 => format!("{}.to_i16_list()", arr_expr),
         TypeMeta::U16 | TypeMeta::Char16 => format!("{}.to_u16_list()", arr_expr),
         TypeMeta::I32 => format!("{}.to_i32_list()", arr_expr),
-        TypeMeta::Enum {
-            namespace, name, ..
-        } if known_types.contains(name) => format!(
+        typ @ TypeMeta::Enum { name, .. } if context.is_known_type(typ) => format!(
             "[_dynwinrt_enum('{}', '{}', value) for value in {}.to_i32_list()]",
-            python_module_name(namespace, name),
+            context.implementation_module_for_type(typ),
             name,
             arr_expr
         ),
@@ -771,32 +807,29 @@ pub(crate) fn py_convert_array_return(
             to_snake_case(name),
             arr_expr
         ),
-        TypeMeta::RuntimeClass {
-            namespace, name, ..
-        } if known_types.contains(name) => {
+        typ @ TypeMeta::RuntimeClass { name, .. } if context.is_known_type(typ) => {
             format!(
                 "_dynwinrt_wrap_values('{}', '{}', {}.to_values())",
-                python_module_name(namespace, name),
+                context.implementation_module_for_type(typ),
                 name,
                 arr_expr
             )
         }
-        TypeMeta::Interface {
-            namespace, name, ..
-        } if known_types.contains(name) => {
+        typ @ TypeMeta::Interface { .. } if context.is_known_type(typ) => {
+            let projected_name = context.projected_name_for_type(typ);
             format!(
                 "_dynwinrt_wrap_values('{}', '{}', {}.to_values())",
-                python_module_name(namespace, name),
-                name,
+                context.implementation_module_for_type(typ),
+                projected_name,
                 arr_expr
             )
         }
-        TypeMeta::Parameterized { name, args, .. } => {
-            let concrete = crate::meta::make_parameterized_name(name, args);
-            if known_types.contains(&concrete) {
+        typ @ TypeMeta::Parameterized { .. } => {
+            let concrete = context.projected_name_for_type(typ);
+            if context.is_known_type(typ) {
                 format!(
                     "_dynwinrt_wrap_values('{}', '{}', {}.to_values())",
-                    to_snake_case_filename(&concrete),
+                    context.implementation_module_for_type(typ),
                     concrete,
                     arr_expr
                 )
@@ -816,13 +849,17 @@ pub(crate) fn py_convert_array_return(
 }
 
 /// Generate a Python `_IFoo = DynWinRTType.register_interface(...)` block.
-pub(crate) fn py_generate_interface_registration(iface: &InterfaceMeta, var_name: &str) -> String {
+pub(crate) fn py_generate_interface_registration(
+    iface: &InterfaceMeta,
+    var_name: &str,
+    symbol_name: &str,
+) -> String {
     let mut out = String::new();
     out.push_str(&format!(
         "{} = DynWinRTType.register_interface(\n",
         var_name
     ));
-    out.push_str(&format!("    \"{}\", IID_{}) \\\n", iface.name, iface.name));
+    out.push_str(&format!("    \"{}\", IID_{symbol_name}) \\\n", iface.name));
     for (i, method) in iface.methods.iter().enumerate() {
         let trailing = if i + 1 < iface.methods.len() {
             " \\"
@@ -871,7 +908,7 @@ mod tests {
     fn runtime_class_inputs_cast_to_the_expected_interface() {
         let geometry = geometry_type();
         assert_eq!(
-            py_type_guard("value", &geometry, &HashSet::from(["Geometry".into()])),
+            py_type_guard("value", &geometry, &PythonProjectionContext::default()),
             "_dynwinrt_can_cast(value, IID_ARG_Microsoft_UI_Xaml_Media_Geometry)"
         );
         assert_eq!(
@@ -891,17 +928,17 @@ mod tests {
 
     #[test]
     fn python_numeric_overload_integer_guards_use_exact_ranges() {
-        let known = HashSet::new();
+        let context = PythonProjectionContext::default();
         assert_eq!(
-            py_type_guard("value", &TypeMeta::I8, &known),
+            py_type_guard("value", &TypeMeta::I8, &context),
             "isinstance(value, int) and not isinstance(value, bool) and not isinstance(value, __import__('enum').Enum) and -128 <= value <= 127"
         );
         assert_eq!(
-            py_type_guard("value", &TypeMeta::U8, &known),
+            py_type_guard("value", &TypeMeta::U8, &context),
             "isinstance(value, int) and not isinstance(value, bool) and not isinstance(value, __import__('enum').Enum) and 0 <= value <= 255"
         );
         assert_eq!(
-            py_type_guard("value", &TypeMeta::U64, &known),
+            py_type_guard("value", &TypeMeta::U64, &context),
             format!(
                 "isinstance(value, int) and not isinstance(value, bool) and not isinstance(value, __import__('enum').Enum) and 0 <= value <= {}",
                 u64::MAX
@@ -911,26 +948,35 @@ mod tests {
 
     #[test]
     fn python_numeric_overload_float_guards_reject_enum_instances() {
-        let known = HashSet::new();
+        let context = PythonProjectionContext::default();
         assert_eq!(
-            py_type_guard("value", &TypeMeta::F64, &known),
+            py_type_guard("value", &TypeMeta::F64, &context),
             "isinstance(value, (int, float)) and not isinstance(value, bool) and not isinstance(value, __import__('enum').Enum)"
         );
     }
 
     #[test]
     fn python_known_enum_guards_are_precise_and_unknown_enums_fail_closed() {
-        let known = HashSet::from(["Mode".to_string()]);
+        let mode = enum_type("Mode", false);
+        let context = PythonProjectionContext::packaged([mode.type_identity()]).unwrap();
         assert_eq!(
-            py_type_guard("value", &enum_type("Mode", false), &known),
+            py_type_guard("value", &mode, &context),
             "isinstance(value, _dynwinrt_symbol('contoso__mode', 'Mode'))"
         );
         assert_eq!(
-            py_type_guard("value", &enum_type("Mode", false), &HashSet::new()),
+            py_type_guard(
+                "value",
+                &enum_type("Mode", false),
+                &PythonProjectionContext::default()
+            ),
             "isinstance(value, int) and not isinstance(value, bool) and not isinstance(value, __import__('enum').Enum)"
         );
         assert_eq!(
-            py_type_guard("value", &enum_type("Options", true), &HashSet::new()),
+            py_type_guard(
+                "value",
+                &enum_type("Options", true),
+                &PythonProjectionContext::default()
+            ),
             "isinstance(value, int) and not isinstance(value, bool) and not isinstance(value, __import__('enum').Enum)"
         );
     }

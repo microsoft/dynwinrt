@@ -239,7 +239,7 @@ class DataWriter:
     def close(self):
         if self._closed:
             return
-        _dynwinrt_symbol('i_closable', 'IClosable').from_value(self._obj).close()
+        _dynwinrt_symbol('windows__foundation__i_closable', 'IClosable').from_value(self._obj).close()
         self._closed = True
 
     def __enter__(self):

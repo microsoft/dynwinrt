@@ -10,6 +10,7 @@ from dynwinrt import (
     WinGUID,
     DynWinRTArray,
     DynWinRTStruct,
+    DynWinRtDelegate,
     ro_initialize,
 )
 
@@ -17,6 +18,27 @@ from dynwinrt import (
 def test_ro_initialize():
     """RoInitialize should succeed (or already initialized)."""
     ro_initialize(1)
+
+
+def test_delegate_creation_failures_are_python_exceptions():
+    object_type = DynWinRTType.object()
+    with pytest.raises(OSError, match="supports up to 2 parameters"):
+        DynWinRtDelegate.create(
+            WinGUID.parse("699a62d5-a8a5-431c-9c00-a75c70b30524"),
+            [object_type, object_type, object_type],
+            lambda *_args: None,
+        )
+
+    empty_struct = DynWinRTType.struct_type(
+        "DynWinRT.Tests.EmptyDelegateArgument",
+        [],
+    )
+    with pytest.raises(OSError, match="struct callbacks do not support"):
+        DynWinRtDelegate.create(
+            WinGUID.parse("f1662550-78fd-4bf1-9022-0a2c85168380"),
+            [object_type, empty_struct],
+            lambda *_args: None,
+        )
 
 
 def test_primitive_types():

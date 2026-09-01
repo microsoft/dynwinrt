@@ -7,11 +7,13 @@ use super::imports::{emit_type_checking_imports, format_py_type_import};
 use super::structs::{generate_struct_helpers, generate_struct_imports};
 use super::*;
 use crate::codegen::winrt::python::collections::{
-    CollectionKind, interface_kind, map_iterable_name, observable_vector_name, runtime_mixin,
+    CollectionKind, interface_kind, map_iterable_identity, observable_vector_identity,
+    runtime_mixin,
 };
+use crate::types::{TypeIdentity, TypeIdentityKind};
 
 /// Generate a Python file for a single enum.
-pub fn generate_enum(en: &TypeMeta) -> Option<String> {
+pub fn generate_enum(_context: &PythonProjectionContext, en: &TypeMeta) -> Option<String> {
     let (name, members, is_flags, enum_doc, enum_dep) = match en {
         TypeMeta::Enum {
             name,
@@ -74,13 +76,11 @@ pub fn generate_enum(en: &TypeMeta) -> Option<String> {
 }
 
 /// Generate a Python file for a WinRT interface (non-exclusive).
-pub fn generate_interface(
-    iface: &InterfaceMeta,
-    known_types: &HashSet<String>,
-    delegate_type_names: &HashSet<String>,
-) -> String {
-    let is_delegate = iface.methods.iter().any(|m| m.name == ".ctor")
-        && iface.methods.iter().any(|m| m.name == "Invoke");
+pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMeta) -> String {
+    let mut projected_iface = iface.clone();
+    projected_iface.name = context.projected_name_for_interface(iface);
+    let iface = &projected_iface;
+    let is_delegate = iface.is_delegate();
     if is_delegate {
         return generate_delegate(iface);
     }
@@ -97,7 +97,7 @@ pub fn generate_interface(
         out.push_str("from dynwinrt import DynWinRtElementFactory\n");
     }
     let collection_kind = interface_kind(iface);
-    let observable_vector = observable_vector_name(iface);
+    let observable_vector = observable_vector_identity(iface);
     if observable_vector.is_none()
         && let Some(mixin) = collection_kind.and_then(runtime_mixin)
     {
@@ -106,8 +106,8 @@ pub fn generate_interface(
     if methods_have_async_output(iface.methods.iter()) {
         out.push_str(ASYNC_IMPORT_LINE);
     }
-    if python_module_layout_installed() {
-        out.push_str(&generate_struct_imports(&used_structs));
+    if context.is_packaged() {
+        out.push_str(&generate_struct_imports(context, &used_structs));
     }
     if has_ireference_input(iface.methods.iter()) || has_ireference_struct_field(&used_structs) {
         out.push_str(IREFERENCE_HELPER);
@@ -116,31 +116,50 @@ pub fn generate_interface(
     let mut type_checking_imports = Vec::new();
 
     // Collect delegate names
-    let delegate_names =
-        super::super::collect_referenced_delegate_names(&iface.methods, delegate_type_names);
+    let delegate_names = super::super::collect_referenced_delegate_names(&iface.methods, context);
     let runtime_delegate_names =
-        super::super::collect_runtime_delegate_names(&iface.methods, delegate_type_names);
+        super::super::collect_runtime_delegate_names(&iface.methods, context);
 
     // Import parameterized collection types (skip delegates)
-    let collection_names = collect_used_generics_from_methods(&iface.methods);
-    for cname in &collection_names {
-        if cname != &iface.name && !delegate_names.contains(cname) {
-            let module = to_snake_case_filename(cname);
-            type_checking_imports
-                .push(format!("from .{} import {}  # noqa: F401\n", module, cname));
+    let collection_identities = collect_used_generic_identities_from_methods(&iface.methods);
+    for identity in &collection_identities {
+        let identity = context.normalize_identity(identity);
+        if identity != iface.type_identity() && !delegate_names.contains(&identity) {
+            let module = context.implementation_module(&identity);
+            let name = context.projected_name(&identity);
+            let reference_name = context.reference_name(&identity);
+            let import = if name == reference_name {
+                name
+            } else {
+                format!("{name} as {reference_name}")
+            };
+            type_checking_imports.push(format!("from .{module} import {import}  # noqa: F401\n"));
         }
     }
-    if let Some(vector_name) = &observable_vector
-        && !collection_names.contains(vector_name)
-    {
-        let module = to_snake_case_filename(vector_name);
-        type_checking_imports.push(format!(
-            "from .{module} import {vector_name}  # noqa: F401\n"
-        ));
+    if let Some(identity) = &observable_vector {
+        if !collection_identities
+            .iter()
+            .any(|candidate| context.normalize_identity(candidate) == *identity)
+        {
+            let module = context.implementation_module(&identity);
+            let vector_name = context.projected_name(&identity);
+            let reference_name = context.reference_name(&identity);
+            let import = if vector_name == reference_name {
+                vector_name
+            } else {
+                format!("{vector_name} as {reference_name}")
+            };
+            type_checking_imports.push(format!("from .{module} import {import}  # noqa: F401\n"));
+        }
     }
     if observable_vector.is_some() {
         let event_args = "IVectorChangedEventArgs";
-        let module = to_snake_case_filename(event_args);
+        let identity = TypeIdentity::named(
+            TypeIdentityKind::Interface,
+            crate::meta::WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE,
+            event_args,
+        );
+        let module = context.implementation_module(&identity);
         type_checking_imports.push(format!(
             "from .{module} import {event_args}  # noqa: F401\n"
         ));
@@ -149,11 +168,19 @@ pub fn generate_interface(
     // Import delegate IID + PARAM_TYPES
     let mut sorted_delegates: Vec<_> = runtime_delegate_names.iter().collect();
     sorted_delegates.sort();
-    for dname in &sorted_delegates {
-        let module = to_snake_case_filename(dname);
-        type_checking_imports.push(format!(
-            "from .{module} import IID_{dname}, {dname}_PARAM_TYPES  # noqa: F401\n",
-        ));
+    for identity in &sorted_delegates {
+        let module = context.implementation_module(identity);
+        let dname = context.projected_name(identity);
+        let reference_name = context.reference_name(identity);
+        let imports = if dname == reference_name {
+            format!("IID_{dname}, {dname}_PARAM_TYPES")
+        } else {
+            format!(
+                "IID_{dname} as IID_{reference_name}, \
+                 {dname}_PARAM_TYPES as {reference_name}_PARAM_TYPES"
+            )
+        };
+        type_checking_imports.push(format!("from .{module} import {imports}  # noqa: F401\n",));
     }
 
     // Type imports for referenced types
@@ -162,8 +189,23 @@ pub fn generate_interface(
     sorted_type_imports
         .sort_by(|a, b| (&a.namespace, &a.name, &a.kind).cmp(&(&b.namespace, &b.name, &b.kind)));
     for r in &sorted_type_imports {
-        if known_types.contains(&r.name) && !delegate_names.contains(&r.name) {
-            type_checking_imports.push(format_py_type_import(&r.namespace, &r.name, r.kind));
+        let identity_kind = match r.kind {
+            TypeKind::Class => TypeIdentityKind::Class,
+            TypeKind::Enum => TypeIdentityKind::Enum,
+            TypeKind::Interface => TypeIdentityKind::Interface,
+        };
+        let identity = context.normalize_identity(&TypeIdentity::named(
+            identity_kind,
+            r.namespace.clone(),
+            r.name.clone(),
+        ));
+        if context.is_known_ref(r) && !delegate_names.contains(&identity) {
+            type_checking_imports.push(format_py_type_import(
+                context,
+                &r.namespace,
+                &r.name,
+                r.kind,
+            ));
         }
     }
     emit_type_checking_imports(&mut out, type_checking_imports);
@@ -191,23 +233,25 @@ pub fn generate_interface(
     out.push_str(&py_generate_interface_registration(
         iface,
         &format!("_{}", iface.name),
+        &iface.name,
     ));
     out.push('\n');
 
     // Struct helpers
-    if !python_module_layout_installed() {
+    if !context.is_packaged() {
         for s in &used_structs {
-            out.push_str(&generate_struct_helpers(s));
+            out.push_str(&generate_struct_helpers(context, s));
             out.push('\n');
         }
     }
 
     // Wrapper class
-    if let Some(vector_name) = &observable_vector {
+    if let Some(identity) = &observable_vector {
+        let vector_name = context.projected_name(identity);
         out.push_str(&format!(
             "\nclass {}({}):\n",
             iface.name,
-            py_runtime_symbol(vector_name, vector_name)
+            py_runtime_symbol(context, identity, &vector_name)
         ));
     } else if let Some(mixin) = collection_kind.and_then(runtime_mixin) {
         out.push_str(&format!("\nclass {}({mixin}):\n", iface.name));
@@ -240,10 +284,11 @@ pub fn generate_interface(
          \x20       return super().__new__(cls)\n\n",
     );
     out.push_str("    def _set_native(self, obj: DynWinRTValue):\n");
-    if let Some(vector_name) = &observable_vector {
+    if let Some(identity) = &observable_vector {
+        let vector_name = context.projected_name(identity);
         out.push_str(&format!(
             "        {}._set_native(self, obj)\n",
-            py_runtime_symbol(vector_name, vector_name)
+            py_runtime_symbol(context, identity, &vector_name)
         ));
         out.push_str(&format!(
             "        self._observable_obj = obj.cast(IID_{})\n",
@@ -302,12 +347,13 @@ pub fn generate_interface(
             let elem_type = py_dynwinrt_type(&iface.generic_args[0]);
             let elem_annotation = crate::codegen::winrt::python::type_helpers::py_param_type_safe(
                 &iface.generic_args[0],
-                known_types,
+                context,
             );
             let wrap = py_wrap_native_value("item", &iface.generic_args[0]);
-            let vector_name = observable_vector
+            let vector_identity = observable_vector
                 .as_ref()
                 .expect("observable vector companion");
+            let vector_name = context.projected_name(vector_identity);
             out.push_str("    @staticmethod\n");
             out.push_str(&format!(
                 "    def create(items: Iterable[{}]) -> '{}':\n",
@@ -318,16 +364,15 @@ pub fn generate_interface(
                 iface.name, wrap, elem_type
             ));
             out.push_str(&format!("    def as_vector(self) -> '{}':\n", vector_name));
-            out.push_str(&format!(
-                "        return {}(self._obj)\n",
-                py_runtime_symbol(vector_name, vector_name)
-            ));
+            out.push_str(&format!("        return {}(self._obj)\n", {
+                py_runtime_symbol(context, vector_identity, &vector_name)
+            }));
             out.push('\n');
         } else if piid == "913337e9-11a1-4345-a3a2-4e7f956e222d" && iface.generic_args.len() == 1 {
             let elem_type = py_dynwinrt_type(&iface.generic_args[0]);
             let elem_annotation = crate::codegen::winrt::python::type_helpers::py_param_type_safe(
                 &iface.generic_args[0],
-                known_types,
+                context,
             );
             let wrap = py_wrap_native_value("item", &iface.generic_args[0]);
             out.push_str("    @staticmethod\n");
@@ -345,11 +390,11 @@ pub fn generate_interface(
             let val_type = py_dynwinrt_type(&iface.generic_args[1]);
             let key_annotation = crate::codegen::winrt::python::type_helpers::py_param_type_safe(
                 &iface.generic_args[0],
-                known_types,
+                context,
             );
             let val_annotation = crate::codegen::winrt::python::type_helpers::py_param_type_safe(
                 &iface.generic_args[1],
-                known_types,
+                context,
             );
             let wrap_key = py_wrap_native_value("item", &iface.generic_args[0]);
             let wrap_value = py_wrap_native_value("item", &iface.generic_args[1]);
@@ -367,10 +412,27 @@ pub fn generate_interface(
     }
 
     if is_element_factory {
-        let get_args = py_runtime_symbol("ElementFactoryGetArgs", "ElementFactoryGetArgs");
-        let recycle_args =
-            py_runtime_symbol("ElementFactoryRecycleArgs", "ElementFactoryRecycleArgs");
-        let ui_element_iid = py_runtime_symbol("UIElement", "IID_IUIElement");
+        let get_args = py_runtime_named_symbol(
+            context,
+            TypeIdentityKind::Class,
+            "Microsoft.UI.Xaml",
+            "ElementFactoryGetArgs",
+            "ElementFactoryGetArgs",
+        );
+        let recycle_args = py_runtime_named_symbol(
+            context,
+            TypeIdentityKind::Class,
+            "Microsoft.UI.Xaml",
+            "ElementFactoryRecycleArgs",
+            "ElementFactoryRecycleArgs",
+        );
+        let ui_element_iid = py_runtime_named_symbol(
+            context,
+            TypeIdentityKind::Class,
+            "Microsoft.UI.Xaml",
+            "UIElement",
+            "IID_IUIElement",
+        );
         out.push_str(
             r#"    @staticmethod
     def create(get_element, recycle_element):
@@ -458,12 +520,13 @@ pub fn generate_interface(
     if matches!(
         collection_kind,
         Some(CollectionKind::Mapping | CollectionKind::MutableMapping)
-    ) && let Some(iterable_name) = map_iterable_name(&iface.generic_args)
+    ) && let Some(iterable_identity) = map_iterable_identity(&iface.generic_args)
     {
+        let iterable_name = context.projected_name(&iterable_identity);
         out.push_str("    def _iter_pairs(self):\n");
         out.push_str(&format!(
             "        return iter({}(self._obj))\n\n",
-            py_runtime_symbol(&iterable_name, &iterable_name)
+            py_runtime_symbol(context, &iterable_identity, &iterable_name)
         ));
     }
 
@@ -494,11 +557,7 @@ pub fn generate_interface(
                     }),
             })
             .collect::<Vec<_>>();
-        out.push_str(&generate_instance_method_group(
-            &overloads,
-            known_types,
-            &delegate_names,
-        ));
+        out.push_str(&generate_instance_method_group(&overloads, context));
     }
     let aliases = generate_compatibility_aliases(iface.methods.iter());
     if !aliases.is_empty() {
@@ -599,7 +658,7 @@ mod tests {
             deprecated: None,
         };
 
-        let code = generate_enum(&value).unwrap();
+        let code = generate_enum(&PythonProjectionContext::default(), &value).unwrap();
         assert!(code.contains("from enum import IntFlag"));
         assert!(code.contains("class Options(IntFlag):"));
     }
@@ -612,7 +671,8 @@ mod tests {
             iid: "11111111-1111-1111-1111-111111111111".into(),
             ..Default::default()
         };
-        let code = generate_interface(&iface, &HashSet::new(), &HashSet::new());
+        let context = PythonProjectionContext::standalone([iface.type_identity()]).unwrap();
+        let code = generate_interface(&context, &iface);
         assert!(code.contains("_dynwinrt_interface_type = True"));
         assert!(code.contains("_dynwinrt_interface_iid = IID_IWidget"));
         assert!(code.contains("@classmethod\n    def from_value(cls, obj: DynWinRTValue)"));
@@ -632,11 +692,12 @@ mod tests {
             }],
             ..Default::default()
         };
-        let code = generate_interface(
-            &iface,
-            &HashSet::from(["Widget".into(), "IVector_Widget".into()]),
-            &HashSet::new(),
-        );
+        let context = PythonProjectionContext::standalone([
+            iface.type_identity(),
+            TypeIdentity::named(TypeIdentityKind::Class, "Contoso", "Widget"),
+        ])
+        .unwrap();
+        let code = generate_interface(&context, &iface);
 
         assert!(code.contains("def create(items: Iterable['WidgetLike'])"));
         assert!(!code.contains("def create(items: Iterable[WidgetLike | None])"));

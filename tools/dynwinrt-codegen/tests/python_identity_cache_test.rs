@@ -1,9 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+mod common;
+
 use std::collections::HashSet;
 
-use dynwinrt_codegen::codegen::{python, python_stub};
 use dynwinrt_codegen::meta::{
     ClassMeta, ConstructorKind, ConstructorMeta, InterfaceMeta, MethodMeta, ParamDirection,
     ParamMeta,
@@ -20,12 +21,20 @@ fn runtime_class_generation_uses_projected_identity_cache() {
             name: "IWidget".into(),
             namespace: "Contoso".into(),
             iid: "11111111-1111-1111-1111-111111111111".into(),
+            methods: vec![MethodMeta {
+                name: "get_Name".into(),
+                raw_name: "get_Name".into(),
+                vtable_index: 6,
+                return_type: Some(TypeMeta::String),
+                is_property_getter: true,
+                ..Default::default()
+            }],
             ..Default::default()
         }),
         ..Default::default()
     };
 
-    let py = python::generate_class(
+    let py = common::generate_class(
         &class,
         &HashSet::from(["Widget".to_string()]),
         &HashSet::new(),
@@ -107,7 +116,7 @@ fn runtime_class_public_constructor_registers_final_self() {
         ..Default::default()
     };
 
-    let py = python::generate_class(
+    let py = common::generate_class(
         &class,
         &HashSet::from(["Widget".to_string()]),
         &HashSet::new(),
@@ -137,7 +146,7 @@ fn interface_generation_uses_projected_identity_cache() {
         ..Default::default()
     };
 
-    let py = python::generate_interface(
+    let py = common::generate_interface(
         &iface,
         &HashSet::from(["IWidget".to_string()]),
         &HashSet::new(),
@@ -188,8 +197,8 @@ fn embedded_interface_projection_preserves_subclasses_and_qi_helpers() {
         ..Default::default()
     };
     let known = HashSet::from(["Widget".to_string()]);
-    let py = python::generate_class(&class, &known, &HashSet::new(), &HashSet::new());
-    let pyi = python_stub::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
+    let py = common::generate_class(&class, &known, &HashSet::new(), &HashSet::new());
+    let pyi = common::generate_class_stub(&class, &known, &HashSet::new(), &HashSet::new());
     let inline = py
         .split("\nclass IExtra:")
         .nth(1)

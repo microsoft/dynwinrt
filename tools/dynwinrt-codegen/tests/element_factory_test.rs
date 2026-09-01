@@ -1,9 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+mod common;
+
 use std::collections::{HashMap, HashSet};
 
-use dynwinrt_codegen::codegen::{project, python, python_stub, render_dts, render_js};
+use dynwinrt_codegen::codegen::{project, render_dts, render_js};
 use dynwinrt_codegen::meta::{ClassMeta, InterfaceMeta, MethodMeta, ParamDirection, ParamMeta};
 use dynwinrt_codegen::types::TypeMeta;
 
@@ -246,8 +248,8 @@ fn element_factory_projects_js_callback_constructor() {
     );
     let js = render_js::render(&projected);
     let dts = render_dts::render(&projected);
-    let py = python::generate_interface(&interface, &known_types, &HashSet::new());
-    let pyi = python_stub::generate_interface_stub(&interface, &known_types, &HashSet::new());
+    let py = common::generate_interface(&interface, &known_types, &HashSet::new());
+    let pyi = common::generate_interface_stub(&interface, &known_types, &HashSet::new());
 
     assert!(js.contains("DynWinRtElementFactory.create"));
     assert!(js.contains("const elements = new Map()"));

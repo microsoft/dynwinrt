@@ -42,6 +42,14 @@ of a dynamic projection.
 - [x] Preserve `Uri` implementation and `.pyi` snapshots.
 - [x] Organize output by WinRT namespace instead of one flat short-name
       namespace.
+- [x] Derive Python symbols, implementation modules, facade modules, and stable
+      path hashes from a namespace- and kind-preserving semantic type identity,
+      including recursively closed generic arguments.
+- [x] Keep same-short-name types available through their namespace facades,
+      omit ambiguous root exports, and use deterministic qualified aliases in
+      consumer modules instead of selecting a short-name ABI implicitly.
+- [x] Pass an immutable Python projection context through generation and
+      rendering instead of installing thread-local module-layout state.
 - [x] Detect and reject namespace/type filename collisions.
 - [x] Add stage/swap generation and remove stale Python output.
 - [x] Emit a consumable Python package manifest with an exact runtime

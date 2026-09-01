@@ -1,10 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+mod common;
+
 use std::collections::HashSet;
 use std::path::Path;
 
-use dynwinrt_codegen::codegen::{project, python, python_stub, render_dts, render_js};
+use dynwinrt_codegen::codegen::{project, render_dts, render_js};
 use dynwinrt_codegen::meta;
 use dynwinrt_codegen::types::TypeMeta;
 
@@ -160,13 +162,9 @@ fn ireference_values_are_projected_as_native_nullable_values() {
     );
     let js = render_js::render(&projected);
     let dts = render_dts::render(&projected);
-    let py = python::generate_class(class, &known_types, &delegate_type_names, &HashSet::new());
-    let pyi = python_stub::generate_class_stub(
-        class,
-        &known_types,
-        &delegate_type_names,
-        &HashSet::new(),
-    );
+    let py = common::generate_class(class, &known_types, &delegate_type_names, &HashSet::new());
+    let pyi =
+        common::generate_class_stub(class, &known_types, &delegate_type_names, &HashSet::new());
 
     assert!(py.contains("def day(self) -> int | None:"));
     assert!(py.contains(

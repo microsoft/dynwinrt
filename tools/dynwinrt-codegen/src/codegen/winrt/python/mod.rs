@@ -17,64 +17,87 @@ pub(crate) mod type_helpers;
 
 pub use generator::*;
 pub use naming::{
-    PythonModuleLayoutGuard, PythonTypeIdentity, install_python_module_layout,
-    python_module_layout_installed, python_module_name, python_namespace_segments,
-    python_public_module_name, python_public_qualified_module_name, to_snake_case_filename,
+    PythonProjectionContext, PythonTypeIdentity, python_identity_display_name,
+    python_namespace_segments, python_public_module_name, python_public_qualified_module_name,
+    to_snake_case_filename,
 };
 
 pub(crate) fn has_projectable_default_interface(class: &crate::meta::ClassMeta) -> bool {
-    class
-        .default_interface
-        .as_ref()
-        .is_some_and(|interface| !interface.iid.is_empty() || interface.generic_piid.is_some())
+    let Some(default_interface) = class.default_interface.as_ref() else {
+        return false;
+    };
+    if default_interface.iid.is_empty() && default_interface.generic_piid.is_none() {
+        return false;
+    }
+    !default_interface.methods.is_empty()
+        || !class.required_interfaces.is_empty()
+        || !class.overridable_interfaces.is_empty()
+        || class.base_class.is_some()
+        || !class.constructors.is_empty()
+        || class.is_referenced_as_value
+        || class
+            .factory_interfaces
+            .iter()
+            .chain(class.static_interfaces.iter())
+            .any(|interface| {
+                interface.methods.iter().any(|method| {
+                    matches!(
+                        method.return_type.as_ref(),
+                        Some(crate::types::TypeMeta::RuntimeClass {
+                            namespace,
+                            name,
+                            ..
+                        }) if namespace == &class.namespace && name == &class.name
+                    )
+                })
+            })
+}
+
+pub(crate) fn has_native_projector(class: &crate::meta::ClassMeta) -> bool {
+    has_projectable_default_interface(class)
+        || class
+            .default_interface
+            .as_ref()
+            .is_some_and(|interface| !interface.iid.is_empty())
 }
 
 pub(crate) fn collect_referenced_delegate_names(
     methods: &[crate::meta::MethodMeta],
-    known_delegate_names: &std::collections::HashSet<String>,
-) -> std::collections::HashSet<String> {
+    context: &PythonProjectionContext,
+) -> std::collections::HashSet<PythonTypeIdentity> {
     fn collect(
         typ: &crate::types::TypeMeta,
-        known: &std::collections::HashSet<String>,
-        result: &mut std::collections::HashSet<String>,
+        context: &PythonProjectionContext,
+        result: &mut std::collections::HashSet<PythonTypeIdentity>,
     ) {
         use crate::types::TypeMeta;
+        if context.is_delegate_type(typ) {
+            result.insert(context.identity_for_type(typ));
+        }
         match typ {
-            TypeMeta::Delegate { name, .. } => {
-                result.insert(name.clone());
-            }
-            TypeMeta::Interface { name, .. } => {
-                if known.contains(name) {
-                    result.insert(name.clone());
-                }
-            }
             TypeMeta::AsyncActionWithProgress(inner)
             | TypeMeta::AsyncOperation(inner)
             | TypeMeta::Array(inner) => {
-                collect(inner, known, result);
+                collect(inner, context, result);
             }
             TypeMeta::AsyncOperationWithProgress(result_type, progress) => {
-                collect(result_type, known, result);
-                collect(progress, known, result);
+                collect(result_type, context, result);
+                collect(progress, context, result);
             }
-            TypeMeta::Parameterized { name, args, .. } => {
-                let concrete = crate::meta::make_parameterized_name(name, args);
-                if known.contains(&concrete) {
-                    result.insert(concrete);
-                }
+            TypeMeta::Parameterized { args, .. } => {
                 for argument in args {
-                    collect(argument, known, result);
+                    collect(argument, context, result);
                 }
             }
             TypeMeta::RuntimeClass {
                 default_interface: Some(interface),
                 ..
             } => {
-                collect(interface, known, result);
+                collect(interface, context, result);
             }
             TypeMeta::Struct { fields, .. } => {
                 for field in fields {
-                    collect(&field.typ, known, result);
+                    collect(&field.typ, context, result);
                 }
             }
             _ => {}
@@ -84,10 +107,10 @@ pub(crate) fn collect_referenced_delegate_names(
     let mut result = std::collections::HashSet::new();
     for method in methods {
         for parameter in &method.params {
-            collect(&parameter.typ, known_delegate_names, &mut result);
+            collect(&parameter.typ, context, &mut result);
         }
         if let Some(return_type) = &method.return_type {
-            collect(return_type, known_delegate_names, &mut result);
+            collect(return_type, context, &mut result);
         }
     }
     result
@@ -95,10 +118,9 @@ pub(crate) fn collect_referenced_delegate_names(
 
 pub(crate) fn collect_runtime_delegate_names(
     methods: &[crate::meta::MethodMeta],
-    known_delegate_names: &std::collections::HashSet<String>,
-) -> std::collections::HashSet<String> {
+    context: &PythonProjectionContext,
+) -> std::collections::HashSet<PythonTypeIdentity> {
     use crate::meta::ParamDirection;
-    use crate::types::TypeMeta;
 
     let mut result = std::collections::HashSet::new();
     for method in methods {
@@ -106,20 +128,8 @@ pub(crate) fn collect_runtime_delegate_names(
             if parameter.direction != ParamDirection::In {
                 continue;
             }
-            match &parameter.typ {
-                TypeMeta::Delegate { name, .. } => {
-                    result.insert(name.clone());
-                }
-                TypeMeta::Interface { name, .. } if known_delegate_names.contains(name) => {
-                    result.insert(name.clone());
-                }
-                TypeMeta::Parameterized { name, args, .. } => {
-                    let concrete = crate::meta::make_parameterized_name(name, args);
-                    if known_delegate_names.contains(&concrete) {
-                        result.insert(concrete);
-                    }
-                }
-                _ => {}
+            if context.is_delegate_type(&parameter.typ) {
+                result.insert(context.identity_for_type(&parameter.typ));
             }
         }
     }
