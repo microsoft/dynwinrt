@@ -367,7 +367,15 @@ extends:
                 ```bash
                 npm install @microsoft/dynwinrt
                 npm install -D @microsoft/dynwinrt-codegen
-                python -m pip install dynwinrt dynwinrt-codegen
+                ```
+
+                Python packages are distributed as GitHub Release assets until
+                PyPI publication is enabled. Download the `dynwinrt` wheel that
+                matches your CPython version and Windows architecture, plus the
+                matching `dynwinrt_codegen` wheel, then install both files:
+
+                ```powershell
+                python -m pip install <dynwinrt-wheel>.whl <dynwinrt-codegen-wheel>.whl
                 ```
 
                 ## What's Included
