@@ -20,6 +20,11 @@ RUNTIME_REQUIRES = ">=3.11,<3.15"
 CODEGEN_REQUIRES = ">=3.8,<3.15"
 RUNTIME_MINORS = tuple(f"3.{minor}" for minor in range(11, 15))
 PLATFORM_TAGS = ("win_amd64", "win_arm64")
+README_SPEC = {"file": "README.md", "content-type": "text/markdown"}
+README_HEADINGS = {
+    "dynwinrt": "# dynwinrt",
+    "dynwinrt-codegen": "# dynwinrt-codegen",
+}
 
 
 def load_toml(path: Path) -> dict:
@@ -57,6 +62,8 @@ def verify_source(tag: str | None, release_version: str | None) -> None:
     assert SpecifierSet(codegen_project["requires-python"]) == SpecifierSet(
         CODEGEN_REQUIRES
     )
+    assert runtime_project["readme"] == README_SPEC
+    assert codegen_project["readme"] == README_SPEC
 
     generated_manifest = (
         ROOT / "tools" / "dynwinrt-codegen" / "src" / "codegen" / "package.rs"
@@ -117,6 +124,17 @@ def verify_wheel(args: argparse.Namespace) -> None:
         )
         dependencies = metadata.get_all("Requires-Dist", [])
         assert dependencies == [], f"Unexpected wheel dependencies: {dependencies}"
+        content_type = metadata["Description-Content-Type"]
+        assert content_type == "text/markdown", (
+            f"Expected Markdown long description, got {content_type!r}"
+        )
+        payload = metadata.get_payload(decode=True)
+        assert isinstance(payload, bytes), "Wheel long description is missing"
+        description = payload.decode("utf-8").strip()
+        expected_heading = README_HEADINGS[args.package]
+        assert description.startswith(expected_heading), (
+            f"Wheel long description must start with {expected_heading!r}"
+        )
         names = archive.namelist()
         if args.package == "dynwinrt":
             assert any(name.endswith(".pyd") for name in names)

@@ -23,7 +23,7 @@ parameters:
   - name: PublishPyPI
     displayName: Publish Python packages to PyPI
     type: boolean
-    default: false
+    default: true
   - name: signingIdentity
     type: object
     default:

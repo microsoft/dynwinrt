@@ -102,9 +102,9 @@ of a dynamic projection.
       wheel set to the shared JavaScript GitHub release.
 - [ ] Publish signed/provenanced wheels to an approved internal Python feed.
 - [x] Route production PyPI publication through the official 1ES ADO release
-      pipeline and Microsoft ESRP identity, behind the opt-in `PublishPyPI`
-      parameter that is disabled by default.
-- [ ] Complete one-time ESRP/PyPI onboarding for `dynwinrt` and
+      pipeline and Microsoft ESRP identity. `PublishPyPI` is enabled by default
+      for tag releases and can be disabled for non-PyPI rehearsals.
+- [x] Complete one-time ESRP/PyPI onboarding for `dynwinrt` and
       `dynwinrt-codegen`, including release owners and approvers.
 - [x] Add complete tested Python wheel assets and installation notes to GitHub
       releases.

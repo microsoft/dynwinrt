@@ -6,11 +6,10 @@ The floor is intentionally the first CPython line for which the release
 infrastructure can install and execute a native Windows ARM64 interpreter; the
 project does not ship cross-compiled, untested ARM64 wheels.
 
-Install the runtime and the standalone generator from an approved feed or a
-downloaded release:
+Install the runtime and the standalone generator from PyPI:
 
 ```powershell
-python -m pip install dynwinrt dynwinrt-codegen
+python -m pip install --pre dynwinrt dynwinrt-codegen
 dynwinrt-codegen generate --namespace Windows.Foundation --class-name Uri `
   --lang py --output generated_uri
 ```
@@ -53,14 +52,14 @@ To release:
 3. The ADO pipeline waits for the complete wheel set, downloads it through the
    repository's GitHub service connection, and revalidates every filename,
    platform tag, Python ABI tag, metadata record, type stub, and native payload.
-4. PyPI publication is opt-in: the ADO `PublishPyPI` parameter is disabled by
-   default. When explicitly enabled with `DoEsrp`, ADO publishes the eight
-   `dynwinrt` wheels first and the two `dynwinrt-codegen` wheels second through
-   the Microsoft ESRP release identity. PyPI publication is not available from
-   GitHub Actions.
+4. With `DoEsrp` enabled, ADO publishes the npm packages and, by default, the
+   Python packages. It publishes the eight `dynwinrt` wheels first and the two
+   `dynwinrt-codegen` wheels second through the Microsoft ESRP release identity.
+   `PublishPyPI` can be disabled for a non-PyPI rehearsal. PyPI publication is
+   not available from GitHub Actions.
 
-Before the first release, onboard both PyPI project names to the configured ESRP
-service connection and confirm the signing identity, owners, and approvers.
+Both PyPI projects are owned by Microsoft and onboarded to the configured ESRP
+service connection.
 
 Generated `IReference<T>` values are projected as `T | None`; native values,
 `None`, and generated `IReference_*` wrappers are accepted as inputs.
