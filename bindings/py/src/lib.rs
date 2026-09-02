@@ -17,7 +17,9 @@ mod dynwinrt {
         super::async_runtime::init_async_runtime();
         m.py().run(
             c"
+from abc import abstractmethod as _abstractmethod
 from collections.abc import (
+    Coroutine as _Coroutine,
     Iterable as _Iterable,
     Iterator as _Iterator,
     Mapping as _Mapping,
@@ -30,8 +32,8 @@ from itertools import count as _count
 from contextvars import ContextVar as _ContextVar
 from operator import index as _index
 from threading import get_ident as _thread_get_ident
-from typing import Protocol as _Protocol, TypeVar as _TypeVar
-from typing import Awaitable as _Awaitable, Callable as _Callable
+from types import TracebackType as _TracebackType
+from typing import Any as _Any, Callable as _Callable, Generic as _Generic, TypeVar as _TypeVar
 from uuid import UUID as _UUID
 from weakref import WeakValueDictionary as _WeakValueDictionary
 
@@ -39,12 +41,16 @@ _T = _TypeVar('_T', covariant=True)
 _P = _TypeVar('_P', covariant=True)
 _WINRT_EPOCH = _datetime(1601, 1, 1, tzinfo=_timezone.utc)
 
-class WinRTAsync(_Awaitable[_T], _Protocol[_T]):
+class WinRTAsync(_Coroutine[_Any, _Any, _T]):
+    @_abstractmethod
     def wait(self) -> _T: ...
+    @_abstractmethod
     def cancel(self) -> None: ...
+    @_abstractmethod
     def release(self) -> None: ...
 
-class WinRTAsyncWithProgress(WinRTAsync[_T], _Protocol[_T, _P]):
+class WinRTAsyncWithProgress(WinRTAsync[_T], _Generic[_T, _P]):
+    @_abstractmethod
     def progress(self, callback: _Callable[[_P], object]) -> None: ...
 
 _active_projected_lifetime_scope = _ContextVar(
@@ -462,6 +468,23 @@ async def _dynwinrt_convert_future(future, converter):
             future.cancel()
         raise
 
+async def _dynwinrt_drive_future(future):
+    return await future
+
+async def _dynwinrt_empty_coroutine():
+    return None
+
+def _dynwinrt_validate_throw(typ, value, traceback):
+    if isinstance(typ, BaseException):
+        if value is not None:
+            raise TypeError('instance exception may not have a separate value')
+    elif not isinstance(typ, type) or not issubclass(typ, BaseException):
+        raise TypeError(
+            'exceptions must be classes or instances deriving from BaseException'
+        )
+    if traceback is not None and not isinstance(traceback, _TracebackType):
+        raise TypeError('throw() third argument must be a traceback object')
+
 def _dynwinrt_link_cancellation(task, future):
     def cancel_inner(completed):
         if completed.cancelled() and not future.done():
@@ -491,6 +514,14 @@ def _dynwinrt_dispatch_progress(callback, converter, value):
         m.add_class::<super::runtime::DynWinRtElementFactory>()?;
         m.add_class::<super::async_runtime::DynWinRTAsync>()?;
         m.add_class::<super::async_runtime::DynWinRTAsyncWithProgress>()?;
+        m.py().run(
+            c"
+WinRTAsync.register(_DynWinRTAsync)
+WinRTAsyncWithProgress.register(_DynWinRTAsyncWithProgress)
+",
+            Some(&m.dict()),
+            None,
+        )?;
 
         // Functions
         m.add_function(wrap_pyfunction!(super::runtime::init_winappsdk, m)?)?;

@@ -1,4 +1,6 @@
-from typing import Awaitable, Callable, List, Literal, Mapping, Optional, Protocol, Sequence, TypeVar, Union, final, overload
+from abc import ABCMeta, abstractmethod
+from collections.abc import Coroutine
+from typing import Any, Callable, Generic, List, Literal, Mapping, Optional, Protocol, Sequence, TypeVar, Union, final, overload
 from uuid import UUID
 
 _T = TypeVar("_T", covariant=True)
@@ -378,13 +380,17 @@ class DynWinRTValue:
     def __str__(self) -> str: ...
 
 
-class WinRTAsync(Awaitable[_T], Protocol[_T]):
+class WinRTAsync(Coroutine[Any, Any, _T], metaclass=ABCMeta):
+    @abstractmethod
     def wait(self) -> _T: ...
+    @abstractmethod
     def cancel(self) -> None: ...
+    @abstractmethod
     def release(self) -> None: ...
 
 
-class WinRTAsyncWithProgress(WinRTAsync[_T], Protocol[_T, _P]):
+class WinRTAsyncWithProgress(WinRTAsync[_T], Generic[_T, _P], metaclass=ABCMeta):
+    @abstractmethod
     def progress(self, callback: Callable[[_P], object]) -> None: ...
 
 

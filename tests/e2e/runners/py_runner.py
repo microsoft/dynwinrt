@@ -1013,8 +1013,25 @@ async def run_check(
             if not inspect.isawaitable(store_op):
                 cr['error'] = 'store_async() did not return an awaitable'
                 return cr
-            stored = await store_op
+            if not asyncio.iscoroutine(store_op):
+                cr['error'] = 'store_async() did not return a coroutine'
+                return cr
+            stored = await asyncio.create_task(store_op)
             stored_again = await store_op
+            try:
+                await asyncio.create_task(store_op)
+                cr['error'] = 'completed async operation was accepted by create_task twice'
+                return cr
+            except RuntimeError as error:
+                if 'cannot reuse already awaited WinRT async coroutine' not in str(error):
+                    cr['error'] = f'unexpected repeated create_task error: {error}'
+                    return cr
+
+            writer.write_int32(write_val)
+            grouped_op = writer.store_async()
+            async with asyncio.TaskGroup() as group:
+                grouped_task = group.create_task(grouped_op)
+            grouped = grouped_task.result()
 
             stream.seek(0)
             reader = reader_cls.create_data_reader(stream.get_input_stream_at(0))
@@ -1149,6 +1166,7 @@ async def run_check(
             if (
                 stored < 4
                 or stored_again != stored
+                or grouped < 4
                 or loaded < 4
                 or blocked < 4
                 or read_val != write_val

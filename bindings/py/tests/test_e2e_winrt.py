@@ -14,9 +14,14 @@ Requires: Windows 10/11 with standard SDK (no extra installs needed).
 """
 
 import asyncio
+from collections.abc import Coroutine
+import gc
 import http.server
 import threading
 import time
+import weakref
+
+import pytest
 
 from dynwinrt import (
     DynWinRTType,
@@ -72,10 +77,13 @@ def _start_progress_server():
             self.send_header("Content-Type", "text/plain; charset=utf-8")
             self.send_header("Connection", "close")
             self.end_headers()
-            for offset in range(0, len(payload), 8_192):
-                self.wfile.write(payload[offset : offset + 8_192])
-                self.wfile.flush()
-                time.sleep(0.005)
+            try:
+                for offset in range(0, len(payload), 8_192):
+                    self.wfile.write(payload[offset : offset + 8_192])
+                    self.wfile.flush()
+                    time.sleep(0.005)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
             self.close_connection = True
 
         def log_message(self, _format, *_args):
@@ -644,7 +652,10 @@ class TestHttpProgress:
                 ),
                 [DynWinRTValue.from_hstring(url)],
             )
-            operation = client_type.method(11).invoke(client.cast(client_iid), [uri])
+            def create_operation():
+                return client_type.method(11).invoke(client.cast(client_iid), [uri])
+
+            operation = create_operation()
 
             async def run_operation():
                 snapshots = []
@@ -670,11 +681,43 @@ class TestHttpProgress:
                     convert_progress,
                 )
                 projected.progress(snapshots.append)
-                body = await projected
+                assert isinstance(projected, Coroutine)
+                body = await asyncio.create_task(projected)
                 await asyncio.sleep(0.05)
-                return body, snapshots
 
-            body, snapshots = asyncio.run(run_operation())
+                cancel_raw = create_operation()
+                cancel_projected = _DynWinRTAsyncWithProgress(
+                    cancel_raw,
+                    lambda value: value.to_string(),
+                    convert_progress,
+                )
+                progress_seen = asyncio.Event()
+
+                class ProgressObserver:
+                    def __call__(self, _value):
+                        progress_seen.set()
+
+                observer = ProgressObserver()
+                observer_ref = weakref.ref(observer)
+                cancel_projected.progress(observer)
+                cancel_task = asyncio.create_task(cancel_projected)
+                await asyncio.wait_for(progress_seen.wait(), timeout=5)
+                assert cancel_task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await cancel_task
+                with pytest.raises(asyncio.CancelledError):
+                    await cancel_projected
+                cancel_projected.release()
+                del observer, cancel_projected, cancel_task
+                await asyncio.sleep(0)
+                return body, snapshots, cancel_raw, observer_ref
+
+            body, snapshots, cancel_raw, observer_ref = asyncio.run(run_operation())
+            with pytest.raises(asyncio.CancelledError):
+                cancel_raw.wait()
+            cancel_raw.release()
+            gc.collect()
+            assert observer_ref() is None
         finally:
             server.shutdown()
             server.server_close()

@@ -14,10 +14,13 @@ Covers:
 """
 
 import asyncio
+from collections.abc import Coroutine
 from contextvars import copy_context
 from datetime import datetime, timedelta, timezone
 import gc
+import inspect
 import threading
+import warnings
 import weakref
 from types import SimpleNamespace
 
@@ -177,7 +180,7 @@ def test_sync_hresult_maps_to_os_error_with_winerror():
     assert exc_info.value.strerror
 
 
-def _missing_storage_file_operation_value(path: str):
+def _storage_file_operation_value(path: str):
     statics_iid = WinGUID.parse(IID_ISTORAGE_FILE_STATICS)
     storage_file_type = DynWinRTType.runtime_class(
         "Windows.Storage.StorageFile",
@@ -204,7 +207,7 @@ def _missing_storage_file_operation_value(path: str):
 
 def _missing_storage_file_operation(path: str):
     return _DynWinRTAsync(
-        _missing_storage_file_operation_value(path),
+        _storage_file_operation_value(path),
         lambda value: value,
     )
 
@@ -230,6 +233,207 @@ def test_blocking_async_hresult_maps_to_os_error_with_winerror(tmp_path):
 
     assert exc_info.value.winerror == -2147024894  # HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND)
     assert exc_info.value.strerror
+
+
+def test_async_wrapper_is_a_public_coroutine(tmp_path):
+    path = tmp_path / "dynwinrt-coroutine.txt"
+    path.write_text("coroutine")
+    operation = _DynWinRTAsync(
+        _storage_file_operation_value(str(path)),
+        lambda value: value,
+    )
+
+    assert inspect.isawaitable(operation)
+    assert asyncio.iscoroutine(operation)
+    assert isinstance(operation, Coroutine)
+    assert isinstance(operation, WinRTAsync)
+    operation.release()
+
+
+def test_create_task_task_group_ensure_future_and_wait_for(tmp_path):
+    path = tmp_path / "dynwinrt-asyncio-entry-points.txt"
+    path.write_text("asyncio")
+
+    def operation():
+        return _DynWinRTAsync(
+            _storage_file_operation_value(str(path)),
+            lambda value: value,
+        )
+
+    async def run_operations():
+        create_task_operation = operation()
+        with pytest.raises(
+            TypeError,
+            match="can't send non-None value to a just-started coroutine",
+        ):
+            create_task_operation.send(1)
+        created = asyncio.create_task(create_task_operation)
+        created_result = await created
+        assert await create_task_operation is created_result
+
+        ensured_result = await asyncio.ensure_future(operation())
+        waited_result = await asyncio.wait_for(operation(), timeout=5)
+
+        async with asyncio.TaskGroup() as group:
+            grouped = group.create_task(operation())
+
+        assert not created_result.is_null()
+        assert not ensured_result.is_null()
+        assert not waited_result.is_null()
+        assert not grouped.result().is_null()
+
+    asyncio.run(run_operations())
+
+
+def test_task_driver_is_one_shot_but_direct_await_remains_repeatable(tmp_path):
+    path = tmp_path / "dynwinrt-repeated-await.txt"
+    path.write_text("repeat")
+    operation = _DynWinRTAsync(
+        _storage_file_operation_value(str(path)),
+        lambda value: value,
+    )
+
+    async def run_operation():
+        first = await asyncio.create_task(operation)
+        second = await operation
+        assert second is first
+
+        repeated_task = asyncio.create_task(operation)
+        with pytest.raises(
+            RuntimeError,
+            match="cannot reuse already awaited WinRT async coroutine",
+        ):
+            await repeated_task
+
+        assert await operation is first
+
+    asyncio.run(run_operation())
+
+
+def test_task_failure_remains_repeatable_for_direct_await(tmp_path):
+    path = tmp_path / "dynwinrt-repeated-failure.txt"
+    path.write_text("failure")
+    conversions = 0
+
+    def fail_once(value):
+        nonlocal conversions
+        conversions += 1
+        if conversions == 1:
+            raise LookupError("conversion failed")
+        return value
+
+    operation = _DynWinRTAsync(
+        _storage_file_operation_value(str(path)),
+        fail_once,
+    )
+
+    async def run_operation():
+        with pytest.raises(LookupError, match="conversion failed"):
+            await asyncio.create_task(operation)
+        with pytest.raises(LookupError, match="conversion failed"):
+            await operation
+
+    asyncio.run(run_operation())
+    assert conversions == 1
+
+
+def test_concurrent_task_attempt_is_rejected_without_hiding_winrt_failure(tmp_path):
+    operation = _missing_storage_file_operation(
+        str(tmp_path / "missing-concurrent-dynwinrt-file")
+    )
+
+    async def run_operation():
+        first = asyncio.create_task(operation)
+        concurrent = asyncio.create_task(operation)
+        results = await asyncio.gather(first, concurrent, return_exceptions=True)
+
+        assert isinstance(results[0], OSError)
+        assert results[0].winerror == -2147024894
+        assert isinstance(results[1], RuntimeError)
+        assert "already being awaited by another task" in str(results[1])
+
+    asyncio.run(run_operation())
+
+
+def test_invalid_throw_does_not_consume_or_leak_coroutine(tmp_path):
+    path = tmp_path / "dynwinrt-invalid-throw.txt"
+    path.write_text("throw")
+    operation = _DynWinRTAsync(
+        _storage_file_operation_value(str(path)),
+        lambda value: value,
+    )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        with pytest.raises(
+            TypeError,
+            match="exceptions must be classes or instances deriving from BaseException",
+        ):
+            operation.throw(123)
+        gc.collect()
+
+    async def run_operation():
+        assert not (await asyncio.create_task(operation)).is_null()
+
+    asyncio.run(run_operation())
+
+
+def test_release_preserves_owning_task_cancellation(tmp_path):
+    path = tmp_path / "dynwinrt-release-cancellation.txt"
+    path.write_text("release")
+    operation = _DynWinRTAsync(
+        _storage_file_operation_value(str(path)),
+        lambda value: value,
+    )
+
+    async def run_operation():
+        task = asyncio.create_task(operation)
+        await asyncio.sleep(0)
+        task.cancel()
+        operation.release()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run_operation())
+
+
+def test_release_before_task_start_preserves_cancellation(tmp_path):
+    path = tmp_path / "dynwinrt-release-before-start.txt"
+    path.write_text("release")
+    operation = _DynWinRTAsync(
+        _storage_file_operation_value(str(path)),
+        lambda value: value,
+    )
+
+    async def run_operation():
+        task = asyncio.create_task(operation)
+        task.cancel()
+        operation.release()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run_operation())
+
+
+def test_close_is_idempotent_and_prevents_future_execution(tmp_path):
+    operation = _missing_storage_file_operation(
+        str(tmp_path / "missing-closed-dynwinrt-file")
+    )
+    operation.close()
+    operation.close()
+
+    async def run_operation():
+        with pytest.raises(RuntimeError, match="closed WinRT async coroutine"):
+            await operation
+        task = asyncio.create_task(operation)
+        with pytest.raises(
+            RuntimeError,
+            match="cannot reuse already awaited WinRT async coroutine",
+        ):
+            await task
+
+    asyncio.run(run_operation())
+    operation.release()
 
 
 # ----------------------------------------------------------------------
@@ -267,7 +471,7 @@ def test_progress_wrapper_rejects_non_async_value():
 
 
 def test_progress_wrapper_rejects_async_operation_without_progress(tmp_path):
-    raw_operation = _missing_storage_file_operation_value(
+    raw_operation = _storage_file_operation_value(
         str(tmp_path / "missing-dynwinrt-progress-file")
     )
     with pytest.raises(

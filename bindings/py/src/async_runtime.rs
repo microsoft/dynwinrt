@@ -9,7 +9,7 @@ use crate::errors::{
     map_dynwinrt_error, map_dynwinrt_error_with_context, map_windows_error_with_context,
 };
 use crate::runtime::DynWinRTValue;
-use pyo3::exceptions::PyRuntimeError;
+use pyo3::exceptions::{PyRuntimeError, PyTypeError};
 use pyo3::prelude::*;
 use windows::Win32::Foundation::CO_E_NOTINITIALIZED;
 use windows::Win32::System::Com::{
@@ -140,6 +140,258 @@ enum ExecutionState {
     Future(Py<PyAny>),
 }
 
+enum CoroutineExecutionState {
+    New,
+    Executing(Py<PyAny>),
+    Suspended {
+        owner: Py<PyAny>,
+        coroutine: Py<PyAny>,
+    },
+    Finished,
+    Closed,
+}
+
+struct CoroutineProtocol {
+    state: Mutex<CoroutineExecutionState>,
+}
+
+impl CoroutineProtocol {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(CoroutineExecutionState::New),
+        }
+    }
+
+    fn lock_state(&self) -> PyResult<MutexGuard<'_, CoroutineExecutionState>> {
+        self.state
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("coroutine state lock was poisoned"))
+    }
+
+    fn ensure_awaitable(&self) -> PyResult<()> {
+        if matches!(*self.lock_state()?, CoroutineExecutionState::Closed) {
+            return Err(PyRuntimeError::new_err(
+                "cannot reuse closed WinRT async coroutine",
+            ));
+        }
+        Ok(())
+    }
+
+    fn current_owner(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        Ok(py.import("asyncio")?.call_method0("current_task")?.unbind())
+    }
+
+    fn begin_call(
+        &self,
+        operation: Option<&AsyncOperation>,
+        py: Python<'_>,
+        require_started: bool,
+    ) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
+        let owner = self.current_owner(py)?;
+        let existing = {
+            let mut state = self.lock_state()?;
+            match &*state {
+                CoroutineExecutionState::New => None,
+                CoroutineExecutionState::Suspended {
+                    owner: current_owner,
+                    ..
+                } if !current_owner.bind(py).is(owner.bind(py)) => {
+                    return Err(PyRuntimeError::new_err(
+                        "WinRT async coroutine is already being awaited by another task",
+                    ));
+                }
+                CoroutineExecutionState::Suspended { .. } => {
+                    match std::mem::replace(
+                        &mut *state,
+                        CoroutineExecutionState::Executing(owner.clone_ref(py)),
+                    ) {
+                        CoroutineExecutionState::Suspended { coroutine, .. } => Some(coroutine),
+                        _ => unreachable!(),
+                    }
+                }
+                CoroutineExecutionState::Executing(_) => {
+                    return Err(PyRuntimeError::new_err(
+                        "WinRT async coroutine is already executing",
+                    ));
+                }
+                CoroutineExecutionState::Finished | CoroutineExecutionState::Closed => {
+                    return Err(PyRuntimeError::new_err(
+                        "cannot reuse already awaited WinRT async coroutine",
+                    ));
+                }
+            }
+        };
+
+        if let Some(coroutine) = existing {
+            return Ok((owner, coroutine));
+        }
+        if require_started {
+            return Err(PyTypeError::new_err(
+                "can't send non-None value to a just-started coroutine",
+            ));
+        }
+
+        let operation = operation.ok_or_else(|| {
+            PyRuntimeError::new_err("the WinRT async operation has been released")
+        })?;
+        let future = operation.future(py)?;
+        let coroutine = py
+            .import("dynwinrt.dynwinrt")?
+            .getattr("_dynwinrt_drive_future")?
+            .call1((future,))?
+            .unbind();
+        *self.lock_state()? = CoroutineExecutionState::Executing(owner.clone_ref(py));
+        Ok((owner, coroutine))
+    }
+
+    fn finish_call(
+        &self,
+        py: Python<'_>,
+        owner: Py<PyAny>,
+        coroutine: Py<PyAny>,
+        result: &PyResult<Py<PyAny>>,
+    ) -> PyResult<()> {
+        let mut state = self.lock_state()?;
+        match &*state {
+            CoroutineExecutionState::Executing(current_owner)
+                if current_owner.bind(py).is(owner.bind(py)) => {}
+            _ => {
+                return Err(PyRuntimeError::new_err(
+                    "WinRT async coroutine execution state changed unexpectedly",
+                ));
+            }
+        }
+        *state = if result.is_ok() {
+            CoroutineExecutionState::Suspended { owner, coroutine }
+        } else {
+            CoroutineExecutionState::Finished
+        };
+        Ok(())
+    }
+
+    fn send(
+        &self,
+        operation: Option<&AsyncOperation>,
+        py: Python<'_>,
+        value: Py<PyAny>,
+    ) -> PyResult<Py<PyAny>> {
+        let require_started = !value.bind(py).is_none();
+        let (owner, coroutine) = self.begin_call(operation, py, require_started)?;
+        let result = coroutine.call_method1(py, "send", (value,));
+        self.finish_call(py, owner, coroutine, &result)?;
+        result
+    }
+
+    fn throw(
+        &self,
+        operation: Option<&AsyncOperation>,
+        py: Python<'_>,
+        typ: Py<PyAny>,
+        value: Option<Py<PyAny>>,
+        traceback: Option<Py<PyAny>>,
+    ) -> PyResult<Py<PyAny>> {
+        let validation_value = value
+            .as_ref()
+            .map(|value| value.clone_ref(py))
+            .unwrap_or_else(|| py.None());
+        let validation_traceback = traceback
+            .as_ref()
+            .map(|traceback| traceback.clone_ref(py))
+            .unwrap_or_else(|| py.None());
+        py.import("dynwinrt.dynwinrt")?
+            .getattr("_dynwinrt_validate_throw")?
+            .call1((typ.clone_ref(py), validation_value, validation_traceback))?;
+
+        if operation.is_none() && matches!(*self.lock_state()?, CoroutineExecutionState::New) {
+            let coroutine = py
+                .import("dynwinrt.dynwinrt")?
+                .getattr("_dynwinrt_empty_coroutine")?
+                .call0()?;
+            return match (value, traceback) {
+                (None, None) => coroutine.call_method1("throw", (typ,)).map(Bound::unbind),
+                (Some(value), None) => coroutine
+                    .call_method1("throw", (typ, value))
+                    .map(Bound::unbind),
+                (value, Some(traceback)) => coroutine
+                    .call_method1(
+                        "throw",
+                        (typ, value.unwrap_or_else(|| py.None()), traceback),
+                    )
+                    .map(Bound::unbind),
+            };
+        }
+
+        let (owner, coroutine) = self.begin_call(operation, py, false)?;
+        let result = match (value, traceback) {
+            (None, None) => coroutine.call_method1(py, "throw", (typ,)),
+            (Some(value), None) => coroutine.call_method1(py, "throw", (typ, value)),
+            (value, Some(traceback)) => coroutine.call_method1(
+                py,
+                "throw",
+                (typ, value.unwrap_or_else(|| py.None()), traceback),
+            ),
+        };
+        self.finish_call(py, owner, coroutine, &result)?;
+        if let Err(primary_error) = &result {
+            if let Some(operation) = operation {
+                if !operation.future_is_done(py)? {
+                    if let Err(cleanup_error) = operation.stop(py) {
+                        append_cleanup_error(py, primary_error, &cleanup_error)?;
+                    }
+                }
+            }
+        }
+        result
+    }
+
+    fn close(&self, operation: &AsyncOperation, py: Python<'_>) -> PyResult<()> {
+        let coroutine = {
+            let mut state = self.lock_state()?;
+            match &*state {
+                CoroutineExecutionState::Closed => None,
+                CoroutineExecutionState::Finished => return Ok(()),
+                CoroutineExecutionState::Executing(_) => {
+                    return Err(PyRuntimeError::new_err(
+                        "cannot close a WinRT async coroutine while it is executing",
+                    ));
+                }
+                CoroutineExecutionState::New => {
+                    *state = CoroutineExecutionState::Closed;
+                    None
+                }
+                CoroutineExecutionState::Suspended { .. } => {
+                    match std::mem::replace(&mut *state, CoroutineExecutionState::Closed) {
+                        CoroutineExecutionState::Suspended { coroutine, .. } => Some(coroutine),
+                        _ => unreachable!(),
+                    }
+                }
+            }
+        };
+
+        let close_result = match coroutine {
+            Some(coroutine) => coroutine.call_method0(py, "close").map(|_| ()),
+            None => Ok(()),
+        };
+        let cleanup_result = operation.stop(py);
+        match (close_result, cleanup_result) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Ok(()), Err(cleanup_error)) => Err(cleanup_error),
+            (Err(primary_error), Ok(())) => Err(primary_error),
+            (Err(primary_error), Err(cleanup_error)) => {
+                append_cleanup_error(py, &primary_error, &cleanup_error)?;
+                Err(primary_error)
+            }
+        }
+    }
+}
+
+fn append_cleanup_error(py: Python<'_>, primary: &PyErr, cleanup: &PyErr) -> PyResult<()> {
+    py.import("dynwinrt.dynwinrt")?
+        .getattr("_dynwinrt_append_exception_cause")?
+        .call1((primary.value(py), cleanup.value(py)))?;
+    Ok(())
+}
+
 struct AsyncOperation {
     value: dynwinrt::WinRTValue,
     converter: Py<PyAny>,
@@ -162,7 +414,7 @@ impl AsyncOperation {
             .map_err(|_| PyRuntimeError::new_err("async operation state lock was poisoned"))
     }
 
-    fn release(&self, py: Python<'_>) -> PyResult<()> {
+    fn stop(&self, py: Python<'_>) -> PyResult<()> {
         let _ = self.cancel();
         let future = {
             let mut state = self.lock_state()?;
@@ -175,6 +427,20 @@ impl AsyncOperation {
             future.call_method0(py, "cancel")?;
         }
         Ok(())
+    }
+
+    fn future_is_done(&self, py: Python<'_>) -> PyResult<bool> {
+        let future = {
+            let state = self.lock_state()?;
+            match &*state {
+                ExecutionState::Future(future) => Some(future.clone_ref(py)),
+                ExecutionState::Idle | ExecutionState::Blocking => None,
+            }
+        };
+        match future {
+            Some(future) => future.call_method0(py, "done")?.extract(py),
+            None => Ok(false),
+        }
     }
 
     fn future<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
@@ -276,6 +542,7 @@ pub(crate) fn finish_progress_registration(
 #[pyclass(name = "_DynWinRTAsync")]
 pub struct DynWinRTAsync {
     operation: Option<Arc<AsyncOperation>>,
+    coroutine: CoroutineProtocol,
 }
 
 impl DynWinRTAsync {
@@ -292,11 +559,34 @@ impl DynWinRTAsync {
     fn new(value: &DynWinRTValue, result_converter: Py<PyAny>) -> PyResult<Self> {
         Ok(Self {
             operation: Some(Arc::new(AsyncOperation::new(value, result_converter)?)),
+            coroutine: CoroutineProtocol::new(),
         })
     }
 
     fn __await__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        self.operation()?.await_iter(py)
+        let operation = self.operation()?;
+        self.coroutine.ensure_awaitable()?;
+        operation.await_iter(py)
+    }
+
+    fn send(&self, py: Python<'_>, value: Py<PyAny>) -> PyResult<Py<PyAny>> {
+        self.coroutine.send(self.operation.as_deref(), py, value)
+    }
+
+    #[pyo3(signature = (typ, value=None, traceback=None))]
+    fn throw(
+        &self,
+        py: Python<'_>,
+        typ: Py<PyAny>,
+        value: Option<Py<PyAny>>,
+        traceback: Option<Py<PyAny>>,
+    ) -> PyResult<Py<PyAny>> {
+        self.coroutine
+            .throw(self.operation.as_deref(), py, typ, value, traceback)
+    }
+
+    fn close(&self, py: Python<'_>) -> PyResult<()> {
+        self.coroutine.close(self.operation()?, py)
     }
 
     fn wait(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
@@ -309,7 +599,7 @@ impl DynWinRTAsync {
 
     fn release(&mut self, py: Python<'_>) -> PyResult<()> {
         if let Some(operation) = &self.operation {
-            operation.release(py)?;
+            operation.stop(py)?;
         }
         self.operation = None;
         Ok(())
@@ -323,6 +613,7 @@ impl DynWinRTAsync {
 #[pyclass(name = "_DynWinRTAsyncWithProgress")]
 pub struct DynWinRTAsyncWithProgress {
     operation: Option<Arc<AsyncOperation>>,
+    coroutine: CoroutineProtocol,
     progress_converter: Py<PyAny>,
 }
 
@@ -354,12 +645,35 @@ impl DynWinRTAsyncWithProgress {
         }
         Ok(Self {
             operation: Some(operation),
+            coroutine: CoroutineProtocol::new(),
             progress_converter,
         })
     }
 
     fn __await__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        self.operation()?.await_iter(py)
+        let operation = self.operation()?;
+        self.coroutine.ensure_awaitable()?;
+        operation.await_iter(py)
+    }
+
+    fn send(&self, py: Python<'_>, value: Py<PyAny>) -> PyResult<Py<PyAny>> {
+        self.coroutine.send(self.operation.as_deref(), py, value)
+    }
+
+    #[pyo3(signature = (typ, value=None, traceback=None))]
+    fn throw(
+        &self,
+        py: Python<'_>,
+        typ: Py<PyAny>,
+        value: Option<Py<PyAny>>,
+        traceback: Option<Py<PyAny>>,
+    ) -> PyResult<Py<PyAny>> {
+        self.coroutine
+            .throw(self.operation.as_deref(), py, typ, value, traceback)
+    }
+
+    fn close(&self, py: Python<'_>) -> PyResult<()> {
+        self.coroutine.close(self.operation()?, py)
     }
 
     fn wait(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
@@ -372,7 +686,7 @@ impl DynWinRTAsyncWithProgress {
 
     fn release(&mut self, py: Python<'_>) -> PyResult<()> {
         if let Some(operation) = &self.operation {
-            operation.release(py)?;
+            operation.stop(py)?;
         }
         self.operation = None;
         Ok(())

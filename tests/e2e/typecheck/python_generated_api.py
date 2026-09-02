@@ -1,8 +1,9 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
-from collections.abc import Sequence
-from typing import Awaitable, List, Tuple
+import asyncio
+from collections.abc import Coroutine, Sequence
+from typing import Any, Awaitable, List, Tuple
 
 from dynwinrt import (
     DynWinRTArray,
@@ -91,10 +92,19 @@ def check_async_types(
 ) -> None:
     store: WinRTAsync[int] = writer.store_async()
     awaitable: Awaitable[int] = store
+    coroutine: Coroutine[Any, Any, int] = store
+    task: asyncio.Task[int] = asyncio.create_task(store)
     write: WinRTAsyncWithProgress[int, int] = output.write_async(buffer)
     write.progress(lambda value: value)
     progress_awaitable: Awaitable[int] = write
-    _: Tuple[Awaitable[int], Awaitable[int]] = (awaitable, progress_awaitable)
+    progress_task: asyncio.Task[int] = asyncio.TaskGroup().create_task(write)
+    _: Tuple[
+        Awaitable[int],
+        Coroutine[Any, Any, int],
+        asyncio.Task[int],
+        Awaitable[int],
+        asyncio.Task[int],
+    ] = (awaitable, coroutine, task, progress_awaitable, progress_task)
 
 
 def check_ibuffer_bytes() -> None:
