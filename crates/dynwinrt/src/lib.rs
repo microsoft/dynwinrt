@@ -7,6 +7,7 @@ mod abi;
 mod call;
 pub mod com;
 mod composition;
+mod ibuffer;
 mod interfaces;
 mod native_call;
 mod native_callback;
@@ -46,6 +47,7 @@ pub use crate::element_factory::{
     ElementFactoryGetCallback, ElementFactoryRecycleCallback, create_element_factory,
     create_element_factory_value,
 };
+pub use crate::ibuffer::{copy_from_ibuffer, copy_to_ibuffer};
 pub use crate::metadata_table::{MetadataTable, MethodHandle, TypeHandle, TypeKind, ValueTypeData};
 pub use crate::reference::box_ireference;
 pub use crate::result::{Error, Result};

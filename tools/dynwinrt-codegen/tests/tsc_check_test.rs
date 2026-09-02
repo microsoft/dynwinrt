@@ -240,6 +240,7 @@ export declare class DynWinRtValue {
     toF64(): number;
     toBool(): boolean;
     toString(): string;
+    toBuffer(): Uint8Array;
     asArray(): DynWinRtArray;
     asStruct(): DynWinRtStruct;
     cast(iid: WinGuid): DynWinRtValue;
@@ -250,6 +251,7 @@ export declare class DynWinRtValue {
     static hstring(s: string): DynWinRtValue;
     static fromI32(n: number): DynWinRtValue;
     static fromBool(b: boolean): DynWinRtValue;
+    static fromBuffer(data: Uint8Array): DynWinRtValue;
     static createVector(items: DynWinRtValue[], elemType: DynWinRtType): DynWinRtValue;
     static createMap(keys: DynWinRtValue[], values: DynWinRtValue[], keyType: DynWinRtType, valueType: DynWinRtType): DynWinRtValue;
     [key: string]: any;

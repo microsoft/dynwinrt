@@ -20,7 +20,12 @@ from python_bindings.windows.foundation import (
     Uri,
 )
 from python_bindings.windows.globalization import Calendar
-from python_bindings.windows.storage.streams import DataWriter, IBuffer, IOutputStream
+from python_bindings.windows.storage.streams import (
+    Buffer as WinRTBuffer,
+    DataWriter,
+    IBuffer,
+    IOutputStream,
+)
 
 
 def check_runtime_stubs() -> None:
@@ -90,3 +95,11 @@ def check_async_types(
     write.progress(lambda value: value)
     progress_awaitable: Awaitable[int] = write
     _: Tuple[Awaitable[int], Awaitable[int]] = (awaitable, progress_awaitable)
+
+
+def check_ibuffer_bytes() -> None:
+    interface_buffer: IBuffer = IBuffer.from_bytes(bytearray(b"\x00\xff"))
+    runtime_buffer: WinRTBuffer = WinRTBuffer.from_bytes(b"\x01\x02")
+    interface_bytes: bytes = interface_buffer.to_bytes()
+    runtime_bytes: bytes = runtime_buffer.to_bytes()
+    _: Tuple[bytes, bytes] = (interface_bytes, runtime_bytes)

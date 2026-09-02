@@ -267,6 +267,31 @@ async function runCheck(
       } else {
         cr.pass = true;
       }
+    } else if (kind === "ibuffer_copied_roundtrip") {
+      const empty = cls.fromBuffer(Buffer.alloc(0));
+      if (
+        empty.capacity !== 0 ||
+        empty.length !== 0 ||
+        !empty.toBuffer().equals(Buffer.alloc(0))
+      ) {
+        cr.error = "empty IBuffer copy round-trip failed";
+        return cr;
+      }
+
+      const mutable = Uint8Array.from([0, 1, 2, 0, 255, 128]);
+      const buffer = cls.fromBuffer(mutable);
+      mutable.fill(9);
+      const copied = buffer.toBuffer();
+      if (buffer.capacity !== 6 || buffer.length !== 6) {
+        cr.error = `expected Length/Capacity 6, got ${buffer.length}/${buffer.capacity}`;
+        return cr;
+      }
+      buffer._obj.release();
+      if (!copied.equals(Buffer.from([0, 1, 2, 0, 255, 128]))) {
+        cr.error = `copied bytes changed after owner release: ${copied.toString("hex")}`;
+        return cr;
+      }
+      cr.pass = true;
     } else if (kind === "property_exists") {
       const _ = obj[member]; // should not throw
       cr.pass = true;

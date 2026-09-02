@@ -88,6 +88,7 @@
              "static_uuid_roundtrip",
              "static_uuid_input",
              "static_bytes_input",
+             "ibuffer_copied_roundtrip",
              "static_sequence_input",
              "closable_context",
              "method_then_property_equals",

@@ -1077,6 +1077,23 @@ impl DynWinRTValue {
             .map_err(map_dynwinrt_error)
     }
 
+    /// Create an owned WinRT IBuffer by copying Python bytes or bytearray data.
+    #[staticmethod]
+    fn from_bytes(data: &Bound<'_, PyAny>) -> PyResult<DynWinRTValue> {
+        let bytes = if let Ok(data) = data.cast::<pyo3::types::PyBytes>() {
+            data.as_bytes().to_vec()
+        } else if let Ok(data) = data.cast::<pyo3::types::PyByteArray>() {
+            data.to_vec()
+        } else {
+            return Err(pyo3::exceptions::PyTypeError::new_err(
+                "from_bytes: expected bytes or bytearray",
+            ));
+        };
+        dynwinrt::copy_to_ibuffer(&bytes)
+            .map(DynWinRTValue)
+            .map_err(map_dynwinrt_error)
+    }
+
     /// Compose a WinUI `Microsoft.UI.Xaml.Application` whose outer object
     /// exposes the supplied `IXamlMetadataProvider`.
     ///
@@ -1438,6 +1455,13 @@ impl DynWinRTValue {
             dynwinrt::WinRTValue::Guid(g) => Ok(WinGUID(*g)),
             _ => Err(PyRuntimeError::new_err("Value is not a GUID")),
         }
+    }
+
+    /// Copy the initialized bytes from a WinRT IBuffer into Python bytes.
+    fn to_bytes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
+        dynwinrt::copy_from_ibuffer(&self.0)
+            .map(|bytes| pyo3::types::PyBytes::new(py, &bytes))
+            .map_err(map_dynwinrt_error)
     }
 
     fn is_null(&self) -> bool {

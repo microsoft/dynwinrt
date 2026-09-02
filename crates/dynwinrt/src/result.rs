@@ -22,6 +22,15 @@ pub enum Error {
     ExpectedAsync(TypeKind),
     UnsupportedCollectionElement(TypeKind),
     InvalidCollectionValue(&'static str),
+    ExpectedIBuffer(TypeKind),
+    InvalidIBufferBounds {
+        length: u32,
+        capacity: u32,
+    },
+    NullIBufferPointer {
+        length: usize,
+    },
+    IBufferInputTooLarge(usize),
     /// An async operation was canceled (status == AsyncStatus::Canceled).
     Canceled,
 }
@@ -68,6 +77,21 @@ impl Error {
             }
             Error::InvalidCollectionValue(expected) => {
                 format!("Invalid dynamic collection value: expected {expected}")
+            }
+            Error::ExpectedIBuffer(actual) => {
+                format!("Expected a Windows.Storage.Streams.IBuffer object, found {actual:?}")
+            }
+            Error::InvalidIBufferBounds { length, capacity } => {
+                format!("Invalid IBuffer bounds: Length {length} exceeds Capacity {capacity}")
+            }
+            Error::NullIBufferPointer { length } => {
+                format!("IBufferByteAccess returned a null pointer for {length} bytes")
+            }
+            Error::IBufferInputTooLarge(length) => {
+                format!(
+                    "Cannot create an IBuffer from {length} bytes; the maximum is {}",
+                    u32::MAX
+                )
             }
             Error::Canceled => "Async operation was canceled".to_string(),
         }

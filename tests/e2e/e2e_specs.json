@@ -196,7 +196,8 @@
       },
       "checks": [
         { "kind": "property_equals", "member": "capacity", "expected": 1024 },
-        { "kind": "property_equals", "member": "length", "expected": 0 }
+        { "kind": "property_equals", "member": "length", "expected": 0 },
+        { "kind": "ibuffer_copied_roundtrip", "member": "copied_bytes" }
       ]
     },
     {

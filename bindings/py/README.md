@@ -61,6 +61,18 @@ WinRT collection interfaces. Byte arrays accept `bytes` and `bytearray`; GUID,
 `DateTime`, and `TimeSpan` values use `uuid.UUID`, `datetime.datetime`, and
 `datetime.timedelta`.
 
+Generated `Windows.Storage.Streams.Buffer` and `IBuffer` projections also
+provide copied byte conversion:
+
+```python
+winrt_buffer = IBuffer.from_bytes(bytearray(b"\x00\x01\xff"))
+data: bytes = winrt_buffer.to_bytes()
+```
+
+Both directions copy exactly `Length` bytes. Mutating the input or releasing
+the WinRT object does not change the returned `bytes`, and no native buffer
+pointer is exposed.
+
 Exceptions raised by Python event or delegate callbacks are reported through
 `sys.unraisablehook`. The originating WinRT invocation receives
 `0xA0EE4005` (`PYWINRT_E_UNRAISABLE_PYTHON_EXCEPTION`) instead of unconditional

@@ -405,6 +405,13 @@ pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &Interf
             "    def as_interface(self, interface_class: _DynWinRTProjector[_InterfaceT]) -> _InterfaceT: ...\n",
         );
     }
+    if crate::codegen::winrt::is_ibuffer_interface(&iface.namespace, &iface.name, &iface.iid) {
+        out.push_str(
+            "\n    @staticmethod\n\
+             \x20   def from_bytes(data: bytes | bytearray) -> 'IBuffer': ...\n\
+             \x20   def to_bytes(self) -> bytes: ...\n",
+        );
+    }
 
     // IVector<T> / IMap<K,V> create()
     if let Some(ref piid) = iface.generic_piid {
@@ -755,8 +762,11 @@ pub fn generate_class_stub(
             )),
             _ => None,
         });
-    let instance_stub_body =
+    let mut instance_stub_body =
         emit_class_instance_stubs(class, context, collection_iface, false, has_closable);
+    if crate::codegen::winrt::is_buffer_class(&class.namespace, &class.name) {
+        instance_stub_body.push_str("    def to_bytes(self) -> bytes: ...\n");
+    }
     let identity_name = format!("_{}Identity", class.name);
     let mut identity_bases = base_identity.into_iter().collect::<Vec<_>>();
     identity_bases.push("Protocol".into());
@@ -810,6 +820,12 @@ pub fn generate_class_stub(
         "    ",
     ));
     out.push_str(&emit_constructor_stubs(class, context));
+    if crate::codegen::winrt::is_buffer_class(&class.namespace, &class.name) {
+        out.push_str(
+            "    @staticmethod\n\
+             \x20   def from_bytes(data: bytes | bytearray) -> 'Buffer': ...\n",
+        );
+    }
     if collection_base.is_some() {
         out.push_str(&emit_class_instance_stubs(
             class,

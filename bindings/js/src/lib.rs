@@ -1160,6 +1160,16 @@ impl DynWinRTValue {
     Ok(DynWinRTValue::new(factory))
   }
 
+  /// Create an owned WinRT IBuffer by copying a Node.js Buffer or Uint8Array.
+  #[napi]
+  pub fn from_buffer(
+    #[napi(ts_arg_type = "Buffer | Uint8Array")] data: napi::bindgen_prelude::Uint8Array,
+  ) -> napi::Result<DynWinRTValue> {
+    dynwinrt::copy_to_ibuffer(&data)
+      .map(DynWinRTValue::new)
+      .map_err(|error| napi::Error::from_reason(error.message()))
+  }
+
   /// Create a composed WinUI Application that forwards IXamlMetadataProvider
   /// calls to the supplied provider.
   #[napi]
@@ -1531,6 +1541,14 @@ impl DynWinRTValue {
       dynwinrt::WinRTValue::Guid(g) => Ok(WinGUID(*g)),
       _ => Err(napi::Error::from_reason("Value is not a GUID")),
     }
+  }
+
+  /// Copy the initialized bytes from a WinRT IBuffer into a Node.js Buffer.
+  #[napi]
+  pub fn to_buffer(&self) -> napi::Result<napi::bindgen_prelude::Buffer> {
+    dynwinrt::copy_from_ibuffer(&self.0)
+      .map(Into::into)
+      .map_err(|error| napi::Error::from_reason(error.message()))
   }
 
   #[napi]

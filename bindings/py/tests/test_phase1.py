@@ -10,6 +10,7 @@ Covers:
   * WinRTAsync                       — public asyncio-compatible protocols
   * DynWinRTArray.to_bytes/from_bytes — Pythonic byte-buffer interop
   * DynWinRTArray.from_object_values — T[] of object/interface elements
+  * DynWinRTValue.to_bytes/from_bytes — copied IBuffer interop
 """
 
 import asyncio
@@ -1064,6 +1065,30 @@ def test_from_bytes_accepts_bytearray():
     data = bytearray(b"\x00\x01\x02\xff")
     arr = DynWinRTArray.from_bytes(data)
     assert arr.to_bytes() == bytes(data)
+
+
+def test_ibuffer_bytes_round_trip_and_copy_isolation():
+    empty = DynWinRTValue.from_bytes(b"")
+    assert empty.to_bytes() == b""
+
+    data = bytearray(b"\x00\x01\x02\x00\xff\x80")
+    value = DynWinRTValue.from_bytes(data)
+    data[:] = b"\x09" * len(data)
+    copied = value.to_bytes()
+    value.release()
+
+    assert isinstance(copied, bytes)
+    assert copied == b"\x00\x01\x02\x00\xff\x80"
+
+
+def test_ibuffer_bytes_rejects_unsupported_values():
+    with pytest.raises(RuntimeError, match="Windows.Storage.Streams.IBuffer"):
+        DynWinRTValue.from_u8(1).to_bytes()
+
+    uri_factory = DynWinRTValue.activation_factory("Windows.Foundation.Uri")
+    with pytest.raises(OSError) as exc_info:
+        uri_factory.to_bytes()
+    assert exc_info.value.winerror == -2147467262  # E_NOINTERFACE
 
 
 def test_winrt_datetime_round_trip():

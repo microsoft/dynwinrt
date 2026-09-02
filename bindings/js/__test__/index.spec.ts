@@ -1110,6 +1110,26 @@ test('release WinRT object values deterministically', (t) => {
   t.notThrows(() => value.release())
 })
 
+test('copy between WinRT IBuffer and Buffer or Uint8Array', (t) => {
+  const empty = DynWinRtValue.fromBuffer(Buffer.alloc(0))
+  t.deepEqual(empty.toBuffer(), Buffer.alloc(0))
+
+  const input = Uint8Array.from([0, 1, 2, 0, 255, 128])
+  const value = DynWinRtValue.fromBuffer(input)
+  input.fill(9)
+  const copy = value.toBuffer()
+  value.release()
+
+  t.true(Buffer.isBuffer(copy))
+  t.deepEqual(copy, Buffer.from([0, 1, 2, 0, 255, 128]))
+  t.throws(() => DynWinRtValue.u8Value(1).toBuffer(), {
+    message: /Expected a Windows\.Storage\.Streams\.IBuffer/,
+  })
+  t.throws(() => DynWinRtValue.activationFactory('Windows.Foundation.Uri').toBuffer(), {
+    message: /80004002|No such interface/i,
+  })
+})
+
 test('round-trip WinRT value arrays', (t) => {
   const array = DynWinRtArray.fromI32Values([1, 2, 3])
   t.is(array.len(), 3)
