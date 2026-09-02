@@ -441,18 +441,18 @@ jobs:
         run: |
           $wheels = (Get-ChildItem dist\*.whl -Recurse).FullName
           $releaseFound = $false
-          for ($attempt = 1; $attempt -le 40; $attempt++) {
+          for ($attempt = 1; $attempt -le 120; $attempt++) {
             & gh release view $env:TAG --repo $env:GH_REPO *> $null
             if ($LASTEXITCODE -eq 0) {
               $releaseFound = $true
               break
             }
-            Write-Host "Waiting for the JavaScript release $env:TAG ($attempt/40)..."
+            Write-Host "Waiting for the JavaScript release $env:TAG ($attempt/120)..."
             Start-Sleep -Seconds 30
           }
 
           if (-not $releaseFound) {
-            throw "JavaScript GitHub release $env:TAG was not found after 20 minutes"
+            throw "JavaScript GitHub release $env:TAG was not found after 60 minutes"
           }
 
           $arguments = @('release', 'upload', $env:TAG, '--repo', $env:GH_REPO, '--clobber')

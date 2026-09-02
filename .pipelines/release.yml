@@ -297,7 +297,7 @@ extends:
                 }
 
                 $ready = $false
-                for ($attempt = 1; $attempt -le 20; $attempt++) {
+                for ($attempt = 1; $attempt -le 60; $attempt++) {
                   $jobs = Invoke-GitHubApi "$($run.jobs_url)?per_page=100"
                   $assembly = @($jobs.jobs | Where-Object name -EQ 'assemble-release')
                   if ($assembly.Count -eq 1 -and $assembly[0].status -eq 'completed') {
@@ -310,11 +310,11 @@ extends:
                   if ($run.status -eq 'completed' -and $run.conclusion -ne 'success') {
                     throw "Python tag workflow concluded '$($run.conclusion)'"
                   }
-                  Write-Host "Waiting for Python release assembly (attempt $attempt/20)..."
+                  Write-Host "Waiting for Python release assembly (attempt $attempt/60)..."
                   Start-Sleep -Seconds 60
                 }
                 if (-not $ready) {
-                  throw 'Python release assembly did not pass within 20 minutes'
+                  throw 'Python release assembly did not pass within 60 minutes'
                 }
 
     - stage: Release_GitHub
@@ -426,7 +426,7 @@ extends:
                   }
                 }
                 $ready = $false
-                for ($attempt = 1; $attempt -le 40; $attempt++) {
+                for ($attempt = 1; $attempt -le 120; $attempt++) {
                   $release = Invoke-GitHubApi $uri
                   if ($release.target_commitish -ne '$(Build.SourceVersion)') {
                     throw "GitHub release target '$($release.target_commitish)' does not match $(Build.SourceVersion)"
@@ -439,11 +439,11 @@ extends:
                   if ($wheels.Count -gt 10) {
                     throw "Expected 10 Python wheel assets, found $($wheels.Count)"
                   }
-                  Write-Host "Waiting for Python release wheels ($($wheels.Count)/10, attempt $attempt/40)..."
+                  Write-Host "Waiting for Python release wheels ($($wheels.Count)/10, attempt $attempt/120)..."
                   Start-Sleep -Seconds 30
                 }
                 if (-not $ready) {
-                  throw 'The complete tested Python wheel set was not attached within 20 minutes'
+                  throw 'The complete tested Python wheel set was not attached within 60 minutes'
                 }
 
           - task: DownloadGitHubRelease@0
