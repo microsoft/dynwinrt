@@ -1,12 +1,17 @@
 # Native Layer Performance Analysis
 
+> **Recorded benchmark snapshot (August 2026).** These measurements document a
+> specific implementation and machine, not a permanent performance guarantee.
+> Re-run the commands at the end of this document before making current
+> performance decisions.
+
 Benchmark for direct napi calls (no Electron IPC). Measures the actual overhead of dynwinrt's dynamic dispatch compared to static C++/WinRT projections.
 
 Environment: AMD Ryzen 9 7940HX, Windows 11, Node.js v22. All Rust builds: release + LTO + codegen-units=1.
 
 ---
 
-## Current Performance (napi-rs standard path)
+## Recorded Performance (napi-rs standard path)
 
 JS → **napi-rs** → **dynwinrt** (Rust + libffi) → COM vtable.
 
@@ -130,7 +135,7 @@ Specialized methods that combine invoke + result extraction into a single napi c
 
 ## Theoretical Performance Limits
 
-### Current: napi-rs macro path (~1-3 µs overhead)
+### Recorded production path: napi-rs macros (~1-3 µs overhead)
 
 Our production path uses napi-rs macros for ergonomic Rust ↔ JS bindings. The napi-rs layer adds 75-170 ns per call for type checking and string roundtrips, plus each `DynWinRtValue` argument or result extraction is an extra napi boundary crossing (~500-1000 ns each).
 

@@ -1,7 +1,8 @@
 # Python readiness checklist
 
-This checklist tracks the path from the current source-built Python prototype
-to a distributable, typed, and reliable WinRT projection.
+This checklist records the shipped Python preview and tracks the remaining work
+toward a stable, broadly supported WinRT projection. The `dynwinrt` runtime and
+standalone `dynwinrt-codegen` command are published on PyPI.
 
 See [`docs/guides/python/python-ui-ecosystem.md`](../guides/python/python-ui-ecosystem.md) for research on
 Python UI frameworks, static pywinrt adoption, real integrations, and the value
@@ -9,13 +10,15 @@ of a dynamic projection.
 
 ## Target states
 
-- **Data API preview:** a clean machine can install wheels and generated
+- **Data API preview (shipped):** a clean machine can install wheels and generated
   bindings, then call supported Windows SDK APIs without Rust, Node.js, or a
   source checkout.
-- **Data API release:** generated APIs follow normal Python semantics for
+- **Data API release (in progress):** generated APIs follow normal Python semantics for
   typing, async, events, collections, errors, and lifecycle.
-- **WinUI preview:** Python can bootstrap the Windows App SDK, enter an STA,
-  construct composable WinUI classes, load Fluent resources, and close cleanly.
+- **WinUI preview (x64 validated):** Python can bootstrap the Windows App SDK,
+  enter an STA, construct composable WinUI classes, and load Fluent resources.
+  Native ARM64 immediate teardown remains tracked in
+  [issue #116](https://github.com/microsoft/dynwinrt/issues/116).
 
 ## Verified baseline
 
@@ -24,7 +27,7 @@ of a dynamic projection.
       APIs on ARM64.
 - [x] Python generation emits `.py` implementations.
 - [x] `--lang py` emits `.pyi`, `__init__.pyi`, and `py.typed` by default.
-- [x] Generated Python E2E covers 34 Windows SDK scenarios.
+- [x] Generated Python E2E covers 42 API specs and 88 checks.
 - [x] Runtime primitives exist for arrays, structs, delegates, events,
       cancellation, progress callbacks, vectors, and maps.
 - [x] Python codegen snapshots cover the `Uri` implementation and stubs.
@@ -147,7 +150,7 @@ of a dynamic projection.
       Windows App SDK, and custom WinMD namespaces.
 - [x] Add runnable samples for files, notifications, imaging, async, events,
       collections, and custom WinMD consumption.
-- [ ] Document generated-code version compatibility with `dynwinrt`.
+- [x] Document generated-code version compatibility with `dynwinrt`.
 - [ ] Add troubleshooting for metadata, apartment, bootstrap, architecture,
       and wheel compatibility failures.
 - [x] Add progress-callback tests for worker-thread delivery and operations
@@ -225,14 +228,14 @@ of a dynamic projection.
 20. [x] Make reference returns null-safe without lying in generated annotations.
 21. [x] Preserve `UInt32` / `UInt64` values across the Python boundary.
 22. [x] Project and box `IReference<T>` struct fields, including struct-valued `T`.
-22. [x] Add typed event arguments while preserving token subscriptions and adding
+23. [x] Add typed event arguments while preserving token subscriptions and adding
         idempotent unsubscribe helpers.
-23. [x] Project public composable constructors and reject protected composition.
-24. [x] Add an experimental, typed WinUI `Application` bootstrap path backed
+24. [x] Project public composable constructors and reject protected composition.
+25. [x] Add an experimental, typed WinUI `Application` bootstrap path backed
         by a shared `codegen/winrt/extensions/winui` spec consumed by both
         JavaScript and Python projection.
-25. [x] Run a real unpackaged x64 Python WinUI app with Fluent resources,
+26. [x] Run a real unpackaged x64 Python WinUI app with Fluent resources,
         Window/Grid/Button/TextBlock, automation-driven Click, and clean
         apartment shutdown.
-26. [x] Release the GIL around blocking WinUI host calls and verify asyncio
+27. [x] Release the GIL around blocking WinUI host calls and verify asyncio
         worker progress, WinRT async completion, and DispatcherQueue UI dispatch.

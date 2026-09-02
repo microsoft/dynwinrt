@@ -53,7 +53,7 @@ package.
 | `--class-name NAME[,NAME...]` | Generate specific classes or public interfaces. Use fully qualified names, or unqualified names together with `--namespace`. |
 | `--ref PATH[;PATH...]` | Metadata used only for type resolution. Sibling discovery is disabled for references. |
 | `--ref-list FILE` | Newline-separated reference metadata paths; blank lines and `#` comments are ignored. |
-| `--lang js\|py` | `js` emits ESM `.js` and `.d.ts` files (default); `py` emits `.py`, `.pyi`, and `py.typed`. |
+| `--lang js\|py` | `js` emits CommonJS `.js`, an ESM facade, and `.d.ts` files (default); `py` emits `.py`, `.pyi`, and `py.typed`. |
 | `--output DIR` | Dedicated codegen-owned output directory (default `./generated`). Existing contents may be replaced or removed. |
 | `--import-name NAME` | Runtime package imported by generated JavaScript (default `@microsoft/dynwinrt`). |
 | `--dry-run` | Validate metadata, dependencies, ABI contracts, and layout without writing files. |
@@ -112,9 +112,10 @@ WinRT output includes typed classes and interfaces, public activation
 constructors, static factory methods, enums, structs, delegates, async
 operations, and generic collections.
 
-JavaScript output is ESM and needs no TypeScript compilation step. Python output
-uses snake_case names and includes type information by default. Documentation
-from sibling XML files is included when available.
+JavaScript implementation modules are CommonJS, with `index.mjs` facades for
+ESM consumers, and need no TypeScript compilation step. Python output uses
+snake_case names and includes type information by default. Documentation from
+sibling XML files is included when available.
 
 Classic COM generation is available only with `--lang js`. It is isolated in a
 `com` subpackage and fails closed when metadata does not provide enough ABI,

@@ -1,18 +1,24 @@
 # WinRT in the Python UI Ecosystem: Adoption and the Value of dynwinrt
 
 > Research snapshot: July 20, 2026
+>
+> **Current project status:** since this research was collected, the
+> [`dynwinrt`](https://pypi.org/project/dynwinrt/) runtime and standalone
+> [`dynwinrt-codegen`](https://pypi.org/project/dynwinrt-codegen/) command have
+> shipped as PyPI previews. Numerical ecosystem data below remains a dated
+> research snapshot.
 
 ## What this research asks
 
-Is there real user value in adding Python support to dynwinrt?
+Is there real user value in dynwinrt's Python support?
 
 **Yes, but the value is not in creating another Python UI framework.**
 
 Python developers already build user interfaces with Qt, Tkinter, wxPython,
 Kivy, and pywebview. Those applications still need Windows-specific features
 such as notifications, media controls, OCR, Wi-Fi, Bluetooth, sensors, and
-system colors. Today, they primarily access those APIs through the static
-pywinrt projection.
+system colors. At the time of this snapshot, they primarily accessed those APIs
+through the static pywinrt projection.
 
 Public data shows that:
 
@@ -26,8 +32,8 @@ Public data shows that:
   BLE, notifications, and OCR are more common.
 
 The audience for dynwinrt Python support is therefore developers who already
-have a UI framework but still need Windows APIs. dynwinrt would provide the
-Windows API access layer, not replace the UI framework.
+have a UI framework but still need Windows APIs. dynwinrt provides the Windows
+API access layer; it does not replace the UI framework.
 
 ## Terminology
 
@@ -36,7 +42,7 @@ Windows API access layer, not replace the UI framework.
 | UI framework | Provides windows, controls, and UI events. Examples include PyQt, PySide, Tkinter, and wxPython. |
 | WinRT | A set of Windows system APIs for capabilities such as notifications, media, OCR, Bluetooth, and sensors. |
 | Python projection | Converts WinRT COM/ABI interfaces into ordinary Python classes, methods, and events. |
-| pywinrt | The current active static Python projection. Each WinRT namespace is generated and compiled into a wheel ahead of time. |
+| pywinrt | The active static Python projection at the time of this snapshot. Each WinRT namespace is generated and compiled into a wheel ahead of time. |
 | dynwinrt | Generates lightweight Python wrappers and invokes the WinRT ABI through a shared native runtime. |
 
 "Python UI framework" describes the API used by Python developers, not
@@ -231,7 +237,7 @@ that calling WinRT from Python is not merely an experimental niche.
 |---|---|---|
 | Microsoft `winrt` | Discontinued after 2021 | Covers only CPython 3.7-3.9 and x86/x64 |
 | Community `winsdk` | Archived | Monolithic package supporting CPython 3.8-3.12 and ARM64 |
-| Current `pywinrt` | Active solution | One `winrt-*` wheel per namespace; supports CPython 3.9-3.14 and x86/x64/ARM64 |
+| `pywinrt` (July 2026) | Active solution | One `winrt-*` wheel per namespace; supports CPython 3.9-3.14 and x86/x64/ARM64 |
 
 The continued presence of all three generations shows both sustained demand and
 the maintenance burden of a static projection. It must track:
@@ -270,7 +276,7 @@ does not require another purpose-built native extension.
 | Custom WinMD | Build and maintain a dedicated native projection | Use the same code generator and runtime |
 | Python and JavaScript | Maintain separate projection and runtime implementations | Share the Rust ABI core |
 | UI framework | Framework-independent | Also framework-independent |
-| Current maturity | Production users and broad API coverage | Python support is still evolving; coverage depends on the runtime |
+| Maturity | Production users and broad API coverage | Published preview; coverage depends on the shared runtime's supported ABI types |
 
 For an existing Python UI application, the practical value is:
 

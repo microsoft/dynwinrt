@@ -1,7 +1,8 @@
 # Python samples
 
-All Python samples use generated bindings and the local `dynwinrt` runtime.
-Run each sample's `generate.ps1` before `run.ps1`.
+All Python samples use generated bindings and an installed `dynwinrt` runtime.
+Install `dynwinrt` and `dynwinrt-codegen` from PyPI, or build both from this
+checkout, then run each sample's `generate.ps1` before `run.ps1`.
 
 | Sample | Demonstrates |
 | --- | --- |

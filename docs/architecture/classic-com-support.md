@@ -3,6 +3,12 @@
 `dynwinrt` supports a deliberately limited subset of Classic COM. It is not a
 general Automation or native Win32 projection.
 
+> **Status: preview, under active development.** The current CI baseline against
+> `Microsoft.Windows.SDK.Win32Metadata` 71.0.14-preview is 5,567 complete safe
+> interface projections out of 7,929 eligible interfaces (70.21%). Earlier
+> inventory and demand-snapshot sections retain the metadata versions and dates
+> stated in those sections.
+
 For installation and application-facing examples, including GUID/IID/CLSID
 and `/com/unsafe`, see
 [Classic COM JavaScript usage](../guides/windows/classic-com-usage.md).

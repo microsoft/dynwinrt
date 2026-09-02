@@ -7,26 +7,23 @@ window resizing, a named Python `TicTacToePanel` XAML registration, a native
 
 ## Prerequisites
 
-- Windows 11 on x64 with Python and Rust/Cargo available.
+- Windows 11 on x64 with CPython 3.11–3.14.
 - An unpackaged **x64** WinAppSDK 2.3 fixture: `Microsoft.UI.Xaml.winmd`, a
   newline-separated reference-WinMD list, and the matching x64
   `Microsoft.WindowsAppRuntime.Bootstrap.dll`. The matching x64 WinAppSDK
   framework/runtime packages and resources must also be installed or available
   to the unpackaged runtime.
 - `dynwinrt` installed in the Python interpreter used to run the sample.
-- A compatible `dynwinrt-codegen` executable, either on `PATH` or passed with
-  `-Codegen`.
+- Matching `dynwinrt` and `dynwinrt-codegen` versions.
 
-No published package is assumed. From the repository root, build the codegen
-executable and install the runtime into the active Python environment:
+Install the published preview packages:
 
 ```powershell
-cargo build -p dynwinrt-codegen --release
-Push-Location bindings\py
-python -m pip install maturin
-python -m maturin develop --release
-Pop-Location
+python -m pip install --pre dynwinrt dynwinrt-codegen
 ```
+
+For source-checkout development, build `dynwinrt-codegen` and install the
+runtime with `python -m maturin develop --release` from `bindings\py` instead.
 
 From this sample directory, generate the local package and copy the bootstrap
 DLL (replace the fixture paths):
@@ -35,12 +32,11 @@ DLL (replace the fixture paths):
 .\generate.ps1 `
   -WinuiWinmd C:\fixtures\winappsdk\metadata\Microsoft.UI.Xaml.winmd `
   -RefList C:\fixtures\winappsdk\winmd-reference-list.txt `
-  -BootstrapDll C:\fixtures\winappsdk\x64\Microsoft.WindowsAppRuntime.Bootstrap.dll `
-  -Codegen ..\..\..\target\release\dynwinrt-codegen.exe
+  -BootstrapDll C:\fixtures\winappsdk\x64\Microsoft.WindowsAppRuntime.Bootstrap.dll
 ```
 
-If the CLI is installed on `PATH`, omit `-Codegen`. Run with the same Python
-environment that contains `dynwinrt`:
+Pass `-Codegen ..\..\..\target\release\dynwinrt-codegen.exe` when testing a
+source build. Run with the same Python environment that contains `dynwinrt`:
 
 ```powershell
 .\run.ps1 -Python C:\path\to\python.exe

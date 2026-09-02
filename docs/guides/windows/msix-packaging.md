@@ -2,7 +2,7 @@
 
 This guide shows how to package a Node.js application that uses
 `@microsoft/dynwinrt` into an MSIX with
-[WinApp CLI](https://github.com/microsoft/WinAppCli) 0.5.0.
+[WinApp CLI](https://github.com/microsoft/WinAppCli) 0.6.2.
 
 The process first creates an application-specific Node
 [Single Executable Application (SEA)](https://nodejs.org/api/single-executable-applications.html).
@@ -20,7 +20,7 @@ Create a Node.js project:
 mkdir my-dynwinrt-app
 cd my-dynwinrt-app
 npm init -y
-npm install --save-dev @microsoft/winappcli@0.5.0
+npm install --save-dev @microsoft/winappcli@0.6.2
 npx winapp init . --use-defaults --add-js-bindings
 ```
 
@@ -322,7 +322,7 @@ For ARM64, repeat the SEA build with the same Node version's
 [`win-arm64/node.exe`](https://nodejs.org/dist/v24.19.0/win-arm64/node.exe)
 and the ARM64 dynwinrt runtime.
 
-WinApp CLI 0.5.0 can create a multi-architecture bundle directly:
+WinApp CLI 0.6.2 can create a multi-architecture bundle directly:
 
 ```powershell
 npx winapp pack `

@@ -18,7 +18,13 @@ contact [opencode@microsoft.com](mailto:opencode@microsoft.com) with any additio
 
 - **Rust** (stable, 2024 edition)
 - **Windows 10/11** with Windows SDK installed
+- **Node.js 18+** for the JavaScript binding and generated JavaScript tests
+- **CPython 3.11–3.14** plus `maturin` for the Python binding
 - **libffi** (bundled via the `libffi` crate)
+
+Some suites also require Windows App SDK metadata/runtime assets or
+`Microsoft.Windows.SDK.Win32Metadata`; the test scripts skip optional suites
+unless those inputs are explicitly required.
 
 ### Building
 
@@ -28,6 +34,12 @@ cargo build -p dynwinrt
 
 # Build the code generator
 cargo build -p dynwinrt-codegen
+
+# Build the JavaScript binding
+(cd bindings/js && npm install && npm run build)
+
+# Build/install the Python binding
+(cd bindings/py && python -m maturin develop)
 ```
 
 ### Running Tests
@@ -38,6 +50,15 @@ cargo test -p dynwinrt
 
 # Code generator tests
 cargo test -p dynwinrt-codegen
+
+# JavaScript tests
+(cd bindings/js && npm test)
+
+# Python tests
+(cd bindings/py && python -m pytest)
+
+# End-to-end tests (auto-detects available metadata)
+pwsh -File ./tests/e2e/e2e_test.ps1
 ```
 
 ### Coverage
@@ -76,7 +97,7 @@ Please use the provided issue templates when available.
 
 1. Fork the repo and create your branch from `main`
 2. If you've added code, add tests that cover the new functionality
-3. Ensure all tests pass (`cargo test`)
+3. Ensure the relevant Rust and language-binding tests pass
 4. Run `cargo clippy` and address any warnings
 5. Submit your pull request
 

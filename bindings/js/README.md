@@ -1,6 +1,6 @@
 # @microsoft/dynwinrt
 
-**Call any Windows Runtime (WinRT) API from JavaScript — without writing a native addon.**
+**Call Windows Runtime (WinRT) APIs from JavaScript — without writing a native addon.**
 
 `dynwinrt` is a runtime library that lets your Node.js or Electron code call modern Windows APIs (WinAppSDK, Windows AI, notifications, file pickers, sensors, storage, networking, …) **directly from JavaScript / TypeScript**, with full IntelliSense, no MSBuild step, no C++ or C# project, and no per-Windows-version recompile.
 
@@ -12,7 +12,12 @@ If you've ever tried to call a Windows API from an Electron or Node app, you've 
 - **Writing a C# addon via `node-api-dotnet`.** Needs the .NET SDK, a separate `csproj` build step, and a manually-maintained C# wrapper for every API surface you want to expose.
 - **Waiting for a typed projection.** Some Windows APIs ship `.winmd` metadata months before any JavaScript-friendly projection appears in a published package.
 
-`dynwinrt` removes all of that. It reads the `.winmd` metadata that ships with the Windows SDK (and WinAppSDK NuGet packages) at **runtime**, resolves the COM vtables, and invokes WinRT methods dynamically. There is no native build step in your Electron project. There is no version pinning — the same generated bindings work across Windows SDK / WinAppSDK revisions as long as the metadata is forward-compatible. You just install `@microsoft/dynwinrt` from npm and call the API.
+`dynwinrt-codegen` reads the `.winmd` metadata that ships with the Windows SDK
+and WinAppSDK ahead of time. The generated JavaScript registers the required
+interface signatures, and `dynwinrt` resolves and invokes the COM vtables
+dynamically at runtime. There is no native build step in the consuming Electron
+or Node project. The same generated bindings can work across compatible
+metadata revisions without rebuilding a native addon.
 
 The runtime primarily targets **data-style WinRT APIs** (AI, storage, notifications, networking, globalization, …). It also supports WinUI `Application + Window` hosting through the generated `Application.create()` helper when the caller supplies an STA UI thread, an initialized Windows App SDK runtime, and application lifecycle. Unpackaged callers can initialize the runtime with `initWinappsdk()`; the helper resolves the framework resources from that package graph. It also enables Per-Monitor V2 DPI awareness on the UI thread.
 
@@ -64,8 +69,8 @@ contains duplicate short names, each canonical module keeps its native symbol
 name while the root barrel uses a namespace-qualified name, such as
 `AIFoundationEmbeddingVector` or `SemanticSearchEmbeddingVector`.
 
-Classic COM uses a separate subpath from the same package, keeping the WinRT
-root API unchanged:
+Classic COM is a preview under active development. It uses a separate subpath
+from the same package, keeping the WinRT root API unchanged:
 
 ```js
 const { initializeCom } = require('@microsoft/dynwinrt/com');
@@ -83,7 +88,8 @@ type-specific cleanup function.
 
 See the repository's
 [Classic COM JavaScript usage guide](../../docs/guides/windows/classic-com-usage.md) for
-codegen, GUID/IID/CLSID, lifetime, Automation, and `/com/unsafe` examples.
+codegen, current coverage and limitations, GUID/IID/CLSID, lifetime, Automation,
+and `/com/unsafe` examples.
 
 Unambiguous public WinRT activation metadata is projected as JavaScript constructors.
 Parameterized and composable activations support idiomatic forms such as
@@ -140,7 +146,7 @@ properties, and codegen emits the paired `IVector<T>` binding automatically.
 ## Platform support
 
 - **Windows 10 / 11** — x64 and arm64 native binaries shipped via `napi-rs` prebuilds
-- **Node.js** ≥ 16 (Electron, plain Node, vscode extensions, …)
+- **Node.js** ≥ 18 (Electron, plain Node, VS Code extensions, …)
 
 ## Links
 

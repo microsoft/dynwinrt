@@ -1,5 +1,9 @@
 # End-to-End Performance: Electron IPC
 
+> **Recorded benchmark snapshot (August 2026).** These numbers describe the
+> hardware and software environment below; they are not continuously updated.
+> Re-run the command at the end of this document for current results.
+
 Benchmark for the full Electron UI call path: **Renderer → IPC → Main Process → native addon → WinRT → IPC → Renderer**.
 
 This demonstrates that **dynwinrt has no meaningful performance impact** in real Electron applications — IPC serialization dominates all native-layer differences.

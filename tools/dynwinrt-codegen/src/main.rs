@@ -81,9 +81,9 @@ enum Commands {
     /// Generate bindings from .winmd files
     #[command(
         long_about = "Parse .winmd metadata and generate typed binding files.\n\n\
-        By default (`--lang js`) the tool emits plain ESM JavaScript (`.js`) plus\n\
-        matching ambient TypeScript declarations (`.d.ts`) — no TypeScript compiler\n\
-        or SWC step is involved.\n\n\
+        By default (`--lang js`) the tool emits CommonJS JavaScript (`.js`), ESM\n\
+        facades (`.mjs`), and matching ambient TypeScript declarations (`.d.ts`) —\n\
+        no TypeScript compiler or SWC step is involved.\n\n\
         The tool automatically:\n\
         - Detects Windows.winmd from the Windows SDK install path\n\
         - Discovers sibling .winmd files in the same directory as --winmd\n\

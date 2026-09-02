@@ -8,19 +8,15 @@ _None currently. Reserved for issues that make v0.1 unshippable (crash on happy 
 
 ## P1 — Correctness / quality (near-term)
 
-- [ ] **Complete the first native Python ARM64 release-matrix run**. The
-  fail-closed wheel workflow targets the existing
-  `[self-hosted, Windows, ARM64, winui]` runner for CPython 3.11–3.14, but this
-  worktree can validate only x64. Do not mark ARM64 wheels releasable until all
-  native consumer jobs have imported them and called `Windows.Foundation.Uri`.
-
-- [ ] **Panic-free COM entrypoints**. Several `extern "system"` COM callbacks still `unwrap()` on raw pointer inputs, which is UB across the FFI boundary if a caller passes a bad pointer:
-  - `crates/dynwinrt/src/delegate.rs:309` — `IUnknown::from_raw_borrowed(&raw).unwrap()` inside `marshal_abi_ptr` (fires whenever WinRT passes a null pointer arg to a delegate; not just malicious callers)
-  - `crates/dynwinrt/src/com_helpers.rs:42, 53` — same pattern in `com_to_usize` / `com_usize_addref_out`
-  - `crates/dynwinrt/src/array.rs:288, 461` — array element COM read paths
-  - `crates/dynwinrt/src/com_helpers.rs:74-103` — generated `IInspectable` stubs write through `*count`, `*iids`, `*name`, `*level` without null-checking the out-pointer
-  - `crates/dynwinrt/src/vector.rs:229, 382, 384` — `get_at`, `get_many`, `get_size` write to `result`/`items_out`/`actual` unconditionally
-  - `crates/dynwinrt/src/map.rs:222, 231, 267, 396` — `lookup`, `size`, `insert`, `split` do the same
+- [ ] **Panic-free WinRT collection entrypoints**. Several internal
+  `extern "system"` implementations still assume Windows supplied valid
+  pointers:
+  - `com_to_usize` / `com_usize_addref_out` and array clone/read paths use
+    `IUnknown::from_raw_borrowed(...).unwrap()` after a non-null check;
+  - generated `IInspectable` stubs still write through output pointers without
+    validating them; and
+  - vector/map/iterator methods still have output writes whose `E_POINTER`
+    coverage must be audited method by method.
 
   Fix pattern: at every COM ABI entry, validate each out-pointer against null and return `E_POINTER`; convert `.unwrap()` on incoming COM pointers to `Result` + `E_UNEXPECTED`.
 
@@ -40,7 +36,10 @@ _None currently. Reserved for issues that make v0.1 unshippable (crash on happy 
       validate type, numeric range, and nested struct identity before entering
       core accessors.
 
-- [ ] **Codegen: `extract_iid` silently zero-fills malformed GuidAttribute**. `tools/dynwinrt-codegen/src/meta.rs:1030-1051` — if any GuidAttribute field is the wrong integer width, helpers return `0`, producing a plausible-but-wrong IID that will corrupt interface registration without any error. Treat non-matching shapes as a hard error / empty IID.
+- [ ] **Codegen: `extract_iid` silently zero-fills malformed GuidAttribute**.
+      `extract_u8`/`extract_u16`/`extract_u32` return `0` for a mismatched
+      metadata value, producing a plausible-but-wrong IID. Treat a malformed
+      attribute as a hard error or empty IID.
 
 - [x] **Codegen: project concrete generic ancestor interfaces**. Inherited generic
       interfaces are resolved with their concrete arguments, deduplicated by full
@@ -52,17 +51,16 @@ _None currently. Reserved for issues that make v0.1 unshippable (crash on happy 
   Python control subclasses by arbitrary qualified names and preserves native
   overrides/identity. OS activation remains deliberately outside this boundary.
 
-- [ ] **Codegen: default-interface lookup returns first hit**. `tools/dynwinrt-codegen/src/meta.rs:1075-1090` — `find_default_interface_iid` returns on the first `DefaultAttribute` it resolves, which may not be the actual default in edge cases with malformed metadata. Validate against parsed default interface metadata or fail loudly.
-
-- [ ] **Codegen: `--class-name` docs vs `--class` CLI**. The CLI derives the flag from the field name (`class_name` → `--class-name`), and docs use `--class-name`. Confirm both are wired consistently and that any lingering `--class` example is updated. (One instance in `main.rs` after_help was fixed in this review round.)
+- [ ] **Codegen: default-interface lookup returns first hit**.
+      `find_default_interface_type` returns the first `DefaultAttribute` it
+      resolves. Validate that malformed metadata cannot expose multiple
+      conflicting defaults, or fail loudly.
 
 - [ ] **Codegen: snapshot coverage too narrow**. Python snapshots now cover
   `Windows.Foundation.Uri` and the method-rich
   `Windows.Storage.Streams.DataWriter`, but event-heavy types, parameterized
   interfaces, and inherited-interface flattening still need dedicated
   snapshots.
-
-- [ ] **Rust: `AppendOnlyBoxArena::stable_ptr` panics on out-of-range**. `crates/dynwinrt/src/metadata_table/append_only_arena.rs:45-49` — trusted internal use, but the invariant is undocumented and callers can drift. Add a documented safety contract and a debug assertion (or return `Option`).
 
 - [ ] **Rust: map key semantics under-specified**. `crates/dynwinrt/src/map.rs:79-120` — pointer identity is the default, with an ad-hoc string extraction path for `IPropertyValue`. Define one contract (identity vs value equality) and enforce it explicitly.
 
@@ -72,13 +70,9 @@ _None currently. Reserved for issues that make v0.1 unshippable (crash on happy 
       HRESULT when dispatch cannot complete. Each delegate also carries a
       `napi_async_context`, preserving `async_hooks` and `AsyncLocalStorage`.
 
-- [ ] **JS: `DynWinRtStruct::set_object` silently no-ops**. `bindings/js/src/lib.rs:1103-1125` — unsupported input kinds hit `_ => {}`. Return `napi::Result<()>` with a clear error.
-
 ## P2 — Feature completeness
 
 - [ ] **Struct auto-marshaling**. Users still need `DynWinRtStruct.create()` + `setF64(...)` per field. Codegen generates `_packXxx` helpers for known structs already; the gap is user-defined / ad-hoc structs. Consider generic `pack(schema, obj)`.
-
-- [ ] **Nullable / `IReference<T>` handling**. Null COM pointers surface as `WinRTValue::Null`; codegen wrappers should surface `T | null` in `.d.ts` for these return positions.
 
 - [x] **Python `IReference<T>` as struct field**. Generated structs read native
       `T | None`, accept native values and legacy wrappers, and box through
@@ -93,32 +87,45 @@ _None currently. Reserved for issues that make v0.1 unshippable (crash on happy 
 
 ## P3 — Developer experience & performance
 
-- [ ] **Auto-detect WinAppSDK Bootstrap DLL for unpackaged apps**. `initialize_winappsdk(major, minor)` currently `.expect(...)`s the `WINAPPSDK_BOOTSTRAP_DLL_PATH` env var (`crates/dynwinrt/src/winapp.rs:43`). Only relevant when a user is running unpackaged (packaged/MSIX apps don't call this — the framework package dep loads WinAppSDK automatically). For the unpackaged path, search `~/.winapp/packages/`, `~/.nuget/packages/microsoft.windowsappsdk.*/`, and standard Program Files install paths, in that order, falling back to the env var. Also swap the `expect(...)` for a typed error.
+- [ ] **Auto-detect the WinAppSDK Bootstrap DLL for unpackaged apps**.
+      Initialization now returns a typed error when neither
+      `bootstrap_dll_path` nor `WINAPPSDK_BOOTSTRAP_DLL_PATH` is supplied, but
+      it does not search restored `~/.winapp/packages`,
+      `~/.nuget/packages/microsoft.windowsappsdk.*`, or installed framework
+      locations.
 
-- [ ] **Error message enrichment**. Wrap HRESULT errors with `IRestrictedErrorInfo` message strings on the way out; today users see raw HRESULT codes.
+- [ ] **JavaScript error message enrichment**. Preserve restricted WinRT error
+      information alongside HRESULTs. Python already exposes the signed HRESULT
+      through `.winerror` and includes restricted error text when Windows
+      provides it.
 
 - [ ] **Value-type inputs to `invoke()`**. `invoke()` currently requires `DynWinRtValue` wrappers per argument (`+~0.6-1.6 µs / arg`). Accept raw JS values (`number`/`string`/`bool`) and dispatch via `in_param_types()` on `MethodHandle`.
 
-- [ ] **Method handle without `RwLock`**. `invoke_method` takes an `RwLock` read on every call (~15-20 ns). Store `Arc<Method>` directly in `MethodHandle` and bypass the arena lock on the hot path.
+- [ ] **Method handle without an arena read lock**. `MethodHandle` stores an
+      arena index; each call briefly reads `AppendOnlyBoxArena` to obtain its
+      stable method pointer. Store a stable method handle directly if benchmark
+      results justify removing that lock.
 
 - [ ] **Stack-allocated return path**. `Ok(vec![out])` heap-allocates per call. `SmallVec<[WinRTValue; 2]>` for the common single-out shape.
 
-- [ ] **JS binding: raw `Env` lifetime discipline**. `bindings/js/src/lib.rs:1400-1412` — the same-thread delegate path stores the raw `napi_env` under the assumption that the registering thread stays alive. Document + assert thread affinity, or minimize raw-env lifetime.
+- [ ] **JS binding: raw `Env` lifetime discipline**. The same-thread delegate
+      path stores the raw `napi_env` under the assumption that the registering
+      thread stays alive. Document and assert thread affinity, or minimize the
+      raw environment lifetime.
 
-- [ ] **JS: `HSTRING` field extraction via layout cast**. `bindings/js/src/lib.rs:1041-1049` — reads HSTRING out of `ValueTypeData` by reinterpreting bytes as `*const HSTRING`. Expose a typed accessor in `dynwinrt` (`ValueTypeData::field_hstring(index)`) and switch the JS side to it.
+- [ ] **`package.json` engines vs README floor**. `bindings/js/package.json`
+      advertises Node 12+ ranges, while the README requires Node 18+. Align both
+      to a tested release floor. (Currently CI runs Node 24.)
 
-- [ ] **`package.json` engines vs README floor**. `bindings/js/package.json:34-36` advertises Node 12+ ranges, README says Node ≥16. Align to whichever floor CI actually tests. (Currently CI runs Node 24.)
+- [ ] **Python binding follow-ups**. Remaining work is tracked in
+      `PYTHON_CHECKLIST.md`: WinApp CLI integration, consolidated
+      troubleshooting, native ARM64 WinUI E2E, delegates with more than two ABI
+      parameters, zero-copy buffers, and diagnostics.
 
-- [ ] **Python binding follow-ups**. The runtime and codegen now cover async,
-  collections, structs, typed delegates/events, nullable references, and an
-  experimental WinUI Application bootstrap. Remaining work is tracked in
-  `PYTHON_CHECKLIST.md`, especially generated package layout, CPython/architecture
-  coverage, native XAML custom-control registration/overrides, object identity,
-  and delegates with more than two ABI parameters.
-
-- [ ] **Troubleshooting docs in READMEs**. Common failure modes not covered end-to-end: `WINAPPSDK_BOOTSTRAP_DLL_PATH` not set, mismatched apartment, missing capability. Root `README.md` has a small table; grow it based on the last three GitHub issues that repeated.
-
-- [ ] **JSDoc / TSDoc on generated `.d.ts`**. Parameter descriptions and return descriptions are missing on many generated method signatures. `xml_doc.rs` already loads sibling `.xml` — thread that through render_dts.
+- [ ] **Consolidate troubleshooting docs**. Apartment, bootstrap, package
+      identity, architecture, and capability guidance exists across the root,
+      Python, Node dev-mode, and sample READMEs; add one indexed troubleshooting
+      guide instead of duplicating it further.
 
 ## Completed
 
@@ -133,6 +140,8 @@ Kept for reference; git history is the source of truth. Grouped by area.
 - [x] `toNumber()` expanded to Bool, I8, U8, I16, U16, I32, U32, HResult
 - [x] `WinGuid.toString()` for cache keys
 - [x] Auto value wrapping — `filter.append('.png')` works directly on generated `IVector_String`
+- [x] `DynWinRtStruct::setObject` validates field kind and value type and returns
+      a contextual N-API error instead of silently ignoring invalid values
 
 ### Runtime (crates/dynwinrt)
 - [x] `SingleThreadedVector` / `SingleThreadedMap` migrated `RefCell` → `Mutex`; now `Send + Sync + IAgileObject`
@@ -147,6 +156,9 @@ Kept for reference; git history is the source of truth. Grouped by area.
 - [x] COM vtable panic safety: `lock_or!` + null-checked `from_raw_borrowed` returning HRESULTs
 - [x] `WinRTValue::Enum { value, type_handle }` as independent runtime type
 - [x] Parameterized type `default_winrt_value` no longer panics
+- [x] `AppendOnlyBoxArena` documents and tests its stable-pointer invariant;
+      method calls release the arena read guard before native dispatch
+- [x] JS HSTRING struct fields use typed core accessors instead of layout casts
 
 ### Metadata / codegen
 - [x] Struct helpers deduplicated (`generate_struct_helpers`: shared TS interface + pack/unpack)
@@ -158,6 +170,8 @@ Kept for reference; git history is the source of truth. Grouped by area.
 - [x] Parameterized interfaces (e.g. `IVector<String>`, `IReference<UInt32>`) generated as concrete types from winmd (removed unused `_collections.ts`)
 - [x] Auto-detect `Windows.winmd` from `C:\Program Files (x86)\Windows Kits\10\UnionMetadata\`
 - [x] Collection methods: IVector / IVectorView / IMap / IMapView / IKeyValuePair / IIterable / IIterator with full methods
+- [x] Generated JSDoc includes summaries, parameter descriptions, return
+      descriptions, and deprecation text from sibling XML documentation
 
 ### Features
 - [x] Delegate / event support: COM vtable + napi ThreadsafeFunction in `delegate.rs`; `DynWinRtDelegate.create(iid, paramTypes, callback)`; same-thread synchronous invocation path
@@ -166,9 +180,10 @@ Kept for reference; git history is the source of truth. Grouped by area.
 ### Distribution / CI
 - [x] Python runtime wheel matrix for CPython 3.11–3.14 on x64/native ARM64,
   standalone `py3-none-win_<arch>` codegen wheels, isolated artifact consumers,
-  GitHub release assets, and manual OIDC trusted-publishing gates
+  shared GitHub release assets, and PyPI publication through Microsoft ESRP
 - [x] npm prebuilds for `win32-x64-msvc` + `win32-arm64-msvc`
-- [x] `.github/workflows/build.yml` builds winrt-meta and dynwinrt-js on x64 + arm64, plus publishing and sample generation
+- [x] `.github/workflows/build.yml` validates the Rust runtime, JS/Python
+  bindings, codegen, Classic COM coverage, and x64/ARM64 targets
 - [x] `winapp init --add-js-bindings` toolchain integration
 - [x] `package.json` repository URL corrected to `github.com/microsoft/dynwinrt`
 - [x] Cargo.toml files have `authors`, `license`, `description`, `repository`; `bindings/py/pyproject.toml` has authors/license/urls
