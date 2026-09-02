@@ -18,7 +18,9 @@ If you've ever tried to call a modern Windows API (WinAppSDK, Windows AI, notifi
 
 `dynwinrt` reads the same `.winmd` metadata shipped by the Windows SDK and WinAppSDK, then calls the underlying COM vtables **dynamically at runtime via libffi**. The codegen emits typed `.js` + `.d.ts` or `.py` + `.pyi` wrappers; the matching native runtime invokes them. Consuming applications do not need MSBuild, `node-gyp`, Cargo, or a native compiler.
 
-> **Scope** — `dynwinrt` primarily targets **data-style WinRT APIs**. WinUI `Application + Window` hosting is also supported on a caller-managed STA UI thread. Classic COM generation from `Windows.Win32.winmd` is currently available for JavaScript and TypeScript only.
+> **Scope** — `dynwinrt` primarily targets **data-style WinRT APIs**. WinUI
+> `Application + Window` hosting is also supported on a caller-managed STA UI
+> thread. Classic COM has a separate preview surface described below.
 
 ## Quick start
 
@@ -83,19 +85,6 @@ names, native Python values, asyncio-compatible awaitables, and type stubs.
 - [Python codegen package guide](tools/dynwinrt-codegen/python/README.md)
 - [Python runtime guide](bindings/py/README.md)
 
-### Classic COM (JavaScript/TypeScript only)
-
-Classic COM bindings import their runtime API from the separate
-`@microsoft/dynwinrt/com/unsafe` subpath internally. Applications use
-`@microsoft/dynwinrt/com` for initialization and managed COM value types;
-manual ABI declarations require an explicit `/com/unsafe` import. All are
-part of the same npm package, while the package root remains WinRT-only. See
-[Classic COM support](docs/architecture/classic-com-support.md) for the supported ABI,
-common-interface test matrix, unsupported native types, and ownership rules.
-See [Classic COM JavaScript usage](docs/guides/windows/classic-com-usage.md) for codegen,
-GUID/IID/CLSID, lifecycle, generated same-thread event sinks, Automation, and explicit unsafe ABI
-examples.
-
 ### WinUI `Application + Window`
 
 When `Microsoft.UI.Xaml.Application` is selected, codegen emits helpers for
@@ -143,6 +132,38 @@ set `WINAPPSDK_BOOTSTRAP_DLL_PATH` to the architecture-matched
 `Application.create()` resolves the bootstrapped framework resources and
 configures its UI thread for Per-Monitor V2 DPI awareness. Packaged processes
 can omit the bootstrap call.
+
+## Classic COM (Preview)
+
+Classic COM support is functional and tested, but remains a **preview under
+active development**. It targets a conservatively validated subset of
+`IUnknown`- and `IInspectable`-rooted interfaces from `Windows.Win32.winmd`; it
+is not a general Automation or native Win32 projection, and it does not project
+flat DLL exports.
+
+The current CI baseline against
+`Microsoft.Windows.SDK.Win32Metadata` 71.0.14-preview is **5,567 of 7,929
+eligible interfaces (70.21%)** with complete safe code generation. Supported
+contracts include generated coclass activation and QueryInterface views,
+managed interface ownership, native POD layouts, typed counted buffers,
+BSTR/HSTRING, validated VARIANT, SAFEARRAY and PROPVARIANT subsets, and
+synchronous JavaScript implementations of fully supported callback interfaces.
+Seventeen stock-Windows Node E2E runners exercise representative Shell,
+Automation, stream, callback, HWND, and WinRT interop scenarios.
+
+Safety takes priority over coverage. If metadata does not fully describe an
+interface's ABI, layout, ownership, allocator, or cleanup contract, generation
+fails before emitting a partial wrapper. Material gaps still include several
+common graphics, audio, WMI, clipboard/drag-and-drop, derived Automation, union,
+BYREF/InOut, and output-ownership shapes.
+
+Classic COM generation currently emits JavaScript and TypeScript only. It uses
+the separate `@microsoft/dynwinrt/com` public surface; generated wrappers call
+`@microsoft/dynwinrt/com/unsafe` internally after codegen validates the ABI.
+The `@microsoft/dynwinrt` package root remains WinRT-only.
+
+- [Classic COM JavaScript usage guide](docs/guides/windows/classic-com-usage.md)
+- [Supported ABI, coverage, limitations, and ownership model](docs/architecture/classic-com-support.md)
 
 ## Repository layout
 
