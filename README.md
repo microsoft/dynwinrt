@@ -169,14 +169,17 @@ The `@microsoft/dynwinrt` package root remains WinRT-only.
 
 ```
 dynwinrt/
-├── crates/dynwinrt/          # Core Rust runtime (FFI, metadata, async, delegates, collections)
+├── .github/
+│   └── workflows/            # CI, coverage, and Python wheel assembly
+├── .pipelines/               # Official 1ES npm, PyPI, and GitHub release pipeline
+├── crates/dynwinrt/          # Shared WinRT + Classic COM ABI/libffi runtime
 ├── bindings/
-│   ├── js/                   # @microsoft/dynwinrt — JS / TS bindings (napi-rs)
-│   └── py/                   # dynwinrt — Python bindings (PyO3)
+│   ├── js/                   # @microsoft/dynwinrt npm runtime (N-API)
+│   └── py/                   # dynwinrt PyPI runtime (PyO3)
 ├── tools/
-│   └── dynwinrt-codegen/     # npm + PyPI typed-binding generator
+│   └── dynwinrt-codegen/     # npm + PyPI WinRT/Classic COM codegen CLI
 ├── tests/
-│   └── e2e/                  # Cross-language E2E specs, runners, and scripts
+│   └── e2e/                  # JavaScript, Python, and Classic COM E2E suites
 ├── benchmarks/
 │   ├── electron/             # Electron IPC benchmark app
 │   └── js/                   # Dynamic and static JS/native benchmarks
@@ -184,7 +187,9 @@ dynwinrt/
 │   ├── js/                   # JavaScript/TypeScript samples
 │   └── python/               # Python samples
 ├── docs/                     # Architecture, benchmark, guide, and status docs
-└── eng/release/python/       # Python release verification helpers
+└── eng/
+    ├── coverage/             # Mixed Rust/JavaScript/Python coverage tooling
+    └── release/python/       # Python release preparation and verification
 ```
 
 ## Build from source
