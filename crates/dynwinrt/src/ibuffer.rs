@@ -4,14 +4,19 @@
 use std::ffi::c_void;
 
 use windows::Storage::Streams::{Buffer, IBuffer};
-use windows_core::{GUID, HRESULT, IUnknown, Interface};
+use windows_core::{HRESULT, IUnknown, Interface};
 
 use crate::{Error, Result, WinRTValue};
 
-const IID_IBUFFER_BYTE_ACCESS: GUID = GUID::from_u128(0x905a0fef_bc53_11df_8c49_001e4fc686da);
+windows_core::imp::define_interface!(
+    IBufferByteAccess,
+    IBufferByteAccessVtbl,
+    0x905a0fef_bc53_11df_8c49_001e4fc686da
+);
+windows_core::imp::interface_hierarchy!(IBufferByteAccess, IUnknown);
 
 #[repr(C)]
-struct IBufferByteAccessVtbl {
+pub struct IBufferByteAccessVtbl {
     base__: windows_core::IUnknown_Vtbl,
     buffer: unsafe extern "system" fn(*mut c_void, *mut *mut u8) -> HRESULT,
 }
@@ -23,16 +28,15 @@ fn validate_bounds(length: u32, capacity: u32) -> Result<usize> {
     Ok(length as usize)
 }
 
-fn query_byte_pointer(owner: &IBuffer) -> Result<(IUnknown, *mut u8)> {
+fn query_byte_access(owner: &IUnknown) -> Result<IBufferByteAccess> {
+    owner.cast().map_err(Error::WindowsError)
+}
+
+fn query_byte_pointer(owner: &IBuffer) -> Result<(IBufferByteAccess, *mut u8)> {
     let owner: IUnknown = owner.cast().map_err(Error::WindowsError)?;
-    let mut raw_access = std::ptr::null_mut();
-    unsafe { owner.query(&IID_IBUFFER_BYTE_ACCESS, &mut raw_access) }
-        .ok()
-        .map_err(Error::WindowsError)?;
-    let access = unsafe { IUnknown::from_raw(raw_access) };
-    let vtable = unsafe { *(access.as_raw() as *const *const IBufferByteAccessVtbl) };
+    let access = query_byte_access(&owner)?;
     let mut bytes = std::ptr::null_mut();
-    unsafe { ((*vtable).buffer)(access.as_raw(), &mut bytes) }
+    unsafe { (Interface::vtable(&access).buffer)(Interface::as_raw(&access), &mut bytes) }
         .ok()
         .map_err(Error::WindowsError)?;
     Ok((access, bytes))
@@ -96,9 +100,77 @@ pub fn copy_to_ibuffer(bytes: &[u8]) -> Result<WinRTValue> {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::c_void;
+
     use windows::Foundation::Uri;
+    use windows_core::{GUID, HRESULT, IUnknown, Interface};
 
     use super::*;
+    use crate::com_helpers::{E_NOINTERFACE, E_POINTER, S_OK};
+
+    #[repr(C)]
+    struct NullByteAccessQuery {
+        vtable: *const windows_core::IUnknown_Vtbl,
+        ref_count: windows_core::imp::RefCount,
+    }
+
+    impl NullByteAccessQuery {
+        const VTABLE: windows_core::IUnknown_Vtbl = windows_core::IUnknown_Vtbl {
+            QueryInterface: Self::query_interface,
+            AddRef: Self::add_ref,
+            Release: Self::release,
+        };
+
+        fn new() -> IUnknown {
+            let object = Box::new(Self {
+                vtable: &Self::VTABLE,
+                ref_count: windows_core::imp::RefCount::new(1),
+            });
+            unsafe { IUnknown::from_raw(Box::into_raw(object).cast()) }
+        }
+
+        unsafe fn from_ptr(this: *mut c_void) -> &'static Self {
+            unsafe { &*(this as *const Self) }
+        }
+
+        unsafe extern "system" fn query_interface(
+            this: *mut c_void,
+            iid: *const GUID,
+            result: *mut *mut c_void,
+        ) -> HRESULT {
+            if iid.is_null() || result.is_null() {
+                return E_POINTER;
+            }
+
+            unsafe {
+                *result = std::ptr::null_mut();
+                if *iid == IUnknown::IID {
+                    *result = this;
+                    Self::from_ptr(this).ref_count.add_ref();
+                    S_OK
+                } else if *iid == IBufferByteAccess::IID {
+                    S_OK
+                } else {
+                    E_NOINTERFACE
+                }
+            }
+        }
+
+        unsafe extern "system" fn add_ref(this: *mut c_void) -> u32 {
+            unsafe { Self::from_ptr(this).ref_count.add_ref() }
+        }
+
+        unsafe extern "system" fn release(this: *mut c_void) -> u32 {
+            unsafe {
+                let object = Self::from_ptr(this);
+                let remaining = object.ref_count.release();
+                if remaining == 0 {
+                    drop(Box::from_raw(this as *mut Self));
+                }
+                remaining
+            }
+        }
+    }
 
     #[test]
     fn validates_length_does_not_exceed_capacity() {
@@ -123,6 +195,14 @@ mod tests {
             copy_borrowed_bytes(std::ptr::null(), 1),
             Err(Error::NullIBufferPointer { length: 1 })
         ));
+    }
+
+    #[test]
+    fn rejects_successful_query_interface_with_null_output() {
+        let owner = NullByteAccessQuery::new();
+        let error = query_byte_access(&owner).unwrap_err();
+        assert!(matches!(error, Error::WindowsError(_)));
+        assert!(error.message().contains("0x80004003"));
     }
 
     #[test]
