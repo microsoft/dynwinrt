@@ -94,7 +94,12 @@ extends:
                     print(f"Package target: {package_target}")
                     print("Real PyPI publication: enabled")
                     '@
-                    python -c $validationScript
+                    $validationScriptPath = Join-Path '$(Agent.TempDirectory)' 'validate-pinned-publication-inputs.py'
+                    [System.IO.File]::WriteAllText(
+                        $validationScriptPath,
+                        $validationScript,
+                        [System.Text.UTF8Encoding]::new($false))
+                    python $validationScriptPath
                     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
                 env:
                   RELEASE_TAG: '${{ variables.releaseTag }}'
