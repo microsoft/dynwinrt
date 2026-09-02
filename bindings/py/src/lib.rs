@@ -496,6 +496,7 @@ def _dynwinrt_dispatch_progress(callback, converter, value):
         m.add_function(wrap_pyfunction!(super::runtime::init_winappsdk, m)?)?;
         m.add_function(wrap_pyfunction!(super::runtime::ro_initialize, m)?)?;
         m.add_function(wrap_pyfunction!(super::runtime::ro_uninitialize, m)?)?;
+        m.add_function(wrap_pyfunction!(super::runtime::unbox_object, m)?)?;
         m.add_function(wrap_pyfunction!(
             super::runtime::register_xaml_runtime_class,
             m
@@ -516,6 +517,7 @@ for _name in (
    'projected_lifetime_scope',
    'project_as',
    'release_projected',
+   'unbox_object',
 ):
     if _name not in __all__:
         __all__.append(_name)

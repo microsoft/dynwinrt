@@ -1,4 +1,5 @@
-from typing import Awaitable, Callable, List, Literal, Mapping, Optional, Protocol, Sequence, TypeVar, Union, final
+from typing import Awaitable, Callable, List, Literal, Mapping, Optional, Protocol, Sequence, TypeVar, Union, final, overload
+from uuid import UUID
 
 _T = TypeVar("_T", covariant=True)
 _P = TypeVar("_P", covariant=True)
@@ -38,6 +39,7 @@ __all__ = [
     "projected_lifetime_scope",
     "project_as",
     "release_projected",
+    "unbox_object",
     "init_winappsdk",
     "ro_initialize",
     "ro_uninitialize",
@@ -110,6 +112,27 @@ def project_as(
 ) -> _ProjectableClass: ...
 
 def release_projected(value: object) -> None: ...
+
+_UnboxedPropertyValue = Union[
+    bool,
+    int,
+    float,
+    str,
+    UUID,
+    bytes,
+    List[int],
+    List[float],
+    List[bool],
+    List[str],
+    List[UUID],
+]
+
+@overload
+def unbox_object(value: None) -> None: ...
+@overload
+def unbox_object(
+    value: "DynWinRTValue",
+) -> Union[_UnboxedPropertyValue, "DynWinRTValue", None]: ...
 
 
 @final

@@ -26,6 +26,7 @@ from dynwinrt import (
     DynWinRTStruct,
     WinGUID,
     ro_initialize,
+    unbox_object,
 )
 from dynwinrt.dynwinrt import _DynWinRTAsyncWithProgress
 
@@ -315,6 +316,27 @@ class TestPropertyValue:
             ("CreateChar16", [DynWinRTType.char16()], [obj]),  # [16]
             ("CreateBoolean", [bool_t], [obj]),    # [17]
             ("CreateString", [hstr], [obj]),       # [18]
+            ("CreateInspectable", [obj], [obj]),   # [19]
+            ("SkippedCreateGuid", [], []),         # [20]
+            ("CreateDateTime", [DynWinRTType.struct_type(
+                "Windows.Foundation.DateTime", [DynWinRTType.i64_type()]
+            )], [obj]),                            # [21]
+            ("SkippedCreateTimeSpan", [], []),     # [22]
+            ("SkippedCreatePoint", [], []),        # [23]
+            ("SkippedCreateSize", [], []),         # [24]
+            ("SkippedCreateRect", [], []),         # [25]
+            ("CreateUInt8Array", [DynWinRTType.array_type(DynWinRTType.u8_type())], [obj]), # [26]
+            ("SkippedCreateInt16Array", [], []),   # [27]
+            ("SkippedCreateUInt16Array", [], []),  # [28]
+            ("CreateInt32Array", [DynWinRTType.array_type(i32)], [obj]), # [29]
+            ("SkippedCreateUInt32Array", [], []),  # [30]
+            ("SkippedCreateInt64Array", [], []),   # [31]
+            ("SkippedCreateUInt64Array", [], []),  # [32]
+            ("SkippedCreateSingleArray", [], []),  # [33]
+            ("SkippedCreateDoubleArray", [], []),  # [34]
+            ("CreateChar16Array", [DynWinRTType.array_type(
+                DynWinRTType.char16()
+            )], [obj]),                             # [35]
         ]
         _, statics_iid, statics_h = _register("E2E_IPropertyValueStatics", self.IPVSTATICS_IID, statics_methods)
 
@@ -369,6 +391,86 @@ class TestPropertyValue:
         pv = statics_h["CreateString"].invoke(factory, [DynWinRTValue.from_hstring("hello dynwinrt")])
         pv_cast = pv.cast(pv_iid)
         assert pv_h["GetString"].get_string(pv_cast) == "hello dynwinrt"
+
+    def test_explicit_unbox_object_for_device_property_values(self):
+        statics_h, _, _, factory = self._setup()
+        boxed_string = statics_h["CreateString"].invoke(
+            factory, [DynWinRTValue.from_hstring("BLE Device")]
+        )
+        boxed_int64 = statics_h["CreateInt64"].invoke(
+            factory, [DynWinRTValue.from_i64(-(2**63))]
+        )
+        boxed_char = statics_h["CreateChar16"].invoke(
+            factory, [DynWinRTValue.from_u16(0xD800)]
+        )
+        boxed_bytes = statics_h["CreateUInt8Array"].invoke(
+            factory,
+            [DynWinRTArray.from_u8_values([0, 1, 127, 255]).to_value()],
+        )
+        boxed_ints = statics_h["CreateInt32Array"].invoke(
+            factory,
+            [DynWinRTArray.from_i32_values([-1, 0, 42]).to_value()],
+        )
+        boxed_chars = statics_h["CreateChar16Array"].invoke(
+            factory,
+            [DynWinRTArray.from_u16_values([0xD800, 0x61]).to_value()],
+        )
+
+        assert unbox_object(boxed_string) == "BLE Device"
+        assert unbox_object(boxed_int64) == -(2**63)
+        assert ord(unbox_object(boxed_char)) == 0xD800
+        assert unbox_object(boxed_bytes) == bytes([0, 1, 127, 255])
+        assert unbox_object(boxed_ints) == [-1, 0, 42]
+        assert [ord(value) for value in unbox_object(boxed_chars)] == [
+            0xD800,
+            0x61,
+        ]
+        assert unbox_object(None) is None
+        assert unbox_object(DynWinRTValue.null_value()) is None
+
+        uri_factory = DynWinRTValue.activation_factory("Windows.Foundation.Uri")
+        identity = uri_factory.identity_raw()
+        assert unbox_object(uri_factory) is uri_factory
+        assert uri_factory.identity_raw() == identity
+
+        date_time = DynWinRTStruct.create(
+            DynWinRTType.struct_type(
+                "Windows.Foundation.DateTime", [DynWinRTType.i64_type()]
+            )
+        )
+        date_time.set_i64(0, 0)
+        unsupported = statics_h["CreateDateTime"].invoke(
+            factory, [date_time.to_value()]
+        )
+        import pytest
+
+        with pytest.raises(OSError, match="Unsupported WinRT IPropertyValue type"):
+            unbox_object(unsupported)
+
+        key_type = DynWinRTType.hstring()
+        object_type = DynWinRTType.object()
+        properties = DynWinRTValue.create_map(
+            [DynWinRTValue.from_hstring("System.Devices.DeviceInstanceId")],
+            [boxed_string],
+            key_type,
+            object_type,
+        )
+        map_type = DynWinRTType.parameterized(
+            WinGUID.parse("3c2925fe-8519-45c1-aa79-197b6718c1c1"),
+            [key_type, object_type],
+        )
+        map_interface = DynWinRTType.register_interface(
+            "IMap_String_Object_UnboxTest", map_type.iid()
+        ).add_method(
+            "Lookup",
+            DynWinRTMethodSig().add_in(key_type).add_out(object_type),
+        )
+        device_property = map_interface.method_by_name("Lookup").invoke(
+            properties.cast(map_type.iid()),
+            [DynWinRTValue.from_hstring("System.Devices.DeviceInstanceId")],
+        )
+        assert unbox_object(device_property) == "BLE Device"
+        assert unbox_object(boxed_string) == "BLE Device"
 
     def test_is_numeric_scalar(self):
         """IsNumericScalar returns False for both int and string PropertyValues

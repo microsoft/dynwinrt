@@ -10,6 +10,7 @@ mod composition;
 mod interfaces;
 mod native_call;
 mod native_callback;
+mod property_value;
 mod result;
 mod roapi;
 mod signature;
@@ -47,6 +48,9 @@ pub use crate::element_factory::{
     create_element_factory_value,
 };
 pub use crate::metadata_table::{MetadataTable, MethodHandle, TypeHandle, TypeKind, ValueTypeData};
+pub use crate::property_value::{
+    PropertyValueData, PropertyValueUnboxResult, unbox_property_value,
+};
 pub use crate::reference::box_ireference;
 pub use crate::result::{Error, Result};
 pub use crate::roapi::ro_get_activation_factory_2;

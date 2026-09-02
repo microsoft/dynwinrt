@@ -114,6 +114,28 @@ produce a wrapper unless the input actually implements that default interface.
 Incompatible types raise the ordinary WinRT `OSError`. Static-only metadata
 classes with no instance surface are not projection targets.
 
+### Explicit boxed-value unboxing
+
+Generic WinRT `Object`/`IInspectable` results remain raw `DynWinRTValue`
+instances. Use `unbox_object()` only where the application expects a boxed
+`Windows.Foundation.IPropertyValue`, such as values from
+`DeviceInformation.properties`:
+
+```python
+from dynwinrt import unbox_object
+
+raw = device_information.properties["System.Devices.DeviceInstanceId"]
+instance_id = unbox_object(raw)
+```
+
+The helper borrows its argument. It maps supported numeric, Boolean, string,
+character, GUID, and corresponding array property types to Python values;
+64-bit integers use `int`, GUIDs use `uuid.UUID`, and `UInt8Array` uses `bytes`.
+`None` stays `None`. If the object does not implement `IPropertyValue`, the
+exact same Python object is returned, so identity and later projection remain
+intact. Unsupported property types (including `DateTime`, `TimeSpan`, geometry,
+inspectable, and other types) and native getter failures raise an exception.
+
 Use `wrapper.as_interface(InterfaceClass)` when converting an existing
 wrapper to an interface view. Use `InterfaceClass.from_value(raw)` for a raw
 `DynWinRTValue`. Do not call the internal `_from_native()` method from

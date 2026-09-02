@@ -20,6 +20,7 @@ import {
   getWindowsDirectory,
   hasPackageIdentity,
   roInitialize,
+  unboxObject,
 } from '../dist/winrt.js'
 import * as winrtRuntime from '../dist/winrt.js'
 import * as comRuntime from '../dist/com.js'
@@ -746,6 +747,113 @@ test('invoke WinRT through dynamic metadata', (t) => {
     .cast(uriIid)
 
   t.is(uriType.methodByName('get_AbsoluteUri').invoke(uri, []).toString(), expected)
+})
+
+test('explicitly unbox WinRT property values without changing raw objects', (t) => {
+  roInitialize(1)
+  const staticsIid = WinGuid.parse('629bdbc8-d932-4ff4-96b9-8d96c5c1e858')
+  const objectType = DynWinRtType.object()
+  const methods: Array<[string, InstanceType<typeof DynWinRtMethodSig>]> = [
+    ['CreateEmpty', new DynWinRtMethodSig().addOut(objectType)],
+    ['CreateUInt8', new DynWinRtMethodSig().addIn(DynWinRtType.u8()).addOut(objectType)],
+    ['CreateInt16', new DynWinRtMethodSig().addIn(DynWinRtType.i16()).addOut(objectType)],
+    ['CreateUInt16', new DynWinRtMethodSig().addIn(DynWinRtType.u16()).addOut(objectType)],
+    ['CreateInt32', new DynWinRtMethodSig().addIn(DynWinRtType.i32()).addOut(objectType)],
+    ['CreateUInt32', new DynWinRtMethodSig().addIn(DynWinRtType.u32()).addOut(objectType)],
+    ['CreateInt64', new DynWinRtMethodSig().addIn(DynWinRtType.i64()).addOut(objectType)],
+    ['CreateUInt64', new DynWinRtMethodSig().addIn(DynWinRtType.u64()).addOut(objectType)],
+    ['CreateSingle', new DynWinRtMethodSig().addIn(DynWinRtType.f32()).addOut(objectType)],
+    ['CreateDouble', new DynWinRtMethodSig().addIn(DynWinRtType.f64()).addOut(objectType)],
+    ['CreateChar16', new DynWinRtMethodSig().addIn(DynWinRtType.char16()).addOut(objectType)],
+    ['CreateBoolean', new DynWinRtMethodSig().addIn(DynWinRtType.boolType()).addOut(objectType)],
+    ['CreateString', new DynWinRtMethodSig().addIn(DynWinRtType.hstring()).addOut(objectType)],
+    ['CreateInspectable', new DynWinRtMethodSig().addIn(objectType).addOut(objectType)],
+    ['SkippedCreateGuid', new DynWinRtMethodSig()],
+    [
+      'CreateDateTime',
+      new DynWinRtMethodSig()
+        .addIn(DynWinRtType.structType('Windows.Foundation.DateTime', [DynWinRtType.i64()]))
+        .addOut(objectType),
+    ],
+    ['SkippedCreateTimeSpan', new DynWinRtMethodSig()],
+    ['SkippedCreatePoint', new DynWinRtMethodSig()],
+    ['SkippedCreateSize', new DynWinRtMethodSig()],
+    ['SkippedCreateRect', new DynWinRtMethodSig()],
+    ['CreateUInt8Array', new DynWinRtMethodSig().addIn(DynWinRtType.arrayType(DynWinRtType.u8())).addOut(objectType)],
+    ['SkippedCreateInt16Array', new DynWinRtMethodSig()],
+    ['SkippedCreateUInt16Array', new DynWinRtMethodSig()],
+    ['CreateInt32Array', new DynWinRtMethodSig().addIn(DynWinRtType.arrayType(DynWinRtType.i32())).addOut(objectType)],
+    ['SkippedCreateUInt32Array', new DynWinRtMethodSig()],
+    ['SkippedCreateInt64Array', new DynWinRtMethodSig()],
+    ['SkippedCreateUInt64Array', new DynWinRtMethodSig()],
+    ['SkippedCreateSingleArray', new DynWinRtMethodSig()],
+    ['SkippedCreateDoubleArray', new DynWinRtMethodSig()],
+    [
+      'CreateChar16Array',
+      new DynWinRtMethodSig().addIn(DynWinRtType.arrayType(DynWinRtType.char16())).addOut(objectType),
+    ],
+  ]
+  let staticsType = DynWinRtType.registerInterface('IPropertyValueStaticsUnboxTest', staticsIid)
+  for (const [name, signature] of methods) {
+    staticsType = staticsType.addMethod(name, signature)
+  }
+  const factory = DynWinRtValue.activationFactory('Windows.Foundation.PropertyValue').cast(staticsIid)
+
+  const boxedString = staticsType.methodByName('CreateString').invoke(factory, [DynWinRtValue.hstring('BLE Device')])
+  const boxedInt64 = staticsType.methodByName('CreateInt64').invoke(factory, [DynWinRtValue.i64(-(2n ** 63n))])
+  const boxedChar = staticsType.methodByName('CreateChar16').invoke(factory, [DynWinRtValue.u16(0xd800)])
+  const boxedBytes = staticsType
+    .methodByName('CreateUInt8Array')
+    .invoke(factory, [DynWinRtArray.fromU8Values([0, 1, 127, 255]).toValue()])
+  const boxedInts = staticsType
+    .methodByName('CreateInt32Array')
+    .invoke(factory, [DynWinRtArray.fromI32Values([-1, 0, 42]).toValue()])
+  const boxedChars = staticsType
+    .methodByName('CreateChar16Array')
+    .invoke(factory, [DynWinRtArray.fromU16Values([0xd800, 0x61]).toValue()])
+
+  t.is(unboxObject(boxedString), 'BLE Device')
+  t.is(unboxObject(boxedInt64), -(2n ** 63n))
+  t.is((unboxObject(boxedChar) as string).charCodeAt(0), 0xd800)
+  t.deepEqual([...(unboxObject(boxedBytes) as Uint8Array)], [0, 1, 127, 255])
+  t.deepEqual(unboxObject(boxedInts), [-1, 0, 42])
+  t.deepEqual(
+    (unboxObject(boxedChars) as string[]).map((value) => value.charCodeAt(0)),
+    [0xd800, 0x61],
+  )
+  t.is(unboxObject(null), null)
+  t.is(unboxObject(DynWinRtValue.nullValue()), null)
+
+  const uriFactory = DynWinRtValue.activationFactory('Windows.Foundation.Uri')
+  const identity = uriFactory.identityRaw()
+  t.is(unboxObject(uriFactory), uriFactory)
+  t.is(uriFactory.identityRaw(), identity)
+
+  const dateTime = DynWinRtStruct.create(DynWinRtType.structType('Windows.Foundation.DateTime', [DynWinRtType.i64()]))
+  dateTime.setI64(0, 0n)
+  const unsupported = staticsType.methodByName('CreateDateTime').invoke(factory, [dateTime.toValue()])
+  t.throws(() => unboxObject(unsupported), { message: /Unsupported WinRT IPropertyValue type/ })
+
+  const keyType = DynWinRtType.hstring()
+  const propertyMap = DynWinRtValue.createMap(
+    [DynWinRtValue.hstring('System.Devices.DeviceInstanceId')],
+    [boxedString],
+    keyType,
+    objectType,
+  )
+  const mapType = DynWinRtType.parameterized(WinGuid.parse('3c2925fe-8519-45c1-aa79-197b6718c1c1'), [
+    keyType,
+    objectType,
+  ])
+  const mapInterface = DynWinRtType.registerInterface('IMap_String_Object_UnboxTest', mapType.iid()).addMethod(
+    'Lookup',
+    new DynWinRtMethodSig().addIn(keyType).addOut(objectType),
+  )
+  const deviceProperty = mapInterface
+    .methodByName('Lookup')
+    .invoke(propertyMap.cast(mapType.iid()), [DynWinRtValue.hstring('System.Devices.DeviceInstanceId')])
+  t.is(unboxObject(deviceProperty), 'BLE Device')
+  t.is(unboxObject(boxedString), 'BLE Device')
 })
 
 test('resolve WinRT async operations through the Node event loop', async (t) => {

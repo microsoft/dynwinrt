@@ -125,6 +125,29 @@ converting a raw value to a generated runtime class. A failed QueryInterface is
 reported as an error. Internal generated `_fromNative()` paths consume native
 return values; application code should use `projectAs()` instead.
 
+### Explicit boxed-value unboxing
+
+Generic WinRT `Object`/`IInspectable` results remain raw `DynWinRtValue`
+instances. Use `unboxObject()` only where the application expects a boxed
+`Windows.Foundation.IPropertyValue`, such as values from
+`DeviceInformation.properties`:
+
+```js
+import { unboxObject } from '@microsoft/dynwinrt'
+
+const raw = deviceInformation.properties.get('System.Devices.DeviceInstanceId')
+const instanceId = unboxObject(raw)
+```
+
+The helper borrows its argument. It maps supported numeric, Boolean, string,
+character, GUID, and corresponding array property types to JavaScript values;
+`Int64` and `UInt64` use `bigint`, GUIDs use strings, and `UInt8Array` uses
+`Uint8Array`. `null` stays `null`. If the object does not implement
+`IPropertyValue`, the exact same JavaScript object is returned, so identity and
+later projection remain intact. Unsupported property types (including
+`DateTime`, `TimeSpan`, geometry, inspectable, and other types) and native getter
+failures throw.
+
 Generated WinUI `IElementFactory` bindings expose `IElementFactory.create()`.
 It creates a synchronous, UI-thread factory backed by JavaScript
 `getElement`/`recycleElement` callbacks. Call `releaseCallbacks()` on the
