@@ -1,6 +1,6 @@
 # dynwinrt
 
-**Call any Windows Runtime (WinRT) API from JavaScript or TypeScript — without writing a native addon.**
+**Call Windows APIs — WinRT, classic COM, and flat Win32 (`[DllImport]`) — from JavaScript or TypeScript without writing a native addon.**
 
 [![@microsoft/dynwinrt](https://img.shields.io/npm/v/@microsoft/dynwinrt.svg?label=%40microsoft%2Fdynwinrt)](https://www.npmjs.com/package/@microsoft/dynwinrt)
 [![@microsoft/dynwinrt-codegen](https://img.shields.io/npm/v/@microsoft/dynwinrt-codegen.svg?label=%40microsoft%2Fdynwinrt-codegen)](https://www.npmjs.com/package/@microsoft/dynwinrt-codegen)
@@ -14,7 +14,7 @@ If you've ever tried to call a modern Windows API (WinAppSDK, Windows AI, notifi
 - **Writing a C# addon via `node-api-dotnet`** — needs the .NET SDK, a `csproj` build step, and a hand-maintained wrapper for every API surface you want to expose.
 - **Waiting for an official projection** — Windows ships `.winmd` metadata months before any JavaScript- or Python-friendly projection appears in a published package.
 
-`dynwinrt` removes all of that. It reads the same `.winmd` metadata your Windows SDK / WinAppSDK NuGet packages already ship and calls the underlying COM vtables **dynamically at runtime via libffi**. The codegen emits typed `.js` + `.d.ts` wrappers; the runtime invokes them through `dynwinrt`'s native binary. No MSBuild step in your app, no `node-gyp`, no per-Windows-version recompile.
+`dynwinrt` removes all of that. It reads the same `.winmd` metadata your Windows SDK / WinAppSDK NuGet packages already ship and calls the underlying COM vtables **dynamically at runtime via libffi**. The codegen emits typed `.js` + `.d.ts` wrappers; the runtime invokes them through `dynwinrt`'s native binary. No MSBuild step in your app, no `node-gyp`, no per-Windows-version recompile. The same runtime and generator now cover three metadata-driven surfaces — **WinRT**, **classic COM**, and **flat Win32 (`[DllImport]`)** — so you can reach Windows APIs whether or not they ship as WinRT runtime classes.
 
 ```ts
 import { LanguageModel } from './bindings/winrt';
@@ -108,6 +108,96 @@ set `WINAPPSDK_BOOTSTRAP_DLL_PATH` to the architecture-matched
 `Application.create()` resolves the bootstrapped framework resources and
 configures its UI thread for Per-Monitor V2 DPI awareness. Packaged processes
 can omit the bootstrap call.
+
+## New: Win32 and classic COM support (JavaScript/TypeScript)
+
+`dynwinrt` now reaches beyond WinRT runtime classes. From the same metadata-driven pipeline it can also project **Windows APIs that are not WinRT**:
+
+- **Classic COM** — `IUnknown`-rooted interfaces created via `CoCreateInstance` and dispatched through the COM vtable (e.g. taskbar, shell).
+- **WinRT interop bridges** — the desktop `*Interop` shims a windowed app needs to reach WinRT features from an `HWND` (Share, media controls, file-picker parenting).
+- **Flat Win32 `[DllImport]`** — plain DLL exports (e.g. Registry, credentials) called through `LoadLibrary` + `GetProcAddress` + libffi.
+
+Generate Win32/COM wrappers by pointing the codegen at the Win32 metadata (`Windows.Win32.winmd` from the [win32metadata](https://github.com/microsoft/win32metadata) package):
+
+### Getting `Windows.Win32.winmd`
+
+`Windows.Win32.winmd` is not on a stock Windows machine — it ships in the MIT-licensed NuGet package [`Microsoft.Windows.SDK.Win32Metadata`](https://www.nuget.org/packages/Microsoft.Windows.SDK.Win32Metadata). A `.nupkg` is just a zip with the `.winmd` at its root, so **copy-paste this whole block into PowerShell as-is** — it fetches the latest winmd and generates the `ITaskbarList3` classic-COM wrapper (used in the first example below) into `./generated` (no NuGet client, no version number to pick):
+
+```powershell
+$pkg = 'microsoft.windows.sdk.win32metadata'
+$ver = (Invoke-RestMethod "https://api.nuget.org/v3-flatcontainer/$pkg/index.json").versions[-1]
+Invoke-WebRequest "https://api.nuget.org/v3-flatcontainer/$pkg/$ver/$pkg.$ver.nupkg" -OutFile "$env:TEMP\win32meta.zip"
+Expand-Archive "$env:TEMP\win32meta.zip" -DestinationPath .\win32meta -Force
+npx dynwinrt-codegen generate --winmd .\win32meta\Windows.Win32.winmd --namespace Windows.Win32.UI.Shell --class-name ITaskbarList3 --output ./generated
+```
+
+`--class-name` names what to generate — either a specific classic-COM/WinRT interface like `ITaskbarList3` (above), or `Apis`, the synthetic bundle of a whole namespace's flat `[DllImport]` exports (shown in the Flat Win32 example below). Dependencies are pulled in automatically. Swap in any other namespace — for something Electron doesn't give you, try `Windows.Win32.Security.Credentials` / `Apis` (Credential Manager — a replacement for the deprecated `keytar`). Reuse the same `.\win32meta\Windows.Win32.winmd` for every run.
+
+> Win32 and classic-COM generation currently emits JavaScript/TypeScript (`.js` + `.d.ts`).
+
+### Classic COM: `CoCreateInstance` + vtable interfaces
+
+```js
+// main.js (Electron main process) — mainWindow is your existing BrowserWindow
+import { ITaskbarList3 } from './generated/ITaskbarList3.js';
+import { TBPFLAG } from './generated/TBPFLAG.js';
+
+// Your window's HWND — any window size works. getNativeWindowHandle() returns a
+// Node Buffer; read it as a 64-bit little-endian bigint.
+const hwnd = mainWindow.getNativeWindowHandle().readBigUInt64LE(0);
+
+const taskbar = ITaskbarList3.create(); // CoCreateInstance under the hood
+taskbar.hrInit();
+taskbar.setProgressState(hwnd, TBPFLAG.TBPF_NORMAL);
+taskbar.setProgressValue(hwnd, 40n, 100n); // paint 40% on the taskbar icon
+```
+
+The generated wrapper exposes natural typed methods while the runtime handles `CoCreateInstance`, interface registration, pointer arguments, `HRESULT` checks, and vtable slot dispatch — no hand-written IIDs, `REFIID`, `void**`, or vtable indices.
+
+### WinRT interop bridges: from `HWND` to WinRT objects
+
+```js
+// main.js (Electron main process)
+import { IDataTransferManagerInterop } from './generated/IDataTransferManagerInterop.js';
+
+const hwnd = mainWindow.getNativeWindowHandle().readBigUInt64LE(0); // your existing window
+
+const interop = IDataTransferManagerInterop.create();
+const dtm = interop.getForWindow(hwnd); // → DynWinRtValue bridge to DataTransferManager
+interop.showShareUIForWindow(hwnd);     // pops the Windows Share sheet over your window
+```
+
+Where `ITaskbarList3` above is a *pure* classic-COM object — every call stays on its own vtable — an **interop** interface is a one-way bridge from Win32 windowing into WinRT: you hand it an `HWND` and `getForWindow(hwnd)` hands back a live **WinRT** object (here a `DataTransferManager`) that you then drive with the rest of your generated WinRT bindings. `create()` activates the WinRT factory and QIs to the interop interface; the returned COM pointer is adopted and surfaced as a `DynWinRtValue` bridge — with no `riid`/`void**` in the signature.
+
+### Flat Win32 exports: call `[DllImport]` APIs
+
+Flat exports live in a namespace's synthetic `Apis` bundle. Generate a whole namespace at once — here every `Reg*` function — with `--class-name Apis` (reusing the winmd fetched above):
+
+```powershell
+npx dynwinrt-codegen generate --winmd .\win32meta\Windows.Win32.winmd --namespace Windows.Win32.System.Registry --class-name Apis --output ./generated
+```
+
+```js
+import { regOpenKeyExW, regCloseKey } from './generated/Apis.js';
+import { REG_SAM_FLAGS } from './generated/REG_SAM_FLAGS.js';
+
+const HKEY_LOCAL_MACHINE = 0x80000002n;
+
+const open = regOpenKeyExW(
+  HKEY_LOCAL_MACHINE,
+  'SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion', // note: doubled backslashes in JS
+  0,
+  REG_SAM_FLAGS.KEY_READ,
+);
+if (open.status !== 0) throw new Error(`RegOpenKeyExW failed: LSTATUS=${open.status}`);
+try {
+  console.log(`hKey = 0x${open.phkResult.toString(16)}`);
+} finally {
+  regCloseKey(open.phkResult);
+}
+```
+
+`[out]` parameters become return fields (`{ status, phkResult }`), caller-allocated buffers and in/out sizes are handled for you, `LPCWSTR` ↔ `string`, and the Win32 `LSTATUS`/error is surfaced. Handles (`HKEY`, `HANDLE`) project as `bigint | number`.
 
 ## Repository layout
 
