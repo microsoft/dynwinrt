@@ -25,10 +25,12 @@ use dynwinrt_codegen::xml_doc::DocTable;
 
 #[derive(Parser)]
 #[command(name = "dynwinrt-codegen")]
-#[command(about = "Generate typed language bindings from WinRT metadata (.winmd) files")]
+#[command(about = "Generate typed language bindings from Windows metadata (.winmd) files")]
 #[command(
     long_about = "dynwinrt-codegen reads .winmd metadata and generates typed bindings\n\
-    that use @microsoft/dynwinrt at runtime to call Windows Runtime APIs dynamically.\n\n\
+    for dynamic Windows API invocation. JavaScript and TypeScript output uses\n\
+    @microsoft/dynwinrt; Python output uses dynwinrt. Supported Classic COM APIs\n\
+    from Windows.Win32 metadata are available for JavaScript and TypeScript.\n\n\
     It auto-detects Windows SDK metadata and discovers sibling .winmd files\n\
     in the same directory, so you typically only need to point at one file."
 )]

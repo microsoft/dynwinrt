@@ -367,7 +367,7 @@ extends:
                 ```bash
                 npm install @microsoft/dynwinrt
                 npm install -D @microsoft/dynwinrt-codegen
-                python -m pip install dynwinrt dynwinrt-codegen
+                python -m pip install --pre dynwinrt dynwinrt-codegen
                 ```
 
                 ## What's Included
