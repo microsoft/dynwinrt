@@ -1,6 +1,5 @@
-# DISPOSABLE TEST PIPELINE: THIS BRANCH MUST NEVER BE MERGED.
-# PublishPyPI=true performs a real, immutable PyPI publication through ESRP.
-# It is not a dry run. Always validate with PublishPyPI=false first.
+# WARNING: MANUALLY RUNNING THIS DISPOSABLE BRANCH PERFORMS IRREVERSIBLE PYPI
+# PUBLICATION. THIS PIPELINE MUST NEVER BE MERGED.
 trigger: none
 pr: none
 
@@ -13,37 +12,16 @@ resources:
 
 variables:
   - group: signingIdentity
-
-parameters:
-  - name: ReleaseTag
-    displayName: Existing GitHub Release tag
-    type: string
-    default: v0.1.0-preview.20
-  - name: ConfirmVersion
-    displayName: Confirm normalized PyPI version (required for publication)
-    type: string
-    default: ''
-  - name: PublishPyPI
-    displayName: Publish to PyPI (REAL AND IRREVERSIBLE)
-    type: boolean
-    default: false
-  - name: PackageTarget
-    displayName: Python package target
-    type: string
-    default: both
-    values:
-      - both
-      - runtime
-      - codegen
-  - name: signingIdentity
-    type: object
-    default:
-      serviceName: $(SigningServiceName)
-      appId: $(SigningAppId)
-      tenantId: $(SigningTenantId)
-      akvName: $(SigningAKVName)
-      authCertName: $(SigningAuthCertName)
-      signCertName: $(SigningSignCertName)
+  - name: releaseTag
+    value: v0.1.0-preview.20
+  - name: releaseVersion
+    value: 0.1.0-preview.20
+  - name: pypiVersion
+    value: 0.1.0rc20
+  - name: packageTarget
+    value: both
+  - name: publishPyPI
+    value: 'true'
 
 extends:
   template: v1/1ES.Official.PipelineTemplate.yml@1esPipelines
@@ -73,7 +51,7 @@ extends:
                   versionSpec: '3.12'
 
               - task: PowerShell@2
-                displayName: Derive and confirm release version
+                displayName: Confirm pinned real-publication inputs
                 inputs:
                   targetType: inline
                   script: |
@@ -85,50 +63,45 @@ extends:
 
                     $validationScript = @'
                     import os
-                    import re
                     from packaging.version import Version
-
                     tag = os.environ["RELEASE_TAG"]
-                    match = re.fullmatch(r"v(.+)", tag)
-                    if not match:
+                    raw_version = os.environ["RELEASE_VERSION"]
+                    pypi_version = os.environ["PYPI_VERSION"]
+                    package_target = os.environ["PACKAGE_TARGET"]
+                    publish = os.environ["PUBLISH_PYPI"].lower()
+                    actual = (tag, raw_version, pypi_version, package_target, publish)
+                    expected = (
+                        "v0.1.0-preview.20",
+                        "0.1.0-preview.20",
+                        "0.1.0rc20",
+                        "both",
+                        "true",
+                    )
+                    if actual != expected:
                         raise SystemExit(
-                            f"ReleaseTag must exactly match v<version>, got {tag!r}"
+                            f"Disposable pipeline inputs changed: expected {expected}, "
+                            f"got {actual}"
                         )
-
-                    raw_version = match.group(1)
-                    normalized_version = str(Version(raw_version))
-                    publish = os.environ["PUBLISH_PYPI"].lower() == "true"
-                    confirm_version = os.environ["CONFIRM_VERSION"]
-                    if publish:
-                        expected_tag = "v0.1.0-preview.20"
-                        expected_version = "0.1.0rc20"
-                        if tag != expected_tag or normalized_version != expected_version:
-                            raise SystemExit(
-                                "This disposable pipeline may publish only "
-                                f"{expected_tag} ({expected_version}), got "
-                                f"{tag} ({normalized_version})"
-                            )
-                        if confirm_version != expected_version:
-                            raise SystemExit(
-                                "PublishPyPI=true requires ConfirmVersion to exactly "
-                                f"equal {expected_version!r}; got {confirm_version!r}"
-                            )
-
+                    if tag != f"v{raw_version}":
+                        raise SystemExit(f"{tag!r} does not match {raw_version!r}")
+                    if str(Version(raw_version)) != pypi_version:
+                        raise SystemExit(
+                            f"{raw_version!r} does not normalize to {pypi_version!r}"
+                        )
                     print(f"Release tag: {tag}")
                     print(f"Raw version: {raw_version}")
-                    print(f"Normalized PyPI version: {normalized_version}")
-                    print(f"##vso[task.setvariable variable=rawVersion]{raw_version}")
-                    print(
-                        "##vso[task.setvariable variable=normalizedVersion]"
-                        f"{normalized_version}"
-                    )
+                    print(f"Normalized PyPI version: {pypi_version}")
+                    print(f"Package target: {package_target}")
+                    print("Real PyPI publication: enabled")
                     '@
                     python -c $validationScript
                     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
                 env:
-                  RELEASE_TAG: '${{ parameters.ReleaseTag }}'
-                  CONFIRM_VERSION: '${{ parameters.ConfirmVersion }}'
-                  PUBLISH_PYPI: '${{ parameters.PublishPyPI }}'
+                  RELEASE_TAG: '${{ variables.releaseTag }}'
+                  RELEASE_VERSION: '${{ variables.releaseVersion }}'
+                  PYPI_VERSION: '${{ variables.pypiVersion }}'
+                  PACKAGE_TARGET: '${{ variables.packageTarget }}'
+                  PUBLISH_PYPI: '${{ variables.publishPyPI }}'
 
               - task: DownloadGitHubRelease@0
                 displayName: Download wheels from exact existing GitHub Release
@@ -136,7 +109,7 @@ extends:
                   connection: 'github-service-connection'
                   userRepository: 'microsoft/dynwinrt'
                   defaultVersionType: 'specificTag'
-                  version: '${{ parameters.ReleaseTag }}'
+                  version: '${{ variables.releaseTag }}'
                   itemPattern: '*.whl'
                   downloadPath: '$(Pipeline.Workspace)/python-packages'
 
@@ -148,7 +121,7 @@ extends:
                     $ErrorActionPreference = 'Stop'
                     python eng\release\python\verify_python_release.py release-set `
                       --directory "$(Pipeline.Workspace)/python-packages" `
-                      --version "$(normalizedVersion)"
+                      --version "${{ variables.pypiVersion }}"
                     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
               - task: 1ES.PublishPipelineArtifact@1
@@ -158,179 +131,119 @@ extends:
                   artifactName: python-packages
 
       # REAL PUBLICATION: PyPI rejects replacement of an existing filename.
-      # This stage is omitted entirely unless PublishPyPI=true.
-      - ${{ if and(eq(parameters.PublishPyPI, true), eq(parameters.ReleaseTag, 'v0.1.0-preview.20'), eq(parameters.ConfirmVersion, '0.1.0rc20'), or(eq(parameters.PackageTarget, 'both'), eq(parameters.PackageTarget, 'runtime'))) }}:
-        - stage: Release_PyPI_Runtime
-          displayName: Publish dynwinrt to PyPI (irreversible)
-          dependsOn: Validate_Collect
-          jobs:
-            - job: publish_python_runtime
-              displayName: Publish 8 dynwinrt wheels to PyPI
-              pool:
-                name: Azure-Pipelines-1ESPT-ExDShared
-                image: windows-latest
-                os: windows
-                hostArchitecture: amd64
-              templateContext:
-                type: releaseJob
-                isProduction: true
+      - stage: Release_PyPI_Runtime
+        displayName: Publish dynwinrt to PyPI (irreversible)
+        dependsOn: Validate_Collect
+        condition: succeeded()
+        jobs:
+          - job: publish_python_runtime
+            displayName: Publish 8 dynwinrt wheels to PyPI
+            pool:
+              name: Azure-Pipelines-1ESPT-ExDShared
+              image: windows-latest
+              os: windows
+              hostArchitecture: amd64
+            templateContext:
+              type: releaseJob
+              isProduction: true
+              inputs:
+                - input: pipelineArtifact
+                  artifactName: python-packages
+                  targetPath: $(Pipeline.Workspace)/python-packages
+            steps:
+              - task: PowerShell@2
+                displayName: Stage exactly 8 runtime wheels
                 inputs:
-                  - input: pipelineArtifact
-                    artifactName: python-packages
-                    targetPath: $(Pipeline.Workspace)/python-packages
-              steps:
-                - task: PowerShell@2
-                  displayName: Stage exactly 8 runtime wheels
-                  inputs:
-                    targetType: inline
-                    script: |
-                      $ErrorActionPreference = 'Stop'
-                      $source = '$(Pipeline.Workspace)/python-packages'
-                      $destination = '$(Pipeline.Workspace)/python-runtime'
-                      New-Item $destination -ItemType Directory -Force | Out-Null
-                      $wheels = @(Get-ChildItem $source `
-                        -Filter 'dynwinrt-*.whl' -File -Recurse)
-                      if ($wheels.Count -ne 8) {
-                        throw "Expected 8 dynwinrt wheels, found $($wheels.Count)"
-                      }
-                      $wheels | Copy-Item -Destination $destination
+                  targetType: inline
+                  script: |
+                    $ErrorActionPreference = 'Stop'
+                    $source = '$(Pipeline.Workspace)/python-packages'
+                    $destination = '$(Pipeline.Workspace)/python-runtime'
+                    New-Item $destination -ItemType Directory -Force | Out-Null
+                    $wheels = @(Get-ChildItem $source `
+                      -Filter 'dynwinrt-*.whl' -File -Recurse)
+                    if ($wheels.Count -ne 8) {
+                      throw "Expected 8 dynwinrt wheels, found $($wheels.Count)"
+                    }
+                    $wheels | Copy-Item -Destination $destination
 
-                # SUCCESS HERE IS A REAL, IMMUTABLE PYPI PUBLICATION, NOT A DRY RUN.
-                - task: EsrpRelease@10
-                  displayName: Publish dynwinrt to PyPI via ESRP
-                  inputs:
-                    ConnectedServiceName: ${{ parameters.signingIdentity.serviceName }}
-                    usemanagedidentity: false
-                    keyvaultname: ${{ parameters.signingIdentity.akvName }}
-                    authcertname: ${{ parameters.signingIdentity.authCertName }}
-                    signcertname: ${{ parameters.signingIdentity.signCertName }}
-                    clientid: ${{ parameters.signingIdentity.appId }}
-                    intent: 'PackageDistribution'
-                    contenttype: 'PyPI'
-                    contentsource: 'Folder'
-                    folderlocation: '$(Pipeline.Workspace)/python-runtime'
-                    waitforreleasecompletion: true
-                    owners: '$(EsrpOwnersEmail)'
-                    approvers: '$(EsrpApproversEmail)'
-                    serviceendpointurl: 'https://api.esrp.microsoft.com'
-                    mainpublisher: 'ESRPRELPACMAN'
-                    domaintenantid: ${{ parameters.signingIdentity.tenantId }}
-                    releasetitle: 'dynwinrt ${{ parameters.ConfirmVersion }}'
-
-      # For PackageTarget=both, codegen waits for runtime so all 8 runtime wheels
-      # publish before the 2 codegen wheels. A codegen-only retry is independent.
-      - ${{ if and(eq(parameters.PublishPyPI, true), eq(parameters.ReleaseTag, 'v0.1.0-preview.20'), eq(parameters.ConfirmVersion, '0.1.0rc20'), eq(parameters.PackageTarget, 'both')) }}:
-        - stage: Release_PyPI_Codegen
-          displayName: Publish dynwinrt-codegen to PyPI (irreversible)
-          dependsOn: Release_PyPI_Runtime
-          jobs:
-            - job: publish_python_codegen
-              displayName: Publish 2 dynwinrt-codegen wheels to PyPI
-              pool:
-                name: Azure-Pipelines-1ESPT-ExDShared
-                image: windows-latest
-                os: windows
-                hostArchitecture: amd64
-              templateContext:
-                type: releaseJob
-                isProduction: true
+              # SUCCESS HERE IS A REAL, IMMUTABLE PYPI PUBLICATION, NOT A DRY RUN.
+              - task: EsrpRelease@10
+                displayName: Publish dynwinrt to PyPI via ESRP
                 inputs:
-                  - input: pipelineArtifact
-                    artifactName: python-packages
-                    targetPath: $(Pipeline.Workspace)/python-packages
-              steps:
-                - task: PowerShell@2
-                  displayName: Stage exactly 2 codegen wheels
-                  inputs:
-                    targetType: inline
-                    script: |
-                      $ErrorActionPreference = 'Stop'
-                      $source = '$(Pipeline.Workspace)/python-packages'
-                      $destination = '$(Pipeline.Workspace)/python-codegen'
-                      New-Item $destination -ItemType Directory -Force | Out-Null
-                      $wheels = @(Get-ChildItem $source `
-                        -Filter 'dynwinrt_codegen-*.whl' -File -Recurse)
-                      if ($wheels.Count -ne 2) {
-                        throw "Expected 2 dynwinrt-codegen wheels, found $($wheels.Count)"
-                      }
-                      $wheels | Copy-Item -Destination $destination
+                  ConnectedServiceName: $(SigningServiceName)
+                  usemanagedidentity: false
+                  keyvaultname: $(SigningAKVName)
+                  authcertname: $(SigningAuthCertName)
+                  signcertname: $(SigningSignCertName)
+                  clientid: $(SigningAppId)
+                  intent: 'PackageDistribution'
+                  contenttype: 'PyPI'
+                  contentsource: 'Folder'
+                  folderlocation: '$(Pipeline.Workspace)/python-runtime'
+                  waitforreleasecompletion: true
+                  owners: '$(EsrpOwnersEmail)'
+                  approvers: '$(EsrpApproversEmail)'
+                  serviceendpointurl: 'https://api.esrp.microsoft.com'
+                  mainpublisher: 'ESRPRELPACMAN'
+                  domaintenantid: $(SigningTenantId)
+                  releasetitle: 'dynwinrt ${{ variables.pypiVersion }}'
 
-                # SUCCESS HERE IS A REAL, IMMUTABLE PYPI PUBLICATION, NOT A DRY RUN.
-                - task: EsrpRelease@10
-                  displayName: Publish dynwinrt-codegen to PyPI via ESRP
-                  inputs:
-                    ConnectedServiceName: ${{ parameters.signingIdentity.serviceName }}
-                    usemanagedidentity: false
-                    keyvaultname: ${{ parameters.signingIdentity.akvName }}
-                    authcertname: ${{ parameters.signingIdentity.authCertName }}
-                    signcertname: ${{ parameters.signingIdentity.signCertName }}
-                    clientid: ${{ parameters.signingIdentity.appId }}
-                    intent: 'PackageDistribution'
-                    contenttype: 'PyPI'
-                    contentsource: 'Folder'
-                    folderlocation: '$(Pipeline.Workspace)/python-codegen'
-                    waitforreleasecompletion: true
-                    owners: '$(EsrpOwnersEmail)'
-                    approvers: '$(EsrpApproversEmail)'
-                    serviceendpointurl: 'https://api.esrp.microsoft.com'
-                    mainpublisher: 'ESRPRELPACMAN'
-                    domaintenantid: ${{ parameters.signingIdentity.tenantId }}
-                    releasetitle: 'dynwinrt-codegen ${{ parameters.ConfirmVersion }}'
-
-      - ${{ if and(eq(parameters.PublishPyPI, true), eq(parameters.ReleaseTag, 'v0.1.0-preview.20'), eq(parameters.ConfirmVersion, '0.1.0rc20'), eq(parameters.PackageTarget, 'codegen')) }}:
-        - stage: Release_PyPI_Codegen
-          displayName: Publish dynwinrt-codegen to PyPI (irreversible retry)
-          dependsOn: Validate_Collect
-          jobs:
-            - job: publish_python_codegen
-              displayName: Publish 2 dynwinrt-codegen wheels to PyPI
-              pool:
-                name: Azure-Pipelines-1ESPT-ExDShared
-                image: windows-latest
-                os: windows
-                hostArchitecture: amd64
-              templateContext:
-                type: releaseJob
-                isProduction: true
+      # Codegen cannot start unless all 8 runtime wheels publish successfully.
+      - stage: Release_PyPI_Codegen
+        displayName: Publish dynwinrt-codegen to PyPI (irreversible)
+        dependsOn: Release_PyPI_Runtime
+        condition: succeeded()
+        jobs:
+          - job: publish_python_codegen
+            displayName: Publish 2 dynwinrt-codegen wheels to PyPI
+            pool:
+              name: Azure-Pipelines-1ESPT-ExDShared
+              image: windows-latest
+              os: windows
+              hostArchitecture: amd64
+            templateContext:
+              type: releaseJob
+              isProduction: true
+              inputs:
+                - input: pipelineArtifact
+                  artifactName: python-packages
+                  targetPath: $(Pipeline.Workspace)/python-packages
+            steps:
+              - task: PowerShell@2
+                displayName: Stage exactly 2 codegen wheels
                 inputs:
-                  - input: pipelineArtifact
-                    artifactName: python-packages
-                    targetPath: $(Pipeline.Workspace)/python-packages
-              steps:
-                - task: PowerShell@2
-                  displayName: Stage exactly 2 codegen wheels
-                  inputs:
-                    targetType: inline
-                    script: |
-                      $ErrorActionPreference = 'Stop'
-                      $source = '$(Pipeline.Workspace)/python-packages'
-                      $destination = '$(Pipeline.Workspace)/python-codegen'
-                      New-Item $destination -ItemType Directory -Force | Out-Null
-                      $wheels = @(Get-ChildItem $source `
-                        -Filter 'dynwinrt_codegen-*.whl' -File -Recurse)
-                      if ($wheels.Count -ne 2) {
-                        throw "Expected 2 dynwinrt-codegen wheels, found $($wheels.Count)"
-                      }
-                      $wheels | Copy-Item -Destination $destination
+                  targetType: inline
+                  script: |
+                    $ErrorActionPreference = 'Stop'
+                    $source = '$(Pipeline.Workspace)/python-packages'
+                    $destination = '$(Pipeline.Workspace)/python-codegen'
+                    New-Item $destination -ItemType Directory -Force | Out-Null
+                    $wheels = @(Get-ChildItem $source `
+                      -Filter 'dynwinrt_codegen-*.whl' -File -Recurse)
+                    if ($wheels.Count -ne 2) {
+                      throw "Expected 2 dynwinrt-codegen wheels, found $($wheels.Count)"
+                    }
+                    $wheels | Copy-Item -Destination $destination
 
-                # SUCCESS HERE IS A REAL, IMMUTABLE PYPI PUBLICATION, NOT A DRY RUN.
-                - task: EsrpRelease@10
-                  displayName: Publish dynwinrt-codegen to PyPI via ESRP
-                  inputs:
-                    ConnectedServiceName: ${{ parameters.signingIdentity.serviceName }}
-                    usemanagedidentity: false
-                    keyvaultname: ${{ parameters.signingIdentity.akvName }}
-                    authcertname: ${{ parameters.signingIdentity.authCertName }}
-                    signcertname: ${{ parameters.signingIdentity.signCertName }}
-                    clientid: ${{ parameters.signingIdentity.appId }}
-                    intent: 'PackageDistribution'
-                    contenttype: 'PyPI'
-                    contentsource: 'Folder'
-                    folderlocation: '$(Pipeline.Workspace)/python-codegen'
-                    waitforreleasecompletion: true
-                    owners: '$(EsrpOwnersEmail)'
-                    approvers: '$(EsrpApproversEmail)'
-                    serviceendpointurl: 'https://api.esrp.microsoft.com'
-                    mainpublisher: 'ESRPRELPACMAN'
-                    domaintenantid: ${{ parameters.signingIdentity.tenantId }}
-                    releasetitle: 'dynwinrt-codegen ${{ parameters.ConfirmVersion }}'
+              # SUCCESS HERE IS A REAL, IMMUTABLE PYPI PUBLICATION, NOT A DRY RUN.
+              - task: EsrpRelease@10
+                displayName: Publish dynwinrt-codegen to PyPI via ESRP
+                inputs:
+                  ConnectedServiceName: $(SigningServiceName)
+                  usemanagedidentity: false
+                  keyvaultname: $(SigningAKVName)
+                  authcertname: $(SigningAuthCertName)
+                  signcertname: $(SigningSignCertName)
+                  clientid: $(SigningAppId)
+                  intent: 'PackageDistribution'
+                  contenttype: 'PyPI'
+                  contentsource: 'Folder'
+                  folderlocation: '$(Pipeline.Workspace)/python-codegen'
+                  waitforreleasecompletion: true
+                  owners: '$(EsrpOwnersEmail)'
+                  approvers: '$(EsrpApproversEmail)'
+                  serviceendpointurl: 'https://api.esrp.microsoft.com'
+                  mainpublisher: 'ESRPRELPACMAN'
+                  domaintenantid: $(SigningTenantId)
+                  releasetitle: 'dynwinrt-codegen ${{ variables.pypiVersion }}'
