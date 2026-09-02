@@ -302,35 +302,30 @@ impl CoroutineProtocol {
             .getattr("_dynwinrt_validate_throw")?
             .call1((typ.clone_ref(py), validation_value, validation_traceback))?;
 
-        if operation.is_none() && matches!(*self.lock_state()?, CoroutineExecutionState::New) {
-            let coroutine = py
+        let was_new = {
+            let mut state = self.lock_state()?;
+            if matches!(*state, CoroutineExecutionState::New) {
+                *state = CoroutineExecutionState::Closed;
+                true
+            } else {
+                false
+            }
+        };
+        if was_new {
+            let result = py
                 .import("dynwinrt.dynwinrt")?
                 .getattr("_dynwinrt_empty_coroutine")?
-                .call0()?;
-            return match (value, traceback) {
-                (None, None) => coroutine.call_method1("throw", (typ,)).map(Bound::unbind),
-                (Some(value), None) => coroutine
-                    .call_method1("throw", (typ, value))
-                    .map(Bound::unbind),
-                (value, Some(traceback)) => coroutine
-                    .call_method1(
-                        "throw",
-                        (typ, value.unwrap_or_else(|| py.None()), traceback),
-                    )
-                    .map(Bound::unbind),
+                .call0()
+                .and_then(|coroutine| throw_into_coroutine(py, &coroutine, typ, value, traceback));
+            let cleanup_result = match operation {
+                Some(operation) => operation.stop(py),
+                None => Ok(()),
             };
+            return finish_with_cleanup(py, result, cleanup_result);
         }
 
         let (owner, coroutine) = self.begin_call(operation, py, false)?;
-        let result = match (value, traceback) {
-            (None, None) => coroutine.call_method1(py, "throw", (typ,)),
-            (Some(value), None) => coroutine.call_method1(py, "throw", (typ, value)),
-            (value, Some(traceback)) => coroutine.call_method1(
-                py,
-                "throw",
-                (typ, value.unwrap_or_else(|| py.None()), traceback),
-            ),
-        };
+        let result = throw_into_coroutine(py, coroutine.bind(py), typ, value, traceback);
         self.finish_call(py, owner, coroutine, &result)?;
         if let Err(primary_error) = &result {
             if let Some(operation) = operation {
@@ -385,6 +380,43 @@ impl CoroutineProtocol {
     }
 }
 
+fn throw_into_coroutine(
+    py: Python<'_>,
+    coroutine: &Bound<'_, PyAny>,
+    typ: Py<PyAny>,
+    value: Option<Py<PyAny>>,
+    traceback: Option<Py<PyAny>>,
+) -> PyResult<Py<PyAny>> {
+    match (value, traceback) {
+        (None, None) => coroutine.call_method1("throw", (typ,)).map(Bound::unbind),
+        (Some(value), None) => coroutine
+            .call_method1("throw", (typ, value))
+            .map(Bound::unbind),
+        (value, Some(traceback)) => coroutine
+            .call_method1(
+                "throw",
+                (typ, value.unwrap_or_else(|| py.None()), traceback),
+            )
+            .map(Bound::unbind),
+    }
+}
+
+fn finish_with_cleanup<T>(
+    py: Python<'_>,
+    result: PyResult<T>,
+    cleanup_result: PyResult<()>,
+) -> PyResult<T> {
+    match (result, cleanup_result) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Ok(_), Err(cleanup_error)) => Err(cleanup_error),
+        (Err(primary_error), Ok(())) => Err(primary_error),
+        (Err(primary_error), Err(cleanup_error)) => {
+            append_cleanup_error(py, &primary_error, &cleanup_error)?;
+            Err(primary_error)
+        }
+    }
+}
+
 fn append_cleanup_error(py: Python<'_>, primary: &PyErr, cleanup: &PyErr) -> PyResult<()> {
     py.import("dynwinrt.dynwinrt")?
         .getattr("_dynwinrt_append_exception_cause")?
@@ -415,7 +447,7 @@ impl AsyncOperation {
     }
 
     fn stop(&self, py: Python<'_>) -> PyResult<()> {
-        let _ = self.cancel();
+        let cancel_result = self.cancel();
         let future = {
             let mut state = self.lock_state()?;
             match std::mem::replace(&mut *state, ExecutionState::Idle) {
@@ -423,10 +455,11 @@ impl AsyncOperation {
                 ExecutionState::Idle | ExecutionState::Blocking => None,
             }
         };
-        if let Some(future) = future {
-            future.call_method0(py, "cancel")?;
-        }
-        Ok(())
+        let future_result = match future {
+            Some(future) => future.call_method0(py, "cancel").map(|_| ()),
+            None => Ok(()),
+        };
+        finish_with_cleanup(py, cancel_result, future_result)
     }
 
     fn future_is_done(&self, py: Python<'_>) -> PyResult<bool> {

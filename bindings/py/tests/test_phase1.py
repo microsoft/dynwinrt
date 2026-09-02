@@ -378,6 +378,45 @@ def test_invalid_throw_does_not_consume_or_leak_coroutine(tmp_path):
     asyncio.run(run_operation())
 
 
+@pytest.mark.parametrize(
+    ("throw_args", "message"),
+    [
+        ((ValueError("injected"),), "injected"),
+        ((ValueError, "legacy injection"), "legacy injection"),
+    ],
+)
+def test_throw_before_start_is_synchronous_and_closes_coroutine(
+    tmp_path, throw_args, message
+):
+    path = tmp_path / f"dynwinrt-new-throw-{len(throw_args)}.txt"
+    path.write_text("throw")
+    operation = _DynWinRTAsync(
+        _storage_file_operation_value(str(path)),
+        lambda value: value,
+    )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        with pytest.raises(ValueError, match=message):
+            operation.throw(*throw_args)
+
+    operation.close()
+    operation.close()
+    with pytest.raises(RuntimeError, match="closed WinRT async coroutine"):
+        operation.__await__()
+
+    async def reject_reuse():
+        task = asyncio.create_task(operation)
+        with pytest.raises(
+            RuntimeError,
+            match="cannot reuse already awaited WinRT async coroutine",
+        ):
+            await task
+
+    asyncio.run(reject_reuse())
+    operation.release()
+
+
 def test_release_preserves_owning_task_cancellation(tmp_path):
     path = tmp_path / "dynwinrt-release-cancellation.txt"
     path.write_text("release")
