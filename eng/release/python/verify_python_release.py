@@ -20,7 +20,13 @@ RUNTIME_REQUIRES = ">=3.11,<3.15"
 CODEGEN_REQUIRES = ">=3.8,<3.15"
 RUNTIME_MINORS = tuple(f"3.{minor}" for minor in range(11, 15))
 PLATFORM_TAGS = ("win_amd64", "win_arm64")
-README_SPEC = {"file": "README.md", "content-type": "text/markdown"}
+README_SPECS = {
+    "dynwinrt": {"file": "README.md", "content-type": "text/markdown"},
+    "dynwinrt-codegen": {
+        "file": "python/README.md",
+        "content-type": "text/markdown",
+    },
+}
 README_HEADINGS = {
     "dynwinrt": "# dynwinrt",
     "dynwinrt-codegen": "# dynwinrt-codegen",
@@ -62,8 +68,8 @@ def verify_source(tag: str | None, release_version: str | None) -> None:
     assert SpecifierSet(codegen_project["requires-python"]) == SpecifierSet(
         CODEGEN_REQUIRES
     )
-    assert runtime_project["readme"] == README_SPEC
-    assert codegen_project["readme"] == README_SPEC
+    assert runtime_project["readme"] == README_SPECS["dynwinrt"]
+    assert codegen_project["readme"] == README_SPECS["dynwinrt-codegen"]
 
     generated_manifest = (
         ROOT / "tools" / "dynwinrt-codegen" / "src" / "codegen" / "package.rs"
