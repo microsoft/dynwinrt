@@ -1,8 +1,7 @@
-trigger:
-  tags:
-    include:
-      - v*
-
+# DISPOSABLE TEST PIPELINE: THIS BRANCH MUST NEVER BE MERGED.
+# PublishPyPI=true performs a real, immutable PyPI publication through ESRP.
+# It is not a dry run. Always validate with PublishPyPI=false first.
+trigger: none
 pr: none
 
 resources:
@@ -16,14 +15,26 @@ variables:
   - group: signingIdentity
 
 parameters:
-  - name: DoEsrp
-    displayName: Sign and release the packages (DoEsrp)
-    type: boolean
-    default: true
+  - name: ReleaseTag
+    displayName: Existing GitHub Release tag
+    type: string
+    default: v0.1.0-preview.20
+  - name: ConfirmVersion
+    displayName: Confirm normalized PyPI version (required for publication)
+    type: string
+    default: ''
   - name: PublishPyPI
-    displayName: Publish Python packages to PyPI
+    displayName: Publish to PyPI (REAL AND IRREVERSIBLE)
     type: boolean
     default: false
+  - name: PackageTarget
+    displayName: Python package target
+    type: string
+    default: both
+    values:
+      - both
+      - runtime
+      - codegen
   - name: signingIdentity
     type: object
     default:
@@ -43,605 +54,283 @@ extends:
         image: windows-latest
         os: windows
     stages:
-    - stage: Build
-      jobs:
-      - job: Build
-        pool:
-          name: Azure-Pipelines-1ESPT-ExDShared
-          image: windows-latest
-          os: windows
-          hostArchitecture: amd64
-        steps:
-          - checkout: self
-            fetchDepth: 0
-
-          - task: UseNode@1
-            displayName: Setup Node.js 24
-            inputs:
-              version: '24.x'
-
-          # Install Rust toolchain with ARM64 target
-          - task: PowerShell@2
-            displayName: Install Rust toolchain
-            inputs:
-              targetType: inline
-              script: |
-                Invoke-WebRequest -Uri https://win.rustup.rs/x86_64 -OutFile rustup-init.exe
-                .\rustup-init.exe -y --default-toolchain stable --target aarch64-pc-windows-msvc
-                $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
-                echo "##vso[task.prependpath]$env:USERPROFILE\.cargo\bin"
-                rustc --version
-                cargo --version
-
-          # Configure Cargo to use Azure Artifacts feed with auth
-          - task: PowerShell@2
-            displayName: Configure Cargo for Azure Artifacts feed
-            inputs:
-              targetType: inline
-              script: |
-                $feedUrl = "sparse+https://pkgs.dev.azure.com/microsoft/pde-oss/_packaging/dynwinrt-cargo/Cargo/index/"
-
-                # Project-level config: registry + source replacement
-                New-Item -ItemType Directory -Path .cargo -Force | Out-Null
-                @"
-                [registries]
-                dynwinrt-cargo = { index = "$feedUrl" }
-
-                [source.crates-io]
-                replace-with = "dynwinrt-cargo"
-
-                [source.dynwinrt-cargo]
-                registry = "$feedUrl"
-                "@ | Set-Content .cargo/config.toml
-
-                # User-level config: credential providers.
-                # Omits cargo:wincred (its RPC stub crashes with `os error 1783`
-                # on some hosted ADO Windows images during the `cargo login`
-                # write path). cargo:token reads the credentials.toml written
-                # below, which is all CI needs.
-                $userConfig = "$env:USERPROFILE\.cargo\config.toml"
-                New-Item -ItemType Directory -Path "$env:USERPROFILE\.cargo" -Force | Out-Null
-                @"
-                [registry]
-                global-credential-providers = ["cargo:token"]
-                "@ | Set-Content $userConfig
-
-                # Write token directly to credentials.toml — bypasses the
-                # deprecated `cargo login <token>` stdin path entirely.
-                $token = "Basic " + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("PAT:$env:SYSTEM_ACCESSTOKEN"))
-                $credsPath = "$env:USERPROFILE\.cargo\credentials.toml"
-                @"
-                [registries.dynwinrt-cargo]
-                token = "$token"
-                "@ | Set-Content $credsPath
-
-                Write-Host "Configured Cargo feed with auth"
-            env:
-              SYSTEM_ACCESSTOKEN: $(System.AccessToken)
-
-          # Build dynwinrt-codegen (x64 + arm64)
-          - task: PowerShell@2
-            displayName: Build dynwinrt-codegen (x64)
-            inputs:
-              targetType: inline
-              script: |
-                cargo build -p dynwinrt-codegen --release
-                New-Item -ItemType Directory -Path tools/dynwinrt-codegen/npm/bin/x64 -Force | Out-Null
-                Copy-Item target/release/dynwinrt-codegen.exe tools/dynwinrt-codegen/npm/bin/x64/
-
-          - task: PowerShell@2
-            displayName: Build dynwinrt-codegen (arm64)
-            inputs:
-              targetType: inline
-              script: |
-                cargo build -p dynwinrt-codegen --release --target aarch64-pc-windows-msvc
-                New-Item -ItemType Directory -Path tools/dynwinrt-codegen/npm/bin/arm64 -Force | Out-Null
-                Copy-Item target/aarch64-pc-windows-msvc/release/dynwinrt-codegen.exe tools/dynwinrt-codegen/npm/bin/arm64/
-
-          # Build dynwinrt (x64 + arm64)
-          - task: PowerShell@2
-            displayName: Configure npm for Azure Artifacts feed
-            inputs:
-              targetType: inline
-              workingDirectory: bindings/js
-              script: |
-                @"
-                registry=https://pkgs.dev.azure.com/microsoft/pde-oss/_packaging/dynwinrt-npm/npm/registry/
-                always-auth=true
-                "@ | Set-Content .npmrc
-                Write-Host "Configured .npmrc for Azure Artifacts"
-
-          - task: npmAuthenticate@0
-            displayName: Authenticate npm feed
-            inputs:
-              workingFile: bindings/js/.npmrc
-
-          - task: PowerShell@2
-            displayName: Install JS binding dependencies
-            inputs:
-              targetType: inline
-              workingDirectory: bindings/js
-              script: npm install
-
-          - task: PowerShell@2
-            displayName: Build dynwinrt (x64)
-            inputs:
-              targetType: inline
-              workingDirectory: bindings/js
-              script: |
-                npx napi build --no-const-enum --platform --release -o dist
-                if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-                npm run build:entrypoints --silent
-
-          - task: PowerShell@2
-            displayName: Build dynwinrt (arm64)
-            inputs:
-              targetType: inline
-              workingDirectory: bindings/js
-              script: |
-                npx napi build --no-const-enum --platform --release --target aarch64-pc-windows-msvc -o dist
-                if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-                npm run build:entrypoints --silent
-
-          # Set version from tag
-          - task: PowerShell@2
-            name: SetMeta
-            displayName: Calculate version from tag
-            inputs:
-              targetType: inline
-              script: |
-                $tag = "$(Build.SourceBranchName)"
-                $version = $tag -replace '^v', ''
-                $isPrerelease = if ($version -match '-') { 'true' } else { 'false' }
-                $releaseLabel = if ($isPrerelease -eq 'true') { 'Prerelease' } else { 'Release' }
-                Write-Host "Publishing version: $version"
-                echo "##vso[task.setvariable variable=version;isOutput=true]$version"
-                echo "##vso[task.setvariable variable=isPrerelease;isOutput=true]$isPrerelease"
-                echo "##vso[task.setvariable variable=releaseLabel;isOutput=true]$releaseLabel"
-
-                # Update package.json versions
-                $jsPackage = Get-Content "bindings/js/package.json" | ConvertFrom-Json
-                $jsPackage.version = $version
-                $jsPackage | ConvertTo-Json -Depth 10 | Set-Content "bindings/js/package.json"
-
-                $metaPackage = Get-Content "tools/dynwinrt-codegen/npm/package.json" | ConvertFrom-Json
-                $metaPackage.version = $version
-                $metaPackage | ConvertTo-Json -Depth 10 | Set-Content "tools/dynwinrt-codegen/npm/package.json"
-
-                Write-Host "Updated package.json versions to $version"
-
-          # Pack npm packages
-          - task: PowerShell@2
-            displayName: Pack npm packages
-            inputs:
-              targetType: inline
-              script: |
-                New-Item -ItemType Directory -Path artifacts -Force | Out-Null
-
-                # Pack dynwinrt
-                Push-Location bindings/js
-                npm pack
-                Move-Item *.tgz ../../artifacts/
-                Pop-Location
-
-                # Pack dynwinrt-codegen
-                Push-Location tools/dynwinrt-codegen/npm
-                npm pack
-                Move-Item *.tgz ../../../artifacts/
-                Pop-Location
-
-                Write-Host "Packed artifacts:"
-                Get-ChildItem artifacts/
-
-          - task: 1ES.PublishPipelineArtifact@1
-            displayName: Upload npm packages
-            inputs:
-              targetPath: artifacts
-              artifactName: npm-packages
-
-    - stage: Wait_Python
-      displayName: Wait for tested Python wheels
-      dependsOn: Build
-      variables:
-        version: $[ stageDependencies.Build.Build.outputs['SetMeta.version'] ]
-      jobs:
-      - job: wait_python
-        pool:
-          name: Azure-Pipelines-1ESPT-ExDShared
-          image: windows-latest
-          os: windows
-          hostArchitecture: amd64
-        displayName: Require successful Python release assembly
-        steps:
-          - checkout: none
-          - task: PowerShell@2
-            displayName: Wait for GitHub ARM64 and x64 validation
-            inputs:
-              targetType: inline
-              script: |
-                $ErrorActionPreference = 'Stop'
-                $runsUri = "https://api.github.com/repos/microsoft/dynwinrt/actions/workflows/python-release.yml/runs?event=push&head_sha=$(Build.SourceVersion)&per_page=20"
-                $headers = @{
-                  Accept = 'application/vnd.github+json'
-                  'User-Agent' = 'microsoft-dynwinrt-ado-release'
-                  'X-GitHub-Api-Version' = '2022-11-28'
-                }
-                function Invoke-GitHubApi([string]$Uri) {
-                  for ($requestAttempt = 1; $requestAttempt -le 3; $requestAttempt++) {
-                    try {
-                      return (Invoke-RestMethod -Uri $Uri -Headers $headers)
-                    } catch {
-                      if ($requestAttempt -eq 3) { throw }
-                      Write-Warning "GitHub API request failed; retrying: $($_.Exception.Message)"
-                      Start-Sleep -Seconds (10 * $requestAttempt)
-                    }
-                  }
-                }
-                $run = $null
-                for ($attempt = 1; $attempt -le 10; $attempt++) {
-                  $runs = Invoke-GitHubApi $runsUri
-                  $matches = @($runs.workflow_runs |
-                    Where-Object head_branch -EQ "v$(version)")
-                  if ($matches.Count -gt 1) {
-                    throw "Expected one Python tag workflow, found $($matches.Count)"
-                  }
-                  if ($matches.Count -eq 1) {
-                    $run = $matches[0]
-                    break
-                  }
-                  Write-Host "Waiting for the Python tag workflow (attempt $attempt/10)..."
-                  Start-Sleep -Seconds 30
-                }
-                if (-not $run) {
-                  throw 'The Python tag workflow did not start within 5 minutes'
-                }
-
-                $ready = $false
-                for ($attempt = 1; $attempt -le 20; $attempt++) {
-                  $jobs = Invoke-GitHubApi "$($run.jobs_url)?per_page=100"
-                  $assembly = @($jobs.jobs | Where-Object name -EQ 'assemble-release')
-                  if ($assembly.Count -eq 1 -and $assembly[0].status -eq 'completed') {
-                    if ($assembly[0].conclusion -ne 'success') {
-                      throw "Python release assembly concluded '$($assembly[0].conclusion)'"
-                    }
-                    $ready = $true
-                    break
-                  }
-                  if ($run.status -eq 'completed' -and $run.conclusion -ne 'success') {
-                    throw "Python tag workflow concluded '$($run.conclusion)'"
-                  }
-                  Write-Host "Waiting for Python release assembly (attempt $attempt/20)..."
-                  Start-Sleep -Seconds 60
-                }
-                if (-not $ready) {
-                  throw 'Python release assembly did not pass within 20 minutes'
-                }
-
-    - stage: Release_GitHub
-      displayName: Create GitHub Release
-      dependsOn:
-        - Build
-        - Wait_Python
-      variables:
-        version: $[ stageDependencies.Build.Build.outputs['SetMeta.version'] ]
-        isPrerelease: $[ stageDependencies.Build.Build.outputs['SetMeta.isPrerelease'] ]
-        releaseLabel: $[ stageDependencies.Build.Build.outputs['SetMeta.releaseLabel'] ]
-      jobs:
-      - job: create_github_release
-        pool:
-          name: Azure-Pipelines-1ESPT-ExDShared
-          image: windows-latest
-          os: windows
-          hostArchitecture: amd64
-        displayName: GitHub Release
-        templateContext:
-          type: releaseJob
-          isProduction: true
-          inputs:
-          - input: pipelineArtifact
-            artifactName: npm-packages
-            targetPath: $(Pipeline.Workspace)/npm-packages
-        steps:
-          - task: GitHubRelease@1
-            displayName: Create GitHub Release
-            inputs:
-              gitHubConnection: 'github-service-connection'
-              repositoryName: 'microsoft/dynwinrt'
-              action: 'create'
-              target: '$(Build.SourceVersion)'
-              tagSource: 'userSpecifiedTag'
-              tag: 'v$(version)'
-              title: 'v$(version)'
-              releaseNotesSource: 'inline'
-              releaseNotesInline: |
-                ## $(releaseLabel) v$(version)
-
-                **Packages:**
-                - `@microsoft/dynwinrt` - JavaScript/TypeScript bindings for WinRT dynamic invocation
-                - `@microsoft/dynwinrt-codegen` - Code generation tool for typed WinRT bindings
-                - `dynwinrt` - Native Python runtime for generated WinRT projections
-                - `dynwinrt-codegen` - Standalone Python code generation tool
-
-                ## Installation
-
-                ```bash
-                npm install @microsoft/dynwinrt
-                npm install -D @microsoft/dynwinrt-codegen
-                python -m pip install dynwinrt dynwinrt-codegen
-                ```
-
-                ## What's Included
-
-                - ✅ Native addons for x64 and ARM64
-                - ✅ TypeScript type definitions
-                - ✅ dynwinrt-codegen CLI for code generation
-                - ✅ CPython 3.11–3.14 runtime wheels for Windows x64 and ARM64
-                - ✅ Standalone Python codegen wheels for Windows x64 and ARM64
-
-                For usage instructions, see the [README](https://github.com/microsoft/dynwinrt#readme).
-              assets: '$(Pipeline.Workspace)/npm-packages/*.tgz'
-              isDraft: false
-              isPreRelease: $(isPrerelease)
-              addChangeLog: true
-
-    - stage: Collect_Python
-      displayName: Collect tested Python wheels
-      dependsOn:
-        - Build
-        - Release_GitHub
-      variables:
-        version: $[ stageDependencies.Build.Build.outputs['SetMeta.version'] ]
-      jobs:
-      - job: collect_python
-        pool:
-          name: Azure-Pipelines-1ESPT-ExDShared
-          image: windows-latest
-          os: windows
-          hostArchitecture: amd64
-        displayName: Collect Python release artifacts
-        steps:
-          - checkout: self
-
-          - task: PowerShell@2
-            displayName: Wait for tested Python wheels
-            inputs:
-              targetType: inline
-              script: |
-                $ErrorActionPreference = 'Stop'
-                $uri = "https://api.github.com/repos/microsoft/dynwinrt/releases/tags/v$(version)"
-                $headers = @{
-                  Accept = 'application/vnd.github+json'
-                  'User-Agent' = 'microsoft-dynwinrt-ado-release'
-                  'X-GitHub-Api-Version' = '2022-11-28'
-                }
-                function Invoke-GitHubApi([string]$Uri) {
-                  for ($requestAttempt = 1; $requestAttempt -le 3; $requestAttempt++) {
-                    try {
-                      return (Invoke-RestMethod -Uri $Uri -Headers $headers)
-                    } catch {
-                      if ($requestAttempt -eq 3) { throw }
-                      Write-Warning "GitHub API request failed; retrying: $($_.Exception.Message)"
-                      Start-Sleep -Seconds (10 * $requestAttempt)
-                    }
-                  }
-                }
-                $ready = $false
-                for ($attempt = 1; $attempt -le 40; $attempt++) {
-                  $release = Invoke-GitHubApi $uri
-                  if ($release.target_commitish -ne '$(Build.SourceVersion)') {
-                    throw "GitHub release target '$($release.target_commitish)' does not match $(Build.SourceVersion)"
-                  }
-                  $wheels = @($release.assets | Where-Object name -Like '*.whl')
-                  if ($wheels.Count -eq 10) {
-                    $ready = $true
-                    break
-                  }
-                  if ($wheels.Count -gt 10) {
-                    throw "Expected 10 Python wheel assets, found $($wheels.Count)"
-                  }
-                  Write-Host "Waiting for Python release wheels ($($wheels.Count)/10, attempt $attempt/40)..."
-                  Start-Sleep -Seconds 30
-                }
-                if (-not $ready) {
-                  throw 'The complete tested Python wheel set was not attached within 20 minutes'
-                }
-
-          - task: DownloadGitHubRelease@0
-            displayName: Download tested Python wheels
-            inputs:
-              connection: 'github-service-connection'
-              userRepository: 'microsoft/dynwinrt'
-              defaultVersionType: 'specificTag'
-              version: 'v$(version)'
-              itemPattern: '*.whl'
-              downloadPath: '$(Pipeline.Workspace)/python-packages'
-
-          - task: UsePythonVersion@0
-            displayName: Setup Python 3.12
-            inputs:
-              versionSpec: '3.12'
-
-          - task: PowerShell@2
-            displayName: Verify complete Python release set
-            inputs:
-              targetType: inline
-              script: |
-                python -m pip install `
-                  --index-url https://packagefeedproxy.microsoft.io/pypi/simple/ `
-                  "packaging>=24,<27" --quiet
-                if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-                python eng\release\python\verify_python_release.py release-set `
-                  --directory "$(Pipeline.Workspace)/python-packages" `
-                  --version "$(version)"
-                if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-          - task: 1ES.PublishPipelineArtifact@1
-            displayName: Upload verified Python packages
-            inputs:
-              targetPath: '$(Pipeline.Workspace)/python-packages'
-              artifactName: python-packages
-
-    - ${{ if eq(parameters.DoEsrp, 'true') }}:
-      - stage: Release_Npm
-        displayName: Publish to NPM
-        dependsOn:
-          - Build
-          - Collect_Python
-        variables:
-          version: $[ stageDependencies.Build.Build.outputs['SetMeta.version'] ]
+      - stage: Validate_Collect
+        displayName: Validate and collect existing Python wheels
         jobs:
-        - job: publish_npm
-          pool:
-            name: Azure-Pipelines-1ESPT-ExDShared
-            image: windows-latest
-            os: windows
-            hostArchitecture: amd64
-          displayName: NPM Publish
-          templateContext:
-            type: releaseJob
-            isProduction: true
-            inputs:
-            - input: pipelineArtifact
-              artifactName: npm-packages
-              targetPath: $(Pipeline.Workspace)/npm-packages
-          steps:
-            - task: PowerShell@2
-              displayName: Verify service connection
-              inputs:
-                targetType: inline
-                script: |
-                  Write-Host "Service Name: ${{ parameters.signingIdentity.serviceName }}"
-                  Write-Host "Version: $(version)"
-                  Write-Host "Packages:"
-                  Get-ChildItem $(Pipeline.Workspace)/npm-packages/
+          - job: validate_collect
+            displayName: Validate existing GitHub Release wheels
+            pool:
+              name: Azure-Pipelines-1ESPT-ExDShared
+              image: windows-latest
+              os: windows
+              hostArchitecture: amd64
+            steps:
+              - checkout: self
 
-            - task: EsrpRelease@10
-              displayName: Publish to NPM via ESRP
-              inputs:
-                ConnectedServiceName: ${{ parameters.signingIdentity.serviceName }}
-                usemanagedidentity: false
-                keyvaultname: ${{ parameters.signingIdentity.akvName }}
-                authcertname: ${{ parameters.signingIdentity.authCertName }}
-                signcertname: ${{ parameters.signingIdentity.signCertName }}
-                clientid: ${{ parameters.signingIdentity.appId }}
-                intent: 'PackageDistribution'
-                contenttype: 'npm'
-                contentsource: 'Folder'
-                folderlocation: $(Pipeline.Workspace)/npm-packages/
-                waitforreleasecompletion: true
-                owners: '$(EsrpOwnersEmail)'
-                approvers: '$(EsrpApproversEmail)'
-                serviceendpointurl: 'https://api.esrp.microsoft.com'
-                mainpublisher: 'ESRPRELPACMAN'
-                domaintenantid: ${{ parameters.signingIdentity.tenantId }}
+              - task: UsePythonVersion@0
+                displayName: Setup Python 3.12
+                inputs:
+                  versionSpec: '3.12'
 
-    - ${{ if and(eq(parameters.DoEsrp, 'true'), eq(parameters.PublishPyPI, 'true')) }}:
-      - stage: Release_PyPI
-        displayName: Publish to PyPI
-        dependsOn:
-          - Build
-          - Collect_Python
-          - Release_Npm
-        variables:
-          version: $[ stageDependencies.Build.Build.outputs['SetMeta.version'] ]
-        jobs:
-        - job: publish_python_runtime
-          pool:
-            name: Azure-Pipelines-1ESPT-ExDShared
-            image: windows-latest
-            os: windows
-            hostArchitecture: amd64
-          displayName: Publish dynwinrt to PyPI
-          templateContext:
-            type: releaseJob
-            isProduction: true
-            inputs:
-            - input: pipelineArtifact
-              artifactName: python-packages
-              targetPath: $(Pipeline.Workspace)/python-packages
-          steps:
-            - task: PowerShell@2
-              displayName: Stage runtime wheels
-              inputs:
-                targetType: inline
-                script: |
-                  $destination = '$(Pipeline.Workspace)/python-runtime'
-                  New-Item $destination -ItemType Directory -Force | Out-Null
-                  $wheels = @(Get-ChildItem '$(Pipeline.Workspace)/python-packages' `
-                    -Filter 'dynwinrt-*.whl' -File -Recurse)
-                  if ($wheels.Count -ne 8) {
-                    throw "Expected 8 dynwinrt wheels, found $($wheels.Count)"
-                  }
-                  $wheels | Copy-Item -Destination $destination
+              - task: PowerShell@2
+                displayName: Derive and confirm release version
+                inputs:
+                  targetType: inline
+                  script: |
+                    $ErrorActionPreference = 'Stop'
+                    python -m pip install `
+                      --index-url https://packagefeedproxy.microsoft.io/pypi/simple/ `
+                      "packaging>=24,<27" --quiet
+                    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-            - task: EsrpRelease@10
-              displayName: Publish dynwinrt to PyPI via ESRP
-              inputs:
-                ConnectedServiceName: ${{ parameters.signingIdentity.serviceName }}
-                usemanagedidentity: false
-                keyvaultname: ${{ parameters.signingIdentity.akvName }}
-                authcertname: ${{ parameters.signingIdentity.authCertName }}
-                signcertname: ${{ parameters.signingIdentity.signCertName }}
-                clientid: ${{ parameters.signingIdentity.appId }}
-                intent: 'PackageDistribution'
-                contenttype: 'PyPI'
-                contentsource: 'Folder'
-                folderlocation: '$(Pipeline.Workspace)/python-runtime'
-                waitforreleasecompletion: true
-                owners: '$(EsrpOwnersEmail)'
-                approvers: '$(EsrpApproversEmail)'
-                serviceendpointurl: 'https://api.esrp.microsoft.com'
-                mainpublisher: 'ESRPRELPACMAN'
-                domaintenantid: ${{ parameters.signingIdentity.tenantId }}
-                releasetitle: 'dynwinrt $(version)'
+                    $validationScript = @'
+                    import os
+                    import re
+                    from packaging.version import Version
 
-        - job: publish_python_codegen
-          dependsOn: publish_python_runtime
-          pool:
-            name: Azure-Pipelines-1ESPT-ExDShared
-            image: windows-latest
-            os: windows
-            hostArchitecture: amd64
-          displayName: Publish dynwinrt-codegen to PyPI
-          templateContext:
-            type: releaseJob
-            isProduction: true
-            inputs:
-            - input: pipelineArtifact
-              artifactName: python-packages
-              targetPath: $(Pipeline.Workspace)/python-packages
-          steps:
-            - task: PowerShell@2
-              displayName: Stage codegen wheels
-              inputs:
-                targetType: inline
-                script: |
-                  $destination = '$(Pipeline.Workspace)/python-codegen'
-                  New-Item $destination -ItemType Directory -Force | Out-Null
-                  $wheels = @(Get-ChildItem '$(Pipeline.Workspace)/python-packages' `
-                    -Filter 'dynwinrt_codegen-*.whl' -File -Recurse)
-                  if ($wheels.Count -ne 2) {
-                    throw "Expected 2 dynwinrt-codegen wheels, found $($wheels.Count)"
-                  }
-                  $wheels | Copy-Item -Destination $destination
+                    tag = os.environ["RELEASE_TAG"]
+                    match = re.fullmatch(r"v(.+)", tag)
+                    if not match:
+                        raise SystemExit(
+                            f"ReleaseTag must exactly match v<version>, got {tag!r}"
+                        )
 
-            - task: EsrpRelease@10
-              displayName: Publish dynwinrt-codegen to PyPI via ESRP
-              inputs:
-                ConnectedServiceName: ${{ parameters.signingIdentity.serviceName }}
-                usemanagedidentity: false
-                keyvaultname: ${{ parameters.signingIdentity.akvName }}
-                authcertname: ${{ parameters.signingIdentity.authCertName }}
-                signcertname: ${{ parameters.signingIdentity.signCertName }}
-                clientid: ${{ parameters.signingIdentity.appId }}
-                intent: 'PackageDistribution'
-                contenttype: 'PyPI'
-                contentsource: 'Folder'
-                folderlocation: '$(Pipeline.Workspace)/python-codegen'
-                waitforreleasecompletion: true
-                owners: '$(EsrpOwnersEmail)'
-                approvers: '$(EsrpApproversEmail)'
-                serviceendpointurl: 'https://api.esrp.microsoft.com'
-                mainpublisher: 'ESRPRELPACMAN'
-                domaintenantid: ${{ parameters.signingIdentity.tenantId }}
-                releasetitle: 'dynwinrt-codegen $(version)'
+                    raw_version = match.group(1)
+                    normalized_version = str(Version(raw_version))
+                    publish = os.environ["PUBLISH_PYPI"].lower() == "true"
+                    confirm_version = os.environ["CONFIRM_VERSION"]
+                    if publish:
+                        expected_tag = "v0.1.0-preview.20"
+                        expected_version = "0.1.0rc20"
+                        if tag != expected_tag or normalized_version != expected_version:
+                            raise SystemExit(
+                                "This disposable pipeline may publish only "
+                                f"{expected_tag} ({expected_version}), got "
+                                f"{tag} ({normalized_version})"
+                            )
+                        if confirm_version != expected_version:
+                            raise SystemExit(
+                                "PublishPyPI=true requires ConfirmVersion to exactly "
+                                f"equal {expected_version!r}; got {confirm_version!r}"
+                            )
+
+                    print(f"Release tag: {tag}")
+                    print(f"Raw version: {raw_version}")
+                    print(f"Normalized PyPI version: {normalized_version}")
+                    print(f"##vso[task.setvariable variable=rawVersion]{raw_version}")
+                    print(
+                        "##vso[task.setvariable variable=normalizedVersion]"
+                        f"{normalized_version}"
+                    )
+                    '@
+                    python -c $validationScript
+                    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+                env:
+                  RELEASE_TAG: '${{ parameters.ReleaseTag }}'
+                  CONFIRM_VERSION: '${{ parameters.ConfirmVersion }}'
+                  PUBLISH_PYPI: '${{ parameters.PublishPyPI }}'
+
+              - task: DownloadGitHubRelease@0
+                displayName: Download wheels from exact existing GitHub Release
+                inputs:
+                  connection: 'github-service-connection'
+                  userRepository: 'microsoft/dynwinrt'
+                  defaultVersionType: 'specificTag'
+                  version: '${{ parameters.ReleaseTag }}'
+                  itemPattern: '*.whl'
+                  downloadPath: '$(Pipeline.Workspace)/python-packages'
+
+              - task: PowerShell@2
+                displayName: Verify exact 10-wheel Python release set
+                inputs:
+                  targetType: inline
+                  script: |
+                    $ErrorActionPreference = 'Stop'
+                    python eng\release\python\verify_python_release.py release-set `
+                      --directory "$(Pipeline.Workspace)/python-packages" `
+                      --version "$(normalizedVersion)"
+                    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+              - task: 1ES.PublishPipelineArtifact@1
+                displayName: Upload verified Python packages
+                inputs:
+                  targetPath: '$(Pipeline.Workspace)/python-packages'
+                  artifactName: python-packages
+
+      # REAL PUBLICATION: PyPI rejects replacement of an existing filename.
+      # This stage is omitted entirely unless PublishPyPI=true.
+      - ${{ if and(eq(parameters.PublishPyPI, true), eq(parameters.ReleaseTag, 'v0.1.0-preview.20'), eq(parameters.ConfirmVersion, '0.1.0rc20'), or(eq(parameters.PackageTarget, 'both'), eq(parameters.PackageTarget, 'runtime'))) }}:
+        - stage: Release_PyPI_Runtime
+          displayName: Publish dynwinrt to PyPI (irreversible)
+          dependsOn: Validate_Collect
+          jobs:
+            - job: publish_python_runtime
+              displayName: Publish 8 dynwinrt wheels to PyPI
+              pool:
+                name: Azure-Pipelines-1ESPT-ExDShared
+                image: windows-latest
+                os: windows
+                hostArchitecture: amd64
+              templateContext:
+                type: releaseJob
+                isProduction: true
+                inputs:
+                  - input: pipelineArtifact
+                    artifactName: python-packages
+                    targetPath: $(Pipeline.Workspace)/python-packages
+              steps:
+                - task: PowerShell@2
+                  displayName: Stage exactly 8 runtime wheels
+                  inputs:
+                    targetType: inline
+                    script: |
+                      $ErrorActionPreference = 'Stop'
+                      $source = '$(Pipeline.Workspace)/python-packages'
+                      $destination = '$(Pipeline.Workspace)/python-runtime'
+                      New-Item $destination -ItemType Directory -Force | Out-Null
+                      $wheels = @(Get-ChildItem $source `
+                        -Filter 'dynwinrt-*.whl' -File -Recurse)
+                      if ($wheels.Count -ne 8) {
+                        throw "Expected 8 dynwinrt wheels, found $($wheels.Count)"
+                      }
+                      $wheels | Copy-Item -Destination $destination
+
+                # SUCCESS HERE IS A REAL, IMMUTABLE PYPI PUBLICATION, NOT A DRY RUN.
+                - task: EsrpRelease@10
+                  displayName: Publish dynwinrt to PyPI via ESRP
+                  inputs:
+                    ConnectedServiceName: ${{ parameters.signingIdentity.serviceName }}
+                    usemanagedidentity: false
+                    keyvaultname: ${{ parameters.signingIdentity.akvName }}
+                    authcertname: ${{ parameters.signingIdentity.authCertName }}
+                    signcertname: ${{ parameters.signingIdentity.signCertName }}
+                    clientid: ${{ parameters.signingIdentity.appId }}
+                    intent: 'PackageDistribution'
+                    contenttype: 'PyPI'
+                    contentsource: 'Folder'
+                    folderlocation: '$(Pipeline.Workspace)/python-runtime'
+                    waitforreleasecompletion: true
+                    owners: '$(EsrpOwnersEmail)'
+                    approvers: '$(EsrpApproversEmail)'
+                    serviceendpointurl: 'https://api.esrp.microsoft.com'
+                    mainpublisher: 'ESRPRELPACMAN'
+                    domaintenantid: ${{ parameters.signingIdentity.tenantId }}
+                    releasetitle: 'dynwinrt ${{ parameters.ConfirmVersion }}'
+
+      # For PackageTarget=both, codegen waits for runtime so all 8 runtime wheels
+      # publish before the 2 codegen wheels. A codegen-only retry is independent.
+      - ${{ if and(eq(parameters.PublishPyPI, true), eq(parameters.ReleaseTag, 'v0.1.0-preview.20'), eq(parameters.ConfirmVersion, '0.1.0rc20'), eq(parameters.PackageTarget, 'both')) }}:
+        - stage: Release_PyPI_Codegen
+          displayName: Publish dynwinrt-codegen to PyPI (irreversible)
+          dependsOn: Release_PyPI_Runtime
+          jobs:
+            - job: publish_python_codegen
+              displayName: Publish 2 dynwinrt-codegen wheels to PyPI
+              pool:
+                name: Azure-Pipelines-1ESPT-ExDShared
+                image: windows-latest
+                os: windows
+                hostArchitecture: amd64
+              templateContext:
+                type: releaseJob
+                isProduction: true
+                inputs:
+                  - input: pipelineArtifact
+                    artifactName: python-packages
+                    targetPath: $(Pipeline.Workspace)/python-packages
+              steps:
+                - task: PowerShell@2
+                  displayName: Stage exactly 2 codegen wheels
+                  inputs:
+                    targetType: inline
+                    script: |
+                      $ErrorActionPreference = 'Stop'
+                      $source = '$(Pipeline.Workspace)/python-packages'
+                      $destination = '$(Pipeline.Workspace)/python-codegen'
+                      New-Item $destination -ItemType Directory -Force | Out-Null
+                      $wheels = @(Get-ChildItem $source `
+                        -Filter 'dynwinrt_codegen-*.whl' -File -Recurse)
+                      if ($wheels.Count -ne 2) {
+                        throw "Expected 2 dynwinrt-codegen wheels, found $($wheels.Count)"
+                      }
+                      $wheels | Copy-Item -Destination $destination
+
+                # SUCCESS HERE IS A REAL, IMMUTABLE PYPI PUBLICATION, NOT A DRY RUN.
+                - task: EsrpRelease@10
+                  displayName: Publish dynwinrt-codegen to PyPI via ESRP
+                  inputs:
+                    ConnectedServiceName: ${{ parameters.signingIdentity.serviceName }}
+                    usemanagedidentity: false
+                    keyvaultname: ${{ parameters.signingIdentity.akvName }}
+                    authcertname: ${{ parameters.signingIdentity.authCertName }}
+                    signcertname: ${{ parameters.signingIdentity.signCertName }}
+                    clientid: ${{ parameters.signingIdentity.appId }}
+                    intent: 'PackageDistribution'
+                    contenttype: 'PyPI'
+                    contentsource: 'Folder'
+                    folderlocation: '$(Pipeline.Workspace)/python-codegen'
+                    waitforreleasecompletion: true
+                    owners: '$(EsrpOwnersEmail)'
+                    approvers: '$(EsrpApproversEmail)'
+                    serviceendpointurl: 'https://api.esrp.microsoft.com'
+                    mainpublisher: 'ESRPRELPACMAN'
+                    domaintenantid: ${{ parameters.signingIdentity.tenantId }}
+                    releasetitle: 'dynwinrt-codegen ${{ parameters.ConfirmVersion }}'
+
+      - ${{ if and(eq(parameters.PublishPyPI, true), eq(parameters.ReleaseTag, 'v0.1.0-preview.20'), eq(parameters.ConfirmVersion, '0.1.0rc20'), eq(parameters.PackageTarget, 'codegen')) }}:
+        - stage: Release_PyPI_Codegen
+          displayName: Publish dynwinrt-codegen to PyPI (irreversible retry)
+          dependsOn: Validate_Collect
+          jobs:
+            - job: publish_python_codegen
+              displayName: Publish 2 dynwinrt-codegen wheels to PyPI
+              pool:
+                name: Azure-Pipelines-1ESPT-ExDShared
+                image: windows-latest
+                os: windows
+                hostArchitecture: amd64
+              templateContext:
+                type: releaseJob
+                isProduction: true
+                inputs:
+                  - input: pipelineArtifact
+                    artifactName: python-packages
+                    targetPath: $(Pipeline.Workspace)/python-packages
+              steps:
+                - task: PowerShell@2
+                  displayName: Stage exactly 2 codegen wheels
+                  inputs:
+                    targetType: inline
+                    script: |
+                      $ErrorActionPreference = 'Stop'
+                      $source = '$(Pipeline.Workspace)/python-packages'
+                      $destination = '$(Pipeline.Workspace)/python-codegen'
+                      New-Item $destination -ItemType Directory -Force | Out-Null
+                      $wheels = @(Get-ChildItem $source `
+                        -Filter 'dynwinrt_codegen-*.whl' -File -Recurse)
+                      if ($wheels.Count -ne 2) {
+                        throw "Expected 2 dynwinrt-codegen wheels, found $($wheels.Count)"
+                      }
+                      $wheels | Copy-Item -Destination $destination
+
+                # SUCCESS HERE IS A REAL, IMMUTABLE PYPI PUBLICATION, NOT A DRY RUN.
+                - task: EsrpRelease@10
+                  displayName: Publish dynwinrt-codegen to PyPI via ESRP
+                  inputs:
+                    ConnectedServiceName: ${{ parameters.signingIdentity.serviceName }}
+                    usemanagedidentity: false
+                    keyvaultname: ${{ parameters.signingIdentity.akvName }}
+                    authcertname: ${{ parameters.signingIdentity.authCertName }}
+                    signcertname: ${{ parameters.signingIdentity.signCertName }}
+                    clientid: ${{ parameters.signingIdentity.appId }}
+                    intent: 'PackageDistribution'
+                    contenttype: 'PyPI'
+                    contentsource: 'Folder'
+                    folderlocation: '$(Pipeline.Workspace)/python-codegen'
+                    waitforreleasecompletion: true
+                    owners: '$(EsrpOwnersEmail)'
+                    approvers: '$(EsrpApproversEmail)'
+                    serviceendpointurl: 'https://api.esrp.microsoft.com'
+                    mainpublisher: 'ESRPRELPACMAN'
+                    domaintenantid: ${{ parameters.signingIdentity.tenantId }}
+                    releasetitle: 'dynwinrt-codegen ${{ parameters.ConfirmVersion }}'
