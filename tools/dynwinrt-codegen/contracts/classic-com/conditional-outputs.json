@@ -71,7 +71,9 @@
         "sourceFingerprint": "EA3628EB9E45E1A0BAA0BC9F6DA1FD82FE938091EF1730E25E3CCEEA9EFD316B"
       },
       "contract": {
-        "publicInputParameterIndices": [0],
+        "publicInputParameterIndices": [
+          0
+        ],
         "contextParameterIndex": 2,
         "contextMustBeNativeNull": true,
         "flagsParameterIndex": 1,
@@ -107,6 +109,704 @@
         {
           "kind": "microsoft-learn",
           "url": "https://learn.microsoft.com/windows/win32/api/wbemcli/nf-wbemcli-iwbemservices-opennamespace",
+          "file": null
+        },
+        {
+          "kind": "sdk-header",
+          "url": null,
+          "file": "WbemCli.h/WbemIdl.idl"
+        }
+      ],
+      "validatedMetadata": [
+        {
+          "package": "Microsoft.Windows.SDK.Win32Metadata",
+          "version": "71.0.14-preview",
+          "sha256": "B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D"
+        }
+      ]
+    },
+    {
+      "entryId": "wmi.conditional-output.entry.windows-win32-system-wmi.iwbemservices.9556dc99828c11cfa37e00aa003240c7.getobject.slot-6.v1",
+      "familyId": "wmi.conditional-output.v1",
+      "kind": "conditional-output",
+      "reason": "IWbemServices::GetObject uses exact synchronous/semisynchronous output selection controlled by WBEM_FLAG_RETURN_IMMEDIATELY",
+      "selector": {
+        "interface": {
+          "namespace": "Windows.Win32.System.Wmi",
+          "name": "IWbemServices",
+          "iid": "9556dc99-828c-11cf-a37e-00aa003240c7"
+        },
+        "declaringIid": "9556dc99-828c-11cf-a37e-00aa003240c7",
+        "method": "GetObject",
+        "absoluteSlot": 6,
+        "parameterCount": 5,
+        "parameters": [
+          {
+            "index": 0,
+            "name": "strObjectPath",
+            "nativeType": "Windows.Win32.Foundation.BSTR",
+            "pointerDepth": 0,
+            "direction": "in",
+            "optional": false,
+            "constness": "unspecified",
+            "constAttribute": true
+          },
+          {
+            "index": 1,
+            "name": "lFlags",
+            "nativeType": "Windows.Win32.System.Wmi.WBEM_GENERIC_FLAG_TYPE",
+            "pointerDepth": 0,
+            "direction": "in",
+            "optional": false,
+            "constness": "unspecified",
+            "constAttribute": false
+          },
+          {
+            "index": 2,
+            "name": "pCtx",
+            "nativeType": "Windows.Win32.System.Wmi.IWbemContext",
+            "pointerDepth": 0,
+            "direction": "in",
+            "optional": false,
+            "constness": "unspecified",
+            "constAttribute": false
+          },
+          {
+            "index": 3,
+            "name": "ppObject",
+            "nativeType": "Windows.Win32.System.Wmi.IWbemClassObject",
+            "pointerDepth": 1,
+            "direction": "inout",
+            "optional": true,
+            "constness": "mutable",
+            "constAttribute": false
+          },
+          {
+            "index": 4,
+            "name": "ppCallResult",
+            "nativeType": "Windows.Win32.System.Wmi.IWbemCallResult",
+            "pointerDepth": 1,
+            "direction": "inout",
+            "optional": true,
+            "constness": "mutable",
+            "constAttribute": false
+          }
+        ],
+        "sourceFingerprint": "2BEDF71C77747D732A0672CBC3E36117D84276622B672521B802BA01851563A4"
+      },
+      "contract": {
+        "publicInputParameterIndices": [
+          0
+        ],
+        "contextParameterIndex": 2,
+        "contextMustBeNativeNull": true,
+        "flagsParameterIndex": 1,
+        "flagsOptionName": "lFlags",
+        "synchronous": {
+          "flags": 0,
+          "outputParameterIndex": 3,
+          "optionName": "object"
+        },
+        "semisynchronous": {
+          "flags": 16,
+          "outputParameterIndex": 4,
+          "optionName": "result"
+        },
+        "outputs": [
+          {
+            "parameterIndex": 3,
+            "interfaceIid": "dc12a681-737f-11cf-884d-00aa004b2e24",
+            "argumentOptional": true,
+            "nullableOnSuccess": false,
+            "ownership": "owned-com-plus-one"
+          },
+          {
+            "parameterIndex": 4,
+            "interfaceIid": "44aca675-e8fc-11d0-a07c-00c04fb68820",
+            "argumentOptional": true,
+            "nullableOnSuccess": false,
+            "ownership": "owned-com-plus-one"
+          }
+        ]
+      },
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/wbemcli/nf-wbemcli-iwbemservices-getobject",
+          "file": null
+        },
+        {
+          "kind": "sdk-header",
+          "url": null,
+          "file": "WbemCli.h/WbemIdl.idl"
+        }
+      ],
+      "validatedMetadata": [
+        {
+          "package": "Microsoft.Windows.SDK.Win32Metadata",
+          "version": "71.0.14-preview",
+          "sha256": "B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D"
+        }
+      ]
+    },
+    {
+      "entryId": "wmi.conditional-output.entry.windows-win32-system-wmi.iwbemservices.9556dc99828c11cfa37e00aa003240c7.putclass.slot-8.v1",
+      "familyId": "wmi.conditional-output.v1",
+      "kind": "conditional-output",
+      "reason": "IWbemServices::PutClass uses exact synchronous/semisynchronous output selection controlled by WBEM_FLAG_RETURN_IMMEDIATELY",
+      "selector": {
+        "interface": {
+          "namespace": "Windows.Win32.System.Wmi",
+          "name": "IWbemServices",
+          "iid": "9556dc99-828c-11cf-a37e-00aa003240c7"
+        },
+        "declaringIid": "9556dc99-828c-11cf-a37e-00aa003240c7",
+        "method": "PutClass",
+        "absoluteSlot": 8,
+        "parameterCount": 4,
+        "parameters": [
+          {
+            "index": 0,
+            "name": "pObject",
+            "nativeType": "Windows.Win32.System.Wmi.IWbemClassObject",
+            "pointerDepth": 0,
+            "direction": "in",
+            "optional": false,
+            "constness": "unspecified",
+            "constAttribute": false
+          },
+          {
+            "index": 1,
+            "name": "lFlags",
+            "nativeType": "Windows.Win32.System.Wmi.WBEM_GENERIC_FLAG_TYPE",
+            "pointerDepth": 0,
+            "direction": "in",
+            "optional": false,
+            "constness": "unspecified",
+            "constAttribute": false
+          },
+          {
+            "index": 2,
+            "name": "pCtx",
+            "nativeType": "Windows.Win32.System.Wmi.IWbemContext",
+            "pointerDepth": 0,
+            "direction": "in",
+            "optional": false,
+            "constness": "unspecified",
+            "constAttribute": false
+          },
+          {
+            "index": 3,
+            "name": "ppCallResult",
+            "nativeType": "Windows.Win32.System.Wmi.IWbemCallResult",
+            "pointerDepth": 1,
+            "direction": "inout",
+            "optional": true,
+            "constness": "mutable",
+            "constAttribute": false
+          }
+        ],
+        "sourceFingerprint": "328A97A723ABF04163C2B5BCDD1585F5C4553783BF788C1B3BDF4372C5375083"
+      },
+      "contract": {
+        "publicInputParameterIndices": [
+          0
+        ],
+        "contextParameterIndex": 2,
+        "contextMustBeNativeNull": true,
+        "flagsParameterIndex": 1,
+        "flagsOptionName": "lFlags",
+        "synchronous": {
+          "flags": 0,
+          "outputParameterIndex": null,
+          "optionName": null
+        },
+        "semisynchronous": {
+          "flags": 16,
+          "outputParameterIndex": 3,
+          "optionName": "result"
+        },
+        "outputs": [
+          {
+            "parameterIndex": 3,
+            "interfaceIid": "44aca675-e8fc-11d0-a07c-00c04fb68820",
+            "argumentOptional": true,
+            "nullableOnSuccess": false,
+            "ownership": "owned-com-plus-one"
+          }
+        ]
+      },
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/wbemcli/nf-wbemcli-iwbemservices-putclass",
+          "file": null
+        },
+        {
+          "kind": "sdk-header",
+          "url": null,
+          "file": "WbemCli.h/WbemIdl.idl"
+        }
+      ],
+      "validatedMetadata": [
+        {
+          "package": "Microsoft.Windows.SDK.Win32Metadata",
+          "version": "71.0.14-preview",
+          "sha256": "B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D"
+        }
+      ]
+    },
+    {
+      "entryId": "wmi.conditional-output.entry.windows-win32-system-wmi.iwbemservices.9556dc99828c11cfa37e00aa003240c7.deleteclass.slot-10.v1",
+      "familyId": "wmi.conditional-output.v1",
+      "kind": "conditional-output",
+      "reason": "IWbemServices::DeleteClass uses exact synchronous/semisynchronous output selection controlled by WBEM_FLAG_RETURN_IMMEDIATELY",
+      "selector": {
+        "interface": {
+          "namespace": "Windows.Win32.System.Wmi",
+          "name": "IWbemServices",
+          "iid": "9556dc99-828c-11cf-a37e-00aa003240c7"
+        },
+        "declaringIid": "9556dc99-828c-11cf-a37e-00aa003240c7",
+        "method": "DeleteClass",
+        "absoluteSlot": 10,
+        "parameterCount": 4,
+        "parameters": [
+          {
+            "index": 0,
+            "name": "strClass",
+            "nativeType": "Windows.Win32.Foundation.BSTR",
+            "pointerDepth": 0,
+            "direction": "in",
+            "optional": false,
+            "constness": "unspecified",
+            "constAttribute": true
+          },
+          {
+            "index": 1,
+            "name": "lFlags",
+            "nativeType": "Windows.Win32.System.Wmi.WBEM_GENERIC_FLAG_TYPE",
+            "pointerDepth": 0,
+            "direction": "in",
+            "optional": false,
+            "constness": "unspecified",
+            "constAttribute": false
+          },
+          {
+            "index": 2,
+            "name": "pCtx",
+            "nativeType": "Windows.Win32.System.Wmi.IWbemContext",
+            "pointerDepth": 0,
+            "direction": "in",
+            "optional": false,
+            "constness": "unspecified",
+            "constAttribute": false
+          },
+          {
+            "index": 3,
+            "name": "ppCallResult",
+            "nativeType": "Windows.Win32.System.Wmi.IWbemCallResult",
+            "pointerDepth": 1,
+            "direction": "inout",
+            "optional": true,
+            "constness": "mutable",
+            "constAttribute": false
+          }
+        ],
+        "sourceFingerprint": "0315584C0B90F153FEAFDF3DC99CFEDACD0E473FBBBE4C06E40961167FDE2AD6"
+      },
+      "contract": {
+        "publicInputParameterIndices": [
+          0
+        ],
+        "contextParameterIndex": 2,
+        "contextMustBeNativeNull": true,
+        "flagsParameterIndex": 1,
+        "flagsOptionName": "lFlags",
+        "synchronous": {
+          "flags": 0,
+          "outputParameterIndex": null,
+          "optionName": null
+        },
+        "semisynchronous": {
+          "flags": 16,
+          "outputParameterIndex": 3,
+          "optionName": "result"
+        },
+        "outputs": [
+          {
+            "parameterIndex": 3,
+            "interfaceIid": "44aca675-e8fc-11d0-a07c-00c04fb68820",
+            "argumentOptional": true,
+            "nullableOnSuccess": false,
+            "ownership": "owned-com-plus-one"
+          }
+        ]
+      },
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/wbemcli/nf-wbemcli-iwbemservices-deleteclass",
+          "file": null
+        },
+        {
+          "kind": "sdk-header",
+          "url": null,
+          "file": "WbemCli.h/WbemIdl.idl"
+        }
+      ],
+      "validatedMetadata": [
+        {
+          "package": "Microsoft.Windows.SDK.Win32Metadata",
+          "version": "71.0.14-preview",
+          "sha256": "B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D"
+        }
+      ]
+    },
+    {
+      "entryId": "wmi.conditional-output.entry.windows-win32-system-wmi.iwbemservices.9556dc99828c11cfa37e00aa003240c7.putinstance.slot-14.v1",
+      "familyId": "wmi.conditional-output.v1",
+      "kind": "conditional-output",
+      "reason": "IWbemServices::PutInstance uses exact synchronous/semisynchronous output selection controlled by WBEM_FLAG_RETURN_IMMEDIATELY",
+      "selector": {
+        "interface": {
+          "namespace": "Windows.Win32.System.Wmi",
+          "name": "IWbemServices",
+          "iid": "9556dc99-828c-11cf-a37e-00aa003240c7"
+        },
+        "declaringIid": "9556dc99-828c-11cf-a37e-00aa003240c7",
+        "method": "PutInstance",
+        "absoluteSlot": 14,
+        "parameterCount": 4,
+        "parameters": [
+          {
+            "index": 0,
+            "name": "pInst",
+            "nativeType": "Windows.Win32.System.Wmi.IWbemClassObject",
+            "pointerDepth": 0,
+            "direction": "in",
+            "optional": false,
+            "constness": "unspecified",
+            "constAttribute": false
+          },
+          {
+            "index": 1,
+            "name": "lFlags",
+            "nativeType": "Windows.Win32.System.Wmi.WBEM_GENERIC_FLAG_TYPE",
+            "pointerDepth": 0,
+            "direction": "in",
+            "optional": false,
+            "constness": "unspecified",
+            "constAttribute": false
+          },
+          {
+            "index": 2,
+            "name": "pCtx",
+            "nativeType": "Windows.Win32.System.Wmi.IWbemContext",
+            "pointerDepth": 0,
+            "direction": "in",
+            "optional": false,
+            "constness": "unspecified",
+            "constAttribute": false
+          },
+          {
+            "index": 3,
+            "name": "ppCallResult",
+            "nativeType": "Windows.Win32.System.Wmi.IWbemCallResult",
+            "pointerDepth": 1,
+            "direction": "inout",
+            "optional": true,
+            "constness": "mutable",
+            "constAttribute": false
+          }
+        ],
+        "sourceFingerprint": "B2F893185D67E641DB62BC0AB2F991540EDC4C157BC9F4A88987C03944D005F9"
+      },
+      "contract": {
+        "publicInputParameterIndices": [
+          0
+        ],
+        "contextParameterIndex": 2,
+        "contextMustBeNativeNull": true,
+        "flagsParameterIndex": 1,
+        "flagsOptionName": "lFlags",
+        "synchronous": {
+          "flags": 0,
+          "outputParameterIndex": null,
+          "optionName": null
+        },
+        "semisynchronous": {
+          "flags": 16,
+          "outputParameterIndex": 3,
+          "optionName": "result"
+        },
+        "outputs": [
+          {
+            "parameterIndex": 3,
+            "interfaceIid": "44aca675-e8fc-11d0-a07c-00c04fb68820",
+            "argumentOptional": true,
+            "nullableOnSuccess": false,
+            "ownership": "owned-com-plus-one"
+          }
+        ]
+      },
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/wbemcli/nf-wbemcli-iwbemservices-putinstance",
+          "file": null
+        },
+        {
+          "kind": "sdk-header",
+          "url": null,
+          "file": "WbemCli.h/WbemIdl.idl"
+        }
+      ],
+      "validatedMetadata": [
+        {
+          "package": "Microsoft.Windows.SDK.Win32Metadata",
+          "version": "71.0.14-preview",
+          "sha256": "B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D"
+        }
+      ]
+    },
+    {
+      "entryId": "wmi.conditional-output.entry.windows-win32-system-wmi.iwbemservices.9556dc99828c11cfa37e00aa003240c7.deleteinstance.slot-16.v1",
+      "familyId": "wmi.conditional-output.v1",
+      "kind": "conditional-output",
+      "reason": "IWbemServices::DeleteInstance uses exact synchronous/semisynchronous output selection controlled by WBEM_FLAG_RETURN_IMMEDIATELY",
+      "selector": {
+        "interface": {
+          "namespace": "Windows.Win32.System.Wmi",
+          "name": "IWbemServices",
+          "iid": "9556dc99-828c-11cf-a37e-00aa003240c7"
+        },
+        "declaringIid": "9556dc99-828c-11cf-a37e-00aa003240c7",
+        "method": "DeleteInstance",
+        "absoluteSlot": 16,
+        "parameterCount": 4,
+        "parameters": [
+          {
+            "index": 0,
+            "name": "strObjectPath",
+            "nativeType": "Windows.Win32.Foundation.BSTR",
+            "pointerDepth": 0,
+            "direction": "in",
+            "optional": false,
+            "constness": "unspecified",
+            "constAttribute": true
+          },
+          {
+            "index": 1,
+            "name": "lFlags",
+            "nativeType": "Windows.Win32.System.Wmi.WBEM_GENERIC_FLAG_TYPE",
+            "pointerDepth": 0,
+            "direction": "in",
+            "optional": false,
+            "constness": "unspecified",
+            "constAttribute": false
+          },
+          {
+            "index": 2,
+            "name": "pCtx",
+            "nativeType": "Windows.Win32.System.Wmi.IWbemContext",
+            "pointerDepth": 0,
+            "direction": "in",
+            "optional": false,
+            "constness": "unspecified",
+            "constAttribute": false
+          },
+          {
+            "index": 3,
+            "name": "ppCallResult",
+            "nativeType": "Windows.Win32.System.Wmi.IWbemCallResult",
+            "pointerDepth": 1,
+            "direction": "inout",
+            "optional": true,
+            "constness": "mutable",
+            "constAttribute": false
+          }
+        ],
+        "sourceFingerprint": "10B5A66DD158D91DC7A51570BE933EF616E304EFCE5E82EFDF58AA0832FBC4BA"
+      },
+      "contract": {
+        "publicInputParameterIndices": [
+          0
+        ],
+        "contextParameterIndex": 2,
+        "contextMustBeNativeNull": true,
+        "flagsParameterIndex": 1,
+        "flagsOptionName": "lFlags",
+        "synchronous": {
+          "flags": 0,
+          "outputParameterIndex": null,
+          "optionName": null
+        },
+        "semisynchronous": {
+          "flags": 16,
+          "outputParameterIndex": 3,
+          "optionName": "result"
+        },
+        "outputs": [
+          {
+            "parameterIndex": 3,
+            "interfaceIid": "44aca675-e8fc-11d0-a07c-00c04fb68820",
+            "argumentOptional": true,
+            "nullableOnSuccess": false,
+            "ownership": "owned-com-plus-one"
+          }
+        ]
+      },
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/wbemcli/nf-wbemcli-iwbemservices-deleteinstance",
+          "file": null
+        },
+        {
+          "kind": "sdk-header",
+          "url": null,
+          "file": "WbemCli.h/WbemIdl.idl"
+        }
+      ],
+      "validatedMetadata": [
+        {
+          "package": "Microsoft.Windows.SDK.Win32Metadata",
+          "version": "71.0.14-preview",
+          "sha256": "B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D"
+        }
+      ]
+    },
+    {
+      "entryId": "wmi.conditional-output.entry.windows-win32-system-wmi.iwbemservices.9556dc99828c11cfa37e00aa003240c7.execmethod.slot-24.v1",
+      "familyId": "wmi.conditional-output.v1",
+      "kind": "conditional-output",
+      "reason": "IWbemServices::ExecMethod uses exact synchronous/semisynchronous output selection controlled by WBEM_FLAG_RETURN_IMMEDIATELY",
+      "selector": {
+        "interface": {
+          "namespace": "Windows.Win32.System.Wmi",
+          "name": "IWbemServices",
+          "iid": "9556dc99-828c-11cf-a37e-00aa003240c7"
+        },
+        "declaringIid": "9556dc99-828c-11cf-a37e-00aa003240c7",
+        "method": "ExecMethod",
+        "absoluteSlot": 24,
+        "parameterCount": 7,
+        "parameters": [
+          {
+            "index": 0,
+            "name": "strObjectPath",
+            "nativeType": "Windows.Win32.Foundation.BSTR",
+            "pointerDepth": 0,
+            "direction": "in",
+            "optional": false,
+            "constness": "unspecified",
+            "constAttribute": true
+          },
+          {
+            "index": 1,
+            "name": "strMethodName",
+            "nativeType": "Windows.Win32.Foundation.BSTR",
+            "pointerDepth": 0,
+            "direction": "in",
+            "optional": false,
+            "constness": "unspecified",
+            "constAttribute": true
+          },
+          {
+            "index": 2,
+            "name": "lFlags",
+            "nativeType": "Windows.Win32.System.Wmi.WBEM_GENERIC_FLAG_TYPE",
+            "pointerDepth": 0,
+            "direction": "in",
+            "optional": false,
+            "constness": "unspecified",
+            "constAttribute": false
+          },
+          {
+            "index": 3,
+            "name": "pCtx",
+            "nativeType": "Windows.Win32.System.Wmi.IWbemContext",
+            "pointerDepth": 0,
+            "direction": "in",
+            "optional": false,
+            "constness": "unspecified",
+            "constAttribute": false
+          },
+          {
+            "index": 4,
+            "name": "pInParams",
+            "nativeType": "Windows.Win32.System.Wmi.IWbemClassObject",
+            "pointerDepth": 0,
+            "direction": "in",
+            "optional": false,
+            "constness": "unspecified",
+            "constAttribute": false
+          },
+          {
+            "index": 5,
+            "name": "ppOutParams",
+            "nativeType": "Windows.Win32.System.Wmi.IWbemClassObject",
+            "pointerDepth": 1,
+            "direction": "inout",
+            "optional": true,
+            "constness": "mutable",
+            "constAttribute": false
+          },
+          {
+            "index": 6,
+            "name": "ppCallResult",
+            "nativeType": "Windows.Win32.System.Wmi.IWbemCallResult",
+            "pointerDepth": 1,
+            "direction": "inout",
+            "optional": true,
+            "constness": "mutable",
+            "constAttribute": false
+          }
+        ],
+        "sourceFingerprint": "3F7B10674AB434C0E363951EFD437F6B0C078E2D8E82550CADF184F886D6B201"
+      },
+      "contract": {
+        "publicInputParameterIndices": [
+          0,
+          1,
+          4
+        ],
+        "contextParameterIndex": 3,
+        "contextMustBeNativeNull": true,
+        "flagsParameterIndex": 2,
+        "flagsOptionName": "lFlags",
+        "synchronous": {
+          "flags": 0,
+          "outputParameterIndex": 5,
+          "optionName": "outParams"
+        },
+        "semisynchronous": {
+          "flags": 16,
+          "outputParameterIndex": 6,
+          "optionName": "result"
+        },
+        "outputs": [
+          {
+            "parameterIndex": 5,
+            "interfaceIid": "dc12a681-737f-11cf-884d-00aa004b2e24",
+            "argumentOptional": true,
+            "nullableOnSuccess": false,
+            "ownership": "owned-com-plus-one"
+          },
+          {
+            "parameterIndex": 6,
+            "interfaceIid": "44aca675-e8fc-11d0-a07c-00c04fb68820",
+            "argumentOptional": true,
+            "nullableOnSuccess": false,
+            "ownership": "owned-com-plus-one"
+          }
+        ]
+      },
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/wbemcli/nf-wbemcli-iwbemservices-execmethod",
           "file": null
         },
         {

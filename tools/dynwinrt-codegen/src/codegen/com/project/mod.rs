@@ -13,12 +13,12 @@ use super::ir::{
     ComSinkReturnConvention, ComType, DispatchShape, NativePodArchitectureLayout, NativePodField,
     NativePodFieldType, NativePodInitializer, NativePodLayout, NativePodScalar,
     NativeUnionArchitectureLayout, NativeUnionField, NativeUnionFieldType, NativeUnionLayout,
-    OverloadDispatch, OverloadInfo, PointerAliasKind, ProjectedComCoclass, ProjectedComEnum,
-    ProjectedComEnumMember, ProjectedComInterface, ProjectedComMethod, ProjectedComMethodKind,
-    ProjectedComParam, ProjectedComResult, ProjectedComSinkMethod, ProjectedEnumValue,
-    ProjectedInterfaceRef, ResultConversion, ResultSource, SafeArrayElement, SharedCountPlan,
-    StringBufferPlan, StringEncoding, TypedBufferPlan, TypedBufferRelation, TypedBufferSizing,
-    dispatch_shape,
+    OverloadDispatch, OverloadInfo, OwnedHandleCleanup, PointerAliasKind, ProjectedComCoclass,
+    ProjectedComEnum, ProjectedComEnumMember, ProjectedComInterface, ProjectedComMethod,
+    ProjectedComMethodKind, ProjectedComParam, ProjectedComResult, ProjectedComSinkMethod,
+    ProjectedEnumValue, ProjectedInterfaceRef, ResultConversion, ResultSource, SafeArrayElement,
+    SharedCountPlan, StringBufferPlan, StringEncoding, TypedBufferPlan, TypedBufferRelation,
+    TypedBufferSizing, dispatch_shape,
 };
 use super::javascript::naming::camel_case;
 use super::model::ValidatedComInterface;
@@ -494,6 +494,7 @@ fn validate_projected_surface_names(meta: &ProjectedComInterface) -> Result<(), 
                 | ComType::Guid
                 | ComType::HString
                 | ComType::RawPointer
+                | ComType::ExactNullPointer
                 | ComType::AllocatorPointer
                 | ComType::ConsumedAllocatorPointer
                 | ComType::InspectedAllocatorPointer
@@ -642,20 +643,52 @@ fn project_method(
 ) -> Result<ProjectedComMethod, String> {
     let context = || method.name().to_string();
     let dynamic_iid = method.dynamic_iid_contract();
-    let mut kind = if let Some(ComMethodSpecialContract::FixedCapacityBytes { guid_param }) =
-        method.special_contract()
-    {
-        if dynamic_iid.is_some() {
-            return Err(format!(
-                "{}: fixed-capacity bytes cannot also use a dynamic IID output",
-                context()
-            ));
+    let mut kind = match method.special_contract() {
+        Some(ComMethodSpecialContract::FixedCapacityBytes { guid_param }) => {
+            if dynamic_iid.is_some() {
+                return Err(format!(
+                    "{}: fixed-capacity bytes cannot also use a dynamic IID output",
+                    context()
+                ));
+            }
+            ProjectedComMethodKind::FixedCapacityBytes {
+                guid_param_index: guid_param.index(),
+            }
         }
-        ProjectedComMethodKind::FixedCapacityBytes {
-            guid_param_index: guid_param.index(),
-        }
-    } else {
-        project_dynamic_method_kind(
+        Some(ComMethodSpecialContract::FlagSelectedString {
+            discriminator_param,
+            reserved_null_param,
+            buffer_param,
+            capacity_param,
+            string_flags,
+            validation_flag,
+        }) => ProjectedComMethodKind::FlagSelectedString {
+            discriminator_param_index: discriminator_param.index(),
+            reserved_null_param_index: reserved_null_param.index(),
+            buffer_param_index: buffer_param.index(),
+            capacity_param_index: capacity_param.index(),
+            string_flags,
+            validation_flag,
+        },
+        Some(ComMethodSpecialContract::ConditionalInterfaceOutput {
+            public_input_params,
+            flags_param,
+            context_param,
+            synchronous_output,
+            semisynchronous_output,
+            synchronous_flags,
+            semisynchronous_flags,
+        }) => ProjectedComMethodKind::ConditionalInterfaceOutput {
+            public_input_param_indices: public_input_params
+                .map(|index| index.map(|index| index.index())),
+            flags_param_index: flags_param.index(),
+            context_param_index: context_param.index(),
+            synchronous_output_param_index: synchronous_output.map(|index| index.index()),
+            semisynchronous_output_param_index: semisynchronous_output.map(|index| index.index()),
+            synchronous_flags,
+            semisynchronous_flags,
+        },
+        Some(ComMethodSpecialContract::Malloc) | None => project_dynamic_method_kind(
             method.name(),
             dynamic_iid.map(|contract| {
                 (
@@ -664,7 +697,7 @@ fn project_method(
                 )
             }),
             interop_target.map(|(_, _, target_iid)| target_iid.as_str()),
-        )
+        ),
     };
     let is_idispatch_invoke = interface_namespace == "Windows.Win32.System.Com"
         && interface_name == "IDispatch"
@@ -803,6 +836,15 @@ fn project_method(
                         && (is_idispatch_invoke
                             || matches!(
                                 &kind,
+                                ProjectedComMethodKind::ConditionalInterfaceOutput {
+                                    synchronous_output_param_index,
+                                    semisynchronous_output_param_index,
+                                    ..
+                                } if *synchronous_output_param_index == Some(index)
+                                    || *semisynchronous_output_param_index == Some(index)
+                            )
+                            || matches!(
+                                &kind,
                                 ProjectedComMethodKind::EnumeratorNext {
                                     fetched_param_index,
                                     ..
@@ -824,6 +866,18 @@ fn project_method(
                 | ComParamDirection::CallerOutputBuffer
                 | ComParamDirection::CalleeAllocatedBuffer
         );
+        if matches!(typ, ComType::ExactNullPointer) {
+            surface_input = false;
+        }
+        if matches!(
+            kind,
+            ProjectedComMethodKind::ConditionalInterfaceOutput {
+                flags_param_index,
+                ..
+            } if flags_param_index == index
+        ) {
+            surface_input = false;
+        }
         for plan in &typed_buffers {
             match plan.relation {
                 TypedBufferRelation::Input {
@@ -938,7 +992,7 @@ fn project_method(
         }
         let nullable = param.nullability() == Nullability::Nullable
             && (surface_input || (surface_result && matches!(typ, ComType::SafeArray { .. })));
-        if nullable && !supports_nullable_projection(&typ) {
+        if nullable && !supports_nullable_projection(&typ, direction) {
             return Err(format!(
                 "{}: nullable parameter `{}` has no safe language/runtime lowering",
                 context(),
@@ -989,72 +1043,79 @@ fn project_method(
     if !optional_outputs.is_empty()
         && !matches!(kind, ProjectedComMethodKind::EnumeratorNext { .. })
     {
-        if interface_namespace != "Windows.Win32.System.Com"
-            || interface_name != "IDispatch"
-            || method.name() != "Invoke"
-            || params.len() != 8
-            || optional_outputs != [5, 6, 7]
-            || params[..5]
-                .iter()
-                .any(|param| param.direction != ComParamDirection::In)
-            || !matches!(
-                params[0].typ,
-                ComType::Primitive(ComPrimitive::I32)
-                    | ComType::ScalarAlias {
-                        underlying: ComScalarRepr::Primitive(ComPrimitive::I32),
-                        ..
-                    }
-            )
-            || !matches!(params[1].typ, ComType::GuidPointer)
-            || !matches!(
-                params[2].typ,
-                ComType::Primitive(ComPrimitive::U32)
-                    | ComType::ScalarAlias {
-                        underlying: ComScalarRepr::Primitive(ComPrimitive::U32),
-                        ..
-                    }
-            )
-            || !matches!(
-                params[3].typ,
-                ComType::Primitive(ComPrimitive::U16)
-                    | ComType::Enum {
-                        underlying: ComEnumUnderlying::U16,
-                        ..
-                    }
-                    | ComType::ScalarAlias {
-                        underlying: ComScalarRepr::Primitive(ComPrimitive::U16),
-                        ..
-                    }
-            )
-            || params[4].direction != ComParamDirection::In
-            || !matches!(params[4].typ, ComType::DispatchParams)
-            || !matches!(params[5].typ, ComType::Variant)
-            || !matches!(params[6].typ, ComType::ExcepInfo)
-            || !matches!(
-                params[7].typ,
-                ComType::Primitive(ComPrimitive::U32)
-                    | ComType::ScalarAlias {
-                        underlying: ComScalarRepr::Primitive(ComPrimitive::U32),
-                        ..
-                    }
-            )
-        {
-            return Err(format!(
-                "{}: optional COM outputs require the exact validated IDispatch::Invoke contract",
-                context()
-            ));
+        if matches!(
+            kind,
+            ProjectedComMethodKind::ConditionalInterfaceOutput { .. }
+        ) {
+            // The exact mode contract controls which optional output is requested.
+        } else {
+            if interface_namespace != "Windows.Win32.System.Com"
+                || interface_name != "IDispatch"
+                || method.name() != "Invoke"
+                || params.len() != 8
+                || optional_outputs != [5, 6, 7]
+                || params[..5]
+                    .iter()
+                    .any(|param| param.direction != ComParamDirection::In)
+                || !matches!(
+                    params[0].typ,
+                    ComType::Primitive(ComPrimitive::I32)
+                        | ComType::ScalarAlias {
+                            underlying: ComScalarRepr::Primitive(ComPrimitive::I32),
+                            ..
+                        }
+                )
+                || !matches!(params[1].typ, ComType::GuidPointer)
+                || !matches!(
+                    params[2].typ,
+                    ComType::Primitive(ComPrimitive::U32)
+                        | ComType::ScalarAlias {
+                            underlying: ComScalarRepr::Primitive(ComPrimitive::U32),
+                            ..
+                        }
+                )
+                || !matches!(
+                    params[3].typ,
+                    ComType::Primitive(ComPrimitive::U16)
+                        | ComType::Enum {
+                            underlying: ComEnumUnderlying::U16,
+                            ..
+                        }
+                        | ComType::ScalarAlias {
+                            underlying: ComScalarRepr::Primitive(ComPrimitive::U16),
+                            ..
+                        }
+                )
+                || params[4].direction != ComParamDirection::In
+                || !matches!(params[4].typ, ComType::DispatchParams)
+                || !matches!(params[5].typ, ComType::Variant)
+                || !matches!(params[6].typ, ComType::ExcepInfo)
+                || !matches!(
+                    params[7].typ,
+                    ComType::Primitive(ComPrimitive::U32)
+                        | ComType::ScalarAlias {
+                            underlying: ComScalarRepr::Primitive(ComPrimitive::U32),
+                            ..
+                        }
+                )
+            {
+                return Err(format!(
+                    "{}: optional COM outputs require the exact validated IDispatch::Invoke contract",
+                    context()
+                ));
+            }
+            kind = ProjectedComMethodKind::DispatchInvoke {
+                result_param_index: 5,
+                excep_info_param_index: 6,
+                arg_err_param_index: 7,
+            };
+            params[4].name = "dispParams".into();
+            params[6].surface_result = false;
+            params[7].surface_result = false;
         }
-        kind = ProjectedComMethodKind::DispatchInvoke {
-            result_param_index: 5,
-            excep_info_param_index: 6,
-            arg_err_param_index: 7,
-        };
-        params[4].name = "dispParams".into();
-        params[6].surface_result = false;
-        params[7].surface_result = false;
     }
 
-    fn supports_nullable_projection(typ: &ComType) -> bool {
+    fn supports_nullable_projection(typ: &ComType, direction: ComParamDirection) -> bool {
         matches!(
             typ,
             ComType::RawPointer
@@ -1067,7 +1128,11 @@ fn project_method(
                 | ComType::Bstr
                 | ComType::ManagedInterface { .. }
                 | ComType::SafeArray { .. }
-        )
+        ) || (direction == ComParamDirection::InputBuffer
+            && matches!(
+                typ,
+                ComType::TypedBuffer { .. } | ComType::StringArray { .. }
+            ))
     }
 
     let mut return_convention = match method.return_kind() {
@@ -1306,6 +1371,7 @@ fn project_input_type(
         .type_definition(abi_type)
         .map_err(|error| error.to_string())?;
     match definition.abi() {
+        ComAbiType::ExactNullPointer => Ok(ComType::ExactNullPointer),
         ComAbiType::Pointer { pointee, depth, .. } if depth.get() == 1 => {
             let pointee_definition = semantic
                 .type_definition(*pointee)
@@ -1542,6 +1608,7 @@ fn project_value_type(
                 kind: PointerAliasKind::StringPointer(project_string_encoding(*encoding)),
             })
         }
+        ComAbiType::ExactNullPointer => Ok(ComType::ExactNullPointer),
         ComAbiType::Bstr => Ok(ComType::Bstr),
         ComAbiType::HString => Ok(ComType::HString),
         ComAbiType::ComInterface { iid } => Ok(ComType::ManagedInterface {
@@ -1939,6 +2006,9 @@ fn project_native_pod_field_type(
         | ComAbiType::DataPointer { .. }
         | ComAbiType::Handle(_)
         | ComAbiType::StringPointer { .. } => Ok(NativePodFieldType::Pointer),
+        ComAbiType::ExactNullPointer => {
+            Err("exact-null pointers cannot appear in native POD fields".into())
+        }
         ComAbiType::NativeStruct(layout_id) => {
             if !visiting.insert(*layout_id) {
                 return Err("recursive native POD layout".into());
@@ -2675,6 +2745,26 @@ fn result_conversion(
             Ok(ResultConversion::BorrowedHandle)
         }
         (ComOwnership::Borrowed, Cleanup::None) => Ok(ResultConversion::Value),
+        (ComOwnership::HandleOwned(expected), Cleanup::Handle(actual))
+            if expected == actual
+                && matches!(
+                    typ,
+                    ComType::PointerAlias {
+                        kind: PointerAliasKind::HandleValue,
+                        ..
+                    }
+                ) =>
+        {
+            match (expected.function().namespace(), expected.function().name()) {
+                ("Windows.Win32.Graphics.Gdi", "DeleteObject") => Ok(
+                    ResultConversion::OwnedHandle(OwnedHandleCleanup::DeleteObject),
+                ),
+                (namespace, function) => Err(format!(
+                    "{}: unsupported projected handle cleanup {namespace}.{function}",
+                    param.name()
+                )),
+            }
+        }
         (ComOwnership::ComOwned, Cleanup::ComRelease)
             if matches!(typ, ComType::ManagedInterface { .. }) =>
         {

@@ -145,6 +145,7 @@ pub(in crate::codegen::com) enum ComAbiType {
         encoding: StringEncoding,
         constness: Constness,
     },
+    ExactNullPointer,
     Bstr,
     HString,
     ComInterface {
@@ -175,6 +176,7 @@ impl ComAbiType {
             Self::Pointer { .. }
                 | Self::DataPointer { .. }
                 | Self::StringPointer { .. }
+                | Self::ExactNullPointer
                 | Self::Bstr
                 | Self::ComInterface { .. }
                 | Self::CountedBuffer { .. }

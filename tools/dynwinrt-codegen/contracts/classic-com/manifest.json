@@ -5,7 +5,13 @@
       "path": "conditional-outputs.json",
       "kind": "conditional-output",
       "familyIds": ["wmi.conditional-output.v1"],
-      "sha256": "9E3D44052CE16146F16516D498B6E9B7FD2406AEAF852DCC307A38C3EEA842DF"
+      "sha256": "01E05134218C12F6E3BC0D0F6DBB6D19E40A553B3EA94266262CC0AC6D720B4C"
+    },
+    {
+      "path": "ownership-outputs.json",
+      "kind": "ownership",
+      "familyIds": ["com.ownership.v1"],
+      "sha256": "96C76D7A2762FC077D73AF74050B7F585DB71B4E5A2E583FD50F212F82164C0C"
     }
   ]
 }

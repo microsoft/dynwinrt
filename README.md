@@ -142,8 +142,8 @@ is not a general Automation or native Win32 projection, and it does not project
 flat DLL exports.
 
 The current CI baseline against
-`Microsoft.Windows.SDK.Win32Metadata` 71.0.14-preview is **5,567 of 7,929
-eligible interfaces (70.21%)** with complete safe code generation. Supported
+`Microsoft.Windows.SDK.Win32Metadata` 71.0.14-preview is **5,681 of 7,929
+eligible interfaces (71.65%)** with complete safe code generation. Supported
 contracts include generated coclass activation and QueryInterface views,
 managed interface ownership, native POD layouts, typed counted buffers,
 BSTR/HSTRING, validated VARIANT, SAFEARRAY and PROPVARIANT subsets, and

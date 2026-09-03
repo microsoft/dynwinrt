@@ -376,7 +376,31 @@ fn map_method(
     if let Some(contract) = dynamic_iid {
         method = method.with_dynamic_iid_contract(contract)?;
     }
-    Ok(
+    let method = if let Some(contract) = &raw.exact_interface_output_call {
+        if contract.public_input_param_indices.len() > 3 {
+            return Err(ModelError::InvalidContract(
+                "conditional interface output supports at most three public inputs".into(),
+            ));
+        }
+        let mut public_input_params = [None; 3];
+        for (target, source) in public_input_params
+            .iter_mut()
+            .zip(&contract.public_input_param_indices)
+        {
+            *target = Some(ParamIndex::new(*source));
+        }
+        method.with_special_contract(ComMethodSpecialContract::ConditionalInterfaceOutput {
+            public_input_params,
+            flags_param: ParamIndex::new(contract.flags_param_index),
+            context_param: ParamIndex::new(contract.context_param_index),
+            synchronous_output: contract.synchronous_output_param_index.map(ParamIndex::new),
+            semisynchronous_output: contract
+                .semisynchronous_output_param_index
+                .map(ParamIndex::new),
+            synchronous_flags: contract.synchronous_flags,
+            semisynchronous_flags: contract.semisynchronous_flag_value,
+        })
+    } else {
         match raw.exact_contract.as_ref().map(|contract| contract.kind) {
             Some(RawExactMethodContractKind::FixedCapacityBytes) => {
                 method.with_special_contract(ComMethodSpecialContract::FixedCapacityBytes {
@@ -390,9 +414,25 @@ fn map_method(
             Some(RawExactMethodContractKind::Malloc) => {
                 method.with_special_contract(ComMethodSpecialContract::Malloc)
             }
+            Some(RawExactMethodContractKind::FlagSelectedString) => {
+                let contract = raw.exact_contract.as_ref().unwrap();
+                method.with_special_contract(ComMethodSpecialContract::FlagSelectedString {
+                    discriminator_param: ParamIndex::new(
+                        contract.discriminator_param_index.unwrap(),
+                    ),
+                    reserved_null_param: ParamIndex::new(
+                        contract.reserved_null_param_index.unwrap(),
+                    ),
+                    buffer_param: ParamIndex::new(contract.buffer_param_index),
+                    capacity_param: ParamIndex::new(contract.capacity_param_index),
+                    string_flags: [4, 5],
+                    validation_flag: 6,
+                })
+            }
             None => method,
-        },
-    )
+        }
+    };
+    Ok(method)
 }
 
 fn map_param(
@@ -404,6 +444,18 @@ fn map_param(
     raw_method: &RawComMethod,
     dynamic_iid_output: bool,
 ) -> Result<ComParamContract, ModelError> {
+    let exact_null_input = raw_method
+        .exact_null_input_contracts
+        .iter()
+        .any(|contract| contract.parameter_index == param_index)
+        || raw_method.exact_contract.as_ref().is_some_and(|contract| {
+            contract.kind == RawExactMethodContractKind::FlagSelectedString
+                && contract.reserved_null_param_index == Some(param_index)
+        })
+        || raw_method
+            .exact_interface_output_call
+            .as_ref()
+            .is_some_and(|contract| contract.context_param_index == param_index);
     let effective_direction = documented_bstr_direction_override(
         interface_namespace,
         interface_name,
@@ -424,7 +476,32 @@ fn map_param(
             .then_some(RawParamDirection::Out)
     })
     .unwrap_or(raw.direction);
-    let (abi_type, count) = if raw_method.exact_contract.as_ref().is_some_and(|contract| {
+    let (abi_type, count) = if exact_null_input {
+        let interface_pointer = matches!(
+            raw.typ.native_type,
+            RawNativeType::Named {
+                kind: RawNamedKind::Interface | RawNamedKind::RuntimeClass,
+                ..
+            }
+        );
+        if effective_direction != RawParamDirection::In
+            || (raw.typ.pointer_depth == 0 && !interface_pointer)
+        {
+            return Err(ModelError::InvalidContract(format!(
+                "{} exact-null parameter no longer has pointer-shaped input metadata",
+                raw.name
+            )));
+        }
+        (
+            insert_abi(
+                model,
+                raw_native_name(&raw.typ)?,
+                None,
+                ComAbiType::ExactNullPointer,
+            )?,
+            None,
+        )
+    } else if raw_method.exact_contract.as_ref().is_some_and(|contract| {
         contract.kind == RawExactMethodContractKind::StatStg
             && contract.buffer_param_index == param_index
     }) {
@@ -557,17 +634,18 @@ fn map_param(
         param_index,
         dynamic_iid_output,
     )?;
-    let nullable = if (raw.optional
-        || known_nullable_param_override(
-            interface_namespace,
-            interface_name,
-            &raw_method.metadata_name,
-            &raw.name,
-        )
-        || raw
-            .safe_array_evidence
-            .as_ref()
-            .is_some_and(crate::com_safe_array_registry::safe_array_output_allows_null))
+    let nullable = if !exact_null_input
+        && (raw.optional
+            || known_nullable_param_override(
+                interface_namespace,
+                interface_name,
+                &raw_method.metadata_name,
+                &raw.name,
+            )
+            || raw
+                .safe_array_evidence
+                .as_ref()
+                .is_some_and(crate::com_safe_array_registry::safe_array_output_allows_null))
         && is_nullable_type(model, abi_type)?
     {
         Nullability::Nullable
@@ -578,7 +656,7 @@ fn map_param(
         raw.name.clone(),
         abi_type,
         direction,
-        raw.optional,
+        raw.optional && !exact_null_input,
         nullable,
         count,
         ownership,
@@ -734,7 +812,11 @@ fn map_return(model: &mut ComModel, raw: &RawComMethod) -> Result<ComReturnKind,
     if is_hresult(model, abi_type)? {
         return Ok(if raw.enumerator_next.is_some() {
             ComReturnKind::EnumeratorNextHResult
-        } else if raw.semantic_hresult.is_some() {
+        } else if raw.semantic_hresult.is_some()
+            || raw.exact_contract.as_ref().is_some_and(|contract| {
+                contract.kind == RawExactMethodContractKind::FlagSelectedString
+            })
+        {
             ComReturnKind::SemanticHResult
         } else {
             ComReturnKind::HResult
@@ -874,6 +956,7 @@ pub(in crate::codegen::com) fn census_raw_base_category(raw: &RawComType) -> &'s
             ComAbiType::Handle(_) => "Handle",
             ComAbiType::DataPointer { .. } => "DataPointer",
             ComAbiType::StringPointer { .. } => "StringPointer",
+            ComAbiType::ExactNullPointer => "DataPointer",
             ComAbiType::Bstr => "Bstr",
             ComAbiType::HString => "HString",
             ComAbiType::ComInterface { .. } => "ComInterface",
@@ -1347,6 +1430,9 @@ fn validate_pod_field_type(
         | ComAbiType::Handle(_)
         | ComAbiType::StringPointer { .. }
         | ComAbiType::NativeStruct(_) => Ok(()),
+        ComAbiType::ExactNullPointer => Err(ModelError::InvalidLayout(
+            "exact-null pointers cannot appear in native POD fields".into(),
+        )),
         ComAbiType::NativeUnion(_) if enclosing_union => {
             Err(ModelError::Unsupported(UnsupportedReason::Other(
                 "nested native unions require an explicit nested active-field contract".into(),
@@ -1430,6 +1516,7 @@ fn abi_size_alignment(
         | ComAbiType::Handle(_)
         | ComAbiType::DataPointer { .. }
         | ComAbiType::StringPointer { .. }
+        | ComAbiType::ExactNullPointer
         | ComAbiType::Bstr
         | ComAbiType::HString
         | ComAbiType::ComInterface { .. }
@@ -1652,6 +1739,7 @@ fn buffer_element_ownership(
         | ComAbiType::Pointer { .. }
         | ComAbiType::Handle(_)
         | ComAbiType::DataPointer { .. }
+        | ComAbiType::ExactNullPointer
         | ComAbiType::HString
         | ComAbiType::NativeUnion(_)
         | ComAbiType::CountedBuffer { .. }
@@ -1845,6 +1933,7 @@ fn map_ownership(
         ComAbiType::Pointer { .. }
         | ComAbiType::DataPointer { .. }
         | ComAbiType::StringPointer { .. }
+        | ComAbiType::ExactNullPointer
         | ComAbiType::Bstr
         | ComAbiType::HString
         | ComAbiType::ComInterface { .. }
@@ -2205,6 +2294,7 @@ fn raw_scalar_alias(typ: &RawComType, namespace: &str, alias_name: &str) -> Opti
 fn handle_cleanup_namespace(function: &str) -> Option<&'static str> {
     match function {
         "CloseHandle" | "DestroyIcon" => Some("Windows.Win32.Foundation"),
+        "DeleteObject" => Some("Windows.Win32.Graphics.Gdi"),
         "RegCloseKey" => Some("Windows.Win32.System.Registry"),
         _ => None,
     }
@@ -2392,6 +2482,9 @@ mod tests {
             enumerator_next: None,
             exact_contract: None,
             interface_replacement_contracts: Vec::new(),
+            output_ownership_contracts: Vec::new(),
+            exact_null_input_contracts: Vec::new(),
+            exact_parameter_direction_contracts: Vec::new(),
             exact_interface_output_call: None,
             safe_array_contract_error: None,
         }

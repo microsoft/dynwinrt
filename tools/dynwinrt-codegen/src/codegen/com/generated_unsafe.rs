@@ -246,13 +246,13 @@ pub struct UnsafeExactInterfaceOutputCall {
     pub source_fingerprint: String,
     pub flags_param_index: usize,
     pub context_param_index: usize,
-    pub synchronous_output_param_index: usize,
-    pub semisynchronous_output_param_index: usize,
+    pub synchronous_output_param_index: Option<usize>,
+    pub semisynchronous_output_param_index: Option<usize>,
     pub synchronous_flags: i32,
     pub semisynchronous_flag_value: i32,
     pub flags_option_name: String,
-    pub synchronous_output_option_name: String,
-    pub semisynchronous_output_option_name: String,
+    pub synchronous_output_option_name: Option<String>,
+    pub semisynchronous_output_option_name: Option<String>,
     pub reason: String,
     pub citation: String,
 }
@@ -767,7 +767,7 @@ fn render_unsafe_class(
     dts.push_str("export interface UnsafeNativeLayoutRequirement { readonly size: number; readonly alignment: number; }\n");
     dts.push_str("export interface UnsafeStrategyRequirement { readonly parameterIndex: number | null; readonly parameterName: string | null; readonly strategy: 'UnsafePointee' | 'UnsafePointerOutput' | 'UnsafeHandleOutput' | 'UnsafeInterfaceReplacement' | 'UnsafeCountedBuffer' | 'UnsafeRawCall'; readonly reasons: readonly string[]; readonly direction: 'in' | 'out' | 'inout' | null; readonly nullable: boolean | null; readonly pointeeLayouts: Readonly<Record<'x64' | 'i686' | 'arm64', UnsafeNativeLayoutRequirement | null>> | null; }\n");
     dts.push_str("export interface UnsafeExactInterfaceOutput { readonly entryId: string; readonly familyId: string; readonly contractKind: string; readonly parameterIndex: number; readonly parameterName: string; readonly interfaceIid: string; readonly argumentOptional: boolean; readonly nullableOnSuccess: boolean; readonly reason: string; readonly citation: string; }\n");
-    dts.push_str("export interface UnsafeExactInterfaceOutputCall { readonly entryId: string; readonly familyId: string; readonly contractKind: string; readonly sourceFingerprint: string; readonly flagsParamIndex: number; readonly contextParamIndex: number; readonly synchronousOutputParamIndex: number; readonly semisynchronousOutputParamIndex: number; readonly synchronousFlags: number; readonly semisynchronousFlagValue: number; readonly flagsOptionName: string; readonly synchronousOutputOptionName: string; readonly semisynchronousOutputOptionName: string; readonly reason: string; readonly citation: string; }\n");
+    dts.push_str("export interface UnsafeExactInterfaceOutputCall { readonly entryId: string; readonly familyId: string; readonly contractKind: string; readonly sourceFingerprint: string; readonly flagsParamIndex: number; readonly contextParamIndex: number; readonly synchronousOutputParamIndex: number | null; readonly semisynchronousOutputParamIndex: number | null; readonly synchronousFlags: number; readonly semisynchronousFlagValue: number; readonly flagsOptionName: string; readonly synchronousOutputOptionName: string | null; readonly semisynchronousOutputOptionName: string | null; readonly reason: string; readonly citation: string; }\n");
     dts.push_str("export interface UnsafeMethodSupport { readonly name: string; readonly projectedName: string; readonly declaringIid: string; readonly absoluteSlot: number; readonly signatureFingerprint: string; readonly status: UnsafeMethodStatus; readonly reasons: readonly string[]; readonly strategyRequirements: readonly UnsafeStrategyRequirement[]; readonly exactInterfaceOutputs: readonly UnsafeExactInterfaceOutput[]; readonly exactInterfaceOutputCall: UnsafeExactInterfaceOutputCall | null; readonly targets: Readonly<Record<'x64' | 'i686' | 'arm64', UnsafeMethodTargetSupport>>; }\n");
     dts.push_str("export interface UnsafeMetadataFile { readonly file: string; readonly package: string; readonly version: string; readonly sha256: string; }\n");
     dts.push_str("export interface UnsafeMetadataSupport { readonly setSha256: string; readonly files: readonly UnsafeMetadataFile[]; readonly definingFile: UnsafeMetadataFile | null; }\n");
@@ -974,6 +974,20 @@ fn render_exact_interface_output_call_method(
     layouts: &mut LayoutRegistry,
     registration: String,
 ) -> Result<RenderedMethod, String> {
+    let (
+        Some(synchronous_output_param_index),
+        Some(semisynchronous_output_param_index),
+        Some(synchronous_output_option_name),
+        Some(semisynchronous_output_option_name),
+    ) = (
+        contract.synchronous_output_param_index,
+        contract.semisynchronous_output_param_index,
+        contract.synchronous_output_option_name.as_deref(),
+        contract.semisynchronous_output_option_name.as_deref(),
+    )
+    else {
+        return Err("Generated unsafe exact-output emitter requires outputs in both modes".into());
+    };
     let flags = method
         .params
         .get(contract.flags_param_index)
@@ -984,11 +998,11 @@ fn render_exact_interface_output_call_method(
         .ok_or_else(|| "Exact interface output context parameter is out of range".to_string())?;
     let synchronous = method
         .params
-        .get(contract.synchronous_output_param_index)
+        .get(synchronous_output_param_index)
         .ok_or_else(|| "Exact synchronous output parameter is out of range".to_string())?;
     let semisynchronous = method
         .params
-        .get(contract.semisynchronous_output_param_index)
+        .get(semisynchronous_output_param_index)
         .ok_or_else(|| "Exact semisynchronous output parameter is out of range".to_string())?;
     let synchronous_contract = synchronous
         .exact_interface_output
@@ -1025,9 +1039,9 @@ fn render_exact_interface_output_call_method(
             ));
         } else if index == contract.context_param_index {
             native_args.push("DynComRawPointer.null().toValue()".into());
-        } else if index == contract.synchronous_output_param_index {
+        } else if index == synchronous_output_param_index {
             native_args.push("__strategyArgument(_synchronousOutputRecord)".into());
-        } else if index == contract.semisynchronous_output_param_index {
+        } else if index == semisynchronous_output_param_index {
             native_args.push("__strategyArgument(_semisynchronousOutputRecord)".into());
         } else {
             return Err(format!(
@@ -1042,8 +1056,8 @@ fn render_exact_interface_output_call_method(
 
     let name = safe_identifier(&camel_case(&capability.projected_name));
     let flags_name = safe_identifier(&contract.flags_option_name);
-    let synchronous_name = safe_identifier(&contract.synchronous_output_option_name);
-    let semisynchronous_name = safe_identifier(&contract.semisynchronous_output_option_name);
+    let synchronous_name = safe_identifier(synchronous_output_option_name);
+    let semisynchronous_name = safe_identifier(semisynchronous_output_option_name);
     let method_args = if public_args.is_empty() {
         "options".into()
     } else {
@@ -1053,9 +1067,8 @@ fn render_exact_interface_output_call_method(
         "    /** @unsafe Exact OpenNamespace mode contract; pCtx is always native null. */\n    {name}({method_args}) {{\n        if (!options || Object.getPrototypeOf(options) !== Object.prototype) throw new TypeError('options must be a plain object');\n        if (options.pCtx !== undefined && options.pCtx !== null) throw new TypeError('pCtx is reserved and must be native null');\n        const {flags_name} = options[{}];\n        if (!Number.isInteger({flags_name}) || {flags_name} < -2147483648 || {flags_name} > 2147483647) throw new RangeError('{} must be an exact signed 32-bit integer');\n        const {synchronous_name} = options[{}] ?? null;\n        const {semisynchronous_name} = options[{}] ?? null;\n        if (({synchronous_name} === null) === ({semisynchronous_name} === null)) throw new TypeError('Exactly one OpenNamespace output must be supplied');\n        const _isSynchronous = {flags_name} === {};\n        const _isSemisynchronous = {flags_name} === {};\n        if ({synchronous_name} !== null && !_isSynchronous) throw new TypeError('workingNamespace requires synchronous lFlags');\n        if ({semisynchronous_name} !== null && !_isSemisynchronous) throw new TypeError('result requires exact WBEM_FLAG_RETURN_IMMEDIATELY lFlags');\n        const _synchronousOutputRecord = __prepareExactWritableSpan({synchronous_name}, '{}', true);\n        const _semisynchronousOutputRecord = __prepareExactWritableSpan({semisynchronous_name}, '{}', true);\n        const _prepared = [_synchronousOutputRecord, _semisynchronousOutputRecord];\n        __validateStrategySpans(_prepared);\n        const _nativeArgs = [{}];\n        const _owners = [];\n        try {{\n            _interface.method({}).invokeAll(this._obj, _nativeArgs);\n            const _owner = {synchronous_name} !== null\n                ? _takeOwnedInterfaceOutput({synchronous_name}, '{}', WinGuid.parse({}), false)\n                : _takeOwnedInterfaceOutput({semisynchronous_name}, '{}', WinGuid.parse({}), false);\n            _owners.push(_owner);\n            return _owner;\n        }} catch (_error) {{\n            const _cleanupErrors = [];\n            try {{ _cleanupOwnedInterfaceOutput({semisynchronous_name}); }} catch (_cleanup) {{ _cleanupErrors.push(_cleanup); }}\n            try {{ _cleanupOwnedInterfaceOutput({synchronous_name}); }} catch (_cleanup) {{ _cleanupErrors.push(_cleanup); }}\n            for (let _index = _owners.length - 1; _index >= 0; _index--) {{\n                try {{ _owners[_index].release(); }} catch (_cleanup) {{ _cleanupErrors.push(_cleanup); }}\n            }}\n            if (_cleanupErrors.length) throw new AggregateError([_error, ..._cleanupErrors], 'Exact interface output cleanup failed', {{ cause: _error }});\n            throw _error;\n        }}\n    }}\n",
         serde_json::to_string(&contract.flags_option_name).map_err(|error| error.to_string())?,
         contract.flags_option_name,
-        serde_json::to_string(&contract.synchronous_output_option_name)
-            .map_err(|error| error.to_string())?,
-        serde_json::to_string(&contract.semisynchronous_output_option_name)
+        serde_json::to_string(synchronous_output_option_name).map_err(|error| error.to_string())?,
+        serde_json::to_string(semisynchronous_output_option_name)
             .map_err(|error| error.to_string())?,
         contract.synchronous_flags,
         contract.semisynchronous_flag_value,
@@ -1080,13 +1093,13 @@ fn render_exact_interface_output_call_method(
         contract.synchronous_flags,
         contract.flags_option_name,
         contract.synchronous_flags,
-        contract.synchronous_output_option_name,
-        contract.semisynchronous_output_option_name,
+        synchronous_output_option_name,
+        semisynchronous_output_option_name,
         contract.semisynchronous_flag_value,
         contract.flags_option_name,
         contract.semisynchronous_flag_value,
-        contract.synchronous_output_option_name,
-        contract.semisynchronous_output_option_name,
+        synchronous_output_option_name,
+        semisynchronous_output_option_name,
     );
     Ok(RenderedMethod {
         registration,
@@ -1650,6 +1663,9 @@ mod tests {
             enumerator_next: None,
             exact_contract: None,
             interface_replacement_contracts: Vec::new(),
+            output_ownership_contracts: Vec::new(),
+            exact_null_input_contracts: Vec::new(),
+            exact_parameter_direction_contracts: Vec::new(),
             exact_interface_output_call: None,
             safe_array_contract_error: None,
         }
@@ -2303,13 +2319,13 @@ mod tests {
         };
         let coverage = measure_stage2_coverage(&winmd).unwrap();
         println!("{}", serde_json::to_string(&coverage).unwrap());
-        assert_eq!(coverage.x64_manual_interfaces, 1_554);
-        assert_eq!(coverage.x64_manual_interfaces_with_executable_method, 1_550);
+        assert_eq!(coverage.x64_manual_interfaces, 1_446);
+        assert_eq!(coverage.x64_manual_interfaces_with_executable_method, 1_442);
         assert_eq!(
             coverage.x64_manual_interfaces_with_executable_manual_method,
-            1_549
+            1_441
         );
-        assert_eq!(coverage.executable_manual_methods, 6_343);
+        assert_eq!(coverage.executable_manual_methods, 6_083);
         assert_eq!(coverage.remaining_manual_methods, 0);
         assert_eq!(coverage.runtime_blocked_methods, 1_163);
     }

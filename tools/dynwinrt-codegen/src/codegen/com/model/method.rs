@@ -33,7 +33,26 @@ impl ComReturnKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::codegen::com) enum ComMethodSpecialContract {
-    FixedCapacityBytes { guid_param: ParamIndex },
+    FixedCapacityBytes {
+        guid_param: ParamIndex,
+    },
+    FlagSelectedString {
+        discriminator_param: ParamIndex,
+        reserved_null_param: ParamIndex,
+        buffer_param: ParamIndex,
+        capacity_param: ParamIndex,
+        string_flags: [u32; 2],
+        validation_flag: u32,
+    },
+    ConditionalInterfaceOutput {
+        public_input_params: [Option<ParamIndex>; 3],
+        flags_param: ParamIndex,
+        context_param: ParamIndex,
+        synchronous_output: Option<ParamIndex>,
+        semisynchronous_output: Option<ParamIndex>,
+        synchronous_flags: i32,
+        semisynchronous_flags: i32,
+    },
     Malloc,
 }
 

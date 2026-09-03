@@ -45,7 +45,7 @@ const CATEGORIES: [&str; 21] = [
     "Unknown",
 ];
 
-const STANDARD_CLEANUPS: [&str; 11] = [
+const STANDARD_CLEANUPS: [&str; 12] = [
     "IUnknown::Release",
     "CoTaskMemFree",
     "LocalFree",
@@ -57,6 +57,7 @@ const STANDARD_CLEANUPS: [&str; 11] = [
     "ReleaseStgMedium",
     "CloseHandle",
     "DestroyIcon",
+    "DeleteObject",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
@@ -3383,6 +3384,9 @@ mod tests {
             enumerator_next: None,
             exact_contract: None,
             interface_replacement_contracts: Vec::new(),
+            output_ownership_contracts: Vec::new(),
+            exact_null_input_contracts: Vec::new(),
+            exact_parameter_direction_contracts: Vec::new(),
             exact_interface_output_call: None,
             safe_array_contract_error: None,
         }
@@ -4555,10 +4559,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(report.summary.eligible_interfaces, 7_929);
-        assert_eq!(report.summary.safe_complete, 5_567);
-        assert_eq!(report.summary.safe_evidence.safe_complete, 5_567);
-        assert_eq!(report.summary.safe_evidence.standard_derived, 5_317);
-        assert_eq!(report.summary.safe_evidence.exact_registry_dependent, 250);
+        assert_eq!(report.summary.safe_complete, 5_681);
+        assert_eq!(report.summary.safe_evidence.safe_complete, 5_681);
+        assert_eq!(report.summary.safe_evidence.standard_derived, 5_326);
+        assert_eq!(report.summary.safe_evidence.exact_registry_dependent, 355);
         assert_eq!(
             report.summary.safe_evidence.standard_derived
                 + report.summary.safe_evidence.exact_registry_dependent,
@@ -4566,51 +4570,55 @@ mod tests {
         );
         assert_eq!(
             report.summary.safe_evidence.metadata_fact_occurrences,
-            5_867
+            5_974
         );
         assert_eq!(
             report.summary.safe_evidence.com_standard_fact_occurrences,
-            25_526
+            26_076
         );
-        assert_eq!(report.summary.safe_evidence.registered_exact_entries, 334);
+        assert_eq!(report.summary.safe_evidence.registered_exact_entries, 495);
         assert_eq!(
             report.summary.safe_evidence.metadata_matched_exact_entries,
-            334
+            495
         );
         assert_eq!(
             report.summary.safe_evidence.safe_consumed_exact_entries,
-            291
+            404
         );
         assert_eq!(
             report
                 .summary
                 .safe_evidence
                 .exact_entry_interface_dependencies,
-            431
+            655
         );
         assert_eq!(
             report
                 .summary
                 .safe_evidence
                 .exact_family_interface_dependencies,
-            268
+            404
         );
         assert_eq!(
             report.summary.safe_evidence.by_contract_kind,
             BTreeMap::from([
                 ("borrowed-handle".into(), 54),
-                ("bounded-two-call".into(), 1),
+                ("bounded-two-call".into(), 16),
                 ("compound-dispatch".into(), 1),
+                ("conditional-output".into(), 7),
                 ("counted-buffer".into(), 16),
                 ("enumerator-next".into(), 74),
-                ("ownership".into(), 20),
+                ("flag-selected-buffer".into(), 3),
+                ("null-input".into(), 2),
+                ("ownership".into(), 172),
+                ("parameter-direction".into(), 45),
                 ("safearray".into(), 263),
                 ("semantic-hresult".into(), 2),
             ])
         );
         assert_eq!(
             report.summary.safe_evidence.by_family_id["com.ownership.v1"],
-            15
+            116
         );
         assert_eq!(
             report.summary.safe_evidence.by_family_id["windows.borrowed-hwnd-output.v1"],
@@ -4624,7 +4632,7 @@ mod tests {
             report.summary.safe_evidence.by_family_id["automation.idispatch-invoke.v1"],
             1
         );
-        assert_eq!(report.summary.safe_evidence.by_entry_id.len(), 291);
+        assert_eq!(report.summary.safe_evidence.by_entry_id.len(), 404);
         assert!(
             report
                 .summary
@@ -4635,7 +4643,7 @@ mod tests {
         );
         assert_eq!(
             report.summary.safe_evidence.by_standard_rule_id["com.automation.bstr-output-owned-sysfreestring.v1"],
-            1_227
+            1_231
         );
         assert_eq!(
             report.summary.safe_evidence.by_standard_rule_id["com.automation.bstr-replacement.v1"],
@@ -4646,12 +4654,12 @@ mod tests {
             25
         );
         assert!(
-            !report
+            report
                 .summary
                 .safe_evidence
                 .by_entry_id
                 .contains_key(crate::contract_registry::WMI_OPEN_NAMESPACE_ENTRY_ID),
-            "an exact entry used only by an unsafe companion must not be counted as a safe dependency"
+            "safe IWbemServices must retain its exact conditional-output dependency"
         );
         assert!(
             report
@@ -4669,7 +4677,7 @@ mod tests {
                 .values()
                 .filter(|entry| entry.safe_consumed)
                 .count(),
-            291
+            404
         );
         let status = &report.summary.safe_evidence.exact_entry_status;
         assert_eq!(
@@ -4723,6 +4731,27 @@ mod tests {
             Some(SafeEvidenceClass::StandardDerived)
         ));
         assert!(standard.exact_entry_ids.is_empty());
+        let promoted_audio = report
+            .interfaces
+            .iter()
+            .find(|interface| {
+                interface.namespace == "Windows.Win32.Media.Audio"
+                    && interface.name == "IAudioSessionControl"
+            })
+            .unwrap();
+        assert!(promoted_audio.safe_complete);
+        assert!(matches!(
+            promoted_audio.evidence_class,
+            Some(SafeEvidenceClass::ExactRegistryDependent)
+        ));
+        assert_eq!(
+            promoted_audio
+                .exact_entry_ids
+                .iter()
+                .filter(|entry| entry.starts_with("com.ownership.entry."))
+                .count(),
+            2
+        );
         let bstr_standard = report
             .interfaces
             .iter()
@@ -4782,8 +4811,8 @@ mod tests {
                     counts.safe_incomplete_raw_runtime_blocked,
                 ),
                 (
-                    418 - usize::from(target == CensusTarget::I686),
-                    1_554 - 23 * usize::from(target == CensusTarget::I686),
+                    412 - usize::from(target == CensusTarget::I686),
+                    1_446 - 23 * usize::from(target == CensusTarget::I686),
                     390 + 24 * usize::from(target == CensusTarget::I686)
                 )
             );

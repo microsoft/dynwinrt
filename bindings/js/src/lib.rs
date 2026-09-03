@@ -1092,6 +1092,9 @@ impl DynWinRTValue {
         dynwinrt::com::PointerOutputKind::Com => com::PointerProvenance::ComOutput,
         dynwinrt::com::PointerOutputKind::CoTaskMem => com::PointerProvenance::CoTaskMemOutput,
         dynwinrt::com::PointerOutputKind::Bstr => com::PointerProvenance::BstrOutput,
+        dynwinrt::com::PointerOutputKind::OwnedHandle(cleanup) => {
+          com::PointerProvenance::OwnedHandleOutput(cleanup)
+        }
       }
     } else {
       com::PointerProvenance::None
@@ -1248,6 +1251,12 @@ impl DynWinRTValue {
       com::PointerProvenance::BstrOutput => {
         drop(unsafe { windows::core::BSTR::from_raw(ptr.cast()) });
       }
+      com::PointerProvenance::OwnedHandleOutput(
+        dynwinrt::com::OwnedHandleCleanup::DeleteObject,
+      ) => unsafe {
+        let _ =
+          windows::Win32::Graphics::Gdi::DeleteObject(windows::Win32::Graphics::Gdi::HGDIOBJ(ptr));
+      },
       com::PointerProvenance::None
       | com::PointerProvenance::Borrowed
       | com::PointerProvenance::DetachedCom

@@ -53,12 +53,18 @@ impl InterfaceBase {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OwnedHandleCleanup {
+    DeleteObject,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PointerOutputKind {
     None,
     Unclassified,
     Com,
     CoTaskMem,
     Bstr,
+    OwnedHandle(OwnedHandleCleanup),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1052,6 +1058,7 @@ enum ComBufferStorage {
         encoding: StringEncoding,
         strings: Vec<EncodedString>,
         pointers: Vec<*mut c_void>,
+        is_null: bool,
     },
     InterfaceArray {
         iid: GUID,
@@ -1114,7 +1121,10 @@ impl Clone for ComBufferStorage {
                 native_layout_name: native_layout_name.clone(),
             },
             Self::StringArray {
-                encoding, strings, ..
+                encoding,
+                strings,
+                is_null,
+                ..
             } => {
                 let mut strings = strings.clone();
                 let pointers = strings.iter_mut().map(EncodedString::pointer).collect();
@@ -1122,6 +1132,7 @@ impl Clone for ComBufferStorage {
                     encoding: *encoding,
                     strings,
                     pointers,
+                    is_null: *is_null,
                 }
             }
             Self::InterfaceArray { iid, values, .. } => {
@@ -1297,8 +1308,20 @@ impl ComBufferValue {
                 encoding,
                 strings,
                 pointers,
+                is_null: false,
             },
         })
+    }
+
+    pub fn null_string_array(encoding: StringEncoding) -> Self {
+        Self {
+            storage: ComBufferStorage::StringArray {
+                encoding,
+                strings: Vec::new(),
+                pointers: Vec::new(),
+                is_null: true,
+            },
+        }
     }
 
     pub fn interface_array(iid: GUID, values: Vec<IUnknown>) -> result::Result<Self> {
@@ -1559,9 +1582,16 @@ impl ComBufferValue {
                 None,
             )),
             ComBufferStorage::StringArray {
-                encoding, pointers, ..
+                encoding,
+                pointers,
+                is_null,
+                ..
             } => Ok((
-                pointers.as_ptr().cast_mut().cast(),
+                if *is_null {
+                    std::ptr::null_mut()
+                } else {
+                    pointers.as_ptr().cast_mut().cast()
+                },
                 pointers.len() * size_of::<*mut c_void>(),
                 size_of::<*mut c_void>(),
                 false,
@@ -1802,6 +1832,10 @@ impl Type {
 
     pub fn borrowed_handle_output() -> Self {
         Self::pointer_with_output(PointerOutputKind::None)
+    }
+
+    pub fn owned_handle_output(cleanup: OwnedHandleCleanup) -> Self {
+        Self::pointer_with_output(PointerOutputKind::OwnedHandle(cleanup))
     }
 
     pub fn owned_com_pointer() -> Self {
@@ -2085,6 +2119,9 @@ impl Type {
             PointerOutputKind::Com => OutputCleanup::ComRelease,
             PointerOutputKind::CoTaskMem => OutputCleanup::CoTaskMemFree,
             PointerOutputKind::Bstr => OutputCleanup::BstrFree,
+            PointerOutputKind::OwnedHandle(OwnedHandleCleanup::DeleteObject) => {
+                OutputCleanup::DeleteObject
+            }
             PointerOutputKind::None | PointerOutputKind::Unclassified => {
                 self.abi.default_output_cleanup()
             }
@@ -2521,6 +2558,7 @@ enum ComSuccessDisposition {
     OwnedComPointer,
     OwnedCoTaskMemPointer,
     OwnedBstr,
+    OwnedHandle(OwnedHandleCleanup),
 }
 
 impl From<PointerOutputKind> for ComSuccessDisposition {
@@ -2531,6 +2569,7 @@ impl From<PointerOutputKind> for ComSuccessDisposition {
             PointerOutputKind::Com => Self::OwnedComPointer,
             PointerOutputKind::CoTaskMem => Self::OwnedCoTaskMemPointer,
             PointerOutputKind::Bstr => Self::OwnedBstr,
+            PointerOutputKind::OwnedHandle(cleanup) => Self::OwnedHandle(cleanup),
         }
     }
 }
@@ -2543,6 +2582,7 @@ impl ComSuccessDisposition {
             Self::OwnedComPointer => PointerOutputKind::Com,
             Self::OwnedCoTaskMemPointer => PointerOutputKind::CoTaskMem,
             Self::OwnedBstr => PointerOutputKind::Bstr,
+            Self::OwnedHandle(cleanup) => PointerOutputKind::OwnedHandle(cleanup),
         }
     }
 }
@@ -10415,6 +10455,16 @@ mod tests {
         windows_core::HRESULT(0x80004005u32 as i32)
     }
 
+    unsafe extern "system" fn observe_null_string_array(
+        _this: *mut c_void,
+        names: *const *const u16,
+        count: u32,
+    ) -> windows_core::HRESULT {
+        assert!(names.is_null());
+        assert_eq!(count, 0);
+        windows_core::HRESULT(0)
+    }
+
     fn invoke_test_pod(
         function: *mut c_void,
         signature: MethodSignature,
@@ -10805,6 +10855,33 @@ mod tests {
                 .contains("ASCII")
         );
         assert_eq!(STRING_ARRAY_CALLS.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn null_string_array_preserves_encoding_and_reaches_native_as_null() {
+        let table = MetadataTable::new();
+        let signature = MethodSignature::new(&table)
+            .add_input_string_array(StringEncoding::Utf16, 1)
+            .unwrap()
+            .add_in(Type::winrt(table.u32_type()));
+        invoke_test_buffer(
+            observe_null_string_array as *mut c_void,
+            signature.clone(),
+            &[Value::Buffer(ComBufferValue::null_string_array(
+                StringEncoding::Utf16,
+            ))],
+        )
+        .unwrap();
+
+        let error = invoke_test_buffer(
+            observe_null_string_array as *mut c_void,
+            signature,
+            &[Value::Buffer(ComBufferValue::null_string_array(
+                StringEncoding::Ansi,
+            ))],
+        )
+        .unwrap_err();
+        assert!(error.message().contains("element contract does not match"));
     }
 
     #[test]
@@ -14129,6 +14206,11 @@ mod tests {
                 Type::bstr_pointer(),
                 OutputCleanup::BstrFree,
                 PointerOutputKind::Bstr,
+            ),
+            (
+                Type::owned_handle_output(OwnedHandleCleanup::DeleteObject),
+                OutputCleanup::DeleteObject,
+                PointerOutputKind::OwnedHandle(OwnedHandleCleanup::DeleteObject),
             ),
         ];
 

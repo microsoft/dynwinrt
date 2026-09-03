@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
 use sha2::{Digest, Sha256};
 use windows_metadata::{HasAttributes, reader};
@@ -316,6 +316,9 @@ pub struct RawComMethod {
     pub enumerator_next: Option<RawEnumeratorNext>,
     pub exact_contract: Option<RawExactMethodContract>,
     pub interface_replacement_contracts: Vec<RawInterfaceReplacementContract>,
+    pub output_ownership_contracts: Vec<RawOutputOwnershipContract>,
+    pub exact_null_input_contracts: Vec<RawExactNullInputContract>,
+    pub exact_parameter_direction_contracts: Vec<RawExactParameterDirectionContract>,
     pub exact_interface_output_call: Option<RawExactInterfaceOutputCallContract>,
     pub safe_array_contract_error: Option<String>,
 }
@@ -326,13 +329,13 @@ pub struct RawExactInterfaceOutputCallContract {
     pub public_input_param_indices: Vec<usize>,
     pub flags_param_index: usize,
     pub context_param_index: usize,
-    pub synchronous_output_param_index: usize,
-    pub semisynchronous_output_param_index: usize,
+    pub synchronous_output_param_index: Option<usize>,
+    pub semisynchronous_output_param_index: Option<usize>,
     pub synchronous_flags: i32,
     pub semisynchronous_flag_value: i32,
     pub flags_option_name: String,
-    pub synchronous_output_option_name: String,
-    pub semisynchronous_output_option_name: String,
+    pub synchronous_output_option_name: Option<String>,
+    pub semisynchronous_output_option_name: Option<String>,
     pub evidence: RawEvidence,
 }
 
@@ -350,12 +353,34 @@ pub struct RawInterfaceReplacementContract {
     pub evidence: RawEvidence,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawOutputOwnershipContract {
+    pub parameter_index: usize,
+    pub source_fingerprint: String,
+    pub evidence: RawEvidence,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawExactNullInputContract {
+    pub parameter_index: usize,
+    pub source_fingerprint: String,
+    pub evidence: RawEvidence,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawExactParameterDirectionContract {
+    pub parameter_index: usize,
+    pub source_fingerprint: String,
+    pub evidence: RawEvidence,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RawExactMethodContractKind {
     FixedCapacityBytes,
     UnsafePrivateData,
     StatStg,
     Malloc,
+    FlagSelectedString,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -369,6 +394,8 @@ pub struct RawExactMethodContract {
     pub buffer_param_index: usize,
     pub capacity_param_index: usize,
     pub actual_length_param_index: Option<usize>,
+    pub discriminator_param_index: Option<usize>,
+    pub reserved_null_param_index: Option<usize>,
     pub citation: &'static str,
     pub reason: &'static str,
 }
@@ -384,6 +411,9 @@ impl RawExactMethodContract {
             }
             RawExactMethodContractKind::StatStg | RawExactMethodContractKind::Malloc => {
                 crate::contract_registry::ExactFamilyId::Ownership
+            }
+            RawExactMethodContractKind::FlagSelectedString => {
+                crate::contract_registry::ExactFamilyId::ShellCommandString
             }
         }
     }
@@ -409,6 +439,9 @@ impl RawExactMethodContract {
             }
             RawExactMethodContractKind::StatStg | RawExactMethodContractKind::Malloc => {
                 crate::contract_registry::ContractKind::Ownership
+            }
+            RawExactMethodContractKind::FlagSelectedString => {
+                crate::contract_registry::ContractKind::FlagSelectedBuffer
             }
         }
     }
@@ -748,7 +781,6 @@ fn parse_com_coclass_from_index(
             "{namespace}.{name} is coclass-shaped but has no CLSID"
         ));
     }
-
     // Windows.Win32.winmd represents coclasses as GUID-bearing ValueType
     // definitions without InterfaceImpl rows. Associate interfaces using the
     // metadata naming convention already used for interface activation, then
@@ -1036,6 +1068,9 @@ fn parse_methods(
                 enumerator_next,
                 exact_contract: None,
                 interface_replacement_contracts: Vec::new(),
+                output_ownership_contracts: Vec::new(),
+                exact_null_input_contracts: Vec::new(),
+                exact_parameter_direction_contracts: Vec::new(),
                 exact_interface_output_call: None,
                 safe_array_contract_error: None,
             };
@@ -1048,6 +1083,9 @@ fn parse_methods(
             );
             apply_safe_array_evidence(&mut raw);
             apply_exact_parameter_direction_overrides(&mut compatibility, &mut raw);
+            apply_exact_out_parameter_contracts(&mut compatibility, &mut raw);
+            apply_exact_output_ownership_contracts(&mut compatibility, &mut raw);
+            apply_exact_null_input_contracts(&mut raw);
             (compatibility, raw)
         })
         .unzip()
@@ -1134,6 +1172,15 @@ pub(crate) fn collect_evidence_dependencies(
         }
         for replacement in &method.interface_replacement_contracts {
             dependencies.consume_raw_evidence(&replacement.evidence);
+        }
+        for contract in &method.output_ownership_contracts {
+            dependencies.consume_raw_evidence(&contract.evidence);
+        }
+        for contract in &method.exact_null_input_contracts {
+            dependencies.consume_raw_evidence(&contract.evidence);
+        }
+        for contract in &method.exact_parameter_direction_contracts {
+            dependencies.consume_raw_evidence(&contract.evidence);
         }
         if let Some(borrowed) =
             crate::com_borrowed_handle_registry::borrowed_hwnd_evidence_for_declaration(
@@ -1278,6 +1325,95 @@ pub(crate) fn collect_exact_registry_entries(
                     .map(|parameter| (replacement.parameter_index, parameter)),
             ));
         }
+        let output_ownership_entry_ids = method
+            .output_ownership_contracts
+            .iter()
+            .filter_map(|contract| match &contract.evidence {
+                RawEvidence::ExactRegistry { entry_id, .. } => Some(entry_id.as_str()),
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
+        for contract in &method.output_ownership_contracts {
+            let Some(parameter) = method.params.get(contract.parameter_index) else {
+                continue;
+            };
+            let RawEvidence::ExactRegistry {
+                entry_id,
+                family_id,
+                contract_kind,
+                reason,
+                citation,
+            } = &contract.evidence
+            else {
+                continue;
+            };
+            entries.push(ExactRegistryEntry {
+                entry_id: entry_id.clone(),
+                family_id: *family_id,
+                contract_kind: *contract_kind,
+                selector: ExactEntrySelector {
+                    parameter: Some((contract.parameter_index, parameter.name.clone())),
+                    ..method_selector()
+                },
+                source_fingerprint: contract.source_fingerprint.clone(),
+                reason: reason.clone(),
+                citation: citation.clone(),
+            });
+        }
+        for contract in &method.exact_null_input_contracts {
+            let Some(parameter) = method.params.get(contract.parameter_index) else {
+                continue;
+            };
+            let RawEvidence::ExactRegistry {
+                entry_id,
+                family_id,
+                contract_kind,
+                reason,
+                citation,
+            } = &contract.evidence
+            else {
+                continue;
+            };
+            entries.push(ExactRegistryEntry {
+                entry_id: entry_id.clone(),
+                family_id: *family_id,
+                contract_kind: *contract_kind,
+                selector: ExactEntrySelector {
+                    parameter: Some((contract.parameter_index, parameter.name.clone())),
+                    ..method_selector()
+                },
+                source_fingerprint: contract.source_fingerprint.clone(),
+                reason: reason.clone(),
+                citation: citation.clone(),
+            });
+        }
+        for contract in &method.exact_parameter_direction_contracts {
+            let Some(parameter) = method.params.get(contract.parameter_index) else {
+                continue;
+            };
+            let RawEvidence::ExactRegistry {
+                entry_id,
+                family_id,
+                contract_kind,
+                reason,
+                citation,
+            } = &contract.evidence
+            else {
+                continue;
+            };
+            entries.push(ExactRegistryEntry {
+                entry_id: entry_id.clone(),
+                family_id: *family_id,
+                contract_kind: *contract_kind,
+                selector: ExactEntrySelector {
+                    parameter: Some((contract.parameter_index, parameter.name.clone())),
+                    ..method_selector()
+                },
+                source_fingerprint: contract.source_fingerprint.clone(),
+                reason: reason.clone(),
+                citation: citation.clone(),
+            });
+        }
         if let Some(borrowed) =
             crate::com_borrowed_handle_registry::borrowed_hwnd_evidence_for_declaration(
                 &method.declaring_namespace,
@@ -1308,10 +1444,14 @@ pub(crate) fn collect_exact_registry_entries(
                 entries.extend(record(evidence, Some((parameter_index, parameter))));
             }
             if let Some(free_with) = &parameter.free_with {
-                entries.extend(record(
-                    &free_with.evidence,
-                    Some((parameter_index, parameter)),
-                ));
+                let duplicate_output_contract = matches!(&free_with.evidence, RawEvidence::ExactRegistry { entry_id, .. }
+                        if output_ownership_entry_ids.contains(entry_id.as_str()));
+                if !duplicate_output_contract {
+                    entries.extend(record(
+                        &free_with.evidence,
+                        Some((parameter_index, parameter)),
+                    ));
+                }
             }
             if let Some(safe_array) = &parameter.safe_array_evidence {
                 entries.push(ExactRegistryEntry {
@@ -1342,95 +1482,268 @@ fn apply_exact_parameter_direction_overrides(
     compatibility: &mut MethodMeta,
     raw: &mut RawComMethod,
 ) -> bool {
-    let entry = crate::contract_registry::conditional_output_contract(
-        crate::contract_registry::WMI_OPEN_NAMESPACE_ENTRY_ID,
-    )
-    .expect("embedded WMI contract registry must validate");
-    let selector = &entry.selector;
-    if raw.declaring_namespace != selector.interface.namespace
-        || raw.declaring_interface != selector.interface.name
-        || !raw
-            .declaring_iid
-            .eq_ignore_ascii_case(&selector.interface.iid)
-        || !raw
-            .declaring_iid
-            .eq_ignore_ascii_case(&selector.declaring_iid)
-        || raw.metadata_name != selector.method
-        || raw.vtable_index != selector.absolute_slot
-        || raw.params.len() != selector.parameter_count
-        || compatibility.params.len() != selector.parameter_count
-    {
-        return false;
-    }
-    if raw_method_fingerprint(raw) != selector.source_fingerprint {
-        return false;
-    }
-    if !selector
-        .parameters
-        .iter()
-        .zip(&raw.params)
-        .all(|(expected, actual)| {
-            expected.name == actual.name
-                && expected.native_type == raw_type_registry_name(&actual.typ)
-                && expected.pointer_depth == actual.typ.pointer_depth
-                && expected.direction == raw_direction_key(actual.direction)
-                && expected.optional == actual.optional
-                && expected.constness == raw_constness_key(actual.typ.constness)
-                && expected.const_attribute == actual.const_attribute
-        })
-    {
-        return false;
-    }
-    let citation = entry
-        .evidence
-        .iter()
-        .filter_map(|source| {
-            source
-                .url
-                .as_deref()
-                .or(source.file.as_deref())
-                .map(|value| format!("{}:{value}", source.kind.key()))
-        })
-        .collect::<Vec<_>>()
-        .join("; ");
-    for output in &entry.contract.outputs {
-        let index = output.parameter_index;
-        raw.params[index].direction = RawParamDirection::Out;
-        raw.params[index].exact_interface_output = Some(RawExactInterfaceOutputContract {
-            interface_iid: output.interface_iid.clone(),
-            argument_optional: output.argument_optional,
-            nullable_on_success: output.nullable_on_success,
+    let entries = crate::contract_registry::conditional_output_contracts()
+        .expect("embedded conditional-output registry must validate");
+    for entry in entries {
+        let selector = &entry.selector;
+        if raw.declaring_namespace != selector.interface.namespace
+            || raw.declaring_interface != selector.interface.name
+            || !raw
+                .declaring_iid
+                .eq_ignore_ascii_case(&selector.interface.iid)
+            || !raw
+                .declaring_iid
+                .eq_ignore_ascii_case(&selector.declaring_iid)
+            || raw.metadata_name != selector.method
+            || raw.vtable_index != selector.absolute_slot
+            || raw.params.len() != selector.parameter_count
+            || compatibility.params.len() != selector.parameter_count
+            || raw_method_fingerprint(raw) != selector.source_fingerprint
+            || !selector
+                .parameters
+                .iter()
+                .zip(&raw.params)
+                .all(|(expected, actual)| {
+                    expected.name == actual.name
+                        && expected.native_type == raw_type_registry_name(&actual.typ)
+                        && expected.pointer_depth == actual.typ.pointer_depth
+                        && expected.direction == raw_direction_key(actual.direction)
+                        && expected.optional == actual.optional
+                        && expected.constness == raw_constness_key(actual.typ.constness)
+                        && expected.const_attribute == actual.const_attribute
+                })
+        {
+            continue;
+        }
+        let citation = entry
+            .evidence
+            .iter()
+            .filter_map(|source| {
+                source
+                    .url
+                    .as_deref()
+                    .or(source.file.as_deref())
+                    .map(|value| format!("{}:{value}", source.kind.key()))
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        for output in &entry.contract.outputs {
+            let index = output.parameter_index;
+            raw.params[index].direction = RawParamDirection::Out;
+            raw.params[index].exact_interface_output = Some(RawExactInterfaceOutputContract {
+                interface_iid: output.interface_iid.clone(),
+                argument_optional: output.argument_optional,
+                nullable_on_success: output.nullable_on_success,
+                evidence: RawEvidence::exact_registry(
+                    entry.entry_id.clone(),
+                    entry.family_id,
+                    entry.kind,
+                    entry.reason.clone(),
+                    citation.clone(),
+                ),
+            });
+            compatibility.params[index].direction = ParamDirection::Out;
+        }
+        raw.exact_interface_output_call = Some(RawExactInterfaceOutputCallContract {
+            source_fingerprint: selector.source_fingerprint.clone(),
+            public_input_param_indices: entry.contract.public_input_parameter_indices.clone(),
+            flags_param_index: entry.contract.flags_parameter_index,
+            context_param_index: entry.contract.context_parameter_index,
+            synchronous_output_param_index: entry.contract.synchronous.output_parameter_index,
+            semisynchronous_output_param_index: entry
+                .contract
+                .semisynchronous
+                .output_parameter_index,
+            synchronous_flags: entry.contract.synchronous.flags,
+            semisynchronous_flag_value: entry.contract.semisynchronous.flags,
+            flags_option_name: entry.contract.flags_option_name.clone(),
+            synchronous_output_option_name: entry.contract.synchronous.option_name.clone(),
+            semisynchronous_output_option_name: entry.contract.semisynchronous.option_name.clone(),
             evidence: RawEvidence::exact_registry(
                 entry.entry_id.clone(),
                 entry.family_id,
                 entry.kind,
                 entry.reason.clone(),
-                citation.clone(),
+                citation,
             ),
         });
-        compatibility.params[index].direction = ParamDirection::Out;
+        return true;
     }
-    raw.exact_interface_output_call = Some(RawExactInterfaceOutputCallContract {
-        source_fingerprint: selector.source_fingerprint.clone(),
-        public_input_param_indices: entry.contract.public_input_parameter_indices.clone(),
-        flags_param_index: entry.contract.flags_parameter_index,
-        context_param_index: entry.contract.context_parameter_index,
-        synchronous_output_param_index: entry.contract.synchronous.output_parameter_index,
-        semisynchronous_output_param_index: entry.contract.semisynchronous.output_parameter_index,
-        synchronous_flags: entry.contract.synchronous.flags,
-        semisynchronous_flag_value: entry.contract.semisynchronous.flags,
-        flags_option_name: entry.contract.flags_option_name.clone(),
-        synchronous_output_option_name: entry.contract.synchronous.option_name.clone(),
-        semisynchronous_output_option_name: entry.contract.semisynchronous.option_name.clone(),
-        evidence: RawEvidence::exact_registry(
+    false
+}
+
+fn apply_exact_output_ownership_contracts(
+    compatibility: &mut MethodMeta,
+    raw: &mut RawComMethod,
+) -> bool {
+    let source_fingerprint = raw_method_fingerprint(raw);
+    let entries = crate::contract_registry::ownership_output_contracts()
+        .expect("embedded ownership contract registry must validate");
+    let mut attached = false;
+    for entry in entries {
+        let selector = &entry.selector;
+        if raw.declaring_namespace != selector.interface.namespace
+            || raw.declaring_interface != selector.interface.name
+            || !raw
+                .declaring_iid
+                .eq_ignore_ascii_case(&selector.interface.iid)
+            || !raw
+                .declaring_iid
+                .eq_ignore_ascii_case(&selector.declaring_iid)
+            || raw.metadata_name != selector.method
+            || raw.vtable_index != selector.absolute_slot
+            || raw.params.len() != selector.parameter_count
+            || compatibility.params.len() != selector.parameter_count
+            || source_fingerprint != selector.source_fingerprint
+            || !selector
+                .parameters
+                .iter()
+                .zip(&raw.params)
+                .all(|(expected, actual)| {
+                    expected.name == actual.name
+                        && expected.native_type == raw_type_registry_name(&actual.typ)
+                        && expected.pointer_depth == actual.typ.pointer_depth
+                        && expected.direction == raw_direction_key(actual.direction)
+                        && expected.optional == actual.optional
+                        && expected.constness == raw_constness_key(actual.typ.constness)
+                        && expected.const_attribute == actual.const_attribute
+                })
+        {
+            continue;
+        }
+
+        let index = entry.contract.parameter_index;
+        let parameter = &mut raw.params[index];
+        if parameter.free_with.is_some() {
+            continue;
+        }
+        let citation = entry
+            .evidence
+            .iter()
+            .filter_map(|source| {
+                source
+                    .url
+                    .as_deref()
+                    .or(source.file.as_deref())
+                    .map(|value| format!("{}:{value}", source.kind.key()))
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        let evidence = RawEvidence::exact_registry(
             entry.entry_id.clone(),
             entry.family_id,
             entry.kind,
             entry.reason.clone(),
             citation,
-        ),
-    });
-    true
+        );
+        parameter.free_with = Some(RawFreeWith {
+            function: match entry.contract.cleanup {
+                crate::contract_registry::OutputAllocationCleanup::CoTaskMemFree => "CoTaskMemFree",
+                crate::contract_registry::OutputAllocationCleanup::DeleteObject => "DeleteObject",
+            }
+            .into(),
+            evidence: evidence.clone(),
+        });
+        compatibility.owned_outputs.push(OwnedOutput {
+            param_index: index,
+            free_with: "CoTaskMemFree".into(),
+        });
+        raw.output_ownership_contracts
+            .push(RawOutputOwnershipContract {
+                parameter_index: index,
+                source_fingerprint: source_fingerprint.clone(),
+                evidence,
+            });
+        attached = true;
+    }
+    attached
+}
+
+fn apply_exact_out_parameter_contracts(
+    compatibility: &mut MethodMeta,
+    raw: &mut RawComMethod,
+) -> bool {
+    let source_fingerprint = raw_method_fingerprint(raw);
+    let mut attached = false;
+    for entry in crate::com_parameter_direction_registry::entries() {
+        if raw.declaring_namespace != entry.declaring_namespace
+            || raw.declaring_interface != entry.declaring_interface
+            || !raw.declaring_iid.eq_ignore_ascii_case(entry.declaring_iid)
+            || raw.metadata_name != entry.method_name
+            || raw.vtable_index != entry.vtable_index
+            || raw.params.len() != entry.parameter_count
+            || compatibility.params.len() != entry.parameter_count
+            || source_fingerprint != entry.source_fingerprint
+        {
+            continue;
+        }
+        let Some(parameter) = raw.params.get(entry.parameter_index) else {
+            continue;
+        };
+        if parameter.name != entry.parameter_name
+            || parameter.direction != RawParamDirection::InOut
+            || parameter.typ.pointer_depth == 0
+        {
+            continue;
+        }
+        raw.params[entry.parameter_index].direction = RawParamDirection::Out;
+        compatibility.params[entry.parameter_index].direction = ParamDirection::Out;
+        raw.exact_parameter_direction_contracts
+            .push(RawExactParameterDirectionContract {
+                parameter_index: entry.parameter_index,
+                source_fingerprint: source_fingerprint.clone(),
+                evidence: RawEvidence::exact_registry(
+                    entry.entry_id(),
+                    entry.family_id(),
+                    entry.contract_kind(),
+                    entry.reason,
+                    entry.citation,
+                ),
+            });
+        attached = true;
+    }
+    attached
+}
+
+fn apply_exact_null_input_contracts(raw: &mut RawComMethod) -> bool {
+    let source_fingerprint = raw_method_fingerprint(raw);
+    let mut attached = false;
+    for entry in crate::com_null_input_registry::entries() {
+        if raw.declaring_namespace != entry.declaring_namespace
+            || raw.declaring_interface != entry.declaring_interface
+            || !raw.declaring_iid.eq_ignore_ascii_case(entry.declaring_iid)
+            || raw.metadata_name != entry.method_name
+            || raw.vtable_index != entry.vtable_index
+            || raw.params.len() != entry.parameter_count
+            || source_fingerprint != entry.source_fingerprint
+        {
+            continue;
+        }
+        let Some(parameter) = raw.params.get(entry.parameter_index) else {
+            continue;
+        };
+        if parameter.name != entry.parameter_name
+            || parameter.direction != RawParamDirection::In
+            || parameter.typ.pointer_depth == 0
+            || !matches!(parameter.typ.native_type, RawNativeType::Void)
+        {
+            continue;
+        }
+        raw.exact_null_input_contracts
+            .push(RawExactNullInputContract {
+                parameter_index: entry.parameter_index,
+                source_fingerprint: source_fingerprint.clone(),
+                evidence: RawEvidence::exact_registry(
+                    entry.entry_id(),
+                    entry.family_id(),
+                    entry.contract_kind(),
+                    entry.reason,
+                    entry.citation,
+                ),
+            });
+        attached = true;
+    }
+    attached
 }
 
 fn raw_type_registry_name(typ: &RawComType) -> String {
@@ -1857,6 +2170,50 @@ fn apply_exact_method_contract(
         }
         RawExactMethodContractKind::StatStg => {}
         RawExactMethodContractKind::Malloc => {}
+        RawExactMethodContractKind::FlagSelectedString => {
+            let buffer = contract.buffer_param_index;
+            let capacity = contract.capacity_param_index;
+            let discriminator = contract
+                .discriminator_param_index
+                .expect("flag-selected string discriminator");
+            let reserved = contract
+                .reserved_null_param_index
+                .expect("flag-selected string reserved pointer");
+            let Some(relation) = raw.params[buffer].native_array.as_mut() else {
+                raw.params[buffer].native_array = Some(RawArrayRelation {
+                    count_param_index: Some(capacity),
+                    actual_length_param_index: None,
+                    unit: RawCountUnit::Elements,
+                    two_call: false,
+                    projected_capacity: false,
+                    constness: Some(RawConstness::Mutable),
+                    evidence: vec![RawEvidence::exact_registry(
+                        contract.entry_id(),
+                        contract.family_id(),
+                        contract.contract_kind(),
+                        contract.reason,
+                        contract.citation,
+                    )],
+                });
+                if let RawNativeType::Named {
+                    namespace, name, ..
+                } = &mut raw.params[buffer].typ.native_type
+                {
+                    *namespace = "Windows.Win32.Foundation".into();
+                    *name = "PWSTR".into();
+                }
+                compatibility.params[buffer].direction = ParamDirection::OutStringBuffer {
+                    count_param_index: capacity,
+                };
+                compatibility.preserve_hresult = true;
+                debug_assert_ne!(discriminator, reserved);
+                return;
+            };
+            relation.count_param_index = Some(capacity);
+            relation.unit = RawCountUnit::Elements;
+            relation.projected_capacity = false;
+            relation.constness = Some(RawConstness::Mutable);
+        }
     }
 }
 
@@ -1893,6 +2250,22 @@ fn registered_exact_method_contract(
             None,
             "IStream::Stat returns an owned STATSTG whose nested name is allocated with CoTaskMem",
             "https://learn.microsoft.com/windows/win32/api/objidl/nf-objidl-istream-stat",
+        ),
+        ("Windows.Win32.System.Com.StructuredStorage", "IStorage", "Stat") => (
+            RawExactMethodContractKind::StatStg,
+            0,
+            1,
+            None,
+            "IStorage::Stat returns an owned STATSTG whose nested name is allocated with CoTaskMem",
+            "https://learn.microsoft.com/windows/win32/api/objidl/nf-objidl-istorage-stat",
+        ),
+        ("Windows.Win32.UI.Shell", "IContextMenu", "GetCommandString") => (
+            RawExactMethodContractKind::FlagSelectedString,
+            3,
+            4,
+            None,
+            "IContextMenu::GetCommandString selects UTF-16 caller-buffer or validation semantics by GCS flag and requires pReserved to be native null",
+            "https://learn.microsoft.com/windows/win32/api/shobjidl_core/nf-shobjidl_core-icontextmenu-getcommandstring",
         ),
         ("Windows.Win32.System.Com", "IMalloc", "Alloc") => (
             RawExactMethodContractKind::Malloc,
@@ -2010,6 +2383,8 @@ fn registered_exact_method_contract(
             "ID3D12Object" => "Windows.Win32.Graphics.Direct3D12",
             "IDMLObject" => "Windows.Win32.AI.MachineLearning.DirectML",
             "IStream" => "Windows.Win32.System.Com",
+            "IStorage" => "Windows.Win32.System.Com.StructuredStorage",
+            "IContextMenu" => "Windows.Win32.UI.Shell",
             "IMalloc" => "Windows.Win32.System.Com",
             _ => unreachable!("matched exact method interface"),
         },
@@ -2023,6 +2398,8 @@ fn registered_exact_method_contract(
             "ID3D12Object" => "ID3D12Object",
             "IDMLObject" => "IDMLObject",
             "IStream" => "IStream",
+            "IStorage" => "IStorage",
+            "IContextMenu" => "IContextMenu",
             "IMalloc" => "IMalloc",
             _ => unreachable!("matched exact method interface"),
         },
@@ -2040,8 +2417,15 @@ fn registered_exact_method_contract(
                 "IDMLObject" => "c8263aac-9e0c-4a2d-9b8e-007521a3317c",
                 _ => unreachable!("matched exact private-data interface"),
             },
-            RawExactMethodContractKind::StatStg => "0000000c-0000-0000-c000-000000000046",
+            RawExactMethodContractKind::StatStg => match interface {
+                "IStream" => "0000000c-0000-0000-c000-000000000046",
+                "IStorage" => "0000000b-0000-0000-c000-000000000046",
+                _ => unreachable!("matched exact STATSTG interface"),
+            },
             RawExactMethodContractKind::Malloc => "00000002-0000-0000-c000-000000000046",
+            RawExactMethodContractKind::FlagSelectedString => {
+                "000214e4-0000-0000-c000-000000000046"
+            }
         },
         method_name: match kind {
             RawExactMethodContractKind::FixedCapacityBytes => "GetBlob",
@@ -2056,6 +2440,7 @@ fn registered_exact_method_contract(
                 "HeapMinimize" => "HeapMinimize",
                 _ => unreachable!("matched exact IMalloc method"),
             },
+            RawExactMethodContractKind::FlagSelectedString => "GetCommandString",
         },
         vtable_index: match (interface, method) {
             ("IMFAttributes", "GetBlob") => 15,
@@ -2066,6 +2451,8 @@ fn registered_exact_method_contract(
             ("ID3D11Device", "GetPrivateData") => 34,
             ("ID3D12Object", "GetPrivateData") | ("IDMLObject", "GetPrivateData") => 3,
             ("IStream", "Stat") => 12,
+            ("IStorage", "Stat") => 17,
+            ("IContextMenu", "GetCommandString") => 5,
             ("IMalloc", "Alloc") => 3,
             ("IMalloc", "Realloc") => 4,
             ("IMalloc", "Free") => 5,
@@ -2077,6 +2464,10 @@ fn registered_exact_method_contract(
         buffer_param_index: buffer,
         capacity_param_index: capacity,
         actual_length_param_index: actual,
+        discriminator_param_index: (kind == RawExactMethodContractKind::FlagSelectedString)
+            .then_some(1),
+        reserved_null_param_index: (kind == RawExactMethodContractKind::FlagSelectedString)
+            .then_some(2),
         citation,
         reason,
     })
@@ -2288,7 +2679,10 @@ pub(crate) fn validate_exact_method_contract(
         }
         RawExactMethodContractKind::StatStg => {
             raw_method_shape(raw)
-                == "Stat@12(pstatstg:out:required:noconstattr:Windows.Win32.System.Com.STATSTG[Struct]/ptr1/Mutable,grfStatFlag:in:required:noconstattr:u32/ptr0/Unspecified)->Windows.Win32.Foundation.HRESULT[Struct]/ptr0/Unspecified/underlying=i32/ptr0/Unspecified:plain_hresult:not_enumerator_next"
+                == format!(
+                    "Stat@{}(pstatstg:out:required:noconstattr:Windows.Win32.System.Com.STATSTG[Struct]/ptr1/Mutable,grfStatFlag:in:required:noconstattr:u32/ptr0/Unspecified)->Windows.Win32.Foundation.HRESULT[Struct]/ptr0/Unspecified/underlying=i32/ptr0/Unspecified:plain_hresult:not_enumerator_next",
+                    contract.vtable_index
+                )
         }
         RawExactMethodContractKind::Malloc => {
             let expected = match contract.method_name {
@@ -2314,6 +2708,37 @@ pub(crate) fn validate_exact_method_contract(
             };
             raw_method_shape(raw) == expected
         }
+        RawExactMethodContractKind::FlagSelectedString => {
+            let buffer = contract.buffer_param_index;
+            let capacity = contract.capacity_param_index;
+            let discriminator = contract.discriminator_param_index;
+            let reserved = contract.reserved_null_param_index;
+            raw.params.len() == 5
+                && discriminator == Some(1)
+                && reserved == Some(2)
+                && raw.params[0].name == "idCmd"
+                && raw.params[0].direction == RawParamDirection::In
+                && raw.params[1].name == "uType"
+                && raw_u32_scalar(&raw.params[1], RawParamDirection::In, false)
+                && raw.params[2].name == "pReserved"
+                && raw.params[2].direction == RawParamDirection::In
+                && raw.params[2].optional
+                && raw.params[2].typ.pointer_depth == 1
+                && raw.params[buffer].name == "pszName"
+                && raw.params[buffer].direction == RawParamDirection::Out
+                && raw.params[buffer]
+                    .native_array
+                    .as_ref()
+                    .is_some_and(|relation| {
+                        relation.count_param_index == Some(capacity)
+                            && relation.unit == RawCountUnit::Elements
+                            && !relation.projected_capacity
+                            && relation.constness == Some(RawConstness::Mutable)
+                    })
+                && raw.params[capacity].name == "cchMax"
+                && raw_u32_scalar(&raw.params[capacity], RawParamDirection::In, false)
+                && raw_hresult(&raw.return_type)
+        }
     };
     let indices_valid = match contract.kind {
         RawExactMethodContractKind::FixedCapacityBytes
@@ -2324,6 +2749,16 @@ pub(crate) fn validate_exact_method_contract(
                 && contract
                     .actual_length_param_index
                     .is_none_or(|index| index < raw.params.len())
+        }
+        RawExactMethodContractKind::FlagSelectedString => {
+            contract.buffer_param_index < raw.params.len()
+                && contract.capacity_param_index < raw.params.len()
+                && contract
+                    .discriminator_param_index
+                    .is_some_and(|index| index < raw.params.len())
+                && contract
+                    .reserved_null_param_index
+                    .is_some_and(|index| index < raw.params.len())
         }
         RawExactMethodContractKind::Malloc => true,
     };
@@ -3805,6 +4240,9 @@ mod tests {
             enumerator_next: None,
             exact_contract: None,
             interface_replacement_contracts: Vec::new(),
+            output_ownership_contracts: Vec::new(),
+            exact_null_input_contracts: Vec::new(),
+            exact_parameter_direction_contracts: Vec::new(),
             exact_interface_output_call: None,
             safe_array_contract_error: None,
         };
@@ -4103,6 +4541,8 @@ mod tests {
                 buffer_param_index: 0,
                 capacity_param_index: 1,
                 actual_length_param_index: None,
+                discriminator_param_index: None,
+                reserved_null_param_index: None,
                 citation: "test://drift",
                 reason: "drift",
             })
@@ -4128,13 +4568,13 @@ mod tests {
                 public_input_param_indices: vec![0],
                 flags_param_index: 1,
                 context_param_index: 2,
-                synchronous_output_param_index: 3,
-                semisynchronous_output_param_index: 4,
+                synchronous_output_param_index: Some(3),
+                semisynchronous_output_param_index: Some(4),
                 synchronous_flags: 0,
                 semisynchronous_flag_value: 0x10,
                 flags_option_name: "lFlags".into(),
-                synchronous_output_option_name: "workingNamespace".into(),
-                semisynchronous_output_option_name: "result".into(),
+                synchronous_output_option_name: Some("workingNamespace".into()),
+                semisynchronous_output_option_name: Some("result".into()),
                 evidence: RawEvidence::exact_registry(
                     "tests.conditional-output.drift.v1",
                     crate::contract_registry::ExactFamilyId::ConditionalOutput,
@@ -4771,6 +5211,88 @@ mod tests {
             .as_deref(),
             Some("CoTaskMemFree")
         );
+    }
+
+    #[test]
+    fn exact_output_ownership_registry_attaches_and_fails_closed_on_drift() {
+        let Ok(winmd) = std::env::var("DYNWINRT_WIN32_WINMD") else {
+            return;
+        };
+        let hash = format!(
+            "{:X}",
+            Sha256::digest(std::fs::read(&winmd).expect("configured metadata must be readable"))
+        );
+        if hash != crate::codegen::com::capability::OFFICIAL_METADATA_SHA256 {
+            return;
+        }
+        let interface =
+            parse_com_interface(&winmd, "Windows.Win32.Media.Audio", "IAudioSessionControl")
+                .expect("configured metadata must contain IAudioSessionControl");
+        let method_index = interface
+            .raw_methods
+            .as_ref()
+            .unwrap()
+            .iter()
+            .position(|method| method.metadata_name == "GetDisplayName")
+            .unwrap();
+        let method = &interface.raw_methods.as_ref().unwrap()[method_index];
+        let parameter_index = method
+            .params
+            .iter()
+            .position(|parameter| parameter.name == "pRetVal")
+            .unwrap();
+        let ownership = method
+            .output_ownership_contracts
+            .iter()
+            .find(|contract| contract.parameter_index == parameter_index)
+            .expect("exact output ownership must be attached");
+        assert_eq!(
+            method.params[parameter_index]
+                .free_with
+                .as_ref()
+                .map(|free_with| free_with.function.as_str()),
+            Some("CoTaskMemFree")
+        );
+        let RawEvidence::ExactRegistry {
+            entry_id,
+            family_id,
+            contract_kind,
+            citation,
+            ..
+        } = &ownership.evidence
+        else {
+            panic!("output ownership must retain exact provenance");
+        };
+        assert_eq!(
+            *family_id,
+            crate::contract_registry::ExactFamilyId::Ownership
+        );
+        assert_eq!(
+            *contract_kind,
+            crate::contract_registry::ContractKind::Ownership
+        );
+        assert!(entry_id.contains("iaudiosessioncontrol"));
+        assert!(citation.contains("learn.microsoft.com"));
+
+        let mut baseline = method.clone();
+        baseline.params[parameter_index].free_with = None;
+        baseline.output_ownership_contracts.clear();
+        assert_eq!(
+            raw_method_fingerprint(&baseline),
+            ownership.source_fingerprint
+        );
+
+        baseline.params[parameter_index].name.push_str("Drift");
+        let mut compatibility = interface.interface.methods[method_index].clone();
+        compatibility
+            .owned_outputs
+            .retain(|output| output.param_index != parameter_index);
+        assert!(!apply_exact_output_ownership_contracts(
+            &mut compatibility,
+            &mut baseline
+        ));
+        assert!(baseline.params[parameter_index].free_with.is_none());
+        assert!(baseline.output_ownership_contracts.is_empty());
     }
 
     #[test]

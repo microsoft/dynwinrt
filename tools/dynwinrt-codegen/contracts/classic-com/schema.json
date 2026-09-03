@@ -41,6 +41,9 @@
             "wmi.conditional-output.v1",
             "com.sequential-stream-buffer.v1",
             "automation.idispatch-invoke.v1"
+            ,"com.reserved-null-input.v1",
+            "com.parameter-direction.v1"
+            ,"shell.flag-selected-string.v1"
           ]
         },
         "kind": {
@@ -55,11 +58,19 @@
             "semantic-hresult",
             "compound-dispatch",
             "hazard"
+            ,"null-input",
+            "parameter-direction"
+            ,"flag-selected-buffer"
           ]
         },
         "reason": { "type": "string", "minLength": 1 },
         "selector": { "$ref": "#/$defs/selector" },
-        "contract": { "$ref": "#/$defs/conditionalOutput" },
+        "contract": {
+          "oneOf": [
+            { "$ref": "#/$defs/conditionalOutput" },
+            { "$ref": "#/$defs/outputOwnership" }
+          ]
+        },
         "evidence": {
           "type": "array",
           "minItems": 1,
@@ -157,10 +168,20 @@
         "semisynchronous": { "$ref": "#/$defs/outputMode" },
         "outputs": {
           "type": "array",
-          "minItems": 2,
+          "minItems": 1,
           "maxItems": 2,
           "items": { "$ref": "#/$defs/interfaceOutput" }
         }
+      }
+    },
+    "outputOwnership": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["parameterIndex", "ownership", "cleanup"],
+      "properties": {
+        "parameterIndex": { "type": "integer", "minimum": 0 },
+        "ownership": { "enum": ["cotaskmem-owned", "handle-owned"] },
+        "cleanup": { "enum": ["CoTaskMemFree", "DeleteObject"] }
       }
     },
     "outputMode": {
@@ -169,8 +190,18 @@
       "required": ["flags", "outputParameterIndex", "optionName"],
       "properties": {
         "flags": { "type": "integer" },
-        "outputParameterIndex": { "type": "integer", "minimum": 0 },
-        "optionName": { "type": "string", "minLength": 1 }
+        "outputParameterIndex": {
+          "oneOf": [
+            { "type": "integer", "minimum": 0 },
+            { "type": "null" }
+          ]
+        },
+        "optionName": {
+          "oneOf": [
+            { "type": "string", "minLength": 1 },
+            { "type": "null" }
+          ]
+        }
       }
     },
     "interfaceOutput": {

@@ -80,26 +80,30 @@
   "parsed_interface_identities": 7944,
   "eligible_interfaces": 7929,
   "not_addressable": 15,
-  "safe_complete": 5567,
-  "safe_incomplete": 2362,
+  "safe_complete": 5681,
+  "safe_incomplete": 2248,
   "safeEvidence": {
-    "safeComplete": 5567,
-    "standardDerived": 5317,
-    "exactRegistryDependent": 250,
-    "metadataFactOccurrences": 5867,
-    "comStandardFactOccurrences": 25526,
-    "registeredExactEntries": 334,
-    "metadataMatchedExactEntries": 334,
-    "safeConsumedExactEntries": 291,
-    "exactEntryInterfaceDependencies": 431,
-    "exactFamilyInterfaceDependencies": 268,
+    "safeComplete": 5681,
+    "standardDerived": 5326,
+    "exactRegistryDependent": 355,
+    "metadataFactOccurrences": 5974,
+    "comStandardFactOccurrences": 26076,
+    "registeredExactEntries": 495,
+    "metadataMatchedExactEntries": 495,
+    "safeConsumedExactEntries": 404,
+    "exactEntryInterfaceDependencies": 655,
+    "exactFamilyInterfaceDependencies": 404,
     "byContractKind": {
       "borrowed-handle": 54,
-      "bounded-two-call": 1,
+      "bounded-two-call": 16,
       "compound-dispatch": 1,
+      "conditional-output": 7,
       "counted-buffer": 16,
       "enumerator-next": 74,
-      "ownership": 20,
+      "flag-selected-buffer": 3,
+      "null-input": 2,
+      "ownership": 172,
+      "parameter-direction": 45,
       "safearray": 263,
       "semantic-hresult": 2
     },
@@ -286,6 +290,7 @@
       "automation.safearray.entry.windows-win32-ui-accessibility.iuiautomationtextedittextchangedeventhandler.92faa680e7044156931ae32d5bb38f3f.handletextedittextchangedevent.slot-3.param-2-eventstrings.v1": 1,
       "automation.safearray.entry.windows-win32-ui-accessibility.iuiautomationtextrange.a543cc6af4ae494b8239c814481187a8.getboundingrectangles.slot-10.param-0-boundingrects.v1": 3,
       "automation.safearray.entry.windows-win32-ui-accessibility.iuiautomationtextrange3.6a315d6955124c2e85f053fce6dd4bc2.getattributevalues.slot-24.param-2-attributevalues.v1": 1,
+      "buffers.bounded-two-call.entry.windows-win32-media-mediafoundation.imfattributes.2cd2d921c44744a7a13c4adabfc247e3.getblob.slot-15.v1": 15,
       "buffers.bounded-two-call.entry.windows-win32-storage-imapi.idiscrecorder.85ac9776ca884cf2894e09598c078a41.getrecorderguid.slot-4.param-0-pbyuniqueid.v1": 1,
       "buffers.counted-buffer.entry.windows-win32-storage-imapi.idiscrecorder.85ac9776ca884cf2894e09598c078a41.init.slot-3.param-0-pbyuniqueid.v1": 1,
       "buffers.counted-buffer.entry.windows-win32-storage-packaging-opc.iopcsignaturecustomobject.5d77a19e62c144e7becd45da5ae51a56.getxml.slot-3.param-0-xmlmarkup.v1": 1,
@@ -362,7 +367,84 @@
       "com.enumerator-next-exception.entry.windows-win32-ui-textservices.ienumtfproperties.19188cb0aca911d2afc500105a2799b5.next.slot-4.v1": 1,
       "com.enumerator-next-exception.entry.windows-win32-ui-textservices.ienumtfranges.f99d3f408e3211d2bf4600105a2799b5.next.slot-4.v1": 1,
       "com.enumerator-next-exception.entry.windows-win32-ui-textservices.ienumtfuielements.887aa91eacba493184da3c5208cf543f.next.slot-4.v1": 1,
+      "com.ownership.entry.windows-win32-devices-tapi.itcallinfo.350f85d1122711d383d400c04fb6809f.getcallinfobuffer.slot-17.param-2-ppcallinfobuffer.v1": 2,
+      "com.ownership.entry.windows-win32-devices-tapi.itlegacycallmediacontrol.d624582fcc234436b8a547c625c8045d.getid.slot-9.param-2-ppdeviceid.v1": 2,
+      "com.ownership.entry.windows-win32-graphics-direct3d-dxc.idxcversioninfo2.fb6904c442f04b629c46983af7da7c83.getcommitinfo.slot-5.param-1-pcommithash.v1": 1,
+      "com.ownership.entry.windows-win32-graphics-direct3d-dxc.idxcversioninfo3.5e13e8439d25473c9ad203b2d0b44b1e.getcustomversionstring.slot-3.param-0-pversionstring.v1": 1,
+      "com.ownership.entry.windows-win32-media-audio-apo.iaudiosystemeffectscustomformats.b1176e34bb7f4f05bebd1b18a534e097.getformatrepresentation.slot-5.param-1-ppwstrformatrep.v1": 1,
+      "com.ownership.entry.windows-win32-media-audio.iaudioeffectsmanager.4460b3ae4b44452786767548a8acd260.getaudioeffects.slot-5.param-0-effects.v1": 1,
+      "com.ownership.entry.windows-win32-media-audio.iaudiosessioncontrol.f4b1a59972664319a8cae70acb11e8cd.getdisplayname.slot-4.param-0-pretval.v1": 1,
+      "com.ownership.entry.windows-win32-media-audio.iaudiosessioncontrol.f4b1a59972664319a8cae70acb11e8cd.geticonpath.slot-6.param-0-pretval.v1": 1,
+      "com.ownership.entry.windows-win32-media-directshow-tv.iatsc-ett.5a142cc9b8cf4a86a040e9cadf3ef3e7.getextendedmessagetext.slot-7.param-1-pptext.v1": 1,
+      "com.ownership.entry.windows-win32-media-directshow-tv.iatsc-vct.26879a1832f946c691f0fb6479270e8c.getrecordname.slot-8.param-1-pwsname.v1": 1,
+      "com.ownership.entry.windows-win32-media-directshow-tv.iatsccontentadvisorydescriptor.ff76e60c028343eaba32b422238547ee.getrecordratingdescriptiontext.slot-10.param-2-pptext.v1": 1,
+      "com.ownership.entry.windows-win32-media-directshow-tv.idvb-st.4d5b9f232a0245debcda5d5dbfbfbe62.getdata.slot-5.param-0-ppdata.v1": 1,
+      "com.ownership.entry.windows-win32-media-directshow-tv.igenericdescriptor.6a5918f8a77a4f61aed05702bdcda3e6.getbody.slot-6.param-0-ppbval.v1": 1,
+      "com.ownership.entry.windows-win32-media-directshow-tv.istreambufferconfigure.ce14dfae40984af7bbf7d6511f835414.getdirectory.slot-4.param-0-ppszdirectoryname.v1": 3,
+      "com.ownership.entry.windows-win32-media-directshow-tv.istreambufferconfigure3.7e2d2a1e71924bd780c1061fd1d10402.getnamespace.slot-16.param-0-ppsznamespace.v1": 1,
+      "com.ownership.entry.windows-win32-media-directshow.iamdeviceremoval.f90a6130b65811d2ae490000f8754b99.deviceinfo.slot-3.param-1-pwszsymboliclink.v1": 1,
+      "com.ownership.entry.windows-win32-media-directshow.iamextdevice.b5730a901a2c11cf8c2300aa006b6814.get-externaldeviceid.slot-4.param-0-ppszdata.v1": 1,
+      "com.ownership.entry.windows-win32-media-directshow.iamextdevice.b5730a901a2c11cf8c2300aa006b6814.get-externaldeviceversion.slot-5.param-0-ppszdata.v1": 1,
+      "com.ownership.entry.windows-win32-media-directshow.iamvideocontrol.6a2e067028e411d0a18c00a0c9118956.getframeratelist.slot-8.param-4-framerates.v1": 1,
+      "com.ownership.entry.windows-win32-media-directshow.ivmrwindowlesscontrol.0eb1088c4dcd46f0878f39dae86a51b7.getcurrentimage.slot-13.param-0-lpdib.v1": 1,
+      "com.ownership.entry.windows-win32-media-directshow.ivmrwindowlesscontrol9.8f537d09f85e4414b23b502e54c79927.getcurrentimage.slot-13.param-0-lpdib.v1": 1,
+      "com.ownership.entry.windows-win32-media-mediafoundation.imfattributes.2cd2d921c44744a7a13c4adabfc247e3.getallocatedblob.slot-16.param-1-ppbuf.v1": 15,
+      "com.ownership.entry.windows-win32-media-mediafoundation.imfattributes.2cd2d921c44744a7a13c4adabfc247e3.getallocatedstring.slot-13.param-1-ppwszvalue.v1": 15,
+      "com.ownership.entry.windows-win32-media-mediafoundation.imfaudiopolicy.a0638c2b646543959ae7a321a9fd2856.getdisplayname.slot-6.param-0-pszname.v1": 1,
+      "com.ownership.entry.windows-win32-media-mediafoundation.imfaudiopolicy.a0638c2b646543959ae7a321a9fd2856.geticonpath.slot-8.param-0-pszpath.v1": 1,
+      "com.ownership.entry.windows-win32-media-mediafoundation.imfdrmnethelper.3d1ff0ea679a41908d467fa69e8c7e15.getchainedlicenseresponse.slot-4.param-0-pplicenseresponse.v1": 1,
+      "com.ownership.entry.windows-win32-media-mediafoundation.imfdrmnethelper.3d1ff0ea679a41908d467fa69e8c7e15.processlicenserequest.slot-3.param-2-pplicenseresponse.v1": 1,
+      "com.ownership.entry.windows-win32-media-mediafoundation.imfmetadata.f88cfb8cef164991b450cb8c69e51704.getlanguage.slot-4.param-0-ppwszrfc1766.v1": 1,
+      "com.ownership.entry.windows-win32-media-mediafoundation.imfnetcrossoriginsupport.bc2b7d44a72d49d583761480dee58b22.getsourceorigin.slot-4.param-0-wszsourceorigin.v1": 1,
+      "com.ownership.entry.windows-win32-media-mediafoundation.imfsamistyle.a7e025dd53034a6289d6e747e1efac73.getselectedstyle.slot-6.param-0-ppwszstyle.v1": 1,
+      "com.ownership.entry.windows-win32-media-mediafoundation.imfsampleprotection.8e36395fc7b943c4a54d512b4af63c95.getprotectioncertificate.slot-5.param-1-ppcert.v1": 1,
+      "com.ownership.entry.windows-win32-media-mediafoundation.imfsampleprotection.8e36395fc7b943c4a54d512b4af63c95.initoutputprotection.slot-6.param-4-ppbseed.v1": 1,
+      "com.ownership.entry.windows-win32-media-mediafoundation.imfsecurechannel.d0ae555d3b124d97b0600990bc5aeb67.getcertificate.slot-3.param-0-ppcert.v1": 1,
+      "com.ownership.entry.windows-win32-networking-backgroundintelligenttransferservice.ibackgroundcopyfile.01b7bd23fb884a7784905891d3e4653a.getlocalname.slot-4.param-0-pval.v1": 1,
+      "com.ownership.entry.windows-win32-networking-backgroundintelligenttransferservice.ibackgroundcopyfile.01b7bd23fb884a7784905891d3e4653a.getremotename.slot-3.param-0-pval.v1": 1,
+      "com.ownership.entry.windows-win32-networking-backgroundintelligenttransferservice.ibitspeer.659cdea2489e11d9a9cd000d56965251.getpeername.slot-3.param-0-pname.v1": 1,
+      "com.ownership.entry.windows-win32-security-tpm.itpmvirtualsmartcardmanager.112b1dffd9dc41f7869fd67fee7cb591.createvirtualsmartcard.slot-3.param-12-ppszinstanceid.v1": 1,
+      "com.ownership.entry.windows-win32-storage-offlinefiles.iofflinefilescache.855d6203791448b98d404c56f5acffc5.getlocation.slot-13.param-0-ppszpath.v1": 2,
+      "com.ownership.entry.windows-win32-storage-offlinefiles.iofflinefilesitem.4a753da6e0444f12a7185d14d079a906.getpath.slot-4.param-0-ppszpath.v1": 5,
+      "com.ownership.entry.windows-win32-storage-offlinefiles.iofflinefilessetting.d871d3f7f61348a1827e7a34e560fff6.getname.slot-3.param-0-ppszname.v1": 1,
+      "com.ownership.entry.windows-win32-storage-packaging-appx.iappxblockmapblock.75cf393032444fe0a8c8e0bcb270b889.gethash.slot-3.param-1-buffer.v1": 1,
+      "com.ownership.entry.windows-win32-storage-packaging-appx.iappxblockmapfile.277672ac4f6342c18abcbeae3600eb59.getname.slot-5.param-0-name.v1": 2,
+      "com.ownership.entry.windows-win32-storage-packaging-appx.iappxfile.91df827b94fd468f827b57f41b2f6f2e.getcontenttype.slot-4.param-0-contenttype.v1": 2,
+      "com.ownership.entry.windows-win32-storage-packaging-appx.iappxfile.91df827b94fd468f827b57f41b2f6f2e.getname.slot-5.param-0-filename.v1": 2,
+      "com.ownership.entry.windows-win32-storage-packaging-appx.iappxmanifestapplication.5da89bf4377346beb6507e744863b7e8.getappusermodelid.slot-4.param-0-appusermodelid.v1": 1,
+      "com.ownership.entry.windows-win32-storage-packaging-appx.iappxmanifestapplication.5da89bf4377346beb6507e744863b7e8.getstringvalue.slot-3.param-1-value.v1": 1,
+      "com.ownership.entry.windows-win32-storage-packaging-appx.iappxmanifestdevicecapabilitiesenumerator.30204541427b4a1cbacf655bf463a540.getcurrent.slot-3.param-0-devicecapability.v1": 1,
+      "com.ownership.entry.windows-win32-storage-packaging-appx.iappxmanifestpackageid.283ce2d771534a9196497a0f7240945f.getname.slot-3.param-0-name.v1": 2,
+      "com.ownership.entry.windows-win32-storage-packaging-appx.iappxmanifestpackageid.283ce2d771534a9196497a0f7240945f.getpackagefamilyname.slot-10.param-0-packagefamilyname.v1": 2,
+      "com.ownership.entry.windows-win32-storage-packaging-appx.iappxmanifestpackageid.283ce2d771534a9196497a0f7240945f.getpackagefullname.slot-9.param-0-packagefullname.v1": 2,
+      "com.ownership.entry.windows-win32-storage-packaging-appx.iappxmanifestpackageid.283ce2d771534a9196497a0f7240945f.getpublisher.slot-5.param-0-publisher.v1": 2,
+      "com.ownership.entry.windows-win32-storage-packaging-appx.iappxmanifestpackageid.283ce2d771534a9196497a0f7240945f.getresourceid.slot-7.param-0-resourceid.v1": 2,
+      "com.ownership.entry.windows-win32-storage-packaging-appx.iappxmanifestproperties.03faf64df26f4b2caaf78fe7789b8bca.getstringvalue.slot-4.param-1-value.v1": 1,
+      "com.ownership.entry.windows-win32-storage-packaging-opc.iopcpart.421959493b794fc889c6fc7fb979ee71.getcontenttype.slot-6.param-0-contenttype.v1": 1,
+      "com.ownership.entry.windows-win32-storage-packaging-opc.iopcrelationship.421959493b794fc889c6fc7fb979ee72.getid.slot-3.param-0-relationshipidentifier.v1": 1,
+      "com.ownership.entry.windows-win32-storage-packaging-opc.iopcrelationship.421959493b794fc889c6fc7fb979ee72.getrelationshiptype.slot-4.param-0-relationshiptype.v1": 1,
+      "com.ownership.entry.windows-win32-storage-packaging-opc.iopcrelationshipselector.f8f26c7fb28f489984c85d5639ede75f.getselectioncriterion.slot-4.param-0-selectioncriterion.v1": 1,
       "com.ownership.entry.windows-win32-storage-packaging-opc.iopcsignaturecustomobject.5d77a19e62c144e7becd45da5ae51a56.getxml.slot-3.param-0-xmlmarkup.v1": 1,
+      "com.ownership.entry.windows-win32-storage-packaging-opc.iopcsignaturereference.1b47005e30114edcbe6f0f65e5ab0342.getdigestmethod.slot-7.param-0-digestmethod.v1": 1,
+      "com.ownership.entry.windows-win32-storage-packaging-opc.iopcsignaturereference.1b47005e30114edcbe6f0f65e5ab0342.getdigestvalue.slot-8.param-0-digestvalue.v1": 1,
+      "com.ownership.entry.windows-win32-storage-packaging-opc.iopcsignaturereference.1b47005e30114edcbe6f0f65e5ab0342.getid.slot-3.param-0-referenceid.v1": 1,
+      "com.ownership.entry.windows-win32-storage-packaging-opc.iopcsignaturereference.1b47005e30114edcbe6f0f65e5ab0342.gettype.slot-5.param-0-type.v1": 1,
+      "com.ownership.entry.windows-win32-storage-packaging-opc.iopcsigningoptions.50d2d6a57aeb46c0b24143ab0e9b407e.getdefaultdigestmethod.slot-7.param-0-digestmethod.v1": 1,
+      "com.ownership.entry.windows-win32-storage-packaging-opc.iopcsigningoptions.50d2d6a57aeb46c0b24143ab0e9b407e.getsignatureid.slot-3.param-0-signatureid.v1": 1,
+      "com.ownership.entry.windows-win32-storage-packaging-opc.iopcsigningoptions.50d2d6a57aeb46c0b24143ab0e9b407e.getsignaturemethod.slot-5.param-0-signaturemethod.v1": 1,
+      "com.ownership.entry.windows-win32-storage-xps.ixpsomdictionary.897c86b88eaf4ae3bdde56419fcf4236.getat.slot-5.param-1-key.v1": 1,
+      "com.ownership.entry.windows-win32-storage-xps.ixpsomgeometry.64fcf3d74d5844baad73a13af6492072.gettransformlookup.slot-11.param-0-lookup.v1": 1,
+      "com.ownership.entry.windows-win32-storage-xps.ixpsomglyphseditor.a5ab86165b164b9f962989b323ed7909.getdevicefontname.slot-19.param-0-devicefontname.v1": 1,
+      "com.ownership.entry.windows-win32-storage-xps.ixpsomglyphseditor.a5ab86165b164b9f962989b323ed7909.getunicodestring.slot-4.param-0-unicodestring.v1": 1,
+      "com.ownership.entry.windows-win32-storage-xps.ixpsomgradientbrush.edb5962261a242c3baceacf2286c06bf.gettransformlookup.slot-11.param-0-key.v1": 3,
+      "com.ownership.entry.windows-win32-storage-xps.ixpsomnamecollection.4bddf8ecc915421ba166d173d25653d2.getat.slot-4.param-1-name.v1": 1,
+      "com.ownership.entry.windows-win32-storage-xps.ixpsompage.d3e18888f1204fee8c6835296eae91d4.generateunusedlookupkey.slot-25.param-1-key.v1": 2,
+      "com.ownership.entry.windows-win32-storage-xps.ixpsompage.d3e18888f1204fee8c6835296eae91d4.getlanguage.slot-13.param-0-language.v1": 2,
+      "com.ownership.entry.windows-win32-storage-xps.ixpsompage.d3e18888f1204fee8c6835296eae91d4.getname.slot-15.param-0-name.v1": 2,
+      "com.ownership.entry.windows-win32-storage-xps.ixpsomtilebrush.0fc2328dd7224a54b2ecbe90218a789e.gettransformlookup.slot-10.param-0-key.v1": 3,
+      "com.ownership.entry.windows-win32-storage-xps.ixpsomvisualbrush.97e294af5b3746b48057874d2f64119b.getvisuallookup.slot-21.param-0-lookup.v1": 1,
+      "com.ownership.entry.windows-win32-system-com-structuredstorage.istorage.0000000b00000000c000000000000046.stat.slot-17.v1": 1,
+      "com.ownership.entry.windows-win32-system-com.icatinformation.0002e01300000000c000000000000046.getcategorydesc.slot-4.param-2-pszdesc.v1": 1,
       "com.ownership.entry.windows-win32-system-com.imalloc.0000000200000000c000000000000046.alloc.slot-3.v1": 1,
       "com.ownership.entry.windows-win32-system-com.imalloc.0000000200000000c000000000000046.didalloc.slot-7.v1": 1,
       "com.ownership.entry.windows-win32-system-com.imalloc.0000000200000000c000000000000046.free.slot-5.v1": 1,
@@ -371,12 +453,40 @@
       "com.ownership.entry.windows-win32-system-com.imalloc.0000000200000000c000000000000046.realloc.slot-4.v1": 1,
       "com.ownership.entry.windows-win32-system-com.ipersistfile.0000010b00000000c000000000000046.getcurfile.slot-8.param-0-ppszfilename.v1": 2,
       "com.ownership.entry.windows-win32-system-com.istream.0000000c00000000c000000000000046.stat.slot-12.v1": 5,
+      "com.ownership.entry.windows-win32-system-mmc.iheaderctrl.43136eb3d36c11cfadbc00aa00a80033.getcolumntext.slot-6.param-1-ptext.v1": 1,
+      "com.ownership.entry.windows-win32-system-search.imetadata.780102b0c43b4876bc7b5e9ba5c88794.getdata.slot-3.param-0-ppszkey.v1": 1,
+      "com.ownership.entry.windows-win32-system-search.imetadata.780102b0c43b4876bc7b5e9ba5c88794.getdata.slot-3.param-1-ppszvalue.v1": 1,
+      "com.ownership.entry.windows-win32-system-search.inamedentity.abdbd0b17d5449fbab5cbff4130004cd.defaultphrase.slot-4.param-0-ppszphrase.v1": 1,
+      "com.ownership.entry.windows-win32-system-search.inamedentity.abdbd0b17d5449fbab5cbff4130004cd.getvalue.slot-3.param-0-ppszvalue.v1": 1,
+      "com.ownership.entry.windows-win32-system-search.iqueryparser.2ebdee67350543f89946ea44abc8e5b0.restatepropertyvaluetostring.slot-10.param-2-ppszpropertyname.v1": 1,
+      "com.ownership.entry.windows-win32-system-search.iqueryparser.2ebdee67350543f89946ea44abc8e5b0.restatepropertyvaluetostring.slot-10.param-3-ppszquerystring.v1": 1,
+      "com.ownership.entry.windows-win32-system-search.iqueryparser.2ebdee67350543f89946ea44abc8e5b0.restatetostring.slot-8.param-2-ppszquerystring.v1": 1,
+      "com.ownership.entry.windows-win32-system-search.ischemalocalizersupport.ca3fdca2bfbe4eed90d70caef0a1bda1.localize.slot-3.param-1-ppszlocalstring.v1": 1,
+      "com.ownership.entry.windows-win32-system-settingsmanagementinfrastructure.isettingsitem.9f7d7bbb20b311da81a50030f1642e3c.getvalueraw.slot-8.param-0-data.v1": 1,
+      "com.ownership.entry.windows-win32-system-taskscheduler.itaskscheduler.148bd527a2ab11ceb11f00aa00530503.gettargetcomputer.slot-4.param-0-ppwszcomputer.v1": 1,
+      "com.ownership.entry.windows-win32-system-winrt.iinspectable.af86e2e0b12d4c6a9c5ad7aa65101e90.getiids.slot-3.param-1-iids.v1": 1,
+      "com.ownership.entry.windows-win32-ui-accessibility.iaccidentity.7852b78d1cfd41c1a6159c0c85960b5f.getidentitystring.slot-3.param-1-ppidstring.v1": 1,
+      "com.ownership.entry.windows-win32-ui-shell-propertiessystem.ipersistserializedpropstorage.e318ad570aa0450faca56fab7103d917.getpropertystorage.slot-5.param-0-ppsps.v1": 2,
+      "com.ownership.entry.windows-win32-ui-shell.iautocompletedropdown.3cd141f43c6a11d2bcaa00c04fd929db.getdropdownstatus.slot-3.param-1-ppwszstring.v1": 1,
       "com.ownership.entry.windows-win32-ui-shell.ifiledialog.42f85136db7e439c85f1e4075d135fc8.getfilename.slot-16.param-0-pszname.v1": 4,
+      "com.ownership.entry.windows-win32-ui-shell.ifiledialogcustomize.e6fdd21a163f49759c8ca69f1ba37034.geteditboxtext.slot-15.param-1-ppsztext.v1": 1,
+      "com.ownership.entry.windows-win32-ui-shell.iqueryinfo.0002150000000000c000000000000046.getinfotip.slot-3.param-1-ppwsztip.v1": 1,
       "com.ownership.entry.windows-win32-ui-shell.ishellitem.43826d1ee71842eebc55a1e261c37bfe.getdisplayname.slot-5.param-1-ppszname.v1": 1,
       "com.ownership.entry.windows-win32-ui-shell.ishelllinkw.000214f900000000c000000000000046.getidlist.slot-4.param-0-ppidl.v1": 1,
+      "com.ownership.entry.windows-win32-ui-shell.isyncmgrhandlerinfo.4ff1d798ecf74524aa811e362a0aef3a.getcomment.slot-5.param-0-ppszcomment.v1": 1,
+      "com.ownership.entry.windows-win32-ui-shell.isyncmgrhandlerinfo.4ff1d798ecf74524aa811e362a0aef3a.gettypelabel.slot-4.param-0-ppsztypelabel.v1": 1,
+      "com.ownership.entry.windows-win32-ui-shell.isyncmgrsynciteminfo.e7fd9502be0c446490a12b5277031232.getcomment.slot-4.param-0-ppszcomment.v1": 1,
+      "com.ownership.entry.windows-win32-ui-shell.isyncmgrsynciteminfo.e7fd9502be0c446490a12b5277031232.gettypelabel.slot-3.param-0-ppsztypelabel.v1": 1,
+      "com.ownership.entry.windows-win32-ui-shell.ithumbnailprovider.e357fccda9954576b01f234630154e96.getthumbnail.slot-3.param-1-phbmp.v1": 1,
+      "com.parameter-direction.entry.windows-win32-media-mediafoundation.imfattributes.2cd2d921c44744a7a13c4adabfc247e3.getitem.slot-3.param-1-pvalue.v1": 15,
+      "com.parameter-direction.entry.windows-win32-media-mediafoundation.imfattributes.2cd2d921c44744a7a13c4adabfc247e3.getitembyindex.slot-31.param-2-pvalue.v1": 15,
+      "com.parameter-direction.entry.windows-win32-media-mediafoundation.imfattributes.2cd2d921c44744a7a13c4adabfc247e3.getstring.slot-12.param-3-pcchlength.v1": 15,
+      "com.reserved-null-input.entry.windows-win32-system-com-structuredstorage.istorage.0000000b00000000c000000000000046.enumelements.slot-11.param-1-reserved2.v1": 1,
+      "com.reserved-null-input.entry.windows-win32-system-com-structuredstorage.istorage.0000000b00000000c000000000000046.openstream.slot-4.param-1-reserved1.v1": 1,
       "com.semantic-hresult.entry.windows-win32-system-com.ipersistfile.0000010b00000000c000000000000046.getcurfile.slot-8.v1": 2,
       "com.sequential-stream-buffer.entry.windows-win32-system-com.isequentialstream.0c733a302a1c11ceade500aa0044773d.read.slot-3.param-0-pv.v1": 7,
       "com.sequential-stream-buffer.entry.windows-win32-system-com.isequentialstream.0c733a302a1c11ceade500aa0044773d.write.slot-4.param-0-pv.v1": 7,
+      "shell.flag-selected-string.entry.windows-win32-ui-shell.icontextmenu.000214e400000000c000000000000046.getcommandstring.slot-5.v1": 3,
       "windows.borrowed-hwnd-output.entry.windows-win32-devices-imageacquisition.iwiaapperrorhandler.6c16186cd0a6400c80f4d26986a0e734.getwindow.slot-3.param-0-phwnd.v1": 1,
       "windows.borrowed-hwnd-output.entry.windows-win32-media-directshow-tv.imsvidctl.b0edf162910a11d2b63200c04f79498e.get-window.slot-15.param-0-phwnd.v1": 1,
       "windows.borrowed-hwnd-output.entry.windows-win32-media-directshow-tv.imsvidrect.7f5000a6a44047ca8accc0e75531a2c2.get-hwnd.slot-15.param-0-hwndval.v1": 1,
@@ -394,37 +504,48 @@
       "windows.borrowed-hwnd-output.entry.windows-win32-ui-shell.ipreviewhandler.8895b1c6b41f4c1ca5620d564250836f.queryfocus.slot-8.param-0-phwnd.v1": 1,
       "windows.borrowed-hwnd-output.entry.windows-win32-ui-tabletpc.itextinputpanel.6b6a65a56af346c2b6ea56cd1f80df71.get-attachededitwindow.slot-3.param-0-attachededitwindow.v1": 1,
       "windows.borrowed-hwnd-output.entry.windows-win32-ui-textservices.itfcontextowner.aa80e80c202111d293e00060b067b86e.getwnd.slot-7.param-0-phwnd.v1": 1,
-      "windows.borrowed-hwnd-output.entry.windows-win32-ui-textservices.itfcontextview.2433bf8e0f9b435cba2c180611978c30.getwnd.slot-6.param-0-phwnd.v1": 1
+      "windows.borrowed-hwnd-output.entry.windows-win32-ui-textservices.itfcontextview.2433bf8e0f9b435cba2c180611978c30.getwnd.slot-6.param-0-phwnd.v1": 1,
+      "wmi.conditional-output.entry.windows-win32-system-wmi.iwbemservices.9556dc99828c11cfa37e00aa003240c7.deleteclass.slot-10.v1": 1,
+      "wmi.conditional-output.entry.windows-win32-system-wmi.iwbemservices.9556dc99828c11cfa37e00aa003240c7.deleteinstance.slot-16.v1": 1,
+      "wmi.conditional-output.entry.windows-win32-system-wmi.iwbemservices.9556dc99828c11cfa37e00aa003240c7.execmethod.slot-24.v1": 1,
+      "wmi.conditional-output.entry.windows-win32-system-wmi.iwbemservices.9556dc99828c11cfa37e00aa003240c7.getobject.slot-6.v1": 1,
+      "wmi.conditional-output.entry.windows-win32-system-wmi.iwbemservices.9556dc99828c11cfa37e00aa003240c7.opennamespace.slot-3.v1": 1,
+      "wmi.conditional-output.entry.windows-win32-system-wmi.iwbemservices.9556dc99828c11cfa37e00aa003240c7.putclass.slot-8.v1": 1,
+      "wmi.conditional-output.entry.windows-win32-system-wmi.iwbemservices.9556dc99828c11cfa37e00aa003240c7.putinstance.slot-14.v1": 1
     },
     "byFamilyId": {
       "automation.idispatch-invoke.v1": 1,
       "automation.safearray.v1": 121,
-      "buffers.bounded-two-call.v1": 1,
+      "buffers.bounded-two-call.v1": 16,
       "buffers.counted-buffer.v1": 2,
       "com.enumerator-next-exception.v1": 74,
-      "com.ownership.v1": 15,
+      "com.ownership.v1": 116,
+      "com.parameter-direction.v1": 15,
+      "com.reserved-null-input.v1": 1,
       "com.semantic-hresult.v1": 2,
       "com.sequential-stream-buffer.v1": 7,
-      "windows.borrowed-hwnd-output.v1": 45
+      "shell.flag-selected-string.v1": 3,
+      "windows.borrowed-hwnd-output.v1": 45,
+      "wmi.conditional-output.v1": 1
     },
     "byMetadataAttribute": {
-      "CanReturnMultipleSuccessValuesAttribute": 38,
-      "ConstAttribute": 3261,
+      "CanReturnMultipleSuccessValuesAttribute": 42,
+      "ConstAttribute": 3327,
       "FreeWithAttribute": 3,
-      "NativeArrayInfoAttribute": 2565
+      "NativeArrayInfoAttribute": 2602
     },
     "byStandardRuleId": {
-      "com.activation.output-plus-one.v1": 969,
-      "com.automation.bstr-output-owned-sysfreestring.v1": 1227,
+      "com.activation.output-plus-one.v1": 976,
+      "com.automation.bstr-output-owned-sysfreestring.v1": 1231,
       "com.automation.bstr-replacement.v1": 99,
       "com.enumerator-next.generic.v1": 25,
       "com.handle.borrowed-no-cleanup.v1": 45,
-      "com.hresult.failure.v1": 5454,
-      "com.interface.input-borrow.v1": 1835,
-      "com.interface.typed-output-plus-one.v1": 3402,
-      "com.iunknown.identity-refcount.v1": 5567,
-      "com.query-interface.output-plus-one.v1": 5567,
-      "com.standard-cleanup.matching-allocator.v1": 1336
+      "com.hresult.failure.v1": 5568,
+      "com.interface.input-borrow.v1": 1881,
+      "com.interface.typed-output-plus-one.v1": 3453,
+      "com.iunknown.identity-refcount.v1": 5681,
+      "com.query-interface.output-plus-one.v1": 5681,
+      "com.standard-cleanup.matching-allocator.v1": 1436
     },
     "exactEntryStatus": {
       "automation.idispatch-invoke.entry.windows-win32-system-com.idispatch.0002040000000000c000000000000046.invoke.slot-6.v1": {
@@ -4845,12 +4966,12 @@
           "slot": 15,
           "parameter": null
         },
-        "sourceFingerprint": "974B7A057BAE4321C6FB325A3F2A4C54D874454A6891733354BD6C013996E497",
+        "sourceFingerprint": "1B89A2E869A1ED374C21050F3BB13F09929D6D9F9B5943EAAFC345EFDA825014",
         "citation": "https://learn.microsoft.com/windows/win32/api/mfobjects/nf-mfobjects-imfattributes-getblob",
         "registered": true,
         "metadataMatched": true,
-        "safeConsumed": false,
-        "interfaceDependencies": 0
+        "safeConsumed": true,
+        "interfaceDependencies": 15
       },
       "buffers.bounded-two-call.entry.windows-win32-storage-imapi.idiscrecorder.85ac9776ca884cf2894e09598c078a41.getrecorderguid.slot-4.param-0-pbyuniqueid.v1": {
         "familyId": "buffers.bounded-two-call.v1",
@@ -6250,6 +6371,1644 @@
         "safeConsumed": true,
         "interfaceDependencies": 1
       },
+      "com.ownership.entry.windows-win32-devices-portabledevices.iportabledevice.625e2df863924cf09ad13cfa5f17775c.getpnpdeviceid.slot-11.param-0-ppszpnpdeviceid.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Devices.PortableDevices",
+          "interface": "IPortableDevice",
+          "iid": "625e2df8-6392-4cf0-9ad1-3cfa5f17775c",
+          "method": "GetPnPDeviceID",
+          "slot": 11,
+          "parameter": [
+            0,
+            "ppszPnPDeviceID"
+          ]
+        },
+        "sourceFingerprint": "7C95E8A738067B4AD6F02B3A493B792AA3E06906A69DFD852537289141CF02ED",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/portabledeviceapi/nf-portabledeviceapi-iportabledevice-getpnpdeviceid",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "com.ownership.entry.windows-win32-devices-portabledevices.iportabledeviceservice.d3bd3a44d7b540a998b72fa4d01dec08.advise.slot-11.param-3-ppszcookie.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Devices.PortableDevices",
+          "interface": "IPortableDeviceService",
+          "iid": "d3bd3a44-d7b5-40a9-98b7-2fa4d01dec08",
+          "method": "Advise",
+          "slot": 11,
+          "parameter": [
+            3,
+            "ppszCookie"
+          ]
+        },
+        "sourceFingerprint": "5493EE1762648B405B9A409DDFEDF04C246777B764E236558F42FD65F90EDFD8",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/portabledeviceapi/nf-portabledeviceapi-iportabledeviceservice-advise",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "com.ownership.entry.windows-win32-devices-tapi.itcallinfo.350f85d1122711d383d400c04fb6809f.getcallinfobuffer.slot-17.param-2-ppcallinfobuffer.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Devices.Tapi",
+          "interface": "ITCallInfo",
+          "iid": "350f85d1-1227-11d3-83d4-00c04fb6809f",
+          "method": "GetCallInfoBuffer",
+          "slot": 17,
+          "parameter": [
+            2,
+            "ppCallInfoBuffer"
+          ]
+        },
+        "sourceFingerprint": "E8A0365F1EAEAF58293F98D8F16D16EC343711BE4090CF93B0BC4F6804E54F24",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/tapi3if/nf-tapi3if-itcallinfo-get_callinfobuffer",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 2
+      },
+      "com.ownership.entry.windows-win32-devices-tapi.itlegacyaddressmediacontrol.ab4936404c0b11d2a04600c04fb6809f.getdevconfig.slot-4.param-2-ppdeviceconfig.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Devices.Tapi",
+          "interface": "ITLegacyAddressMediaControl",
+          "iid": "ab493640-4c0b-11d2-a046-00c04fb6809f",
+          "method": "GetDevConfig",
+          "slot": 4,
+          "parameter": [
+            2,
+            "ppDeviceConfig"
+          ]
+        },
+        "sourceFingerprint": "CA4EA3329770AE20B18497C61524785AE1A7FD1C89FB528C9028815650BF16DC",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/tapi3if/nf-tapi3if-itlegacyaddressmediacontrol-getdevconfig",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "com.ownership.entry.windows-win32-devices-tapi.itlegacycallmediacontrol.d624582fcc234436b8a547c625c8045d.getid.slot-9.param-2-ppdeviceid.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Devices.Tapi",
+          "interface": "ITLegacyCallMediaControl",
+          "iid": "d624582f-cc23-4436-b8a5-47c625c8045d",
+          "method": "GetID",
+          "slot": 9,
+          "parameter": [
+            2,
+            "ppDeviceID"
+          ]
+        },
+        "sourceFingerprint": "8A68F31D62689E833581750D64C56476991E3D974991AB566D182AE6CACDC4FD",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/tapi3if/nf-tapi3if-itlegacycallmediacontrol-getid",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 2
+      },
+      "com.ownership.entry.windows-win32-graphics-direct3d-dxc.idxcversioninfo2.fb6904c442f04b629c46983af7da7c83.getcommitinfo.slot-5.param-1-pcommithash.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Graphics.Direct3D.Dxc",
+          "interface": "IDxcVersionInfo2",
+          "iid": "fb6904c4-42f0-4b62-9c46-983af7da7c83",
+          "method": "GetCommitInfo",
+          "slot": 5,
+          "parameter": [
+            1,
+            "pCommitHash"
+          ]
+        },
+        "sourceFingerprint": "40A5CC7D0DBE99FFA396F5347E568BE51E4B9B612F8B2823DC8140CF54B14851",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/dxcapi/nf-dxcapi-idxcversioninfo2-getcommitinfo",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-graphics-direct3d-dxc.idxcversioninfo3.5e13e8439d25473c9ad203b2d0b44b1e.getcustomversionstring.slot-3.param-0-pversionstring.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Graphics.Direct3D.Dxc",
+          "interface": "IDxcVersionInfo3",
+          "iid": "5e13e843-9d25-473c-9ad2-03b2d0b44b1e",
+          "method": "GetCustomVersionString",
+          "slot": 3,
+          "parameter": [
+            0,
+            "pVersionString"
+          ]
+        },
+        "sourceFingerprint": "53BFB010C94841283113AED2294FD00480C9039ACED85ED6DB5450F0BA21BF16",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/dxcapi/nf-dxcapi-idxcversioninfo3-getcustomversionstring",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-media-audio-apo.iaudiosystemeffectscustomformats.b1176e34bb7f4f05bebd1b18a534e097.getformatrepresentation.slot-5.param-1-ppwstrformatrep.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Media.Audio.Apo",
+          "interface": "IAudioSystemEffectsCustomFormats",
+          "iid": "b1176e34-bb7f-4f05-bebd-1b18a534e097",
+          "method": "GetFormatRepresentation",
+          "slot": 5,
+          "parameter": [
+            1,
+            "ppwstrFormatRep"
+          ]
+        },
+        "sourceFingerprint": "24B368379EFBF0BF2CBE577A616767171EDAFA7F3B7A9579517F016A6306E987",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/audioenginebaseapo/nf-audioenginebaseapo-iaudiosystemeffectscustomformats-getformatrepresentation",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-media-audio.iaudioeffectsmanager.4460b3ae4b44452786767548a8acd260.getaudioeffects.slot-5.param-0-effects.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Media.Audio",
+          "interface": "IAudioEffectsManager",
+          "iid": "4460b3ae-4b44-4527-8676-7548a8acd260",
+          "method": "GetAudioEffects",
+          "slot": 5,
+          "parameter": [
+            0,
+            "effects"
+          ]
+        },
+        "sourceFingerprint": "8C30A60456F29282F538D9F1FA2BDEE18C4D3B460D49FCFFF065596581CE22B3",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/audioclient/nf-audioclient-iaudioeffectsmanager-getaudioeffects",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-media-audio.iaudiosessioncontrol.f4b1a59972664319a8cae70acb11e8cd.getdisplayname.slot-4.param-0-pretval.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Media.Audio",
+          "interface": "IAudioSessionControl",
+          "iid": "f4b1a599-7266-4319-a8ca-e70acb11e8cd",
+          "method": "GetDisplayName",
+          "slot": 4,
+          "parameter": [
+            0,
+            "pRetVal"
+          ]
+        },
+        "sourceFingerprint": "DE58CB39D56956C7EB410C0AAD2C931AEC75265C61021D37E7362B65C40F884F",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/audiopolicy/nf-audiopolicy-iaudiosessioncontrol-getdisplayname",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-media-audio.iaudiosessioncontrol.f4b1a59972664319a8cae70acb11e8cd.geticonpath.slot-6.param-0-pretval.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Media.Audio",
+          "interface": "IAudioSessionControl",
+          "iid": "f4b1a599-7266-4319-a8ca-e70acb11e8cd",
+          "method": "GetIconPath",
+          "slot": 6,
+          "parameter": [
+            0,
+            "pRetVal"
+          ]
+        },
+        "sourceFingerprint": "81B5D77A0E2B217A60BD2E2D6C7D2AD975EA391C313FD076A9EDF38124ED5E5C",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/audiopolicy/nf-audiopolicy-iaudiosessioncontrol-geticonpath",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-media-audio.iaudiosessioncontrol2.bfb7ff8872394fc98fa207c950be9c6d.getsessionidentifier.slot-12.param-0-pretval.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Media.Audio",
+          "interface": "IAudioSessionControl2",
+          "iid": "bfb7ff88-7239-4fc9-8fa2-07c950be9c6d",
+          "method": "GetSessionIdentifier",
+          "slot": 12,
+          "parameter": [
+            0,
+            "pRetVal"
+          ]
+        },
+        "sourceFingerprint": "34268F6D7F66C19B0A08F7C60072B7552965E4D38E57C6703C44EE9DE332CBF2",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/audiopolicy/nf-audiopolicy-iaudiosessioncontrol2-getsessionidentifier",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "com.ownership.entry.windows-win32-media-audio.iconnector.9c2c405823f541de877adf3af236a09e.getconnectoridconnectedto.slot-9.param-0-ppwstrconnectorid.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Media.Audio",
+          "interface": "IConnector",
+          "iid": "9c2c4058-23f5-41de-877a-df3af236a09e",
+          "method": "GetConnectorIdConnectedTo",
+          "slot": 9,
+          "parameter": [
+            0,
+            "ppwstrConnectorId"
+          ]
+        },
+        "sourceFingerprint": "4B66CB6C52C46218B2308DA1B46DE14369664F9F36FEC102390CD1F3A29122A6",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/devicetopology/nf-devicetopology-iconnector-getconnectoridconnectedto",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "com.ownership.entry.windows-win32-media-audio.ipart.ae2de0e45bca4f2daa465d13f8fdb3a9.getglobalid.slot-5.param-0-ppwstrglobalid.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Media.Audio",
+          "interface": "IPart",
+          "iid": "ae2de0e4-5bca-4f2d-aa46-5d13f8fdb3a9",
+          "method": "GetGlobalId",
+          "slot": 5,
+          "parameter": [
+            0,
+            "ppwstrGlobalId"
+          ]
+        },
+        "sourceFingerprint": "D3B17AC60F7327C900C2AD850F60318887C34E126082BCD8B7C1D156513C712C",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/devicetopology/nf-devicetopology-ipart-getglobalid",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "com.ownership.entry.windows-win32-media-audio.ipart.ae2de0e45bca4f2daa465d13f8fdb3a9.getname.slot-3.param-0-ppwstrname.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Media.Audio",
+          "interface": "IPart",
+          "iid": "ae2de0e4-5bca-4f2d-aa46-5d13f8fdb3a9",
+          "method": "GetName",
+          "slot": 3,
+          "parameter": [
+            0,
+            "ppwstrName"
+          ]
+        },
+        "sourceFingerprint": "5314C494FE52555DB95190C1D058A3F8C74955C50988E0D262299C361449A37E",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/devicetopology/nf-devicetopology-ipart-getname",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "com.ownership.entry.windows-win32-media-directshow-tv.iatsc-ett.5a142cc9b8cf4a86a040e9cadf3ef3e7.getextendedmessagetext.slot-7.param-1-pptext.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Media.DirectShow.Tv",
+          "interface": "IATSC_ETT",
+          "iid": "5a142cc9-b8cf-4a86-a040-e9cadf3ef3e7",
+          "method": "GetExtendedMessageText",
+          "slot": 7,
+          "parameter": [
+            1,
+            "ppText"
+          ]
+        },
+        "sourceFingerprint": "33C416D8982CCCD3CB6DD8A1A694E6A5C688553085641E3A2FC1F0A1710B8EAC",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/atscpsipparser/nf-atscpsipparser-iatsc_ett-getextendedmessagetext",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-media-directshow-tv.iatsc-vct.26879a1832f946c691f0fb6479270e8c.getrecordname.slot-8.param-1-pwsname.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Media.DirectShow.Tv",
+          "interface": "IATSC_VCT",
+          "iid": "26879a18-32f9-46c6-91f0-fb6479270e8c",
+          "method": "GetRecordName",
+          "slot": 8,
+          "parameter": [
+            1,
+            "pwsName"
+          ]
+        },
+        "sourceFingerprint": "7AD7E0D9BB6122A2ADAF1694111288FE627E1BFBDB38C53B4CE808AEDAD9EF29",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/atscpsipparser/nf-atscpsipparser-iatsc_vct-getrecordname",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-media-directshow-tv.iatsccontentadvisorydescriptor.ff76e60c028343eaba32b422238547ee.getrecordratingdescriptiontext.slot-10.param-2-pptext.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Media.DirectShow.Tv",
+          "interface": "IAtscContentAdvisoryDescriptor",
+          "iid": "ff76e60c-0283-43ea-ba32-b422238547ee",
+          "method": "GetRecordRatingDescriptionText",
+          "slot": 10,
+          "parameter": [
+            2,
+            "ppText"
+          ]
+        },
+        "sourceFingerprint": "2F535300DA8ACB7FD2E17D7443AA5E20144DE807B722ED8A125BFDE6997C057E",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/atscpsipparser/nf-atscpsipparser-iatsccontentadvisorydescriptor-getrecordratingdescriptiontext",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-media-directshow-tv.idvb-st.4d5b9f232a0245debcda5d5dbfbfbe62.getdata.slot-5.param-0-ppdata.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Media.DirectShow.Tv",
+          "interface": "IDVB_ST",
+          "iid": "4d5b9f23-2a02-45de-bcda-5d5dbfbfbe62",
+          "method": "GetData",
+          "slot": 5,
+          "parameter": [
+            0,
+            "ppData"
+          ]
+        },
+        "sourceFingerprint": "32FEB84B8C1EDF81B78B6419B913AE730F2610ED39885E4C57853B0BF2FB2F30",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/dvbsiparser/nf-dvbsiparser-idvb_st-getdata",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-media-directshow-tv.igenericdescriptor.6a5918f8a77a4f61aed05702bdcda3e6.getbody.slot-6.param-0-ppbval.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Media.DirectShow.Tv",
+          "interface": "IGenericDescriptor",
+          "iid": "6a5918f8-a77a-4f61-aed0-5702bdcda3e6",
+          "method": "GetBody",
+          "slot": 6,
+          "parameter": [
+            0,
+            "ppbVal"
+          ]
+        },
+        "sourceFingerprint": "142E3930ACBD72D8A9FFF186D091BD511DDC4D120170766C718C7CB8E0471A2E",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/mpeg2psiparser/nf-mpeg2psiparser-igenericdescriptor-getbody",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-media-directshow-tv.istreambufferconfigure.ce14dfae40984af7bbf7d6511f835414.getdirectory.slot-4.param-0-ppszdirectoryname.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Media.DirectShow.Tv",
+          "interface": "IStreamBufferConfigure",
+          "iid": "ce14dfae-4098-4af7-bbf7-d6511f835414",
+          "method": "GetDirectory",
+          "slot": 4,
+          "parameter": [
+            0,
+            "ppszDirectoryName"
+          ]
+        },
+        "sourceFingerprint": "48D94FCF39A2261D88D1F8B90D4B10C5769522192C22B9AE4849842A76E7629B",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/sbe/nf-sbe-istreambufferconfigure-getdirectory",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 3
+      },
+      "com.ownership.entry.windows-win32-media-directshow-tv.istreambufferconfigure3.7e2d2a1e71924bd780c1061fd1d10402.getnamespace.slot-16.param-0-ppsznamespace.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Media.DirectShow.Tv",
+          "interface": "IStreamBufferConfigure3",
+          "iid": "7e2d2a1e-7192-4bd7-80c1-061fd1d10402",
+          "method": "GetNamespace",
+          "slot": 16,
+          "parameter": [
+            0,
+            "ppszNamespace"
+          ]
+        },
+        "sourceFingerprint": "39FCC9E1458B2BEC1EFBD599058D0196FE0EE2BDAD4833FFC739445FC0D508BF",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/sbe/nf-sbe-istreambufferconfigure3-getnamespace",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-media-directshow.iamdeviceremoval.f90a6130b65811d2ae490000f8754b99.deviceinfo.slot-3.param-1-pwszsymboliclink.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Media.DirectShow",
+          "interface": "IAMDeviceRemoval",
+          "iid": "f90a6130-b658-11d2-ae49-0000f8754b99",
+          "method": "DeviceInfo",
+          "slot": 3,
+          "parameter": [
+            1,
+            "pwszSymbolicLink"
+          ]
+        },
+        "sourceFingerprint": "402563DD99B725F2F55BE496C8502DEE324C07A2CD1436D77E2E830C5F4D9823",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/strmif/nf-strmif-iamdeviceremoval-deviceinfo",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-media-directshow.iamextdevice.b5730a901a2c11cf8c2300aa006b6814.get-externaldeviceid.slot-4.param-0-ppszdata.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Media.DirectShow",
+          "interface": "IAMExtDevice",
+          "iid": "b5730a90-1a2c-11cf-8c23-00aa006b6814",
+          "method": "get_ExternalDeviceID",
+          "slot": 4,
+          "parameter": [
+            0,
+            "ppszData"
+          ]
+        },
+        "sourceFingerprint": "CAD4EA87E2DE63E6EE62F537A91FC363F5193211C71DE9EDDB1DFA636316ED8A",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/strmif/nf-strmif-iamextdevice-get_externaldeviceid",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-media-directshow.iamextdevice.b5730a901a2c11cf8c2300aa006b6814.get-externaldeviceversion.slot-5.param-0-ppszdata.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Media.DirectShow",
+          "interface": "IAMExtDevice",
+          "iid": "b5730a90-1a2c-11cf-8c23-00aa006b6814",
+          "method": "get_ExternalDeviceVersion",
+          "slot": 5,
+          "parameter": [
+            0,
+            "ppszData"
+          ]
+        },
+        "sourceFingerprint": "E34B73C50244EA607EB69A422E70E4F892582C77777AE0F75B4A477633305515",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/strmif/nf-strmif-iamextdevice-get_externaldeviceversion",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-media-directshow.iamvideocontrol.6a2e067028e411d0a18c00a0c9118956.getframeratelist.slot-8.param-4-framerates.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Media.DirectShow",
+          "interface": "IAMVideoControl",
+          "iid": "6a2e0670-28e4-11d0-a18c-00a0c9118956",
+          "method": "GetFrameRateList",
+          "slot": 8,
+          "parameter": [
+            4,
+            "FrameRates"
+          ]
+        },
+        "sourceFingerprint": "05FAE58EE5F46707567CE0A9A4D7B88730CE4A52127812ACD0BC09FECA3F04C4",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/strmif/nf-strmif-iamvideocontrol-getframeratelist",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-media-directshow.ifrequencymap.06fb45c1693c4ea7b79f7a6a54d8def2.get-countrycodelist.slot-8.param-1-ppullist.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Media.DirectShow",
+          "interface": "IFrequencyMap",
+          "iid": "06fb45c1-693c-4ea7-b79f-7a6a54d8def2",
+          "method": "get_CountryCodeList",
+          "slot": 8,
+          "parameter": [
+            1,
+            "ppulList"
+          ]
+        },
+        "sourceFingerprint": "4F9354F904803DA29105A9233F6CF25B6B224544DEC9CCAF5B56304509EF675B",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/bdaiface/nf-bdaiface-ifrequencymap-get_countrycodelist",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "com.ownership.entry.windows-win32-media-directshow.ifrequencymap.06fb45c1693c4ea7b79f7a6a54d8def2.get-frequencymapping.slot-3.param-1-ppullist.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Media.DirectShow",
+          "interface": "IFrequencyMap",
+          "iid": "06fb45c1-693c-4ea7-b79f-7a6a54d8def2",
+          "method": "get_FrequencyMapping",
+          "slot": 3,
+          "parameter": [
+            1,
+            "ppulList"
+          ]
+        },
+        "sourceFingerprint": "C9EFC4AC4232D327CF524D95409784240256A5440533BC25C5E94B2242BAFE44",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/bdaiface/nf-bdaiface-ifrequencymap-get_frequencymapping",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "com.ownership.entry.windows-win32-media-directshow.ivmrwindowlesscontrol.0eb1088c4dcd46f0878f39dae86a51b7.getcurrentimage.slot-13.param-0-lpdib.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Media.DirectShow",
+          "interface": "IVMRWindowlessControl",
+          "iid": "0eb1088c-4dcd-46f0-878f-39dae86a51b7",
+          "method": "GetCurrentImage",
+          "slot": 13,
+          "parameter": [
+            0,
+            "lpDib"
+          ]
+        },
+        "sourceFingerprint": "42221D38FBE0C53FF9047035B787B16411B59A9240744053761EA4736C706247",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/strmif/nf-strmif-ivmrwindowlesscontrol-getcurrentimage",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-media-directshow.ivmrwindowlesscontrol9.8f537d09f85e4414b23b502e54c79927.getcurrentimage.slot-13.param-0-lpdib.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Media.DirectShow",
+          "interface": "IVMRWindowlessControl9",
+          "iid": "8f537d09-f85e-4414-b23b-502e54c79927",
+          "method": "GetCurrentImage",
+          "slot": 13,
+          "parameter": [
+            0,
+            "lpDib"
+          ]
+        },
+        "sourceFingerprint": "3000E03269FEB99CBBF622FC725AC9096C833731C1D970229F34396C4A010635",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/vmr9/nf-vmr9-ivmrwindowlesscontrol9-getcurrentimage",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-media-mediafoundation.imfattributes.2cd2d921c44744a7a13c4adabfc247e3.getallocatedblob.slot-16.param-1-ppbuf.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Media.MediaFoundation",
+          "interface": "IMFAttributes",
+          "iid": "2cd2d921-c447-44a7-a13c-4adabfc247e3",
+          "method": "GetAllocatedBlob",
+          "slot": 16,
+          "parameter": [
+            1,
+            "ppBuf"
+          ]
+        },
+        "sourceFingerprint": "B313F8B68D2CE9867FB8BBE285370D3A8BAC01F053B476D9D0A5DDE4611A4695",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/mfobjects/nf-mfobjects-imfattributes-getallocatedblob",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 15
+      },
+      "com.ownership.entry.windows-win32-media-mediafoundation.imfattributes.2cd2d921c44744a7a13c4adabfc247e3.getallocatedstring.slot-13.param-1-ppwszvalue.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Media.MediaFoundation",
+          "interface": "IMFAttributes",
+          "iid": "2cd2d921-c447-44a7-a13c-4adabfc247e3",
+          "method": "GetAllocatedString",
+          "slot": 13,
+          "parameter": [
+            1,
+            "ppwszValue"
+          ]
+        },
+        "sourceFingerprint": "C9A1CAF2E57FC40A0365188C76762495D7EB0F87BC6D66A7DB542EEF1BE0CA2F",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/mfobjects/nf-mfobjects-imfattributes-getallocatedstring",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 15
+      },
+      "com.ownership.entry.windows-win32-media-mediafoundation.imfaudiopolicy.a0638c2b646543959ae7a321a9fd2856.getdisplayname.slot-6.param-0-pszname.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Media.MediaFoundation",
+          "interface": "IMFAudioPolicy",
+          "iid": "a0638c2b-6465-4395-9ae7-a321a9fd2856",
+          "method": "GetDisplayName",
+          "slot": 6,
+          "parameter": [
+            0,
+            "pszName"
+          ]
+        },
+        "sourceFingerprint": "D0150E482FE8AFD914233DE51311620882CFDFAA7365AB177A27498AB3571D26",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/mfidl/nf-mfidl-imfaudiopolicy-getdisplayname",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-media-mediafoundation.imfaudiopolicy.a0638c2b646543959ae7a321a9fd2856.geticonpath.slot-8.param-0-pszpath.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Media.MediaFoundation",
+          "interface": "IMFAudioPolicy",
+          "iid": "a0638c2b-6465-4395-9ae7-a321a9fd2856",
+          "method": "GetIconPath",
+          "slot": 8,
+          "parameter": [
+            0,
+            "pszPath"
+          ]
+        },
+        "sourceFingerprint": "5ED8158BEF159EAA1876F1D116E6DF68058D502D46FF87B76258366971D45C5A",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/mfidl/nf-mfidl-imfaudiopolicy-geticonpath",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-media-mediafoundation.imfdrmnethelper.3d1ff0ea679a41908d467fa69e8c7e15.getchainedlicenseresponse.slot-4.param-0-pplicenseresponse.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Media.MediaFoundation",
+          "interface": "IMFDRMNetHelper",
+          "iid": "3d1ff0ea-679a-4190-8d46-7fa69e8c7e15",
+          "method": "GetChainedLicenseResponse",
+          "slot": 4,
+          "parameter": [
+            0,
+            "ppLicenseResponse"
+          ]
+        },
+        "sourceFingerprint": "B0A503F5E97545AA137E4546670FE323FAF586D9E1491B7554FCA3F498186B0B",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/wmcontainer/nf-wmcontainer-imfdrmnethelper-getchainedlicenseresponse",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-media-mediafoundation.imfdrmnethelper.3d1ff0ea679a41908d467fa69e8c7e15.processlicenserequest.slot-3.param-2-pplicenseresponse.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Media.MediaFoundation",
+          "interface": "IMFDRMNetHelper",
+          "iid": "3d1ff0ea-679a-4190-8d46-7fa69e8c7e15",
+          "method": "ProcessLicenseRequest",
+          "slot": 3,
+          "parameter": [
+            2,
+            "ppLicenseResponse"
+          ]
+        },
+        "sourceFingerprint": "5C6972693DE9DAC05DDDD0C9932078CA47AAB7EA94274B9746E98C40FADC9342",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/wmcontainer/nf-wmcontainer-imfdrmnethelper-processlicenserequest",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-media-mediafoundation.imfmetadata.f88cfb8cef164991b450cb8c69e51704.getlanguage.slot-4.param-0-ppwszrfc1766.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Media.MediaFoundation",
+          "interface": "IMFMetadata",
+          "iid": "f88cfb8c-ef16-4991-b450-cb8c69e51704",
+          "method": "GetLanguage",
+          "slot": 4,
+          "parameter": [
+            0,
+            "ppwszRFC1766"
+          ]
+        },
+        "sourceFingerprint": "7AECE01900D9D10B81E24F8014BFF90A372EB7D9252B21F15DFB789B1C6D93CA",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/mfidl/nf-mfidl-imfmetadata-getlanguage",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-media-mediafoundation.imfnetcrossoriginsupport.bc2b7d44a72d49d583761480dee58b22.getsourceorigin.slot-4.param-0-wszsourceorigin.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Media.MediaFoundation",
+          "interface": "IMFNetCrossOriginSupport",
+          "iid": "bc2b7d44-a72d-49d5-8376-1480dee58b22",
+          "method": "GetSourceOrigin",
+          "slot": 4,
+          "parameter": [
+            0,
+            "wszSourceOrigin"
+          ]
+        },
+        "sourceFingerprint": "5A2C5E6A4B7BCF0D32E366257F4689EF048796C030BFDBB60A9406CEA08FDAAE",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/mfidl/nf-mfidl-imfnetcrossoriginsupport-getsourceorigin",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-media-mediafoundation.imfsamistyle.a7e025dd53034a6289d6e747e1efac73.getselectedstyle.slot-6.param-0-ppwszstyle.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Media.MediaFoundation",
+          "interface": "IMFSAMIStyle",
+          "iid": "a7e025dd-5303-4a62-89d6-e747e1efac73",
+          "method": "GetSelectedStyle",
+          "slot": 6,
+          "parameter": [
+            0,
+            "ppwszStyle"
+          ]
+        },
+        "sourceFingerprint": "7CF76B94A335F194FD2BD26FB201D504B070357939DEA786A80CB9C57814A935",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/mfidl/nf-mfidl-imfsamistyle-getselectedstyle",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-media-mediafoundation.imfsampleprotection.8e36395fc7b943c4a54d512b4af63c95.getprotectioncertificate.slot-5.param-1-ppcert.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Media.MediaFoundation",
+          "interface": "IMFSampleProtection",
+          "iid": "8e36395f-c7b9-43c4-a54d-512b4af63c95",
+          "method": "GetProtectionCertificate",
+          "slot": 5,
+          "parameter": [
+            1,
+            "ppCert"
+          ]
+        },
+        "sourceFingerprint": "31CEC47BFE8CC69907FADE8284A1A68F07997C3174C4088BDF64E01FAEC29629",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/mfidl/nf-mfidl-imfsampleprotection-getprotectioncertificate",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-media-mediafoundation.imfsampleprotection.8e36395fc7b943c4a54d512b4af63c95.initoutputprotection.slot-6.param-4-ppbseed.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Media.MediaFoundation",
+          "interface": "IMFSampleProtection",
+          "iid": "8e36395f-c7b9-43c4-a54d-512b4af63c95",
+          "method": "InitOutputProtection",
+          "slot": 6,
+          "parameter": [
+            4,
+            "ppbSeed"
+          ]
+        },
+        "sourceFingerprint": "8931303923E8E9BB6E56F49AC34A16EF8D4803527FA3DBDAD22A692F75EB68EB",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/mfidl/nf-mfidl-imfsampleprotection-initoutputprotection",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-media-mediafoundation.imfsecurechannel.d0ae555d3b124d97b0600990bc5aeb67.getcertificate.slot-3.param-0-ppcert.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Media.MediaFoundation",
+          "interface": "IMFSecureChannel",
+          "iid": "d0ae555d-3b12-4d97-b060-0990bc5aeb67",
+          "method": "GetCertificate",
+          "slot": 3,
+          "parameter": [
+            0,
+            "ppCert"
+          ]
+        },
+        "sourceFingerprint": "735F551BC15C34D9569475A75F612C952295FA8D17E75A139AFFA55004231DBB",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/mfidl/nf-mfidl-imfsecurechannel-getcertificate",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-media-mediafoundation.imfsslcertificatemanager.61f7d88712304a8baeba8ad434d1a64d.endgetclientcertificate.slot-5.param-1-ppbdata.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Media.MediaFoundation",
+          "interface": "IMFSSLCertificateManager",
+          "iid": "61f7d887-1230-4a8b-aeba-8ad434d1a64d",
+          "method": "EndGetClientCertificate",
+          "slot": 5,
+          "parameter": [
+            1,
+            "ppbData"
+          ]
+        },
+        "sourceFingerprint": "D6DDA16B6622C1E8C8775EFA35EE358787AE5FE99FE8BF6919F3D08BD6BCD36E",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/mfidl/nf-mfidl-imfsslcertificatemanager-endgetclientcertificate",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "com.ownership.entry.windows-win32-media-mediafoundation.imfsystemid.fff4af3a1fc14ef9a29bd26c49e2f31a.getdata.slot-3.param-1-data.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Media.MediaFoundation",
+          "interface": "IMFSystemId",
+          "iid": "fff4af3a-1fc1-4ef9-a29b-d26c49e2f31a",
+          "method": "GetData",
+          "slot": 3,
+          "parameter": [
+            1,
+            "data"
+          ]
+        },
+        "sourceFingerprint": "E71984C8EF14DF7CF2E9380A9B04AD64FE2F1DCCACC6F1EA113E0D1F464F86D4",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/mfidl/nf-mfidl-imfsystemid-getdata",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "com.ownership.entry.windows-win32-media-windowsmediaformat.iwmsecurechannel.2720598ad0f24189bd1091c46ef0936f.wmsc-getvalidcertificate.slot-11.param-0-ppbcertificate.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Media.WindowsMediaFormat",
+          "interface": "IWMSecureChannel",
+          "iid": "2720598a-d0f2-4189-bd10-91c46ef0936f",
+          "method": "WMSC_GetValidCertificate",
+          "slot": 11,
+          "parameter": [
+            0,
+            "ppbCertificate"
+          ]
+        },
+        "sourceFingerprint": "BE54BE07B6DE2C58D4896D5684A8EF70B66C52C02F2CBDBE136C1E89942FDF79",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/wmsecure/nf-wmsecure-iwmsecurechannel-wmsc_getvalidcertificate",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "com.ownership.entry.windows-win32-networking-backgroundintelligenttransferservice.ibackgroundcopyerror.19c613a0fcb84f2881ae897c3d078f81.geterrorcontextdescription.slot-6.param-1-pcontextdescription.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Networking.BackgroundIntelligentTransferService",
+          "interface": "IBackgroundCopyError",
+          "iid": "19c613a0-fcb8-4f28-81ae-897c3d078f81",
+          "method": "GetErrorContextDescription",
+          "slot": 6,
+          "parameter": [
+            1,
+            "pContextDescription"
+          ]
+        },
+        "sourceFingerprint": "AA5FBB70C495A7CEAA15AD1A068899A9C4340B6C2F2AC43DFFC6780356C9781E",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/bits/nf-bits-ibackgroundcopyerror-geterrorcontextdescription",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "com.ownership.entry.windows-win32-networking-backgroundintelligenttransferservice.ibackgroundcopyerror.19c613a0fcb84f2881ae897c3d078f81.getprotocol.slot-7.param-0-pprotocol.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Networking.BackgroundIntelligentTransferService",
+          "interface": "IBackgroundCopyError",
+          "iid": "19c613a0-fcb8-4f28-81ae-897c3d078f81",
+          "method": "GetProtocol",
+          "slot": 7,
+          "parameter": [
+            0,
+            "pProtocol"
+          ]
+        },
+        "sourceFingerprint": "2E5B9E3E891727C7E917EF0859190C71E58F2FFDC09DD8B2EB66FF1198458876",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/bits/nf-bits-ibackgroundcopyerror-getprotocol",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "com.ownership.entry.windows-win32-networking-backgroundintelligenttransferservice.ibackgroundcopyfile.01b7bd23fb884a7784905891d3e4653a.getlocalname.slot-4.param-0-pval.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Networking.BackgroundIntelligentTransferService",
+          "interface": "IBackgroundCopyFile",
+          "iid": "01b7bd23-fb88-4a77-8490-5891d3e4653a",
+          "method": "GetLocalName",
+          "slot": 4,
+          "parameter": [
+            0,
+            "pVal"
+          ]
+        },
+        "sourceFingerprint": "DEB5D2E15A73917B61536911517F4FB89CF13E37394C6F1A1AD28D745EC5022F",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/bits/nf-bits-ibackgroundcopyfile-getlocalname",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-networking-backgroundintelligenttransferservice.ibackgroundcopyfile.01b7bd23fb884a7784905891d3e4653a.getremotename.slot-3.param-0-pval.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Networking.BackgroundIntelligentTransferService",
+          "interface": "IBackgroundCopyFile",
+          "iid": "01b7bd23-fb88-4a77-8490-5891d3e4653a",
+          "method": "GetRemoteName",
+          "slot": 3,
+          "parameter": [
+            0,
+            "pVal"
+          ]
+        },
+        "sourceFingerprint": "609048EE50E0043E280D2AA83E4B7D52C5D7E84BF5CB3597A61B16FF0C3CA025",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/bits/nf-bits-ibackgroundcopyfile-getremotename",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-networking-backgroundintelligenttransferservice.ibitspeer.659cdea2489e11d9a9cd000d56965251.getpeername.slot-3.param-0-pname.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Networking.BackgroundIntelligentTransferService",
+          "interface": "IBitsPeer",
+          "iid": "659cdea2-489e-11d9-a9cd-000d56965251",
+          "method": "GetPeerName",
+          "slot": 3,
+          "parameter": [
+            0,
+            "pName"
+          ]
+        },
+        "sourceFingerprint": "F0CDCA59D3C819BE81B234341E2E08140DDE9CFEEA522D5FE944306AA787A992",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/bits3_0/nf-bits3_0-ibitspeer-getpeername",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-security-tpm.itpmvirtualsmartcardmanager.112b1dffd9dc41f7869fd67fee7cb591.createvirtualsmartcard.slot-3.param-12-ppszinstanceid.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Security.Tpm",
+          "interface": "ITpmVirtualSmartCardManager",
+          "iid": "112b1dff-d9dc-41f7-869f-d67fee7cb591",
+          "method": "CreateVirtualSmartCard",
+          "slot": 3,
+          "parameter": [
+            12,
+            "ppszInstanceId"
+          ]
+        },
+        "sourceFingerprint": "DCB3793D77C443C26A0FDA1E9E248BE121A18BD6A602ADE11BDA81465DF672F4",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/tpmvscmgr/nf-tpmvscmgr-itpmvirtualsmartcardmanager-createvirtualsmartcard",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-storage-enhancedstorage.ienhancedstoragesiloaction.b6f7f311206f4ff89c4b27efee77a86f.getdescription.slot-4.param-0-ppwszactiondescription.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.EnhancedStorage",
+          "interface": "IEnhancedStorageSiloAction",
+          "iid": "b6f7f311-206f-4ff8-9c4b-27efee77a86f",
+          "method": "GetDescription",
+          "slot": 4,
+          "parameter": [
+            0,
+            "ppwszActionDescription"
+          ]
+        },
+        "sourceFingerprint": "83456C35D90803391929A00DE2A230F3553260F2F5048D0BAABE46CF8F164D06",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/ehstorapi/nf-ehstorapi-ienhancedstoragesiloaction-getdescription",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "com.ownership.entry.windows-win32-storage-offlinefiles.iofflinefilescache.855d6203791448b98d404c56f5acffc5.getlocation.slot-13.param-0-ppszpath.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.OfflineFiles",
+          "interface": "IOfflineFilesCache",
+          "iid": "855d6203-7914-48b9-8d40-4c56f5acffc5",
+          "method": "GetLocation",
+          "slot": 13,
+          "parameter": [
+            0,
+            "ppszPath"
+          ]
+        },
+        "sourceFingerprint": "ACD72AD53DB19738AA1F640831E3A2BB4553A1F857097078E623E8AB681EB09D",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/cscobj/nf-cscobj-iofflinefilescache-getlocation",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 2
+      },
+      "com.ownership.entry.windows-win32-storage-offlinefiles.iofflinefilesitem.4a753da6e0444f12a7185d14d079a906.getpath.slot-4.param-0-ppszpath.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.OfflineFiles",
+          "interface": "IOfflineFilesItem",
+          "iid": "4a753da6-e044-4f12-a718-5d14d079a906",
+          "method": "GetPath",
+          "slot": 4,
+          "parameter": [
+            0,
+            "ppszPath"
+          ]
+        },
+        "sourceFingerprint": "F866FC519BD9F1C343D756D13C5E1B1DA466E4994F09D58096D0AC74923C6A2F",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/cscobj/nf-cscobj-iofflinefilesitem-getpath",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 5
+      },
+      "com.ownership.entry.windows-win32-storage-offlinefiles.iofflinefilessetting.d871d3f7f61348a1827e7a34e560fff6.getname.slot-3.param-0-ppszname.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.OfflineFiles",
+          "interface": "IOfflineFilesSetting",
+          "iid": "d871d3f7-f613-48a1-827e-7a34e560fff6",
+          "method": "GetName",
+          "slot": 3,
+          "parameter": [
+            0,
+            "ppszName"
+          ]
+        },
+        "sourceFingerprint": "87642D537D6A82805AE1790C69A70B1BD4B7B67E6C747E77CADBE67B1082DF3F",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/cscobj/nf-cscobj-iofflinefilessetting-getname",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-storage-packaging-appx.iappxblockmapblock.75cf393032444fe0a8c8e0bcb270b889.gethash.slot-3.param-1-buffer.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Packaging.Appx",
+          "interface": "IAppxBlockMapBlock",
+          "iid": "75cf3930-3244-4fe0-a8c8-e0bcb270b889",
+          "method": "GetHash",
+          "slot": 3,
+          "parameter": [
+            1,
+            "buffer"
+          ]
+        },
+        "sourceFingerprint": "684B4052AA6022C42361C42ADF316B0DFF12AA187FF648DF443041DAF1D296DC",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/appxpackaging/nf-appxpackaging-iappxblockmapblock-gethash",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-storage-packaging-appx.iappxblockmapfile.277672ac4f6342c18abcbeae3600eb59.getname.slot-5.param-0-name.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Packaging.Appx",
+          "interface": "IAppxBlockMapFile",
+          "iid": "277672ac-4f63-42c1-8abc-beae3600eb59",
+          "method": "GetName",
+          "slot": 5,
+          "parameter": [
+            0,
+            "name"
+          ]
+        },
+        "sourceFingerprint": "CE562111BDED9847456728CB1BC87A675D0581E902CE3CEFF4B96A1A19B51E70",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/appxpackaging/nf-appxpackaging-iappxblockmapfile-getname",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 2
+      },
+      "com.ownership.entry.windows-win32-storage-packaging-appx.iappxfile.91df827b94fd468f827b57f41b2f6f2e.getcontenttype.slot-4.param-0-contenttype.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Packaging.Appx",
+          "interface": "IAppxFile",
+          "iid": "91df827b-94fd-468f-827b-57f41b2f6f2e",
+          "method": "GetContentType",
+          "slot": 4,
+          "parameter": [
+            0,
+            "contentType"
+          ]
+        },
+        "sourceFingerprint": "E68C56A9040D0DD4A967360DE9A71EB8FAB630797778A96346D2635FEB7C5C7C",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/appxpackaging/nf-appxpackaging-iappxfile-getcontenttype",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 2
+      },
+      "com.ownership.entry.windows-win32-storage-packaging-appx.iappxfile.91df827b94fd468f827b57f41b2f6f2e.getname.slot-5.param-0-filename.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Packaging.Appx",
+          "interface": "IAppxFile",
+          "iid": "91df827b-94fd-468f-827b-57f41b2f6f2e",
+          "method": "GetName",
+          "slot": 5,
+          "parameter": [
+            0,
+            "fileName"
+          ]
+        },
+        "sourceFingerprint": "C6AEA71F121260944F0BE32FA109A5309B2D378F8D0CB99DC98F655796D03958",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/appxpackaging/nf-appxpackaging-iappxfile-getname",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 2
+      },
+      "com.ownership.entry.windows-win32-storage-packaging-appx.iappxmanifestapplication.5da89bf4377346beb6507e744863b7e8.getappusermodelid.slot-4.param-0-appusermodelid.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Packaging.Appx",
+          "interface": "IAppxManifestApplication",
+          "iid": "5da89bf4-3773-46be-b650-7e744863b7e8",
+          "method": "GetAppUserModelId",
+          "slot": 4,
+          "parameter": [
+            0,
+            "appUserModelId"
+          ]
+        },
+        "sourceFingerprint": "1CC6B8208EB40A94F312DA4F84B22B5DFECCE2258BCD423E478CAF2A8D6C5E06",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/appxpackaging/nf-appxpackaging-iappxmanifestapplication-getappusermodelid",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-storage-packaging-appx.iappxmanifestapplication.5da89bf4377346beb6507e744863b7e8.getstringvalue.slot-3.param-1-value.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Packaging.Appx",
+          "interface": "IAppxManifestApplication",
+          "iid": "5da89bf4-3773-46be-b650-7e744863b7e8",
+          "method": "GetStringValue",
+          "slot": 3,
+          "parameter": [
+            1,
+            "value"
+          ]
+        },
+        "sourceFingerprint": "35EE98A50E2E2E9B865AC78E291162A418D2F82801DC13B733888BB4B3650BD5",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/appxpackaging/nf-appxpackaging-iappxmanifestapplication-getstringvalue",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-storage-packaging-appx.iappxmanifestdevicecapabilitiesenumerator.30204541427b4a1cbacf655bf463a540.getcurrent.slot-3.param-0-devicecapability.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Packaging.Appx",
+          "interface": "IAppxManifestDeviceCapabilitiesEnumerator",
+          "iid": "30204541-427b-4a1c-bacf-655bf463a540",
+          "method": "GetCurrent",
+          "slot": 3,
+          "parameter": [
+            0,
+            "deviceCapability"
+          ]
+        },
+        "sourceFingerprint": "4261531B0DAFF6854B082FFD7BF0074278BB8CEE65CC187D6673C4FFD2CE3C77",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/appxpackaging/nf-appxpackaging-iappxmanifestdevicecapabilitiesenumerator-getcurrent",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-storage-packaging-appx.iappxmanifestpackageid.283ce2d771534a9196497a0f7240945f.getname.slot-3.param-0-name.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Packaging.Appx",
+          "interface": "IAppxManifestPackageId",
+          "iid": "283ce2d7-7153-4a91-9649-7a0f7240945f",
+          "method": "GetName",
+          "slot": 3,
+          "parameter": [
+            0,
+            "name"
+          ]
+        },
+        "sourceFingerprint": "6872EB3F83DE14AFB13A3B85DBBD4148EE6D128CDA188BD5362AEFFB6F1F99B2",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/appxpackaging/nf-appxpackaging-iappxmanifestpackageid-getname",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 2
+      },
+      "com.ownership.entry.windows-win32-storage-packaging-appx.iappxmanifestpackageid.283ce2d771534a9196497a0f7240945f.getpackagefamilyname.slot-10.param-0-packagefamilyname.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Packaging.Appx",
+          "interface": "IAppxManifestPackageId",
+          "iid": "283ce2d7-7153-4a91-9649-7a0f7240945f",
+          "method": "GetPackageFamilyName",
+          "slot": 10,
+          "parameter": [
+            0,
+            "packageFamilyName"
+          ]
+        },
+        "sourceFingerprint": "A578B14F851FD8D22FA62810898F0BE3367C90FF84EC3717A451781F846D5936",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/appxpackaging/nf-appxpackaging-iappxmanifestpackageid-getpackagefamilyname",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 2
+      },
+      "com.ownership.entry.windows-win32-storage-packaging-appx.iappxmanifestpackageid.283ce2d771534a9196497a0f7240945f.getpackagefullname.slot-9.param-0-packagefullname.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Packaging.Appx",
+          "interface": "IAppxManifestPackageId",
+          "iid": "283ce2d7-7153-4a91-9649-7a0f7240945f",
+          "method": "GetPackageFullName",
+          "slot": 9,
+          "parameter": [
+            0,
+            "packageFullName"
+          ]
+        },
+        "sourceFingerprint": "41D7CC05BFBA8E8257C29259361106B5D9AEC9733C9C0C85A09F8ACBEC299D0A",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/appxpackaging/nf-appxpackaging-iappxmanifestpackageid-getpackagefullname",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 2
+      },
+      "com.ownership.entry.windows-win32-storage-packaging-appx.iappxmanifestpackageid.283ce2d771534a9196497a0f7240945f.getpublisher.slot-5.param-0-publisher.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Packaging.Appx",
+          "interface": "IAppxManifestPackageId",
+          "iid": "283ce2d7-7153-4a91-9649-7a0f7240945f",
+          "method": "GetPublisher",
+          "slot": 5,
+          "parameter": [
+            0,
+            "publisher"
+          ]
+        },
+        "sourceFingerprint": "57D4B1441D4718F632D413622FCCD1300F3EA49B7D68487FA4C54B52A3B214AC",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/appxpackaging/nf-appxpackaging-iappxmanifestpackageid-getpublisher",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 2
+      },
+      "com.ownership.entry.windows-win32-storage-packaging-appx.iappxmanifestpackageid.283ce2d771534a9196497a0f7240945f.getresourceid.slot-7.param-0-resourceid.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Packaging.Appx",
+          "interface": "IAppxManifestPackageId",
+          "iid": "283ce2d7-7153-4a91-9649-7a0f7240945f",
+          "method": "GetResourceId",
+          "slot": 7,
+          "parameter": [
+            0,
+            "resourceId"
+          ]
+        },
+        "sourceFingerprint": "E0CAB4AD7BBC0623CB00ABD22F199DEB3B87B7F309AF8BA2B42858C6431140D1",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/appxpackaging/nf-appxpackaging-iappxmanifestpackageid-getresourceid",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 2
+      },
+      "com.ownership.entry.windows-win32-storage-packaging-appx.iappxmanifestproperties.03faf64df26f4b2caaf78fe7789b8bca.getstringvalue.slot-4.param-1-value.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Packaging.Appx",
+          "interface": "IAppxManifestProperties",
+          "iid": "03faf64d-f26f-4b2c-aaf7-8fe7789b8bca",
+          "method": "GetStringValue",
+          "slot": 4,
+          "parameter": [
+            1,
+            "value"
+          ]
+        },
+        "sourceFingerprint": "C970E39D1EC4810D2139DD3EE5058353DAD24EC6C11B49F947AEE82A8B0D7E81",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/appxpackaging/nf-appxpackaging-iappxmanifestproperties-getstringvalue",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-storage-packaging-opc.iopcdigitalsignature.52ab21dd1cd04949bc800c1232d00cb4.getnamespaces.slot-3.param-0-prefixes.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Packaging.Opc",
+          "interface": "IOpcDigitalSignature",
+          "iid": "52ab21dd-1cd0-4949-bc80-0c1232d00cb4",
+          "method": "GetNamespaces",
+          "slot": 3,
+          "parameter": [
+            0,
+            "prefixes"
+          ]
+        },
+        "sourceFingerprint": "14995347E5CC0CAD25125416A75F6F7290D6CB94FE23FB53DA9991957711ECFC",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/msopc/nf-msopc-iopcdigitalsignature-getnamespaces",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "com.ownership.entry.windows-win32-storage-packaging-opc.iopcdigitalsignature.52ab21dd1cd04949bc800c1232d00cb4.getnamespaces.slot-3.param-1-namespaces.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Packaging.Opc",
+          "interface": "IOpcDigitalSignature",
+          "iid": "52ab21dd-1cd0-4949-bc80-0c1232d00cb4",
+          "method": "GetNamespaces",
+          "slot": 3,
+          "parameter": [
+            1,
+            "namespaces"
+          ]
+        },
+        "sourceFingerprint": "14995347E5CC0CAD25125416A75F6F7290D6CB94FE23FB53DA9991957711ECFC",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/msopc/nf-msopc-iopcdigitalsignature-getnamespaces",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "com.ownership.entry.windows-win32-storage-packaging-opc.iopcdigitalsignature.52ab21dd1cd04949bc800c1232d00cb4.getsignatureid.slot-4.param-0-signatureid.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Packaging.Opc",
+          "interface": "IOpcDigitalSignature",
+          "iid": "52ab21dd-1cd0-4949-bc80-0c1232d00cb4",
+          "method": "GetSignatureId",
+          "slot": 4,
+          "parameter": [
+            0,
+            "signatureId"
+          ]
+        },
+        "sourceFingerprint": "24AFAD8D9CEF5250BF3B52CE8B671E6671636CD98E1B32CDA56BE95BB57F5D8A",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/msopc/nf-msopc-iopcdigitalsignature-getsignatureid",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "com.ownership.entry.windows-win32-storage-packaging-opc.iopcdigitalsignature.52ab21dd1cd04949bc800c1232d00cb4.getsignaturevalue.slot-8.param-0-signaturevalue.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Packaging.Opc",
+          "interface": "IOpcDigitalSignature",
+          "iid": "52ab21dd-1cd0-4949-bc80-0c1232d00cb4",
+          "method": "GetSignatureValue",
+          "slot": 8,
+          "parameter": [
+            0,
+            "signatureValue"
+          ]
+        },
+        "sourceFingerprint": "73B03F91F248DDD385B090B6B66653456F6887EDC8082446F9FF309354DB5B80",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/msopc/nf-msopc-iopcdigitalsignature-getsignaturevalue",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "com.ownership.entry.windows-win32-storage-packaging-opc.iopcdigitalsignature.52ab21dd1cd04949bc800c1232d00cb4.getsignaturexml.slot-17.param-0-signaturexml.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Packaging.Opc",
+          "interface": "IOpcDigitalSignature",
+          "iid": "52ab21dd-1cd0-4949-bc80-0c1232d00cb4",
+          "method": "GetSignatureXml",
+          "slot": 17,
+          "parameter": [
+            0,
+            "signatureXml"
+          ]
+        },
+        "sourceFingerprint": "02BBF3524316564BDE7E05B41A9A2739DE8107D20218C32AE4ABF6B662940B3B",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/msopc/nf-msopc-iopcdigitalsignature-getsignaturexml",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "com.ownership.entry.windows-win32-storage-packaging-opc.iopcdigitalsignature.52ab21dd1cd04949bc800c1232d00cb4.getsigningtime.slot-11.param-0-signingtime.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Packaging.Opc",
+          "interface": "IOpcDigitalSignature",
+          "iid": "52ab21dd-1cd0-4949-bc80-0c1232d00cb4",
+          "method": "GetSigningTime",
+          "slot": 11,
+          "parameter": [
+            0,
+            "signingTime"
+          ]
+        },
+        "sourceFingerprint": "ACEA0EA1D6745A634869941CCE744BA9234395E5D9E77B16F1EF7B84BC3BCAEB",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/msopc/nf-msopc-iopcdigitalsignature-getsigningtime",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "com.ownership.entry.windows-win32-storage-packaging-opc.iopcpart.421959493b794fc889c6fc7fb979ee71.getcontenttype.slot-6.param-0-contenttype.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Packaging.Opc",
+          "interface": "IOpcPart",
+          "iid": "42195949-3b79-4fc8-89c6-fc7fb979ee71",
+          "method": "GetContentType",
+          "slot": 6,
+          "parameter": [
+            0,
+            "contentType"
+          ]
+        },
+        "sourceFingerprint": "A2D9DB85FED0EC691B7804050FF258711DDDFE331D668BB88760C2CED5A69E46",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/msopc/nf-msopc-iopcpart-getcontenttype",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-storage-packaging-opc.iopcrelationship.421959493b794fc889c6fc7fb979ee72.getid.slot-3.param-0-relationshipidentifier.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Packaging.Opc",
+          "interface": "IOpcRelationship",
+          "iid": "42195949-3b79-4fc8-89c6-fc7fb979ee72",
+          "method": "GetId",
+          "slot": 3,
+          "parameter": [
+            0,
+            "relationshipIdentifier"
+          ]
+        },
+        "sourceFingerprint": "F69625F4D84053B3CDB71BB347A18AD69E569DEA01BD60EDEE54D1CF5D92CBDC",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/msopc/nf-msopc-iopcrelationship-getid",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-storage-packaging-opc.iopcrelationship.421959493b794fc889c6fc7fb979ee72.getrelationshiptype.slot-4.param-0-relationshiptype.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Packaging.Opc",
+          "interface": "IOpcRelationship",
+          "iid": "42195949-3b79-4fc8-89c6-fc7fb979ee72",
+          "method": "GetRelationshipType",
+          "slot": 4,
+          "parameter": [
+            0,
+            "relationshipType"
+          ]
+        },
+        "sourceFingerprint": "CB1C5BF36A54E9529B078603331CB8761183BDA06BF3BAB25303BA2C41AC2D00",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/msopc/nf-msopc-iopcrelationship-getrelationshiptype",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-storage-packaging-opc.iopcrelationshipselector.f8f26c7fb28f489984c85d5639ede75f.getselectioncriterion.slot-4.param-0-selectioncriterion.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Packaging.Opc",
+          "interface": "IOpcRelationshipSelector",
+          "iid": "f8f26c7f-b28f-4899-84c8-5d5639ede75f",
+          "method": "GetSelectionCriterion",
+          "slot": 4,
+          "parameter": [
+            0,
+            "selectionCriterion"
+          ]
+        },
+        "sourceFingerprint": "A40AC693ADEEFAE31A61FBAA4B97CE678FD46B74729FFE92AAF55E784A868DCC",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/msopc/nf-msopc-iopcrelationshipselector-getselectioncriterion",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
       "com.ownership.entry.windows-win32-storage-packaging-opc.iopcsignaturecustomobject.5d77a19e62c144e7becd45da5ae51a56.getxml.slot-3.param-0-xmlmarkup.v1": {
         "familyId": "com.ownership.v1",
         "contractKind": "ownership",
@@ -6271,6 +8030,885 @@
         "safeConsumed": true,
         "interfaceDependencies": 1
       },
+      "com.ownership.entry.windows-win32-storage-packaging-opc.iopcsignaturepartreference.e24231ca59f4484eb64b36eeda36072c.getdigestvalue.slot-6.param-0-digestvalue.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Packaging.Opc",
+          "interface": "IOpcSignaturePartReference",
+          "iid": "e24231ca-59f4-484e-b64b-36eeda36072c",
+          "method": "GetDigestValue",
+          "slot": 6,
+          "parameter": [
+            0,
+            "digestValue"
+          ]
+        },
+        "sourceFingerprint": "E44EF5E4E74909AA6D3CA81577D43503BD0AE60ED81E225140B242B31CC7AF12",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/msopc/nf-msopc-iopcsignaturepartreference-getdigestvalue",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "com.ownership.entry.windows-win32-storage-packaging-opc.iopcsignaturereference.1b47005e30114edcbe6f0f65e5ab0342.getdigestmethod.slot-7.param-0-digestmethod.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Packaging.Opc",
+          "interface": "IOpcSignatureReference",
+          "iid": "1b47005e-3011-4edc-be6f-0f65e5ab0342",
+          "method": "GetDigestMethod",
+          "slot": 7,
+          "parameter": [
+            0,
+            "digestMethod"
+          ]
+        },
+        "sourceFingerprint": "C0D5E026789032F22CFC166C143361BB8D4D5CA6B294BDD1692207162121AC55",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/msopc/nf-msopc-iopcsignaturereference-getdigestmethod",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-storage-packaging-opc.iopcsignaturereference.1b47005e30114edcbe6f0f65e5ab0342.getdigestvalue.slot-8.param-0-digestvalue.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Packaging.Opc",
+          "interface": "IOpcSignatureReference",
+          "iid": "1b47005e-3011-4edc-be6f-0f65e5ab0342",
+          "method": "GetDigestValue",
+          "slot": 8,
+          "parameter": [
+            0,
+            "digestValue"
+          ]
+        },
+        "sourceFingerprint": "8B626B5659171C9F6F501201C14CA04B4FC6B2635EA71BE9008059CB88874D51",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/msopc/nf-msopc-iopcsignaturereference-getdigestvalue",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-storage-packaging-opc.iopcsignaturereference.1b47005e30114edcbe6f0f65e5ab0342.getid.slot-3.param-0-referenceid.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Packaging.Opc",
+          "interface": "IOpcSignatureReference",
+          "iid": "1b47005e-3011-4edc-be6f-0f65e5ab0342",
+          "method": "GetId",
+          "slot": 3,
+          "parameter": [
+            0,
+            "referenceId"
+          ]
+        },
+        "sourceFingerprint": "4923AB113174756058B7100724173CF56FA13BB4E9E4005A0993C7AC6155A153",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/msopc/nf-msopc-iopcsignaturereference-getid",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-storage-packaging-opc.iopcsignaturereference.1b47005e30114edcbe6f0f65e5ab0342.gettype.slot-5.param-0-type.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Packaging.Opc",
+          "interface": "IOpcSignatureReference",
+          "iid": "1b47005e-3011-4edc-be6f-0f65e5ab0342",
+          "method": "GetType",
+          "slot": 5,
+          "parameter": [
+            0,
+            "type"
+          ]
+        },
+        "sourceFingerprint": "4E968A4144CCC701A84044B400168308CF960C2A322389E73E2B62941F06ADA8",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/msopc/nf-msopc-iopcsignaturereference-gettype",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-storage-packaging-opc.iopcsignaturerelationshipreference.57babac69d4a4e508b86e5d4051eae7c.getdigestvalue.slot-5.param-0-digestvalue.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Packaging.Opc",
+          "interface": "IOpcSignatureRelationshipReference",
+          "iid": "57babac6-9d4a-4e50-8b86-e5d4051eae7c",
+          "method": "GetDigestValue",
+          "slot": 5,
+          "parameter": [
+            0,
+            "digestValue"
+          ]
+        },
+        "sourceFingerprint": "5ED01A752BDB58948B54F5239E324E555A87E4A690123EC4842F7FA104D35E87",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/msopc/nf-msopc-iopcsignaturerelationshipreference-getdigestvalue",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "com.ownership.entry.windows-win32-storage-packaging-opc.iopcsigningoptions.50d2d6a57aeb46c0b24143ab0e9b407e.getdefaultdigestmethod.slot-7.param-0-digestmethod.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Packaging.Opc",
+          "interface": "IOpcSigningOptions",
+          "iid": "50d2d6a5-7aeb-46c0-b241-43ab0e9b407e",
+          "method": "GetDefaultDigestMethod",
+          "slot": 7,
+          "parameter": [
+            0,
+            "digestMethod"
+          ]
+        },
+        "sourceFingerprint": "A625034CDB34EE7870B1480CA406516DA5EAAA44D458F1F6CF928670893953EF",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/msopc/nf-msopc-iopcsigningoptions-getdefaultdigestmethod",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-storage-packaging-opc.iopcsigningoptions.50d2d6a57aeb46c0b24143ab0e9b407e.getsignatureid.slot-3.param-0-signatureid.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Packaging.Opc",
+          "interface": "IOpcSigningOptions",
+          "iid": "50d2d6a5-7aeb-46c0-b241-43ab0e9b407e",
+          "method": "GetSignatureId",
+          "slot": 3,
+          "parameter": [
+            0,
+            "signatureId"
+          ]
+        },
+        "sourceFingerprint": "CA159EC3D9DC531510C92276C4E9BB5DD80622D02E72BEA8EF13A1120E363C55",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/msopc/nf-msopc-iopcsigningoptions-getsignatureid",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-storage-packaging-opc.iopcsigningoptions.50d2d6a57aeb46c0b24143ab0e9b407e.getsignaturemethod.slot-5.param-0-signaturemethod.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Packaging.Opc",
+          "interface": "IOpcSigningOptions",
+          "iid": "50d2d6a5-7aeb-46c0-b241-43ab0e9b407e",
+          "method": "GetSignatureMethod",
+          "slot": 5,
+          "parameter": [
+            0,
+            "signatureMethod"
+          ]
+        },
+        "sourceFingerprint": "A641729841B98EA8E830EA80B59CFE6E0C687CF7F388887B5CB98C0FE1E2C1EE",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/msopc/nf-msopc-iopcsigningoptions-getsignaturemethod",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-storage-xps.ixpsomcanvas.221d1452331e47c687e96ccefb9b5ba3.getaccessibilityshortdescription.slot-33.param-0-shortdescription.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Xps",
+          "interface": "IXpsOMCanvas",
+          "iid": "221d1452-331e-47c6-87e9-6ccefb9b5ba3",
+          "method": "GetAccessibilityShortDescription",
+          "slot": 33,
+          "parameter": [
+            0,
+            "shortDescription"
+          ]
+        },
+        "sourceFingerprint": "619160FD29FE53E545FC180DA2E0DD88C6761AAB8476CF6F8CD1C376A9FA3657",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/xpsobjectmodel/nf-xpsobjectmodel-ixpsomcanvas-getaccessibilityshortdescription",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "com.ownership.entry.windows-win32-storage-xps.ixpsomcoreproperties.3340fe8f40274aa18f5fd35ae45fe597.getcontentstatus.slot-8.param-0-contentstatus.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Xps",
+          "interface": "IXpsOMCoreProperties",
+          "iid": "3340fe8f-4027-4aa1-8f5f-d35ae45fe597",
+          "method": "GetContentStatus",
+          "slot": 8,
+          "parameter": [
+            0,
+            "contentStatus"
+          ]
+        },
+        "sourceFingerprint": "C9B0E293664DD3F87586B1557A3AD3704832C640021F194AD8D91967A6FD26F6",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/xpsobjectmodel/nf-xpsobjectmodel-ixpsomcoreproperties-getcontentstatus",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "com.ownership.entry.windows-win32-storage-xps.ixpsomcoreproperties.3340fe8f40274aa18f5fd35ae45fe597.getdescription.slot-16.param-0-description.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Xps",
+          "interface": "IXpsOMCoreProperties",
+          "iid": "3340fe8f-4027-4aa1-8f5f-d35ae45fe597",
+          "method": "GetDescription",
+          "slot": 16,
+          "parameter": [
+            0,
+            "description"
+          ]
+        },
+        "sourceFingerprint": "44D1F4D05B9DBDCFEA9EC3A56B4E02302330BF4316145E104DDF1CA9036407C7",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/xpsobjectmodel/nf-xpsobjectmodel-ixpsomcoreproperties-getdescription",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "com.ownership.entry.windows-win32-storage-xps.ixpsomcoreproperties.3340fe8f40274aa18f5fd35ae45fe597.getidentifier.slot-18.param-0-identifier.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Xps",
+          "interface": "IXpsOMCoreProperties",
+          "iid": "3340fe8f-4027-4aa1-8f5f-d35ae45fe597",
+          "method": "GetIdentifier",
+          "slot": 18,
+          "parameter": [
+            0,
+            "identifier"
+          ]
+        },
+        "sourceFingerprint": "14C220815B07BD12F52247580FE4B1CDD62BA09BB38B160C532AC4E637F49E2E",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/xpsobjectmodel/nf-xpsobjectmodel-ixpsomcoreproperties-getidentifier",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "com.ownership.entry.windows-win32-storage-xps.ixpsomcoreproperties.3340fe8f40274aa18f5fd35ae45fe597.getkeywords.slot-20.param-0-keywords.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Xps",
+          "interface": "IXpsOMCoreProperties",
+          "iid": "3340fe8f-4027-4aa1-8f5f-d35ae45fe597",
+          "method": "GetKeywords",
+          "slot": 20,
+          "parameter": [
+            0,
+            "keywords"
+          ]
+        },
+        "sourceFingerprint": "E5CBCA3A467B17974940873D8F737783DF372F9332310958FB034E4098C3A84A",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/xpsobjectmodel/nf-xpsobjectmodel-ixpsomcoreproperties-getkeywords",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "com.ownership.entry.windows-win32-storage-xps.ixpsomcoreproperties.3340fe8f40274aa18f5fd35ae45fe597.getlanguage.slot-22.param-0-language.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Xps",
+          "interface": "IXpsOMCoreProperties",
+          "iid": "3340fe8f-4027-4aa1-8f5f-d35ae45fe597",
+          "method": "GetLanguage",
+          "slot": 22,
+          "parameter": [
+            0,
+            "language"
+          ]
+        },
+        "sourceFingerprint": "8E4CB1E1C6F9E0A9EA64BC241C520FE225E415F59EA42F7F4767CCDB4E141428",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/xpsobjectmodel/nf-xpsobjectmodel-ixpsomcoreproperties-getlanguage",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "com.ownership.entry.windows-win32-storage-xps.ixpsomcoreproperties.3340fe8f40274aa18f5fd35ae45fe597.getlastmodifiedby.slot-24.param-0-lastmodifiedby.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Xps",
+          "interface": "IXpsOMCoreProperties",
+          "iid": "3340fe8f-4027-4aa1-8f5f-d35ae45fe597",
+          "method": "GetLastModifiedBy",
+          "slot": 24,
+          "parameter": [
+            0,
+            "lastModifiedBy"
+          ]
+        },
+        "sourceFingerprint": "2D9A8B6FD83F4BFD4CC1F9FE942962F8E51444E3E0C2C6F62C7F900DB3F0F358",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/xpsobjectmodel/nf-xpsobjectmodel-ixpsomcoreproperties-getlastmodifiedby",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "com.ownership.entry.windows-win32-storage-xps.ixpsomcoreproperties.3340fe8f40274aa18f5fd35ae45fe597.getrevision.slot-30.param-0-revision.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Xps",
+          "interface": "IXpsOMCoreProperties",
+          "iid": "3340fe8f-4027-4aa1-8f5f-d35ae45fe597",
+          "method": "GetRevision",
+          "slot": 30,
+          "parameter": [
+            0,
+            "revision"
+          ]
+        },
+        "sourceFingerprint": "E9B541AC62A67008C0E4DF7848B8987D8EEB208F869E048F4B89CAC98B19DEE4",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/xpsobjectmodel/nf-xpsobjectmodel-ixpsomcoreproperties-getrevision",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "com.ownership.entry.windows-win32-storage-xps.ixpsomcoreproperties.3340fe8f40274aa18f5fd35ae45fe597.getsubject.slot-32.param-0-subject.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Xps",
+          "interface": "IXpsOMCoreProperties",
+          "iid": "3340fe8f-4027-4aa1-8f5f-d35ae45fe597",
+          "method": "GetSubject",
+          "slot": 32,
+          "parameter": [
+            0,
+            "subject"
+          ]
+        },
+        "sourceFingerprint": "20B40E77732CAC3E39699ADEF3423C4FC055794A5D50D902A331B1D2922BE9DC",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/xpsobjectmodel/nf-xpsobjectmodel-ixpsomcoreproperties-getsubject",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "com.ownership.entry.windows-win32-storage-xps.ixpsomcoreproperties.3340fe8f40274aa18f5fd35ae45fe597.gettitle.slot-34.param-0-title.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Xps",
+          "interface": "IXpsOMCoreProperties",
+          "iid": "3340fe8f-4027-4aa1-8f5f-d35ae45fe597",
+          "method": "GetTitle",
+          "slot": 34,
+          "parameter": [
+            0,
+            "title"
+          ]
+        },
+        "sourceFingerprint": "B16FDE9BA521B703A5400721558713A312AF5F5D0460CA6AFFF44693F5E582AD",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/xpsobjectmodel/nf-xpsobjectmodel-ixpsomcoreproperties-gettitle",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "com.ownership.entry.windows-win32-storage-xps.ixpsomdictionary.897c86b88eaf4ae3bdde56419fcf4236.getat.slot-5.param-1-key.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Xps",
+          "interface": "IXpsOMDictionary",
+          "iid": "897c86b8-8eaf-4ae3-bdde-56419fcf4236",
+          "method": "GetAt",
+          "slot": 5,
+          "parameter": [
+            1,
+            "key"
+          ]
+        },
+        "sourceFingerprint": "71A6BF79BBA1CEEA6DF3C6E6DF1D93C2F0C84F6FB6D66F3E1818DEC5CF7C04F3",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/xpsobjectmodel/nf-xpsobjectmodel-ixpsomdictionary-getat",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-storage-xps.ixpsomgeometry.64fcf3d74d5844baad73a13af6492072.gettransformlookup.slot-11.param-0-lookup.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Xps",
+          "interface": "IXpsOMGeometry",
+          "iid": "64fcf3d7-4d58-44ba-ad73-a13af6492072",
+          "method": "GetTransformLookup",
+          "slot": 11,
+          "parameter": [
+            0,
+            "lookup"
+          ]
+        },
+        "sourceFingerprint": "0467D7D58A6370D642A24BC282F9858C006CF49B3627DADE04AD48DEB66872FD",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/xpsobjectmodel/nf-xpsobjectmodel-ixpsomgeometry-gettransformlookup",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-storage-xps.ixpsomglyphs.819b31990a5a4b64bec7a9e17e780de2.getfillbrushlookup.slot-53.param-0-key.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Xps",
+          "interface": "IXpsOMGlyphs",
+          "iid": "819b3199-0a5a-4b64-bec7-a9e17e780de2",
+          "method": "GetFillBrushLookup",
+          "slot": 53,
+          "parameter": [
+            0,
+            "key"
+          ]
+        },
+        "sourceFingerprint": "0C9D165EF8E870E4FC85BBC784A90C19D58938D61D9B8B872C41A44D8E98958D",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/xpsobjectmodel/nf-xpsobjectmodel-ixpsomglyphs-getfillbrushlookup",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "com.ownership.entry.windows-win32-storage-xps.ixpsomglyphs.819b31990a5a4b64bec7a9e17e780de2.getunicodestring.slot-30.param-0-unicodestring.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Xps",
+          "interface": "IXpsOMGlyphs",
+          "iid": "819b3199-0a5a-4b64-bec7-a9e17e780de2",
+          "method": "GetUnicodeString",
+          "slot": 30,
+          "parameter": [
+            0,
+            "unicodeString"
+          ]
+        },
+        "sourceFingerprint": "DAFFD452E133E9BE341C215636C4FDAC32740D71A3D6CF71B6F1C837DB5C64DE",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/xpsobjectmodel/nf-xpsobjectmodel-ixpsomglyphs-getunicodestring",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "com.ownership.entry.windows-win32-storage-xps.ixpsomglyphseditor.a5ab86165b164b9f962989b323ed7909.getdevicefontname.slot-19.param-0-devicefontname.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Xps",
+          "interface": "IXpsOMGlyphsEditor",
+          "iid": "a5ab8616-5b16-4b9f-9629-89b323ed7909",
+          "method": "GetDeviceFontName",
+          "slot": 19,
+          "parameter": [
+            0,
+            "deviceFontName"
+          ]
+        },
+        "sourceFingerprint": "1C831A99F6829CA78ED0AD68FA8A20AC20CE2ABF44F28CA093DBB050808CE0D0",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/xpsobjectmodel/nf-xpsobjectmodel-ixpsomglyphseditor-getdevicefontname",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-storage-xps.ixpsomglyphseditor.a5ab86165b164b9f962989b323ed7909.getunicodestring.slot-4.param-0-unicodestring.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Xps",
+          "interface": "IXpsOMGlyphsEditor",
+          "iid": "a5ab8616-5b16-4b9f-9629-89b323ed7909",
+          "method": "GetUnicodeString",
+          "slot": 4,
+          "parameter": [
+            0,
+            "unicodeString"
+          ]
+        },
+        "sourceFingerprint": "2CE7E594FE845EF1CB65AC14F664810636356D7CC1C0DF2FBEFF7A994D018C53",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/xpsobjectmodel/nf-xpsobjectmodel-ixpsomglyphseditor-getunicodestring",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-storage-xps.ixpsomgradientbrush.edb5962261a242c3baceacf2286c06bf.gettransformlookup.slot-11.param-0-key.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Xps",
+          "interface": "IXpsOMGradientBrush",
+          "iid": "edb59622-61a2-42c3-bace-acf2286c06bf",
+          "method": "GetTransformLookup",
+          "slot": 11,
+          "parameter": [
+            0,
+            "key"
+          ]
+        },
+        "sourceFingerprint": "71359AD8372D9C707C75F8011DA3868AAB93BA7B883585EA50FC19676F27A4EC",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/xpsobjectmodel/nf-xpsobjectmodel-ixpsomgradientbrush-gettransformlookup",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 3
+      },
+      "com.ownership.entry.windows-win32-storage-xps.ixpsomnamecollection.4bddf8ecc915421ba166d173d25653d2.getat.slot-4.param-1-name.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Xps",
+          "interface": "IXpsOMNameCollection",
+          "iid": "4bddf8ec-c915-421b-a166-d173d25653d2",
+          "method": "GetAt",
+          "slot": 4,
+          "parameter": [
+            1,
+            "name"
+          ]
+        },
+        "sourceFingerprint": "6E227EF3FF34C04E88FD55BBD4065397DE25B6B60EF3F44B5A3AE254D7A58210",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/xpsobjectmodel/nf-xpsobjectmodel-ixpsomnamecollection-getat",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-storage-xps.ixpsompage.d3e18888f1204fee8c6835296eae91d4.generateunusedlookupkey.slot-25.param-1-key.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Xps",
+          "interface": "IXpsOMPage",
+          "iid": "d3e18888-f120-4fee-8c68-35296eae91d4",
+          "method": "GenerateUnusedLookupKey",
+          "slot": 25,
+          "parameter": [
+            1,
+            "key"
+          ]
+        },
+        "sourceFingerprint": "2279C51F31BE3B709E1AC297079DA4C9CED526D70D2A7BF3B4A4B2D6015B1734",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/xpsobjectmodel/nf-xpsobjectmodel-ixpsompage-generateunusedlookupkey",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 2
+      },
+      "com.ownership.entry.windows-win32-storage-xps.ixpsompage.d3e18888f1204fee8c6835296eae91d4.getlanguage.slot-13.param-0-language.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Xps",
+          "interface": "IXpsOMPage",
+          "iid": "d3e18888-f120-4fee-8c68-35296eae91d4",
+          "method": "GetLanguage",
+          "slot": 13,
+          "parameter": [
+            0,
+            "language"
+          ]
+        },
+        "sourceFingerprint": "18FB399E551DE782A3865A9947C05D6333E4C9ADF49C6C5B9EF06958C5BBB19A",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/xpsobjectmodel/nf-xpsobjectmodel-ixpsompage-getlanguage",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 2
+      },
+      "com.ownership.entry.windows-win32-storage-xps.ixpsompage.d3e18888f1204fee8c6835296eae91d4.getname.slot-15.param-0-name.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Xps",
+          "interface": "IXpsOMPage",
+          "iid": "d3e18888-f120-4fee-8c68-35296eae91d4",
+          "method": "GetName",
+          "slot": 15,
+          "parameter": [
+            0,
+            "name"
+          ]
+        },
+        "sourceFingerprint": "2344026EF8F9A68CC63181885D3E5D7FCA7FEBD76141B82E31400F6E49EFA871",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/xpsobjectmodel/nf-xpsobjectmodel-ixpsompage-getname",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 2
+      },
+      "com.ownership.entry.windows-win32-storage-xps.ixpsompath.37d38bb63ee94110931214b194163337.getaccessibilitylongdescription.slot-37.param-0-longdescription.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Xps",
+          "interface": "IXpsOMPath",
+          "iid": "37d38bb6-3ee9-4110-9312-14b194163337",
+          "method": "GetAccessibilityLongDescription",
+          "slot": 37,
+          "parameter": [
+            0,
+            "longDescription"
+          ]
+        },
+        "sourceFingerprint": "91E9269807768A9856A7E29E458EB8315AFE69EF28696177126BCE604D7E510E",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/xpsobjectmodel/nf-xpsobjectmodel-ixpsompath-getaccessibilitylongdescription",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "com.ownership.entry.windows-win32-storage-xps.ixpsompath.37d38bb63ee94110931214b194163337.getaccessibilityshortdescription.slot-35.param-0-shortdescription.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Xps",
+          "interface": "IXpsOMPath",
+          "iid": "37d38bb6-3ee9-4110-9312-14b194163337",
+          "method": "GetAccessibilityShortDescription",
+          "slot": 35,
+          "parameter": [
+            0,
+            "shortDescription"
+          ]
+        },
+        "sourceFingerprint": "FDF0B5CDDBF31A8D16184E8A07573FA934E6A83ADC940E1CD3059CA0A9D284CB",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/xpsobjectmodel/nf-xpsobjectmodel-ixpsompath-getaccessibilityshortdescription",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "com.ownership.entry.windows-win32-storage-xps.ixpsomtilebrush.0fc2328dd7224a54b2ecbe90218a789e.gettransformlookup.slot-10.param-0-key.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Xps",
+          "interface": "IXpsOMTileBrush",
+          "iid": "0fc2328d-d722-4a54-b2ec-be90218a789e",
+          "method": "GetTransformLookup",
+          "slot": 10,
+          "parameter": [
+            0,
+            "key"
+          ]
+        },
+        "sourceFingerprint": "BD3F4D77C584EA676308D8BAA41ECB610852D84D5CAE666059EF589374D81AE0",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/xpsobjectmodel/nf-xpsobjectmodel-ixpsomtilebrush-gettransformlookup",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 3
+      },
+      "com.ownership.entry.windows-win32-storage-xps.ixpsomvisual.bc3e7333fb0b4af3a8190b4eaad0d2fd.getname.slot-22.param-0-name.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Xps",
+          "interface": "IXpsOMVisual",
+          "iid": "bc3e7333-fb0b-4af3-a819-0b4eaad0d2fd",
+          "method": "GetName",
+          "slot": 22,
+          "parameter": [
+            0,
+            "name"
+          ]
+        },
+        "sourceFingerprint": "5927444FCE9E89A1CABF48FEF36353AFB23AE02942E8F05DB4900A2582092966",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/xpsobjectmodel/nf-xpsobjectmodel-ixpsomvisual-getname",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "com.ownership.entry.windows-win32-storage-xps.ixpsomvisual.bc3e7333fb0b4af3a8190b4eaad0d2fd.getopacitymaskbrushlookup.slot-20.param-0-key.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Xps",
+          "interface": "IXpsOMVisual",
+          "iid": "bc3e7333-fb0b-4af3-a819-0b4eaad0d2fd",
+          "method": "GetOpacityMaskBrushLookup",
+          "slot": 20,
+          "parameter": [
+            0,
+            "key"
+          ]
+        },
+        "sourceFingerprint": "D0246E88485B66C8C82AE1E9EE83598346BD51155A9B8F776B95CA8FB0772E3D",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/xpsobjectmodel/nf-xpsobjectmodel-ixpsomvisual-getopacitymaskbrushlookup",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "com.ownership.entry.windows-win32-storage-xps.ixpsomvisual.bc3e7333fb0b4af3a8190b4eaad0d2fd.gettransformlookup.slot-8.param-0-key.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Xps",
+          "interface": "IXpsOMVisual",
+          "iid": "bc3e7333-fb0b-4af3-a819-0b4eaad0d2fd",
+          "method": "GetTransformLookup",
+          "slot": 8,
+          "parameter": [
+            0,
+            "key"
+          ]
+        },
+        "sourceFingerprint": "8019E0B0C52A1F2FC2AAF827015BAC8BB959A7CAEEF97A1D8189557BFB350FD8",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/xpsobjectmodel/nf-xpsobjectmodel-ixpsomvisual-gettransformlookup",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "com.ownership.entry.windows-win32-storage-xps.ixpsomvisualbrush.97e294af5b3746b48057874d2f64119b.getvisuallookup.slot-21.param-0-lookup.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Xps",
+          "interface": "IXpsOMVisualBrush",
+          "iid": "97e294af-5b37-46b4-8057-874d2f64119b",
+          "method": "GetVisualLookup",
+          "slot": 21,
+          "parameter": [
+            0,
+            "lookup"
+          ]
+        },
+        "sourceFingerprint": "D54C3EDA9DA05FE6C9129E5368B3DC6D510011021D831114A9FCE6336ECA7A03",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/xpsobjectmodel/nf-xpsobjectmodel-ixpsomvisualbrush-getvisuallookup",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-storage-xps.ixpssignaturerequest.ac58950b72084b2db2c4951083d3b8eb.getrequestedsigner.slot-5.param-0-signername.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Xps",
+          "interface": "IXpsSignatureRequest",
+          "iid": "ac58950b-7208-4b2d-b2c4-951083d3b8eb",
+          "method": "GetRequestedSigner",
+          "slot": 5,
+          "parameter": [
+            0,
+            "signerName"
+          ]
+        },
+        "sourceFingerprint": "299EB74A880A72D7FC6BE3ECD9132E018D9132AF4593BED01C73DACD1EF88941",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/xpsdigitalsignature/nf-xpsdigitalsignature-ixpssignaturerequest-getrequestedsigner",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "com.ownership.entry.windows-win32-storage-xps.ixpssignaturerequest.ac58950b72084b2db2c4951083d3b8eb.getrequestsignbydate.slot-7.param-0-datestring.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Xps",
+          "interface": "IXpsSignatureRequest",
+          "iid": "ac58950b-7208-4b2d-b2c4-951083d3b8eb",
+          "method": "GetRequestSignByDate",
+          "slot": 7,
+          "parameter": [
+            0,
+            "dateString"
+          ]
+        },
+        "sourceFingerprint": "8F63E4A4DCE83FA6B24F9175EC6262D5FAF3C4223BF5FD59219BB89F9501B34E",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/xpsdigitalsignature/nf-xpsdigitalsignature-ixpssignaturerequest-getrequestsignbydate",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "com.ownership.entry.windows-win32-storage-xps.ixpssigningoptions.7718eae4321549beaf5b594fef7fcfa6.getsignatureid.slot-3.param-0-signatureid.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Storage.Xps",
+          "interface": "IXpsSigningOptions",
+          "iid": "7718eae4-3215-49be-af5b-594fef7fcfa6",
+          "method": "GetSignatureId",
+          "slot": 3,
+          "parameter": [
+            0,
+            "signatureId"
+          ]
+        },
+        "sourceFingerprint": "4055A30A9E6E1F408B0689E8142F1CBD05B375A13F0B3093460E26D2330BBD7C",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/xpsdigitalsignature/nf-xpsdigitalsignature-ixpssigningoptions-getsignatureid",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "com.ownership.entry.windows-win32-system-com-structuredstorage.istorage.0000000b00000000c000000000000046.stat.slot-17.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.System.Com.StructuredStorage",
+          "interface": "IStorage",
+          "iid": "0000000b-0000-0000-c000-000000000046",
+          "method": "Stat",
+          "slot": 17,
+          "parameter": null
+        },
+        "sourceFingerprint": "22517D81811094DCECE75634DC1BA343E41E60AD54433B9124934646A2D56877",
+        "citation": "https://learn.microsoft.com/windows/win32/api/objidl/nf-objidl-istorage-stat",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-system-com.icatinformation.0002e01300000000c000000000000046.getcategorydesc.slot-4.param-2-pszdesc.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.System.Com",
+          "interface": "ICatInformation",
+          "iid": "0002e013-0000-0000-c000-000000000046",
+          "method": "GetCategoryDesc",
+          "slot": 4,
+          "parameter": [
+            2,
+            "pszDesc"
+          ]
+        },
+        "sourceFingerprint": "FA3D7D84BF86DDF31D21A9A9EC42936B321D8935D3BCA5AEA18FE30DBEAFCCB9",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/comcat/nf-comcat-icatinformation-getcategorydesc",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
       "com.ownership.entry.windows-win32-system-com.imalloc.0000000200000000c000000000000046.alloc.slot-3.v1": {
         "familyId": "com.ownership.v1",
         "contractKind": "ownership",
@@ -6282,7 +8920,7 @@
           "slot": 3,
           "parameter": null
         },
-        "sourceFingerprint": "D6C713560BAFD1DD3F166084419CC5C9583AB85CD399369C30E801D96E85DFBE",
+        "sourceFingerprint": "2A96941D7141039452FE007E69FB04C3AA6CE28DFF7B96115B6C919DC6B42A69",
         "citation": "https://learn.microsoft.com/windows/win32/api/objidl/nf-objidl-imalloc-alloc",
         "registered": true,
         "metadataMatched": true,
@@ -6300,7 +8938,7 @@
           "slot": 7,
           "parameter": null
         },
-        "sourceFingerprint": "4B98E2010636B6C9A8E993DAA9303B5500ECF6406C0FFA94E982CF9ED110BCA0",
+        "sourceFingerprint": "A74ACDD3DD6DEE7213EEDC685F8FF23C6009DBAC882459F3684399B4269D4FD8",
         "citation": "https://learn.microsoft.com/windows/win32/api/objidl/nf-objidl-imalloc-didalloc",
         "registered": true,
         "metadataMatched": true,
@@ -6318,7 +8956,7 @@
           "slot": 5,
           "parameter": null
         },
-        "sourceFingerprint": "7D00BC7513198FDF50CA92E07F7778FF86043A12378986374A6EDE4F9DDC6E83",
+        "sourceFingerprint": "0D9A3FDC75ED4D0CACDD6EB87FD4B37CDDC76AE3A7FE6A092684BCC423EC65E6",
         "citation": "https://learn.microsoft.com/windows/win32/api/objidl/nf-objidl-imalloc-free",
         "registered": true,
         "metadataMatched": true,
@@ -6336,7 +8974,7 @@
           "slot": 6,
           "parameter": null
         },
-        "sourceFingerprint": "050A3FA25B989D107C2F030AFD5167694047319277F7D9E15BEF54D03048785C",
+        "sourceFingerprint": "60D609C9AA79872157DA36E7E382AD705F616A2F8FA5F30703ED370BF225668C",
         "citation": "https://learn.microsoft.com/windows/win32/api/objidl/nf-objidl-imalloc-getsize",
         "registered": true,
         "metadataMatched": true,
@@ -6354,7 +8992,7 @@
           "slot": 8,
           "parameter": null
         },
-        "sourceFingerprint": "0D65FAF7929BF921E212370DDC8D72D938CCDCB0475C33A4C7786B2BE5AC7D6E",
+        "sourceFingerprint": "9E45919984C17476FC1E0B6203DAFC5CDE37B14901CFBBB7EC67B46DAEAFDBC0",
         "citation": "https://learn.microsoft.com/windows/win32/api/objidl/nf-objidl-imalloc-heapminimize",
         "registered": true,
         "metadataMatched": true,
@@ -6372,7 +9010,7 @@
           "slot": 4,
           "parameter": null
         },
-        "sourceFingerprint": "130C6766294A3080FEEF04B48E9D1864DD43BAFDE193F03CA0D3A7589757BCA5",
+        "sourceFingerprint": "5B38A32AADFCAE023617814069CB356DB3FD8FDA0397144711B3A3807A446016",
         "citation": "https://learn.microsoft.com/windows/win32/api/objidl/nf-objidl-imalloc-realloc",
         "registered": true,
         "metadataMatched": true,
@@ -6411,12 +9049,474 @@
           "slot": 12,
           "parameter": null
         },
-        "sourceFingerprint": "0C200C25AA5D3A71C18EA194BB1446E80824ADEA388A32F6934FA992E0C263E9",
+        "sourceFingerprint": "718E5AFEC6B381CDF9A3AEB64F7FE25127C2C71D12B3E006E9547E4073AC5F26",
         "citation": "https://learn.microsoft.com/windows/win32/api/objidl/nf-objidl-istream-stat",
         "registered": true,
         "metadataMatched": true,
         "safeConsumed": true,
         "interfaceDependencies": 5
+      },
+      "com.ownership.entry.windows-win32-system-mmc.iheaderctrl.43136eb3d36c11cfadbc00aa00a80033.getcolumntext.slot-6.param-1-ptext.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.System.Mmc",
+          "interface": "IHeaderCtrl",
+          "iid": "43136eb3-d36c-11cf-adbc-00aa00a80033",
+          "method": "GetColumnText",
+          "slot": 6,
+          "parameter": [
+            1,
+            "pText"
+          ]
+        },
+        "sourceFingerprint": "23F9DFF5D2F92231BEBBEBD86221AE25F88B7FD03EB7678706365532C2651378",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/mmc/nf-mmc-iheaderctrl-getcolumntext",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-system-search.imetadata.780102b0c43b4876bc7b5e9ba5c88794.getdata.slot-3.param-0-ppszkey.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.System.Search",
+          "interface": "IMetaData",
+          "iid": "780102b0-c43b-4876-bc7b-5e9ba5c88794",
+          "method": "GetData",
+          "slot": 3,
+          "parameter": [
+            0,
+            "ppszKey"
+          ]
+        },
+        "sourceFingerprint": "D5A48591E126973353D54FEF0D4CE08660AF6F200001D73C9598496FB0161529",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/structuredquery/nf-structuredquery-imetadata-getdata",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-system-search.imetadata.780102b0c43b4876bc7b5e9ba5c88794.getdata.slot-3.param-1-ppszvalue.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.System.Search",
+          "interface": "IMetaData",
+          "iid": "780102b0-c43b-4876-bc7b-5e9ba5c88794",
+          "method": "GetData",
+          "slot": 3,
+          "parameter": [
+            1,
+            "ppszValue"
+          ]
+        },
+        "sourceFingerprint": "D5A48591E126973353D54FEF0D4CE08660AF6F200001D73C9598496FB0161529",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/structuredquery/nf-structuredquery-imetadata-getdata",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-system-search.inamedentity.abdbd0b17d5449fbab5cbff4130004cd.defaultphrase.slot-4.param-0-ppszphrase.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.System.Search",
+          "interface": "INamedEntity",
+          "iid": "abdbd0b1-7d54-49fb-ab5c-bff4130004cd",
+          "method": "DefaultPhrase",
+          "slot": 4,
+          "parameter": [
+            0,
+            "ppszPhrase"
+          ]
+        },
+        "sourceFingerprint": "FC1CD9E1AAFC98865D58A2BA7192A80BC2C5BF1CBE20C3875D1AC06E7A0CFF08",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/structuredquery/nf-structuredquery-inamedentity-defaultphrase",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-system-search.inamedentity.abdbd0b17d5449fbab5cbff4130004cd.getvalue.slot-3.param-0-ppszvalue.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.System.Search",
+          "interface": "INamedEntity",
+          "iid": "abdbd0b1-7d54-49fb-ab5c-bff4130004cd",
+          "method": "GetValue",
+          "slot": 3,
+          "parameter": [
+            0,
+            "ppszValue"
+          ]
+        },
+        "sourceFingerprint": "0552185E228DFD00F0FC34C1DBD0DD6D08883454AF6F52760EDB1A698B5015F3",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/structuredquery/nf-structuredquery-inamedentity-getvalue",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-system-search.iqueryparser.2ebdee67350543f89946ea44abc8e5b0.restatepropertyvaluetostring.slot-10.param-2-ppszpropertyname.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.System.Search",
+          "interface": "IQueryParser",
+          "iid": "2ebdee67-3505-43f8-9946-ea44abc8e5b0",
+          "method": "RestatePropertyValueToString",
+          "slot": 10,
+          "parameter": [
+            2,
+            "ppszPropertyName"
+          ]
+        },
+        "sourceFingerprint": "357B0DECA1074305912A9BBCD831C74987654672B4740D0CCA6A469FFC0E912B",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/structuredquery/nf-structuredquery-iqueryparser-restatepropertyvaluetostring",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-system-search.iqueryparser.2ebdee67350543f89946ea44abc8e5b0.restatepropertyvaluetostring.slot-10.param-3-ppszquerystring.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.System.Search",
+          "interface": "IQueryParser",
+          "iid": "2ebdee67-3505-43f8-9946-ea44abc8e5b0",
+          "method": "RestatePropertyValueToString",
+          "slot": 10,
+          "parameter": [
+            3,
+            "ppszQueryString"
+          ]
+        },
+        "sourceFingerprint": "357B0DECA1074305912A9BBCD831C74987654672B4740D0CCA6A469FFC0E912B",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/structuredquery/nf-structuredquery-iqueryparser-restatepropertyvaluetostring",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-system-search.iqueryparser.2ebdee67350543f89946ea44abc8e5b0.restatetostring.slot-8.param-2-ppszquerystring.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.System.Search",
+          "interface": "IQueryParser",
+          "iid": "2ebdee67-3505-43f8-9946-ea44abc8e5b0",
+          "method": "RestateToString",
+          "slot": 8,
+          "parameter": [
+            2,
+            "ppszQueryString"
+          ]
+        },
+        "sourceFingerprint": "3C9E3692C69D85B126E82D3EA3025C807CC73643C221E750B6A6C1B95F731320",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/structuredquery/nf-structuredquery-iqueryparser-restatetostring",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-system-search.ischemalocalizersupport.ca3fdca2bfbe4eed90d70caef0a1bda1.localize.slot-3.param-1-ppszlocalstring.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.System.Search",
+          "interface": "ISchemaLocalizerSupport",
+          "iid": "ca3fdca2-bfbe-4eed-90d7-0caef0a1bda1",
+          "method": "Localize",
+          "slot": 3,
+          "parameter": [
+            1,
+            "ppszLocalString"
+          ]
+        },
+        "sourceFingerprint": "A2D6F60A0CFB5988A205044797A42CE32D2429A1C8A3806575559AF804600434",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/structuredquery/nf-structuredquery-ischemalocalizersupport-localize",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-system-search.isearchroot.04c18ccf1f574cbd88cc3900f5195ce3.get-rooturl.slot-6.param-0-ppszurl.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.System.Search",
+          "interface": "ISearchRoot",
+          "iid": "04c18ccf-1f57-4cbd-88cc-3900f5195ce3",
+          "method": "get_RootURL",
+          "slot": 6,
+          "parameter": [
+            0,
+            "ppszURL"
+          ]
+        },
+        "sourceFingerprint": "994D0F5742072981A0B3915E0EED56480EE6DC058194AAD3356AD008A6E78825",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/searchapi/nf-searchapi-isearchroot-get_rooturl",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "com.ownership.entry.windows-win32-system-settingsmanagementinfrastructure.isettingsitem.9f7d7bbb20b311da81a50030f1642e3c.getvalueraw.slot-8.param-0-data.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.System.SettingsManagementInfrastructure",
+          "interface": "ISettingsItem",
+          "iid": "9f7d7bbb-20b3-11da-81a5-0030f1642e3c",
+          "method": "GetValueRaw",
+          "slot": 8,
+          "parameter": [
+            0,
+            "Data"
+          ]
+        },
+        "sourceFingerprint": "370F90B953CF916B7FE78896E2429C64E268112B832626E9014796E2F61DCB6A",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/wcmconfig/nf-wcmconfig-isettingsitem-getvalueraw",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-system-taskscheduler.ischeduledworkitem.a6b952f0a4b111d0997d00aa006887ec.getaccountinformation.slot-31.param-0-ppwszaccountname.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.System.TaskScheduler",
+          "interface": "IScheduledWorkItem",
+          "iid": "a6b952f0-a4b1-11d0-997d-00aa006887ec",
+          "method": "GetAccountInformation",
+          "slot": 31,
+          "parameter": [
+            0,
+            "ppwszAccountName"
+          ]
+        },
+        "sourceFingerprint": "C30506742230C2FAA13DCA8A49B36EFFA634CDA8A0B27A32D0D2304C2049F923",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/mstask/nf-mstask-ischeduledworkitem-getaccountinformation",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "com.ownership.entry.windows-win32-system-taskscheduler.ischeduledworkitem.a6b952f0a4b111d0997d00aa006887ec.getruntimes.slot-8.param-3-rgsttasktimes.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.System.TaskScheduler",
+          "interface": "IScheduledWorkItem",
+          "iid": "a6b952f0-a4b1-11d0-997d-00aa006887ec",
+          "method": "GetRunTimes",
+          "slot": 8,
+          "parameter": [
+            3,
+            "rgstTaskTimes"
+          ]
+        },
+        "sourceFingerprint": "B243B2CEE060B0E322C4DC5F3687300D32E9C563CDBCEAD4CA46015DB5951863",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/mstask/nf-mstask-ischeduledworkitem-getruntimes",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "com.ownership.entry.windows-win32-system-taskscheduler.ischeduledworkitem.a6b952f0a4b111d0997d00aa006887ec.getworkitemdata.slot-23.param-1-prgbdata.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.System.TaskScheduler",
+          "interface": "IScheduledWorkItem",
+          "iid": "a6b952f0-a4b1-11d0-997d-00aa006887ec",
+          "method": "GetWorkItemData",
+          "slot": 23,
+          "parameter": [
+            1,
+            "prgbData"
+          ]
+        },
+        "sourceFingerprint": "B0A46009AED33DC2DCE9DA02C0CAAC4A7DBAF8C23EDB0FB8AB54EE45192A2819",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/mstask/nf-mstask-ischeduledworkitem-getworkitemdata",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "com.ownership.entry.windows-win32-system-taskscheduler.itask.148bd524a2ab11ceb11f00aa00530503.getparameters.slot-35.param-0-ppwszparameters.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.System.TaskScheduler",
+          "interface": "ITask",
+          "iid": "148bd524-a2ab-11ce-b11f-00aa00530503",
+          "method": "GetParameters",
+          "slot": 35,
+          "parameter": [
+            0,
+            "ppwszParameters"
+          ]
+        },
+        "sourceFingerprint": "7E80CA19D66790A0BB8E99A4848EB858D553A7483924BA6CD1C0AD81085A86B3",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/mstask/nf-mstask-itask-getparameters",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "com.ownership.entry.windows-win32-system-taskscheduler.itask.148bd524a2ab11ceb11f00aa00530503.getworkingdirectory.slot-37.param-0-ppwszworkingdirectory.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.System.TaskScheduler",
+          "interface": "ITask",
+          "iid": "148bd524-a2ab-11ce-b11f-00aa00530503",
+          "method": "GetWorkingDirectory",
+          "slot": 37,
+          "parameter": [
+            0,
+            "ppwszWorkingDirectory"
+          ]
+        },
+        "sourceFingerprint": "20B30FCD861CFD687903D89FC6E310FAA4C5EEE4EFEED102414F244546CF4DDD",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/mstask/nf-mstask-itask-getworkingdirectory",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "com.ownership.entry.windows-win32-system-taskscheduler.itaskscheduler.148bd527a2ab11ceb11f00aa00530503.gettargetcomputer.slot-4.param-0-ppwszcomputer.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.System.TaskScheduler",
+          "interface": "ITaskScheduler",
+          "iid": "148bd527-a2ab-11ce-b11f-00aa00530503",
+          "method": "GetTargetComputer",
+          "slot": 4,
+          "parameter": [
+            0,
+            "ppwszComputer"
+          ]
+        },
+        "sourceFingerprint": "654917415B5CB35948CB03A64F7DEC9475C63E01F74FB68392C63CB79F1A7E8A",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/mstask/nf-mstask-itaskscheduler-gettargetcomputer",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-system-winrt.iinspectable.af86e2e0b12d4c6a9c5ad7aa65101e90.getiids.slot-3.param-1-iids.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.System.WinRT",
+          "interface": "IInspectable",
+          "iid": "af86e2e0-b12d-4c6a-9c5a-d7aa65101e90",
+          "method": "GetIids",
+          "slot": 3,
+          "parameter": [
+            1,
+            "iids"
+          ]
+        },
+        "sourceFingerprint": "730B73060EAFB9D8C2820E731637C45736FD41ADE0F1EA8911739AE78E7C9BB1",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/inspectable/nf-inspectable-iinspectable-getiids",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-ui-accessibility.iaccidentity.7852b78d1cfd41c1a6159c0c85960b5f.getidentitystring.slot-3.param-1-ppidstring.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.UI.Accessibility",
+          "interface": "IAccIdentity",
+          "iid": "7852b78d-1cfd-41c1-a615-9c0c85960b5f",
+          "method": "GetIdentityString",
+          "slot": 3,
+          "parameter": [
+            1,
+            "ppIDString"
+          ]
+        },
+        "sourceFingerprint": "B6E469CD9FFEFB9296F1ED7DB04B9A45ADDB53BE4FA3991E8DF95D8538D5D7D7",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/oleacc/nf-oleacc-iaccidentity-getidentitystring",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-ui-shell-propertiessystem.ipersistserializedpropstorage.e318ad570aa0450faca56fab7103d917.getpropertystorage.slot-5.param-0-ppsps.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.UI.Shell.PropertiesSystem",
+          "interface": "IPersistSerializedPropStorage",
+          "iid": "e318ad57-0aa0-450f-aca5-6fab7103d917",
+          "method": "GetPropertyStorage",
+          "slot": 5,
+          "parameter": [
+            0,
+            "ppsps"
+          ]
+        },
+        "sourceFingerprint": "CEE22F76E4AC924E45FCFE2BA11B90B557B9C080D4659F895150C2DC227088E9",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/propsys/nf-propsys-ipersistserializedpropstorage-getpropertystorage",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 2
+      },
+      "com.ownership.entry.windows-win32-ui-shell.iautocompletedropdown.3cd141f43c6a11d2bcaa00c04fd929db.getdropdownstatus.slot-3.param-1-ppwszstring.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.UI.Shell",
+          "interface": "IAutoCompleteDropDown",
+          "iid": "3cd141f4-3c6a-11d2-bcaa-00c04fd929db",
+          "method": "GetDropDownStatus",
+          "slot": 3,
+          "parameter": [
+            1,
+            "ppwszString"
+          ]
+        },
+        "sourceFingerprint": "94734C62462169CF79C86237C799A5EA05DE617ACEA6C4E8B5619ABAF6E9A8D7",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/shobjidl/nf-shobjidl-iautocompletedropdown-getdropdownstatus",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-ui-shell.icredentialprovideruser.137932853ea640fdb42015f47da41fbb.getsid.slot-3.param-0-sid.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.UI.Shell",
+          "interface": "ICredentialProviderUser",
+          "iid": "13793285-3ea6-40fd-b420-15f47da41fbb",
+          "method": "GetSid",
+          "slot": 3,
+          "parameter": [
+            0,
+            "sid"
+          ]
+        },
+        "sourceFingerprint": "9C0E84CB8E372C7FF37262FB3908746E44A174B07F2930DC0CA090EFA3F5894B",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/credentialprovider/nf-credentialprovider-icredentialprovideruser-getsid",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
       },
       "com.ownership.entry.windows-win32-ui-shell.ifiledialog.42f85136db7e439c85f1e4075d135fc8.getfilename.slot-16.param-0-pszname.v1": {
         "familyId": "com.ownership.v1",
@@ -6438,6 +9538,48 @@
         "metadataMatched": true,
         "safeConsumed": true,
         "interfaceDependencies": 4
+      },
+      "com.ownership.entry.windows-win32-ui-shell.ifiledialogcustomize.e6fdd21a163f49759c8ca69f1ba37034.geteditboxtext.slot-15.param-1-ppsztext.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.UI.Shell",
+          "interface": "IFileDialogCustomize",
+          "iid": "e6fdd21a-163f-4975-9c8c-a69f1ba37034",
+          "method": "GetEditBoxText",
+          "slot": 15,
+          "parameter": [
+            1,
+            "ppszText"
+          ]
+        },
+        "sourceFingerprint": "AA8DF212F0B3CBF69B03F1990976F408A85721C7ACDC5236E4CC58D45A6385F4",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/shobjidl_core/nf-shobjidl_core-ifiledialogcustomize-geteditboxtext",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-ui-shell.iqueryinfo.0002150000000000c000000000000046.getinfotip.slot-3.param-1-ppwsztip.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.UI.Shell",
+          "interface": "IQueryInfo",
+          "iid": "00021500-0000-0000-c000-000000000046",
+          "method": "GetInfoTip",
+          "slot": 3,
+          "parameter": [
+            1,
+            "ppwszTip"
+          ]
+        },
+        "sourceFingerprint": "464992DE7473599076443BE14AAEFAAA67E0623058696DA38B74BC83D6B64FFA",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/shlobj_core/nf-shlobj_core-iqueryinfo-getinfotip",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
       },
       "com.ownership.entry.windows-win32-ui-shell.ishellitem.43826d1ee71842eebc55a1e261c37bfe.getdisplayname.slot-5.param-1-ppszname.v1": {
         "familyId": "com.ownership.v1",
@@ -6497,6 +9639,216 @@
         },
         "sourceFingerprint": "05D862A1F5FEF164292D1784F62E5F0AD93600BDF52EBD59194B9DFC4CF7E9BE",
         "citation": "https://learn.microsoft.com/windows/win32/api/shobjidl_core/nf-shobjidl_core-ishelllinkw-getidlist",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-ui-shell.isyncmgrhandlerinfo.4ff1d798ecf74524aa811e362a0aef3a.getcomment.slot-5.param-0-ppszcomment.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.UI.Shell",
+          "interface": "ISyncMgrHandlerInfo",
+          "iid": "4ff1d798-ecf7-4524-aa81-1e362a0aef3a",
+          "method": "GetComment",
+          "slot": 5,
+          "parameter": [
+            0,
+            "ppszComment"
+          ]
+        },
+        "sourceFingerprint": "89128C082B63F4DB008431CA9991A79009DFDBDC6F48A4281565B4300F2FDEC5",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/syncmgr/nf-syncmgr-isyncmgrhandlerinfo-getcomment",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-ui-shell.isyncmgrhandlerinfo.4ff1d798ecf74524aa811e362a0aef3a.gettypelabel.slot-4.param-0-ppsztypelabel.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.UI.Shell",
+          "interface": "ISyncMgrHandlerInfo",
+          "iid": "4ff1d798-ecf7-4524-aa81-1e362a0aef3a",
+          "method": "GetTypeLabel",
+          "slot": 4,
+          "parameter": [
+            0,
+            "ppszTypeLabel"
+          ]
+        },
+        "sourceFingerprint": "D4E48194227A21AA4FCD060F30FED6C7A8F8F21DB56DC4D29855FCD039B0F7B9",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/syncmgr/nf-syncmgr-isyncmgrhandlerinfo-gettypelabel",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-ui-shell.isyncmgrsynciteminfo.e7fd9502be0c446490a12b5277031232.getcomment.slot-4.param-0-ppszcomment.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.UI.Shell",
+          "interface": "ISyncMgrSyncItemInfo",
+          "iid": "e7fd9502-be0c-4464-90a1-2b5277031232",
+          "method": "GetComment",
+          "slot": 4,
+          "parameter": [
+            0,
+            "ppszComment"
+          ]
+        },
+        "sourceFingerprint": "5C0FB4F7A662845AE0BD415E989CE6E3E58706E8847679C86B780EC2CA3E1D99",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/syncmgr/nf-syncmgr-isyncmgrsynciteminfo-getcomment",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-ui-shell.isyncmgrsynciteminfo.e7fd9502be0c446490a12b5277031232.gettypelabel.slot-3.param-0-ppsztypelabel.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.UI.Shell",
+          "interface": "ISyncMgrSyncItemInfo",
+          "iid": "e7fd9502-be0c-4464-90a1-2b5277031232",
+          "method": "GetTypeLabel",
+          "slot": 3,
+          "parameter": [
+            0,
+            "ppszTypeLabel"
+          ]
+        },
+        "sourceFingerprint": "ED535CA19780625C68673C2ACEB8EB4A4B3C14D9C7FBD985411A7B5932BCB85C",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/syncmgr/nf-syncmgr-isyncmgrsynciteminfo-gettypelabel",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-ui-shell.ithumbnailprovider.e357fccda9954576b01f234630154e96.getthumbnail.slot-3.param-1-phbmp.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.UI.Shell",
+          "interface": "IThumbnailProvider",
+          "iid": "e357fccd-a995-4576-b01f-234630154e96",
+          "method": "GetThumbnail",
+          "slot": 3,
+          "parameter": [
+            1,
+            "phbmp"
+          ]
+        },
+        "sourceFingerprint": "C5CA943218AF7848E28EFAC1E3B050ED1561C651565B7D84642F91F806F80DA0",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/thumbcache/nf-thumbcache-ithumbnailprovider-getthumbnail",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.parameter-direction.entry.windows-win32-media-mediafoundation.imfattributes.2cd2d921c44744a7a13c4adabfc247e3.getitem.slot-3.param-1-pvalue.v1": {
+        "familyId": "com.parameter-direction.v1",
+        "contractKind": "parameter-direction",
+        "selector": {
+          "namespace": "Windows.Win32.Media.MediaFoundation",
+          "interface": "IMFAttributes",
+          "iid": "2cd2d921-c447-44a7-a13c-4adabfc247e3",
+          "method": "GetItem",
+          "slot": 3,
+          "parameter": [
+            1,
+            "pValue"
+          ]
+        },
+        "sourceFingerprint": "0D8781FF90DF92EA09042A8386C01B7E8DEE1B2E546B3E616D2498896330BDF0",
+        "citation": "https://learn.microsoft.com/windows/win32/api/mfobjects/nf-mfobjects-imfattributes-getitem",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 15
+      },
+      "com.parameter-direction.entry.windows-win32-media-mediafoundation.imfattributes.2cd2d921c44744a7a13c4adabfc247e3.getitembyindex.slot-31.param-2-pvalue.v1": {
+        "familyId": "com.parameter-direction.v1",
+        "contractKind": "parameter-direction",
+        "selector": {
+          "namespace": "Windows.Win32.Media.MediaFoundation",
+          "interface": "IMFAttributes",
+          "iid": "2cd2d921-c447-44a7-a13c-4adabfc247e3",
+          "method": "GetItemByIndex",
+          "slot": 31,
+          "parameter": [
+            2,
+            "pValue"
+          ]
+        },
+        "sourceFingerprint": "1D349D3E79CC839831A7F6E87CC2656C2D153A136CB397815850D2417B880DAE",
+        "citation": "https://learn.microsoft.com/windows/win32/api/mfobjects/nf-mfobjects-imfattributes-getitembyindex",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 15
+      },
+      "com.parameter-direction.entry.windows-win32-media-mediafoundation.imfattributes.2cd2d921c44744a7a13c4adabfc247e3.getstring.slot-12.param-3-pcchlength.v1": {
+        "familyId": "com.parameter-direction.v1",
+        "contractKind": "parameter-direction",
+        "selector": {
+          "namespace": "Windows.Win32.Media.MediaFoundation",
+          "interface": "IMFAttributes",
+          "iid": "2cd2d921-c447-44a7-a13c-4adabfc247e3",
+          "method": "GetString",
+          "slot": 12,
+          "parameter": [
+            3,
+            "pcchLength"
+          ]
+        },
+        "sourceFingerprint": "CF4D9EAF95123257840355F21F0623E137623EF95D205B63D5B1BB8758328DB0",
+        "citation": "https://learn.microsoft.com/windows/win32/api/mfobjects/nf-mfobjects-imfattributes-getstring",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 15
+      },
+      "com.reserved-null-input.entry.windows-win32-system-com-structuredstorage.istorage.0000000b00000000c000000000000046.enumelements.slot-11.param-1-reserved2.v1": {
+        "familyId": "com.reserved-null-input.v1",
+        "contractKind": "null-input",
+        "selector": {
+          "namespace": "Windows.Win32.System.Com.StructuredStorage",
+          "interface": "IStorage",
+          "iid": "0000000b-0000-0000-c000-000000000046",
+          "method": "EnumElements",
+          "slot": 11,
+          "parameter": [
+            1,
+            "reserved2"
+          ]
+        },
+        "sourceFingerprint": "77D49C81B42D6B6961239D06E42A8728EC4CDDDFFF0A0174DD3FC248D17071C6",
+        "citation": "https://learn.microsoft.com/windows/win32/api/objidl/nf-objidl-istorage-enumelements",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.reserved-null-input.entry.windows-win32-system-com-structuredstorage.istorage.0000000b00000000c000000000000046.openstream.slot-4.param-1-reserved1.v1": {
+        "familyId": "com.reserved-null-input.v1",
+        "contractKind": "null-input",
+        "selector": {
+          "namespace": "Windows.Win32.System.Com.StructuredStorage",
+          "interface": "IStorage",
+          "iid": "0000000b-0000-0000-c000-000000000046",
+          "method": "OpenStream",
+          "slot": 4,
+          "parameter": [
+            1,
+            "reserved1"
+          ]
+        },
+        "sourceFingerprint": "A72D743B32CCE55D17F522F6695095CF08BBCDCF4FA54E29E3275B24B30716F0",
+        "citation": "https://learn.microsoft.com/windows/win32/api/objidl/nf-objidl-istorage-openstream",
         "registered": true,
         "metadataMatched": true,
         "safeConsumed": true,
@@ -6573,7 +9925,7 @@
           "slot": 3,
           "parameter": null
         },
-        "sourceFingerprint": "563D4515A0BFF7AD0951E5F2E2ED16CF1552DA342866F13DD1010AA70052B42F",
+        "sourceFingerprint": "AC437FAE3FE761589AEB3C27EDDBC3F5ECBAC3D34464872BA0064D5E668C17AA",
         "citation": "https://learn.microsoft.com/windows/win32/api/directml/nf-directml-idmlobject-getprivatedata",
         "registered": true,
         "metadataMatched": true,
@@ -6591,7 +9943,7 @@
           "slot": 66,
           "parameter": null
         },
-        "sourceFingerprint": "4EA13A483B12DCF7F41F97D8FDF5A171CA465314DB75779E21FFDB5CA1A84D75",
+        "sourceFingerprint": "DA0CC272AF987868D2497EFFE79A96349D84D51D7E4C11E8567974815A6F0A28",
         "citation": "https://learn.microsoft.com/windows/win32/api/d3d10/nf-d3d10-id3d10device-getprivatedata",
         "registered": true,
         "metadataMatched": true,
@@ -6609,7 +9961,7 @@
           "slot": 4,
           "parameter": null
         },
-        "sourceFingerprint": "0C52635ACBAD10A06DB6F22650D4601134A1A4C88FA300BC55602D96D6A3A08A",
+        "sourceFingerprint": "2E96AE1D44B409A41A9509E45B1DB3C6AA3A59E2AAA66ABE544021DFC363F8E0",
         "citation": "https://learn.microsoft.com/windows/win32/api/d3d10/nf-d3d10-id3d10devicechild-getprivatedata",
         "registered": true,
         "metadataMatched": true,
@@ -6627,7 +9979,7 @@
           "slot": 34,
           "parameter": null
         },
-        "sourceFingerprint": "3E92642139AF02B3F1309226022D8D38501733831D101C7CAE01A523B11EE12B",
+        "sourceFingerprint": "8DA4BA24A6A660589252D8690C3D1C30B53A5070A6D987D917097BF4558EC213",
         "citation": "https://learn.microsoft.com/windows/win32/api/d3d11/nf-d3d11-id3d11device-getprivatedata",
         "registered": true,
         "metadataMatched": true,
@@ -6645,7 +9997,7 @@
           "slot": 4,
           "parameter": null
         },
-        "sourceFingerprint": "23526CC7F603040B1887D868398E5FF8D77653ADBA366C2267E6431EC507B314",
+        "sourceFingerprint": "6FFBA22644296AB929DD001ECCC7AAD2B1EB1949BB0878BF0C2CDF7F063EAF53",
         "citation": "https://learn.microsoft.com/windows/win32/api/d3d11/nf-d3d11-id3d11devicechild-getprivatedata",
         "registered": true,
         "metadataMatched": true,
@@ -6663,7 +10015,7 @@
           "slot": 3,
           "parameter": null
         },
-        "sourceFingerprint": "769A2A57DB78E7DAF9CBBD2EE2CD49096CD96BA5DAFE04F63A0F8E61F4F57B09",
+        "sourceFingerprint": "D1901D622093A53FE505636B00289593DC41B95D73811CEFF4BB33E669501731",
         "citation": "https://learn.microsoft.com/windows/win32/api/d3d12/nf-d3d12-id3d12object-getprivatedata",
         "registered": true,
         "metadataMatched": true,
@@ -6681,12 +10033,30 @@
           "slot": 5,
           "parameter": null
         },
-        "sourceFingerprint": "DF029EEDA1CF44CC7ADBDFF3EC6F0F9C3D07F0600849CDCBA9CD64D628DC5C41",
+        "sourceFingerprint": "822F781335150C935D2F6B91F34727F8B9923E0EFCCE751563E0ECFDD49FD5A0",
         "citation": "https://learn.microsoft.com/windows/win32/api/dxgi/nf-dxgi-idxgiobject-getprivatedata",
         "registered": true,
         "metadataMatched": true,
         "safeConsumed": false,
         "interfaceDependencies": 0
+      },
+      "shell.flag-selected-string.entry.windows-win32-ui-shell.icontextmenu.000214e400000000c000000000000046.getcommandstring.slot-5.v1": {
+        "familyId": "shell.flag-selected-string.v1",
+        "contractKind": "flag-selected-buffer",
+        "selector": {
+          "namespace": "Windows.Win32.UI.Shell",
+          "interface": "IContextMenu",
+          "iid": "000214e4-0000-0000-c000-000000000046",
+          "method": "GetCommandString",
+          "slot": 5,
+          "parameter": null
+        },
+        "sourceFingerprint": "94F522A39E514578ED19BD294398A38591677F63BB11A3047C5545D3DE77AD1A",
+        "citation": "https://learn.microsoft.com/windows/win32/api/shobjidl_core/nf-shobjidl_core-icontextmenu-getcommandstring",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 3
       },
       "windows.borrowed-hwnd-output.entry.windows-win32-devices-imageacquisition.iwiaapperrorhandler.6c16186cd0a6400c80f4d26986a0e734.getwindow.slot-3.param-0-phwnd.v1": {
         "familyId": "windows.borrowed-hwnd-output.v1",
@@ -7150,6 +10520,78 @@
         "safeConsumed": true,
         "interfaceDependencies": 1
       },
+      "wmi.conditional-output.entry.windows-win32-system-wmi.iwbemservices.9556dc99828c11cfa37e00aa003240c7.deleteclass.slot-10.v1": {
+        "familyId": "wmi.conditional-output.v1",
+        "contractKind": "conditional-output",
+        "selector": {
+          "namespace": "Windows.Win32.System.Wmi",
+          "interface": "IWbemServices",
+          "iid": "9556dc99-828c-11cf-a37e-00aa003240c7",
+          "method": "DeleteClass",
+          "slot": 10,
+          "parameter": null
+        },
+        "sourceFingerprint": "0315584C0B90F153FEAFDF3DC99CFEDACD0E473FBBBE4C06E40961167FDE2AD6",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/wbemcli/nf-wbemcli-iwbemservices-deleteclass; sdk-header:WbemCli.h/WbemIdl.idl",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "wmi.conditional-output.entry.windows-win32-system-wmi.iwbemservices.9556dc99828c11cfa37e00aa003240c7.deleteinstance.slot-16.v1": {
+        "familyId": "wmi.conditional-output.v1",
+        "contractKind": "conditional-output",
+        "selector": {
+          "namespace": "Windows.Win32.System.Wmi",
+          "interface": "IWbemServices",
+          "iid": "9556dc99-828c-11cf-a37e-00aa003240c7",
+          "method": "DeleteInstance",
+          "slot": 16,
+          "parameter": null
+        },
+        "sourceFingerprint": "10B5A66DD158D91DC7A51570BE933EF616E304EFCE5E82EFDF58AA0832FBC4BA",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/wbemcli/nf-wbemcli-iwbemservices-deleteinstance; sdk-header:WbemCli.h/WbemIdl.idl",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "wmi.conditional-output.entry.windows-win32-system-wmi.iwbemservices.9556dc99828c11cfa37e00aa003240c7.execmethod.slot-24.v1": {
+        "familyId": "wmi.conditional-output.v1",
+        "contractKind": "conditional-output",
+        "selector": {
+          "namespace": "Windows.Win32.System.Wmi",
+          "interface": "IWbemServices",
+          "iid": "9556dc99-828c-11cf-a37e-00aa003240c7",
+          "method": "ExecMethod",
+          "slot": 24,
+          "parameter": null
+        },
+        "sourceFingerprint": "3F7B10674AB434C0E363951EFD437F6B0C078E2D8E82550CADF184F886D6B201",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/wbemcli/nf-wbemcli-iwbemservices-execmethod; sdk-header:WbemCli.h/WbemIdl.idl",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "wmi.conditional-output.entry.windows-win32-system-wmi.iwbemservices.9556dc99828c11cfa37e00aa003240c7.getobject.slot-6.v1": {
+        "familyId": "wmi.conditional-output.v1",
+        "contractKind": "conditional-output",
+        "selector": {
+          "namespace": "Windows.Win32.System.Wmi",
+          "interface": "IWbemServices",
+          "iid": "9556dc99-828c-11cf-a37e-00aa003240c7",
+          "method": "GetObject",
+          "slot": 6,
+          "parameter": null
+        },
+        "sourceFingerprint": "2BEDF71C77747D732A0672CBC3E36117D84276622B672521B802BA01851563A4",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/wbemcli/nf-wbemcli-iwbemservices-getobject; sdk-header:WbemCli.h/WbemIdl.idl",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
       "wmi.conditional-output.entry.windows-win32-system-wmi.iwbemservices.9556dc99828c11cfa37e00aa003240c7.opennamespace.slot-3.v1": {
         "familyId": "wmi.conditional-output.v1",
         "contractKind": "conditional-output",
@@ -7165,35 +10607,71 @@
         "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/wbemcli/nf-wbemcli-iwbemservices-opennamespace; sdk-header:WbemCli.h/WbemIdl.idl",
         "registered": true,
         "metadataMatched": true,
-        "safeConsumed": false,
-        "interfaceDependencies": 0
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "wmi.conditional-output.entry.windows-win32-system-wmi.iwbemservices.9556dc99828c11cfa37e00aa003240c7.putclass.slot-8.v1": {
+        "familyId": "wmi.conditional-output.v1",
+        "contractKind": "conditional-output",
+        "selector": {
+          "namespace": "Windows.Win32.System.Wmi",
+          "interface": "IWbemServices",
+          "iid": "9556dc99-828c-11cf-a37e-00aa003240c7",
+          "method": "PutClass",
+          "slot": 8,
+          "parameter": null
+        },
+        "sourceFingerprint": "328A97A723ABF04163C2B5BCDD1585F5C4553783BF788C1B3BDF4372C5375083",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/wbemcli/nf-wbemcli-iwbemservices-putclass; sdk-header:WbemCli.h/WbemIdl.idl",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "wmi.conditional-output.entry.windows-win32-system-wmi.iwbemservices.9556dc99828c11cfa37e00aa003240c7.putinstance.slot-14.v1": {
+        "familyId": "wmi.conditional-output.v1",
+        "contractKind": "conditional-output",
+        "selector": {
+          "namespace": "Windows.Win32.System.Wmi",
+          "interface": "IWbemServices",
+          "iid": "9556dc99-828c-11cf-a37e-00aa003240c7",
+          "method": "PutInstance",
+          "slot": 14,
+          "parameter": null
+        },
+        "sourceFingerprint": "B2F893185D67E641DB62BC0AB2F991540EDC4C157BC9F4A88987C03944D005F9",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/wbemcli/nf-wbemcli-iwbemservices-putinstance; sdk-header:WbemCli.h/WbemIdl.idl",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
       }
     },
     "countSemantics": "registeredExactEntries counts declared selector-specific entries; metadataMatchedExactEntries counts entries matched against pinned metadata; safeConsumedExactEntries counts distinct entries used by safe plans; exactEntryInterfaceDependencies counts every safe entry/interface pair; exactFamilyInterfaceDependencies counts each family once per safe interface. None is a net-contribution or ablation count."
   },
   "targets": {
     "arm64": {
-      "raw_metadata_complete": 5985,
-      "raw_manual_contract": 1554,
+      "raw_metadata_complete": 6093,
+      "raw_manual_contract": 1446,
       "raw_runtime_blocked": 390,
-      "safe_incomplete_raw_metadata_complete": 418,
-      "safe_incomplete_raw_manual_contract": 1554,
+      "safe_incomplete_raw_metadata_complete": 412,
+      "safe_incomplete_raw_manual_contract": 1446,
       "safe_incomplete_raw_runtime_blocked": 390
     },
     "i686": {
-      "raw_metadata_complete": 5984,
-      "raw_manual_contract": 1531,
+      "raw_metadata_complete": 6092,
+      "raw_manual_contract": 1423,
       "raw_runtime_blocked": 414,
-      "safe_incomplete_raw_metadata_complete": 417,
-      "safe_incomplete_raw_manual_contract": 1531,
+      "safe_incomplete_raw_metadata_complete": 411,
+      "safe_incomplete_raw_manual_contract": 1423,
       "safe_incomplete_raw_runtime_blocked": 414
     },
     "x64": {
-      "raw_metadata_complete": 5985,
-      "raw_manual_contract": 1554,
+      "raw_metadata_complete": 6093,
+      "raw_manual_contract": 1446,
       "raw_runtime_blocked": 390,
-      "safe_incomplete_raw_metadata_complete": 418,
-      "safe_incomplete_raw_manual_contract": 1554,
+      "safe_incomplete_raw_metadata_complete": 412,
+      "safe_incomplete_raw_manual_contract": 1446,
       "safe_incomplete_raw_runtime_blocked": 390
     }
   },
@@ -7240,13 +10718,13 @@
   },
   "manual_reason_counts": {
     "arm64": {
-      "external_pointee_storage": 987,
-      "missing_allocator": 1150,
+      "external_pointee_storage": 986,
+      "missing_allocator": 1044,
       "missing_count_relation": 83,
-      "missing_handle_ownership": 212,
-      "missing_interface_replacement_contract": 43,
-      "missing_output_ownership": 1150,
-      "nested_pointer_lifetime": 571,
+      "missing_handle_ownership": 211,
+      "missing_interface_replacement_contract": 42,
+      "missing_output_ownership": 1044,
+      "nested_pointer_lifetime": 570,
       "opaque_pointee_contract": 289,
       "pointee_missing_layout": 412,
       "pointee_recursive_layout": 25,
@@ -7257,13 +10735,13 @@
       "variant_safearray_element_contract": 2
     },
     "i686": {
-      "external_pointee_storage": 988,
-      "missing_allocator": 1150,
+      "external_pointee_storage": 987,
+      "missing_allocator": 1044,
       "missing_count_relation": 83,
-      "missing_handle_ownership": 212,
-      "missing_interface_replacement_contract": 43,
-      "missing_output_ownership": 1150,
-      "nested_pointer_lifetime": 545,
+      "missing_handle_ownership": 211,
+      "missing_interface_replacement_contract": 42,
+      "missing_output_ownership": 1044,
+      "nested_pointer_lifetime": 544,
       "opaque_pointee_contract": 289,
       "pointee_missing_layout": 399,
       "pointee_recursive_layout": 25,
@@ -7274,13 +10752,13 @@
       "variant_safearray_element_contract": 2
     },
     "x64": {
-      "external_pointee_storage": 987,
-      "missing_allocator": 1150,
+      "external_pointee_storage": 986,
+      "missing_allocator": 1044,
       "missing_count_relation": 83,
-      "missing_handle_ownership": 212,
-      "missing_interface_replacement_contract": 43,
-      "missing_output_ownership": 1150,
-      "nested_pointer_lifetime": 571,
+      "missing_handle_ownership": 211,
+      "missing_interface_replacement_contract": 42,
+      "missing_output_ownership": 1044,
+      "nested_pointer_lifetime": 570,
       "opaque_pointee_contract": 289,
       "pointee_missing_layout": 412,
       "pointee_recursive_layout": 25,
@@ -7294,27 +10772,27 @@
   "lifecycle_flag_counts": {
     "arm64": {
       "cleanup_known_external": 0,
-      "cleanup_none_required": 2236,
-      "cleanup_standard_supported": 4424,
-      "cleanup_unknown": 1269,
+      "cleanup_none_required": 2237,
+      "cleanup_standard_supported": 4530,
+      "cleanup_unknown": 1162,
       "requires_current_apartment": 7929,
       "requires_external_acquisition": 6804,
       "requires_external_pointer_or_callback": 1089
     },
     "i686": {
       "cleanup_known_external": 0,
-      "cleanup_none_required": 2236,
-      "cleanup_standard_supported": 4424,
-      "cleanup_unknown": 1269,
+      "cleanup_none_required": 2237,
+      "cleanup_standard_supported": 4530,
+      "cleanup_unknown": 1162,
       "requires_current_apartment": 7929,
       "requires_external_acquisition": 6804,
       "requires_external_pointer_or_callback": 1090
     },
     "x64": {
       "cleanup_known_external": 0,
-      "cleanup_none_required": 2236,
-      "cleanup_standard_supported": 4424,
-      "cleanup_unknown": 1269,
+      "cleanup_none_required": 2237,
+      "cleanup_standard_supported": 4530,
+      "cleanup_unknown": 1162,
       "requires_current_apartment": 7929,
       "requires_external_acquisition": 6804,
       "requires_external_pointer_or_callback": 1089
@@ -7371,8 +10849,8 @@
     },
     {
       "category": "StringPointer",
-      "direct_occurrences": 6320,
-      "expanded_occurrences": 10577,
+      "direct_occurrences": 6317,
+      "expanded_occurrences": 10574,
       "named_types": 2
     },
     {
@@ -7395,8 +10873,8 @@
     },
     {
       "category": "CountedBuffer",
-      "direct_occurrences": 10492,
-      "expanded_occurrences": 10492,
+      "direct_occurrences": 10495,
+      "expanded_occurrences": 10495,
       "named_types": 459
     },
     {

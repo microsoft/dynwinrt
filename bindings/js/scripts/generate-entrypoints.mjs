@@ -23,6 +23,7 @@ const comExports = new Set([
   'DynComNativeStruct',
   'DynComNativeStructArray',
   'DynComNativeUnion',
+  'DynComOwnedHandle',
   'DynComPropVariant',
   'DynComSafeArray',
   'DynComStatStg',

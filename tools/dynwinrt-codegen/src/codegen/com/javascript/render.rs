@@ -449,6 +449,12 @@ fn render_js(meta: &ProjectedComInterface) -> String {
             ProjectedComMethodKind::EnumeratorNext { .. } => {
                 emit_enumerator_next_method_js(&mut out, method, &iface_var)
             }
+            ProjectedComMethodKind::FlagSelectedString { .. } => {
+                emit_flag_selected_string_method_js(&mut out, method, &iface_var)
+            }
+            ProjectedComMethodKind::ConditionalInterfaceOutput { .. } => {
+                emit_conditional_interface_output_method_js(&mut out, method, &iface_var)
+            }
         }
     }
     out.push_str("}\n");
@@ -633,7 +639,7 @@ fn build_method_sig_js(method: &ProjectedComMethod) -> String {
         match param.direction {
             ComParamDirection::In => parts.push(format!(
                 ".{}({})",
-                if param.nullable {
+                if param.nullable || matches!(param.typ, ComType::ExactNullPointer) {
                     "addNullableIn"
                 } else {
                     "addIn"
@@ -813,6 +819,13 @@ fn wrap_param_arg_js(param: &ProjectedComParam, variable: &str) -> String {
             ComType::RawPointer | ComType::GuidPointer | ComType::PointerAlias { .. } => {
                 format!("{variable} === null ? DynCom.pointer(null) : {wrapped}")
             }
+            ComType::TypedBuffer { .. } => {
+                format!("{variable} === null ? DynCom.nullBuffer() : {wrapped}")
+            }
+            ComType::StringArray { encoding, .. } => format!(
+                "{variable} === null ? DynCom.nullStringArray({}) : {wrapped}",
+                matches!(encoding, StringEncoding::Wide)
+            ),
             ComType::Bstr => format!("{variable} === null ? DynCom.nullBstr() : {wrapped}"),
             _ => unreachable!("nullable projection was validated"),
         };
@@ -854,6 +867,9 @@ fn out_abi_type_js(method: &ProjectedComMethod, param_index: usize, typ: &ComTyp
     match conversion {
         Some(ResultConversion::DynamicIidAdoption) => "DynCom.ownedComPointerType()".into(),
         Some(ResultConversion::BorrowedHandle) => "DynCom.borrowedHandleOutputType()".into(),
+        Some(ResultConversion::OwnedHandle(super::super::ir::OwnedHandleCleanup::DeleteObject)) => {
+            "DynCom.deleteObjectHandleOutputType()".into()
+        }
         Some(ResultConversion::Bstr) => "DynCom.bstrType()".into(),
         Some(ResultConversion::CoTaskMemString(_) | ResultConversion::CoTaskMemData) => {
             "DynCom.coTaskMemPointerType()".into()
@@ -1209,6 +1225,9 @@ fn emit_method_js_named(
         .filter_map(|(index, param)| {
             if malloc_reallocation && index == 1 {
                 return Some("DynCom.usize(_mallocSize)".into());
+            }
+            if matches!(param.typ, ComType::ExactNullPointer) {
+                return Some("DynCom.exactNullPointer(null)".into());
             }
             for group in &method.shared_counts {
                 match group {
@@ -1686,6 +1705,227 @@ fn emit_invocation_and_results(
     }
 }
 
+fn emit_flag_selected_string_method_js(
+    out: &mut String,
+    method: &ProjectedComMethod,
+    iface_var: &str,
+) {
+    let ProjectedComMethodKind::FlagSelectedString {
+        discriminator_param_index,
+        reserved_null_param_index,
+        buffer_param_index,
+        capacity_param_index,
+        string_flags,
+        validation_flag,
+    } = method.kind
+    else {
+        unreachable!("flag-selected string emitter requires exact method semantics")
+    };
+    let plan = method
+        .string_buffer
+        .as_ref()
+        .expect("flag-selected string contract requires a string buffer");
+    assert_eq!(plan.buffer_param_index, buffer_param_index);
+    assert_eq!(plan.count_param_index, capacity_param_index);
+    assert_eq!(plan.encoding, StringEncoding::Wide);
+    assert!(matches!(
+        method.params[reserved_null_param_index].typ,
+        ComType::ExactNullPointer
+    ));
+    let inputs = input_params(method);
+    let surface_name = |param_index: usize| {
+        let surface = inputs
+            .iter()
+            .position(|(index, _)| *index == param_index)
+            .expect("flag-selected input must remain visible");
+        js_param_name(&method.params[param_index].name, surface)
+    };
+    let id_name = surface_name(0);
+    let discriminator_name = surface_name(discriminator_param_index);
+    let capacity_name = surface_name(capacity_param_index);
+    emit_method_doc_js(out, &method.doc);
+    out.push_str(&format!(
+        "    {}({id_name}, {discriminator_name}, {capacity_name} = 260) {{\n",
+        method.camel_name
+    ));
+    out.push_str(&format!(
+        "        if ({discriminator_name} !== {} && {discriminator_name} !== {} && {discriminator_name} !== {}) throw new RangeError('{} must be one of the exact registered flag values');\n",
+        string_flags[0],
+        string_flags[1],
+        validation_flag,
+        method.params[discriminator_param_index].name,
+    ));
+    out.push_str(&format!(
+        "        const _validateOnly = {discriminator_name} === {validation_flag};\n"
+    ));
+    out.push_str(&format!(
+        "        if (!_validateOnly) {capacity_name} = _normalizeStringBufferCount({capacity_name}, '{}');\n",
+        method.params[capacity_param_index].name
+    ));
+    out.push_str(&format!(
+        "        const _buffer = _validateOnly ? null : Buffer.alloc({capacity_name} * 2);\n"
+    ));
+    let args = method
+        .params
+        .iter()
+        .enumerate()
+        .filter_map(|(index, param)| {
+            if index == reserved_null_param_index {
+                return Some("DynCom.exactNullPointer(null)".into());
+            }
+            if index == buffer_param_index {
+                return Some(
+                    "(_validateOnly ? DynCom.pointer(null) : DynCom.pointer(_buffer))".into(),
+                );
+            }
+            if index == capacity_param_index {
+                return Some(format!("DynCom.u32(_validateOnly ? 0 : {capacity_name})"));
+            }
+            if !param.surface_input {
+                return None;
+            }
+            let variable = if index == discriminator_param_index {
+                discriminator_name.clone()
+            } else if index == 0 {
+                id_name.clone()
+            } else {
+                surface_name(index)
+            };
+            Some(wrap_param_arg_js(param, &variable))
+        })
+        .collect::<Vec<_>>();
+    out.push_str(&format!(
+        "        const _hresult = {iface_var}.method({}).invoke(this._obj, [{}]);\n",
+        method.vtable_index,
+        args.join(", ")
+    ));
+    out.push_str(
+        "        if (_validateOnly) return DynCom.toNumber(_hresult) === 0;\n        return _decodeWideString(_buffer);\n    }\n",
+    );
+}
+
+fn emit_conditional_interface_output_method_js(
+    out: &mut String,
+    method: &ProjectedComMethod,
+    iface_var: &str,
+) {
+    let ProjectedComMethodKind::ConditionalInterfaceOutput {
+        public_input_param_indices,
+        flags_param_index,
+        context_param_index,
+        synchronous_output_param_index,
+        semisynchronous_output_param_index,
+        synchronous_flags,
+        semisynchronous_flags,
+    } = method.kind
+    else {
+        unreachable!("conditional interface output emitter requires exact method semantics")
+    };
+    assert!(matches!(
+        method.params[context_param_index].typ,
+        ComType::ExactNullPointer
+    ));
+    let public_indices = public_input_param_indices
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    let public_params = public_indices
+        .iter()
+        .enumerate()
+        .map(|(surface, index)| js_param_name(&method.params[*index].name, surface))
+        .collect::<Vec<_>>();
+    emit_method_doc_js(out, &method.doc);
+    let method_params = if public_params.is_empty() {
+        "options".into()
+    } else {
+        format!("{}, options", public_params.join(", "))
+    };
+    out.push_str(&format!("    {}({method_params}) {{\n", method.camel_name));
+    out.push_str("        if (!options || Object.getPrototypeOf(options) !== Object.prototype) throw new TypeError('options must be a plain object');\n");
+    out.push_str("        const _mode = options.mode;\n");
+    out.push_str("        if (_mode !== 'sync' && _mode !== 'semisync') throw new TypeError(\"options.mode must be 'sync' or 'semisync'\");\n");
+    out.push_str("        const _sync = _mode === 'sync';\n");
+    out.push_str(&format!(
+        "        const _flags = _sync ? {synchronous_flags} : {semisynchronous_flags};\n"
+    ));
+    let args = method
+        .params
+        .iter()
+        .enumerate()
+        .filter_map(|(index, param)| match param.direction {
+            ComParamDirection::In if index == flags_param_index => {
+                Some(wrap_param_arg_js(param, "_flags"))
+            }
+            ComParamDirection::In if index == context_param_index => {
+                Some("DynCom.exactNullPointer(null)".into())
+            }
+            ComParamDirection::In => {
+                let surface = public_indices
+                    .iter()
+                    .position(|candidate| *candidate == index)
+                    .expect("conditional contract must list every public input");
+                Some(wrap_param_arg_js(param, &public_params[surface]))
+            }
+            ComParamDirection::OptionalOut => Some(format!(
+                "DynCom.boolValue({})",
+                match (
+                    synchronous_output_param_index == Some(index),
+                    semisynchronous_output_param_index == Some(index),
+                ) {
+                    (true, false) => "_sync",
+                    (false, true) => "!_sync",
+                    _ => panic!("conditional output must belong to exactly one mode"),
+                }
+            )),
+            ComParamDirection::Out
+            | ComParamDirection::InOut
+            | ComParamDirection::OutStringBuffer
+            | ComParamDirection::InputBuffer
+            | ComParamDirection::CallerOutputBuffer
+            | ComParamDirection::CalleeAllocatedBuffer => {
+                panic!("conditional interface output has an unexpected parameter direction")
+            }
+        })
+        .collect::<Vec<_>>();
+    out.push_str(&format!(
+        "        const _results = {iface_var}.method({}).invokeAll(this._obj, [{}]);\n",
+        method.vtable_index,
+        args.join(", ")
+    ));
+    let result_index = |parameter_index: usize| {
+        method
+            .results
+            .iter()
+            .position(|result| result.source == ResultSource::Param(parameter_index))
+            .expect("conditional output must have a projected result")
+    };
+    match synchronous_output_param_index {
+        Some(index) => {
+            let position = result_index(index);
+            let converted = unwrap_method_result_js(
+                method,
+                &method.results[position],
+                &format!("_results[{position}]"),
+            );
+            out.push_str(&format!("        if (_sync) return {converted};\n"));
+        }
+        None => out.push_str("        if (_sync) return;\n"),
+    }
+    match semisynchronous_output_param_index {
+        Some(index) => {
+            let position = result_index(index);
+            let converted = unwrap_method_result_js(
+                method,
+                &method.results[position],
+                &format!("_results[{position}]"),
+            );
+            out.push_str(&format!("        return {converted};\n"));
+        }
+        None => out.push_str("        return;\n"),
+    }
+    out.push_str("    }\n");
+}
+
 fn emit_dynamic_iid_method_js(
     out: &mut String,
     method: &ProjectedComMethod,
@@ -2086,6 +2326,85 @@ fn render_dts(meta: &ProjectedComInterface) -> String {
             }
             continue;
         }
+        if let ProjectedComMethodKind::FlagSelectedString {
+            discriminator_param_index,
+            capacity_param_index,
+            string_flags,
+            validation_flag,
+            ..
+        } = method.kind
+        {
+            emit_method_doc_dts(&mut out, &method.doc);
+            let inputs = input_params(method);
+            let id_param_index = inputs
+                .iter()
+                .map(|(index, _)| *index)
+                .find(|index| *index != discriminator_param_index && *index != capacity_param_index)
+                .expect("flag-selected string contract requires an identifier input");
+            let id_name = js_param_name(&method.params[id_param_index].name, 0);
+            let id_type = param_input_type_dts(&method.params[id_param_index]);
+            let discriminator_name = &method.params[discriminator_param_index].name;
+            let capacity_name = &method.params[capacity_param_index].name;
+            out.push_str(&format!(
+                "    {}({id_name}: {id_type}, {discriminator_name}: {} | {}, {capacity_name}?: number): string;\n",
+                method.camel_name, string_flags[0], string_flags[1]
+            ));
+            out.push_str(&format!(
+                "    {}({id_name}: {id_type}, {discriminator_name}: {validation_flag}, {capacity_name}?: number): boolean;\n",
+                method.camel_name
+            ));
+            continue;
+        }
+        if let ProjectedComMethodKind::ConditionalInterfaceOutput {
+            public_input_param_indices,
+            synchronous_output_param_index,
+            semisynchronous_output_param_index,
+            ..
+        } = method.kind
+        {
+            emit_method_doc_dts(&mut out, &method.doc);
+            let public = public_input_param_indices
+                .into_iter()
+                .flatten()
+                .enumerate()
+                .map(|(surface, index)| {
+                    format!(
+                        "{}: {}",
+                        js_param_name(&method.params[index].name, surface),
+                        param_input_type_dts(&method.params[index])
+                    )
+                })
+                .collect::<Vec<_>>();
+            let prefix = if public.is_empty() {
+                String::new()
+            } else {
+                format!("{}, ", public.join(", "))
+            };
+            let return_type = |output: Option<usize>| {
+                output.map_or_else(
+                    || "void".into(),
+                    |parameter_index| {
+                        let result = method
+                            .results
+                            .iter()
+                            .find(|result| result.source == ResultSource::Param(parameter_index))
+                            .expect("conditional output result");
+                        result_type_dts(result)
+                    },
+                )
+            };
+            out.push_str(&format!(
+                "    {}({prefix}options: {{ readonly mode: 'sync' }}): {};\n",
+                method.camel_name,
+                return_type(synchronous_output_param_index)
+            ));
+            out.push_str(&format!(
+                "    {}({prefix}options: {{ readonly mode: 'semisync' }}): {};\n",
+                method.camel_name,
+                return_type(semisynchronous_output_param_index)
+            ));
+            continue;
+        }
         let (params, ret) = match method.kind {
             ProjectedComMethodKind::Normal
             | ProjectedComMethodKind::FixedCapacityBytes { .. }
@@ -2110,6 +2429,12 @@ fn render_dts(meta: &ProjectedComInterface) -> String {
             }
             ProjectedComMethodKind::EnumeratorNext { .. } => {
                 (vec!["count: number".into()], dts_return_type(method))
+            }
+            ProjectedComMethodKind::FlagSelectedString { .. } => {
+                unreachable!("flag-selected string declarations are emitted above")
+            }
+            ProjectedComMethodKind::ConditionalInterfaceOutput { .. } => {
+                unreachable!("conditional interface output declarations are emitted above")
             }
         };
         emit_method_doc_dts(&mut out, &method.doc);
@@ -2283,6 +2608,7 @@ fn collect_pointer_aliases(meta: &ProjectedComInterface) -> Vec<(String, Pointer
                 | ComType::Enum { .. }
                 | ComType::ScalarAlias { .. }
                 | ComType::RawPointer
+                | ComType::ExactNullPointer
                 | ComType::AllocatorPointer
                 | ComType::ConsumedAllocatorPointer
                 | ComType::InspectedAllocatorPointer
@@ -2383,6 +2709,7 @@ fn collect_native_pods(meta: &ProjectedComInterface) -> Vec<super::super::ir::Na
                 | ComType::Enum { .. }
                 | ComType::ScalarAlias { .. }
                 | ComType::RawPointer
+                | ComType::ExactNullPointer
                 | ComType::AllocatorPointer
                 | ComType::ConsumedAllocatorPointer
                 | ComType::InspectedAllocatorPointer
@@ -2449,6 +2776,13 @@ fn collect_native_unions(meta: &ProjectedComInterface) -> Vec<super::super::ir::
 fn collect_runtime_types(meta: &ProjectedComInterface) -> Vec<&'static str> {
     let mut types = std::collections::BTreeSet::new();
     for method in &meta.methods {
+        if method
+            .results
+            .iter()
+            .any(|result| matches!(result.conversion, ResultConversion::OwnedHandle(_)))
+        {
+            types.insert("DynComOwnedHandle");
+        }
         for typ in method
             .params
             .iter()
@@ -2541,6 +2875,7 @@ fn collect_scalar_alias(
         | ComType::HString
         | ComType::Enum { .. }
         | ComType::RawPointer
+        | ComType::ExactNullPointer
         | ComType::AllocatorPointer
         | ComType::ConsumedAllocatorPointer
         | ComType::InspectedAllocatorPointer

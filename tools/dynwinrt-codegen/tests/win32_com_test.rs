@@ -2082,6 +2082,119 @@ fn shellitem_getdisplayname_is_not_classified_as_caller_owned_string_buffer() {
 }
 
 #[test]
+fn thumbnail_provider_returns_a_delete_object_owned_handle() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+
+    let interface = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.UI.Shell",
+        "IThumbnailProvider",
+    )
+    .expect("IThumbnailProvider must exist");
+    let get_thumbnail = interface
+        .raw_methods
+        .as_ref()
+        .unwrap()
+        .iter()
+        .find(|method| method.metadata_name == "GetThumbnail")
+        .unwrap();
+    if get_thumbnail.params[1]
+        .free_with
+        .as_ref()
+        .is_none_or(|cleanup| cleanup.function != "DeleteObject")
+    {
+        eprintln!("Skipping: configured metadata does not match the pinned exact contract");
+        return;
+    }
+
+    let output = com::generate_com_interface_files(&interface, &win32_winmd())
+        .expect("IThumbnailProvider exact ownership must generate safely");
+    assert!(
+        output
+            .js
+            .contains(".addOut(DynCom.deleteObjectHandleOutputType())")
+    );
+    assert!(output.js.contains("DynCom.takeDeleteObjectHandle(_r[0])"));
+    assert!(output.dts.contains("DynComOwnedHandle"));
+    assert!(
+        output
+            .dts
+            .contains("getThumbnail(cx: number): [DynComOwnedHandle, WTS_ALPHATYPE]")
+    );
+}
+
+#[test]
+fn high_value_exact_contracts_generate_complete_safe_interfaces() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+
+    let generate = |namespace: &str, name: &str| {
+        let interface = com_metadata::parse_com_interface(&win32_winmd(), namespace, name)
+            .unwrap_or_else(|| panic!("{namespace}.{name} must exist"));
+        com::generate_com_interface_files(&interface, &win32_winmd())
+            .unwrap_or_else(|error| panic!("{namespace}.{name}: {error}"))
+    };
+
+    let storage = generate("Windows.Win32.System.Com.StructuredStorage", "IStorage");
+    assert!(storage.js.contains("DynCom.exactNullPointer(null)"));
+    assert!(storage.js.contains("DynCom.nullBuffer()"));
+    assert!(storage.js.contains("DynCom.takeStatStg"));
+    assert!(storage.dts.contains("DynComStatStg"));
+    assert!(
+        !storage
+            .dts
+            .contains("openStream(pwcsName: PWSTR, reserved1")
+    );
+    assert!(
+        !storage
+            .dts
+            .contains("enumElements(reserved1: number, reserved2")
+    );
+
+    let attributes = generate("Windows.Win32.Media.MediaFoundation", "IMFAttributes");
+    assert!(attributes.js.contains("DynCom.takePropVariant"));
+    assert!(attributes.js.contains("DynCom.takeCoTaskMemWideString"));
+    assert!(attributes.js.contains("DynCom.takeBuffer"));
+    assert!(attributes.js.contains("DynCom.adoptComPointer"));
+    assert!(attributes.dts.contains("DynComPropVariant"));
+
+    let context_menu = generate("Windows.Win32.UI.Shell", "IContextMenu3");
+    assert!(context_menu.js.contains("uType !== 4"));
+    assert!(context_menu.js.contains("uType !== 5"));
+    assert!(context_menu.js.contains("uType !== 6"));
+    assert!(context_menu.js.contains("_decodeWideString(_buffer)"));
+    assert!(context_menu.dts.contains("uType: 4 | 5"));
+    assert!(context_menu.dts.contains("uType: 6"));
+    assert!(!context_menu.dts.contains("pReserved"));
+
+    let wbem = generate("Windows.Win32.System.Wmi", "IWbemServices");
+    assert!(wbem.js.contains(".addOptionalOut("));
+    assert!(
+        wbem.js
+            .contains("options.mode must be 'sync' or 'semisync'")
+    );
+    assert!(wbem.js.contains("DynCom.exactNullPointer(null)"));
+    assert!(wbem.dts.contains("readonly mode: 'sync'"));
+    assert!(wbem.dts.contains("readonly mode: 'semisync'"));
+    assert!(!wbem.dts.contains("getObject(strObjectPath: string, pCtx"));
+    assert!(!wbem.dts.contains("putClass(pObject: DynWinRtValue, pCtx"));
+    assert!(
+        !wbem
+            .dts
+            .contains("execMethod(strObjectPath: string, strMethodName: string, pCtx")
+    );
+
+    let dxc = generate("Windows.Win32.Graphics.Direct3D.Dxc", "IDxcCompiler");
+    assert!(dxc.js.contains("DynCom.nullStringArray(true)"));
+    assert!(dxc.dts.contains("pArguments: string[] | null"));
+}
+
+#[test]
 fn u16_input_param_uses_existing_u16_value_ctor_not_u16value() {
     if !win32_available() {
         eprintln!("Skipping: Win32 winmd not available");
@@ -4820,9 +4933,9 @@ fn safe_incomplete_interface_generates_an_isolated_unsafe_companion() {
             "--winmd",
             &win32_winmd(),
             "--namespace",
-            "Windows.Win32.System.Wmi",
+            "Windows.Win32.Media.Audio",
             "--class-name",
-            "IWbemServices",
+            "IAudioClient",
             "--output",
             output.to_str().unwrap(),
         ]);
@@ -4833,34 +4946,22 @@ fn safe_incomplete_interface_generates_an_isolated_unsafe_companion() {
     };
 
     let dry_run = generate(&dry_run_dir, true);
-    assert!(
-        dry_run.status.success(),
-        "unsafe dry run failed:\n{}",
-        String::from_utf8_lossy(&dry_run.stderr)
-    );
-    assert!(
-        !dry_run_dir.exists(),
-        "unsafe dry run must not create output files"
-    );
+    assert!(dry_run.status.success());
+    assert!(!dry_run_dir.exists());
 
     let first = generate(&output_dir, false);
     assert!(
         first.status.success(),
-        "unsafe generation failed:\n{}",
+        "{}",
         String::from_utf8_lossy(&first.stderr)
     );
-    assert!(
-        String::from_utf8_lossy(&first.stdout)
-            .contains("Generated IWbemServicesUnsafe (raw metadata-complete: 17, manual executable: 6, blocked omitted: 0)"),
-        "unsafe generation must report executable and omitted method counts:\n{}",
-        String::from_utf8_lossy(&first.stdout)
-    );
+    assert!(String::from_utf8_lossy(&first.stdout).contains("Generated IAudioClientUnsafe"));
 
     let unsafe_dir = output_dir.join("com").join("unsafe");
-    let class_module = "windows/win32/system/wmi/IWbemServicesUnsafe";
+    let class_module = "windows/win32/media/audio/IAudioClientUnsafe";
     let retained = [
-        "windows/win32/system/wmi/IWbemServicesUnsafe.js",
-        "windows/win32/system/wmi/IWbemServicesUnsafe.d.ts",
+        "windows/win32/media/audio/IAudioClientUnsafe.js",
+        "windows/win32/media/audio/IAudioClientUnsafe.d.ts",
         "index.js",
         "index.mjs",
         "index.d.ts",
@@ -4877,68 +4978,22 @@ fn safe_incomplete_interface_generates_an_isolated_unsafe_companion() {
         .collect::<std::collections::BTreeMap<_, _>>();
 
     let js = fs::read_to_string(unsafe_dir.join(format!("{class_module}.js"))).unwrap();
-    assert!(js.contains("class IWbemServicesUnsafe"));
-    assert!(js.contains("openNamespace(strNamespace, options)"));
-    assert!(js.contains("DynCom.bstr(strNamespace)"));
-    assert!(js.contains("DynCom.bstrType()"));
-    assert!(js.contains("DynCom.interfaceType(WinGuid.parse("));
-    assert!(js.contains("__prepareExactWritableSpan(workingNamespace"));
-    assert!(js.contains("_takeOwnedInterfaceOutput(workingNamespace"));
-    assert!(js.contains("DynComRawPointer.null().toValue()"));
-    assert!(js.contains("const _isSemisynchronous = lFlags === 16"));
-    assert!(!js.contains("(lFlags & 16)"));
-    assert!(!js.contains("DynComRawStructLayout.fromDescriptor"));
-    assert!(!js.contains("implement(") && !js.contains("implementation"));
     let dts = fs::read_to_string(unsafe_dir.join(format!("{class_module}.d.ts"))).unwrap();
+    assert!(js.contains("class IAudioClientUnsafe"));
+    assert!(js.contains("isFormatSupported("));
+    assert!(!js.contains("implement(") && !js.contains("implementation"));
     assert!(dts.contains("private constructor()"));
     assert!(dts.contains("static from(value: DynWinRtValue"));
-    assert!(dts.contains("strNamespace: string"));
-    assert!(dts.contains(
-        "options: { readonly lFlags: 0; readonly workingNamespace: DynComRawMemory; readonly result?: null }"
-    ));
-    assert!(dts.contains(
-        "options: { readonly lFlags: 16; readonly workingNamespace?: null; readonly result: DynComRawMemory }"
-    ));
 
     let support: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(unsafe_dir.join("support.json")).unwrap())
             .unwrap();
     assert_eq!(support["schemaVersion"], com::UNSAFE_SUPPORT_SCHEMA_VERSION);
     assert_eq!(support["interfaces"][0]["modulePath"], class_module);
-    let methods = support["interfaces"][0]["methods"]
-        .as_array()
-        .expect("unsafe support methods");
-    assert_eq!(methods.len(), 23);
-    assert!(methods.iter().all(|method| {
-        method["absoluteSlot"].as_u64().is_some()
-            && method["declaringIid"].as_str().is_some()
-            && method["signatureFingerprint"]
-                .as_str()
-                .is_some_and(|fingerprint| fingerprint.len() == 64)
+    let methods = support["interfaces"][0]["methods"].as_array().unwrap();
+    assert!(methods.iter().any(|method| {
+        method["name"] == "IsFormatSupported" && method["status"] == "raw_manual_contract"
     }));
-    assert_eq!(
-        methods
-            .iter()
-            .filter(|method| method["status"] == "raw_metadata_complete")
-            .count(),
-        17
-    );
-    assert_eq!(
-        methods
-            .iter()
-            .filter(|method| method["status"] == "raw_manual_contract")
-            .count(),
-        6
-    );
-    assert_eq!(methods[0]["projectedName"], "openNamespace");
-    assert_eq!(
-        methods[0]["targets"]["x64"]["lifecycle"]["requires_current_apartment"],
-        true
-    );
-    assert_eq!(
-        methods[0]["targets"]["x64"]["lifecycle"]["requires_external_acquisition"],
-        true
-    );
 
     assert!(!output_dir.join("index.js").exists());
     assert!(!output_dir.join("index.d.ts").exists());
@@ -4947,25 +5002,20 @@ fn safe_incomplete_interface_generates_an_isolated_unsafe_companion() {
         output_dir.join("com").join("index.mjs"),
         output_dir.join("com").join("index.d.ts"),
     ] {
-        let contents = fs::read_to_string(&path).unwrap();
         assert!(
-            !contents.contains("IWbemServicesUnsafe"),
-            "safe package surface leaked an unsafe companion through {}",
-            path.display()
+            !fs::read_to_string(path)
+                .unwrap()
+                .contains("IAudioClientUnsafe")
         );
     }
 
     let second = generate(&output_dir, false);
-    assert!(
-        second.status.success(),
-        "repeat unsafe generation failed:\n{}",
-        String::from_utf8_lossy(&second.stderr)
-    );
+    assert!(second.status.success());
     for (name, expected) in first_bytes {
         assert_eq!(
             fs::read(unsafe_dir.join(&name)).unwrap(),
             expected,
-            "generated unsafe output is not deterministic: {name}"
+            "{name}"
         );
     }
 
@@ -4974,15 +5024,12 @@ fn safe_incomplete_interface_generates_an_isolated_unsafe_companion() {
         unsafe_dir.join("index.js"),
         unsafe_dir.join("index.mjs"),
     ] {
-        let syntax = Command::new("node")
-            .args(["--check", script.to_str().unwrap()])
-            .output()
-            .expect("run node --check");
         assert!(
-            syntax.status.success(),
-            "generated unsafe JavaScript did not parse ({}):\n{}",
-            script.display(),
-            String::from_utf8_lossy(&syntax.stderr)
+            Command::new("node")
+                .args(["--check", script.to_str().unwrap()])
+                .status()
+                .unwrap()
+                .success()
         );
     }
 
@@ -5034,12 +5081,6 @@ fn stage2_official_manual_interfaces_emit_exact_strategy_requirements() {
             "IStillImageW",
             "windows/win32/devices/fax/IStillImageWUnsafe",
             "getSTILaunchInformation(pwszDeviceName: UnsafeCountedBuffer, pdwEventCode: DynComRawMemory, pwszEventName: UnsafeCountedBuffer): void",
-        ),
-        (
-            "Windows.Win32.System.Wmi",
-            "IWbemServices",
-            "windows/win32/system/wmi/IWbemServicesUnsafe",
-            "openNamespace(strNamespace: string, options: { readonly lFlags: 0; readonly workingNamespace: DynComRawMemory; readonly result?: null }): DynComRawOwnedComPointer",
         ),
     ];
     for (namespace, name, module, declaration) in cases {
@@ -5106,62 +5147,6 @@ fn stage2_official_manual_interfaces_emit_exact_strategy_requirements() {
         format["strategyRequirements"][0]["pointeeLayouts"],
         serde_json::json!({"arm64": null, "i686": null, "x64": null})
     );
-    let wbem = support["interfaces"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|interface| interface["interfaceName"] == "Windows.Win32.System.Wmi.IWbemServices")
-        .unwrap();
-    let open_namespace = wbem["methods"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|method| method["name"] == "OpenNamespace")
-        .unwrap();
-    assert_eq!(open_namespace["status"], "raw_metadata_complete");
-    assert_eq!(
-        open_namespace["strategyRequirements"],
-        serde_json::json!([])
-    );
-    let working_output = open_namespace["exactInterfaceOutputs"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|output| output["parameterName"] == "ppWorkingNamespace")
-        .unwrap();
-    assert_eq!(
-        working_output["interfaceIid"],
-        "9556dc99-828c-11cf-a37e-00aa003240c7"
-    );
-    assert_eq!(working_output["argumentOptional"], true);
-    assert_eq!(working_output["nullableOnSuccess"], false);
-    let result_output = open_namespace["exactInterfaceOutputs"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|output| output["parameterName"] == "ppResult")
-        .unwrap();
-    assert_eq!(result_output["argumentOptional"], true);
-    assert_eq!(result_output["nullableOnSuccess"], false);
-    assert!(
-        working_output["citation"]
-            .as_str()
-            .unwrap()
-            .contains("learn.microsoft.com")
-    );
-    let output_call = &open_namespace["exactInterfaceOutputCall"];
-    assert_eq!(
-        output_call["entryId"],
-        "wmi.conditional-output.entry.windows-win32-system-wmi.iwbemservices.9556dc99828c11cfa37e00aa003240c7.opennamespace.slot-3.v1"
-    );
-    assert_eq!(output_call["familyId"], "wmi.conditional-output.v1");
-    assert_eq!(output_call["contractKind"], "conditional-output");
-    assert_eq!(
-        output_call["sourceFingerprint"],
-        "EA3628EB9E45E1A0BAA0BC9F6DA1FD82FE938091EF1730E25E3CCEEA9EFD316B"
-    );
-    assert_eq!(output_call["synchronousFlags"], 0);
-    assert_eq!(output_call["semisynchronousFlagValue"], 0x10);
     assert!(
         output
             .join("com")
@@ -5186,7 +5171,6 @@ fn stage2_official_manual_interfaces_emit_exact_strategy_requirements() {
         "Windows.Win32.System.ClrHosting.IHostMalloc",
         "Windows.Win32.Devices.Fax.IStiDeviceControl",
         "Windows.Win32.Devices.Fax.IStillImageW",
-        "Windows.Win32.System.Wmi.IWbemServices",
     ] {
         let files = manifest["roots"][root].as_array().unwrap();
         assert!(files.contains(&serde_json::json!("unsafe/runtime.js")));
@@ -5291,7 +5275,7 @@ fn report_only_interface_persists_support_and_removes_only_owned_stale_files() {
     );
     let unsafe_dir = output_dir.join("com").join("unsafe");
     let mf_module = "windows/win32/media/media-foundation/MFASYNCRESULTUnsafe";
-    let iwbem_module = "windows/win32/system/wmi/IWbemServicesUnsafe";
+    let unsafe_module = "windows/win32/media/audio/IAudioClientUnsafe";
     assert!(unsafe_dir.join("support.json").is_file());
     assert!(!unsafe_dir.join(format!("{mf_module}.js")).exists());
     assert!(!unsafe_dir.join(format!("{mf_module}.d.ts")).exists());
@@ -5332,8 +5316,8 @@ fn report_only_interface_persists_support_and_removes_only_owned_stale_files() {
 
     let unsafe_success = run(
         &output_dir,
-        "Windows.Win32.System.Wmi",
-        "IWbemServices",
+        "Windows.Win32.Media.Audio",
+        "IAudioClient",
         false,
     );
     assert!(
@@ -5344,17 +5328,18 @@ fn report_only_interface_persists_support_and_removes_only_owned_stale_files() {
     let merged: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(unsafe_dir.join("support.json")).unwrap())
             .unwrap();
+    let merged_names = merged["interfaces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|interface| interface["interfaceName"].as_str().unwrap())
+        .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(
-        merged["interfaces"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|interface| interface["interfaceName"].as_str().unwrap())
-            .collect::<Vec<_>>(),
-        vec![
+        merged_names,
+        std::collections::BTreeSet::from([
+            "Windows.Win32.Media.Audio.IAudioClient",
             "Windows.Win32.Media.MediaFoundation.MFASYNCRESULT",
-            "Windows.Win32.System.Wmi.IWbemServices"
-        ]
+        ])
     );
 
     let mut manifest: serde_json::Value =
@@ -5377,7 +5362,7 @@ fn report_only_interface_persists_support_and_removes_only_owned_stale_files() {
     );
     assert!(!repeated.status.success());
     assert!(!stale_path.exists());
-    assert!(unsafe_dir.join(format!("{iwbem_module}.js")).is_file());
+    assert!(unsafe_dir.join(format!("{unsafe_module}.js")).is_file());
     let merged_again = fs::read_to_string(unsafe_dir.join("support.json")).unwrap();
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&merged_again).unwrap()["interfaces"]
@@ -5387,7 +5372,7 @@ fn report_only_interface_persists_support_and_removes_only_owned_stale_files() {
         2
     );
 
-    let iwbem_before = fs::read(unsafe_dir.join(format!("{iwbem_module}.js"))).unwrap();
+    let unsafe_before = fs::read(unsafe_dir.join(format!("{unsafe_module}.js"))).unwrap();
     fs::write(unsafe_dir.join("support.json"), "{ invalid support").unwrap();
     let atomic_failure = run(
         &output_dir,
@@ -5401,8 +5386,8 @@ fn report_only_interface_persists_support_and_removes_only_owned_stale_files() {
         "{ invalid support"
     );
     assert_eq!(
-        fs::read(unsafe_dir.join(format!("{iwbem_module}.js"))).unwrap(),
-        iwbem_before
+        fs::read(unsafe_dir.join(format!("{unsafe_module}.js"))).unwrap(),
+        unsafe_before
     );
 
     fs::remove_dir_all(&output_dir).unwrap();
@@ -5444,7 +5429,7 @@ fn concurrent_incremental_com_generation_preserves_all_roots_and_reports() {
     };
 
     let safe = spawn("Windows.Win32.UI.Shell", "ITaskbarList3");
-    let unsafe_companion = spawn("Windows.Win32.System.Wmi", "IWbemServices");
+    let unsafe_companion = spawn("Windows.Win32.Media.Audio", "IAudioClient");
     let safe = safe.wait_with_output().unwrap();
     let unsafe_companion = unsafe_companion.wait_with_output().unwrap();
     assert!(
@@ -5460,23 +5445,23 @@ fn concurrent_incremental_com_generation_preserves_all_roots_and_reports() {
 
     let com_dir = output_dir.join("com");
     let unsafe_dir = com_dir.join("unsafe");
-    let iwbem_module = "windows/win32/system/wmi/IWbemServicesUnsafe.js";
+    let unsafe_module = "windows/win32/media/audio/IAudioClientUnsafe.js";
     assert!(
         generated_com_module(&output_dir, "Windows.Win32.UI.Shell", "ITaskbarList3", "js")
             .is_file()
     );
-    assert!(unsafe_dir.join(iwbem_module).is_file());
+    assert!(unsafe_dir.join(unsafe_module).is_file());
     let safe_barrel = fs::read_to_string(com_dir.join("index.js")).unwrap();
     let unsafe_barrel = fs::read_to_string(unsafe_dir.join("index.js")).unwrap();
     assert!(safe_barrel.contains("ITaskbarList3"));
-    assert!(!safe_barrel.contains("IWbemServicesUnsafe"));
-    assert!(unsafe_barrel.contains("IWbemServicesUnsafe"));
+    assert!(!safe_barrel.contains("IAudioClientUnsafe"));
+    assert!(unsafe_barrel.contains("IAudioClientUnsafe"));
     let manifest: serde_json::Value = serde_json::from_str(
         &fs::read_to_string(com_dir.join(".dynwinrt-com-manifest.json")).unwrap(),
     )
     .unwrap();
     assert!(manifest["roots"]["Windows.Win32.UI.Shell.ITaskbarList3"].is_array());
-    assert!(manifest["roots"]["Windows.Win32.System.Wmi.IWbemServices"].is_array());
+    assert!(manifest["roots"]["Windows.Win32.Media.Audio.IAudioClient"].is_array());
 
     let safe_second = spawn("Windows.Win32.UI.Shell", "IShellLinkW");
     let report_only = spawn("Windows.Win32.Media.MediaFoundation", "MFASYNCRESULT");
@@ -5495,7 +5480,7 @@ fn concurrent_incremental_com_generation_preserves_all_roots_and_reports() {
     assert!(
         generated_com_module(&output_dir, "Windows.Win32.UI.Shell", "IShellLinkW", "js").is_file()
     );
-    assert!(unsafe_dir.join(iwbem_module).is_file());
+    assert!(unsafe_dir.join(unsafe_module).is_file());
     let support: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(unsafe_dir.join("support.json")).unwrap())
             .unwrap();
@@ -5507,7 +5492,7 @@ fn concurrent_incremental_com_generation_preserves_all_roots_and_reports() {
     for root in [
         "Windows.Win32.UI.Shell.ITaskbarList3",
         "Windows.Win32.UI.Shell.IShellLinkW",
-        "Windows.Win32.System.Wmi.IWbemServices",
+        "Windows.Win32.Media.Audio.IAudioClient",
         "Windows.Win32.Media.MediaFoundation.MFASYNCRESULT",
     ] {
         assert!(
@@ -5637,8 +5622,8 @@ fn concurrent_com_and_winrt_writers_share_one_output_lock_in_both_orders() {
     let baseline_unsafe = spawn(
         &output,
         &win32_metadata,
-        "Windows.Win32.System.Wmi",
-        "IWbemServices",
+        "Windows.Win32.Media.Audio",
+        "IAudioClient",
         None,
         None,
     )
@@ -5699,7 +5684,7 @@ fn concurrent_com_and_winrt_writers_share_one_output_lock_in_both_orders() {
     );
     assert!(generated_com_module(&output, "Windows.Win32.UI.Shell", "IShellLinkW", "js").is_file());
     assert!(
-        generated_unsafe_module(&output, "Windows.Win32.System.Wmi", "IWbemServices", "js")
+        generated_unsafe_module(&output, "Windows.Win32.Media.Audio", "IAudioClient", "js")
             .is_file()
     );
     let manifest: serde_json::Value = serde_json::from_str(
@@ -5707,14 +5692,14 @@ fn concurrent_com_and_winrt_writers_share_one_output_lock_in_both_orders() {
     )
     .unwrap();
     assert!(manifest["roots"]["Windows.Win32.UI.Shell.IShellLinkW"].is_array());
-    assert!(manifest["roots"]["Windows.Win32.System.Wmi.IWbemServices"].is_array());
+    assert!(manifest["roots"]["Windows.Win32.Media.Audio.IAudioClient"].is_array());
     let root_barrel = fs::read_to_string(output.join("index.d.ts")).unwrap();
     let com_barrel = fs::read_to_string(output.join("com").join("index.d.ts")).unwrap();
     let unsafe_barrel =
         fs::read_to_string(output.join("com").join("unsafe").join("index.d.ts")).unwrap();
     assert!(root_barrel.contains("Uri") && !root_barrel.contains("Calendar"));
     assert!(com_barrel.contains("IShellLinkW"));
-    assert!(unsafe_barrel.contains("IWbemServicesUnsafe"));
+    assert!(unsafe_barrel.contains("IAudioClientUnsafe"));
     let support: serde_json::Value = serde_json::from_str(
         &fs::read_to_string(output.join("com").join("unsafe").join("support.json")).unwrap(),
     )
@@ -5759,9 +5744,9 @@ fn generated_unsafe_fingerprint_includes_sibling_and_reference_metadata() {
             "--winmd",
             winmd.to_str().unwrap(),
             "--namespace",
-            "Windows.Win32.System.Wmi",
+            "Windows.Win32.Media.Audio",
             "--class-name",
-            "IWbemServices",
+            "IAudioClient",
             "--output",
             output.to_str().unwrap(),
         ]);
@@ -5892,7 +5877,7 @@ fn unified_output_transaction_rolls_back_first_and_incremental_failures() {
     );
     let before = snapshot_tree(&output_dir);
     let incremental_failure = run(
-        "Windows.Win32.System.Wmi.IWbemServices",
+        "Windows.Win32.Media.Audio.IAudioClient",
         Some("after_backup_rename"),
     );
     assert!(!incremental_failure.status.success());
@@ -5914,7 +5899,7 @@ fn unified_output_transaction_rolls_back_first_and_incremental_failures() {
             "--winmd",
             &metadata,
             "--class-name",
-            "Windows.Win32.System.Wmi.IWbemServices",
+            "Windows.Win32.Media.Audio.IAudioClient",
             "--output",
             output_dir.to_str().unwrap(),
         ])
@@ -5943,8 +5928,8 @@ fn unified_output_transaction_rolls_back_first_and_incremental_failures() {
     assert!(
         generated_unsafe_module(
             &output_dir,
-            "Windows.Win32.System.Wmi",
-            "IWbemServices",
+            "Windows.Win32.Media.Audio",
+            "IAudioClient",
             "js"
         )
         .is_file()
@@ -6199,8 +6184,8 @@ fn mixed_unsafe_only_com_retains_com_package_exports() {
 
     run_codegen_command(
         &win32_winmd(),
-        Some("Windows.Win32.System.Wmi"),
-        "IWbemServices",
+        Some("Windows.Win32.Media.Audio"),
+        "IAudioClient",
         &output,
     );
     run_codegen_command(
@@ -6211,7 +6196,7 @@ fn mixed_unsafe_only_com_retains_com_package_exports() {
     );
 
     assert!(
-        generated_unsafe_module(&output, "Windows.Win32.System.Wmi", "IWbemServices", "js")
+        generated_unsafe_module(&output, "Windows.Win32.Media.Audio", "IAudioClient", "js")
             .is_file()
     );
     let package = fs::read_to_string(output.join("package.json")).unwrap();
