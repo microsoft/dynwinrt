@@ -16,7 +16,7 @@ pub(super) mod contract;
 pub(super) mod diagnostics;
 pub(super) mod ids;
 pub(super) mod layout;
-mod metadata;
+pub(super) mod metadata;
 pub(super) mod method;
 pub(super) mod ownership;
 
@@ -33,6 +33,7 @@ use ownership::CleanupTable;
 pub(super) struct ValidatedComInterface<'a> {
     meta: &'a crate::com_metadata::ComInterfaceMeta,
     semantic: metadata::SemanticComInterface,
+    evidence_dependencies: crate::contract_registry::EvidenceDependencies,
 }
 
 impl<'a> ValidatedComInterface<'a> {
@@ -42,6 +43,12 @@ impl<'a> ValidatedComInterface<'a> {
 
     pub(super) const fn semantic(&self) -> &metadata::SemanticComInterface {
         &self.semantic
+    }
+
+    pub(super) const fn evidence_dependencies(
+        &self,
+    ) -> &crate::contract_registry::EvidenceDependencies {
+        &self.evidence_dependencies
     }
 }
 
@@ -74,7 +81,12 @@ pub(super) fn validate_interface(
     meta: &crate::com_metadata::ComInterfaceMeta,
 ) -> Result<ValidatedComInterface<'_>, String> {
     let semantic = metadata::map_interface(meta).map_err(|error| error.to_string())?;
-    Ok(ValidatedComInterface { meta, semantic })
+    let evidence_dependencies = crate::com_metadata::collect_evidence_dependencies(meta);
+    Ok(ValidatedComInterface {
+        meta,
+        semantic,
+        evidence_dependencies,
+    })
 }
 
 #[derive(Debug, Default)]

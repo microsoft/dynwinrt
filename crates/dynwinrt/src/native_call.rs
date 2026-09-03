@@ -30,6 +30,7 @@ pub(crate) fn system_cif(types: Vec<libffi::middle::Type>, result: libffi::middl
 pub(crate) enum NativeCallValue {
     WinRt(WinRTValue),
     NativeStruct(crate::com::NativeStructValue),
+    NativeUnion(crate::com::NativeUnionValue),
     Variant(crate::com::VariantValue),
     SafeArray(crate::com::SafeArrayValue),
     PropVariant(crate::com::PropVariantValue),
@@ -57,6 +58,7 @@ pub(crate) enum ParameterType {
         layout: Arc<crate::com::NativeStructLayout>,
         nullable: bool,
     },
+    NativeUnion(Arc<crate::com::NativeUnionLayout>),
     NativeUnionPointer(Arc<crate::com::NativeUnionLayout>),
     Variant,
     VariantByValue,
@@ -83,6 +85,21 @@ pub(crate) enum OutputCleanup {
     PropVariantClear,
 }
 
+#[cfg(test)]
+thread_local! {
+    static CO_TASK_MEM_TEST_FREES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_co_task_mem_test_frees() {
+    CO_TASK_MEM_TEST_FREES.set(0);
+}
+
+#[cfg(test)]
+pub(crate) fn co_task_mem_test_frees() -> usize {
+    CO_TASK_MEM_TEST_FREES.get()
+}
+
 impl OutputCleanup {
     pub(crate) unsafe fn cleanup(self, ptr: *mut std::ffi::c_void) {
         if ptr.is_null() {
@@ -96,6 +113,8 @@ impl OutputCleanup {
                 drop(value);
             }
             Self::CoTaskMemFree => unsafe {
+                #[cfg(test)]
+                CO_TASK_MEM_TEST_FREES.set(CO_TASK_MEM_TEST_FREES.get() + 1);
                 windows::Win32::System::Com::CoTaskMemFree(Some(ptr));
             },
             Self::BstrFree => drop(unsafe { windows_core::BSTR::from_raw(ptr.cast()) }),
@@ -136,6 +155,10 @@ impl ParameterType {
 
     pub(crate) fn native_union_pointer(layout: Arc<crate::com::NativeUnionLayout>) -> Self {
         Self::NativeUnionPointer(layout)
+    }
+
+    pub(crate) fn native_union(layout: Arc<crate::com::NativeUnionLayout>) -> Self {
+        Self::NativeUnion(layout)
     }
 
     pub(crate) fn variant() -> Self {
@@ -197,6 +220,7 @@ impl ParameterType {
             | Self::Bstr { .. }
             | Self::NativeStruct(_)
             | Self::NativeStructPointer { .. }
+            | Self::NativeUnion(_)
             | Self::NativeUnionPointer(_)
             | Self::Variant
             | Self::VariantByValue
@@ -215,6 +239,7 @@ impl ParameterType {
             | Self::Pointer
             | Self::CoTaskMemWideString
             | Self::Bstr { .. }
+            | Self::NativeUnion(_)
             | Self::NativeUnionPointer(_)
             | Self::Variant
             | Self::VariantByValue
@@ -228,9 +253,13 @@ impl ParameterType {
 
     pub(crate) fn native_union_layout(&self) -> Option<&Arc<crate::com::NativeUnionLayout>> {
         match self {
-            Self::NativeUnionPointer(layout) => Some(layout),
+            Self::NativeUnion(layout) | Self::NativeUnionPointer(layout) => Some(layout),
             _ => None,
         }
+    }
+
+    pub(crate) fn is_native_union(&self) -> bool {
+        matches!(self, Self::NativeUnion(_))
     }
 
     pub(crate) fn is_native_struct(&self) -> bool {
@@ -326,6 +355,7 @@ impl ParameterType {
                 | Self::Bstr { .. }
                 | Self::NativeStruct(_)
                 | Self::NativeStructPointer { .. }
+                | Self::NativeUnion(_)
         ) || matches!(
             self,
             Self::WinRT(typ)
@@ -364,7 +394,7 @@ impl ParameterType {
             | Self::DispatchParams
             | Self::ExcepInfo
             | Self::StatStg => AbiType::Ptr,
-            Self::NativeStruct(_) | Self::VariantByValue => {
+            Self::NativeStruct(_) | Self::NativeUnion(_) | Self::VariantByValue => {
                 panic!("aggregate values do not have a scalar AbiType")
             }
         }
@@ -385,6 +415,7 @@ impl ParameterType {
             | Self::ExcepInfo
             | Self::StatStg => libffi::middle::Type::pointer(),
             Self::NativeStruct(layout) => layout.libffi_type(),
+            Self::NativeUnion(layout) => layout.libffi_type(),
             Self::VariantByValue => variant_by_value_libffi_type(),
         }
     }
@@ -409,6 +440,7 @@ impl ParameterType {
             Self::Bstr { .. } => panic!("BSTR storage is allocated by the dynamic executor"),
             Self::NativeStruct(_)
             | Self::NativeStructPointer { .. }
+            | Self::NativeUnion(_)
             | Self::NativeUnionPointer(_)
             | Self::Variant
             | Self::VariantByValue
@@ -431,6 +463,7 @@ impl ParameterType {
             | Self::NativeStructPointer { .. }
             | Self::NativeUnionPointer(_) => Ok(WinRTValue::RawPtr(ptr)),
             Self::NativeStruct(_)
+            | Self::NativeUnion(_)
             | Self::Variant
             | Self::VariantByValue
             | Self::SafeArray { .. }
@@ -467,6 +500,7 @@ impl ParameterType {
             )),
             (
                 Self::NativeStruct(_)
+                | Self::NativeUnion(_)
                 | Self::Variant
                 | Self::VariantByValue
                 | Self::SafeArray { .. }
@@ -498,6 +532,7 @@ impl ParameterType {
             | Self::Pointer
             | Self::NativeStruct(_)
             | Self::NativeStructPointer { .. }
+            | Self::NativeUnion(_)
             | Self::NativeUnionPointer(_)
             | Self::VariantByValue
             | Self::DispatchParams => OutputCleanup::None,
@@ -1862,9 +1897,9 @@ impl Method {
                     .into_iter()
                     .map(|value| match value {
                         NativeCallValue::WinRt(value) => Ok(value),
-                        NativeCallValue::NativeStruct(_) => Err(invalid_argument(
-                            "native POD result reached the WinRT invocation path",
-                        )),
+                        NativeCallValue::NativeStruct(_) | NativeCallValue::NativeUnion(_) => Err(
+                            invalid_argument("native POD result reached the WinRT invocation path"),
+                        ),
                         NativeCallValue::Variant(_)
                         | NativeCallValue::SafeArray(_)
                         | NativeCallValue::PropVariant(_)
@@ -2107,6 +2142,7 @@ impl Method {
                 .map(|value| match value {
                     NativeCallValue::WinRt(value) => crate::com::Value::WinRt(value),
                     NativeCallValue::NativeStruct(value) => crate::com::Value::NativeStruct(value),
+                    NativeCallValue::NativeUnion(value) => crate::com::Value::NativeUnion(value),
                     NativeCallValue::Variant(value) => crate::com::Value::Variant(value),
                     NativeCallValue::SafeArray(value) => crate::com::Value::SafeArray(value),
                     NativeCallValue::PropVariant(value) => crate::com::Value::PropVariant(value),

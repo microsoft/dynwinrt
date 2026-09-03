@@ -3,8 +3,12 @@
 
 use std::collections::HashSet;
 
+use sha2::{Digest, Sha256};
 use windows_metadata::{HasAttributes, reader};
 
+pub use crate::contract_registry::ComStandardRule as RawComStandardRule;
+pub use crate::contract_registry::ContractKind as RawContractKind;
+pub use crate::contract_registry::ExactFamilyId as RawExactFamilyId;
 use crate::types::TypeMeta;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -171,10 +175,32 @@ pub enum RawCountUnit {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RawEvidence {
     MetadataAttribute(&'static str),
-    Override {
-        reason: &'static str,
-        citation: &'static str,
+    ComStandard(crate::contract_registry::ComStandardRule),
+    ExactRegistry {
+        entry_id: String,
+        family_id: crate::contract_registry::ExactFamilyId,
+        contract_kind: crate::contract_registry::ContractKind,
+        reason: String,
+        citation: String,
     },
+}
+
+impl RawEvidence {
+    pub fn exact_registry(
+        entry_id: impl Into<String>,
+        family_id: crate::contract_registry::ExactFamilyId,
+        contract_kind: crate::contract_registry::ContractKind,
+        reason: impl Into<String>,
+        citation: impl Into<String>,
+    ) -> Self {
+        Self::ExactRegistry {
+            entry_id: entry_id.into(),
+            family_id,
+            contract_kind,
+            reason: reason.into(),
+            citation: citation.into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -194,6 +220,15 @@ pub struct RawComParam {
     pub string_pointer_array: Option<RawStringPointerArray>,
     pub free_with: Option<RawFreeWith>,
     pub safe_array_evidence: Option<RawSafeArrayEvidence>,
+    pub exact_interface_output: Option<RawExactInterfaceOutputContract>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawExactInterfaceOutputContract {
+    pub interface_iid: String,
+    pub argument_optional: bool,
+    pub nullable_on_success: bool,
+    pub evidence: RawEvidence,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -244,6 +279,29 @@ pub struct RawSafeArrayEvidence {
     pub citation: &'static str,
 }
 
+impl RawSafeArrayEvidence {
+    pub(crate) fn entry_id(&self) -> String {
+        crate::contract_registry::exact_parameter_entry_id(
+            self.family_id(),
+            self.declaring_namespace,
+            self.declaring_interface,
+            self.declaring_iid,
+            self.method_name,
+            self.vtable_index,
+            self.parameter_index,
+            self.parameter_name,
+        )
+    }
+
+    pub(crate) const fn family_id(&self) -> crate::contract_registry::ExactFamilyId {
+        crate::contract_registry::ExactFamilyId::SafeArray
+    }
+
+    pub(crate) const fn contract_kind(&self) -> crate::contract_registry::ContractKind {
+        crate::contract_registry::ContractKind::Safearray
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawComMethod {
     pub declaring_namespace: String,
@@ -257,7 +315,39 @@ pub struct RawComMethod {
     pub semantic_hresult: Option<RawEvidence>,
     pub enumerator_next: Option<RawEnumeratorNext>,
     pub exact_contract: Option<RawExactMethodContract>,
+    pub interface_replacement_contracts: Vec<RawInterfaceReplacementContract>,
+    pub exact_interface_output_call: Option<RawExactInterfaceOutputCallContract>,
     pub safe_array_contract_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawExactInterfaceOutputCallContract {
+    pub source_fingerprint: String,
+    pub public_input_param_indices: Vec<usize>,
+    pub flags_param_index: usize,
+    pub context_param_index: usize,
+    pub synchronous_output_param_index: usize,
+    pub semisynchronous_output_param_index: usize,
+    pub synchronous_flags: i32,
+    pub semisynchronous_flag_value: i32,
+    pub flags_option_name: String,
+    pub synchronous_output_option_name: String,
+    pub semisynchronous_output_option_name: String,
+    pub evidence: RawEvidence,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RawInterfaceReplacementSemantics {
+    ConsumesOldReturnsOwnedNew,
+    PreservesOldReturnsOwnedNew,
+    Unchanged,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawInterfaceReplacementContract {
+    pub parameter_index: usize,
+    pub semantics: RawInterfaceReplacementSemantics,
+    pub evidence: RawEvidence,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -281,6 +371,47 @@ pub struct RawExactMethodContract {
     pub actual_length_param_index: Option<usize>,
     pub citation: &'static str,
     pub reason: &'static str,
+}
+
+impl RawExactMethodContract {
+    pub(crate) fn family_id(&self) -> crate::contract_registry::ExactFamilyId {
+        match self.kind {
+            RawExactMethodContractKind::FixedCapacityBytes => {
+                crate::contract_registry::ExactFamilyId::BoundedTwoCall
+            }
+            RawExactMethodContractKind::UnsafePrivateData => {
+                crate::contract_registry::ExactFamilyId::PrivateDataHazard
+            }
+            RawExactMethodContractKind::StatStg | RawExactMethodContractKind::Malloc => {
+                crate::contract_registry::ExactFamilyId::Ownership
+            }
+        }
+    }
+
+    pub(crate) fn entry_id(&self) -> String {
+        crate::contract_registry::exact_method_entry_id(
+            self.family_id(),
+            self.declaring_namespace,
+            self.declaring_interface,
+            self.declaring_iid,
+            self.method_name,
+            self.vtable_index,
+        )
+    }
+
+    pub(crate) const fn contract_kind(&self) -> crate::contract_registry::ContractKind {
+        match self.kind {
+            RawExactMethodContractKind::FixedCapacityBytes => {
+                crate::contract_registry::ContractKind::BoundedTwoCall
+            }
+            RawExactMethodContractKind::UnsafePrivateData => {
+                crate::contract_registry::ContractKind::Hazard
+            }
+            RawExactMethodContractKind::StatStg | RawExactMethodContractKind::Malloc => {
+                crate::contract_registry::ContractKind::Ownership
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -698,6 +829,8 @@ fn parse_methods(
         .enumerate()
         .map(|(index_in_interface, method)| {
             let signature = method.signature(&[]);
+            let declaring_iid = crate::meta::extract_iid(def);
+            let absolute_slot = base_offset + index_in_interface;
             let raw_name = method.name().to_string();
             let name = method
                 .find_attribute("OverloadAttribute")
@@ -739,10 +872,11 @@ fn parse_methods(
                 let native_array = known_array_contract_override(
                     def.namespace(),
                     def.name(),
-                    &crate::meta::extract_iid(def),
+                    &declaring_iid,
                     method.name(),
-                    base_offset + index_in_interface,
+                    absolute_slot,
                     param_index,
+                    param.name(),
                     metadata_array,
                 );
                 let mapped_type = map_parameter_type(typ, &direction, index);
@@ -783,7 +917,11 @@ fn parse_methods(
                             known_free_with_override(
                                 def.namespace(),
                                 def.name(),
+                                &declaring_iid,
                                 method.name(),
+                                absolute_slot,
+                                param_index,
+                                param.name(),
                                 typ,
                                 &direction,
                             )
@@ -820,6 +958,7 @@ fn parse_methods(
                     string_pointer_array,
                     free_with,
                     safe_array_evidence: None,
+                    exact_interface_output: None,
                 });
                 params.push(ParamMeta {
                     name: param.name().to_string(),
@@ -835,14 +974,20 @@ fn parse_methods(
                         "CanReturnMultipleSuccessValuesAttribute",
                     ))
                 } else {
-                    known_semantic_hresult_override(def.namespace(), def.name(), method.name())
+                    known_semantic_hresult_override(
+                        def.namespace(),
+                        def.name(),
+                        &declaring_iid,
+                        method.name(),
+                        absolute_slot,
+                    )
                 };
             let enumerator_next = known_enumerator_next_override(
                 def.namespace(),
                 def.name(),
-                &crate::meta::extract_iid(def),
+                &declaring_iid,
                 method.name(),
-                base_offset + index_in_interface,
+                absolute_slot,
                 &raw_params,
                 &map_raw_com_type(&signature.return_type, index),
             );
@@ -871,7 +1016,7 @@ fn parse_methods(
                 });
             let mut compatibility = MethodMeta {
                 name: name.clone(),
-                vtable_index: base_offset + index_in_interface,
+                vtable_index: absolute_slot,
                 params,
                 return_type,
                 preserve_hresult,
@@ -881,15 +1026,17 @@ fn parse_methods(
             let mut raw = RawComMethod {
                 declaring_namespace: def.namespace().to_string(),
                 declaring_interface: def.name().to_string(),
-                declaring_iid: crate::meta::extract_iid(def),
+                declaring_iid,
                 metadata_name: method.name().to_string(),
                 projected_name: name,
-                vtable_index: base_offset + index_in_interface,
+                vtable_index: absolute_slot,
                 params: raw_params,
                 return_type: map_raw_com_type(&signature.return_type, index),
                 semantic_hresult,
                 enumerator_next,
                 exact_contract: None,
+                interface_replacement_contracts: Vec::new(),
+                exact_interface_output_call: None,
                 safe_array_contract_error: None,
             };
             apply_exact_method_contract(
@@ -900,9 +1047,416 @@ fn parse_methods(
                 &mut raw,
             );
             apply_safe_array_evidence(&mut raw);
+            apply_exact_parameter_direction_overrides(&mut compatibility, &mut raw);
             (compatibility, raw)
         })
         .unzip()
+}
+
+pub(crate) fn canonical_raw_method(method: &RawComMethod) -> String {
+    let params = method
+        .params
+        .iter()
+        .enumerate()
+        .map(|(index, param)| {
+            format!(
+                "{index}:name={}:type={:?}:direction={:?}:optional={}:const_attribute={}:array={:?}:string_array={:?}:free={:?}:safe_array={:?}:exact_interface_output={:?}",
+                param.name,
+                param.typ,
+                param.direction,
+                param.optional,
+                param.const_attribute,
+                param.native_array,
+                param.string_pointer_array,
+                param.free_with,
+                param.safe_array_evidence,
+                param.exact_interface_output,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("|");
+    format!(
+        "namespace={};interface={};iid={};method={};projected={};slot={};params=[{}];return={:?};semantic_hresult={:?};enumerator={:?};exact_contract={:?};interface_replacements={:?};exact_interface_output_call={:?};safe_array_error={:?}",
+        method.declaring_namespace,
+        method.declaring_interface,
+        method.declaring_iid,
+        method.metadata_name,
+        method.projected_name,
+        method.vtable_index,
+        params,
+        method.return_type,
+        method.semantic_hresult,
+        method.enumerator_next,
+        method.exact_contract,
+        method.interface_replacement_contracts,
+        method.exact_interface_output_call,
+        method.safe_array_contract_error,
+    )
+}
+
+pub(crate) fn raw_method_fingerprint(method: &RawComMethod) -> String {
+    format!(
+        "{:X}",
+        Sha256::digest(canonical_raw_method(method).as_bytes())
+    )
+}
+
+pub(crate) fn collect_evidence_dependencies(
+    interface: &ComInterfaceMeta,
+) -> crate::contract_registry::EvidenceDependencies {
+    use crate::contract_registry::{ComStandardRule, EvidenceDependencies};
+
+    let mut dependencies = EvidenceDependencies::default();
+    dependencies.add_standard(ComStandardRule::IUnknownIdentityRefcount);
+    dependencies.add_standard(ComStandardRule::QueryInterfaceOutputPlusOne);
+    if interface.coclass_clsid.is_some() {
+        dependencies.add_standard(ComStandardRule::ActivationOutputPlusOne);
+    }
+    for method in interface.raw_methods.as_deref().unwrap_or_default() {
+        if raw_hresult(&method.return_type) {
+            dependencies.add_standard(ComStandardRule::HresultFailure);
+        }
+        if let Some(evidence) = &method.semantic_hresult {
+            dependencies.consume_raw_evidence(evidence);
+        }
+        if let Some(enumerator) = &method.enumerator_next {
+            dependencies.consume_raw_evidence(&enumerator.evidence);
+        }
+        if let Some(contract) = &method.exact_contract {
+            dependencies.add_exact(
+                contract.entry_id(),
+                contract.family_id(),
+                contract.contract_kind(),
+            );
+        }
+        if let Some(call) = &method.exact_interface_output_call {
+            dependencies.consume_raw_evidence(&call.evidence);
+        }
+        for replacement in &method.interface_replacement_contracts {
+            dependencies.consume_raw_evidence(&replacement.evidence);
+        }
+        if let Some(borrowed) =
+            crate::com_borrowed_handle_registry::borrowed_hwnd_evidence_for_declaration(
+                &method.declaring_namespace,
+                &method.declaring_interface,
+                &method.metadata_name,
+                method.vtable_index,
+            )
+        {
+            dependencies.add_exact(
+                borrowed.entry_id(),
+                borrowed.family_id(),
+                borrowed.contract_kind(),
+            );
+        }
+        for (parameter_index, parameter) in method.params.iter().enumerate() {
+            if parameter.const_attribute {
+                dependencies
+                    .metadata_attributes
+                    .insert("ConstAttribute".into());
+            }
+            for evidence in parameter
+                .native_array
+                .iter()
+                .flat_map(|array| &array.evidence)
+            {
+                dependencies.consume_raw_evidence(evidence);
+            }
+            if let Some(free_with) = &parameter.free_with {
+                dependencies.consume_raw_evidence(&free_with.evidence);
+                dependencies.add_standard(ComStandardRule::MatchingStandardCleanup);
+            }
+            if let Some(safe_array) = &parameter.safe_array_evidence {
+                dependencies.add_exact(
+                    safe_array.entry_id(),
+                    safe_array.family_id(),
+                    safe_array.contract_kind(),
+                );
+            }
+            if let Some(output) = &parameter.exact_interface_output {
+                dependencies.consume_raw_evidence(&output.evidence);
+            }
+            if matches!(
+                &parameter.typ.native_type,
+                RawNativeType::Named {
+                    kind: RawNamedKind::Interface | RawNamedKind::RuntimeClass,
+                    ..
+                }
+            ) {
+                match parameter.direction {
+                    RawParamDirection::In => {
+                        dependencies.add_standard(ComStandardRule::InterfaceInputBorrow);
+                    }
+                    RawParamDirection::Out => {
+                        dependencies.add_standard(ComStandardRule::TypedInterfaceOutputPlusOne);
+                    }
+                    RawParamDirection::InOut => {}
+                }
+            }
+            if is_registered_borrowed_hwnd_output(method, parameter_index) {
+                dependencies.add_standard(ComStandardRule::BorrowedHandleNoCleanup);
+            }
+        }
+    }
+    dependencies
+}
+
+pub(crate) fn collect_exact_registry_entries(
+    interface: &ComInterfaceMeta,
+) -> Vec<crate::contract_registry::ExactRegistryEntry> {
+    use crate::contract_registry::{ExactEntrySelector, ExactRegistryEntry};
+
+    let mut entries = Vec::new();
+    for method in interface.raw_methods.as_deref().unwrap_or_default() {
+        let method_fingerprint = method
+            .exact_interface_output_call
+            .as_ref()
+            .map(|contract| contract.source_fingerprint.clone())
+            .unwrap_or_else(|| raw_method_fingerprint(method));
+        let method_selector = || ExactEntrySelector {
+            namespace: method.declaring_namespace.clone(),
+            interface: method.declaring_interface.clone(),
+            iid: method.declaring_iid.clone(),
+            method: method.metadata_name.clone(),
+            slot: method.vtable_index,
+            parameter: None,
+        };
+        let record = |evidence: &RawEvidence, parameter: Option<(usize, &RawComParam)>| {
+            let RawEvidence::ExactRegistry {
+                entry_id,
+                family_id,
+                contract_kind,
+                reason,
+                citation,
+            } = evidence
+            else {
+                return None;
+            };
+            let mut selector = method_selector();
+            if entry_id.contains(".param-")
+                && let Some((index, parameter)) = parameter
+            {
+                selector.parameter = Some((index, parameter.name.clone()));
+            }
+            Some(ExactRegistryEntry {
+                entry_id: entry_id.clone(),
+                family_id: *family_id,
+                contract_kind: *contract_kind,
+                selector,
+                source_fingerprint: method_fingerprint.clone(),
+                reason: reason.clone(),
+                citation: citation.clone(),
+            })
+        };
+
+        if let Some(evidence) = &method.semantic_hresult {
+            entries.extend(record(evidence, None));
+        }
+        if let Some(enumerator) = &method.enumerator_next {
+            entries.extend(record(&enumerator.evidence, None));
+        }
+        if let Some(contract) = &method.exact_contract {
+            entries.push(ExactRegistryEntry {
+                entry_id: contract.entry_id(),
+                family_id: contract.family_id(),
+                contract_kind: contract.contract_kind(),
+                selector: method_selector(),
+                source_fingerprint: method_fingerprint.clone(),
+                reason: contract.reason.into(),
+                citation: contract.citation.into(),
+            });
+        }
+        if let Some(call) = &method.exact_interface_output_call {
+            entries.extend(record(&call.evidence, None));
+        }
+        for replacement in &method.interface_replacement_contracts {
+            entries.extend(record(
+                &replacement.evidence,
+                method
+                    .params
+                    .get(replacement.parameter_index)
+                    .map(|parameter| (replacement.parameter_index, parameter)),
+            ));
+        }
+        if let Some(borrowed) =
+            crate::com_borrowed_handle_registry::borrowed_hwnd_evidence_for_declaration(
+                &method.declaring_namespace,
+                &method.declaring_interface,
+                &method.metadata_name,
+                method.vtable_index,
+            )
+        {
+            entries.push(ExactRegistryEntry {
+                entry_id: borrowed.entry_id(),
+                family_id: borrowed.family_id(),
+                contract_kind: borrowed.contract_kind(),
+                selector: ExactEntrySelector {
+                    parameter: Some((borrowed.parameter_index, borrowed.parameter_name.into())),
+                    ..method_selector()
+                },
+                source_fingerprint: method_fingerprint.clone(),
+                reason: borrowed.reason.into(),
+                citation: borrowed.citation.into(),
+            });
+        }
+        for (parameter_index, parameter) in method.params.iter().enumerate() {
+            for evidence in parameter
+                .native_array
+                .iter()
+                .flat_map(|array| &array.evidence)
+            {
+                entries.extend(record(evidence, Some((parameter_index, parameter))));
+            }
+            if let Some(free_with) = &parameter.free_with {
+                entries.extend(record(
+                    &free_with.evidence,
+                    Some((parameter_index, parameter)),
+                ));
+            }
+            if let Some(safe_array) = &parameter.safe_array_evidence {
+                entries.push(ExactRegistryEntry {
+                    entry_id: safe_array.entry_id(),
+                    family_id: safe_array.family_id(),
+                    contract_kind: safe_array.contract_kind(),
+                    selector: ExactEntrySelector {
+                        parameter: Some((
+                            safe_array.parameter_index,
+                            safe_array.parameter_name.into(),
+                        )),
+                        ..method_selector()
+                    },
+                    source_fingerprint: method_fingerprint.clone(),
+                    reason: safe_array.reason.into(),
+                    citation: safe_array.citation.into(),
+                });
+            }
+            if let Some(output) = &parameter.exact_interface_output {
+                entries.extend(record(&output.evidence, Some((parameter_index, parameter))));
+            }
+        }
+    }
+    entries
+}
+
+fn apply_exact_parameter_direction_overrides(
+    compatibility: &mut MethodMeta,
+    raw: &mut RawComMethod,
+) -> bool {
+    let entry = crate::contract_registry::conditional_output_contract(
+        crate::contract_registry::WMI_OPEN_NAMESPACE_ENTRY_ID,
+    )
+    .expect("embedded WMI contract registry must validate");
+    let selector = &entry.selector;
+    if raw.declaring_namespace != selector.interface.namespace
+        || raw.declaring_interface != selector.interface.name
+        || !raw
+            .declaring_iid
+            .eq_ignore_ascii_case(&selector.interface.iid)
+        || !raw
+            .declaring_iid
+            .eq_ignore_ascii_case(&selector.declaring_iid)
+        || raw.metadata_name != selector.method
+        || raw.vtable_index != selector.absolute_slot
+        || raw.params.len() != selector.parameter_count
+        || compatibility.params.len() != selector.parameter_count
+    {
+        return false;
+    }
+    if raw_method_fingerprint(raw) != selector.source_fingerprint {
+        return false;
+    }
+    if !selector
+        .parameters
+        .iter()
+        .zip(&raw.params)
+        .all(|(expected, actual)| {
+            expected.name == actual.name
+                && expected.native_type == raw_type_registry_name(&actual.typ)
+                && expected.pointer_depth == actual.typ.pointer_depth
+                && expected.direction == raw_direction_key(actual.direction)
+                && expected.optional == actual.optional
+                && expected.constness == raw_constness_key(actual.typ.constness)
+                && expected.const_attribute == actual.const_attribute
+        })
+    {
+        return false;
+    }
+    let citation = entry
+        .evidence
+        .iter()
+        .filter_map(|source| {
+            source
+                .url
+                .as_deref()
+                .or(source.file.as_deref())
+                .map(|value| format!("{}:{value}", source.kind.key()))
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    for output in &entry.contract.outputs {
+        let index = output.parameter_index;
+        raw.params[index].direction = RawParamDirection::Out;
+        raw.params[index].exact_interface_output = Some(RawExactInterfaceOutputContract {
+            interface_iid: output.interface_iid.clone(),
+            argument_optional: output.argument_optional,
+            nullable_on_success: output.nullable_on_success,
+            evidence: RawEvidence::exact_registry(
+                entry.entry_id.clone(),
+                entry.family_id,
+                entry.kind,
+                entry.reason.clone(),
+                citation.clone(),
+            ),
+        });
+        compatibility.params[index].direction = ParamDirection::Out;
+    }
+    raw.exact_interface_output_call = Some(RawExactInterfaceOutputCallContract {
+        source_fingerprint: selector.source_fingerprint.clone(),
+        public_input_param_indices: entry.contract.public_input_parameter_indices.clone(),
+        flags_param_index: entry.contract.flags_parameter_index,
+        context_param_index: entry.contract.context_parameter_index,
+        synchronous_output_param_index: entry.contract.synchronous.output_parameter_index,
+        semisynchronous_output_param_index: entry.contract.semisynchronous.output_parameter_index,
+        synchronous_flags: entry.contract.synchronous.flags,
+        semisynchronous_flag_value: entry.contract.semisynchronous.flags,
+        flags_option_name: entry.contract.flags_option_name.clone(),
+        synchronous_output_option_name: entry.contract.synchronous.option_name.clone(),
+        semisynchronous_output_option_name: entry.contract.semisynchronous.option_name.clone(),
+        evidence: RawEvidence::exact_registry(
+            entry.entry_id.clone(),
+            entry.family_id,
+            entry.kind,
+            entry.reason.clone(),
+            citation,
+        ),
+    });
+    true
+}
+
+fn raw_type_registry_name(typ: &RawComType) -> String {
+    match &typ.native_type {
+        RawNativeType::Named {
+            namespace, name, ..
+        } => format!("{namespace}.{name}"),
+        other => format!("{other:?}").to_ascii_lowercase(),
+    }
+}
+
+const fn raw_direction_key(direction: RawParamDirection) -> &'static str {
+    match direction {
+        RawParamDirection::In => "in",
+        RawParamDirection::Out => "out",
+        RawParamDirection::InOut => "inout",
+    }
+}
+
+const fn raw_constness_key(constness: RawConstness) -> &'static str {
+    match constness {
+        RawConstness::Const => "const",
+        RawConstness::Mutable => "mutable",
+        RawConstness::Mixed => "mixed",
+        RawConstness::Unspecified => "unspecified",
+    }
 }
 
 fn apply_safe_array_evidence(raw: &mut RawComMethod) {
@@ -1280,10 +1834,13 @@ fn apply_exact_method_contract(
             relation.unit = RawCountUnit::Bytes;
             relation.projected_capacity = true;
             relation.constness = Some(RawConstness::Mutable);
-            relation.evidence.push(RawEvidence::Override {
-                reason: contract.reason,
-                citation: contract.citation,
-            });
+            relation.evidence.push(RawEvidence::exact_registry(
+                contract.entry_id(),
+                contract.family_id(),
+                crate::contract_registry::ContractKind::BoundedTwoCall,
+                contract.reason,
+                contract.citation,
+            ));
             let actual = contract
                 .actual_length_param_index
                 .expect("fixed-capacity GetBlob has an actual byte count");
@@ -1706,8 +2263,11 @@ pub(crate) fn validate_exact_method_contract(
                         && relation.evidence.iter().any(|evidence| {
                             matches!(
                                 evidence,
-                                RawEvidence::Override { reason, citation }
-                                    if *reason == contract.reason && *citation == contract.citation
+                                RawEvidence::ExactRegistry {
+                                    reason,
+                                    citation,
+                                    ..
+                                } if reason == contract.reason && citation == contract.citation
                             )
                         })
                 })
@@ -1787,6 +2347,7 @@ fn known_array_contract_override(
     method_name: &str,
     vtable_index: usize,
     param_index: usize,
+    param_name: &str,
     metadata: Option<RawArrayRelation>,
 ) -> Option<RawArrayRelation> {
     if metadata.is_none()
@@ -1806,10 +2367,10 @@ fn known_array_contract_override(
             two_call: false,
             projected_capacity: false,
             constness: None,
-            evidence: vec![RawEvidence::Override {
-                reason: ENUMERATOR_ARRAY_REASON,
-                citation: contract.citation,
-            }],
+            evidence: vec![enumerator_contract_evidence(
+                contract,
+                ENUMERATOR_ARRAY_REASON,
+            )],
         });
     }
     let exact = match (
@@ -1897,7 +2458,41 @@ fn known_array_contract_override(
     let mut evidence = metadata
         .map(|relation| relation.evidence)
         .unwrap_or_default();
-    evidence.push(RawEvidence::Override { reason, citation });
+    let (family_id, contract_kind) = if interface_namespace == "Windows.Win32.System.Com"
+        && interface_name == "ISequentialStream"
+        && matches!(method_name, "Read" | "Write")
+    {
+        (
+            crate::contract_registry::ExactFamilyId::SequentialStreamBuffer,
+            crate::contract_registry::ContractKind::CountedBuffer,
+        )
+    } else if two_call {
+        (
+            crate::contract_registry::ExactFamilyId::BoundedTwoCall,
+            crate::contract_registry::ContractKind::BoundedTwoCall,
+        )
+    } else {
+        (
+            crate::contract_registry::ExactFamilyId::CountedBuffer,
+            crate::contract_registry::ContractKind::CountedBuffer,
+        )
+    };
+    evidence.push(RawEvidence::exact_registry(
+        crate::contract_registry::exact_parameter_entry_id(
+            family_id,
+            interface_namespace,
+            interface_name,
+            interface_iid,
+            method_name,
+            vtable_index,
+            param_index,
+            param_name,
+        ),
+        family_id,
+        contract_kind,
+        reason,
+        citation,
+    ));
     Some(RawArrayRelation {
         count_param_index: Some(count),
         actual_length_param_index: actual,
@@ -2015,20 +2610,30 @@ fn known_enumerator_next_override(
             && exact_known_type
             && param.native_array.as_ref().is_some_and(|relation| {
                 relation.count_param_index == Some(0)
-                    && relation.actual_length_param_index.is_none()
-                    && relation.unit == RawCountUnit::Elements
-                    && !relation.two_call
-                    && relation.evidence.iter().any(|evidence| {
-                        matches!(
-                            evidence,
-                            RawEvidence::MetadataAttribute("NativeArrayInfoAttribute")
-                        ) || matches!(
-                            evidence,
-                            RawEvidence::Override { reason, citation }
-                                if *reason == ENUMERATOR_ARRAY_REASON
-                                    && *citation == expected.citation
-                        )
-                    })
+                && relation.actual_length_param_index.is_none()
+                && relation.unit == RawCountUnit::Elements
+                && !relation.two_call
+                && relation.evidence.iter().any(|evidence| {
+                    matches!(
+                        evidence,
+                        RawEvidence::MetadataAttribute("NativeArrayInfoAttribute")
+                    ) || matches!(
+                        evidence,
+                        RawEvidence::ComStandard(
+                            crate::contract_registry::ComStandardRule::GenericEnumeratorNext
+                        ) if expected.uses_generic_standard()
+                    ) || matches!(
+                        evidence,
+                        RawEvidence::ExactRegistry {
+                            contract_kind: crate::contract_registry::ContractKind::EnumeratorNext,
+                            reason,
+                            citation,
+                            ..
+                        } if !expected.uses_generic_standard()
+                                && reason == ENUMERATOR_ARRAY_REASON
+                                && citation == expected.citation
+                    )
+                })
             })
     });
     let exact_shape = method_name == "Next"
@@ -2050,11 +2655,28 @@ fn known_enumerator_next_override(
         values_param_index: 1,
         fetched_param_index: 2,
         fetched_optional_for_single: expected_fetched_optional,
-        evidence: RawEvidence::Override {
-            reason: "the standard IEnum* contract defines pceltFetched as the initialized element count and permits omission only where this exact interface metadata marks it optional",
-            citation: expected.citation,
-        },
+        evidence: enumerator_contract_evidence(
+            expected,
+            "the standard IEnum* contract defines pceltFetched as the initialized element count and permits omission only where this exact interface metadata marks it optional",
+        ),
     })
+}
+
+fn enumerator_contract_evidence(
+    contract: &crate::com_enumerator_registry::EnumeratorContract,
+    reason: &str,
+) -> RawEvidence {
+    if contract.uses_generic_standard() {
+        RawEvidence::ComStandard(crate::contract_registry::ComStandardRule::GenericEnumeratorNext)
+    } else {
+        RawEvidence::exact_registry(
+            contract.entry_id(),
+            contract.family_id(),
+            contract.contract_kind(),
+            reason,
+            contract.citation,
+        )
+    }
 }
 
 fn is_registered_enumerator_interface(interface_namespace: &str, interface_name: &str) -> bool {
@@ -2118,7 +2740,11 @@ pub(crate) fn validate_attached_enumerator_evidence(raw: &RawComMethod) -> Resul
 fn known_free_with_override(
     interface_namespace: &str,
     interface_name: &str,
+    interface_iid: &str,
     method_name: &str,
+    vtable_index: usize,
+    parameter_index: usize,
+    parameter_name: &str,
     typ: &windows_metadata::Type,
     direction: &ParamDirection,
 ) -> Option<RawFreeWith> {
@@ -2143,10 +2769,11 @@ fn known_free_with_override(
     {
         return Some(RawFreeWith {
             function: "SysFreeString".into(),
-            evidence: RawEvidence::Override {
-                reason: "Windows.Win32 metadata omits scalar BSTR output cleanup",
-                citation: "https://learn.microsoft.com/windows/win32/api/oleauto/nf-oleauto-sysfreestring",
-            },
+            evidence: RawEvidence::ComStandard(if matches!(direction, ParamDirection::InOut) {
+                crate::contract_registry::ComStandardRule::BstrReplacement
+            } else {
+                crate::contract_registry::ComStandardRule::BstrOutputOwnershipCleanup
+            }),
         });
     }
     let is_known_cotaskmem_wide_string = matches!(
@@ -2165,9 +2792,21 @@ fn known_free_with_override(
     {
         return Some(RawFreeWith {
             function: "CoTaskMemFree".into(),
-            evidence: RawEvidence::Override {
-                reason: "API documentation assigns the returned string to the COM task allocator",
-                citation: match (interface_namespace, interface_name, method_name) {
+            evidence: RawEvidence::exact_registry(
+                crate::contract_registry::exact_parameter_entry_id(
+                    crate::contract_registry::ExactFamilyId::Ownership,
+                    interface_namespace,
+                    interface_name,
+                    interface_iid,
+                    method_name,
+                    vtable_index,
+                    parameter_index,
+                    parameter_name,
+                ),
+                crate::contract_registry::ExactFamilyId::Ownership,
+                crate::contract_registry::ContractKind::Ownership,
+                "API documentation assigns the returned string to the COM task allocator",
+                match (interface_namespace, interface_name, method_name) {
                     ("Windows.Win32.UI.Shell", "IShellItem", "GetDisplayName") => {
                         "https://learn.microsoft.com/windows/win32/api/shobjidl_core/nf-shobjidl_core-ishellitem-getdisplayname"
                     }
@@ -2179,7 +2818,7 @@ fn known_free_with_override(
                     }
                     _ => unreachable!("guarded by exact override registry"),
                 },
-            },
+            ),
         });
     }
     if *depth == 2
@@ -2195,10 +2834,22 @@ fn known_free_with_override(
     {
         return Some(RawFreeWith {
             function: "CoTaskMemFree".into(),
-            evidence: RawEvidence::Override {
-                reason: "IOpcSignatureCustomObject::GetXml assigns the returned byte buffer to the COM task allocator",
-                citation: "https://learn.microsoft.com/windows/win32/api/msopc/nf-msopc-iopcsignaturecustomobject-getxml",
-            },
+            evidence: RawEvidence::exact_registry(
+                crate::contract_registry::exact_parameter_entry_id(
+                    crate::contract_registry::ExactFamilyId::Ownership,
+                    interface_namespace,
+                    interface_name,
+                    interface_iid,
+                    method_name,
+                    vtable_index,
+                    parameter_index,
+                    parameter_name,
+                ),
+                crate::contract_registry::ExactFamilyId::Ownership,
+                crate::contract_registry::ContractKind::Ownership,
+                "IOpcSignatureCustomObject::GetXml assigns the returned byte buffer to the COM task allocator",
+                "https://learn.microsoft.com/windows/win32/api/msopc/nf-msopc-iopcsignaturecustomobject-getxml",
+            ),
         });
     }
     // Windows.Win32.winmd omits FreeWith on IShellLink::GetIDList.
@@ -2217,10 +2868,22 @@ fn known_free_with_override(
         {
             Some(RawFreeWith {
                 function: "CoTaskMemFree".into(),
-                evidence: RawEvidence::Override {
-                    reason: "IShellLink::GetIDList returns a PIDL allocated by the Shell task allocator",
-                    citation: "https://learn.microsoft.com/windows/win32/api/shobjidl_core/nf-shobjidl_core-ishelllinkw-getidlist",
-                },
+                evidence: RawEvidence::exact_registry(
+                    crate::contract_registry::exact_parameter_entry_id(
+                        crate::contract_registry::ExactFamilyId::Ownership,
+                        interface_namespace,
+                        interface_name,
+                        interface_iid,
+                        method_name,
+                        vtable_index,
+                        parameter_index,
+                        parameter_name,
+                    ),
+                    crate::contract_registry::ExactFamilyId::Ownership,
+                    crate::contract_registry::ContractKind::Ownership,
+                    "IShellLink::GetIDList returns a PIDL allocated by the Shell task allocator",
+                    "https://learn.microsoft.com/windows/win32/api/shobjidl_core/nf-shobjidl_core-ishelllinkw-getidlist",
+                ),
             })
         }
         _ => None,
@@ -2238,7 +2901,11 @@ fn known_free_with(
     known_free_with_override(
         interface_namespace,
         interface_name,
+        "",
         method_name,
+        3,
+        0,
+        "value",
         typ,
         direction,
     )
@@ -2248,15 +2915,29 @@ fn known_free_with(
 fn known_semantic_hresult_override(
     interface_namespace: &str,
     interface_name: &str,
+    interface_iid: &str,
     method_name: &str,
+    vtable_index: usize,
 ) -> Option<RawEvidence> {
     matches!(
         (interface_namespace, interface_name, method_name),
         ("Windows.Win32.System.Com", "IPersistFile", "GetCurFile")
     )
-    .then_some(RawEvidence::Override {
-        reason: "GetCurFile uses S_OK and S_FALSE as distinct successful ownership states",
-        citation: "https://learn.microsoft.com/windows/win32/api/objidl/nf-objidl-ipersistfile-getcurfile",
+    .then(|| {
+        RawEvidence::exact_registry(
+            crate::contract_registry::exact_method_entry_id(
+                crate::contract_registry::ExactFamilyId::SemanticHresult,
+                interface_namespace,
+                interface_name,
+                interface_iid,
+                method_name,
+                vtable_index,
+            ),
+            crate::contract_registry::ExactFamilyId::SemanticHresult,
+            crate::contract_registry::ContractKind::SemanticHresult,
+            "GetCurFile uses S_OK and S_FALSE as distinct successful ownership states",
+            "https://learn.microsoft.com/windows/win32/api/objidl/nf-objidl-ipersistfile-getcurfile",
+        )
     })
 }
 
@@ -2266,7 +2947,8 @@ fn is_known_semantic_hresult(
     interface_name: &str,
     method_name: &str,
 ) -> bool {
-    known_semantic_hresult_override(interface_namespace, interface_name, method_name).is_some()
+    known_semantic_hresult_override(interface_namespace, interface_name, "", method_name, 0)
+        .is_some()
 }
 
 fn map_parameter_type(
@@ -2978,6 +3660,562 @@ pub fn discover_newest_windows_winmd() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const IWBEM_SERVICES_IID: &str = "9556dc99-828c-11cf-a37e-00aa003240c7";
+    const IWBEM_CALL_RESULT_IID: &str = "44aca675-e8fc-11d0-a07c-00c04fb68820";
+
+    fn wbem_open_namespace_fixture() -> (MethodMeta, RawComMethod) {
+        let scalar_type = |native_type| RawComType {
+            native_type,
+            underlying: None,
+            pointer_depth: 0,
+            constness: RawConstness::Unspecified,
+        };
+        let wrapper_type =
+            |namespace: &str, name: &str, field_type: RawComType, underlying: RawComType| {
+                RawComType {
+                    native_type: RawNativeType::Named {
+                        namespace: namespace.into(),
+                        name: name.into(),
+                        kind: RawNamedKind::Struct,
+                        iid: None,
+                        layout: Some(Box::new(RawNativeLayoutSet {
+                            recursive: false,
+                            variants: vec![RawNativeLayout {
+                                architectures: 7,
+                                kind: RawLayoutKind::Sequential,
+                                packing: RawPacking::Default,
+                                declared_size: None,
+                                fields: vec![RawNativeField {
+                                    name: "Value".into(),
+                                    typ: field_type,
+                                    explicit_offset: None,
+                                    fixed_count: None,
+                                    bitfield: false,
+                                    flexible_array: false,
+                                }],
+                                is_union: false,
+                            }],
+                        })),
+                    },
+                    underlying: Some(Box::new(underlying)),
+                    pointer_depth: 0,
+                    constness: RawConstness::Unspecified,
+                }
+            };
+        let input = |name: &str, typ: RawComType, const_attribute| RawComParam {
+            name: name.into(),
+            typ,
+            direction: RawParamDirection::In,
+            optional: false,
+            const_attribute,
+            native_array: None,
+            string_pointer_array: None,
+            free_with: None,
+            safe_array_evidence: None,
+            exact_interface_output: None,
+        };
+        let char_pointer = RawComType {
+            native_type: RawNativeType::Char16,
+            underlying: None,
+            pointer_depth: 1,
+            constness: RawConstness::Mutable,
+        };
+        let bstr = wrapper_type(
+            "Windows.Win32.Foundation",
+            "BSTR",
+            char_pointer.clone(),
+            char_pointer,
+        );
+        let i32_type = scalar_type(RawNativeType::I32);
+        let flags = RawComType {
+            native_type: RawNativeType::Named {
+                namespace: "Windows.Win32.System.Wmi".into(),
+                name: "WBEM_GENERIC_FLAG_TYPE".into(),
+                kind: RawNamedKind::Enum,
+                iid: None,
+                layout: None,
+            },
+            underlying: Some(Box::new(i32_type.clone())),
+            pointer_depth: 0,
+            constness: RawConstness::Unspecified,
+        };
+        let context = RawComType {
+            native_type: RawNativeType::Named {
+                namespace: "Windows.Win32.System.Wmi".into(),
+                name: "IWbemContext".into(),
+                kind: RawNamedKind::Interface,
+                iid: Some("44aca674-e8fc-11d0-a07c-00c04fb68820".into()),
+                layout: None,
+            },
+            underlying: None,
+            pointer_depth: 0,
+            constness: RawConstness::Unspecified,
+        };
+        let hresult = wrapper_type(
+            "Windows.Win32.Foundation",
+            "HRESULT",
+            i32_type.clone(),
+            i32_type,
+        );
+        let output = |name: &str, interface: &str, iid: &str, optional| RawComParam {
+            name: name.into(),
+            typ: RawComType {
+                native_type: RawNativeType::Named {
+                    namespace: "Windows.Win32.System.Wmi".into(),
+                    name: interface.into(),
+                    kind: RawNamedKind::Interface,
+                    iid: Some(iid.into()),
+                    layout: None,
+                },
+                underlying: None,
+                pointer_depth: 1,
+                constness: RawConstness::Mutable,
+            },
+            direction: RawParamDirection::InOut,
+            optional,
+            const_attribute: false,
+            native_array: None,
+            string_pointer_array: None,
+            free_with: None,
+            safe_array_evidence: None,
+            exact_interface_output: None,
+        };
+        let raw = RawComMethod {
+            declaring_namespace: "Windows.Win32.System.Wmi".into(),
+            declaring_interface: "IWbemServices".into(),
+            declaring_iid: IWBEM_SERVICES_IID.into(),
+            metadata_name: "OpenNamespace".into(),
+            projected_name: "OpenNamespace".into(),
+            vtable_index: 3,
+            params: vec![
+                input("strNamespace", bstr, true),
+                input("lFlags", flags, false),
+                input("pCtx", context, false),
+                output(
+                    "ppWorkingNamespace",
+                    "IWbemServices",
+                    IWBEM_SERVICES_IID,
+                    true,
+                ),
+                output("ppResult", "IWbemCallResult", IWBEM_CALL_RESULT_IID, true),
+            ],
+            return_type: hresult,
+            semantic_hresult: None,
+            enumerator_next: None,
+            exact_contract: None,
+            interface_replacement_contracts: Vec::new(),
+            exact_interface_output_call: None,
+            safe_array_contract_error: None,
+        };
+        let compatibility = MethodMeta {
+            name: "openNamespace".into(),
+            vtable_index: 3,
+            params: raw
+                .params
+                .iter()
+                .map(|param| ParamMeta {
+                    name: param.name.clone(),
+                    typ: crate::types::TypeMeta::I32,
+                    direction: match param.direction {
+                        RawParamDirection::In => ParamDirection::In,
+                        RawParamDirection::Out => ParamDirection::Out,
+                        RawParamDirection::InOut => ParamDirection::InOut,
+                    },
+                })
+                .collect(),
+            ..MethodMeta::default()
+        };
+        (compatibility, raw)
+    }
+
+    fn assert_open_namespace_override_rejects_drift(mutate: impl FnOnce(&mut RawComMethod)) {
+        let (mut compatibility, mut raw) = wbem_open_namespace_fixture();
+        mutate(&mut raw);
+        compatibility.params.truncate(raw.params.len());
+        assert!(!apply_exact_parameter_direction_overrides(
+            &mut compatibility,
+            &mut raw
+        ));
+    }
+
+    #[test]
+    fn iwbem_open_namespace_out_override_is_exact_and_cited() {
+        let (mut compatibility, mut raw) = wbem_open_namespace_fixture();
+        assert_eq!(
+            raw_method_fingerprint(&raw),
+            crate::contract_registry::conditional_output_contract(
+                crate::contract_registry::WMI_OPEN_NAMESPACE_ENTRY_ID
+            )
+            .unwrap()
+            .selector
+            .source_fingerprint
+        );
+        assert!(apply_exact_parameter_direction_overrides(
+            &mut compatibility,
+            &mut raw
+        ));
+        let call = raw.exact_interface_output_call.as_ref().unwrap();
+        assert_eq!(call.synchronous_flags, 0);
+        assert_eq!(call.semisynchronous_flag_value, 16);
+        for index in [3, 4] {
+            assert_eq!(raw.params[index].direction, RawParamDirection::Out);
+            assert_eq!(compatibility.params[index].direction, ParamDirection::Out);
+            let evidence = &raw.params[index]
+                .exact_interface_output
+                .as_ref()
+                .unwrap()
+                .evidence;
+            let RawEvidence::ExactRegistry {
+                entry_id,
+                family_id,
+                contract_kind,
+                reason,
+                citation,
+            } = evidence
+            else {
+                panic!("OpenNamespace output must carry override evidence");
+            };
+            assert_eq!(
+                entry_id,
+                crate::contract_registry::WMI_OPEN_NAMESPACE_ENTRY_ID
+            );
+            assert_eq!(
+                *family_id,
+                crate::contract_registry::ExactFamilyId::ConditionalOutput
+            );
+            assert_eq!(
+                *contract_kind,
+                crate::contract_registry::ContractKind::ConditionalOutput
+            );
+            assert!(reason.contains("owned +1"));
+            assert!(citation.contains("learn.microsoft.com"));
+            assert!(citation.contains("WbemIdl.idl"));
+        }
+    }
+
+    #[test]
+    fn external_evidence_families_have_stable_typed_provenance() {
+        let borrowed = crate::com_borrowed_handle_registry::borrowed_hwnd_evidence_for_declaration(
+            "Windows.Win32.System.Ole",
+            "IOleWindow",
+            "GetWindow",
+            3,
+        )
+        .unwrap();
+        assert!(
+            borrowed
+                .entry_id()
+                .starts_with("windows.borrowed-hwnd-output.entry.")
+        );
+        assert_eq!(
+            borrowed.family_id(),
+            crate::contract_registry::ExactFamilyId::BorrowedHwndOutput
+        );
+        assert_eq!(
+            borrowed.contract_kind(),
+            crate::contract_registry::ContractKind::BorrowedHandle
+        );
+
+        let enumerator = crate::com_enumerator_registry::contract_for_declaration(
+            "Windows.Win32.System.Com",
+            "IEnumString",
+        )
+        .unwrap();
+        assert!(
+            enumerator
+                .entry_id()
+                .starts_with("com.enumerator-next-exception.entry.")
+        );
+        assert_eq!(
+            enumerator.family_id(),
+            crate::contract_registry::ExactFamilyId::EnumeratorException
+        );
+        assert_eq!(
+            enumerator.contract_kind(),
+            crate::contract_registry::ContractKind::EnumeratorNext
+        );
+
+        let safe_array = &crate::com_safe_array_registry::all_safe_array_evidence()[0];
+        assert!(
+            safe_array
+                .entry_id()
+                .starts_with("automation.safearray.entry.")
+        );
+        assert_eq!(
+            safe_array.family_id(),
+            crate::contract_registry::ExactFamilyId::SafeArray
+        );
+        assert_eq!(
+            safe_array.contract_kind(),
+            crate::contract_registry::ContractKind::Safearray
+        );
+
+        for (namespace, interface, method, expected_family, kind) in [
+            (
+                "Windows.Win32.System.Com",
+                "IStream",
+                "Stat",
+                crate::contract_registry::ExactFamilyId::Ownership,
+                crate::contract_registry::ContractKind::Ownership,
+            ),
+            (
+                "Windows.Win32.System.Com",
+                "IMalloc",
+                "Alloc",
+                crate::contract_registry::ExactFamilyId::Ownership,
+                crate::contract_registry::ContractKind::Ownership,
+            ),
+            (
+                "Windows.Win32.Graphics.Dxgi",
+                "IDXGIObject",
+                "GetPrivateData",
+                crate::contract_registry::ExactFamilyId::PrivateDataHazard,
+                crate::contract_registry::ContractKind::Hazard,
+            ),
+        ] {
+            let contract = registered_exact_method_contract(namespace, interface, method).unwrap();
+            assert_eq!(contract.family_id(), expected_family);
+            assert!(crate::contract_registry::valid_exact_entry_id(
+                &contract.entry_id()
+            ));
+            assert_eq!(contract.contract_kind(), kind);
+        }
+    }
+
+    #[test]
+    fn iwbem_open_namespace_out_override_rejects_every_identity_and_shape_drift() {
+        assert_open_namespace_override_rejects_drift(|method| {
+            method.declaring_namespace.push_str(".Drift")
+        });
+        assert_open_namespace_override_rejects_drift(|method| {
+            method.declaring_interface.push_str("Drift")
+        });
+        assert_open_namespace_override_rejects_drift(|method| {
+            method.declaring_iid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".into()
+        });
+        assert_open_namespace_override_rejects_drift(|method| {
+            method.metadata_name.push_str("Drift")
+        });
+        assert_open_namespace_override_rejects_drift(|method| {
+            method.projected_name.push_str("Drift")
+        });
+        assert_open_namespace_override_rejects_drift(|method| method.vtable_index += 1);
+        assert_open_namespace_override_rejects_drift(|method| {
+            method.params.pop();
+        });
+        assert_open_namespace_override_rejects_drift(|method| method.params.swap(3, 4));
+        for index in 0..3 {
+            assert_open_namespace_override_rejects_drift(|method| {
+                method.params[index].name.push_str("Drift")
+            });
+            assert_open_namespace_override_rejects_drift(|method| {
+                method.params[index].typ.pointer_depth += 1
+            });
+            assert_open_namespace_override_rejects_drift(|method| {
+                method.params[index].direction = RawParamDirection::Out
+            });
+            assert_open_namespace_override_rejects_drift(|method| {
+                method.params[index].optional = true
+            });
+            assert_open_namespace_override_rejects_drift(|method| {
+                method.params[index].const_attribute = !method.params[index].const_attribute
+            });
+        }
+        assert_open_namespace_override_rejects_drift(|method| {
+            method.return_type = RawComType {
+                native_type: RawNativeType::Void,
+                underlying: None,
+                pointer_depth: 0,
+                constness: RawConstness::Unspecified,
+            }
+        });
+        assert_open_namespace_override_rejects_drift(|method| {
+            method.semantic_hresult = Some(RawEvidence::MetadataAttribute(
+                "CanReturnMultipleSuccessValuesAttribute",
+            ))
+        });
+        assert_open_namespace_override_rejects_drift(|method| {
+            method.enumerator_next = Some(RawEnumeratorNext {
+                capacity_param_index: 1,
+                values_param_index: 3,
+                fetched_param_index: 4,
+                fetched_optional_for_single: false,
+                evidence: RawEvidence::exact_registry(
+                    "tests.enumerator.drift.v1",
+                    crate::contract_registry::ExactFamilyId::EnumeratorException,
+                    crate::contract_registry::ContractKind::EnumeratorNext,
+                    "drift",
+                    "test://drift",
+                ),
+            })
+        });
+        assert_open_namespace_override_rejects_drift(|method| {
+            method.params[0].native_array = Some(RawArrayRelation {
+                count_param_index: Some(1),
+                actual_length_param_index: None,
+                unit: RawCountUnit::Elements,
+                two_call: false,
+                projected_capacity: false,
+                constness: Some(RawConstness::Const),
+                evidence: Vec::new(),
+            })
+        });
+        assert_open_namespace_override_rejects_drift(|method| {
+            method.params[0].string_pointer_array = Some(RawStringPointerArray {
+                encoding: RawStringEncoding::Utf16,
+                pointer_depth: 1,
+                constness: RawConstness::Const,
+                ownership: RawElementOwnership::Borrowed,
+            })
+        });
+        assert_open_namespace_override_rejects_drift(|method| {
+            method.params[0].free_with = Some(RawFreeWith {
+                function: "CoTaskMemFree".into(),
+                evidence: RawEvidence::MetadataAttribute("FreeWithAttribute"),
+            })
+        });
+        assert_open_namespace_override_rejects_drift(|method| {
+            method.params[0].safe_array_evidence = Some(RawSafeArrayEvidence {
+                declaring_namespace: "Tests",
+                declaring_interface: "ITest",
+                declaring_iid: IWBEM_SERVICES_IID,
+                method_name: "OpenNamespace",
+                vtable_index: 3,
+                parameter_index: 0,
+                parameter_name: "strNamespace",
+                element_vartype: RawSafeArrayVartype::I4,
+                element_iid: None,
+                ownership: RawSafeArrayOwnership::BorrowedInput,
+                raw_method_shape: "drift",
+                reason: "drift",
+                citation: "test://drift",
+            })
+        });
+        assert_open_namespace_override_rejects_drift(|method| {
+            method.exact_contract = Some(RawExactMethodContract {
+                kind: RawExactMethodContractKind::FixedCapacityBytes,
+                declaring_namespace: "Tests",
+                declaring_interface: "ITest",
+                declaring_iid: IWBEM_SERVICES_IID,
+                method_name: "OpenNamespace",
+                vtable_index: 3,
+                buffer_param_index: 0,
+                capacity_param_index: 1,
+                actual_length_param_index: None,
+                citation: "test://drift",
+                reason: "drift",
+            })
+        });
+        assert_open_namespace_override_rejects_drift(|method| {
+            method
+                .interface_replacement_contracts
+                .push(RawInterfaceReplacementContract {
+                    parameter_index: 3,
+                    semantics: RawInterfaceReplacementSemantics::Unchanged,
+                    evidence: RawEvidence::exact_registry(
+                        "tests.replacement.drift.v1",
+                        crate::contract_registry::ExactFamilyId::Ownership,
+                        crate::contract_registry::ContractKind::Ownership,
+                        "drift",
+                        "test://drift",
+                    ),
+                })
+        });
+        assert_open_namespace_override_rejects_drift(|method| {
+            method.exact_interface_output_call = Some(RawExactInterfaceOutputCallContract {
+                source_fingerprint: "drift".into(),
+                public_input_param_indices: vec![0],
+                flags_param_index: 1,
+                context_param_index: 2,
+                synchronous_output_param_index: 3,
+                semisynchronous_output_param_index: 4,
+                synchronous_flags: 0,
+                semisynchronous_flag_value: 0x10,
+                flags_option_name: "lFlags".into(),
+                synchronous_output_option_name: "workingNamespace".into(),
+                semisynchronous_output_option_name: "result".into(),
+                evidence: RawEvidence::exact_registry(
+                    "tests.conditional-output.drift.v1",
+                    crate::contract_registry::ExactFamilyId::ConditionalOutput,
+                    crate::contract_registry::ContractKind::ConditionalOutput,
+                    "drift",
+                    "test://drift",
+                ),
+            })
+        });
+        assert_open_namespace_override_rejects_drift(|method| {
+            method.safe_array_contract_error = Some("drift".into())
+        });
+        for index in [3, 4] {
+            assert_open_namespace_override_rejects_drift(|method| {
+                method.params[index].name.push_str("Drift")
+            });
+            assert_open_namespace_override_rejects_drift(|method| {
+                method.params[index].typ.native_type = RawNativeType::U32
+            });
+            assert_open_namespace_override_rejects_drift(|method| {
+                if let RawNativeType::Named { namespace, .. } =
+                    &mut method.params[index].typ.native_type
+                {
+                    namespace.push_str(".Drift");
+                }
+            });
+            assert_open_namespace_override_rejects_drift(|method| {
+                if let RawNativeType::Named { name, .. } = &mut method.params[index].typ.native_type
+                {
+                    name.push_str("Drift");
+                }
+            });
+            assert_open_namespace_override_rejects_drift(|method| {
+                if let RawNativeType::Named { kind, .. } = &mut method.params[index].typ.native_type
+                {
+                    *kind = RawNamedKind::Struct;
+                }
+            });
+            assert_open_namespace_override_rejects_drift(|method| {
+                method.params[index].typ.pointer_depth += 1
+            });
+            assert_open_namespace_override_rejects_drift(|method| {
+                method.params[index].typ.underlying = Some(Box::new(RawComType {
+                    native_type: RawNativeType::U32,
+                    underlying: None,
+                    pointer_depth: 0,
+                    constness: RawConstness::Unspecified,
+                }))
+            });
+            assert_open_namespace_override_rejects_drift(|method| {
+                method.params[index].typ.constness = RawConstness::Const
+            });
+            assert_open_namespace_override_rejects_drift(|method| {
+                method.params[index].exact_interface_output =
+                    Some(RawExactInterfaceOutputContract {
+                        interface_iid: IWBEM_SERVICES_IID.into(),
+                        argument_optional: true,
+                        nullable_on_success: false,
+                        evidence: RawEvidence::exact_registry(
+                            "tests.output.drift.v1",
+                            crate::contract_registry::ExactFamilyId::Ownership,
+                            crate::contract_registry::ContractKind::Ownership,
+                            "drift",
+                            "test://drift",
+                        ),
+                    })
+            });
+            assert_open_namespace_override_rejects_drift(|method| {
+                method.params[index].optional = !method.params[index].optional
+            });
+            assert_open_namespace_override_rejects_drift(|method| {
+                method.params[index].direction = RawParamDirection::In
+            });
+            assert_open_namespace_override_rejects_drift(|method| {
+                if let RawNativeType::Named { iid, .. } = &mut method.params[index].typ.native_type
+                {
+                    *iid = Some("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".into());
+                }
+            });
+        }
+    }
 
     #[test]
     fn safe_array_registry_matches_configured_win32_metadata() {

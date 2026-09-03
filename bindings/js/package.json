@@ -23,6 +23,12 @@
       "require": "./dist/com-unsafe.js",
       "default": "./dist/com-unsafe.js"
     },
+    "./com/unsafe/raw": {
+      "types": "./dist/com-unsafe-raw.d.ts",
+      "import": "./dist/com-unsafe-raw.js",
+      "require": "./dist/com-unsafe-raw.js",
+      "default": "./dist/com-unsafe-raw.js"
+    },
     "./package.json": "./package.json"
   },
   "typesVersions": {
@@ -32,6 +38,9 @@
       ],
       "com/unsafe": [
         "dist/com-unsafe.d.ts"
+      ],
+      "com/unsafe/raw": [
+        "dist/com-unsafe-raw.d.ts"
       ]
     }
   },
@@ -63,7 +72,7 @@
     "packageJsonPath": "dist/package.json"
   },
   "engines": {
-    "node": ">= 12.22.0 < 13 || >= 14.17.0 < 15 || >= 15.12.0 < 16 || >= 16.0.0"
+    "node": ">=18.0.0"
   },
   "publishConfig": {
     "registry": "https://registry.npmjs.org",
@@ -81,7 +90,9 @@
     "format:toml": "taplo format",
     "format:rs": "cargo fmt",
     "lint": "oxlint",
-    "test": "ava",
+    "test": "npm run test:types && ava",
+    "test:generated-unsafe": "npm run build:test-hooks && npm run build:entrypoints && ava __test__/generated-unsafe-companion.e2e.ts",
+    "test:types": "tsc --noEmit --project __test__/types/tsconfig.json",
     "test:tsfn": "npm run build:test-hooks && ava __test__/tsfn.spec.ts",
     "version": "napi version"
   },

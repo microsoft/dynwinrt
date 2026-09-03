@@ -6,7 +6,7 @@ env:
 on:
   push:
     branches: [main]
-    tags: ['v*']
+    tags: ["v*"]
   pull_request:
     branches: [main]
 
@@ -75,6 +75,10 @@ jobs:
         run: cargo test -p dynwinrt
       - name: Test dynwinrt-codegen
         run: cargo test -p dynwinrt-codegen
+      - name: Test raw union MSVC C oracle (x64)
+        run: cargo test -p jswinrt_rs --features test-hooks com_raw::tests::msvc_c_union_oracle_executes_through_libffi -- --exact
+      - name: Test raw union MSVC C oracle (live i686)
+        run: cargo test -p jswinrt_rs --features test-hooks --target i686-pc-windows-msvc com_raw::tests::msvc_c_union_oracle_executes_through_libffi -- --exact
       - name: Enforce Classic COM coverage baseline
         shell: pwsh
         run: |
@@ -93,6 +97,116 @@ jobs:
             throw "Classic COM coverage fell below 70%: $($result.coverage_percent)"
           }
           Write-Host "Classic COM coverage: $($result.complete_interfaces)/$($result.eligible_interfaces) ($($result.coverage_percent)%)"
+      - name: Enforce Classic COM raw capability baseline
+        shell: pwsh
+        run: |
+          $output = Join-Path $env:RUNNER_TEMP 'classic-com-capability'
+          cargo run -p dynwinrt-codegen --quiet -- com-capability-census `
+            --winmd $env:DYNWINRT_WIN32_WINMD `
+            --output-dir $output | Out-Null
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $result = Get-Content (Join-Path $output 'classic-com-capability-summary.json') -Raw |
+            ConvertFrom-Json
+          if ($result.eligible_interfaces -ne 7929 -or $result.safe_complete -ne 5567) {
+            throw "Classic COM safe totals changed in capability census"
+          }
+          $support = Import-Csv (Join-Path $output 'classic-com-interface-support.csv')
+          if (
+            @($support).Count -ne 7929 -or
+            @($support | Where-Object { $_.safe_complete -eq 'true' }).Count -ne 5567 -or
+            @($support | Where-Object { $_.safe_complete -eq 'false' }).Count -ne 2362
+          ) {
+            throw "Classic COM compact interface support index changed"
+          }
+          $expected = @{
+            x64 = @(418, 1554, 390)
+            i686 = @(417, 1531, 414)
+            arm64 = @(418, 1554, 390)
+          }
+          foreach ($target in @('x64', 'i686', 'arm64')) {
+            $counts = $result.targets.$target
+            if (
+              $counts.safe_incomplete_raw_metadata_complete -ne $expected[$target][0] -or
+              $counts.safe_incomplete_raw_manual_contract -ne $expected[$target][1] -or
+              $counts.safe_incomplete_raw_runtime_blocked -ne $expected[$target][2]
+            ) {
+              throw "Classic COM raw capability totals changed for $target"
+            }
+          }
+          if (
+            $result.safeEvidence.safeComplete -ne 5567 -or
+            $result.safeEvidence.standardDerived -ne 5317 -or
+            $result.safeEvidence.exactRegistryDependent -ne 250 -or
+            $result.safeEvidence.metadataFactOccurrences -ne 5867 -or
+            $result.safeEvidence.comStandardFactOccurrences -ne 25526 -or
+            $result.safeEvidence.registeredExactEntries -ne 334 -or
+            $result.safeEvidence.metadataMatchedExactEntries -ne 334 -or
+            $result.safeEvidence.safeConsumedExactEntries -ne 291 -or
+            $result.safeEvidence.exactEntryInterfaceDependencies -ne 431 -or
+            $result.safeEvidence.exactFamilyInterfaceDependencies -ne 268
+          ) {
+            throw "Classic COM safe evidence dependency census changed"
+          }
+          $statuses = @($result.safeEvidence.exactEntryStatus.psobject.Properties.Value)
+          if (
+            @($statuses | Where-Object { -not $_.registered -or -not $_.metadataMatched }).Count -ne 0 -or
+            @($statuses | Where-Object { $_.familyId -eq 'windows.borrowed-hwnd-output.v1' }).Count -ne 22 -or
+            @($statuses | Where-Object { $_.familyId -eq 'com.enumerator-next-exception.v1' }).Count -ne 73
+          ) {
+            throw "Classic COM exact registry entry validation changed"
+          }
+          $interfaces = Import-Csv (Join-Path $output 'classic-com-interface-capabilities.csv')
+          $fsrm = $interfaces | Where-Object { $_.name -eq 'IFsrmFileManagementJob' }
+          if (@($fsrm.exact_entry_ids | ConvertFrom-Json).Count -ne 7) {
+            throw "IFsrmFileManagementJob exact SAFEARRAY entry granularity changed"
+          }
+          $second = Join-Path $env:RUNNER_TEMP 'classic-com-capability-second'
+          cargo run -p dynwinrt-codegen --quiet -- com-capability-census `
+            --winmd $env:DYNWINRT_WIN32_WINMD `
+            --output-dir $second | Out-Null
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $firstFiles = Get-ChildItem $output -File | Sort-Object Name
+          $secondFiles = Get-ChildItem $second -File | Sort-Object Name
+          if (($firstFiles.Name -join '|') -ne ($secondFiles.Name -join '|')) {
+            throw 'Classic COM capability artifact sets differ'
+          }
+          foreach ($file in $firstFiles) {
+            $other = Join-Path $second $file.Name
+            if (
+              (Get-FileHash $file.FullName -Algorithm SHA256).Hash -ne
+              (Get-FileHash $other -Algorithm SHA256).Hash
+            ) {
+              throw "Classic COM capability artifact drift: $($file.Name)"
+            }
+          }
+          $retained = Join-Path $env:GITHUB_WORKSPACE 'docs\status\generated'
+          $retainedNames = @(
+            'classic-com-capability-summary.json',
+            'classic-com-interface-support.csv'
+          )
+          $retainedFiles = Get-ChildItem $retained -File |
+            Where-Object { $retainedNames -contains $_.Name } |
+            Sort-Object Name
+          if (($retainedNames -join '|') -ne ($retainedFiles.Name -join '|')) {
+            throw 'Retained Classic COM capability artifact set is stale'
+          }
+          foreach ($name in $retainedNames) {
+            $generated = Join-Path $output $name
+            $committed = Join-Path $retained $name
+            if (
+              (Get-FileHash $generated -Algorithm SHA256).Hash -ne
+              (Get-FileHash $committed -Algorithm SHA256).Hash
+            ) {
+              throw "Retained Classic COM capability artifact drift: $name"
+            }
+          }
+      - name: Upload complete Classic COM capability report
+        uses: actions/upload-artifact@v4
+        with:
+          name: classic-com-capability-report
+          path: ${{ runner.temp }}\classic-com-capability
+          if-no-files-found: error
+          retention-days: 14
       - name: Test Classic COM failure cleanup contracts
         run: |
           cargo test -p dynwinrt failing_hresult_releases_written_interface_output
@@ -117,7 +231,7 @@ jobs:
           node-version: 24
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: "3.12"
       - uses: NuGet/setup-nuget@v2
       - name: Install Win32 metadata
         shell: pwsh
@@ -167,6 +281,9 @@ jobs:
       - name: Test JS TSFN lifecycle and queue handling
         working-directory: bindings/js
         run: npm run test:tsfn
+      - name: Test actual generated unsafe COM companion
+        working-directory: bindings/js
+        run: npm run test:generated-unsafe
 
   # dynwinrt-codegen (x64 + arm64)
   dynwinrt-codegen:
@@ -207,6 +324,8 @@ jobs:
       - name: Install dependencies
         working-directory: bindings/js
         run: npm install
+      - name: Compile raw union MSVC C oracle for ARM64
+        run: cargo test -p jswinrt_rs --features test-hooks --target aarch64-pc-windows-msvc --no-run
       - name: Build x64
         working-directory: bindings/js
         run: |

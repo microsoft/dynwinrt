@@ -850,6 +850,63 @@ fn is_opaque_named_pointee(raw: &RawComType) -> bool {
     }
 }
 
+pub(in crate::codegen::com) fn census_raw_base_category(raw: &RawComType) -> &'static str {
+    if matches!(
+        raw.native_type,
+        RawNativeType::Named {
+            kind: RawNamedKind::Delegate,
+            ..
+        }
+    ) {
+        return "FunctionPointer";
+    }
+    let mut model = ComModel::default();
+    if let Ok(id) = map_raw_base_type(&mut model, raw)
+        && let Ok(definition) = model.types().get(id)
+    {
+        return match definition.abi() {
+            ComAbiType::Scalar(_) => "Scalar",
+            ComAbiType::Guid => "Guid",
+            ComAbiType::Enum(_) => "Enum",
+            ComAbiType::NativeStruct(_) => "NativeStruct",
+            ComAbiType::NativeUnion(_) => "NativeUnion",
+            ComAbiType::Pointer { .. } => "Pointer",
+            ComAbiType::Handle(_) => "Handle",
+            ComAbiType::DataPointer { .. } => "DataPointer",
+            ComAbiType::StringPointer { .. } => "StringPointer",
+            ComAbiType::Bstr => "Bstr",
+            ComAbiType::HString => "HString",
+            ComAbiType::ComInterface { .. } => "ComInterface",
+            ComAbiType::CountedBuffer { .. } => "CountedBuffer",
+            ComAbiType::SafeArray { .. } => "SafeArray",
+            ComAbiType::Variant => "Variant",
+            ComAbiType::PropVariant => "PropVariant",
+            ComAbiType::DispatchParams => "DispatchParams",
+            ComAbiType::ExcepInfo => "ExcepInfo",
+            ComAbiType::StatStg => "StatStg",
+            ComAbiType::FunctionPointer(_) => "FunctionPointer",
+            ComAbiType::Unknown(_) => "Unknown",
+        };
+    }
+    if let RawNativeType::Named {
+        layout: Some(layout),
+        ..
+    } = &raw.native_type
+    {
+        if layout
+            .variants
+            .first()
+            .is_some_and(|variant| variant.is_union)
+        {
+            "NativeUnion"
+        } else {
+            "NativeStruct"
+        }
+    } else {
+        "Unknown"
+    }
+}
+
 fn map_raw_base_type(model: &mut ComModel, raw: &RawComType) -> Result<TypeId, ModelError> {
     let scalar = match raw.native_type {
         RawNativeType::Bool => Some(ScalarType::Bool),
@@ -876,6 +933,7 @@ fn map_raw_base_type(model: &mut ComModel, raw: &RawComType) -> Result<TypeId, M
             ComAbiType::Scalar(scalar),
         );
     }
+
     match &raw.native_type {
         RawNativeType::Named {
             namespace, name, ..
@@ -2280,6 +2338,7 @@ mod tests {
             string_pointer_array: None,
             free_with: None,
             safe_array_evidence: None,
+            exact_interface_output: None,
         }
     }
 
@@ -2299,6 +2358,7 @@ mod tests {
             string_pointer_array: None,
             free_with: None,
             safe_array_evidence: None,
+            exact_interface_output: None,
         }
     }
 
@@ -2331,6 +2391,8 @@ mod tests {
             semantic_hresult: None,
             enumerator_next: None,
             exact_contract: None,
+            interface_replacement_contracts: Vec::new(),
+            exact_interface_output_call: None,
             safe_array_contract_error: None,
         }
     }
@@ -2352,6 +2414,7 @@ mod tests {
             string_pointer_array: None,
             free_with: None,
             safe_array_evidence: None,
+            exact_interface_output: None,
         };
         let method = raw_dynamic_method(vec![
             scalar.clone(),
@@ -2434,6 +2497,7 @@ mod tests {
             string_pointer_array: None,
             free_with: None,
             safe_array_evidence: None,
+            exact_interface_output: None,
         };
         assert_rejected(vec![
             raw_guid_param("iid", 1),
@@ -2484,6 +2548,7 @@ mod tests {
             }),
             free_with: None,
             safe_array_evidence: None,
+            exact_interface_output: None,
         };
         assert_eq!(
             map_buffer_element(&mut model, &string_array, false, false).unwrap(),
@@ -3478,12 +3543,12 @@ mod tests {
         assert_eq!(free_with.function, "CoTaskMemFree");
         assert!(matches!(
             free_with.evidence,
-            crate::com_metadata::RawEvidence::Override { citation, .. }
+            crate::com_metadata::RawEvidence::ExactRegistry { ref citation, .. }
                 if citation.contains("ipersistfile-getcurfile")
         ));
         assert!(matches!(
             get_cur_file.semantic_hresult,
-            Some(crate::com_metadata::RawEvidence::Override { citation, .. })
+            Some(crate::com_metadata::RawEvidence::ExactRegistry { ref citation, .. })
                 if citation.contains("ipersistfile-getcurfile")
         ));
     }

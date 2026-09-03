@@ -113,10 +113,6 @@ _None currently. Reserved for issues that make v0.1 unshippable (crash on happy 
       thread stays alive. Document and assert thread affinity, or minimize the
       raw environment lifetime.
 
-- [ ] **`package.json` engines vs README floor**. `bindings/js/package.json`
-      advertises Node 12+ ranges, while the README requires Node 18+. Align both
-      to a tested release floor. (Currently CI runs Node 24.)
-
 - [ ] **Python binding follow-ups**. Remaining work is tracked in
       `PYTHON_CHECKLIST.md`: WinApp CLI integration, consolidated
       troubleshooting, native ARM64 WinUI E2E, delegates with more than two ABI

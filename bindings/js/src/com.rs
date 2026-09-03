@@ -6,7 +6,7 @@ use napi::JsValue;
 use napi_derive::napi;
 use windows::core::{IUnknown, Interface as _, GUID};
 
-use super::{DynWinRTType, DynWinRTValue, WinGUID, TABLE};
+use super::{com_raw::DynComRaw, DynWinRTType, DynWinRTValue, WinGUID, TABLE};
 
 #[allow(dead_code)]
 pub(super) enum NativePointerOwner {
@@ -27,6 +27,8 @@ pub(super) enum NativePointerOwner {
   Guid(*mut GUID),
   WideString(Box<[u16]>),
   AnsiString(Box<[u8]>),
+  RawMemory(std::sync::Arc<super::com_raw::RawAllocation>),
+  RawCom(std::sync::Arc<super::com_raw::RawComReference>),
 }
 
 enum AutomationValueKind {
@@ -178,14 +180,26 @@ unsafe impl Sync for AutomationValue {}
 pub(super) enum PointerProvenance {
   None,
   Borrowed,
+  DetachedCom,
   UnclassifiedOutput,
   ComOutput,
   CoTaskMemOutput,
   BstrOutput,
 }
 
+pub(super) struct NativeInvocationLeases {
+  _raw_memory: Vec<super::com_raw::RawInvocationLease>,
+  _raw_com: Vec<super::com_raw::RawComInvocationLease>,
+}
+
 impl NativePointerOwner {
-  fn validate(&self) -> napi::Result<()> {
+  pub(super) fn validate(&self) -> napi::Result<()> {
+    if let Self::RawMemory(allocation) = self {
+      return allocation.validate_live();
+    }
+    if let Self::RawCom(reference) = self {
+      return reference.validate_live();
+    }
     if let Self::TypedBuffer {
       env,
       reference,
@@ -579,7 +593,7 @@ fn try_cast(value: &DynWinRTValue, iid: &WinGUID) -> napi::Result<Option<DynWinR
   }
 }
 
-fn apartment_bound_com_object(value: IUnknown) -> napi::Result<DynWinRTValue> {
+pub(crate) fn apartment_bound_com_object(value: IUnknown) -> napi::Result<DynWinRTValue> {
   let mut value = DynWinRTValue::new(dynwinrt::WinRTValue::Object(value));
   value.bind_current_com_apartment()?;
   Ok(value)
@@ -1308,7 +1322,45 @@ fn validate_pointer_owner(value: &DynWinRTValue) -> napi::Result<()> {
   Ok(())
 }
 
-fn take_native_output_pointer(
+pub(super) fn collect_native_invocation_leases(
+  args: &[&DynWinRTValue],
+) -> napi::Result<NativeInvocationLeases> {
+  let mut raw_memory = Vec::new();
+  let mut raw_com = Vec::new();
+  for arg in args {
+    if let Some(owner) = &arg.1 {
+      match owner {
+        NativePointerOwner::RawMemory(allocation) => {
+          raw_memory.push(allocation.acquire_invocation_lease()?);
+        }
+        NativePointerOwner::RawCom(reference) => {
+          raw_com.push(reference.acquire_invocation_lease()?);
+        }
+        _ => {
+          owner.validate()?;
+        }
+      }
+    }
+  }
+  Ok(NativeInvocationLeases {
+    _raw_memory: raw_memory,
+    _raw_com: raw_com,
+  })
+}
+
+pub(super) fn with_com_invocation_args<T>(
+  args: &[&DynWinRTValue],
+  invoke: impl FnOnce(&[dynwinrt::com::Value]) -> napi::Result<T>,
+) -> napi::Result<T> {
+  let _leases = collect_native_invocation_leases(args)?;
+  let args = args
+    .iter()
+    .map(|arg| arg.to_com_value())
+    .collect::<napi::Result<Vec<_>>>()?;
+  invoke(&args)
+}
+
+pub(super) fn take_native_output_pointer(
   value: &mut DynWinRTValue,
   expected: PointerProvenance,
   description: &str,
@@ -1354,7 +1406,7 @@ fn iid_pointer(value: &WinGUID) -> DynWinRTValue {
   )
 }
 
-fn native_struct_layout(
+pub(super) fn native_struct_layout(
   descriptor: &str,
 ) -> napi::Result<std::sync::Arc<dynwinrt::com::NativeStructLayout>> {
   let root: serde_json::Value = serde_json::from_str(descriptor).map_err(|error| {
@@ -1413,7 +1465,7 @@ fn native_struct_layout(
   Ok(std::sync::Arc::new(parsed))
 }
 
-fn native_union_layout(
+pub(super) fn native_union_layout(
   descriptor: &str,
 ) -> napi::Result<std::sync::Arc<dynwinrt::com::NativeUnionLayout>> {
   let root: serde_json::Value = serde_json::from_str(descriptor).map_err(|error| {
@@ -1444,6 +1496,25 @@ fn native_union_layout(
 fn parse_native_union_variant(
   name: &str,
   layout: &serde_json::Value,
+) -> napi::Result<std::sync::Arc<dynwinrt::com::NativeUnionLayout>> {
+  parse_native_union_variant_with_stack(name, layout, &mut Vec::new())
+}
+
+fn parse_native_union_variant_with_stack(
+  name: &str,
+  layout: &serde_json::Value,
+  stack: &mut Vec<String>,
+) -> napi::Result<std::sync::Arc<dynwinrt::com::NativeUnionLayout>> {
+  enter_native_aggregate(name, stack)?;
+  let result = parse_native_union_variant_body(name, layout, stack);
+  stack.pop();
+  result
+}
+
+fn parse_native_union_variant_body(
+  name: &str,
+  layout: &serde_json::Value,
+  stack: &mut Vec<String>,
 ) -> napi::Result<std::sync::Arc<dynwinrt::com::NativeUnionLayout>> {
   let size = json_usize(layout, "size")?;
   let alignment = json_usize(layout, "alignment")?;
@@ -1509,9 +1580,24 @@ fn parse_native_union_variant(
           let nested_layout = typ
             .get("layout")
             .ok_or_else(|| napi::Error::from_reason("Nested native struct is missing `layout`"))?;
-          dynwinrt::com::NativeUnionFieldType::Struct(parse_native_struct_variant(
+          dynwinrt::com::NativeUnionFieldType::Struct(parse_native_struct_variant_with_stack(
             nested_name,
             nested_layout,
+            stack,
+          )?)
+        }
+        "union" => {
+          let nested_name = typ
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| napi::Error::from_reason("Nested native union is missing `name`"))?;
+          let nested_layout = typ
+            .get("layout")
+            .ok_or_else(|| napi::Error::from_reason("Nested native union is missing `layout`"))?;
+          dynwinrt::com::NativeUnionFieldType::Union(parse_native_union_variant_with_stack(
+            nested_name,
+            nested_layout,
+            stack,
           )?)
         }
         _ => {
@@ -1524,14 +1610,44 @@ fn parse_native_union_variant(
         .map_err(|error| napi::Error::from_reason(error.message()))
     })
     .collect::<napi::Result<Vec<_>>>()?;
-  dynwinrt::com::NativeUnionLayout::new(name, size, alignment, fields)
-    .map(std::sync::Arc::new)
-    .map_err(|error| napi::Error::from_reason(error.message()))
+  let complete = layout
+    .get("complete")
+    .and_then(serde_json::Value::as_bool)
+    .unwrap_or(false);
+  let parsed = dynwinrt::com::NativeUnionLayout::new(name, size, alignment, fields)
+    .map_err(|error| napi::Error::from_reason(error.message()))?;
+  let parsed = if complete {
+    parsed
+      .with_complete_raw_by_value()
+      .map_err(|error| napi::Error::from_reason(error.message()))?
+  } else {
+    parsed
+  };
+  Ok(std::sync::Arc::new(parsed))
 }
 
 fn parse_native_struct_variant(
   name: &str,
   layout: &serde_json::Value,
+) -> napi::Result<std::sync::Arc<dynwinrt::com::NativeStructLayout>> {
+  parse_native_struct_variant_with_stack(name, layout, &mut Vec::new())
+}
+
+fn parse_native_struct_variant_with_stack(
+  name: &str,
+  layout: &serde_json::Value,
+  stack: &mut Vec<String>,
+) -> napi::Result<std::sync::Arc<dynwinrt::com::NativeStructLayout>> {
+  enter_native_aggregate(name, stack)?;
+  let result = parse_native_struct_variant_body(name, layout, stack);
+  stack.pop();
+  result
+}
+
+fn parse_native_struct_variant_body(
+  name: &str,
+  layout: &serde_json::Value,
+  stack: &mut Vec<String>,
 ) -> napi::Result<std::sync::Arc<dynwinrt::com::NativeStructLayout>> {
   let size = json_usize(layout, "size")?;
   let alignment = json_usize(layout, "alignment")?;
@@ -1598,9 +1714,24 @@ fn parse_native_struct_variant(
           let nested_layout = typ
             .get("layout")
             .ok_or_else(|| napi::Error::from_reason("Nested native struct is missing `layout`"))?;
-          dynwinrt::com::NativeStructFieldType::Struct(parse_native_struct_variant(
+          dynwinrt::com::NativeStructFieldType::Struct(parse_native_struct_variant_with_stack(
             nested_name,
             nested_layout,
+            stack,
+          )?)
+        }
+        "union" => {
+          let nested_name = typ
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| napi::Error::from_reason("Nested native union is missing `name`"))?;
+          let nested_layout = typ
+            .get("layout")
+            .ok_or_else(|| napi::Error::from_reason("Nested native union is missing `layout`"))?;
+          dynwinrt::com::NativeStructFieldType::Union(parse_native_union_variant_with_stack(
+            nested_name,
+            nested_layout,
+            stack,
           )?)
         }
         _ => {
@@ -1616,6 +1747,22 @@ fn parse_native_struct_variant(
   dynwinrt::com::NativeStructLayout::new(name, size, alignment, fields)
     .map(std::sync::Arc::new)
     .map_err(|error| napi::Error::from_reason(error.message()))
+}
+
+fn enter_native_aggregate(name: &str, stack: &mut Vec<String>) -> napi::Result<()> {
+  const MAX_NATIVE_AGGREGATE_DEPTH: usize = 64;
+  if stack.len() >= MAX_NATIVE_AGGREGATE_DEPTH {
+    return Err(napi::Error::from_reason(format!(
+      "Native aggregate `{name}` exceeds the maximum nesting depth of {MAX_NATIVE_AGGREGATE_DEPTH}",
+    )));
+  }
+  if stack.iter().any(|active| active == name) {
+    return Err(napi::Error::from_reason(format!(
+      "Native aggregate descriptor contains a recursive cycle through `{name}`",
+    )));
+  }
+  stack.push(name.to_string());
+  Ok(())
 }
 
 fn json_usize(value: &serde_json::Value, name: &str) -> napi::Result<usize> {
@@ -1758,7 +1905,7 @@ fn safe_array_element_type_from_name(
 }
 
 #[napi]
-pub struct DynComType(dynwinrt::com::Type);
+pub struct DynComType(pub(super) dynwinrt::com::Type);
 
 #[napi]
 pub struct DynComMethodSig(dynwinrt::com::MethodSignature);
@@ -2036,6 +2183,11 @@ impl DynComUnsafeInterface {
 pub struct DynComMethodHandle(dynwinrt::com::MethodHandle);
 
 #[napi]
+pub struct DynComRawDispatchState {
+  entered: std::cell::Cell<bool>,
+}
+
+#[napi]
 pub struct DynComDispatchInvokeResult {
   hresult: i32,
   result: Option<DynWinRTValue>,
@@ -2104,15 +2256,10 @@ impl DynComMethodHandle {
       .as_object()
       .ok_or_else(|| napi::Error::from_reason("invoke() requires a COM object"))?
       .as_raw();
-    for arg in &args {
-      validate_pointer_owner(arg)?;
-    }
-    let args = args
-      .iter()
-      .map(|arg| arg.to_com_value())
-      .collect::<napi::Result<Vec<_>>>()?;
-    let mut results = unsafe { self.0.invoke_values_with_output_kinds(raw, &args) }
-      .map_err(|error| napi::Error::from_reason(error.message()))?;
+    let mut results = with_com_invocation_args(&args, |args| {
+      unsafe { self.0.invoke_values_with_output_kinds(raw, args) }
+        .map_err(|error| napi::Error::from_reason(error.message()))
+    })?;
     let (value, kind) = results.drain(..).next().unwrap_or((
       dynwinrt::com::Value::WinRt(dynwinrt::WinRTValue::I32(0)),
       dynwinrt::com::PointerOutputKind::None,
@@ -2132,21 +2279,16 @@ impl DynComMethodHandle {
       .as_object()
       .ok_or_else(|| napi::Error::from_reason("invokeAll() requires a COM object"))?
       .as_raw();
-    for arg in &args {
-      validate_pointer_owner(arg)?;
-    }
-    let args = args
-      .iter()
-      .map(|arg| arg.to_com_value())
-      .collect::<napi::Result<Vec<_>>>()?;
-    unsafe { self.0.invoke_values_with_output_kinds(raw, &args) }
-      .map(|results| {
-        results
-          .into_iter()
-          .map(|(value, kind)| DynWinRTValue::from_com_value(value, kind))
-          .collect()
-      })
-      .map_err(|error| napi::Error::from_reason(error.message()))
+    with_com_invocation_args(&args, |args| {
+      unsafe { self.0.invoke_values_with_output_kinds(raw, args) }
+        .map_err(|error| napi::Error::from_reason(error.message()))
+    })
+    .map(|results| {
+      results
+        .into_iter()
+        .map(|(value, kind)| DynWinRTValue::from_com_value(value, kind))
+        .collect()
+    })
   }
 
   #[napi]
@@ -2161,14 +2303,9 @@ impl DynComMethodHandle {
       .as_object()
       .ok_or_else(|| napi::Error::from_reason("invokeDispatch() requires a COM object"))?
       .as_raw();
-    for arg in &args {
-      validate_pointer_owner(arg)?;
-    }
-    let args = args
-      .iter()
-      .map(|arg| arg.to_com_value())
-      .collect::<napi::Result<Vec<_>>>()?;
-    let result = unsafe { self.0.invoke_dispatch(raw, &args) }.map_err(com_error)?;
+    let result = with_com_invocation_args(&args, |args| {
+      unsafe { self.0.invoke_dispatch(raw, args) }.map_err(com_error)
+    })?;
     let (hresult, result, excep_info, arg_err, finalization_error) = result.into_parts();
     Ok(DynComDispatchInvokeResult {
       hresult: hresult.0,
@@ -2186,6 +2323,56 @@ impl DynComMethodHandle {
       }),
       arg_err,
       finalization_error: finalization_error.map(|error| error.message()),
+    })
+  }
+}
+
+#[napi]
+impl DynComRaw {
+  #[napi(js_name = "__validateGuid")]
+  pub fn validate_guid(value: &WinGUID) -> WinGUID {
+    *value
+  }
+
+  #[napi(js_name = "__createDispatchState")]
+  pub fn create_dispatch_state() -> DynComRawDispatchState {
+    DynComRawDispatchState {
+      entered: std::cell::Cell::new(false),
+    }
+  }
+
+  #[napi(js_name = "__dispatchEntered")]
+  pub fn dispatch_entered(dispatch: &DynComRawDispatchState) -> bool {
+    dispatch.entered.get()
+  }
+
+  #[napi(js_name = "__invokeAllTracked")]
+  pub fn invoke_all_tracked(
+    method: &DynComMethodHandle,
+    obj: &DynWinRTValue,
+    args: Vec<&DynWinRTValue>,
+    dispatch: &DynComRawDispatchState,
+  ) -> napi::Result<Vec<DynWinRTValue>> {
+    dispatch.entered.set(false);
+    obj.ensure_com_apartment()?;
+    let raw = obj
+      .0
+      .as_object()
+      .ok_or_else(|| napi::Error::from_reason("invokeAllTracked() requires a COM object"))?
+      .as_raw();
+    with_com_invocation_args(&args, |args| {
+      unsafe {
+        method
+          .0
+          .invoke_values_with_output_kinds_tracked(raw, args, || dispatch.entered.set(true))
+      }
+      .map_err(|error| napi::Error::from_reason(error.message()))
+    })
+    .map(|results| {
+      results
+        .into_iter()
+        .map(|(value, kind)| DynWinRTValue::from_com_value(value, kind))
+        .collect()
     })
   }
 }
@@ -2374,7 +2561,7 @@ pub struct DynComNativeUnion {
 impl DynComNativeUnion {
   #[napi(getter)]
   pub fn active_field(&self) -> String {
-    self.value.active_field().into()
+    self.value.active_field().unwrap_or_default().into()
   }
 
   #[napi(getter)]
@@ -4354,7 +4541,16 @@ impl DynCom {
   #[napi]
   pub fn native_struct_type(descriptor: String) -> napi::Result<DynComType> {
     native_struct_layout(&descriptor)
-      .map(dynwinrt::com::Type::native_struct)
+      .and_then(|layout| {
+        if layout.contains_union() {
+          Err(napi::Error::from_reason(format!(
+            "Semantic native struct `{}` contains a union; use @microsoft/dynwinrt/com/unsafe/raw",
+            layout.name()
+          )))
+        } else {
+          Ok(dynwinrt::com::Type::native_struct(layout))
+        }
+      })
       .map(DynComType)
   }
 
@@ -4364,11 +4560,17 @@ impl DynCom {
     nullable: Option<bool>,
   ) -> napi::Result<DynComType> {
     native_struct_layout(&descriptor)
-      .map(|layout| {
+      .and_then(|layout| {
+        if layout.contains_union() {
+          return Err(napi::Error::from_reason(format!(
+            "Semantic native struct `{}` contains a union; use @microsoft/dynwinrt/com/unsafe/raw",
+            layout.name()
+          )));
+        }
         if nullable.unwrap_or(false) {
-          dynwinrt::com::Type::nullable_native_struct_pointer(layout)
+          Ok(dynwinrt::com::Type::nullable_native_struct_pointer(layout))
         } else {
-          dynwinrt::com::Type::native_struct_pointer(layout)
+          Ok(dynwinrt::com::Type::native_struct_pointer(layout))
         }
       })
       .map(DynComType)
@@ -5478,6 +5680,147 @@ mod tests {
   #[repr(C)]
   struct FakeComObject {
     vtable: *const *mut c_void,
+  }
+
+  static NATIVE_WIDTH_SIGNED_INPUT: std::sync::atomic::AtomicIsize =
+    std::sync::atomic::AtomicIsize::new(0);
+  static NATIVE_WIDTH_UNSIGNED_INPUT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+  unsafe extern "system" fn native_width_round_trip(
+    _this: *mut c_void,
+    signed: isize,
+    unsigned: usize,
+    signed_out: *mut isize,
+    unsigned_out: *mut usize,
+  ) -> isize {
+    NATIVE_WIDTH_SIGNED_INPUT.store(signed, std::sync::atomic::Ordering::Relaxed);
+    NATIVE_WIDTH_UNSIGNED_INPUT.store(unsigned, std::sync::atomic::Ordering::Relaxed);
+    unsafe {
+      *signed_out = isize::MAX;
+      *unsigned_out = 0;
+    }
+    isize::MIN
+  }
+
+  unsafe extern "system" fn native_width_unsigned_return(_this: *mut c_void) -> usize {
+    usize::MAX
+  }
+
+  #[test]
+  fn generated_native_width_fake_vtable_uses_exact_target_values() {
+    let signed_type = DynCom::isize_type();
+    let unsigned_type = DynCom::usize_type();
+    let interface = dynwinrt::com::register_interface(
+      &TABLE,
+      "Tests.IGeneratedNativeWidth",
+      windows::core::GUID::from_u128(0x6339e3bb_7981_42fa_91de_10722166f924),
+      dynwinrt::com::InterfaceBase::IUnknown,
+    )
+    .add_method(
+      "RoundTrip",
+      dynwinrt::com::MethodSignature::new(&TABLE)
+        .add_in(signed_type.0.clone())
+        .add_in(unsigned_type.0.clone())
+        .add_in(DynCom::pointer_type().0)
+        .add_in(DynCom::pointer_type().0)
+        .returns(signed_type.0.clone()),
+    )
+    .add_method(
+      "UnsignedReturn",
+      dynwinrt::com::MethodSignature::new(&TABLE).returns(unsigned_type.0.clone()),
+    );
+    let vtable = [
+      std::ptr::null_mut(),
+      std::ptr::null_mut(),
+      std::ptr::null_mut(),
+      native_width_round_trip as *mut c_void,
+      native_width_unsigned_return as *mut c_void,
+    ];
+    let mut object = FakeComObject {
+      vtable: vtable.as_ptr(),
+    };
+    let signed = DynCom::isize(BigInt::from(isize::MIN as i64)).unwrap();
+    let unsigned = DynCom::usize(BigInt::from(usize::MAX as u64)).unwrap();
+    let mut signed_out = 0isize;
+    let mut unsigned_out = usize::MAX;
+    let signed_out_pointer = DynWinRTValue::with_borrowed_pointer(dynwinrt::WinRTValue::RawPtr(
+      (&mut signed_out as *mut isize).cast(),
+    ));
+    let unsigned_out_pointer = DynWinRTValue::with_borrowed_pointer(dynwinrt::WinRTValue::RawPtr(
+      (&mut unsigned_out as *mut usize).cast(),
+    ));
+    let args = [
+      signed.to_com_value().unwrap(),
+      unsigned.to_com_value().unwrap(),
+      signed_out_pointer.to_com_value().unwrap(),
+      unsigned_out_pointer.to_com_value().unwrap(),
+    ];
+    let results = unsafe {
+      interface
+        .method(3)
+        .unwrap()
+        .invoke_values_with_output_kinds((&mut object as *mut FakeComObject).cast(), &args)
+    }
+    .unwrap();
+
+    assert_eq!(
+      NATIVE_WIDTH_SIGNED_INPUT.load(std::sync::atomic::Ordering::Relaxed),
+      isize::MIN
+    );
+    assert_eq!(
+      NATIVE_WIDTH_UNSIGNED_INPUT.load(std::sync::atomic::Ordering::Relaxed),
+      usize::MAX
+    );
+    assert_eq!(signed_out, isize::MAX);
+    assert_eq!(unsigned_out, 0);
+    assert_eq!(results.len(), 1);
+    let (value, kind) = results.into_iter().next().unwrap();
+    let converted = DynWinRTValue::from_com_value(value, kind);
+    assert_eq!(
+      DynCom::to_isize_bigint(&converted).unwrap().get_i64().0,
+      isize::MIN as i64
+    );
+
+    let mut direct_unsigned = unsafe {
+      interface
+        .method(4)
+        .unwrap()
+        .invoke_values_with_output_kinds((&mut object as *mut FakeComObject).cast(), &[])
+    }
+    .unwrap();
+    let (value, kind) = direct_unsigned.pop().unwrap();
+    assert_eq!(
+      DynCom::to_usize_bigint(&DynWinRTValue::from_com_value(value, kind))
+        .unwrap()
+        .get_u64()
+        .1,
+      usize::MAX as u64
+    );
+
+    #[cfg(target_pointer_width = "64")]
+    let wrong_signed = DynWinRTValue::new(dynwinrt::WinRTValue::I32(1));
+    #[cfg(target_pointer_width = "32")]
+    let wrong_signed = DynWinRTValue::new(dynwinrt::WinRTValue::I64(1));
+    #[cfg(target_pointer_width = "64")]
+    let wrong_unsigned = DynWinRTValue::new(dynwinrt::WinRTValue::U32(1));
+    #[cfg(target_pointer_width = "32")]
+    let wrong_unsigned = DynWinRTValue::new(dynwinrt::WinRTValue::U64(1));
+    assert!(DynCom::to_isize_bigint(&wrong_signed).is_err());
+    assert!(DynCom::to_usize_bigint(&wrong_unsigned).is_err());
+    let wrong_args = [
+      wrong_signed.to_com_value().unwrap(),
+      wrong_unsigned.to_com_value().unwrap(),
+      signed_out_pointer.to_com_value().unwrap(),
+      unsigned_out_pointer.to_com_value().unwrap(),
+    ];
+    assert!(unsafe {
+      interface
+        .method(3)
+        .unwrap()
+        .invoke_values_with_output_kinds((&mut object as *mut FakeComObject).cast(), &wrong_args)
+    }
+    .is_err());
   }
 
   #[test]

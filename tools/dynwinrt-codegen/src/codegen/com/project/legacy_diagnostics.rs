@@ -84,6 +84,7 @@ fn project_legacy_interface(
         activation,
         referenced_enums,
         sink: None,
+        evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
     };
     Ok(projected)
 }

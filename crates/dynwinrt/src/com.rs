@@ -77,12 +77,41 @@ pub enum NativeStructScalar {
     USize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeHomogeneousBase {
+    F32,
+    F64,
+}
+
+impl NativeHomogeneousBase {
+    const fn size(self) -> usize {
+        match self {
+            Self::F32 => 4,
+            Self::F64 => 8,
+        }
+    }
+
+    fn libffi_type(self) -> libffi::middle::Type {
+        match self {
+            Self::F32 => libffi::middle::Type::f32(),
+            Self::F64 => libffi::middle::Type::f64(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeHomogeneousAggregate {
+    pub base: NativeHomogeneousBase,
+    pub count: u8,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NativeStructFieldType {
     Scalar(NativeStructScalar),
     Guid,
     Pointer,
     Struct(Arc<NativeStructLayout>),
+    Union(Arc<NativeUnionLayout>),
 }
 
 impl NativeStructFieldType {
@@ -104,6 +133,7 @@ impl NativeStructFieldType {
             Self::Guid => (16, 4),
             Self::Pointer => (size_of::<usize>(), align_of::<usize>()),
             Self::Struct(layout) => (layout.size, layout.alignment),
+            Self::Union(layout) => (layout.size, layout.alignment),
         }
     }
 
@@ -143,6 +173,23 @@ impl NativeStructFieldType {
             }
             Self::Pointer => Type::pointer(),
             Self::Struct(layout) => layout.libffi_type(),
+            Self::Union(layout) => layout.libffi_type(),
+        }
+    }
+
+    fn homogeneous_aggregate(&self) -> Option<NativeHomogeneousAggregate> {
+        match self {
+            Self::Scalar(NativeStructScalar::F32) => Some(NativeHomogeneousAggregate {
+                base: NativeHomogeneousBase::F32,
+                count: 1,
+            }),
+            Self::Scalar(NativeStructScalar::F64) => Some(NativeHomogeneousAggregate {
+                base: NativeHomogeneousBase::F64,
+                count: 1,
+            }),
+            Self::Struct(layout) => layout.homogeneous_aggregate(),
+            Self::Union(layout) => layout.homogeneous_aggregate(),
+            Self::Scalar(_) | Self::Guid | Self::Pointer => None,
         }
     }
 }
@@ -335,6 +382,62 @@ impl NativeStructLayout {
         &self.name
     }
 
+    pub fn homogeneous_aggregate(&self) -> Option<NativeHomogeneousAggregate> {
+        let mut fields = self.fields.iter().collect::<Vec<_>>();
+        fields.sort_by_key(|field| field.offset);
+        let mut cursor = 0usize;
+        let mut base = None;
+        let mut count = 0usize;
+        for field in fields {
+            if field.offset != cursor {
+                return None;
+            }
+
+            let homogeneous = field.typ.homogeneous_aggregate()?;
+            if base.is_some_and(|base| base != homogeneous.base) {
+                return None;
+            }
+            base = Some(homogeneous.base);
+            count = count
+                .checked_add((homogeneous.count as usize).checked_mul(field.count as usize)?)?;
+            cursor = cursor.checked_add(
+                field
+                    .typ
+                    .size_alignment()
+                    .0
+                    .checked_mul(field.count as usize)?,
+            )?;
+        }
+        let base = base?;
+        if cursor != self.size
+            || count == 0
+            || count > 4
+            || self.size != base.size().checked_mul(count)?
+        {
+            return None;
+        }
+        Some(NativeHomogeneousAggregate {
+            base,
+            count: count as u8,
+        })
+    }
+
+    pub fn contains_union(&self) -> bool {
+        self.fields.iter().any(|field| match &field.typ {
+            NativeStructFieldType::Struct(layout) => layout.contains_union(),
+            NativeStructFieldType::Union(_) => true,
+            _ => false,
+        })
+    }
+
+    fn raw_unions_complete(&self) -> bool {
+        self.fields.iter().all(|field| match &field.typ {
+            NativeStructFieldType::Struct(layout) => layout.raw_unions_complete(),
+            NativeStructFieldType::Union(layout) => layout.raw_by_value_complete(),
+            _ => true,
+        })
+    }
+
     pub(crate) fn libffi_type(&self) -> libffi::middle::Type {
         let mut fields = self.fields.iter().collect::<Vec<_>>();
         fields.sort_by_key(|field| field.offset);
@@ -379,10 +482,18 @@ impl NativeStructValue {
         Ok(Self { layout, bytes })
     }
 
-    pub fn zeroed(layout: Arc<NativeStructLayout>) -> Self {
-        let mut bytes = vec![0; layout.size];
+    pub fn try_zeroed(layout: Arc<NativeStructLayout>) -> result::Result<Self> {
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(layout.size)
+            .map_err(|_| invalid_argument("native struct byte allocation failed"))?;
+        bytes.resize(layout.size, 0);
         layout.initialize_bytes(&mut bytes);
-        Self { bytes, layout }
+        Ok(Self { bytes, layout })
+    }
+
+    pub fn zeroed(layout: Arc<NativeStructLayout>) -> Self {
+        Self::try_zeroed(layout).expect("native struct byte allocation failed")
     }
 
     pub fn layout(&self) -> &Arc<NativeStructLayout> {
@@ -537,6 +648,7 @@ pub enum NativeUnionFieldType {
     Guid,
     Pointer,
     Struct(Arc<NativeStructLayout>),
+    Union(Arc<NativeUnionLayout>),
 }
 
 impl NativeUnionFieldType {
@@ -546,6 +658,23 @@ impl NativeUnionFieldType {
             Self::Guid => NativeStructFieldType::Guid.size_alignment(),
             Self::Pointer => NativeStructFieldType::Pointer.size_alignment(),
             Self::Struct(layout) => NativeStructFieldType::Struct(layout.clone()).size_alignment(),
+            Self::Union(layout) => (layout.size, layout.alignment),
+        }
+    }
+
+    fn homogeneous_aggregate(&self) -> Option<NativeHomogeneousAggregate> {
+        match self {
+            Self::Scalar(NativeStructScalar::F32) => Some(NativeHomogeneousAggregate {
+                base: NativeHomogeneousBase::F32,
+                count: 1,
+            }),
+            Self::Scalar(NativeStructScalar::F64) => Some(NativeHomogeneousAggregate {
+                base: NativeHomogeneousBase::F64,
+                count: 1,
+            }),
+            Self::Struct(layout) => layout.homogeneous_aggregate(),
+            Self::Union(layout) => layout.homogeneous_aggregate(),
+            Self::Scalar(_) | Self::Guid | Self::Pointer => None,
         }
     }
 }
@@ -583,6 +712,7 @@ pub struct NativeUnionLayout {
     size: usize,
     alignment: usize,
     fields: Vec<NativeUnionField>,
+    raw_by_value_complete: bool,
 }
 
 impl NativeUnionLayout {
@@ -603,6 +733,11 @@ impl NativeUnionLayout {
                 "native union alignment must be a power of two and divide its size",
             ));
         }
+        if !matches!(alignment, 1 | 2 | 4 | 8) {
+            return Err(invalid_argument(
+                "native union alignment must be one of 1, 2, 4, or 8",
+            ));
+        }
         if fields.is_empty() {
             return Err(invalid_argument(
                 "native union layout requires at least one field",
@@ -610,6 +745,7 @@ impl NativeUnionLayout {
         }
         let mut names = std::collections::HashSet::new();
         let mut maximum_alignment = 1usize;
+        let mut maximum_size = 0usize;
         for field in &fields {
             if !names.insert(field.name.as_str()) {
                 return Err(invalid_argument(format!(
@@ -622,6 +758,7 @@ impl NativeUnionLayout {
             let field_size = element_size
                 .checked_mul(field.count as usize)
                 .ok_or_else(|| invalid_argument("native union field size overflow"))?;
+            maximum_size = maximum_size.max(field_size);
             if field_size > size {
                 return Err(invalid_argument(format!(
                     "native union `{name}` field `{}` requires {field_size} bytes but the union has {size}",
@@ -634,11 +771,21 @@ impl NativeUnionLayout {
                 "native union `{name}` declares alignment {alignment}, computed {maximum_alignment}"
             )));
         }
+        let natural_size = maximum_size
+            .checked_add(alignment - 1)
+            .map(|size| size & !(alignment - 1))
+            .ok_or_else(|| invalid_argument("native union natural size overflow"))?;
+        if size != natural_size {
+            return Err(invalid_argument(format!(
+                "native union `{name}` declares size {size}, natural C layout requires {natural_size}"
+            )));
+        }
         Ok(Self {
             name,
             size,
             alignment,
             fields,
+            raw_by_value_complete: false,
         })
     }
 
@@ -657,12 +804,76 @@ impl NativeUnionLayout {
     pub fn has_field(&self, name: &str) -> bool {
         self.fields.iter().any(|field| field.name == name)
     }
+
+    pub fn with_complete_raw_by_value(mut self) -> result::Result<Self> {
+        let nested_complete = self.fields.iter().all(|field| match &field.typ {
+            NativeUnionFieldType::Struct(layout) => layout.raw_unions_complete(),
+            NativeUnionFieldType::Union(layout) => layout.raw_by_value_complete(),
+            _ => true,
+        });
+        if !nested_complete {
+            return Err(invalid_argument(format!(
+                "native union `{}` contains a nested union not marked complete",
+                self.name
+            )));
+        }
+        self.raw_by_value_complete = true;
+        Ok(self)
+    }
+
+    pub const fn raw_by_value_complete(&self) -> bool {
+        self.raw_by_value_complete
+    }
+
+    pub fn homogeneous_aggregate(&self) -> Option<NativeHomogeneousAggregate> {
+        let mut base = None;
+        let mut count = 0usize;
+        for field in &self.fields {
+            let homogeneous = field.typ.homogeneous_aggregate()?;
+            if base.is_some_and(|base| base != homogeneous.base) {
+                return None;
+            }
+            base = Some(homogeneous.base);
+            count = count.max((homogeneous.count as usize).checked_mul(field.count as usize)?);
+        }
+        let base = base?;
+        if count == 0 || count > 4 || self.size != base.size().checked_mul(count)? {
+            return None;
+        }
+        Some(NativeHomogeneousAggregate {
+            base,
+            count: count as u8,
+        })
+    }
+
+    pub(crate) fn libffi_type(&self) -> libffi::middle::Type {
+        if let Some(homogeneous) = self.homogeneous_aggregate() {
+            return libffi::middle::Type::structure(
+                (0..homogeneous.count)
+                    .map(|_| homogeneous.base.libffi_type())
+                    .collect::<Vec<_>>(),
+            );
+        }
+        let first = match self.alignment {
+            1 => libffi::middle::Type::u8(),
+            2 => libffi::middle::Type::u16(),
+            4 => libffi::middle::Type::u32(),
+            8 => libffi::middle::Type::u64(),
+            _ => unreachable!("validated raw union alignment is one of 1, 2, 4, or 8"),
+        };
+        let mut elements = Vec::with_capacity(1 + self.size - self.alignment);
+        elements.push(first);
+        elements.extend(
+            std::iter::repeat_with(libffi::middle::Type::u8).take(self.size - self.alignment),
+        );
+        libffi::middle::Type::structure(elements)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeUnionValue {
     layout: Arc<NativeUnionLayout>,
-    active_field: String,
+    active_field: Option<String>,
     bytes: Vec<u8>,
 }
 
@@ -689,7 +900,26 @@ impl NativeUnionValue {
         }
         Ok(Self {
             layout,
-            active_field,
+            active_field: Some(active_field),
+            bytes,
+        })
+    }
+
+    pub fn from_returned_bytes(
+        layout: Arc<NativeUnionLayout>,
+        bytes: Vec<u8>,
+    ) -> result::Result<Self> {
+        if bytes.len() != layout.size {
+            return Err(invalid_argument(format!(
+                "native union `{}` requires {} bytes, received {}",
+                layout.name,
+                layout.size,
+                bytes.len()
+            )));
+        }
+        Ok(Self {
+            layout,
+            active_field: None,
             bytes,
         })
     }
@@ -698,7 +928,11 @@ impl NativeUnionValue {
         layout: Arc<NativeUnionLayout>,
         active_field: impl Into<String>,
     ) -> result::Result<Self> {
-        let bytes = vec![0; layout.size];
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(layout.size)
+            .map_err(|_| invalid_argument("native union byte allocation failed"))?;
+        bytes.resize(layout.size, 0);
         Self::new(layout, active_field, bytes)
     }
 
@@ -706,8 +940,8 @@ impl NativeUnionValue {
         &self.layout
     }
 
-    pub fn active_field(&self) -> &str {
-        &self.active_field
+    pub fn active_field(&self) -> Option<&str> {
+        self.active_field.as_deref()
     }
 
     pub fn bytes(&self) -> &[u8] {
@@ -1394,10 +1628,12 @@ struct BufferElementPlan {
     cleanup: BufferElementCleanup,
     native_layout_name: Option<String>,
     kind: BufferElementKind,
+    callback_safe: bool,
 }
 
 impl BufferElementPlan {
     fn from_type(typ: &Type) -> result::Result<Self> {
+        typ.validate_outbound_aggregate_policy()?;
         let (size, alignment) = match &typ.abi {
             ParameterType::WinRT(handle)
                 if matches!(
@@ -1423,6 +1659,11 @@ impl BufferElementPlan {
                 (handle.size_of(), handle.align_of())
             }
             ParameterType::NativeStruct(layout) => (layout.size(), layout.alignment()),
+            ParameterType::NativeUnion(_) => {
+                return Err(invalid_argument(
+                    "native union buffer elements require a dedicated ownership plan",
+                ));
+            }
             ParameterType::WinRT(handle) if handle.kind().is_com_pointer() => {
                 let iid = handle.iid().ok_or_else(|| {
                     invalid_argument("COM interface buffer elements require an exact IID")
@@ -1433,6 +1674,7 @@ impl BufferElementPlan {
                     cleanup: BufferElementCleanup::ComRelease,
                     native_layout_name: None,
                     kind: BufferElementKind::ComInterface(iid),
+                    callback_safe: true,
                 });
             }
             ParameterType::CoTaskMemWideString => {
@@ -1442,6 +1684,7 @@ impl BufferElementPlan {
                     cleanup: BufferElementCleanup::CoTaskMemFree,
                     native_layout_name: None,
                     kind: BufferElementKind::CoTaskMemWideString,
+                    callback_safe: true,
                 });
             }
             ParameterType::Pointer
@@ -1458,6 +1701,7 @@ impl BufferElementPlan {
                     cleanup: BufferElementCleanup::BstrFree,
                     native_layout_name: None,
                     kind: BufferElementKind::Bstr,
+                    callback_safe: true,
                 });
             }
             ParameterType::Variant => {
@@ -1467,6 +1711,7 @@ impl BufferElementPlan {
                     cleanup: BufferElementCleanup::VariantClear,
                     native_layout_name: None,
                     kind: BufferElementKind::Variant,
+                    callback_safe: true,
                 });
             }
             ParameterType::VariantByValue
@@ -1499,6 +1744,7 @@ impl BufferElementPlan {
                 _ => None,
             },
             kind: BufferElementKind::Plain,
+            callback_safe: typ.callback_aggregate_supported(),
         })
     }
 
@@ -1509,6 +1755,7 @@ impl BufferElementPlan {
             cleanup: BufferElementCleanup::None,
             native_layout_name: None,
             kind: BufferElementKind::StringPointer(encoding),
+            callback_safe: true,
         }
     }
 
@@ -1517,10 +1764,18 @@ impl BufferElementPlan {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AggregateCapability {
+    Semantic,
+    RawOutbound,
+}
+
 #[derive(Debug, Clone)]
 pub struct Type {
     abi: ParameterType,
     pointer_output: PointerOutputKind,
+    allow_direct_aggregate_return: bool,
+    aggregate_capability: Option<AggregateCapability>,
 }
 
 impl Type {
@@ -1528,6 +1783,8 @@ impl Type {
         Self {
             abi: ParameterType::winrt(typ),
             pointer_output: PointerOutputKind::None,
+            allow_direct_aggregate_return: false,
+            aggregate_capability: None,
         }
     }
 
@@ -1551,6 +1808,8 @@ impl Type {
         Self {
             abi: ParameterType::co_task_mem_wide_string(),
             pointer_output: PointerOutputKind::CoTaskMem,
+            allow_direct_aggregate_return: false,
+            aggregate_capability: None,
         }
     }
 
@@ -1562,6 +1821,8 @@ impl Type {
         Self {
             abi: ParameterType::bstr(false),
             pointer_output: PointerOutputKind::Bstr,
+            allow_direct_aggregate_return: false,
+            aggregate_capability: None,
         }
     }
 
@@ -1569,6 +1830,8 @@ impl Type {
         Self {
             abi: ParameterType::bstr(true),
             pointer_output: PointerOutputKind::Bstr,
+            allow_direct_aggregate_return: false,
+            aggregate_capability: None,
         }
     }
 
@@ -1576,13 +1839,27 @@ impl Type {
         Self {
             abi: ParameterType::native_struct(layout),
             pointer_output: PointerOutputKind::None,
+            allow_direct_aggregate_return: false,
+            aggregate_capability: Some(AggregateCapability::Semantic),
         }
+    }
+
+    pub fn raw_native_struct(layout: Arc<NativeStructLayout>) -> result::Result<Self> {
+        validate_raw_native_struct_by_value(&layout)?;
+        Ok(Self {
+            abi: ParameterType::native_struct(layout),
+            pointer_output: PointerOutputKind::None,
+            allow_direct_aggregate_return: true,
+            aggregate_capability: Some(AggregateCapability::RawOutbound),
+        })
     }
 
     pub fn native_struct_pointer(layout: Arc<NativeStructLayout>) -> Self {
         Self {
             abi: ParameterType::native_struct_pointer(layout, false),
             pointer_output: PointerOutputKind::None,
+            allow_direct_aggregate_return: false,
+            aggregate_capability: Some(AggregateCapability::Semantic),
         }
     }
 
@@ -1590,6 +1867,17 @@ impl Type {
         Self {
             abi: ParameterType::native_struct_pointer(layout, true),
             pointer_output: PointerOutputKind::None,
+            allow_direct_aggregate_return: false,
+            aggregate_capability: Some(AggregateCapability::Semantic),
+        }
+    }
+
+    pub fn raw_native_struct_pointer(layout: Arc<NativeStructLayout>, nullable: bool) -> Self {
+        Self {
+            abi: ParameterType::native_struct_pointer(layout, nullable),
+            pointer_output: PointerOutputKind::None,
+            allow_direct_aggregate_return: false,
+            aggregate_capability: Some(AggregateCapability::RawOutbound),
         }
     }
 
@@ -1597,6 +1885,34 @@ impl Type {
         Self {
             abi: ParameterType::native_union_pointer(layout),
             pointer_output: PointerOutputKind::None,
+            allow_direct_aggregate_return: false,
+            aggregate_capability: Some(AggregateCapability::Semantic),
+        }
+    }
+
+    pub fn raw_native_union_pointer(layout: Arc<NativeUnionLayout>) -> Self {
+        Self {
+            abi: ParameterType::native_union_pointer(layout),
+            pointer_output: PointerOutputKind::None,
+            allow_direct_aggregate_return: false,
+            aggregate_capability: Some(AggregateCapability::RawOutbound),
+        }
+    }
+
+    pub fn raw_native_union(layout: Arc<NativeUnionLayout>) -> result::Result<Self> {
+        validate_raw_native_union_by_value(&layout)?;
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            Ok(Self {
+                abi: ParameterType::native_union(layout),
+                pointer_output: PointerOutputKind::None,
+                allow_direct_aggregate_return: true,
+                aggregate_capability: Some(AggregateCapability::RawOutbound),
+            })
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            unreachable!("ARM64 raw union validation always returns an error")
         }
     }
 
@@ -1604,6 +1920,8 @@ impl Type {
         Self {
             abi: ParameterType::variant(),
             pointer_output: PointerOutputKind::None,
+            allow_direct_aggregate_return: false,
+            aggregate_capability: None,
         }
     }
 
@@ -1611,6 +1929,8 @@ impl Type {
         Self {
             abi: ParameterType::variant_by_value(),
             pointer_output: PointerOutputKind::None,
+            allow_direct_aggregate_return: false,
+            aggregate_capability: None,
         }
     }
 
@@ -1618,6 +1938,8 @@ impl Type {
         Self {
             abi: ParameterType::safe_array(None),
             pointer_output: PointerOutputKind::None,
+            allow_direct_aggregate_return: false,
+            aggregate_capability: None,
         }
     }
 
@@ -1625,6 +1947,8 @@ impl Type {
         Self {
             abi: ParameterType::safe_array(Some(element)),
             pointer_output: PointerOutputKind::None,
+            allow_direct_aggregate_return: false,
+            aggregate_capability: None,
         }
     }
 
@@ -1632,6 +1956,8 @@ impl Type {
         Self {
             abi: ParameterType::interface_safe_array(iid),
             pointer_output: PointerOutputKind::None,
+            allow_direct_aggregate_return: false,
+            aggregate_capability: None,
         }
     }
 
@@ -1639,6 +1965,8 @@ impl Type {
         Self {
             abi: ParameterType::nullable_safe_array(element, None),
             pointer_output: PointerOutputKind::None,
+            allow_direct_aggregate_return: false,
+            aggregate_capability: None,
         }
     }
 
@@ -1646,6 +1974,8 @@ impl Type {
         Self {
             abi: ParameterType::nullable_safe_array(SafeArrayElementType::Unknown, Some(iid)),
             pointer_output: PointerOutputKind::None,
+            allow_direct_aggregate_return: false,
+            aggregate_capability: None,
         }
     }
 
@@ -1653,6 +1983,8 @@ impl Type {
         Self {
             abi: ParameterType::prop_variant(),
             pointer_output: PointerOutputKind::None,
+            allow_direct_aggregate_return: false,
+            aggregate_capability: None,
         }
     }
 
@@ -1660,6 +1992,8 @@ impl Type {
         Self {
             abi: ParameterType::dispatch_params(),
             pointer_output: PointerOutputKind::None,
+            allow_direct_aggregate_return: false,
+            aggregate_capability: None,
         }
     }
 
@@ -1667,6 +2001,8 @@ impl Type {
         Self {
             abi: ParameterType::excep_info(),
             pointer_output: PointerOutputKind::None,
+            allow_direct_aggregate_return: false,
+            aggregate_capability: None,
         }
     }
 
@@ -1674,6 +2010,8 @@ impl Type {
         Self {
             abi: ParameterType::stat_stg(),
             pointer_output: PointerOutputKind::None,
+            allow_direct_aggregate_return: false,
+            aggregate_capability: None,
         }
     }
 
@@ -1681,7 +2019,49 @@ impl Type {
         Self {
             abi: ParameterType::pointer(),
             pointer_output,
+            allow_direct_aggregate_return: false,
+            aggregate_capability: None,
         }
+    }
+
+    fn validate_outbound_aggregate_policy(&self) -> result::Result<()> {
+        match (self.aggregate_capability, &self.abi) {
+            (
+                Some(AggregateCapability::Semantic),
+                ParameterType::NativeStruct(layout)
+                | ParameterType::NativeStructPointer { layout, .. },
+            ) if layout.contains_union() => Err(invalid_argument(format!(
+                "semantic native struct `{}` contains a union; use the raw outbound aggregate API",
+                layout.name()
+            ))),
+            (Some(AggregateCapability::RawOutbound), ParameterType::NativeStruct(layout)) => {
+                validate_raw_native_struct_by_value(layout)
+            }
+            (Some(AggregateCapability::RawOutbound), ParameterType::NativeUnion(layout)) => {
+                validate_raw_native_union_by_value(layout)
+            }
+            (
+                Some(AggregateCapability::Semantic | AggregateCapability::RawOutbound),
+                ParameterType::NativeStructPointer { .. } | ParameterType::NativeUnionPointer(_),
+            )
+            | (Some(AggregateCapability::Semantic), ParameterType::NativeStruct(_))
+            | (None, _) => Ok(()),
+            (Some(_), _) => Err(invalid_argument(
+                "aggregate capability does not match the completed native type",
+            )),
+        }
+    }
+
+    fn callback_aggregate_supported(&self) -> bool {
+        if self.aggregate_capability == Some(AggregateCapability::RawOutbound) {
+            return false;
+        }
+        !matches!(
+            &self.abi,
+            ParameterType::NativeStruct(layout)
+                | ParameterType::NativeStructPointer { layout, .. }
+                if layout.contains_union()
+        )
     }
 
     fn output_cleanup(&self) -> OutputCleanup {
@@ -1701,28 +2081,243 @@ impl Type {
 
     fn supports_direct_return(&self) -> bool {
         matches!(self.abi, ParameterType::Pointer)
+            || (self.allow_direct_aggregate_return
+                && matches!(
+                    self.abi,
+                    ParameterType::NativeStruct(_) | ParameterType::NativeUnion(_)
+                ))
             || matches!(
-            &self.abi,
-            ParameterType::WinRT(typ)
-                if matches!(
-                    typ.kind(),
-                    TypeKind::Bool
-                        | TypeKind::I8
-                        | TypeKind::U8
-                        | TypeKind::I16
-                        | TypeKind::U16
-                        | TypeKind::Char16
-                        | TypeKind::I32
-                        | TypeKind::U32
-                        | TypeKind::I64
-                        | TypeKind::U64
-                        | TypeKind::F32
-                        | TypeKind::F64
-                        | TypeKind::HResult
-                        | TypeKind::Enum(_)
-                )
+                &self.abi,
+                ParameterType::WinRT(typ)
+                    if matches!(
+                        typ.kind(),
+                        TypeKind::Bool
+                            | TypeKind::I8
+                            | TypeKind::U8
+                            | TypeKind::I16
+                            | TypeKind::U16
+                            | TypeKind::Char16
+                            | TypeKind::I32
+                            | TypeKind::U32
+                            | TypeKind::I64
+                            | TypeKind::U64
+                            | TypeKind::F32
+                            | TypeKind::F64
+                            | TypeKind::HResult
+                            | TypeKind::Enum(_)
+                    )
             )
     }
+}
+
+fn validate_raw_native_struct_by_value(layout: &NativeStructLayout) -> result::Result<()> {
+    if !layout.raw_unions_complete() {
+        return Err(invalid_argument(format!(
+            "raw native struct `{}` contains an incomplete union",
+            layout.name()
+        )));
+    }
+    validate_raw_natural_struct(layout, &mut Vec::new())?;
+    #[cfg(target_arch = "x86_64")]
+    if matches!(layout.size(), 3 | 5 | 6 | 7) {
+        return Err(invalid_argument(format!(
+            "raw Win64 by-value struct size {} is rejected for the bundled libffi 3.5.2 irregular-size argument passing/copy defect",
+            layout.size()
+        )));
+    }
+    #[cfg(target_arch = "aarch64")]
+    if layout.contains_union() {
+        return Err(invalid_argument(
+            "raw ARM64 structs containing unions are disabled pending a live ABI oracle",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_raw_native_union_by_value(layout: &NativeUnionLayout) -> result::Result<()> {
+    if !layout.raw_by_value_complete() {
+        return Err(invalid_argument(format!(
+            "raw native union `{}` is not marked complete",
+            layout.name()
+        )));
+    }
+    validate_raw_natural_union(layout, &mut Vec::new())?;
+    #[cfg(target_arch = "x86_64")]
+    if matches!(layout.size(), 3 | 5 | 6 | 7) {
+        return Err(invalid_argument(format!(
+            "raw Win64 by-value union size {} is rejected for the bundled libffi 3.5.2 irregular-size argument passing/copy defect",
+            layout.size()
+        )));
+    }
+    #[cfg(target_arch = "aarch64")]
+    return Err(invalid_argument(
+        "raw ARM64 by-value unions are disabled pending a live ABI oracle",
+    ));
+    #[cfg(not(target_arch = "aarch64"))]
+    Ok(())
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RawNaturalAggregateNode {
+    Struct(*const NativeStructLayout),
+    Union(*const NativeUnionLayout),
+}
+
+fn validate_raw_natural_struct(
+    layout: &NativeStructLayout,
+    stack: &mut Vec<RawNaturalAggregateNode>,
+) -> result::Result<()> {
+    let node = RawNaturalAggregateNode::Struct(layout);
+    if stack.contains(&node) {
+        return Err(invalid_argument(format!(
+            "raw native aggregate layout contains a recursive cycle through `{}`",
+            layout.name()
+        )));
+    }
+    stack.push(node);
+    let result = (|| {
+        if layout.fields.is_empty() {
+            return Err(invalid_argument(format!(
+                "raw native struct `{}` must describe at least one field",
+                layout.name()
+            )));
+        }
+
+        let mut fields = layout.fields.iter().collect::<Vec<_>>();
+        fields.sort_by_key(|field| field.offset);
+        let mut previous_end = 0usize;
+        let mut maximum_alignment = 1usize;
+        for field in fields {
+            validate_raw_natural_struct_field_type(&field.typ, stack)?;
+            let (element_size, field_alignment) = field.typ.size_alignment();
+            if element_size == 0 || field_alignment == 0 || !field_alignment.is_power_of_two() {
+                return Err(invalid_argument(format!(
+                    "raw native struct `{}` field `{}` has an incomplete natural layout",
+                    layout.name(),
+                    field.name
+                )));
+            }
+            let expected_offset = checked_raw_align_up(previous_end, field_alignment)?;
+            if field.offset != expected_offset {
+                return Err(invalid_argument(format!(
+                    "raw native struct `{}` field `{}` offset {} is not the natural C offset {expected_offset}",
+                    layout.name(),
+                    field.name,
+                    field.offset
+                )));
+            }
+            let field_size = element_size
+                .checked_mul(field.count as usize)
+                .ok_or_else(|| invalid_argument("raw native struct fixed array size overflow"))?;
+            previous_end = field
+                .offset
+                .checked_add(field_size)
+                .ok_or_else(|| invalid_argument("raw native struct field end overflow"))?;
+            maximum_alignment = maximum_alignment.max(field_alignment);
+        }
+        if layout.alignment != maximum_alignment {
+            return Err(invalid_argument(format!(
+                "raw native struct `{}` declares alignment {}, natural C alignment is {maximum_alignment}",
+                layout.name(),
+                layout.alignment
+            )));
+        }
+        let natural_size = checked_raw_align_up(previous_end, maximum_alignment)?;
+        if layout.size != natural_size {
+            return Err(invalid_argument(format!(
+                "raw native struct `{}` declares size {}, natural C size is {natural_size}",
+                layout.name(),
+                layout.size
+            )));
+        }
+        Ok(())
+    })();
+    stack.pop();
+    result
+}
+
+fn validate_raw_natural_struct_field_type(
+    typ: &NativeStructFieldType,
+    stack: &mut Vec<RawNaturalAggregateNode>,
+) -> result::Result<()> {
+    match typ {
+        NativeStructFieldType::Struct(layout) => validate_raw_natural_struct(layout, stack),
+        NativeStructFieldType::Union(layout) => validate_raw_natural_union(layout, stack),
+        NativeStructFieldType::Scalar(_)
+        | NativeStructFieldType::Guid
+        | NativeStructFieldType::Pointer => Ok(()),
+    }
+}
+
+fn validate_raw_natural_union(
+    layout: &NativeUnionLayout,
+    stack: &mut Vec<RawNaturalAggregateNode>,
+) -> result::Result<()> {
+    let node = RawNaturalAggregateNode::Union(layout);
+    if stack.contains(&node) {
+        return Err(invalid_argument(format!(
+            "raw native aggregate layout contains a recursive cycle through `{}`",
+            layout.name()
+        )));
+    }
+    stack.push(node);
+    let result = (|| {
+        if !layout.raw_by_value_complete() || layout.fields.is_empty() {
+            return Err(invalid_argument(format!(
+                "raw native union `{}` is incomplete",
+                layout.name()
+            )));
+        }
+        let mut maximum_alignment = 1usize;
+        let mut maximum_size = 0usize;
+        for field in &layout.fields {
+            match &field.typ {
+                NativeUnionFieldType::Struct(layout) => validate_raw_natural_struct(layout, stack)?,
+                NativeUnionFieldType::Union(layout) => validate_raw_natural_union(layout, stack)?,
+                NativeUnionFieldType::Scalar(_)
+                | NativeUnionFieldType::Guid
+                | NativeUnionFieldType::Pointer => {}
+            }
+            let (element_size, field_alignment) = field.typ.size_alignment();
+            if element_size == 0 || field_alignment == 0 || !field_alignment.is_power_of_two() {
+                return Err(invalid_argument(format!(
+                    "raw native union `{}` field `{}` has an incomplete natural layout",
+                    layout.name(),
+                    field.name
+                )));
+            }
+            let field_size = element_size
+                .checked_mul(field.count as usize)
+                .ok_or_else(|| invalid_argument("raw native union fixed array size overflow"))?;
+            maximum_alignment = maximum_alignment.max(field_alignment);
+            maximum_size = maximum_size.max(field_size);
+        }
+        if layout.alignment != maximum_alignment {
+            return Err(invalid_argument(format!(
+                "raw native union `{}` declares alignment {}, natural C alignment is {maximum_alignment}",
+                layout.name(),
+                layout.alignment
+            )));
+        }
+        let natural_size = checked_raw_align_up(maximum_size, maximum_alignment)?;
+        if layout.size != natural_size {
+            return Err(invalid_argument(format!(
+                "raw native union `{}` declares size {}, natural C size is {natural_size}",
+                layout.name(),
+                layout.size
+            )));
+        }
+        Ok(())
+    })();
+    stack.pop();
+    result
+}
+
+fn checked_raw_align_up(value: usize, alignment: usize) -> result::Result<usize> {
+    value
+        .checked_add(alignment - 1)
+        .map(|value| value & !(alignment - 1))
+        .ok_or_else(|| invalid_argument("raw native aggregate natural alignment overflow"))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2212,28 +2807,29 @@ impl CallbackMethodPlan {
             .iter()
             .map(|parameter| {
                 if let Some(buffer) = &parameter.buffer {
-                    return matches!(
-                        (&parameter.direction, &buffer.relation, &buffer.element.kind),
-                        (
-                            ComParameterDirection::InputBuffer,
-                            ComBufferRelation::Input { .. },
-                            BufferElementKind::Plain
-                        ) | (
-                            ComParameterDirection::CallerOutputBuffer,
-                            ComBufferRelation::CallerCapacity {
-                                two_call: false,
-                                ..
-                            },
-                            BufferElementKind::Plain
-                        ) | (
-                            ComParameterDirection::CalleeAllocatedBuffer,
-                            ComBufferRelation::CalleeAllocated {
-                                allocator: BufferAllocator::CoTaskMem,
-                                ..
-                            },
-                            BufferElementKind::Plain
-                        )
-                    )
+                    return (buffer.element.callback_safe
+                        && matches!(
+                            (&parameter.direction, &buffer.relation, &buffer.element.kind),
+                            (
+                                ComParameterDirection::InputBuffer,
+                                ComBufferRelation::Input { .. },
+                                BufferElementKind::Plain
+                            ) | (
+                                ComParameterDirection::CallerOutputBuffer,
+                                ComBufferRelation::CallerCapacity {
+                                    two_call: false,
+                                    ..
+                                },
+                                BufferElementKind::Plain
+                            ) | (
+                                ComParameterDirection::CalleeAllocatedBuffer,
+                                ComBufferRelation::CalleeAllocated {
+                                    allocator: BufferAllocator::CoTaskMem,
+                                    ..
+                                },
+                                BufferElementKind::Plain
+                            )
+                        ))
                     .then_some((
                         crate::native_callback::CallbackAbiType::Pointer,
                         libffi::middle::Type::pointer(),
@@ -2241,7 +2837,7 @@ impl CallbackMethodPlan {
                 }
                 match parameter.direction {
                     ComParameterDirection::In => {
-                        let abi = Self::callback_abi_type(&parameter.typ.abi)?;
+                        let abi = Self::callback_abi_type(&parameter.typ)?;
                         Some((abi, parameter.typ.abi.libffi_type()))
                     }
                     ComParameterDirection::Out
@@ -2272,7 +2868,7 @@ impl CallbackMethodPlan {
                 Some(crate::native_callback::CallbackSignature::void(parameters))
             }
             ComReturnPlan::Direct(typ) => {
-                let abi = Self::callback_abi_type(&typ.abi)?;
+                let abi = Self::callback_abi_type(typ)?;
                 Some(crate::native_callback::CallbackSignature::direct(
                     parameters,
                     (abi, typ.abi.libffi_type()),
@@ -2295,8 +2891,11 @@ impl CallbackMethodPlan {
         }
     }
 
-    fn callback_abi_type(typ: &ParameterType) -> Option<crate::native_callback::CallbackAbiType> {
-        match typ {
+    fn callback_abi_type(typ: &Type) -> Option<crate::native_callback::CallbackAbiType> {
+        if !typ.callback_aggregate_supported() {
+            return None;
+        }
+        match &typ.abi {
             ParameterType::WinRT(typ) => match typ.kind() {
                 TypeKind::I8 => Some(crate::native_callback::CallbackAbiType::I8),
                 TypeKind::Bool | TypeKind::U8 => Some(crate::native_callback::CallbackAbiType::U8),
@@ -2341,69 +2940,76 @@ impl CallbackMethodPlan {
                 ))
             }
             ParameterType::VariantByValue => None,
+            ParameterType::NativeUnion(_) => None,
         }
     }
 
     fn supports_callback_output(typ: &Type) -> bool {
-        matches!(
-            &typ.abi,
-            ParameterType::Pointer | ParameterType::Bstr { .. } | ParameterType::NativeStruct(_)
-        ) || matches!(
+        typ.callback_aggregate_supported()
+            && (matches!(
                 &typ.abi,
-                ParameterType::WinRT(value)
-                if matches!(
-                    value.kind(),
-                    TypeKind::Bool
-                        | TypeKind::I8
-                        | TypeKind::U8
-                        | TypeKind::I16
-                        | TypeKind::U16
-                        | TypeKind::Char16
-                        | TypeKind::I32
-                        | TypeKind::U32
-                        | TypeKind::I64
-                        | TypeKind::U64
-                        | TypeKind::F32
-                        | TypeKind::F64
-                        | TypeKind::Guid
-                        | TypeKind::HString
-                        | TypeKind::HResult
-                        | TypeKind::Enum(_)
-                        | TypeKind::Object
-                        | TypeKind::Interface(_)
-                        | TypeKind::Delegate(_)
-                        | TypeKind::RuntimeClass(_)
-                        | TypeKind::Parameterized(_)
-                )
-        )
+                ParameterType::Pointer
+                    | ParameterType::Bstr { .. }
+                    | ParameterType::NativeStruct(_)
+            ) || matches!(
+                    &typ.abi,
+                    ParameterType::WinRT(value)
+                    if matches!(
+                        value.kind(),
+                        TypeKind::Bool
+                            | TypeKind::I8
+                            | TypeKind::U8
+                            | TypeKind::I16
+                            | TypeKind::U16
+                            | TypeKind::Char16
+                            | TypeKind::I32
+                            | TypeKind::U32
+                            | TypeKind::I64
+                            | TypeKind::U64
+                            | TypeKind::F32
+                            | TypeKind::F64
+                            | TypeKind::Guid
+                            | TypeKind::HString
+                            | TypeKind::HResult
+                            | TypeKind::Enum(_)
+                            | TypeKind::Object
+                            | TypeKind::Interface(_)
+                            | TypeKind::Delegate(_)
+                            | TypeKind::RuntimeClass(_)
+                            | TypeKind::Parameterized(_)
+                    )
+            ))
     }
 
     fn supports_callback_inout(typ: &Type) -> bool {
-        matches!(
-            &typ.abi,
-            ParameterType::Pointer | ParameterType::Bstr { .. } | ParameterType::NativeStruct(_)
-        ) || matches!(
-            &typ.abi,
-            ParameterType::WinRT(value)
+        typ.callback_aggregate_supported()
+            && (matches!(
+                &typ.abi,
+                ParameterType::Pointer
+                    | ParameterType::Bstr { .. }
+                    | ParameterType::NativeStruct(_)
+            ) || matches!(
+                &typ.abi,
+                ParameterType::WinRT(value)
                 if matches!(
-                    value.kind(),
-                    TypeKind::Bool
-                        | TypeKind::I8
-                        | TypeKind::U8
-                        | TypeKind::I16
-                        | TypeKind::U16
-                        | TypeKind::Char16
-                        | TypeKind::I32
-                        | TypeKind::U32
-                        | TypeKind::I64
-                        | TypeKind::U64
-                        | TypeKind::F32
-                        | TypeKind::F64
-                        | TypeKind::Guid
-                        | TypeKind::HResult
-                        | TypeKind::Enum(_)
-                )
-        )
+                        value.kind(),
+                        TypeKind::Bool
+                            | TypeKind::I8
+                            | TypeKind::U8
+                            | TypeKind::I16
+                            | TypeKind::U16
+                            | TypeKind::Char16
+                            | TypeKind::I32
+                            | TypeKind::U32
+                            | TypeKind::I64
+                            | TypeKind::U64
+                            | TypeKind::F32
+                            | TypeKind::F64
+                            | TypeKind::Guid
+                            | TypeKind::HResult
+                            | TypeKind::Enum(_)
+                    )
+            ))
     }
 
     fn callback_hidden_params(&self) -> BTreeSet<usize> {
@@ -2773,7 +3379,7 @@ impl CallbackMethodPlan {
                         .map_err(|_| SINK_E_FAIL)
                 }
             }
-            ParameterType::VariantByValue => Err(SINK_E_FAIL),
+            ParameterType::NativeUnion(_) | ParameterType::VariantByValue => Err(SINK_E_FAIL),
         }
     }
 
@@ -3435,6 +4041,18 @@ impl ComCallPlan {
     }
 
     fn invoke_values(&self, obj: *mut c_void, args: &[Value]) -> result::Result<Vec<Value>> {
+        self.invoke_values_tracked(obj, args, || {})
+    }
+
+    fn invoke_values_tracked<F>(
+        &self,
+        obj: *mut c_void,
+        args: &[Value],
+        mark_dispatched: F,
+    ) -> result::Result<Vec<Value>>
+    where
+        F: FnOnce(),
+    {
         if matches!(self.return_plan, ComReturnPlan::DispatchInvokeHResult(_)) {
             return Err(invalid_argument(
                 "IDispatch::Invoke captured HRESULT calls require invoke_dispatch()",
@@ -3585,6 +4203,7 @@ impl ComCallPlan {
             native_args.push(args[argument.input_index.expect("visible native input")].clone());
         }
 
+        mark_dispatched();
         let native_result = if self.native.uses_com_value_path()
             || native_args
                 .iter()
@@ -4977,6 +5596,12 @@ impl MethodSignature {
     }
 
     fn build(self, vtable_index: usize) -> result::Result<RegisteredMethod> {
+        for parameter in &self.parameters {
+            parameter.typ.validate_outbound_aggregate_policy()?;
+        }
+        if let ComReturnPlan::Direct(typ) = &self.return_plan {
+            typ.validate_outbound_aggregate_policy()?;
+        }
         validate_automation_contracts(&self.parameters, &self.return_plan)?;
         validate_in_out_ownership(&self.parameters)?;
         validate_buffer_contracts(&self.parameters)?;
@@ -5068,6 +5693,7 @@ fn validate_automation_contracts(
 ) -> result::Result<()> {
     for parameter in parameters {
         if parameter.typ.abi.native_union_layout().is_some()
+            && !parameter.typ.abi.is_native_union()
             && parameter.direction != ComParameterDirection::In
         {
             return Err(invalid_argument(
@@ -5690,6 +6316,40 @@ impl MethodHandle {
         args: &[Value],
     ) -> result::Result<Vec<(Value, PointerOutputKind)>> {
         self.0.plan.invoke_values_with_output_kinds(obj, args)
+    }
+
+    /// Invokes this method and marks the precise boundary immediately before
+    /// the native executor is entered, after all fallible argument validation.
+    pub unsafe fn invoke_values_with_output_kinds_tracked<F>(
+        &self,
+        obj: *mut c_void,
+        args: &[Value],
+        mark_dispatched: F,
+    ) -> result::Result<Vec<(Value, PointerOutputKind)>>
+    where
+        F: FnOnce(),
+    {
+        let values = self
+            .0
+            .plan
+            .invoke_values_tracked(obj, args, mark_dispatched)?;
+        if values.len() != self.0.plan.results.len() {
+            return Err(invalid_argument(format!(
+                "COM result plan mismatch: native call returned {} value(s), plan describes {}",
+                values.len(),
+                self.0.plan.results.len()
+            )));
+        }
+        Ok(values
+            .into_iter()
+            .zip(
+                self.0
+                    .plan
+                    .results
+                    .iter()
+                    .map(|result| result.success.pointer_output_kind()),
+            )
+            .collect())
     }
 
     /// # Safety
@@ -8259,6 +8919,13 @@ mod tests {
         output: *mut c_void,
     }
 
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct InvalidDirectPod {
+        cb_size: u32,
+        value: u32,
+    }
+
     unsafe extern "system" fn write_object_then_fail(
         this: *mut c_void,
         output: *mut *mut c_void,
@@ -8279,6 +8946,22 @@ mod tests {
             *number = 42;
         }
         windows_core::HRESULT(0x80004005u32 as i32)
+    }
+
+    unsafe extern "system" fn return_invalid_direct_and_owned_outputs(
+        this: *mut c_void,
+        object: *mut *mut c_void,
+        allocation: *mut *mut c_void,
+    ) -> InvalidDirectPod {
+        let call = unsafe { &*(this as *const FailingOutCall) };
+        unsafe {
+            *object = call.output;
+            *allocation = windows::Win32::System::Com::CoTaskMemAlloc(16);
+        }
+        InvalidDirectPod {
+            cb_size: 0,
+            value: 42,
+        }
     }
 
     #[test]
@@ -9176,6 +9859,35 @@ mod tests {
         )
     }
 
+    fn invalid_direct_pod_layout() -> Arc<NativeStructLayout> {
+        Arc::new(
+            NativeStructLayout::new(
+                "Tests.InvalidDirectPod",
+                size_of::<InvalidDirectPod>(),
+                align_of::<InvalidDirectPod>(),
+                vec![
+                    NativeStructField::new(
+                        "cbSize",
+                        0,
+                        1,
+                        NativeStructFieldType::Scalar(NativeStructScalar::U32),
+                    )
+                    .unwrap(),
+                    NativeStructField::new(
+                        "value",
+                        4,
+                        1,
+                        NativeStructFieldType::Scalar(NativeStructScalar::U32),
+                    )
+                    .unwrap(),
+                ],
+            )
+            .unwrap()
+            .with_size_field_initializer("cbSize")
+            .unwrap(),
+        )
+    }
+
     unsafe extern "system" fn read_bind_opts(
         _this: *mut c_void,
         value: *const TestBindOpts,
@@ -9230,6 +9942,14 @@ mod tests {
         let value = unsafe { &*value };
         unsafe { *result = value.first + u32::from(value.second) + u32::from(value.tag) };
         windows_core::HRESULT(0)
+    }
+
+    unsafe extern "system" fn return_pod(_this: *mut c_void) -> TestPod {
+        TestPod {
+            first: 31,
+            second: 7,
+            tag: 4,
+        }
     }
 
     unsafe extern "system" fn nullable_pod_pointer_is_null(
@@ -10148,16 +10868,19 @@ mod tests {
             vtable: vtable.as_ptr(),
         };
         let output = ComBufferValue::enumerator_output(&Type::winrt(table.u32_type()), 2).unwrap();
+        let dispatched = std::cell::Cell::new(false);
         let values = unsafe {
             interface
                 .method(3)
                 .unwrap()
-                .invoke_values_with_output_kinds(
+                .invoke_values_with_output_kinds_tracked(
                     (&mut object as *mut FakeComObject).cast(),
                     &[Value::Buffer(output)],
+                    || dispatched.set(true),
                 )
         }
         .unwrap();
+        assert!(dispatched.get());
         assert!(matches!(
             values[0].0,
             Value::WinRt(WinRTValue::HResult(value)) if value.0 == 1
@@ -10192,17 +10915,20 @@ mod tests {
             vtable: optional_vtable.as_ptr(),
         };
         let output = ComBufferValue::enumerator_output(&Type::winrt(table.u32_type()), 2).unwrap();
+        let dispatched = std::cell::Cell::new(false);
         let error = unsafe {
             interface
                 .method(3)
                 .unwrap()
-                .invoke_values_with_output_kinds(
+                .invoke_values_with_output_kinds_tracked(
                     (&mut optional_object as *mut FakeComObject).cast(),
                     &[Value::Buffer(output), Value::WinRt(WinRTValue::Bool(false))],
+                    || dispatched.set(true),
                 )
         }
         .unwrap_err();
         assert!(error.message().contains("null pceltFetched"));
+        assert!(!dispatched.get());
         assert_eq!(OPTIONAL_ENUMERATOR_NEXT_CALLS.load(Ordering::Relaxed), 0);
     }
 
@@ -10997,6 +11723,24 @@ mod tests {
         .unwrap();
         assert!(matches!(&pointer[0], Value::WinRt(WinRTValue::U32(42))));
 
+        let direct = invoke_test_pod(
+            return_pod as *mut c_void,
+            MethodSignature::new(&table).returns(Type::raw_native_struct(layout.clone()).unwrap()),
+            &[],
+        )
+        .unwrap();
+        let Value::NativeStruct(direct) = &direct[0] else {
+            panic!("expected direct native POD return");
+        };
+        let direct = read_test_pod(direct);
+        assert_eq!((direct.first, direct.second, direct.tag), (31, 7, 4));
+        assert!(
+            std::panic::catch_unwind(|| {
+                MethodSignature::new(&table).returns(Type::native_struct(layout.clone()))
+            })
+            .is_err()
+        );
+
         let nullable = invoke_test_pod(
             nullable_pod_pointer_is_null as *mut c_void,
             MethodSignature::new(&table)
@@ -11223,6 +11967,565 @@ mod tests {
                 .message()
                 .contains("active-field")
         );
+    }
+
+    #[test]
+    fn native_union_libffi_carriers_prepare_exact_size_and_alignment() {
+        let integer = test_union_layout();
+        let homogeneous = Arc::new(
+            NativeUnionLayout::new(
+                "Tests.Hfa2",
+                8,
+                4,
+                vec![
+                    NativeUnionField::new(
+                        "pair",
+                        2,
+                        NativeUnionFieldType::Scalar(NativeStructScalar::F32),
+                    )
+                    .unwrap(),
+                    NativeUnionField::new(
+                        "scalar",
+                        1,
+                        NativeUnionFieldType::Scalar(NativeStructScalar::F32),
+                    )
+                    .unwrap(),
+                ],
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            homogeneous.homogeneous_aggregate(),
+            Some(NativeHomogeneousAggregate {
+                base: NativeHomogeneousBase::F32,
+                count: 2,
+            })
+        );
+
+        for layout in [integer, homogeneous] {
+            let argument = layout.libffi_type();
+            let result = layout.libffi_type();
+            let cif = crate::native_call::system_cif(vec![argument], result);
+            let raw = unsafe { &*cif.as_raw_ptr() };
+            let argument = unsafe { &**raw.arg_types };
+            let result = unsafe { &*raw.rtype };
+            assert_eq!(
+                (argument.size, argument.alignment as usize),
+                (layout.size(), layout.alignment())
+            );
+            assert_eq!(
+                (result.size, result.alignment as usize),
+                (layout.size(), layout.alignment())
+            );
+        }
+    }
+
+    #[test]
+    fn raw_union_core_gates_complete_natural_and_top_level_layouts() {
+        assert!(
+            NativeUnionLayout::new(
+                "Tests.Inflated",
+                16,
+                8,
+                vec![
+                    NativeUnionField::new(
+                        "value",
+                        1,
+                        NativeUnionFieldType::Scalar(NativeStructScalar::U64),
+                    )
+                    .unwrap(),
+                ],
+            )
+            .is_err()
+        );
+
+        let incomplete = Arc::new(
+            NativeUnionLayout::new(
+                "Tests.Incomplete",
+                1,
+                1,
+                vec![
+                    NativeUnionField::new(
+                        "value",
+                        1,
+                        NativeUnionFieldType::Scalar(NativeStructScalar::U8),
+                    )
+                    .unwrap(),
+                ],
+            )
+            .unwrap(),
+        );
+        assert!(Type::raw_native_union(incomplete).is_err());
+
+        let odd_inner = Arc::new(
+            NativeUnionLayout::new(
+                "Tests.OddInner",
+                3,
+                1,
+                vec![
+                    NativeUnionField::new(
+                        "bytes",
+                        3,
+                        NativeUnionFieldType::Scalar(NativeStructScalar::U8),
+                    )
+                    .unwrap(),
+                ],
+            )
+            .unwrap()
+            .with_complete_raw_by_value()
+            .unwrap(),
+        );
+        let outer = Arc::new(
+            NativeUnionLayout::new(
+                "Tests.NaturallySizedOuter",
+                4,
+                4,
+                vec![
+                    NativeUnionField::new("odd", 1, NativeUnionFieldType::Union(odd_inner.clone()))
+                        .unwrap(),
+                    NativeUnionField::new(
+                        "integer",
+                        1,
+                        NativeUnionFieldType::Scalar(NativeStructScalar::U32),
+                    )
+                    .unwrap(),
+                ],
+            )
+            .unwrap()
+            .with_complete_raw_by_value()
+            .unwrap(),
+        );
+        #[cfg(target_arch = "aarch64")]
+        assert!(Type::raw_native_union(outer).is_err());
+        #[cfg(not(target_arch = "aarch64"))]
+        assert!(Type::raw_native_union(outer).is_ok());
+
+        #[cfg(target_arch = "x86_64")]
+        assert!(Type::raw_native_union(odd_inner).is_err());
+        #[cfg(target_arch = "x86")]
+        assert!(Type::raw_native_union(odd_inner).is_ok());
+    }
+
+    #[test]
+    fn raw_struct_by_value_requires_recursive_natural_c_layout() {
+        let scalar_field = |name: &str, offset: usize, count: u32, scalar: NativeStructScalar| {
+            NativeStructField::new(name, offset, count, NativeStructFieldType::Scalar(scalar))
+                .unwrap()
+        };
+        let layout = |name: &str, size: usize, alignment: usize, fields: Vec<NativeStructField>| {
+            Arc::new(NativeStructLayout::new(name, size, alignment, fields).unwrap())
+        };
+
+        let inflated_single = layout(
+            "Tests.InflatedSingle",
+            8,
+            4,
+            vec![scalar_field("value", 0, 1, NativeStructScalar::U32)],
+        );
+        assert!(Type::raw_native_struct(inflated_single.clone()).is_err());
+
+        let internal_gap = layout(
+            "Tests.InternalGap",
+            12,
+            4,
+            vec![
+                scalar_field("first", 0, 1, NativeStructScalar::U32),
+                scalar_field("second", 8, 1, NativeStructScalar::U32),
+            ],
+        );
+        assert!(Type::raw_native_struct(internal_gap.clone()).is_err());
+
+        let inflated_tail = layout(
+            "Tests.InflatedTail",
+            12,
+            4,
+            vec![
+                scalar_field("first", 0, 1, NativeStructScalar::U32),
+                scalar_field("last", 4, 1, NativeStructScalar::U8),
+            ],
+        );
+        assert!(Type::raw_native_struct(inflated_tail).is_err());
+
+        let wrong_alignment = Arc::new(NativeStructLayout {
+            name: "Tests.WrongRawAlignment".into(),
+            size: 8,
+            alignment: 8,
+            fields: vec![scalar_field("value", 0, 1, NativeStructScalar::U32)],
+            size_field_offsets: Vec::new(),
+        });
+        assert!(Type::raw_native_struct(wrong_alignment).is_err());
+
+        let empty = Arc::new(NativeStructLayout {
+            name: "Tests.EmptyRawStruct".into(),
+            size: 1,
+            alignment: 1,
+            fields: Vec::new(),
+            size_field_offsets: Vec::new(),
+        });
+        assert!(Type::raw_native_struct(empty).is_err());
+        assert!(checked_raw_align_up(usize::MAX, 8).is_err());
+
+        let natural_u8_u32 = layout(
+            "Tests.NaturalU8U32",
+            8,
+            4,
+            vec![
+                scalar_field("first", 0, 1, NativeStructScalar::U8),
+                scalar_field("second", 4, 1, NativeStructScalar::U32),
+            ],
+        );
+        let natural_u32_u8 = layout(
+            "Tests.NaturalU32U8",
+            8,
+            4,
+            vec![
+                scalar_field("first", 0, 1, NativeStructScalar::U32),
+                scalar_field("second", 4, 1, NativeStructScalar::U8),
+            ],
+        );
+        let explicit_reserved = layout(
+            "Tests.ExplicitReservedBytes",
+            8,
+            4,
+            vec![
+                scalar_field("reserved", 0, 4, NativeStructScalar::U8),
+                scalar_field("value", 4, 1, NativeStructScalar::U32),
+            ],
+        );
+        let fixed_array = layout(
+            "Tests.NaturalFixedArray",
+            8,
+            2,
+            vec![scalar_field("values", 0, 4, NativeStructScalar::U16)],
+        );
+        for natural in [
+            natural_u8_u32.clone(),
+            natural_u32_u8,
+            explicit_reserved,
+            fixed_array,
+        ] {
+            Type::raw_native_struct(natural).unwrap();
+        }
+
+        let nested_struct = layout(
+            "Tests.NaturalNestedStruct",
+            12,
+            4,
+            vec![
+                scalar_field("tag", 0, 1, NativeStructScalar::U8),
+                NativeStructField::new(
+                    "value",
+                    4,
+                    1,
+                    NativeStructFieldType::Struct(natural_u8_u32.clone()),
+                )
+                .unwrap(),
+            ],
+        );
+        Type::raw_native_struct(nested_struct).unwrap();
+
+        let natural_union = Arc::new(
+            NativeUnionLayout::new(
+                "Tests.NaturalNestedUnion",
+                4,
+                4,
+                vec![
+                    NativeUnionField::new(
+                        "integer",
+                        1,
+                        NativeUnionFieldType::Scalar(NativeStructScalar::U32),
+                    )
+                    .unwrap(),
+                    NativeUnionField::new(
+                        "bytes",
+                        4,
+                        NativeUnionFieldType::Scalar(NativeStructScalar::U8),
+                    )
+                    .unwrap(),
+                ],
+            )
+            .unwrap()
+            .with_complete_raw_by_value()
+            .unwrap(),
+        );
+        let struct_with_union = layout(
+            "Tests.NaturalStructWithUnion",
+            8,
+            4,
+            vec![
+                scalar_field("tag", 0, 1, NativeStructScalar::U8),
+                NativeStructField::new(
+                    "value",
+                    4,
+                    1,
+                    NativeStructFieldType::Union(natural_union.clone()),
+                )
+                .unwrap(),
+            ],
+        );
+        #[cfg(target_arch = "aarch64")]
+        assert!(Type::raw_native_struct(struct_with_union).is_err());
+        #[cfg(not(target_arch = "aarch64"))]
+        Type::raw_native_struct(struct_with_union).unwrap();
+
+        let union_with_struct = Arc::new(
+            NativeUnionLayout::new(
+                "Tests.NaturalUnionWithStruct",
+                8,
+                4,
+                vec![
+                    NativeUnionField::new("value", 1, NativeUnionFieldType::Struct(natural_u8_u32))
+                        .unwrap(),
+                ],
+            )
+            .unwrap()
+            .with_complete_raw_by_value()
+            .unwrap(),
+        );
+        #[cfg(target_arch = "aarch64")]
+        assert!(Type::raw_native_union(union_with_struct).is_err());
+        #[cfg(not(target_arch = "aarch64"))]
+        Type::raw_native_union(union_with_struct).unwrap();
+
+        let union_with_bad_struct = Arc::new(
+            NativeUnionLayout::new(
+                "Tests.UnionWithUnnaturalStruct",
+                12,
+                4,
+                vec![
+                    NativeUnionField::new(
+                        "value",
+                        1,
+                        NativeUnionFieldType::Struct(internal_gap.clone()),
+                    )
+                    .unwrap(),
+                ],
+            )
+            .unwrap()
+            .with_complete_raw_by_value()
+            .unwrap(),
+        );
+        assert!(Type::raw_native_union(union_with_bad_struct).is_err());
+
+        let table = MetadataTable::new();
+        MethodSignature::new(&table)
+            .add_in(Type::native_struct(internal_gap.clone()))
+            .build(3)
+            .unwrap();
+        MethodSignature::new(&table)
+            .add_in(Type::raw_native_struct_pointer(internal_gap.clone(), false))
+            .build(3)
+            .unwrap();
+        assert!(Type::raw_native_struct(internal_gap.clone()).is_err());
+        let forged_raw = Type {
+            abi: ParameterType::native_struct(internal_gap.clone()),
+            pointer_output: PointerOutputKind::None,
+            allow_direct_aggregate_return: true,
+            aggregate_capability: Some(AggregateCapability::RawOutbound),
+        };
+        assert!(
+            MethodSignature::new(&table)
+                .add_in(forged_raw.clone())
+                .build(3)
+                .is_err()
+        );
+        assert!(
+            MethodSignature::new(&table)
+                .returns(forged_raw)
+                .build(3)
+                .is_err()
+        );
+
+        let mut cycle_stack = vec![RawNaturalAggregateNode::Struct(
+            internal_gap.as_ref() as *const NativeStructLayout
+        )];
+        assert!(validate_raw_natural_struct(&internal_gap, &mut cycle_stack).is_err());
+    }
+
+    #[test]
+    fn aggregate_capability_separates_semantic_raw_and_callback_paths() {
+        let table = MetadataTable::new();
+        let union = Arc::new(
+            NativeUnionLayout::new(
+                "Tests.CapabilityUnion",
+                8,
+                8,
+                vec![
+                    NativeUnionField::new(
+                        "integer",
+                        1,
+                        NativeUnionFieldType::Scalar(NativeStructScalar::U64),
+                    )
+                    .unwrap(),
+                ],
+            )
+            .unwrap()
+            .with_complete_raw_by_value()
+            .unwrap(),
+        );
+        let struct_with_union = Arc::new(
+            NativeStructLayout::new(
+                "Tests.StructWithCapabilityUnion",
+                8,
+                8,
+                vec![
+                    NativeStructField::new(
+                        "value",
+                        0,
+                        1,
+                        NativeStructFieldType::Union(union.clone()),
+                    )
+                    .unwrap(),
+                ],
+            )
+            .unwrap(),
+        );
+
+        for semantic in [
+            Type::native_struct(struct_with_union.clone()),
+            Type::native_struct_pointer(struct_with_union.clone()),
+            Type::nullable_native_struct_pointer(struct_with_union.clone()),
+        ] {
+            assert!(
+                MethodSignature::new(&table)
+                    .add_in(semantic)
+                    .build(3)
+                    .unwrap_err()
+                    .message()
+                    .contains("semantic native struct")
+            );
+        }
+
+        let raw_pointer = Type::raw_native_struct_pointer(struct_with_union.clone(), false);
+        MethodSignature::new(&table)
+            .add_in(raw_pointer.clone())
+            .build(3)
+            .unwrap();
+        let raw_union_pointer = Type::raw_native_union_pointer(union.clone());
+        MethodSignature::new(&table)
+            .add_in(raw_union_pointer.clone())
+            .build(3)
+            .unwrap();
+
+        #[cfg(target_arch = "aarch64")]
+        assert!(Type::raw_native_struct(struct_with_union.clone()).is_err());
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            let raw_value = Type::raw_native_struct(struct_with_union.clone()).unwrap();
+            MethodSignature::new(&table)
+                .add_in(raw_value.clone())
+                .build(3)
+                .unwrap();
+
+            let raw_value_interface = register_interface(
+                &table,
+                "Tests.IRawValueCallbackRejected",
+                GUID::from_u128(0x557431e0_62c9_4e24_92a8_4dc5a34f7ddb),
+                InterfaceBase::IUnknown,
+            )
+            .add_method("Invoke", MethodSignature::new(&table).add_in(raw_value));
+            assert!(
+                create_sink(
+                    &raw_value_interface,
+                    Arc::new(|_, _, _, _| SinkCallbackResult::hresult(HRESULT(0)))
+                )
+                .unwrap_err()
+                .message()
+                .contains("callback ABI")
+            );
+        }
+
+        for (name, iid, typ) in [
+            (
+                "Tests.IRawStructPointerCallbackRejected",
+                GUID::from_u128(0x523e52f3_73a6_4382_8e3a_b94499ce357f),
+                raw_pointer,
+            ),
+            (
+                "Tests.IRawUnionPointerCallbackRejected",
+                GUID::from_u128(0x79ddcf87_1818_49cc_9754_b79f74383b1d),
+                raw_union_pointer,
+            ),
+        ] {
+            let interface = register_interface(&table, name, iid, InterfaceBase::IUnknown)
+                .add_method("Invoke", MethodSignature::new(&table).add_in(typ));
+            assert!(
+                create_sink(
+                    &interface,
+                    Arc::new(|_, _, _, _| SinkCallbackResult::hresult(HRESULT(0)))
+                )
+                .unwrap_err()
+                .message()
+                .contains("callback ABI")
+            );
+        }
+
+        let pod = test_pod_layout("Tests.CallbackSafePod");
+        let raw_pod = Type::raw_native_struct(pod.clone()).unwrap();
+        MethodSignature::new(&table)
+            .add_in(raw_pod.clone())
+            .build(3)
+            .unwrap();
+        let raw_pod_callback = register_interface(
+            &table,
+            "Tests.IRawPodCallbackRejected",
+            GUID::from_u128(0xd9c331e1_7f79_4d35_af07_482b3b257066),
+            InterfaceBase::IUnknown,
+        )
+        .add_method("Invoke", MethodSignature::new(&table).add_in(raw_pod));
+        assert!(
+            create_sink(
+                &raw_pod_callback,
+                Arc::new(|_, _, _, _| SinkCallbackResult::hresult(HRESULT(0)))
+            )
+            .unwrap_err()
+            .message()
+            .contains("callback ABI")
+        );
+        let raw_pod_buffer = register_interface(
+            &table,
+            "Tests.IRawPodBufferCallbackRejected",
+            GUID::from_u128(0x233724a8_e8af_4d75_8546_4e07060a52cc),
+            InterfaceBase::IUnknown,
+        )
+        .add_method(
+            "Invoke",
+            MethodSignature::new(&table)
+                .add_input_buffer(
+                    Type::raw_native_struct(pod.clone()).unwrap(),
+                    1,
+                    None,
+                    BufferCountUnit::Elements,
+                )
+                .unwrap()
+                .add_in(Type::winrt(table.u32_type())),
+        );
+        assert!(
+            create_sink(
+                &raw_pod_buffer,
+                Arc::new(|_, _, _, _| SinkCallbackResult::hresult(HRESULT(0)))
+            )
+            .unwrap_err()
+            .message()
+            .contains("callback ABI")
+        );
+
+        let callback_safe = register_interface(
+            &table,
+            "Tests.ICallbackSafePod",
+            GUID::from_u128(0xe5444950_6d35_4b6d_ba74_879c1b1404a7),
+            InterfaceBase::IUnknown,
+        )
+        .add_method(
+            "Invoke",
+            MethodSignature::new(&table).add_in(Type::native_struct(pod)),
+        );
+        let sink = create_sink(
+            &callback_safe,
+            Arc::new(|_, _, _, _| SinkCallbackResult::hresult(HRESULT(0))),
+        )
+        .unwrap();
+        drop(sink);
     }
 
     #[test]
@@ -12616,6 +13919,40 @@ mod tests {
 
         assert!(error.message().contains("80004005"));
         assert_eq!(tracked.releases.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn invalid_direct_aggregate_cleans_all_owned_outputs_once() {
+        crate::native_call::reset_co_task_mem_test_frees();
+        let tracked = TrackedComObject {
+            vtable: &TRACKED_VTABLE,
+            addrefs: AtomicU32::new(0),
+            releases: AtomicU32::new(0),
+        };
+        let vtable = [return_invalid_direct_and_owned_outputs as *mut c_void];
+        let mut call = FailingOutCall {
+            vtable: vtable.as_ptr(),
+            output: (&tracked as *const TrackedComObject).cast_mut().cast(),
+        };
+        let table = MetadataTable::new();
+        let registered = MethodSignature::new(&table)
+            .add_out(Type::owned_com_pointer())
+            .add_out(Type::co_task_mem_pointer())
+            .returns(Type::raw_native_struct(invalid_direct_pod_layout()).unwrap())
+            .build(0)
+            .unwrap();
+
+        let error = registered
+            .plan
+            .invoke_values((&mut call as *mut FailingOutCall).cast(), &[])
+            .unwrap_err();
+
+        assert!(error.message().contains("size field"));
+        assert_eq!(tracked.releases.load(Ordering::Relaxed), 1);
+        assert_eq!(crate::native_call::co_task_mem_test_frees(), 1);
+        drop(error);
+        assert_eq!(tracked.releases.load(Ordering::Relaxed), 1);
+        assert_eq!(crate::native_call::co_task_mem_test_frees(), 1);
     }
 
     #[test]

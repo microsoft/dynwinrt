@@ -3,14 +3,53 @@
 
 //! Classic-COM metadata projection and JavaScript generation.
 
+pub mod capability;
+mod generated_unsafe;
 mod ir;
 mod javascript;
 mod model;
 mod project;
+mod typedef_inventory;
 
 use crate::com_metadata::{ComCoclassMeta, ComInterfaceMeta};
 
+pub use generated_unsafe::{
+    Stage2Coverage, UnsafeGeneratedOutput, UnsafeInterfaceSupport, generate_unsafe_interface_files,
+    generate_unsafe_interface_files_with_metadata, measure_stage2_coverage,
+    render_unsafe_package_files, validate_unsafe_supports, windows_relative_path_key,
+};
 pub use javascript::render::ComGeneratedOutput;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SafeCleanupAvailability {
+    NoneRequired,
+    StandardSupported,
+}
+
+pub fn safe_interface_cleanup_availability(
+    meta: &ComInterfaceMeta,
+    winmd_paths: &str,
+) -> Result<SafeCleanupAvailability, String> {
+    let projected = project::project_com_interface(meta, winmd_paths)?;
+    let owns_native_result = projected
+        .methods
+        .iter()
+        .flat_map(|method| &method.results)
+        .any(|result| {
+            !matches!(
+                result.conversion,
+                ir::ResultConversion::Value
+                    | ir::ResultConversion::BorrowedHandle
+                    | ir::ResultConversion::Buffer
+                    | ir::ResultConversion::PlainArray
+            )
+        });
+    Ok(if owns_native_result {
+        SafeCleanupAvailability::StandardSupported
+    } else {
+        SafeCleanupAvailability::NoneRequired
+    })
+}
 
 pub fn generate_com_interface_files(
     meta: &ComInterfaceMeta,

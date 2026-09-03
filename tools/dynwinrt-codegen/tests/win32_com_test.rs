@@ -14,7 +14,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use dynwinrt_codegen::codegen::com;
 use dynwinrt_codegen::codegen::project::{get_import_name, set_import_name};
@@ -33,6 +33,53 @@ fn win32_winmd() -> String {
 
 fn win32_available() -> bool {
     Path::new(&win32_winmd()).exists()
+}
+
+fn remove_com_generation_lock(output_dir: &Path) {
+    let Some(parent) = output_dir.parent() else {
+        return;
+    };
+    let Some(leaf) = output_dir.file_name().and_then(|name| name.to_str()) else {
+        return;
+    };
+    let path = parent.join(format!(".{leaf}.dynwinrt-generation.lock"));
+    if path.exists() {
+        fs::remove_file(path).expect("remove COM generation test lock");
+    }
+}
+
+fn snapshot_tree(root: &Path) -> std::collections::BTreeMap<String, Option<Vec<u8>>> {
+    fn visit(
+        root: &Path,
+        current: &Path,
+        snapshot: &mut std::collections::BTreeMap<String, Option<Vec<u8>>>,
+    ) {
+        let mut entries = fs::read_dir(current)
+            .unwrap()
+            .map(Result::unwrap)
+            .collect::<Vec<_>>();
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let path = entry.path();
+            let relative = path
+                .strip_prefix(root)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
+            if path.is_dir() {
+                snapshot.insert(format!("{relative}/"), None);
+                visit(root, &path, snapshot);
+            } else {
+                snapshot.insert(relative, Some(fs::read(path).unwrap()));
+            }
+        }
+    }
+
+    let mut snapshot = std::collections::BTreeMap::new();
+    if root.is_dir() {
+        visit(root, root, &mut snapshot);
+    }
+    snapshot
 }
 
 fn isolate_com_method(
@@ -2914,7 +2961,7 @@ fn real_owning_counted_arrays_project_natural_inputs_and_outputs() {
     assert_eq!(names.actual_length_param_index, Some(3));
     assert!(names.evidence.iter().any(|evidence| matches!(
         evidence,
-        com_metadata::RawEvidence::Override { citation, .. }
+        com_metadata::RawEvidence::ExactRegistry { citation, .. }
             if citation.contains("itypeinfo-getnames")
     )));
     let get_names_output = com::generate_com_interface_files(
@@ -3220,10 +3267,13 @@ fn real_borrowed_hwnd_outputs_are_exact_numeric_getters() {
     drifted.raw_methods.as_mut().unwrap()[0].params[0].free_with =
         Some(com_metadata::RawFreeWith {
             function: "DestroyWindow".into(),
-            evidence: com_metadata::RawEvidence::Override {
-                reason: "mutation",
-                citation: "mutation",
-            },
+            evidence: com_metadata::RawEvidence::exact_registry(
+                "tests.borrowed-hwnd.mutation.v1",
+                com_metadata::RawExactFamilyId::BorrowedHwndOutput,
+                com_metadata::RawContractKind::BorrowedHandle,
+                "mutation",
+                "mutation",
+            ),
         });
     let error = com::generate_com_interface_files(&drifted, &win32_winmd())
         .expect_err("borrowed HWND cleanup drift must fail closed");
@@ -4590,6 +4640,14 @@ fn com_only_generation_emits_an_importable_package_shape() {
     assert!(index.contains("__exportLazy('ITaskbarList3', './com/ITaskbarList3.js')"));
     let com_index = fs::read_to_string(output_dir.join("com").join("index.js")).unwrap();
     assert!(com_index.contains("__exportLazy('ITaskbarList3', './ITaskbarList3.js')"));
+    assert!(
+        !index.contains("Unsafe") && !com_index.contains("Unsafe"),
+        "safe-complete generation must not leak generated unsafe companions"
+    );
+    assert!(
+        !output_dir.join("com").join("unsafe").exists(),
+        "safe-complete generation must not create a duplicate unsafe package"
+    );
     let com_esm_index = fs::read_to_string(output_dir.join("com").join("index.mjs")).unwrap();
     assert!(com_esm_index.contains("import * as __m"));
     let package = fs::read_to_string(output_dir.join("package.json")).unwrap();
@@ -4682,6 +4740,1142 @@ fn com_only_generation_emits_an_importable_package_shape() {
     );
 
     fs::remove_dir_all(&output_dir).expect("remove COM package test directory");
+    remove_com_generation_lock(&output_dir);
+}
+
+#[test]
+fn safe_incomplete_interface_generates_an_isolated_unsafe_companion() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+
+    let output_dir = std::env::temp_dir().join(format!(
+        "dynwinrt-codegen-unsafe-companion-{}",
+        std::process::id()
+    ));
+    let dry_run_dir = std::env::temp_dir().join(format!(
+        "dynwinrt-codegen-unsafe-companion-dry-{}",
+        std::process::id()
+    ));
+    for path in [&output_dir, &dry_run_dir] {
+        if path.exists() {
+            fs::remove_dir_all(path).expect("remove stale generated unsafe test directory");
+        }
+    }
+
+    let generate = |output: &std::path::Path, dry_run: bool| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_dynwinrt-codegen"));
+        command.args([
+            "generate",
+            "--winmd",
+            &win32_winmd(),
+            "--namespace",
+            "Windows.Win32.System.Wmi",
+            "--class-name",
+            "IWbemServices",
+            "--output",
+            output.to_str().unwrap(),
+        ]);
+        if dry_run {
+            command.arg("--dry-run");
+        }
+        command.output().expect("spawn dynwinrt-codegen")
+    };
+
+    let dry_run = generate(&dry_run_dir, true);
+    assert!(
+        dry_run.status.success(),
+        "unsafe dry run failed:\n{}",
+        String::from_utf8_lossy(&dry_run.stderr)
+    );
+    assert!(
+        !dry_run_dir.exists(),
+        "unsafe dry run must not create output files"
+    );
+
+    let first = generate(&output_dir, false);
+    assert!(
+        first.status.success(),
+        "unsafe generation failed:\n{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&first.stdout)
+            .contains("Generated IWbemServicesUnsafe (raw metadata-complete: 17, manual executable: 6, blocked omitted: 0)"),
+        "unsafe generation must report executable and omitted method counts:\n{}",
+        String::from_utf8_lossy(&first.stdout)
+    );
+
+    let unsafe_dir = output_dir.join("com").join("unsafe");
+    let class_module = "Windows/Win32/System/Wmi/IWbemServicesUnsafe";
+    let retained = [
+        "Windows/Win32/System/Wmi/IWbemServicesUnsafe.js",
+        "Windows/Win32/System/Wmi/IWbemServicesUnsafe.d.ts",
+        "index.js",
+        "index.mjs",
+        "index.d.ts",
+        "package.json",
+        "support.json",
+    ];
+    let first_bytes = retained
+        .iter()
+        .map(|name| {
+            let path = unsafe_dir.join(name);
+            assert!(path.is_file(), "missing generated unsafe file {name}");
+            ((*name).to_string(), fs::read(path).unwrap())
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+
+    let js = fs::read_to_string(unsafe_dir.join(format!("{class_module}.js"))).unwrap();
+    assert!(js.contains("class IWbemServicesUnsafe"));
+    assert!(js.contains("openNamespace(strNamespace, options)"));
+    assert!(js.contains("DynCom.bstr(strNamespace)"));
+    assert!(js.contains("DynCom.bstrType()"));
+    assert!(js.contains("DynCom.interfaceType(WinGuid.parse("));
+    assert!(js.contains("__prepareExactWritableSpan(workingNamespace"));
+    assert!(js.contains("_takeOwnedInterfaceOutput(workingNamespace"));
+    assert!(js.contains("DynComRawPointer.null().toValue()"));
+    assert!(js.contains("const _isSemisynchronous = lFlags === 16"));
+    assert!(!js.contains("(lFlags & 16)"));
+    assert!(!js.contains("DynComRawStructLayout.fromDescriptor"));
+    assert!(!js.contains("implement(") && !js.contains("implementation"));
+    let dts = fs::read_to_string(unsafe_dir.join(format!("{class_module}.d.ts"))).unwrap();
+    assert!(dts.contains("private constructor()"));
+    assert!(dts.contains("static from(value: DynWinRtValue"));
+    assert!(dts.contains("strNamespace: string"));
+    assert!(dts.contains(
+        "options: { readonly lFlags: 0; readonly workingNamespace: DynComRawMemory; readonly result?: null }"
+    ));
+    assert!(dts.contains(
+        "options: { readonly lFlags: 16; readonly workingNamespace?: null; readonly result: DynComRawMemory }"
+    ));
+
+    let support: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(unsafe_dir.join("support.json")).unwrap())
+            .unwrap();
+    assert_eq!(support["schemaVersion"], 10);
+    assert_eq!(support["interfaces"][0]["modulePath"], class_module);
+    let methods = support["interfaces"][0]["methods"]
+        .as_array()
+        .expect("unsafe support methods");
+    assert_eq!(methods.len(), 23);
+    assert!(methods.iter().all(|method| {
+        method["absoluteSlot"].as_u64().is_some()
+            && method["declaringIid"].as_str().is_some()
+            && method["signatureFingerprint"]
+                .as_str()
+                .is_some_and(|fingerprint| fingerprint.len() == 64)
+    }));
+    assert_eq!(
+        methods
+            .iter()
+            .filter(|method| method["status"] == "raw_metadata_complete")
+            .count(),
+        17
+    );
+    assert_eq!(
+        methods
+            .iter()
+            .filter(|method| method["status"] == "raw_manual_contract")
+            .count(),
+        6
+    );
+    assert_eq!(methods[0]["projectedName"], "openNamespace");
+    assert_eq!(
+        methods[0]["targets"]["x64"]["lifecycle"]["requires_current_apartment"],
+        true
+    );
+    assert_eq!(
+        methods[0]["targets"]["x64"]["lifecycle"]["requires_external_acquisition"],
+        true
+    );
+
+    for path in [
+        output_dir.join("index.js"),
+        output_dir.join("index.d.ts"),
+        output_dir.join("com").join("index.js"),
+        output_dir.join("com").join("index.mjs"),
+        output_dir.join("com").join("index.d.ts"),
+    ] {
+        let contents = fs::read_to_string(&path).unwrap();
+        assert!(
+            !contents.contains("IWbemServicesUnsafe"),
+            "safe package surface leaked an unsafe companion through {}",
+            path.display()
+        );
+    }
+
+    let second = generate(&output_dir, false);
+    assert!(
+        second.status.success(),
+        "repeat unsafe generation failed:\n{}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    for (name, expected) in first_bytes {
+        assert_eq!(
+            fs::read(unsafe_dir.join(&name)).unwrap(),
+            expected,
+            "generated unsafe output is not deterministic: {name}"
+        );
+    }
+
+    for script in [
+        unsafe_dir.join(format!("{class_module}.js")),
+        unsafe_dir.join("index.js"),
+        unsafe_dir.join("index.mjs"),
+    ] {
+        let syntax = Command::new("node")
+            .args(["--check", script.to_str().unwrap()])
+            .output()
+            .expect("run node --check");
+        assert!(
+            syntax.status.success(),
+            "generated unsafe JavaScript did not parse ({}):\n{}",
+            script.display(),
+            String::from_utf8_lossy(&syntax.stderr)
+        );
+    }
+
+    fs::remove_dir_all(&output_dir).expect("remove generated unsafe test directory");
+    remove_com_generation_lock(&output_dir);
+}
+
+#[test]
+fn stage2_official_manual_interfaces_emit_exact_strategy_requirements() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+    let output = std::env::temp_dir().join(format!(
+        "dynwinrt-codegen-stage2-official-{}",
+        std::process::id()
+    ));
+    if output.exists() {
+        fs::remove_dir_all(&output).unwrap();
+    }
+    remove_com_generation_lock(&output);
+    let cases = [
+        (
+            "Windows.Win32.Media.Audio",
+            "IAudioClient",
+            "Windows/Win32/Media/Audio/IAudioClientUnsafe",
+            "isFormatSupported<T0>(ShareMode: number, pFormat: UnsafePointee, ppClosestMatch: UnsafePointerOutput<T0>): readonly [number, T0]",
+        ),
+        (
+            "Windows.Win32.Graphics.Dxgi",
+            "IDXGIObject",
+            "Windows/Win32/Graphics/Dxgi/IDXGIObjectUnsafe",
+            "setPrivateData(Name: DynComRawMemory | DynComRawPointer, DataSize: number, pData: UnsafePointee): void",
+        ),
+        (
+            "Windows.Win32.System.ClrHosting",
+            "IHostMalloc",
+            "Windows/Win32/System/ClrHosting/IHostMallocUnsafe",
+            "alloc<T0>(cbSize: bigint, eCriticalLevel: number, ppMem: UnsafePointerOutput<T0>): T0",
+        ),
+        (
+            "Windows.Win32.Devices.Fax",
+            "IStiDeviceControl",
+            "Windows/Win32/Devices/Fax/IStiDeviceControlUnsafe",
+            "getMyDeviceHandle<T0>(",
+        ),
+        (
+            "Windows.Win32.Devices.Fax",
+            "IStillImageW",
+            "Windows/Win32/Devices/Fax/IStillImageWUnsafe",
+            "getSTILaunchInformation(pwszDeviceName: UnsafeCountedBuffer, pdwEventCode: DynComRawMemory, pwszEventName: UnsafeCountedBuffer): void",
+        ),
+        (
+            "Windows.Win32.System.Wmi",
+            "IWbemServices",
+            "Windows/Win32/System/Wmi/IWbemServicesUnsafe",
+            "openNamespace(strNamespace: string, options: { readonly lFlags: 0; readonly workingNamespace: DynComRawMemory; readonly result?: null }): DynComRawOwnedComPointer",
+        ),
+    ];
+    for (namespace, name, module, declaration) in cases {
+        let result = Command::new(env!("CARGO_BIN_EXE_dynwinrt-codegen"))
+            .args([
+                "generate",
+                "--winmd",
+                &win32_winmd(),
+                "--namespace",
+                namespace,
+                "--class-name",
+                name,
+                "--output",
+                output.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let base = output.join("com").join("unsafe").join(module);
+        let dts = fs::read_to_string(base.with_extension("d.ts")).unwrap();
+        assert!(dts.contains(declaration), "{name}:\n{dts}");
+        assert!(base.with_extension("js").is_file());
+    }
+    let support: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(output.join("com").join("unsafe").join("support.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(support["schemaVersion"], 10);
+    let audio = support["interfaces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|interface| interface["interfaceName"] == "Windows.Win32.Media.Audio.IAudioClient")
+        .unwrap();
+    let format = audio["methods"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|method| method["name"] == "IsFormatSupported")
+        .unwrap();
+    assert_eq!(format["status"], "raw_manual_contract");
+    assert_eq!(
+        format["strategyRequirements"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|requirement| (
+                requirement["parameterName"].as_str().unwrap(),
+                requirement["strategy"].as_str().unwrap()
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            ("pFormat", "UnsafePointee"),
+            ("ppClosestMatch", "UnsafePointerOutput")
+        ]
+    );
+    assert_eq!(format["strategyRequirements"][0]["direction"], "in");
+    assert_eq!(format["strategyRequirements"][0]["nullable"], false);
+    assert_eq!(
+        format["strategyRequirements"][0]["pointeeLayouts"],
+        serde_json::json!({"arm64": null, "i686": null, "x64": null})
+    );
+    let wbem = support["interfaces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|interface| interface["interfaceName"] == "Windows.Win32.System.Wmi.IWbemServices")
+        .unwrap();
+    let open_namespace = wbem["methods"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|method| method["name"] == "OpenNamespace")
+        .unwrap();
+    assert_eq!(open_namespace["status"], "raw_metadata_complete");
+    assert_eq!(
+        open_namespace["strategyRequirements"],
+        serde_json::json!([])
+    );
+    let working_output = open_namespace["exactInterfaceOutputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|output| output["parameterName"] == "ppWorkingNamespace")
+        .unwrap();
+    assert_eq!(
+        working_output["interfaceIid"],
+        "9556dc99-828c-11cf-a37e-00aa003240c7"
+    );
+    assert_eq!(working_output["argumentOptional"], true);
+    assert_eq!(working_output["nullableOnSuccess"], false);
+    let result_output = open_namespace["exactInterfaceOutputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|output| output["parameterName"] == "ppResult")
+        .unwrap();
+    assert_eq!(result_output["argumentOptional"], true);
+    assert_eq!(result_output["nullableOnSuccess"], false);
+    assert!(
+        working_output["citation"]
+            .as_str()
+            .unwrap()
+            .contains("learn.microsoft.com")
+    );
+    let output_call = &open_namespace["exactInterfaceOutputCall"];
+    assert_eq!(
+        output_call["entryId"],
+        "wmi.conditional-output.entry.windows-win32-system-wmi.iwbemservices.9556dc99828c11cfa37e00aa003240c7.opennamespace.slot-3.v1"
+    );
+    assert_eq!(output_call["familyId"], "wmi.conditional-output.v1");
+    assert_eq!(output_call["contractKind"], "conditional-output");
+    assert_eq!(
+        output_call["sourceFingerprint"],
+        "EA3628EB9E45E1A0BAA0BC9F6DA1FD82FE938091EF1730E25E3CCEEA9EFD316B"
+    );
+    assert_eq!(output_call["synchronousFlags"], 0);
+    assert_eq!(output_call["semisynchronousFlagValue"], 0x10);
+    assert!(
+        output
+            .join("com")
+            .join("unsafe")
+            .join("runtime.js")
+            .is_file()
+    );
+    assert!(
+        output
+            .join("com")
+            .join("unsafe")
+            .join("runtime.d.ts")
+            .is_file()
+    );
+    let manifest: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(output.join("com").join(".dynwinrt-com-manifest.json")).unwrap(),
+    )
+    .unwrap();
+    for root in [
+        "Windows.Win32.Media.Audio.IAudioClient",
+        "Windows.Win32.Graphics.Dxgi.IDXGIObject",
+        "Windows.Win32.System.ClrHosting.IHostMalloc",
+        "Windows.Win32.Devices.Fax.IStiDeviceControl",
+        "Windows.Win32.Devices.Fax.IStillImageW",
+        "Windows.Win32.System.Wmi.IWbemServices",
+    ] {
+        let files = manifest["roots"][root].as_array().unwrap();
+        assert!(files.contains(&serde_json::json!("unsafe/runtime.js")));
+        assert!(files.contains(&serde_json::json!("unsafe/runtime.d.ts")));
+    }
+
+    fs::remove_dir_all(&output).unwrap();
+    remove_com_generation_lock(&output);
+}
+
+#[test]
+fn report_only_interface_persists_support_and_removes_only_owned_stale_files() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+
+    let output_dir = std::env::temp_dir().join(format!(
+        "dynwinrt-codegen-report-only-{}",
+        std::process::id()
+    ));
+    let dry_run_dir = std::env::temp_dir().join(format!(
+        "dynwinrt-codegen-report-only-dry-{}",
+        std::process::id()
+    ));
+    for path in [&output_dir, &dry_run_dir] {
+        if path.exists() {
+            fs::remove_dir_all(path).unwrap();
+        }
+        remove_com_generation_lock(path);
+    }
+
+    let run = |output: &Path, namespace: &str, name: &str, dry_run: bool| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_dynwinrt-codegen"));
+        command.args([
+            "generate",
+            "--winmd",
+            &win32_winmd(),
+            "--namespace",
+            namespace,
+            "--class-name",
+            name,
+            "--output",
+            output.to_str().unwrap(),
+        ]);
+        if dry_run {
+            command.arg("--dry-run");
+        }
+        command.output().expect("run report-only codegen")
+    };
+
+    let dry = run(
+        &dry_run_dir,
+        "Windows.Win32.Media.MediaFoundation",
+        "MFASYNCRESULT",
+        true,
+    );
+    assert!(!dry.status.success());
+    assert!(!dry_run_dir.exists(), "report-only dry-run wrote output");
+    let dry_stdout = String::from_utf8_lossy(&dry.stdout);
+    assert!(dry_stdout.contains("[dry-run] Report-only MFASYNCRESULTUnsafe"));
+    assert!(dry_stdout.contains("\"metadataComplete\":0"));
+    assert!(dry_stdout.contains("\"missing_interface_iid\""));
+
+    let report = run(
+        &output_dir,
+        "Windows.Win32.Media.MediaFoundation",
+        "MFASYNCRESULT",
+        false,
+    );
+    assert!(!report.status.success());
+    let stderr = String::from_utf8_lossy(&report.stderr);
+    assert!(
+        stderr.contains("emitted a support report but no callable class")
+            && stderr.contains("missing_interface_iid"),
+        "{stderr}"
+    );
+    let unsafe_dir = output_dir.join("com").join("unsafe");
+    let mf_module = "Windows/Win32/Media/MediaFoundation/MFASYNCRESULTUnsafe";
+    let iwbem_module = "Windows/Win32/System/Wmi/IWbemServicesUnsafe";
+    assert!(unsafe_dir.join("support.json").is_file());
+    assert!(!unsafe_dir.join(format!("{mf_module}.js")).exists());
+    assert!(!unsafe_dir.join(format!("{mf_module}.d.ts")).exists());
+    let support: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(unsafe_dir.join("support.json")).unwrap())
+            .unwrap();
+    assert_eq!(support["schemaVersion"], 10);
+    let mf = &support["interfaces"][0];
+    assert_eq!(
+        mf["interfaceName"],
+        "Windows.Win32.Media.MediaFoundation.MFASYNCRESULT"
+    );
+    assert_eq!(mf["interfaceIid"], "");
+    assert_eq!(mf["metadata"]["files"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        mf["metadata"]["definingFile"]["file"],
+        "Windows.Win32.winmd"
+    );
+    assert!(
+        mf["metadata"]["setSha256"]
+            .as_str()
+            .is_some_and(|hash| hash.len() == 64)
+    );
+    assert!(mf["methods"].as_array().unwrap().iter().all(|method| {
+        method["status"] == "raw_runtime_blocked"
+            && method["reasons"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::Value::String("missing_interface_iid".into()))
+    }));
+    let manifest_path = output_dir.join("com").join(".dynwinrt-com-manifest.json");
+    let manifest: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
+    assert_eq!(
+        manifest["roots"]["Windows.Win32.Media.MediaFoundation.MFASYNCRESULT"],
+        serde_json::json!(["unsafe/runtime.d.ts", "unsafe/runtime.js"])
+    );
+
+    let unsafe_success = run(
+        &output_dir,
+        "Windows.Win32.System.Wmi",
+        "IWbemServices",
+        false,
+    );
+    assert!(
+        unsafe_success.status.success(),
+        "{}",
+        String::from_utf8_lossy(&unsafe_success.stderr)
+    );
+    let merged: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(unsafe_dir.join("support.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        merged["interfaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|interface| interface["interfaceName"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec![
+            "Windows.Win32.Media.MediaFoundation.MFASYNCRESULT",
+            "Windows.Win32.System.Wmi.IWbemServices"
+        ]
+    );
+
+    let mut manifest: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
+    manifest["roots"]["Windows.Win32.Media.MediaFoundation.MFASYNCRESULT"] =
+        serde_json::json!([format!("unsafe/{mf_module}.js")]);
+    fs::write(
+        &manifest_path,
+        format!("{}\n", serde_json::to_string_pretty(&manifest).unwrap()),
+    )
+    .unwrap();
+    let stale_path = unsafe_dir.join(format!("{mf_module}.js"));
+    fs::create_dir_all(stale_path.parent().unwrap()).unwrap();
+    fs::write(&stale_path, "throw new Error('stale');\n").unwrap();
+    let repeated = run(
+        &output_dir,
+        "Windows.Win32.Media.MediaFoundation",
+        "MFASYNCRESULT",
+        false,
+    );
+    assert!(!repeated.status.success());
+    assert!(!stale_path.exists());
+    assert!(unsafe_dir.join(format!("{iwbem_module}.js")).is_file());
+    let merged_again = fs::read_to_string(unsafe_dir.join("support.json")).unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&merged_again).unwrap()["interfaces"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+
+    let iwbem_before = fs::read(unsafe_dir.join(format!("{iwbem_module}.js"))).unwrap();
+    fs::write(unsafe_dir.join("support.json"), "{ invalid support").unwrap();
+    let atomic_failure = run(
+        &output_dir,
+        "Windows.Win32.UI.Shell",
+        "ITaskbarList3",
+        false,
+    );
+    assert!(!atomic_failure.status.success());
+    assert_eq!(
+        fs::read_to_string(unsafe_dir.join("support.json")).unwrap(),
+        "{ invalid support"
+    );
+    assert_eq!(
+        fs::read(unsafe_dir.join(format!("{iwbem_module}.js"))).unwrap(),
+        iwbem_before
+    );
+
+    fs::remove_dir_all(&output_dir).unwrap();
+    remove_com_generation_lock(&output_dir);
+}
+
+#[test]
+fn concurrent_incremental_com_generation_preserves_all_roots_and_reports() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+    let output_dir = std::env::temp_dir().join(format!(
+        "dynwinrt-codegen-concurrent-com-{}",
+        std::process::id()
+    ));
+    if output_dir.exists() {
+        fs::remove_dir_all(&output_dir).unwrap();
+    }
+    remove_com_generation_lock(&output_dir);
+
+    let spawn = |namespace: &str, name: &str| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_dynwinrt-codegen"));
+        command
+            .args([
+                "generate",
+                "--winmd",
+                &win32_winmd(),
+                "--namespace",
+                namespace,
+                "--class-name",
+                name,
+                "--output",
+                output_dir.to_str().unwrap(),
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        command.spawn().expect("spawn concurrent codegen")
+    };
+
+    let safe = spawn("Windows.Win32.UI.Shell", "ITaskbarList3");
+    let unsafe_companion = spawn("Windows.Win32.System.Wmi", "IWbemServices");
+    let safe = safe.wait_with_output().unwrap();
+    let unsafe_companion = unsafe_companion.wait_with_output().unwrap();
+    assert!(
+        safe.status.success(),
+        "{}",
+        String::from_utf8_lossy(&safe.stderr)
+    );
+    assert!(
+        unsafe_companion.status.success(),
+        "{}",
+        String::from_utf8_lossy(&unsafe_companion.stderr)
+    );
+
+    let com_dir = output_dir.join("com");
+    let unsafe_dir = com_dir.join("unsafe");
+    let iwbem_module = "Windows/Win32/System/Wmi/IWbemServicesUnsafe.js";
+    assert!(com_dir.join("ITaskbarList3.js").is_file());
+    assert!(unsafe_dir.join(iwbem_module).is_file());
+    let safe_barrel = fs::read_to_string(com_dir.join("index.js")).unwrap();
+    let unsafe_barrel = fs::read_to_string(unsafe_dir.join("index.js")).unwrap();
+    assert!(safe_barrel.contains("ITaskbarList3"));
+    assert!(!safe_barrel.contains("IWbemServicesUnsafe"));
+    assert!(unsafe_barrel.contains("IWbemServicesUnsafe"));
+    let manifest: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(com_dir.join(".dynwinrt-com-manifest.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(manifest["roots"]["Windows.Win32.UI.Shell.ITaskbarList3"].is_array());
+    assert!(manifest["roots"]["Windows.Win32.System.Wmi.IWbemServices"].is_array());
+
+    let safe_second = spawn("Windows.Win32.UI.Shell", "IShellLinkW");
+    let report_only = spawn("Windows.Win32.Media.MediaFoundation", "MFASYNCRESULT");
+    let safe_second = safe_second.wait_with_output().unwrap();
+    let report_only = report_only.wait_with_output().unwrap();
+    assert!(
+        safe_second.status.success(),
+        "{}",
+        String::from_utf8_lossy(&safe_second.stderr)
+    );
+    assert!(!report_only.status.success());
+    assert!(com_dir.join("ITaskbarList3.js").is_file());
+    assert!(com_dir.join("IShellLinkW.js").is_file());
+    assert!(unsafe_dir.join(iwbem_module).is_file());
+    let support: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(unsafe_dir.join("support.json")).unwrap())
+            .unwrap();
+    assert_eq!(support["interfaces"].as_array().unwrap().len(), 2);
+    let manifest: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(com_dir.join(".dynwinrt-com-manifest.json")).unwrap(),
+    )
+    .unwrap();
+    for root in [
+        "Windows.Win32.UI.Shell.ITaskbarList3",
+        "Windows.Win32.UI.Shell.IShellLinkW",
+        "Windows.Win32.System.Wmi.IWbemServices",
+        "Windows.Win32.Media.MediaFoundation.MFASYNCRESULT",
+    ] {
+        assert!(
+            manifest["roots"][root].is_array(),
+            "missing manifest root {root}"
+        );
+    }
+
+    fs::remove_dir_all(&output_dir).unwrap();
+    remove_com_generation_lock(&output_dir);
+}
+
+#[test]
+fn concurrent_com_and_winrt_writers_share_one_output_lock_in_both_orders() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+    let Some(windows_winmd) = discovered_windows_winmd() else {
+        eprintln!("Skipping: Windows.winmd not available");
+        return;
+    };
+    let win32_metadata = win32_winmd();
+    let root = std::env::temp_dir().join(format!(
+        "dynwinrt-codegen-cross-domain-concurrent-{}",
+        std::process::id()
+    ));
+    if root.exists() {
+        fs::remove_dir_all(&root).unwrap();
+    }
+    fs::create_dir_all(&root).unwrap();
+
+    let spawn = |output: &Path,
+                 winmd: &str,
+                 namespace: &str,
+                 name: &str,
+                 marker: Option<&Path>,
+                 failure: Option<&str>| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_dynwinrt-codegen"));
+        command
+            .args([
+                "generate",
+                "--winmd",
+                winmd,
+                "--namespace",
+                namespace,
+                "--class-name",
+                name,
+                "--output",
+                output.to_str().unwrap(),
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if let Some(marker) = marker {
+            command
+                .env("DYNWINRT_CODEGEN_TEST_OUTPUT_LOCK_MARKER", marker)
+                .env("DYNWINRT_CODEGEN_TEST_HOLD_OUTPUT_LOCK_MS", "400");
+        }
+        if let Some(failure) = failure {
+            command.env("DYNWINRT_CODEGEN_TEST_FAIL_OUTPUT_COMMIT", failure);
+        }
+        command.spawn().unwrap()
+    };
+    let wait_for_marker = |marker: &Path| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while !marker.is_file() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for output-lock marker {}",
+                marker.display()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    };
+
+    for (index, com_first) in [true, false].into_iter().enumerate() {
+        let output = root.join(format!("order-{index}"));
+        let marker = root.join(format!("order-{index}.lock-acquired"));
+        let (first, second) = if com_first {
+            (
+                spawn(
+                    &output,
+                    &win32_metadata,
+                    "Windows.Win32.UI.Shell",
+                    "ITaskbarList3",
+                    Some(&marker),
+                    None,
+                ),
+                ("Windows.Foundation", "Uri", windows_winmd.as_str()),
+            )
+        } else {
+            (
+                spawn(
+                    &output,
+                    &windows_winmd,
+                    "Windows.Foundation",
+                    "Uri",
+                    Some(&marker),
+                    None,
+                ),
+                (
+                    "Windows.Win32.UI.Shell",
+                    "ITaskbarList3",
+                    win32_metadata.as_str(),
+                ),
+            )
+        };
+        wait_for_marker(&marker);
+        let second = spawn(&output, second.2, second.0, second.1, None, None);
+        let first = first.wait_with_output().unwrap();
+        let second = second.wait_with_output().unwrap();
+        assert!(
+            first.status.success(),
+            "{}",
+            String::from_utf8_lossy(&first.stderr)
+        );
+        assert!(
+            second.status.success(),
+            "{}",
+            String::from_utf8_lossy(&second.stderr)
+        );
+        assert_mixed_package_shape(&output);
+        remove_com_generation_lock(&output);
+    }
+
+    let output = root.join("failing-writer");
+    let baseline_unsafe = spawn(
+        &output,
+        &win32_metadata,
+        "Windows.Win32.System.Wmi",
+        "IWbemServices",
+        None,
+        None,
+    )
+    .wait_with_output()
+    .unwrap();
+    assert!(baseline_unsafe.status.success());
+    let baseline_winrt = spawn(
+        &output,
+        &windows_winmd,
+        "Windows.Foundation",
+        "Uri",
+        None,
+        None,
+    )
+    .wait_with_output()
+    .unwrap();
+    assert!(baseline_winrt.status.success());
+
+    let marker = root.join("failing-writer.lock-acquired");
+    let successful = spawn(
+        &output,
+        &win32_metadata,
+        "Windows.Win32.UI.Shell",
+        "IShellLinkW",
+        Some(&marker),
+        None,
+    );
+    wait_for_marker(&marker);
+    let failing = spawn(
+        &output,
+        &windows_winmd,
+        "Windows.Globalization",
+        "Calendar",
+        None,
+        Some("before_publish"),
+    );
+    let successful = successful.wait_with_output().unwrap();
+    let failing = failing.wait_with_output().unwrap();
+    assert!(
+        successful.status.success(),
+        "{}",
+        String::from_utf8_lossy(&successful.stderr)
+    );
+    assert!(!failing.status.success());
+    assert!(output.join("Uri.js").is_file());
+    assert!(!output.join("Calendar.js").exists());
+    assert!(output.join("com").join("IShellLinkW.js").is_file());
+    assert!(
+        output
+            .join("com")
+            .join("unsafe")
+            .join("Windows")
+            .join("Win32")
+            .join("System")
+            .join("Wmi")
+            .join("IWbemServicesUnsafe.js")
+            .is_file()
+    );
+    let manifest: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(output.join("com").join(".dynwinrt-com-manifest.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(manifest["roots"]["Windows.Win32.UI.Shell.IShellLinkW"].is_array());
+    assert!(manifest["roots"]["Windows.Win32.System.Wmi.IWbemServices"].is_array());
+    let root_barrel = fs::read_to_string(output.join("index.d.ts")).unwrap();
+    let com_barrel = fs::read_to_string(output.join("com").join("index.d.ts")).unwrap();
+    let unsafe_barrel =
+        fs::read_to_string(output.join("com").join("unsafe").join("index.d.ts")).unwrap();
+    assert!(root_barrel.contains("Uri") && !root_barrel.contains("Calendar"));
+    assert!(com_barrel.contains("IShellLinkW"));
+    assert!(unsafe_barrel.contains("IWbemServicesUnsafe"));
+    let support: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(output.join("com").join("unsafe").join("support.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(support["interfaces"].as_array().unwrap().len(), 1);
+    remove_com_generation_lock(&output);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn generated_unsafe_fingerprint_includes_sibling_and_reference_metadata() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+    let Some(windows_winmd) = discovered_windows_winmd() else {
+        eprintln!("Skipping: Windows.winmd not available");
+        return;
+    };
+    let win32_winmd = win32_winmd();
+    let root = std::env::temp_dir().join(format!(
+        "dynwinrt-codegen-metadata-set-{}",
+        std::process::id()
+    ));
+    if root.exists() {
+        fs::remove_dir_all(&root).unwrap();
+    }
+    let input = root.join("input");
+    let sibling_output = root.join("sibling-output");
+    let reference_output = root.join("reference-output");
+    fs::create_dir_all(&input).unwrap();
+    let copied_win32 = input.join("Windows.Win32.winmd");
+    let copied_windows = input.join("Windows.winmd");
+    fs::copy(&win32_winmd, &copied_win32).unwrap();
+    fs::copy(&windows_winmd, &copied_windows).unwrap();
+
+    let generate = |output: &Path, winmd: &Path, reference: Option<&str>| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_dynwinrt-codegen"));
+        command.args([
+            "generate",
+            "--winmd",
+            winmd.to_str().unwrap(),
+            "--namespace",
+            "Windows.Win32.System.Wmi",
+            "--class-name",
+            "IWbemServices",
+            "--output",
+            output.to_str().unwrap(),
+        ]);
+        if let Some(reference) = reference {
+            command.args(["--ref", reference]);
+        }
+        command.output().unwrap()
+    };
+    let sibling = generate(&sibling_output, &copied_win32, None);
+    assert!(
+        sibling.status.success(),
+        "{}",
+        String::from_utf8_lossy(&sibling.stderr)
+    );
+    let reference = generate(
+        &reference_output,
+        Path::new(&win32_winmd),
+        Some(&windows_winmd),
+    );
+    assert!(
+        reference.status.success(),
+        "{}",
+        String::from_utf8_lossy(&reference.stderr)
+    );
+
+    let read_metadata = |output: &Path| {
+        let support: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(output.join("com").join("unsafe").join("support.json")).unwrap(),
+        )
+        .unwrap();
+        support["interfaces"][0]["metadata"].clone()
+    };
+    let sibling_metadata = read_metadata(&sibling_output);
+    let reference_metadata = read_metadata(&reference_output);
+    assert_eq!(
+        sibling_metadata["setSha256"],
+        reference_metadata["setSha256"]
+    );
+    assert_eq!(
+        sibling_metadata["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|file| file["file"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["Windows.Win32.winmd", "Windows.winmd"]
+    );
+    assert_eq!(
+        sibling_metadata["definingFile"]["file"],
+        "Windows.Win32.winmd"
+    );
+    let serialized = serde_json::to_string(&sibling_metadata).unwrap();
+    assert!(!serialized.contains(root.to_string_lossy().as_ref()));
+    assert!(!serialized.contains(&windows_winmd));
+
+    fs::remove_dir_all(&root).unwrap();
+    remove_com_generation_lock(&sibling_output);
+    remove_com_generation_lock(&reference_output);
+}
+
+#[test]
+fn unified_output_transaction_rolls_back_first_and_incremental_failures() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+    let Some(windows_winmd) = discovered_windows_winmd() else {
+        eprintln!("Skipping: Windows.winmd not available");
+        return;
+    };
+    let metadata = format!("{};{}", windows_winmd, win32_winmd());
+    let output_dir = std::env::temp_dir().join(format!(
+        "dynwinrt-codegen-unified-transaction-{}",
+        std::process::id()
+    ));
+    if output_dir.exists() {
+        fs::remove_dir_all(&output_dir).unwrap();
+    }
+    remove_com_generation_lock(&output_dir);
+
+    let run = |classes: &str, failure: Option<&str>| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_dynwinrt-codegen"));
+        command.args([
+            "generate",
+            "--winmd",
+            &metadata,
+            "--class-name",
+            classes,
+            "--output",
+            output_dir.to_str().unwrap(),
+        ]);
+        if let Some(failure) = failure {
+            command.env("DYNWINRT_CODEGEN_TEST_FAIL_OUTPUT_COMMIT", failure);
+        }
+        command.output().unwrap()
+    };
+    let assert_no_transaction_artifacts = || {
+        let parent = output_dir.parent().unwrap();
+        let leaf = output_dir.file_name().unwrap().to_string_lossy();
+        for entry in fs::read_dir(parent).unwrap().map(Result::unwrap) {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let transaction_artifact = name == format!(".{leaf}.dynwinrt-stage")
+                || name == format!(".{leaf}.dynwinrt-backup")
+                || name == format!(".{leaf}.dynwinrt-failed-output");
+            assert!(
+                !transaction_artifact,
+                "transaction artifact survived rollback: {name}"
+            );
+        }
+    };
+    let mixed_classes = "Windows.Foundation.Uri,Windows.Win32.UI.Shell.ITaskbarList3";
+    let first_failure = run(mixed_classes, Some("before_publish"));
+    assert!(!first_failure.status.success());
+    assert!(
+        String::from_utf8_lossy(&first_failure.stderr)
+            .contains("Injected output transaction failure at `before_publish`")
+    );
+    assert!(
+        !output_dir.exists(),
+        "failed first generation published an output root"
+    );
+    assert_no_transaction_artifacts();
+
+    let baseline = run(mixed_classes, None);
+    assert!(
+        baseline.status.success(),
+        "{}",
+        String::from_utf8_lossy(&baseline.stderr)
+    );
+    let before = snapshot_tree(&output_dir);
+    let incremental_failure = run(
+        "Windows.Win32.System.Wmi.IWbemServices",
+        Some("after_backup_rename"),
+    );
+    assert!(!incremental_failure.status.success());
+    assert!(
+        String::from_utf8_lossy(&incremental_failure.stderr)
+            .contains("Injected output transaction failure at `after_backup_rename`")
+    );
+    assert_eq!(
+        snapshot_tree(&output_dir),
+        before,
+        "incremental commit failure did not restore the exact previous output"
+    );
+    assert_no_transaction_artifacts();
+
+    let mut partial_cleanup = Command::new(env!("CARGO_BIN_EXE_dynwinrt-codegen"));
+    partial_cleanup
+        .args([
+            "generate",
+            "--winmd",
+            &metadata,
+            "--class-name",
+            "Windows.Win32.System.Wmi.IWbemServices",
+            "--output",
+            output_dir.to_str().unwrap(),
+        ])
+        .env("DYNWINRT_CODEGEN_TEST_FAIL_BACKUP_CLEANUP", "partial");
+    let partial_cleanup = partial_cleanup.output().unwrap();
+    assert!(
+        partial_cleanup.status.success(),
+        "{}",
+        String::from_utf8_lossy(&partial_cleanup.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&partial_cleanup.stderr)
+            .contains("output committed, but backup cleanup failed")
+    );
+    assert!(output_dir.join("Uri.js").is_file());
+    assert!(output_dir.join("com").join("ITaskbarList3.js").is_file());
+    assert!(
+        output_dir
+            .join("com")
+            .join("unsafe")
+            .join("Windows")
+            .join("Win32")
+            .join("System")
+            .join("Wmi")
+            .join("IWbemServicesUnsafe.js")
+            .is_file()
+    );
+    let backup = output_dir.parent().unwrap().join(format!(
+        ".{}.dynwinrt-backup",
+        output_dir.file_name().unwrap().to_string_lossy()
+    ));
+    assert!(backup.is_dir(), "partial backup residue was not retained");
+
+    let cleanup_retry = run("Windows.Win32.UI.Shell.IShellLinkW", None);
+    assert!(
+        cleanup_retry.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cleanup_retry.stderr)
+    );
+    assert!(
+        !backup.exists(),
+        "next locked generation did not remove backup residue"
+    );
+    assert!(output_dir.join("com").join("IShellLinkW.js").is_file());
+
+    fs::remove_dir_all(&output_dir).unwrap();
+    remove_com_generation_lock(&output_dir);
 }
 
 #[test]
@@ -4758,6 +5952,16 @@ fn mixed_generation_supports_one_command_and_both_incremental_orders() {
 
     run_codegen_command(&metadata, Some("Windows.Foundation"), "Uri", &com_first);
     assert_mixed_package_shape(&com_first);
+    assert_eq!(
+        snapshot_tree(&mixed),
+        snapshot_tree(&winrt_first),
+        "one-batch and WinRT-first output must be byte-identical"
+    );
+    assert_eq!(
+        snapshot_tree(&mixed),
+        snapshot_tree(&com_first),
+        "one-batch and COM-first output must be byte-identical"
+    );
 
     run_codegen_command(
         &metadata,
@@ -4796,15 +6000,15 @@ fn mixed_generation_supports_one_command_and_both_incremental_orders() {
 
     for output_dir in [&mixed, &winrt_first, &com_first, &legacy_com_first] {
         fs::remove_dir_all(output_dir).expect("remove mixed package test directory");
+        remove_com_generation_lock(output_dir);
     }
 }
 
 /// Requirement 8: multi-interface COM generation must be atomic enough that
-/// a later interface's projection failure doesn't leave an earlier,
+/// a later request's resolution/projection failure doesn't leave an earlier,
 /// successfully-projected interface's files (or the `com/` barrel) newly
-/// written on disk. `ITaskbarList3` projects cleanly; `IShellFolder` fails
-/// closed because `ParseDisplayName` has an untyped owned pointer output.
-/// Requesting both in one `--class-name` batch must
+/// written on disk. `ITaskbarList3` projects cleanly, while the deliberately
+/// missing second request cannot be resolved. Requesting both in one batch must
 /// fail the whole command AND leave no `com/` output directory at all (since
 /// this is a from-scratch generation into a directory that doesn't exist
 /// yet).
@@ -4830,7 +6034,7 @@ fn multi_interface_com_generation_does_not_leave_partial_output_on_projection_fa
             "--namespace",
             "Windows.Win32.UI.Shell",
             "--class-name",
-            "ITaskbarList3,IShellFolder",
+            "ITaskbarList3,DefinitelyMissing",
             "--output",
             output_dir.to_str().unwrap(),
         ])
@@ -4843,8 +6047,8 @@ fn multi_interface_com_generation_does_not_leave_partial_output_on_projection_fa
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("IShellFolder") && stderr.contains("ParseDisplayName"),
-        "failure must name the offending interface/parameter:\n{stderr}"
+        stderr.contains("DefinitelyMissing") && stderr.contains("not found"),
+        "failure must name the unresolved request:\n{stderr}"
     );
 
     // No partial `com/` output (nor any of ITaskbarList3's already-projected
@@ -4854,8 +6058,13 @@ fn multi_interface_com_generation_does_not_leave_partial_output_on_projection_fa
         "a failed multi-interface COM batch must not leave a partial com/ directory: {:?}",
         output_dir.join("com")
     );
+    assert!(
+        !output_dir.exists(),
+        "failed first generation must not publish an empty output root"
+    );
 
     if output_dir.exists() {
         fs::remove_dir_all(&output_dir).expect("remove atomic COM test directory");
     }
+    remove_com_generation_lock(&output_dir);
 }

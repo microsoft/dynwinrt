@@ -13,13 +13,26 @@ use crate::{
 
 struct NativeStructStorage {
     ptr: std::ptr::NonNull<u8>,
+    allocation_ptr: std::ptr::NonNull<u8>,
     allocation: std::alloc::Layout,
+    size: usize,
 }
 
 struct NativeUnionStorage {
     ptr: std::ptr::NonNull<u8>,
+    allocation_ptr: std::ptr::NonNull<u8>,
     allocation: std::alloc::Layout,
+    size: usize,
 }
+
+#[cfg(test)]
+const NATIVE_AGGREGATE_GUARD_SIZE: usize = 16;
+#[cfg(not(test))]
+const NATIVE_AGGREGATE_GUARD_SIZE: usize = 0;
+#[cfg(test)]
+const NATIVE_AGGREGATE_PREFIX_CANARY: u8 = 0xA5;
+#[cfg(test)]
+const NATIVE_AGGREGATE_SUFFIX_CANARY: u8 = 0x5A;
 
 struct BstrCallValue {
     raw: *const u16,
@@ -92,60 +105,179 @@ pub(crate) fn bstr_test_counts() -> (usize, usize) {
 }
 
 impl NativeUnionStorage {
-    fn from_value(value: &crate::com::NativeUnionValue) -> windows_core::Result<Self> {
-        let layout = value.layout();
-        let allocation = std::alloc::Layout::from_size_align(layout.size(), layout.alignment())
-            .map_err(|_| {
+    fn zeroed(layout: &crate::com::NativeUnionLayout) -> windows_core::Result<Self> {
+        #[cfg(target_arch = "x86_64")]
+        let alignment = layout.alignment().max(16);
+        #[cfg(not(target_arch = "x86_64"))]
+        let alignment = layout.alignment();
+        let allocation_size = layout
+            .size()
+            .checked_add(NATIVE_AGGREGATE_GUARD_SIZE.saturating_mul(2))
+            .ok_or_else(|| {
+                windows_core::Error::new(
+                    windows_core::HRESULT(0x80070057u32 as i32),
+                    "invalid native union allocation size",
+                )
+            })?;
+        let allocation =
+            std::alloc::Layout::from_size_align(allocation_size, alignment).map_err(|_| {
                 windows_core::Error::new(
                     windows_core::HRESULT(0x80070057u32 as i32),
                     "invalid native union allocation layout",
                 )
             })?;
-        let ptr = unsafe { std::alloc::alloc_zeroed(allocation) };
-        let ptr = std::ptr::NonNull::new(ptr).ok_or_else(|| {
+        let allocation_ptr = unsafe { std::alloc::alloc_zeroed(allocation) };
+        let allocation_ptr = std::ptr::NonNull::new(allocation_ptr).ok_or_else(|| {
             windows_core::Error::new(
                 windows_core::HRESULT(0x8007000Eu32 as i32),
                 "native union allocation failed",
             )
         })?;
+        let ptr = unsafe {
+            std::ptr::NonNull::new_unchecked(
+                allocation_ptr.as_ptr().add(NATIVE_AGGREGATE_GUARD_SIZE),
+            )
+        };
+        let storage = Self {
+            ptr,
+            allocation_ptr,
+            allocation,
+            size: layout.size(),
+        };
+        storage.initialize_canaries();
+        Ok(storage)
+    }
+
+    fn from_value(value: &crate::com::NativeUnionValue) -> windows_core::Result<Self> {
+        let layout = value.layout();
+        let storage = Self::zeroed(layout)?;
         unsafe {
             std::ptr::copy_nonoverlapping(
                 value.bytes().as_ptr(),
-                ptr.as_ptr(),
+                storage.ptr.as_ptr(),
                 value.bytes().len(),
             );
         }
-        Ok(Self { ptr, allocation })
+        Ok(storage)
     }
 
     fn as_ptr(&self) -> *const u8 {
         self.ptr.as_ptr()
     }
+
+    fn as_mut_ptr(&mut self) -> *mut u8 {
+        self.ptr.as_ptr()
+    }
+
+    fn as_slice(&self) -> &[u8] {
+        unsafe { std::slice::from_raw_parts(self.ptr.as_ptr(), self.size) }
+    }
+
+    fn as_ret(&mut self) -> libffi::middle::Ret<'_> {
+        let bytes = unsafe { std::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.size) };
+        libffi::middle::Ret::new(bytes)
+    }
+
+    fn to_vec(&self) -> Vec<u8> {
+        self.as_slice().to_vec()
+    }
+
+    fn initialize_canaries(&self) {
+        #[cfg(test)]
+        unsafe {
+            std::ptr::write_bytes(
+                self.allocation_ptr.as_ptr(),
+                NATIVE_AGGREGATE_PREFIX_CANARY,
+                NATIVE_AGGREGATE_GUARD_SIZE,
+            );
+            std::ptr::write_bytes(
+                self.ptr.as_ptr().add(self.size),
+                NATIVE_AGGREGATE_SUFFIX_CANARY,
+                NATIVE_AGGREGATE_GUARD_SIZE,
+            );
+        }
+    }
+
+    fn validate_canaries(&self) -> windows_core::Result<()> {
+        #[cfg(test)]
+        {
+            let prefix = unsafe {
+                std::slice::from_raw_parts(
+                    self.allocation_ptr.as_ptr(),
+                    NATIVE_AGGREGATE_GUARD_SIZE,
+                )
+            };
+            let suffix = unsafe {
+                std::slice::from_raw_parts(
+                    self.ptr.as_ptr().add(self.size),
+                    NATIVE_AGGREGATE_GUARD_SIZE,
+                )
+            };
+            if prefix
+                .iter()
+                .any(|byte| *byte != NATIVE_AGGREGATE_PREFIX_CANARY)
+                || suffix
+                    .iter()
+                    .any(|byte| *byte != NATIVE_AGGREGATE_SUFFIX_CANARY)
+            {
+                return Err(windows_core::Error::new(
+                    windows_core::HRESULT(0x80004005u32 as i32),
+                    "native union return storage canary was modified",
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 impl Drop for NativeUnionStorage {
     fn drop(&mut self) {
-        unsafe { std::alloc::dealloc(self.ptr.as_ptr(), self.allocation) };
+        unsafe { std::alloc::dealloc(self.allocation_ptr.as_ptr(), self.allocation) };
     }
 }
 
 impl NativeStructStorage {
     fn zeroed(layout: &crate::com::NativeStructLayout) -> windows_core::Result<Self> {
-        let allocation = std::alloc::Layout::from_size_align(layout.size(), layout.alignment())
-            .map_err(|_| {
+        #[cfg(target_arch = "x86_64")]
+        let alignment = layout.alignment().max(16);
+        #[cfg(not(target_arch = "x86_64"))]
+        let alignment = layout.alignment();
+        let allocation_size = layout
+            .size()
+            .checked_add(NATIVE_AGGREGATE_GUARD_SIZE.saturating_mul(2))
+            .ok_or_else(|| {
+                windows_core::Error::new(
+                    windows_core::HRESULT(0x80070057u32 as i32),
+                    "invalid native struct allocation size",
+                )
+            })?;
+        let allocation =
+            std::alloc::Layout::from_size_align(allocation_size, alignment).map_err(|_| {
                 windows_core::Error::new(
                     windows_core::HRESULT(0x80070057u32 as i32),
                     "invalid native struct allocation layout",
                 )
             })?;
-        let ptr = unsafe { std::alloc::alloc_zeroed(allocation) };
-        let ptr = std::ptr::NonNull::new(ptr).ok_or_else(|| {
+        let allocation_ptr = unsafe { std::alloc::alloc_zeroed(allocation) };
+        let allocation_ptr = std::ptr::NonNull::new(allocation_ptr).ok_or_else(|| {
             windows_core::Error::new(
                 windows_core::HRESULT(0x8007000Eu32 as i32),
                 "native struct allocation failed",
             )
         })?;
-        Ok(Self { ptr, allocation })
+        let ptr = unsafe {
+            std::ptr::NonNull::new_unchecked(
+                allocation_ptr.as_ptr().add(NATIVE_AGGREGATE_GUARD_SIZE),
+            )
+        };
+        let storage = Self {
+            ptr,
+            allocation_ptr,
+            allocation,
+            size: layout.size(),
+        };
+        storage.initialize_canaries();
+        Ok(storage)
     }
 
     fn from_bytes(
@@ -173,14 +305,74 @@ impl NativeStructStorage {
         self.ptr.as_ptr()
     }
 
+    fn as_slice(&self) -> &[u8] {
+        // Safety: this storage uniquely owns an initialized allocation of
+        // exactly `allocation.size()` bytes.
+        unsafe { std::slice::from_raw_parts(self.ptr.as_ptr(), self.size) }
+    }
+
+    fn as_ret(&mut self) -> libffi::middle::Ret<'_> {
+        // Safety: this storage uniquely owns an allocation of exactly
+        // `allocation.size()` initialized bytes for the duration of the call.
+        let bytes = unsafe { std::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.size) };
+        libffi::middle::Ret::new(bytes)
+    }
+
     fn to_vec(&self) -> Vec<u8> {
-        unsafe { std::slice::from_raw_parts(self.ptr.as_ptr(), self.allocation.size()).to_vec() }
+        self.as_slice().to_vec()
+    }
+
+    fn initialize_canaries(&self) {
+        #[cfg(test)]
+        unsafe {
+            std::ptr::write_bytes(
+                self.allocation_ptr.as_ptr(),
+                NATIVE_AGGREGATE_PREFIX_CANARY,
+                NATIVE_AGGREGATE_GUARD_SIZE,
+            );
+            std::ptr::write_bytes(
+                self.ptr.as_ptr().add(self.size),
+                NATIVE_AGGREGATE_SUFFIX_CANARY,
+                NATIVE_AGGREGATE_GUARD_SIZE,
+            );
+        }
+    }
+
+    fn validate_canaries(&self) -> windows_core::Result<()> {
+        #[cfg(test)]
+        {
+            let prefix = unsafe {
+                std::slice::from_raw_parts(
+                    self.allocation_ptr.as_ptr(),
+                    NATIVE_AGGREGATE_GUARD_SIZE,
+                )
+            };
+            let suffix = unsafe {
+                std::slice::from_raw_parts(
+                    self.ptr.as_ptr().add(self.size),
+                    NATIVE_AGGREGATE_GUARD_SIZE,
+                )
+            };
+            if prefix
+                .iter()
+                .any(|byte| *byte != NATIVE_AGGREGATE_PREFIX_CANARY)
+                || suffix
+                    .iter()
+                    .any(|byte| *byte != NATIVE_AGGREGATE_SUFFIX_CANARY)
+            {
+                return Err(windows_core::Error::new(
+                    windows_core::HRESULT(0x80004005u32 as i32),
+                    "native struct return storage canary was modified",
+                ));
+            }
+        }
+        Ok(())
     }
 }
 
 impl Drop for NativeStructStorage {
     fn drop(&mut self) {
-        unsafe { std::alloc::dealloc(self.ptr.as_ptr(), self.allocation) };
+        unsafe { std::alloc::dealloc(self.allocation_ptr.as_ptr(), self.allocation) };
     }
 }
 
@@ -505,6 +697,8 @@ fn call_method_dynamic_impl<A: ArgumentList + ?Sized>(
     let mut guid_out_values: Vec<Option<Box<windows_core::GUID>>> = Vec::with_capacity(out_count);
     let mut native_struct_out_values: Vec<Option<NativeStructStorage>> =
         Vec::with_capacity(out_count);
+    let mut native_union_out_values =
+        std::collections::BTreeMap::<usize, NativeUnionStorage>::new();
     let mut bstr_out_values = std::collections::BTreeMap::<usize, Box<BstrCallValue>>::new();
     let mut variant_out_values: Vec<Option<crate::com::VariantValue>> =
         Vec::with_capacity(out_count);
@@ -654,6 +848,30 @@ fn call_method_dynamic_impl<A: ArgumentList + ?Sized>(
                 variant_out_values.push(None);
                 safe_array_out_values.push(None);
                 prop_variant_out_values.push(None);
+                array_out_map.push(None);
+                fill_array_map.push(None);
+            } else if p.typ.is_native_union() {
+                let layout = p
+                    .typ
+                    .native_union_layout()
+                    .expect("native union parameter has a layout");
+                let mut value = if p.is_in_out() {
+                    NativeUnionStorage::from_value(
+                        args.get_native_union(p.input_index.expect("native union input index"))
+                            .expect("validated native union in/out value"),
+                    )?
+                } else {
+                    NativeUnionStorage::zeroed(layout)?
+                };
+                out_ptrs.push(value.as_mut_ptr().cast());
+                out_values.push(AbiValue::Pointer(std::ptr::null_mut()));
+                struct_out_values.push(None);
+                guid_out_values.push(None);
+                native_struct_out_values.push(None);
+                variant_out_values.push(None);
+                safe_array_out_values.push(None);
+                prop_variant_out_values.push(None);
+                native_union_out_values.insert(p.value_index, value);
                 array_out_map.push(None);
                 fill_array_map.push(None);
             } else if p.typ.is_native_struct_pointer() {
@@ -1001,11 +1219,15 @@ fn call_method_dynamic_impl<A: ArgumentList + ?Sized>(
             let slot = native_struct_in_slots[native_struct_in_idx]
                 .as_ref()
                 .expect("by-value native struct cannot be null");
-            ffi_args.push(Arg::new(unsafe { &*slot.as_ptr() }));
+            ffi_args.push(Arg::new(slot.as_slice()));
             native_struct_in_idx += 1;
         } else if p.typ.is_native_struct_pointer() {
             ffi_args.push(arg(&native_struct_in_ptrs[native_struct_in_idx]));
             native_struct_in_idx += 1;
+        } else if p.typ.is_native_union() {
+            let slot = &native_union_in_slots[native_union_in_idx];
+            ffi_args.push(Arg::new(slot.as_slice()));
+            native_union_in_idx += 1;
         } else if p.typ.native_union_layout().is_some() {
             ffi_args.push(arg(&native_union_in_ptrs[native_union_in_idx]));
             native_union_in_idx += 1;
@@ -1035,60 +1257,98 @@ fn call_method_dynamic_impl<A: ArgumentList + ?Sized>(
     }
 
     // Phase 3: Call
-    let (return_value, native_hresult) = unsafe {
+    let call_result: windows_core::Result<(
+        Option<NativeCallValue>,
+        Option<windows_core::HRESULT>,
+    )> = unsafe {
         match return_kind {
             MethodReturn::HResult => {
                 let hr: windows_core::HRESULT = cif.call(CodePtr(fptr), &ffi_args);
-                (None, Some(hr))
+                Ok((None, Some(hr)))
             }
             MethodReturn::SemanticHResult => {
                 let hr: windows_core::HRESULT = cif.call(CodePtr(fptr), &ffi_args);
-                (
+                Ok((
                     hr.is_ok()
                         .then_some(NativeCallValue::WinRt(WinRTValue::HResult(hr))),
                     Some(hr),
-                )
+                ))
             }
             MethodReturn::PreservedHResult => {
                 let hr: windows_core::HRESULT = cif.call(CodePtr(fptr), &ffi_args);
-                (Some(NativeCallValue::WinRt(WinRTValue::HResult(hr))), None)
+                Ok((Some(NativeCallValue::WinRt(WinRTValue::HResult(hr))), None))
             }
             MethodReturn::CapturedHResult(_) => {
                 let hr: windows_core::HRESULT = cif.call(CodePtr(fptr), &ffi_args);
-                (None, Some(hr))
+                Ok((None, Some(hr)))
             }
             MethodReturn::Void => {
                 cif.call::<()>(CodePtr(fptr), &ffi_args);
-                (None, None)
+                Ok((None, None))
             }
             MethodReturn::Value { typ, .. } => {
-                let value = match typ.abi_type() {
-                    AbiType::Bool => AbiValue::Bool(cif.call(CodePtr(fptr), &ffi_args)),
-                    AbiType::I8 => AbiValue::I8(cif.call(CodePtr(fptr), &ffi_args)),
-                    AbiType::U8 => AbiValue::U8(cif.call(CodePtr(fptr), &ffi_args)),
-                    AbiType::I16 => AbiValue::I16(cif.call(CodePtr(fptr), &ffi_args)),
-                    AbiType::U16 => AbiValue::U16(cif.call(CodePtr(fptr), &ffi_args)),
-                    AbiType::I32 => AbiValue::I32(cif.call(CodePtr(fptr), &ffi_args)),
-                    AbiType::U32 => AbiValue::U32(cif.call(CodePtr(fptr), &ffi_args)),
-                    AbiType::I64 => AbiValue::I64(cif.call(CodePtr(fptr), &ffi_args)),
-                    AbiType::U64 => AbiValue::U64(cif.call(CodePtr(fptr), &ffi_args)),
-                    AbiType::F32 => AbiValue::F32(cif.call(CodePtr(fptr), &ffi_args)),
-                    AbiType::F64 => AbiValue::F64(cif.call(CodePtr(fptr), &ffi_args)),
-                    AbiType::Guid => AbiValue::Guid(cif.call(CodePtr(fptr), &ffi_args)),
-                    AbiType::Ptr => AbiValue::Pointer(cif.call(CodePtr(fptr), &ffi_args)),
-                };
-                (
-                    Some(NativeCallValue::WinRt(typ.from_out_value(&value).map_err(
-                        |error| {
+                if let crate::native_call::ParameterType::NativeStruct(layout) = typ {
+                    NativeStructStorage::zeroed(layout).and_then(|mut storage| {
+                        cif.call_return_into(CodePtr(fptr), &ffi_args, storage.as_ret());
+                        storage.validate_canaries()?;
+                        crate::com::NativeStructValue::new(layout.clone(), storage.to_vec())
+                            .map(|value| (Some(NativeCallValue::NativeStruct(value)), None))
+                            .map_err(|error| {
+                                windows_core::Error::new(
+                                    windows_core::HRESULT(0x80070057u32 as i32),
+                                    &error.message(),
+                                )
+                            })
+                    })
+                } else if let crate::native_call::ParameterType::NativeUnion(layout) = typ {
+                    NativeUnionStorage::zeroed(layout).and_then(|mut storage| {
+                        cif.call_return_into(CodePtr(fptr), &ffi_args, storage.as_ret());
+                        storage.validate_canaries()?;
+                        crate::com::NativeUnionValue::from_returned_bytes(
+                            layout.clone(),
+                            storage.to_vec(),
+                        )
+                        .map(|value| (Some(NativeCallValue::NativeUnion(value)), None))
+                        .map_err(|error| {
                             windows_core::Error::new(
                                 windows_core::HRESULT(0x80070057u32 as i32),
                                 &error.message(),
                             )
-                        },
-                    )?)),
-                    None,
-                )
+                        })
+                    })
+                } else {
+                    let value = match typ.abi_type() {
+                        AbiType::Bool => AbiValue::Bool(cif.call(CodePtr(fptr), &ffi_args)),
+                        AbiType::I8 => AbiValue::I8(cif.call(CodePtr(fptr), &ffi_args)),
+                        AbiType::U8 => AbiValue::U8(cif.call(CodePtr(fptr), &ffi_args)),
+                        AbiType::I16 => AbiValue::I16(cif.call(CodePtr(fptr), &ffi_args)),
+                        AbiType::U16 => AbiValue::U16(cif.call(CodePtr(fptr), &ffi_args)),
+                        AbiType::I32 => AbiValue::I32(cif.call(CodePtr(fptr), &ffi_args)),
+                        AbiType::U32 => AbiValue::U32(cif.call(CodePtr(fptr), &ffi_args)),
+                        AbiType::I64 => AbiValue::I64(cif.call(CodePtr(fptr), &ffi_args)),
+                        AbiType::U64 => AbiValue::U64(cif.call(CodePtr(fptr), &ffi_args)),
+                        AbiType::F32 => AbiValue::F32(cif.call(CodePtr(fptr), &ffi_args)),
+                        AbiType::F64 => AbiValue::F64(cif.call(CodePtr(fptr), &ffi_args)),
+                        AbiType::Guid => AbiValue::Guid(cif.call(CodePtr(fptr), &ffi_args)),
+                        AbiType::Ptr => AbiValue::Pointer(cif.call(CodePtr(fptr), &ffi_args)),
+                    };
+                    typ.from_out_value(&value)
+                        .map(|value| (Some(NativeCallValue::WinRt(value)), None))
+                        .map_err(|error| {
+                            windows_core::Error::new(
+                                windows_core::HRESULT(0x80070057u32 as i32),
+                                &error.message(),
+                            )
+                        })
+                }
             }
+        }
+    };
+    let (return_value, native_hresult) = match call_result {
+        Ok(result) => result,
+        Err(error) => {
+            cleanup_failed_outputs(parameters, &mut out_values);
+            return Err(error);
         }
     };
 
@@ -1267,6 +1527,21 @@ fn call_method_dynamic_impl<A: ArgumentList + ?Sized>(
                             },
                         )?,
                     ));
+                } else if let Some(bytes) = native_union_out_values.remove(&p.value_index) {
+                    let layout = p
+                        .typ
+                        .native_union_layout()
+                        .expect("native union output has a layout")
+                        .clone();
+                    result_values.push(NativeCallValue::NativeUnion(
+                        crate::com::NativeUnionValue::from_returned_bytes(layout, bytes.to_vec())
+                            .map_err(|error| {
+                            windows_core::Error::new(
+                                windows_core::HRESULT(0x80070057u32 as i32),
+                                &error.message(),
+                            )
+                        })?,
+                    ));
                 } else if p.typ.is_nullable_native_struct_pointer() && p.is_in_out() {
                     result_values.push(NativeCallValue::WinRt(WinRTValue::Null));
                 } else if let Some(value) = variant_out_values[p.value_index].take() {
@@ -1346,4 +1621,56 @@ fn call_method_dynamic_impl<A: ArgumentList + ?Sized>(
         result_values.insert(0, value);
     }
     Ok(DynamicCallOutcome::Values(result_values))
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::com::{
+        NativeStructField, NativeStructFieldType, NativeStructLayout, NativeStructScalar,
+        NativeUnionField, NativeUnionFieldType, NativeUnionLayout,
+    };
+
+    use super::{NativeStructStorage, NativeUnionStorage};
+
+    #[test]
+    fn aggregate_return_storage_canaries_detect_out_of_span_writes() {
+        let struct_layout = NativeStructLayout::new(
+            "Tests.GuardedReturnStruct",
+            8,
+            8,
+            vec![
+                NativeStructField::new(
+                    "value",
+                    0,
+                    1,
+                    NativeStructFieldType::Scalar(NativeStructScalar::U64),
+                )
+                .unwrap(),
+            ],
+        )
+        .unwrap();
+        let struct_storage = NativeStructStorage::zeroed(&struct_layout).unwrap();
+        struct_storage.validate_canaries().unwrap();
+        unsafe { struct_storage.ptr.as_ptr().sub(1).write(0) };
+        assert!(struct_storage.validate_canaries().is_err());
+
+        let union_layout = NativeUnionLayout::new(
+            "Tests.GuardedReturnUnion",
+            8,
+            8,
+            vec![
+                NativeUnionField::new(
+                    "value",
+                    1,
+                    NativeUnionFieldType::Scalar(NativeStructScalar::U64),
+                )
+                .unwrap(),
+            ],
+        )
+        .unwrap();
+        let union_storage = NativeUnionStorage::zeroed(&union_layout).unwrap();
+        union_storage.validate_canaries().unwrap();
+        unsafe { union_storage.ptr.as_ptr().add(union_layout.size()).write(0) };
+        assert!(union_storage.validate_canaries().is_err());
+    }
 }

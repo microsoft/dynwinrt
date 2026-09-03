@@ -3235,7 +3235,6 @@ pub(crate) fn safe_array_output_allows_null(evidence: &RawSafeArrayEvidence) -> 
                 == "https://learn.microsoft.com/windows/win32/api/uiautomationcore/nf-uiautomationcore-idragprovider-getgrabbeditems")
 }
 
-#[cfg(test)]
 pub(crate) fn all_safe_array_evidence() -> &'static [RawSafeArrayEvidence] {
     SAFE_ARRAY_EVIDENCE
 }

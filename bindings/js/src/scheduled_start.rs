@@ -14,7 +14,7 @@ use windows::{
   Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress},
 };
 
-use super::{async_promise, set_winui_dispatcher_loop_active};
+use super::{async_promise, com::NativeInvocationLeases, set_winui_dispatcher_loop_active};
 
 #[repr(C)]
 struct UvAsyncHandle {
@@ -86,6 +86,7 @@ struct ScheduledWinuiStart {
   method: dynwinrt::MethodHandle,
   object: dynwinrt::WinRTValue,
   args: Vec<dynwinrt::WinRTValue>,
+  _leases: NativeInvocationLeases,
   promise: StartPromise,
 }
 
@@ -376,6 +377,7 @@ pub fn schedule<'env>(
   method: dynwinrt::MethodHandle,
   object: dynwinrt::WinRTValue,
   args: Vec<dynwinrt::WinRTValue>,
+  leases: NativeInvocationLeases,
 ) -> napi::Result<PromiseRaw<'env, ()>> {
   async_promise::register_winui_dispatcher_queue(env)?;
   let raw_env = env.raw();
@@ -391,6 +393,7 @@ pub fn schedule<'env>(
     method,
     object,
     args,
+    _leases: leases,
     promise: promise_state,
   };
   if let Err(error) = schedule_on_node_loop(env, invocation) {

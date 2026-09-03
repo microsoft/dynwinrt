@@ -16,6 +16,33 @@ pub(crate) struct BorrowedHwndOutputEvidence {
     pub citation: &'static str,
 }
 
+impl BorrowedHwndOutputEvidence {
+    pub(crate) fn entry_id(&self) -> String {
+        crate::contract_registry::exact_parameter_entry_id(
+            self.family_id(),
+            self.declaring_namespace,
+            self.declaring_interface,
+            self.declaring_iid,
+            self.method_name,
+            self.vtable_index,
+            self.parameter_index,
+            self.parameter_name,
+        )
+    }
+
+    pub(crate) const fn family_id(&self) -> crate::contract_registry::ExactFamilyId {
+        crate::contract_registry::ExactFamilyId::BorrowedHwndOutput
+    }
+
+    pub(crate) fn entries() -> &'static [BorrowedHwndOutputEvidence] {
+        BORROWED_HWND_OUTPUTS
+    }
+
+    pub(crate) const fn contract_kind(&self) -> crate::contract_registry::ContractKind {
+        crate::contract_registry::ContractKind::BorrowedHandle
+    }
+}
+
 const BORROWED_HWND_OUTPUTS: &[BorrowedHwndOutputEvidence] = &[
     BorrowedHwndOutputEvidence {
         declaring_namespace: "Windows.Win32.Devices.ImageAcquisition",

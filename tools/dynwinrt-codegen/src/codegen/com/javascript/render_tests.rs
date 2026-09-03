@@ -36,6 +36,7 @@ fn renderer_api_accepts_only_projected_ir() {
         activation: ActivationPlan::None,
         referenced_enums: Vec::new(),
         sink: None,
+        evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
     };
     let output = render_com_interface(&projected);
     assert!(output.js.contains("registerIUnknownInterface"));
@@ -155,6 +156,7 @@ fn renderer_serializes_validated_com_sink_plan() {
                 },
             ],
         }),
+        evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
     };
 
     let output = render_com_interface(&projected);
@@ -259,6 +261,7 @@ fn renderer_serializes_direct_and_void_com_sink_returns() {
                 },
             ],
         }),
+        evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
     };
 
     let output = render_com_interface(&projected);
@@ -362,6 +365,7 @@ fn renderer_projects_borrowed_hwnd_output_as_numeric_handle() {
         activation: ActivationPlan::None,
         referenced_enums: Vec::new(),
         sink: None,
+        evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
     };
 
     let output = render_com_interface(&projected);
@@ -430,6 +434,7 @@ fn canonical_iunknown_arrays_use_managed_values_without_nominal_wrappers() {
         activation: ActivationPlan::None,
         referenced_enums: Vec::new(),
         sink: None,
+        evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
     };
     let output = render_com_interface(&projected);
     assert!(
@@ -475,6 +480,7 @@ fn renderer_projects_bstr_replacement_as_a_string_roundtrip() {
         activation: ActivationPlan::None,
         referenced_enums: Vec::new(),
         sink: None,
+        evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
     };
     let output = render_com_interface(&projected);
 
@@ -522,6 +528,7 @@ fn renderer_allows_null_only_for_nullable_bstr_inputs() {
         activation: ActivationPlan::None,
         referenced_enums: Vec::new(),
         sink: None,
+        evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
     };
     let output = render_com_interface(&projected);
 
@@ -641,6 +648,7 @@ fn renderer_keeps_dynamic_iid_native_order_and_all_results() {
         activation: ActivationPlan::None,
         referenced_enums: Vec::new(),
         sink: None,
+        evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
     });
 
     assert!(output.js.contains(
@@ -695,6 +703,7 @@ fn renderer_emits_distinct_by_value_variant_inputs() {
         activation: ActivationPlan::None,
         referenced_enums: Vec::new(),
         sink: None,
+        evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
     };
 
     let output = render_com_interface(&projected);
@@ -749,6 +758,7 @@ fn typed_buffer_scalar_aliases_are_collected_for_declarations() {
         activation: ActivationPlan::None,
         referenced_enums: Vec::new(),
         sink: None,
+        evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
     };
 
     assert_eq!(
@@ -833,6 +843,7 @@ fn renderer_serializes_fixed_capacity_bytes_from_projected_ir() {
         activation: ActivationPlan::None,
         referenced_enums: Vec::new(),
         sink: None,
+        evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
     };
 
     let output = render_com_interface(&projected);
@@ -938,6 +949,7 @@ fn parallel_arrays_use_semantic_element_counts_and_guid_conversion() {
         activation: ActivationPlan::None,
         referenced_enums: Vec::new(),
         sink: None,
+        evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
     };
 
     let output = render_com_interface(&projected);
@@ -1066,6 +1078,7 @@ fn renderer_emits_tagged_unions_and_automation_runtime_transfers() {
         activation: ActivationPlan::None,
         referenced_enums: Vec::new(),
         sink: None,
+        evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
     };
 
     let output = render_com_interface(&projected);
@@ -1146,6 +1159,7 @@ fn renderer_emits_explicit_idispatch_invoke_options_and_compound_types() {
         activation: ActivationPlan::None,
         referenced_enums: Vec::new(),
         sink: None,
+        evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
     });
 
     assert!(output.js.contains(".addIn(DynCom.dispatchParamsType())"));
@@ -1196,6 +1210,7 @@ fn coclass_renderer_uses_new_and_runtime_query_interface_views() {
         activation: ActivationPlan::None,
         referenced_enums: Vec::new(),
         sink: None,
+        evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
     };
     let coclass = ProjectedComCoclass {
         name: "Test".into(),
@@ -1450,12 +1465,18 @@ fn default_runtime_import_uses_com_subpath() {
     crate::codegen::project::set_import_name("@microsoft/dynwinrt");
     assert_eq!(com_runtime_import_name(), "@microsoft/dynwinrt/com/unsafe");
     assert_eq!(com_public_import_name(), "@microsoft/dynwinrt/com");
+    assert_eq!(
+        com_raw_runtime_import_name(),
+        "@microsoft/dynwinrt/com/unsafe/raw"
+    );
     crate::codegen::project::set_import_name("../dist/com.js");
     assert_eq!(com_runtime_import_name(), "../dist/com-unsafe.js");
     assert_eq!(com_public_import_name(), "../dist/com.js");
+    assert_eq!(com_raw_runtime_import_name(), "../dist/com-unsafe-raw.js");
     crate::codegen::project::set_import_name("./mycom.js");
     assert_eq!(com_runtime_import_name(), "./mycom.js");
     assert_eq!(com_public_import_name(), "./mycom.js");
+    assert_eq!(com_raw_runtime_import_name(), "./mycom.js");
     crate::codegen::project::set_import_name(&previous);
 }
 

@@ -78,6 +78,21 @@ enum Commands {
         json: bool,
     },
 
+    /// Generate exact per-target Classic COM raw/type capability reports.
+    ComCapabilityCensus {
+        /// Path to Microsoft Windows.Win32.winmd 71.0.14-preview.
+        #[arg(long, value_name = "PATH")]
+        winmd: String,
+
+        /// Directory receiving deterministic JSON, CSV, and Markdown reports.
+        #[arg(long, value_name = "DIR")]
+        output_dir: String,
+
+        /// Also emit large JSON duplicates of interface/type/shape CSV datasets.
+        #[arg(long)]
+        large_json: bool,
+    },
+
     /// Generate bindings from .winmd files
     #[command(
         long_about = "Parse .winmd metadata and generate typed binding files.\n\n\
@@ -168,9 +183,65 @@ struct ComGenerationManifest {
     roots: BTreeMap<String, BTreeSet<String>>,
 }
 
+#[derive(Debug)]
 struct ComManifestUpdate {
     manifest: ComGenerationManifest,
     stale_files: BTreeSet<String>,
+}
+
+struct PlannedComRoot {
+    root: String,
+    name: String,
+    files: Vec<(String, String)>,
+    unsafe_support: Option<com::UnsafeInterfaceSupport>,
+    summary: Option<(usize, usize, usize)>,
+    no_callable_error: Option<String>,
+}
+
+fn collect_planned_com_files(
+    generated: &[PlannedComRoot],
+) -> Result<(BTreeMap<String, String>, BTreeMap<String, BTreeSet<String>>), String> {
+    let mut planned_files = BTreeMap::new();
+    let mut root_files = BTreeMap::new();
+    for output in generated {
+        root_files.entry(output.root.clone()).or_default();
+        for (file_name, content) in &output.files {
+            root_files
+                .entry(output.root.clone())
+                .or_insert_with(BTreeSet::new)
+                .insert(file_name.clone());
+            insert_planned_com_file(&mut planned_files, file_name.clone(), content.clone())?;
+        }
+    }
+    Ok((planned_files, root_files))
+}
+
+fn insert_planned_com_file(
+    planned_files: &mut BTreeMap<String, String>,
+    file_name: String,
+    content: String,
+) -> Result<(), String> {
+    let key = com::windows_relative_path_key(&file_name)?;
+    for (existing_path, existing_content) in planned_files.iter() {
+        if com::windows_relative_path_key(existing_path)? != key {
+            continue;
+        }
+        if existing_path != &file_name {
+            return Err(format!(
+                "Classic-COM paths `{existing_path}` and `{file_name}` collide on \
+                 case-insensitive Windows path key `{key}`"
+            ));
+        }
+        if existing_content != &content {
+            return Err(format!(
+                "Classic-COM generation produced conflicting `{file_name}` outputs across roots; \
+                 only byte-identical shared files may have multiple owners"
+            ));
+        }
+        return Ok(());
+    }
+    planned_files.insert(file_name, content);
+    Ok(())
 }
 
 #[derive(Debug, Serialize)]
@@ -266,6 +337,23 @@ fn run() -> Result<(), String> {
         }
         Commands::ComCensus { winmd, json } => {
             run_com_census(&winmd, json)?;
+        }
+        Commands::ComCapabilityCensus {
+            winmd,
+            output_dir,
+            large_json,
+        } => {
+            let report = com::capability::generate_capability_report(
+                Path::new(&winmd),
+                Path::new(&output_dir),
+                large_json,
+            )?;
+            println!(
+                "{}",
+                serde_json::to_string(&report.summary).map_err(|error| format!(
+                    "Failed to serialize COM capability summary: {error}"
+                ))?
+            );
         }
         Commands::Generate {
             winmd,
@@ -530,6 +618,7 @@ fn run() -> Result<(), String> {
                 // cannot collide with or leak into the WinRT root barrel.
                 if !com_interfaces.is_empty() || !com_coclasses.is_empty() {
                     let com_output_dir = output_dir.join("com");
+                    let mut unsafe_metadata = None;
 
                     // Project every requested COM interface into memory FIRST,
                     // before writing anything. A later interface's projection
@@ -542,21 +631,94 @@ fn run() -> Result<(), String> {
                     let mut generated =
                         Vec::with_capacity(com_interfaces.len() + com_coclasses.len());
                     for com_iface in &com_interfaces {
-                        let out =
-                            com::generate_com_interface_files(com_iface, &winmd).map_err(|e| {
-                                format!(
-                                    "Classic-COM codegen for {} failed: {}",
-                                    com_iface.interface.name, e
-                                )
-                            })?;
-                        generated.push((
-                            format!(
-                                "{}.{}",
-                                com_iface.interface.namespace, com_iface.interface.name
-                            ),
-                            com_iface.interface.name.clone(),
-                            out,
-                        ));
+                        let root = format!(
+                            "{}.{}",
+                            com_iface.interface.namespace, com_iface.interface.name
+                        );
+                        let name = com_iface.interface.name.clone();
+                        match com::generate_com_interface_files(com_iface, &winmd) {
+                            Ok(out) => {
+                                let mut files = vec![
+                                    (format!("{name}.js"), out.js),
+                                    (format!("{name}.d.ts"), out.dts),
+                                ];
+                                files.extend(out.extra_files);
+                                generated.push(PlannedComRoot {
+                                    root,
+                                    name,
+                                    files,
+                                    unsafe_support: None,
+                                    summary: None,
+                                    no_callable_error: None,
+                                });
+                            }
+                            Err(safe_error) => {
+                                if unsafe_metadata.is_none() {
+                                    unsafe_metadata = Some(
+                                        com::capability::metadata_set_identity_for_paths(&winmd)?,
+                                    );
+                                }
+                                let unsafe_output =
+                                    com::generate_unsafe_interface_files_with_metadata(
+                                        com_iface,
+                                        unsafe_metadata.as_ref().unwrap(),
+                                    )
+                                    .map_err(|error| {
+                                        format!(
+                                            "Classic-COM unsafe codegen for {name} failed after safe projection failed ({safe_error}): {error}"
+                                        )
+                                    })?;
+                                let files = match (
+                                    unsafe_output.js.clone(),
+                                    unsafe_output.dts.clone(),
+                                ) {
+                                    (Some(js), Some(dts)) => vec![
+                                        (format!("unsafe/{}.js", unsafe_output.module_path), js),
+                                        (format!("unsafe/{}.d.ts", unsafe_output.module_path), dts),
+                                    ],
+                                    (None, None) => Vec::new(),
+                                    _ => {
+                                        return Err(format!(
+                                            "Classic-COM unsafe codegen for {name} produced an incomplete class"
+                                        ));
+                                    }
+                                };
+                                let no_callable_error = (unsafe_output.metadata_complete_methods
+                                    + unsafe_output.manual_methods
+                                    == 0)
+                                    .then(|| {
+                                        let reasons = unsafe_output
+                                            .support
+                                            .methods
+                                            .iter()
+                                            .flat_map(|method| method.reasons.iter().cloned())
+                                            .collect::<BTreeSet<_>>()
+                                            .into_iter()
+                                            .collect::<Vec<_>>();
+                                        format!(
+                                            "Classic-COM codegen for {name} emitted a support report but no callable class: {safe_error}. \
+                                             No raw-metadata-complete outbound methods are available \
+                                             (manual: {}, blocked: {}, reasons: {}).",
+                                            unsafe_output.manual_methods,
+                                            unsafe_output.blocked_methods,
+                                            serde_json::to_string(&reasons)
+                                                .expect("serializing string reasons cannot fail")
+                                        )
+                                    });
+                                generated.push(PlannedComRoot {
+                                    root,
+                                    name,
+                                    files,
+                                    unsafe_support: Some(unsafe_output.support),
+                                    summary: Some((
+                                        unsafe_output.metadata_complete_methods,
+                                        unsafe_output.manual_methods,
+                                        unsafe_output.blocked_methods,
+                                    )),
+                                    no_callable_error,
+                                });
+                            }
+                        }
                     }
                     for coclass in &com_coclasses {
                         let out =
@@ -566,45 +728,47 @@ fn run() -> Result<(), String> {
                                     coclass.name, e
                                 )
                             })?;
-                        generated.push((
-                            format!("{}.{}", coclass.namespace, coclass.name),
-                            coclass.name.clone(),
-                            out,
-                        ));
+                        let mut files = vec![
+                            (format!("{}.js", coclass.name), out.js),
+                            (format!("{}.d.ts", coclass.name), out.dts),
+                        ];
+                        files.extend(out.extra_files);
+                        generated.push(PlannedComRoot {
+                            root: format!("{}.{}", coclass.namespace, coclass.name),
+                            name: coclass.name.clone(),
+                            files,
+                            unsafe_support: None,
+                            summary: None,
+                            no_callable_error: None,
+                        });
                     }
 
-                    let mut planned_files = BTreeMap::new();
-                    let mut root_files = BTreeMap::new();
-                    for (root, name, out) in &generated {
-                        let mut files = vec![
-                            (format!("{name}.js"), out.js.clone()),
-                            (format!("{name}.d.ts"), out.dts.clone()),
-                        ];
-                        files.extend(out.extra_files.iter().cloned());
-                        for (file_name, content) in files {
-                            root_files
-                                .entry(root.clone())
-                                .or_insert_with(BTreeSet::new)
-                                .insert(file_name.clone());
-                            if let Some(existing) = planned_files.get(&file_name)
-                                && existing != &content
-                            {
-                                return Err(format!(
-                                    "Classic-COM generation produced conflicting `{file_name}` outputs; \
-                                     request a single primary interface for each coclass"
-                                ));
-                            }
-                            planned_files.insert(file_name, content);
-                        }
-                    }
+                    let (mut planned_files, mut root_files) =
+                        collect_planned_com_files(&generated)?;
 
                     if !dry_run {
                         ensure_safe_generated_parent(
                             output_dir,
                             &com_output_dir.join(".dynwinrt-write-check"),
                         )?;
-                        let manifest_update =
-                            prepare_com_generation_manifest(&com_output_dir, &root_files)?;
+                        let unsafe_package =
+                            prepare_generated_unsafe_package(&com_output_dir, &generated)?;
+                        for (file_name, content) in unsafe_package.files {
+                            insert_planned_com_file(&mut planned_files, file_name, content)?;
+                        }
+                        for output in generated
+                            .iter()
+                            .filter(|output| output.unsafe_support.is_some())
+                        {
+                            let files = root_files.entry(output.root.clone()).or_default();
+                            files.insert("unsafe/runtime.js".into());
+                            files.insert("unsafe/runtime.d.ts".into());
+                        }
+                        let manifest_update = prepare_com_generation_manifest(
+                            &com_output_dir,
+                            &root_files,
+                            &planned_files,
+                        )?;
                         for (file_name, content) in &planned_files {
                             let path = com_output_dir.join(file_name);
                             ensure_safe_generated_destination(output_dir, &path)?;
@@ -612,31 +776,87 @@ fn run() -> Result<(), String> {
                                 .map_err(|e| format!("Failed to write {}: {}", file_name, e))?;
                         }
                         apply_com_generation_manifest(&com_output_dir, manifest_update)?;
-                    }
-                    for (_, name, out) in &generated {
-                        if dry_run {
-                            println!("[dry-run] Would generate {}", name);
-                        } else {
-                            println!(
-                                "Generated {} ({} .js/.d.ts + {} extras)",
-                                name,
-                                2,
-                                out.extra_files.len()
-                            );
+                        if unsafe_package.remove_existing {
+                            remove_generated_unsafe_package_files(&com_output_dir)?;
                         }
-                    }
-                    if !dry_run {
                         write_com_js_barrel(&com_output_dir)?;
                     }
-
+                    for output in &generated {
+                        if dry_run {
+                            if let Some((metadata_complete, manual, blocked)) = output.summary {
+                                if output.no_callable_error.is_some() {
+                                    let reasons = output
+                                        .unsafe_support
+                                        .as_ref()
+                                        .into_iter()
+                                        .flat_map(|support| &support.methods)
+                                        .flat_map(|method| method.reasons.iter().cloned())
+                                        .collect::<BTreeSet<_>>();
+                                    println!(
+                                        "[dry-run] Report-only {}Unsafe {{\"metadataComplete\":{metadata_complete},\"manual\":{manual},\"blocked\":{blocked},\"reasons\":{}}}",
+                                        output.name,
+                                        serde_json::to_string(&reasons)
+                                            .expect("serializing string reasons cannot fail")
+                                    );
+                                } else {
+                                    println!(
+                                        "[dry-run] Would generate {}Unsafe (metadata-complete: {metadata_complete}, manual: {manual}, blocked: {blocked})",
+                                        output.name
+                                    );
+                                }
+                            } else {
+                                println!("[dry-run] Would generate {}", output.name);
+                            }
+                        } else {
+                            if let Some((metadata_complete, manual, blocked)) = output.summary {
+                                if output.no_callable_error.is_some() {
+                                    println!(
+                                        "Generated {}Unsafe support report (raw metadata-complete: {metadata_complete}, manual: {manual}, blocked: {blocked}; no callable class)",
+                                        output.name
+                                    );
+                                } else {
+                                    println!(
+                                        "Generated {}Unsafe (raw metadata-complete: {metadata_complete}, manual executable: {manual}, blocked omitted: {blocked})",
+                                        output.name
+                                    );
+                                }
+                            } else {
+                                println!(
+                                    "Generated {} ({} .js/.d.ts + {} extras)",
+                                    output.name,
+                                    2,
+                                    output.files.len().saturating_sub(2)
+                                );
+                            }
+                        }
+                    }
+                    let no_callable_errors = generated
+                        .iter()
+                        .filter_map(|output| output.no_callable_error.clone())
+                        .collect::<Vec<_>>();
                     if classes.is_empty() && requested_winrt_interfaces.is_empty() {
+                        if !dry_run {
+                            finalize_com_generation(output_dir)?;
+                        }
+                        if !no_callable_errors.is_empty() {
+                            if let Some(transaction) = output_transaction.take() {
+                                transaction.commit()?;
+                            }
+                            return Err(no_callable_errors.join("\n"));
+                        }
+                        if let Some(transaction) = output_transaction.take() {
+                            transaction.commit()?;
+                        }
+                        return Ok(());
+                    }
+                    if !no_callable_errors.is_empty() {
                         if !dry_run {
                             finalize_com_generation(output_dir)?;
                         }
                         if let Some(transaction) = output_transaction.take() {
                             transaction.commit()?;
                         }
-                        return Ok(());
+                        return Err(no_callable_errors.join("\n"));
                     }
                 }
 
@@ -885,7 +1105,7 @@ fn run() -> Result<(), String> {
                         total_classes,
                         total_interfaces,
                         total_enums,
-                        output_dir.display()
+                        final_output_dir.display()
                     );
                 }
             }
@@ -2787,6 +3007,7 @@ fn write_js_barrel_and_manifest(
 fn prepare_com_generation_manifest(
     com_output_dir: &Path,
     updated_roots: &BTreeMap<String, BTreeSet<String>>,
+    planned_files: &BTreeMap<String, String>,
 ) -> Result<ComManifestUpdate, String> {
     let path = com_output_dir.join(COM_MANIFEST_FILE);
     let mut manifest = if path.exists() {
@@ -2812,6 +3033,73 @@ fn prepare_com_generation_manifest(
         ));
     }
 
+    let mut retained_paths = BTreeMap::<String, (String, BTreeSet<String>)>::new();
+    for (root, files) in &manifest.roots {
+        for file in files {
+            let key = com::windows_relative_path_key(file).map_err(|error| {
+                format!("Invalid retained COM manifest path `{file}` for root `{root}`: {error}")
+            })?;
+            if let Some((existing, owners)) = retained_paths.get_mut(&key) {
+                if existing != file {
+                    return Err(format!(
+                        "Retained COM manifest paths `{existing}` and `{file}` collide on \
+                         case-insensitive Windows path key `{key}`"
+                    ));
+                }
+                owners.insert(root.clone());
+            } else {
+                retained_paths.insert(key, (file.clone(), BTreeSet::from([root.clone()])));
+            }
+        }
+    }
+    let updated = updated_roots.keys().cloned().collect::<BTreeSet<_>>();
+    for (file, content) in planned_files {
+        let key = com::windows_relative_path_key(file)?;
+        let Some((retained_path, owners)) = retained_paths.get(&key) else {
+            continue;
+        };
+        let outside_owners = owners.difference(&updated).collect::<Vec<_>>();
+        if outside_owners.is_empty() {
+            continue;
+        }
+        if retained_path != file {
+            return Err(format!(
+                "Planned COM path `{file}` collides with retained path `{retained_path}` \
+                 owned by {}",
+                outside_owners
+                    .iter()
+                    .map(|owner| owner.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        let staged_path = com_output_dir.join(retained_path);
+        if !staged_path.is_file() {
+            return Err(format!(
+                "Cannot share planned COM path `{file}` with retained root ownership {}: \
+                 staged file is missing",
+                outside_owners
+                    .iter()
+                    .map(|owner| owner.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        let existing = fs::read(&staged_path)
+            .map_err(|error| format!("Failed to read {}: {error}", staged_path.display()))?;
+        if existing != content.as_bytes() {
+            return Err(format!(
+                "Cannot overwrite shared COM path `{file}` owned by {}: planned bytes differ \
+                 from the staged public identity",
+                outside_owners
+                    .iter()
+                    .map(|owner| owner.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+    }
+
     let previous_files = updated_roots
         .keys()
         .filter_map(|root| manifest.roots.get(root))
@@ -2832,10 +3120,18 @@ fn prepare_com_generation_manifest(
         .cloned()
         .collect::<BTreeSet<_>>();
     for stale in &stale_files {
+        com::windows_relative_path_key(stale)
+            .map_err(|error| format!("Invalid stale COM manifest path `{stale}`: {error}"))?;
         let relative = Path::new(stale);
-        if relative.components().count() != 1
-            || !(stale.ends_with(".js") || stale.ends_with(".d.ts"))
-        {
+        let components = relative.components().collect::<Vec<_>>();
+        let all_normal = components
+            .iter()
+            .all(|component| matches!(component, std::path::Component::Normal(_)));
+        let safe_location = all_normal
+            && (components.len() == 1
+                || (components.len() >= 2
+                    && components[0].as_os_str() == std::ffi::OsStr::new("unsafe")));
+        if !safe_location || !(stale.ends_with(".js") || stale.ends_with(".d.ts")) {
             return Err(format!(
                 "Refusing unsafe path `{stale}` in COM generation manifest {}",
                 path.display()
@@ -2867,6 +3163,83 @@ fn apply_com_generation_manifest(
     ensure_safe_generated_destination(output_dir, &path)?;
     fs::write(&path, format!("{content}\n"))
         .map_err(|error| format!("Failed to write {}: {error}", path.display()))
+}
+
+const GENERATED_UNSAFE_PACKAGE_FILES: [&str; 7] = [
+    "unsafe/index.js",
+    "unsafe/index.mjs",
+    "unsafe/index.d.ts",
+    "unsafe/package.json",
+    "unsafe/support.json",
+    "unsafe/runtime.js",
+    "unsafe/runtime.d.ts",
+];
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct GeneratedUnsafePackagePlan {
+    files: Vec<(String, String)>,
+    remove_existing: bool,
+}
+
+fn remove_generated_unsafe_package_files(com_output_dir: &Path) -> Result<(), String> {
+    for relative in GENERATED_UNSAFE_PACKAGE_FILES {
+        let path = com_output_dir.join(relative);
+        if path.exists() {
+            fs::remove_file(&path)
+                .map_err(|error| format!("Failed to remove {}: {error}", path.display()))?;
+        }
+    }
+    Ok(())
+}
+
+fn prepare_generated_unsafe_package(
+    com_output_dir: &Path,
+    outputs: &[PlannedComRoot],
+) -> Result<GeneratedUnsafePackagePlan, String> {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ExistingSupport {
+        schema_version: u32,
+        interfaces: Vec<com::UnsafeInterfaceSupport>,
+    }
+
+    let support_path = com_output_dir.join("unsafe").join("support.json");
+    let mut supports = if support_path.exists() {
+        let content = fs::read_to_string(&support_path)
+            .map_err(|error| format!("Failed to read {}: {error}", support_path.display()))?;
+        let existing: ExistingSupport = serde_json::from_str(&content)
+            .map_err(|error| format!("Invalid {}: {error}", support_path.display()))?;
+        if existing.schema_version != 10 {
+            return Err(format!(
+                "Unsupported generated unsafe support schema {} (expected 9)",
+                existing.schema_version
+            ));
+        }
+        existing.interfaces
+    } else {
+        Vec::new()
+    };
+    let updated = outputs
+        .iter()
+        .map(|output| output.root.as_str())
+        .collect::<BTreeSet<_>>();
+    supports.retain(|support| !updated.contains(support.interface_name.as_str()));
+    supports.extend(
+        outputs
+            .iter()
+            .filter_map(|output| output.unsafe_support.clone()),
+    );
+    supports.sort_by(|left, right| left.interface_name.cmp(&right.interface_name));
+    if supports.is_empty() {
+        return Ok(GeneratedUnsafePackagePlan {
+            files: Vec::new(),
+            remove_existing: support_path.exists(),
+        });
+    }
+    Ok(GeneratedUnsafePackagePlan {
+        files: com::render_unsafe_package_files(&supports)?,
+        remove_existing: false,
+    })
 }
 
 fn write_com_js_barrel(com_output_dir: &Path) -> Result<(), String> {
@@ -4306,8 +4679,16 @@ struct OutputTransaction {
     backup_dir: PathBuf,
     nonce: String,
     had_existing_output: bool,
+    retained_links: Vec<RetainedLink>,
     lock_file: Option<fs::File>,
     committed: bool,
+}
+
+#[derive(Debug, Clone)]
+struct RetainedLink {
+    relative_path: PathBuf,
+    display_path: String,
+    windows_key: String,
 }
 
 const OUTPUT_TRANSACTION_OWNER: &str = ".dynwinrt-transaction-owner";
@@ -4384,7 +4765,7 @@ fn remove_owned_transaction_dir(directory: &Path, nonce: &str) -> Result<(), Str
         return Ok(());
     }
     validate_transaction_owner(directory, nonce)?;
-    fs::remove_dir_all(directory)
+    remove_path_no_follow(directory)
         .map_err(|error| format!("Failed to remove {}: {error}", directory.display()))
 }
 
@@ -4497,6 +4878,7 @@ impl OutputTransaction {
             return Err(error);
         }
         let had_existing_output = final_dir.exists();
+        let mut retained_links = Vec::new();
         if had_existing_output {
             if !final_dir.is_dir() {
                 let _ = remove_owned_transaction_dir(&stage_dir, &nonce);
@@ -4512,7 +4894,7 @@ impl OutputTransaction {
                     final_dir.display()
                 ));
             }
-            if let Err(error) = copy_directory(&final_dir, &stage_dir) {
+            if let Err(error) = snapshot_directory(&final_dir, &stage_dir, &mut retained_links) {
                 let _ = remove_owned_transaction_dir(&stage_dir, &nonce);
                 return Err(error);
             }
@@ -4524,6 +4906,7 @@ impl OutputTransaction {
             backup_dir,
             nonce,
             had_existing_output,
+            retained_links,
             lock_file: Some(lock_file),
             committed: false,
         })
@@ -4535,7 +4918,9 @@ impl OutputTransaction {
 
     fn commit(mut self) -> Result<(), String> {
         validate_transaction_owner(&self.stage_dir, &self.nonce)?;
+        validate_retained_links(&self.stage_dir, &self.retained_links)?;
         let had_existing_output = self.had_existing_output;
+        let mut moved_links = Vec::new();
         let cwd_relative = std::env::current_dir()
             .ok()
             .and_then(|cwd| fs::canonicalize(cwd).ok())
@@ -4581,10 +4966,43 @@ impl OutputTransaction {
                     .map(|error| format!(". {error}"))
                     .unwrap_or_default());
             }
+            if let Err(error) = move_retained_links(
+                &self.backup_dir,
+                &self.stage_dir,
+                &self.retained_links,
+                &mut moved_links,
+            ) {
+                let link_rollback_error =
+                    rollback_retained_links(&self.stage_dir, &self.backup_dir, &moved_links).err();
+                let output_rollback_error = fs::rename(&self.backup_dir, &self.final_dir).err();
+                if output_rollback_error.is_none() {
+                    let _ = remove_transaction_owner(&self.final_dir, &self.nonce);
+                }
+                let restore_error = restore_cwd(&cwd_relative).err();
+                return Err(format!(
+                    "Failed to retain linked filesystem entries while replacing '{}': {}",
+                    self.final_dir.display(),
+                    error
+                ) + &link_rollback_error
+                    .map(|error| format!(". Link rollback failed: {error}"))
+                    .unwrap_or_default()
+                    + &output_rollback_error
+                        .map(|error| {
+                            format!(
+                                ". Output rollback failed: {error}. The original output remains at '{}'",
+                                self.backup_dir.display()
+                            )
+                        })
+                        .unwrap_or_default()
+                    + &restore_error
+                        .map(|error| format!(". {error}"))
+                        .unwrap_or_default());
+            }
         }
 
         if let Err(error) = fs::rename(&self.stage_dir, &self.final_dir) {
             if had_existing_output {
+                rollback_retained_links(&self.stage_dir, &self.backup_dir, &moved_links)?;
                 if let Err(rollback_error) = fs::rename(&self.backup_dir, &self.final_dir) {
                     return Err(format!(
                         "Failed to replace generated output directory '{}': {}. Rollback also failed: \
@@ -4629,10 +5047,13 @@ impl Drop for OutputTransaction {
                         let _ = remove_owned_transaction_dir(&self.backup_dir, &self.nonce);
                         let _ = remove_transaction_owner(&self.final_dir, &self.nonce);
                     }
-                } else if validate_transaction_owner(&self.backup_dir, &self.nonce).is_ok()
-                    && fs::rename(&self.backup_dir, &self.final_dir).is_ok()
-                {
-                    let _ = remove_transaction_owner(&self.final_dir, &self.nonce);
+                } else if validate_transaction_owner(&self.backup_dir, &self.nonce).is_ok() {
+                    let recovered_links =
+                        recover_retained_links_from_stage(&self.stage_dir, &self.backup_dir)
+                            .is_ok();
+                    if recovered_links && fs::rename(&self.backup_dir, &self.final_dir).is_ok() {
+                        let _ = remove_transaction_owner(&self.final_dir, &self.nonce);
+                    }
                 }
             }
             if self.stage_dir.exists() {
@@ -4643,7 +5064,22 @@ impl Drop for OutputTransaction {
     }
 }
 
-fn copy_directory(source: &Path, destination: &Path) -> Result<(), String> {
+fn snapshot_directory(
+    source: &Path,
+    destination: &Path,
+    retained_links: &mut Vec<RetainedLink>,
+) -> Result<(), String> {
+    let mut seen_paths = BTreeMap::new();
+    snapshot_directory_inner(source, destination, source, retained_links, &mut seen_paths)
+}
+
+fn snapshot_directory_inner(
+    source: &Path,
+    destination: &Path,
+    root: &Path,
+    retained_links: &mut Vec<RetainedLink>,
+    seen_paths: &mut BTreeMap<String, String>,
+) -> Result<(), String> {
     fs::create_dir_all(destination)
         .map_err(|e| format!("Failed to create {}: {}", destination.display(), e))?;
     for entry in
@@ -4655,15 +5091,43 @@ fn copy_directory(source: &Path, destination: &Path) -> Result<(), String> {
         let destination_path = destination.join(entry.file_name());
         let metadata = fs::symlink_metadata(&source_path)
             .map_err(|e| format!("Failed to inspect {}: {}", source_path.display(), e))?;
-        if is_link_or_reparse_point(&metadata) {
-            return Err(format!(
-                "Unsupported linked filesystem entry in generated output: {}",
-                source_path.display()
-            ));
+        let relative_path = source_path.strip_prefix(root).map_err(|error| {
+            format!(
+                "Failed to make '{}' relative to '{}': {error}",
+                source_path.display(),
+                root.display()
+            )
+        })?;
+        let display_path = relative_output_path(relative_path)?;
+        let windows_key = com::windows_relative_path_key(&display_path)?;
+        if let Some(existing) = seen_paths.insert(windows_key.clone(), display_path.clone()) {
+            if existing != display_path {
+                return Err(format!(
+                    "Output contains case-insensitive Windows path aliases: '{existing}' and '{display_path}'"
+                ));
+            }
         }
-        if metadata.is_dir() {
-            copy_directory(&source_path, &destination_path)?;
-        } else if metadata.is_file() {
+        if is_link_entry(&metadata) {
+            fs::read_link(&source_path).map_err(|error| {
+                format!(
+                    "Unsupported reparse entry '{}': {error}. Only filesystem links understood by std::fs::read_link are retained",
+                    source_path.display()
+                )
+            })?;
+            retained_links.push(RetainedLink {
+                relative_path: relative_path.to_path_buf(),
+                display_path,
+                windows_key,
+            });
+        } else if metadata.file_type().is_dir() {
+            snapshot_directory_inner(
+                &source_path,
+                &destination_path,
+                root,
+                retained_links,
+                seen_paths,
+            )?;
+        } else if metadata.file_type().is_file() {
             fs::copy(&source_path, &destination_path).map_err(|e| {
                 format!(
                     "Failed to copy {} to {}: {}",
@@ -4674,12 +5138,365 @@ fn copy_directory(source: &Path, destination: &Path) -> Result<(), String> {
             })?;
         } else {
             return Err(format!(
-                "Unsupported filesystem entry in generated output: {}",
+                "Unsupported filesystem entry in output: {}",
                 source_path.display()
             ));
         }
     }
     Ok(())
+}
+
+fn path_entry_exists(path: &Path) -> bool {
+    match fs::symlink_metadata(path) {
+        Ok(_) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(_) => true,
+    }
+}
+
+fn is_link_entry(metadata: &fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::{FileTypeExt, MetadataExt};
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        metadata.file_type().is_symlink_dir()
+            || metadata.file_type().is_symlink_file()
+            || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+fn relative_output_path(path: &Path) -> Result<String, String> {
+    path.components()
+        .map(|component| {
+            let std::path::Component::Normal(segment) = component else {
+                return Err(format!(
+                    "Output entry has a non-relative path component: '{}'",
+                    path.display()
+                ));
+            };
+            segment.to_str().map(str::to_owned).ok_or_else(|| {
+                format!(
+                    "Output entry path is not valid Unicode: '{}'",
+                    path.display()
+                )
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(|segments| segments.join("/"))
+}
+
+#[derive(Debug)]
+struct StageEntry {
+    windows_key: String,
+    is_directory: bool,
+}
+
+fn collect_stage_entries(root: &Path) -> Result<Vec<StageEntry>, String> {
+    let mut entries = Vec::new();
+    collect_stage_entries_inner(root, root, &mut entries)?;
+    Ok(entries)
+}
+
+fn collect_stage_entries_inner(
+    root: &Path,
+    directory: &Path,
+    entries: &mut Vec<StageEntry>,
+) -> Result<(), String> {
+    for entry in fs::read_dir(directory).map_err(|error| {
+        format!(
+            "Failed to read staged directory '{}': {error}",
+            directory.display()
+        )
+    })? {
+        let entry = entry.map_err(|error| {
+            format!(
+                "Failed to read staged entry in '{}': {error}",
+                directory.display()
+            )
+        })?;
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path).map_err(|error| {
+            format!(
+                "Failed to inspect staged entry '{}': {error}",
+                path.display()
+            )
+        })?;
+        if is_link_entry(&metadata) {
+            return Err(format!(
+                "Generated stage contains an unsupported reparse entry: '{}'",
+                path.display()
+            ));
+        }
+        let relative = path.strip_prefix(root).map_err(|error| {
+            format!(
+                "Failed to make staged path '{}' relative to '{}': {error}",
+                path.display(),
+                root.display()
+            )
+        })?;
+        let display = relative_output_path(relative)?;
+        entries.push(StageEntry {
+            windows_key: com::windows_relative_path_key(&display)?,
+            is_directory: metadata.file_type().is_dir(),
+        });
+        if metadata.file_type().is_dir() {
+            collect_stage_entries_inner(root, &path, entries)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_retained_links(
+    stage_dir: &Path,
+    retained_links: &[RetainedLink],
+) -> Result<(), String> {
+    let stage_entries = collect_stage_entries(stage_dir)?;
+    let mut retained_keys = BTreeMap::new();
+    let mut manifest_paths = BTreeSet::new();
+    let com_manifest = stage_dir.join("com").join(COM_MANIFEST_FILE);
+    if com_manifest.is_file() {
+        let content = fs::read_to_string(&com_manifest)
+            .map_err(|error| format!("Failed to read '{}': {error}", com_manifest.display()))?;
+        let manifest: ComGenerationManifest = serde_json::from_str(&content)
+            .map_err(|error| format!("Invalid '{}': {error}", com_manifest.display()))?;
+        for file in manifest.roots.values().flatten() {
+            manifest_paths.insert(com::windows_relative_path_key(&format!("com/{file}"))?);
+        }
+    }
+    let python_inventory = stage_dir.join(PYTHON_GENERATED_INVENTORY);
+    if python_inventory.is_file() {
+        let content = fs::read_to_string(&python_inventory)
+            .map_err(|error| format!("Failed to read '{}': {error}", python_inventory.display()))?;
+        for file in content.lines().filter(|line| !line.trim().is_empty()) {
+            manifest_paths.insert(com::windows_relative_path_key(file.trim())?);
+        }
+    }
+
+    for link in retained_links {
+        if let Some(existing) =
+            retained_keys.insert(link.windows_key.clone(), link.display_path.clone())
+        {
+            return Err(format!(
+                "Retained links use the same case-insensitive Windows path: '{existing}' and '{}'",
+                link.display_path
+            ));
+        }
+        if link.display_path.split('/').any(|segment| {
+            segment.ends_with(".dynwinrt-stage")
+                || segment.ends_with(".dynwinrt-backup")
+                || segment.ends_with(".dynwinrt-failed-output")
+                || segment.ends_with(".dynwinrt-generation.lock")
+        }) {
+            return Err(format!(
+                "Retained link conflicts with transaction lock/residue naming: '{}'",
+                link.display_path
+            ));
+        }
+        for entry in &stage_entries {
+            if entry.windows_key == link.windows_key
+                || entry
+                    .windows_key
+                    .starts_with(&format!("{}/", link.windows_key))
+                || (!entry.is_directory
+                    && link
+                        .windows_key
+                        .starts_with(&format!("{}/", entry.windows_key)))
+            {
+                return Err(format!(
+                    "Retained link '{}' conflicts with generated stage path '{}'",
+                    link.display_path, entry.windows_key
+                ));
+            }
+        }
+        for managed in &manifest_paths {
+            if managed == &link.windows_key
+                || managed.starts_with(&format!("{}/", link.windows_key))
+                || link.windows_key.starts_with(&format!("{managed}/"))
+            {
+                return Err(format!(
+                    "Retained link '{}' conflicts with manifest-owned path '{}'",
+                    link.display_path, managed
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn move_retained_links(
+    source_root: &Path,
+    destination_root: &Path,
+    retained_links: &[RetainedLink],
+    moved: &mut Vec<PathBuf>,
+) -> Result<(), String> {
+    for link in retained_links {
+        let source = source_root.join(&link.relative_path);
+        let destination = destination_root.join(&link.relative_path);
+        let metadata = fs::symlink_metadata(&source).map_err(|error| {
+            format!(
+                "Failed to inspect retained link '{}' before move: {error}",
+                source.display()
+            )
+        })?;
+        if !is_link_entry(&metadata) || fs::read_link(&source).is_err() {
+            return Err(format!(
+                "Retained reparse entry changed or became unsupported before commit: '{}'",
+                source.display()
+            ));
+        }
+        if path_entry_exists(&destination) {
+            return Err(format!(
+                "Retained link destination already exists in stage: '{}'",
+                destination.display()
+            ));
+        }
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent).map_err(|error| {
+                format!(
+                    "Failed to create retained link parent '{}': {error}",
+                    parent.display()
+                )
+            })?;
+        }
+        fs::rename(&source, &destination).map_err(|error| {
+            format!(
+                "Failed to move retained link '{}' to '{}': {error}",
+                source.display(),
+                destination.display()
+            )
+        })?;
+        moved.push(link.relative_path.clone());
+    }
+    Ok(())
+}
+
+fn rollback_retained_links(
+    source_root: &Path,
+    destination_root: &Path,
+    moved: &[PathBuf],
+) -> Result<(), String> {
+    for relative in moved.iter().rev() {
+        let source = source_root.join(relative);
+        let destination = destination_root.join(relative);
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent).map_err(|error| {
+                format!(
+                    "Failed to recreate retained link parent '{}': {error}",
+                    parent.display()
+                )
+            })?;
+        }
+        fs::rename(&source, &destination).map_err(|error| {
+            format!(
+                "Failed to roll retained link '{}' back to '{}': {error}",
+                source.display(),
+                destination.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn recover_retained_links_from_stage(stage_dir: &Path, backup_dir: &Path) -> Result<(), String> {
+    if !path_entry_exists(stage_dir) {
+        return Ok(());
+    }
+    let retained_links = discover_retained_links(stage_dir)?;
+    let mut moved = Vec::new();
+    move_retained_links(stage_dir, backup_dir, &retained_links, &mut moved)
+}
+
+fn discover_retained_links(root: &Path) -> Result<Vec<RetainedLink>, String> {
+    let mut links = Vec::new();
+    let mut seen = BTreeMap::new();
+    discover_retained_links_inner(root, root, &mut links, &mut seen)?;
+    Ok(links)
+}
+
+fn discover_retained_links_inner(
+    root: &Path,
+    directory: &Path,
+    links: &mut Vec<RetainedLink>,
+    seen: &mut BTreeMap<String, String>,
+) -> Result<(), String> {
+    for entry in fs::read_dir(directory).map_err(|error| {
+        format!(
+            "Failed to read transaction stage '{}': {error}",
+            directory.display()
+        )
+    })? {
+        let entry = entry.map_err(|error| {
+            format!(
+                "Failed to read transaction stage entry in '{}': {error}",
+                directory.display()
+            )
+        })?;
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path).map_err(|error| {
+            format!(
+                "Failed to inspect transaction stage entry '{}': {error}",
+                path.display()
+            )
+        })?;
+        let relative = path.strip_prefix(root).map_err(|error| {
+            format!(
+                "Failed to make transaction stage entry '{}' relative to '{}': {error}",
+                path.display(),
+                root.display()
+            )
+        })?;
+        let display_path = relative_output_path(relative)?;
+        let windows_key = com::windows_relative_path_key(&display_path)?;
+        if let Some(existing) = seen.insert(windows_key.clone(), display_path.clone()) {
+            if existing != display_path {
+                return Err(format!(
+                    "Transaction stage contains case-insensitive Windows path aliases: '{existing}' and '{display_path}'"
+                ));
+            }
+        }
+        if is_link_entry(&metadata) {
+            fs::read_link(&path).map_err(|error| {
+                format!(
+                    "Unsupported reparse entry in transaction stage '{}': {error}",
+                    path.display()
+                )
+            })?;
+            links.push(RetainedLink {
+                relative_path: relative.to_path_buf(),
+                display_path,
+                windows_key,
+            });
+        } else if metadata.file_type().is_dir() {
+            discover_retained_links_inner(root, &path, links, seen)?;
+        }
+    }
+    Ok(())
+}
+
+fn remove_path_no_follow(path: &Path) -> std::io::Result<()> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if is_link_entry(&metadata) {
+        return fs::remove_file(path).or_else(|_| fs::remove_dir(path));
+    }
+    if metadata.file_type().is_dir() {
+        for entry in fs::read_dir(path)? {
+            remove_path_no_follow(&entry?.path())?;
+        }
+        fs::remove_dir(path)
+    } else {
+        fs::remove_file(path)
+    }
 }
 
 fn write_python_package_manifest(output_dir: &Path, final_output_dir: &Path) -> Result<(), String> {
@@ -7498,6 +8315,357 @@ mod tests {
     }
 
     #[test]
+    fn com_manifest_ownership_allows_only_identical_cross_root_files() {
+        let root = |name: &str, content: &str| PlannedComRoot {
+            root: name.into(),
+            name: name.into(),
+            files: vec![("unsafe/Contoso/A/IFooUnsafe.js".into(), content.into())],
+            unsafe_support: None,
+            summary: None,
+            no_callable_error: None,
+        };
+        let namespaced = collect_planned_com_files(&[
+            PlannedComRoot {
+                root: "Contoso.A.IFoo".into(),
+                name: "IFoo".into(),
+                files: vec![("unsafe/Contoso/A/IFooUnsafe.js".into(), "first".into())],
+                unsafe_support: None,
+                summary: None,
+                no_callable_error: None,
+            },
+            PlannedComRoot {
+                root: "Contoso.B.IFoo".into(),
+                name: "IFoo".into(),
+                files: vec![("unsafe/Contoso/B/IFooUnsafe.js".into(), "second".into())],
+                unsafe_support: None,
+                summary: None,
+                no_callable_error: None,
+            },
+        ])
+        .unwrap();
+        assert_eq!(namespaced.0.len(), 2);
+        assert_eq!(namespaced.1.len(), 2);
+
+        let identical = collect_planned_com_files(&[
+            root("Contoso.A.IFoo", "same"),
+            root("Contoso.B.IFoo", "same"),
+        ])
+        .unwrap();
+        assert_eq!(identical.0.len(), 1);
+        assert_eq!(identical.1.len(), 2);
+
+        let error = collect_planned_com_files(&[
+            root("Contoso.A.IFoo", "first"),
+            root("Contoso.B.IFoo", "second"),
+        ])
+        .unwrap_err();
+        assert!(error.contains("conflicting"));
+        assert!(error.contains("byte-identical"));
+
+        let case_error = collect_planned_com_files(&[
+            PlannedComRoot {
+                root: "Contoso.A.IFoo".into(),
+                name: "IFoo".into(),
+                files: vec![("unsafe/Contoso/A/IFooUnsafe.js".into(), "same".into())],
+                unsafe_support: None,
+                summary: None,
+                no_callable_error: None,
+            },
+            PlannedComRoot {
+                root: "contoso.a.IFoo".into(),
+                name: "IFoo".into(),
+                files: vec![("unsafe/contoso/a/IFooUnsafe.js".into(), "same".into())],
+                unsafe_support: None,
+                summary: None,
+                no_callable_error: None,
+            },
+        ])
+        .unwrap_err();
+        assert!(case_error.contains("case-insensitive Windows path key"));
+        for (first, second) in [
+            (("Foo.js", "first"), ("foo.js", "second")),
+            (("foo.js", "second"), ("Foo.js", "first")),
+            (("SharedExtra.d.ts", "same"), ("sharedextra.d.ts", "same")),
+            (("sharedextra.d.ts", "same"), ("SharedExtra.d.ts", "same")),
+        ] {
+            let plan = |root: &str, file: &str, content: &str| PlannedComRoot {
+                root: root.into(),
+                name: root.into(),
+                files: vec![(file.into(), content.into())],
+                unsafe_support: None,
+                summary: None,
+                no_callable_error: None,
+            };
+            let error = collect_planned_com_files(&[
+                plan("Contoso.First", first.0, first.1),
+                plan("Contoso.Second", second.0, second.1),
+            ])
+            .unwrap_err();
+            assert!(
+                error.contains("case-insensitive Windows path key"),
+                "{error}"
+            );
+        }
+
+        let untouched = test_directory("same-batch-path-collision");
+        fs::create_dir_all(&untouched).unwrap();
+        fs::write(untouched.join("sentinel"), "unchanged").unwrap();
+        let before = fs::read(untouched.join("sentinel")).unwrap();
+        let collision = collect_planned_com_files(&[
+            PlannedComRoot {
+                root: "Contoso.SafeUpper".into(),
+                name: "Foo".into(),
+                files: vec![("Foo.js".into(), "upper".into())],
+                unsafe_support: None,
+                summary: None,
+                no_callable_error: None,
+            },
+            PlannedComRoot {
+                root: "Contoso.SafeLower".into(),
+                name: "foo".into(),
+                files: vec![("foo.js".into(), "lower".into())],
+                unsafe_support: None,
+                summary: None,
+                no_callable_error: None,
+            },
+        ]);
+        assert!(collision.is_err());
+        assert_eq!(fs::read(untouched.join("sentinel")).unwrap(), before);
+        fs::remove_dir_all(untouched).unwrap();
+
+        let mut shared_package_files = BTreeMap::new();
+        insert_planned_com_file(
+            &mut shared_package_files,
+            "unsafe/index.js".into(),
+            "first".into(),
+        )
+        .unwrap();
+        assert!(
+            insert_planned_com_file(
+                &mut shared_package_files,
+                "Unsafe/INDEX.js".into(),
+                "first".into(),
+            )
+            .unwrap_err()
+            .contains("case-insensitive Windows path key")
+        );
+
+        assert!(
+            collect_planned_com_files(&[PlannedComRoot {
+                root: "Contoso.CON".into(),
+                name: "CON".into(),
+                files: vec![("unsafe/CON.js".into(), "same".into())],
+                unsafe_support: None,
+                summary: None,
+                no_callable_error: None,
+            }])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn retained_manifest_paths_and_cross_root_overwrites_fail_closed() {
+        let output = test_directory("retained-com-ownership");
+        let com_dir = output.join("com");
+        fs::create_dir_all(com_dir.join("unsafe/Contoso/A")).unwrap();
+        let shared = "unsafe/Contoso/A/Shared.js";
+        fs::write(com_dir.join(shared), "same").unwrap();
+
+        let write_manifest = |roots: BTreeMap<String, BTreeSet<String>>| {
+            let manifest = ComGenerationManifest { version: 1, roots };
+            fs::write(
+                com_dir.join(COM_MANIFEST_FILE),
+                format!("{}\n", serde_json::to_string_pretty(&manifest).unwrap()),
+            )
+            .unwrap();
+        };
+        for (existing_root, updated_root) in [
+            ("Contoso.A.IFoo", "Contoso.B.IFoo"),
+            ("Contoso.B.IFoo", "Contoso.A.IFoo"),
+        ] {
+            write_manifest(BTreeMap::from([(
+                existing_root.into(),
+                BTreeSet::from([shared.into()]),
+            )]));
+            let roots = BTreeMap::from([(updated_root.into(), BTreeSet::from([shared.into()]))]);
+            let same = BTreeMap::from([(shared.into(), "same".into())]);
+            assert!(prepare_com_generation_manifest(&com_dir, &roots, &same).is_ok());
+
+            let before = fs::read(com_dir.join(COM_MANIFEST_FILE)).unwrap();
+            let different = BTreeMap::from([(shared.into(), "different".into())]);
+            let error = prepare_com_generation_manifest(&com_dir, &roots, &different).unwrap_err();
+            assert!(error.contains("planned bytes differ"));
+            assert_eq!(fs::read(com_dir.join(COM_MANIFEST_FILE)).unwrap(), before);
+
+            fs::remove_file(com_dir.join(shared)).unwrap();
+            let error = prepare_com_generation_manifest(&com_dir, &roots, &same).unwrap_err();
+            assert!(error.contains("staged file is missing"));
+            assert_eq!(fs::read(com_dir.join(COM_MANIFEST_FILE)).unwrap(), before);
+            fs::write(com_dir.join(shared), "same").unwrap();
+        }
+
+        for invalid in [
+            "unsafe/../escape.js",
+            "unsafe/CON.js",
+            "unsafe/Contoso/A/Bad.js.",
+            "C:/absolute.js",
+        ] {
+            write_manifest(BTreeMap::from([(
+                "Contoso.Invalid".into(),
+                BTreeSet::from([invalid.into()]),
+            )]));
+            let before = fs::read(com_dir.join(COM_MANIFEST_FILE)).unwrap();
+            assert!(
+                prepare_com_generation_manifest(&com_dir, &BTreeMap::new(), &BTreeMap::new())
+                    .is_err()
+            );
+            assert_eq!(fs::read(com_dir.join(COM_MANIFEST_FILE)).unwrap(), before);
+        }
+        write_manifest(BTreeMap::from([
+            (
+                "Contoso.A.IFoo".into(),
+                BTreeSet::from(["unsafe/Contoso/A/IFooUnsafe.js".into()]),
+            ),
+            (
+                "contoso.a.IFoo".into(),
+                BTreeSet::from(["unsafe/contoso/a/IFooUnsafe.js".into()]),
+            ),
+        ]));
+        assert!(
+            prepare_com_generation_manifest(&com_dir, &BTreeMap::new(), &BTreeMap::new())
+                .unwrap_err()
+                .contains("case-insensitive Windows path key")
+        );
+
+        fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
+    fn unsafe_support_sequential_orders_converge_and_stale_removal_restores_export() {
+        fn support(namespace: &str) -> com::UnsafeInterfaceSupport {
+            let interface_name = format!("{namespace}.IFoo");
+            let module_path = format!("{}/IFooUnsafe", namespace.replace('.', "/"));
+            serde_json::from_value(serde_json::json!({
+                "schemaVersion": 10,
+                "metadata": {
+                    "setSha256": "00",
+                    "files": [],
+                    "definingFile": null
+                },
+                "interfaceName": interface_name,
+                "interfaceIid": "10000000-0000-0000-c000-000000000046",
+                "root": "IUnknown",
+                "baseIids": [],
+                "unsafeClass": "IFooUnsafe",
+                "modulePath": module_path,
+                "methods": [{
+                    "name": "GetValue",
+                    "projectedName": "getValue",
+                    "declaringIid": "10000000-0000-0000-c000-000000000046",
+                    "absoluteSlot": 3,
+                    "signatureFingerprint": "00",
+                    "status": "raw_metadata_complete",
+                    "reasons": [],
+                    "strategyRequirements": [],
+                    "targets": {}
+                }]
+            }))
+            .unwrap()
+        }
+        fn plan(root: &str, support: Option<com::UnsafeInterfaceSupport>) -> PlannedComRoot {
+            PlannedComRoot {
+                root: root.into(),
+                name: "IFoo".into(),
+                files: Vec::new(),
+                unsafe_support: support,
+                summary: None,
+                no_callable_error: None,
+            }
+        }
+        fn apply(output: &Path, plan: GeneratedUnsafePackagePlan) {
+            for (relative, content) in plan.files {
+                let path = output.join(relative);
+                fs::create_dir_all(path.parent().unwrap()).unwrap();
+                fs::write(path, content).unwrap();
+            }
+            if plan.remove_existing {
+                remove_generated_unsafe_package_files(output).unwrap();
+            }
+        }
+
+        let first = support("Contoso.A");
+        let second = support("Contoso.B");
+        let forward = test_directory("unsafe-sequential-forward").join("com");
+        let reverse = test_directory("unsafe-sequential-reverse").join("com");
+        fs::create_dir_all(&forward).unwrap();
+        fs::create_dir_all(&reverse).unwrap();
+
+        apply(
+            &forward,
+            prepare_generated_unsafe_package(
+                &forward,
+                &[plan("Contoso.A.IFoo", Some(first.clone()))],
+            )
+            .unwrap(),
+        );
+        let forward_final = prepare_generated_unsafe_package(
+            &forward,
+            &[plan("Contoso.B.IFoo", Some(second.clone()))],
+        )
+        .unwrap();
+        apply(&forward, forward_final.clone());
+
+        apply(
+            &reverse,
+            prepare_generated_unsafe_package(
+                &reverse,
+                &[plan("Contoso.B.IFoo", Some(second.clone()))],
+            )
+            .unwrap(),
+        );
+        let reverse_final = prepare_generated_unsafe_package(
+            &reverse,
+            &[plan("Contoso.A.IFoo", Some(first.clone()))],
+        )
+        .unwrap();
+        apply(&reverse, reverse_final.clone());
+
+        assert_eq!(forward_final, reverse_final);
+        assert!(
+            !fs::read_to_string(forward.join("unsafe/index.js"))
+                .unwrap()
+                .contains("IFooUnsafe")
+        );
+
+        let restored =
+            prepare_generated_unsafe_package(&forward, &[plan("Contoso.B.IFoo", None)]).unwrap();
+        let restored_index = restored
+            .files
+            .iter()
+            .find(|(path, _)| path == "unsafe/index.js")
+            .unwrap()
+            .1
+            .as_str();
+        assert!(restored_index.contains("require('./Contoso/A/IFooUnsafe.js').IFooUnsafe"));
+        apply(&forward, restored);
+
+        let removed =
+            prepare_generated_unsafe_package(&forward, &[plan("Contoso.A.IFoo", None)]).unwrap();
+        assert!(removed.files.is_empty());
+        assert!(removed.remove_existing);
+        apply(&forward, removed);
+        for relative in GENERATED_UNSAFE_PACKAGE_FILES {
+            assert!(
+                !forward.join(relative).exists(),
+                "{relative} was not removed"
+            );
+        }
+
+        fs::remove_dir_all(forward.parent().unwrap()).unwrap();
+        fs::remove_dir_all(reverse.parent().unwrap()).unwrap();
+    }
+
+    #[test]
     fn output_transaction_commits_complete_tree() {
         let output = test_directory("transaction-commit");
         fs::create_dir_all(&output).unwrap();
@@ -7596,10 +8764,88 @@ mod tests {
         fs::remove_dir_all(output).unwrap();
     }
 
+    #[test]
+    fn output_transaction_recovers_owned_interrupted_publish() {
+        let output = test_directory("transaction-owned-recovery");
+        fs::create_dir_all(&output).unwrap();
+        fs::write(output.join("state"), "old").unwrap();
+        let transaction = OutputTransaction::begin(&output).unwrap();
+        fs::write(transaction.stage_dir().join("state"), "new").unwrap();
+        write_transaction_owner(&transaction.final_dir, &transaction.nonce).unwrap();
+        fs::rename(&transaction.final_dir, &transaction.backup_dir).unwrap();
+        drop(transaction);
+
+        assert_eq!(fs::read_to_string(output.join("state")).unwrap(), "old");
+        fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
+    fn retained_links_reject_stage_manifest_and_case_conflicts_without_mutation() {
+        let output = test_directory("retained-link-conflicts");
+        let stage = output.join("stage");
+        fs::create_dir_all(stage.join("com")).unwrap();
+        fs::write(stage.join("com").join("index.js"), "managed").unwrap();
+        let before = fs::read(stage.join("com").join("index.js")).unwrap();
+        let stage_conflict = RetainedLink {
+            relative_path: PathBuf::from("COM").join("INDEX.js"),
+            display_path: "COM/INDEX.js".into(),
+            windows_key: com::windows_relative_path_key("COM/INDEX.js").unwrap(),
+        };
+        assert!(
+            validate_retained_links(&stage, std::slice::from_ref(&stage_conflict))
+                .unwrap_err()
+                .contains("generated stage path")
+        );
+        assert_eq!(
+            fs::read(stage.join("com").join("index.js")).unwrap(),
+            before
+        );
+
+        let manifest = ComGenerationManifest {
+            version: 1,
+            roots: BTreeMap::from([(
+                "Tests.IRoot".into(),
+                BTreeSet::from(["unsafe/missing.js".into()]),
+            )]),
+        };
+        fs::write(
+            stage.join("com").join(COM_MANIFEST_FILE),
+            serde_json::to_string(&manifest).unwrap(),
+        )
+        .unwrap();
+        let manifest_conflict = RetainedLink {
+            relative_path: PathBuf::from("com").join("unsafe").join("missing.js"),
+            display_path: "com/unsafe/missing.js".into(),
+            windows_key: com::windows_relative_path_key("com/unsafe/missing.js").unwrap(),
+        };
+        assert!(
+            validate_retained_links(&stage, std::slice::from_ref(&manifest_conflict))
+                .unwrap_err()
+                .contains("manifest-owned path")
+        );
+
+        let case_first = RetainedLink {
+            relative_path: PathBuf::from("other").join("Link"),
+            display_path: "other/Link".into(),
+            windows_key: com::windows_relative_path_key("other/Link").unwrap(),
+        };
+        let case_alias = RetainedLink {
+            relative_path: PathBuf::from("OTHER").join("link"),
+            display_path: "OTHER/link".into(),
+            windows_key: case_first.windows_key.clone(),
+        };
+        assert!(
+            validate_retained_links(&stage, &[case_first, case_alias])
+                .unwrap_err()
+                .contains("case-insensitive Windows path")
+        );
+        remove_path_no_follow(&output).unwrap();
+    }
+
     #[cfg(windows)]
     #[test]
-    fn output_transaction_rejects_linked_root_and_cleans_failed_stage() {
-        use std::os::windows::fs::{symlink_dir, symlink_file};
+    fn output_transaction_rejects_linked_root() {
+        use std::os::windows::fs::symlink_dir;
 
         let output = test_directory("transaction-linked-root");
         let target = test_directory("transaction-linked-root-target");
@@ -7614,30 +8860,72 @@ mod tests {
             .expect("a linked transaction root must be rejected");
         assert!(error.contains("linked directory"), "{error}");
         fs::remove_dir(&output).unwrap();
+        fs::remove_dir_all(target).unwrap();
+    }
 
+    #[cfg(windows)]
+    #[test]
+    fn output_transaction_preserves_available_file_and_directory_symlinks() {
+        use std::os::windows::fs::{symlink_dir, symlink_file};
+
+        let root = test_directory("retained-symlinks");
+        let output = root.join("output");
+        let external = root.join("external");
         fs::create_dir_all(&output).unwrap();
-        let external = target.join("external.js");
-        fs::write(&external, "outside").unwrap();
-        symlink_file(&external, output.join("linked.js")).unwrap();
-        let error = OutputTransaction::begin(&output)
-            .err()
-            .expect("a linked child must fail staging");
-        assert!(error.contains("linked filesystem entry"), "{error}");
-        let parent = output.parent().unwrap();
-        let leaf = output.file_name().unwrap().to_string_lossy();
-        assert!(
-            fs::read_dir(parent).unwrap().flatten().all(|entry| {
-                !entry
-                    .file_name()
-                    .to_string_lossy()
-                    .starts_with(&format!(".{leaf}.dynwinrt-stage-"))
-            }),
-            "failed begin must not leak a staging directory"
+        fs::create_dir_all(&external).unwrap();
+        let external_file = external.join("file.txt");
+        let external_sentinel = external.join("sentinel.txt");
+        fs::write(&external_file, "file-target").unwrap();
+        fs::write(&external_sentinel, "sentinel").unwrap();
+        let file_link = output.join("file-link");
+        let directory_link = output.join("directory-link");
+
+        if let Err(error) = symlink_file(&external_file, &file_link) {
+            eprintln!("Skipping file/directory symlink transaction test: {error}");
+            remove_path_no_follow(&root).unwrap();
+            return;
+        }
+        if let Err(error) = symlink_dir(&external, &directory_link) {
+            eprintln!("Directory symlink unavailable; file symlink remains covered: {error}");
+        }
+
+        let file_target = fs::read_link(&file_link).unwrap();
+        let directory_target = fs::read_link(&directory_link).ok();
+        let transaction = OutputTransaction::begin(&output).unwrap();
+        fs::write(transaction.stage_dir().join("generated.txt"), "generated").unwrap();
+        transaction.commit().unwrap();
+
+        assert_eq!(fs::read_link(&file_link).unwrap(), file_target);
+        if let Some(directory_target) = &directory_target {
+            assert_eq!(fs::read_link(&directory_link).unwrap(), *directory_target);
+        }
+        assert_eq!(fs::read_to_string(&external_file).unwrap(), "file-target");
+        assert_eq!(fs::read_to_string(&external_sentinel).unwrap(), "sentinel");
+        assert_eq!(
+            fs::read_to_string(output.join("generated.txt")).unwrap(),
+            "generated"
         );
 
-        fs::remove_file(output.join("linked.js")).unwrap();
-        fs::remove_dir_all(output).unwrap();
-        fs::remove_dir_all(target).unwrap();
+        let interrupted = OutputTransaction::begin(&output).unwrap();
+        write_transaction_owner(&interrupted.final_dir, &interrupted.nonce).unwrap();
+        fs::rename(&interrupted.final_dir, &interrupted.backup_dir).unwrap();
+        let mut moved = Vec::new();
+        move_retained_links(
+            &interrupted.backup_dir,
+            &interrupted.stage_dir,
+            &interrupted.retained_links,
+            &mut moved,
+        )
+        .unwrap();
+        drop(interrupted);
+        assert_eq!(fs::read_link(&file_link).unwrap(), file_target);
+        if let Some(directory_target) = &directory_target {
+            assert_eq!(fs::read_link(&directory_link).unwrap(), *directory_target);
+        }
+
+        remove_path_no_follow(&output).unwrap();
+        assert_eq!(fs::read_to_string(&external_sentinel).unwrap(), "sentinel");
+        remove_path_no_follow(&root).unwrap();
     }
 
     #[test]

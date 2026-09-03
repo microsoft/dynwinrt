@@ -23,7 +23,14 @@ pub use com::{
   DynComNativeStructArray, DynComNativeUnion, DynComPropVariant, DynComSafeArray,
   DynComSafeArrayBound, DynComType, DynComUnsafe, DynComUnsafeInterface, DynComVariant,
 };
+mod com_raw;
+pub use com_raw::{
+  DynComRaw, DynComRawCleanup, DynComRawMemory, DynComRawOwnedComPointer, DynComRawPointer,
+  DynComRawStructLayout, DynComRawUnionLayout,
+};
 mod async_promise;
+#[cfg(feature = "test-hooks")]
+mod generated_unsafe_test_hooks;
 mod managed_tsfn;
 mod scheduled_start;
 #[cfg(feature = "test-hooks")]
@@ -584,6 +591,7 @@ impl DynWinRTMethodHandle {
         ));
       }
     };
+    let _leases = com::collect_native_invocation_leases(&args)?;
     let wrt_args: Vec<dynwinrt::WinRTValue> = args.iter().map(|a| a.0.clone()).collect();
     let results = self
       .0
@@ -607,11 +615,13 @@ impl DynWinRTMethodHandle {
     obj: &DynWinRTValue,
     args: Vec<&DynWinRTValue>,
   ) -> napi::Result<PromiseRaw<'env, ()>> {
+    let leases = com::collect_native_invocation_leases(&args)?;
     scheduled_start::schedule(
       env,
       self.0.clone(),
       obj.0.clone(),
       args.into_iter().map(|value| value.0.clone()).collect(),
+      leases,
     )
   }
 
@@ -631,6 +641,7 @@ impl DynWinRTMethodHandle {
         ));
       }
     };
+    let _leases = com::collect_native_invocation_leases(&args)?;
     let wrt_args: Vec<dynwinrt::WinRTValue> = args.iter().map(|a| a.0.clone()).collect();
     let results = self
       .0
@@ -913,6 +924,21 @@ impl DynWinRTValue {
     )
   }
 
+  fn with_detached_com_owner(
+    value: dynwinrt::WinRTValue,
+    owner: std::sync::Arc<com_raw::RawComReference>,
+  ) -> Self {
+    Self(
+      value,
+      Some(com::NativePointerOwner::RawCom(owner)),
+      com::PointerProvenance::DetachedCom,
+      None,
+      None,
+      None,
+      None,
+    )
+  }
+
   fn with_com_buffer(
     buffer: dynwinrt::com::ComBufferValue,
     owner: com::NativePointerOwner,
@@ -1098,6 +1124,7 @@ impl DynWinRTValue {
       }
       com::PointerProvenance::None
       | com::PointerProvenance::Borrowed
+      | com::PointerProvenance::DetachedCom
       | com::PointerProvenance::UnclassifiedOutput => {}
     }
   }

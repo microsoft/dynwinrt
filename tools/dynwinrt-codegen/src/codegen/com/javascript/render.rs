@@ -2558,6 +2558,21 @@ fn com_public_import_name() -> String {
     }
 }
 
+pub(crate) fn com_raw_runtime_import_name() -> String {
+    let import_name = crate::codegen::project::get_import_name();
+    match import_name.as_str() {
+        "@microsoft/dynwinrt" => format!("{import_name}/com/unsafe/raw"),
+        "@microsoft/dynwinrt/com" => format!("{import_name}/unsafe/raw"),
+        "@microsoft/dynwinrt/com/unsafe" => format!("{import_name}/raw"),
+        "@microsoft/dynwinrt/com/unsafe/raw" => import_name,
+        _ => replace_exact_module_basename(&import_name, "com.js", "com-unsafe-raw.js")
+            .or_else(|| {
+                replace_exact_module_basename(&import_name, "com-unsafe.js", "com-unsafe-raw.js")
+            })
+            .unwrap_or(import_name),
+    }
+}
+
 fn replace_exact_module_basename(value: &str, from: &str, to: &str) -> Option<String> {
     let (prefix, basename) = value
         .rfind(|character| character == '/' || character == '\\')

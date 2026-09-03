@@ -435,6 +435,14 @@ target
 
 **/generated
 **/.*.dynwinrt-lock
+!docs/status/generated/
+!docs/status/generated/**
+# Full Classic COM census inventories are reproducible CI artifacts. Keep only
+# the compact summary and per-interface support index in source control.
+docs/status/generated/classic-com-all-metadata-definitions.csv
+docs/status/generated/classic-com-interface-capabilities.*
+docs/status/generated/classic-com-named-types.*
+docs/status/generated/classic-com-type-shapes.*
 **/node_modules
 tools/dynwinrt-codegen/npm/bin/**/*.exe
 !benchmarks/electron/out/

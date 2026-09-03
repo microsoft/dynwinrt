@@ -69,6 +69,7 @@ pub(super) fn project_com_reference_interface(
         activation: ActivationPlan::None,
         referenced_enums: Vec::new(),
         sink: None,
+        evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
     };
     validate_projected_surface_names(&projected)?;
     Ok(projected)
@@ -98,6 +99,25 @@ fn project_validated_interface(
         })
         .collect::<Result<Vec<_>, _>>()?;
     let methods = group_overloads(methods, &meta.interface.name)?;
+    let mut evidence_dependencies = validated.evidence_dependencies().clone();
+    if methods
+        .iter()
+        .any(|method| matches!(method.kind, ProjectedComMethodKind::DispatchInvoke { .. }))
+    {
+        let family_id = crate::contract_registry::ExactFamilyId::DispatchInvoke;
+        evidence_dependencies.add_exact(
+            crate::contract_registry::exact_method_entry_id(
+                family_id,
+                "Windows.Win32.System.Com",
+                "IDispatch",
+                "00020400-0000-0000-c000-000000000046",
+                "Invoke",
+                6,
+            ),
+            family_id,
+            crate::contract_registry::ContractKind::CompoundDispatch,
+        );
+    }
 
     let activation = if let Some((class_name, class_namespace, target_iid)) = interop_target {
         ActivationPlan::WinRtFactory {
@@ -152,6 +172,7 @@ fn project_validated_interface(
         activation,
         referenced_enums,
         sink,
+        evidence_dependencies,
     };
     validate_projected_surface_names(&projected)?;
     Ok(projected)
@@ -3179,6 +3200,8 @@ mod tests {
             )
         });
         semantic.sink = None;
+        assert!(!semantic.evidence_dependencies.standard_rule_ids.is_empty());
+        legacy.evidence_dependencies = semantic.evidence_dependencies.clone();
         assert_eq!(semantic, legacy);
     }
 
@@ -3404,6 +3427,7 @@ mod tests {
             activation: ActivationPlan::None,
             referenced_enums: Vec::new(),
             sink: None,
+            evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
         };
 
         let error = validate_projected_surface_names(&interface).unwrap_err();
@@ -3548,6 +3572,7 @@ mod tests {
                 },
             ],
             sink: None,
+            evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
         };
         assert!(validate_projected_surface_names(&interface).is_err());
 
@@ -3597,6 +3622,7 @@ mod tests {
                 members: Vec::new(),
             }],
             sink: None,
+            evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
         };
         assert!(
             validate_coclass_enum_files(

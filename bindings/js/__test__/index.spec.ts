@@ -32,12 +32,22 @@ import {
   DynComUnsafe,
   DynComVariant,
 } from '../dist/com-unsafe.js'
+import {
+  DynComRaw,
+  DynComRawCleanup,
+  DynComRawMemory,
+  DynComRawOwnedComPointer,
+  DynComRawPointer,
+  DynComRawStructLayout,
+  DynComRawUnionLayout,
+} from '../dist/com-unsafe-raw.js'
 
 const requireFromTest = createRequire(import.meta.url)
 const nativeRuntime = requireFromTest('../dist/index.js') as Record<string, unknown>
 const winrtCjsRuntime = requireFromTest('../dist/winrt.js') as Record<string, unknown>
 const comCjsRuntime = requireFromTest('../dist/com.js') as Record<string, unknown>
 const unsafeComRuntime = requireFromTest('../dist/com-unsafe.js') as Record<string, unknown>
+const rawComRuntime = requireFromTest('../dist/com-unsafe-raw.js') as Record<string, unknown>
 
 const moduleKeys = (value: object) =>
   Object.keys(value)
@@ -53,15 +63,20 @@ test('Classic COM is isolated from the WinRT root entrypoint', (t) => {
   t.false(Object.prototype.hasOwnProperty.call(comRuntime, 'DynComType'))
   t.false(Object.prototype.hasOwnProperty.call(comRuntime, 'DynWinRTValue'))
   t.false(Object.prototype.hasOwnProperty.call(comRuntime, 'WinGUID'))
+  t.false(Object.prototype.hasOwnProperty.call(winrtRuntime, 'DynComRawMemory'))
+  t.false(Object.prototype.hasOwnProperty.call(comRuntime, 'DynComRawMemory'))
+  t.false(Object.prototype.hasOwnProperty.call(unsafeComRuntime, 'DynComRawMemory'))
   t.is(typeof comRuntime.initializeCom, 'function')
   t.truthy(DynCom)
   t.truthy(DynComUnsafe)
+  t.truthy(DynComRawMemory)
 
   const assertion =
     "const assert = require('node:assert/strict');" +
     "const winrt = require('@microsoft/dynwinrt');" +
     "const com = require('@microsoft/dynwinrt/com');" +
     "const unsafeCom = require('@microsoft/dynwinrt/com/unsafe');" +
+    "const rawCom = require('@microsoft/dynwinrt/com/unsafe/raw');" +
     "assert.equal(Object.prototype.hasOwnProperty.call(winrt, 'DynCom'), false);" +
     "assert.equal(Object.prototype.hasOwnProperty.call(com, 'DynComUnsafe'), false);" +
     "assert.equal(Object.prototype.hasOwnProperty.call(com, 'DynComMethodSig'), false);" +
@@ -69,10 +84,18 @@ test('Classic COM is isolated from the WinRT root entrypoint', (t) => {
     "assert.equal(Object.prototype.hasOwnProperty.call(com, 'DynComType'), false);" +
     "assert.equal(Object.prototype.hasOwnProperty.call(com, 'DynWinRTValue'), false);" +
     "assert.equal(Object.prototype.hasOwnProperty.call(com, 'WinGUID'), false);" +
+    "assert.equal(Object.prototype.hasOwnProperty.call(winrt, 'DynComRawMemory'), false);" +
+    "assert.equal(Object.prototype.hasOwnProperty.call(com, 'DynComRawMemory'), false);" +
+    "assert.equal(Object.prototype.hasOwnProperty.call(unsafeCom, 'DynComRawMemory'), false);" +
     "assert.equal(typeof winrt.DynWinRtType, 'function');" +
     "assert.equal(typeof com.DynComVariant, 'function');" +
     "assert.equal(typeof com.initializeCom, 'function');" +
     "assert.equal(typeof unsafeCom.DynComUnsafe, 'function');" +
+    "assert.equal(typeof rawCom.DynComRawMemory, 'function');" +
+    "assert.equal(typeof rawCom.DynComRawOwnedComPointer, 'function');" +
+    "assert.equal(typeof rawCom.DynComRawCleanup, 'function');" +
+    "assert.equal(typeof rawCom.DynComRawStructLayout, 'function');" +
+    "assert.equal(typeof rawCom.DynComRawUnionLayout, 'function');" +
     "console.log('runtime-entrypoints-ok')"
   const cjs = spawnSync(process.execPath, ['--eval', assertion], {
     cwd: resolve(process.cwd()),
@@ -87,6 +110,7 @@ test('Classic COM is isolated from the WinRT root entrypoint', (t) => {
     "import * as winrt from '@microsoft/dynwinrt';" +
     "import * as com from '@microsoft/dynwinrt/com';" +
     "import * as unsafeCom from '@microsoft/dynwinrt/com/unsafe';" +
+    "import * as rawCom from '@microsoft/dynwinrt/com/unsafe/raw';" +
     "assert.equal(Object.prototype.hasOwnProperty.call(winrt, 'DynCom'), false);" +
     "assert.equal(Object.prototype.hasOwnProperty.call(com, 'DynComUnsafe'), false);" +
     "assert.equal(Object.prototype.hasOwnProperty.call(com, 'DynComMethodSig'), false);" +
@@ -94,10 +118,18 @@ test('Classic COM is isolated from the WinRT root entrypoint', (t) => {
     "assert.equal(Object.prototype.hasOwnProperty.call(com, 'DynComType'), false);" +
     "assert.equal(Object.prototype.hasOwnProperty.call(com, 'DynWinRTValue'), false);" +
     "assert.equal(Object.prototype.hasOwnProperty.call(com, 'WinGUID'), false);" +
+    "assert.equal(Object.prototype.hasOwnProperty.call(winrt, 'DynComRawMemory'), false);" +
+    "assert.equal(Object.prototype.hasOwnProperty.call(com, 'DynComRawMemory'), false);" +
+    "assert.equal(Object.prototype.hasOwnProperty.call(unsafeCom, 'DynComRawMemory'), false);" +
     "assert.equal(typeof winrt.DynWinRtType, 'function');" +
     "assert.equal(typeof com.DynComVariant, 'function');" +
     "assert.equal(typeof com.initializeCom, 'function');" +
     "assert.equal(typeof unsafeCom.DynComUnsafe, 'function');" +
+    "assert.equal(typeof rawCom.DynComRawMemory, 'function');" +
+    "assert.equal(typeof rawCom.DynComRawOwnedComPointer, 'function');" +
+    "assert.equal(typeof rawCom.DynComRawCleanup, 'function');" +
+    "assert.equal(typeof rawCom.DynComRawStructLayout, 'function');" +
+    "assert.equal(typeof rawCom.DynComRawUnionLayout, 'function');" +
     "console.log('runtime-entrypoints-ok')"
   const esm = spawnSync(process.execPath, ['--input-type=module', '--eval', esmAssertion], {
     cwd: resolve(process.cwd()),
@@ -138,6 +170,16 @@ test('package facades exactly partition native exports', (t) => {
     'DynComUnsafe',
     'DynComUnsafeInterface',
   ])
+  const rawComNames = new Set([
+    ...unsafeComNames,
+    'DynComRaw',
+    'DynComRawCleanup',
+    'DynComRawMemory',
+    'DynComRawOwnedComPointer',
+    'DynComRawPointer',
+    'DynComRawStructLayout',
+    'DynComRawUnionLayout',
+  ])
 
   t.deepEqual(moduleKeys(winrtCjsRuntime), expectedWinrt)
   t.deepEqual(
@@ -147,6 +189,10 @@ test('package facades exactly partition native exports', (t) => {
   t.deepEqual(
     moduleKeys(unsafeComRuntime),
     nativeKeys.filter((name) => unsafeComNames.has(name)),
+  )
+  t.deepEqual(
+    moduleKeys(rawComRuntime),
+    nativeKeys.filter((name) => rawComNames.has(name)),
   )
 
   t.is(winrtCjsRuntime.WinGuid, comCjsRuntime.WinGuid)
@@ -158,6 +204,290 @@ test('package facades exactly partition native exports', (t) => {
   for (const name of moduleKeys(comCjsRuntime)) {
     t.true(moduleKeys(unsafeComRuntime).includes(name), `${name} must remain available from /com/unsafe`)
   }
+  for (const name of moduleKeys(unsafeComRuntime)) {
+    t.true(moduleKeys(rawComRuntime).includes(name), `${name} must remain available from /com/unsafe/raw`)
+  }
+})
+
+test('raw COM memory and pointers expose checked owner-retaining primitives', (t) => {
+  const pointerSize = DynComRaw.pointerSize()
+  t.true(pointerSize === 4 || pointerSize === 8)
+  t.throws(() => DynComRawMemory.allocate(0), { message: /greater than zero/ })
+  t.throws(() => DynComRawMemory.allocate(8, 3), { message: /power of two/ })
+
+  const memory = DynComRawMemory.allocate(64, 16)
+  t.is(memory.size, 64n)
+  t.is(memory.alignment, 16n)
+  t.false(memory.released)
+  t.deepEqual(memory.readBytes(0, 64), Buffer.alloc(64))
+
+  memory.writeBytes(0, Buffer.from([1, 2, 3, 4]))
+  t.deepEqual(memory.readBytes(0, 4), Buffer.from([1, 2, 3, 4]))
+  memory.writeI8(0, -128)
+  memory.writeU16(1, 65535)
+  memory.writeI32(3, -123456)
+  memory.writeU64(7, 2n ** 64n - 1n)
+  memory.writeF32(15, 1.25)
+  memory.writeF64(19, -9.5)
+  t.is(memory.readI8(0), -128)
+  t.is(memory.readU16(1), 65535)
+  t.is(memory.readI32(3), -123456)
+  t.is(memory.readU64(7), 2n ** 64n - 1n)
+  t.is(memory.readF32(15), 1.25)
+  t.is(memory.readF64(19), -9.5)
+
+  const external = DynComRawPointer.fromAddress(0x1234n)
+  t.is(external.address, 0x1234n)
+  t.false(external.isNull)
+  t.throws(() => external.offset(1), { message: /owned raw-memory pointer/ })
+  t.true(DynComRawPointer.null().isNull)
+
+  memory.writePointer(32, external)
+  const read = memory.readPointer(32)
+  t.is(read.address, 0x1234n)
+  t.throws(() => read.offset(1), { message: /owned raw-memory pointer/ })
+
+  const owned = memory.pointer(40)
+  t.is(owned.offset(8).address, owned.address + 8n)
+  t.truthy(owned.toValue())
+  t.throws(() => memory.readU32(62), { message: /exceeds allocation size/ })
+
+  const externalView = DynComRawMemory.fromUnsafePointer(memory.pointer(), 64, 16)
+  externalView.writeU32(52, 0x12345678)
+  t.is(memory.readU32(52), 0x12345678)
+  externalView.release()
+  t.true(externalView.released)
+  t.is(memory.readU32(52), 0x12345678)
+  const addressView = DynComRawMemory.fromUnsafeAddress(memory.pointer().address, 64, 16)
+  t.is(addressView.readU32(52), 0x12345678)
+  addressView.release()
+  t.throws(() => DynComRawMemory.fromUnsafeAddress(0n, 1, 1), {
+    message: /non-null address/,
+  })
+  t.throws(() => DynComRawMemory.fromUnsafeAddress(memory.pointer().address + 1n, 8, 8), {
+    message: /aligned/,
+  })
+
+  memory.release()
+  memory.release()
+  t.true(memory.released)
+  t.throws(() => owned.toValue(), { message: /released/ })
+})
+
+test('raw bounded views use memmove semantics for overlapping Buffers', (t) => {
+  const bytes = Buffer.from([0, 1, 2, 3, 4, 5, 6, 7])
+  const pointerValue = DynCom.pointer(bytes)
+  const view = DynComRawMemory.fromUnsafeAddress(
+    DynCom.asPointerBigint(pointerValue),
+    bytes.length,
+    1,
+  )
+  try {
+    view.writeBytes(2, bytes.subarray(0, 6))
+    t.deepEqual(bytes, Buffer.from([0, 1, 0, 1, 2, 3, 4, 5]))
+
+    bytes.set([0, 1, 2, 3, 4, 5, 6, 7])
+    view.writeBytes(0, bytes.subarray(2, 8))
+    t.deepEqual(bytes, Buffer.from([2, 3, 4, 5, 6, 7, 6, 7]))
+  } finally {
+    view.release()
+    pointerValue.release()
+  }
+})
+
+test('raw aggregate descriptors expose validated struct and closed by-value union ABI', (t) => {
+  const architecture = {
+    size: 8,
+    alignment: 4,
+    fields: [
+      { name: 'first', offset: 0, count: 1, type: { kind: 'u32' } },
+      { name: 'values', offset: 4, count: 2, type: { kind: 'u16' } },
+    ],
+  }
+  const descriptor = JSON.stringify({
+    name: 'Tests.JsRawAggregate',
+    x86: architecture,
+    x64: architecture,
+    arm64: architecture,
+  })
+
+  const layout = DynComRawStructLayout.fromDescriptor(descriptor)
+  t.is(layout.qualifiedName, 'Tests.JsRawAggregate')
+  t.is(layout.size, 8n)
+  t.is(layout.alignment, 4n)
+  t.is(layout.descriptor, descriptor)
+  t.truthy(layout.byValueType())
+  t.truthy(layout.pointerType())
+  t.truthy(layout.pointerType(true))
+  const value = layout.createValue(Buffer.from([1, 0, 0, 0, 2, 0, 3, 0]))
+  t.deepEqual(layout.readValueBytes(value), Buffer.from([1, 0, 0, 0, 2, 0, 3, 0]))
+
+  const unionDescriptor = JSON.stringify({
+    name: 'Tests.JsRawUnion',
+    x86: {
+      size: 8,
+      alignment: 8,
+      complete: true,
+      fields: [{ name: 'integer', count: 1, type: { kind: 'u64' } }],
+    },
+    x64: {
+      size: 8,
+      alignment: 8,
+      complete: true,
+      fields: [{ name: 'integer', count: 1, type: { kind: 'u64' } }],
+    },
+    arm64: {
+      size: 8,
+      alignment: 8,
+      complete: true,
+      fields: [{ name: 'integer', count: 1, type: { kind: 'u64' } }],
+    },
+  })
+  const union = DynComRawUnionLayout.fromDescriptor(unionDescriptor)
+  t.is(union.qualifiedName, 'Tests.JsRawUnion')
+  t.truthy(union.pointerType())
+  t.truthy(union.byValueType())
+  const unionBytes = Buffer.alloc(8)
+  unionBytes.writeBigUInt64LE(42n)
+  const unionValue = union.createValue('integer', unionBytes)
+  t.is(union.readValueBytes(unionValue).length, 8)
+})
+
+test('raw aggregate capability cannot enter semantic or callback APIs', (t) => {
+  const architecture = {
+    size: 8,
+    alignment: 8,
+    fields: [
+      {
+        name: 'value',
+        offset: 0,
+        count: 1,
+        type: {
+          kind: 'union',
+          name: 'Tests.JsCapabilityUnion',
+          layout: {
+            size: 8,
+            alignment: 8,
+            complete: true,
+            fields: [{ name: 'integer', count: 1, type: { kind: 'u64' } }],
+          },
+        },
+      },
+    ],
+  }
+  const descriptor = JSON.stringify({
+    name: 'Tests.JsStructWithUnion',
+    x86: architecture,
+    x64: architecture,
+    arm64: architecture,
+  })
+
+  t.throws(() => DynCom.nativeStructType(descriptor), { message: /contains a union/ })
+  t.throws(() => DynCom.nativeStructPointerType(descriptor), { message: /contains a union/ })
+
+  const raw = DynComRawStructLayout.fromDescriptor(descriptor)
+  t.truthy(raw.pointerType())
+  const rawType = raw.byValueType()
+  const callbackInterface = DynCom.registerIUnknownInterface(
+    'Tests.IJsRawAggregateCallbackRejected',
+    WinGuid.parse('34ce63e7-3f27-47b4-8f5d-e76c22dcb24b'),
+  ).addMethod('Invoke', new DynComMethodSig().addIn(rawType))
+  t.throws(() => DynCom.createIUnknownSink(callbackInterface, () => 0), {
+    message: /callback ABI/,
+  })
+
+  const reviewDescriptor = JSON.parse(descriptor) as {
+    x86: Record<string, unknown>
+    x64: Record<string, unknown>
+    arm64: Record<string, unknown>
+  }
+  for (const architectureName of ['x86', 'x64', 'arm64'] as const) {
+    reviewDescriptor[architectureName].packed = true
+    reviewDescriptor[architectureName].opaque = true
+    reviewDescriptor[architectureName].nontrivial = true
+  }
+  const pointerOnly = DynComRawStructLayout.fromDescriptor(JSON.stringify(reviewDescriptor))
+  t.truthy(pointerOnly.pointerType())
+  t.throws(() => pointerOnly.byValueType(), { message: /unsupported ABI marker/ })
+})
+
+test('raw COM pointer bridge preserves explicit ownership states', (t) => {
+  roInitialize(1)
+  const iid = WinGuid.parse('00000035-0000-0000-c000-000000000046')
+  const managed = DynWinRtValue.activationFactory('Windows.Foundation.Uri')
+  const borrowed = DynComRawPointer.fromManagedBorrowed(managed)
+  const owner = DynComRawOwnedComPointer.queryInterface(managed, iid)
+  try {
+    t.false(borrowed.isNull)
+    t.is(typeof borrowed.address, 'bigint')
+    t.is(typeof owner.address, 'bigint')
+    t.false(owner.released)
+    t.is(owner.pointer().address, owner.address)
+
+    const view = owner.query(iid)
+    view.release()
+    t.true(view.released)
+
+    const transferOwner = DynComRawOwnedComPointer.addRef(managed)
+    const slot = DynComRawMemory.allocate(DynComRaw.pointerSize(), DynComRaw.pointerSize())
+    transferOwner.transferTo(slot)
+    t.true(transferOwner.released)
+    const assumed = DynComRawOwnedComPointer.assumeTransferred(slot.readPointer(0), iid)
+    assumed.release()
+    slot.release()
+
+    const detached = owner.detach()
+    t.true(owner.released)
+    t.throws(() => owner.detach(), { message: /consumed or released/ })
+    const adopted = DynComRawOwnedComPointer.adoptTransferred(detached, iid)
+    const managedAgain = adopted.intoManaged(iid)
+    try {
+      t.true(adopted.released)
+      t.throws(() => DynComRawOwnedComPointer.adoptTransferred(detached), {
+        message: /consumed/,
+      })
+    } finally {
+      managedAgain.release()
+    }
+  } finally {
+    managed.release()
+  }
+
+  const cleanupMethods = [
+    DynComRawCleanup.coTaskMemFree,
+    DynComRawCleanup.localFree,
+    DynComRawCleanup.globalFree,
+    DynComRawCleanup.sysFreeString,
+    DynComRawCleanup.safeArrayDestroy,
+    DynComRawCleanup.variantClear,
+    DynComRawCleanup.propVariantClear,
+    DynComRawCleanup.releaseStgMedium,
+    DynComRawCleanup.closeHandle,
+    DynComRawCleanup.destroyIcon,
+    DynComRawCleanup.deleteObject,
+  ]
+  t.true(cleanupMethods.every((method) => typeof method === 'function'))
+})
+
+test('raw COM declarations do not leak into existing declaration facades', (t) => {
+  for (const name of ['winrt.d.ts', 'com.d.ts', 'com-unsafe.d.ts']) {
+    const declaration = readFileSync(
+      fileURLToPath(new URL(`../dist/${name}`, import.meta.url)),
+      'utf8',
+    )
+    t.notRegex(declaration, /DynComRaw(?:Memory|Pointer)?/)
+  }
+  const rawDeclaration = readFileSync(
+    fileURLToPath(new URL('../dist/com-unsafe-raw.d.ts', import.meta.url)),
+    'utf8',
+  )
+  t.regex(rawDeclaration, /DynComRawMemory/)
+  t.regex(rawDeclaration, /DynComRawPointer/)
+  t.regex(rawDeclaration, /DynComRawStructLayout/)
+  t.regex(rawDeclaration, /DynComRawUnionLayout/)
+  t.regex(rawDeclaration, /DynComRawOwnedComPointer/)
+  t.regex(rawDeclaration, /DynComRawCleanup/)
+  t.is((rawDeclaration.match(/private constructor\(\)/g) ?? []).length, 7)
 })
 
 test('COM allocation declaration is opaque and non-constructible', (t) => {

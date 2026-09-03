@@ -617,6 +617,7 @@ pub(super) struct ProjectedComInterface {
     pub(super) activation: ActivationPlan,
     pub(super) referenced_enums: Vec<ProjectedComEnum>,
     pub(super) sink: Option<ComSinkPlan>,
+    pub(super) evidence_dependencies: crate::contract_registry::EvidenceDependencies,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

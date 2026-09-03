@@ -46,6 +46,20 @@ const uri = new Uri('https://example.com/path?q=1');
 console.log(uri.host);                                 // "example.com"
 ```
 
+Classic COM bindings import their runtime API from the separate
+`@microsoft/dynwinrt/com/unsafe` subpath internally. Applications use
+`@microsoft/dynwinrt/com` for initialization and managed COM value types;
+manual ABI declarations require an explicit `/com/unsafe` import. All are
+part of the same npm package, while the package root remains WinRT-only. See
+[Classic COM API support plan](docs/status/CLASSIC_COM_API_SUPPORT_PLAN.md) for
+the user-facing capability map, unsafe layering, blocked API families, and
+roadmap. See
+[Classic COM support](docs/architecture/classic-com-support.md) for the supported ABI,
+common-interface test matrix, unsupported native types, and ownership rules.
+See [Classic COM JavaScript usage](docs/guides/windows/classic-com-usage.md) for codegen,
+GUID/IID/CLSID, lifecycle, generated same-thread event sinks, Automation, and explicit unsafe ABI
+examples.
+
 ### Python
 
 ```powershell

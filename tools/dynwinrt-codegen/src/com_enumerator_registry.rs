@@ -27,6 +27,31 @@ pub(crate) struct EnumeratorContract {
     pub citation: &'static str,
 }
 
+impl EnumeratorContract {
+    pub(crate) fn entry_id(&self) -> String {
+        crate::contract_registry::exact_method_entry_id(
+            self.family_id(),
+            self.interface_namespace,
+            self.interface_name,
+            self.interface_iid,
+            "Next",
+            self.next_vtable_index,
+        )
+    }
+
+    pub(crate) const fn family_id(&self) -> crate::contract_registry::ExactFamilyId {
+        crate::contract_registry::ExactFamilyId::EnumeratorException
+    }
+
+    pub(crate) const fn contract_kind(&self) -> crate::contract_registry::ContractKind {
+        crate::contract_registry::ContractKind::EnumeratorNext
+    }
+
+    pub(crate) fn uses_generic_standard(&self) -> bool {
+        self.citation == STANDARD_NEXT
+    }
+}
+
 use EnumeratorElementKind::{Interface, Struct, Unknown};
 
 const STANDARD_NEXT: &str =
@@ -1295,7 +1320,6 @@ pub(crate) fn exact_contract(
     })
 }
 
-#[cfg(test)]
 pub(crate) fn contracts() -> &'static [EnumeratorContract] {
     ENUMERATOR_CONTRACTS
 }
@@ -1364,5 +1388,22 @@ mod tests {
                 contract.interface_name
             );
         }
+    }
+
+    #[test]
+    fn generic_standard_next_entries_are_not_exact_exceptions() {
+        assert_eq!(
+            ENUMERATOR_CONTRACTS
+                .iter()
+                .filter(|contract| contract.uses_generic_standard())
+                .count(),
+            24
+        );
+        assert!(
+            ENUMERATOR_CONTRACTS
+                .iter()
+                .filter(|contract| !contract.uses_generic_standard())
+                .all(|contract| contract.citation != STANDARD_NEXT)
+        );
     }
 }

@@ -10,10 +10,13 @@ authors = ["Microsoft"]
 [dependencies]
 windows-metadata = "0.59.0"
 clap = { version = "4", features = ["derive"] }
+csv = "1"
+fs2 = "0.4"
 roxmltree = "0.20"
 regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 
 [dev-dependencies]
 regex = "1"
