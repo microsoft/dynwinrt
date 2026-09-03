@@ -1346,7 +1346,7 @@ enum ReturnKind {
 }
 
 fn return_kind(typ: &RawComType) -> ReturnKind {
-    if matches!(typ.native_type, RawNativeType::Void) {
+    if typ.pointer_depth == 0 && matches!(typ.native_type, RawNativeType::Void) {
         ReturnKind::Void
     } else if matches!(
         &typ.native_type,
@@ -2049,6 +2049,27 @@ mod tests {
         assert!(dts.contains("writeSigned(value: DynComRawMemory | DynComRawPointer): void"));
         assert!(!js.contains("DynCom.toI64Bigint(_out[0])"));
         assert!(!js.contains("DynCom.toU64Bigint(_out[0])"));
+    }
+
+    #[test]
+    fn direct_void_pointer_return_is_not_lowered_as_void() {
+        let output = generate_unsafe_interface_files_with_identity(
+            &interface(vec![method(
+                "GetBufferPointer",
+                3,
+                Vec::new(),
+                raw(RawNativeType::Void, 1),
+            )]),
+            identity(),
+        )
+        .expect("direct void pointer companion");
+        let js = output.js.as_deref().unwrap();
+        let dts = output.dts.as_deref().unwrap();
+
+        assert!(js.contains("returns(DynCom.pointerType())"));
+        assert!(js.contains("DynComRawPointer.fromAddress(DynCom.asPointerBigint(_out[0]))"));
+        assert!(!js.contains("returnsVoid()"));
+        assert!(dts.contains("getBufferPointer(unsafeContract: UnsafeRawCall): DynComRawPointer"));
     }
 
     #[test]

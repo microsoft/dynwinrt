@@ -613,22 +613,29 @@ directory entry itself from backup into stage; this preserves its target
 without requiring symlink recreation or developer-mode privileges. A failure
 while moving links or before publication moves them back in reverse order
 before restoring the backup. After publication, the links are part of the
-authoritative final root.
+authoritative final root. If a terminal sharing violation prevents link
+rollback, both owner-marked stage and backup are preserved; neither the
+incomplete backup nor stranded link entries are deleted, and the next locked
+run retries recovery.
 
 Backup cleanup failure is a nonfatal warning. It retains the new committed root
 and any orphan backup residue. The next generation retries deterministic
 residue cleanup while holding the same output lock. Recovery handles:
 
 - an old final root with no residue;
-- backup-only interruption before publication, which restores the untouched
-  backup;
-- final plus backup, which always keeps final and removes only backup residue;
-- complete failed-output residue without final, which is preferred over a
-  possibly partial backup; and
-- abandoned staging residue, which is never published.
+- an owner-marked final plus stage before the first rename, which keeps the old
+  final and discards the abandoned stage;
+- stage plus backup with no final between the two publication renames, which
+  moves retained links back and restores the untouched backup;
+- an owner-marked final plus backup after publication, which keeps the new
+  final and removes only backup residue;
+- backup-only interruption, which restores the owned backup;
+- stage-only interruption, which discards the never-published stage; and
+- invalid ownership markers, multiple nonces, or ambiguous residue
+  combinations, which fail closed.
 
-Stage, backup, failed-output, and orphan-backup cleanup recursively inspects
-entries without following reparses. Link entries are removed with
+Stage and backup cleanup recursively inspects entries without following
+reparses. Link entries are removed with
 `remove_file`/`remove_dir`; their targets, including targets outside the output
 root, are never deleted. Reparse entries that `std::fs::read_link` cannot
 identify as supported filesystem links fail closed.

@@ -195,7 +195,7 @@ const rawComDeclarations = [
   '  readonly descriptor: string',
   '  readonly size: bigint',
   '  readonly alignment: bigint',
-  "  pointerType(): import('./index.js').DynComType",
+  "  pointerType(nullable?: boolean | null): import('./index.js').DynComType",
   "  byValueType(): import('./index.js').DynComType",
   "  createValue(activeField: string, bytes?: Buffer | null): import('./index.js').DynWinRTValue",
   "  readValueBytes(value: import('./index.js').DynWinRTValue): Buffer",

@@ -28,6 +28,7 @@ const unionValue = unionLayout.createValue('field')
 const unionBytes = unionLayout.readValueBytes(unionValue)
 const assertedUnionBytes = unionLayout.assertActiveField(unionValue, 'field')
 const unionPointerType = unionLayout.pointerType()
+const nullableUnionPointerType = unionLayout.pointerType(true)
 const unionByValueType = unionLayout.byValueType()
 const borrowedManagedPointer = DynComRawPointer.fromManagedBorrowed(callValue)
 const ownedManagedPointer = DynComRawOwnedComPointer.addRef(callValue)
@@ -61,6 +62,7 @@ void [
   unionBytes,
   assertedUnionBytes,
   unionPointerType,
+  nullableUnionPointerType,
   unionByValueType,
   borrowedManagedPointer,
   ownedManagedPointer,

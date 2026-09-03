@@ -1022,9 +1022,10 @@ impl DynComRawUnionLayout {
   }
 
   #[napi]
-  pub fn pointer_type(&self) -> DynComType {
+  pub fn pointer_type(&self, nullable: Option<bool>) -> DynComType {
     DynComType(dynwinrt::com::Type::raw_native_union_pointer(
       self.layout.clone(),
+      nullable.unwrap_or(false),
     ))
   }
 
@@ -5678,7 +5679,7 @@ mod tests {
       union.read_value_bytes(&union_value).unwrap().as_ref(),
       &42u64.to_ne_bytes()
     );
-    let _ = union.pointer_type();
+    let _ = union.pointer_type(None);
   }
 
   #[test]

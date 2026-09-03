@@ -805,6 +805,15 @@ impl NativeUnionLayout {
         self.fields.iter().any(|field| field.name == name)
     }
 
+    pub fn contains_nested_aggregate(&self) -> bool {
+        self.fields.iter().any(|field| {
+            matches!(
+                &field.typ,
+                NativeUnionFieldType::Struct(_) | NativeUnionFieldType::Union(_)
+            )
+        })
+    }
+
     pub fn with_complete_raw_by_value(mut self) -> result::Result<Self> {
         let nested_complete = self.fields.iter().all(|field| match &field.typ {
             NativeUnionFieldType::Struct(layout) => layout.raw_unions_complete(),
@@ -1689,7 +1698,7 @@ impl BufferElementPlan {
             }
             ParameterType::Pointer
             | ParameterType::NativeStructPointer { .. }
-            | ParameterType::NativeUnionPointer(_) => {
+            | ParameterType::NativeUnionPointer { .. } => {
                 return Err(invalid_argument(
                     "pointer buffer elements require explicit element ownership",
                 ));
@@ -1883,16 +1892,16 @@ impl Type {
 
     pub fn native_union_pointer(layout: Arc<NativeUnionLayout>) -> Self {
         Self {
-            abi: ParameterType::native_union_pointer(layout),
+            abi: ParameterType::native_union_pointer(layout, false),
             pointer_output: PointerOutputKind::None,
             allow_direct_aggregate_return: false,
             aggregate_capability: Some(AggregateCapability::Semantic),
         }
     }
 
-    pub fn raw_native_union_pointer(layout: Arc<NativeUnionLayout>) -> Self {
+    pub fn raw_native_union_pointer(layout: Arc<NativeUnionLayout>, nullable: bool) -> Self {
         Self {
-            abi: ParameterType::native_union_pointer(layout),
+            abi: ParameterType::native_union_pointer(layout, nullable),
             pointer_output: PointerOutputKind::None,
             allow_direct_aggregate_return: false,
             aggregate_capability: Some(AggregateCapability::RawOutbound),
@@ -2034,6 +2043,13 @@ impl Type {
                 "semantic native struct `{}` contains a union; use the raw outbound aggregate API",
                 layout.name()
             ))),
+            (
+                Some(AggregateCapability::Semantic),
+                ParameterType::NativeUnionPointer { layout, .. },
+            ) if layout.contains_nested_aggregate() => Err(invalid_argument(format!(
+                "semantic native union `{}` contains a nested aggregate; use the raw outbound aggregate API",
+                layout.name()
+            ))),
             (Some(AggregateCapability::RawOutbound), ParameterType::NativeStruct(layout)) => {
                 validate_raw_native_struct_by_value(layout)
             }
@@ -2042,7 +2058,8 @@ impl Type {
             }
             (
                 Some(AggregateCapability::Semantic | AggregateCapability::RawOutbound),
-                ParameterType::NativeStructPointer { .. } | ParameterType::NativeUnionPointer(_),
+                ParameterType::NativeStructPointer { .. }
+                | ParameterType::NativeUnionPointer { .. },
             )
             | (Some(AggregateCapability::Semantic), ParameterType::NativeStruct(_))
             | (None, _) => Ok(()),
@@ -2076,7 +2093,9 @@ impl Type {
     }
 
     fn input_is_intrinsically_nullable(&self) -> bool {
-        self.abi.is_nullable_native_struct_pointer() || self.abi.is_nullable_bstr()
+        self.abi.is_nullable_native_struct_pointer()
+            || self.abi.is_nullable_native_union_pointer()
+            || self.abi.is_nullable_bstr()
     }
 
     fn supports_direct_return(&self) -> bool {
@@ -2926,7 +2945,7 @@ impl CallbackMethodPlan {
             | ParameterType::CoTaskMemWideString
             | ParameterType::Bstr { .. }
             | ParameterType::NativeStructPointer { .. }
-            | ParameterType::NativeUnionPointer(_)
+            | ParameterType::NativeUnionPointer { .. }
             | ParameterType::Variant
             | ParameterType::SafeArray { .. }
             | ParameterType::PropVariant
@@ -3168,7 +3187,7 @@ impl CallbackMethodPlan {
             ParameterType::Pointer
             | ParameterType::CoTaskMemWideString
             | ParameterType::NativeStructPointer { .. }
-            | ParameterType::NativeUnionPointer(_)
+            | ParameterType::NativeUnionPointer { .. }
             | ParameterType::Variant
             | ParameterType::SafeArray { .. }
             | ParameterType::PropVariant
@@ -3330,7 +3349,6 @@ impl CallbackMethodPlan {
             },
             ParameterType::Pointer
             | ParameterType::CoTaskMemWideString
-            | ParameterType::NativeUnionPointer(_)
             | ParameterType::Variant
             | ParameterType::SafeArray { .. }
             | ParameterType::PropVariant
@@ -3338,6 +3356,14 @@ impl CallbackMethodPlan {
             | ParameterType::ExcepInfo
             | ParameterType::StatStg => {
                 winrt(WinRTValue::RawPtr(unsafe { *value.cast::<*mut c_void>() }))
+            }
+            ParameterType::NativeUnionPointer { nullable, .. } => {
+                let raw = unsafe { *value.cast::<*mut c_void>() };
+                if raw.is_null() && !nullable {
+                    Err(SINK_E_POINTER)
+                } else {
+                    winrt(WinRTValue::RawPtr(raw))
+                }
             }
             ParameterType::Bstr { nullable } => {
                 let raw = unsafe { *value.cast::<*const u16>() };
@@ -4203,14 +4229,13 @@ impl ComCallPlan {
             native_args.push(args[argument.input_index.expect("visible native input")].clone());
         }
 
-        mark_dispatched();
         let native_result = if self.native.uses_com_value_path()
             || native_args
                 .iter()
                 .any(|value| !matches!(value, Value::WinRt(_) | Value::Buffer(_)))
         {
             self.native
-                .call_com_dynamic(obj, &native_args)
+                .call_com_dynamic(obj, &native_args, mark_dispatched)
                 .map_err(result::Error::WindowsError)
         } else {
             let winrt_args = native_args
@@ -4236,7 +4261,7 @@ impl ComCallPlan {
                 })
                 .collect::<result::Result<Vec<_>>>()?;
             self.native
-                .call_dynamic(obj, &winrt_args)
+                .call_dynamic_tracked(obj, &winrt_args, mark_dispatched)
                 .map(|values| values.into_iter().map(Value::WinRt).collect())
                 .map_err(result::Error::WindowsError)
         };
@@ -9744,6 +9769,15 @@ mod tests {
         windows_core::HRESULT(0)
     }
 
+    unsafe extern "system" fn nullable_union_pointer_is_null(
+        _this: *mut c_void,
+        input: *const u64,
+        output: *mut u32,
+    ) -> windows_core::HRESULT {
+        unsafe { *output = u32::from(input.is_null()) };
+        windows_core::HRESULT(0)
+    }
+
     #[repr(C)]
     #[derive(Clone, Copy)]
     struct TestPod {
@@ -10933,6 +10967,57 @@ mod tests {
     }
 
     #[test]
+    fn dispatch_marker_is_set_only_after_native_argument_preparation() {
+        let method = MethodSignature::new(&MetadataTable::new())
+            .add_in(Type::pointer())
+            .build(0)
+            .unwrap();
+        let dispatched = std::cell::Cell::new(false);
+        let error = method
+            .plan
+            .invoke_values_tracked(
+                std::ptr::null_mut(),
+                &[Value::Buffer(ComBufferValue::null())],
+                || dispatched.set(true),
+            )
+            .unwrap_err();
+
+        assert!(
+            error
+                .message()
+                .contains("COM buffer reached the private native-call backend")
+        );
+        assert!(!dispatched.get());
+    }
+
+    #[test]
+    fn dispatch_marker_waits_for_com_value_validation() {
+        let expected = test_pod_layout("Tests.DispatchExpected");
+        let wrong = test_pod_layout("Tests.DispatchWrong");
+        let method = MethodSignature::new(&MetadataTable::new())
+            .add_in(Type::pointer())
+            .add_in(Type::native_struct(expected))
+            .build(0)
+            .unwrap();
+        let dispatched = std::cell::Cell::new(false);
+        let pointer = std::ptr::with_exposed_provenance_mut::<c_void>(1);
+        let error = method
+            .plan
+            .invoke_values_tracked(
+                std::ptr::null_mut(),
+                &[
+                    Value::WinRt(WinRTValue::RawPtr(pointer)),
+                    Value::NativeStruct(NativeStructValue::zeroed(wrong)),
+                ],
+                || dispatched.set(true),
+            )
+            .unwrap_err();
+
+        assert!(error.message().contains("Native struct type mismatch"));
+        assert!(!dispatched.get());
+    }
+
+    #[test]
     fn enumerator_next_interface_cleanup_is_bounded_and_exactly_once() {
         ENUMERATOR_NEXT_CALLS.store(0, Ordering::Relaxed);
         let table = MetadataTable::new();
@@ -11970,6 +12055,34 @@ mod tests {
     }
 
     #[test]
+    fn raw_native_union_pointer_preserves_nullability() {
+        let table = MetadataTable::new();
+        let layout = test_union_layout();
+        let nullable = invoke_test_pod(
+            nullable_union_pointer_is_null as *mut c_void,
+            MethodSignature::new(&table)
+                .add_in(Type::raw_native_union_pointer(layout.clone(), true))
+                .add_out(Type::winrt(table.u32_type())),
+            &[Value::WinRt(WinRTValue::Null)],
+        )
+        .unwrap();
+        assert!(matches!(
+            nullable.as_slice(),
+            [Value::WinRt(WinRTValue::U32(1))]
+        ));
+
+        let error = invoke_test_pod(
+            nullable_union_pointer_is_null as *mut c_void,
+            MethodSignature::new(&table)
+                .add_nullable_in(Type::raw_native_union_pointer(layout, false))
+                .add_out(Type::winrt(table.u32_type())),
+            &[Value::WinRt(WinRTValue::Null)],
+        )
+        .unwrap_err();
+        assert!(error.message().contains("expected native union"));
+    }
+
+    #[test]
     fn native_union_libffi_carriers_prepare_exact_size_and_alignment() {
         let integer = test_union_layout();
         let homogeneous = Arc::new(
@@ -12380,6 +12493,18 @@ mod tests {
             )
             .unwrap(),
         );
+        let nested_union = Arc::new(
+            NativeUnionLayout::new(
+                "Tests.NestedCapabilityUnion",
+                8,
+                8,
+                vec![
+                    NativeUnionField::new("value", 1, NativeUnionFieldType::Union(union.clone()))
+                        .unwrap(),
+                ],
+            )
+            .unwrap(),
+        );
 
         for semantic in [
             Type::native_struct(struct_with_union.clone()),
@@ -12401,9 +12526,21 @@ mod tests {
             .add_in(raw_pointer.clone())
             .build(3)
             .unwrap();
-        let raw_union_pointer = Type::raw_native_union_pointer(union.clone());
+        let raw_union_pointer = Type::raw_native_union_pointer(union.clone(), false);
         MethodSignature::new(&table)
             .add_in(raw_union_pointer.clone())
+            .build(3)
+            .unwrap();
+        assert!(
+            MethodSignature::new(&table)
+                .add_in(Type::native_union_pointer(nested_union.clone()))
+                .build(3)
+                .unwrap_err()
+                .message()
+                .contains("semantic native union")
+        );
+        MethodSignature::new(&table)
+            .add_in(Type::raw_native_union_pointer(nested_union, false))
             .build(3)
             .unwrap();
 

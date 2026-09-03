@@ -4579,7 +4579,16 @@ impl DynCom {
   #[napi]
   pub fn native_union_pointer_type(descriptor: String) -> napi::Result<DynComType> {
     native_union_layout(&descriptor)
-      .map(dynwinrt::com::Type::native_union_pointer)
+      .and_then(|layout| {
+        if layout.contains_nested_aggregate() {
+          Err(napi::Error::from_reason(format!(
+            "Semantic native union `{}` contains a nested aggregate; use @microsoft/dynwinrt/com/unsafe/raw",
+            layout.name()
+          )))
+        } else {
+          Ok(dynwinrt::com::Type::native_union_pointer(layout))
+        }
+      })
       .map(DynComType)
   }
 

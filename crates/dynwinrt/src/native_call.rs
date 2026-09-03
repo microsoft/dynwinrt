@@ -59,7 +59,10 @@ pub(crate) enum ParameterType {
         nullable: bool,
     },
     NativeUnion(Arc<crate::com::NativeUnionLayout>),
-    NativeUnionPointer(Arc<crate::com::NativeUnionLayout>),
+    NativeUnionPointer {
+        layout: Arc<crate::com::NativeUnionLayout>,
+        nullable: bool,
+    },
     Variant,
     VariantByValue,
     SafeArray {
@@ -153,8 +156,11 @@ impl ParameterType {
         Self::NativeStructPointer { layout, nullable }
     }
 
-    pub(crate) fn native_union_pointer(layout: Arc<crate::com::NativeUnionLayout>) -> Self {
-        Self::NativeUnionPointer(layout)
+    pub(crate) fn native_union_pointer(
+        layout: Arc<crate::com::NativeUnionLayout>,
+        nullable: bool,
+    ) -> Self {
+        Self::NativeUnionPointer { layout, nullable }
     }
 
     pub(crate) fn native_union(layout: Arc<crate::com::NativeUnionLayout>) -> Self {
@@ -221,7 +227,7 @@ impl ParameterType {
             | Self::NativeStruct(_)
             | Self::NativeStructPointer { .. }
             | Self::NativeUnion(_)
-            | Self::NativeUnionPointer(_)
+            | Self::NativeUnionPointer { .. }
             | Self::Variant
             | Self::VariantByValue
             | Self::SafeArray { .. }
@@ -240,7 +246,7 @@ impl ParameterType {
             | Self::CoTaskMemWideString
             | Self::Bstr { .. }
             | Self::NativeUnion(_)
-            | Self::NativeUnionPointer(_)
+            | Self::NativeUnionPointer { .. }
             | Self::Variant
             | Self::VariantByValue
             | Self::SafeArray { .. }
@@ -253,7 +259,7 @@ impl ParameterType {
 
     pub(crate) fn native_union_layout(&self) -> Option<&Arc<crate::com::NativeUnionLayout>> {
         match self {
-            Self::NativeUnion(layout) | Self::NativeUnionPointer(layout) => Some(layout),
+            Self::NativeUnion(layout) | Self::NativeUnionPointer { layout, .. } => Some(layout),
             _ => None,
         }
     }
@@ -272,6 +278,10 @@ impl ParameterType {
 
     pub(crate) fn is_nullable_native_struct_pointer(&self) -> bool {
         matches!(self, Self::NativeStructPointer { nullable: true, .. })
+    }
+
+    pub(crate) fn is_nullable_native_union_pointer(&self) -> bool {
+        matches!(self, Self::NativeUnionPointer { nullable: true, .. })
     }
 
     pub(crate) fn is_variant(&self) -> bool {
@@ -387,7 +397,7 @@ impl ParameterType {
             | Self::CoTaskMemWideString
             | Self::Bstr { .. }
             | Self::NativeStructPointer { .. }
-            | Self::NativeUnionPointer(_)
+            | Self::NativeUnionPointer { .. }
             | Self::Variant
             | Self::SafeArray { .. }
             | Self::PropVariant
@@ -407,7 +417,7 @@ impl ParameterType {
             | Self::CoTaskMemWideString
             | Self::Bstr { .. }
             | Self::NativeStructPointer { .. }
-            | Self::NativeUnionPointer(_)
+            | Self::NativeUnionPointer { .. }
             | Self::Variant
             | Self::SafeArray { .. }
             | Self::PropVariant
@@ -441,7 +451,7 @@ impl ParameterType {
             Self::NativeStruct(_)
             | Self::NativeStructPointer { .. }
             | Self::NativeUnion(_)
-            | Self::NativeUnionPointer(_)
+            | Self::NativeUnionPointer { .. }
             | Self::Variant
             | Self::VariantByValue
             | Self::SafeArray { .. }
@@ -461,7 +471,7 @@ impl ParameterType {
             | Self::CoTaskMemWideString
             | Self::Bstr { .. }
             | Self::NativeStructPointer { .. }
-            | Self::NativeUnionPointer(_) => Ok(WinRTValue::RawPtr(ptr)),
+            | Self::NativeUnionPointer { .. } => Ok(WinRTValue::RawPtr(ptr)),
             Self::NativeStruct(_)
             | Self::NativeUnion(_)
             | Self::Variant
@@ -484,7 +494,7 @@ impl ParameterType {
                 | Self::CoTaskMemWideString
                 | Self::Bstr { .. }
                 | Self::NativeStructPointer { .. }
-                | Self::NativeUnionPointer(_),
+                | Self::NativeUnionPointer { .. },
                 AbiValue::Pointer(ptr),
             ) => Ok(WinRTValue::RawPtr(*ptr)),
             (
@@ -492,7 +502,7 @@ impl ParameterType {
                 | Self::CoTaskMemWideString
                 | Self::Bstr { .. }
                 | Self::NativeStructPointer { .. }
-                | Self::NativeUnionPointer(_),
+                | Self::NativeUnionPointer { .. },
                 value,
             ) => Err(crate::result::Error::InvalidTypeAbiToWinRT(
                 TypeKind::Object,
@@ -533,7 +543,7 @@ impl ParameterType {
             | Self::NativeStruct(_)
             | Self::NativeStructPointer { .. }
             | Self::NativeUnion(_)
-            | Self::NativeUnionPointer(_)
+            | Self::NativeUnionPointer { .. }
             | Self::VariantByValue
             | Self::DispatchParams => OutputCleanup::None,
         }
@@ -1629,6 +1639,18 @@ impl Method {
         obj: *mut std::ffi::c_void,
         args: &[WinRTValue],
     ) -> windows_core::Result<Vec<WinRTValue>> {
+        self.call_dynamic_tracked(obj, args, || {})
+    }
+
+    pub(crate) fn call_dynamic_tracked<F>(
+        &self,
+        obj: *mut std::ffi::c_void,
+        args: &[WinRTValue],
+        mark_dispatched: F,
+    ) -> windows_core::Result<Vec<WinRTValue>>
+    where
+        F: FnOnce(),
+    {
         if args.len() != self.info.input_count {
             return Err(invalid_argument(&format!(
                 "Argument count mismatch: expected {}, received {}",
@@ -1657,10 +1679,17 @@ impl Method {
                 args.replace(input_index, value);
             }
         }
+        let mut mark_dispatched = Some(mark_dispatched);
+        let mut mark_dispatched = || {
+            mark_dispatched
+                .take()
+                .expect("native dispatch marker must run exactly once")();
+        };
 
         match &self.strategy {
             CallStrategy::Direct0In0Out => {
                 // 0 in + 0 out: fn(this) -> HRESULT
+                mark_dispatched();
                 let hr = call::call_winrt_method_0(self.info.index, obj);
                 hr.ok()?;
                 Ok(vec![])
@@ -1669,6 +1698,7 @@ impl Method {
                 // 0 in + 1 out: fn(this, out) -> HRESULT
                 let param = &self.info.parameters[0];
                 let mut out = param.typ.default_value();
+                mark_dispatched();
                 let hr = call::call_winrt_method_1(self.info.index, obj, out.out_ptr());
                 if hr.is_err() {
                     if let WinRTValue::RawPtr(ptr) = &mut out {
@@ -1689,6 +1719,7 @@ impl Method {
             }
             CallStrategy::Direct1In0Out => {
                 // 1 in + 0 out: fn(this, val) -> HRESULT
+                mark_dispatched();
                 let hr = call::call_1in(self.info.index, obj, args.get_value(0));
                 hr.ok()?;
                 Ok(vec![])
@@ -1697,6 +1728,7 @@ impl Method {
                 // 1 in + 1 out: fn(this, val, out) -> HRESULT
                 let out_param = self.info.parameters.iter().find(|p| p.is_out()).unwrap();
                 let mut out = out_param.typ.default_value();
+                mark_dispatched();
                 let hr =
                     call::call_1in_1out(self.info.index, obj, args.get_value(0), out.out_ptr());
                 if hr.is_err() {
@@ -1721,6 +1753,7 @@ impl Method {
                 let mut length: u32 = 0;
                 let mut data_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
                 let fptr = call::get_vtable_function_ptr(obj, self.info.index);
+                mark_dispatched();
                 let hr: windows_core::HRESULT = unsafe {
                     let method: unsafe extern "system" fn(
                         *mut std::ffi::c_void,
@@ -1763,6 +1796,7 @@ impl Method {
                 let buffer = array_data.serialize_for_abi();
                 let mut out = out_param.typ.default_value();
                 let fptr = call::get_vtable_function_ptr(obj, self.info.index);
+                mark_dispatched();
                 let hr: windows_core::HRESULT = unsafe {
                     let method: unsafe extern "system" fn(
                         *mut std::ffi::c_void,
@@ -1812,6 +1846,7 @@ impl Method {
                     unsafe { windows::Win32::System::Com::CoTaskMemAlloc(total_bytes) as *mut u8 };
                 assert!(!buffer_ptr.is_null(), "CoTaskMemAlloc failed for FillArray");
                 unsafe { std::ptr::write_bytes(buffer_ptr, 0, total_bytes) };
+                mark_dispatched();
                 let hr: windows_core::HRESULT = unsafe {
                     let method: unsafe extern "system" fn(
                         *mut std::ffi::c_void,
@@ -1860,6 +1895,7 @@ impl Method {
                 assert!(!buffer_ptr.is_null(), "CoTaskMemAlloc failed for FillArray");
                 unsafe { std::ptr::write_bytes(buffer_ptr, 0, total_bytes) };
                 let fptr = call::get_vtable_function_ptr(obj, self.info.index);
+                mark_dispatched();
                 let hr = call::call_fill_array_1in(
                     fptr,
                     obj,
@@ -1891,6 +1927,7 @@ impl Method {
                 self.info.out_count,
                 &self.info.return_kind,
                 cif,
+                mark_dispatched,
             )
             .and_then(|values| {
                 values
@@ -1994,6 +2031,14 @@ impl Method {
             }
 
             if let Some(expected_layout) = parameter.typ.native_union_layout() {
+                if parameter.typ.is_nullable_native_union_pointer()
+                    && matches!(
+                        &args[input_index],
+                        crate::com::Value::WinRt(value) if value.is_null_object()
+                    )
+                {
+                    continue;
+                }
                 let crate::com::Value::NativeUnion(value) = &args[input_index] else {
                     return Err(invalid_argument(&format!(
                         "Argument type mismatch: expected native union `{}`",
@@ -2111,11 +2156,15 @@ impl Method {
         Ok(invocation_args)
     }
 
-    pub(crate) fn call_com_dynamic(
+    pub(crate) fn call_com_dynamic<F>(
         &self,
         obj: *mut std::ffi::c_void,
         args: &[crate::com::Value],
-    ) -> windows_core::Result<Vec<crate::com::Value>> {
+        mark_dispatched: F,
+    ) -> windows_core::Result<Vec<crate::com::Value>>
+    where
+        F: FnOnce(),
+    {
         if matches!(self.info.return_kind, MethodReturn::CapturedHResult(_)) {
             return Err(invalid_argument(
                 "captured HRESULT calls require the dedicated COM invocation path",
@@ -2135,6 +2184,7 @@ impl Method {
             self.info.out_count,
             &self.info.return_kind,
             cif,
+            mark_dispatched,
         )
         .map(|values| {
             values

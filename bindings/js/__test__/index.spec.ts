@@ -385,6 +385,32 @@ test('raw aggregate capability cannot enter semantic or callback APIs', (t) => {
   t.throws(() => DynCom.nativeStructType(descriptor), { message: /contains a union/ })
   t.throws(() => DynCom.nativeStructPointerType(descriptor), { message: /contains a union/ })
 
+  const nestedUnionDescriptor = JSON.stringify({
+    name: 'Tests.JsNestedUnion',
+    x86: {
+      size: 8,
+      alignment: 8,
+      complete: true,
+      fields: [{ name: 'nested', count: 1, type: architecture.fields[0].type }],
+    },
+    x64: {
+      size: 8,
+      alignment: 8,
+      complete: true,
+      fields: [{ name: 'nested', count: 1, type: architecture.fields[0].type }],
+    },
+    arm64: {
+      size: 8,
+      alignment: 8,
+      complete: true,
+      fields: [{ name: 'nested', count: 1, type: architecture.fields[0].type }],
+    },
+  })
+  t.throws(() => DynCom.nativeUnionPointerType(nestedUnionDescriptor), {
+    message: /nested aggregate.*unsafe\/raw/,
+  })
+  t.truthy(DynComRawUnionLayout.fromDescriptor(nestedUnionDescriptor).pointerType())
+
   const raw = DynComRawStructLayout.fromDescriptor(descriptor)
   t.truthy(raw.pointerType())
   const rawType = raw.byValueType()

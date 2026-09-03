@@ -325,10 +325,17 @@ by-value input and supplies an aligned runtime return buffer with
 to at least 16 bytes.
 
 `DynComRawUnionLayout` exposes `createValue(activeField, bytes?)`,
-`readValueBytes`, `assertActiveField`, `pointerType()`, and `byValueType()`.
+`readValueBytes`, `assertActiveField`, `pointerType(nullable?)`, and
+`byValueType()`. Nullable union pointer types preserve native null through
+validation and invocation; non-nullable union pointer types reject it before
+dispatch.
 `activeField` is a caller interpretation only and never participates in ABI
 classification. Direct returns and Out/InOut values carry branded bytes with
 unknown active field until `assertActiveField` is called explicitly.
+
+Nested aggregate parsing remains raw-only. The semantic
+`DynCom.nativeUnionPointerType()` factory accepts only flat union alternatives
+and directs recursive struct/union descriptors to `/com/unsafe/raw`.
 
 By-value union descriptors must set `complete: true` for every
 architecture-specific union layout and describe every alternative. The closed

@@ -625,7 +625,7 @@ enum DynamicCallOutcome {
     Captured(CapturedHResultCall),
 }
 
-pub fn call_method_dynamic<A: ArgumentList + ?Sized>(
+pub(crate) fn call_method_dynamic<A, F>(
     vtable_index: usize,
     obj: *mut c_void,
     parameters: &[Parameter],
@@ -633,7 +633,12 @@ pub fn call_method_dynamic<A: ArgumentList + ?Sized>(
     out_count: usize,
     return_kind: &MethodReturn,
     cif: &libffi::middle::Cif,
-) -> windows_core::Result<Vec<NativeCallValue>> {
+    mark_dispatched: F,
+) -> windows_core::Result<Vec<NativeCallValue>>
+where
+    A: ArgumentList + ?Sized,
+    F: FnOnce(),
+{
     match call_method_dynamic_impl(
         vtable_index,
         obj,
@@ -642,6 +647,7 @@ pub fn call_method_dynamic<A: ArgumentList + ?Sized>(
         out_count,
         return_kind,
         cif,
+        mark_dispatched,
     )? {
         DynamicCallOutcome::Values(values) => Ok(values),
         DynamicCallOutcome::Captured(_) => Err(windows_core::Error::new(
@@ -668,6 +674,7 @@ pub(crate) fn call_method_dynamic_captured<A: ArgumentList + ?Sized>(
         out_count,
         return_kind,
         cif,
+        || {},
     )? {
         DynamicCallOutcome::Captured(call) => Ok(call),
         DynamicCallOutcome::Values(_) => Err(windows_core::Error::new(
@@ -677,7 +684,7 @@ pub(crate) fn call_method_dynamic_captured<A: ArgumentList + ?Sized>(
     }
 }
 
-fn call_method_dynamic_impl<A: ArgumentList + ?Sized>(
+fn call_method_dynamic_impl<A, F>(
     vtable_index: usize,
     obj: *mut c_void,
     parameters: &[Parameter],
@@ -685,7 +692,12 @@ fn call_method_dynamic_impl<A: ArgumentList + ?Sized>(
     out_count: usize,
     return_kind: &MethodReturn,
     cif: &libffi::middle::Cif,
-) -> windows_core::Result<DynamicCallOutcome> {
+    mark_dispatched: F,
+) -> windows_core::Result<DynamicCallOutcome>
+where
+    A: ArgumentList + ?Sized,
+    F: FnOnce(),
+{
     use crate::metadata_table::ValueTypeData;
     use libffi::middle::CodePtr;
 
@@ -726,7 +738,7 @@ fn call_method_dynamic_impl<A: ArgumentList + ?Sized>(
     let mut array_in_slots: Vec<Box<ArrayInSlot>> = Vec::new();
     let mut native_struct_in_slots: Vec<Option<NativeStructStorage>> = Vec::new();
     let mut bstr_in_slots: Vec<BstrCallValue> = Vec::new();
-    let mut native_union_in_slots: Vec<NativeUnionStorage> = Vec::new();
+    let mut native_union_in_slots: Vec<Option<NativeUnionStorage>> = Vec::new();
     let mut variant_by_value_in_slots: Vec<crate::com::automation::VariantCopyValue> = Vec::new();
 
     // FillArray storage: caller-allocated buffers
@@ -1078,10 +1090,13 @@ fn call_method_dynamic_impl<A: ArgumentList + ?Sized>(
                     .as_deref(),
             )?);
         } else if p.is_input() && !p.is_out() && p.typ.native_union_layout().is_some() {
-            native_union_in_slots.push(NativeUnionStorage::from_value(
-                args.get_native_union(p.input_index.expect("native union input index"))
-                    .expect("validated native union input"),
-            )?);
+            let input_index = p.input_index.expect("native union input index");
+            let slot = match args.get_native_union(input_index) {
+                Some(value) => Some(NativeUnionStorage::from_value(value)?),
+                None if p.typ.is_nullable_native_union_pointer() => None,
+                None => panic!("validated native union input"),
+            };
+            native_union_in_slots.push(slot);
         } else if p.is_input() && !p.is_out() && p.typ.is_variant_by_value() {
             variant_by_value_in_slots.push(
                 crate::com::automation::VariantCopyValue::new(
@@ -1106,7 +1121,10 @@ fn call_method_dynamic_impl<A: ArgumentList + ?Sized>(
         .collect::<Vec<_>>();
     let native_union_in_ptrs = native_union_in_slots
         .iter()
-        .map(NativeUnionStorage::as_ptr)
+        .map(|slot| {
+            slot.as_ref()
+                .map_or(std::ptr::null(), NativeUnionStorage::as_ptr)
+        })
         .collect::<Vec<_>>();
     let bstr_in_ptrs = bstr_in_slots
         .iter()
@@ -1225,7 +1243,9 @@ fn call_method_dynamic_impl<A: ArgumentList + ?Sized>(
             ffi_args.push(arg(&native_struct_in_ptrs[native_struct_in_idx]));
             native_struct_in_idx += 1;
         } else if p.typ.is_native_union() {
-            let slot = &native_union_in_slots[native_union_in_idx];
+            let slot = native_union_in_slots[native_union_in_idx]
+                .as_ref()
+                .expect("by-value native union input");
             ffi_args.push(Arg::new(slot.as_slice()));
             native_union_in_idx += 1;
         } else if p.typ.native_union_layout().is_some() {
@@ -1257,16 +1277,24 @@ fn call_method_dynamic_impl<A: ArgumentList + ?Sized>(
     }
 
     // Phase 3: Call
+    let mut mark_dispatched = Some(mark_dispatched);
+    let mut mark_dispatched = || {
+        mark_dispatched
+            .take()
+            .expect("native dispatch marker must run exactly once")();
+    };
     let call_result: windows_core::Result<(
         Option<NativeCallValue>,
         Option<windows_core::HRESULT>,
     )> = unsafe {
         match return_kind {
             MethodReturn::HResult => {
+                mark_dispatched();
                 let hr: windows_core::HRESULT = cif.call(CodePtr(fptr), &ffi_args);
                 Ok((None, Some(hr)))
             }
             MethodReturn::SemanticHResult => {
+                mark_dispatched();
                 let hr: windows_core::HRESULT = cif.call(CodePtr(fptr), &ffi_args);
                 Ok((
                     hr.is_ok()
@@ -1275,20 +1303,24 @@ fn call_method_dynamic_impl<A: ArgumentList + ?Sized>(
                 ))
             }
             MethodReturn::PreservedHResult => {
+                mark_dispatched();
                 let hr: windows_core::HRESULT = cif.call(CodePtr(fptr), &ffi_args);
                 Ok((Some(NativeCallValue::WinRt(WinRTValue::HResult(hr))), None))
             }
             MethodReturn::CapturedHResult(_) => {
+                mark_dispatched();
                 let hr: windows_core::HRESULT = cif.call(CodePtr(fptr), &ffi_args);
                 Ok((None, Some(hr)))
             }
             MethodReturn::Void => {
+                mark_dispatched();
                 cif.call::<()>(CodePtr(fptr), &ffi_args);
                 Ok((None, None))
             }
             MethodReturn::Value { typ, .. } => {
                 if let crate::native_call::ParameterType::NativeStruct(layout) = typ {
                     NativeStructStorage::zeroed(layout).and_then(|mut storage| {
+                        mark_dispatched();
                         cif.call_return_into(CodePtr(fptr), &ffi_args, storage.as_ret());
                         storage.validate_canaries()?;
                         crate::com::NativeStructValue::new(layout.clone(), storage.to_vec())
@@ -1302,6 +1334,7 @@ fn call_method_dynamic_impl<A: ArgumentList + ?Sized>(
                     })
                 } else if let crate::native_call::ParameterType::NativeUnion(layout) = typ {
                     NativeUnionStorage::zeroed(layout).and_then(|mut storage| {
+                        mark_dispatched();
                         cif.call_return_into(CodePtr(fptr), &ffi_args, storage.as_ret());
                         storage.validate_canaries()?;
                         crate::com::NativeUnionValue::from_returned_bytes(
@@ -1317,6 +1350,7 @@ fn call_method_dynamic_impl<A: ArgumentList + ?Sized>(
                         })
                     })
                 } else {
+                    mark_dispatched();
                     let value = match typ.abi_type() {
                         AbiType::Bool => AbiValue::Bool(cif.call(CodePtr(fptr), &ffi_args)),
                         AbiType::I8 => AbiValue::I8(cif.call(CodePtr(fptr), &ffi_args)),

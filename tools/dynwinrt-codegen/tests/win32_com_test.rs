@@ -5153,6 +5153,31 @@ fn stage2_official_manual_interfaces_emit_exact_strategy_requirements() {
 }
 
 #[test]
+fn generated_unsafe_preserves_direct_void_pointer_returns() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+    let interface = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.Graphics.Direct3D",
+        "ID3DBlob",
+    )
+    .expect("ID3DBlob must exist");
+    let output = com::generate_unsafe_interface_files(&interface, &win32_winmd())
+        .expect("ID3DBlob unsafe generation");
+    let js = output.js.as_deref().expect("ID3DBlob unsafe JavaScript");
+    let dts = output.dts.as_deref().expect("ID3DBlob unsafe declarations");
+
+    assert!(js.contains("returns(DynCom.pointerType())"));
+    assert!(js.contains("DynComRawPointer.fromAddress(DynCom.asPointerBigint(_out[0]))"));
+    assert!(
+        !js.contains("getBufferPointer(unsafeContract) {\n        _interface.method(3).invoke")
+    );
+    assert!(dts.contains("getBufferPointer(unsafeContract: UnsafeRawCall): DynComRawPointer"));
+}
+
+#[test]
 fn report_only_interface_persists_support_and_removes_only_owned_stale_files() {
     if !win32_available() {
         eprintln!("Skipping: Win32 winmd not available");

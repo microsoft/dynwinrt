@@ -266,7 +266,9 @@ transaction, covering cleanup, manifest/support, barrels, package files, and
 the `com` subtree. Pre-publication failure restores the previous root
 byte-for-byte. Successful publication is the commit point; later backup
 cleanup failure keeps the complete new root, warns, retains residue, and
-retries cleanup on the next locked run.
+retries cleanup on the next locked run. Owner-marked stage/backup residue from
+process termination between publication renames is recovered under that same
+lock; ambiguous or unowned residue fails closed.
 
 Unmanaged file symlinks, directory symlinks, and junctions inside an existing
 output are detected without following reparse targets. Their directory entries

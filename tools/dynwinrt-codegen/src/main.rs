@@ -4812,15 +4812,54 @@ fn ensure_no_orphaned_transaction_artifacts(parent: &Path, leaf: &str) -> Result
     Ok(())
 }
 
-fn cleanup_committed_backup_residues(
+#[derive(Default)]
+struct OutputTransactionResidue {
+    stage: Option<PathBuf>,
+    backup: Option<PathBuf>,
+}
+
+#[cfg(test)]
+thread_local! {
+    static INJECTED_RENAME_FAILURE_SOURCE: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn rename_transaction_path(source: &Path, destination: &Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    if INJECTED_RENAME_FAILURE_SOURCE.with(|path| path.borrow().as_deref() == Some(source)) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "injected terminal transaction rename failure",
+        ));
+    }
+    const TIMEOUT: Duration = Duration::from_secs(10);
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        match fs::rename(source, destination) {
+            Ok(()) => return Ok(()),
+            Err(error)
+                if error.kind() == std::io::ErrorKind::PermissionDenied
+                    || error.kind() == std::io::ErrorKind::WouldBlock
+                    || matches!(error.raw_os_error(), Some(5 | 32 | 33)) =>
+            {
+                if Instant::now() >= deadline {
+                    return Err(error);
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn recover_interrupted_output_transaction(
     parent: &Path,
     leaf: &str,
     final_dir: &Path,
 ) -> Result<(), String> {
-    if !final_dir.is_dir() || transaction_owner_path(final_dir).exists() {
-        return Ok(());
-    }
+    let stage_prefix = format!(".{leaf}.dynwinrt-stage-");
     let backup_prefix = format!(".{leaf}.dynwinrt-backup-");
+    let mut residues = BTreeMap::<String, OutputTransactionResidue>::new();
     for entry in fs::read_dir(parent)
         .map_err(|error| format!("Failed to inspect {}: {error}", parent.display()))?
     {
@@ -4828,17 +4867,99 @@ fn cleanup_committed_backup_residues(
             entry.map_err(|error| format!("Failed to inspect {}: {error}", parent.display()))?;
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        let Some(nonce) = name.strip_prefix(&backup_prefix) else {
+        let (nonce, is_stage) = if let Some(nonce) = name.strip_prefix(&stage_prefix) {
+            (nonce, true)
+        } else if let Some(nonce) = name.strip_prefix(&backup_prefix) {
+            (nonce, false)
+        } else {
             continue;
         };
-        if parent
-            .join(format!(".{leaf}.dynwinrt-stage-{nonce}"))
-            .exists()
-        {
-            continue;
+        let residue = residues.entry(nonce.to_string()).or_default();
+        let slot = if is_stage {
+            &mut residue.stage
+        } else {
+            &mut residue.backup
+        };
+        if slot.replace(entry.path()).is_some() {
+            return Err(format!(
+                "Duplicate generated output transaction residue for nonce `{nonce}`"
+            ));
         }
-        validate_transaction_owner(&entry.path(), nonce)?;
-        remove_owned_transaction_dir(&entry.path(), nonce)?;
+    }
+    if residues.is_empty() {
+        return Ok(());
+    }
+    if residues.len() != 1 {
+        return Err(format!(
+            "Multiple generated output transaction residues exist for '{}'",
+            final_dir.display()
+        ));
+    }
+    let (nonce, residue) = residues.into_iter().next().unwrap();
+    if let Some(stage) = &residue.stage {
+        validate_transaction_owner(stage, &nonce)?;
+    }
+    if let Some(backup) = &residue.backup {
+        validate_transaction_owner(backup, &nonce)?;
+    }
+
+    let final_exists = path_entry_exists(final_dir);
+    let final_owned = final_exists && transaction_owner_path(final_dir).exists();
+    if final_owned {
+        validate_transaction_owner(final_dir, &nonce)?;
+    }
+
+    match (
+        final_exists,
+        final_owned,
+        residue.stage.as_deref(),
+        residue.backup.as_deref(),
+    ) {
+        (true, false, Some(stage), None) => {
+            remove_owned_transaction_dir(stage, &nonce)?;
+        }
+        (true, false, None, Some(backup)) => {
+            remove_owned_transaction_dir(backup, &nonce)?;
+        }
+        (true, true, Some(stage), None) => {
+            remove_transaction_owner(final_dir, &nonce)?;
+            remove_owned_transaction_dir(stage, &nonce)?;
+        }
+        (true, true, None, Some(backup)) => {
+            remove_transaction_owner(final_dir, &nonce)?;
+            remove_owned_transaction_dir(backup, &nonce)?;
+        }
+        (false, false, Some(stage), Some(backup)) => {
+            recover_retained_links_from_stage(stage, backup)?;
+            rename_transaction_path(backup, final_dir).map_err(|error| {
+                format!(
+                    "Failed to restore interrupted output backup '{}' to '{}': {error}",
+                    backup.display(),
+                    final_dir.display()
+                )
+            })?;
+            remove_transaction_owner(final_dir, &nonce)?;
+            remove_owned_transaction_dir(stage, &nonce)?;
+        }
+        (false, false, Some(stage), None) => {
+            remove_owned_transaction_dir(stage, &nonce)?;
+        }
+        (false, false, None, Some(backup)) => {
+            rename_transaction_path(backup, final_dir).map_err(|error| {
+                format!(
+                    "Failed to restore interrupted output backup '{}' to '{}': {error}",
+                    backup.display(),
+                    final_dir.display()
+                )
+            })?;
+            remove_transaction_owner(final_dir, &nonce)?;
+        }
+        _ => {
+            return Err(format!(
+                "Ambiguous generated output transaction residue for '{}'",
+                final_dir.display()
+            ));
+        }
     }
     Ok(())
 }
@@ -4976,7 +5097,7 @@ impl OutputTransaction {
             std::thread::sleep(Duration::from_millis(delay));
         }
 
-        cleanup_committed_backup_residues(parent, leaf, &final_dir)?;
+        recover_interrupted_output_transaction(parent, leaf, &final_dir)?;
         ensure_no_orphaned_transaction_artifacts(parent, leaf)?;
         let nonce = transaction_nonce(&final_dir);
         let stage_dir = parent.join(format!(".{leaf}.dynwinrt-stage-{nonce}"));
@@ -5069,7 +5190,7 @@ impl OutputTransaction {
         };
         if had_existing_output {
             write_transaction_owner(&self.final_dir, &self.nonce)?;
-            if let Err(error) = fs::rename(&self.final_dir, &self.backup_dir) {
+            if let Err(error) = rename_transaction_path(&self.final_dir, &self.backup_dir) {
                 let _ = remove_transaction_owner(&self.final_dir, &self.nonce);
                 let restore_error = restore_cwd(&cwd_relative).err();
                 return Err(format!(
@@ -5081,7 +5202,8 @@ impl OutputTransaction {
                     .unwrap_or_default());
             }
             if let Err(error) = inject_output_transaction_failure("after_backup_rename") {
-                let rollback_error = fs::rename(&self.backup_dir, &self.final_dir).err();
+                let rollback_error =
+                    rename_transaction_path(&self.backup_dir, &self.final_dir).err();
                 if rollback_error.is_none() {
                     let _ = remove_transaction_owner(&self.final_dir, &self.nonce);
                 }
@@ -5108,8 +5230,11 @@ impl OutputTransaction {
             ) {
                 let link_rollback_error =
                     rollback_retained_links(&self.stage_dir, &self.backup_dir, &moved_links).err();
-                let output_rollback_error = fs::rename(&self.backup_dir, &self.final_dir).err();
-                if output_rollback_error.is_none() {
+                let output_rollback_error = link_rollback_error
+                    .is_none()
+                    .then(|| rename_transaction_path(&self.backup_dir, &self.final_dir).err())
+                    .flatten();
+                if link_rollback_error.is_none() && output_rollback_error.is_none() {
                     let _ = remove_transaction_owner(&self.final_dir, &self.nonce);
                 }
                 let restore_error = restore_cwd(&cwd_relative).err();
@@ -5120,6 +5245,11 @@ impl OutputTransaction {
                 ) + &link_rollback_error
                     .map(|error| format!(". Link rollback failed: {error}"))
                     .unwrap_or_default()
+                    + if self.final_dir.exists() {
+                        ""
+                    } else {
+                        ". Owner-marked stage and backup residue was preserved for the next locked recovery"
+                    }
                     + &output_rollback_error
                         .map(|error| {
                             format!(
@@ -5135,8 +5265,11 @@ impl OutputTransaction {
             if let Err(error) = inject_output_transaction_failure("after_link_move") {
                 let link_rollback_error =
                     rollback_retained_links(&self.stage_dir, &self.backup_dir, &moved_links).err();
-                let output_rollback_error = fs::rename(&self.backup_dir, &self.final_dir).err();
-                if output_rollback_error.is_none() {
+                let output_rollback_error = link_rollback_error
+                    .is_none()
+                    .then(|| rename_transaction_path(&self.backup_dir, &self.final_dir).err())
+                    .flatten();
+                if link_rollback_error.is_none() && output_rollback_error.is_none() {
                     let _ = remove_transaction_owner(&self.final_dir, &self.nonce);
                 }
                 let restore_error = restore_cwd(&cwd_relative).err();
@@ -5144,6 +5277,11 @@ impl OutputTransaction {
                     + &link_rollback_error
                         .map(|error| format!(". Link rollback failed: {error}"))
                         .unwrap_or_default()
+                    + if self.final_dir.exists() {
+                        ""
+                    } else {
+                        ". Owner-marked stage and backup residue was preserved for the next locked recovery"
+                    }
                     + &output_rollback_error
                         .map(|error| {
                             format!(
@@ -5158,10 +5296,12 @@ impl OutputTransaction {
             }
         }
 
-        if let Err(error) = fs::rename(&self.stage_dir, &self.final_dir) {
+        if let Err(error) = rename_transaction_path(&self.stage_dir, &self.final_dir) {
             if had_existing_output {
                 rollback_retained_links(&self.stage_dir, &self.backup_dir, &moved_links)?;
-                if let Err(rollback_error) = fs::rename(&self.backup_dir, &self.final_dir) {
+                if let Err(rollback_error) =
+                    rename_transaction_path(&self.backup_dir, &self.final_dir)
+                {
                     return Err(format!(
                         "Failed to replace generated output directory '{}': {}. Rollback also failed: \
                          {}. The original output remains at '{}'",
@@ -5209,6 +5349,7 @@ impl OutputTransaction {
 impl Drop for OutputTransaction {
     fn drop(&mut self) {
         if !self.committed {
+            let mut stage_safe_to_remove = true;
             if self.backup_dir.exists() {
                 if self.final_dir.exists() {
                     if validate_transaction_owner(&self.final_dir, &self.nonce).is_ok()
@@ -5217,16 +5358,20 @@ impl Drop for OutputTransaction {
                         let _ = remove_owned_transaction_dir(&self.backup_dir, &self.nonce);
                         let _ = remove_transaction_owner(&self.final_dir, &self.nonce);
                     }
-                } else if validate_transaction_owner(&self.backup_dir, &self.nonce).is_ok() {
-                    let recovered_links =
-                        recover_retained_links_from_stage(&self.stage_dir, &self.backup_dir)
-                            .is_ok();
-                    if recovered_links && fs::rename(&self.backup_dir, &self.final_dir).is_ok() {
-                        let _ = remove_transaction_owner(&self.final_dir, &self.nonce);
+                } else {
+                    stage_safe_to_remove = false;
+                    if validate_transaction_owner(&self.backup_dir, &self.nonce).is_ok()
+                        && recover_retained_links_from_stage(&self.stage_dir, &self.backup_dir)
+                            .is_ok()
+                    {
+                        stage_safe_to_remove = true;
+                        if rename_transaction_path(&self.backup_dir, &self.final_dir).is_ok() {
+                            let _ = remove_transaction_owner(&self.final_dir, &self.nonce);
+                        }
                     }
                 }
             }
-            if self.stage_dir.exists() {
+            if stage_safe_to_remove && self.stage_dir.exists() {
                 let _ = remove_owned_transaction_dir(&self.stage_dir, &self.nonce);
             }
         }
@@ -5535,7 +5680,7 @@ fn move_retained_links(
                 )
             })?;
         }
-        fs::rename(&source, &destination).map_err(|error| {
+        rename_transaction_path(&source, &destination).map_err(|error| {
             format!(
                 "Failed to move retained link '{}' to '{}': {error}",
                 source.display(),
@@ -5563,7 +5708,7 @@ fn rollback_retained_links(
                 )
             })?;
         }
-        fs::rename(&source, &destination).map_err(|error| {
+        rename_transaction_path(&source, &destination).map_err(|error| {
             format!(
                 "Failed to roll retained link '{}' back to '{}': {error}",
                 source.display(),
@@ -8985,6 +9130,61 @@ mod tests {
     }
 
     #[test]
+    fn output_transaction_recovers_process_exit_between_publication_renames() {
+        let output = test_directory("transaction-process-exit-prepublish");
+        let parent = output.parent().unwrap();
+        let leaf = output.file_name().unwrap().to_string_lossy();
+        let nonce = "prepublish-crash";
+        let stage = parent.join(format!(".{leaf}.dynwinrt-stage-{nonce}"));
+        let backup = parent.join(format!(".{leaf}.dynwinrt-backup-{nonce}"));
+
+        fs::create_dir_all(&output).unwrap();
+        fs::write(output.join("state"), "old").unwrap();
+        fs::create_dir_all(&stage).unwrap();
+        fs::write(stage.join("state"), "new").unwrap();
+        write_transaction_owner(&stage, nonce).unwrap();
+        write_transaction_owner(&output, nonce).unwrap();
+        fs::rename(&output, &backup).unwrap();
+
+        let transaction = OutputTransaction::begin(&output).unwrap();
+        assert_eq!(
+            fs::read_to_string(transaction.stage_dir().join("state")).unwrap(),
+            "old"
+        );
+        assert!(!stage.exists());
+        assert!(!backup.exists());
+        drop(transaction);
+        assert_eq!(fs::read_to_string(output.join("state")).unwrap(), "old");
+        fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
+    fn output_transaction_completes_process_exit_after_publication() {
+        let output = test_directory("transaction-process-exit-postpublish");
+        let parent = output.parent().unwrap();
+        let leaf = output.file_name().unwrap().to_string_lossy();
+        let nonce = "postpublish-crash";
+        let backup = parent.join(format!(".{leaf}.dynwinrt-backup-{nonce}"));
+
+        fs::create_dir_all(&output).unwrap();
+        fs::write(output.join("state"), "new").unwrap();
+        write_transaction_owner(&output, nonce).unwrap();
+        fs::create_dir_all(&backup).unwrap();
+        fs::write(backup.join("state"), "old").unwrap();
+        write_transaction_owner(&backup, nonce).unwrap();
+
+        let transaction = OutputTransaction::begin(&output).unwrap();
+        assert_eq!(
+            fs::read_to_string(transaction.stage_dir().join("state")).unwrap(),
+            "new"
+        );
+        assert!(!backup.exists());
+        drop(transaction);
+        assert_eq!(fs::read_to_string(output.join("state")).unwrap(), "new");
+        fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
     fn retained_links_reject_stage_manifest_and_case_conflicts_without_mutation() {
         let output = test_directory("retained-link-conflicts");
         let stage = output.join("stage");
@@ -9130,6 +9330,67 @@ mod tests {
 
         remove_path_no_follow(&output).unwrap();
         assert_eq!(fs::read_to_string(&external_sentinel).unwrap(), "sentinel");
+        remove_path_no_follow(&root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn terminal_link_rollback_failure_preserves_recoverable_residue() {
+        use std::os::windows::fs::symlink_file;
+
+        let root = test_directory("retained-link-terminal-rollback");
+        let output = root.join("output");
+        let external = root.join("external");
+        fs::create_dir_all(&output).unwrap();
+        fs::create_dir_all(&external).unwrap();
+        let targets = [external.join("a.txt"), external.join("b.txt")];
+        for (index, target) in targets.iter().enumerate() {
+            fs::write(target, format!("target-{index}")).unwrap();
+            if let Err(error) = symlink_file(target, output.join(format!("link-{index}"))) {
+                eprintln!("Skipping terminal link rollback test: {error}");
+                remove_path_no_follow(&root).unwrap();
+                return;
+            }
+        }
+
+        let transaction = OutputTransaction::begin(&output).unwrap();
+        assert_eq!(transaction.retained_links.len(), 2);
+        write_transaction_owner(&transaction.final_dir, &transaction.nonce).unwrap();
+        rename_transaction_path(&transaction.final_dir, &transaction.backup_dir).unwrap();
+        let mut moved = Vec::new();
+        move_retained_links(
+            &transaction.backup_dir,
+            &transaction.stage_dir,
+            &transaction.retained_links,
+            &mut moved,
+        )
+        .unwrap();
+        assert_eq!(moved.len(), 2);
+        let stranded = transaction.stage_dir.join(&moved[0]);
+        let stage = transaction.stage_dir.clone();
+        let backup = transaction.backup_dir.clone();
+        INJECTED_RENAME_FAILURE_SOURCE.with(|path| *path.borrow_mut() = Some(stranded));
+
+        let error =
+            rollback_retained_links(&transaction.stage_dir, &transaction.backup_dir, &moved)
+                .unwrap_err();
+        assert!(error.contains("injected terminal transaction rename failure"));
+        drop(transaction);
+        assert!(stage.is_dir());
+        assert!(backup.is_dir());
+        assert!(!output.exists());
+        INJECTED_RENAME_FAILURE_SOURCE.with(|path| *path.borrow_mut() = None);
+
+        let recovered = OutputTransaction::begin(&output).unwrap();
+        for (index, target) in targets.iter().enumerate() {
+            assert_eq!(
+                fs::read_link(output.join(format!("link-{index}"))).unwrap(),
+                *target
+            );
+        }
+        drop(recovered);
+        assert!(!stage.exists());
+        assert!(!backup.exists());
         remove_path_no_follow(&root).unwrap();
     }
 
