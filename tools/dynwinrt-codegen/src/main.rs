@@ -6,7 +6,7 @@ use std::fs;
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
@@ -4765,8 +4765,32 @@ fn remove_owned_transaction_dir(directory: &Path, nonce: &str) -> Result<(), Str
         return Ok(());
     }
     validate_transaction_owner(directory, nonce)?;
-    remove_path_no_follow(directory)
-        .map_err(|error| format!("Failed to remove {}: {error}", directory.display()))
+    let marker = transaction_owner_path(directory);
+    let mut entries = fs::read_dir(directory)
+        .map_err(|error| format!("Failed to inspect {}: {error}", directory.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Failed to inspect {}: {error}", directory.display()))?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        if entry.path() == marker {
+            continue;
+        }
+        remove_path_no_follow(&entry.path())
+            .map_err(|error| format!("Failed to remove {}: {error}", entry.path().display()))?;
+    }
+    fs::remove_file(&marker)
+        .map_err(|error| format!("Failed to remove {}: {error}", marker.display()))?;
+    if let Err(error) = fs::remove_dir(directory) {
+        let marker_error = write_transaction_owner(directory, nonce).err();
+        return Err(format!(
+            "Failed to remove {} after clearing its ownership marker: {error}{}",
+            directory.display(),
+            marker_error
+                .map(|error| format!(". Failed to restore ownership marker: {error}"))
+                .unwrap_or_default()
+        ));
+    }
+    Ok(())
 }
 
 fn ensure_no_orphaned_transaction_artifacts(parent: &Path, leaf: &str) -> Result<(), String> {
@@ -4788,7 +4812,68 @@ fn ensure_no_orphaned_transaction_artifacts(parent: &Path, leaf: &str) -> Result
     Ok(())
 }
 
+fn cleanup_committed_backup_residues(
+    parent: &Path,
+    leaf: &str,
+    final_dir: &Path,
+) -> Result<(), String> {
+    if !final_dir.is_dir() || transaction_owner_path(final_dir).exists() {
+        return Ok(());
+    }
+    let backup_prefix = format!(".{leaf}.dynwinrt-backup-");
+    for entry in fs::read_dir(parent)
+        .map_err(|error| format!("Failed to inspect {}: {error}", parent.display()))?
+    {
+        let entry =
+            entry.map_err(|error| format!("Failed to inspect {}: {error}", parent.display()))?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let Some(nonce) = name.strip_prefix(&backup_prefix) else {
+            continue;
+        };
+        if parent
+            .join(format!(".{leaf}.dynwinrt-stage-{nonce}"))
+            .exists()
+        {
+            continue;
+        }
+        validate_transaction_owner(&entry.path(), nonce)?;
+        remove_owned_transaction_dir(&entry.path(), nonce)?;
+    }
+    Ok(())
+}
+
+fn inject_output_transaction_failure(point: &str) -> Result<(), String> {
+    if std::env::var("DYNWINRT_CODEGEN_TEST_FAIL_OUTPUT_COMMIT").as_deref() == Ok(point) {
+        Err(format!("Injected output transaction failure at `{point}`"))
+    } else {
+        Ok(())
+    }
+}
+
+fn remove_committed_backup(path: &Path, nonce: &str) -> Result<(), String> {
+    if std::env::var("DYNWINRT_CODEGEN_TEST_FAIL_BACKUP_CLEANUP").as_deref() == Ok("partial") {
+        validate_transaction_owner(path, nonce)?;
+        let mut entries = fs::read_dir(path)
+            .map_err(|error| format!("Failed to inspect {}: {error}", path.display()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("Failed to inspect {}: {error}", path.display()))?;
+        entries.sort_by_key(|entry| entry.file_name());
+        if let Some(entry) = entries
+            .iter()
+            .find(|entry| entry.file_name() != OUTPUT_TRANSACTION_OWNER)
+        {
+            remove_path_no_follow(&entry.path())
+                .map_err(|error| format!("Failed to remove {}: {error}", entry.path().display()))?;
+        }
+        return Err("injected partial backup cleanup failure".into());
+    }
+    remove_owned_transaction_dir(path, nonce)
+}
+
 impl OutputTransaction {
+    const LOCK_TIMEOUT: Duration = Duration::from_secs(120);
+
     fn begin(requested_final_dir: &Path) -> Result<Self, String> {
         let absolute = if requested_final_dir.is_absolute() {
             requested_final_dir.to_path_buf()
@@ -4857,13 +4942,41 @@ impl OutputTransaction {
                     lock_path.display()
                 )
             })?;
-        lock_file.try_lock().map_err(|error| {
-            format!(
-                "Another generation is already using output directory '{}': {error}",
-                final_dir.display()
-            )
-        })?;
+        let deadline = Instant::now() + Self::LOCK_TIMEOUT;
+        loop {
+            match lock_file.try_lock() {
+                Ok(()) => break,
+                Err(std::fs::TryLockError::WouldBlock) => {
+                    if Instant::now() >= deadline {
+                        return Err(format!(
+                            "Timed out after {} seconds waiting for generated output lock '{}'",
+                            Self::LOCK_TIMEOUT.as_secs(),
+                            lock_path.display()
+                        ));
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(std::fs::TryLockError::Error(error)) => {
+                    return Err(format!(
+                        "Failed to acquire generated output lock '{}': {error}",
+                        lock_path.display()
+                    ));
+                }
+            }
+        }
+        if let Ok(marker) = std::env::var("DYNWINRT_CODEGEN_TEST_OUTPUT_LOCK_MARKER") {
+            fs::write(&marker, b"locked").map_err(|error| {
+                format!("Failed to write output-lock marker '{marker}': {error}")
+            })?;
+        }
+        if let Ok(delay) = std::env::var("DYNWINRT_CODEGEN_TEST_HOLD_OUTPUT_LOCK_MS") {
+            let delay = delay
+                .parse::<u64>()
+                .map_err(|error| format!("Invalid output-lock delay '{delay}': {error}"))?;
+            std::thread::sleep(Duration::from_millis(delay));
+        }
 
+        cleanup_committed_backup_residues(parent, leaf, &final_dir)?;
         ensure_no_orphaned_transaction_artifacts(parent, leaf)?;
         let nonce = transaction_nonce(&final_dir);
         let stage_dir = parent.join(format!(".{leaf}.dynwinrt-stage-{nonce}"));
@@ -4919,6 +5032,7 @@ impl OutputTransaction {
     fn commit(mut self) -> Result<(), String> {
         validate_transaction_owner(&self.stage_dir, &self.nonce)?;
         validate_retained_links(&self.stage_dir, &self.retained_links)?;
+        inject_output_transaction_failure("before_publish")?;
         let had_existing_output = self.had_existing_output;
         let mut moved_links = Vec::new();
         let cwd_relative = std::env::current_dir()
@@ -4966,6 +5080,26 @@ impl OutputTransaction {
                     .map(|error| format!(". {error}"))
                     .unwrap_or_default());
             }
+            if let Err(error) = inject_output_transaction_failure("after_backup_rename") {
+                let rollback_error = fs::rename(&self.backup_dir, &self.final_dir).err();
+                if rollback_error.is_none() {
+                    let _ = remove_transaction_owner(&self.final_dir, &self.nonce);
+                }
+                let restore_error = restore_cwd(&cwd_relative).err();
+                return Err(error
+                    + &rollback_error
+                        .map(|error| {
+                            format!(
+                                ". Failed to restore output directory '{}': {error}. The original output remains at '{}'",
+                                self.final_dir.display(),
+                                self.backup_dir.display()
+                            )
+                        })
+                        .unwrap_or_default()
+                    + &restore_error
+                        .map(|error| format!(". {error}"))
+                        .unwrap_or_default());
+            }
             if let Err(error) = move_retained_links(
                 &self.backup_dir,
                 &self.stage_dir,
@@ -4986,6 +5120,30 @@ impl OutputTransaction {
                 ) + &link_rollback_error
                     .map(|error| format!(". Link rollback failed: {error}"))
                     .unwrap_or_default()
+                    + &output_rollback_error
+                        .map(|error| {
+                            format!(
+                                ". Output rollback failed: {error}. The original output remains at '{}'",
+                                self.backup_dir.display()
+                            )
+                        })
+                        .unwrap_or_default()
+                    + &restore_error
+                        .map(|error| format!(". {error}"))
+                        .unwrap_or_default());
+            }
+            if let Err(error) = inject_output_transaction_failure("after_link_move") {
+                let link_rollback_error =
+                    rollback_retained_links(&self.stage_dir, &self.backup_dir, &moved_links).err();
+                let output_rollback_error = fs::rename(&self.backup_dir, &self.final_dir).err();
+                if output_rollback_error.is_none() {
+                    let _ = remove_transaction_owner(&self.final_dir, &self.nonce);
+                }
+                let restore_error = restore_cwd(&cwd_relative).err();
+                return Err(error
+                    + &link_rollback_error
+                        .map(|error| format!(". Link rollback failed: {error}"))
+                        .unwrap_or_default()
                     + &output_rollback_error
                         .map(|error| {
                             format!(
@@ -5026,12 +5184,24 @@ impl OutputTransaction {
         }
 
         restore_cwd(&cwd_relative)?;
-        if had_existing_output {
-            validate_transaction_owner(&self.final_dir, &self.nonce)?;
-            remove_owned_transaction_dir(&self.backup_dir, &self.nonce)?;
-        }
         remove_transaction_owner(&self.final_dir, &self.nonce)?;
         self.committed = true;
+        let post_publish_error = inject_output_transaction_failure("after_publish").err();
+        if had_existing_output
+            && let Err(error) = remove_committed_backup(&self.backup_dir, &self.nonce)
+        {
+            eprintln!(
+                "warning: output committed, but backup cleanup failed for '{}': {error}. \
+                 The complete new output remains published; the residue will be retried on the next locked generation.",
+                self.backup_dir.display()
+            );
+        }
+        if let Some(error) = post_publish_error {
+            return Err(format!(
+                "{error}. The complete output remains committed at '{}'",
+                self.final_dir.display()
+            ));
+        }
         Ok(())
     }
 }
@@ -8749,19 +8919,54 @@ mod tests {
         fs::create_dir_all(&output).unwrap();
         let first = OutputTransaction::begin(&output).unwrap();
 
-        let error = OutputTransaction::begin(&output)
-            .err()
-            .expect("a second transaction must not share the output");
-
+        let waiting_output = output.clone();
+        let waiting = std::thread::spawn(move || {
+            let transaction = OutputTransaction::begin(&waiting_output)?;
+            drop(transaction);
+            Ok::<_, String>(())
+        });
+        std::thread::sleep(Duration::from_millis(100));
         assert!(
-            error.contains("Another generation is already using"),
-            "{error}"
+            !waiting.is_finished(),
+            "a second transaction acquired the output lock concurrently"
         );
         drop(first);
-        let next = OutputTransaction::begin(&output)
-            .expect("the lock must be released when the transaction drops");
-        drop(next);
+        waiting
+            .join()
+            .unwrap()
+            .expect("the waiting transaction must acquire the released lock");
         fs::remove_dir_all(output).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn owned_transaction_cleanup_preserves_marker_after_partial_failure() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let output = test_directory("transaction-marker-preservation");
+        fs::create_dir_all(&output).unwrap();
+        let nonce = "marker-preservation";
+        write_transaction_owner(&output, nonce).unwrap();
+        fs::write(output.join("a-removable"), "remove first").unwrap();
+        let blocked = output.join("b-blocked");
+        fs::write(&blocked, "locked").unwrap();
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&blocked)
+            .unwrap();
+
+        let error = remove_owned_transaction_dir(&output, nonce).unwrap_err();
+        assert!(error.contains("b-blocked"), "{error}");
+        assert!(!output.join("a-removable").exists());
+        assert_eq!(
+            fs::read_to_string(transaction_owner_path(&output)).unwrap(),
+            nonce
+        );
+
+        drop(lock);
+        remove_owned_transaction_dir(&output, nonce).unwrap();
+        assert!(!output.exists());
     }
 
     #[test]

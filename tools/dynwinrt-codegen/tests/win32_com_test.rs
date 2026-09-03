@@ -42,9 +42,13 @@ fn remove_com_generation_lock(output_dir: &Path) {
     let Some(leaf) = output_dir.file_name().and_then(|name| name.to_str()) else {
         return;
     };
-    let path = parent.join(format!(".{leaf}.dynwinrt-generation.lock"));
-    if path.exists() {
-        fs::remove_file(path).expect("remove COM generation test lock");
+    for path in [
+        parent.join(format!(".{leaf}.dynwinrt-generation.lock")),
+        parent.join(format!(".{leaf}.dynwinrt-lock")),
+    ] {
+        if path.exists() {
+            fs::remove_file(path).expect("remove COM generation test lock");
+        }
     }
 }
 
@@ -5601,8 +5605,20 @@ fn concurrent_com_and_winrt_writers_share_one_output_lock_in_both_orders() {
         String::from_utf8_lossy(&successful.stderr)
     );
     assert!(!failing.status.success());
-    assert!(output.join("Uri.js").is_file());
-    assert!(!output.join("Calendar.js").exists());
+    assert!(
+        output
+            .join("windows")
+            .join("foundation")
+            .join("Uri.js")
+            .is_file()
+    );
+    assert!(
+        !output
+            .join("windows")
+            .join("globalization")
+            .join("Calendar.js")
+            .exists()
+    );
     assert!(output.join("com").join("IShellLinkW.js").is_file());
     assert!(
         output
@@ -5776,9 +5792,8 @@ fn unified_output_transaction_rolls_back_first_and_incremental_failures() {
         let leaf = output_dir.file_name().unwrap().to_string_lossy();
         for entry in fs::read_dir(parent).unwrap().map(Result::unwrap) {
             let name = entry.file_name().to_string_lossy().into_owned();
-            let transaction_artifact = name == format!(".{leaf}.dynwinrt-stage")
-                || name == format!(".{leaf}.dynwinrt-backup")
-                || name == format!(".{leaf}.dynwinrt-failed-output");
+            let transaction_artifact = name.starts_with(&format!(".{leaf}.dynwinrt-stage-"))
+                || name.starts_with(&format!(".{leaf}.dynwinrt-backup-"));
             assert!(
                 !transaction_artifact,
                 "transaction artifact survived rollback: {name}"
@@ -5843,7 +5858,13 @@ fn unified_output_transaction_rolls_back_first_and_incremental_failures() {
         String::from_utf8_lossy(&partial_cleanup.stderr)
             .contains("output committed, but backup cleanup failed")
     );
-    assert!(output_dir.join("Uri.js").is_file());
+    assert!(
+        output_dir
+            .join("windows")
+            .join("foundation")
+            .join("Uri.js")
+            .is_file()
+    );
     assert!(output_dir.join("com").join("ITaskbarList3.js").is_file());
     assert!(
         output_dir
@@ -5856,10 +5877,21 @@ fn unified_output_transaction_rolls_back_first_and_incremental_failures() {
             .join("IWbemServicesUnsafe.js")
             .is_file()
     );
-    let backup = output_dir.parent().unwrap().join(format!(
-        ".{}.dynwinrt-backup",
+    let backup_prefix = format!(
+        ".{}.dynwinrt-backup-",
         output_dir.file_name().unwrap().to_string_lossy()
-    ));
+    );
+    let backup = fs::read_dir(output_dir.parent().unwrap())
+        .unwrap()
+        .map(Result::unwrap)
+        .find(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(&backup_prefix)
+        })
+        .expect("partial backup residue was not retained")
+        .path();
     assert!(backup.is_dir(), "partial backup residue was not retained");
 
     let cleanup_retry = run("Windows.Win32.UI.Shell.IShellLinkW", None);
@@ -5927,7 +5959,12 @@ fn mixed_generation_supports_one_command_and_both_incremental_orders() {
     );
     assert!(!mixed.join("IDirect3DSurface.js").exists());
 
-    run_codegen_command(&metadata, Some("Windows.Foundation"), "Uri", &winrt_first);
+    run_codegen_command(
+        &metadata,
+        None,
+        "Windows.Foundation.Uri,Windows.Graphics.DirectX.Direct3D11.IDirect3DSurface",
+        &winrt_first,
+    );
     run_codegen_command(
         &metadata,
         Some("Windows.Win32.UI.Shell"),
@@ -5950,7 +5987,12 @@ fn mixed_generation_supports_one_command_and_both_incremental_orders() {
             .contains("ITaskbarList3")
     );
 
-    run_codegen_command(&metadata, Some("Windows.Foundation"), "Uri", &com_first);
+    run_codegen_command(
+        &metadata,
+        None,
+        "Windows.Foundation.Uri,Windows.Graphics.DirectX.Direct3D11.IDirect3DSurface",
+        &com_first,
+    );
     assert_mixed_package_shape(&com_first);
     assert_eq!(
         snapshot_tree(&mixed),
@@ -5990,8 +6032,8 @@ fn mixed_generation_supports_one_command_and_both_incremental_orders() {
 
     run_codegen_command(
         &metadata,
-        Some("Windows.Foundation"),
-        "Uri",
+        None,
+        "Windows.Foundation.Uri,Windows.Graphics.DirectX.Direct3D11.IDirect3DSurface",
         &legacy_com_first,
     );
     assert_mixed_package_shape(&legacy_com_first);
