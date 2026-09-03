@@ -11,7 +11,7 @@ use std::{
 };
 
 use dynwinrt;
-use napi::bindgen_prelude::{BigInt, Either, PromiseRaw};
+use napi::bindgen_prelude::{BigInt, Either, FromNapiValue, PromiseRaw, ToNapiValue, Unknown};
 use napi::Env;
 use napi_derive::napi;
 use windows::core::{IUnknown, Interface, HSTRING};
@@ -178,6 +178,132 @@ fn js_safe_i64(value: i64, context: &str) -> napi::Result<i64> {
     return Err(napi::Error::from_reason(format!(
       "{context}: value is outside the JavaScript safe-integer range; use the bigint conversion instead",
     )));
+  }
+
+  fn property_value_guid(value: windows::core::GUID) -> String {
+    format!("{value:?}")
+  }
+
+  fn to_unknown<'env, T: ToNapiValue>(env: Env, value: T) -> napi::Result<Unknown<'env>> {
+    let value = unsafe { T::to_napi_value(env.raw(), value) }?;
+    unsafe { Unknown::from_napi_value(env.raw(), value) }
+  }
+
+  fn utf16_unknown<'env>(env: Env, value: &[u16]) -> napi::Result<Unknown<'env>> {
+    let length = isize::try_from(value.len())
+      .map_err(|_| napi::Error::from_reason("WinRT Char16 string is too large for JavaScript"))?;
+    let mut result = std::ptr::null_mut();
+    napi::check_status!(
+      unsafe {
+        napi::sys::napi_create_string_utf16(env.raw(), value.as_ptr(), length, &mut result)
+      },
+      "Failed to create JavaScript UTF-16 string"
+    )?;
+    unsafe { Unknown::from_napi_value(env.raw(), result) }
+  }
+
+  fn utf16_array_unknown<'env>(env: Env, values: Vec<u16>) -> napi::Result<Unknown<'env>> {
+    let mut result = std::ptr::null_mut();
+    napi::check_status!(
+      unsafe { napi::sys::napi_create_array_with_length(env.raw(), values.len(), &mut result) },
+      "Failed to create JavaScript Char16 array"
+    )?;
+    for (index, value) in values.into_iter().enumerate() {
+      let value = utf16_unknown(env, &[value])?;
+      napi::check_status!(
+        unsafe {
+          napi::sys::napi_set_element(env.raw(), result, index as u32, napi::JsValue::raw(&value))
+        },
+        "Failed to populate JavaScript Char16 array"
+      )?;
+    }
+    unsafe { Unknown::from_napi_value(env.raw(), result) }
+  }
+
+  fn null_unknown<'env>(env: Env) -> napi::Result<Unknown<'env>> {
+    let mut value = std::ptr::null_mut();
+    napi::check_status!(
+      unsafe { napi::sys::napi_get_null(env.raw(), &mut value) },
+      "Failed to create JavaScript null"
+    )?;
+    unsafe { Unknown::from_napi_value(env.raw(), value) }
+  }
+
+  fn property_value_to_javascript<'env>(
+    env: Env,
+    value: dynwinrt::PropertyValueData,
+  ) -> napi::Result<Unknown<'env>> {
+    use dynwinrt::PropertyValueData;
+
+    match value {
+      PropertyValueData::UInt8(value) => to_unknown(env, u32::from(value)),
+      PropertyValueData::Int16(value) => to_unknown(env, i32::from(value)),
+      PropertyValueData::UInt16(value) => to_unknown(env, u32::from(value)),
+      PropertyValueData::Int32(value) => to_unknown(env, value),
+      PropertyValueData::UInt32(value) => to_unknown(env, value),
+      PropertyValueData::Int64(value) => to_unknown(env, BigInt::from(value)),
+      PropertyValueData::UInt64(value) => to_unknown(env, BigInt::from(value)),
+      PropertyValueData::Single(value) => to_unknown(env, value),
+      PropertyValueData::Double(value) => to_unknown(env, value),
+      PropertyValueData::Char16(value) => utf16_unknown(env, &[value]),
+      PropertyValueData::Boolean(value) => to_unknown(env, value),
+      PropertyValueData::String(value) => to_unknown(env, value),
+      PropertyValueData::Guid(value) => to_unknown(env, property_value_guid(value)),
+      PropertyValueData::UInt8Array(value) => {
+        to_unknown(env, napi::bindgen_prelude::Buffer::from(value))
+      }
+      PropertyValueData::Int16Array(value) => {
+        to_unknown(env, value.into_iter().map(i32::from).collect::<Vec<_>>())
+      }
+      PropertyValueData::UInt16Array(value) => {
+        to_unknown(env, value.into_iter().map(u32::from).collect::<Vec<_>>())
+      }
+      PropertyValueData::Int32Array(value) => to_unknown(env, value),
+      PropertyValueData::UInt32Array(value) => to_unknown(env, value),
+      PropertyValueData::Int64Array(value) => {
+        to_unknown(env, value.into_iter().map(BigInt::from).collect::<Vec<_>>())
+      }
+      PropertyValueData::UInt64Array(value) => {
+        to_unknown(env, value.into_iter().map(BigInt::from).collect::<Vec<_>>())
+      }
+      PropertyValueData::SingleArray(value) => to_unknown(env, value),
+      PropertyValueData::DoubleArray(value) => to_unknown(env, value),
+      PropertyValueData::Char16Array(value) => utf16_array_unknown(env, value),
+      PropertyValueData::BooleanArray(value) => to_unknown(env, value),
+      PropertyValueData::StringArray(value) => to_unknown(env, value),
+      PropertyValueData::GuidArray(value) => to_unknown(
+        env,
+        value
+          .into_iter()
+          .map(property_value_guid)
+          .collect::<Vec<_>>(),
+      ),
+    }
+  }
+
+  /// Explicitly unbox a supported WinRT `IPropertyValue`.
+  ///
+  /// JavaScript `null` and WinRT null are returned as `null`. A non-`IPropertyValue`
+  /// `DynWinRtValue` is returned unchanged, preserving JavaScript and COM identity.
+  #[napi(
+    ts_args_type = "value: unknown",
+    ts_return_type = "boolean | number | bigint | string | Uint8Array | number[] | bigint[] | boolean[] | string[] | DynWinRtValue | null"
+  )]
+  pub fn unbox_object<'env>(env: Env, value: Unknown<'env>) -> napi::Result<Unknown<'env>> {
+    if value.get_type()? == napi::ValueType::Null {
+      return Ok(value);
+    }
+
+    let raw = unsafe {
+      <&DynWinRTValue as FromNapiValue>::from_napi_value(env.raw(), napi::JsValue::raw(&value))
+    }?;
+    match dynwinrt::unbox_property_value(&raw.0)
+      .map_err(|error| napi::Error::from_reason(error.message()))?
+    {
+      dynwinrt::PropertyValueUnboxResult::Null => null_unknown(env),
+      dynwinrt::PropertyValueUnboxResult::NotPropertyValue => Ok(value),
+      dynwinrt::PropertyValueUnboxResult::Value(value) => property_value_to_javascript(env, value),
+    }
   }
   Ok(value)
 }
@@ -1187,6 +1313,16 @@ impl DynWinRTValue {
     Ok(DynWinRTValue::new(factory))
   }
 
+  /// Create an owned WinRT IBuffer by copying a Node.js Buffer or Uint8Array.
+  #[napi]
+  pub fn from_buffer(
+    #[napi(ts_arg_type = "Buffer | Uint8Array")] data: napi::bindgen_prelude::Uint8Array,
+  ) -> napi::Result<DynWinRTValue> {
+    dynwinrt::copy_to_ibuffer(&data)
+      .map(DynWinRTValue::new)
+      .map_err(|error| napi::Error::from_reason(error.message()))
+  }
+
   /// Create a composed WinUI Application that forwards IXamlMetadataProvider
   /// calls to the supplied provider.
   #[napi]
@@ -1558,6 +1694,14 @@ impl DynWinRTValue {
       dynwinrt::WinRTValue::Guid(g) => Ok(WinGUID(*g)),
       _ => Err(napi::Error::from_reason("Value is not a GUID")),
     }
+  }
+
+  /// Copy the initialized bytes from a WinRT IBuffer into a Node.js Buffer.
+  #[napi]
+  pub fn to_buffer(&self) -> napi::Result<napi::bindgen_prelude::Buffer> {
+    dynwinrt::copy_from_ibuffer(&self.0)
+      .map(Into::into)
+      .map_err(|error| napi::Error::from_reason(error.message()))
   }
 
   #[napi]

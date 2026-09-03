@@ -145,6 +145,65 @@ const PIID_IMAP_VIEW: &str = "e480ce40-a338-4ada-adcf-272272e48cb9";
 const ICLOSABLE_IID: &str = "30d5a829-7fa4-4026-83bb-d75bae4ea99e";
 const ISTRINGABLE_IID: &str = "96369f54-8eb6-48f0-abce-c1b211e627c3";
 
+fn project_ibuffer_members(projected_name: &str, from_native: &str) -> [ProjectedMember; 2] {
+    let from_buffer = ProjectedMember::Method(ProjectedMethod {
+        name: "fromBuffer".into(),
+        doc: Some(DocInfo {
+            summary: Some(
+                "Create an owned IBuffer by copying a Node.js Buffer or Uint8Array.".into(),
+            ),
+            deprecated: None,
+            returns: None,
+            params: vec![("data".into(), "Bytes to copy into the new IBuffer.".into())],
+        }),
+        params: vec![ProjectedParam {
+            name: "data".into(),
+            ts_type: "Parameters<typeof DynWinRtValue.fromBuffer>[0]".into(),
+            optional: false,
+            delegate_wrap: None,
+        }],
+        argument_kinds: vec![Some(JsArgumentKind::Object)],
+        return_type: projected_name.into(),
+        async_kind: AsyncKind::None,
+        is_static: true,
+        invoke_expr: String::new(),
+        sync_return_expr: Some(format!("{from_native}(DynWinRtValue.fromBuffer(data))")),
+        async_convert_v: None,
+        progress_convert: None,
+        is_void: false,
+        array_return_expr: None,
+        delegate_wraps: vec![],
+        js_only: false,
+        overload_of: None,
+    });
+    let to_buffer = ProjectedMember::Method(ProjectedMethod {
+        name: "toBuffer".into(),
+        doc: Some(DocInfo {
+            summary: Some(
+                "Copy this IBuffer's initialized bytes into a new Node.js Buffer.".into(),
+            ),
+            deprecated: None,
+            returns: None,
+            params: vec![],
+        }),
+        params: vec![],
+        argument_kinds: vec![],
+        return_type: "ReturnType<DynWinRtValue['toBuffer']>".into(),
+        async_kind: AsyncKind::None,
+        is_static: false,
+        invoke_expr: String::new(),
+        sync_return_expr: Some("this._obj.toBuffer()".into()),
+        async_convert_v: None,
+        progress_convert: None,
+        is_void: false,
+        array_return_expr: None,
+        delegate_wraps: vec![],
+        js_only: false,
+        overload_of: None,
+    });
+    [from_buffer, to_buffer]
+}
+
 fn project_winui_abi_types(types: &[WinUiAbiType]) -> String {
     types
         .iter()
@@ -632,6 +691,13 @@ pub fn project_class(
         js_only: true,
         overload_of: None,
     }));
+
+    if crate::codegen::winrt::is_buffer_class(&class.namespace, &class.name) {
+        members.extend(project_ibuffer_members(
+            &class.name,
+            &format!("{}._fromNative", class.name),
+        ));
+    }
 
     // Default constructor (static create/createDefault)
     if class.has_default_constructor {
@@ -1319,6 +1385,13 @@ pub fn project_interface(
 
     // Static create() for IVector / IMap
     project_collection_create(context, iface, known_types, &mut members, &mut imports);
+
+    if crate::codegen::winrt::is_ibuffer_interface(&iface.namespace, &iface.name, &iface.iid) {
+        members.extend(project_ibuffer_members(
+            &iface.name,
+            &format!("{}.from", iface.name),
+        ));
+    }
 
     if iface.namespace == "Microsoft.UI.Xaml"
         && context.metadata_type_name(&iface.namespace, &iface.name) == "IElementFactory"

@@ -26,10 +26,19 @@ Generated async methods return typed, asyncio-compatible operation objects:
 ```python
 operation = writer.store_async()
 stored_bytes = await operation
+
+task = asyncio.create_task(writer.store_async())
+stored_bytes = await task
+
+async with asyncio.TaskGroup() as group:
+    task = group.create_task(writer.store_async())
 ```
 
-Their public types are `WinRTAsync[T]` and
-`WinRTAsyncWithProgress[T, P]`; the concrete runtime wrappers remain private.
+Generated methods return `WinRTCoroutine[T]` and
+`WinRTCoroutineWithProgress[T, P]`, which retain the structural
+`WinRTAsync[T]` and `WinRTAsyncWithProgress[T, P]` contracts while also being
+typed as coroutines for `asyncio.create_task()`. The concrete runtime wrappers
+remain private.
 
 Regenerated bindings no longer block inside async methods. Existing code that
 expects an immediate result must use `await operation` or `operation.wait()`.
@@ -38,6 +47,14 @@ expects an immediate result must use `await operation` or `operation.wait()`.
 WinRT operation. Operations with supported progress values also expose
 `operation.progress(callback)`. Fast operations can finish before registration;
 in that case no future progress exists and registration is a no-op.
+
+An operation can be awaited directly more than once; every direct await observes
+the same converted completion, failure, or cancellation. Its coroutine driver is
+one-shot like a native Python coroutine, so pass a given operation to
+`create_task()`, `TaskGroup.create_task()`, or `ensure_future()` only once.
+Directly awaiting that operation after its task completes remains supported.
+Calling `close()` cancels pending WinRT work and permanently closes the coroutine
+driver.
 
 For scripts without an event loop, `operation.wait()` remains available as an
 explicit blocking API. It rejects started operations when called from a running
@@ -60,6 +77,18 @@ Method inputs accept normal Python sequences and mappings in place of compatible
 WinRT collection interfaces. Byte arrays accept `bytes` and `bytearray`; GUID,
 `DateTime`, and `TimeSpan` values use `uuid.UUID`, `datetime.datetime`, and
 `datetime.timedelta`.
+
+Generated `Windows.Storage.Streams.Buffer` and `IBuffer` projections also
+provide copied byte conversion:
+
+```python
+winrt_buffer = IBuffer.from_bytes(bytearray(b"\x00\x01\xff"))
+data: bytes = winrt_buffer.to_bytes()
+```
+
+Both directions copy exactly `Length` bytes. Mutating the input or releasing
+the WinRT object does not change the returned `bytes`, and no native buffer
+pointer is exposed.
 
 Exceptions raised by Python event or delegate callbacks are reported through
 `sys.unraisablehook`. The originating WinRT invocation receives
@@ -113,6 +142,28 @@ Projection always performs QueryInterface, so a static-only declaration cannot
 produce a wrapper unless the input actually implements that default interface.
 Incompatible types raise the ordinary WinRT `OSError`. Static-only metadata
 classes with no instance surface are not projection targets.
+
+### Explicit boxed-value unboxing
+
+Generic WinRT `Object`/`IInspectable` results remain raw `DynWinRTValue`
+instances. Use `unbox_object()` only where the application expects a boxed
+`Windows.Foundation.IPropertyValue`, such as values from
+`DeviceInformation.properties`:
+
+```python
+from dynwinrt import unbox_object
+
+raw = device_information.properties["System.Devices.DeviceInstanceId"]
+instance_id = unbox_object(raw)
+```
+
+The helper borrows its argument. It maps supported numeric, Boolean, string,
+character, GUID, and corresponding array property types to Python values;
+64-bit integers use `int`, GUIDs use `uuid.UUID`, and `UInt8Array` uses `bytes`.
+`None` stays `None`. If the object does not implement `IPropertyValue`, the
+exact same Python object is returned, so identity and later projection remain
+intact. Unsupported property types (including `DateTime`, `TimeSpan`, geometry,
+inspectable, and other types) and native getter failures raise an exception.
 
 Use `wrapper.as_interface(InterfaceClass)` when converting an existing
 wrapper to an interface view. Use `InterfaceClass.from_value(raw)` for a raw

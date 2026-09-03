@@ -357,6 +357,18 @@ pub fn generate_class(
         collection_uses_default,
     ));
 
+    if crate::codegen::winrt::is_buffer_class(&class.namespace, &class.name) {
+        out.push_str(
+            "    @staticmethod\n\
+             \x20   def from_bytes(data: bytes | bytearray) -> 'Buffer':\n\
+             \x20       \"\"\"Create an owned IBuffer by copying bytes or bytearray data.\"\"\"\n\
+             \x20       return Buffer._from_native(DynWinRTValue.from_bytes(data))\n\n\
+             \x20   def to_bytes(self) -> bytes:\n\
+             \x20       \"\"\"Copy the initialized IBuffer data into a new bytes object.\"\"\"\n\
+             \x20       return self._obj.to_bytes()\n\n",
+        );
+    }
+
     // Resolve activation factories per call. Keeping COM factories in Python
     // class variables lets them outlive the thread's RoApartment and can crash
     // during interpreter shutdown when WinUI releases them after RoUninitialize.

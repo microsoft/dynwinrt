@@ -411,6 +411,18 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
         }
     }
 
+    if crate::codegen::winrt::is_ibuffer_interface(&iface.namespace, &iface.name, &iface.iid) {
+        out.push_str(
+            "    @staticmethod\n\
+             \x20   def from_bytes(data: bytes | bytearray) -> 'IBuffer':\n\
+             \x20       \"\"\"Create an owned IBuffer by copying bytes or bytearray data.\"\"\"\n\
+             \x20       return IBuffer._from_native(DynWinRTValue.from_bytes(data))\n\n\
+             \x20   def to_bytes(self) -> bytes:\n\
+             \x20       \"\"\"Copy the initialized IBuffer data into a new bytes object.\"\"\"\n\
+             \x20       return self._obj.to_bytes()\n\n",
+        );
+    }
+
     if is_element_factory {
         let get_args = py_runtime_named_symbol(
             context,

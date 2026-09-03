@@ -1,13 +1,16 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
-from collections.abc import Sequence
-from typing import Awaitable, List, Tuple
+import asyncio
+from collections.abc import Coroutine, Generator, Sequence
+from typing import Any, Awaitable, List, Tuple
 
 from dynwinrt import (
     DynWinRTArray,
     WinRTAsync,
     WinRTAsyncWithProgress,
+    WinRTCoroutine,
+    WinRTCoroutineWithProgress,
     DynWinRTMethodSig,
     DynWinRTType,
     DynWinRTValue,
@@ -20,7 +23,34 @@ from python_bindings.windows.foundation import (
     Uri,
 )
 from python_bindings.windows.globalization import Calendar
-from python_bindings.windows.storage.streams import DataWriter, IBuffer, IOutputStream
+from python_bindings.windows.storage.streams import (
+    Buffer as WinRTBuffer,
+    DataWriter,
+    IBuffer,
+    IOutputStream,
+)
+
+
+class StructuralAsyncAdapter:
+    def __await__(self) -> Generator[None, None, int]:
+        if False:
+            yield None
+        return self.wait()
+
+    def wait(self) -> int:
+        return 1
+
+    def cancel(self) -> None:
+        pass
+
+    def release(self) -> None:
+        pass
+
+
+def check_structural_async_compatibility() -> None:
+    adapter: WinRTAsync[int] = StructuralAsyncAdapter()
+    awaitable: Awaitable[int] = adapter
+    _: Tuple[WinRTAsync[int], Awaitable[int]] = (adapter, awaitable)
 
 
 def check_runtime_stubs() -> None:
@@ -84,9 +114,41 @@ def check_async_types(
     output: IOutputStream,
     buffer: IBuffer,
 ) -> None:
-    store: WinRTAsync[int] = writer.store_async()
+    store: WinRTCoroutine[int] = writer.store_async()
+    legacy_store: WinRTAsync[int] = store
     awaitable: Awaitable[int] = store
-    write: WinRTAsyncWithProgress[int, int] = output.write_async(buffer)
+    coroutine: Coroutine[Any, Any, int] = store
+    task: asyncio.Task[int] = asyncio.create_task(store)
+    write: WinRTCoroutineWithProgress[int, int] = output.write_async(buffer)
+    legacy_write: WinRTAsyncWithProgress[int, int] = write
     write.progress(lambda value: value)
     progress_awaitable: Awaitable[int] = write
-    _: Tuple[Awaitable[int], Awaitable[int]] = (awaitable, progress_awaitable)
+    progress_coroutine: Coroutine[Any, Any, int] = write
+    progress_task: asyncio.Task[int] = asyncio.TaskGroup().create_task(write)
+    _: Tuple[
+        WinRTAsync[int],
+        Awaitable[int],
+        Coroutine[Any, Any, int],
+        asyncio.Task[int],
+        WinRTAsyncWithProgress[int, int],
+        Awaitable[int],
+        Coroutine[Any, Any, int],
+        asyncio.Task[int],
+    ] = (
+        legacy_store,
+        awaitable,
+        coroutine,
+        task,
+        legacy_write,
+        progress_awaitable,
+        progress_coroutine,
+        progress_task,
+    )
+
+
+def check_ibuffer_bytes() -> None:
+    interface_buffer: IBuffer = IBuffer.from_bytes(bytearray(b"\x00\xff"))
+    runtime_buffer: WinRTBuffer = WinRTBuffer.from_bytes(b"\x01\x02")
+    interface_bytes: bytes = interface_buffer.to_bytes()
+    runtime_bytes: bytes = runtime_buffer.to_bytes()
+    _: Tuple[bytes, bytes] = (interface_bytes, runtime_bytes)

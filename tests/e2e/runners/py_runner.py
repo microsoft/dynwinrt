@@ -191,6 +191,28 @@ async def run_check(
             else:
                 cr['pass'] = True
 
+        elif kind == 'ibuffer_copied_roundtrip':
+            empty = cls.from_bytes(b'')
+            if empty.capacity != 0 or empty.length != 0 or empty.to_bytes() != b'':
+                cr['error'] = 'empty IBuffer copy round-trip failed'
+                return cr
+
+            mutable = bytearray(b'\x00\x01\x02\x00\xff\x80')
+            buffer = cls.from_bytes(mutable)
+            mutable[:] = b'\x09' * len(mutable)
+            copied = buffer.to_bytes()
+            if buffer.capacity != 6 or buffer.length != 6:
+                cr['error'] = (
+                    f'expected Length/Capacity 6, got '
+                    f'{buffer.length}/{buffer.capacity}'
+                )
+                return cr
+            buffer._obj.release()
+            if copied != b'\x00\x01\x02\x00\xff\x80':
+                cr['error'] = f'copied bytes changed after owner release: {copied!r}'
+                return cr
+            cr['pass'] = True
+
         elif kind == 'property_exists':
             _ = getattr(obj, member)
             cr['pass'] = True
@@ -991,8 +1013,25 @@ async def run_check(
             if not inspect.isawaitable(store_op):
                 cr['error'] = 'store_async() did not return an awaitable'
                 return cr
-            stored = await store_op
+            if not asyncio.iscoroutine(store_op):
+                cr['error'] = 'store_async() did not return a coroutine'
+                return cr
+            stored = await asyncio.create_task(store_op)
             stored_again = await store_op
+            try:
+                await asyncio.create_task(store_op)
+                cr['error'] = 'completed async operation was accepted by create_task twice'
+                return cr
+            except RuntimeError as error:
+                if 'cannot reuse already awaited WinRT async coroutine' not in str(error):
+                    cr['error'] = f'unexpected repeated create_task error: {error}'
+                    return cr
+
+            writer.write_int32(write_val)
+            grouped_op = writer.store_async()
+            async with asyncio.TaskGroup() as group:
+                grouped_task = group.create_task(grouped_op)
+            grouped = grouped_task.result()
 
             stream.seek(0)
             reader = reader_cls.create_data_reader(stream.get_input_stream_at(0))
@@ -1127,6 +1166,7 @@ async def run_check(
             if (
                 stored < 4
                 or stored_again != stored
+                or grouped < 4
                 or loaded < 4
                 or blocked < 4
                 or read_val != write_val

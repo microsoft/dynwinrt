@@ -2,11 +2,8 @@ import argparse
 import hashlib
 
 from dynwinrt import RoApartment, projected_lifetime_scope
-from generated.windows.security.cryptography import (
-    BinaryStringEncoding,
-    CryptographicBuffer,
-)
 from generated.windows.security.cryptography.core import HashAlgorithmProvider
+from generated.windows.storage.streams import IBuffer
 
 
 def sha256(text: str) -> str:
@@ -14,16 +11,18 @@ def sha256(text: str) -> str:
         provider = HashAlgorithmProvider.open_algorithm("SHA256")
         if provider is None:
             raise RuntimeError("SHA256 provider is unavailable")
-        data = CryptographicBuffer.convert_string_to_binary(
-            text,
-            BinaryStringEncoding.Utf8,
-        )
-        if data is None:
-            raise RuntimeError("CryptographicBuffer returned no input buffer")
+        data = IBuffer.from_bytes(text.encode("utf-8"))
         digest = provider.hash_data(data)
         if digest is None:
             raise RuntimeError("HashAlgorithmProvider returned no digest")
-        return CryptographicBuffer.encode_to_hex_string(digest).lower()
+        copied_digest = digest.to_bytes()
+        expected_length = provider.hash_length
+        if len(copied_digest) != expected_length:
+            raise RuntimeError(
+                f"SHA256 buffer length mismatch: {len(copied_digest)} != "
+                f"{expected_length}"
+            )
+        return copied_digest.hex()
 
 
 def main() -> None:

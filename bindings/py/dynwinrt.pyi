@@ -1,4 +1,6 @@
-from typing import Awaitable, Callable, List, Literal, Mapping, Optional, Protocol, Sequence, TypeVar, Union, final
+from collections.abc import Coroutine
+from typing import Any, Awaitable, Callable, List, Literal, Mapping, Optional, Protocol, Sequence, TypeVar, Union, final, overload
+from uuid import UUID
 
 _T = TypeVar("_T", covariant=True)
 _P = TypeVar("_P", covariant=True)
@@ -34,10 +36,13 @@ __all__ = [
     "DynWinRtElementFactory",
     "WinRTAsync",
     "WinRTAsyncWithProgress",
+    "WinRTCoroutine",
+    "WinRTCoroutineWithProgress",
     "ProjectedLifetimeScope",
     "projected_lifetime_scope",
     "project_as",
     "release_projected",
+    "unbox_object",
     "init_winappsdk",
     "ro_initialize",
     "ro_uninitialize",
@@ -110,6 +115,27 @@ def project_as(
 ) -> _ProjectableClass: ...
 
 def release_projected(value: object) -> None: ...
+
+_UnboxedPropertyValue = Union[
+    bool,
+    int,
+    float,
+    str,
+    UUID,
+    bytes,
+    List[int],
+    List[float],
+    List[bool],
+    List[str],
+    List[UUID],
+]
+
+@overload
+def unbox_object(value: None) -> None: ...
+@overload
+def unbox_object(
+    value: "DynWinRTValue",
+) -> Union[_UnboxedPropertyValue, "DynWinRTValue", None]: ...
 
 
 @final
@@ -258,6 +284,8 @@ class DynWinRTValue:
     @staticmethod
     def activation_factory(name: str) -> DynWinRTValue: ...
     @staticmethod
+    def from_bytes(data: Union[bytes, bytearray]) -> DynWinRTValue: ...
+    @staticmethod
     def create_xaml_application(
         metadata_provider: DynWinRTValue,
         launched_callback: Optional[DynWinRTValue] = ...,
@@ -322,6 +350,7 @@ class DynWinRTValue:
     def to_u64(self) -> int: ...
     def to_f64(self) -> float: ...
     def to_guid(self) -> WinGUID: ...
+    def to_bytes(self) -> bytes: ...
     def is_null(self) -> bool: ...
     def release(self) -> None: ...
     def as_raw(self) -> int: ...
@@ -360,6 +389,18 @@ class WinRTAsync(Awaitable[_T], Protocol[_T]):
 
 class WinRTAsyncWithProgress(WinRTAsync[_T], Protocol[_T, _P]):
     def progress(self, callback: Callable[[_P], object]) -> None: ...
+
+
+class WinRTCoroutine(  # type: ignore[misc]
+    WinRTAsync[_T], Coroutine[Any, Any, _T], Protocol[_T]
+): ...
+
+
+class WinRTCoroutineWithProgress(
+    WinRTAsyncWithProgress[_T, _P],
+    WinRTCoroutine[_T],
+    Protocol[_T, _P],
+): ...
 
 
 @final

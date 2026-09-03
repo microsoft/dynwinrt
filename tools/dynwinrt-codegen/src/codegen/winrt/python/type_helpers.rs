@@ -174,17 +174,17 @@ fn py_async_return_type_with_result(
     context: &PythonProjectionContext,
 ) -> Option<String> {
     match typ {
-        TypeMeta::AsyncAction => Some("WinRTAsync[None]".to_string()),
+        TypeMeta::AsyncAction => Some("WinRTCoroutine[None]".to_string()),
         TypeMeta::AsyncOperation(result) => Some(format!(
-            "WinRTAsync[{}]",
+            "WinRTCoroutine[{}]",
             result_override.unwrap_or_else(|| py_return_type_safe(Some(result), context))
         )),
         TypeMeta::AsyncActionWithProgress(progress) => Some(format!(
-            "WinRTAsyncWithProgress[None, {}]",
+            "WinRTCoroutineWithProgress[None, {}]",
             py_return_type_safe(Some(progress), context)
         )),
         TypeMeta::AsyncOperationWithProgress(result, progress) => Some(format!(
-            "WinRTAsyncWithProgress[{}, {}]",
+            "WinRTCoroutineWithProgress[{}, {}]",
             result_override.unwrap_or_else(|| py_return_type_safe(Some(result), context)),
             py_return_type_safe(Some(progress), context)
         )),
@@ -270,15 +270,15 @@ pub(super) fn py_output_type(typ: &TypeMeta, context: &PythonProjectionContext) 
             "list[DynWinRTValue | None]".to_string()
         }
         TypeMeta::AsyncOperation(inner) => {
-            format!("WinRTAsync[{}]", py_output_type(inner, context))
+            format!("WinRTCoroutine[{}]", py_output_type(inner, context))
         }
         TypeMeta::AsyncOperationWithProgress(result, progress) => format!(
-            "WinRTAsyncWithProgress[{}, {}]",
+            "WinRTCoroutineWithProgress[{}, {}]",
             py_output_type(result, context),
             py_output_type(progress, context)
         ),
         TypeMeta::AsyncActionWithProgress(progress) => format!(
-            "WinRTAsyncWithProgress[None, {}]",
+            "WinRTCoroutineWithProgress[None, {}]",
             py_output_type(progress, context)
         ),
         _ => py_return_type_safe(Some(typ), context),
@@ -330,16 +330,16 @@ fn py_return_type(typ: Option<&TypeMeta>, context: &PythonProjectionContext) -> 
             format!("'{}'", context.reference_name_for_type(typ))
         }
         Some(TypeMeta::AsyncOperation(inner)) => {
-            format!("WinRTAsync[{}]", py_return_type(Some(inner), context))
+            format!("WinRTCoroutine[{}]", py_return_type(Some(inner), context))
         }
         Some(TypeMeta::AsyncOperationWithProgress(result, progress)) => format!(
-            "WinRTAsyncWithProgress[{}, {}]",
+            "WinRTCoroutineWithProgress[{}, {}]",
             py_return_type(Some(result), context),
             py_return_type(Some(progress), context)
         ),
-        Some(TypeMeta::AsyncAction) => "WinRTAsync[None]".to_string(),
+        Some(TypeMeta::AsyncAction) => "WinRTCoroutine[None]".to_string(),
         Some(TypeMeta::AsyncActionWithProgress(progress)) => format!(
-            "WinRTAsyncWithProgress[None, {}]",
+            "WinRTCoroutineWithProgress[None, {}]",
             py_return_type(Some(progress), context)
         ),
         Some(TypeMeta::Array(inner)) => py_array_return_type(inner, context),

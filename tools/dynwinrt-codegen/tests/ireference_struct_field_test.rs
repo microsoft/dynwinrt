@@ -454,7 +454,7 @@ fn sdk_http_progress_ireference_u64_fields_are_native_optional_values() {
     );
     assert!(
         py.contains("lambda value: _unpack_http_progress(value)")
-            && pyi.contains("WinRTAsyncWithProgress[str, 'HttpProgress']"),
+            && pyi.contains("WinRTCoroutineWithProgress[str, 'HttpProgress']"),
         "Python struct progress projection was not preserved:\n{py}\n{pyi}"
     );
 }

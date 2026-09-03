@@ -1026,7 +1026,7 @@ mod tests {
             true,
         );
 
-        assert!(code.contains("def load_async(self) -> WinRTAsync[int]:"));
+        assert!(code.contains("def load_async(self) -> WinRTCoroutine[int]:"));
         assert!(code.contains("return _dynwinrt_track_projected(_DynWinRTAsync("));
         assert!(code.contains("'WinRTAsync')"));
         assert!(code.contains("lambda value: value.to_u32()"));
@@ -1062,7 +1062,7 @@ mod tests {
         );
 
         assert!(code.contains(
-            "def write_async(self, buffer: 'DynWinRTValue') -> WinRTAsyncWithProgress[int, int]:"
+            "def write_async(self, buffer: 'DynWinRTValue') -> WinRTCoroutineWithProgress[int, int]:"
         ));
         assert!(code.contains("return _dynwinrt_track_projected(_DynWinRTAsyncWithProgress("));
         assert!(code.contains("'WinRTAsyncWithProgress')"));

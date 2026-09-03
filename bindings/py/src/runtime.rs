@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use dynwinrt;
 use pyo3::exceptions::{PyIndexError, PyOverflowError, PyRuntimeError, PyTypeError};
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
+use pyo3::types::{PyBytes, PyDict, PyList};
 use windows::core::{GUID, HSTRING, IUnknown, Interface};
 
 use crate::errors::{map_dynwinrt_error, map_dynwinrt_error_with_context, map_windows_error};
@@ -208,6 +208,99 @@ pub fn ro_initialize(apartment_type: Option<i32>) -> PyResult<()> {
 pub fn ro_uninitialize() {
     use windows::Win32::System::WinRT::RoUninitialize;
     unsafe { RoUninitialize() };
+}
+
+fn python_uuid(py: Python<'_>, value: GUID) -> PyResult<Py<PyAny>> {
+    Ok(py
+        .import("uuid")?
+        .getattr("UUID")?
+        .call1((format!("{value:?}"),))?
+        .unbind())
+}
+
+fn python_char(py: Python<'_>, value: u16) -> PyResult<Py<PyAny>> {
+    Ok(py
+        .import("builtins")?
+        .getattr("chr")?
+        .call1((u32::from(value),))?
+        .unbind())
+}
+
+fn property_value_to_python(
+    py: Python<'_>,
+    value: dynwinrt::PropertyValueData,
+) -> PyResult<Py<PyAny>> {
+    use dynwinrt::PropertyValueData;
+
+    macro_rules! into_python {
+        ($value:expr) => {
+            Ok($value.into_pyobject(py)?.into_any().unbind())
+        };
+    }
+
+    match value {
+        PropertyValueData::UInt8(value) => into_python!(value),
+        PropertyValueData::Int16(value) => into_python!(value),
+        PropertyValueData::UInt16(value) => into_python!(value),
+        PropertyValueData::Int32(value) => into_python!(value),
+        PropertyValueData::UInt32(value) => into_python!(value),
+        PropertyValueData::Int64(value) => into_python!(value),
+        PropertyValueData::UInt64(value) => into_python!(value),
+        PropertyValueData::Single(value) => into_python!(value),
+        PropertyValueData::Double(value) => into_python!(value),
+        PropertyValueData::Char16(value) => python_char(py, value),
+        PropertyValueData::Boolean(value) => {
+            Ok(value.into_pyobject(py)?.to_owned().into_any().unbind())
+        }
+        PropertyValueData::String(value) => into_python!(value),
+        PropertyValueData::Guid(value) => python_uuid(py, value),
+        PropertyValueData::UInt8Array(value) => Ok(PyBytes::new(py, &value).into_any().unbind()),
+        PropertyValueData::Int16Array(value) => into_python!(value),
+        PropertyValueData::UInt16Array(value) => into_python!(value),
+        PropertyValueData::Int32Array(value) => into_python!(value),
+        PropertyValueData::UInt32Array(value) => into_python!(value),
+        PropertyValueData::Int64Array(value) => into_python!(value),
+        PropertyValueData::UInt64Array(value) => into_python!(value),
+        PropertyValueData::SingleArray(value) => into_python!(value),
+        PropertyValueData::DoubleArray(value) => into_python!(value),
+        PropertyValueData::Char16Array(value) => {
+            let values = value
+                .into_iter()
+                .map(|value| python_char(py, value))
+                .collect::<PyResult<Vec<_>>>()?;
+            Ok(PyList::new(py, values)?.into_any().unbind())
+        }
+        PropertyValueData::BooleanArray(value) => into_python!(value),
+        PropertyValueData::StringArray(value) => into_python!(value),
+        PropertyValueData::GuidArray(value) => {
+            let values = value
+                .into_iter()
+                .map(|value| python_uuid(py, value))
+                .collect::<PyResult<Vec<_>>>()?;
+            Ok(PyList::new(py, values)?.into_any().unbind())
+        }
+    }
+}
+
+/// Explicitly unbox a supported WinRT `IPropertyValue`.
+///
+/// Python `None` and WinRT null are returned as `None`. A non-`IPropertyValue`
+/// `DynWinRTValue` is returned unchanged, preserving Python and COM identity.
+#[pyfunction]
+pub fn unbox_object(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+    if value.is_none() {
+        return Ok(py.None());
+    }
+
+    let result = {
+        let raw = value.extract::<PyRef<'_, DynWinRTValue>>()?;
+        dynwinrt::unbox_property_value(&raw.0).map_err(map_dynwinrt_error)?
+    };
+    match result {
+        dynwinrt::PropertyValueUnboxResult::Null => Ok(py.None()),
+        dynwinrt::PropertyValueUnboxResult::NotPropertyValue => Ok(value.clone().unbind()),
+        dynwinrt::PropertyValueUnboxResult::Value(value) => property_value_to_python(py, value),
+    }
 }
 
 // ======================================================================
@@ -1077,6 +1170,23 @@ impl DynWinRTValue {
             .map_err(map_dynwinrt_error)
     }
 
+    /// Create an owned WinRT IBuffer by copying Python bytes or bytearray data.
+    #[staticmethod]
+    fn from_bytes(data: &Bound<'_, PyAny>) -> PyResult<DynWinRTValue> {
+        let bytes = if let Ok(data) = data.cast::<pyo3::types::PyBytes>() {
+            data.as_bytes().to_vec()
+        } else if let Ok(data) = data.cast::<pyo3::types::PyByteArray>() {
+            data.to_vec()
+        } else {
+            return Err(pyo3::exceptions::PyTypeError::new_err(
+                "from_bytes: expected bytes or bytearray",
+            ));
+        };
+        dynwinrt::copy_to_ibuffer(&bytes)
+            .map(DynWinRTValue)
+            .map_err(map_dynwinrt_error)
+    }
+
     /// Compose a WinUI `Microsoft.UI.Xaml.Application` whose outer object
     /// exposes the supplied `IXamlMetadataProvider`.
     ///
@@ -1438,6 +1548,13 @@ impl DynWinRTValue {
             dynwinrt::WinRTValue::Guid(g) => Ok(WinGUID(*g)),
             _ => Err(PyRuntimeError::new_err("Value is not a GUID")),
         }
+    }
+
+    /// Copy the initialized bytes from a WinRT IBuffer into Python bytes.
+    fn to_bytes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
+        dynwinrt::copy_from_ibuffer(&self.0)
+            .map(|bytes| pyo3::types::PyBytes::new(py, &bytes))
+            .map_err(map_dynwinrt_error)
     }
 
     fn is_null(&self) -> bool {

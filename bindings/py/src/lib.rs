@@ -18,6 +18,7 @@ mod dynwinrt {
         m.py().run(
             c"
 from collections.abc import (
+    Coroutine as _Coroutine,
     Iterable as _Iterable,
     Iterator as _Iterator,
     Mapping as _Mapping,
@@ -30,8 +31,9 @@ from itertools import count as _count
 from contextvars import ContextVar as _ContextVar
 from operator import index as _index
 from threading import get_ident as _thread_get_ident
+from types import TracebackType as _TracebackType
+from typing import Any as _Any, Awaitable as _Awaitable, Callable as _Callable
 from typing import Protocol as _Protocol, TypeVar as _TypeVar
-from typing import Awaitable as _Awaitable, Callable as _Callable
 from uuid import UUID as _UUID
 from weakref import WeakValueDictionary as _WeakValueDictionary
 
@@ -46,6 +48,24 @@ class WinRTAsync(_Awaitable[_T], _Protocol[_T]):
 
 class WinRTAsyncWithProgress(WinRTAsync[_T], _Protocol[_T, _P]):
     def progress(self, callback: _Callable[[_P], object]) -> None: ...
+
+class WinRTCoroutine(WinRTAsync[_T], _Protocol[_T]):
+    def send(self, value: _Any, /) -> _Any: ...
+    def throw(
+        self,
+        typ: type[BaseException] | BaseException,
+        val: _Any = None,
+        tb: _TracebackType | None = None,
+        /,
+    ) -> _Any: ...
+    def close(self) -> None: ...
+
+class WinRTCoroutineWithProgress(
+    WinRTAsyncWithProgress[_T, _P],
+    WinRTCoroutine[_T],
+    _Protocol[_T, _P],
+):
+    pass
 
 _active_projected_lifetime_scope = _ContextVar(
     'dynwinrt_active_projected_lifetime_scope',
@@ -462,14 +482,33 @@ async def _dynwinrt_convert_future(future, converter):
             future.cancel()
         raise
 
+async def _dynwinrt_drive_future(future):
+    return await future
+
+async def _dynwinrt_empty_coroutine():
+    return None
+
+def _dynwinrt_validate_throw(typ, value, traceback):
+    if isinstance(typ, BaseException):
+        if value is not None:
+            raise TypeError('instance exception may not have a separate value')
+    elif not isinstance(typ, type) or not issubclass(typ, BaseException):
+        raise TypeError(
+            'exceptions must be classes or instances deriving from BaseException'
+        )
+    if traceback is not None and not isinstance(traceback, _TracebackType):
+        raise TypeError('throw() third argument must be a traceback object')
+
 def _dynwinrt_link_cancellation(task, future):
     def cancel_inner(completed):
         if completed.cancelled() and not future.done():
             future.cancel()
     task.add_done_callback(cancel_inner)
 
-def _dynwinrt_dispatch_progress(callback, converter, value):
-    callback(converter(value))
+def _dynwinrt_dispatch_progress(dispatch_state, value):
+    if dispatch_state:
+        callback, converter = dispatch_state
+        callback(converter(value))
 ",
             Some(&m.dict()),
             None,
@@ -491,11 +530,20 @@ def _dynwinrt_dispatch_progress(callback, converter, value):
         m.add_class::<super::runtime::DynWinRtElementFactory>()?;
         m.add_class::<super::async_runtime::DynWinRTAsync>()?;
         m.add_class::<super::async_runtime::DynWinRTAsyncWithProgress>()?;
+        m.py().run(
+            c"
+_Coroutine.register(_DynWinRTAsync)
+_Coroutine.register(_DynWinRTAsyncWithProgress)
+",
+            Some(&m.dict()),
+            None,
+        )?;
 
         // Functions
         m.add_function(wrap_pyfunction!(super::runtime::init_winappsdk, m)?)?;
         m.add_function(wrap_pyfunction!(super::runtime::ro_initialize, m)?)?;
         m.add_function(wrap_pyfunction!(super::runtime::ro_uninitialize, m)?)?;
+        m.add_function(wrap_pyfunction!(super::runtime::unbox_object, m)?)?;
         m.add_function(wrap_pyfunction!(
             super::runtime::register_xaml_runtime_class,
             m
@@ -512,10 +560,13 @@ __all__ = [name for name in __all__ if not name.startswith('_')]
 for _name in (
    'WinRTAsync',
    'WinRTAsyncWithProgress',
+   'WinRTCoroutine',
+   'WinRTCoroutineWithProgress',
    'ProjectedLifetimeScope',
    'projected_lifetime_scope',
    'project_as',
    'release_projected',
+   'unbox_object',
 ):
     if _name not in __all__:
         __all__.append(_name)

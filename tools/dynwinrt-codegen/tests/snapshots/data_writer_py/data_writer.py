@@ -14,7 +14,7 @@ from ._runtime import (
     _dynwinrt_symbol, _dynwinrt_track_projected, _dynwinrt_uuid,
     _dynwinrt_vector, _dynwinrt_wrap_values,
 )
-from dynwinrt import WinRTAsync, WinRTAsyncWithProgress
+from dynwinrt import WinRTCoroutine, WinRTCoroutineWithProgress
 from dynwinrt.dynwinrt import _DynWinRTAsync, _DynWinRTAsyncWithProgress
 
 if TYPE_CHECKING:
@@ -216,10 +216,10 @@ class DataWriter:
     def measure_string(self, value: str) -> int:
         return _IDataWriter.method(28).invoke(self._obj, [DynWinRTValue.from_hstring(value)]).to_u32()
 
-    def store_async(self) -> WinRTAsync[int]:
+    def store_async(self) -> WinRTCoroutine[int]:
         return _dynwinrt_track_projected(_DynWinRTAsync(_IDataWriter.method(29).invoke(self._obj, []), lambda value: value.to_u32()), 'WinRTAsync')
 
-    def flush_async(self) -> WinRTAsync[bool]:
+    def flush_async(self) -> WinRTCoroutine[bool]:
         return _dynwinrt_track_projected(_DynWinRTAsync(_IDataWriter.method(30).invoke(self._obj, []), lambda value: value.to_bool()), 'WinRTAsync')
 
     def detach_buffer(self) -> IBuffer | None:

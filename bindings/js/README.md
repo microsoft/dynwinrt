@@ -101,6 +101,19 @@ Generated `IReference<T>` values use `T | null` in JavaScript. Native values,
 The same projection applies when `IReference<T>` appears inside a WinRT struct;
 packing boxes the field automatically and unpacking returns the native value.
 
+Generated `Windows.Storage.Streams.Buffer` and `IBuffer` projections provide
+copied byte conversion. `fromBuffer()` accepts a Node.js `Buffer` or
+`Uint8Array`, and `toBuffer()` returns a new `Buffer` containing exactly
+`Length` bytes:
+
+```js
+const winrtBuffer = IBuffer.fromBuffer(Buffer.from([0, 1, 255]))
+const bytes = winrtBuffer.toBuffer()
+```
+
+Both directions copy. Mutating the input or releasing the WinRT object does not
+change the returned bytes, and no native buffer pointer is exposed.
+
 Generated packages export `createProjectedLifetimeScope()`. WinUI/XAML hosts
 can create a scope after Application and Window setup, then dispose it before
 the native window and XAML core are destroyed. Active scopes retain projected
@@ -130,6 +143,29 @@ wrapper to another interface view. Use `projectAs(raw, RuntimeClass)` when
 converting a raw value to a generated runtime class. A failed QueryInterface is
 reported as an error. Internal generated `_fromNative()` paths consume native
 return values; application code should use `projectAs()` instead.
+
+### Explicit boxed-value unboxing
+
+Generic WinRT `Object`/`IInspectable` results remain raw `DynWinRtValue`
+instances. Use `unboxObject()` only where the application expects a boxed
+`Windows.Foundation.IPropertyValue`, such as values from
+`DeviceInformation.properties`:
+
+```js
+import { unboxObject } from '@microsoft/dynwinrt'
+
+const raw = deviceInformation.properties.get('System.Devices.DeviceInstanceId')
+const instanceId = unboxObject(raw)
+```
+
+The helper borrows its argument. It maps supported numeric, Boolean, string,
+character, GUID, and corresponding array property types to JavaScript values;
+`Int64` and `UInt64` use `bigint`, GUIDs use strings, and `UInt8Array` uses
+`Uint8Array`. `null` stays `null`. If the object does not implement
+`IPropertyValue`, the exact same JavaScript object is returned, so identity and
+later projection remain intact. Unsupported property types (including
+`DateTime`, `TimeSpan`, geometry, inspectable, and other types) and native getter
+failures throw.
 
 Generated WinUI `IElementFactory` bindings expose `IElementFactory.create()`.
 It creates a synchronous, UI-thread factory backed by JavaScript

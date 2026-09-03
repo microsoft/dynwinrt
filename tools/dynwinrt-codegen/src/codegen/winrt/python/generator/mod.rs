@@ -129,7 +129,7 @@ pub fn generate_runtime_support_module() -> String {
 }
 
 const ASYNC_IMPORT_LINE: &str = "\
-from dynwinrt import WinRTAsync, WinRTAsyncWithProgress
+from dynwinrt import WinRTCoroutine, WinRTCoroutineWithProgress
 from dynwinrt.dynwinrt import _DynWinRTAsync, _DynWinRTAsyncWithProgress
 ";
 
