@@ -82,6 +82,7 @@
     "format:rs": "cargo fmt",
     "lint": "oxlint",
     "test": "ava",
+    "test:types": "tsc --noEmit --strict --target ESNext --module NodeNext --moduleResolution NodeNext __test__/index.spec.ts",
     "test:tsfn": "npm run build:test-hooks && ava __test__/tsfn.spec.ts",
     "version": "napi version"
   },

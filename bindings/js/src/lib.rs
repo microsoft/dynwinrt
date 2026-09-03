@@ -279,7 +279,7 @@ fn js_safe_i64(value: i64, context: &str) -> napi::Result<i64> {
   /// JavaScript `null` and WinRT null are returned as `null`. A non-`IPropertyValue`
   /// `DynWinRtValue` is returned unchanged, preserving JavaScript and COM identity.
   #[napi(
-    ts_args_type = "value: DynWinRtValue | null",
+    ts_args_type = "value: unknown",
     ts_return_type = "boolean | number | bigint | string | Uint8Array | number[] | bigint[] | boolean[] | string[] | DynWinRtValue | null"
   )]
   pub fn unbox_object<'env>(env: Env, value: Unknown<'env>) -> napi::Result<Unknown<'env>> {

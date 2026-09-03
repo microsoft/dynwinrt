@@ -852,8 +852,12 @@ test('explicitly unbox WinRT property values without changing raw objects', (t) 
   const deviceProperty = mapInterface
     .methodByName('Lookup')
     .invoke(propertyMap.cast(mapType.iid()), [DynWinRtValue.hstring('System.Devices.DeviceInstanceId')])
-  t.is(unboxObject(deviceProperty), 'BLE Device')
+  const generatedObjectResult: unknown = deviceProperty
+  t.is(unboxObject(generatedObjectResult), 'BLE Device')
   t.is(unboxObject(boxedString), 'BLE Device')
+  t.throws(() => unboxObject('not a DynWinRtValue'), {
+    message: /Failed to recover `DynWinRTValue` type from napi value/,
+  })
 })
 
 test('resolve WinRT async operations through the Node event loop', async (t) => {
