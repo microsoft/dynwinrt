@@ -3472,11 +3472,11 @@ fn write_bindings_manifest_with_plan(
     } else {
         BTreeSet::new()
     };
-    let com_subpath_names = collect_com_subpath_names(&output_dir.join("com"))?;
+    let has_com_output = has_com_output(&output_dir.join("com"))?;
     let content = package::render_bindings_package_json(&package::BindingsPackageManifestInput {
         has_winrt_root,
+        has_com_output,
         winrt_subpath_names: &winrt_subpath_names,
-        com_subpath_names: &com_subpath_names,
     });
     let path = output_dir.join("package.json");
     ensure_safe_generated_destination(output_dir, &path)?;
@@ -3484,7 +3484,7 @@ fn write_bindings_manifest_with_plan(
         .map_err(|error| format!("Failed to write {}: {error}", path.display()))
 }
 
-fn collect_com_subpath_names(com_output_dir: &Path) -> Result<BTreeSet<String>, String> {
+fn has_com_output(com_output_dir: &Path) -> Result<bool, String> {
     if let Some(manifest) = read_com_generation_manifest(com_output_dir)? {
         if manifest.version != COM_MANIFEST_VERSION {
             return Err(format!(
@@ -3493,14 +3493,7 @@ fn collect_com_subpath_names(com_output_dir: &Path) -> Result<BTreeSet<String>, 
                 com_output_dir.join(COM_MANIFEST_FILE).display()
             ));
         }
-        return Ok(manifest
-            .roots
-            .values()
-            .flatten()
-            .filter(|path| !path.starts_with("unsafe/"))
-            .filter_map(|path| path.strip_suffix(".js"))
-            .map(str::to_string)
-            .collect());
+        return Ok(!manifest.roots.is_empty());
     }
     let index_path = com_output_dir.join("index.d.ts");
     if index_path.is_file() {
@@ -3510,7 +3503,7 @@ fn collect_com_subpath_names(com_output_dir: &Path) -> Result<BTreeSet<String>, 
             COM_MANIFEST_VERSION
         ));
     }
-    Ok(BTreeSet::new())
+    Ok(false)
 }
 
 fn collect_com_cjs_exports(content: &str) -> BTreeSet<String> {
@@ -8999,7 +8992,7 @@ mod tests {
         )
         .unwrap();
 
-        let error = collect_com_subpath_names(&output).unwrap_err();
+        let error = has_com_output(&output).unwrap_err();
         assert!(
             error.contains("have no version 2 generation manifest")
                 && error.contains("delete and regenerate"),

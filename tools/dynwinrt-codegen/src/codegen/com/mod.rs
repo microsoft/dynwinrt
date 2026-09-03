@@ -138,7 +138,7 @@ pub fn generate_com_interface_files(
     winmd_paths: &str,
 ) -> Result<ComGeneratedOutput, String> {
     let projected = project::project_com_interface(meta, winmd_paths)?;
-    let mut output = javascript::render::render_com_interface(&projected);
+    let mut output = javascript::render::render_com_interface(&projected)?;
     let mut pending = enumerator_interface_refs(&projected);
     let mut generated = std::collections::BTreeSet::from([(
         meta.interface.namespace.clone(),
@@ -159,7 +159,7 @@ pub fn generate_com_interface_files(
         let projected = project::project_com_interface(&referenced, winmd_paths)
             .or_else(|_| project::project_com_reference_interface(&referenced))?;
         pending.extend(enumerator_interface_refs(&projected));
-        let rendered = javascript::render::render_com_interface(&projected);
+        let rendered = javascript::render::render_com_interface(&projected)?;
         insert_extra(
             &mut extras,
             canonical_module_file_path(&namespace, &name, "js")?,
@@ -228,5 +228,5 @@ pub fn generate_com_coclass_files(
     winmd_paths: &str,
 ) -> Result<ComGeneratedOutput, String> {
     let projected = project::project_com_coclass(meta, winmd_paths)?;
-    Ok(javascript::render::render_com_coclass(&projected))
+    javascript::render::render_com_coclass(&projected)
 }

@@ -6180,6 +6180,49 @@ fn mixed_generation_supports_one_command_and_both_incremental_orders() {
     }
 }
 
+#[test]
+fn mixed_unsafe_only_com_retains_com_package_exports() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+    let Some(windows_winmd) = discovered_windows_winmd() else {
+        eprintln!("Skipping: Windows.winmd not available");
+        return;
+    };
+    let output = std::env::temp_dir().join(format!(
+        "dynwinrt-codegen-mixed-unsafe-only-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&output);
+    remove_com_generation_lock(&output);
+
+    run_codegen_command(
+        &win32_winmd(),
+        Some("Windows.Win32.System.Wmi"),
+        "IWbemServices",
+        &output,
+    );
+    run_codegen_command(
+        &format!("{};{}", windows_winmd, win32_winmd()),
+        Some("Windows.Foundation"),
+        "Uri",
+        &output,
+    );
+
+    assert!(
+        generated_unsafe_module(&output, "Windows.Win32.System.Wmi", "IWbemServices", "js")
+            .is_file()
+    );
+    let package = fs::read_to_string(output.join("package.json")).unwrap();
+    assert!(package.contains("\".\":"));
+    assert!(package.contains("\"./com\":"));
+    assert!(package.contains("\"./com/*\":"));
+
+    fs::remove_dir_all(&output).unwrap();
+    remove_com_generation_lock(&output);
+}
+
 /// Requirement 8: multi-interface COM generation must be atomic enough that
 /// a later request's resolution/projection failure doesn't leave an earlier,
 /// successfully-projected interface's files (or the `com/` barrel) newly

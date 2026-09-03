@@ -35,37 +35,39 @@ pub struct ComGeneratedOutput {
 
 pub(in crate::codegen::com) fn render_com_interface(
     meta: &ProjectedComInterface,
-) -> ComGeneratedOutput {
+) -> Result<ComGeneratedOutput, String> {
     render_projected_interface(meta)
 }
 
-fn render_projected_interface(meta: &ProjectedComInterface) -> ComGeneratedOutput {
+fn render_projected_interface(meta: &ProjectedComInterface) -> Result<ComGeneratedOutput, String> {
     let js = com_esm_to_cjs(&render_js(meta), &meta.namespace);
     let dts = render_dts(meta);
     let mut extra_files = BTreeMap::new();
     for en in &meta.referenced_enums {
         let (enum_js, enum_dts) = render_enum_files(en);
-        extra_files.insert(
-            canonical_module_file_path(&en.namespace, &en.name, "js")
-                .expect("projected COM enum has a safe module identity"),
+        insert_unique_extra_file(
+            &mut extra_files,
+            canonical_module_file_path(&en.namespace, &en.name, "js")?,
             enum_js,
-        );
-        extra_files.insert(
-            canonical_module_file_path(&en.namespace, &en.name, "d.ts")
-                .expect("projected COM enum has a safe module identity"),
+            &format!("enum {}.{}", en.namespace, en.name),
+        )?;
+        insert_unique_extra_file(
+            &mut extra_files,
+            canonical_module_file_path(&en.namespace, &en.name, "d.ts")?,
             enum_dts,
-        );
+            &format!("enum {}.{}", en.namespace, en.name),
+        )?;
     }
-    ComGeneratedOutput {
+    Ok(ComGeneratedOutput {
         js,
         dts,
         extra_files: extra_files.into_iter().collect(),
-    }
+    })
 }
 
 pub(in crate::codegen::com) fn render_com_coclass(
     meta: &ProjectedComCoclass,
-) -> ComGeneratedOutput {
+) -> Result<ComGeneratedOutput, String> {
     let (js, dts) = render_coclass_files(
         &meta.namespace,
         &meta.name,
@@ -74,30 +76,61 @@ pub(in crate::codegen::com) fn render_com_coclass(
     );
     let mut extra_files = BTreeMap::new();
     for interface in &meta.associated_interfaces {
-        let output = render_projected_interface(interface);
-        extra_files.insert(
-            canonical_module_file_path(&interface.namespace, &interface.name, "js")
-                .expect("projected COM interface has a safe module identity"),
+        let output = render_projected_interface(interface)?;
+        let identity = format!("interface {}.{}", interface.namespace, interface.name);
+        insert_unique_extra_file(
+            &mut extra_files,
+            canonical_module_file_path(&interface.namespace, &interface.name, "js")?,
             output.js,
-        );
-        extra_files.insert(
-            canonical_module_file_path(&interface.namespace, &interface.name, "d.ts")
-                .expect("projected COM interface has a safe module identity"),
+            &identity,
+        )?;
+        insert_unique_extra_file(
+            &mut extra_files,
+            canonical_module_file_path(&interface.namespace, &interface.name, "d.ts")?,
             output.dts,
-        );
+            &identity,
+        )?;
         for (name, content) in output.extra_files {
-            if let Some(existing) = extra_files.insert(name.clone(), content.clone())
-                && existing != content
-            {
-                panic!("validated coclass emitted conflicting `{name}` files");
-            }
+            insert_shared_extra_file(&mut extra_files, name, content)?;
         }
     }
-    ComGeneratedOutput {
+    Ok(ComGeneratedOutput {
         js,
         dts,
         extra_files: extra_files.into_iter().collect(),
+    })
+}
+
+fn insert_unique_extra_file(
+    files: &mut BTreeMap<String, String>,
+    path: String,
+    content: String,
+    identity: &str,
+) -> Result<(), String> {
+    if files.contains_key(&path) {
+        return Err(format!(
+            "Classic-COM canonical path collision for {identity}: `{path}` is already emitted"
+        ));
     }
+    files.insert(path, content);
+    Ok(())
+}
+
+fn insert_shared_extra_file(
+    files: &mut BTreeMap<String, String>,
+    path: String,
+    content: String,
+) -> Result<(), String> {
+    if let Some(existing) = files.get(&path) {
+        if existing != &content {
+            return Err(format!(
+                "Classic-COM coclass emitted conflicting canonical output `{path}`"
+            ));
+        }
+        return Ok(());
+    }
+    files.insert(path, content);
+    Ok(())
 }
 
 fn render_coclass_files(

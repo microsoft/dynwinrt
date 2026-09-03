@@ -21,7 +21,7 @@ fn generate_com_interface_files(
     winmd_paths: &str,
 ) -> Result<super::ComGeneratedOutput, String> {
     let projected = project_com_interface(meta, winmd_paths)?;
-    Ok(render_com_interface(&projected))
+    render_com_interface(&projected)
 }
 
 #[test]
@@ -38,7 +38,7 @@ fn renderer_api_accepts_only_projected_ir() {
         sink: None,
         evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
     };
-    let output = render_com_interface(&projected);
+    let output = render_com_interface(&projected).unwrap();
     assert!(output.js.contains("registerIUnknownInterface"));
     assert!(output.dts.contains("export declare class ITest"));
     assert!(
@@ -159,7 +159,7 @@ fn renderer_serializes_validated_com_sink_plan() {
         evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
     };
 
-    let output = render_com_interface(&projected);
+    let output = render_com_interface(&projected).unwrap();
     assert!(output.js.contains("static implementation(handlers)"));
     assert!(
         output
@@ -264,7 +264,7 @@ fn renderer_serializes_direct_and_void_com_sink_returns() {
         evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
     };
 
-    let output = render_com_interface(&projected);
+    let output = render_com_interface(&projected).unwrap();
     assert!(output.js.contains("return DynCom.i32(result);"));
     assert!(output.js.contains("return undefined;"));
     assert!(
@@ -368,7 +368,7 @@ fn renderer_projects_borrowed_hwnd_output_as_numeric_handle() {
         evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
     };
 
-    let output = render_com_interface(&projected);
+    let output = render_com_interface(&projected).unwrap();
     assert!(
         output
             .js
@@ -436,7 +436,7 @@ fn canonical_iunknown_arrays_use_managed_values_without_nominal_wrappers() {
         sink: None,
         evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
     };
-    let output = render_com_interface(&projected);
+    let output = render_com_interface(&projected).unwrap();
     assert!(
         output
             .dts
@@ -482,7 +482,7 @@ fn renderer_projects_bstr_replacement_as_a_string_roundtrip() {
         sink: None,
         evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
     };
-    let output = render_com_interface(&projected);
+    let output = render_com_interface(&projected).unwrap();
 
     assert!(
         output
@@ -530,7 +530,7 @@ fn renderer_allows_null_only_for_nullable_bstr_inputs() {
         sink: None,
         evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
     };
-    let output = render_com_interface(&projected);
+    let output = render_com_interface(&projected).unwrap();
 
     assert!(
         output
@@ -566,7 +566,7 @@ fn real_automation_bstr_interfaces_render_natural_string_apis() {
             crate::com_metadata::parse_com_interface(&winmd, namespace, interface_name).unwrap();
         let projected = crate::codegen::com::project::project_com_interface(&meta, &winmd)
             .unwrap_or_else(|error| panic!("{namespace}.{interface_name}: {error}"));
-        let output = render_com_interface(&projected);
+        let output = render_com_interface(&projected).unwrap();
         assert!(output.js.contains("DynCom.bstrType()"));
         assert!(output.js.contains("DynCom.takeBstr("));
         assert!(output.dts.contains("string"));
@@ -649,7 +649,8 @@ fn renderer_keeps_dynamic_iid_native_order_and_all_results() {
         referenced_enums: Vec::new(),
         sink: None,
         evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
-    });
+    })
+    .unwrap();
 
     assert!(output.js.contains(
         ".addIn(DynCom.u32Type()).addOut(DynCom.i32Type()).addIn(DynCom.pointerType()).addOut(DynCom.ownedComPointerType()).addIn(DynCom.u16Type()).addOut(DynCom.u64Type())"
@@ -706,7 +707,7 @@ fn renderer_emits_distinct_by_value_variant_inputs() {
         evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
     };
 
-    let output = render_com_interface(&projected);
+    let output = render_com_interface(&projected).unwrap();
     assert!(output.js.contains(
         ".addMethodAt(3, 'UseVariant', new DynComMethodSig().addIn(DynCom.variantByValueType()))"
     ));
@@ -846,7 +847,7 @@ fn renderer_serializes_fixed_capacity_bytes_from_projected_ir() {
         evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
     };
 
-    let output = render_com_interface(&projected);
+    let output = render_com_interface(&projected).unwrap();
     assert!(
         output
             .js
@@ -952,7 +953,7 @@ fn parallel_arrays_use_semantic_element_counts_and_guid_conversion() {
         evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
     };
 
-    let output = render_com_interface(&projected);
+    let output = render_com_interface(&projected).unwrap();
     assert!(
         output
             .js
@@ -1081,7 +1082,7 @@ fn renderer_emits_tagged_unions_and_automation_runtime_transfers() {
         evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
     };
 
-    let output = render_com_interface(&projected);
+    let output = render_com_interface(&projected).unwrap();
     assert!(output.js.contains("createTaggedValue(activeField, bytes)"));
     assert!(output.js.contains("DynCom.nativeUnion("));
     assert!(output.js.contains("DynCom.variant("));
@@ -1160,7 +1161,8 @@ fn renderer_emits_explicit_idispatch_invoke_options_and_compound_types() {
         referenced_enums: Vec::new(),
         sink: None,
         evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
-    });
+    })
+    .unwrap();
 
     assert!(output.js.contains(".addIn(DynCom.dispatchParamsType())"));
     assert!(
@@ -1220,7 +1222,7 @@ fn coclass_renderer_uses_new_and_runtime_query_interface_views() {
         associated_interfaces: vec![primary],
     };
 
-    let output = render_com_coclass(&coclass);
+    let output = render_com_coclass(&coclass).unwrap();
 
     assert!(output.js.contains("class Test extends ITest4"));
     assert!(
@@ -1249,6 +1251,60 @@ fn coclass_renderer_uses_new_and_runtime_query_interface_views() {
             .iter()
             .any(|(name, _)| name == "tests/ITest4.js")
     );
+}
+
+#[test]
+fn coclass_renderer_rejects_exact_canonical_interface_path_collisions() {
+    let interface = |namespace: &str, iid: &str| ProjectedComInterface {
+        name: "ICollision".into(),
+        namespace: namespace.into(),
+        iid: iid.into(),
+        base_iids: Vec::new(),
+        is_iunknown_rooted: true,
+        methods: Vec::new(),
+        activation: ActivationPlan::None,
+        referenced_enums: Vec::new(),
+        sink: None,
+        evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
+    };
+    let first = interface("Tests.FooBar", "00000000-0000-0000-0000-000000000001");
+    let second = interface("Tests.Foo-Bar", "00000000-0000-0000-0000-000000000002");
+    let coclass = ProjectedComCoclass {
+        name: "CollisionClass".into(),
+        namespace: "Tests".into(),
+        clsid: "10000000-0000-0000-0000-000000000001".into(),
+        primary_interface: first.clone(),
+        associated_interfaces: vec![first, second],
+    };
+
+    let error = render_com_coclass(&coclass).unwrap_err();
+    assert!(error.contains("canonical path collision"), "{error}");
+    assert!(error.contains("tests/foo-bar/ICollision.js"), "{error}");
+}
+
+#[test]
+fn renderer_returns_invalid_referenced_identity_errors() {
+    let projected = ProjectedComInterface {
+        name: "ITest".into(),
+        namespace: "Tests".into(),
+        iid: "00000000-0000-0000-0000-000000000001".into(),
+        base_iids: Vec::new(),
+        is_iunknown_rooted: true,
+        methods: Vec::new(),
+        activation: ActivationPlan::None,
+        referenced_enums: vec![ProjectedComEnum {
+            namespace: "Tests.CON".into(),
+            name: "FLAGS".into(),
+            underlying: ComEnumUnderlying::I32,
+            members: Vec::new(),
+        }],
+        sink: None,
+        evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
+    };
+
+    let error = render_com_interface(&projected).unwrap_err();
+    assert!(error.contains("reserved"), "{error}");
+    assert!(error.contains("con"), "{error}");
 }
 
 #[test]
