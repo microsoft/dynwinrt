@@ -46,7 +46,7 @@ from ._typing import (
     DynWinRTType, DynWinRTValue, DynWinRTArray, DynWinRTStruct, DynWinRtDelegate,
     _DynWinRTProjector,
 )\n";
-const ASYNC_IMPORT_LINE: &str = "from dynwinrt import WinRTAsync, WinRTAsyncWithProgress\n";
+const ASYNC_IMPORT_LINE: &str = "from dynwinrt import WinRTCoroutine, WinRTCoroutineWithProgress\n";
 
 pub fn generate_typing_support_module() -> String {
     format!(

@@ -7,7 +7,8 @@ Phase 1 — Python binding API additions for JS parity.
 Covers:
   * DynWinRTMethodHandle.invoke_all  — multi-out-parameter invocation
   * DynWinRTValue.cancel             — IAsyncInfo::Cancel
-  * WinRTAsync                       — public asyncio-compatible protocols
+  * WinRTAsync                       — public structural async protocols
+  * WinRTCoroutine                   — asyncio-compatible return protocols
   * DynWinRTArray.to_bytes/from_bytes — Pythonic byte-buffer interop
   * DynWinRTArray.from_object_values — T[] of object/interface elements
   * DynWinRTValue.to_bytes/from_bytes — copied IBuffer interop
@@ -42,6 +43,8 @@ from dynwinrt import (
     release_projected,
     WinRTAsync,
     WinRTAsyncWithProgress,
+    WinRTCoroutine,
+    WinRTCoroutineWithProgress,
     WinGUID,
     ro_initialize,
     register_xaml_runtime_class,
@@ -246,7 +249,6 @@ def test_async_wrapper_is_a_public_coroutine(tmp_path):
     assert inspect.isawaitable(operation)
     assert asyncio.iscoroutine(operation)
     assert isinstance(operation, Coroutine)
-    assert isinstance(operation, WinRTAsync)
     operation.release()
 
 
@@ -1029,6 +1031,8 @@ def test_element_factory_callback_cleanup_allows_reentrant_destructors():
 def test_async_protocols_are_public():
     assert WinRTAsync.__name__ == "WinRTAsync"
     assert WinRTAsyncWithProgress.__name__ == "WinRTAsyncWithProgress"
+    assert WinRTCoroutine.__name__ == "WinRTCoroutine"
+    assert WinRTCoroutineWithProgress.__name__ == "WinRTCoroutineWithProgress"
     assert not hasattr(dynwinrt, "_DynWinRTAsync")
 
 

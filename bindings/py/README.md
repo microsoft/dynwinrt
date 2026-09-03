@@ -34,8 +34,11 @@ async with asyncio.TaskGroup() as group:
     task = group.create_task(writer.store_async())
 ```
 
-Their public types are `WinRTAsync[T]` and
-`WinRTAsyncWithProgress[T, P]`; the concrete runtime wrappers remain private.
+Generated methods return `WinRTCoroutine[T]` and
+`WinRTCoroutineWithProgress[T, P]`, which retain the structural
+`WinRTAsync[T]` and `WinRTAsyncWithProgress[T, P]` contracts while also being
+typed as coroutines for `asyncio.create_task()`. The concrete runtime wrappers
+remain private.
 
 Regenerated bindings no longer block inside async methods. Existing code that
 expects an immediate result must use `await operation` or `operation.wait()`.

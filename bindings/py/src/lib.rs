@@ -17,7 +17,6 @@ mod dynwinrt {
         super::async_runtime::init_async_runtime();
         m.py().run(
             c"
-from abc import abstractmethod as _abstractmethod
 from collections.abc import (
     Coroutine as _Coroutine,
     Iterable as _Iterable,
@@ -33,7 +32,8 @@ from contextvars import ContextVar as _ContextVar
 from operator import index as _index
 from threading import get_ident as _thread_get_ident
 from types import TracebackType as _TracebackType
-from typing import Any as _Any, Callable as _Callable, Generic as _Generic, TypeVar as _TypeVar
+from typing import Any as _Any, Awaitable as _Awaitable, Callable as _Callable
+from typing import Protocol as _Protocol, TypeVar as _TypeVar
 from uuid import UUID as _UUID
 from weakref import WeakValueDictionary as _WeakValueDictionary
 
@@ -41,17 +41,31 @@ _T = _TypeVar('_T', covariant=True)
 _P = _TypeVar('_P', covariant=True)
 _WINRT_EPOCH = _datetime(1601, 1, 1, tzinfo=_timezone.utc)
 
-class WinRTAsync(_Coroutine[_Any, _Any, _T]):
-    @_abstractmethod
+class WinRTAsync(_Awaitable[_T], _Protocol[_T]):
     def wait(self) -> _T: ...
-    @_abstractmethod
     def cancel(self) -> None: ...
-    @_abstractmethod
     def release(self) -> None: ...
 
-class WinRTAsyncWithProgress(WinRTAsync[_T], _Generic[_T, _P]):
-    @_abstractmethod
+class WinRTAsyncWithProgress(WinRTAsync[_T], _Protocol[_T, _P]):
     def progress(self, callback: _Callable[[_P], object]) -> None: ...
+
+class WinRTCoroutine(WinRTAsync[_T], _Protocol[_T]):
+    def send(self, value: _Any, /) -> _Any: ...
+    def throw(
+        self,
+        typ: type[BaseException] | BaseException,
+        val: _Any = None,
+        tb: _TracebackType | None = None,
+        /,
+    ) -> _Any: ...
+    def close(self) -> None: ...
+
+class WinRTCoroutineWithProgress(
+    WinRTAsyncWithProgress[_T, _P],
+    WinRTCoroutine[_T],
+    _Protocol[_T, _P],
+):
+    pass
 
 _active_projected_lifetime_scope = _ContextVar(
     'dynwinrt_active_projected_lifetime_scope',
@@ -516,8 +530,8 @@ def _dynwinrt_dispatch_progress(callback, converter, value):
         m.add_class::<super::async_runtime::DynWinRTAsyncWithProgress>()?;
         m.py().run(
             c"
-WinRTAsync.register(_DynWinRTAsync)
-WinRTAsyncWithProgress.register(_DynWinRTAsyncWithProgress)
+_Coroutine.register(_DynWinRTAsync)
+_Coroutine.register(_DynWinRTAsyncWithProgress)
 ",
             Some(&m.dict()),
             None,
@@ -544,6 +558,8 @@ __all__ = [name for name in __all__ if not name.startswith('_')]
 for _name in (
    'WinRTAsync',
    'WinRTAsyncWithProgress',
+   'WinRTCoroutine',
+   'WinRTCoroutineWithProgress',
    'ProjectedLifetimeScope',
    'projected_lifetime_scope',
    'project_as',

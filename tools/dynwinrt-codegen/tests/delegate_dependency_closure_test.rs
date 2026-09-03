@@ -163,16 +163,16 @@ fn generated_interfaces_import_only_runtime_delegates() {
         "{dts}",
     );
     assert!(
-        py.contains("WinRTAsync[list[DynWinRTValue | None]]",)
+        py.contains("WinRTCoroutine[list[DynWinRTValue | None]]",)
             && py.contains("value.as_array().to_values()",)
             && py.contains("def callbacks(self) -> list[DynWinRTValue | None]:",)
-            && !py.contains("WinRTAsync[list[AsyncHandler | None]]",),
+            && !py.contains("WinRTCoroutine[list[AsyncHandler | None]]",),
         "{py}",
     );
     assert!(
-        pyi.contains("WinRTAsync[list[DynWinRTValue | None]]",)
+        pyi.contains("WinRTCoroutine[list[DynWinRTValue | None]]",)
             && pyi.contains("def callbacks(self) -> list[DynWinRTValue | None]:",)
-            && !pyi.contains("WinRTAsync[list[AsyncHandler | None]]",),
+            && !pyi.contains("WinRTCoroutine[list[AsyncHandler | None]]",),
         "{pyi}",
     );
 }
