@@ -505,8 +505,10 @@ def _dynwinrt_link_cancellation(task, future):
             future.cancel()
     task.add_done_callback(cancel_inner)
 
-def _dynwinrt_dispatch_progress(callback, converter, value):
-    callback(converter(value))
+def _dynwinrt_dispatch_progress(dispatch_state, value):
+    if dispatch_state:
+        callback, converter = dispatch_state
+        callback(converter(value))
 ",
             Some(&m.dict()),
             None,

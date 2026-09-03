@@ -530,12 +530,14 @@ def test_progress_dispatch_propagates_callback_errors():
     def fail(_value):
         raise ValueError("progress callback failed")
 
+    dispatch_state = [fail, lambda value: value.to_number()]
     with pytest.raises(ValueError, match="progress callback failed"):
         _dynwinrt_dispatch_progress(
-            fail,
-            lambda value: value.to_number(),
+            dispatch_state,
             DynWinRTValue.from_u32(17),
         )
+    dispatch_state.clear()
+    _dynwinrt_dispatch_progress(dispatch_state, DynWinRTValue.from_u32(17))
 
 
 def test_observable_vector_reports_mutations_and_unsubscribes():

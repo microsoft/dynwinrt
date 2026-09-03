@@ -710,6 +710,8 @@ class TestHttpProgress:
                 cancel_projected.release()
                 del observer, cancel_projected, cancel_task
                 await asyncio.sleep(0)
+                gc.collect()
+                assert observer_ref() is None
                 return body, snapshots, cancel_raw, observer_ref
 
             body, snapshots, cancel_raw, observer_ref = asyncio.run(run_operation())
