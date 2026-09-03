@@ -5,6 +5,6 @@
     "moduleResolution": "NodeNext",
     "noEmit": true
   },
-  "include": ["raw-constructibility.ts", "node-buffer.d.ts"],
+  "include": ["raw-constructibility.ts"],
   "exclude": []
 }
