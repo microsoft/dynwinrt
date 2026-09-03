@@ -6,11 +6,11 @@ import { DynCom, DynComMethodSig, WinGuid } from '../../../../bindings/js/dist/c
 import {
   IID_IStream,
   IStream,
-} from '../../e2e_generated/com/stream/com/IStream.js';
+} from '../../e2e_generated/com/stream/com/windows/win32/system/com/IStream.js';
 import {
   IID_IWICImagingFactory,
   IWICImagingFactory,
-} from '../../e2e_generated/com/wic/com/IWICImagingFactory.js';
+} from '../../e2e_generated/com/wic/com/windows/win32/graphics/imaging/IWICImagingFactory.js';
 
 const CLSID_WIC_IMAGING_FACTORY = 'cacaf262-9370-4615-a13b-9f5539da4c0a';
 const IID_IWIC_STREAM = WinGuid.parse('135ff860-22b7-4ddf-b0f6-218f4f299a43');

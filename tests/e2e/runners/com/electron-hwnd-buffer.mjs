@@ -6,8 +6,8 @@
 // contents as the handle value. Other Buffer-backed pointers retain address
 // semantics.
 
-import { TaskbarList } from '../../e2e_generated/com/shell/com/TaskbarList.js';
-import { TBPFLAG } from '../../e2e_generated/com/shell/com/TBPFLAG.js';
+import { TaskbarList } from '../../e2e_generated/com/shell/com/windows/win32/ui/shell/TaskbarList.js';
+import { TBPFLAG } from '../../e2e_generated/com/shell/com/windows/win32/ui/shell/TBPFLAG.js';
 import { acquireHwndBigInt } from './hwnd.mjs';
 
 function fail(msg) {

@@ -261,8 +261,9 @@ mod tests {
     }
 
     #[test]
-    fn com_only_package_preserves_legacy_root_subpaths() {
-        let com = BTreeSet::from(["ITaskbarList3".to_string()]);
+    fn com_only_package_exposes_canonical_root_subpaths() {
+        let module = "windows/win32/ui/shell/ITaskbarList3";
+        let com = BTreeSet::from([module.to_string()]);
         let winrt = BTreeSet::new();
         let out = render_bindings_package_json(&BindingsPackageManifestInput {
             has_winrt_root: false,
@@ -271,10 +272,10 @@ mod tests {
         });
 
         assert!(out.contains("\"type\": \"commonjs\""));
-        assert!(out.contains("\"./ITaskbarList3\""));
-        assert!(out.contains("\"types\": \"./com/ITaskbarList3.d.ts\""));
-        assert!(out.contains("\"import\": \"./com/ITaskbarList3.js\""));
-        assert!(out.contains("\"require\": \"./com/ITaskbarList3.js\""));
+        assert!(out.contains(&format!("\"./{module}\"")));
+        assert!(out.contains(&format!("\"types\": \"./com/{module}.d.ts\"")));
+        assert!(out.contains(&format!("\"import\": \"./com/{module}.js\"")));
+        assert!(out.contains(&format!("\"require\": \"./com/{module}.js\"")));
         assert!(out.contains("\"import\": \"./com/index.mjs\""));
         assert!(out.contains("\"require\": \"./com/index.js\""));
         assert!(out.contains("\"./com/*\""));

@@ -7,7 +7,7 @@
 // Run: .\tests\e2e\e2e_test.ps1 -SkipBuild -Lang com
 
 import { DynCom, DynComMethodSig, WinGuid } from '../../../../bindings/js/dist/com-unsafe.js';
-import { IDataTransferManagerInterop } from '../../e2e_generated/com/shell/com/IDataTransferManagerInterop.js';
+import { IDataTransferManagerInterop } from '../../e2e_generated/com/shell/com/windows/win32/ui/shell/IDataTransferManagerInterop.js';
 import { acquireHwndBigInt } from './hwnd.mjs';
 
 function fail(msg) {

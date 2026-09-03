@@ -1247,7 +1247,7 @@ fn coclass_renderer_uses_new_and_runtime_query_interface_views() {
         output
             .extra_files
             .iter()
-            .any(|(name, _)| name == "ITest4.js")
+            .any(|(name, _)| name == "tests/ITest4.js")
     );
 }
 
@@ -1473,10 +1473,26 @@ fn default_runtime_import_uses_com_subpath() {
     assert_eq!(com_runtime_import_name(), "../dist/com-unsafe.js");
     assert_eq!(com_public_import_name(), "../dist/com.js");
     assert_eq!(com_raw_runtime_import_name(), "../dist/com-unsafe-raw.js");
+    assert_eq!(
+        com_runtime_import_name_for_module("Windows.Win32.System.Com"),
+        "../../../../../dist/com-unsafe.js"
+    );
+    assert_eq!(
+        com_public_import_name_for_module("Windows.Win32.System.Com"),
+        "../../../../../dist/com.js"
+    );
+    assert_eq!(
+        com_raw_runtime_import_name_for_depth(5),
+        "../../../../../../dist/com-unsafe-raw.js"
+    );
     crate::codegen::project::set_import_name("./mycom.js");
     assert_eq!(com_runtime_import_name(), "./mycom.js");
     assert_eq!(com_public_import_name(), "./mycom.js");
     assert_eq!(com_raw_runtime_import_name(), "./mycom.js");
+    assert_eq!(
+        com_runtime_import_name_for_module("Windows.Win32.System.Com"),
+        "../../../../mycom.js"
+    );
     crate::codegen::project::set_import_name(&previous);
 }
 
@@ -2535,13 +2551,13 @@ fn return_only_enum_emits_import_and_sibling_files() {
     assert!(
         output
             .dts
-            .contains("import { THING_KIND } from './THING_KIND.js';")
+            .contains("import { THING_KIND } from '../../example/THING_KIND.js';")
     );
     assert!(
         output
             .extra_files
             .iter()
-            .any(|(name, _)| name == "THING_KIND.d.ts")
+            .any(|(name, _)| name == "windows/win32/example/THING_KIND.d.ts")
     );
 }
 

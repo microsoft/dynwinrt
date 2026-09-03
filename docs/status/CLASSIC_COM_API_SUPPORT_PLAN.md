@@ -255,7 +255,7 @@ non-addressable identities block every method before companion selection.
 `MFASYNCRESULT` therefore produces no callable class.
 
 When an interface has no executable method, generation transactionally commits
-a schema-9 report containing every blocked/manual method and exact reasons,
+a schema-11 report containing every blocked/manual method and exact reasons,
 emits no class `.js`/`.d.ts`, and then exits nonzero. The metadata record is a
 sorted, deduplicated set of every loaded emission/reference/sibling winmd, with
 per-file hashes, a set hash, and an optional exact defining file; it contains no
@@ -277,8 +277,9 @@ pre-publication rollback. No-follow residue cleanup removes only the links,
 never an external target. Case aliases, managed/staged/manifest ownership
 conflicts, transaction-residue names, and unsupported reparse tags fail closed.
 
-Unsafe modules include their stable namespace path, for example
-`com/unsafe/Windows/Win32/System/Wmi/IWbemServicesUnsafe.js`. The short class
+Safe and unsafe modules use the canonical lowercase/kebab namespace layout, for
+example `com/windows/win32/ui/shell/ITaskbarList3.js` and
+`com/unsafe/windows/win32/system/wmi/IWbemServicesUnsafe.js`. The short class
 name remains `IWbemServicesUnsafe`. A short barrel export is emitted only when
 globally unique; ambiguous names are available only through deep modules, and
 incremental order does not affect the resulting barrel.
@@ -304,7 +305,7 @@ generated `runtime.js`/`.d.ts` provides closed pointee, pointer-output, handle,
 interface-replacement, counted-buffer, owned-pointer, and raw-fallback
 strategies. Generated methods validate strategy types before dispatch, clean
 dirty HRESULT failure outputs according to the selected strategy, and report
-exact per-parameter requirements in support schema 9.
+exact per-parameter requirements in support schema 11.
 
 Strategy capabilities are unforgeable frozen objects backed by private
 WeakMaps. Private generated helpers perform prepare, writable-span overlap

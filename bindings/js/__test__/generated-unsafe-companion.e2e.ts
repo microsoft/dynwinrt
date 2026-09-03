@@ -87,8 +87,8 @@ test.serial('actual generated IWbemServices and IAudioClient companions use hard
     t.true(lstatSync(externalJunction).isSymbolicLink())
     t.is(readFileSync(sentinel, 'utf8'), 'outside-target-must-survive')
 
-    const deepBase = join(output, 'com', 'unsafe', 'Windows', 'Win32', 'System', 'Wmi', 'IWbemServicesUnsafe')
-    const audioBase = join(output, 'com', 'unsafe', 'Windows', 'Win32', 'Media', 'Audio', 'IAudioClientUnsafe')
+    const deepBase = join(output, 'com', 'unsafe', 'windows', 'win32', 'system', 'wmi', 'IWbemServicesUnsafe')
+    const audioBase = join(output, 'com', 'unsafe', 'windows', 'win32', 'media', 'audio', 'IAudioClientUnsafe')
     const runner = join(output, 'generated-companion-runner.cjs')
     writeFileSync(
       runner,
@@ -121,7 +121,7 @@ test.serial('actual generated IWbemServices and IAudioClient companions use hard
         `  const esmBarrel = await import(pathToFileURL(${JSON.stringify(join(output, 'com', 'unsafe', 'index.mjs'))}).href)`,
         "  assert.equal(typeof cjs.IWbemServicesUnsafe, 'function')",
         "  assert.equal(typeof audio.IAudioClientUnsafe, 'function')",
-        '  assert.equal(cjs.IWbemServicesUnsafe.support.schemaVersion, 10)',
+        '  assert.equal(cjs.IWbemServicesUnsafe.support.schemaVersion, 11)',
         "  const openNamespaceSupport = cjs.IWbemServicesUnsafe.support.methods.find(method => method.name === 'OpenNamespace')",
         "  assert.equal(openNamespaceSupport.status, 'raw_metadata_complete')",
         "  assert.deepEqual(openNamespaceSupport.reasons, [])",
@@ -655,8 +655,8 @@ test.serial('actual generated IWbemServices and IAudioClient companions use hard
     writeFileSync(
       consumer,
       [
-        "import { IWbemServicesUnsafe } from './com/unsafe/Windows/Win32/System/Wmi/IWbemServicesUnsafe.js'",
-        "import { IAudioClientUnsafe } from './com/unsafe/Windows/Win32/Media/Audio/IAudioClientUnsafe.js'",
+        "import { IWbemServicesUnsafe } from './com/unsafe/windows/win32/system/wmi/IWbemServicesUnsafe.js'",
+        "import { IAudioClientUnsafe } from './com/unsafe/windows/win32/media/audio/IAudioClientUnsafe.js'",
         "import { IWbemServicesUnsafe as FromBarrel } from './com/unsafe/index.js'",
         "import { UnsafePointee, UnsafePointerOutput } from './com/unsafe/runtime.js'",
         "import type { UnsafeOwnedPointer } from './com/unsafe/runtime.js'",

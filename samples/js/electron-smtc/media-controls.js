@@ -15,7 +15,7 @@ const {
 } = require("./generated/index.js");
 const {
   ISystemMediaTransportControlsInterop,
-} = require("./generated/com/ISystemMediaTransportControlsInterop.js");
+} = require("./generated/com/windows/win32/system/win-rt/ISystemMediaTransportControlsInterop.js");
 const { releaseProjected } = require("./generated/lifetime.js");
 
 const TICKS_PER_SECOND = 10_000_000n;

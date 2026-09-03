@@ -176,6 +176,8 @@ enum Commands {
 }
 
 const COM_MANIFEST_FILE: &str = ".dynwinrt-com-manifest.json";
+const COM_MANIFEST_VERSION: u32 = 2;
+const LEGACY_COM_MANIFEST_VERSION: u32 = 1;
 
 #[derive(Debug, Default, Deserialize, Serialize)]
 struct ComGenerationManifest {
@@ -580,6 +582,17 @@ fn run() -> Result<(), String> {
                         }
                     }
                 }
+                if lang == "js"
+                    && !dry_run
+                    && (!com_interfaces.is_empty() || !com_coclasses.is_empty())
+                {
+                    include_legacy_com_manifest_roots(
+                        &output_dir.join("com"),
+                        &winmd,
+                        &mut com_interfaces,
+                        &mut com_coclasses,
+                    )?;
+                }
 
                 // Fail loud: classic-COM codegen only emits `.js` + `.d.ts`
                 // today. If the user asked for a different language
@@ -638,9 +651,13 @@ fn run() -> Result<(), String> {
                         let name = com_iface.interface.name.clone();
                         match com::generate_com_interface_files(com_iface, &winmd) {
                             Ok(out) => {
+                                let module = com::canonical_module_path(
+                                    &com_iface.interface.namespace,
+                                    &name,
+                                )?;
                                 let mut files = vec![
-                                    (format!("{name}.js"), out.js),
-                                    (format!("{name}.d.ts"), out.dts),
+                                    (format!("{module}.js"), out.js),
+                                    (format!("{module}.d.ts"), out.dts),
                                 ];
                                 files.extend(out.extra_files);
                                 generated.push(PlannedComRoot {
@@ -728,9 +745,10 @@ fn run() -> Result<(), String> {
                                     coclass.name, e
                                 )
                             })?;
+                        let module = com::canonical_module_path(&coclass.namespace, &coclass.name)?;
                         let mut files = vec![
-                            (format!("{}.js", coclass.name), out.js),
-                            (format!("{}.d.ts", coclass.name), out.dts),
+                            (format!("{module}.js"), out.js),
+                            (format!("{module}.d.ts"), out.dts),
                         ];
                         files.extend(out.extra_files);
                         generated.push(PlannedComRoot {
@@ -769,13 +787,13 @@ fn run() -> Result<(), String> {
                             &root_files,
                             &planned_files,
                         )?;
+                        apply_com_generation_manifest(&com_output_dir, manifest_update)?;
                         for (file_name, content) in &planned_files {
                             let path = com_output_dir.join(file_name);
                             ensure_safe_generated_destination(output_dir, &path)?;
                             fs::write(&path, content)
                                 .map_err(|e| format!("Failed to write {}: {}", file_name, e))?;
                         }
-                        apply_com_generation_manifest(&com_output_dir, manifest_update)?;
                         if unsafe_package.remove_existing {
                             remove_generated_unsafe_package_files(&com_output_dir)?;
                         }
@@ -3010,27 +3028,35 @@ fn prepare_com_generation_manifest(
     planned_files: &BTreeMap<String, String>,
 ) -> Result<ComManifestUpdate, String> {
     let path = com_output_dir.join(COM_MANIFEST_FILE);
-    let mut manifest = if path.exists() {
-        let content = fs::read_to_string(&path)
-            .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
-        serde_json::from_str::<ComGenerationManifest>(&content).map_err(|error| {
-            format!(
-                "Invalid COM generation manifest {}: {error}",
-                path.display()
-            )
-        })?
-    } else {
-        ComGenerationManifest {
-            version: 1,
+    let mut manifest =
+        read_com_generation_manifest(com_output_dir)?.unwrap_or_else(|| ComGenerationManifest {
+            version: COM_MANIFEST_VERSION,
             roots: BTreeMap::new(),
-        }
-    };
-    if manifest.version != 1 {
+        });
+    if !matches!(
+        manifest.version,
+        LEGACY_COM_MANIFEST_VERSION | COM_MANIFEST_VERSION
+    ) {
         return Err(format!(
             "Unsupported COM generation manifest version {} in {}",
             manifest.version,
             path.display()
         ));
+    }
+    if manifest.version == LEGACY_COM_MANIFEST_VERSION {
+        let missing = manifest
+            .roots
+            .keys()
+            .filter(|root| !updated_roots.contains_key(*root))
+            .cloned()
+            .collect::<Vec<_>>();
+        if !missing.is_empty() {
+            return Err(format!(
+                "Classic-COM canonical layout migration did not reproject retained roots: {}",
+                missing.join(", ")
+            ));
+        }
+        manifest.version = COM_MANIFEST_VERSION;
     }
 
     let mut retained_paths = BTreeMap::<String, (String, BTreeSet<String>)>::new();
@@ -3127,10 +3153,7 @@ fn prepare_com_generation_manifest(
         let all_normal = components
             .iter()
             .all(|component| matches!(component, std::path::Component::Normal(_)));
-        let safe_location = all_normal
-            && (components.len() == 1
-                || (components.len() >= 2
-                    && components[0].as_os_str() == std::ffi::OsStr::new("unsafe")));
+        let safe_location = all_normal && !components.is_empty();
         if !safe_location || !(stale.ends_with(".js") || stale.ends_with(".d.ts")) {
             return Err(format!(
                 "Refusing unsafe path `{stale}` in COM generation manifest {}",
@@ -3156,13 +3179,107 @@ fn apply_com_generation_manifest(
         if stale_path.exists() {
             fs::remove_file(&stale_path)
                 .map_err(|error| format!("Failed to remove {}: {error}", stale_path.display()))?;
+            remove_empty_com_parents(stale_path.parent(), com_output_dir)?;
         }
     }
+
     let content = serde_json::to_string_pretty(&update.manifest)
         .map_err(|error| format!("Failed to serialize COM generation manifest: {error}"))?;
     ensure_safe_generated_destination(output_dir, &path)?;
     fs::write(&path, format!("{content}\n"))
         .map_err(|error| format!("Failed to write {}: {error}", path.display()))
+}
+
+fn read_com_generation_manifest(
+    com_output_dir: &Path,
+) -> Result<Option<ComGenerationManifest>, String> {
+    let path = com_output_dir.join(COM_MANIFEST_FILE);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let content = fs::read_to_string(&path)
+        .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
+    serde_json::from_str::<ComGenerationManifest>(&content)
+        .map(Some)
+        .map_err(|error| {
+            format!(
+                "Invalid COM generation manifest {}: {error}",
+                path.display()
+            )
+        })
+}
+
+fn include_legacy_com_manifest_roots(
+    com_output_dir: &Path,
+    winmd: &str,
+    interfaces: &mut Vec<com_metadata::ComInterfaceMeta>,
+    coclasses: &mut Vec<com_metadata::ComCoclassMeta>,
+) -> Result<(), String> {
+    let Some(manifest) = read_com_generation_manifest(com_output_dir)? else {
+        return Ok(());
+    };
+    if manifest.version != LEGACY_COM_MANIFEST_VERSION {
+        return Ok(());
+    }
+    let mut included = interfaces
+        .iter()
+        .map(|interface| {
+            format!(
+                "{}.{}",
+                interface.interface.namespace, interface.interface.name
+            )
+        })
+        .chain(
+            coclasses
+                .iter()
+                .map(|coclass| format!("{}.{}", coclass.namespace, coclass.name)),
+        )
+        .collect::<BTreeSet<_>>();
+    for root in manifest.roots.keys() {
+        if !included.insert(root.clone()) {
+            continue;
+        }
+        let (namespace, name) = root
+            .rsplit_once('.')
+            .ok_or_else(|| format!("Legacy COM manifest root is not qualified: `{root}`"))?;
+        if let Some(interface) = com_metadata::parse_com_interface(winmd, namespace, name) {
+            interfaces.push(interface);
+            continue;
+        }
+        if let Some(coclass) = com_metadata::parse_com_coclass(winmd, namespace, name)? {
+            coclasses.push(coclass);
+            continue;
+        }
+        return Err(format!(
+            "Legacy COM manifest root `{root}` could not be reprojected from the configured metadata"
+        ));
+    }
+    Ok(())
+}
+
+fn remove_empty_com_parents(
+    mut current: Option<&Path>,
+    com_output_dir: &Path,
+) -> Result<(), String> {
+    while let Some(directory) = current {
+        if directory == com_output_dir {
+            break;
+        }
+        match fs::remove_dir(directory) {
+            Ok(()) => current = directory.parent(),
+            Err(error) if error.kind() == std::io::ErrorKind::DirectoryNotEmpty => break,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                current = directory.parent();
+            }
+            Err(error) => {
+                return Err(format!(
+                    "Failed to remove empty COM output directory {}: {error}",
+                    directory.display()
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 const GENERATED_UNSAFE_PACKAGE_FILES: [&str; 7] = [
@@ -3209,10 +3326,15 @@ fn prepare_generated_unsafe_package(
             .map_err(|error| format!("Failed to read {}: {error}", support_path.display()))?;
         let existing: ExistingSupport = serde_json::from_str(&content)
             .map_err(|error| format!("Invalid {}: {error}", support_path.display()))?;
-        if existing.schema_version != 10 {
+        if !matches!(
+            existing.schema_version,
+            com::LEGACY_UNSAFE_SUPPORT_SCHEMA_VERSION | com::UNSAFE_SUPPORT_SCHEMA_VERSION
+        ) {
             return Err(format!(
-                "Unsupported generated unsafe support schema {} (expected 9)",
-                existing.schema_version
+                "Unsupported generated unsafe support schema {} (expected {} or {})",
+                existing.schema_version,
+                com::LEGACY_UNSAFE_SUPPORT_SCHEMA_VERSION,
+                com::UNSAFE_SUPPORT_SCHEMA_VERSION
             ));
         }
         existing.interfaces
@@ -3229,6 +3351,14 @@ fn prepare_generated_unsafe_package(
             .iter()
             .filter_map(|output| output.unsafe_support.clone()),
     );
+    if supports
+        .iter()
+        .any(|support| support.schema_version != com::UNSAFE_SUPPORT_SCHEMA_VERSION)
+    {
+        return Err(
+            "Legacy generated unsafe support remained after canonical layout migration".into(),
+        );
+    }
     supports.sort_by(|left, right| left.interface_name.cmp(&right.interface_name));
     if supports.is_empty() {
         return Ok(GeneratedUnsafePackagePlan {
@@ -3247,32 +3377,9 @@ fn write_com_js_barrel(com_output_dir: &Path) -> Result<(), String> {
     ensure_safe_generated_parent(output_dir, &com_output_dir.join(".dynwinrt-write-check"))?;
     let mut modules: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut contents: BTreeMap<String, String> = BTreeMap::new();
-    let entries = fs::read_dir(com_output_dir).map_err(|error| {
-        format!(
-            "Failed to read COM output directory {}: {error}",
-            com_output_dir.display()
-        )
-    })?;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
-        let Some(module) = file_name.strip_suffix(".js") else {
-            continue;
-        };
-        if module == "index" {
-            continue;
-        }
-        let content = fs::read_to_string(&path)
-            .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
-        let exports = collect_com_cjs_exports(&content);
-        if !exports.is_empty() {
-            modules.insert(module.to_string(), exports);
-            contents.insert(module.to_string(), content);
-        }
-    }
+    collect_com_barrel_modules(com_output_dir, com_output_dir, &mut modules, &mut contents)?;
     deduplicate_com_barrel_exports(&mut modules, &contents)?;
+    modules.retain(|_, exports| !exports.is_empty());
 
     let mut index = String::from("// Generated by dynwinrt-codegen - do not edit\n");
     for (module, exports) in &modules {
@@ -3307,23 +3414,92 @@ fn deduplicate_com_barrel_exports(
     modules: &mut BTreeMap<String, BTreeSet<String>>,
     contents: &BTreeMap<String, String>,
 ) -> Result<(), String> {
-    let mut owners = BTreeMap::<String, (String, Option<String>)>::new();
-    for (module, exports) in modules.iter_mut() {
+    let mut owners = BTreeMap::<String, Vec<(String, Option<String>)>>::new();
+    for (module, exports) in modules.iter() {
         let content = &contents[module];
-        let names = exports.iter().cloned().collect::<Vec<_>>();
-        for name in names {
-            let signature = native_pod_factory_signature(content, &name);
-            if let Some((owner, owner_signature)) = owners.get(&name) {
-                if signature.is_some() && signature.as_ref() == owner_signature.as_ref() {
-                    exports.remove(&name);
-                } else {
-                    return Err(format!(
-                        "COM barrel export `{name}` is ambiguous between `{owner}.js` and `{module}.js`"
-                    ));
-                }
-            } else {
-                owners.insert(name, (module.clone(), signature));
+        for name in exports {
+            owners
+                .entry(name.clone())
+                .or_default()
+                .push((module.clone(), native_pod_factory_signature(content, name)));
+        }
+    }
+    for (name, owners) in owners {
+        if owners.len() < 2 {
+            continue;
+        }
+        let shared_factory = owners[0].1.is_some()
+            && owners
+                .iter()
+                .all(|(_, signature)| signature == &owners[0].1);
+        for (index, (module, _)) in owners.into_iter().enumerate() {
+            if !shared_factory || index > 0 {
+                modules
+                    .get_mut(&module)
+                    .expect("barrel module exists")
+                    .remove(&name);
             }
+        }
+    }
+    Ok(())
+}
+
+fn collect_com_barrel_modules(
+    com_output_dir: &Path,
+    current: &Path,
+    modules: &mut BTreeMap<String, BTreeSet<String>>,
+    contents: &mut BTreeMap<String, String>,
+) -> Result<(), String> {
+    let mut entries = fs::read_dir(current)
+        .map_err(|error| {
+            format!(
+                "Failed to read COM output directory {}: {error}",
+                current.display()
+            )
+        })?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| {
+            format!(
+                "Failed to read COM output directory {}: {error}",
+                current.display()
+            )
+        })?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path)
+            .map_err(|error| format!("Failed to inspect {}: {error}", path.display()))?;
+        if is_link_or_reparse_point(&metadata) {
+            continue;
+        }
+        if metadata.is_dir() {
+            if current == com_output_dir && entry.file_name() == std::ffi::OsStr::new("unsafe") {
+                continue;
+            }
+            collect_com_barrel_modules(com_output_dir, &path, modules, contents)?;
+            continue;
+        }
+        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if file_name == "index.js" || !file_name.ends_with(".js") {
+            continue;
+        }
+        let relative = path
+            .strip_prefix(com_output_dir)
+            .expect("recursive COM path remains under output root");
+        let module = relative
+            .to_string_lossy()
+            .replace('\\', "/")
+            .strip_suffix(".js")
+            .expect("JavaScript suffix checked")
+            .to_string();
+        let content = fs::read_to_string(&path)
+            .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
+        let exports = collect_com_cjs_exports(&content);
+        if !exports.is_empty() {
+            modules.insert(module.clone(), exports);
+            contents.insert(module, content);
         }
     }
     Ok(())
@@ -3400,7 +3576,10 @@ fn migrate_legacy_com_only_package(output_dir: &Path) -> Result<(), String> {
         return Ok(());
     }
 
-    let modules = collect_com_index_modules(&index);
+    let modules = collect_com_index_modules(&index)
+        .into_iter()
+        .filter(|module| !module.starts_with("com/"))
+        .collect::<BTreeSet<_>>();
     if modules.is_empty() {
         return Ok(());
     }
@@ -3442,7 +3621,7 @@ fn collect_com_index_modules(index: &str) -> BTreeSet<String> {
         .filter_map(|line| {
             let (_, module) = line.split_once(" from './")?;
             let module = module.strip_suffix(".js';")?;
-            (!module.is_empty() && !module.contains(['/', '\\'])).then(|| module.to_string())
+            (!module.is_empty() && !module.contains('\\')).then(|| module.to_string())
         })
         .collect()
 }
@@ -3518,6 +3697,26 @@ fn write_bindings_manifest_with_plan(
 }
 
 fn collect_com_subpath_names(com_output_dir: &Path) -> Result<BTreeSet<String>, String> {
+    if let Some(manifest) = read_com_generation_manifest(com_output_dir)? {
+        if !matches!(
+            manifest.version,
+            LEGACY_COM_MANIFEST_VERSION | COM_MANIFEST_VERSION
+        ) {
+            return Err(format!(
+                "Unsupported COM generation manifest version {} in {}",
+                manifest.version,
+                com_output_dir.join(COM_MANIFEST_FILE).display()
+            ));
+        }
+        return Ok(manifest
+            .roots
+            .values()
+            .flatten()
+            .filter(|path| !path.starts_with("unsafe/"))
+            .filter_map(|path| path.strip_suffix(".js"))
+            .map(str::to_string)
+            .collect());
+    }
     let index_path = com_output_dir.join("index.d.ts");
     if !index_path.is_file() {
         return Ok(BTreeSet::new());
@@ -6674,10 +6873,9 @@ mod tests {
             "ISecond".into(),
             "const _nativeLayout_RECT = 'different';\nexports.createRECT = createRECT;\n".into(),
         );
-        assert!(
-            deduplicate_com_barrel_exports(&mut conflicting_modules, &conflicting_contents)
-                .is_err()
-        );
+        deduplicate_com_barrel_exports(&mut conflicting_modules, &conflicting_contents).unwrap();
+        assert!(!conflicting_modules["IFirst"].contains("createRECT"));
+        assert!(!conflicting_modules["ISecond"].contains("createRECT"));
 
         let union_descriptor = "const _nativeUnionLayout_VALUE = '{\"name\":\"Contoso.VALUE\"}';";
         let mut union_modules = BTreeMap::from([
@@ -8787,7 +8985,10 @@ mod tests {
         fs::write(com_dir.join(shared), "same").unwrap();
 
         let write_manifest = |roots: BTreeMap<String, BTreeSet<String>>| {
-            let manifest = ComGenerationManifest { version: 1, roots };
+            let manifest = ComGenerationManifest {
+                version: COM_MANIFEST_VERSION,
+                roots,
+            };
             fs::write(
                 com_dir.join(COM_MANIFEST_FILE),
                 format!("{}\n", serde_json::to_string_pretty(&manifest).unwrap()),
@@ -8859,9 +9060,9 @@ mod tests {
     fn unsafe_support_sequential_orders_converge_and_stale_removal_restores_export() {
         fn support(namespace: &str) -> com::UnsafeInterfaceSupport {
             let interface_name = format!("{namespace}.IFoo");
-            let module_path = format!("{}/IFooUnsafe", namespace.replace('.', "/"));
+            let module_path = com::canonical_module_path(namespace, "IFooUnsafe").unwrap();
             serde_json::from_value(serde_json::json!({
-                "schemaVersion": 10,
+                "schemaVersion": com::UNSAFE_SUPPORT_SCHEMA_VERSION,
                 "metadata": {
                     "setSha256": "00",
                     "files": [],
@@ -8961,7 +9162,7 @@ mod tests {
             .unwrap()
             .1
             .as_str();
-        assert!(restored_index.contains("require('./Contoso/A/IFooUnsafe.js').IFooUnsafe"));
+        assert!(restored_index.contains("require('./contoso/a/IFooUnsafe.js').IFooUnsafe"));
         apply(&forward, restored);
 
         let removed =

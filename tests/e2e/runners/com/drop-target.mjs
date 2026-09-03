@@ -7,8 +7,8 @@ import { DynCom } from "../../../../bindings/js/dist/com-unsafe.js";
 import {
   createPOINTL,
   IDropTarget,
-} from "../../e2e_generated/com/shell/com/IDropTarget.js";
-import { IFileDialogEvents } from "../../e2e_generated/com/shell/com/IFileDialogEvents.js";
+} from "../../e2e_generated/com/shell/com/windows/win32/system/ole/IDropTarget.js";
+import { IFileDialogEvents } from "../../e2e_generated/com/shell/com/windows/win32/ui/shell/IFileDialogEvents.js";
 
 DynCom.initialize(0);
 

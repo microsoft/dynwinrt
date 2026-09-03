@@ -6,7 +6,7 @@ import { DynCom } from '../../../../bindings/js/dist/com-unsafe.js';
 import {
   IID_IPersistFile,
   IPersistFile,
-} from '../../e2e_generated/com/shell/com/IPersistFile.js';
+} from '../../e2e_generated/com/shell/com/windows/win32/system/com/IPersistFile.js';
 
 const CLSID_SHELL_LINK = '00021401-0000-0000-c000-000000000046';
 DynCom.initialize(1);

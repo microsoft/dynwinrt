@@ -44,11 +44,12 @@ metadata does not contain.
 ```text
 generated/
 └── com/
-    ├── IFoo.js
-    ├── IFoo.d.ts
     ├── index.js
+    ├── windows/win32/ui/shell/
+    │   ├── ITaskbarList3.js
+    │   └── ITaskbarList3.d.ts
     └── unsafe/
-        ├── Windows/Win32/System/Wmi/
+        ├── windows/win32/system/wmi/
         │   ├── IWbemServicesUnsafe.js
         │   └── IWbemServicesUnsafe.d.ts
         ├── index.js
@@ -70,8 +71,12 @@ Rules:
 - the npm package root and `@microsoft/dynwinrt/com` remain unchanged.
 - a safe-complete interface does not need a duplicate unsafe companion unless a
   future explicit diagnostic feature requests one.
-- unsafe module paths include every namespace segment. The class inside remains
-  the ergonomic short `<Interface>Unsafe` name.
+- safe and unsafe module paths use the same lowercase/kebab namespace mapping
+  as canonical WinRT JavaScript output. Class names preserve their metadata
+  spelling.
+- generated imports are relative between canonical modules. The safe root
+  barrel omits ambiguous short exports while both deep modules remain
+  available.
 
 ## Class and method naming
 
@@ -94,8 +99,8 @@ same class; the preferred design keeps them in separate companion classes.
 `Contoso.A.IFoo` and `Contoso.B.IFoo` therefore generate:
 
 ```text
-com/unsafe/Contoso/A/IFooUnsafe.js
-com/unsafe/Contoso/B/IFooUnsafe.js
+com/unsafe/contoso/a/IFooUnsafe.js
+com/unsafe/contoso/b/IFooUnsafe.js
 ```
 
 If an unsafe class short name is globally unique in `support.json`, the unsafe
@@ -450,10 +455,10 @@ Generation emits `generated/com/unsafe/support.json`:
 
 ```json
 {
-  "schemaVersion": 10,
+  "schemaVersion": 11,
   "interfaces": [
     {
-      "schemaVersion": 10,
+      "schemaVersion": 11,
       "metadata": {
         "setSha256": "...",
         "files": [
@@ -557,6 +562,10 @@ dynwinrt-codegen generate `
   --output generated
 ```
 
+Package import names remain unchanged. A relative `--import-name` is interpreted
+from `generated/com/` and rebased for each canonical safe module, unsafe
+companion, and shared unsafe runtime file.
+
 Possible outcomes:
 
 | Result                                      | Exit behavior                               |
@@ -649,11 +658,17 @@ trailing dots/spaces, and Windows device names (`CON`, `PRN`, `AUX`, `NUL`,
 `CLOCK$`, `CONIN$`, `CONOUT$`, `COM1`-`COM9`, and `LPT1`-`LPT9`), including
 device names with extensions.
 
-Retained schema-9 `modulePath` is never trusted. Codegen rederives it from the
+Retained schema-11 `modulePath` is never trusted. Codegen rederives it from the
 validated qualified interface identity and exact `<Interface>Unsafe` class
 name, requires an exact match, and then checks the case-insensitive path key.
 Case-only namespaces or type names therefore fail instead of aliasing on
 Windows.
+
+Manifest v2 records canonical safe and unsafe paths. The first COM generation
+against manifest v1 reprojects every retained root from the configured
+metadata, migrates support schema 10 to 11, removes manifest-owned flat/Pascal
+paths, prunes their empty directories, and publishes the complete canonical
+tree in the same output transaction.
 
 Before overwriting a staged path owned by any manifest root outside the current
 update set, codegen requires the retained and planned path identities to match,
@@ -670,8 +685,11 @@ remain allowed.
 
 ## Compatibility invariants
 
-- Existing safe-complete generated output is byte-for-byte unchanged.
-- Existing safe output paths and package exports are unchanged.
+- Existing generated COM classes, declarations, and root barrel symbols retain
+  their public names; their deep module paths intentionally move to canonical
+  namespace directories.
+- Manifest v1 output migrates atomically instead of retaining mixed flat and
+  canonical layouts.
 - Unsafe symbols never appear in a safe barrel or safe declaration file.
 - Existing WinRT generation is unchanged.
 - Existing Classic COM safe generation never changes a class into an unsafe
@@ -745,7 +763,7 @@ Stage 2 is implemented:
   arguments;
 - parameter requirements come from the same per-target classifier analysis;
 - runtime-blocked methods remain omitted;
-- support schema 9 records every parameter index/name, strategy type, exact
+- support schema 11 records every parameter index/name, strategy type, exact
   reason, native direction/nullability, and known target pointee layouts; and
 - a raw pointer is never substituted for missing ownership.
 

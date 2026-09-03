@@ -15,7 +15,7 @@ const {
 } = require('./generated/index.js')
 const {
   IUserConsentVerifierInterop,
-} = require('./generated/com/IUserConsentVerifierInterop.js')
+} = require('./generated/com/windows/win32/system/win-rt/IUserConsentVerifierInterop.js')
 
 const resultType = DynWinRtType.enumType(
   'Windows.Security.Credentials.UI.UserConsentVerificationResult',

@@ -7,7 +7,7 @@ import {
   createWIN32_FIND_DATAW,
   IID_IShellLinkW,
   IShellLinkW,
-} from '../../e2e_generated/com/shell/com/IShellLinkW.js';
+} from '../../e2e_generated/com/shell/com/windows/win32/ui/shell/IShellLinkW.js';
 
 const CLSID_SHELL_LINK = '00021401-0000-0000-c000-000000000046';
 const SLGP_RAWPATH = 4;

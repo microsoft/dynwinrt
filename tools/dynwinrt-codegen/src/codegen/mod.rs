@@ -3,6 +3,7 @@
 
 pub mod com;
 pub mod common;
+mod javascript_layout;
 pub mod package;
 pub mod winrt;
 

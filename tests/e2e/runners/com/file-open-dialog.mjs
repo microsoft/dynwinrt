@@ -3,10 +3,10 @@
 
 import assert from 'node:assert/strict';
 import { DynCom } from '../../../../bindings/js/dist/com-unsafe.js';
-import { FDE_OVERWRITE_RESPONSE } from '../../e2e_generated/com/shell/com/FDE_OVERWRITE_RESPONSE.js';
-import { FDE_SHAREVIOLATION_RESPONSE } from '../../e2e_generated/com/shell/com/FDE_SHAREVIOLATION_RESPONSE.js';
-import { FileOpenDialog } from '../../e2e_generated/com/shell/com/FileOpenDialog.js';
-import { IFileDialogEvents } from '../../e2e_generated/com/shell/com/IFileDialogEvents.js';
+import { FDE_OVERWRITE_RESPONSE } from '../../e2e_generated/com/shell/com/windows/win32/ui/shell/FDE_OVERWRITE_RESPONSE.js';
+import { FDE_SHAREVIOLATION_RESPONSE } from '../../e2e_generated/com/shell/com/windows/win32/ui/shell/FDE_SHAREVIOLATION_RESPONSE.js';
+import { FileOpenDialog } from '../../e2e_generated/com/shell/com/windows/win32/ui/shell/FileOpenDialog.js';
+import { IFileDialogEvents } from '../../e2e_generated/com/shell/com/windows/win32/ui/shell/IFileDialogEvents.js';
 
 DynCom.initialize(0);
 

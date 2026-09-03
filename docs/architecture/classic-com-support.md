@@ -508,14 +508,15 @@ bindings/
 ├── index.js
 ├── index.mjs
 ├── index.d.ts
-├── Uri.js
+├── windows/foundation/Uri.js
 ├── com/
 │   ├── package.json
 │   ├── index.js
 │   ├── index.mjs
 │   ├── index.d.ts
-│   ├── TaskbarList.js
-│   └── ITaskbarList4.js
+│   └── windows/win32/ui/shell/
+│       ├── TaskbarList.js
+│       └── ITaskbarList4.js
 └── package.json
 ```
 
@@ -548,10 +549,11 @@ without adding COM exports to the WinRT root. Legacy COM-only output is
 relocated automatically when it is reused with the new generator.
 
 winappCli project aliases use `#winapp/bindings/com` for the COM barrel and
-`#winapp/bindings/com/InterfaceName` for deep imports. Existing source that
-used `#winapp/bindings/InterfaceName` for COM should switch to the `com/`
-path. Standalone COM-only packages continue to expose their legacy
-package-name deep imports.
+canonical deep imports such as
+`#winapp/bindings/com/windows/win32/ui/shell/ITaskbarList3`. Existing source
+that used a flat COM deep import should switch to the canonical namespace path.
+Standalone COM-only packages expose the same canonical path with and without
+the explicit `com/` prefix.
 
 ### Explicit unsafe/raw opt-in
 

@@ -144,9 +144,9 @@ remain intact.
 The ordinary command has no unsafe opt-in flag. If complete safe projection
 fails but one or more methods are `raw_metadata_complete`, codegen writes an
 isolated namespace-qualified companion such as
-`generated/com/unsafe/Windows/Win32/System/Wmi/IWbemServicesUnsafe.js` and
-records every method in `support.json`. Safe-complete interfaces keep their
-existing output unchanged.
+`generated/com/unsafe/windows/win32/system/wmi/IWbemServicesUnsafe.js` and
+records every method in `support.json`. Safe-complete interfaces use matching
+canonical namespace directories under `generated/com/`.
 
 ```powershell
 npx dynwinrt-codegen generate `
@@ -194,8 +194,8 @@ The short barrel export is available only while `IWbemServicesUnsafe` is
 globally unique. If two namespaces contain `IFoo`, import their deep modules:
 
 ```js
-import { IFooUnsafe as FooA } from "./generated/com/unsafe/Contoso/A/IFooUnsafe.js";
-import { IFooUnsafe as FooB } from "./generated/com/unsafe/Contoso/B/IFooUnsafe.js";
+import { IFooUnsafe as FooA } from "./generated/com/unsafe/contoso/a/IFooUnsafe.js";
+import { IFooUnsafe as FooB } from "./generated/com/unsafe/contoso/b/IFooUnsafe.js";
 ```
 
 The ambiguous `IFooUnsafe` short export is omitted until one root is removed.
@@ -485,7 +485,7 @@ creates a safe `create()` method:
 
 ```js
 import { initializeCom } from "@microsoft/dynwinrt/com";
-import { IDataTransferManagerInterop } from "./generated/com/IDataTransferManagerInterop.js";
+import { IDataTransferManagerInterop } from "./generated/com/windows/win32/ui/shell/IDataTransferManagerInterop.js";
 
 initializeCom(1);
 

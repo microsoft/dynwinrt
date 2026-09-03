@@ -10,9 +10,9 @@ import { DynComUnsafe } from "../../../../bindings/js/dist/com-unsafe.js";
 import {
   IDispatch,
   IID_IDispatch,
-} from "../../e2e_generated/com/automation/com/IDispatch.js";
-import { IEnumVARIANT } from "../../e2e_generated/com/automation/com/IEnumVARIANT.js";
-import { IStream } from "../../e2e_generated/com/stream/com/IStream.js";
+} from "../../e2e_generated/com/automation/com/windows/win32/system/com/IDispatch.js";
+import { IEnumVARIANT } from "../../e2e_generated/com/automation/com/windows/win32/system/ole/IEnumVARIANT.js";
+import { IStream } from "../../e2e_generated/com/stream/com/windows/win32/system/com/IStream.js";
 
 const CLSID_SHELL_APPLICATION = "13709620-c279-11ce-a49e-444553540000";
 const DISPATCH_PROPERTYGET = 2;

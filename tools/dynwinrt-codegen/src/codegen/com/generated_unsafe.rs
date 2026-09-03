@@ -17,6 +17,9 @@ use super::capability::{
 };
 use super::javascript::naming::camel_case;
 
+pub const LEGACY_UNSAFE_SUPPORT_SCHEMA_VERSION: u32 = 10;
+pub const UNSAFE_SUPPORT_SCHEMA_VERSION: u32 = 11;
+
 #[derive(Debug, Clone)]
 pub struct UnsafeGeneratedOutput {
     pub class_name: String,
@@ -137,32 +140,13 @@ fn is_windows_reserved_name(segment: &str) -> bool {
 }
 
 fn unsafe_module_path(namespace: &str, class_name: &str) -> Result<String, String> {
-    let valid_segment = |segment: &str| {
-        !segment.is_empty()
-            && !segment.as_bytes()[0].is_ascii_digit()
-            && segment
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
-    };
-    let mut segments = namespace.split('.').collect::<Vec<_>>();
-    if segments.is_empty()
-        || segments.iter().any(|segment| !valid_segment(segment))
-        || !valid_segment(class_name)
-    {
-        return Err(format!(
-            "Unsafe COM namespace `{namespace}` cannot form a safe module path"
-        ));
-    }
-    segments.push(class_name);
-    let path = segments.join("/");
-    windows_relative_path_key(&path)?;
-    Ok(path)
+    super::canonical_module_path(namespace, class_name)
 }
 
 pub fn validate_unsafe_supports(supports: &[UnsafeInterfaceSupport]) -> Result<(), String> {
     let mut identities = BTreeMap::<String, &str>::new();
     for support in supports {
-        if support.schema_version != 10 {
+        if support.schema_version != UNSAFE_SUPPORT_SCHEMA_VERSION {
             return Err(format!(
                 "Unsupported generated unsafe interface schema {} for {}",
                 support.schema_version, support.interface_name
@@ -429,7 +413,7 @@ pub fn generate_unsafe_interface_files_with_metadata(
         });
     }
     let support = UnsafeInterfaceSupport {
-        schema_version: 10,
+        schema_version: UNSAFE_SUPPORT_SCHEMA_VERSION,
         metadata: UnsafeMetadataSupport {
             set_sha256: metadata.set_sha256.clone(),
             files: metadata.files.clone(),
@@ -684,9 +668,12 @@ fn render_unsafe_class(
     support: &UnsafeInterfaceSupport,
     methods: &[(&RawComMethod, MethodCapability)],
 ) -> Result<(String, String), String> {
-    let raw_runtime_import =
-        serde_json::to_string(&super::javascript::render::com_raw_runtime_import_name())
-            .map_err(|error| error.to_string())?;
+    let raw_runtime_import = serde_json::to_string(
+        &super::javascript::render::com_raw_runtime_import_name_for_depth(
+            super::canonical_namespace_depth(&meta.interface.namespace) + 1,
+        ),
+    )
+    .map_err(|error| error.to_string())?;
     let mut layouts = LayoutRegistry::new();
     let has_manual = methods
         .iter()
@@ -785,7 +772,7 @@ fn render_unsafe_class(
     dts.push_str("export interface UnsafeMethodSupport { readonly name: string; readonly projectedName: string; readonly declaringIid: string; readonly absoluteSlot: number; readonly signatureFingerprint: string; readonly status: UnsafeMethodStatus; readonly reasons: readonly string[]; readonly strategyRequirements: readonly UnsafeStrategyRequirement[]; readonly exactInterfaceOutputs: readonly UnsafeExactInterfaceOutput[]; readonly exactInterfaceOutputCall: UnsafeExactInterfaceOutputCall | null; readonly targets: Readonly<Record<'x64' | 'i686' | 'arm64', UnsafeMethodTargetSupport>>; }\n");
     dts.push_str("export interface UnsafeMetadataFile { readonly file: string; readonly package: string; readonly version: string; readonly sha256: string; }\n");
     dts.push_str("export interface UnsafeMetadataSupport { readonly setSha256: string; readonly files: readonly UnsafeMetadataFile[]; readonly definingFile: UnsafeMetadataFile | null; }\n");
-    dts.push_str("export interface UnsafeInterfaceSupport { readonly schemaVersion: 10; readonly metadata: UnsafeMetadataSupport; readonly interfaceName: string; readonly interfaceIid: string; readonly root: 'IUnknown' | 'IInspectable' | 'Unknown'; readonly baseIids: readonly string[]; readonly unsafeClass: string; readonly modulePath: string; readonly methods: readonly UnsafeMethodSupport[]; }\n\n");
+    dts.push_str(&format!("export interface UnsafeInterfaceSupport {{ readonly schemaVersion: {UNSAFE_SUPPORT_SCHEMA_VERSION}; readonly metadata: UnsafeMetadataSupport; readonly interfaceName: string; readonly interfaceIid: string; readonly root: 'IUnknown' | 'IInspectable' | 'Unknown'; readonly baseIids: readonly string[]; readonly unsafeClass: string; readonly modulePath: string; readonly methods: readonly UnsafeMethodSupport[]; }}\n\n"));
     dts.push_str(&format!("export declare class {class_name} {{\n"));
     dts.push_str("    private constructor();\n");
     dts.push_str(&format!(
@@ -1857,11 +1844,11 @@ mod tests {
         crate::codegen::project::set_import_name(&previous);
 
         for content in [output.js.unwrap(), output.dts.unwrap()] {
-            assert!(content.contains("\"../dist/com-unsafe-raw.js\""));
+            assert!(content.contains("\"../../../dist/com-unsafe-raw.js\""));
             assert!(!content.contains("@microsoft/dynwinrt/com/unsafe/raw"));
         }
         for (_, content) in runtime {
-            assert!(content.contains("\"../dist/com-unsafe-raw.js\""));
+            assert!(content.contains("\"../../dist/com-unsafe-raw.js\""));
             assert!(!content.contains("@microsoft/dynwinrt/com/unsafe/raw"));
         }
     }
@@ -2189,8 +2176,8 @@ mod tests {
         let second = build("Contoso.B", "20000000-0000-0000-c000-000000000046");
         assert_eq!(first.class_name, "IFooUnsafe");
         assert_eq!(second.class_name, "IFooUnsafe");
-        assert_eq!(first.module_path, "Contoso/A/IFooUnsafe");
-        assert_eq!(second.module_path, "Contoso/B/IFooUnsafe");
+        assert_eq!(first.module_path, "contoso/a/IFooUnsafe");
+        assert_eq!(second.module_path, "contoso/b/IFooUnsafe");
         assert!(first.js.as_deref().unwrap().contains("class IFooUnsafe"));
         assert!(
             first
@@ -2234,8 +2221,8 @@ mod tests {
             .find(|(path, _)| path == "unsafe/index.d.ts")
             .unwrap()
             .1;
-        assert!(cjs.contains("require('./Contoso/A/IFooUnsafe.js').IFooUnsafe"));
-        assert!(esm.contains("export { IFooUnsafe } from './Contoso/A/IFooUnsafe.js'"));
+        assert!(cjs.contains("require('./contoso/a/IFooUnsafe.js').IFooUnsafe"));
+        assert!(esm.contains("export { IFooUnsafe } from './contoso/a/IFooUnsafe.js'"));
         assert_eq!(esm, dts);
     }
 
@@ -2627,7 +2614,7 @@ pub fn render_unsafe_package_files(
     );
     let dts = esm.clone();
     let support = serde_json::to_string_pretty(&serde_json::json!({
-        "schemaVersion": 10,
+        "schemaVersion": UNSAFE_SUPPORT_SCHEMA_VERSION,
         "interfaces": supports,
     }))
     .map_err(|error| format!("Failed to serialize generated unsafe support: {error}"))?;
@@ -2647,7 +2634,7 @@ pub fn render_unsafe_package_files(
 
 fn render_unsafe_runtime_files() -> Vec<(String, String)> {
     let raw_runtime_import =
-        serde_json::to_string(&super::javascript::render::com_raw_runtime_import_name())
+        serde_json::to_string(&super::javascript::render::com_raw_runtime_import_name_for_depth(1))
             .expect("serializing the runtime import name cannot fail");
     let mut js = r#"// Generated by dynwinrt-codegen — do not edit
 'use strict';

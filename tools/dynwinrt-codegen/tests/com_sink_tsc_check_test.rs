@@ -67,7 +67,7 @@ fn generated_com_sink_dts_passes_tsc_no_emit() {
     let com_dir = tmp.join("com");
     fs::write(
         com_dir.join("sink-usage.ts"),
-        r#"import { FileOpenDialog } from "./FileOpenDialog.js";
+        r#"import { FileOpenDialog } from "./windows/win32/ui/shell/FileOpenDialog.js";
 import {
           DROPEFFECT,
           FDE_OVERWRITE_RESPONSE,
@@ -75,13 +75,13 @@ import {
           IFileDialogEvents,
           MODIFIERKEYS_FLAGS,
 } from "./index.js";
-import type { IFileDialogEventsImplementation } from "./IFileDialogEvents.js";
+import type { IFileDialogEventsImplementation } from "./windows/win32/ui/shell/IFileDialogEvents.js";
 import {
   createPOINTL,
   IDropTarget,
   type IDropTargetImplementation,
   type POINTL,
-} from "./IDropTarget.js";
+} from "./windows/win32/system/ole/IDropTarget.js";
 
 const dialog = new FileOpenDialog();
 const eventHandlers: IFileDialogEventsImplementation = {
@@ -161,7 +161,7 @@ composed.release();
     "skipLibCheck": false,
     "types": []
   },
-  "include": ["globals.d.ts", "com/*.d.ts", "com/*.ts"]
+  "include": ["globals.d.ts", "com/**/*.d.ts", "com/*.ts"]
 }"#,
     )
     .expect("write COM sink tsconfig");

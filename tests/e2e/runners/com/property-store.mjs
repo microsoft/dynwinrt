@@ -10,7 +10,7 @@ import {
   createPROPERTYKEY,
   IID_IPropertyStore,
   IPropertyStore,
-} from '../../e2e_generated/com/shell/com/IPropertyStore.js';
+} from '../../e2e_generated/com/shell/com/windows/win32/ui/shell/properties-system/IPropertyStore.js';
 
 const CLSID_SHELL_LINK = '00021401-0000-0000-c000-000000000046';
 const VT_LPWSTR = 31;

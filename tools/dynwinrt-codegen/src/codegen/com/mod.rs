@@ -14,11 +14,93 @@ mod typedef_inventory;
 use crate::com_metadata::{ComCoclassMeta, ComInterfaceMeta};
 
 pub use generated_unsafe::{
-    Stage2Coverage, UnsafeGeneratedOutput, UnsafeInterfaceSupport, generate_unsafe_interface_files,
+    LEGACY_UNSAFE_SUPPORT_SCHEMA_VERSION, Stage2Coverage, UNSAFE_SUPPORT_SCHEMA_VERSION,
+    UnsafeGeneratedOutput, UnsafeInterfaceSupport, generate_unsafe_interface_files,
     generate_unsafe_interface_files_with_metadata, measure_stage2_coverage,
     render_unsafe_package_files, validate_unsafe_supports, windows_relative_path_key,
 };
 pub use javascript::render::ComGeneratedOutput;
+
+fn module_path(namespace: &str, name: &str) -> String {
+    let namespace = crate::codegen::javascript_layout::canonical_namespace_path(namespace);
+    if namespace.is_empty() {
+        name.to_string()
+    } else {
+        format!("{namespace}/{name}")
+    }
+}
+
+pub fn canonical_module_path(namespace: &str, name: &str) -> Result<String, String> {
+    let path = module_path(namespace, name);
+    windows_relative_path_key(&path)?;
+    if path.split('/').next() == Some("unsafe") {
+        return Err(format!(
+            "Classic-COM module `{namespace}.{name}` collides with the reserved unsafe package"
+        ));
+    }
+    Ok(path)
+}
+
+pub fn canonical_module_file_path(
+    namespace: &str,
+    name: &str,
+    extension: &str,
+) -> Result<String, String> {
+    let module = canonical_module_path(namespace, name)?;
+    let path = format!("{module}.{extension}");
+    windows_relative_path_key(&path)?;
+    Ok(path)
+}
+
+pub(in crate::codegen::com) fn relative_module_specifier(
+    from_namespace: &str,
+    from_name: &str,
+    to_namespace: &str,
+    to_name: &str,
+) -> String {
+    let from = module_path(from_namespace, from_name);
+    let to = module_path(to_namespace, to_name);
+    let mut from_segments = from.split('/').collect::<Vec<_>>();
+    from_segments.pop();
+    let to_segments = to.split('/').collect::<Vec<_>>();
+    let common = from_segments
+        .iter()
+        .zip(&to_segments)
+        .take_while(|(left, right)| left == right)
+        .count();
+    let mut segments = vec![".."; from_segments.len() - common];
+    segments.extend(to_segments[common..].iter().copied());
+    let path = segments.join("/");
+    if path.starts_with("../") {
+        format!("{path}.js")
+    } else {
+        format!("./{path}.js")
+    }
+}
+
+pub(in crate::codegen::com) fn canonical_namespace_depth(namespace: &str) -> usize {
+    let path = crate::codegen::javascript_layout::canonical_namespace_path(namespace);
+    if path.is_empty() {
+        0
+    } else {
+        path.split('/').count()
+    }
+}
+
+pub(in crate::codegen::com) fn rebase_runtime_import(
+    import_name: String,
+    parent_depth: usize,
+) -> String {
+    if !import_name.starts_with('.') || parent_depth == 0 {
+        return import_name;
+    }
+    let prefix = "../".repeat(parent_depth);
+    if let Some(import_name) = import_name.strip_prefix("./") {
+        format!("{prefix}{import_name}")
+    } else {
+        format!("{prefix}{import_name}")
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SafeCleanupAvailability {
@@ -78,8 +160,16 @@ pub fn generate_com_interface_files(
             .or_else(|_| project::project_com_reference_interface(&referenced))?;
         pending.extend(enumerator_interface_refs(&projected));
         let rendered = javascript::render::render_com_interface(&projected);
-        insert_extra(&mut extras, format!("{name}.js"), rendered.js)?;
-        insert_extra(&mut extras, format!("{name}.d.ts"), rendered.dts)?;
+        insert_extra(
+            &mut extras,
+            canonical_module_file_path(&namespace, &name, "js")?,
+            rendered.js,
+        )?;
+        insert_extra(
+            &mut extras,
+            canonical_module_file_path(&namespace, &name, "d.ts")?,
+            rendered.dts,
+        )?;
         for (file, content) in rendered.extra_files {
             insert_extra(&mut extras, file, content)?;
         }
