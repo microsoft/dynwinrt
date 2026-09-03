@@ -699,12 +699,11 @@ test.serial('actual generated IWbemServices and IAudioClient companions use hard
         'Node16',
         '--target',
         'ES2022',
-        join(packageRoot, '__test__', 'types', 'node-buffer.d.ts'),
         consumer,
       ],
       { cwd: packageRoot, encoding: 'utf8', windowsHide: true },
     )
-    t.is(tsc.status, 0, tsc.stderr)
+    t.is(tsc.status, 0, `${tsc.stdout}\n${tsc.stderr}`)
   } finally {
     rmSync(output, { recursive: true, force: true })
     rmSync(externalLinkTarget, { recursive: true, force: true })
