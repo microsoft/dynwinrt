@@ -2032,10 +2032,11 @@ impl Method {
 
             if let Some(expected_layout) = parameter.typ.native_union_layout() {
                 if parameter.typ.is_nullable_native_union_pointer()
-                    && matches!(
-                        &args[input_index],
-                        crate::com::Value::WinRt(value) if value.is_null_object()
-                    )
+                    && match &args[input_index] {
+                        crate::com::Value::WinRt(WinRTValue::RawPtr(pointer)) => pointer.is_null(),
+                        crate::com::Value::WinRt(value) => value.is_null_object(),
+                        _ => false,
+                    }
                 {
                     continue;
                 }

@@ -1348,14 +1348,16 @@ enum ReturnKind {
 fn return_kind(typ: &RawComType) -> ReturnKind {
     if typ.pointer_depth == 0 && matches!(typ.native_type, RawNativeType::Void) {
         ReturnKind::Void
-    } else if matches!(
-        &typ.native_type,
-        RawNativeType::Named {
-            namespace,
-            name,
-            ..
-        } if namespace == "Windows.Win32.Foundation" && name == "HRESULT"
-    ) {
+    } else if typ.pointer_depth == 0
+        && matches!(
+            &typ.native_type,
+            RawNativeType::Named {
+                namespace,
+                name,
+                ..
+            } if namespace == "Windows.Win32.Foundation" && name == "HRESULT"
+        )
+    {
         ReturnKind::HResult
     } else {
         ReturnKind::Value
@@ -2053,13 +2055,26 @@ mod tests {
 
     #[test]
     fn direct_void_pointer_return_is_not_lowered_as_void() {
+        let hresult_pointer = raw(
+            RawNativeType::Named {
+                namespace: "Windows.Win32.Foundation".into(),
+                name: "HRESULT".into(),
+                kind: RawNamedKind::Struct,
+                iid: None,
+                layout: None,
+            },
+            1,
+        );
         let output = generate_unsafe_interface_files_with_identity(
-            &interface(vec![method(
-                "GetBufferPointer",
-                3,
-                Vec::new(),
-                raw(RawNativeType::Void, 1),
-            )]),
+            &interface(vec![
+                method(
+                    "GetBufferPointer",
+                    3,
+                    Vec::new(),
+                    raw(RawNativeType::Void, 1),
+                ),
+                method("GetStatusPointer", 4, Vec::new(), hresult_pointer),
+            ]),
             identity(),
         )
         .expect("direct void pointer companion");
@@ -2070,6 +2085,7 @@ mod tests {
         assert!(js.contains("DynComRawPointer.fromAddress(DynCom.asPointerBigint(_out[0]))"));
         assert!(!js.contains("returnsVoid()"));
         assert!(dts.contains("getBufferPointer(unsafeContract: UnsafeRawCall): DynComRawPointer"));
+        assert!(dts.contains("getStatusPointer(unsafeContract: UnsafeRawCall): DynComRawPointer"));
     }
 
     #[test]

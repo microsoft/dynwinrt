@@ -1493,6 +1493,21 @@ pub(super) fn native_union_layout(
   parse_native_union_variant(name, layout)
 }
 
+fn semantic_native_union_layout(
+  descriptor: &str,
+) -> napi::Result<std::sync::Arc<dynwinrt::com::NativeUnionLayout>> {
+  native_union_layout(descriptor).and_then(|layout| {
+    if layout.contains_nested_union() {
+      Err(napi::Error::from_reason(format!(
+        "Semantic native union `{}` contains a nested union; use @microsoft/dynwinrt/com/unsafe/raw",
+        layout.name()
+      )))
+    } else {
+      Ok(layout)
+    }
+  })
+}
+
 fn parse_native_union_variant(
   name: &str,
   layout: &serde_json::Value,
@@ -4578,17 +4593,8 @@ impl DynCom {
 
   #[napi]
   pub fn native_union_pointer_type(descriptor: String) -> napi::Result<DynComType> {
-    native_union_layout(&descriptor)
-      .and_then(|layout| {
-        if layout.contains_nested_aggregate() {
-          Err(napi::Error::from_reason(format!(
-            "Semantic native union `{}` contains a nested aggregate; use @microsoft/dynwinrt/com/unsafe/raw",
-            layout.name()
-          )))
-        } else {
-          Ok(dynwinrt::com::Type::native_union_pointer(layout))
-        }
-      })
+    semantic_native_union_layout(&descriptor)
+      .map(dynwinrt::com::Type::native_union_pointer)
       .map(DynComType)
   }
 
@@ -5404,7 +5410,7 @@ impl DynCom {
     active_field: String,
     bytes: Option<Buffer>,
   ) -> napi::Result<DynComNativeUnion> {
-    let layout = native_union_layout(&descriptor)?;
+    let layout = semantic_native_union_layout(&descriptor)?;
     let value = match bytes {
       Some(bytes) => dynwinrt::com::NativeUnionValue::new(layout, active_field, bytes.to_vec()),
       None => dynwinrt::com::NativeUnionValue::zeroed(layout, active_field),
@@ -5418,7 +5424,7 @@ impl DynCom {
     descriptor: String,
     value: &DynComNativeUnion,
   ) -> napi::Result<DynWinRTValue> {
-    let layout = native_union_layout(&descriptor)?;
+    let layout = semantic_native_union_layout(&descriptor)?;
     if value.descriptor != descriptor || value.value.layout() != &layout {
       return Err(napi::Error::from_reason(format!(
         "Native union type mismatch: expected `{}`",

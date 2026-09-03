@@ -333,9 +333,10 @@ dispatch.
 classification. Direct returns and Out/InOut values carry branded bytes with
 unknown active field until `assertActiveField` is called explicitly.
 
-Nested aggregate parsing remains raw-only. The semantic
-`DynCom.nativeUnionPointerType()` factory accepts only flat union alternatives
-and directs recursive struct/union descriptors to `/com/unsafe/raw`.
+Nested POD structs remain valid semantic union alternatives. Nested unions,
+including unions reached through a struct field, remain raw-only:
+`DynCom.nativeUnionPointerType()`, `createNativeUnion()`, and `nativeUnion()`
+direct those descriptors to `/com/unsafe/raw`.
 
 By-value union descriptors must set `complete: true` for every
 architecture-specific union layout and describe every alternative. The closed

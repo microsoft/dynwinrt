@@ -407,9 +407,44 @@ test('raw aggregate capability cannot enter semantic or callback APIs', (t) => {
     },
   })
   t.throws(() => DynCom.nativeUnionPointerType(nestedUnionDescriptor), {
-    message: /nested aggregate.*unsafe\/raw/,
+    message: /nested union.*unsafe\/raw/,
+  })
+  t.throws(() => DynCom.createNativeUnion(nestedUnionDescriptor, 'nested'), {
+    message: /nested union.*unsafe\/raw/,
   })
   t.truthy(DynComRawUnionLayout.fromDescriptor(nestedUnionDescriptor).pointerType())
+
+  const nestedPodArchitecture = {
+    size: 8,
+    alignment: 4,
+    complete: true,
+    fields: [
+      {
+        name: 'pod',
+        count: 1,
+        type: {
+          kind: 'struct',
+          name: 'Tests.JsNestedPod',
+          layout: {
+            size: 8,
+            alignment: 4,
+            fields: [
+              { name: 'first', offset: 0, count: 1, type: { kind: 'u32' } },
+              { name: 'second', offset: 4, count: 1, type: { kind: 'u32' } },
+            ],
+          },
+        },
+      },
+    ],
+  }
+  const nestedPodDescriptor = JSON.stringify({
+    name: 'Tests.JsUnionWithNestedPod',
+    x86: nestedPodArchitecture,
+    x64: nestedPodArchitecture,
+    arm64: nestedPodArchitecture,
+  })
+  t.truthy(DynCom.nativeUnionPointerType(nestedPodDescriptor))
+  t.is(DynCom.createNativeUnion(nestedPodDescriptor, 'pod').bytes.length, 8)
 
   const raw = DynComRawStructLayout.fromDescriptor(descriptor)
   t.truthy(raw.pointerType())

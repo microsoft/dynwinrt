@@ -805,12 +805,11 @@ impl NativeUnionLayout {
         self.fields.iter().any(|field| field.name == name)
     }
 
-    pub fn contains_nested_aggregate(&self) -> bool {
-        self.fields.iter().any(|field| {
-            matches!(
-                &field.typ,
-                NativeUnionFieldType::Struct(_) | NativeUnionFieldType::Union(_)
-            )
+    pub fn contains_nested_union(&self) -> bool {
+        self.fields.iter().any(|field| match &field.typ {
+            NativeUnionFieldType::Struct(layout) => layout.contains_union(),
+            NativeUnionFieldType::Union(_) => true,
+            _ => false,
         })
     }
 
@@ -2046,8 +2045,8 @@ impl Type {
             (
                 Some(AggregateCapability::Semantic),
                 ParameterType::NativeUnionPointer { layout, .. },
-            ) if layout.contains_nested_aggregate() => Err(invalid_argument(format!(
-                "semantic native union `{}` contains a nested aggregate; use the raw outbound aggregate API",
+            ) if layout.contains_nested_union() => Err(invalid_argument(format!(
+                "semantic native union `{}` contains a nested union; use the raw outbound aggregate API",
                 layout.name()
             ))),
             (Some(AggregateCapability::RawOutbound), ParameterType::NativeStruct(layout)) => {
@@ -12063,7 +12062,7 @@ mod tests {
             MethodSignature::new(&table)
                 .add_in(Type::raw_native_union_pointer(layout.clone(), true))
                 .add_out(Type::winrt(table.u32_type())),
-            &[Value::WinRt(WinRTValue::Null)],
+            &[Value::WinRt(WinRTValue::RawPtr(std::ptr::null_mut()))],
         )
         .unwrap();
         assert!(matches!(
@@ -12076,7 +12075,7 @@ mod tests {
             MethodSignature::new(&table)
                 .add_nullable_in(Type::raw_native_union_pointer(layout, false))
                 .add_out(Type::winrt(table.u32_type())),
-            &[Value::WinRt(WinRTValue::Null)],
+            &[Value::WinRt(WinRTValue::RawPtr(std::ptr::null_mut()))],
         )
         .unwrap_err();
         assert!(error.message().contains("expected native union"));
@@ -12505,6 +12504,22 @@ mod tests {
             )
             .unwrap(),
         );
+        let nested_pod_union = Arc::new(
+            NativeUnionLayout::new(
+                "Tests.NestedPodCapabilityUnion",
+                8,
+                4,
+                vec![
+                    NativeUnionField::new(
+                        "value",
+                        1,
+                        NativeUnionFieldType::Struct(test_pod_layout("Tests.NestedCapabilityPod")),
+                    )
+                    .unwrap(),
+                ],
+            )
+            .unwrap(),
+        );
 
         for semantic in [
             Type::native_struct(struct_with_union.clone()),
@@ -12541,6 +12556,10 @@ mod tests {
         );
         MethodSignature::new(&table)
             .add_in(Type::raw_native_union_pointer(nested_union, false))
+            .build(3)
+            .unwrap();
+        MethodSignature::new(&table)
+            .add_in(Type::native_union_pointer(nested_pod_union))
             .build(3)
             .unwrap();
 
