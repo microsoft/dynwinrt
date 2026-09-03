@@ -14,10 +14,10 @@ mod typedef_inventory;
 use crate::com_metadata::{ComCoclassMeta, ComInterfaceMeta};
 
 pub use generated_unsafe::{
-    LEGACY_UNSAFE_SUPPORT_SCHEMA_VERSION, Stage2Coverage, UNSAFE_SUPPORT_SCHEMA_VERSION,
-    UnsafeGeneratedOutput, UnsafeInterfaceSupport, generate_unsafe_interface_files,
-    generate_unsafe_interface_files_with_metadata, measure_stage2_coverage,
-    render_unsafe_package_files, validate_unsafe_supports, windows_relative_path_key,
+    Stage2Coverage, UNSAFE_SUPPORT_SCHEMA_VERSION, UnsafeGeneratedOutput, UnsafeInterfaceSupport,
+    generate_unsafe_interface_files, generate_unsafe_interface_files_with_metadata,
+    measure_stage2_coverage, render_unsafe_package_files, validate_unsafe_supports,
+    windows_relative_path_key,
 };
 pub use javascript::render::ComGeneratedOutput;
 

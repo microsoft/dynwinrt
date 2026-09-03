@@ -38,7 +38,7 @@ pub fn render_bindings_package_json(input: &BindingsPackageManifestInput<'_>) ->
     if input.has_winrt_root {
         render_winrt_package(input)
     } else {
-        render_com_only_package(input.com_subpath_names)
+        render_com_only_package()
     }
 }
 
@@ -123,52 +123,33 @@ fn render_winrt_package(input: &BindingsPackageManifestInput<'_>) -> String {
         out.push_str("    }");
     }
 
-    append_com_exports(&mut out, input.com_subpath_names);
+    append_com_exports(&mut out, !input.com_subpath_names.is_empty(), true);
     out.push_str("\n  }\n");
     out.push_str("}\n");
     out
 }
 
-fn render_com_only_package(com_subpath_names: &BTreeSet<String>) -> String {
+fn render_com_only_package() -> String {
     let mut out = String::new();
     out.push_str("{\n");
     out.push_str("  \"name\": \"@winapp/bindings\",\n");
     out.push_str("  \"type\": \"commonjs\",\n");
     out.push_str("  \"sideEffects\": false,\n");
-    out.push_str("  \"main\": \"./index.js\",\n");
-    out.push_str("  \"types\": \"./index.d.ts\",\n");
     out.push_str("  \"exports\": {\n");
-    out.push_str("    \".\": {\n");
-    out.push_str("      \"types\": \"./com/index.d.ts\",\n");
-    out.push_str("      \"import\": \"./com/index.mjs\",\n");
-    out.push_str("      \"require\": \"./com/index.js\",\n");
-    out.push_str("      \"default\": \"./com/index.js\"\n");
-    out.push_str("    }");
-
-    // Preserve the original COM-only deep-import paths while storing all COM
-    // implementation files under the domain-specific `com/` directory.
-    for name in com_subpath_names {
-        out.push_str(",\n");
-        out.push_str(&format!("    \"./{}\": {{\n", name));
-        out.push_str(&format!("      \"types\": \"./com/{}.d.ts\",\n", name));
-        out.push_str(&format!("      \"import\": \"./com/{}.js\",\n", name));
-        out.push_str(&format!("      \"require\": \"./com/{}.js\",\n", name));
-        out.push_str(&format!("      \"default\": \"./com/{}.js\"\n", name));
-        out.push_str("    }");
-    }
-
-    append_com_exports(&mut out, com_subpath_names);
+    append_com_exports(&mut out, true, false);
     out.push_str("\n  }\n");
     out.push_str("}\n");
     out
 }
 
-fn append_com_exports(out: &mut String, com_subpath_names: &BTreeSet<String>) {
-    if com_subpath_names.is_empty() {
+fn append_com_exports(out: &mut String, include_com: bool, has_previous: bool) {
+    if !include_com {
         return;
     }
 
-    out.push_str(",\n");
+    if has_previous {
+        out.push_str(",\n");
+    }
     out.push_str("    \"./com\": {\n");
     out.push_str("      \"types\": \"./com/index.d.ts\",\n");
     out.push_str("      \"import\": \"./com/index.mjs\",\n");
@@ -261,7 +242,7 @@ mod tests {
     }
 
     #[test]
-    fn com_only_package_exposes_canonical_root_subpaths() {
+    fn com_only_package_exposes_only_explicit_com_subpaths() {
         let module = "windows/win32/ui/shell/ITaskbarList3";
         let com = BTreeSet::from([module.to_string()]);
         let winrt = BTreeSet::new();
@@ -272,10 +253,10 @@ mod tests {
         });
 
         assert!(out.contains("\"type\": \"commonjs\""));
-        assert!(out.contains(&format!("\"./{module}\"")));
-        assert!(out.contains(&format!("\"types\": \"./com/{module}.d.ts\"")));
-        assert!(out.contains(&format!("\"import\": \"./com/{module}.js\"")));
-        assert!(out.contains(&format!("\"require\": \"./com/{module}.js\"")));
+        assert!(!out.contains("\"main\""));
+        assert!(!out.contains("\n  \"types\":"));
+        assert!(!out.contains("\".\":"));
+        assert!(!out.contains(&format!("\"./{module}\"")));
         assert!(out.contains("\"import\": \"./com/index.mjs\""));
         assert!(out.contains("\"require\": \"./com/index.js\""));
         assert!(out.contains("\"./com/*\""));

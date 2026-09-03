@@ -471,7 +471,7 @@ not be described as solving every problem in the map above.
 | Explicit COM initialization | Activation no longer silently chooses MTA; callers select STA or MTA with `initializeCom()`. Generated implementation files use the isolated unsafe runtime internally. |
 | Dynamic JavaScript COM implementations | Any `IUnknown`-rooted interface whose complete contiguous vtable maps to the validated callback subset receives `static implement()` and `static implementation()`. Static fast-path thunks cover common signatures; cached libffi closures cover arbitrary supported parameter counts, scalar widths, POD layouts, outputs, and native return conventions using the platform COM calling convention. Objects support derived/base IID aliases, multiple interface views, canonical IUnknown identity, shared atomic AddRef/Release, synchronous owner-thread JS dispatch, required Out initialization/validation, allocator-correct transfer, and panic/exception containment. Count/capacity values are read according to their In/InOut ABI direction, fixed outputs without an actual-length slot require exact size, and typed interface outputs are queried to the declared IID. QI references, BSTR/HSTRING values, and CoTaskMem buffers remain RAII-owned until every output is prepared; only then are all native output slots committed, so preparation failure leaves owned outputs null and releases every temporary owner. Wrong-thread HRESULT methods return `RPC_E_WRONG_THREAD`; direct returns are zeroed and void methods do nothing because those native ABIs have no error channel. `IFileDialogEvents` is live-tested with `Advise`/`Unadvise`; `IDropTarget` exercises libffi, POD/InOut, generated multi-interface composition, and QueryInterface. |
 | Fail-closed generation | Unknown/unsafe layouts, untagged/by-value/output unions, bitfields, flexible arrays, nested owned fields, unsupported VARTYPE/BYREF/SAFEARRAY/PROPVARIANT combinations, unsupported arrays, pointer outputs, ownership, and in/out shapes stop generation with a targeted error. |
-| Consumable output | Classic COM files live under `com/`, with `./com` and `./com/*` package exports. Mixed and incremental generation preserve the WinRT-only root barrel; COM-only output retains its legacy root entrypoint. |
+| Consumable output | Classic COM files live under `com/`, with `./com` and `./com/*` package exports. The generated package root is always WinRT-only; COM-only output deliberately has no root entrypoint. |
 | Explicit vtable registration | Every generated method is registered with `.addMethodAt(vtableIndex, name, signature)`, keyed by its actual metadata-derived vtable slot. Methods are never deduplicated by name, so same-name overloads at different slots both register correctly. |
 | Same-name overload projection | Overloads (e.g. `IDCompositionEffectGroup::SetOpacity`) are grouped once during projection (not by renderer heuristics). A single public JS method dispatches to a private per-slot implementation using only a validated, mutually-distinguishable arity/shape key (`typeof`-based: boolean/number/bigint/string/object); ambiguous groups fail generation closed with a diagnostic naming the interface, method, and reason. The `.d.ts` emits one TypeScript overload signature per branch, contiguously. |
 | Lifecycle ergonomics | Generated interface wrappers declare a protected constructor (`protected constructor(obj: unknown);`) so only generated coclasses can subclass them. Coclasses expose a public zero-argument constructor, and every wrapper provides an idempotent `release()` that delegates to the managed native value. Factory-activated interop wrappers retain `static create()` with JSDoc reminding callers to initialize COM first. |
@@ -545,15 +545,16 @@ taskbar.release();
 
 Separate WinRT and COM invocations may target the same output directory in
 either order. The generated package manifest is rebuilt from both domains
-without adding COM exports to the WinRT root. Legacy COM-only output is
-relocated automatically when it is reused with the new generator.
+without adding COM exports to the WinRT root. Generated layout/schema version
+changes require deleting and regenerating the complete bindings directory;
+in-place cross-version migration is intentionally unsupported.
 
 winappCli project aliases use `#winapp/bindings/com` for the COM barrel and
 canonical deep imports such as
 `#winapp/bindings/com/windows/win32/ui/shell/ITaskbarList3`. Existing source
 that used a flat COM deep import should switch to the canonical namespace path.
-Standalone COM-only packages expose the same canonical path with and without
-the explicit `com/` prefix.
+Standalone COM-only packages also require the explicit `com/` prefix; package
+root imports do not expose COM symbols.
 
 ### Explicit unsafe/raw opt-in
 

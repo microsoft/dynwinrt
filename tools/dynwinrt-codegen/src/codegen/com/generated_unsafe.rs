@@ -17,7 +17,6 @@ use super::capability::{
 };
 use super::javascript::naming::camel_case;
 
-pub const LEGACY_UNSAFE_SUPPORT_SCHEMA_VERSION: u32 = 10;
 pub const UNSAFE_SUPPORT_SCHEMA_VERSION: u32 = 11;
 
 #[derive(Debug, Clone)]

@@ -161,8 +161,10 @@ Classic COM generation currently emits JavaScript and TypeScript only. It uses
 the separate `@microsoft/dynwinrt/com` public surface; generated wrappers call
 `@microsoft/dynwinrt/com/unsafe` internally after codegen validates the ABI.
 Generated COM modules use the same lowercase/kebab namespace layout as WinRT
-under `com/`, while the COM barrel keeps globally unique short exports. The
-`@microsoft/dynwinrt` package root remains WinRT-only.
+under `com/`, while the COM barrel keeps globally unique short exports.
+COM-only generated packages also require the explicit `com/` entrypoint; the
+generated package root and `@microsoft/dynwinrt` runtime root remain
+WinRT-only.
 
 - [Classic COM JavaScript usage guide](docs/guides/windows/classic-com-usage.md)
 - [Supported ABI, coverage, limitations, and ownership model](docs/architecture/classic-com-support.md)

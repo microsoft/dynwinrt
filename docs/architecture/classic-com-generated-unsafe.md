@@ -664,11 +664,9 @@ name, requires an exact match, and then checks the case-insensitive path key.
 Case-only namespaces or type names therefore fail instead of aliasing on
 Windows.
 
-Manifest v2 records canonical safe and unsafe paths. The first COM generation
-against manifest v1 reprojects every retained root from the configured
-metadata, migrates support schema 10 to 11, removes manifest-owned flat/Pascal
-paths, prunes their empty directories, and publishes the complete canonical
-tree in the same output transaction.
+Manifest v2 records canonical safe and unsafe paths. Manifest or support schema
+mismatches fail closed; version upgrades require deleting and regenerating the
+complete bindings output rather than migrating files in place.
 
 Before overwriting a staged path owned by any manifest root outside the current
 update set, codegen requires the retained and planned path identities to match,
@@ -688,8 +686,8 @@ remain allowed.
 - Existing generated COM classes, declarations, and root barrel symbols retain
   their public names; their deep module paths intentionally move to canonical
   namespace directories.
-- Manifest v1 output migrates atomically instead of retaining mixed flat and
-  canonical layouts.
+- Version-mismatched output is rejected instead of producing a mixed flat and
+  canonical layout.
 - Unsafe symbols never appear in a safe barrel or safe declaration file.
 - Existing WinRT generation is unchanged.
 - Existing Classic COM safe generation never changes a class into an unsafe
@@ -700,7 +698,7 @@ remain allowed.
 - Concurrent processes targeting the same output serialize the complete
   incremental merge, including successful classes and report-only entries.
 - The entire output root is replaced transactionally. COM is never published
-  before root compatibility barrels and package metadata are ready.
+  before COM barrels and package metadata are ready.
 
 ## Validation
 

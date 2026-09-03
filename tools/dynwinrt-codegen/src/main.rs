@@ -177,7 +177,6 @@ enum Commands {
 
 const COM_MANIFEST_FILE: &str = ".dynwinrt-com-manifest.json";
 const COM_MANIFEST_VERSION: u32 = 2;
-const LEGACY_COM_MANIFEST_VERSION: u32 = 1;
 
 #[derive(Debug, Default, Deserialize, Serialize)]
 struct ComGenerationManifest {
@@ -513,9 +512,6 @@ fn run() -> Result<(), String> {
                 fs::create_dir_all(output_dir).map_err(|e| {
                     format!("Failed to create output directory '{}': {}", output, e)
                 })?;
-                if lang == "js" {
-                    migrate_legacy_com_only_package(output_dir)?;
-                }
             }
             if lang == "py" && !dry_run && !pyi && class_name.is_some() {
                 remove_all_generated_python_stubs(output_dir)?;
@@ -582,18 +578,6 @@ fn run() -> Result<(), String> {
                         }
                     }
                 }
-                if lang == "js"
-                    && !dry_run
-                    && (!com_interfaces.is_empty() || !com_coclasses.is_empty())
-                {
-                    include_legacy_com_manifest_roots(
-                        &output_dir.join("com"),
-                        &winmd,
-                        &mut com_interfaces,
-                        &mut com_coclasses,
-                    )?;
-                }
-
                 // Fail loud: classic-COM codegen only emits `.js` + `.d.ts`
                 // today. If the user asked for a different language
                 // (e.g. `--lang py`) but any of the requested `--class-name`
@@ -2323,8 +2307,6 @@ fn load_effective_generation_plan(
                     index_path.display()
                 )
             })?;
-            // A COM-only package temporarily uses the root barrel as a
-            // compatibility forwarder. WinRT generation replaces that barrel;
             // COM subpaths are planned independently from the `com/` manifest.
             if module.starts_with("com/") && !plan.modules.contains_key(&module) {
                 continue;
@@ -3028,35 +3010,24 @@ fn prepare_com_generation_manifest(
     planned_files: &BTreeMap<String, String>,
 ) -> Result<ComManifestUpdate, String> {
     let path = com_output_dir.join(COM_MANIFEST_FILE);
-    let mut manifest =
-        read_com_generation_manifest(com_output_dir)?.unwrap_or_else(|| ComGenerationManifest {
-            version: COM_MANIFEST_VERSION,
-            roots: BTreeMap::new(),
-        });
-    if !matches!(
-        manifest.version,
-        LEGACY_COM_MANIFEST_VERSION | COM_MANIFEST_VERSION
-    ) {
+    let existing_manifest = read_com_generation_manifest(com_output_dir)?;
+    if existing_manifest.is_none() && com_output_dir.join("index.d.ts").is_file() {
         return Err(format!(
-            "Unsupported COM generation manifest version {} in {}",
+            "Existing COM bindings in '{}' have no version {} generation manifest; delete and regenerate the complete bindings directory",
+            com_output_dir.display(),
+            COM_MANIFEST_VERSION
+        ));
+    }
+    let mut manifest = existing_manifest.unwrap_or_else(|| ComGenerationManifest {
+        version: COM_MANIFEST_VERSION,
+        roots: BTreeMap::new(),
+    });
+    if manifest.version != COM_MANIFEST_VERSION {
+        return Err(format!(
+            "Unsupported COM generation manifest version {} in {}; delete and regenerate the complete bindings directory",
             manifest.version,
             path.display()
         ));
-    }
-    if manifest.version == LEGACY_COM_MANIFEST_VERSION {
-        let missing = manifest
-            .roots
-            .keys()
-            .filter(|root| !updated_roots.contains_key(*root))
-            .cloned()
-            .collect::<Vec<_>>();
-        if !missing.is_empty() {
-            return Err(format!(
-                "Classic-COM canonical layout migration did not reproject retained roots: {}",
-                missing.join(", ")
-            ));
-        }
-        manifest.version = COM_MANIFEST_VERSION;
     }
 
     let mut retained_paths = BTreeMap::<String, (String, BTreeSet<String>)>::new();
@@ -3209,54 +3180,6 @@ fn read_com_generation_manifest(
         })
 }
 
-fn include_legacy_com_manifest_roots(
-    com_output_dir: &Path,
-    winmd: &str,
-    interfaces: &mut Vec<com_metadata::ComInterfaceMeta>,
-    coclasses: &mut Vec<com_metadata::ComCoclassMeta>,
-) -> Result<(), String> {
-    let Some(manifest) = read_com_generation_manifest(com_output_dir)? else {
-        return Ok(());
-    };
-    if manifest.version != LEGACY_COM_MANIFEST_VERSION {
-        return Ok(());
-    }
-    let mut included = interfaces
-        .iter()
-        .map(|interface| {
-            format!(
-                "{}.{}",
-                interface.interface.namespace, interface.interface.name
-            )
-        })
-        .chain(
-            coclasses
-                .iter()
-                .map(|coclass| format!("{}.{}", coclass.namespace, coclass.name)),
-        )
-        .collect::<BTreeSet<_>>();
-    for root in manifest.roots.keys() {
-        if !included.insert(root.clone()) {
-            continue;
-        }
-        let (namespace, name) = root
-            .rsplit_once('.')
-            .ok_or_else(|| format!("Legacy COM manifest root is not qualified: `{root}`"))?;
-        if let Some(interface) = com_metadata::parse_com_interface(winmd, namespace, name) {
-            interfaces.push(interface);
-            continue;
-        }
-        if let Some(coclass) = com_metadata::parse_com_coclass(winmd, namespace, name)? {
-            coclasses.push(coclass);
-            continue;
-        }
-        return Err(format!(
-            "Legacy COM manifest root `{root}` could not be reprojected from the configured metadata"
-        ));
-    }
-    Ok(())
-}
-
 fn remove_empty_com_parents(
     mut current: Option<&Path>,
     com_output_dir: &Path,
@@ -3326,14 +3249,10 @@ fn prepare_generated_unsafe_package(
             .map_err(|error| format!("Failed to read {}: {error}", support_path.display()))?;
         let existing: ExistingSupport = serde_json::from_str(&content)
             .map_err(|error| format!("Invalid {}: {error}", support_path.display()))?;
-        if !matches!(
-            existing.schema_version,
-            com::LEGACY_UNSAFE_SUPPORT_SCHEMA_VERSION | com::UNSAFE_SUPPORT_SCHEMA_VERSION
-        ) {
+        if existing.schema_version != com::UNSAFE_SUPPORT_SCHEMA_VERSION {
             return Err(format!(
-                "Unsupported generated unsafe support schema {} (expected {} or {})",
+                "Unsupported generated unsafe support schema {} (expected {}); delete and regenerate the complete bindings directory",
                 existing.schema_version,
-                com::LEGACY_UNSAFE_SUPPORT_SCHEMA_VERSION,
                 com::UNSAFE_SUPPORT_SCHEMA_VERSION
             ));
         }
@@ -3351,14 +3270,6 @@ fn prepare_generated_unsafe_package(
             .iter()
             .filter_map(|output| output.unsafe_support.clone()),
     );
-    if supports
-        .iter()
-        .any(|support| support.schema_version != com::UNSAFE_SUPPORT_SCHEMA_VERSION)
-    {
-        return Err(
-            "Legacy generated unsafe support remained after canonical layout migration".into(),
-        );
-    }
     supports.sort_by(|left, right| left.interface_name.cmp(&right.interface_name));
     if supports.is_empty() {
         return Ok(GeneratedUnsafePackagePlan {
@@ -3525,94 +3436,7 @@ fn native_pod_factory_signature(content: &str, export_name: &str) -> Option<Stri
 }
 
 fn finalize_com_generation(output_dir: &Path) -> Result<(), String> {
-    if !has_winrt_root(output_dir) {
-        write_com_root_compatibility_barrels(output_dir)?;
-    }
     write_bindings_manifest(output_dir)
-}
-
-fn write_com_root_compatibility_barrels(output_dir: &Path) -> Result<(), String> {
-    let com_dir = output_dir.join("com");
-    let com_js_path = com_dir.join("index.js");
-    let com_dts_path = com_dir.join("index.d.ts");
-    ensure_safe_generated_destination(output_dir, &com_js_path)?;
-    ensure_safe_generated_destination(output_dir, &com_dts_path)?;
-    let com_js = fs::read_to_string(&com_js_path)
-        .map_err(|error| format!("Failed to read {}: {error}", com_js_path.display()))?;
-    let com_dts = fs::read_to_string(&com_dts_path)
-        .map_err(|error| format!("Failed to read {}: {error}", com_dts_path.display()))?;
-    let root_js = com_js.replace(", './", ", './com/");
-    let root_dts = com_dts.replace("from './", "from './com/");
-    let index_js = output_dir.join("index.js");
-    let index_dts = output_dir.join("index.d.ts");
-    ensure_safe_generated_destination(output_dir, &index_js)?;
-    ensure_safe_generated_destination(output_dir, &index_dts)?;
-    fs::write(&index_js, &root_js)
-        .map_err(|error| format!("Failed to write COM compatibility index.js: {error}"))?;
-    fs::write(&index_dts, root_dts)
-        .map_err(|error| format!("Failed to write COM compatibility index.d.ts: {error}"))?;
-    Ok(())
-}
-
-fn migrate_legacy_com_only_package(output_dir: &Path) -> Result<(), String> {
-    if has_winrt_root(output_dir) {
-        return Ok(());
-    }
-
-    let package_path = output_dir.join("package.json");
-    let index_path = output_dir.join("index.js");
-    let index_dts_path = output_dir.join("index.d.ts");
-    if !package_path.is_file() || !index_path.is_file() || !index_dts_path.is_file() {
-        return Ok(());
-    }
-    let package = fs::read_to_string(&package_path)
-        .map_err(|error| format!("Failed to read {}: {error}", package_path.display()))?;
-    let index = fs::read_to_string(&index_dts_path)
-        .map_err(|error| format!("Failed to read {}: {error}", index_dts_path.display()))?;
-    if !package.contains("\"name\": \"@winapp/bindings\"")
-        || !(package.contains("\"type\": \"module\"") || package.contains("\"type\": \"commonjs\""))
-        || !index.starts_with("// Generated by dynwinrt-codegen")
-    {
-        return Ok(());
-    }
-
-    let modules = collect_com_index_modules(&index)
-        .into_iter()
-        .filter(|module| !module.starts_with("com/"))
-        .collect::<BTreeSet<_>>();
-    if modules.is_empty() {
-        return Ok(());
-    }
-
-    let com_output_dir = output_dir.join("com");
-    ensure_safe_generated_parent(
-        output_dir,
-        &com_output_dir.join(".dynwinrt-migration-check"),
-    )?;
-    for module in modules {
-        for suffix in [".js", ".d.ts"] {
-            move_legacy_com_file(
-                output_dir,
-                &output_dir.join(format!("{module}{suffix}")),
-                &com_output_dir.join(format!("{module}{suffix}")),
-            )?;
-        }
-    }
-
-    for path in [
-        output_dir.join("index.js"),
-        output_dir.join("index.mjs"),
-        output_dir.join("index.d.ts"),
-        package_path,
-    ] {
-        if path.exists() {
-            ensure_safe_generated_destination(output_dir, &path)?;
-            fs::remove_file(&path)
-                .map_err(|error| format!("Failed to remove {}: {error}", path.display()))?;
-        }
-    }
-    write_com_js_barrel(&com_output_dir)?;
-    finalize_com_generation(output_dir)
 }
 
 fn collect_com_index_modules(index: &str) -> BTreeSet<String> {
@@ -3624,42 +3448,6 @@ fn collect_com_index_modules(index: &str) -> BTreeSet<String> {
             (!module.is_empty() && !module.contains('\\')).then(|| module.to_string())
         })
         .collect()
-}
-
-fn move_legacy_com_file(
-    output_dir: &Path,
-    source: &Path,
-    destination: &Path,
-) -> Result<(), String> {
-    if !source.exists() {
-        return Ok(());
-    }
-    ensure_safe_generated_destination(output_dir, source)?;
-    ensure_safe_generated_destination(output_dir, destination)?;
-    if destination.exists() {
-        let source_content = fs::read(source)
-            .map_err(|error| format!("Failed to read {}: {error}", source.display()))?;
-        let destination_content = fs::read(destination)
-            .map_err(|error| format!("Failed to read {}: {error}", destination.display()))?;
-        if source_content != destination_content {
-            return Err(format!(
-                "Cannot migrate legacy COM file {} because {} already exists with different content",
-                source.display(),
-                destination.display()
-            ));
-        }
-        fs::remove_file(source)
-            .map_err(|error| format!("Failed to remove {}: {error}", source.display()))?;
-        return Ok(());
-    }
-
-    fs::rename(source, destination).map_err(|error| {
-        format!(
-            "Failed to migrate legacy COM file {} to {}: {error}",
-            source.display(),
-            destination.display()
-        )
-    })
 }
 
 fn has_winrt_root(output_dir: &Path) -> bool {
@@ -3698,12 +3486,9 @@ fn write_bindings_manifest_with_plan(
 
 fn collect_com_subpath_names(com_output_dir: &Path) -> Result<BTreeSet<String>, String> {
     if let Some(manifest) = read_com_generation_manifest(com_output_dir)? {
-        if !matches!(
-            manifest.version,
-            LEGACY_COM_MANIFEST_VERSION | COM_MANIFEST_VERSION
-        ) {
+        if manifest.version != COM_MANIFEST_VERSION {
             return Err(format!(
-                "Unsupported COM generation manifest version {} in {}",
+                "Unsupported COM generation manifest version {} in {}; delete and regenerate the complete bindings directory",
                 manifest.version,
                 com_output_dir.join(COM_MANIFEST_FILE).display()
             ));
@@ -3718,12 +3503,14 @@ fn collect_com_subpath_names(com_output_dir: &Path) -> Result<BTreeSet<String>, 
             .collect());
     }
     let index_path = com_output_dir.join("index.d.ts");
-    if !index_path.is_file() {
-        return Ok(BTreeSet::new());
+    if index_path.is_file() {
+        return Err(format!(
+            "Existing COM bindings in '{}' have no version {} generation manifest; delete and regenerate the complete bindings directory",
+            com_output_dir.display(),
+            COM_MANIFEST_VERSION
+        ));
     }
-    let index = fs::read_to_string(&index_path)
-        .map_err(|error| format!("Failed to read {}: {error}", index_path.display()))?;
-    Ok(collect_com_index_modules(&index))
+    Ok(BTreeSet::new())
 }
 
 fn collect_com_cjs_exports(content: &str) -> BTreeSet<String> {
@@ -9179,6 +8966,47 @@ mod tests {
 
         fs::remove_dir_all(forward.parent().unwrap()).unwrap();
         fs::remove_dir_all(reverse.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn unsafe_support_schema_mismatch_requires_clean_regeneration() {
+        let output = test_directory("unsafe-schema-mismatch").join("com");
+        let unsafe_dir = output.join("unsafe");
+        fs::create_dir_all(&unsafe_dir).unwrap();
+        fs::write(
+            unsafe_dir.join("support.json"),
+            "{\"schemaVersion\":10,\"interfaces\":[]}\n",
+        )
+        .unwrap();
+
+        let error = prepare_generated_unsafe_package(&output, &[]).unwrap_err();
+        assert!(
+            error.contains("Unsupported generated unsafe support schema 10")
+                && error.contains("expected 11"),
+            "{error}"
+        );
+
+        fs::remove_dir_all(output.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn unversioned_com_output_requires_clean_regeneration() {
+        let output = test_directory("unversioned-com-output").join("com");
+        fs::create_dir_all(&output).unwrap();
+        fs::write(
+            output.join("index.d.ts"),
+            "// Generated by dynwinrt-codegen - do not edit\n",
+        )
+        .unwrap();
+
+        let error = collect_com_subpath_names(&output).unwrap_err();
+        assert!(
+            error.contains("have no version 2 generation manifest")
+                && error.contains("delete and regenerate"),
+            "{error}"
+        );
+
+        fs::remove_dir_all(output.parent().unwrap()).unwrap();
     }
 
     #[test]
