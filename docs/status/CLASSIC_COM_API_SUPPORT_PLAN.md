@@ -291,10 +291,11 @@ ownership additionally requires the staged file to exist and exactly match the
 planned bytes before overwrite.
 
 CI also generates the real official safe `IWbemServices` wrapper and
-`IAudioClientUnsafe` companion, then invokes `queryObjectSink` at absolute slot
-5 against a test-hook IUnknown implementation with measured
-QueryInterface/AddRef/Release and pointer-slot mutation. This avoids requiring
-a live WMI service while testing the actual generated CJS, ESM, and declaration
+`IAudioClientUnsafe` companion. The WMI test object uses the official
+`IWbemServices_Vtbl` through slot 25 and ABI-correct `IWbemClassObject` and
+`IWbemCallResult` tear-offs with one canonical IUnknown and shared reference
+counting. Generated calls execute both tear-off interfaces without requiring a
+live WMI service while testing the actual generated CJS, ESM, and declaration
 artifacts.
 
 Generated companions are outbound only. They do not infer output ownership,
