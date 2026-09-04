@@ -185,6 +185,7 @@ pub(super) enum ComType {
         underlying: ComScalarRepr,
     },
     RawPointer,
+    ExactNullPointer,
     AllocatorPointer,
     ConsumedAllocatorPointer,
     InspectedAllocatorPointer,
@@ -289,6 +290,7 @@ pub(super) enum ComReturnConvention {
 pub(super) enum ResultConversion {
     Value,
     BorrowedHandle,
+    OwnedHandle(OwnedHandleCleanup),
     ManagedCom,
     Bstr,
     CoTaskMemString(StringEncoding),
@@ -310,6 +312,11 @@ pub(super) enum ResultConversion {
     StatStg,
     MallocAllocation,
     MallocReallocation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum OwnedHandleCleanup {
+    DeleteObject,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -427,6 +434,23 @@ pub(super) enum ProjectedComMethodKind {
     OwningCallerOutput {
         buffer_param_index: usize,
         capacity_param_index: usize,
+    },
+    FlagSelectedString {
+        discriminator_param_index: usize,
+        reserved_null_param_index: usize,
+        buffer_param_index: usize,
+        capacity_param_index: usize,
+        string_flags: [u32; 2],
+        validation_flag: u32,
+    },
+    ConditionalInterfaceOutput {
+        public_input_param_indices: [Option<usize>; 3],
+        flags_param_index: usize,
+        context_param_index: usize,
+        synchronous_output_param_index: Option<usize>,
+        semisynchronous_output_param_index: Option<usize>,
+        synchronous_flags: i32,
+        semisynchronous_flags: i32,
     },
 }
 
@@ -550,6 +574,7 @@ pub(super) fn dispatch_shape(typ: &ComType) -> Option<DispatchShape> {
         // depending on position, so they can collide with any other category
         // and are never safe overload-dispatch keys.
         ComType::RawPointer
+        | ComType::ExactNullPointer
         | ComType::AllocatorPointer
         | ComType::ConsumedAllocatorPointer
         | ComType::InspectedAllocatorPointer

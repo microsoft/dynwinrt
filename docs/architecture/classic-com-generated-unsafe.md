@@ -49,9 +49,9 @@ generated/
     │   ├── ITaskbarList3.js
     │   └── ITaskbarList3.d.ts
     └── unsafe/
-        ├── windows/win32/system/wmi/
-        │   ├── IWbemServicesUnsafe.js
-        │   └── IWbemServicesUnsafe.d.ts
+        ├── windows/win32/media/audio/
+        │   ├── IAudioClientUnsafe.js
+        │   └── IAudioClientUnsafe.d.ts
         ├── index.js
         ├── index.mjs
         ├── index.d.ts
@@ -199,12 +199,12 @@ Generated unsafe companions do not add raw callback implementation.
 An unsafe companion wraps an existing managed native value:
 
 ```ts
-export declare class IWbemServicesUnsafe {
+export declare class IAudioClientUnsafe {
   private constructor();
 
   static from(
     value: DynWinRtValue | { readonly nativeValue: DynWinRtValue },
-  ): IWbemServicesUnsafe;
+  ): IAudioClientUnsafe;
   static readonly iid: WinGuid;
   static readonly support: UnsafeInterfaceSupport;
   readonly nativeValue: DynWinRtValue;
@@ -212,13 +212,11 @@ export declare class IWbemServicesUnsafe {
   /**
    * @unsafe Metadata-complete outbound ABI.
    */
-  openNamespace(
-    namespace: string,
-    flags: number,
-    context: DynWinRtValue,
-    workingNamespace: DynComRawMemory | DynComRawPointer,
-    callResult: DynComRawMemory | DynComRawPointer,
-  ): void;
+  isFormatSupported(
+    shareMode: number,
+    format: UnsafePointee,
+    closestMatch: UnsafePointerOutput,
+  ): readonly [number, UnsafeOwnedPointer | null];
 
   release(): void;
 }
@@ -377,20 +375,12 @@ Callers must create one independent `+1` owner per native slot with
 `UnsafeRawCall.acknowledge()` and never changes an unrelated pointer
 parameter.
 
-`IWbemServices::OpenNamespace` is an exact exception to the generic typed
-interface InOut rule. Win32 metadata 71.0.14 marks both output slots InOut, but
-the Windows SDK `WbemCli.h`/`WbemIdl.idl` declaration and Microsoft Learn
-syntax declare `[out] IWbemServices**` and `[out] IWbemCallResult**`. The
-override is applied atomically only when namespace, interface IID, method,
-absolute slot, parameter count/index/name, optional flag, and complete typed
-pointer shape match. Both native outputs are optional and exactly one may be supplied. Generated
-code hides `pCtx` and always passes native null. Synchronous options require
-`lFlags: 0` plus an initially null working-namespace slot. Semisynchronous
-options require exact `lFlags: 16` (`WBEM_FLAG_RETURN_IMMEDIATELY`), a
-native-null working argument, and an initially null result slot. The requested
-successful output must be non-null and is adopted into
-`DynComRawOwnedComPointer`; dirty failure output is nulled and released before
-rethrowing.
+`IWbemServices` was promoted out of this unsafe layer after its seven
+mode-selected methods acquired exact conditional-output contracts. The safe
+projection exposes `{ mode: "sync" | "semisync" }`, hides `pCtx`, registers
+native outputs with `addOptionalOut`, and returns the selected owned managed
+COM value. Once every inherited method has a closed semantic plan, the safe
+class replaces the companion rather than duplicating it.
 
 ## Registration
 
@@ -461,14 +451,7 @@ Generation emits `generated/com/unsafe/support.json`:
       "schemaVersion": 11,
       "metadata": {
         "setSha256": "...",
-        "files": [
-          {
-            "file": "Windows.Win32.winmd",
-            "package": "Microsoft.Windows.SDK.Win32Metadata",
-            "version": "71.0.14-preview",
-            "sha256": "..."
-          }
-        ],
+        "files": ["..."],
         "definingFile": {
           "file": "Windows.Win32.winmd",
           "package": "Microsoft.Windows.SDK.Win32Metadata",
@@ -476,68 +459,25 @@ Generation emits `generated/com/unsafe/support.json`:
           "sha256": "..."
         }
       },
-      "interfaceName": "Windows.Win32.System.Wmi.IWbemServices",
-      "interfaceIid": "9556dc99-828c-11cf-a37e-00aa003240c7",
+      "interfaceName": "Windows.Win32.Media.Audio.IAudioClient",
+      "interfaceIid": "1cb9ad4c-dbfa-4c32-b178-c2f568a703b2",
       "root": "IUnknown",
       "baseIids": [],
-      "unsafeClass": "IWbemServicesUnsafe",
-      "modulePath": "Windows/Win32/System/Wmi/IWbemServicesUnsafe",
+      "unsafeClass": "IAudioClientUnsafe",
+      "modulePath": "windows/win32/media/audio/IAudioClientUnsafe",
       "methods": [
         {
-          "name": "OpenNamespace",
-          "projectedName": "openNamespace",
-          "declaringIid": "9556dc99-828c-11cf-a37e-00aa003240c7",
-          "absoluteSlot": 3,
+          "name": "Initialize",
+          "projectedName": "initialize",
+          "declaringIid": "1cb9ad4c-dbfa-4c32-b178-c2f568a703b2",
+          "absoluteSlot": 4,
           "signatureFingerprint": "...",
-          "status": "raw_metadata_complete",
-          "reasons": [],
-          "strategyRequirements": [],
-          "exactInterfaceOutputs": [
-            {
-              "entryId": "wmi.conditional-output.entry.windows-win32-system-wmi.iwbemservices.9556dc99828c11cfa37e00aa003240c7.opennamespace.slot-3.v1",
-              "familyId": "wmi.conditional-output.v1",
-              "contractKind": "conditional-output",
-              "parameterIndex": 3,
-              "parameterName": "ppWorkingNamespace",
-              "interfaceIid": "9556dc99-828c-11cf-a37e-00aa003240c7",
-              "argumentOptional": true,
-              "nullableOnSuccess": false,
-              "reason": "exact [out] owned +1 contract",
-              "citation": "Microsoft Learn and Windows SDK WbemCli.h/WbemIdl.idl"
-            },
-            {
-              "entryId": "wmi.conditional-output.entry.windows-win32-system-wmi.iwbemservices.9556dc99828c11cfa37e00aa003240c7.opennamespace.slot-3.v1",
-              "familyId": "wmi.conditional-output.v1",
-              "contractKind": "conditional-output",
-              "parameterIndex": 4,
-              "parameterName": "ppResult",
-              "interfaceIid": "44aca675-e8fc-11d0-a07c-00c04fb68820",
-              "argumentOptional": true,
-              "nullableOnSuccess": false,
-              "reason": "exact [out] owned +1 contract",
-              "citation": "Microsoft Learn and Windows SDK WbemCli.h/WbemIdl.idl"
-            }
-          ],
-          "exactInterfaceOutputCall": {
-            "entryId": "wmi.conditional-output.entry.windows-win32-system-wmi.iwbemservices.9556dc99828c11cfa37e00aa003240c7.opennamespace.slot-3.v1",
-            "familyId": "wmi.conditional-output.v1",
-            "contractKind": "conditional-output",
-            "sourceFingerprint": "EA3628EB9E45E1A0BAA0BC9F6DA1FD82FE938091EF1730E25E3CCEEA9EFD316B",
-            "flagsParamIndex": 1,
-            "contextParamIndex": 2,
-            "synchronousOutputParamIndex": 3,
-            "semisynchronousOutputParamIndex": 4,
-            "synchronousFlags": 0,
-            "semisynchronousFlagValue": 16,
-            "flagsOptionName": "lFlags",
-            "synchronousOutputOptionName": "workingNamespace",
-            "semisynchronousOutputOptionName": "result",
-            "reason": "exact OpenNamespace mode contract",
-            "citation": "Microsoft Learn and Windows SDK WbemCli.h/WbemIdl.idl"
-          },
+          "status": "manual_contract_required",
+          "reasons": ["..."],
+          "strategyRequirements": ["..."],
           "targets": {
             "x64": {
-              "classification": "raw_metadata_complete"
+              "classification": "manual_contract_required"
             }
           }
         }
@@ -581,7 +521,7 @@ also returns nonzero.
 Example output:
 
 ```text
-[dry-run] Would generate IWbemServicesUnsafe (metadata-complete: 23, manual: 0, blocked: 0)
+[dry-run] Would generate IAudioClientUnsafe (metadata-complete: 8, manual: 4, blocked: 0)
 [dry-run] Report-only MFASYNCRESULTUnsafe {"metadataComplete":0,"manual":0,"blocked":5,"reasons":["missing_interface_iid"]}
 ```
 
@@ -717,19 +657,13 @@ Required tests include:
 11. deterministic support manifest generation; and
 12. complete safe COM and WinRT regression suites.
 
-The Stage 1 generated-companion integration fixture uses official
-`IWbemServicesUnsafe::queryObjectSink` (IID
-`9556dc99-828c-11cf-a37e-00aa003240c7`, absolute slot 5). It was selected
-because the real metadata-complete signature combines generated scalar
-conversion with an explicit interface-pointer output slot but does not require
-a live WMI service. The test-hook object implements real IUnknown
-QueryInterface/AddRef/Release plus the exact slot-5 ABI, writes a deterministic
-pointer value, and exposes refcount/call statistics. CI generates the actual
-deep module, loads CJS and ESM forms, type-checks its emitted declaration, calls
-`.from()` and `queryObjectSink`, and checks idempotent/post-release behavior.
+The generated-artifact integration fixture combines safe WMI with unsafe Audio.
+The WMI test-hook validates sync/semisync OptionalOut selection, native-null
+context, failure cleanup, QueryInterface/AddRef/Release balance, CJS, ESM, and
+emitted declarations without requiring a live WMI service.
 
-Stage 2 extends the same generated-artifact test with official
-`IAudioClientUnsafe::isFormatSupported` and `getService` vtable slots. It covers
+The unsafe portion uses official `IAudioClientUnsafe::isFormatSupported` and
+`getService` vtable slots. It covers
 CoTaskMem closest-format success/failure cleanup, BSTR/Local/Global dirty
 failure cleanup, COM-owned output cleanup, required/nullable output, strategy
 mismatch before dispatch, one-shot reuse, handle/raw/count strategies, and all
@@ -765,11 +699,11 @@ Stage 2 is implemented:
   reason, native direction/nullability, and known target pointee layouts; and
 - a raw pointer is never substituted for missing ownership.
 
-For official 71.0.14 metadata, **1,550 of 1,554** x64 manual-contract interfaces
-have at least one portable executable generated high-level method. **1,549**
+For official 71.0.14 metadata, **1,442 of 1,446** x64 manual-contract interfaces
+have at least one portable executable generated high-level method. **1,441**
 have an executable manual method, one retains only metadata-complete methods,
 and four have no portable executable method because every candidate is blocked
-on another generated target. There are **6,343** portable executable manual
+on another generated target. There are **6,083** portable executable manual
 methods, **0** remaining portable manual-classified methods omitted, and
 **1,163** cross-target runtime-blocked methods still omitted.
 

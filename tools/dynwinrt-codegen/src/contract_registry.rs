@@ -13,10 +13,13 @@ const MANIFEST_JSON: &str = include_str!("../contracts/classic-com/manifest.json
 const SCHEMA_JSON: &str = include_str!("../contracts/classic-com/schema.json");
 const CONDITIONAL_OUTPUTS_JSON: &str =
     include_str!("../contracts/classic-com/conditional-outputs.json");
+const OWNERSHIP_OUTPUTS_JSON: &str =
+    include_str!("../contracts/classic-com/ownership-outputs.json");
 const PINNED_METADATA_PACKAGE: &str = "Microsoft.Windows.SDK.Win32Metadata";
 const PINNED_METADATA_VERSION: &str = "71.0.14-preview";
 const PINNED_METADATA_SHA256: &str =
     "B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D";
+#[cfg(test)]
 pub(crate) const WMI_OPEN_NAMESPACE_ENTRY_ID: &str = "wmi.conditional-output.entry.windows-win32-system-wmi.iwbemservices.9556dc99828c11cfa37e00aa003240c7.opennamespace.slot-3.v1";
 
 #[derive(Debug, Clone, Copy, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -32,6 +35,9 @@ pub enum ContractKind {
     SemanticHresult,
     CompoundDispatch,
     Hazard,
+    NullInput,
+    ParameterDirection,
+    FlagSelectedBuffer,
 }
 
 impl ContractKind {
@@ -47,6 +53,9 @@ impl ContractKind {
             Self::SemanticHresult => "semantic-hresult",
             Self::CompoundDispatch => "compound-dispatch",
             Self::Hazard => "hazard",
+            Self::NullInput => "null-input",
+            Self::ParameterDirection => "parameter-direction",
+            Self::FlagSelectedBuffer => "flag-selected-buffer",
         }
     }
 }
@@ -82,6 +91,9 @@ pub enum ExactFamilyId {
     ConditionalOutput,
     SequentialStreamBuffer,
     DispatchInvoke,
+    ReservedNullInput,
+    ParameterDirection,
+    ShellCommandString,
 }
 
 impl ExactFamilyId {
@@ -98,6 +110,9 @@ impl ExactFamilyId {
             Self::ConditionalOutput => "wmi.conditional-output.v1",
             Self::SequentialStreamBuffer => "com.sequential-stream-buffer.v1",
             Self::DispatchInvoke => "automation.idispatch-invoke.v1",
+            Self::ReservedNullInput => "com.reserved-null-input.v1",
+            Self::ParameterDirection => "com.parameter-direction.v1",
+            Self::ShellCommandString => "shell.flag-selected-string.v1",
         }
     }
 
@@ -114,6 +129,9 @@ impl ExactFamilyId {
             Self::ConditionalOutput,
             Self::SequentialStreamBuffer,
             Self::DispatchInvoke,
+            Self::ReservedNullInput,
+            Self::ParameterDirection,
+            Self::ShellCommandString,
         ]
         .into_iter()
         .find(|family| family.id() == value)
@@ -422,6 +440,16 @@ pub(crate) fn statically_declared_exact_entry_ids() -> Result<BTreeSet<String>, 
             .filter(|contract| !contract.uses_generic_standard())
             .map(crate::com_enumerator_registry::EnumeratorContract::entry_id),
     );
+    ids.extend(
+        crate::com_null_input_registry::entries()
+            .iter()
+            .map(crate::com_null_input_registry::ExactNullInputEvidence::entry_id),
+    );
+    ids.extend(
+        crate::com_parameter_direction_registry::entries()
+            .iter()
+            .map(crate::com_parameter_direction_registry::ExactOutParameterEvidence::entry_id),
+    );
     let registry = REGISTRY
         .get_or_init(load_registry)
         .as_ref()
@@ -429,6 +457,12 @@ pub(crate) fn statically_declared_exact_entry_ids() -> Result<BTreeSet<String>, 
     ids.extend(
         registry
             .conditional_outputs
+            .iter()
+            .map(|entry| entry.entry_id.clone()),
+    );
+    ids.extend(
+        registry
+            .ownership_outputs
             .iter()
             .map(|entry| entry.entry_id.clone()),
     );
@@ -456,6 +490,8 @@ const ADDITIONAL_EXACT_ENTRY_IDS: &[&str] = &[
     "com.ownership.entry.windows-win32-system-com.imalloc.0000000200000000c000000000000046.realloc.slot-4.v1",
     "com.ownership.entry.windows-win32-system-com.ipersistfile.0000010b00000000c000000000000046.getcurfile.slot-8.param-0-ppszfilename.v1",
     "com.ownership.entry.windows-win32-system-com.istream.0000000c00000000c000000000000046.stat.slot-12.v1",
+    "com.ownership.entry.windows-win32-system-com-structuredstorage.istorage.0000000b00000000c000000000000046.stat.slot-17.v1",
+    "shell.flag-selected-string.entry.windows-win32-ui-shell.icontextmenu.000214e400000000c000000000000046.getcommandstring.slot-5.v1",
     "com.ownership.entry.windows-win32-ui-shell.ifiledialog.42f85136db7e439c85f1e4075d135fc8.getfilename.slot-16.param-0-pszname.v1",
     "com.ownership.entry.windows-win32-ui-shell.ishellitem.43826d1ee71842eebc55a1e261c37bfe.getdisplayname.slot-5.param-1-ppszname.v1",
     "com.ownership.entry.windows-win32-ui-shell.ishelllinka.000214ee00000000c000000000000046.getidlist.slot-4.param-0-ppidl.v1",
@@ -504,6 +540,13 @@ struct ConditionalOutputFile {
     contracts: Vec<ConditionalOutputContract>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct OwnershipOutputFile {
+    schema_version: u32,
+    contracts: Vec<OwnershipOutputContract>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub(crate) struct ConditionalOutputContract {
@@ -513,6 +556,19 @@ pub(crate) struct ConditionalOutputContract {
     pub reason: String,
     pub selector: ContractSelector,
     pub contract: ConditionalOutputSemantics,
+    pub evidence: Vec<EvidenceCitation>,
+    pub validated_metadata: Vec<ValidatedMetadata>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub(crate) struct OwnershipOutputContract {
+    pub entry_id: String,
+    pub family_id: ExactFamilyId,
+    pub kind: ContractKind,
+    pub reason: String,
+    pub selector: ContractSelector,
+    pub contract: OutputOwnershipSemantics,
     pub evidence: Vec<EvidenceCitation>,
     pub validated_metadata: Vec<ValidatedMetadata>,
 }
@@ -567,8 +623,8 @@ pub(crate) struct ConditionalOutputSemantics {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub(crate) struct OutputMode {
     pub flags: i32,
-    pub output_parameter_index: usize,
-    pub option_name: String,
+    pub output_parameter_index: Option<usize>,
+    pub option_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -579,6 +635,28 @@ pub(crate) struct InterfaceOutput {
     pub argument_optional: bool,
     pub nullable_on_success: bool,
     pub ownership: OutputOwnership,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub(crate) struct OutputOwnershipSemantics {
+    pub parameter_index: usize,
+    pub ownership: OutputAllocationOwnership,
+    pub cleanup: OutputAllocationCleanup,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq)]
+pub(crate) enum OutputAllocationOwnership {
+    #[serde(rename = "cotaskmem-owned")]
+    CoTaskMemOwned,
+    #[serde(rename = "handle-owned")]
+    HandleOwned,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq)]
+pub(crate) enum OutputAllocationCleanup {
+    CoTaskMemFree,
+    DeleteObject,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq)]
@@ -606,10 +684,12 @@ pub(crate) struct ValidatedMetadata {
 #[derive(Debug)]
 struct Registry {
     conditional_outputs: Vec<ConditionalOutputContract>,
+    ownership_outputs: Vec<OwnershipOutputContract>,
 }
 
 static REGISTRY: OnceLock<Result<Registry, String>> = OnceLock::new();
 
+#[cfg(test)]
 pub(crate) fn conditional_output_contract(
     id: &str,
 ) -> Result<&'static ConditionalOutputContract, String> {
@@ -624,12 +704,37 @@ pub(crate) fn conditional_output_contract(
         .ok_or_else(|| format!("Classic COM contract registry entry '{id}' was not found"))
 }
 
+pub(crate) fn conditional_output_contracts() -> Result<&'static [ConditionalOutputContract], String>
+{
+    let registry = REGISTRY
+        .get_or_init(load_registry)
+        .as_ref()
+        .map_err(Clone::clone)?;
+    Ok(&registry.conditional_outputs)
+}
+
+pub(crate) fn ownership_output_contracts() -> Result<&'static [OwnershipOutputContract], String> {
+    let registry = REGISTRY
+        .get_or_init(load_registry)
+        .as_ref()
+        .map_err(Clone::clone)?;
+    Ok(&registry.ownership_outputs)
+}
+
 pub(crate) fn validate_registry_usage(consumed_ids: &BTreeSet<String>) -> Result<(), String> {
     let registry = REGISTRY
         .get_or_init(load_registry)
         .as_ref()
         .map_err(Clone::clone)?;
     for entry in &registry.conditional_outputs {
+        if !consumed_ids.contains(&entry.entry_id) {
+            return Err(format!(
+                "Classic COM contract registry entry '{}' is unused by the loaded metadata",
+                entry.entry_id
+            ));
+        }
+    }
+    for entry in &registry.ownership_outputs {
         if !consumed_ids.contains(&entry.entry_id) {
             return Err(format!(
                 "Classic COM contract registry entry '{}' is unused by the loaded metadata",
@@ -651,19 +756,36 @@ fn load_registry() -> Result<Registry, String> {
             manifest.schema_version
         ));
     }
-    if manifest.files.len() != 1
+    if manifest.files.len() != 2
         || manifest.files[0].path != "conditional-outputs.json"
         || manifest.files[0].kind != ContractKind::ConditionalOutput
         || manifest.files[0].family_ids != [ExactFamilyId::ConditionalOutput]
+        || manifest.files[1].path != "ownership-outputs.json"
+        || manifest.files[1].kind != ContractKind::Ownership
+        || manifest.files[1].family_ids != [ExactFamilyId::Ownership]
     {
         return Err("Classic COM contract manifest does not list the compiled data files".into());
     }
-    validate_sha256(&manifest.files[0].sha256, "manifest file hash")?;
-    let actual = format!("{:X}", Sha256::digest(CONDITIONAL_OUTPUTS_JSON.as_bytes()));
-    if actual != manifest.files[0].sha256 {
+    validate_sha256(
+        &manifest.files[0].sha256,
+        "conditional-outputs.json manifest file hash",
+    )?;
+    validate_sha256(
+        &manifest.files[1].sha256,
+        "ownership-outputs.json manifest file hash",
+    )?;
+    let conditional_hash = format!("{:X}", Sha256::digest(CONDITIONAL_OUTPUTS_JSON.as_bytes()));
+    if conditional_hash != manifest.files[0].sha256 {
         return Err(format!(
-            "Classic COM contract file hash mismatch for conditional-outputs.json: expected {}, found {actual}",
+            "Classic COM contract file hash mismatch for conditional-outputs.json: expected {}, found {conditional_hash}",
             manifest.files[0].sha256
+        ));
+    }
+    let ownership_hash = format!("{:X}", Sha256::digest(OWNERSHIP_OUTPUTS_JSON.as_bytes()));
+    if ownership_hash != manifest.files[1].sha256 {
+        return Err(format!(
+            "Classic COM contract file hash mismatch for ownership-outputs.json: expected {}, found {ownership_hash}",
+            manifest.files[1].sha256
         ));
     }
     let file: ConditionalOutputFile = serde_json::from_str(CONDITIONAL_OUTPUTS_JSON)
@@ -675,9 +797,173 @@ fn load_registry() -> Result<Registry, String> {
         ));
     }
     validate_conditional_outputs(&file.contracts)?;
+    let ownership_file: OwnershipOutputFile = serde_json::from_str(OWNERSHIP_OUTPUTS_JSON)
+        .map_err(|error| format!("Invalid ownership-output contracts: {error}"))?;
+    if ownership_file.schema_version != 2 {
+        return Err(format!(
+            "Unsupported ownership-output contract schema {}",
+            ownership_file.schema_version
+        ));
+    }
+    validate_ownership_outputs(&ownership_file.contracts)?;
     Ok(Registry {
         conditional_outputs: file.contracts,
+        ownership_outputs: ownership_file.contracts,
     })
+}
+
+fn validate_ownership_outputs(entries: &[OwnershipOutputContract]) -> Result<(), String> {
+    let mut ids = BTreeSet::new();
+    let mut selectors = BTreeMap::new();
+    for entry in entries {
+        if entry.kind != ContractKind::Ownership || entry.family_id != ExactFamilyId::Ownership {
+            return Err(format!(
+                "Contract '{}' must use the exact ownership family and kind",
+                entry.entry_id
+            ));
+        }
+        if !valid_exact_entry_id(&entry.entry_id) {
+            return Err(format!(
+                "Contract registry entry ID is invalid: '{}'",
+                entry.entry_id
+            ));
+        }
+        let output = entry.contract.parameter_index;
+        let parameter = entry.selector.parameters.get(output).ok_or_else(|| {
+            format!(
+                "Contract '{}' output parameter index {output} is outside its selector",
+                entry.entry_id
+            )
+        })?;
+        let expected_entry_id = exact_parameter_entry_id(
+            entry.family_id,
+            &entry.selector.interface.namespace,
+            &entry.selector.interface.name,
+            &entry.selector.interface.iid,
+            &entry.selector.method,
+            entry.selector.absolute_slot,
+            output,
+            &parameter.name,
+        );
+        if entry.entry_id != expected_entry_id {
+            return Err(format!(
+                "Contract registry entry ID '{}' does not match its exact selector; expected '{expected_entry_id}'",
+                entry.entry_id
+            ));
+        }
+        if !ids.insert(entry.entry_id.clone()) {
+            return Err(format!(
+                "Duplicate Classic COM contract registry ID '{}'",
+                entry.entry_id
+            ));
+        }
+        validate_contract_selector(
+            &entry.entry_id,
+            &entry.selector,
+            &entry.evidence,
+            &entry.validated_metadata,
+        )?;
+        let valid_ownership = matches!(
+            (entry.contract.ownership, entry.contract.cleanup),
+            (
+                OutputAllocationOwnership::CoTaskMemOwned,
+                OutputAllocationCleanup::CoTaskMemFree
+            ) | (
+                OutputAllocationOwnership::HandleOwned,
+                OutputAllocationCleanup::DeleteObject
+            )
+        );
+        if parameter.direction != "out" || parameter.pointer_depth == 0 || !valid_ownership {
+            return Err(format!(
+                "Contract '{}' is not a supported output ownership/cleanup pair",
+                entry.entry_id
+            ));
+        }
+        let selector_key = format!(
+            "{}.{}:{}:{}:{}:{}",
+            entry.selector.interface.namespace,
+            entry.selector.interface.name,
+            entry.selector.interface.iid.to_ascii_lowercase(),
+            entry.selector.method,
+            entry.selector.absolute_slot,
+            output
+        );
+        if let Some(existing) = selectors.insert(selector_key.clone(), entry.entry_id.clone()) {
+            return Err(format!(
+                "Conflicting contract selectors '{existing}' and '{}' for {selector_key}",
+                entry.entry_id
+            ));
+        }
+        if entry.reason.is_empty() {
+            return Err(format!(
+                "Contract '{}' has no ownership reason",
+                entry.entry_id
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_contract_selector(
+    entry_id: &str,
+    selector: &ContractSelector,
+    evidence: &[EvidenceCitation],
+    validated_metadata: &[ValidatedMetadata],
+) -> Result<(), String> {
+    validate_sha256(
+        &selector.source_fingerprint,
+        &format!("source fingerprint for '{entry_id}'"),
+    )?;
+    if selector.interface.iid != selector.declaring_iid
+        || selector.parameters.len() != selector.parameter_count
+        || selector
+            .parameters
+            .iter()
+            .enumerate()
+            .any(|(index, parameter)| parameter.index != index)
+    {
+        return Err(format!(
+            "Contract '{entry_id}' parameter selector is incomplete, unordered, or has mismatched IIDs"
+        ));
+    }
+    if evidence.is_empty()
+        || evidence.iter().any(|citation| match citation.kind {
+            EvidenceSourceKind::MicrosoftLearn => {
+                citation.url.as_deref().is_none_or(str::is_empty) || citation.file.is_some()
+            }
+            EvidenceSourceKind::SdkHeader => {
+                citation.file.as_deref().is_none_or(str::is_empty) || citation.url.is_some()
+            }
+        })
+    {
+        return Err(format!("Contract '{entry_id}' has no usable citation"));
+    }
+    if validated_metadata.is_empty() {
+        return Err(format!(
+            "Contract '{entry_id}' has no validated metadata identity"
+        ));
+    }
+    for metadata in validated_metadata {
+        if metadata.package.is_empty() || metadata.version.is_empty() {
+            return Err(format!(
+                "Contract '{entry_id}' has an incomplete metadata identity"
+            ));
+        }
+        validate_sha256(
+            &metadata.sha256,
+            &format!("validated metadata hash for '{entry_id}'"),
+        )?;
+    }
+    if !validated_metadata.iter().any(|metadata| {
+        metadata.package == PINNED_METADATA_PACKAGE
+            && metadata.version == PINNED_METADATA_VERSION
+            && metadata.sha256 == PINNED_METADATA_SHA256
+    }) {
+        return Err(format!(
+            "Contract '{entry_id}' is not validated against the pinned metadata package/version/hash"
+        ));
+    }
+    Ok(())
 }
 
 fn validate_conditional_outputs(entries: &[ConditionalOutputContract]) -> Result<(), String> {
@@ -800,10 +1086,19 @@ fn validate_conditional_outputs(entries: &[ConditionalOutputContract]) -> Result
         if !semantics.context_must_be_native_null
             || semantics.synchronous.flags != 0
             || semantics.semisynchronous.flags != 16
-            || semantics.outputs.len() != 2
-            || output_indices.len() != 2
-            || !output_indices.contains(&semantics.synchronous.output_parameter_index)
-            || !output_indices.contains(&semantics.semisynchronous.output_parameter_index)
+            || !(1..=2).contains(&semantics.outputs.len())
+            || output_indices.len() != semantics.outputs.len()
+            || semantics.synchronous.output_parameter_index.is_some()
+                != semantics.synchronous.option_name.is_some()
+            || semantics.semisynchronous.output_parameter_index.is_some()
+                != semantics.semisynchronous.option_name.is_some()
+            || semantics
+                .synchronous
+                .output_parameter_index
+                .into_iter()
+                .chain(semantics.semisynchronous.output_parameter_index)
+                .collect::<BTreeSet<_>>()
+                != output_indices
             || semantics.context_parameter_index >= entry.selector.parameter_count
             || semantics.flags_parameter_index >= entry.selector.parameter_count
             || semantics
@@ -844,8 +1139,9 @@ mod tests {
         serde_json::from_str::<serde_json::Value>(SCHEMA_JSON).unwrap();
         let registry = load_registry().unwrap();
         let ids = statically_declared_exact_entry_ids().unwrap();
-        assert_eq!(ids.len(), 334);
-        assert_eq!(registry.conditional_outputs.len(), 1);
+        assert_eq!(ids.len(), 495);
+        assert_eq!(registry.conditional_outputs.len(), 7);
+        assert_eq!(registry.ownership_outputs.len(), 148);
         assert_eq!(
             registry.conditional_outputs[0].entry_id,
             "wmi.conditional-output.entry.windows-win32-system-wmi.iwbemservices.9556dc99828c11cfa37e00aa003240c7.opennamespace.slot-3.v1"
@@ -853,6 +1149,30 @@ mod tests {
         assert_eq!(
             registry.conditional_outputs[0].family_id,
             ExactFamilyId::ConditionalOutput
+        );
+        assert!(registry.ownership_outputs.iter().all(|entry| {
+            entry.family_id == ExactFamilyId::Ownership
+                && entry.kind == ContractKind::Ownership
+                && matches!(
+                    (entry.contract.ownership, entry.contract.cleanup),
+                    (
+                        OutputAllocationOwnership::CoTaskMemOwned,
+                        OutputAllocationCleanup::CoTaskMemFree
+                    ) | (
+                        OutputAllocationOwnership::HandleOwned,
+                        OutputAllocationCleanup::DeleteObject
+                    )
+                )
+        }));
+        assert_eq!(
+            registry
+                .ownership_outputs
+                .iter()
+                .filter(|entry| {
+                    entry.contract.ownership == OutputAllocationOwnership::HandleOwned
+                })
+                .count(),
+            1
         );
     }
 
@@ -962,6 +1282,28 @@ mod tests {
                 .unwrap_err()
                 .contains("pinned metadata")
         );
+
+        let ownership = registry.ownership_outputs[0].clone();
+        assert!(
+            validate_ownership_outputs(&[ownership.clone(), ownership.clone()])
+                .unwrap_err()
+                .contains("Duplicate")
+        );
+        let mut ownership_drift = ownership.clone();
+        ownership_drift.selector.parameters[ownership.contract.parameter_index].direction =
+            "in".into();
+        assert!(
+            validate_ownership_outputs(&[ownership_drift])
+                .unwrap_err()
+                .contains("supported output ownership/cleanup pair")
+        );
+        let mut ownership_fingerprint = ownership;
+        ownership_fingerprint.selector.source_fingerprint = "bad".into();
+        assert!(
+            validate_ownership_outputs(&[ownership_fingerprint])
+                .unwrap_err()
+                .contains("SHA-256")
+        );
     }
 
     #[test]
@@ -971,11 +1313,24 @@ mod tests {
                 .unwrap_err()
                 .contains("unused")
         );
+        let registry = load_registry().unwrap();
+        let mut used = registry
+            .conditional_outputs
+            .iter()
+            .map(|entry| entry.entry_id.clone())
+            .chain(
+                registry
+                    .ownership_outputs
+                    .iter()
+                    .map(|entry| entry.entry_id.clone()),
+            )
+            .collect::<BTreeSet<_>>();
+        assert!(validate_registry_usage(&used).is_ok());
+        used.remove(&registry.ownership_outputs[0].entry_id);
         assert!(
-            validate_registry_usage(&BTreeSet::from([
-                "wmi.conditional-output.entry.windows-win32-system-wmi.iwbemservices.9556dc99828c11cfa37e00aa003240c7.opennamespace.slot-3.v1".into()
-            ]))
-            .is_ok()
+            validate_registry_usage(&used)
+                .unwrap_err()
+                .contains("unused")
         );
     }
 
@@ -988,6 +1343,16 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("unknown field")
+        );
+
+        let mut ownership: serde_json::Value =
+            serde_json::from_str(OWNERSHIP_OUTPUTS_JSON).unwrap();
+        ownership["contracts"][0]["contract"]["cleanup"] = "ArbitraryFree".into();
+        assert!(
+            serde_json::from_value::<OwnershipOutputFile>(ownership)
+                .unwrap_err()
+                .to_string()
+                .contains("unknown variant")
         );
     }
 }

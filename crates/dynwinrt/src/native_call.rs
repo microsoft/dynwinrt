@@ -86,6 +86,7 @@ pub(crate) enum OutputCleanup {
     VariantClear,
     SafeArrayDestroy,
     PropVariantClear,
+    DeleteObject,
 }
 
 #[cfg(test)]
@@ -124,6 +125,15 @@ impl OutputCleanup {
             Self::VariantClear => crate::com::automation::cleanup_variant(ptr),
             Self::SafeArrayDestroy => crate::com::automation::cleanup_safearray(ptr),
             Self::PropVariantClear => crate::com::automation::cleanup_propvariant(ptr),
+            Self::DeleteObject => {
+                unsafe {
+                    let _ = windows::Win32::Graphics::Gdi::DeleteObject(
+                        windows::Win32::Graphics::Gdi::HGDIOBJ(
+                            std::ptr::with_exposed_provenance_mut(ptr.addr()),
+                        ),
+                    );
+                };
+            }
         }
     }
 }

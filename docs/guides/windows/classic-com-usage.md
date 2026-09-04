@@ -144,53 +144,51 @@ remain intact.
 The ordinary command has no unsafe opt-in flag. If complete safe projection
 fails but one or more methods are `raw_metadata_complete`, codegen writes an
 isolated namespace-qualified companion such as
-`generated/com/unsafe/windows/win32/system/wmi/IWbemServicesUnsafe.js` and
+`generated/com/unsafe/windows/win32/media/audio/IAudioClientUnsafe.js` and
 records every method in `support.json`. Safe-complete interfaces use matching
 canonical namespace directories under `generated/com/`.
 
 ```powershell
 npx dynwinrt-codegen generate `
   --winmd $winmd `
-  --namespace Windows.Win32.System.Wmi `
-  --class-name IWbemServices `
+  --namespace Windows.Win32.Media.Audio `
+  --class-name IAudioClient `
   --output .\generated
 ```
 
-`IWbemServicesUnsafe.openNamespace` hides IID registration, its absolute vtable
-slot, BSTR construction, the reserved `pCtx`, and signature wiring. It exposes
-the documented synchronous and semisynchronous output modes:
+`IAudioClientUnsafe` hides IID registration, inheritance, absolute slots, and
+signature wiring while keeping unknown format/storage ownership explicit:
 
 ```js
 import {
-  DynComRaw,
   DynComRawMemory,
 } from "@microsoft/dynwinrt/com/unsafe/raw";
-import { IWbemServicesUnsafe } from "./generated/com/unsafe/index.js";
+import {
+  IAudioClientUnsafe,
+  UnsafePointee,
+  UnsafePointerOutput,
+} from "./generated/com/unsafe/index.js";
 
-// existingServiceValue must come from a separately validated acquisition path.
-const services = IWbemServicesUnsafe.from(existingServiceValue);
-const workingSlot = DynComRawMemory.allocate(
-  DynComRaw.pointerSize(),
-  DynComRaw.pointerSize(),
-);
+const audio = IAudioClientUnsafe.from(existingAudioClientValue);
+const format = DynComRawMemory.allocate(18, 2);
 try {
-  const child = services.openNamespace("CIMV2", {
-    lFlags: 0,
-    workingNamespace: workingSlot,
-    result: null,
-  });
+  const [hresult, closest] = audio.isFormatSupported(
+    1,
+    UnsafePointee.required(format),
+    UnsafePointerOutput.coTaskMem(),
+  );
   try {
-    // child owns one IWbemServices +1.
+    // Inspect the explicitly owned closest-format result.
   } finally {
-    child.release();
+    closest?.release();
   }
 } finally {
-  workingSlot.release();
-  services.release();
+  format.release();
+  audio.release();
 }
 ```
 
-The short barrel export is available only while `IWbemServicesUnsafe` is
+The short barrel export is available only while `IAudioClientUnsafe` is
 globally unique. If two namespaces contain `IFoo`, import their deep modules:
 
 ```js
@@ -307,38 +305,27 @@ native-dispatch boundary, so the same strategy remains retryable. `IFoo*`,
 typed Out parameters, `IFoo***`, and interface parameters on a method manual
 for an unrelated reason do not acquire a hidden pointer slot.
 
-`IWbemServicesUnsafe.openNamespace` uses exact Windows SDK evidence instead of
-the generic replacement path. Supply an empty pointer-sized working slot and
-pass `null` when no asynchronous result is requested; returned `+1` references
-are already adopted:
+`IWbemServices` now uses exact Windows SDK evidence through the safe generated
+surface. The mode selects exactly one optional native output, `pCtx` is native
+null, and the selected result is an owned managed COM value:
 
 ```js
-const workingSlot = DynComRawMemory.allocate(
-  DynComRaw.pointerSize(),
-  DynComRaw.pointerSize(),
-);
-const workingNamespace = services.openNamespace(
-  "child",
-  {
-    lFlags: 0,
-    workingNamespace: workingSlot,
-    result: null,
-  },
-);
+import { IWbemServices } from "./generated/com/index.js";
+
+const services = IWbemServices._fromNative(existingServiceValue);
+const workingNamespace = services.openNamespace("child", { mode: "sync" });
 try {
-  // pCtx and ppResult were passed as native null.
+  // The semisynchronous form uses { mode: "semisync" }.
 } finally {
   workingNamespace.release();
-  workingSlot.release();
+  services.release();
 }
 ```
 
-The requested slot must contain a null pointer before dispatch. A
-semisynchronous call instead supplies exact `{ lFlags: 0x10,
-workingNamespace: null, result: resultSlot }`; combined flag values such as
-`0x11` are rejected. Exactly one output is allowed; `pCtx` is hidden and
-always native null. Dirty pointers written before a failing HRESULT are
-cleared and released by generated code.
+Generated code maps `sync` to exact flags `0` and `semisync` to
+`WBEM_FLAG_RETURN_IMMEDIATELY` (`16`). Other values are unrepresentable in the
+safe declaration. Dirty output references written before a failing HRESULT
+are released by the runtime.
 
 Never reuse one `DynComRawOwnedComPointer` object for multiple replacement
 arguments, including preserve/unchanged combinations. Create an independent

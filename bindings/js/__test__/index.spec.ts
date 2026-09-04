@@ -152,6 +152,7 @@ test('package facades exactly partition native exports', (t) => {
     'DynComNativeStruct',
     'DynComNativeStructArray',
     'DynComNativeUnion',
+    'DynComOwnedHandle',
     'DynComPropVariant',
     'DynComSafeArray',
     'DynComStatStg',

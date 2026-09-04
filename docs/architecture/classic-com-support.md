@@ -4,8 +4,8 @@
 general Automation or native Win32 projection.
 
 > **Status: preview, under active development.** The current CI baseline against
-> `Microsoft.Windows.SDK.Win32Metadata` 71.0.14-preview is 5,567 complete safe
-> interface projections out of 7,929 eligible interfaces (70.21%). Earlier
+> `Microsoft.Windows.SDK.Win32Metadata` 71.0.14-preview is 5,681 complete safe
+> interface projections out of 7,929 eligible interfaces (71.65%). Earlier
 > inventory and demand-snapshot sections retain the metadata versions and dates
 > stated in those sections.
 
@@ -1219,13 +1219,16 @@ interfaces: nine in the `IUIAutomationElement` family, four in the
 contracts and therefore add no complete-interface census entries. After
 removing enum-name ownership inference, requiring distinct actual-length
 parameters to be exact Out values, and separating counted character pointers
-from terminated strings, the exact final literal census is
-**5,567 / 7,929 = 70.210619%**. The result remains above the 70% target without
+from terminated strings, the HWND-specific census was **5,567 / 7,929**. The
+exact CoTaskMem output-ownership, parameter-direction, and null-input
+registries subsequently promote 114 additional complete interfaces, bringing
+the current literal census to
+**5,681 / 7,929 = 71.648379%**. The result remains above the 70% target without
 admitting any creator-owned, destroyable, InOut, undocumented, optional, or
 `HWND**` shape.
 
 CI reproduces this number with `dynwinrt-codegen com-census --json` and fails
-if the denominator changes, complete generation drops below 5,567, or coverage
+if the denominator changes, complete generation drops below 5,681, or coverage
 falls below 70%.
 
 ## Public-code frequency snapshot
@@ -1279,7 +1282,7 @@ against the resolved namespace.
 | 6 | `IDispatch` via `IID_IDispatch` | 6,408 | 46 | Yes | Complete inherited interface generates; `Invoke` uses dedicated DISPPARAMS/EXCEPINFO and explicit optional-output requests |
 | 7 | `IPersistFile` | 5,996 | 97 | Yes | Generates and live-tested |
 | 8 | `IConnectionPoint` | 5,832 | 51 | Yes | Generates; callback objects passed to `Advise` must satisfy the complete validated same-thread implementation subset |
-| 9 | `IWbemServices` | 5,680 | 76 | Yes | Fail closed: interface in/out ownership |
+| 9 | `IWbemServices` | 5,680 | 76 | Yes | Generates with exact synchronous/semisynchronous conditional outputs and native-null context |
 | 10 | `IWICImagingFactory` | 4,536 | 83 | Yes | Generates and live-tested |
 | 11 | `IDropTarget` | 4,368 | 57 | Yes | Generates for client calls and dynamic JavaScript implementation; live E2E covers by-value `POINTL`, scalar/InOut callback ABI, libffi dispatch, and multi-interface QueryInterface |
 | 12 | `IShellFolder` | 4,056 | 33 | Yes | Fail closed: untyped PIDL output ownership (and later `STRRET` union ABI) |
@@ -1316,7 +1319,7 @@ against the resolved namespace.
   - Automation contracts beyond the exact supported `IDispatch` compounds
     (XML and Task Scheduler BYREF/InOut and nested ownership);
   - explicit output ownership (`DXGI`, audio);
-  - interface in/out semantics (WMI); and
+  - remaining interface in/out replacement semantics; and
   - unsupported PROPVARIANT alternatives in Property System APIs beyond
     `IPropertyStore`.
 - Ten frequency-survey candidates have generated live coverage:
@@ -1327,7 +1330,7 @@ against the resolved namespace.
 
 This means the current suite provides useful ABI breadth, but it
 does **not** cover every high-frequency interface. In particular,
-`IDataObject`, graphics interfaces, WMI, audio, and live real-object
+`IDataObject`, graphics interfaces, audio, and live real-object
 `IDispatch::Invoke` coverage remain material gaps.
 
 ## Engineering priority map
@@ -1339,6 +1342,7 @@ hardware, and whether it adds a distinct ABI shape.
 | Interface | Typical use | Current status |
 |---|---|---|
 | `ISequentialStream` / `IStream` | OLE streams, imaging, shell, serialization | Complete generation includes documented `Read`/`Write` byte contracts and owned `STATSTG`; WIC live coverage exercises buffers, seek, stat, and Clone HRESULT propagation. |
+| `IStorage` | Structured storage | Complete generation reuses owned `STATSTG`, nullable input buffers, and exact reserved-null pointer contracts. |
 | `IOpcSignatureCustomObject` | OPC signature custom XML | `GetXml` generates as a CoTaskMem-owned callee byte buffer; acquisition is application-specific. |
 | `IDiscRecorder` | Legacy IMAPI recorder | Complete generation now includes the exact `GetRecorderGUID` two-call method and documentation-correct `getDisplayNames(): [string, string, string]` BSTR outputs. |
 | `IMalloc` | COM task allocator | Complete generation is gated by exact IID/slot/shape evidence. Opaque values reject forged/stale addresses; destructive and size operations enforce allocator identity, while `DidAlloc` permits borrowed cross-allocator inspection. |
@@ -1354,6 +1358,7 @@ hardware, and whether it adds a distinct ABI shape.
 | `IBindCtx` / `IRunningObjectTable` | Monikers and object binding | Both generate. `BIND_OPTS` carries an exact size initializer, and explicit bytes with a zero or incorrect `cbStruct` fail before native dispatch. |
 | `ICreateErrorInfo` / `IErrorInfo` | COM rich error information | Complete generation and acquisition are live-tested for GUID, wide strings, owned BSTR output, thread-local storage, and one-shot consumption. |
 | `IMMDeviceEnumerator` | Audio endpoint discovery | Generates today, but live behavior depends on available audio endpoints. |
+| `IWbemServices` | WMI queries and method invocation | Complete generation uses exact sync/semisync output selection; selected outputs are owned COM references and `pCtx` is native null in the closed safe overloads. |
 | `IAudioClient` | Low-level audio streaming | Fails closed because its format and output-pointer shapes are not fully modeled. |
 | `IDispatch` | Automation and scripting | Complete inherited real-metadata generation passes. `GetIDsOfNames` projects as `string[] -> number[]`; `Invoke` accepts `DynComDispatchParams` and explicit result/excepInfo/argErr request options, returning dedicated owning wrappers. Derived Automation interfaces remain independently validated. |
 | `IPropertyStore` | Shell/property metadata | Complete generation and live ShellLink `SetValue`/`GetValue`/`Commit` coverage pass with dedicated PROPVARIANT ownership. |

@@ -103,19 +103,14 @@ Contracts live under:
 tools/dynwinrt-codegen/contracts/classic-com/
 ├── schema.json
 ├── manifest.json
-├── ownership.json
 ├── conditional-outputs.json
-├── counted-buffers.json
-├── borrowed-handles.json
-├── enumerators.json
-├── safearray.json
-├── semantic-hresults.json
-└── hazards.json
+└── ownership-outputs.json
 ```
 
 The files are grouped by semantic contract kind, not by renderer or API family.
 They are compiled into dynwinrt-codegen and are not loaded from an application
-directory at runtime.
+directory at runtime. Other exact families remain typed Rust registries until
+they are migrated to equally strict grouped JSON files.
 
 ## Entry format
 
@@ -134,7 +129,7 @@ directory at runtime.
     "declaringIid": "...",
     "method": "IsFormatSupported",
     "absoluteSlot": 7,
-    "sourceFingerprint": "sha256:..."
+    "sourceFingerprint": "..."
   },
   "contract": {
     "discriminator": {
@@ -176,6 +171,19 @@ directory at runtime.
   ]
 }
 ```
+
+A non-conditional CoTaskMem output uses the smaller closed contract:
+
+```json
+{
+  "parameterIndex": 0,
+  "ownership": "cotaskmem-owned",
+  "cleanup": "CoTaskMemFree"
+}
+```
+
+Only these literal ownership and cleanup values are accepted; the file cannot
+name an arbitrary allocator or cleanup function.
 
 ## Selector requirements
 
@@ -330,8 +338,9 @@ Current code registries are migrated without changing behavior:
 - `STATSTG` and allocator-specific outputs; and
 - exact fail-closed hazards such as `GetPrivateData`.
 
-Migration is complete only when generated safe snapshots, the 5,567/7,929
-safe census, generated unsafe manifests, and all live tests remain unchanged.
+Migration or promotion is complete only when generated safe snapshots, the
+5,681/7,929 safe census, generated unsafe manifests, and all live tests agree
+with the exact evidence dependencies.
 
 ## User contracts
 
@@ -367,6 +376,19 @@ method fingerprint, selector, exact flags, mutually exclusive outputs,
 ownership, citations, and validated metadata hash. The old Rust constants were
 removed.
 
+`ownership-outputs.json` contains 147 parameter-specific CoTaskMem contracts
+and one exact `HBITMAP`/`DeleteObject` contract. Attachment occurs only after the complete raw
+method is built and only when its namespace, interface IID, method, absolute
+slot, full parameter selector, and pre-contract fingerprint all match. These
+entries promote complete interfaces without applying allocator or handle
+ownership inference to any unrelated pointer output.
+
+Three exact parameter-direction entries, two reserved-null input entries, one
+flag-selected caller-buffer entry, one `IStorage::Stat` entry, and seven WMI
+conditional-output entries reuse closed semantic models. Together with the
+ownership batch, the high-value promotion pass raises safe-complete coverage
+from 5,651 to 5,681 interfaces.
+
 Every external evidence path now exposes a selector-derived per-entry ID, a
 typed aggregation-only family ID, and a closed contract kind.
 `RawEvidence::ExactRegistry` distinguishes exact
@@ -378,25 +400,29 @@ The safe-complete evidence census is:
 
 | Evidence class | Safe interfaces |
 | --- | ---: |
-| `standard_derived` | 5,317 |
-| `exact_registry_dependent` | 250 |
-| **Total** | **5,567** |
+| `standard_derived` | 5,326 |
+| `exact_registry_dependent` | 355 |
+| **Total** | **5,681** |
 
-The registry contains **334 declared entries**, all 334 match the pinned
-metadata, and 291 distinct entries are consumed by safe plans. Safe plans have
-431 entry/interface dependencies and 268 family/interface dependencies.
-Per-interface dependency-set totals also include 5,867 metadata-attribute
-dependencies and 25,526 COM-standard-rule dependencies.
+The registry contains **495 declared entries**, all 495 match the pinned
+metadata, and 404 distinct entries are consumed by safe plans. Safe plans have
+655 entry/interface dependencies and 404 family/interface dependencies.
+Per-interface dependency-set totals also include 5,974 metadata-attribute
+dependencies and 26,076 COM-standard-rule dependencies.
 
 | Exact contract kind | Safe-interface dependencies |
 | --- | ---: |
-| `ownership` | 20 |
+| `ownership` | 172 |
+| `parameter-direction` | 45 |
+| `bounded-two-call` | 16 |
+| `conditional-output` | 7 |
+| `flag-selected-buffer` | 3 |
+| `null-input` | 2 |
 | `safearray` | 263 |
 | `enumerator-next` | 74 |
 | `borrowed-handle` | 54 |
 | `counted-buffer` | 16 |
 | `semantic-hresult` | 2 |
-| `bounded-two-call` | 1 |
 | `compound-dispatch` | 1 |
 
 Family rollups deliberately count each interface once per family:
@@ -408,28 +434,31 @@ Family rollups deliberately count each interface once per family:
 | `com.enumerator-next-exception.v1` | 73 | 73 | 74 |
 | `com.sequential-stream-buffer.v1` | 2 | 2 | 7 |
 | `buffers.counted-buffer.v1` | 3 | 2 | 2 |
-| `buffers.bounded-two-call.v1` | 2 | 1 | 1 |
-| `com.ownership.v1` | 13 | 12 | 15 |
+| `buffers.bounded-two-call.v1` | 2 | 2 | 16 |
+| `com.ownership.v1` | 162 | 111 | 116 |
+| `com.parameter-direction.v1` | 3 | 3 | 15 |
+| `com.reserved-null-input.v1` | 2 | 2 | 1 |
 | `com.semantic-hresult.v1` | 1 | 1 | 2 |
 | `automation.idispatch-invoke.v1` | 1 | 1 | 1 |
 | `graphics.private-data-hazard.v1` | 7 | 0 | 0 |
-| `wmi.conditional-output.v1` | 1 | 0 | 0 |
+| `shell.flag-selected-string.v1` | 1 | 1 | 3 |
+| `wmi.conditional-output.v1` | 7 | 7 | 1 |
 
 Universal rule dependencies are:
 
 | COM standard rule ID | Safe-interface dependencies |
 | --- | ---: |
-| `com.activation.output-plus-one.v1` | 969 |
-| `com.automation.bstr-output-owned-sysfreestring.v1` | 1,227 |
+| `com.activation.output-plus-one.v1` | 976 |
+| `com.automation.bstr-output-owned-sysfreestring.v1` | 1,231 |
 | `com.automation.bstr-replacement.v1` | 99 |
 | `com.enumerator-next.generic.v1` | 25 |
 | `com.handle.borrowed-no-cleanup.v1` | 45 |
-| `com.hresult.failure.v1` | 5,454 |
-| `com.interface.input-borrow.v1` | 1,835 |
-| `com.interface.typed-output-plus-one.v1` | 3,402 |
-| `com.iunknown.identity-refcount.v1` | 5,567 |
-| `com.query-interface.output-plus-one.v1` | 5,567 |
-| `com.standard-cleanup.matching-allocator.v1` | 1,336 |
+| `com.hresult.failure.v1` | 5,568 |
+| `com.interface.input-borrow.v1` | 1,881 |
+| `com.interface.typed-output-plus-one.v1` | 3,453 |
+| `com.iunknown.identity-refcount.v1` | 5,681 |
+| `com.query-interface.output-plus-one.v1` | 5,681 |
+| `com.standard-cleanup.matching-allocator.v1` | 1,436 |
 
 These are dependency counts: an inherited contract can be consumed by several
 interfaces, and one interface can consume several IDs or kinds. They are not
@@ -452,16 +481,16 @@ compound contract in `automation.idispatch-invoke.v1`.
 Method-specific SAFEARRAY, borrowed-handle, enumerator exception, ownership,
 hazard, and conditional-output registries remain exact.
 
-Borrowed-handle, SAFEARRAY, enumerator, counted-buffer, ownership/cleanup,
-semantic-HRESULT, IDispatch, STATSTG/IMalloc, and hazard registries remain
-code-defined in Stage 1, but each now exposes the same stable typed provenance
-ID/kind and participates in the dependency census only when consumed. Moving
-those families into their grouped JSON files, and adding controlled
-contract-family ablation, remains later registry migration work.
+Borrowed-handle, SAFEARRAY, enumerator, counted-buffer, the remaining
+ownership/cleanup declarations, semantic-HRESULT, IDispatch, STATSTG/IMalloc,
+and hazard registries remain code-defined in Stage 1, but each exposes the same
+stable typed provenance ID/kind and participates in the dependency census only
+when consumed. Moving those declarations into grouped JSON files, and adding
+controlled contract-family ablation, remains later registry migration work.
 
 The strict contract data schema and manifest are version 2. The capability
-summary is version 3, and generated unsafe support manifests are version 10.
-Only the single WMI conditional-output entry is JSON-backed today; the other
-333 registered entries remain code-defined. All code and data entries use the
-same selector-derived `entryId`, typed `familyId`, selector/fingerprint/citation
-catalog, and pinned-metadata validation path.
+summary is version 3, and generated unsafe support manifests are version 11.
+Seven WMI conditional-output entries and 148 output-ownership entries are
+JSON-backed; the other 340 registered entries remain code-defined. All code and
+data entries use the same selector-derived `entryId`, typed `familyId`,
+selector/fingerprint/citation catalog, and pinned-metadata validation path.

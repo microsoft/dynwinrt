@@ -185,6 +185,7 @@ pub(super) enum PointerProvenance {
   ComOutput,
   CoTaskMemOutput,
   BstrOutput,
+  OwnedHandleOutput(dynwinrt::com::OwnedHandleCleanup),
 }
 
 pub(super) struct NativeInvocationLeases {
@@ -901,6 +902,7 @@ fn pointer(value: Unknown) -> napi::Result<DynWinRTValue> {
       dynwinrt::WinRTValue::RawPtr(std::ptr::null_mut()),
     ));
   }
+
   if value_type == sys::ValueType::napi_bigint {
     let bigint = unsafe { BigInt::from_napi_value(env, raw) }?;
     let (negative, bits, lossless) = bigint.get_u64();
@@ -959,6 +961,26 @@ fn pointer(value: Unknown) -> napi::Result<DynWinRTValue> {
   }
   Err(napi::Error::from_reason(
     "pointer(): expected bigint, number, Buffer, Uint8Array, null, or undefined",
+  ))
+}
+
+fn exact_null_pointer(value: Unknown) -> napi::Result<DynWinRTValue> {
+  use napi::sys;
+
+  let env = value.value().env;
+  let raw = value.value().value;
+  let mut value_type = sys::ValueType::napi_undefined;
+  unsafe { sys::napi_typeof(env, raw, &mut value_type) };
+  if !matches!(
+    value_type,
+    sys::ValueType::napi_null | sys::ValueType::napi_undefined
+  ) {
+    return Err(napi::Error::from_reason(
+      "exactNullPointer(): value must be null or undefined",
+    ));
+  }
+  Ok(DynWinRTValue::with_borrowed_pointer(
+    dynwinrt::WinRTValue::RawPtr(std::ptr::null_mut()),
   ))
 }
 
@@ -1306,6 +1328,24 @@ fn take_bstr(value: &mut DynWinRTValue) -> napi::Result<String> {
   }
   let value = unsafe { windows::core::BSTR::from_raw(ptr.cast()) };
   String::try_from(&value).map_err(|error| napi::Error::from_reason(error.to_string()))
+}
+
+fn take_owned_handle(
+  value: &mut DynWinRTValue,
+  cleanup: dynwinrt::com::OwnedHandleCleanup,
+  description: &str,
+) -> napi::Result<DynComOwnedHandle> {
+  let ptr = take_native_output_pointer(
+    value,
+    PointerProvenance::OwnedHandleOutput(cleanup),
+    description,
+  )?;
+  if ptr.is_null() {
+    return Err(napi::Error::from_reason(format!(
+      "{description} returned a null handle on success"
+    )));
+  }
+  Ok(DynComOwnedHandle::new(ptr.addr(), cleanup))
 }
 
 fn copy_callback_bstr(value: &DynWinRTValue) -> napi::Result<Option<String>> {
@@ -2463,6 +2503,13 @@ impl DynComUnsafe {
   }
 
   #[napi]
+  pub fn exact_null_pointer(
+    #[napi(ts_arg_type = "null | undefined")] value: Unknown,
+  ) -> napi::Result<DynWinRTValue> {
+    self::exact_null_pointer(value)
+  }
+
+  #[napi]
   pub fn wide_string_pointer(
     #[napi(ts_arg_type = "string | bigint | number | Buffer | Uint8Array | null | undefined")]
     value: Unknown,
@@ -3018,6 +3065,81 @@ impl DynComExcepInfo {
 pub struct DynComStatStg {
   owner_thread: std::thread::ThreadId,
   value: Option<dynwinrt::com::StatStgValue>,
+}
+
+#[napi]
+#[derive(Debug)]
+pub struct DynComOwnedHandle {
+  address: Option<usize>,
+  cleanup: dynwinrt::com::OwnedHandleCleanup,
+}
+
+impl DynComOwnedHandle {
+  fn new(address: usize, cleanup: dynwinrt::com::OwnedHandleCleanup) -> Self {
+    Self {
+      address: Some(address),
+      cleanup,
+    }
+  }
+
+  fn cleanup_address(
+    address: usize,
+    cleanup: dynwinrt::com::OwnedHandleCleanup,
+  ) -> napi::Result<()> {
+    let succeeded = match cleanup {
+      dynwinrt::com::OwnedHandleCleanup::DeleteObject => unsafe {
+        windows::Win32::Graphics::Gdi::DeleteObject(windows::Win32::Graphics::Gdi::HGDIOBJ(
+          std::ptr::with_exposed_provenance_mut(address),
+        ))
+        .as_bool()
+      },
+    };
+    if succeeded {
+      Ok(())
+    } else {
+      Err(napi::Error::from_reason(
+        "DeleteObject failed for an owned GDI handle",
+      ))
+    }
+  }
+}
+
+impl Drop for DynComOwnedHandle {
+  fn drop(&mut self) {
+    if let Some(address) = self.address.take() {
+      let _ = Self::cleanup_address(address, self.cleanup);
+    }
+  }
+}
+
+#[napi]
+impl DynComOwnedHandle {
+  #[napi(getter)]
+  pub fn value(&self) -> napi::Result<BigInt> {
+    self
+      .address
+      .map(|address| BigInt::from(address as u64))
+      .ok_or_else(|| napi::Error::from_reason("Owned handle has been released"))
+  }
+
+  #[napi(getter)]
+  pub fn is_released(&self) -> bool {
+    self.address.is_none()
+  }
+
+  #[napi]
+  pub fn release(&mut self) -> napi::Result<()> {
+    let Some(address) = self.address.take() else {
+      return Ok(());
+    };
+    match Self::cleanup_address(address, self.cleanup) {
+      Ok(()) => Ok(()),
+      Err(error) => {
+        self.address = Some(address);
+        Err(error)
+      }
+    }
+  }
 }
 
 impl DynComStatStg {
@@ -4508,6 +4630,13 @@ impl DynCom {
   }
 
   #[napi]
+  pub fn delete_object_handle_output_type() -> DynComType {
+    DynComType(dynwinrt::com::Type::owned_handle_output(
+      dynwinrt::com::OwnedHandleCleanup::DeleteObject,
+    ))
+  }
+
+  #[napi]
   pub fn owned_com_pointer_type() -> DynComType {
     DynComType(dynwinrt::com::Type::owned_com_pointer())
   }
@@ -4825,6 +4954,13 @@ impl DynCom {
   }
 
   #[napi]
+  pub fn exact_null_pointer(
+    #[napi(ts_arg_type = "null | undefined")] value: Unknown,
+  ) -> napi::Result<DynWinRTValue> {
+    self::exact_null_pointer(value)
+  }
+
+  #[napi]
   pub fn pointer(
     #[napi(ts_arg_type = "bigint | number | Buffer | Uint8Array | null | undefined")]
     value: Unknown,
@@ -4901,6 +5037,18 @@ impl DynCom {
   pub fn null_buffer() -> DynWinRTValue {
     DynWinRTValue::from_com_value(
       dynwinrt::com::Value::Buffer(dynwinrt::com::ComBufferValue::null()),
+      dynwinrt::com::PointerOutputKind::None,
+    )
+  }
+
+  #[napi]
+  pub fn null_string_array(wide: bool) -> DynWinRTValue {
+    DynWinRTValue::from_com_value(
+      dynwinrt::com::Value::Buffer(dynwinrt::com::ComBufferValue::null_string_array(if wide {
+        dynwinrt::com::StringEncoding::Utf16
+      } else {
+        dynwinrt::com::StringEncoding::Ansi
+      })),
       dynwinrt::com::PointerOutputKind::None,
     )
   }
@@ -5532,6 +5680,15 @@ impl DynCom {
       .take_stat_stg()?;
     value.5 = None;
     Ok(DynComStatStg::new(result))
+  }
+
+  #[napi]
+  pub fn take_delete_object_handle(value: &mut DynWinRTValue) -> napi::Result<DynComOwnedHandle> {
+    take_owned_handle(
+      value,
+      dynwinrt::com::OwnedHandleCleanup::DeleteObject,
+      "DeleteObject-owned handle",
+    )
   }
 
   #[napi]
@@ -6441,6 +6598,53 @@ mod tests {
         .unwrap_err();
     assert!(error.reason.contains("CoTaskMemOutput"));
     assert!(matches!(value.0, dynwinrt::WinRTValue::RawPtr(raw) if raw == ptr));
+  }
+
+  #[test]
+  fn delete_object_owned_handle_consumes_exact_provenance_and_releases_once() {
+    let bitmap = unsafe { windows::Win32::Graphics::Gdi::CreateBitmap(1, 1, 1, 1, None) };
+    assert!(!bitmap.is_invalid());
+    let ptr = bitmap.0;
+    let mut value = DynWinRTValue::from_com_result(
+      dynwinrt::WinRTValue::RawPtr(ptr),
+      dynwinrt::com::PointerOutputKind::OwnedHandle(
+        dynwinrt::com::OwnedHandleCleanup::DeleteObject,
+      ),
+    );
+
+    let mut owner = take_owned_handle(
+      &mut value,
+      dynwinrt::com::OwnedHandleCleanup::DeleteObject,
+      "test bitmap",
+    )
+    .unwrap();
+    assert!(matches!(value.0, dynwinrt::WinRTValue::Null));
+    assert!(!owner.is_released());
+    owner.release().unwrap();
+    assert!(owner.is_released());
+    owner.release().unwrap();
+    assert!(!unsafe {
+      windows::Win32::Graphics::Gdi::DeleteObject(windows::Win32::Graphics::Gdi::HGDIOBJ(ptr))
+    }
+    .as_bool());
+  }
+
+  #[test]
+  fn delete_object_owned_handle_rejects_other_pointer_provenance() {
+    let mut value = DynWinRTValue::from_com_result(
+      dynwinrt::WinRTValue::RawPtr(0x1234usize as *mut std::ffi::c_void),
+      dynwinrt::com::PointerOutputKind::CoTaskMem,
+    );
+    assert!(take_owned_handle(
+      &mut value,
+      dynwinrt::com::OwnedHandleCleanup::DeleteObject,
+      "test bitmap",
+    )
+    .unwrap_err()
+    .reason
+    .contains("CoTaskMemOutput"));
+    value.0 = dynwinrt::WinRTValue::Null;
+    value.2 = PointerProvenance::None;
   }
 
   #[test]

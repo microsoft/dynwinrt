@@ -15,7 +15,7 @@ impl HandleCleanup {
         Self { function }
     }
 
-    pub(super) const fn function(&self) -> &QualifiedName {
+    pub(in crate::codegen::com) const fn function(&self) -> &QualifiedName {
         &self.function
     }
 }

@@ -36,6 +36,7 @@ pub(super) fn abi_type_js(typ: &ComType) -> String {
         ComType::Enum { underlying, .. } => enum_abi_type_js(*underlying).into(),
         ComType::ScalarAlias { underlying, .. } => scalar_abi_type_js(*underlying).into(),
         ComType::RawPointer
+        | ComType::ExactNullPointer
         | ComType::AllocatorPointer
         | ComType::ConsumedAllocatorPointer
         | ComType::InspectedAllocatorPointer
@@ -142,6 +143,7 @@ pub(super) fn type_dts(typ: &ComType) -> String {
         ComType::Enum { name, .. } => name.clone(),
         ComType::ScalarAlias { name, .. } => name.clone(),
         ComType::RawPointer => "Buffer | Uint8Array".into(),
+        ComType::ExactNullPointer => "null".into(),
         ComType::AllocatorPointer
         | ComType::ConsumedAllocatorPointer
         | ComType::InspectedAllocatorPointer => "DynComAllocation".into(),
@@ -179,6 +181,7 @@ pub(super) fn result_type_dts(result: &ProjectedComResult) -> String {
         ResultConversion::Value | ResultConversion::BorrowedHandle | ResultConversion::HString => {
             type_dts(&result.typ)
         }
+        ResultConversion::OwnedHandle(_) => "DynComOwnedHandle".into(),
         ResultConversion::Buffer => "Buffer".into(),
         ResultConversion::PlainArray => {
             let ComType::TypedBuffer { element } = &result.typ else {
@@ -237,6 +240,7 @@ pub(super) fn wrap_arg_js(typ: &ComType, variable: &str) -> String {
         ComType::Enum { underlying, .. } => wrap_enum_arg_js(*underlying, variable),
         ComType::ScalarAlias { underlying, .. } => wrap_scalar_arg_js(*underlying, variable),
         ComType::RawPointer => format!("DynCom.safeDataPointer({variable})"),
+        ComType::ExactNullPointer => format!("DynCom.exactNullPointer({variable})"),
         ComType::AllocatorPointer => {
             format!("DynCom.mallocAllocationPointer(this._obj, {variable})")
         }
@@ -339,6 +343,9 @@ pub(super) fn unwrap_result_js(result: &ProjectedComResult, expression: &str) ->
         ResultConversion::Value | ResultConversion::BorrowedHandle => {
             unwrap_value_js(&result.typ, expression)
         }
+        ResultConversion::OwnedHandle(super::super::ir::OwnedHandleCleanup::DeleteObject) => {
+            format!("DynCom.takeDeleteObjectHandle({expression})")
+        }
         ResultConversion::Buffer => format!("DynCom.takeBuffer({expression})"),
         ResultConversion::PlainArray => {
             let ComType::TypedBuffer { element } = &result.typ else {
@@ -434,6 +441,7 @@ fn unwrap_value_js(typ: &ComType, expression: &str) -> String {
         ComType::HResult => format!("DynCom.toNumber({expression})"),
         ComType::Guid => format!("DynCom.toGuidString({expression})"),
         ComType::GuidPointer => unreachable!("GUID pointer values are input-only"),
+        ComType::ExactNullPointer => unreachable!("exact-null pointers are input-only"),
         ComType::HString => format!("{expression}.toString()"),
         ComType::Enum { underlying, .. } => unwrap_enum_js(*underlying, expression),
         ComType::ScalarAlias { underlying, .. } => unwrap_scalar_js(*underlying, expression),

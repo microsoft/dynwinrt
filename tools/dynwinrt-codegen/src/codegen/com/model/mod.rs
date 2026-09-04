@@ -171,6 +171,7 @@ impl ComModel {
             ComAbiType::Unknown(reason) => {
                 return Err(ModelError::Unsupported(reason.clone()));
             }
+            ComAbiType::ExactNullPointer => {}
             ComAbiType::Pointer {
                 constness: Constness::Unspecified,
                 ..
