@@ -15,6 +15,14 @@ use crate::errors::{map_dynwinrt_error, map_dynwinrt_error_with_context, map_win
 static TABLE: std::sync::LazyLock<Arc<dynwinrt::MetadataTable>> =
     std::sync::LazyLock::new(|| dynwinrt::MetadataTable::new());
 
+fn wrap_python_callback_context(py: Python<'_>, callback: Py<PyAny>) -> PyResult<Py<PyAny>> {
+    Ok(py
+        .import("dynwinrt.dynwinrt")?
+        .getattr("_dynwinrt_wrap_delegate_callback")?
+        .call1((callback,))?
+        .unbind())
+}
+
 fn checked_index(index: i64) -> PyResult<usize> {
     usize::try_from(index)
         .map_err(|_| PyIndexError::new_err(format!("index {index} out of bounds")))
@@ -1395,22 +1403,18 @@ impl DynWinRTValue {
         let handler_iid = async_info.progress_handler_iid().ok_or_else(|| {
             PyRuntimeError::new_err("on_progress: cannot compute progress handler IID")
         })?;
-        let callback_context = py
-            .import("contextvars")?
-            .getattr("copy_context")?
-            .call0()?
-            .unbind();
+        let callback_for_error = callback.clone_ref(py);
+        let callback = wrap_python_callback_context(py, callback)?;
 
         let progress_cb: dynwinrt::ProgressCallback = Box::new(move |val: dynwinrt::WinRTValue| {
             Python::attach(|py| {
                 let result = (|| -> PyResult<()> {
                     let py_val = Py::new(py, DynWinRTValue(val))?;
-                    let context = callback_context.call_method0(py, "copy")?;
-                    context.call_method1(py, "run", (callback.clone_ref(py), py_val))?;
+                    callback.call1(py, (py_val,))?;
                     Ok(())
                 })();
                 if let Err(error) = result {
-                    error.write_unraisable(py, Some(callback.bind(py)));
+                    error.write_unraisable(py, Some(callback_for_error.bind(py)));
                 }
             });
         });
@@ -2326,10 +2330,14 @@ impl DynWinRtDelegate {
 // DynWinRtElementFactory — synchronous WinUI IElementFactory binding
 // ======================================================================
 
+struct ElementFactoryCallback {
+    invoke: Py<PyAny>,
+    error_target: Py<PyAny>,
+}
+
 struct ElementFactoryCallbacks {
-    get_element: Option<Py<PyAny>>,
-    recycle_element: Option<Py<PyAny>>,
-    context: Option<Py<PyAny>>,
+    get_element: Option<ElementFactoryCallback>,
+    recycle_element: Option<ElementFactoryCallback>,
 }
 
 #[pyclass]
@@ -2347,7 +2355,6 @@ impl DynWinRtElementFactory {
             (
                 callbacks.get_element.take(),
                 callbacks.recycle_element.take(),
-                callbacks.context.take(),
             )
         };
         drop(released);
@@ -2368,43 +2375,40 @@ impl DynWinRtElementFactory {
         const RO_E_CLOSED: windows::core::HRESULT = windows::core::HRESULT(0x80000013_u32 as i32);
 
         let element_iid = element_iid.0;
-        let context = py
-            .import("contextvars")?
-            .getattr("copy_context")?
-            .call0()?
-            .unbind();
+        let get_element = ElementFactoryCallback {
+            error_target: get_element.clone_ref(py),
+            invoke: wrap_python_callback_context(py, get_element)?,
+        };
+        let recycle_element = ElementFactoryCallback {
+            error_target: recycle_element.clone_ref(py),
+            invoke: wrap_python_callback_context(py, recycle_element)?,
+        };
         let callbacks = Arc::new(Mutex::new(ElementFactoryCallbacks {
             get_element: Some(get_element),
             recycle_element: Some(recycle_element),
-            context: Some(context),
         }));
 
         let get_callbacks = callbacks.clone();
         let get_callback: dynwinrt::ElementFactoryGetCallback = Box::new(move |args| {
             Python::attach(|py| {
-                let (callback, context) = {
+                let (callback, error_target) = {
                     let callbacks = get_callbacks.lock().map_err(|_| E_FAIL)?;
-                    let callback = callbacks
-                        .get_element
-                        .as_ref()
-                        .ok_or(RO_E_CLOSED)?
-                        .clone_ref(py);
-                    let context = callbacks.context.as_ref().ok_or(RO_E_CLOSED)?.clone_ref(py);
-                    (callback, context)
+                    let callback = callbacks.get_element.as_ref().ok_or(RO_E_CLOSED)?;
+                    (
+                        callback.invoke.clone_ref(py),
+                        callback.error_target.clone_ref(py),
+                    )
                 };
                 let result = (|| -> PyResult<dynwinrt::WinRTValue> {
                     let argument = Py::new(py, DynWinRTValue(args.clone()))?;
-                    let context = context.call_method0(py, "copy")?;
-                    let result = context
-                        .bind(py)
-                        .call_method1("run", (callback.clone_ref(py), argument))?;
-                    let value = result.extract::<PyRef<DynWinRTValue>>()?;
+                    let result = callback.call1(py, (argument,))?;
+                    let value = result.extract::<PyRef<DynWinRTValue>>(py)?;
                     value.0.cast(&element_iid).map_err(map_dynwinrt_error)
                 })();
                 match result {
                     Ok(value) => Ok(value),
                     Err(error) => {
-                        error.write_unraisable(py, Some(callback.bind(py)));
+                        error.write_unraisable(py, Some(error_target.bind(py)));
                         Err(E_FAIL)
                     }
                 }
@@ -2414,7 +2418,7 @@ impl DynWinRtElementFactory {
         let recycle_callbacks = callbacks.clone();
         let recycle_callback: dynwinrt::ElementFactoryRecycleCallback = Box::new(move |args| {
             Python::attach(|py| {
-                let (callback, context) = {
+                let (callback, error_target) = {
                     let callbacks = match recycle_callbacks.lock() {
                         Ok(callbacks) => callbacks,
                         Err(_) => return E_FAIL,
@@ -2422,23 +2426,20 @@ impl DynWinRtElementFactory {
                     let Some(callback) = callbacks.recycle_element.as_ref() else {
                         return RO_E_CLOSED;
                     };
-                    let Some(context) = callbacks.context.as_ref() else {
-                        return RO_E_CLOSED;
-                    };
-                    (callback.clone_ref(py), context.clone_ref(py))
+                    (
+                        callback.invoke.clone_ref(py),
+                        callback.error_target.clone_ref(py),
+                    )
                 };
                 let result = (|| -> PyResult<()> {
                     let argument = Py::new(py, DynWinRTValue(args.clone()))?;
-                    let context = context.call_method0(py, "copy")?;
-                    context
-                        .bind(py)
-                        .call_method1("run", (callback.clone_ref(py), argument))?;
+                    callback.call1(py, (argument,))?;
                     Ok(())
                 })();
                 match result {
                     Ok(()) => windows::core::HRESULT(0),
                     Err(error) => {
-                        error.write_unraisable(py, Some(callback.bind(py)));
+                        error.write_unraisable(py, Some(error_target.bind(py)));
                         E_FAIL
                     }
                 }

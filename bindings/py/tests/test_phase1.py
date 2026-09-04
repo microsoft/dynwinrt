@@ -20,6 +20,7 @@ from contextvars import ContextVar, copy_context
 from datetime import datetime, timedelta, timezone
 import gc
 import inspect
+import sys
 import threading
 import warnings
 import weakref
@@ -696,6 +697,128 @@ def test_com_identity_and_element_factory_callback_release():
         value.release()
         uri_factory.release()
         factory.release()
+
+
+def test_element_factory_callbacks_mask_parent_scope_on_foreign_thread():
+    element_factory_iid = WinGUID.parse(
+        "75FABA47-2CF2-54AE-91E6-0581556FDDAA"
+    )
+    element_factory_type = DynWinRTType.register_interface(
+        "IElementFactoryThreadAffinityTest",
+        element_factory_iid,
+    )
+    element_factory_type = element_factory_type.add_method(
+        "GetElement",
+        DynWinRTMethodSig()
+        .add_in(DynWinRTType.object())
+        .add_out(DynWinRTType.object()),
+    )
+    element_factory_type = element_factory_type.add_method(
+        "RecycleElement",
+        DynWinRTMethodSig().add_in(DynWinRTType.object()),
+    )
+    get_element = element_factory_type.method(6)
+    recycle_element = element_factory_type.method(7)
+    Wrapper = _projected_wrapper_type("ElementFactoryThreadWrapper")
+    marker = ContextVar("dynwinrt_test_element_factory_marker", default=None)
+    parent_release_threads = []
+    retained = []
+    callback_state = {}
+    worker_errors = []
+    unraisable = []
+    owner_thread = threading.get_ident()
+    previous_unraisablehook = sys.unraisablehook
+    marker_token = marker.set("captured")
+
+    class ParentNative:
+        def release(self):
+            parent_release_threads.append(threading.get_ident())
+
+    try:
+        sys.unraisablehook = unraisable.append
+        with RoApartment(1), projected_lifetime_scope() as parent_scope:
+            parent_scope.track(SimpleNamespace(_obj=ParentNative()), "Parent")
+            uri_activation = DynWinRTValue.activation_factory(
+                "Windows.Foundation.Uri"
+            )
+            uri_factory = uri_activation.cast(WinGUID.parse(IID_IURI_FACTORY))
+            uri_factory_type = DynWinRTType.register_interface(
+                "IUriRuntimeClassFactoryElementFactoryThreadTest",
+                WinGUID.parse(IID_IURI_FACTORY),
+            ).add_method(
+                "CreateUri",
+                DynWinRTMethodSig()
+                .add_in(DynWinRTType.hstring())
+                .add_out(DynWinRTType.object()),
+            )
+            uri = uri_factory_type.method(6).invoke(
+                uri_factory,
+                [DynWinRTValue.from_hstring("https://example.com/")],
+            )
+
+            def get_callback(value):
+                callback_state["get"] = (
+                    threading.get_ident(),
+                    marker.get(),
+                )
+                retained.append(Wrapper._from_native(value))
+                return uri.cast(WinGUID.parse(IID_IURI))
+
+            def recycle_callback(value):
+                callback_state["recycle"] = (
+                    threading.get_ident(),
+                    marker.get(),
+                )
+                retained.append(Wrapper._from_native(value))
+
+            implementation = DynWinRtElementFactory.create(
+                WinGUID.parse(IID_IURI),
+                get_callback,
+                recycle_callback,
+            )
+            factory_value = implementation.to_value()
+            factory_interface = factory_value.cast(element_factory_iid)
+
+            def worker():
+                try:
+                    with RoApartment(1):
+                        with pytest.raises(OSError):
+                            get_element.invoke(
+                                factory_interface,
+                                [factory_value],
+                            )
+                        recycle_element.invoke(factory_interface, [uri])
+                except BaseException as error:
+                    worker_errors.append(error)
+
+            thread = threading.Thread(target=worker)
+            thread.start()
+            thread.join()
+
+            assert not worker_errors
+            assert not unraisable
+            assert callback_state["get"][0] != owner_thread
+            assert callback_state["recycle"][0] != owner_thread
+            assert callback_state["get"][1] == "captured"
+            assert callback_state["recycle"][1] == "captured"
+            assert all(not wrapper._obj.is_null() for wrapper in retained)
+            assert parent_release_threads == []
+
+        assert parent_release_threads == [owner_thread]
+        assert all(not wrapper._obj.is_null() for wrapper in retained)
+        for wrapper in retained:
+            release_projected(wrapper)
+            assert wrapper._obj.is_null()
+
+        implementation.release()
+        factory_interface.release()
+        factory_value.release()
+        uri.release()
+        uri_factory.release()
+        uri_activation.release()
+    finally:
+        marker.reset(marker_token)
+        sys.unraisablehook = previous_unraisablehook
 
 
 def test_projected_identity_cache_reuses_live_wrappers_and_skips_released_ones():

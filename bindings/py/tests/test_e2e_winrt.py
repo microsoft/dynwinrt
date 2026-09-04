@@ -15,8 +15,10 @@ Requires: Windows 10/11 with standard SDK (no extra installs needed).
 
 import asyncio
 from collections.abc import Coroutine
+from contextvars import ContextVar
 import gc
 import http.server
+import sys
 import threading
 import time
 import weakref
@@ -29,11 +31,15 @@ from dynwinrt import (
     DynWinRTValue,
     DynWinRTArray,
     DynWinRTStruct,
+    projected_lifetime_scope,
     WinGUID,
     ro_initialize,
     unbox_object,
 )
-from dynwinrt.dynwinrt import _DynWinRTAsyncWithProgress
+from dynwinrt.dynwinrt import (
+    _DynWinRTAsyncWithProgress,
+    _dynwinrt_track_projected,
+)
 
 # Initialize WinRT once for the entire module
 ro_initialize(1)
@@ -652,8 +658,59 @@ class TestHttpProgress:
                 ),
                 [DynWinRTValue.from_hstring(url)],
             )
-            def create_operation():
-                return client_type.method(11).invoke(client.cast(client_iid), [uri])
+            def create_operation(target=uri):
+                return client_type.method(11).invoke(client.cast(client_iid), [target])
+
+            class GeneratedStyleProjection:
+                def __init__(self, value):
+                    self._obj = value
+                    _dynwinrt_track_projected(self, "GeneratedStyleProgress")
+
+            raw_progress_threads = []
+            progress_marker = ContextVar(
+                "dynwinrt_test_raw_progress_marker",
+                default=None,
+            )
+            raw_progress_markers = []
+            unraisable = []
+            previous_unraisablehook = sys.unraisablehook
+            owner_thread = threading.get_ident()
+            marker_token = progress_marker.set("captured")
+            try:
+                sys.unraisablehook = unraisable.append
+                with projected_lifetime_scope():
+                    raw_uri = uri_factory.method(6).invoke(
+                        DynWinRTValue.activation_factory(
+                            "Windows.Foundation.Uri"
+                        ).cast(uri_factory_iid),
+                        [DynWinRTValue.from_hstring(f"{url}?raw-progress=1")],
+                    )
+                    raw_operation = create_operation(raw_uri)
+
+                    def raw_progress(value):
+                        progress = value.as_struct()
+                        projection = GeneratedStyleProjection(
+                            DynWinRTValue.from_i32(progress.get_i32(0))
+                        )
+                        assert not projection._obj.is_null()
+                        raw_progress_threads.append(threading.get_ident())
+                        raw_progress_markers.append(progress_marker.get())
+
+                    raw_operation.on_progress(raw_progress)
+                    raw_result = raw_operation.wait()
+                    raw_body = raw_result.to_string()
+                    raw_result.release()
+                    raw_operation.release()
+                    raw_uri.release()
+            finally:
+                progress_marker.reset(marker_token)
+                sys.unraisablehook = previous_unraisablehook
+
+            assert raw_body == payload
+            assert raw_progress_threads
+            assert all(thread != owner_thread for thread in raw_progress_threads)
+            assert all(marker == "captured" for marker in raw_progress_markers)
+            assert not unraisable
 
             operation = create_operation()
 
