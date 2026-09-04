@@ -1,0 +1,15 @@
+# JavaScript samples
+
+The JavaScript samples use generated bindings and the
+`@microsoft/dynwinrt` runtime.
+
+| Sample                                                        | Demonstrates                                                 |
+| ------------------------------------------------------------- | ------------------------------------------------------------ |
+| [`winui-tic-tac-toe`](winui-tic-tac-toe/)                     | WinUI 3 XAML loading, `projectAs()`, events, and Mica        |
+| [`winui-tic-tac-toe-code-only`](winui-tic-tac-toe-code-only/) | Programmatic WinUI 3 controls, collections, events, and Mica |
+| [`windows-hello`](windows-hello/)                             | Electron, Windows Hello, and HWND-bound Classic COM interop  |
+| [`electron-share-ui`](electron-share-ui/)                     | Electron Share UI with WinRT and Classic COM                 |
+| [`electron-smtc`](electron-smtc/)                             | Electron system media controls and GSMTC loopback            |
+
+The WinUI samples require matching Windows App SDK metadata, reference WinMDs,
+runtime packages, and bootstrap DLL.

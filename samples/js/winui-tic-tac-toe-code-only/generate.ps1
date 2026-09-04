@@ -50,8 +50,8 @@ New-Item -ItemType Directory -Force -Path $output, $runtime | Out-Null
 
 $generations = @(
     @("Microsoft.UI.Xaml", "Application,Window"),
-    @("Microsoft.UI.Xaml.Markup", "XamlReader"),
-    @("Microsoft.UI.Xaml.Controls", "StackPanel,Button,TextBlock"),
+    @("Microsoft.UI.Xaml.Controls", "StackPanel,Grid,RowDefinition,ColumnDefinition,Button,TextBlock"),
+    @("Microsoft.UI.Xaml.Automation", "AutomationProperties"),
     @("Microsoft.UI.Xaml.Media", "MicaBackdrop")
 )
 
@@ -61,7 +61,6 @@ foreach ($generation in $generations) {
         --ref-list $RefList `
         --namespace $generation[0] `
         --class-name $generation[1] `
-        --lang py `
         --output $output
     if ($LASTEXITCODE -ne 0) {
         throw "dynwinrt-codegen failed with exit code $LASTEXITCODE"

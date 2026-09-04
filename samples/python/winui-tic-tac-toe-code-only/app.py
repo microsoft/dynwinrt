@@ -6,15 +6,7 @@ os.environ["WINAPPSDK_BOOTSTRAP_DLL_PATH"] = str(
     ROOT / ".runtime" / "Microsoft.WindowsAppRuntime.Bootstrap.dll"
 )
 
-from dynwinrt import (
-    DynWinRTMethodSig,
-    DynWinRTType,
-    DynWinRTValue,
-    RoApartment,
-    WinGUID,
-    init_winappsdk,
-    projected_lifetime_scope,
-)
+from dynwinrt import RoApartment, init_winappsdk, projected_lifetime_scope
 from generated.microsoft.ui.xaml import (
     Application,
     ApplicationTheme,
@@ -35,7 +27,7 @@ from generated.microsoft.ui.xaml.controls import (
     StackPanel,
     TextBlock,
 )
-from generated.microsoft.ui.xaml.media import SystemBackdrop
+from generated.microsoft.ui.xaml.media import MicaBackdrop
 from generated.windows.graphics import SizeInt32
 from generated.windows.ui.text import FontWeight
 
@@ -51,27 +43,6 @@ WINNING_LINES = (
     (2, 4, 6),
 )
 
-IID_IMICA_BACKDROP = WinGUID.parse("c156a404-3dac-593a-b1f3-7a33c289dc83")
-IID_IMICA_BACKDROP_FACTORY = WinGUID.parse(
-    "774379ce-74bd-59d4-849d-d99c4184d838"
-)
-IMICA_BACKDROP_FACTORY = DynWinRTType.register_interface(
-    "IMicaBackdropFactory",
-    IID_IMICA_BACKDROP_FACTORY,
-).add_method(
-    "CreateInstance",
-    DynWinRTMethodSig()
-    .add_in(DynWinRTType.object())
-    .add_out(DynWinRTType.object())
-    .add_out(
-        DynWinRTType.runtime_class(
-            "Microsoft.UI.Xaml.Media.MicaBackdrop",
-            DynWinRTType.interface(IID_IMICA_BACKDROP),
-        )
-    ),
-)
-
-
 def make_text(
     text: str,
     size: float,
@@ -85,21 +56,6 @@ def make_text(
     block.opacity = opacity
     block.horizontal_alignment = HorizontalAlignment.Center
     return block
-
-
-def create_mica_backdrop() -> SystemBackdrop:
-    factory = DynWinRTValue.activation_factory(
-        "Microsoft.UI.Xaml.Media.MicaBackdrop"
-    ).cast(IID_IMICA_BACKDROP_FACTORY)
-    results = IMICA_BACKDROP_FACTORY.method(6).invoke_all(
-        factory,
-        [DynWinRTValue.null_value()],
-    )
-    if len(results) != 2 or results[1].is_null():
-        raise RuntimeError("MicaBackdrop composable activation returned no instance")
-    return SystemBackdrop(results[1])
-
-
 def run() -> None:
     runtime = init_winappsdk(2, 3)
     state: dict[str, object] = {}
@@ -265,7 +221,7 @@ def run() -> None:
                     event_tokens.append(reset_button.on_click(reset_game))
 
                     window = Window()
-                    mica = create_mica_backdrop()
+                    mica = MicaBackdrop()
                     window.system_backdrop = mica
                     if window.system_backdrop is None:
                         raise RuntimeError("MicaBackdrop was not assigned")

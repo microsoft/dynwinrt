@@ -61,7 +61,6 @@ foreach ($generation in $generations) {
         --ref-list $RefList `
         --namespace $generation[0] `
         --class-name $generation[1] `
-        --lang py `
         --output $output
     if ($LASTEXITCODE -ne 0) {
         throw "dynwinrt-codegen failed with exit code $LASTEXITCODE"

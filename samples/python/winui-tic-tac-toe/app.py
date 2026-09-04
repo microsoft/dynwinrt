@@ -7,10 +7,16 @@ os.environ["WINAPPSDK_BOOTSTRAP_DLL_PATH"] = str(
     ROOT / ".runtime" / "Microsoft.WindowsAppRuntime.Bootstrap.dll"
 )
 
-from dynwinrt import RoApartment, init_winappsdk, projected_lifetime_scope
+from dynwinrt import (
+    RoApartment,
+    init_winappsdk,
+    project_as,
+    projected_lifetime_scope,
+)
 from generated.microsoft.ui.xaml import Application, ApplicationTheme, Window
 from generated.microsoft.ui.xaml.controls import Button, StackPanel, TextBlock
 from generated.microsoft.ui.xaml.markup import XamlReader
+from generated.microsoft.ui.xaml.media import MicaBackdrop
 from generated.windows.foundation import Size
 from generated.windows.graphics import SizeInt32
 
@@ -154,14 +160,14 @@ def run() -> None:
                         if value is None:
                             raise RuntimeError("XamlReader returned no game board")
 
-                        panel = StackPanel(value)
+                        panel = project_as(value, StackPanel)
                         status_value = panel.find_name("StatusText")
                         reset_value = panel.find_name("ResetButton")
                         if status_value is None or reset_value is None:
                             raise RuntimeError("Named controls were not created")
 
-                        status = TextBlock(status_value)
-                        reset_button = Button(reset_value)
+                        status = project_as(status_value, TextBlock)
+                        reset_button = project_as(reset_value, Button)
                         cells: list[Button] = []
                         cell_text: list[TextBlock] = []
                         for index in range(9):
@@ -169,8 +175,8 @@ def run() -> None:
                             text_value = panel.find_name(f"CellText{index}")
                             if button_value is None or text_value is None:
                                 raise RuntimeError(f"Cell {index} was not created")
-                            cells.append(Button(button_value))
-                            cell_text.append(TextBlock(text_value))
+                            cells.append(project_as(button_value, Button))
+                            cell_text.append(project_as(text_value, TextBlock))
 
                         board = [""] * 9
                         current_player = ["X"]
@@ -228,11 +234,8 @@ def run() -> None:
                         event_tokens.append(reset_button.on_click(reset_game))
 
                         window = Window()
-                        mica = XamlReader.load(
-                            '<MicaBackdrop xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" />'
-                        )
-                        if mica is not None:
-                            window.system_backdrop = mica
+                        mica = MicaBackdrop()
+                        window.system_backdrop = mica
 
                         def closed(_sender: object, _args: object) -> None:
                             current = Application.get_current()

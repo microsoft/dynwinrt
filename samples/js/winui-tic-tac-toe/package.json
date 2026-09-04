@@ -1,0 +1,21 @@
+{
+  "name": "dynwinrt-js-winui-tic-tac-toe-sample",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "XAML-based JavaScript WinUI Tic-Tac-Toe using dynwinrt",
+  "scripts": {
+    "check": "tsc --noEmit --allowJs --checkJs --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck app.mjs",
+    "start": "node app.mjs"
+  },
+  "dependencies": {
+    "@microsoft/dynwinrt": "file:../../../bindings/js"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "typescript": "^5.9.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

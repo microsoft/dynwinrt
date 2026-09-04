@@ -226,8 +226,12 @@ Python samples cover
 [files, OCR, cryptography, devices, AppLifecycle, text-to-speech, app
 notifications, WinUI, and custom WinMD generation](samples/python/README.md).
 
-Electron samples include:
+JavaScript samples include:
 
+- [WinUI Tic-Tac-Toe](samples/js/winui-tic-tac-toe/README.md) — XAML
+  loading, typed projection, generated controls, events, and Mica.
+- [WinUI Tic-Tac-Toe (code-only)](samples/js/winui-tic-tac-toe-code-only/README.md)
+  — a programmatic WinUI application without XAML.
 - [Windows Hello](samples/js/windows-hello/README.md) — WinRT async APIs and
   HWND-bound Classic COM interop.
 - [Share UI](samples/js/electron-share-ui/README.md) — typed WinRT and

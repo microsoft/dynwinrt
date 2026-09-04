@@ -1,9 +1,12 @@
 # Python WinUI Tic-Tac-Toe
 
 A polished Mica/Fluent 3x3 Tic-Tac-Toe window built from generated WinUI
-projections. It demonstrates unpackaged WinAppSDK startup, XAML loading, events,
+projections. It demonstrates unpackaged WinAppSDK startup, typed projection of
+raw XAML objects, generated composable `MicaBackdrop` construction, events,
 window resizing, a named Python `TicTacToePanel` XAML registration, a native
 `measure_override`, and deterministic registration cleanup.
+
+![Tic-Tac-Toe running with the Mica system backdrop](../assets/winui-tic-tac-toe.png)
 
 ## Prerequisites
 

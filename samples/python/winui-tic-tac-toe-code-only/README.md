@@ -3,14 +3,11 @@
 A polished, playable 3x3 Tic-Tac-Toe sample built entirely in Python with
 generated WinUI 3 projections. `Application`, `Window`, every layout object,
 grid definition, control, event handler, and game-state transition is created
-programmatically. The sample uses the default Fluent control resources and a
-Mica system backdrop; it does not load or register XAML.
+programmatically. The sample uses the default Fluent control resources and
+constructs a Mica system backdrop through its generated composable projection;
+it does not load or register XAML.
 
-`MicaBackdrop` currently reaches an ambiguous composition-metadata closure when
-generated directly. The sample therefore activates that runtime class through
-its low-level `IMicaBackdropFactory.CreateInstance` ABI and safely wraps the
-returned object as the projected `SystemBackdrop` expected by
-`Window.system_backdrop`.
+![Tic-Tac-Toe running with the Mica system backdrop](../assets/winui-tic-tac-toe.png)
 
 ## Prerequisites
 

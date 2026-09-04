@@ -51,7 +51,8 @@ New-Item -ItemType Directory -Force -Path $output, $runtime | Out-Null
 $generations = @(
     @("Microsoft.UI.Xaml", "Application,Window"),
     @("Microsoft.UI.Xaml.Controls", "StackPanel,Grid,RowDefinition,ColumnDefinition,Button,TextBlock"),
-    @("Microsoft.UI.Xaml.Automation", "AutomationProperties")
+    @("Microsoft.UI.Xaml.Automation", "AutomationProperties"),
+    @("Microsoft.UI.Xaml.Media", "MicaBackdrop")
 )
 
 foreach ($generation in $generations) {
