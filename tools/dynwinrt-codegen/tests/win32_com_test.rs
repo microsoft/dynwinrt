@@ -6175,11 +6175,13 @@ fn mixed_unsafe_only_com_retains_com_package_exports() {
         eprintln!("Skipping: Windows.winmd not available");
         return;
     };
-    let output = std::env::temp_dir().join(format!(
+    let root = std::env::temp_dir().join(format!(
         "dynwinrt-codegen-mixed-unsafe-only-{}",
         std::process::id()
     ));
-    let _ = fs::remove_dir_all(&output);
+    let output = root.join("node_modules").join("@winapp").join("bindings");
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(output.parent().unwrap()).unwrap();
     remove_com_generation_lock(&output);
 
     run_codegen_command(
@@ -6204,8 +6206,27 @@ fn mixed_unsafe_only_com_retains_com_package_exports() {
     assert!(package.contains("\"./com\":"));
     assert!(package.contains("\"./com/*\":"));
 
-    fs::remove_dir_all(&output).unwrap();
-    remove_com_generation_lock(&output);
+    let resolved = Command::new("node")
+        .args([
+            "-e",
+            "for (const id of [\
+             '@winapp/bindings',\
+             '@winapp/bindings/windows/foundation/Uri',\
+             '@winapp/bindings/com',\
+             '@winapp/bindings/com/unsafe/windows/win32/media/audio/IAudioClientUnsafe'\
+             ]) console.log(require.resolve(id))",
+        ])
+        .current_dir(&root)
+        .output()
+        .expect("resolve mixed generated package exports");
+    assert!(
+        resolved.status.success(),
+        "generated package exports were not consumable:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&resolved.stdout),
+        String::from_utf8_lossy(&resolved.stderr)
+    );
+
+    fs::remove_dir_all(&root).unwrap();
 }
 
 /// Requirement 8: multi-interface COM generation must be atomic enough that
