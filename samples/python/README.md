@@ -18,6 +18,8 @@ checkout, then run each sample's `generate.ps1` before `run.ps1`.
 | [`winui-tic-tac-toe`](winui-tic-tac-toe/) | XAML, a Python-defined WinUI control, native layout overrides, and Fluent resources |
 | [`winui-tic-tac-toe-code-only`](winui-tic-tac-toe-code-only/) | A larger programmatic WinUI application without XAML |
 
-The WinUI and AppNotification samples require matching Windows App SDK
-metadata, reference WinMDs, runtime packages, and bootstrap DLL. The stock
-Windows samples auto-detect the newest installed Windows SDK `Windows.winmd`.
+The Windows App SDK samples require matching metadata, runtime packages, and a
+bootstrap DLL. Their `winapp.yaml` configuration is already checked in, so
+`winapp restore` prepares those inputs and the sample `generate.ps1` creates
+Python bindings from the resulting metadata lockfile. The stock Windows samples
+auto-detect the newest installed Windows SDK `Windows.winmd`.

@@ -18,26 +18,23 @@ while using dynwinrt's generated bootstrap and lifetime APIs.
 
 ## Prerequisites
 
-The inputs are the same as the other Python WinUI samples:
-
-- `Microsoft.UI.Xaml.winmd`;
-- a newline-separated reference-WinMD list;
-- the matching architecture's
-  `Microsoft.WindowsAppRuntime.Bootstrap.dll`;
+- WinApp CLI 1.0 or newer;
 - `dynwinrt` installed in the selected Python interpreter; and
 - `dynwinrt-codegen` on `PATH`, or passed with `-Codegen`.
 
 ## Run
 
 ```powershell
-.\generate.ps1 `
-  -WinuiWinmd C:\fixtures\winappsdk\metadata\Microsoft.UI.Xaml.winmd `
-  -RefList C:\fixtures\winappsdk\winmd-reference-list.txt `
-  -BootstrapDll C:\fixtures\winappsdk\x64\Microsoft.WindowsAppRuntime.Bootstrap.dll `
-  -Codegen ..\..\..\target\release\dynwinrt-codegen.exe
+winapp restore
+.\generate.ps1 -Codegen ..\..\..\target\release\dynwinrt-codegen.exe
 
 .\run.ps1 -Python C:\path\to\python.exe -Major 2 -Minor 3
 ```
+
+`winapp restore` honors the standard NuGet configuration and prepares the
+pinned SDK metadata and bootstrap binaries under `.winapp\`. `generate.ps1`
+uses that metadata to generate Python bindings and copies the selected
+architecture's bootstrap DLL to `.runtime\`.
 
 `Major` and `Minor` default to `2` and `3`. They must exactly match the Windows
 App SDK product version represented by the metadata, bootstrap DLL, and

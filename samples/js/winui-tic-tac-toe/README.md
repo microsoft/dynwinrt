@@ -7,36 +7,23 @@ composable `MicaBackdrop` constructor.
 
 ## Prerequisites
 
-- Windows 11 on x64 with Node.js 18 or newer.
-- An unpackaged x64 WinAppSDK 2.3 fixture: `Microsoft.UI.Xaml.winmd`, a
-  newline-separated reference-WinMD list, and the matching x64
-  `Microsoft.WindowsAppRuntime.Bootstrap.dll`.
-- Matching local `dynwinrt` and `dynwinrt-codegen` builds.
+- Windows 11 with Node.js 20 or newer.
+- WinApp CLI 1.0 or newer.
 
-Build the JavaScript runtime from the repository root:
-
-```powershell
-cd bindings\js
-npm install
-npm run build
-```
-
-Generate and run the sample:
+Restore the pinned Windows App SDK, generate the npm bindings, and run:
 
 ```powershell
 cd samples\js\winui-tic-tac-toe
 npm install
-.\generate.ps1 `
-  -WinuiWinmd C:\fixtures\winappsdk\metadata\Microsoft.UI.Xaml.winmd `
-  -RefList C:\fixtures\winappsdk\winmd-reference-list.txt `
-  -BootstrapDll C:\fixtures\winappsdk\x64\Microsoft.WindowsAppRuntime.Bootstrap.dll `
-  -Codegen ..\..\..\target\release\dynwinrt-codegen.exe
+npm run restore
 npm start
 ```
 
-`generate.ps1` copies the bootstrap DLL to `.runtime\`. Before calling
-`initWinappsdk(2, 3)`, `app.mjs` sets `WINAPPSDK_BOOTSTRAP_DLL_PATH` to that
-local copy.
+`npm run restore` honors the standard NuGet configuration, writes SDK artifacts
+under `.winapp\`, copies the architecture-specific bootstrap DLL to
+`.winapp\bin`, and generates bindings under `.winapp\bindings`. `app.mjs`
+selects the bootstrap DLL for the current Node architecture before calling
+`initWinappsdk(2, 3)`.
 
 Closing the window exits the WinUI application and releases the projected
 objects and event subscriptions.

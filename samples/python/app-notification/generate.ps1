@@ -1,17 +1,8 @@
 #!/usr/bin/env pwsh
 
 param(
-    [Parameter(Mandatory)]
-    [string]$AppNotificationsWinmd,
-
-    [Parameter(Mandatory)]
-    [string]$BuilderWinmd,
-
-    [Parameter(Mandatory)]
-    [string]$RefList,
-
-    [Parameter(Mandatory)]
-    [string]$BootstrapDll,
+    [ValidateSet("x64", "arm64")]
+    [string]$Architecture = "x64",
 
     [string]$Codegen = "dynwinrt-codegen"
 )
@@ -26,20 +17,18 @@ function Resolve-CallerPath([string]$Path) {
     return [System.IO.Path]::GetFullPath((Join-Path $caller $Path))
 }
 
-$AppNotificationsWinmd = Resolve-CallerPath $AppNotificationsWinmd
-$BuilderWinmd = Resolve-CallerPath $BuilderWinmd
-$RefList = Resolve-CallerPath $RefList
-$BootstrapDll = Resolve-CallerPath $BootstrapDll
-foreach ($path in @(
-    $AppNotificationsWinmd,
-    $BuilderWinmd,
-    $RefList,
-    $BootstrapDll
-)) {
-    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-        throw "Required input was not found: $path"
-    }
-}
+. (Join-Path $PSScriptRoot "..\Resolve-WinAppSdkInputs.ps1")
+$inputs = Resolve-DynWinRTWinAppSdkInputs `
+    -SampleRoot $PSScriptRoot `
+    -PrimaryWinmdNames @(
+        "Microsoft.Windows.AppNotifications.winmd",
+        "Microsoft.Windows.AppNotifications.Builder.winmd"
+    ) `
+    -Architecture $Architecture
+$AppNotificationsWinmd = $inputs.PrimaryWinmds["Microsoft.Windows.AppNotifications.winmd"]
+$BuilderWinmd = $inputs.PrimaryWinmds["Microsoft.Windows.AppNotifications.Builder.winmd"]
+$RefList = $inputs.RefList
+$BootstrapDll = $inputs.BootstrapDll
 
 $codegenCandidate = Resolve-CallerPath $Codegen
 if (Test-Path -LiteralPath $codegenCandidate -PathType Leaf) {

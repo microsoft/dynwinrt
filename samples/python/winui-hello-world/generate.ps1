@@ -1,14 +1,8 @@
 #!/usr/bin/env pwsh
 
 param(
-    [Parameter(Mandatory)]
-    [string]$WinuiWinmd,
-
-    [Parameter(Mandatory)]
-    [string]$RefList,
-
-    [Parameter(Mandatory)]
-    [string]$BootstrapDll,
+    [ValidateSet("x64", "arm64")]
+    [string]$Architecture = "x64",
 
     [string]$Codegen = "dynwinrt-codegen"
 )
@@ -23,14 +17,14 @@ function Resolve-CallerPath([string]$Path) {
     return [System.IO.Path]::GetFullPath((Join-Path $caller $Path))
 }
 
-$WinuiWinmd = Resolve-CallerPath $WinuiWinmd
-$RefList = Resolve-CallerPath $RefList
-$BootstrapDll = Resolve-CallerPath $BootstrapDll
-foreach ($path in @($WinuiWinmd, $RefList, $BootstrapDll)) {
-    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-        throw "Required input was not found: $path"
-    }
-}
+. (Join-Path $PSScriptRoot "..\Resolve-WinAppSdkInputs.ps1")
+$inputs = Resolve-DynWinRTWinAppSdkInputs `
+    -SampleRoot $PSScriptRoot `
+    -PrimaryWinmdNames "Microsoft.UI.Xaml.winmd" `
+    -Architecture $Architecture
+$WinuiWinmd = $inputs.PrimaryWinmds["Microsoft.UI.Xaml.winmd"]
+$RefList = $inputs.RefList
+$BootstrapDll = $inputs.BootstrapDll
 
 $codegenCandidate = Resolve-CallerPath $Codegen
 if (Test-Path -LiteralPath $codegenCandidate -PathType Leaf) {

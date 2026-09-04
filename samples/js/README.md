@@ -11,5 +11,7 @@ The JavaScript samples use generated bindings and the
 | [`electron-share-ui`](electron-share-ui/)                     | Electron Share UI with WinRT and Classic COM                 |
 | [`electron-smtc`](electron-smtc/)                             | Electron system media controls and GSMTC loopback            |
 
-The WinUI samples require matching Windows App SDK metadata, reference WinMDs,
-runtime packages, and bootstrap DLL.
+The WinUI samples use WinApp CLI to restore matching Windows App SDK metadata,
+runtime packages, bootstrap binaries, and generated npm bindings.
+Their `winapp.yaml` and `winapp.jsBindings` configuration is already checked in,
+so run `npm run restore` rather than initializing the sample again.

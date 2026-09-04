@@ -1,3 +1,3 @@
-generated/
-.runtime/
+.winapp/
 node_modules/
+package-lock.json

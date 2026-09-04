@@ -1,4 +1,5 @@
 generated/
 .runtime/
+.winapp/
 __pycache__/
 *.py[cod]

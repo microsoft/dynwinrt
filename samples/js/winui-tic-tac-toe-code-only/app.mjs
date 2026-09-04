@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -18,14 +19,28 @@ import {
   VerticalAlignment,
   Window,
   createProjectedLifetimeScope,
-} from "./generated/index.mjs";
+} from "#winapp/bindings";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
-process.env.WINAPPSDK_BOOTSTRAP_DLL_PATH = path.join(
-  ROOT,
-  ".runtime",
-  "Microsoft.WindowsAppRuntime.Bootstrap.dll",
-);
+const architecture = { arm64: "arm64", x64: "x64" }[process.arch];
+if (!architecture) {
+  throw new Error(`Unsupported Node.js architecture: ${process.arch}`);
+}
+const bootstrapDll =
+  process.env.WINAPPSDK_BOOTSTRAP_DLL_PATH ??
+  path.join(
+    ROOT,
+    ".winapp",
+    "bin",
+    architecture,
+    "Microsoft.WindowsAppRuntime.Bootstrap.dll",
+  );
+if (!fs.existsSync(bootstrapDll)) {
+  throw new Error(
+    `Windows App SDK bootstrap DLL was not found at ${bootstrapDll}. Run npm run restore first.`,
+  );
+}
+process.env.WINAPPSDK_BOOTSTRAP_DLL_PATH = bootstrapDll;
 
 const WINNING_LINES = [
   [0, 1, 2],

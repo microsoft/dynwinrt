@@ -6,16 +6,68 @@
   "description": "Code-only JavaScript WinUI Tic-Tac-Toe using dynwinrt",
   "scripts": {
     "check": "tsc --noEmit --allowJs --checkJs --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck app.mjs",
+    "generate": "winapp node generate-bindings",
+    "restore": "winapp restore",
     "start": "node app.mjs"
   },
+  "imports": {
+    "#winapp/bindings": {
+      "types": "./.winapp/bindings/index.d.ts",
+      "import": "./.winapp/bindings/index.mjs",
+      "require": "./.winapp/bindings/index.js",
+      "default": "./.winapp/bindings/index.js"
+    },
+    "#winapp/bindings/*": {
+      "types": "./.winapp/bindings/*.d.ts",
+      "default": "./.winapp/bindings/*.js"
+    }
+  },
   "dependencies": {
-    "@microsoft/dynwinrt": "file:../../../bindings/js"
+    "@microsoft/dynwinrt": "0.1.0-preview.21"
   },
   "devDependencies": {
+    "@microsoft/dynwinrt-codegen": "0.1.0-preview.21",
+    "@microsoft/winappcli": "^1.0.0",
     "@types/node": "^24.13.3",
     "typescript": "^5.9.2"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20.0.0"
+  },
+  "winapp": {
+    "jsBindings": {
+      "additionalWinmds": [
+        {
+          "namespace": "Microsoft.UI.Xaml",
+          "classes": [
+            "Application",
+            "Window"
+          ]
+        },
+        {
+          "namespace": "Microsoft.UI.Xaml.Controls",
+          "classes": [
+            "StackPanel",
+            "Grid",
+            "RowDefinition",
+            "ColumnDefinition",
+            "Button",
+            "TextBlock"
+          ]
+        },
+        {
+          "namespace": "Microsoft.UI.Xaml.Automation",
+          "classes": [
+            "AutomationProperties"
+          ]
+        },
+        {
+          "namespace": "Microsoft.UI.Xaml.Media",
+          "classes": [
+            "MicaBackdrop"
+          ]
+        }
+      ]
+    }
   }
 }
