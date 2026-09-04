@@ -273,8 +273,11 @@ def _dynwinrt_wrap_delegate_callback(callback):
             return callback_context.run(callback, *args)
 
         def invoke_foreign_thread():
-            with projected_lifetime_scope():
+            token = _active_projected_lifetime_scope.set(None)
+            try:
                 return callback(*args)
+            finally:
+                _active_projected_lifetime_scope.reset(token)
 
         return callback_context.run(invoke_foreign_thread)
 

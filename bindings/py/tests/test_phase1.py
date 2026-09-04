@@ -1267,7 +1267,7 @@ def test_copied_context_rejects_foreign_scope_tracking_and_close():
     assert foreign_native.release_threads == []
 
 
-def test_generated_delegate_callback_uses_foreign_thread_lifetime_scope():
+def test_generated_delegate_callback_masks_parent_scope_on_foreign_thread():
     marker = ContextVar("dynwinrt_test_callback_marker", default=None)
 
     class Native:
@@ -1277,10 +1277,15 @@ def test_generated_delegate_callback_uses_foreign_thread_lifetime_scope():
         def release(self):
             self.release_threads.append(threading.get_ident())
 
+        def is_null(self):
+            return bool(self.release_threads)
+
     owner_thread = threading.get_ident()
     parent_native = Native()
     callback_native = Native()
     callback_state = {}
+    retained_wrappers = []
+    unretained_drop_threads = []
     marker_token = marker.set("captured")
 
     try:
@@ -1290,12 +1295,23 @@ def test_generated_delegate_callback_uses_foreign_thread_lifetime_scope():
             def callback():
                 callback_state["thread"] = threading.get_ident()
                 callback_state["marker"] = marker.get()
-                _dynwinrt_track_projected(
-                    SimpleNamespace(_obj=callback_native),
-                    "Callback",
+                retained_wrappers.append(
+                    _dynwinrt_track_projected(
+                        SimpleNamespace(_obj=callback_native),
+                        "RetainedCallbackValue",
+                    )
                 )
-                callback_state["released_during_callback"] = bool(
-                    callback_native.release_threads
+
+                class UnretainedNative:
+                    def __del__(self):
+                        unretained_drop_threads.append(threading.get_ident())
+
+                    def release(self):
+                        raise AssertionError("unretained value entered a lifetime scope")
+
+                _dynwinrt_track_projected(
+                    SimpleNamespace(_obj=UnretainedNative()),
+                    "UnretainedCallbackValue",
                 )
 
             invoke = _dynwinrt_wrap_delegate_callback(callback)
@@ -1307,12 +1323,14 @@ def test_generated_delegate_callback_uses_foreign_thread_lifetime_scope():
             callback_thread = callback_state["thread"]
             assert callback_thread != owner_thread
             assert callback_state["marker"] == "captured"
-            assert not callback_state["released_during_callback"]
-            assert callback_native.release_threads == [callback_thread]
+            assert not callback_native.is_null()
+            assert unretained_drop_threads == [callback_thread]
             assert parent_native.release_threads == []
 
         assert parent_native.release_threads == [owner_thread]
-        assert callback_native.release_threads == [callback_thread]
+        assert not callback_native.is_null()
+        release_projected(retained_wrappers.pop())
+        assert callback_native.release_threads == [owner_thread]
     finally:
         marker.reset(marker_token)
 
