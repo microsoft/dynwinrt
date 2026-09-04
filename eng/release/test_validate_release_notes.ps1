@@ -54,6 +54,19 @@ function Assert-ValidationFails {
     Write-Host "Rejected invalid configuration: $Name"
 }
 
+function Assert-ValidationPasses {
+    param(
+        [string]$Name,
+        [string]$Pipeline,
+        [string]$Notes
+    )
+
+    Write-TestFile -Path $tempPipelinePath -Contents $Pipeline
+    Write-TestFile -Path $tempNotesPath -Contents $Notes
+    & $validatorPath -RepositoryRoot $tempRoot | Out-Null
+    Write-Host "Accepted valid configuration: $Name"
+}
+
 & $validatorPath -RepositoryRoot $RepositoryRoot
 
 $validPipeline = Get-Content -LiteralPath $pipelinePath -Raw
@@ -65,6 +78,40 @@ New-Item -ItemType Directory -Force -Path `
     (Split-Path $tempNotesPath -Parent) | Out-Null
 
 try {
+    $checkoutBlock = "          - checkout: self${newline}            fetchDepth: 1"
+    $singleTaskDoubleCheckout = $validPipeline.Replace(
+        "          - task: GitHubRelease@1",
+        "          - task: 'GitHubRelease@1'"
+    ).Replace(
+        $checkoutBlock,
+        "          - checkout: `"self`"${newline}            fetchDepth: 1"
+    )
+    Assert-ValidationPasses -Name "single-quoted task and double-quoted checkout" `
+        -Pipeline $singleTaskDoubleCheckout -Notes $validNotes
+
+    $doubleTaskSingleCheckout = $validPipeline.Replace(
+        "          - task: GitHubRelease@1",
+        "          - task: `"GitHubRelease@1`""
+    ).Replace(
+        $checkoutBlock,
+        "          - checkout: 'self'${newline}            fetchDepth: 1"
+    )
+    Assert-ValidationPasses -Name "double-quoted task and single-quoted checkout" `
+        -Pipeline $doubleTaskSingleCheckout -Notes $validNotes
+
+    $quotedDuplicateTasks = @(
+        "          - task: 'GitHubRelease@1'"
+        ""
+        "          - task: `"GitHubRelease@1`""
+    ) -join $newline
+    $duplicateTaskPipeline = $validPipeline.Replace(
+        "          - task: GitHubRelease@1",
+        $quotedDuplicateTasks
+    )
+    Assert-ValidationFails -Name "quoted duplicate GitHub release task" `
+        -Pipeline $duplicateTaskPipeline -Notes $validNotes -CreateNotes $true `
+        -ExpectedMessage "Expected exactly one active GitHubRelease@1 task, found 2"
+
     $commentedExpectedValues = @(
         "              releaseNotesSource: 'inline'"
         "              # releaseNotesSource: 'filePath'"
@@ -120,7 +167,6 @@ try {
         -Pipeline $disabledChangeLogPipeline -Notes $validNotes -CreateNotes $true `
         -ExpectedMessage "*addChangeLog*must be 'true'*"
 
-    $checkoutBlock = "          - checkout: self${newline}            fetchDepth: 1"
     $checkoutNoneBlock = "          - checkout: none${newline}          # - checkout: self${newline}          #   fetchDepth: 1"
     $missingCheckoutPipeline = $validPipeline.Replace($checkoutBlock, $checkoutNoneBlock)
     Assert-ValidationFails -Name "release job source checkout unavailable" `

@@ -109,12 +109,18 @@ if ([string]::IsNullOrWhiteSpace($releaseNotes)) {
 }
 
 $lines = @(Get-Content -LiteralPath $pipelinePath)
+$yamlScalarPattern = "'(?:[^']|'')*'|`"[^`"]*`"|[^#\s]+"
 $taskMatches = @()
 for ($index = 0; $index -lt $lines.Count; $index++) {
-    if ($lines[$index] -match "^(?<indent>\s*)-\s+task:\s*GitHubRelease@1\s*(?:#.*)?$") {
+    if ($lines[$index] -match "^(?<indent>\s*)-\s+task:\s*(?<value>$yamlScalarPattern)\s*(?:#.*)?$") {
+        $taskIndent = $Matches.indent.Length
+        $taskValue = ConvertFrom-YamlScalar $Matches.value
+        if ($taskValue -cne "GitHubRelease@1") {
+            continue
+        }
         $taskMatches += [pscustomobject]@{
             Index = $index
-            Indent = $Matches.indent.Length
+            Indent = $taskIndent
         }
     }
 }
@@ -209,10 +215,11 @@ $stepIndent = $stepsIndent + 2
 $checkoutMatches = @()
 for ($index = $stepsIndex + 1; $index -lt $taskIndex; $index++) {
     if ((Get-Indent $lines[$index]) -eq $stepIndent -and
-        $lines[$index] -match "^\s*-\s+checkout:\s*(?<value>[^#\s]+)\s*(?:#.*)?$") {
+        $lines[$index] -match "^\s*-\s+checkout:\s*(?<value>$yamlScalarPattern)\s*(?:#.*)?$") {
+        $checkoutValue = ConvertFrom-YamlScalar $Matches.value
         $checkoutMatches += [pscustomobject]@{
             Index = $index
-            Value = $Matches.value
+            Value = $checkoutValue
         }
     }
 }
