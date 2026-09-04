@@ -14,10 +14,17 @@ Restore the pinned Windows App SDK, generate the npm bindings, and run:
 
 ```powershell
 cd samples\js\winui-tic-tac-toe-code-only
+..\prepare-local.ps1
 npm install
 npm run restore
 npm start
 ```
+
+`prepare-local.ps1` builds the JavaScript runtime and Rust code generator, then
+places the codegen executable in its local npm package. The sample consumes both
+packages through `file:` dependencies. WinApp CLI can warn that the local
+runtime's `file:` specifier cannot be compared with the codegen package version;
+this is expected for a source-checkout build.
 
 `npm run restore` writes SDK artifacts under `.winapp\`, copies the
 architecture-specific bootstrap DLL to `.winapp\bin`, and generates bindings

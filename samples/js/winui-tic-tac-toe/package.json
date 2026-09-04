@@ -23,10 +23,10 @@
     }
   },
   "dependencies": {
-    "@microsoft/dynwinrt": "0.1.0-preview.21"
+    "@microsoft/dynwinrt": "file:../../../bindings/js"
   },
   "devDependencies": {
-    "@microsoft/dynwinrt-codegen": "0.1.0-preview.21",
+    "@microsoft/dynwinrt-codegen": "file:../../../tools/dynwinrt-codegen/npm",
     "@microsoft/winappcli": "^0.6.2",
     "@types/node": "^24.13.3",
     "typescript": "^5.9.2"

@@ -15,3 +15,5 @@ The WinUI samples use WinApp CLI to restore matching Windows App SDK metadata,
 runtime packages, bootstrap binaries, and generated npm bindings.
 Their `winapp.yaml` and `winapp.jsBindings` configuration is already checked in,
 so run `npm run restore` rather than initializing the sample again.
+Run `prepare-local.ps1` first to build the repository's JavaScript runtime and
+codegen executable used by both samples.
