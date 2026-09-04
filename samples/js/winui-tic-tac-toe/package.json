@@ -27,7 +27,7 @@
   },
   "devDependencies": {
     "@microsoft/dynwinrt-codegen": "0.1.0-preview.21",
-    "@microsoft/winappcli": "^1.0.0",
+    "@microsoft/winappcli": "^0.6.2",
     "@types/node": "^24.13.3",
     "typescript": "^5.9.2"
   },

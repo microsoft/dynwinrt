@@ -16,7 +16,7 @@ custom `comtypes` local server or manual registry keys.
 
 ## Prerequisites
 
-- WinApp CLI 1.0 or newer;
+- WinApp CLI 0.6.2 or newer;
 - `dynwinrt` installed in the selected Python interpreter; and
 - `dynwinrt-codegen` on `PATH`, or passed with `-Codegen`.
 
@@ -29,10 +29,9 @@ winapp restore
 .\run.ps1 -Python C:\path\to\python.exe -Major 2 -Minor 3
 ```
 
-`winapp restore` honors the standard NuGet configuration and prepares the
-pinned SDK metadata and bootstrap binaries under `.winapp\`. `generate.ps1`
-uses that metadata to generate Python bindings and copies the selected
-architecture's bootstrap DLL to `.runtime\`.
+`winapp restore` prepares the pinned SDK metadata and bootstrap binaries under
+`.winapp\`. `generate.ps1` uses that metadata to generate Python bindings and
+copies the selected architecture's bootstrap DLL to `.runtime\`.
 
 `Major` and `Minor` default to `2` and `3`. They must exactly match the Windows
 App SDK product version represented by the metadata, bootstrap DLL, and

@@ -12,7 +12,7 @@ it does not load or register XAML.
 ## Prerequisites
 
 - Windows 11 on x64 with CPython 3.11–3.14.
-- WinApp CLI 1.0 or newer.
+- WinApp CLI 0.6.2 or newer.
 - `dynwinrt` installed in the Python interpreter used to run the sample.
 - Matching `dynwinrt` and `dynwinrt-codegen` versions.
 
@@ -33,12 +33,11 @@ winapp restore
 .\run.ps1 -Python C:\path\to\python.exe
 ```
 
-`winapp restore` honors the standard NuGet configuration and prepares the
-pinned SDK metadata and bootstrap binaries under `.winapp\`. `generate.ps1`
-uses that metadata to generate Python bindings and copies the selected
-architecture's bootstrap DLL to `.runtime\`. Before calling
-`init_winappsdk(2, 3)`, `app.py` sets `WINAPPSDK_BOOTSTRAP_DLL_PATH` to that
-local copy.
+`winapp restore` prepares the pinned SDK metadata and bootstrap binaries under
+`.winapp\`. `generate.ps1` uses that metadata to generate Python bindings and
+copies the selected architecture's bootstrap DLL to `.runtime\`. Before
+calling `init_winappsdk(2, 3)`, `app.py` sets
+`WINAPPSDK_BOOTSTRAP_DLL_PATH` to that local copy.
 
 Pass `-Codegen ..\..\..\target\release\dynwinrt-codegen.exe` when testing a
 source build.
