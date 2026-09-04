@@ -414,6 +414,10 @@ pub(crate) trait ArgumentList {
     fn get_stg_medium(&self, _index: usize) -> Option<&crate::com::StgMediumValue> {
         None
     }
+
+    fn get_audio_format(&self, _index: usize) -> Option<&crate::com::AudioFormatValue> {
+        None
+    }
 }
 
 impl ArgumentList for [WinRTValue] {
@@ -736,6 +740,8 @@ where
         std::collections::BTreeMap::<usize, crate::com::FormatEtcOutput>::new();
     let mut stg_medium_out_values =
         std::collections::BTreeMap::<usize, crate::com::StgMediumStorage>::new();
+    let mut audio_format_out_values =
+        std::collections::BTreeMap::<usize, crate::com::AudioFormatOutput>::new();
     let mut optional_out_requests: Vec<Option<bool>> = Vec::with_capacity(out_count);
 
     // Array storage: Box'd for pointer stability (addresses don't change after creation)
@@ -754,6 +760,7 @@ where
     let mut variant_by_value_in_slots: Vec<crate::com::automation::VariantCopyValue> = Vec::new();
     let mut format_etc_in_slots: Vec<Box<windows::Win32::System::Com::FORMATETC>> = Vec::new();
     let mut stg_medium_in_slots: Vec<crate::com::StgMediumStorage> = Vec::new();
+    let mut audio_format_in_ptrs: Vec<*const c_void> = Vec::new();
 
     // FillArray storage: caller-allocated buffers
     let mut fill_array_slots: Vec<Box<FillArraySlot>> = Vec::new();
@@ -1069,6 +1076,25 @@ where
                 stg_medium_out_values.insert(p.value_index, value);
                 array_out_map.push(None);
                 fill_array_map.push(None);
+            } else if p.typ.is_audio_format() {
+                if p.is_in_out() {
+                    return Err(windows_core::Error::new(
+                        windows_core::HRESULT(0x80070057u32 as i32),
+                        "WAVEFORMATEX in/out is not supported",
+                    ));
+                }
+                let mut value = crate::com::AudioFormatOutput::new();
+                out_ptrs.push(value.as_mut_ptr().cast_const());
+                out_values.push(AbiValue::Pointer(std::ptr::null_mut()));
+                struct_out_values.push(None);
+                guid_out_values.push(None);
+                native_struct_out_values.push(None);
+                variant_out_values.push(None);
+                safe_array_out_values.push(None);
+                prop_variant_out_values.push(None);
+                audio_format_out_values.insert(p.value_index, value);
+                array_out_map.push(None);
+                fill_array_map.push(None);
             } else if p.typ.is_struct() {
                 let val = if p.is_in_out() {
                     args.get_value(p.input_index.expect("in/out input index"))
@@ -1188,6 +1214,12 @@ where
                     )
                 })?,
             );
+        } else if p.is_input() && !p.is_out() && p.typ.is_audio_format() {
+            audio_format_in_ptrs.push(
+                args.get_audio_format(p.input_index.expect("WAVEFORMATEX input index"))
+                    .expect("validated WAVEFORMATEX input")
+                    .as_ptr(),
+            );
         }
     }
     let native_struct_in_ptrs = native_struct_in_slots
@@ -1300,6 +1332,7 @@ where
     let mut dispatch_params_in_idx = 0usize;
     let mut format_etc_in_idx = 0usize;
     let mut stg_medium_in_idx = 0usize;
+    let mut audio_format_in_idx = 0usize;
     for p in parameters {
         if p.is_out() {
             if let Some(slot_idx) = fill_array_map[p.value_index] {
@@ -1353,6 +1386,9 @@ where
         } else if p.typ.is_stg_medium() {
             ffi_args.push(arg(&stg_medium_in_ptrs[stg_medium_in_idx]));
             stg_medium_in_idx += 1;
+        } else if p.typ.is_audio_format() {
+            ffi_args.push(arg(&audio_format_in_ptrs[audio_format_in_idx]));
+            audio_format_in_idx += 1;
         } else if p.typ.is_variant() {
             ffi_args.push(arg(&variant_in_ptrs[variant_in_idx]));
             variant_in_idx += 1;
@@ -1735,6 +1771,16 @@ where
                             )
                         },
                     )?));
+                } else if let Some(value) = audio_format_out_values.remove(&p.value_index) {
+                    match value.into_value(p.is_optional_out()).map_err(|error| {
+                        windows_core::Error::new(
+                            windows_core::HRESULT(0x80070057u32 as i32),
+                            &error.message(),
+                        )
+                    })? {
+                        Some(value) => result_values.push(NativeCallValue::AudioFormat(value)),
+                        None => result_values.push(NativeCallValue::WinRt(WinRTValue::Null)),
+                    }
                 } else if let Some(struct_val) = struct_out_values[p.value_index].take() {
                     result_values.push(NativeCallValue::WinRt(WinRTValue::Struct(struct_val)));
                 } else {

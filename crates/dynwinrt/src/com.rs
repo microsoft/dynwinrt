@@ -900,6 +900,198 @@ impl Drop for StgMediumStorage {
     }
 }
 
+const WAVEFORMATEX_SIZE: usize = 18;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AudioFormatValue {
+    bytes: Arc<[u8]>,
+}
+
+impl AudioFormatValue {
+    pub fn from_wave_format_ex(bytes: Vec<u8>) -> result::Result<Self> {
+        if bytes.len() < WAVEFORMATEX_SIZE {
+            return Err(invalid_argument(
+                "WAVEFORMATEX storage is smaller than its 18-byte header",
+            ));
+        }
+        let extra_size = u16::from_le_bytes([bytes[16], bytes[17]]) as usize;
+        if bytes.len() != WAVEFORMATEX_SIZE + extra_size {
+            return Err(invalid_argument(&format!(
+                "WAVEFORMATEX storage length {} does not match cbSize {}",
+                bytes.len(),
+                extra_size
+            )));
+        }
+        let value = Self {
+            bytes: bytes.into(),
+        };
+        if value.format_tag() == 0xfffe && extra_size < 22 {
+            return Err(invalid_argument(
+                "WAVEFORMATEXTENSIBLE storage requires at least 22 extension bytes",
+            ));
+        }
+        Ok(value)
+    }
+
+    pub fn wave_format_ex(
+        format_tag: u16,
+        channels: u16,
+        samples_per_second: u32,
+        average_bytes_per_second: u32,
+        block_align: u16,
+        bits_per_sample: u16,
+        extra_data: Vec<u8>,
+    ) -> result::Result<Self> {
+        let extra_size = u16::try_from(extra_data.len())
+            .map_err(|_| invalid_argument("WAVEFORMATEX extra data exceeds u16::MAX bytes"))?;
+        let mut bytes = Vec::with_capacity(WAVEFORMATEX_SIZE + extra_data.len());
+        bytes.extend_from_slice(&format_tag.to_le_bytes());
+        bytes.extend_from_slice(&channels.to_le_bytes());
+        bytes.extend_from_slice(&samples_per_second.to_le_bytes());
+        bytes.extend_from_slice(&average_bytes_per_second.to_le_bytes());
+        bytes.extend_from_slice(&block_align.to_le_bytes());
+        bytes.extend_from_slice(&bits_per_sample.to_le_bytes());
+        bytes.extend_from_slice(&extra_size.to_le_bytes());
+        bytes.extend_from_slice(&extra_data);
+        Self::from_wave_format_ex(bytes)
+    }
+
+    pub fn pcm(
+        channels: u16,
+        samples_per_second: u32,
+        bits_per_sample: u16,
+    ) -> result::Result<Self> {
+        if channels == 0 || samples_per_second == 0 {
+            return Err(invalid_argument(
+                "PCM channel count and sample rate must be non-zero",
+            ));
+        }
+        if bits_per_sample == 0 || bits_per_sample % 8 != 0 {
+            return Err(invalid_argument(
+                "PCM bits per sample must be a non-zero multiple of eight",
+            ));
+        }
+        let block_align = u32::from(channels)
+            .checked_mul(u32::from(bits_per_sample / 8))
+            .and_then(|value| u16::try_from(value).ok())
+            .ok_or_else(|| invalid_argument("PCM block alignment exceeds u16::MAX"))?;
+        let average_bytes_per_second = samples_per_second
+            .checked_mul(u32::from(block_align))
+            .ok_or_else(|| invalid_argument("PCM average byte rate exceeds u32::MAX"))?;
+        Self::wave_format_ex(
+            1,
+            channels,
+            samples_per_second,
+            average_bytes_per_second,
+            block_align,
+            bits_per_sample,
+            Vec::new(),
+        )
+    }
+
+    pub fn format_tag(&self) -> u16 {
+        u16::from_le_bytes([self.bytes[0], self.bytes[1]])
+    }
+
+    pub fn channels(&self) -> u16 {
+        u16::from_le_bytes([self.bytes[2], self.bytes[3]])
+    }
+
+    pub fn samples_per_second(&self) -> u32 {
+        u32::from_le_bytes(self.bytes[4..8].try_into().unwrap())
+    }
+
+    pub fn average_bytes_per_second(&self) -> u32 {
+        u32::from_le_bytes(self.bytes[8..12].try_into().unwrap())
+    }
+
+    pub fn block_align(&self) -> u16 {
+        u16::from_le_bytes([self.bytes[12], self.bytes[13]])
+    }
+
+    pub fn bits_per_sample(&self) -> u16 {
+        u16::from_le_bytes([self.bytes[14], self.bytes[15]])
+    }
+
+    pub fn extra_data(&self) -> &[u8] {
+        &self.bytes[WAVEFORMATEX_SIZE..]
+    }
+
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    pub(crate) fn as_ptr(&self) -> *const c_void {
+        self.bytes.as_ptr().cast()
+    }
+
+    unsafe fn copy_from_native(value: *const c_void) -> result::Result<Self> {
+        if value.is_null() {
+            return Err(invalid_argument("WAVEFORMATEX output was null"));
+        }
+        let header = unsafe { std::slice::from_raw_parts(value.cast::<u8>(), WAVEFORMATEX_SIZE) };
+        let format_tag = u16::from_le_bytes([header[0], header[1]]);
+        let extra_size = if format_tag == 1 {
+            0
+        } else {
+            u16::from_le_bytes([header[16], header[17]]) as usize
+        };
+        let mut bytes = unsafe {
+            std::slice::from_raw_parts(value.cast::<u8>(), WAVEFORMATEX_SIZE + extra_size)
+        }
+        .to_vec();
+        if format_tag == 1 {
+            bytes[16..18].copy_from_slice(&0u16.to_le_bytes());
+        }
+        Self::from_wave_format_ex(bytes)
+    }
+}
+
+pub(crate) struct AudioFormatOutput {
+    raw: Box<*mut c_void>,
+}
+
+impl AudioFormatOutput {
+    pub(crate) fn new() -> Self {
+        Self {
+            raw: Box::new(std::ptr::null_mut()),
+        }
+    }
+
+    pub(crate) fn as_mut_ptr(&mut self) -> *mut c_void {
+        (&mut *self.raw as *mut *mut c_void).cast()
+    }
+
+    pub(crate) fn into_value(mut self, nullable: bool) -> result::Result<Option<AudioFormatValue>> {
+        if self.raw.is_null() {
+            return if nullable {
+                Ok(None)
+            } else {
+                Err(invalid_argument("required WAVEFORMATEX output was null"))
+            };
+        }
+        let value = unsafe { AudioFormatValue::copy_from_native(*self.raw) };
+        self.free();
+        value.map(Some)
+    }
+
+    fn free(&mut self) {
+        if self.raw.is_null() {
+            return;
+        }
+        unsafe {
+            crate::native_call::OutputCleanup::CoTaskMemFree.cleanup(*self.raw);
+        }
+        *self.raw = std::ptr::null_mut();
+    }
+}
+
+impl Drop for AudioFormatOutput {
+    fn drop(&mut self) {
+        self.free();
+    }
+}
+
 #[cfg(test)]
 static STATSTG_TEST_FREES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
@@ -1249,6 +1441,7 @@ pub enum Value {
     StatStg(StatStgValue),
     FormatEtc(FormatEtcValue),
     StgMedium(StgMediumValue),
+    AudioFormat(AudioFormatValue),
     Buffer(ComBufferValue),
 }
 
@@ -1267,6 +1460,7 @@ fn is_null_input_value(value: &Value) -> bool {
         | Value::StatStg(_)
         | Value::FormatEtc(_)
         | Value::StgMedium(_)
+        | Value::AudioFormat(_)
         | Value::Buffer(_) => false,
     }
 }
@@ -2018,7 +2212,8 @@ impl BufferElementPlan {
             | ParameterType::ExcepInfo
             | ParameterType::StatStg
             | ParameterType::FormatEtc
-            | ParameterType::StgMedium => {
+            | ParameterType::StgMedium
+            | ParameterType::AudioFormat => {
                 return Err(invalid_argument(
                     "Automation buffer elements require dedicated ownership and cleanup plans",
                 ));
@@ -2330,6 +2525,15 @@ impl Type {
     pub fn stg_medium() -> Self {
         Self {
             abi: ParameterType::stg_medium(),
+            pointer_output: PointerOutputKind::None,
+            allow_direct_aggregate_return: false,
+            aggregate_capability: None,
+        }
+    }
+
+    pub fn audio_format() -> Self {
+        Self {
+            abi: ParameterType::audio_format(),
             pointer_output: PointerOutputKind::None,
             allow_direct_aggregate_return: false,
             aggregate_capability: None,
@@ -3270,7 +3474,9 @@ impl CallbackMethodPlan {
             | ParameterType::DispatchParams
             | ParameterType::ExcepInfo
             | ParameterType::StatStg => Some(crate::native_callback::CallbackAbiType::Pointer),
-            ParameterType::FormatEtc | ParameterType::StgMedium => None,
+            ParameterType::FormatEtc | ParameterType::StgMedium | ParameterType::AudioFormat => {
+                None
+            }
             ParameterType::NativeStruct(layout) => {
                 Some(crate::native_callback::CallbackAbiType::NativeStruct(
                     format!("{layout:?}"),
@@ -3727,7 +3933,8 @@ impl CallbackMethodPlan {
             ParameterType::NativeUnion(_)
             | ParameterType::VariantByValue
             | ParameterType::FormatEtc
-            | ParameterType::StgMedium => Err(SINK_E_FAIL),
+            | ParameterType::StgMedium
+            | ParameterType::AudioFormat => Err(SINK_E_FAIL),
         }
     }
 
@@ -4380,7 +4587,8 @@ impl ComCallPlan {
                 | Value::ExcepInfo(_)
                 | Value::StatStg(_)
                 | Value::FormatEtc(_)
-                | Value::StgMedium(_) => Err(invalid_argument(
+                | Value::StgMedium(_)
+                | Value::AudioFormat(_) => Err(invalid_argument(
                     "COM-local result requires the COM value invocation path",
                 )),
                 Value::Buffer(_) => Err(invalid_argument(
@@ -4578,7 +4786,8 @@ impl ComCallPlan {
                     | Value::ExcepInfo(_)
                     | Value::StatStg(_)
                     | Value::FormatEtc(_)
-                    | Value::StgMedium(_) => Err(invalid_argument(
+                    | Value::StgMedium(_)
+                    | Value::AudioFormat(_) => Err(invalid_argument(
                         "COM-local value passed to a scalar COM method",
                     )),
                     Value::Buffer(_) => Err(invalid_argument(
@@ -6092,7 +6301,9 @@ fn validate_automation_contracts(
         {
             return Err(invalid_argument("FORMATETC does not support in/out"));
         }
-        if (parameter.typ.abi.is_format_etc() || parameter.typ.abi.is_stg_medium())
+        if (parameter.typ.abi.is_format_etc()
+            || parameter.typ.abi.is_stg_medium()
+            || parameter.typ.abi.is_audio_format())
             && parameter.direction != ComParameterDirection::In
             && !matches!(
                 return_plan,
@@ -6100,8 +6311,13 @@ fn validate_automation_contracts(
             )
         {
             return Err(invalid_argument(
-                "FORMATETC/STGMEDIUM outputs require an HRESULT return convention",
+                "FORMATETC/STGMEDIUM/WAVEFORMATEX outputs require an HRESULT return convention",
             ));
+        }
+        if parameter.typ.abi.is_audio_format()
+            && parameter.direction == ComParameterDirection::InOut
+        {
+            return Err(invalid_argument("WAVEFORMATEX does not support in/out"));
         }
         if parameter.typ.abi.is_excep_info()
             && !matches!(
@@ -10907,6 +11123,126 @@ mod tests {
         HRESULT(0)
     }
 
+    unsafe extern "system" fn inspect_audio_format(
+        _this: *mut c_void,
+        format: *const c_void,
+    ) -> HRESULT {
+        if format.is_null() {
+            return HRESULT(0x80070057u32 as i32);
+        }
+        let header = unsafe { std::slice::from_raw_parts(format.cast::<u8>(), WAVEFORMATEX_SIZE) };
+        if u16::from_le_bytes([header[0], header[1]]) != 1
+            || u16::from_le_bytes([header[2], header[3]]) != 2
+            || u32::from_le_bytes(header[4..8].try_into().unwrap()) != 48_000
+            || u16::from_le_bytes([header[16], header[17]]) != 0
+        {
+            return HRESULT(0x80070057u32 as i32);
+        }
+        HRESULT(0)
+    }
+
+    unsafe extern "system" fn write_audio_format(
+        _this: *mut c_void,
+        output: *mut *mut c_void,
+    ) -> HRESULT {
+        if output.is_null() {
+            return HRESULT(0x80004003u32 as i32);
+        }
+        let bytes = AudioFormatValue::pcm(2, 48_000, 16).unwrap();
+        let allocation =
+            unsafe { windows::Win32::System::Com::CoTaskMemAlloc(bytes.bytes().len()) };
+        if allocation.is_null() {
+            return HRESULT(0x8007000eu32 as i32);
+        }
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                bytes.bytes().as_ptr(),
+                allocation.cast(),
+                bytes.bytes().len(),
+            );
+            output.write(allocation);
+        }
+        HRESULT(0)
+    }
+
+    unsafe extern "system" fn write_audio_format_then_fail(
+        this: *mut c_void,
+        output: *mut *mut c_void,
+    ) -> HRESULT {
+        let result = unsafe { write_audio_format(this, output) };
+        if result.is_err() {
+            result
+        } else {
+            HRESULT(0x80004005u32 as i32)
+        }
+    }
+
+    unsafe extern "system" fn write_invalid_audio_format(
+        _this: *mut c_void,
+        output: *mut *mut c_void,
+    ) -> HRESULT {
+        if output.is_null() {
+            return HRESULT(0x80004003u32 as i32);
+        }
+        let bytes =
+            AudioFormatValue::wave_format_ex(2, 2, 48_000, 192_000, 4, 16, vec![0; 21]).unwrap();
+        let allocation =
+            unsafe { windows::Win32::System::Com::CoTaskMemAlloc(bytes.bytes().len()) };
+        if allocation.is_null() {
+            return HRESULT(0x8007000eu32 as i32);
+        }
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                bytes.bytes().as_ptr(),
+                allocation.cast(),
+                bytes.bytes().len(),
+            );
+            allocation.cast::<u16>().write(0xfffe);
+            output.write(allocation);
+        }
+        HRESULT(0)
+    }
+
+    unsafe extern "system" fn write_pcm_with_ignored_extra_size(
+        this: *mut c_void,
+        output: *mut *mut c_void,
+    ) -> HRESULT {
+        let result = unsafe { write_audio_format(this, output) };
+        if result.is_ok() {
+            unsafe {
+                (*output)
+                    .cast::<u8>()
+                    .add(16)
+                    .cast::<u16>()
+                    .write_unaligned(u16::MAX);
+            }
+        }
+        result
+    }
+
+    unsafe extern "system" fn write_null_audio_format(
+        _this: *mut c_void,
+        output: *mut *mut c_void,
+    ) -> HRESULT {
+        if !output.is_null() {
+            unsafe {
+                output.write(std::ptr::null_mut());
+            }
+        }
+        HRESULT(0)
+    }
+
+    unsafe extern "system" fn require_null_audio_format_output(
+        _this: *mut c_void,
+        output: *mut *mut c_void,
+    ) -> HRESULT {
+        if output.is_null() {
+            HRESULT(0)
+        } else {
+            HRESULT(0x80004005u32 as i32)
+        }
+    }
+
     fn invoke_test_stat_stg(function: *mut c_void, flags: u32) -> result::Result<Vec<Value>> {
         let table = MetadataTable::new();
         invoke_test_pod(
@@ -13886,6 +14222,112 @@ mod tests {
         assert_eq!(
             unsafe { windows::Win32::System::Memory::GlobalSize(released) },
             0
+        );
+    }
+
+    #[test]
+    fn audio_format_calls_validate_variable_storage_and_cotaskmem_ownership() {
+        let table = MetadataTable::new();
+        let format = AudioFormatValue::pcm(2, 48_000, 16).unwrap();
+        assert_eq!(format.format_tag(), 1);
+        assert_eq!(format.channels(), 2);
+        assert_eq!(format.samples_per_second(), 48_000);
+        assert_eq!(format.average_bytes_per_second(), 192_000);
+        assert_eq!(format.block_align(), 4);
+        assert_eq!(format.bits_per_sample(), 16);
+        assert!(format.extra_data().is_empty());
+        assert_eq!(format.bytes().len(), WAVEFORMATEX_SIZE);
+        assert!(AudioFormatValue::pcm(2, 48_000, 12).is_err());
+        assert!(AudioFormatValue::from_wave_format_ex(vec![0; 17]).is_err());
+        let mut wrong_size = format.bytes().to_vec();
+        wrong_size[16..18].copy_from_slice(&1u16.to_le_bytes());
+        assert!(AudioFormatValue::from_wave_format_ex(wrong_size).is_err());
+
+        invoke_test_pod(
+            inspect_audio_format as *mut c_void,
+            MethodSignature::new(&table).add_in(Type::audio_format()),
+            &[Value::AudioFormat(format.clone())],
+        )
+        .unwrap();
+
+        crate::native_call::reset_co_task_mem_test_frees();
+        let output = invoke_test_pod(
+            write_audio_format as *mut c_void,
+            MethodSignature::new(&table).add_out(Type::audio_format()),
+            &[],
+        )
+        .unwrap();
+        let Value::AudioFormat(output) = &output[0] else {
+            panic!("expected WAVEFORMATEX output");
+        };
+        assert_eq!(output, &format);
+        assert_eq!(crate::native_call::co_task_mem_test_frees(), 1);
+
+        crate::native_call::reset_co_task_mem_test_frees();
+        let output = invoke_test_pod(
+            write_pcm_with_ignored_extra_size as *mut c_void,
+            MethodSignature::new(&table).add_out(Type::audio_format()),
+            &[],
+        )
+        .unwrap();
+        let Value::AudioFormat(output) = &output[0] else {
+            panic!("expected normalized PCM WAVEFORMATEX output");
+        };
+        assert_eq!(output, &format);
+        assert_eq!(crate::native_call::co_task_mem_test_frees(), 1);
+
+        crate::native_call::reset_co_task_mem_test_frees();
+        let error = invoke_test_pod(
+            write_invalid_audio_format as *mut c_void,
+            MethodSignature::new(&table).add_out(Type::audio_format()),
+            &[],
+        )
+        .unwrap_err();
+        assert!(error.message().contains("at least 22 extension bytes"));
+        assert_eq!(crate::native_call::co_task_mem_test_frees(), 1);
+
+        crate::native_call::reset_co_task_mem_test_frees();
+        let error = invoke_test_pod(
+            write_audio_format_then_fail as *mut c_void,
+            MethodSignature::new(&table).add_out(Type::audio_format()),
+            &[],
+        )
+        .unwrap_err();
+        assert!(error.message().contains("80004005"));
+        assert_eq!(crate::native_call::co_task_mem_test_frees(), 1);
+
+        let output = invoke_test_pod(
+            write_null_audio_format as *mut c_void,
+            MethodSignature::new(&table).add_optional_out(Type::audio_format()),
+            &[Value::WinRt(WinRTValue::Bool(true))],
+        )
+        .unwrap();
+        assert!(matches!(
+            output.as_slice(),
+            [Value::WinRt(WinRTValue::Null)]
+        ));
+
+        let output = invoke_test_pod(
+            require_null_audio_format_output as *mut c_void,
+            MethodSignature::new(&table).add_optional_out(Type::audio_format()),
+            &[Value::WinRt(WinRTValue::Bool(false))],
+        )
+        .unwrap();
+        assert!(matches!(
+            output.as_slice(),
+            [Value::WinRt(WinRTValue::Null)]
+        ));
+
+        let error = invoke_test_pod(
+            write_null_audio_format as *mut c_void,
+            MethodSignature::new(&table).add_out(Type::audio_format()),
+            &[],
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .message()
+                .contains("required WAVEFORMATEX output was null")
         );
     }
 

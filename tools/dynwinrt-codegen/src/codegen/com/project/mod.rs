@@ -509,6 +509,7 @@ fn validate_projected_surface_names(meta: &ProjectedComInterface) -> Result<(), 
                 | ComType::StatStg
                 | ComType::FormatEtc
                 | ComType::StgMedium
+                | ComType::AudioFormat
                 | ComType::ManagedInterface { .. }
                 | ComType::CoTaskMemWideString
                 | ComType::StringArray { .. } => {}
@@ -695,6 +696,13 @@ fn project_method(
                 release_param_index: release_param.index(),
             }
         }
+        Some(ComMethodSpecialContract::AudioFormatSupport {
+            share_mode_param,
+            closest_match_param,
+        }) => ProjectedComMethodKind::AudioFormatSupport {
+            share_mode_param_index: share_mode_param.index(),
+            closest_match_param_index: closest_match_param.index(),
+        },
         Some(ComMethodSpecialContract::Malloc) | None => project_dynamic_method_kind(
             method.name(),
             dynamic_iid.map(|contract| {
@@ -856,6 +864,13 @@ fn project_method(
                                     fetched_param_index,
                                     ..
                                 } if *fetched_param_index == index
+                            )
+                            || matches!(
+                                &kind,
+                                ProjectedComMethodKind::AudioFormatSupport {
+                                    closest_match_param_index,
+                                    ..
+                                } if *closest_match_param_index == index
                             )) =>
                 {
                     ComParamDirection::OptionalOut
@@ -1066,6 +1081,17 @@ fn project_method(
             ProjectedComMethodKind::ConditionalInterfaceOutput { .. }
         ) {
             // The exact mode contract controls which optional output is requested.
+        } else if let ProjectedComMethodKind::AudioFormatSupport {
+            closest_match_param_index,
+            ..
+        } = kind
+        {
+            if optional_outputs != [closest_match_param_index] {
+                return Err(format!(
+                    "{}: audio format support requires exactly its closest-match optional output",
+                    context()
+                ));
+            }
         } else {
             if interface_namespace != "Windows.Win32.System.Com"
                 || interface_name != "IDispatch"
@@ -1275,6 +1301,43 @@ fn project_method(
                 },
             });
         }
+    }
+
+    if let ProjectedComMethodKind::AudioFormatSupport {
+        share_mode_param_index,
+        closest_match_param_index,
+    } = kind
+        && (return_convention != ComReturnConvention::SemanticHResult
+            || !matches!(
+                params.get(share_mode_param_index),
+                Some(ProjectedComParam {
+                    typ: ComType::Enum {
+                        underlying: ComEnumUnderlying::I32,
+                        ..
+                    },
+                    direction: ComParamDirection::In,
+                    surface_input: true,
+                    ..
+                })
+            )
+            || !matches!(
+                params.get(closest_match_param_index),
+                Some(ProjectedComParam {
+                    typ: ComType::AudioFormat,
+                    direction: ComParamDirection::OptionalOut,
+                    surface_result: true,
+                    ..
+                })
+            )
+            || results.len() != 2
+            || results[0].source != ResultSource::DirectReturn
+            || results[1].source != ResultSource::Param(closest_match_param_index)
+            || results[1].conversion != ResultConversion::AudioFormat)
+    {
+        return Err(format!(
+            "{}: audio format support no longer matches its exact projected result contract",
+            context()
+        ));
     }
 
     Ok(ProjectedComMethod {
@@ -1662,6 +1725,7 @@ fn project_value_type(
         ComAbiType::StatStg => Ok(ComType::StatStg),
         ComAbiType::FormatEtc => Ok(ComType::FormatEtc),
         ComAbiType::StgMedium => Ok(ComType::StgMedium),
+        ComAbiType::AudioFormat => Ok(ComType::AudioFormat),
         ComAbiType::NativeUnion(_) | ComAbiType::FunctionPointer(_) | ComAbiType::Unknown(_) => {
             Err(format!(
                 "unsupported Classic-COM semantic type {}",
@@ -2064,6 +2128,7 @@ fn project_native_pod_field_type(
         | ComAbiType::StatStg
         | ComAbiType::FormatEtc
         | ComAbiType::StgMedium
+        | ComAbiType::AudioFormat
         | ComAbiType::FunctionPointer(_)
         | ComAbiType::Unknown(_) => Err(format!(
             "unsupported nested native POD field {}",
@@ -2848,6 +2913,11 @@ fn result_conversion(
             if matches!(typ, ComType::StgMedium) =>
         {
             Ok(ResultConversion::StgMedium)
+        }
+        (ComOwnership::AudioFormatOwned, Cleanup::CoTaskMemAudioFormat)
+            if matches!(typ, ComType::AudioFormat) =>
+        {
+            Ok(ResultConversion::AudioFormat)
         }
         (ownership, cleanup) => Err(format!(
             "{}: unsupported projected ownership {ownership:?} with cleanup {cleanup:?}",

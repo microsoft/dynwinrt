@@ -1228,6 +1228,17 @@ impl DynWinRTValue {
         ))),
         None,
       ),
+      dynwinrt::com::Value::AudioFormat(value) => Self(
+        dynwinrt::WinRTValue::Null,
+        None,
+        com::PointerProvenance::None,
+        None,
+        None,
+        Some(com::AutomationValue::new(
+          dynwinrt::com::Value::AudioFormat(value),
+        )),
+        None,
+      ),
       dynwinrt::com::Value::Buffer(value) => Self(
         dynwinrt::WinRTValue::Null,
         None,

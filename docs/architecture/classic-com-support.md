@@ -4,8 +4,8 @@
 general Automation or native Win32 projection.
 
 > **Status: preview, under active development.** The current CI baseline against
-> `Microsoft.Windows.SDK.Win32Metadata` 71.0.14-preview is 5,692 complete safe
-> interface projections out of 7,929 eligible interfaces (71.79%). Earlier
+> `Microsoft.Windows.SDK.Win32Metadata` 71.0.14-preview is 5,697 complete safe
+> interface projections out of 7,929 eligible interfaces (71.85%). Earlier
 > inventory and demand-snapshot sections retain the metadata versions and dates
 > stated in those sections.
 
@@ -614,6 +614,7 @@ and `@microsoft/dynwinrt/com`.
 | SAFEARRAY | Rank 1–8, signed bounds, typed scalar/bool/BSTR/interface/VARIANT elements, SafeArray API validation and cleanup | Unsupported element VARTYPEs, rank > 8, untyped arrays whose VARTYPE cannot be proven, and Automation InOut replacement |
 | PROPVARIANT | Scalar numeric/bool, LPWSTR, CLSID, FILETIME, blob, and supported vectors with PropVariantClear | Nested VARIANT vectors, streams/interfaces, arrays, clipboard/storage types, BYREF, and unknown VARTYPEs |
 | FORMATETC / STGMEDIUM | Dedicated target-device-independent `TYMED_HGLOBAL` values; owned outputs use `ReleaseStgMedium`; `GetDataHere` preserves caller allocation; exact IID/slot/shape/fingerprint evidence pins `SetData.fRelease=FALSE` | `DVTARGETDEVICE`, non-HGLOBAL media, JavaScript callback implementation, and ownership-transfer input |
+| Audio formats | Variable-length WAVEFORMATEX/WAVEFORMATEXTENSIBLE bytes with validated `cbSize`; PCM factory; exact shared/exclusive `IsFormatSupported` output selection; CoTaskMem-owned format outputs | Format-specific codec payload interpretation and JavaScript callback implementation |
 | Allocator ownership | COM Release, BSTR output/replacement and array elements, VARIANT clear, CoTaskMem buffers/PWSTR elements, boxed GUID, retained JS buffers | LocalFree, custom allocators, allocator interfaces, unknown ownership |
 | Interface pointers | Typed input/output interfaces, QueryInterface, dynamic IID output, and generated multi-interface callback objects with inherited IID aliases | Interface in/out replacement, aggregation, and `IInspectable` implementation |
 | Apartments | Explicit initialization, non-agile owner-thread implementations, synchronous same-thread callbacks, and rejection before entering JS on a foreign thread | Cross-apartment marshaling, GIT/agility handling, and callback dispatch |
@@ -659,6 +660,7 @@ and `@microsoft/dynwinrt/com`.
 | SAFEARRAY | Supported subset | `DynComSafeArray` preserves rank/bounds and validates VARTYPE and element width through SafeArray APIs. Supported elements are the scalar integer/float family, VARIANT_BOOL, BSTR, IUnknown, IDispatch, and VARIANT. |
 | PROPVARIANT | Supported subset | `DynComPropVariant` supports the scalar family, LPWSTR, CLSID, FILETIME, BLOB, and vectors of numeric/bool/string/GUID/FILETIME elements. |
 | FORMATETC / STGMEDIUM | Supported HGLOBAL subset | `DynComFormatEtc.hglobal()` represents one exact DVASPECT with `ptd == NULL`; `DynComStgMedium.hglobal()` copies bytes into call-local movable HGLOBAL storage. Outputs are copied before `ReleaseStgMedium`, `GetDataHere` rejects replacement of caller-owned storage, and generated `IDataObject::SetData` fixes `fRelease` to `FALSE`. |
+| WAVEFORMATEX / WAVEFORMATEXTENSIBLE | Supported | `DynComAudioFormat` validates the packed 18-byte header plus exact `cbSize` extension, provides a PCM factory and field accessors, and preserves unknown codec extension bytes. Exact contracts pass `IsFormatSupported.ppClosestMatch` only in shared mode and free GetMixFormat/current-engine-format outputs with `CoTaskMemFree`. |
 | DISPPARAMS / EXCEPINFO | Supported for `IDispatch::Invoke` | `DynComDispatchParams` accepts natural-order `DynComVariant[]` plus optional named DISPIDs. `DynComExcepInfo` exposes code/source/description/helpFile/helpContext/scode. Optional Invoke outputs pass native null when not requested. |
 | Typed interface parameters and outputs | Supported | Interface outputs carry an owned COM reference. |
 | Opaque pointers and handle-shaped typedefs | Supported with limits | They are pointer values, not COM objects. Cleanup remains type-specific. |
@@ -714,7 +716,7 @@ of every type in the 24 MB metadata file.
 | Unsupported BSTR pointer nesting, replacement arrays, or callee-allocated outer arrays | Automation collection APIs | Exact counted input/caller-output BSTR arrays are supported; deeper/replacement shapes still require authoritative outer allocation and per-element contracts. | Win32 winmd signature + ownership analysis |
 | Caller-owned ANSI output buffers | `PSTR` output-buffer APIs | Safe sizing and decoding are not yet projected. | Win32 winmd signature + projection limitation |
 | Private-data bytes or interface pointer | `IDXGIObject`, `ID3D10DeviceChild`, `ID3D10Device`, `ID3D11DeviceChild`, `ID3D11Device`, `ID3D12Object`, and `IDMLObject` `GetPrivateData` | The same GUID-keyed method may return ordinary bytes or an AddRef'd interface pointer. A `Buffer` projection would lose the interface ownership transfer; Direct3D 10 NULL calls are destructive, and DXGI's data parameter is required. | Exact Win32 winmd identities + Microsoft method documentation |
-| Untyped output pointers without allocator/ownership | `IAudioClient::IsFormatSupported` and unrelated `void*` outputs | The runtime cannot infer whether the result is borrowed, COM-owned, `CoTaskMem`, or another allocator. | Win32 winmd + codegen diagnostics |
+| Untyped output pointers without allocator/ownership | Unrelated `void*` outputs | The runtime cannot infer whether the result is borrowed, COM-owned, `CoTaskMem`, or another allocator. Audio-format outputs are supported only for exact pinned methods. | Win32 winmd + codegen diagnostics |
 | Interface `[in, out]` ownership | Generic typed `IFoo**` InOut parameters | Replacing an existing interface pointer requires explicit release/AddRef transfer semantics. `IWbemServices::OpenNamespace` is not in this category: exact SDK evidence corrects its two flags to Out. | Win32 winmd + codegen diagnostic |
 | Callback methods outside the validated implementation subset | Automation providers, custom marshaling, and resource-owning callbacks | The dynamic backend supports broad scalar/string/POD/buffer ABI shapes and multi-interface inheritance, but VARIANT/SAFEARRAY/PROPVARIANT callbacks, untagged unions, unknown pointers/allocators, interface replacement, and custom marshal contracts still fail the whole interface closed. | Runtime/codegen validation boundary |
 | COM aggregation | `IClassFactory::CreateInstance` with `pUnkOuter` | The public activation helper always creates a non-aggregated in-process object. | Runtime/public-API boundary |
@@ -1228,12 +1230,14 @@ exact CoTaskMem output-ownership, parameter-direction, and null-input
 registries subsequently promote 114 additional complete interfaces, bringing
 that census to 5,681. The dedicated target-device-independent
 `TYMED_HGLOBAL` FORMATETC/STGMEDIUM model promotes 11 more interfaces, bringing
-the current literal census to **5,692 / 7,929 = 71.787111%**. The result remains
-above the 70% target without admitting any unmodeled target-device, storage
-medium, ownership-transfer, or callback shape.
+that census to 5,692. The variable-length WAVEFORMATEX model and three pinned
+audio method contracts promote five more interfaces, bringing the current
+literal census to **5,697 / 7,929 = 71.850170%**. The result remains above the
+70% target without admitting any unmodeled target-device, storage-medium,
+audio-output ownership, ownership-transfer, or callback shape.
 
 CI reproduces this number with `dynwinrt-codegen com-census --json` and fails
-if the denominator changes, complete generation drops below 5,692, or coverage
+if the denominator changes, complete generation drops below 5,697, or coverage
 falls below 70%.
 
 ## Public-code frequency snapshot
@@ -1302,7 +1306,7 @@ against the resolved namespace.
 | 21 | `IBindCtx` | 2,660 | 42 | Yes | Generates with exact `BIND_OPTS.cbStruct = sizeof(BIND_OPTS)` initialization and live `CreateBindCtx` coverage |
 | 22 | `IFileOpenDialog` | 2,536 | 92 | Yes | Generates and live-tested without showing UI |
 | 23 | `IRunningObjectTable` | 2,532 | 50 | Yes | Generates with POD `FILETIME`; acquisition/live test still needed |
-| 24 | `IAudioClient` | 2,500 | 82 | Yes | Fail closed: format pointer/output ownership |
+| 24 | `IAudioClient` | 2,500 | 82 | Yes | Generates completely with typed variable-length audio formats and exact IsFormatSupported/GetMixFormat ownership |
 | 25 | `IShellLinkW` | 2,128 | 67 | Yes | Generates and is live-tested with nested/fixed-array POD `WIN32_FIND_DATAW` |
 | 26 | `ITaskbarList3` / `TaskbarList` | 1,672 | 87 | Yes | Interface and newable coclass generate and are live-tested |
 | 27 | `ICoreWebView2` | 1,608 | 35 | **No** | Defined in WebView2 metadata, not Windows.Win32.winmd |
@@ -1324,7 +1328,7 @@ against the resolved namespace.
     and non-HGLOBAL data-transfer media);
   - Automation contracts beyond the exact supported `IDispatch` compounds
     (XML and Task Scheduler BYREF/InOut and nested ownership);
-  - explicit output ownership (`DXGI`, audio);
+  - explicit output ownership (notably DXGI/private-data APIs);
   - remaining interface in/out replacement semantics; and
   - unsupported PROPVARIANT alternatives in Property System APIs beyond
     `IPropertyStore`.
@@ -1336,7 +1340,7 @@ against the resolved namespace.
 
 This means the current suite provides useful ABI breadth, but it
 does **not** cover every high-frequency interface. In particular,
-graphics interfaces, audio, non-HGLOBAL data transfer, and live real-object
+graphics interfaces, advanced audio, non-HGLOBAL data transfer, and live real-object
 `IDispatch::Invoke` coverage remain material gaps.
 
 ## Engineering priority map
@@ -1366,7 +1370,7 @@ hardware, and whether it adds a distinct ABI shape.
 | `ICreateErrorInfo` / `IErrorInfo` | COM rich error information | Complete generation and acquisition are live-tested for GUID, wide strings, owned BSTR output, thread-local storage, and one-shot consumption. |
 | `IMMDeviceEnumerator` | Audio endpoint discovery | Generates today, but live behavior depends on available audio endpoints. |
 | `IWbemServices` | WMI queries and method invocation | Complete generation uses exact sync/semisync output selection; selected outputs are owned COM references and `pCtx` is native null in the closed safe overloads. |
-| `IAudioClient` | Low-level audio streaming | Fails closed because its format and output-pointer shapes are not fully modeled. |
+| `IAudioClient` / `IAudioClient2` / `IAudioClient3` | Low-level audio streaming | Complete safe generation uses `DynComAudioFormat`; exact fingerprinted contracts model shared/exclusive closest-format selection and CoTaskMem-owned format outputs. Generated fake-vtable coverage is hardware-independent. |
 | `IDispatch` | Automation and scripting | Complete inherited real-metadata generation passes. `GetIDsOfNames` projects as `string[] -> number[]`; `Invoke` accepts `DynComDispatchParams` and explicit result/excepInfo/argErr request options, returning dedicated owning wrappers. Derived Automation interfaces remain independently validated. |
 | `IPropertyStore` | Shell/property metadata | Complete generation and live ShellLink `SetValue`/`GetValue`/`Commit` coverage pass with dedicated PROPVARIANT ownership. |
 | `IDataObject` | Clipboard and drag-and-drop | Complete safe generation for target-device-independent `TYMED_HGLOBAL`; generated fake-vtable coverage verifies owned GetData output, caller-owned GetDataHere storage, semantic HRESULT, canonical FORMATETC, and borrowed SetData input. |

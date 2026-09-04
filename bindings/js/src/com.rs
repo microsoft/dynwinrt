@@ -42,6 +42,7 @@ enum AutomationValueKind {
   StatStg(dynwinrt::com::StatStgValue),
   FormatEtc(dynwinrt::com::FormatEtcValue),
   StgMedium(dynwinrt::com::StgMediumValue),
+  AudioFormat(dynwinrt::com::AudioFormatValue),
 }
 
 pub(super) struct AutomationValue {
@@ -62,6 +63,7 @@ impl AutomationValue {
       dynwinrt::com::Value::StatStg(value) => AutomationValueKind::StatStg(value),
       dynwinrt::com::Value::FormatEtc(value) => AutomationValueKind::FormatEtc(value),
       dynwinrt::com::Value::StgMedium(value) => AutomationValueKind::StgMedium(value),
+      dynwinrt::com::Value::AudioFormat(value) => AutomationValueKind::AudioFormat(value),
       _ => unreachable!("AutomationValue requires an automation COM value"),
     };
     Self {
@@ -101,6 +103,7 @@ impl AutomationValue {
       AutomationValueKind::StatStg(value) => dynwinrt::com::Value::StatStg(value.clone()),
       AutomationValueKind::FormatEtc(value) => dynwinrt::com::Value::FormatEtc(value.clone()),
       AutomationValueKind::StgMedium(value) => dynwinrt::com::Value::StgMedium(value.clone()),
+      AutomationValueKind::AudioFormat(value) => dynwinrt::com::Value::AudioFormat(value.clone()),
     })
   }
 
@@ -177,6 +180,17 @@ impl AutomationValue {
       value => {
         self.value = value;
         Err(napi::Error::from_reason("Value is not COM STGMEDIUM"))
+      }
+    }
+  }
+
+  pub(super) fn take_audio_format(&mut self) -> napi::Result<dynwinrt::com::AudioFormatValue> {
+    self.ensure_owner_thread()?;
+    match self.value.take() {
+      Some(AutomationValueKind::AudioFormat(value)) => Ok(value),
+      value => {
+        self.value = value;
+        Err(napi::Error::from_reason("Value is not a COM WAVEFORMATEX"))
       }
     }
   }
@@ -3166,6 +3180,103 @@ impl DynComStgMedium {
 }
 
 #[napi]
+pub struct DynComAudioFormat {
+  value: dynwinrt::com::AudioFormatValue,
+}
+
+#[napi]
+impl DynComAudioFormat {
+  #[napi(factory)]
+  pub fn pcm(channels: u32, samples_per_second: u32, bits_per_sample: u32) -> napi::Result<Self> {
+    let channels =
+      u16::try_from(channels).map_err(|_| napi::Error::from_reason("channels must fit in u16"))?;
+    let bits_per_sample = u16::try_from(bits_per_sample)
+      .map_err(|_| napi::Error::from_reason("bitsPerSample must fit in u16"))?;
+    dynwinrt::com::AudioFormatValue::pcm(channels, samples_per_second, bits_per_sample)
+      .map(|value| Self { value })
+      .map_err(|error| napi::Error::from_reason(error.message()))
+  }
+
+  #[napi(factory)]
+  pub fn wave_format_ex(
+    format_tag: u32,
+    channels: u32,
+    samples_per_second: u32,
+    average_bytes_per_second: u32,
+    block_align: u32,
+    bits_per_sample: u32,
+    extra_data: Option<Buffer>,
+  ) -> napi::Result<Self> {
+    let format_tag = u16::try_from(format_tag)
+      .map_err(|_| napi::Error::from_reason("formatTag must fit in u16"))?;
+    let channels =
+      u16::try_from(channels).map_err(|_| napi::Error::from_reason("channels must fit in u16"))?;
+    let block_align = u16::try_from(block_align)
+      .map_err(|_| napi::Error::from_reason("blockAlign must fit in u16"))?;
+    let bits_per_sample = u16::try_from(bits_per_sample)
+      .map_err(|_| napi::Error::from_reason("bitsPerSample must fit in u16"))?;
+    dynwinrt::com::AudioFormatValue::wave_format_ex(
+      format_tag,
+      channels,
+      samples_per_second,
+      average_bytes_per_second,
+      block_align,
+      bits_per_sample,
+      extra_data.map_or_else(Vec::new, |bytes| bytes.to_vec()),
+    )
+    .map(|value| Self { value })
+    .map_err(|error| napi::Error::from_reason(error.message()))
+  }
+
+  #[napi(factory)]
+  pub fn from_buffer(bytes: Buffer) -> napi::Result<Self> {
+    dynwinrt::com::AudioFormatValue::from_wave_format_ex(bytes.to_vec())
+      .map(|value| Self { value })
+      .map_err(|error| napi::Error::from_reason(error.message()))
+  }
+
+  #[napi(getter)]
+  pub fn format_tag(&self) -> u32 {
+    u32::from(self.value.format_tag())
+  }
+
+  #[napi(getter)]
+  pub fn channels(&self) -> u32 {
+    u32::from(self.value.channels())
+  }
+
+  #[napi(getter)]
+  pub fn samples_per_second(&self) -> u32 {
+    self.value.samples_per_second()
+  }
+
+  #[napi(getter)]
+  pub fn average_bytes_per_second(&self) -> u32 {
+    self.value.average_bytes_per_second()
+  }
+
+  #[napi(getter)]
+  pub fn block_align(&self) -> u32 {
+    u32::from(self.value.block_align())
+  }
+
+  #[napi(getter)]
+  pub fn bits_per_sample(&self) -> u32 {
+    u32::from(self.value.bits_per_sample())
+  }
+
+  #[napi(getter)]
+  pub fn extra_data(&self) -> Buffer {
+    Buffer::from(self.value.extra_data().to_vec())
+  }
+
+  #[napi]
+  pub fn to_buffer(&self) -> Buffer {
+    Buffer::from(self.value.bytes().to_vec())
+  }
+}
+
+#[napi]
 #[derive(Debug)]
 pub struct DynComOwnedHandle {
   address: Option<usize>,
@@ -4909,6 +5020,11 @@ impl DynCom {
   }
 
   #[napi]
+  pub fn audio_format_type() -> DynComType {
+    DynComType(dynwinrt::com::Type::audio_format())
+  }
+
+  #[napi]
   pub fn interface_type(iid: &WinGUID) -> DynComType {
     DynComType(dynwinrt::com::Type::winrt(TABLE.interface(iid.0)))
   }
@@ -5757,6 +5873,14 @@ impl DynCom {
   }
 
   #[napi]
+  pub fn audio_format(value: &DynComAudioFormat) -> DynWinRTValue {
+    DynWinRTValue::from_com_value(
+      dynwinrt::com::Value::AudioFormat(value.value.clone()),
+      dynwinrt::com::PointerOutputKind::None,
+    )
+  }
+
+  #[napi]
   pub fn take_variant(value: &mut DynWinRTValue) -> napi::Result<DynComVariant> {
     let result = value
       .5
@@ -5841,6 +5965,27 @@ impl DynCom {
       .take_stg_medium()?;
     value.5 = None;
     Ok(DynComStgMedium { value: result })
+  }
+
+  #[napi]
+  pub fn take_audio_format(value: &mut DynWinRTValue) -> napi::Result<DynComAudioFormat> {
+    let result = value
+      .5
+      .as_mut()
+      .ok_or_else(|| napi::Error::from_reason("Value is not a COM WAVEFORMATEX"))?
+      .take_audio_format()?;
+    value.5 = None;
+    Ok(DynComAudioFormat { value: result })
+  }
+
+  #[napi]
+  pub fn take_nullable_audio_format(
+    value: &mut DynWinRTValue,
+  ) -> napi::Result<Option<DynComAudioFormat>> {
+    if value.5.is_none() && value.0.is_null_object() {
+      return Ok(None);
+    }
+    Self::take_audio_format(value).map(Some)
   }
 
   #[napi]

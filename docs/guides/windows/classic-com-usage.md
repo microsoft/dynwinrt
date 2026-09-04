@@ -144,52 +144,43 @@ remain intact.
 The ordinary command has no unsafe opt-in flag. If complete safe projection
 fails but one or more methods are `raw_metadata_complete`, codegen writes an
 isolated namespace-qualified companion such as
-`generated/com/unsafe/windows/win32/media/audio/IAudioClientUnsafe.js` and
+`generated/com/unsafe/windows/win32/ai/machine-learning/win-ml/IWinMLEvaluationContextUnsafe.js`
+and
 records every method in `support.json`. Safe-complete interfaces use matching
 canonical namespace directories under `generated/com/`.
 
 ```powershell
 npx dynwinrt-codegen generate `
   --winmd $winmd `
-  --namespace Windows.Win32.Media.Audio `
-  --class-name IAudioClient `
+  --namespace Windows.Win32.AI.MachineLearning.WinML `
+  --class-name IWinMLEvaluationContext `
   --output .\generated
 ```
 
-`IAudioClientUnsafe` hides IID registration, inheritance, absolute slots, and
-signature wiring while keeping unknown format/storage ownership explicit:
+`IWinMLEvaluationContextUnsafe` hides IID registration, inheritance, absolute
+slots, and signature wiring while keeping unknown descriptor layout and
+ownership explicit:
 
 ```js
+import { DynComRawMemory } from "@microsoft/dynwinrt/com/unsafe/raw";
 import {
-  DynComRawMemory,
-} from "@microsoft/dynwinrt/com/unsafe/raw";
-import {
-  IAudioClientUnsafe,
+  IWinMLEvaluationContextUnsafe,
   UnsafePointee,
-  UnsafePointerOutput,
 } from "./generated/com/unsafe/index.js";
 
-const audio = IAudioClientUnsafe.from(existingAudioClientValue);
-const format = DynComRawMemory.allocate(18, 2);
+const context = IWinMLEvaluationContextUnsafe.from(existingContextValue);
+const descriptor = DynComRawMemory.allocate(descriptorSize, descriptorAlignment);
 try {
-  const [hresult, closest] = audio.isFormatSupported(
-    1,
-    UnsafePointee.required(format),
-    UnsafePointerOutput.coTaskMem(),
-  );
-  try {
-    // Inspect the explicitly owned closest-format result.
-  } finally {
-    closest?.release();
-  }
+  context.bindValue(UnsafePointee.required(descriptor));
 } finally {
-  format.release();
-  audio.release();
+  descriptor.release();
+  context.release();
 }
 ```
 
-The short barrel export is available only while `IAudioClientUnsafe` is
-globally unique. If two namespaces contain `IFoo`, import their deep modules:
+The short barrel export is available only while
+`IWinMLEvaluationContextUnsafe` is globally unique. If two namespaces contain
+`IFoo`, import their deep modules:
 
 ```js
 import { IFooUnsafe as FooA } from "./generated/com/unsafe/contoso/a/IFooUnsafe.js";
@@ -203,34 +194,41 @@ and cleanup rules against the native contract. A failing HRESULT may throw
 after native code has mutated caller-owned slots; inspect and reconcile such
 storage according to the API contract. See the
 [complete generated unsafe examples](generated-com-unsafe-example.zh-CN.md) for
-synchronous/semisynchronous WMI and manual-contract audio calls.
+synchronous/semisynchronous WMI and manual-contract raw calls.
 
 Stage 2 also emits `raw_manual_contract` methods with required strategies from
-`generated/com/unsafe/runtime.js`. For audio format negotiation:
+`generated/com/unsafe/runtime.js`. A pointer output with unknown ownership
+remains caller-selected and explicit:
 
 ```js
 import {
-  IAudioClientUnsafe,
-  UnsafePointee,
+  IWinMLEvaluationContextUnsafe,
   UnsafePointerOutput,
 } from "./generated/com/unsafe/index.mjs";
 
-const format = DynComRawMemory.allocate(22, 2);
-// Fill the exact WAVEFORMATEX bytes first.
-const [status, closest] = audio.isFormatSupported(
-  shareMode,
-  UnsafePointee.required(format),
-  // S_OK leaves ppClosestMatch null; S_FALSE may return CoTaskMem storage.
-  UnsafePointerOutput.coTaskMem(null, true),
+const context = IWinMLEvaluationContextUnsafe.from(existingContextValue);
+const output = context.getValueByName(
+  nameStorage,
+  UnsafePointerOutput.rawResponsibility(),
 );
 try {
-  const closestView = closest?.view(closestByteLength, closestAlignment);
-  // Interpret only the layout guaranteed by the selected audio contract.
-  closestView?.release();
+  // Reconcile and clean up `output` only according to the application's
+  // authoritative contract. The unsafe wrapper does not guess an allocator.
 } finally {
-  closest?.release();
-  format.release();
+  context.release();
 }
+```
+
+Audio format negotiation is now on the safe surface:
+
+```js
+import { DynComAudioFormat } from "@microsoft/dynwinrt/com";
+import { IAudioClient } from "./generated/com/windows/win32/media/audio/IAudioClient.js";
+
+const audio = IAudioClient._fromNative(existingAudioClientValue);
+const pcm = DynComAudioFormat.pcm(2, 48_000, 16);
+const [status, closest] = audio.isFormatSupported(0, pcm);
+const mixFormat = audio.getMixFormat();
 ```
 
 `IDXGIObjectUnsafe.getPrivateData` keeps its exact caller-storage API because

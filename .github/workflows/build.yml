@@ -90,7 +90,7 @@ jobs:
           if ($result.eligible_interfaces -ne 7929) {
             throw "Classic COM census denominator changed: $($result.eligible_interfaces)"
           }
-          if ($result.complete_interfaces -lt 5692) {
+          if ($result.complete_interfaces -lt 5697) {
             throw "Classic COM complete coverage regressed: $($result.complete_interfaces)"
           }
           if ($result.coverage_percent -lt 70.0) {
@@ -107,21 +107,21 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $result = Get-Content (Join-Path $output 'classic-com-capability-summary.json') -Raw |
             ConvertFrom-Json
-          if ($result.eligible_interfaces -ne 7929 -or $result.safe_complete -ne 5692) {
+          if ($result.eligible_interfaces -ne 7929 -or $result.safe_complete -ne 5697) {
             throw "Classic COM safe totals changed in capability census"
           }
           $support = Import-Csv (Join-Path $output 'classic-com-interface-support.csv')
           if (
             @($support).Count -ne 7929 -or
-            @($support | Where-Object { $_.safe_complete -eq 'true' }).Count -ne 5692 -or
-            @($support | Where-Object { $_.safe_complete -eq 'false' }).Count -ne 2237
+            @($support | Where-Object { $_.safe_complete -eq 'true' }).Count -ne 5697 -or
+            @($support | Where-Object { $_.safe_complete -eq 'false' }).Count -ne 2232
           ) {
             throw "Classic COM compact interface support index changed"
           }
           $expected = @{
-            x64 = @(412, 1437, 388)
-            i686 = @(411, 1414, 412)
-            arm64 = @(412, 1437, 388)
+            x64 = @(412, 1432, 388)
+            i686 = @(411, 1409, 412)
+            arm64 = @(412, 1432, 388)
           }
           foreach ($target in @('x64', 'i686', 'arm64')) {
             $counts = $result.targets.$target
@@ -134,16 +134,16 @@ jobs:
             }
           }
           if (
-            $result.safeEvidence.safeComplete -ne 5692 -or
-            $result.safeEvidence.standardDerived -ne 5336 -or
-            $result.safeEvidence.exactRegistryDependent -ne 356 -or
-            $result.safeEvidence.metadataFactOccurrences -ne 5976 -or
-            $result.safeEvidence.comStandardFactOccurrences -ne 26119 -or
-            $result.safeEvidence.registeredExactEntries -ne 496 -or
-            $result.safeEvidence.metadataMatchedExactEntries -ne 496 -or
-            $result.safeEvidence.safeConsumedExactEntries -ne 405 -or
-            $result.safeEvidence.exactEntryInterfaceDependencies -ne 656 -or
-            $result.safeEvidence.exactFamilyInterfaceDependencies -ne 405
+            $result.safeEvidence.safeComplete -ne 5697 -or
+            $result.safeEvidence.standardDerived -ne 5338 -or
+            $result.safeEvidence.exactRegistryDependent -ne 359 -or
+            $result.safeEvidence.metadataFactOccurrences -ne 5982 -or
+            $result.safeEvidence.comStandardFactOccurrences -ne 26134 -or
+            $result.safeEvidence.registeredExactEntries -ne 499 -or
+            $result.safeEvidence.metadataMatchedExactEntries -ne 499 -or
+            $result.safeEvidence.safeConsumedExactEntries -ne 408 -or
+            $result.safeEvidence.exactEntryInterfaceDependencies -ne 663 -or
+            $result.safeEvidence.exactFamilyInterfaceDependencies -ne 411
           ) {
             throw "Classic COM safe evidence dependency census changed"
           }
@@ -151,7 +151,8 @@ jobs:
           if (
             @($statuses | Where-Object { -not $_.registered -or -not $_.metadataMatched }).Count -ne 0 -or
             @($statuses | Where-Object { $_.familyId -eq 'windows.borrowed-hwnd-output.v1' }).Count -ne 22 -or
-            @($statuses | Where-Object { $_.familyId -eq 'com.enumerator-next-exception.v1' }).Count -ne 73
+            @($statuses | Where-Object { $_.familyId -eq 'com.enumerator-next-exception.v1' }).Count -ne 73 -or
+            @($statuses | Where-Object { $_.familyId -eq 'audio.conditional-output.v1' }).Count -ne 1
           ) {
             throw "Classic COM exact registry entry validation changed"
           }

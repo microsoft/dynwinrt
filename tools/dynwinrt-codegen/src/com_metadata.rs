@@ -382,6 +382,8 @@ pub enum RawExactMethodContractKind {
     Malloc,
     FlagSelectedString,
     DataObjectSetData,
+    AudioFormatOwnedOutput,
+    AudioFormatSupport,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -414,8 +416,12 @@ impl RawExactMethodContract {
             }
             RawExactMethodContractKind::StatStg
             | RawExactMethodContractKind::Malloc
-            | RawExactMethodContractKind::DataObjectSetData => {
+            | RawExactMethodContractKind::DataObjectSetData
+            | RawExactMethodContractKind::AudioFormatOwnedOutput => {
                 crate::contract_registry::ExactFamilyId::Ownership
+            }
+            RawExactMethodContractKind::AudioFormatSupport => {
+                crate::contract_registry::ExactFamilyId::AudioConditionalOutput
             }
             RawExactMethodContractKind::FlagSelectedString => {
                 crate::contract_registry::ExactFamilyId::ShellCommandString
@@ -444,8 +450,12 @@ impl RawExactMethodContract {
             }
             RawExactMethodContractKind::StatStg
             | RawExactMethodContractKind::Malloc
-            | RawExactMethodContractKind::DataObjectSetData => {
+            | RawExactMethodContractKind::DataObjectSetData
+            | RawExactMethodContractKind::AudioFormatOwnedOutput => {
                 crate::contract_registry::ContractKind::Ownership
+            }
+            RawExactMethodContractKind::AudioFormatSupport => {
+                crate::contract_registry::ContractKind::ConditionalOutput
             }
             RawExactMethodContractKind::FlagSelectedString => {
                 crate::contract_registry::ContractKind::FlagSelectedBuffer
@@ -2181,6 +2191,8 @@ fn apply_exact_method_contract(
         RawExactMethodContractKind::StatStg => {}
         RawExactMethodContractKind::Malloc => {}
         RawExactMethodContractKind::DataObjectSetData => {}
+        RawExactMethodContractKind::AudioFormatOwnedOutput => {}
+        RawExactMethodContractKind::AudioFormatSupport => {}
         RawExactMethodContractKind::FlagSelectedString => {
             let buffer = contract.buffer_param_index;
             let capacity = contract.capacity_param_index;
@@ -2334,6 +2346,30 @@ fn registered_exact_method_contract(
             "IDataObject::SetData transfers STGMEDIUM ownership only when fRelease is TRUE; the safe projection pins fRelease to FALSE so call-local HGLOBAL storage remains caller-owned",
             "https://learn.microsoft.com/windows/win32/api/objidl/nf-objidl-idataobject-setdata",
         ),
+        ("Windows.Win32.Media.Audio", "IAudioClient", "IsFormatSupported") => (
+            RawExactMethodContractKind::AudioFormatSupport,
+            2,
+            0,
+            None,
+            "IAudioClient::IsFormatSupported requests a closest-match output only for shared mode and returns that format with CoTaskMem ownership",
+            "https://learn.microsoft.com/windows/win32/api/audioclient/nf-audioclient-iaudioclient-isformatsupported",
+        ),
+        ("Windows.Win32.Media.Audio", "IAudioClient", "GetMixFormat") => (
+            RawExactMethodContractKind::AudioFormatOwnedOutput,
+            0,
+            0,
+            None,
+            "IAudioClient::GetMixFormat returns variable-length WAVEFORMATEX storage allocated with CoTaskMem",
+            "https://learn.microsoft.com/windows/win32/api/audioclient/nf-audioclient-iaudioclient-getmixformat",
+        ),
+        ("Windows.Win32.Media.Audio", "IAudioClient3", "GetCurrentSharedModeEnginePeriod") => (
+            RawExactMethodContractKind::AudioFormatOwnedOutput,
+            0,
+            0,
+            None,
+            "IAudioClient3::GetCurrentSharedModeEnginePeriod returns variable-length WAVEFORMATEX storage allocated with CoTaskMem",
+            "https://learn.microsoft.com/windows/win32/api/audioclient/nf-audioclient-iaudioclient3-getcurrentsharedmodeengineperiod",
+        ),
         ("Windows.Win32.Graphics.Dxgi", "IDXGIObject", "GetPrivateData") => (
             RawExactMethodContractKind::UnsafePrivateData,
             2,
@@ -2402,6 +2438,7 @@ fn registered_exact_method_contract(
             "ID3D12Object" => "Windows.Win32.Graphics.Direct3D12",
             "IDMLObject" => "Windows.Win32.AI.MachineLearning.DirectML",
             "IStream" | "IDataObject" => "Windows.Win32.System.Com",
+            "IAudioClient" | "IAudioClient3" => "Windows.Win32.Media.Audio",
             "IStorage" => "Windows.Win32.System.Com.StructuredStorage",
             "IContextMenu" => "Windows.Win32.UI.Shell",
             "IMalloc" => "Windows.Win32.System.Com",
@@ -2421,6 +2458,8 @@ fn registered_exact_method_contract(
             "IContextMenu" => "IContextMenu",
             "IMalloc" => "IMalloc",
             "IDataObject" => "IDataObject",
+            "IAudioClient" => "IAudioClient",
+            "IAudioClient3" => "IAudioClient3",
             _ => unreachable!("matched exact method interface"),
         },
         declaring_iid: match kind {
@@ -2447,6 +2486,18 @@ fn registered_exact_method_contract(
                 "000214e4-0000-0000-c000-000000000046"
             }
             RawExactMethodContractKind::DataObjectSetData => "0000010e-0000-0000-c000-000000000046",
+            RawExactMethodContractKind::AudioFormatOwnedOutput
+            | RawExactMethodContractKind::AudioFormatSupport
+                if interface == "IAudioClient" =>
+            {
+                "1cb9ad4c-dbfa-4c32-b178-c2f568a703b2"
+            }
+            RawExactMethodContractKind::AudioFormatOwnedOutput => {
+                "7ed4ee07-8e67-4cd4-8c1a-2b7a5987ad42"
+            }
+            RawExactMethodContractKind::AudioFormatSupport => {
+                unreachable!("audio format support belongs to IAudioClient")
+            }
         },
         method_name: match kind {
             RawExactMethodContractKind::FixedCapacityBytes => "GetBlob",
@@ -2463,6 +2514,12 @@ fn registered_exact_method_contract(
             },
             RawExactMethodContractKind::FlagSelectedString => "GetCommandString",
             RawExactMethodContractKind::DataObjectSetData => "SetData",
+            RawExactMethodContractKind::AudioFormatOwnedOutput => match method {
+                "GetMixFormat" => "GetMixFormat",
+                "GetCurrentSharedModeEnginePeriod" => "GetCurrentSharedModeEnginePeriod",
+                _ => unreachable!("matched exact audio format output"),
+            },
+            RawExactMethodContractKind::AudioFormatSupport => "IsFormatSupported",
         },
         vtable_index: match (interface, method) {
             ("IMFAttributes", "GetBlob") => 15,
@@ -2482,19 +2539,38 @@ fn registered_exact_method_contract(
             ("IMalloc", "DidAlloc") => 7,
             ("IMalloc", "HeapMinimize") => 8,
             ("IDataObject", "SetData") => 7,
+            ("IAudioClient", "IsFormatSupported") => 7,
+            ("IAudioClient", "GetMixFormat") => 8,
+            ("IAudioClient3", "GetCurrentSharedModeEnginePeriod") => 19,
             _ => unreachable!("matched exact method identity"),
         },
         buffer_param_index: buffer,
         capacity_param_index: capacity,
         actual_length_param_index: actual,
-        discriminator_param_index: (kind == RawExactMethodContractKind::FlagSelectedString)
-            .then_some(1),
+        discriminator_param_index: match kind {
+            RawExactMethodContractKind::FlagSelectedString => Some(1),
+            RawExactMethodContractKind::AudioFormatSupport => Some(0),
+            _ => None,
+        },
         reserved_null_param_index: (kind == RawExactMethodContractKind::FlagSelectedString)
             .then_some(2),
         ownership_transfer_param_index: (kind == RawExactMethodContractKind::DataObjectSetData)
             .then_some(2),
-        source_fingerprint: (kind == RawExactMethodContractKind::DataObjectSetData)
-            .then_some("7AF093CB4139DC99AFD713365806F4914690BBCE84928887BAECD35E97B823B1"),
+        source_fingerprint: match (interface, method) {
+            ("IDataObject", "SetData") => {
+                Some("7AF093CB4139DC99AFD713365806F4914690BBCE84928887BAECD35E97B823B1")
+            }
+            ("IAudioClient", "IsFormatSupported") => {
+                Some("8C96A1A91E80657C730E2729DEBC3B708E7B94CC8CF9BAF2F3FD0348237CB186")
+            }
+            ("IAudioClient", "GetMixFormat") => {
+                Some("2B32209119D444096A58A1E60C27D3056FACCDC9CD36A3411FBA3CA993537EC4")
+            }
+            ("IAudioClient3", "GetCurrentSharedModeEnginePeriod") => {
+                Some("5566DB7A948DDA6FD355EFC15B60BB90F5A932891255E32143C6554DFF920CAF")
+            }
+            _ => None,
+        },
         citation,
         reason,
     })
@@ -2830,6 +2906,19 @@ pub(crate) fn validate_exact_method_contract(
                     })
                 && raw_hresult(&raw.return_type)
         }
+        RawExactMethodContractKind::AudioFormatOwnedOutput => {
+            if contract.method_name == "GetMixFormat" {
+                raw_method_shape(raw)
+                    == "GetMixFormat@8(ppDeviceFormat:out:required:noconstattr:Windows.Win32.Media.Audio.WAVEFORMATEX[Struct]/ptr2/Mutable)->Windows.Win32.Foundation.HRESULT[Struct]/ptr0/Unspecified/underlying=i32/ptr0/Unspecified:plain_hresult:not_enumerator_next"
+            } else {
+                raw_method_shape(raw)
+                    == "GetCurrentSharedModeEnginePeriod@19(ppFormat:out:required:noconstattr:Windows.Win32.Media.Audio.WAVEFORMATEX[Struct]/ptr2/Mutable,pCurrentPeriodInFrames:out:required:noconstattr:u32/ptr1/Mutable)->Windows.Win32.Foundation.HRESULT[Struct]/ptr0/Unspecified/underlying=i32/ptr0/Unspecified:plain_hresult:not_enumerator_next"
+            }
+        }
+        RawExactMethodContractKind::AudioFormatSupport => {
+            raw_method_shape(raw)
+                == "IsFormatSupported@7(ShareMode:in:required:noconstattr:Windows.Win32.Media.Audio.AUDCLNT_SHAREMODE[Enum]/ptr0/Unspecified/underlying=i32/ptr0/Unspecified,pFormat:in:required:constattr:Windows.Win32.Media.Audio.WAVEFORMATEX[Struct]/ptr1/Mutable,ppClosestMatch:out:optional:noconstattr:Windows.Win32.Media.Audio.WAVEFORMATEX[Struct]/ptr2/Mutable)->Windows.Win32.Foundation.HRESULT[Struct]/ptr0/Unspecified/underlying=i32/ptr0/Unspecified:semantic_hresult:not_enumerator_next"
+        }
     };
     let indices_valid = match contract.kind {
         RawExactMethodContractKind::FixedCapacityBytes
@@ -2859,9 +2948,20 @@ pub(crate) fn validate_exact_method_contract(
                 && contract.discriminator_param_index.is_none()
                 && contract.reserved_null_param_index.is_none()
         }
+        RawExactMethodContractKind::AudioFormatOwnedOutput => {
+            contract.buffer_param_index == 0
+                && contract.discriminator_param_index.is_none()
+                && contract.ownership_transfer_param_index.is_none()
+        }
+        RawExactMethodContractKind::AudioFormatSupport => {
+            contract.buffer_param_index == 2
+                && contract.discriminator_param_index == Some(0)
+                && contract.ownership_transfer_param_index.is_none()
+        }
     };
     if !valid_shape
-        || raw.semantic_hresult.is_some()
+        || (raw.semantic_hresult.is_some()
+            && contract.kind != RawExactMethodContractKind::AudioFormatSupport)
         || raw.enumerator_next.is_some()
         || !indices_valid
     {
@@ -4996,6 +5096,95 @@ mod tests {
             contract,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn audio_format_exact_contracts_are_fingerprint_pinned() {
+        let Some(winmd) = std::env::var("DYNWINRT_WIN32_WINMD")
+            .ok()
+            .filter(|path| std::path::Path::new(path).exists())
+        else {
+            return;
+        };
+        let interface =
+            parse_com_interface(&winmd, "Windows.Win32.Media.Audio", "IAudioClient3").unwrap();
+        let actual = interface
+            .raw_methods
+            .as_ref()
+            .unwrap()
+            .iter()
+            .filter_map(|raw| {
+                let contract = raw.exact_contract.as_ref()?;
+                matches!(
+                    contract.kind,
+                    RawExactMethodContractKind::AudioFormatOwnedOutput
+                        | RawExactMethodContractKind::AudioFormatSupport
+                )
+                .then(|| {
+                    let mut source = raw.clone();
+                    source.exact_contract = None;
+                    (
+                        raw.metadata_name.clone(),
+                        raw_method_fingerprint(&source),
+                        contract.source_fingerprint.unwrap().to_string(),
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            actual
+                .iter()
+                .map(|(name, _, _)| name.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "IsFormatSupported",
+                "GetMixFormat",
+                "GetCurrentSharedModeEnginePeriod"
+            ]
+        );
+        for (_, fingerprint, expected) in actual {
+            assert_eq!(fingerprint, expected);
+        }
+        for raw in interface.raw_methods.as_ref().unwrap() {
+            let Some(contract) = raw.exact_contract.as_ref().filter(|contract| {
+                matches!(
+                    contract.kind,
+                    RawExactMethodContractKind::AudioFormatOwnedOutput
+                        | RawExactMethodContractKind::AudioFormatSupport
+                )
+            }) else {
+                continue;
+            };
+            if let Err(error) = validate_exact_method_contract(
+                contract.declaring_namespace,
+                contract.declaring_interface,
+                contract.declaring_iid,
+                raw,
+                contract,
+            ) {
+                panic!("{error}: {}", raw_method_shape(raw));
+            }
+        }
+        let mut drift = interface
+            .raw_methods
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find(|raw| raw.metadata_name == "IsFormatSupported")
+            .unwrap()
+            .clone();
+        drift.params[2].optional = false;
+        let contract = drift.exact_contract.clone().unwrap();
+        assert!(
+            validate_exact_method_contract(
+                contract.declaring_namespace,
+                contract.declaring_interface,
+                contract.declaring_iid,
+                &drift,
+                &contract,
+            )
+            .is_err()
+        );
     }
 
     #[test]

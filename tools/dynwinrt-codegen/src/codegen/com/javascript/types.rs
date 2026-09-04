@@ -62,6 +62,7 @@ pub(super) fn abi_type_js(typ: &ComType) -> String {
         ComType::StatStg => "DynCom.statStgType()".into(),
         ComType::FormatEtc => "DynCom.formatEtcType()".into(),
         ComType::StgMedium => "DynCom.stgMediumType()".into(),
+        ComType::AudioFormat => "DynCom.audioFormatType()".into(),
         ComType::ManagedInterface { iid } => {
             format!("DynCom.interfaceType(WinGuid.parse('{iid}'))")
         }
@@ -162,6 +163,7 @@ pub(super) fn type_dts(typ: &ComType) -> String {
         ComType::StatStg => "DynComStatStg".into(),
         ComType::FormatEtc => "DynComFormatEtc".into(),
         ComType::StgMedium => "DynComStgMedium".into(),
+        ComType::AudioFormat => "DynComAudioFormat".into(),
         ComType::ManagedInterface { .. } => "DynWinRtValue".into(),
         ComType::CoTaskMemWideString => "string".into(),
         ComType::StringArray { .. } => "string[]".into(),
@@ -214,6 +216,7 @@ pub(super) fn result_type_dts(result: &ProjectedComResult) -> String {
         ResultConversion::StatStg => "DynComStatStg".into(),
         ResultConversion::FormatEtc => "DynComFormatEtc".into(),
         ResultConversion::StgMedium => "DynComStgMedium".into(),
+        ResultConversion::AudioFormat => "DynComAudioFormat".into(),
         ResultConversion::MallocAllocation | ResultConversion::MallocReallocation => {
             "DynComAllocation | null".into()
         }
@@ -297,6 +300,7 @@ pub(super) fn wrap_arg_js(typ: &ComType, variable: &str) -> String {
         ComType::StatStg => unreachable!("STATSTG is output-only"),
         ComType::FormatEtc => format!("DynCom.formatEtc({variable})"),
         ComType::StgMedium => format!("DynCom.stgMedium({variable})"),
+        ComType::AudioFormat => format!("DynCom.audioFormat({variable})"),
         ComType::ManagedInterface { .. } => variable.to_string(),
         ComType::CoTaskMemWideString => {
             unreachable!("CoTaskMem string elements are output-only")
@@ -384,6 +388,7 @@ pub(super) fn unwrap_result_js(result: &ProjectedComResult, expression: &str) ->
         ResultConversion::StatStg => format!("DynCom.takeStatStg({expression})"),
         ResultConversion::FormatEtc => format!("DynCom.takeFormatEtc({expression})"),
         ResultConversion::StgMedium => format!("DynCom.takeStgMedium({expression})"),
+        ResultConversion::AudioFormat => format!("DynCom.takeAudioFormat({expression})"),
         ResultConversion::MallocAllocation => {
             format!("DynCom.takeMallocAllocation(this._obj, {expression})")
         }
@@ -479,6 +484,7 @@ fn unwrap_value_js(typ: &ComType, expression: &str) -> String {
         ComType::StatStg => format!("DynCom.takeStatStg({expression})"),
         ComType::FormatEtc => format!("DynCom.takeFormatEtc({expression})"),
         ComType::StgMedium => format!("DynCom.takeStgMedium({expression})"),
+        ComType::AudioFormat => format!("DynCom.takeAudioFormat({expression})"),
         ComType::ManagedInterface { .. } => expression.to_string(),
         ComType::CoTaskMemWideString => {
             unreachable!("CoTaskMem string elements are array-only")

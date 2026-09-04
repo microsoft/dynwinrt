@@ -28,6 +28,7 @@ const IID_IWBEM_CLASS_OBJECT: GUID = GUID::from_u128(0xdc12a681_737f_11cf_884d_0
 const IID_ITHUMBNAIL_PROVIDER: GUID = GUID::from_u128(0xe357fccd_a995_4576_b01f_234630154e96);
 const IID_IDATA_OBJECT: GUID = GUID::from_u128(0x0000010e_0000_0000_c000_000000000046);
 const IID_IAUDIO_CLIENT: GUID = GUID::from_u128(0x1cb9ad4c_dbfa_4c32_b178_c2f568a703b2);
+const IID_IWINML_EVALUATION_CONTEXT: GUID = GUID::from_u128(0x95848f9e_583d_4054_af12_916387cd8426);
 const E_NOINTERFACE: HRESULT = HRESULT(0x80004002u32 as i32);
 const E_POINTER: HRESULT = HRESULT(0x80004003u32 as i32);
 const E_NOTIMPL: HRESULT = HRESULT(0x80004001u32 as i32);
@@ -56,13 +57,20 @@ static CLASS_OBJECT_END_ENUMERATION_CALLS: AtomicU32 = AtomicU32::new(0);
 static CALL_RESULT_GET_STATUS_CALLS: AtomicU32 = AtomicU32::new(0);
 static LAST_OUTPUT_ADDRESS: AtomicUsize = AtomicUsize::new(0);
 static AUDIO_IS_FORMAT_SUPPORTED_CALLS: AtomicU32 = AtomicU32::new(0);
+static AUDIO_INITIALIZE_CALLS: AtomicU32 = AtomicU32::new(0);
+static AUDIO_GET_MIX_FORMAT_CALLS: AtomicU32 = AtomicU32::new(0);
 static AUDIO_GET_SERVICE_CALLS: AtomicU32 = AtomicU32::new(0);
 static AUDIO_LAST_SHARE_MODE: AtomicI32 = AtomicI32::new(0);
 static AUDIO_LAST_FORMAT_TAG: AtomicU32 = AtomicU32::new(0);
+static AUDIO_FORMAT_SUPPORT_MODE: AtomicI32 = AtomicI32::new(0);
 static AUDIO_GET_SERVICE_MODE: AtomicI32 = AtomicI32::new(0);
 static AUDIO_ADD_REF_CALLS: AtomicU32 = AtomicU32::new(0);
 static AUDIO_RELEASE_CALLS: AtomicU32 = AtomicU32::new(0);
 static AUDIO_CURRENT_REF_COUNT: AtomicU32 = AtomicU32::new(0);
+static EVALUATION_BIND_VALUE_CALLS: AtomicU32 = AtomicU32::new(0);
+static EVALUATION_GET_VALUE_CALLS: AtomicU32 = AtomicU32::new(0);
+static EVALUATION_OUTPUT_MODE: AtomicI32 = AtomicI32::new(0);
+static EVALUATION_CURRENT_REF_COUNT: AtomicU32 = AtomicU32::new(0);
 static THUMBNAIL_CALLS: AtomicU32 = AtomicU32::new(0);
 static THUMBNAIL_CURRENT_REF_COUNT: AtomicU32 = AtomicU32::new(0);
 static DATA_OBJECT_GET_DATA_CALLS: AtomicU32 = AtomicU32::new(0);
@@ -1418,16 +1426,62 @@ unsafe extern "system" fn audio_release(this: *mut c_void) -> u32 {
   count
 }
 
+fn valid_audio_format(format: *const c_void) -> bool {
+  if format.is_null() {
+    return false;
+  }
+  let bytes = unsafe { std::slice::from_raw_parts(format.cast::<u8>(), 18) };
+  u16::from_le_bytes([bytes[0], bytes[1]]) != 0
+    && u16::from_le_bytes([bytes[2], bytes[3]]) != 0
+    && u32::from_le_bytes(bytes[4..8].try_into().unwrap()) != 0
+    && u32::from_le_bytes(bytes[8..12].try_into().unwrap()) != 0
+    && u16::from_le_bytes([bytes[12], bytes[13]]) != 0
+}
+
+unsafe fn write_audio_format(
+  output: *mut *mut c_void,
+  channels: u16,
+  samples_per_second: u32,
+  bits_per_sample: u16,
+) -> HRESULT {
+  if output.is_null() {
+    return E_POINTER;
+  }
+  let block_align = channels * (bits_per_sample / 8);
+  let average_bytes_per_second = samples_per_second * u32::from(block_align);
+  let mut bytes = Vec::with_capacity(18);
+  bytes.extend_from_slice(&1u16.to_le_bytes());
+  bytes.extend_from_slice(&channels.to_le_bytes());
+  bytes.extend_from_slice(&samples_per_second.to_le_bytes());
+  bytes.extend_from_slice(&average_bytes_per_second.to_le_bytes());
+  bytes.extend_from_slice(&block_align.to_le_bytes());
+  bytes.extend_from_slice(&bits_per_sample.to_le_bytes());
+  bytes.extend_from_slice(&0u16.to_le_bytes());
+  let allocation = unsafe { windows::Win32::System::Com::CoTaskMemAlloc(bytes.len()) };
+  if allocation.is_null() {
+    return HRESULT(0x8007000eu32 as i32);
+  }
+  unsafe {
+    std::ptr::copy_nonoverlapping(bytes.as_ptr(), allocation.cast(), bytes.len());
+    output.write(allocation);
+  }
+  HRESULT(0)
+}
+
 unsafe extern "system" fn audio_initialize(
   _this: *mut c_void,
   _share_mode: i32,
   _stream_flags: u32,
   _buffer_duration: i64,
   _periodicity: i64,
-  _format: *mut c_void,
+  format: *mut c_void,
   _session: *const GUID,
 ) -> HRESULT {
-  E_NOTIMPL
+  if !valid_audio_format(format.cast_const()) {
+    return HRESULT(0x80070057u32 as i32);
+  }
+  AUDIO_INITIALIZE_CALLS.fetch_add(1, Ordering::SeqCst);
+  HRESULT(0)
 }
 
 unsafe extern "system" fn audio_get_u32(_this: *mut c_void, _value: *mut u32) -> HRESULT {
@@ -1444,8 +1498,14 @@ unsafe extern "system" fn audio_is_format_supported(
   format: *mut c_void,
   closest: *mut *mut c_void,
 ) -> HRESULT {
-  if format.is_null() || closest.is_null() {
+  if !valid_audio_format(format.cast_const()) {
+    return HRESULT(0x80070057u32 as i32);
+  }
+  if (share_mode == 0 && closest.is_null()) || (share_mode == 1 && !closest.is_null()) {
     return E_POINTER;
+  }
+  if !matches!(share_mode, 0 | 1) {
+    return HRESULT(0x80070057u32 as i32);
   }
   AUDIO_IS_FORMAT_SUPPORTED_CALLS.fetch_add(1, Ordering::SeqCst);
   AUDIO_LAST_SHARE_MODE.store(share_mode, Ordering::SeqCst);
@@ -1453,26 +1513,32 @@ unsafe extern "system" fn audio_is_format_supported(
     unsafe { u32::from(*format.cast::<u16>()) },
     Ordering::SeqCst,
   );
-  let allocation = unsafe { windows::Win32::System::Com::CoTaskMemAlloc(16) };
-  if allocation.is_null() {
-    return HRESULT(0x8007000eu32 as i32);
+  if !closest.is_null() {
+    unsafe {
+      *closest = std::ptr::null_mut();
+    }
   }
-  unsafe {
-    allocation.cast::<u32>().write(0xaabb_ccdd);
-    *closest = allocation;
-  }
-  if share_mode == 2 {
-    HRESULT(0x80004005u32 as i32)
-  } else {
-    HRESULT(1)
+  match AUDIO_FORMAT_SUPPORT_MODE.load(Ordering::SeqCst) {
+    0 => HRESULT(0),
+    1 if share_mode == 0 => {
+      let result = unsafe { write_audio_format(closest, 1, 44_100, 16) };
+      if result.is_ok() {
+        HRESULT(1)
+      } else {
+        result
+      }
+    }
+    1 => HRESULT(0x88890008u32 as i32),
+    _ => HRESULT(0x80004005u32 as i32),
   }
 }
 
 unsafe extern "system" fn audio_get_mix_format(
   _this: *mut c_void,
-  _format: *mut *mut c_void,
+  format: *mut *mut c_void,
 ) -> HRESULT {
-  E_NOTIMPL
+  AUDIO_GET_MIX_FORMAT_CALLS.fetch_add(1, Ordering::SeqCst);
+  unsafe { write_audio_format(format, 2, 48_000, 16) }
 }
 
 unsafe extern "system" fn audio_get_device_period(
@@ -1575,7 +1641,9 @@ static AUDIO_VTABLE: GeneratedAudioClientVtbl = GeneratedAudioClientVtbl {
 
 #[napi(object)]
 pub struct GeneratedAudioClientStats {
+  pub initialize_calls: u32,
   pub is_format_supported_calls: u32,
+  pub get_mix_format_calls: u32,
   pub get_service_calls: u32,
   pub last_share_mode: i32,
   pub last_format_tag: u32,
@@ -1586,10 +1654,13 @@ pub struct GeneratedAudioClientStats {
 
 #[napi]
 pub fn create_generated_audio_client_fake() -> napi::Result<DynWinRTValue> {
+  AUDIO_INITIALIZE_CALLS.store(0, Ordering::SeqCst);
   AUDIO_IS_FORMAT_SUPPORTED_CALLS.store(0, Ordering::SeqCst);
+  AUDIO_GET_MIX_FORMAT_CALLS.store(0, Ordering::SeqCst);
   AUDIO_GET_SERVICE_CALLS.store(0, Ordering::SeqCst);
   AUDIO_LAST_SHARE_MODE.store(0, Ordering::SeqCst);
   AUDIO_LAST_FORMAT_TAG.store(0, Ordering::SeqCst);
+  AUDIO_FORMAT_SUPPORT_MODE.store(0, Ordering::SeqCst);
   AUDIO_GET_SERVICE_MODE.store(0, Ordering::SeqCst);
   AUDIO_ADD_REF_CALLS.store(0, Ordering::SeqCst);
   AUDIO_RELEASE_CALLS.store(0, Ordering::SeqCst);
@@ -1600,6 +1671,17 @@ pub fn create_generated_audio_client_fake() -> napi::Result<DynWinRTValue> {
   });
   let unknown = unsafe { IUnknown::from_raw(Box::into_raw(object).cast()) };
   crate::com::apartment_bound_com_object(unknown)
+}
+
+#[napi]
+pub fn set_generated_audio_client_format_support_mode(mode: i32) -> napi::Result<()> {
+  if !(-1..=1).contains(&mode) {
+    return Err(napi::Error::from_reason(
+      "generated audio format-support mode must be -1, 0, or 1",
+    ));
+  }
+  AUDIO_FORMAT_SUPPORT_MODE.store(mode, Ordering::SeqCst);
+  Ok(())
 }
 
 #[napi]
@@ -1616,13 +1698,207 @@ pub fn set_generated_audio_client_get_service_mode(mode: i32) -> napi::Result<()
 #[napi]
 pub fn generated_audio_client_stats() -> GeneratedAudioClientStats {
   GeneratedAudioClientStats {
+    initialize_calls: AUDIO_INITIALIZE_CALLS.load(Ordering::SeqCst),
     is_format_supported_calls: AUDIO_IS_FORMAT_SUPPORTED_CALLS.load(Ordering::SeqCst),
+    get_mix_format_calls: AUDIO_GET_MIX_FORMAT_CALLS.load(Ordering::SeqCst),
     get_service_calls: AUDIO_GET_SERVICE_CALLS.load(Ordering::SeqCst),
     last_share_mode: AUDIO_LAST_SHARE_MODE.load(Ordering::SeqCst),
     last_format_tag: AUDIO_LAST_FORMAT_TAG.load(Ordering::SeqCst),
     add_ref_calls: AUDIO_ADD_REF_CALLS.load(Ordering::SeqCst),
     release_calls: AUDIO_RELEASE_CALLS.load(Ordering::SeqCst),
     current_ref_count: AUDIO_CURRENT_REF_COUNT.load(Ordering::SeqCst),
+  }
+}
+
+#[repr(C)]
+struct GeneratedEvaluationContextVtbl {
+  base__: IUnknown_Vtbl,
+  bind_value: unsafe extern "system" fn(*mut c_void, *const c_void) -> HRESULT,
+  get_value_by_name:
+    unsafe extern "system" fn(*mut c_void, *const u16, *mut *mut c_void) -> HRESULT,
+  clear: unsafe extern "system" fn(*mut c_void) -> HRESULT,
+}
+
+#[repr(C)]
+struct GeneratedEvaluationContextFake {
+  vtable: *const GeneratedEvaluationContextVtbl,
+  references: AtomicU32,
+}
+
+unsafe extern "system" fn evaluation_query_interface(
+  this: *mut c_void,
+  iid: *const GUID,
+  result: *mut *mut c_void,
+) -> HRESULT {
+  if iid.is_null() || result.is_null() {
+    return E_POINTER;
+  }
+  unsafe {
+    *result = std::ptr::null_mut();
+    if *iid != IUnknown::IID && *iid != IID_IWINML_EVALUATION_CONTEXT {
+      return E_NOINTERFACE;
+    }
+    *result = this;
+    evaluation_add_ref(this);
+  }
+  HRESULT(0)
+}
+
+unsafe extern "system" fn evaluation_add_ref(this: *mut c_void) -> u32 {
+  let object = unsafe { &*this.cast::<GeneratedEvaluationContextFake>() };
+  let count = object.references.fetch_add(1, Ordering::SeqCst) + 1;
+  EVALUATION_CURRENT_REF_COUNT.store(count, Ordering::SeqCst);
+  count
+}
+
+unsafe extern "system" fn evaluation_release(this: *mut c_void) -> u32 {
+  let object = unsafe { &*this.cast::<GeneratedEvaluationContextFake>() };
+  let count = object.references.fetch_sub(1, Ordering::SeqCst) - 1;
+  EVALUATION_CURRENT_REF_COUNT.store(count, Ordering::SeqCst);
+  if count == 0 {
+    unsafe {
+      drop(Box::from_raw(this.cast::<GeneratedEvaluationContextFake>()));
+    }
+  }
+  count
+}
+
+unsafe extern "system" fn evaluation_bind_value(
+  _this: *mut c_void,
+  descriptor: *const c_void,
+) -> HRESULT {
+  if descriptor.is_null() {
+    return E_POINTER;
+  }
+  EVALUATION_BIND_VALUE_CALLS.fetch_add(1, Ordering::SeqCst);
+  HRESULT(0)
+}
+
+unsafe extern "system" fn evaluation_get_value_by_name(
+  this: *mut c_void,
+  name: *const u16,
+  result: *mut *mut c_void,
+) -> HRESULT {
+  if name.is_null() || result.is_null() {
+    return E_POINTER;
+  }
+  EVALUATION_GET_VALUE_CALLS.fetch_add(1, Ordering::SeqCst);
+  let mode = EVALUATION_OUTPUT_MODE.load(Ordering::SeqCst);
+  unsafe {
+    *result = std::ptr::null_mut();
+    if mode == 2 {
+      return HRESULT(0);
+    }
+    if mode == -2 {
+      return HRESULT(0x80004005u32 as i32);
+    }
+    if mode.abs() == 3 {
+      *result = windows::core::BSTR::from("stage2-bstr")
+        .into_raw()
+        .cast_mut()
+        .cast();
+      return if mode < 0 {
+        HRESULT(0x80004005u32 as i32)
+      } else {
+        HRESULT(0)
+      };
+    }
+    if mode.abs() == 4 {
+      *result =
+        windows::Win32::System::Memory::LocalAlloc(windows::Win32::System::Memory::LMEM_FIXED, 32)
+          .map_or(std::ptr::null_mut(), |value| value.0);
+      return if mode < 0 {
+        HRESULT(0x80004005u32 as i32)
+      } else {
+        HRESULT(0)
+      };
+    }
+    if mode.abs() == 5 {
+      *result =
+        windows::Win32::System::Memory::GlobalAlloc(windows::Win32::System::Memory::GMEM_FIXED, 32)
+          .map_or(std::ptr::null_mut(), |value| value.0);
+      return if mode < 0 {
+        HRESULT(0x80004005u32 as i32)
+      } else {
+        HRESULT(0)
+      };
+    }
+    if mode.abs() == 6 {
+      *result = windows::Win32::System::Com::CoTaskMemAlloc(16);
+      if !(*result).is_null() {
+        (*result).cast::<u32>().write(0xaabb_ccdd);
+      }
+      return if mode < 0 {
+        HRESULT(0x80004005u32 as i32)
+      } else if (*result).is_null() {
+        HRESULT(0x8007000eu32 as i32)
+      } else {
+        HRESULT(0)
+      };
+    }
+    evaluation_add_ref(this);
+    *result = this;
+  }
+  if mode == 1 {
+    HRESULT(0x80004005u32 as i32)
+  } else {
+    HRESULT(0)
+  }
+}
+
+unsafe extern "system" fn evaluation_clear(_this: *mut c_void) -> HRESULT {
+  HRESULT(0)
+}
+
+static EVALUATION_VTABLE: GeneratedEvaluationContextVtbl = GeneratedEvaluationContextVtbl {
+  base__: IUnknown_Vtbl {
+    QueryInterface: evaluation_query_interface,
+    AddRef: evaluation_add_ref,
+    Release: evaluation_release,
+  },
+  bind_value: evaluation_bind_value,
+  get_value_by_name: evaluation_get_value_by_name,
+  clear: evaluation_clear,
+};
+
+#[napi(object)]
+pub struct GeneratedEvaluationContextStats {
+  pub bind_value_calls: u32,
+  pub get_value_calls: u32,
+  pub current_ref_count: u32,
+}
+
+#[napi]
+pub fn create_generated_evaluation_context_fake() -> napi::Result<DynWinRTValue> {
+  EVALUATION_BIND_VALUE_CALLS.store(0, Ordering::SeqCst);
+  EVALUATION_GET_VALUE_CALLS.store(0, Ordering::SeqCst);
+  EVALUATION_OUTPUT_MODE.store(0, Ordering::SeqCst);
+  EVALUATION_CURRENT_REF_COUNT.store(1, Ordering::SeqCst);
+  let object = Box::new(GeneratedEvaluationContextFake {
+    vtable: &EVALUATION_VTABLE,
+    references: AtomicU32::new(1),
+  });
+  let unknown = unsafe { IUnknown::from_raw(Box::into_raw(object).cast()) };
+  crate::com::apartment_bound_com_object(unknown)
+}
+
+#[napi]
+pub fn set_generated_evaluation_context_output_mode(mode: i32) -> napi::Result<()> {
+  if !(-6..=6).contains(&mode) {
+    return Err(napi::Error::from_reason(
+      "generated evaluation output mode must be between -6 and 6",
+    ));
+  }
+  EVALUATION_OUTPUT_MODE.store(mode, Ordering::SeqCst);
+  Ok(())
+}
+
+#[napi]
+pub fn generated_evaluation_context_stats() -> GeneratedEvaluationContextStats {
+  GeneratedEvaluationContextStats {
+    bind_value_calls: EVALUATION_BIND_VALUE_CALLS.load(Ordering::SeqCst),
+    get_value_calls: EVALUATION_GET_VALUE_CALLS.load(Ordering::SeqCst),
+    current_ref_count: EVALUATION_CURRENT_REF_COUNT.load(Ordering::SeqCst),
   }
 }
 

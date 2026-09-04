@@ -56,6 +56,10 @@ pub(in crate::codegen::com) enum ComMethodSpecialContract {
     DataObjectSetData {
         release_param: ParamIndex,
     },
+    AudioFormatSupport {
+        share_mode_param: ParamIndex,
+        closest_match_param: ParamIndex,
+    },
     Malloc,
 }
 
@@ -170,6 +174,7 @@ impl ComMethodContract {
                         | ComAbiType::StatStg
                         | ComAbiType::FormatEtc
                         | ComAbiType::StgMedium
+                        | ComAbiType::AudioFormat
                     )
                 {
                     return Err(ModelError::InvalidContract(format!(
