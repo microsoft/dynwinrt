@@ -58,7 +58,6 @@ from ._runtime import (
 
 const RUNTIME_SUPPORT_BODY: &str = "\
 from builtins import property as _property
-from contextvars import copy_context as _copy_context
 from functools import lru_cache
 from importlib import import_module
 from collections.abc import (
@@ -77,6 +76,7 @@ from dynwinrt.dynwinrt import (
     _dynwinrt_map, _dynwinrt_new_vector, _dynwinrt_ticks_to_datetime, _dynwinrt_ticks_to_timedelta,
     _dynwinrt_timedelta_to_ticks, _dynwinrt_cache_projected, _dynwinrt_projected_from_native,
     _dynwinrt_track_projected, _dynwinrt_uuid, _dynwinrt_vector,
+    _dynwinrt_wrap_delegate_callback,
 )
 
 
@@ -100,10 +100,11 @@ def _dynwinrt_enum(module, name, value):
 
 
 def _dynwinrt_create_delegate(iid, parameter_types, callback):
-    context = _copy_context()
-    def invoke(*args):
-        return context.copy().run(callback, *args)
-    return DynWinRtDelegate.create(iid, parameter_types, invoke)
+    return DynWinRtDelegate.create(
+        iid,
+        parameter_types,
+        _dynwinrt_wrap_delegate_callback(callback),
+    )
 
 def _dynwinrt_delegate(value, iid, parameter_types):
     raw = getattr(value, '_obj', value)
@@ -194,3 +195,17 @@ pub use index::{
 };
 pub use structs::generate_struct;
 pub use types::{generate_enum, generate_interface};
+
+#[cfg(test)]
+mod tests {
+    use super::generate_runtime_support_module;
+
+    #[test]
+    fn generated_delegates_use_thread_affine_callback_contexts() {
+        let runtime = generate_runtime_support_module();
+
+        assert!(runtime.contains("_dynwinrt_wrap_delegate_callback,"));
+        assert!(runtime.contains("_dynwinrt_wrap_delegate_callback(callback),"));
+        assert!(!runtime.contains("copy_context"));
+    }
+}

@@ -260,6 +260,11 @@ with RoApartment(0), projected_lifetime_scope():
 
 Scopes nest in LIFO order. Wrappers that survive a closed scope remain Python
 objects, but their native values are released and further WinRT calls fail.
+Each scope is thread-affine: enter, use, and close it inside that thread's
+`RoApartment`. Same-thread asyncio tasks inherit the active scope, while worker
+threads must open their own ordered
+`with RoApartment(...), projected_lifetime_scope():`. Generated delegate
+callbacks invoked on foreign threads use a callback-local scope automatically.
 
 Normal construction remains unavailable for protected-only composable classes
 and system-returned classes without public activation metadata. Named Python

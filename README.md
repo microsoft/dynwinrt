@@ -212,8 +212,8 @@ cargo run   -p dynwinrt-codegen -- generate --namespace Windows.Foundation --cla
 
 Python [`dynwinrt`](https://pypi.org/project/dynwinrt/) runtime wheels target
 CPython 3.11–3.14 on Windows x64 and ARM64. The standalone
-[`dynwinrt-codegen`](https://pypi.org/project/dynwinrt-codegen/) wheel runs on
-Python 3.8–3.14 and needs no Rust installation at consumption time.
+[`dynwinrt-codegen`](https://pypi.org/project/dynwinrt-codegen/) wheel includes
+the prebuilt generator and requires no Rust installation.
 
 Python runtime, codegen, packaging, and WinUI readiness are tracked in
 [`docs/status/PYTHON_CHECKLIST.md`](docs/status/PYTHON_CHECKLIST.md).

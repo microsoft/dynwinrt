@@ -28,9 +28,9 @@ from collections.abc import (
 )
 from datetime import datetime as _datetime, timedelta as _timedelta, timezone as _timezone
 from itertools import count as _count
-from contextvars import ContextVar as _ContextVar
+from contextvars import ContextVar as _ContextVar, copy_context as _copy_context
 from operator import index as _index
-from threading import get_ident as _thread_get_ident
+from threading import current_thread as _thread_current_thread, get_ident as _thread_get_ident
 from types import TracebackType as _TracebackType
 from typing import Any as _Any, Awaitable as _Awaitable, Callable as _Callable
 from typing import Protocol as _Protocol, TypeVar as _TypeVar
@@ -169,6 +169,7 @@ class ProjectedLifetimeScope:
     def __init__(self):
         self._registry = {}
         self._token = None
+        self._owner_thread = None
         self._active = False
         self._disposed = False
         self._retry_pending = False
@@ -178,11 +179,24 @@ class ProjectedLifetimeScope:
     def disposed(self):
         return self._disposed
 
+    def _require_owner_thread(self, operation):
+        if (
+            self._owner_thread is not None
+            and _thread_current_thread() is not self._owner_thread
+        ):
+            raise RuntimeError(
+                f'Cannot {operation} a projection lifetime scope from a different '
+                'thread. Worker threads must use their own ordered '
+                '`with RoApartment(...), projected_lifetime_scope():`.'
+            )
+
     def __enter__(self):
+        self._require_owner_thread('enter')
         if self._disposed:
             raise RuntimeError('Cannot enter a disposed projection lifetime scope.')
         if self._active:
             raise RuntimeError('The projection lifetime scope is already active.')
+        self._owner_thread = _thread_current_thread()
         self._token = _active_projected_lifetime_scope.set(self)
         self._active = True
         return self
@@ -198,6 +212,7 @@ class ProjectedLifetimeScope:
         return False
 
     def track(self, value, type_name=None):
+        self._require_owner_thread('track values in')
         if not self._active or self._disposed:
             raise RuntimeError('Cannot track values in an inactive projection lifetime scope.')
         for native in _dynwinrt_projected_native_values(value):
@@ -205,6 +220,7 @@ class ProjectedLifetimeScope:
         return value
 
     def close(self):
+        self._require_owner_thread('close')
         if self._disposed:
             return
         if not self._active:
@@ -246,6 +262,23 @@ def _dynwinrt_append_exception_cause(error, cleanup_error):
 
 def projected_lifetime_scope():
     return ProjectedLifetimeScope()
+
+def _dynwinrt_wrap_delegate_callback(callback):
+    context = _copy_context()
+    owner_thread = _thread_current_thread()
+
+    def invoke(*args):
+        callback_context = context.copy()
+        if _thread_current_thread() is owner_thread:
+            return callback_context.run(callback, *args)
+
+        def invoke_foreign_thread():
+            with projected_lifetime_scope():
+                return callback(*args)
+
+        return callback_context.run(invoke_foreign_thread)
+
+    return invoke
 
 def _dynwinrt_track_projected(value, type_name=None):
     scope = _active_projected_lifetime_scope.get()
