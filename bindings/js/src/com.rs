@@ -3076,7 +3076,7 @@ pub struct DynComOwnedHandle {
 
 #[cfg(test)]
 thread_local! {
-  static FAIL_NEXT_DELETE_OBJECT_CLEANUP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+  static FORCE_NEXT_DELETE_OBJECT_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 impl DynComOwnedHandle {
@@ -3092,12 +3092,11 @@ impl DynComOwnedHandle {
     cleanup: dynwinrt::com::OwnedHandleCleanup,
   ) -> napi::Result<()> {
     #[cfg(test)]
-    if FAIL_NEXT_DELETE_OBJECT_CLEANUP.with(|fail| fail.replace(false)) {
-      return Err(napi::Error::from_reason(
-        "DeleteObject failed for an owned GDI handle",
-      ));
-    }
+    let force_failure = FORCE_NEXT_DELETE_OBJECT_FAILURE.with(|fail| fail.replace(false));
+    #[cfg(not(test))]
+    let force_failure = false;
     let succeeded = match cleanup {
+      dynwinrt::com::OwnedHandleCleanup::DeleteObject if force_failure => false,
       dynwinrt::com::OwnedHandleCleanup::DeleteObject => unsafe {
         windows::Win32::Graphics::Gdi::DeleteObject(windows::Win32::Graphics::Gdi::HGDIOBJ(
           std::ptr::with_exposed_provenance_mut(address),
@@ -3115,8 +3114,8 @@ impl DynComOwnedHandle {
   }
 
   #[cfg(test)]
-  pub(super) fn fail_next_cleanup_for_test() {
-    FAIL_NEXT_DELETE_OBJECT_CLEANUP.with(|fail| fail.set(true));
+  pub(super) fn force_next_delete_object_failure_for_test() {
+    FORCE_NEXT_DELETE_OBJECT_FAILURE.with(|fail| fail.set(true));
   }
 }
 
