@@ -5,7 +5,13 @@ use windows::core::*;
 
 mod abi;
 mod call;
+pub mod com;
+mod composition;
+mod ibuffer;
 mod interfaces;
+mod native_call;
+mod native_callback;
+mod property_value;
 mod result;
 mod roapi;
 mod signature;
@@ -18,6 +24,7 @@ mod array;
 mod com_helpers;
 mod dasync;
 pub mod delegate;
+mod dispatcher_queue;
 pub mod element_factory;
 pub mod map;
 mod meta;
@@ -26,21 +33,36 @@ mod reference;
 pub mod vector;
 
 pub use crate::array::ArrayData;
-pub use crate::dasync::{
-    ProgressCallback, WinRTAsyncFuture, create_progress_handler, get_async_results,
+pub use crate::composition::{
+    LocalOverrideAbi, LocalOverrideInterface, LocalOverrideSizeCallback, LocalOverrideVoidCallback,
+    compose_winrt, compose_winrt_with_overrides,
 };
+pub use crate::dasync::{
+    AsyncCompletedCallback, ProgressCallback, ProgressResultCallback, WinRTAsyncFuture,
+    create_progress_handler, create_progress_handler_with_result, get_async_results,
+    set_async_completed_handler, try_create_progress_handler,
+    try_create_progress_handler_with_result,
+};
+pub use crate::dispatcher_queue::{SystemDispatcherQueue, SystemDispatcherQueueHandle};
 pub use crate::element_factory::{
     ElementFactoryGetCallback, ElementFactoryRecycleCallback, create_element_factory,
     create_element_factory_value,
 };
+pub use crate::ibuffer::{copy_from_ibuffer, copy_to_ibuffer};
 pub use crate::metadata_table::{MetadataTable, MethodHandle, TypeHandle, TypeKind, ValueTypeData};
+pub use crate::property_value::{
+    PropertyValueData, PropertyValueUnboxResult, unbox_property_value,
+};
 pub use crate::reference::box_ireference;
 pub use crate::result::{Error, Result};
 pub use crate::roapi::ro_get_activation_factory_2;
 pub use crate::signature::{InterfaceSignature, MethodSignature};
-pub use crate::value::WinRTValue;
+pub use crate::value::{ArrayOfIUnknownData, AsyncInfo, WinRTValue};
 pub use crate::winapp::{WinAppSdkContext, initialize_winappsdk};
-pub use crate::xaml_application::create_xaml_application;
+pub use crate::xaml_application::{
+    XamlRuntimeClassActivator, XamlRuntimeClassRegistration, create_xaml_application,
+    register_xaml_runtime_class,
+};
 pub use interfaces::uri_vtable;
 
 pub async fn get_async_string(
@@ -365,11 +387,11 @@ mod tests {
         // Verify
         let array = results[0].as_array().expect("Expected WinRTValue::Array");
         assert_eq!(array.len(), 5);
-        assert_eq!(array.get_i32(0), 100);
-        assert_eq!(array.get_i32(1), 200);
-        assert_eq!(array.get_i32(2), 300);
-        assert_eq!(array.get_i32(3), 400);
-        assert_eq!(array.get_i32(4), 500);
+        assert_eq!(array.get_i32(0).unwrap(), 100);
+        assert_eq!(array.get_i32(1).unwrap(), 200);
+        assert_eq!(array.get_i32(2).unwrap(), 300);
+        assert_eq!(array.get_i32(3).unwrap(), 400);
+        assert_eq!(array.get_i32(4).unwrap(), 500);
 
         Ok(())
     }

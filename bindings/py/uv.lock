@@ -18,7 +18,7 @@ wheels = [
 ]
 
 [[package]]
-name = "dynwinrt-py"
+name = "dynwinrt"
 source = { editable = "." }
 
 [package.dev-dependencies]

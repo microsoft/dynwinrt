@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 2,
+  "files": [
+    {
+      "path": "conditional-outputs.json",
+      "kind": "conditional-output",
+      "familyIds": ["wmi.conditional-output.v1"],
+      "sha256": "9E3D44052CE16146F16516D498B6E9B7FD2406AEAF852DCC307A38C3EEA842DF"
+    }
+  ]
+}

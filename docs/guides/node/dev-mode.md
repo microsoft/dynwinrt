@@ -67,7 +67,9 @@ This exposes the active Node installation at `.local-node` without copying its f
 npx winapp manifest add-alias --name mynode.exe --manifest .\Package.appxmanifest
 ```
 
-This inserts an [`<uap3:Extension Category="windows.appExecutionAlias">`](https://learn.microsoft.com/en-us/uwp/schemas/appxpackage/uapmanifestschema/element-uap3-appexecutionalias) into the manifest, pointing at `.local-node\node.exe`.
+This inserts a
+[`<uap5:AppExecutionAlias>`](https://learn.microsoft.com/en-us/uwp/schemas/appxpackage/uapmanifestschema/element-uap5-appexecutionalias)
+extension into the manifest, pointing at `.local-node\node.exe`.
 
 ### 3. Register the loose-layout package
 
@@ -163,6 +165,10 @@ npx winapp sign   # signs with your (or a test) certificate
 The generated bindings under `.winapp/bindings/`, your `Package.appxmanifest`, and your JavaScript code all carry forward unchanged — dev mode is a subset of the same layout, not a separate structure.
 
 For end users installing the MSIX, no dev mode / no `winapp run` — Windows registers the package the normal way at install time.
+
+For the framework-independent executable, layout, certificate, signing, and
+clean-machine workflow, see
+[Package a dynwinrt Node.js application as MSIX](../windows/msix-packaging.md).
 
 ## Troubleshooting
 

@@ -6,21 +6,218 @@ env:
 on:
   push:
     branches: [main]
-    tags: ['v*']
+    tags: ["v*"]
   pull_request:
     branches: [main]
 
 jobs:
-  # Tests
-  test:
+  format:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Check Rust formatting
+        shell: pwsh
+        run: |
+          cargo fmt --all -- --check
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Rust formatting failed. Run 'cargo fmt --all' and commit the changes."
+            exit 1
+          }
+
+  # Tests
+  test:
+    needs: format
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: i686-pc-windows-msvc
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install declaration test compiler
+        shell: pwsh
+        run: |
+          npm install --prefix target/tsc --no-save --ignore-scripts --no-package-lock typescript@5.9.3
+          $tsc = (Resolve-Path target/tsc/node_modules/typescript/bin/tsc).Path
+          $windowsWinmd = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\UnionMetadata' `
+            -Filter Windows.winmd -File -Recurse |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+          if (-not $windowsWinmd) {
+            throw 'Windows SDK metadata is required for declaration tests'
+          }
+          "DYNWINRT_TSC=$tsc" >> $env:GITHUB_ENV
+          "DYNWINRT_WINDOWS_WINMD=$($windowsWinmd.FullName)" >> $env:GITHUB_ENV
+          "DYNWINRT_REQUIRE_TSC=1" >> $env:GITHUB_ENV
+      - uses: NuGet/setup-nuget@v2
+      - name: Install Win32 metadata
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'win32metadata'
+          nuget install Microsoft.Windows.SDK.Win32Metadata `
+            -Version 71.0.14-preview `
+            -OutputDirectory $root `
+            -DirectDownload `
+            -NonInteractive
+          $winmd = Get-ChildItem $root -Filter Windows.Win32.winmd -File -Recurse |
+            Select-Object -First 1
+          if (-not $winmd) {
+            throw 'Microsoft.Windows.SDK.Win32Metadata did not contain Windows.Win32.winmd'
+          }
+          "DYNWINRT_WIN32_WINMD=$($winmd.FullName)" >> $env:GITHUB_ENV
+          "DYNWINRT_REQUIRE_WIN32_METADATA=1" >> $env:GITHUB_ENV
       - name: Test core library
         run: cargo test -p dynwinrt
       - name: Test dynwinrt-codegen
         run: cargo test -p dynwinrt-codegen
+      - name: Test raw union MSVC C oracle (x64)
+        run: cargo test -p jswinrt_rs --features test-hooks com_raw::tests::msvc_c_union_oracle_executes_through_libffi -- --exact
+      - name: Test raw union MSVC C oracle (live i686)
+        run: cargo test -p jswinrt_rs --features test-hooks --target i686-pc-windows-msvc com_raw::tests::msvc_c_union_oracle_executes_through_libffi -- --exact
+      - name: Enforce Classic COM coverage baseline
+        shell: pwsh
+        run: |
+          $json = cargo run -p dynwinrt-codegen --quiet -- com-census `
+            --winmd $env:DYNWINRT_WIN32_WINMD `
+            --json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $result = $json | ConvertFrom-Json
+          if ($result.eligible_interfaces -ne 7929) {
+            throw "Classic COM census denominator changed: $($result.eligible_interfaces)"
+          }
+          if ($result.complete_interfaces -lt 5567) {
+            throw "Classic COM complete coverage regressed: $($result.complete_interfaces)"
+          }
+          if ($result.coverage_percent -lt 70.0) {
+            throw "Classic COM coverage fell below 70%: $($result.coverage_percent)"
+          }
+          Write-Host "Classic COM coverage: $($result.complete_interfaces)/$($result.eligible_interfaces) ($($result.coverage_percent)%)"
+      - name: Enforce Classic COM raw capability baseline
+        shell: pwsh
+        run: |
+          $output = Join-Path $env:RUNNER_TEMP 'classic-com-capability'
+          cargo run -p dynwinrt-codegen --quiet -- com-capability-census `
+            --winmd $env:DYNWINRT_WIN32_WINMD `
+            --output-dir $output | Out-Null
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $result = Get-Content (Join-Path $output 'classic-com-capability-summary.json') -Raw |
+            ConvertFrom-Json
+          if ($result.eligible_interfaces -ne 7929 -or $result.safe_complete -ne 5567) {
+            throw "Classic COM safe totals changed in capability census"
+          }
+          $support = Import-Csv (Join-Path $output 'classic-com-interface-support.csv')
+          if (
+            @($support).Count -ne 7929 -or
+            @($support | Where-Object { $_.safe_complete -eq 'true' }).Count -ne 5567 -or
+            @($support | Where-Object { $_.safe_complete -eq 'false' }).Count -ne 2362
+          ) {
+            throw "Classic COM compact interface support index changed"
+          }
+          $expected = @{
+            x64 = @(418, 1554, 390)
+            i686 = @(417, 1531, 414)
+            arm64 = @(418, 1554, 390)
+          }
+          foreach ($target in @('x64', 'i686', 'arm64')) {
+            $counts = $result.targets.$target
+            if (
+              $counts.safe_incomplete_raw_metadata_complete -ne $expected[$target][0] -or
+              $counts.safe_incomplete_raw_manual_contract -ne $expected[$target][1] -or
+              $counts.safe_incomplete_raw_runtime_blocked -ne $expected[$target][2]
+            ) {
+              throw "Classic COM raw capability totals changed for $target"
+            }
+          }
+          if (
+            $result.safeEvidence.safeComplete -ne 5567 -or
+            $result.safeEvidence.standardDerived -ne 5317 -or
+            $result.safeEvidence.exactRegistryDependent -ne 250 -or
+            $result.safeEvidence.metadataFactOccurrences -ne 5867 -or
+            $result.safeEvidence.comStandardFactOccurrences -ne 25526 -or
+            $result.safeEvidence.registeredExactEntries -ne 334 -or
+            $result.safeEvidence.metadataMatchedExactEntries -ne 334 -or
+            $result.safeEvidence.safeConsumedExactEntries -ne 291 -or
+            $result.safeEvidence.exactEntryInterfaceDependencies -ne 431 -or
+            $result.safeEvidence.exactFamilyInterfaceDependencies -ne 268
+          ) {
+            throw "Classic COM safe evidence dependency census changed"
+          }
+          $statuses = @($result.safeEvidence.exactEntryStatus.psobject.Properties.Value)
+          if (
+            @($statuses | Where-Object { -not $_.registered -or -not $_.metadataMatched }).Count -ne 0 -or
+            @($statuses | Where-Object { $_.familyId -eq 'windows.borrowed-hwnd-output.v1' }).Count -ne 22 -or
+            @($statuses | Where-Object { $_.familyId -eq 'com.enumerator-next-exception.v1' }).Count -ne 73
+          ) {
+            throw "Classic COM exact registry entry validation changed"
+          }
+          $interfaces = Import-Csv (Join-Path $output 'classic-com-interface-capabilities.csv')
+          $fsrm = $interfaces | Where-Object { $_.name -eq 'IFsrmFileManagementJob' }
+          if (@($fsrm.exact_entry_ids | ConvertFrom-Json).Count -ne 7) {
+            throw "IFsrmFileManagementJob exact SAFEARRAY entry granularity changed"
+          }
+          $second = Join-Path $env:RUNNER_TEMP 'classic-com-capability-second'
+          cargo run -p dynwinrt-codegen --quiet -- com-capability-census `
+            --winmd $env:DYNWINRT_WIN32_WINMD `
+            --output-dir $second | Out-Null
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $firstFiles = Get-ChildItem $output -File | Sort-Object Name
+          $secondFiles = Get-ChildItem $second -File | Sort-Object Name
+          if (($firstFiles.Name -join '|') -ne ($secondFiles.Name -join '|')) {
+            throw 'Classic COM capability artifact sets differ'
+          }
+          foreach ($file in $firstFiles) {
+            $other = Join-Path $second $file.Name
+            if (
+              (Get-FileHash $file.FullName -Algorithm SHA256).Hash -ne
+              (Get-FileHash $other -Algorithm SHA256).Hash
+            ) {
+              throw "Classic COM capability artifact drift: $($file.Name)"
+            }
+          }
+          $retained = Join-Path $env:GITHUB_WORKSPACE 'docs\status\generated'
+          $retainedNames = @(
+            'classic-com-capability-summary.json',
+            'classic-com-interface-support.csv'
+          )
+          $retainedFiles = Get-ChildItem $retained -File |
+            Where-Object { $retainedNames -contains $_.Name } |
+            Sort-Object Name
+          if (($retainedNames -join '|') -ne ($retainedFiles.Name -join '|')) {
+            throw 'Retained Classic COM capability artifact set is stale'
+          }
+          foreach ($name in $retainedNames) {
+            $generated = Join-Path $output $name
+            $committed = Join-Path $retained $name
+            if (
+              (Get-FileHash $generated -Algorithm SHA256).Hash -ne
+              (Get-FileHash $committed -Algorithm SHA256).Hash
+            ) {
+              throw "Retained Classic COM capability artifact drift: $name"
+            }
+          }
+      - name: Upload complete Classic COM capability report
+        uses: actions/upload-artifact@v4
+        with:
+          name: classic-com-capability-report
+          path: ${{ runner.temp }}\classic-com-capability
+          if-no-files-found: error
+          retention-days: 14
+      - name: Test Classic COM failure cleanup contracts
+        run: |
+          cargo test -p dynwinrt failing_hresult_releases_written_interface_output
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p dynwinrt automation_validation_failure_cleans_other_owned_outputs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p dynwinrt bstr_in_out_failure_cleans_unchanged_replaced_and_null_slots
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p dynwinrt excep_info_deferred_fill_runs_once_and_cleans_on_every_failure_path
+      - name: Check x86 Classic COM runtime
+        run: cargo check -p jswinrt_rs --target i686-pc-windows-msvc
 
   # E2E tests: winmd → generate → call real WinRT APIs
   e2e:
@@ -34,7 +231,24 @@ jobs:
           node-version: 24
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: "3.12"
+      - uses: NuGet/setup-nuget@v2
+      - name: Install Win32 metadata
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'win32metadata'
+          nuget install Microsoft.Windows.SDK.Win32Metadata `
+            -Version 71.0.14-preview `
+            -OutputDirectory $root `
+            -DirectDownload `
+            -NonInteractive
+          $winmd = Get-ChildItem $root -Filter Windows.Win32.winmd -File -Recurse |
+            Select-Object -First 1
+          if (-not $winmd) {
+            throw 'Microsoft.Windows.SDK.Win32Metadata did not contain Windows.Win32.winmd'
+          }
+          "DYNWINRT_WIN32_WINMD=$($winmd.FullName)" >> $env:GITHUB_ENV
+          "DYNWINRT_REQUIRE_WIN32_METADATA=1" >> $env:GITHUB_ENV
       - name: Build dynwinrt-codegen
         run: cargo build -p dynwinrt-codegen --release
       - name: Build JS binding
@@ -42,6 +256,8 @@ jobs:
         run: |
           npm install
           npx napi build --no-const-enum --platform --release -o dist
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run build:entrypoints --silent
           npm install --no-save tsx
       - name: Build Python binding
         run: |
@@ -54,9 +270,20 @@ jobs:
       - name: Test Python binding
         run: |
           .\bindings\py\.venv\Scripts\python.exe -m pytest bindings\py\tests -q
-          .\bindings\py\.venv\Scripts\python.exe -m mypy.stubtest dynwinrt_py --allowlist bindings\py\stubtest_allowlist.txt --ignore-disjoint-bases
+          .\bindings\py\.venv\Scripts\python.exe -m mypy.stubtest dynwinrt --allowlist bindings\py\stubtest_allowlist.txt --ignore-disjoint-bases
+      - name: Test generated Python long paths
+        run: |
+          .\eng\release\python\test_generated_python_long_paths.ps1 `
+            -Python .\bindings\py\.venv\Scripts\python.exe `
+            -Codegen .\target\release\dynwinrt-codegen.exe
       - name: Run E2E tests
-        run: .\tests\e2e_test.ps1 -SkipBuild
+        run: .\tests\e2e\e2e_test.ps1 -SkipBuild
+      - name: Test JS TSFN lifecycle and queue handling
+        working-directory: bindings/js
+        run: npm run test:tsfn
+      - name: Test actual generated unsafe COM companion
+        working-directory: bindings/js
+        run: npm run test:generated-unsafe
 
   # dynwinrt-codegen (x64 + arm64)
   dynwinrt-codegen:
@@ -97,12 +324,20 @@ jobs:
       - name: Install dependencies
         working-directory: bindings/js
         run: npm install
+      - name: Compile raw union MSVC C oracle for ARM64
+        run: cargo test -p jswinrt_rs --features test-hooks --target aarch64-pc-windows-msvc --no-run
       - name: Build x64
         working-directory: bindings/js
-        run: npx napi build --no-const-enum --platform --release -o dist
+        run: |
+          npx napi build --no-const-enum --platform --release -o dist
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run build:entrypoints --silent
       - name: Build arm64
         working-directory: bindings/js
-        run: npx napi build --no-const-enum --platform --release --target aarch64-pc-windows-msvc -o dist
+        run: |
+          npx napi build --no-const-enum --platform --release --target aarch64-pc-windows-msvc -o dist
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run build:entrypoints --silent
       - uses: actions/upload-artifact@v4
         with:
           name: dynwinrt
@@ -111,3 +346,9 @@ jobs:
             bindings/js/dist/dynwinrt.win32-arm64-msvc.node
             bindings/js/dist/index.js
             bindings/js/dist/index.d.ts
+            bindings/js/dist/winrt.js
+            bindings/js/dist/winrt.d.ts
+            bindings/js/dist/com.js
+            bindings/js/dist/com.d.ts
+            bindings/js/dist/com-unsafe.js
+            bindings/js/dist/com-unsafe.d.ts

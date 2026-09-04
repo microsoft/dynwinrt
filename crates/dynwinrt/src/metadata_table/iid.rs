@@ -21,14 +21,6 @@ impl MetadataTable {
         GUID::from_signature(buf)
     }
 
-    fn pinterface_signature(&self, piid: &GUID, type_args: &[TypeKind]) -> String {
-        let arg_sigs: Vec<String> = type_args
-            .iter()
-            .map(|a| self.signature_string_kind(*a))
-            .collect();
-        pinterface_signature_from_strings(&format_guid_braced(piid), &arg_sigs)
-    }
-
     fn async_type_args(&self, kind: TypeKind) -> Vec<TypeKind> {
         match kind {
             TypeKind::IAsyncActionWithProgress(idx) | TypeKind::IAsyncOperation(idx) => {
@@ -43,65 +35,115 @@ impl MetadataTable {
     }
 
     pub(crate) fn signature_string_kind(&self, kind: TypeKind) -> String {
+        self.try_signature_string_kind(kind)
+            .expect("Type has no valid WinRT signature")
+    }
+
+    pub(crate) fn try_signature_string_kind(
+        &self,
+        kind: TypeKind,
+    ) -> crate::result::Result<String> {
+        self.try_signature_string_kind_impl(kind, true)
+    }
+
+    pub(crate) fn try_closed_signature_string_kind(
+        &self,
+        kind: TypeKind,
+    ) -> crate::result::Result<String> {
+        self.try_signature_string_kind_impl(kind, false)
+    }
+
+    fn try_signature_string_kind_impl(
+        &self,
+        kind: TypeKind,
+        allow_open_generic: bool,
+    ) -> crate::result::Result<String> {
         if let Some(sig) = kind.signature() {
-            return sig.into();
+            return Ok(sig.into());
         }
         match kind {
-            TypeKind::Interface(iid) | TypeKind::Generic { piid: iid, .. } => {
-                format_guid_braced(&iid)
-            }
-            TypeKind::Delegate(iid) => {
-                format!("delegate({})", format_guid_braced(&iid))
-            }
+            TypeKind::Interface(iid) => Ok(format_guid_braced(&iid)),
+            TypeKind::Generic { piid, .. } if allow_open_generic => Ok(format_guid_braced(&piid)),
+            TypeKind::Delegate(iid) => Ok(format!("delegate({})", format_guid_braced(&iid))),
             TypeKind::RuntimeClass(idx) => {
-                let (name, iid) = self.get_runtime_class(idx);
-                format!("rc({};{})", name, format_guid_braced(&iid))
+                let (name, default_interface) = self.get_runtime_class(idx);
+                Ok(format!(
+                    "rc({};{})",
+                    name,
+                    self.try_signature_string_kind_impl(default_interface, false)?
+                ))
             }
             TypeKind::Parameterized(idx) => {
                 let (generic_def, args) = self.get_parameterized(idx);
-                let piid_sig = self.signature_string_kind(generic_def);
-                let arg_sigs: Vec<String> = args
+                let piid = match generic_def {
+                    TypeKind::Generic { piid, arity } if arity as usize == args.len() => piid,
+                    TypeKind::Interface(iid) => iid,
+                    _ => return Err(Self::invalid_signature(kind)),
+                };
+                let arg_sigs: crate::result::Result<Vec<String>> = args
                     .iter()
-                    .map(|a| self.signature_string_kind(*a))
+                    .map(|a| self.try_signature_string_kind_impl(*a, false))
                     .collect();
-                pinterface_signature_from_strings(&piid_sig, &arg_sigs)
+                Ok(pinterface_signature_from_strings(
+                    &format_guid_braced(&piid),
+                    &arg_sigs?,
+                ))
             }
-            TypeKind::IAsyncAction => format_guid_braced(&IASYNC_ACTION),
-            TypeKind::IAsyncActionWithProgress(_) => {
-                self.pinterface_signature(&IASYNC_ACTION_WITH_PROGRESS, &self.async_type_args(kind))
-            }
+            TypeKind::IAsyncAction => Ok(format_guid_braced(&IASYNC_ACTION)),
+            TypeKind::IAsyncActionWithProgress(_) => self.try_pinterface_signature(
+                &IASYNC_ACTION_WITH_PROGRESS,
+                &self.async_type_args(kind),
+            ),
             TypeKind::IAsyncOperation(_) => {
-                self.pinterface_signature(&IASYNC_OPERATION, &self.async_type_args(kind))
+                self.try_pinterface_signature(&IASYNC_OPERATION, &self.async_type_args(kind))
             }
-            TypeKind::IAsyncOperationWithProgress(_) => self
-                .pinterface_signature(&IASYNC_OPERATION_WITH_PROGRESS, &self.async_type_args(kind)),
-            TypeKind::Object => "cinterface(IInspectable)".to_string(),
-            TypeKind::HResult => "i4".to_string(),
+            TypeKind::IAsyncOperationWithProgress(_) => self.try_pinterface_signature(
+                &IASYNC_OPERATION_WITH_PROGRESS,
+                &self.async_type_args(kind),
+            ),
+            TypeKind::Object => Ok("cinterface(IInspectable)".to_string()),
+            TypeKind::HResult => Ok("i4".to_string()),
             TypeKind::Enum(idx) => {
                 let name = self.get_enum_name(idx);
-                format!("enum({};i4)", name)
+                Ok(format!("enum({};i4)", name))
             }
             TypeKind::Struct(idx) => {
                 let entry = &self.structs.read().unwrap()[idx as usize];
                 let name = &entry.name;
-                let field_sigs: Vec<String> = entry
+                let field_sigs: crate::result::Result<Vec<String>> = entry
                     .field_kinds
                     .iter()
-                    .map(|k| self.signature_string_kind(*k))
+                    .map(|k| self.try_signature_string_kind_impl(*k, false))
                     .collect();
-                format!("struct({};{})", name, field_sigs.join(";"))
+                Ok(format!("struct({};{})", name, field_sigs?.join(";")))
             }
-            _ => panic!("Type {:?} has no WinRT type signature", kind),
+            _ => Err(Self::invalid_signature(kind)),
         }
+    }
+
+    fn try_pinterface_signature(
+        &self,
+        piid: &GUID,
+        type_args: &[TypeKind],
+    ) -> crate::result::Result<String> {
+        let arg_sigs: crate::result::Result<Vec<String>> = type_args
+            .iter()
+            .map(|a| self.try_signature_string_kind_impl(*a, false))
+            .collect();
+        Ok(pinterface_signature_from_strings(
+            &format_guid_braced(piid),
+            &arg_sigs?,
+        ))
     }
 
     pub(crate) fn iid_kind(&self, kind: TypeKind) -> Option<GUID> {
         match kind {
             TypeKind::Interface(iid) | TypeKind::Delegate(iid) => Some(iid),
             TypeKind::RuntimeClass(idx) => {
-                let (_, iid) = self.get_runtime_class(idx);
-                Some(iid)
+                let (_, default_interface) = self.get_runtime_class(idx);
+                self.iid_kind(default_interface)
             }
+
             TypeKind::IAsyncAction => Some(IASYNC_ACTION),
             TypeKind::Parameterized(_)
             | TypeKind::IAsyncActionWithProgress(_)
@@ -112,6 +154,13 @@ impl MetadataTable {
             )),
             _ => None,
         }
+    }
+
+    fn invalid_signature(kind: TypeKind) -> crate::result::Error {
+        crate::result::Error::WindowsError(windows_core::Error::new(
+            windows_core::HRESULT(0x80070057u32 as i32),
+            &format!("Type {kind:?} has no valid WinRT signature"),
+        ))
     }
 
     pub(crate) fn completed_handler_iid_kind(&self, kind: TypeKind) -> Option<GUID> {

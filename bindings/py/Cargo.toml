@@ -7,7 +7,7 @@ description = "Python bindings for dynwinrt via PyO3"
 repository = "https://github.com/microsoft/dynwinrt"
 authors = ["Microsoft"]
 [lib]
-name = "dynwinrt_py"
+name = "dynwinrt"
 crate-type = ["cdylib"]
 
 [dependencies]

@@ -1,6 +1,9 @@
 # End-to-End Test: FileOpenPicker
 
-This guide walks through a full end-to-end test of the dynwinrt-codegen pipeline, from cloning the repo to opening a file picker dialog. The codegen emits plain ESM JavaScript (`.js`) plus ambient TypeScript declarations (`.d.ts`), so the same generated output works from both `node` and `tsx`.
+This guide walks through a full end-to-end test of the dynwinrt-codegen
+pipeline, from cloning the repo to opening a file picker dialog. Codegen emits
+CommonJS implementation modules (`.js`), ESM facades (`.mjs`), and ambient
+TypeScript declarations (`.d.ts`).
 
 ## Prerequisites
 
@@ -29,7 +32,8 @@ cargo build -p dynwinrt-codegen --release
 
 # Build the JS native binding
 cd bindings/js
-npx napi build --no-const-enum --platform --release -o dist
+npm install
+npm run build
 cd ../..
 ```
 
@@ -46,6 +50,9 @@ Create `package.json`:
   "private": true,
   "dependencies": {
     "@microsoft/dynwinrt": "file:../../dynwinrt/bindings/js"
+  },
+  "devDependencies": {
+    "tsx": "^4.21.0"
   }
 }
 ```
@@ -56,7 +63,7 @@ npm install
 
 ## Step 3: Generate bindings
 
-Windows SDK `Windows.winmd` is auto-detected from `C:\Program Files (x86)\Windows Kits\10\UnionMetadata\`. Only the target WinAppSDK winmd needs to be specified. `--lang js` is the default and emits `.js` plus `.d.ts`:
+Windows SDK `Windows.winmd` is auto-detected from `C:\Program Files (x86)\Windows Kits\10\UnionMetadata\`. Only the target WinAppSDK winmd needs to be specified. `--lang js` is the default and emits CommonJS `.js`, ESM `.mjs` facades, and `.d.ts`:
 
 ```bash
 cd ../../dynwinrt
@@ -68,18 +75,21 @@ cargo run -p dynwinrt-codegen --release -- generate \
   --output ../test-winmd/test-picker/generated
 ```
 
-Each generated symbol produces both a `.js` module and a matching `.d.ts` (e.g. `FileOpenPicker.js` + `FileOpenPicker.d.ts`), plus an `index.js` / `index.d.ts` re-exporting everything.
+Each generated symbol produces both a CommonJS `.js` module and a matching
+`.d.ts` (for example, `FileOpenPicker.js` + `FileOpenPicker.d.ts`). The package
+also contains CommonJS `index.js`, ESM `index.mjs`, and `index.d.ts` facades.
 
 Parameterized collection interfaces (e.g. `IVector<String>`) are automatically instantiated from `Windows.winmd` as concrete types like `IVector_String.js` / `.d.ts`.
 
 ## Step 4: Write test script
 
-Create `test_picker.ts` in the test project (TypeScript here — the same imports work from plain `.js` too, since the generated modules are ESM JavaScript with adjacent `.d.ts` declarations):
+Create `test_picker.ts` in the test project. `tsx` reads the adjacent
+declarations and interoperates with the generated CommonJS modules:
 
 ```typescript
 import { initWinappsdk, roInitialize, DynWinRtValue } from '@microsoft/dynwinrt'
-import { FileOpenPicker } from './generated/FileOpenPicker.js'
-import { PickerViewMode } from './generated/PickerViewMode.js'
+import { FileOpenPicker } from './generated/microsoft/windows/storage/pickers/FileOpenPicker.js'
+import { PickerViewMode } from './generated/microsoft/windows/storage/pickers/PickerViewMode.js'
 
 async function main() {
     initWinappsdk(1, 8)
@@ -109,7 +119,7 @@ async function main() {
     // Open file picker dialog
     console.log('Opening file picker dialog...')
     const result = await picker.pickSingleFileAsync()
-    if (result && result._obj) {
+    if (result) {
         console.log('Selected file path:', result.path)
     } else {
         console.log('User cancelled the picker')
@@ -150,14 +160,23 @@ A file picker dialog will open. Select a file (filtered to .png/.jpg/.txt) to co
 |---|---|
 | **dynwinrt-codegen** | Generates correct interface registrations, method signatures, factory methods, enum values from `.winmd` metadata |
 | **dynwinrt-codegen (generics)** | Parameterized interfaces (IVector\<String\>, IVectorView\<PickFileResult\>) instantiated from `Windows.winmd` with concrete types, auto-detected Windows SDK path |
-| **dynwinrt (Rust)** | Dynamic COM vtable dispatch, parameterized type out-params, async operation (IAsyncOperation), RawPtr out-buffer for COM pointers |
+| **dynwinrt (Rust)** | Dynamic COM vtable dispatch, parameterized type outputs, and `IAsyncOperation` |
 | **@microsoft/dynwinrt (napi)** | JS-to-Rust bridge: `invoke()`, `toPromise()`, `toNumber()`, `toString()`, type marshalling |
 | **WinAppSDK runtime** | Bootstrap initialization, FileOpenPicker activation factory, IFileOpenPickerFactory.CreateInstance |
 | **Collection types** | `IVector_String.append()`, `.size`, `.getAt()` — from winmd parameterized interface instantiation, not hardcoded |
 
-## Additional E2E tests
+## Automated E2E suite
 
-| Test | Namespace | What it covers |
-|---|---|---|
-| **test-http** | `Windows.Foundation` + `Windows.Web.Http` | Uri properties, HttpClient.getStringAsync (async with progress), response status code, content.readAsStringAsync |
-| **test-geo** | `Windows.Devices.Geolocation` | Struct pass-by-value (BasicGeoposition → Geopoint.create), struct out-param (Geopoint.position) |
+The repository's canonical cross-language specs are in
+[`tests/e2e/e2e_specs.json`](../../tests/e2e/e2e_specs.json). The orchestrator
+generates temporary bindings and runs the JavaScript/TypeScript, Python, or
+Classic COM runners. From the repository root:
+
+```powershell
+.\tests\e2e\e2e_test.ps1 -Lang ts
+.\tests\e2e\e2e_test.ps1 -Lang py
+.\tests\e2e\e2e_test.ps1 -Lang com
+```
+
+The Classic COM suite also requires `DYNWINRT_WIN32_WINMD` or an installed
+`Microsoft.Windows.SDK.Win32Metadata` package.

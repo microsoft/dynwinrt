@@ -2,8 +2,48 @@
   "name": "@microsoft/dynwinrt",
   "version": "0.1.0",
   "description": "Dynamic WinRT bindings for Node.js — call any Windows Runtime API without native code generation",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": "dist/winrt.js",
+  "types": "dist/winrt.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/winrt.d.ts",
+      "import": "./dist/winrt.js",
+      "require": "./dist/winrt.js",
+      "default": "./dist/winrt.js"
+    },
+    "./com": {
+      "types": "./dist/com.d.ts",
+      "import": "./dist/com.js",
+      "require": "./dist/com.js",
+      "default": "./dist/com.js"
+    },
+    "./com/unsafe": {
+      "types": "./dist/com-unsafe.d.ts",
+      "import": "./dist/com-unsafe.js",
+      "require": "./dist/com-unsafe.js",
+      "default": "./dist/com-unsafe.js"
+    },
+    "./com/unsafe/raw": {
+      "types": "./dist/com-unsafe-raw.d.ts",
+      "import": "./dist/com-unsafe-raw.js",
+      "require": "./dist/com-unsafe-raw.js",
+      "default": "./dist/com-unsafe-raw.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "typesVersions": {
+    "*": {
+      "com": [
+        "dist/com.d.ts"
+      ],
+      "com/unsafe": [
+        "dist/com-unsafe.d.ts"
+      ],
+      "com/unsafe/raw": [
+        "dist/com-unsafe-raw.d.ts"
+      ]
+    }
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/microsoft/dynwinrt"
@@ -32,7 +72,7 @@
     "packageJsonPath": "dist/package.json"
   },
   "engines": {
-    "node": ">= 12.22.0 < 13 || >= 14.17.0 < 15 || >= 15.12.0 < 16 || >= 16.0.0"
+    "node": ">=18.0.0"
   },
   "publishConfig": {
     "registry": "https://registry.npmjs.org",
@@ -40,15 +80,22 @@
   },
   "scripts": {
     "artifacts": "napi artifacts",
-    "bench": "node --import @oxc-node/core/register benchmark/bench.ts",
-    "build": "napi build --no-const-enum --platform --release -o dist",
-    "build:debug": "napi --no-const-enum build --platform -o dist",
+    "bench": "node --import @oxc-node/core/register ../../benchmarks/js/dynamic/bench.ts",
+    "build": "napi build --no-const-enum --platform --release -o dist && npm run build:entrypoints",
+    "build:debug": "napi --no-const-enum build --platform -o dist && npm run build:entrypoints",
+    "build:test-hooks": "napi build --no-const-enum --platform --release --features test-hooks -o dist",
+    "build:entrypoints": "node scripts/generate-entrypoints.mjs",
     "format": "run-p format:prettier format:rs format:toml",
     "format:prettier": "prettier . -w",
     "format:toml": "taplo format",
     "format:rs": "cargo fmt",
     "lint": "oxlint",
-    "test": "ava",
+    "test": "npm run test:types && ava",
+    "test:generated-unsafe": "npm run build:test-hooks && npm run build:entrypoints && ava __test__/generated-unsafe-companion.e2e.ts",
+    "test:types": "npm run test:types:index && npm run test:types:raw",
+    "test:types:index": "tsc --noEmit --strict --target ESNext --module NodeNext --moduleResolution NodeNext __test__/index.spec.ts",
+    "test:types:raw": "tsc --noEmit --project __test__/types/tsconfig.json",
+    "test:tsfn": "npm run build:test-hooks && ava __test__/tsfn.spec.ts",
     "version": "napi version"
   },
   "devDependencies": {
@@ -59,7 +106,9 @@
     "@oxc-node/core": "^0.0.35",
     "@taplo/cli": "^0.7.0",
     "@tybys/wasm-util": "^0.10.0",
+    "@types/node": "^24.13.3",
     "ava": "^6.4.1",
+    "c8": "12.0.0",
     "chalk": "^5.6.2",
     "emnapi": "^1.5.0",
     "husky": "^9.1.7",

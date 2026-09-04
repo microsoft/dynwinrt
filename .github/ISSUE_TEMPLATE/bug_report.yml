@@ -41,7 +41,7 @@ body:
         - "dynwinrt (core library)"
         - "dynwinrt-codegen (code generator)"
         - "JS bindings (@microsoft/dynwinrt)"
-        - "Python bindings (dynwinrt-py)"
+        - "Python bindings (dynwinrt)"
         - "Other"
     id: component
   - type: dropdown
@@ -64,4 +64,3 @@ body:
         - Node.js: 22.x (if using JS bindings)
         - Python: 3.12 (if using Python bindings)
     id: environment
-

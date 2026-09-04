@@ -190,8 +190,16 @@ fn setup_metadata(
         .map(|i| i.name.clone())
         .collect();
     let shared_iids: HashSet<String> = HashSet::new();
+    let context =
+        dynwinrt_codegen::codegen::winrt::javascript::create_javascript_projection_context([])
+            .unwrap();
     let (delegate_sigs, delegate_sig_refs, delegate_param_wraps) =
-        project::build_delegate_signatures(&all_interfaces, &delegate_type_names, &known_types);
+        project::build_delegate_signatures(
+            &context,
+            &all_interfaces,
+            &delegate_type_names,
+            &known_types,
+        );
 
     Some((
         all_classes,
@@ -322,8 +330,12 @@ fn js_dts_structural_consistency_uri() {
         }
     };
 
+    let context =
+        dynwinrt_codegen::codegen::winrt::javascript::create_javascript_projection_context([])
+            .unwrap();
     for class in &all_classes {
         let projected = project::project_class(
+            &context,
             class,
             &known_types,
             &delegate_type_names,
@@ -339,6 +351,7 @@ fn js_dts_structural_consistency_uri() {
     }
     for iface in &all_interfaces {
         let projected = project::project_interface(
+            &context,
             iface,
             &known_types,
             &delegate_type_names,
@@ -374,8 +387,12 @@ fn js_dts_structural_consistency_storage_file() {
         }
     };
 
+    let context =
+        dynwinrt_codegen::codegen::winrt::javascript::create_javascript_projection_context([])
+            .unwrap();
     for class in &all_classes {
         let projected = project::project_class(
+            &context,
             class,
             &known_types,
             &delegate_type_names,
@@ -391,6 +408,7 @@ fn js_dts_structural_consistency_storage_file() {
     }
     for iface in &all_interfaces {
         let projected = project::project_interface(
+            &context,
             iface,
             &known_types,
             &delegate_type_names,
@@ -437,11 +455,20 @@ fn js_dts_structural_consistency_user_watcher() {
         .map(|i| i.name.clone())
         .collect();
     let shared_iids: HashSet<String> = HashSet::new();
+    let context =
+        dynwinrt_codegen::codegen::winrt::javascript::create_javascript_projection_context([])
+            .unwrap();
     let (delegate_sigs, delegate_sig_refs, delegate_param_wraps) =
-        project::build_delegate_signatures(&all_interfaces, &delegate_type_names, &known_types);
+        project::build_delegate_signatures(
+            &context,
+            &all_interfaces,
+            &delegate_type_names,
+            &known_types,
+        );
 
     for class in &all_classes {
         let projected = project::project_class(
+            &context,
             class,
             &known_types,
             &delegate_type_names,

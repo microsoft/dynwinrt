@@ -9,8 +9,8 @@ authors = ["Microsoft"]
 
 [dependencies]
 libffi = "5.1.0"
+libffi-sys = "4.1.0"
 paste = "1"
-tokio = { version = "1.49.0", features = ["macros", "rt"] }
 windows-collections = "0.3.2"
 windows-core = "0.62.2"
 windows-future = "0.3.2"
@@ -21,16 +21,23 @@ windows-metadata = "0.59.0"
 version = ">=0.59, <=0.62"
 features = [
     "ApplicationModel",
+    "ApplicationModel_DataTransfer",
     "Data_Xml_Dom",
     "Foundation_Collections",
     "Devices_Geolocation",
     "Storage_Streams",
+    "System",
     "System_Threading",
     "Web_Http",
     "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
     "Win32_System_LibraryLoader",
+    "Win32_System_Ole",
     "Win32_System_Threading",
+    "Win32_System_Variant",
     "Win32_System_WinRT",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
     "Win32_Storage_Packaging_Appx",
     "Win32_UI_HiDpi",
     "Management_Deployment",
@@ -40,6 +47,7 @@ features = [
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 futures = "0.3.31"
+tokio = { version = "1.49.0", features = ["macros", "rt"] }
 [[bench]]
 name = "bench"
 harness = false

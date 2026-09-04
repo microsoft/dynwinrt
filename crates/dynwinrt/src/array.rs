@@ -212,6 +212,26 @@ impl ArrayData {
         }
     }
 
+    /// Return the raw buffer as a typed slice when this array is CoTaskMem-backed
+    /// and the requested element width matches.
+    ///
+    /// # Safety
+    /// Caller must ensure `T` matches the semantic element type.
+    pub unsafe fn try_as_typed_slice<T: Copy>(&self) -> Option<&[T]> {
+        match &self.buffer {
+            ArrayBuffer::CoTaskMem { ptr, len }
+                if std::mem::size_of::<T>() == self.element_type.element_size() =>
+            {
+                if *len == 0 {
+                    Some(&[])
+                } else {
+                    Some(unsafe { std::slice::from_raw_parts(*ptr as *const T, *len) })
+                }
+            }
+            ArrayBuffer::CoTaskMem { .. } | ArrayBuffer::Values(_) => None,
+        }
+    }
+
     // ------------------------------------------------------------------
     // Per-element access (works for all types)
     // ------------------------------------------------------------------
@@ -220,16 +240,22 @@ impl ArrayData {
     /// For Values arrays, returns a clone of the stored value.
     /// For CoTaskMem arrays, reads from raw bytes (AddRef / DuplicateString as needed).
     pub fn get(&self, index: usize) -> WinRTValue {
-        assert!(
-            index < self.len(),
-            "ArrayData::get index {} out of bounds (len {})",
-            index,
-            self.len()
-        );
-        match &self.buffer {
+        let len = self.len();
+        self.try_get(index).unwrap_or_else(|_| {
+            panic!("ArrayData::get index {} out of bounds (len {})", index, len)
+        })
+    }
+
+    /// Fallible element access that reports invalid indices instead of panicking.
+    pub fn try_get(&self, index: usize) -> crate::result::Result<WinRTValue> {
+        let len = self.len();
+        if index >= len {
+            return Err(crate::result::Error::IndexOutOfBounds { index, len });
+        }
+        Ok(match &self.buffer {
             ArrayBuffer::Values(v) => v[index].clone(),
             ArrayBuffer::CoTaskMem { ptr, .. } => self.get_from_raw(index, *ptr as *const u8),
-        }
+        })
     }
 
     /// Read element from a raw byte buffer (CoTaskMem path).
@@ -249,6 +275,9 @@ impl ArrayData {
                     value: *(base.add(index * elem_size) as *const i32),
                     type_handle: self.element_type.clone(),
                 },
+                TypeKind::HResult => WinRTValue::HResult(windows_core::HRESULT(
+                    *(base.add(index * elem_size) as *const i32),
+                )),
                 TypeKind::U32 => WinRTValue::U32(*(base.add(index * elem_size) as *const u32)),
                 TypeKind::I64 => WinRTValue::I64(*(base.add(index * elem_size) as *const i64)),
                 TypeKind::U64 => WinRTValue::U64(*(base.add(index * elem_size) as *const u64)),
@@ -294,13 +323,28 @@ impl ArrayData {
     // Convenience typed getters
     // ------------------------------------------------------------------
 
-    pub fn get_i32(&self, index: usize) -> i32 {
-        match &self.buffer {
-            ArrayBuffer::Values(v) => v[index].as_i32().unwrap(),
-            ArrayBuffer::CoTaskMem { ptr, len } => {
-                assert!(index < *len);
-                unsafe { *((*ptr as *const u8).add(index * 4) as *const i32) }
+    /// Read an `i32`-compatible element (plain `i32`, named enum, or `HRESULT`).
+    pub fn get_i32(&self, index: usize) -> crate::result::Result<i32> {
+        let len = self.len();
+        if index >= len {
+            return Err(crate::result::Error::IndexOutOfBounds { index, len });
+        }
+
+        match self.element_type.kind() {
+            TypeKind::I32 | TypeKind::Enum(_) | TypeKind::HResult => {}
+            other => {
+                return Err(crate::result::Error::InvalidType(TypeKind::I32, other));
             }
+        }
+
+        match self.try_get(index)? {
+            WinRTValue::I32(value) => Ok(value),
+            WinRTValue::Enum { value, .. } => Ok(value),
+            WinRTValue::HResult(value) => Ok(value.0),
+            other => Err(crate::result::Error::InvalidType(
+                TypeKind::I32,
+                other.get_type_kind(),
+            )),
         }
     }
 
@@ -498,6 +542,7 @@ fn serialize_to_buffer(element_type: &TypeHandle, values: &[WinRTValue]) -> Vec<
             WinRTValue::U16(v) => buffer.extend_from_slice(&v.to_ne_bytes()),
             WinRTValue::I32(v) => buffer.extend_from_slice(&v.to_ne_bytes()),
             WinRTValue::Enum { value, .. } => buffer.extend_from_slice(&value.to_ne_bytes()),
+            WinRTValue::HResult(value) => buffer.extend_from_slice(&value.0.to_ne_bytes()),
             WinRTValue::U32(v) => buffer.extend_from_slice(&v.to_ne_bytes()),
             WinRTValue::I64(v) => buffer.extend_from_slice(&v.to_ne_bytes()),
             WinRTValue::U64(v) => buffer.extend_from_slice(&v.to_ne_bytes()),
@@ -574,6 +619,78 @@ mod tests {
 
         let async_array = ArrayData::from_values(table.async_action(), &[WinRTValue::Null]);
         assert_eq!(async_array.serialize_for_abi(), 0usize.to_ne_bytes());
+    }
+
+    #[test]
+    fn test_try_get_reports_out_of_bounds() {
+        let table = MetadataTable::new();
+        let array = ArrayData::from_values(table.i32_type(), &[WinRTValue::I32(17)]);
+
+        assert_eq!(array.try_get(0).unwrap().as_i32(), Some(17));
+        assert!(matches!(
+            array.try_get(1),
+            Err(crate::result::Error::IndexOutOfBounds { index: 1, len: 1 })
+        ));
+    }
+
+    #[test]
+    fn test_get_i32_reports_invalid_index_and_type_for_values() {
+        let table = MetadataTable::new();
+        let array = ArrayData::from_values(table.i32_type(), &[WinRTValue::I32(17)]);
+        assert_eq!(array.get_i32(0).unwrap(), 17);
+        assert!(matches!(
+            array.get_i32(1),
+            Err(crate::result::Error::IndexOutOfBounds { index: 1, len: 1 })
+        ));
+
+        let wrong_type = ArrayData::from_values(table.u32_type(), &[WinRTValue::U32(17)]);
+        assert!(matches!(
+            wrong_type.get_i32(0),
+            Err(crate::result::Error::InvalidType(
+                TypeKind::I32,
+                TypeKind::U32
+            ))
+        ));
+    }
+
+    #[test]
+    fn test_get_i32_accepts_hresult_values() {
+        let table = MetadataTable::new();
+        let value = windows_core::HRESULT(0x80004005u32 as i32);
+        let array = ArrayData::from_values(table.hresult(), &[WinRTValue::HResult(value)]);
+
+        assert_eq!(array.get_i32(0).unwrap(), value.0);
+        assert_eq!(array.serialize_for_abi(), value.0.to_ne_bytes());
+    }
+
+    #[test]
+    fn test_get_i32_reports_invalid_index_and_type_for_cotaskmem() {
+        let table = MetadataTable::new();
+        let len = 1usize;
+        let total = std::mem::size_of::<i32>() * len;
+        let ptr = unsafe { windows::Win32::System::Com::CoTaskMemAlloc(total) as *mut i32 };
+        assert!(!ptr.is_null());
+        unsafe { ptr.write(17) };
+
+        let array = ArrayData::from_cotaskmem(table.i32_type(), ptr.cast(), len);
+        assert_eq!(array.get_i32(0).unwrap(), 17);
+        assert!(matches!(
+            array.get_i32(1),
+            Err(crate::result::Error::IndexOutOfBounds { index: 1, len: 1 })
+        ));
+
+        let wrong_ptr = unsafe { windows::Win32::System::Com::CoTaskMemAlloc(total) as *mut u32 };
+        assert!(!wrong_ptr.is_null());
+        unsafe { wrong_ptr.write(17) };
+
+        let wrong_type = ArrayData::from_cotaskmem(table.u32_type(), wrong_ptr.cast(), len);
+        assert!(matches!(
+            wrong_type.get_i32(0),
+            Err(crate::result::Error::InvalidType(
+                TypeKind::I32,
+                TypeKind::U32
+            ))
+        ));
     }
 
     /// P1: CoTaskMem array of structs with HString fields — Clone/Drop must recurse.

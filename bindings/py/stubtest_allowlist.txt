@@ -1,1 +1,1 @@
-dynwinrt_py\.dynwinrt_py
+dynwinrt\.dynwinrt

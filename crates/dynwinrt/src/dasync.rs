@@ -35,7 +35,7 @@ struct DynCompletedHandler {
     vtable: *const DynCompletedHandlerVtbl,
     ref_count: windows_core::imp::RefCount,
     handler_iid: GUID,
-    waker: Arc<Mutex<Waker>>,
+    callback: Arc<dyn Fn() + Send + Sync>,
 }
 
 impl DynCompletedHandler {
@@ -48,12 +48,12 @@ impl DynCompletedHandler {
         invoke: Self::invoke,
     };
 
-    fn create(waker: Arc<Mutex<Waker>>, handler_iid: GUID) -> IUnknown {
+    fn create(callback: Arc<dyn Fn() + Send + Sync>, handler_iid: GUID) -> IUnknown {
         let handler = Box::new(Self {
             vtable: &Self::VTBL,
             ref_count: windows_core::imp::RefCount::new(1),
             handler_iid,
-            waker,
+            callback,
         });
         unsafe { IUnknown::from_raw(Box::into_raw(handler) as *mut std::ffi::c_void) }
     }
@@ -106,9 +106,7 @@ impl DynCompletedHandler {
         _status: AsyncStatus,
     ) -> HRESULT {
         let handler = unsafe { &*(this as *const Self) };
-        if let Ok(waker) = handler.waker.lock() {
-            waker.wake_by_ref();
-        }
+        (handler.callback)();
         HRESULT(0) // S_OK
     }
 }
@@ -238,7 +236,14 @@ impl WinRTAsyncFuture {
             action.SetCompleted(&handler).map_err(Error::WindowsError)?;
         } else {
             // Generic types — use DynCompletedHandler via vtable
-            let handler = DynCompletedHandler::create(shared_waker, self.async_info.handler_iid());
+            let handler = DynCompletedHandler::create(
+                Arc::new(move || {
+                    if let Ok(waker) = shared_waker.lock() {
+                        waker.wake_by_ref();
+                    }
+                }),
+                self.async_info.handler_iid(),
+            );
             let concrete = self.query_concrete()?;
             let (set_completed_index, _) = self.vtable_indices();
             let hr = crate::call::call_winrt_method_1(
@@ -250,6 +255,25 @@ impl WinRTAsyncFuture {
         }
         Ok(())
     }
+}
+
+pub type AsyncCompletedCallback = Box<dyn Fn() + Send + Sync>;
+
+pub fn set_async_completed_handler(
+    value: &WinRTValue,
+    callback: AsyncCompletedCallback,
+) -> Result<()> {
+    let async_info = match value {
+        WinRTValue::Async(info) => info.clone(),
+        other => return Err(Error::ExpectedAsync(other.get_type_kind())),
+    };
+    let future = WinRTAsyncFuture::from_async_info(async_info);
+    let handler = DynCompletedHandler::create(Arc::from(callback), future.async_info.handler_iid());
+    let concrete = future.query_concrete()?;
+    let (set_completed_index, _) = future.vtable_indices();
+    let hr =
+        crate::call::call_winrt_method_1(set_completed_index, concrete.as_raw(), handler.as_raw());
+    hr.ok().map_err(Error::WindowsError)
 }
 
 impl Future for WinRTAsyncFuture {
@@ -358,6 +382,9 @@ use crate::metadata_table::TypeHandle;
 /// Callback type for progress notifications.
 pub type ProgressCallback = Box<dyn Fn(WinRTValue) + Send + Sync>;
 
+/// Callback type for progress notifications that can report dispatch failure.
+pub type ProgressResultCallback = Box<dyn Fn(WinRTValue) -> HRESULT + Send + Sync>;
+
 /// Create a progress handler for a WithProgress async operation.
 ///
 /// Reuses `delegate::create_delegate` — the progress handler is simply a
@@ -371,6 +398,42 @@ pub fn create_progress_handler(
     progress_type: TypeHandle,
     callback: ProgressCallback,
 ) -> IUnknown {
+    try_create_progress_handler(handler_iid, progress_type, callback)
+        .expect("failed to create WinRT progress handler")
+}
+
+/// Fallible progress-handler creation for language bindings.
+pub fn try_create_progress_handler(
+    handler_iid: GUID,
+    progress_type: TypeHandle,
+    callback: ProgressCallback,
+) -> Result<IUnknown> {
+    try_create_progress_handler_with_result(
+        handler_iid,
+        progress_type,
+        Box::new(move |value| {
+            callback(value);
+            HRESULT(0)
+        }),
+    )
+}
+
+/// Create a progress handler whose callback HRESULT is returned to WinRT.
+pub fn create_progress_handler_with_result(
+    handler_iid: GUID,
+    progress_type: TypeHandle,
+    callback: ProgressResultCallback,
+) -> IUnknown {
+    try_create_progress_handler_with_result(handler_iid, progress_type, callback)
+        .expect("failed to create WinRT progress handler")
+}
+
+/// Fallible progress-handler creation for callbacks that return an HRESULT.
+pub fn try_create_progress_handler_with_result(
+    handler_iid: GUID,
+    progress_type: TypeHandle,
+    callback: ProgressResultCallback,
+) -> Result<IUnknown> {
     // Progress handler Invoke signature: (sender: Object, progress: TProgress)
     let sender_type = progress_type
         .table()
@@ -381,12 +444,13 @@ pub fn create_progress_handler(
         Box::new(move |args: &[WinRTValue]| {
             // args[0] = sender, args[1] = progress value
             if args.len() >= 2 {
-                callback(args[1].clone());
+                callback(args[1].clone())
+            } else {
+                HRESULT(0)
             }
-            HRESULT(0)
         });
 
-    crate::delegate::create_delegate(handler_iid, param_types, delegate_callback)
+    crate::delegate::try_create_delegate(handler_iid, param_types, delegate_callback)
 }
 
 // ---------------------------------------------------------------------------
@@ -463,6 +527,34 @@ mod tests {
         assert!(matches!(completed, WinRTValue::Async(_)));
         assert!(matches!(
             super::get_async_results(&completed)?,
+            WinRTValue::HResult(windows_core::HRESULT(0))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn test_completion_handler_notifies_without_executor_polling() -> Result<()> {
+        let handler = WorkItemHandler::new(|_| Ok(()));
+        let operation = ThreadPool::RunAsync(&handler).map_err(Error::WindowsError)?;
+        let info: IAsyncInfo = operation.cast().map_err(Error::WindowsError)?;
+        let value = WinRTValue::Async(AsyncInfo {
+            info,
+            async_type: MetadataTable::new().async_action(),
+        });
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+
+        super::set_async_completed_handler(
+            &value,
+            Box::new(move || {
+                let _ = sender.send(());
+            }),
+        )?;
+
+        receiver
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("completion handler should fire");
+        assert!(matches!(
+            super::get_async_results(&value)?,
             WinRTValue::HResult(windows_core::HRESULT(0))
         ));
         Ok(())
@@ -546,6 +638,22 @@ mod tests {
 
         assert!(result.is_ok());
         assert_eq!(received.load(Ordering::SeqCst), 42);
+
+        let failing_handler = super::create_progress_handler_with_result(
+            handler_iid,
+            reg.make(TypeKind::U64),
+            Box::new(|_| HRESULT(0x80004005u32 as i32)),
+        );
+        let failing_vtable =
+            unsafe { &**(failing_handler.as_raw() as *const *const ProgressHandlerVtbl) };
+        let result = unsafe {
+            (failing_vtable.invoke)(
+                failing_handler.as_raw(),
+                std::ptr::null_mut(),
+                42usize as *mut std::ffi::c_void,
+            )
+        };
+        assert_eq!(result, HRESULT(0x80004005u32 as i32));
     }
 
     /// Test SetProgress on a real IAsyncOperationWithProgress using HTTP BufferAllAsync.

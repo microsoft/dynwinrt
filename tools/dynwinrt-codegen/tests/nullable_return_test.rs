@@ -1,10 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+mod common;
+
 use std::collections::HashSet;
 use std::path::Path;
 
-use dynwinrt_codegen::codegen::{project, python, python_stub, render_dts, render_js};
+use dynwinrt_codegen::codegen::{project, render_dts, render_js};
 use dynwinrt_codegen::meta;
 use dynwinrt_codegen::types::TypeMeta;
 
@@ -58,13 +60,19 @@ fn nullable_runtime_class_returns_are_guarded_without_type_changes() {
         .map(|interface| interface.name.clone())
         .collect();
     let (delegate_sigs, delegate_sig_refs, delegate_param_wraps) =
-        project::build_delegate_signatures(&interfaces, &delegate_type_names, &known_types);
+        project::build_delegate_signatures(
+            &Default::default(),
+            &interfaces,
+            &delegate_type_names,
+            &known_types,
+        );
 
     let class = classes
         .iter()
         .find(|class| class.name == "Accelerometer")
         .expect("Accelerometer class missing after dependency resolution");
     let projected = project::project_class(
+        &Default::default(),
         class,
         &known_types,
         &delegate_type_names,
@@ -136,8 +144,14 @@ fn ireference_values_are_projected_as_native_nullable_values() {
         .find(|class| class.name == "ContactDate")
         .expect("ContactDate class missing after dependency resolution");
     let (delegate_sigs, delegate_sig_refs, delegate_param_wraps) =
-        project::build_delegate_signatures(&interfaces, &delegate_type_names, &known_types);
+        project::build_delegate_signatures(
+            &Default::default(),
+            &interfaces,
+            &delegate_type_names,
+            &known_types,
+        );
     let projected = project::project_class(
+        &Default::default(),
         class,
         &known_types,
         &delegate_type_names,
@@ -148,17 +162,13 @@ fn ireference_values_are_projected_as_native_nullable_values() {
     );
     let js = render_js::render(&projected);
     let dts = render_dts::render(&projected);
-    let py = python::generate_class(class, &known_types, &delegate_type_names, &HashSet::new());
-    let pyi = python_stub::generate_class_stub(
-        class,
-        &known_types,
-        &delegate_type_names,
-        &HashSet::new(),
-    );
+    let py = common::generate_class(class, &known_types, &delegate_type_names, &HashSet::new());
+    let pyi =
+        common::generate_class_stub(class, &known_types, &delegate_type_names, &HashSet::new());
 
     assert!(py.contains("def day(self) -> int | None:"));
     assert!(py.contains(
-        "None if value.is_null() else _dynwinrt_symbol('i_reference_u_int32', 'IReference_UInt32')(value).value"
+        "None if value.is_null() else _dynwinrt_symbol('i_reference_uint32', 'IReference_UInt32')(value).value"
     ));
     assert!(py.contains("def day(self, value: int | None | IReference_UInt32):"));
     assert!(py.contains(

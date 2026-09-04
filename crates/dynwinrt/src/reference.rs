@@ -181,6 +181,73 @@ mod tests {
     }
 
     #[test]
+    fn stores_reference_object_fields_with_owned_lifetime() {
+        let table = MetadataTable::new();
+        let value_type = table.u64_type();
+        let generic = table.generic(IREFERENCE, 1);
+        let reference_type = table.parameterized(&generic, std::slice::from_ref(&value_type));
+        let holder_type = table.struct_type("Test.OptionalUInt64Holder", &[reference_type.clone()]);
+        let mut holder = holder_type.default_value();
+        let boxed = box_ireference(WinRTValue::U64(17), value_type.clone()).unwrap();
+        let boxed_object = boxed.as_object().unwrap();
+
+        holder
+            .set_field_object(0, Some(&boxed_object))
+            .expect("store reference object");
+        drop(boxed);
+        drop(boxed_object);
+        let stored = holder
+            .get_field_object(0)
+            .expect("read reference field")
+            .expect("non-null reference field");
+        let interface = table
+            .register_interface(
+                "IReference_UInt64_Struct_Test",
+                reference_type.iid().unwrap(),
+            )
+            .add_method(
+                "get_Value",
+                MethodSignature::new(&table).add_out(value_type),
+            );
+        let result = interface
+            .method(6)
+            .unwrap()
+            .invoke(stored.as_raw(), &[])
+            .unwrap();
+        assert!(matches!(result[0], WinRTValue::U64(17)));
+
+        let incompatible = box_ireference(WinRTValue::U32(9), table.u32_type()).unwrap();
+        let incompatible_object = incompatible.as_object().unwrap();
+        assert!(
+            holder
+                .set_field_object(0, Some(&incompatible_object))
+                .is_err()
+        );
+        let unchanged = holder
+            .get_field_object(0)
+            .unwrap()
+            .expect("failed replacement must preserve the old field");
+        let result = interface
+            .method(6)
+            .unwrap()
+            .invoke(unchanged.as_raw(), &[])
+            .unwrap();
+        assert!(matches!(result[0], WinRTValue::U64(17)));
+
+        holder
+            .set_field_object(0, None)
+            .expect("clear reference object");
+        assert!(holder.get_field_object(0).unwrap().is_none());
+        assert!(
+            table
+                .struct_type("Test.ScalarHolder", &[table.u32_type()])
+                .default_value()
+                .get_field_object(0)
+                .is_err()
+        );
+    }
+
+    #[test]
     fn boxes_enum_and_struct_values() {
         let table = MetadataTable::new();
         let enum_type = table.enum_type(

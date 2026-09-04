@@ -1,12 +1,16 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use windows_metadata::{HasAttributes, reader};
 
-use crate::types::{EnumMember, TypeKind, TypeMeta, TypeRef};
+use crate::types::{EnumMember, TypeIdentity, TypeIdentityKind, TypeKind, TypeMeta, TypeRef};
+
+pub const WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE: &str = "Windows.Foundation.Collections";
+pub const PIID_IVECTOR: &str = "913337e9-11a1-4345-a3a2-4e7f956e222d";
+pub const PIID_IOBSERVABLE_VECTOR: &str = "5917eb53-50b4-4a0d-b309-65862b3f1dbc";
 
 /// Direction of a method parameter at the ABI level.
 #[derive(Debug, Clone, PartialEq)]
@@ -59,15 +63,71 @@ pub struct InterfaceMeta {
     pub name: String,
     pub namespace: String,
     pub iid: String,
+    /// Direct WinRT interface bases, excluding IInspectable/IUnknown.
+    pub base_interfaces: Vec<TypeMeta>,
     pub methods: Vec<MethodMeta>,
     /// For parameterized interfaces: the PIID (generic IID before instantiation).
     pub generic_piid: Option<String>,
+    /// Metadata name of the generic definition before projection name mangling.
+    pub generic_name: Option<String>,
     /// For parameterized interfaces: the type arguments used to instantiate.
     pub generic_args: Vec<TypeMeta>,
     /// XML doc summary (populated from sibling .xml).
     pub doc: Option<String>,
     /// XML `<deprecated>` text.
     pub deprecated: Option<String>,
+}
+
+impl InterfaceMeta {
+    pub fn is_delegate(&self) -> bool {
+        self.methods.iter().any(|method| method.name == ".ctor")
+            && self.methods.iter().any(|method| method.name == "Invoke")
+    }
+
+    pub fn type_identity(&self) -> TypeIdentity {
+        let kind = if self.is_delegate() {
+            TypeIdentityKind::Delegate
+        } else {
+            TypeIdentityKind::Interface
+        };
+        if self.generic_piid.is_some() {
+            let generic_name = self
+                .generic_name
+                .as_deref()
+                .unwrap_or_else(|| self.name.split('_').next().unwrap_or(self.name.as_str()));
+            TypeIdentity::closed_generic(
+                kind,
+                self.namespace.clone(),
+                generic_name,
+                self.generic_args.iter().map(TypeMeta::type_identity),
+            )
+        } else {
+            TypeIdentity::named(kind, self.namespace.clone(), self.name.clone())
+        }
+    }
+}
+
+fn same_interface_identity(left: &InterfaceMeta, right: &InterfaceMeta) -> bool {
+    if left.namespace != right.namespace {
+        return false;
+    }
+    match (&left.generic_piid, &right.generic_piid) {
+        (Some(left_piid), Some(right_piid)) => {
+            left_piid == right_piid && left.generic_args == right.generic_args
+        }
+        (None, None) if !left.iid.is_empty() || !right.iid.is_empty() => left.iid == right.iid,
+        (None, None) => left.name == right.name,
+        _ => false,
+    }
+}
+
+fn push_unique_interface(interfaces: &mut Vec<InterfaceMeta>, interface: InterfaceMeta) {
+    if !interfaces
+        .iter()
+        .any(|existing| same_interface_identity(existing, &interface))
+    {
+        interfaces.push(interface);
+    }
 }
 
 /// How an interface relates to a RuntimeClass.
@@ -107,13 +167,22 @@ pub struct ClassMeta {
     pub name: String,
     pub namespace: String,
     pub full_name: String,
+    /// Direct WinRT runtime-class base, excluding System.Object.
+    pub base_class: Option<TypeRef>,
     pub default_interface: Option<InterfaceMeta>,
     /// Supplemental interfaces, including parameterized and versioned interfaces.
     pub required_interfaces: Vec<InterfaceMeta>,
+    /// Native virtual interfaces marked OverridableAttribute. These describe
+    /// implementation callbacks, not callable projected instance members.
+    pub overridable_interfaces: Vec<InterfaceMeta>,
     pub factory_interfaces: Vec<InterfaceMeta>,
     pub static_interfaces: Vec<InterfaceMeta>,
     pub has_default_constructor: bool,
     pub constructors: Vec<ConstructorMeta>,
+    /// The runtime class appears as a value in a loaded WinRT method signature.
+    pub is_referenced_as_value: bool,
+    /// The runtime class declares MarshalingBehavior(Agile).
+    pub is_agile: bool,
     /// XML doc summary (populated from sibling .xml).
     pub doc: Option<String>,
     /// XML `<deprecated>` text.
@@ -129,6 +198,84 @@ impl ClassMeta {
             .chain(self.static_interfaces.iter())
             .chain(self.required_interfaces.iter())
     }
+
+    /// Whether authoritative WinMD metadata declares parameterless activation.
+    pub fn has_default_activation(&self) -> bool {
+        self.constructors
+            .iter()
+            .any(|constructor| constructor.kind == ConstructorKind::DefaultActivation)
+    }
+
+    /// Whether an interface is named by public activation/composition metadata.
+    pub fn is_public_constructor_factory(&self, interface: &InterfaceMeta) -> bool {
+        self.constructors.iter().any(|constructor| {
+            constructor.is_public()
+                && constructor
+                    .factory_interface
+                    .as_ref()
+                    .is_some_and(|reference| {
+                        reference.namespace == interface.namespace
+                            && reference.name == interface.name
+                    })
+        })
+    }
+}
+
+/// Collect every named type that appears in a WinRT method signature, including
+/// types nested inside arrays and parameterized types.
+pub fn method_signature_type_names(winmd_paths: &str) -> Result<HashSet<(String, String)>, String> {
+    fn collect(typ: &windows_metadata::Type, names: &mut HashSet<(String, String)>) {
+        match typ {
+            windows_metadata::Type::Name(name) => {
+                names.insert((name.namespace.clone(), name.name.clone()));
+                for generic in &name.generics {
+                    collect(generic, names);
+                }
+            }
+            windows_metadata::Type::Array(inner)
+            | windows_metadata::Type::ArrayRef(inner)
+            | windows_metadata::Type::ConstRef(inner)
+            | windows_metadata::Type::PtrMut(inner, _)
+            | windows_metadata::Type::PtrConst(inner, _)
+            | windows_metadata::Type::ArrayFixed(inner, _) => collect(inner, names),
+            _ => {}
+        }
+    }
+
+    let index = load_index(winmd_paths)
+        .ok_or_else(|| "Failed to load metadata method signatures".to_string())?;
+    let mut names = HashSet::new();
+    for def in index.all() {
+        if !def
+            .flags()
+            .contains(windows_metadata::TypeAttributes::WindowsRuntime)
+        {
+            continue;
+        }
+        let generics = def
+            .generic_params()
+            .enumerate()
+            .map(|(index, _)| {
+                u16::try_from(index)
+                    .map(windows_metadata::Type::Generic)
+                    .map_err(|_| {
+                        format!(
+                            "Generic parameter index exceeds u16 for {}.{}",
+                            def.namespace(),
+                            def.name()
+                        )
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        for method in def.methods() {
+            let signature = method.signature(&generics);
+            collect(&signature.return_type, &mut names);
+            for typ in &signature.types {
+                collect(typ, &mut names);
+            }
+        }
+    }
+    Ok(names)
 }
 
 /// List all unique namespaces found in the given winmd files.
@@ -147,6 +294,47 @@ pub fn list_namespaces(winmd_paths: &str) -> Vec<String> {
     let mut sorted: Vec<String> = namespaces.into_iter().collect();
     sorted.sort();
     sorted
+}
+
+/// Return named type short names that identify more than one semantic type in
+/// the loaded metadata graph.
+pub fn ambiguous_named_type_names(winmd_paths: &str) -> HashSet<String> {
+    let Some(index) = load_index(winmd_paths) else {
+        return HashSet::new();
+    };
+    let mut identities = HashMap::<String, HashSet<(String, TypeIdentityKind)>>::new();
+    for def in index.all() {
+        let namespace = def.namespace();
+        if namespace.is_empty() {
+            continue;
+        }
+        let name = def.name().split('`').next().unwrap_or(def.name());
+        let kind = match def.extends() {
+            Some(base) if base.namespace() == "System" && base.name() == "Enum" => {
+                TypeIdentityKind::Enum
+            }
+            Some(base) if base.namespace() == "System" && base.name() == "ValueType" => {
+                TypeIdentityKind::Struct
+            }
+            Some(base)
+                if base.namespace() == "System"
+                    && matches!(base.name(), "Delegate" | "MulticastDelegate") =>
+            {
+                TypeIdentityKind::Delegate
+            }
+            Some(_) => TypeIdentityKind::Class,
+            None => TypeIdentityKind::Interface,
+        };
+        identities
+            .entry(name.to_string())
+            .or_default()
+            .insert((namespace.to_string(), kind));
+    }
+    identities
+        .into_iter()
+        .filter(|(_, identities)| identities.len() > 1)
+        .map(|(name, _)| name)
+        .collect()
 }
 
 /// Parse a WinMD file and extract metadata for a single RuntimeClass.
@@ -315,6 +503,41 @@ pub fn resolve_dependencies(
     existing_interfaces: &[InterfaceMeta],
     existing_enums: &[TypeMeta],
 ) -> ResolvedDeps {
+    resolve_dependencies_impl(
+        winmd_paths,
+        classes,
+        existing_interfaces,
+        existing_enums,
+        false,
+        true,
+    )
+}
+
+/// Resolve dependencies needed by Python's structural class and interface stubs.
+pub fn resolve_python_dependencies(
+    winmd_paths: &str,
+    classes: &[ClassMeta],
+    existing_interfaces: &[InterfaceMeta],
+    existing_enums: &[TypeMeta],
+) -> ResolvedDeps {
+    resolve_dependencies_impl(
+        winmd_paths,
+        classes,
+        existing_interfaces,
+        existing_enums,
+        true,
+        true,
+    )
+}
+
+fn resolve_dependencies_impl(
+    winmd_paths: &str,
+    classes: &[ClassMeta],
+    existing_interfaces: &[InterfaceMeta],
+    existing_enums: &[TypeMeta],
+    include_inheritance: bool,
+    preserve_semantic_identity: bool,
+) -> ResolvedDeps {
     let index = match load_index(winmd_paths) {
         Some(idx) => idx,
         None => {
@@ -326,20 +549,26 @@ pub fn resolve_dependencies(
         }
     };
 
-    // Track all known type names (already generated or discovered)
-    let mut known: HashSet<String> = HashSet::new();
+    // Preserve semantic identities so namespace-distinct and closed generic
+    // dependencies cannot collapse before either language projects a name.
+    let mut known: HashSet<TypeIdentity> = HashSet::new();
     for c in classes {
-        known.insert(c.name.clone());
+        known.insert(dependency_identity(
+            TypeIdentity::named(TypeIdentityKind::Class, c.namespace.clone(), c.name.clone()),
+            &c.name,
+            preserve_semantic_identity,
+        ));
     }
     for i in existing_interfaces {
-        known.insert(i.name.clone());
+        known.insert(dependency_identity(
+            i.type_identity(),
+            &i.name,
+            preserve_semantic_identity,
+        ));
     }
-    for e in existing_enums {
-        if let TypeMeta::Enum { name, .. } = e {
-            known.insert(name.clone());
-        }
+    for typ in existing_enums {
+        known.insert(type_dependency_identity(typ, preserve_semantic_identity));
     }
-
     let mut dep_classes: Vec<ClassMeta> = Vec::new();
     let mut dep_interfaces: Vec<InterfaceMeta> = Vec::new();
     let mut dep_enums: Vec<TypeMeta> = Vec::new();
@@ -347,12 +576,21 @@ pub fn resolve_dependencies(
     // Seed the worklist from initial types
     let mut worklist: Vec<TypeRef> = Vec::new();
     let mut param_worklist: Vec<TypeMeta> = Vec::new();
-    collect_all_refs_from_classes(classes, &known, &mut worklist, &mut param_worklist);
+    collect_all_refs_from_classes(
+        classes,
+        &known,
+        &mut worklist,
+        &mut param_worklist,
+        include_inheritance,
+        preserve_semantic_identity,
+    );
     collect_all_refs_from_interfaces(
         existing_interfaces,
         &known,
         &mut worklist,
         &mut param_worklist,
+        include_inheritance,
+        preserve_semantic_identity,
     );
 
     // Fixpoint: keep resolving until no new types are discovered
@@ -368,10 +606,11 @@ pub fn resolve_dependencies(
         let mut new_interfaces = Vec::new();
 
         for r in &batch {
-            if known.contains(&r.name) {
+            let identity = type_ref_dependency_identity(r, preserve_semantic_identity);
+            if known.contains(&identity) {
                 continue;
             }
-            known.insert(r.name.clone());
+            known.insert(identity);
 
             match r.kind {
                 TypeKind::Interface => {
@@ -419,11 +658,34 @@ pub fn resolve_dependencies(
                 args,
             } = param_type
             {
-                let concrete_name = make_parameterized_name(name, args);
-                if known.contains(&concrete_name) {
+                let resolved_args = args
+                    .iter()
+                    .map(|argument| {
+                        map_winmd_type_with_generics(
+                            &type_meta_to_winmd_type(argument),
+                            &index,
+                            &[],
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                if resolved_args
+                    .iter()
+                    .any(|argument| !is_resolved_generic_arg(argument))
+                {
                     continue;
                 }
-                known.insert(concrete_name.clone());
+                let concrete_name = make_parameterized_name(name, &resolved_args);
+                let resolved_type = TypeMeta::Parameterized {
+                    namespace: namespace.clone(),
+                    name: name.clone(),
+                    piid: piid.clone(),
+                    args: resolved_args.clone(),
+                };
+                let identity = type_dependency_identity(&resolved_type, preserve_semantic_identity);
+                if known.contains(&identity) {
+                    continue;
+                }
+                known.insert(identity);
 
                 if let Some(iface) = parse_parameterized_interface(
                     &index,
@@ -431,7 +693,7 @@ pub fn resolve_dependencies(
                     name,
                     &concrete_name,
                     piid,
-                    args,
+                    &resolved_args,
                 ) {
                     new_interfaces.push(iface);
                 } else {
@@ -444,12 +706,21 @@ pub fn resolve_dependencies(
         }
 
         // Discover new references from the newly resolved types
-        collect_all_refs_from_classes(&new_classes, &known, &mut worklist, &mut param_worklist);
+        collect_all_refs_from_classes(
+            &new_classes,
+            &known,
+            &mut worklist,
+            &mut param_worklist,
+            include_inheritance,
+            preserve_semantic_identity,
+        );
         collect_all_refs_from_interfaces(
             &new_interfaces,
             &known,
             &mut worklist,
             &mut param_worklist,
+            include_inheritance,
+            preserve_semantic_identity,
         );
 
         dep_classes.extend(new_classes);
@@ -521,9 +792,10 @@ fn visit_type_refs(typ: &TypeMeta, named: &mut Vec<TypeRef>, parameterized: &mut
 /// Collect all type references from methods: both named and parameterized.
 fn collect_all_refs_from_methods(
     methods: &[MethodMeta],
-    known: &HashSet<String>,
+    known: &HashSet<TypeIdentity>,
     named_out: &mut Vec<TypeRef>,
     param_out: &mut Vec<TypeMeta>,
+    preserve_semantic_identity: bool,
 ) {
     let mut named = Vec::new();
     let mut parameterized = Vec::new();
@@ -536,18 +808,80 @@ fn collect_all_refs_from_methods(
         }
     }
     for r in named {
-        if !known.contains(&r.name) {
+        if !known.contains(&type_ref_dependency_identity(
+            &r,
+            preserve_semantic_identity,
+        )) {
             named_out.push(r);
         }
     }
     for r in parameterized {
-        if let TypeMeta::Parameterized { name, args, .. } = &r {
-            let concrete = make_parameterized_name(name, args);
-            if !known.contains(&concrete) {
-                param_out.push(r);
-            }
+        if !known.contains(&type_dependency_identity(&r, preserve_semantic_identity)) {
+            param_out.push(r);
         }
     }
+}
+
+fn collect_interface_base_ref(
+    base: &TypeMeta,
+    known: &HashSet<TypeIdentity>,
+    named_out: &mut Vec<TypeRef>,
+    param_out: &mut Vec<TypeMeta>,
+    preserve_semantic_identity: bool,
+) {
+    let mut named = Vec::new();
+    let mut parameterized = Vec::new();
+    visit_type_refs(base, &mut named, &mut parameterized);
+    named_out.extend(named.into_iter().filter(|reference| {
+        !known.contains(&type_ref_dependency_identity(
+            reference,
+            preserve_semantic_identity,
+        ))
+    }));
+    param_out.extend(parameterized.into_iter().filter(|reference| {
+        !known.contains(&type_dependency_identity(
+            reference,
+            preserve_semantic_identity,
+        ))
+    }));
+}
+
+fn dependency_identity(
+    semantic: TypeIdentity,
+    legacy_name: &str,
+    preserve_semantic_identity: bool,
+) -> TypeIdentity {
+    if preserve_semantic_identity {
+        semantic
+    } else {
+        TypeIdentity::Primitive {
+            name: format!("legacy:{legacy_name}"),
+        }
+    }
+}
+
+fn type_dependency_identity(typ: &TypeMeta, preserve_semantic_identity: bool) -> TypeIdentity {
+    dependency_identity(
+        typ.type_identity(),
+        &type_meta_short_name(typ),
+        preserve_semantic_identity,
+    )
+}
+
+fn type_ref_dependency_identity(
+    reference: &TypeRef,
+    preserve_semantic_identity: bool,
+) -> TypeIdentity {
+    let kind = match reference.kind {
+        TypeKind::Class => TypeIdentityKind::Class,
+        TypeKind::Enum => TypeIdentityKind::Enum,
+        TypeKind::Interface => TypeIdentityKind::Interface,
+    };
+    dependency_identity(
+        TypeIdentity::named(kind, reference.namespace.clone(), reference.name.clone()),
+        &reference.name,
+        preserve_semantic_identity,
+    )
 }
 
 /// Generate a concrete name for a parameterized interface, e.g. "IVector_String", "IMap_String_Object".
@@ -586,19 +920,40 @@ fn type_meta_short_name(typ: &TypeMeta) -> String {
 /// Collect all refs from a list of classes (iterates all interface methods).
 fn collect_all_refs_from_classes(
     classes: &[ClassMeta],
-    known: &HashSet<String>,
+    known: &HashSet<TypeIdentity>,
     named_out: &mut Vec<TypeRef>,
     param_out: &mut Vec<TypeMeta>,
+    include_class_bases: bool,
+    preserve_semantic_identity: bool,
 ) {
     for c in classes {
+        if include_class_bases
+            && let Some(base) = &c.base_class
+            && !known.contains(&type_ref_dependency_identity(
+                base,
+                preserve_semantic_identity,
+            ))
+        {
+            named_out.push(base.clone());
+        }
         for iface in c.all_interfaces() {
-            collect_all_refs_from_methods(&iface.methods, known, named_out, param_out);
+            collect_all_refs_from_methods(
+                &iface.methods,
+                known,
+                named_out,
+                param_out,
+                preserve_semantic_identity,
+            );
         }
         // Required interfaces themselves may need to be resolved
         for iface in &c.required_interfaces {
             if iface.generic_piid.is_none()
                 && !iface.name.is_empty()
-                && !known.contains(&iface.name)
+                && !known.contains(&dependency_identity(
+                    iface.type_identity(),
+                    &iface.name,
+                    preserve_semantic_identity,
+                ))
             {
                 named_out.push(TypeRef {
                     namespace: iface.namespace.clone(),
@@ -613,12 +968,45 @@ fn collect_all_refs_from_classes(
 /// Collect all refs from a list of standalone interfaces.
 fn collect_all_refs_from_interfaces(
     interfaces: &[InterfaceMeta],
-    known: &HashSet<String>,
+    known: &HashSet<TypeIdentity>,
     named_out: &mut Vec<TypeRef>,
     param_out: &mut Vec<TypeMeta>,
+    include_interface_bases: bool,
+    preserve_semantic_identity: bool,
 ) {
     for i in interfaces {
-        collect_all_refs_from_methods(&i.methods, known, named_out, param_out);
+        collect_all_refs_from_methods(
+            &i.methods,
+            known,
+            named_out,
+            param_out,
+            preserve_semantic_identity,
+        );
+        if include_interface_bases {
+            for base in &i.base_interfaces {
+                collect_interface_base_ref(
+                    base,
+                    known,
+                    named_out,
+                    param_out,
+                    preserve_semantic_identity,
+                );
+            }
+        }
+        if i.generic_piid.as_deref() == Some(PIID_IOBSERVABLE_VECTOR) && i.generic_args.len() == 1 {
+            let vector = TypeMeta::Parameterized {
+                namespace: WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE.into(),
+                name: "IVector".into(),
+                piid: PIID_IVECTOR.into(),
+                args: i.generic_args.clone(),
+            };
+            if !known.contains(&type_dependency_identity(
+                &vector,
+                preserve_semantic_identity,
+            )) {
+                param_out.push(vector);
+            }
+        }
     }
 }
 
@@ -656,20 +1044,29 @@ pub fn expand_winmd_paths(winmd_paths: &str) -> String {
                 continue;
             }
             if let Ok(entries) = std::fs::read_dir(parent) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path
-                        .extension()
-                        .map_or(false, |ext| ext.eq_ignore_ascii_case("winmd"))
-                    {
-                        let canonical = path
-                            .canonicalize()
-                            .map(|c| c.to_string_lossy().to_string())
-                            .unwrap_or_else(|_| path.to_string_lossy().to_string());
-                        if seen.insert(canonical) {
-                            eprintln!("Auto-discovered sibling winmd: {}", path.display());
-                            all_paths.push(path.to_string_lossy().to_string());
-                        }
+                let mut siblings = entries
+                    .flatten()
+                    .map(|entry| entry.path())
+                    .filter(|path| {
+                        path.extension()
+                            .map_or(false, |ext| ext.eq_ignore_ascii_case("winmd"))
+                    })
+                    .collect::<Vec<_>>();
+                siblings.sort_by(|left, right| {
+                    let left = left.to_string_lossy();
+                    let right = right.to_string_lossy();
+                    left.to_ascii_lowercase()
+                        .cmp(&right.to_ascii_lowercase())
+                        .then_with(|| left.cmp(&right))
+                });
+                for path in siblings {
+                    let canonical = path
+                        .canonicalize()
+                        .map(|c| c.to_string_lossy().to_string())
+                        .unwrap_or_else(|_| path.to_string_lossy().to_string());
+                    if seen.insert(canonical) {
+                        eprintln!("Auto-discovered sibling winmd: {}", path.display());
+                        all_paths.push(path.to_string_lossy().to_string());
                     }
                 }
             }
@@ -679,7 +1076,7 @@ pub fn expand_winmd_paths(winmd_paths: &str) -> String {
     all_paths.join(";")
 }
 
-fn load_index(winmd_paths: &str) -> Option<reader::Index> {
+pub(crate) fn load_index(winmd_paths: &str) -> Option<reader::Index> {
     let paths: Vec<&str> = winmd_paths.split(';').filter(|s| !s.is_empty()).collect();
     if paths.is_empty() {
         eprintln!("warning: no winmd paths provided");
@@ -715,13 +1112,24 @@ fn load_index(winmd_paths: &str) -> Option<reader::Index> {
 fn parse_class_from_index(index: &reader::Index, namespace: &str, name: &str) -> Option<ClassMeta> {
     let def = index.get(namespace, name).next()?;
     let full_name = format!("{}.{}", namespace, name);
+    let base_class = def.extends().and_then(|base| {
+        let namespace = base.namespace().to_string();
+        let name = base.name().to_string();
+        (!(namespace == "System" && name == "Object")).then_some(TypeRef {
+            namespace,
+            name,
+            kind: TypeKind::Class,
+        })
+    });
 
     let mut default_interface = None;
     let mut factory_interfaces = Vec::new();
     let mut static_interfaces = Vec::new();
     let mut generic_required_interfaces = Vec::new();
+    let mut overridable_interfaces = Vec::new();
     let mut has_default_constructor = false;
     let mut constructors = Vec::new();
+    let mut is_agile = false;
 
     // 1. Find default interface and collect all required interfaces
     let mut required_iface_names: Vec<(String, String)> = Vec::new();
@@ -732,6 +1140,16 @@ fn parse_class_from_index(index: &reader::Index, namespace: &str, name: &str) ->
             _ => continue,
         };
 
+        if iface_impl.has_attribute("OverridableAttribute") {
+            if let Some(iface_meta) = parse_interface_type(index, &iface_ty)
+                && !overridable_interfaces
+                    .iter()
+                    .any(|existing| same_interface_identity(existing, &iface_meta))
+            {
+                overridable_interfaces.push(iface_meta);
+            }
+            continue;
+        }
         if iface_impl.has_attribute("DefaultAttribute") {
             if let Some(iface_meta) = parse_interface_type(index, &iface_ty) {
                 default_interface = Some(iface_meta);
@@ -741,7 +1159,7 @@ fn parse_class_from_index(index: &reader::Index, namespace: &str, name: &str) ->
             windows_metadata::Type::Name(type_name) if !type_name.generics.is_empty()
         ) {
             if let Some(iface_meta) = parse_interface_type(index, &iface_ty) {
-                generic_required_interfaces.push(iface_meta);
+                push_unique_interface(&mut generic_required_interfaces, iface_meta);
             }
         } else {
             // Non-default required interface (e.g. ILanguageModel2, versioned interfaces)
@@ -752,13 +1170,10 @@ fn parse_class_from_index(index: &reader::Index, namespace: &str, name: &str) ->
     // 1a. Walk ancestor classes and inherit their interfaces. In WinRT the runtime
     // reaches parent-class members via QI on the child instance — but each parent's
     // interface_impls are only listed on the parent's TypeDef, not repeated on the
-    // child. So we walk def.extends() ourselves and flatten every non-generic
+    // child. So we walk def.extends() ourselves and flatten every
     // ancestor interface onto this class's required_interfaces. Without this,
     // Button.background (from Control), ScrollViewer.content (from ContentControl),
     // and every other inherited member is silently absent from the wrapper class.
-    let default_iface_key = default_interface
-        .as_ref()
-        .map(|d| (d.namespace.clone(), d.name.clone()));
     let mut ancestor_key: Option<(String, String)> = def
         .extends()
         .map(|e| (e.namespace().to_string(), e.name().to_string()));
@@ -772,15 +1187,35 @@ fn parse_class_from_index(index: &reader::Index, namespace: &str, name: &str) ->
         };
         for iface_impl in parent_def.interface_impls() {
             let iface_ty = iface_impl.interface(&[]);
+            if iface_impl.has_attribute("OverridableAttribute") {
+                if let Some(iface_meta) = parse_interface_type(index, &iface_ty)
+                    && !overridable_interfaces
+                        .iter()
+                        .any(|existing| same_interface_identity(existing, &iface_meta))
+                {
+                    overridable_interfaces.push(iface_meta);
+                }
+                continue;
+            }
             if let windows_metadata::Type::Name(tn) = &iface_ty {
-                // Skip generic instantiations — parse_interface can't substitute
-                // args here, and their flavor-specific files (IVector_T.js etc.)
-                // are already emitted separately for explicit casts.
                 if !tn.generics.is_empty() {
+                    // Do not fall back to the open generic definition: a failed
+                    // resolution would register the wrong IID and method types.
+                    if let Some(iface_meta) = parse_interface_type(index, &iface_ty)
+                        && !default_interface
+                            .as_ref()
+                            .is_some_and(|default| same_interface_identity(default, &iface_meta))
+                    {
+                        push_unique_interface(&mut generic_required_interfaces, iface_meta);
+                    }
                     continue;
                 }
                 let key = (tn.namespace.clone(), tn.name.clone());
-                if default_iface_key.as_ref() == Some(&key) {
+                if default_interface.as_ref().is_some_and(|default| {
+                    default.generic_piid.is_none()
+                        && default.namespace == key.0
+                        && default.name == key.1
+                }) {
                     continue;
                 }
                 if required_iface_names.iter().any(|k| k == &key) {
@@ -800,11 +1235,18 @@ fn parse_class_from_index(index: &reader::Index, namespace: &str, name: &str) ->
     for (ns, iname) in &required_iface_names {
         if let Some(req_iface) = parse_interface(index, ns, iname) {
             if !req_iface.methods.is_empty() {
-                required_interfaces.push(req_iface);
+                push_unique_interface(&mut required_interfaces, req_iface);
             }
         }
     }
-    required_interfaces.extend(generic_required_interfaces);
+    for interface in generic_required_interfaces {
+        if !default_interface
+            .as_ref()
+            .is_some_and(|default| same_interface_identity(default, &interface))
+        {
+            push_unique_interface(&mut required_interfaces, interface);
+        }
+    }
 
     // 2. Find factory/static/default-constructor from class-level attributes
     for attr in def.attributes() {
@@ -844,17 +1286,18 @@ fn parse_class_from_index(index: &reader::Index, namespace: &str, name: &str) ->
                         },
                     );
                 }
-                _ => {
-                    has_default_constructor = true;
-                    push_unique_constructor(
-                        &mut constructors,
-                        ConstructorMeta {
-                            kind: ConstructorKind::DefaultActivation,
-                            factory_interface: None,
-                        },
-                    );
-                }
+                // Unknown or malformed activation metadata must fail closed.
+                // Inferring a default constructor here makes system-returned
+                // classes user-constructible.
+                _ => {}
             }
+        } else if attr_name == "MarshalingBehaviorAttribute" {
+            is_agile = values.first().is_some_and(|(_, value)| {
+                matches!(
+                    value,
+                    windows_metadata::Value::I32(2) | windows_metadata::Value::U32(2)
+                )
+            });
         } else if attr_name == "StaticAttribute" {
             if let Some((_, windows_metadata::Value::Utf8(iface_full_name))) = values.first() {
                 if let Some((ns, n)) = split_full_name(iface_full_name) {
@@ -892,12 +1335,16 @@ fn parse_class_from_index(index: &reader::Index, namespace: &str, name: &str) ->
         name: name.to_string(),
         namespace: namespace.to_string(),
         full_name,
+        base_class,
         default_interface,
         required_interfaces,
+        overridable_interfaces,
         factory_interfaces,
         static_interfaces,
         has_default_constructor,
         constructors,
+        is_referenced_as_value: false,
+        is_agile,
         doc: None,
         deprecated: None,
     })
@@ -944,6 +1391,9 @@ fn parse_interface_type(
     if type_name.generics.is_empty() {
         return parse_interface(index, &type_name.namespace, &type_name.name);
     }
+    if type_name.generics.iter().any(contains_open_generic) {
+        return None;
+    }
 
     let TypeMeta::Parameterized {
         namespace,
@@ -960,8 +1410,49 @@ fn parse_interface_type(
     else {
         return None;
     };
+    if piid.is_empty() || args.iter().any(|arg| !is_resolved_generic_arg(arg)) {
+        return None;
+    }
     let concrete_name = make_parameterized_name(&name, &args);
     parse_parameterized_interface(index, &namespace, &name, &concrete_name, &piid, &args)
+}
+
+fn contains_open_generic(typ: &windows_metadata::Type) -> bool {
+    match typ {
+        windows_metadata::Type::Generic(_) => true,
+        windows_metadata::Type::Name(name) => name.generics.iter().any(contains_open_generic),
+        windows_metadata::Type::Array(inner)
+        | windows_metadata::Type::ArrayRef(inner)
+        | windows_metadata::Type::ConstRef(inner)
+        | windows_metadata::Type::PtrMut(inner, _)
+        | windows_metadata::Type::PtrConst(inner, _)
+        | windows_metadata::Type::ArrayFixed(inner, _) => contains_open_generic(inner),
+        _ => false,
+    }
+}
+
+fn is_resolved_generic_arg(typ: &TypeMeta) -> bool {
+    match typ {
+        TypeMeta::Interface { iid, .. } | TypeMeta::Delegate { iid, .. } => !iid.is_empty(),
+        TypeMeta::RuntimeClass {
+            default_interface, ..
+        } => default_interface
+            .as_deref()
+            .is_some_and(is_resolved_generic_arg),
+        TypeMeta::Parameterized { piid, args, .. } => {
+            !piid.is_empty() && args.iter().all(is_resolved_generic_arg)
+        }
+        TypeMeta::Array(inner)
+        | TypeMeta::AsyncOperation(inner)
+        | TypeMeta::AsyncActionWithProgress(inner) => is_resolved_generic_arg(inner),
+        TypeMeta::AsyncOperationWithProgress(result, progress) => {
+            is_resolved_generic_arg(result) && is_resolved_generic_arg(progress)
+        }
+        TypeMeta::Struct { fields, .. } => fields
+            .iter()
+            .all(|field| is_resolved_generic_arg(&field.typ)),
+        _ => true,
+    }
 }
 
 /// Parse a parameterized interface definition (e.g. IVector`1) from winmd,
@@ -977,7 +1468,60 @@ fn parse_parameterized_interface(
 ) -> Option<InterfaceMeta> {
     let trimmed_name = generic_name.split('`').next().unwrap_or(generic_name);
     let def = index.get(namespace, trimmed_name).next()?;
-    parse_interface_methods(index, &def, concrete_name, namespace, piid, generic_args)
+    let mut interface =
+        parse_interface_methods(index, &def, concrete_name, namespace, piid, generic_args)?;
+    interface.generic_name = Some(generic_name.to_string());
+    Some(interface)
+}
+
+fn interface_meta_type_identity(typ: &TypeMeta) -> Option<(String, String)> {
+    match typ {
+        TypeMeta::Interface {
+            namespace, name, ..
+        } => Some((namespace.clone(), name.clone())),
+        TypeMeta::Parameterized {
+            namespace,
+            name,
+            args,
+            ..
+        } => Some((namespace.clone(), make_parameterized_name(name, args))),
+        _ => None,
+    }
+}
+
+fn parse_interface_meta_type(index: &reader::Index, typ: &TypeMeta) -> Option<InterfaceMeta> {
+    match typ {
+        TypeMeta::Interface {
+            namespace, name, ..
+        } => parse_interface(index, namespace, name),
+        TypeMeta::Parameterized {
+            namespace,
+            name,
+            piid,
+            args,
+        } => {
+            let concrete_name = make_parameterized_name(name, args);
+            parse_parameterized_interface(index, namespace, name, &concrete_name, piid, args)
+        }
+        _ => None,
+    }
+}
+
+fn collect_interface_base_closure(
+    index: &reader::Index,
+    interface: &InterfaceMeta,
+    identities: &mut HashSet<(String, String)>,
+) {
+    for base in &interface.base_interfaces {
+        let Some(identity) = interface_meta_type_identity(base) else {
+            continue;
+        };
+        if identities.insert(identity)
+            && let Some(base_interface) = parse_interface_meta_type(index, base)
+        {
+            collect_interface_base_closure(index, &base_interface, identities);
+        }
+    }
 }
 
 /// Core interface parsing: extract methods from a TypeDef, optionally substituting generics.
@@ -1073,12 +1617,53 @@ fn parse_interface_methods(
     } else {
         (None, Vec::new())
     };
+    let mut base_interfaces = Vec::new();
+    for interface_impl in def.interface_impls() {
+        let interface_type = interface_impl.interface(&winmd_generics);
+        let reference = match map_winmd_type_with_generics(&interface_type, index, generic_args) {
+            typ @ TypeMeta::Interface { .. } | typ @ TypeMeta::Parameterized { .. } => Some(typ),
+            _ => None,
+        };
+        if let Some(reference) = reference {
+            let name = type_meta_short_name(&reference);
+            if name != output_name
+                && name != "IInspectable"
+                && name != "IUnknown"
+                && !base_interfaces.contains(&reference)
+            {
+                base_interfaces.push(reference);
+            }
+        }
+    }
+    let closures = base_interfaces
+        .iter()
+        .map(|base| {
+            let mut identities = HashSet::new();
+            if let Some(interface) = parse_interface_meta_type(index, base) {
+                collect_interface_base_closure(index, &interface, &mut identities);
+            }
+            identities
+        })
+        .collect::<Vec<_>>();
+    base_interfaces = base_interfaces
+        .into_iter()
+        .enumerate()
+        .filter(|(index, base)| {
+            let identity = interface_meta_type_identity(base);
+            !closures.iter().enumerate().any(|(other, closure)| {
+                other != *index && identity.as_ref().is_some_and(|id| closure.contains(id))
+            })
+        })
+        .map(|(_, base)| base)
+        .collect();
     Some(InterfaceMeta {
         name: output_name.to_string(),
         namespace: namespace.to_string(),
         iid: iid.to_string(),
+        base_interfaces,
         methods,
         generic_piid,
+        generic_name: None,
         generic_args: generic_args_vec,
         doc: None,
         deprecated: None,
@@ -1194,7 +1779,7 @@ fn type_meta_to_winmd_type(typ: &TypeMeta) -> windows_metadata::Type {
     }
 }
 
-fn extract_iid(def: &reader::TypeDef) -> String {
+pub(crate) fn extract_iid(def: &reader::TypeDef) -> String {
     if let Some(attr) = def.find_attribute("GuidAttribute") {
         let args: Vec<(String, windows_metadata::Value)> = attr.value();
         if args.len() >= 11 {
@@ -1294,7 +1879,7 @@ fn map_winmd_type(ty: &windows_metadata::Type, index: &reader::Index) -> TypeMet
     map_winmd_type_with_generics(ty, index, &[])
 }
 
-fn map_winmd_type_with_generics(
+pub(crate) fn map_winmd_type_with_generics(
     ty: &windows_metadata::Type,
     index: &reader::Index,
     generic_args: &[TypeMeta],
@@ -1504,6 +2089,97 @@ mod tests {
     }
 
     #[test]
+    fn dependency_identity_preserves_namespace_inside_closed_generics() {
+        let point = |namespace: &str| TypeMeta::Struct {
+            namespace: namespace.into(),
+            name: "Point".into(),
+            fields: vec![],
+        };
+        let closed = |argument| TypeMeta::Parameterized {
+            namespace: "Example.Collections".into(),
+            name: "IBox`1".into(),
+            piid: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa".into(),
+            args: vec![argument],
+        };
+        let left = closed(point("Example.Left"));
+        let right = closed(point("Example.Right"));
+
+        let projected_name = |typ: &TypeMeta| match typ {
+            TypeMeta::Parameterized { name, args, .. } => make_parameterized_name(name, args),
+            _ => unreachable!(),
+        };
+        assert_eq!(projected_name(&left), projected_name(&right));
+        assert_ne!(left.type_identity(), right.type_identity());
+    }
+
+    #[test]
+    fn dependency_collection_keeps_same_short_named_references() {
+        let left = TypeMeta::Interface {
+            namespace: "Example.Left".into(),
+            name: "IValue".into(),
+            iid: "11111111-1111-1111-1111-111111111111".into(),
+        };
+        let right = TypeMeta::Interface {
+            namespace: "Example.Right".into(),
+            name: "IValue".into(),
+            iid: "22222222-2222-2222-2222-222222222222".into(),
+        };
+        let known = HashSet::from([left.type_identity()]);
+        let method = MethodMeta {
+            params: vec![ParamMeta {
+                name: "value".into(),
+                typ: right,
+                direction: ParamDirection::In,
+            }],
+            ..Default::default()
+        };
+        let mut named = Vec::new();
+        let mut parameterized = Vec::new();
+
+        collect_all_refs_from_methods(&[method], &known, &mut named, &mut parameterized, true);
+
+        assert_eq!(named.len(), 1);
+        assert_eq!(named[0].namespace, "Example.Right");
+        assert!(parameterized.is_empty());
+    }
+
+    #[test]
+    fn instantiated_interface_identity_includes_generic_arguments() {
+        let interface = |arg| InterfaceMeta {
+            name: "ISameShortName".into(),
+            namespace: "N".into(),
+            iid: "generic-piid".into(),
+            generic_piid: Some("generic-piid".into()),
+            generic_args: vec![arg],
+            ..Default::default()
+        };
+        let mut interfaces = Vec::new();
+        push_unique_interface(&mut interfaces, interface(TypeMeta::U32));
+        push_unique_interface(&mut interfaces, interface(TypeMeta::U64));
+        push_unique_interface(&mut interfaces, interface(TypeMeta::U32));
+        assert_eq!(interfaces.len(), 2);
+    }
+
+    #[test]
+    fn parameterized_dependency_identity_includes_argument_namespace() {
+        let key = |namespace: &str| {
+            TypeMeta::Parameterized {
+                namespace: WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE.into(),
+                name: "IVector".into(),
+                piid: PIID_IVECTOR.into(),
+                args: vec![TypeMeta::RuntimeClass {
+                    namespace: namespace.into(),
+                    name: "PointerPoint".into(),
+                    default_interface: None,
+                }],
+            }
+            .type_identity()
+        };
+
+        assert_ne!(key("Windows.UI.Input"), key("Microsoft.UI.Input"));
+    }
+
+    #[test]
     fn class_all_interfaces_iterates_all() {
         let mk_iface = |n: &str| InterfaceMeta {
             name: n.into(),
@@ -1655,6 +2331,27 @@ mod tests {
     fn test_system_returned_class_has_no_constructor() {
         let class = parse_class(WINDOWS_WINMD, "Windows.System", "User").unwrap();
         assert!(class.constructors.is_empty());
+        assert!(!class.static_interfaces.is_empty());
+        assert!(
+            !class.required_interfaces.is_empty(),
+            "versioned User interfaces must remain available"
+        );
+
+        let context = crate::codegen::python::PythonProjectionContext::standalone(
+            std::iter::once(TypeIdentity::named(
+                TypeIdentityKind::Class,
+                class.namespace.clone(),
+                class.name.clone(),
+            ))
+            .chain(class.all_interfaces().map(InterfaceMeta::type_identity)),
+        )
+        .unwrap();
+        let py = crate::codegen::winrt::python::generate_class(&context, &class, &HashSet::new());
+        let pyi =
+            crate::codegen::python_stub::generate_class_stub(&context, &class, &HashSet::new());
+        assert!(py.contains("def _from_native(cls, obj: DynWinRTValue):"));
+        assert!(py.contains("User cannot be constructed directly"));
+        assert!(pyi.contains("def __init__(self, _not_constructible: NoReturn) -> None: ..."));
     }
 
     #[test]
@@ -1683,9 +2380,75 @@ mod tests {
 
         let stack_panel =
             parse_class(&winmd_paths, "Microsoft.UI.Xaml.Controls", "StackPanel").unwrap();
+        assert!(stack_panel.is_agile);
         assert!(stack_panel.constructors.iter().any(|constructor| {
             constructor.kind == ConstructorKind::PublicComposition && constructor.is_public()
         }));
+        let stack_factory = stack_panel
+            .factory_interfaces
+            .iter()
+            .find(|interface| interface.name == "IStackPanelFactory")
+            .unwrap();
+        let create = stack_factory
+            .methods
+            .iter()
+            .find(|method| method.name == "CreateInstance")
+            .unwrap();
+        assert_eq!(
+            create
+                .params
+                .iter()
+                .map(|param| (param.name.as_str(), &param.direction))
+                .collect::<Vec<_>>(),
+            vec![
+                ("baseInterface", &ParamDirection::In),
+                ("innerInterface", &ParamDirection::Out),
+            ]
+        );
+        assert!(matches!(
+            create.return_type,
+            Some(TypeMeta::RuntimeClass { ref name, .. }) if name == "StackPanel"
+        ));
+        assert!(
+            stack_panel
+                .overridable_interfaces
+                .iter()
+                .any(|interface| interface.name == "IUIElementOverrides")
+        );
+        let framework_overrides = stack_panel
+            .overridable_interfaces
+            .iter()
+            .find(|interface| interface.name == "IFrameworkElementOverrides")
+            .unwrap();
+        assert_eq!(
+            framework_overrides.iid,
+            "ffc6fd98-f38c-5904-9ce4-97a3427cf4ba"
+        );
+        assert_eq!(
+            framework_overrides
+                .methods
+                .iter()
+                .map(|method| (method.name.as_str(), method.vtable_index))
+                .collect::<Vec<_>>(),
+            vec![
+                ("MeasureOverride", 6),
+                ("ArrangeOverride", 7),
+                ("OnApplyTemplate", 8),
+                ("GoToElementStateCore", 9),
+            ]
+        );
+        let on_apply_template = &framework_overrides.methods[2];
+        assert!(on_apply_template.params.is_empty());
+        assert!(on_apply_template.return_type.is_none());
+        assert_eq!(
+            stack_panel
+                .overridable_interfaces
+                .iter()
+                .find(|interface| interface.name == "IUIElementOverrides")
+                .unwrap()
+                .iid,
+            "9034f41e-ab7b-59e7-8168-50de6b689dde"
+        );
 
         let automation_peer = parse_class(
             &winmd_paths,
@@ -1696,6 +2459,38 @@ mod tests {
         assert!(automation_peer.constructors.iter().any(|constructor| {
             constructor.kind == ConstructorKind::ProtectedComposition && !constructor.is_public()
         }));
+        assert!(
+            automation_peer
+                .overridable_interfaces
+                .iter()
+                .any(|interface| interface.name == "IAutomationPeerOverrides")
+        );
+        let context = crate::codegen::python::PythonProjectionContext::standalone(
+            std::iter::once(TypeIdentity::named(
+                TypeIdentityKind::Class,
+                automation_peer.namespace.clone(),
+                automation_peer.name.clone(),
+            ))
+            .chain(
+                automation_peer
+                    .all_interfaces()
+                    .map(InterfaceMeta::type_identity),
+            ),
+        )
+        .unwrap();
+        let py = crate::codegen::winrt::python::generate_class(
+            &context,
+            &automation_peer,
+            &HashSet::new(),
+        );
+        let pyi = crate::codegen::python_stub::generate_class_stub(
+            &context,
+            &automation_peer,
+            &HashSet::new(),
+        );
+        assert!(py.contains("AutomationPeer cannot be constructed directly"));
+        assert!(py.contains("def _from_native(cls, obj: DynWinRTValue):"));
+        assert!(pyi.contains("def __init__(self, _not_constructible: NoReturn) -> None: ..."));
     }
 
     #[test]
@@ -1817,6 +2612,9 @@ mod tests {
 
 #[cfg(test)]
 mod iface_tests {
+    use std::collections::HashSet;
+
+    use crate::types::TypeMeta;
     use windows_metadata::reader;
     const WINDOWS_WINMD: &str =
         r"C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0\Windows.winmd";
@@ -1886,5 +2684,88 @@ mod iface_tests {
                 name
             );
         }
+    }
+
+    #[test]
+    fn unresolved_parameterized_interface_types_fail_closed() {
+        let index = reader::Index::read(WINDOWS_WINMD).unwrap();
+        let open_vector = windows_metadata::Type::Name(windows_metadata::TypeName {
+            namespace: "Windows.Foundation.Collections".into(),
+            name: "IVector`1".into(),
+            generics: vec![windows_metadata::Type::Generic(0)],
+        });
+        assert!(super::parse_interface_type(&index, &open_vector).is_none());
+
+        let unresolved_arg = windows_metadata::Type::Name(windows_metadata::TypeName {
+            namespace: "Windows.Foundation.Collections".into(),
+            name: "IVector`1".into(),
+            generics: vec![windows_metadata::Type::named("Missing.Metadata", "Unknown")],
+        });
+        assert!(super::parse_interface_type(&index, &unresolved_arg).is_none());
+    }
+
+    #[test]
+    fn observable_vector_discovers_mutable_vector_dependency() {
+        let interface = super::InterfaceMeta {
+            name: "IObservableVector_ICommandBarElement".into(),
+            namespace: "Windows.Foundation.Collections".into(),
+            generic_piid: Some(super::PIID_IOBSERVABLE_VECTOR.into()),
+            generic_args: vec![TypeMeta::Interface {
+                namespace: "Microsoft.UI.Xaml.Controls".into(),
+                name: "ICommandBarElement".into(),
+                iid: "f8eb20b4-373e-5327-9942-66a1ea21f5f9".into(),
+            }],
+            ..Default::default()
+        };
+        let mut named = Vec::new();
+        let mut parameterized = Vec::new();
+
+        super::collect_all_refs_from_interfaces(
+            &[interface],
+            &HashSet::new(),
+            &mut named,
+            &mut parameterized,
+            false,
+            true,
+        );
+
+        assert!(named.is_empty());
+        assert_eq!(parameterized.len(), 1);
+        assert!(matches!(
+            &parameterized[0],
+            TypeMeta::Parameterized {
+                namespace,
+                name,
+                piid,
+                args,
+            } if namespace == super::WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE
+                && name == "IVector"
+                && piid == super::PIID_IVECTOR
+                && args == &vec![TypeMeta::Interface {
+                    namespace: "Microsoft.UI.Xaml.Controls".into(),
+                    name: "ICommandBarElement".into(),
+                    iid: "f8eb20b4-373e-5327-9942-66a1ea21f5f9".into(),
+                }]
+        ));
+    }
+
+    #[test]
+    fn observable_vector_dependency_is_resolved_for_emission() {
+        let observable = super::InterfaceMeta {
+            name: "IObservableVector_String".into(),
+            namespace: "Windows.Foundation.Collections".into(),
+            generic_piid: Some(super::PIID_IOBSERVABLE_VECTOR.into()),
+            generic_args: vec![TypeMeta::String],
+            ..Default::default()
+        };
+
+        let dependencies = super::resolve_dependencies(WINDOWS_WINMD, &[], &[observable], &[]);
+
+        assert!(
+            dependencies
+                .interfaces
+                .iter()
+                .any(|interface| interface.name == "IVector_String")
+        );
     }
 }

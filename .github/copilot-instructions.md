@@ -33,14 +33,14 @@ python -m pytest tests/ -v
 # JS binding (requires Node.js 18+)
 cd bindings/js
 npm install
-npx napi build --no-const-enum --platform --release -o dist
+npm run build
 
 # Code generation (JS + .d.ts is the default; --lang py for Python)
 cargo run -p dynwinrt-codegen -- generate --namespace Windows.Foundation --class-name Uri --output ./generated
 cargo run -p dynwinrt-codegen -- generate --namespace Windows.Foundation --class-name Uri --lang py --output ./generated
 
 # E2E test (full pipeline: winmd → generate → call real WinRT APIs)
-.\tests\e2e_test.ps1 -SkipBuild -Lang py
+.\tests\e2e\e2e_test.ps1 -SkipBuild -Lang py
 ```
 
 ## E2E Testing
@@ -49,15 +49,15 @@ The E2E test framework validates the full pipeline: reading .winmd metadata → 
 
 ### How it works
 
-1. **Test specs** are defined in `tests/e2e_specs.json` (schema: `tests/e2e_specs.schema.json`) — each entry describes:
+1. **Test specs** are defined in `tests/e2e/e2e_specs.json` (schema: `tests/e2e/e2e_specs.schema.json`) — each entry describes:
    - `instantiate`: how to create an instance (`activate`, `static_factory`, or `none`)
    - `checks`: array of assertions (`property_equals`, `property_exists`, `method_equals`, `method_result_contains`, `static_equals`, `static_not_null`)
 
-2. **Runners** (`tests/runners/py_runner.py`, `tests/runners/ts_runner.ts`) read the specs and execute them, outputting `results.json`.
+2. **Runners** (`tests/e2e/runners/py_runner.py`, `tests/e2e/runners/ts_runner.ts`, and `tests/e2e/runners/com/*.mjs`) execute generated WinRT and Classic COM bindings.
 
-3. **Orchestrator** (`tests/e2e_test.ps1`) handles build, code generation, and runner invocation.
+3. **Orchestrator** (`tests/e2e/e2e_test.ps1`) handles build, temporary code generation, and runner invocation. Use `-Lang com` for the Classic COM suite; it requires `DYNWINRT_WIN32_WINMD` or an installed `Microsoft.Windows.SDK.Win32Metadata` package.
 
-4. **Adding new test cases**: Add entries to `e2e_specs.json`:
+4. **Adding new test cases**: Add entries to `tests/e2e/e2e_specs.json`:
 ```json
 {
   "namespace": "Windows.Foundation",
@@ -94,6 +94,17 @@ These APIs are available on any Windows 10/11 machine without WinAppSDK:
 - **Interface registration** is by IID (GUID) — each IID maps to one vtable with methods
 - **Method invocation** returns a single `WinRTValue` (not a list) in Python binding
 - **Generated code** uses relative imports (`from .module import Class`) — must be in a Python package
+
+### Classic COM implementation rule
+
+For Classic COM, Windows.Win32 metadata, pointer, handle, ownership, or native
+ABI changes, follow
+[`classic-com-abi`](skills/classic-com-abi/SKILL.md). Model native type plus
+parameter contract before language projection, keep COM separate from WinRT,
+and fail closed when layout or ownership is incomplete. JavaScript ergonomics
+belong to the codegen projection layer; the renderer must not infer ABI
+semantics. Classic COM changes must preserve existing WinRT models, generated
+output, runtime behavior, and the `@microsoft/dynwinrt` root API.
 
 ### Code Generator (dynwinrt-codegen)
 - `src/codegen/project.rs` + `src/codegen/projected.rs` — Build the language-neutral `ProjectedFile` IR from parsed metadata

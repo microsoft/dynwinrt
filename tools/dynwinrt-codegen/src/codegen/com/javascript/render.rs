@@ -1,0 +1,2716 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+//! Pure JavaScript and declaration rendering for validated Classic-COM IR.
+
+use std::collections::BTreeMap;
+
+#[cfg(test)]
+use super::super::ir::ProjectedComEnumMember;
+use super::super::ir::{
+    ActivationPlan, BufferCountUnit, ComEnumUnderlying, ComParamDirection, ComPrimitive,
+    ComReturnConvention, ComSinkReturnConvention, ComType, DispatchShape, OverloadDispatch,
+    PointerAliasKind, ProjectedComCoclass, ProjectedComEnum, ProjectedComInterface,
+    ProjectedComMethod, ProjectedComMethodKind, ProjectedComParam, ProjectedComResult,
+    ProjectedEnumValue, ProjectedInterfaceRef, ResultConversion, ResultSource, SharedCountPlan,
+    StringEncoding, TypedBufferPlan, TypedBufferRelation, TypedBufferSizing,
+};
+use super::naming::js_param_name;
+#[cfg(test)]
+use super::types::type_dts;
+use super::types::{
+    abi_type_js, input_type_dts, native_pod_descriptor_js, native_pod_layout_js,
+    native_union_descriptor_js, native_union_layout_js, result_type_dts, safe_array_abi_type_js,
+    scalar_type_dts, unwrap_callback_arg_js, unwrap_result_js, wrap_arg_js,
+};
+use crate::codegen::com::{canonical_module_file_path, relative_module_specifier};
+use crate::codegen::winrt::javascript::render::javascript::commonjs::convert_to_cjs_with_eager;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComGeneratedOutput {
+    pub js: String,
+    pub dts: String,
+    pub extra_files: Vec<(String, String)>,
+}
+
+pub(in crate::codegen::com) fn render_com_interface(
+    meta: &ProjectedComInterface,
+) -> Result<ComGeneratedOutput, String> {
+    render_projected_interface(meta)
+}
+
+fn render_projected_interface(meta: &ProjectedComInterface) -> Result<ComGeneratedOutput, String> {
+    let js = com_esm_to_cjs(&render_js(meta), &meta.namespace);
+    let dts = render_dts(meta);
+    let mut extra_files = BTreeMap::new();
+    for en in &meta.referenced_enums {
+        let (enum_js, enum_dts) = render_enum_files(en);
+        insert_unique_extra_file(
+            &mut extra_files,
+            canonical_module_file_path(&en.namespace, &en.name, "js")?,
+            enum_js,
+            &format!("enum {}.{}", en.namespace, en.name),
+        )?;
+        insert_unique_extra_file(
+            &mut extra_files,
+            canonical_module_file_path(&en.namespace, &en.name, "d.ts")?,
+            enum_dts,
+            &format!("enum {}.{}", en.namespace, en.name),
+        )?;
+    }
+    Ok(ComGeneratedOutput {
+        js,
+        dts,
+        extra_files: extra_files.into_iter().collect(),
+    })
+}
+
+pub(in crate::codegen::com) fn render_com_coclass(
+    meta: &ProjectedComCoclass,
+) -> Result<ComGeneratedOutput, String> {
+    let (js, dts) = render_coclass_files(
+        &meta.namespace,
+        &meta.name,
+        &meta.clsid,
+        &meta.primary_interface,
+    );
+    let mut extra_files = BTreeMap::new();
+    for interface in &meta.associated_interfaces {
+        let output = render_projected_interface(interface)?;
+        let identity = format!("interface {}.{}", interface.namespace, interface.name);
+        insert_unique_extra_file(
+            &mut extra_files,
+            canonical_module_file_path(&interface.namespace, &interface.name, "js")?,
+            output.js,
+            &identity,
+        )?;
+        insert_unique_extra_file(
+            &mut extra_files,
+            canonical_module_file_path(&interface.namespace, &interface.name, "d.ts")?,
+            output.dts,
+            &identity,
+        )?;
+        for (name, content) in output.extra_files {
+            insert_shared_extra_file(&mut extra_files, name, content)?;
+        }
+    }
+    Ok(ComGeneratedOutput {
+        js,
+        dts,
+        extra_files: extra_files.into_iter().collect(),
+    })
+}
+
+fn insert_unique_extra_file(
+    files: &mut BTreeMap<String, String>,
+    path: String,
+    content: String,
+    identity: &str,
+) -> Result<(), String> {
+    if files.contains_key(&path) {
+        return Err(format!(
+            "Classic-COM canonical path collision for {identity}: `{path}` is already emitted"
+        ));
+    }
+    files.insert(path, content);
+    Ok(())
+}
+
+fn insert_shared_extra_file(
+    files: &mut BTreeMap<String, String>,
+    path: String,
+    content: String,
+) -> Result<(), String> {
+    if let Some(existing) = files.get(&path) {
+        if existing != &content {
+            return Err(format!(
+                "Classic-COM coclass emitted conflicting canonical output `{path}`"
+            ));
+        }
+        return Ok(());
+    }
+    files.insert(path, content);
+    Ok(())
+}
+
+fn render_coclass_files(
+    namespace: &str,
+    name: &str,
+    clsid: &str,
+    primary_interface: &ProjectedComInterface,
+) -> (String, String) {
+    let primary_import = relative_module_specifier(
+        namespace,
+        name,
+        &primary_interface.namespace,
+        &primary_interface.name,
+    );
+    let mut js = String::new();
+    js.push_str("// Generated by dynwinrt-codegen — do not edit\n");
+    js.push_str(&format!(
+        "import {{ DynCom }} from '{}';\n",
+        com_runtime_import_name_for_module(namespace)
+    ));
+    js.push_str(&format!(
+        "import {{ {}, IID_{} }} from '{}';\n\n",
+        primary_interface.name, primary_interface.name, primary_import
+    ));
+    js.push_str(&format!("export const CLSID_{name} = '{clsid}';\n\n"));
+    js.push_str(&format!(
+        "export class {name} extends {} {{\n",
+        primary_interface.name
+    ));
+    js.push_str(&format!(
+        "    constructor() {{\n        const obj = DynCom.coCreateInstance(CLSID_{name}, IID_{});\n        try {{\n            super(obj);\n        }} finally {{\n            obj.release();\n        }}\n    }}\n",
+        primary_interface.name
+    ));
+    js.push_str(&format!(
+        "    static _fromNative(obj) {{\n        const cast = obj.cast(IID_{});\n        DynCom.bindComObject(cast);\n        return Object.assign(Object.create({name}.prototype), {{ _obj: cast }});\n    }}\n",
+        primary_interface.name
+    ));
+    js.push_str(
+        "    as(InterfaceClass) {\n        return InterfaceClass._fromNative(this._obj);\n    }\n",
+    );
+    js.push_str("    tryAs(InterfaceClass) {\n        const obj = DynCom.tryCast(this._obj, InterfaceClass.IID);\n        if (obj === null) return null;\n        try {\n            return InterfaceClass._fromNative(obj);\n        } finally {\n            obj.release();\n        }\n    }\n");
+    js.push_str("    supports(InterfaceClass) {\n        const obj = DynCom.tryCast(this._obj, InterfaceClass.IID);\n        if (obj === null) return false;\n        obj.release();\n        return true;\n    }\n");
+    js.push_str("}\n");
+
+    let descriptor = "{ readonly IID: unknown; _fromNative(obj: unknown): T }";
+    let mut dts = String::new();
+    dts.push_str("// Generated by dynwinrt-codegen — do not edit\n");
+    dts.push_str(&format!(
+        "import {{ {} }} from '{}';\n\n",
+        primary_interface.name, primary_import
+    ));
+    dts.push_str(&format!("export declare const CLSID_{name}: string;\n\n"));
+    dts.push_str(&format!(
+        "export declare class {name} extends {} {{\n",
+        primary_interface.name
+    ));
+    dts.push_str("    constructor();\n");
+    dts.push_str(&format!("    static _fromNative(obj: unknown): {name};\n"));
+    dts.push_str(&format!("    as<T>(InterfaceClass: {descriptor}): T;\n"));
+    dts.push_str(&format!(
+        "    tryAs<T>(InterfaceClass: {descriptor}): T | null;\n"
+    ));
+    dts.push_str(&format!(
+        "    supports<T>(InterfaceClass: {descriptor}): boolean;\n"
+    ));
+    dts.push_str("}\n");
+    (com_esm_to_cjs(&js, namespace), dts)
+}
+
+fn com_esm_to_cjs(esm: &str, namespace: &str) -> String {
+    let runtime_sources =
+        std::collections::HashSet::from([com_runtime_import_name_for_module(namespace)]);
+    convert_to_cjs_with_eager(esm, &runtime_sources)
+}
+
+fn render_js(meta: &ProjectedComInterface) -> String {
+    let mut out = String::new();
+    out.push_str("// Generated by dynwinrt-codegen — do not edit\n");
+    let runtime_imports = if matches!(meta.activation, ActivationPlan::WinRtFactory { .. }) {
+        "DynCom, DynComMethodSig, DynWinRtValue, WinGuid"
+    } else {
+        "DynCom, DynComMethodSig, WinGuid"
+    };
+    out.push_str(&format!(
+        "import {{ {runtime_imports} }} from '{}';\n",
+        com_runtime_import_name_for_module(&meta.namespace)
+    ));
+    for en in &meta.referenced_enums {
+        let import =
+            relative_module_specifier(&meta.namespace, &meta.name, &en.namespace, &en.name);
+        out.push_str(&format!("import {{ {} }} from '{}';\n", en.name, import));
+    }
+    for interface in collect_enumerator_interfaces(meta) {
+        if interface.name != meta.name || interface.namespace != meta.namespace {
+            let import = relative_module_specifier(
+                &meta.namespace,
+                &meta.name,
+                &interface.namespace,
+                &interface.name,
+            );
+            out.push_str(&format!(
+                "import {{ {} }} from '{}';\n",
+                interface.name, import
+            ));
+        }
+    }
+    out.push('\n');
+    let native_pods = collect_native_pods(meta);
+    let native_pod_arrays = collect_native_pod_arrays(meta);
+    for layout in &native_pods {
+        out.push_str(&format!(
+            "const {} = {};\n",
+            native_pod_layout_js(layout),
+            native_pod_descriptor_js(layout)
+        ));
+        out.push_str(&format!(
+            "export function create{}(bytes) {{ return DynCom.createNativeStruct({}, bytes); }}\n",
+            layout.name,
+            native_pod_layout_js(layout)
+        ));
+        if native_pod_arrays.contains(&(layout.namespace.clone(), layout.name.clone())) {
+            out.push_str(&format!(
+                "export function create{}Array(bytes) {{ return DynCom.createNativeStructArray({}, bytes); }}\n",
+                layout.name,
+                native_pod_layout_js(layout)
+            ));
+        }
+    }
+    if !native_pods.is_empty() {
+        out.push('\n');
+    }
+    let native_unions = collect_native_unions(meta);
+    for layout in &native_unions {
+        out.push_str(&format!(
+            "const {} = {};\n",
+            native_union_layout_js(layout),
+            native_union_descriptor_js(layout)
+        ));
+        out.push_str(&format!(
+            "export function create{}(activeField, bytes) {{ return DynCom.createNativeUnion({}, activeField, bytes); }}\n",
+            layout.name,
+            native_union_layout_js(layout)
+        ));
+    }
+    if !native_unions.is_empty() {
+        out.push('\n');
+    }
+    if meta
+        .methods
+        .iter()
+        .any(|method| method.string_buffer.is_some())
+    {
+        out.push_str("function _normalizeStringBufferCount(value, name) {\n");
+        out.push_str("    if (!Number.isInteger(value) || value <= 0) throw new TypeError(`${name} must be a positive integer`);\n");
+        out.push_str("    return value;\n}\n");
+        out.push_str("function _decodeWideString(buffer) {\n    let end = 0;\n");
+        out.push_str(
+            "    while (end + 1 < buffer.length && buffer.readUInt16LE(end) !== 0) end += 2;\n",
+        );
+        out.push_str("    return buffer.subarray(0, end).toString('utf16le');\n}\n\n");
+    }
+    out.push_str(&format!(
+        "export const IID_{} = WinGuid.parse('{}');\n",
+        meta.name, meta.iid
+    ));
+    if let ActivationPlan::WinRtFactory {
+        class_name,
+        target_iid,
+        ..
+    } = &meta.activation
+    {
+        out.push_str(&format!(
+            "const IID_{class_name}_default = WinGuid.parse('{target_iid}');\n"
+        ));
+    }
+    out.push('\n');
+    let register_fn = if meta.is_iunknown_rooted {
+        "registerIUnknownInterface"
+    } else {
+        "registerIInspectableInterface"
+    };
+    let cache_var = format!("_{}Cache", meta.name);
+    let iface_var = format!("_{}", meta.name);
+    let get_iface_var = format!("_get{}", meta.name);
+    let method_lines = meta
+        .methods
+        .iter()
+        .map(|method| {
+            format!(
+                "            .addMethodAt({}, '{}', {})\n",
+                method.vtable_index,
+                method.name,
+                build_method_sig_js(method)
+            )
+        })
+        .collect::<String>();
+    let mut registration = format!(
+        "DynCom.{register_fn}('{}.{}', IID_{})",
+        meta.namespace, meta.name, meta.name
+    );
+    if meta.sink.is_some() {
+        for base_iid in &meta.base_iids {
+            registration.push_str(&format!(
+                "\n            .addBaseInterface(WinGuid.parse('{base_iid}'))"
+            ));
+        }
+    }
+    if !method_lines.is_empty() {
+        registration.push('\n');
+        registration.push_str(method_lines.trim_end());
+    }
+    out.push_str(&format!("let {cache_var};\n"));
+    if meta.sink.is_some() {
+        out.push_str(&format!(
+            "const {get_iface_var} = () => {{\n    {cache_var} ??= {registration};\n    return {cache_var};\n}};\nconst {iface_var} = new Proxy({{}}, {{\n    get(_target, prop) {{\n        const iface = {get_iface_var}();\n        const value = iface[prop];\n        return typeof value === 'function' ? value.bind(iface) : value;\n    }},\n}});\n\n"
+        ));
+    } else {
+        out.push_str(&format!(
+            "const {iface_var} = new Proxy({{}}, {{\n    get(_target, prop) {{\n        {cache_var} ??= {registration};\n        const value = {cache_var}[prop];\n        return typeof value === 'function' ? value.bind({cache_var}) : value;\n    }},\n}});\n\n"
+        ));
+    }
+    out.push_str(&format!("export class {} {{\n", meta.name));
+    out.push_str(&format!("    static IID = IID_{};\n", meta.name));
+    let wrap_owned = format!("_wrap{}Owned", meta.name);
+    out.push_str(&format!(
+        "    _obj;\n    constructor(obj) {{\n        const cast = obj.cast(IID_{});\n        DynCom.bindComObject(cast);\n        this._obj = cast;\n    }}\n",
+        meta.name
+    ));
+    out.push_str(&format!(
+        "    static _fromNative(obj) {{ return {wrap_owned}(obj.cast(IID_{})); }}\n",
+        meta.name,
+    ));
+    if meta.sink.is_some() {
+        out.push_str("    /** Borrowed native value for passing this implementation to generated COM methods. Do not release it separately. */\n    get nativeValue() { return this._obj; }\n");
+        out.push_str(
+            "    /** Query another generated interface implemented by the same COM identity. */\n    as(InterfaceClass) { return InterfaceClass._fromNative(this._obj); }\n",
+        );
+        render_sink_implementation_js(&mut out, meta, &wrap_owned, &get_iface_var);
+    }
+    out.push_str("    /** Release the underlying native COM reference. Safe to call more than once. */\n    release() {\n        this._obj.release();\n    }\n");
+    match &meta.activation {
+        ActivationPlan::None => {}
+        ActivationPlan::Coclass { .. } => {}
+        ActivationPlan::WinRtFactory {
+            class_name,
+            class_namespace,
+            ..
+        } => {
+            let full = format!("{class_namespace}.{class_name}");
+            out.push_str(&format!("    /** Create a new `{}` by activating the `{full}` factory and QI'ing to the interop.\n     * `initializeCom()` must be called once (e.g. at process startup) before this is used. */\n", meta.name));
+            out.push_str(&format!("    static create() {{\n        const factory = DynWinRtValue.activationFactory('{full}');\n        const _obj = factory.cast(IID_{});\n        return {wrap_owned}(_obj);\n    }}\n", meta.name));
+        }
+    }
+    let mut emitted_groups = std::collections::HashSet::new();
+    for method in &meta.methods {
+        if let Some(overload) = &method.overload {
+            if !emitted_groups.insert(overload.public_name.clone()) {
+                continue;
+            }
+            let group: Vec<&ProjectedComMethod> = meta
+                .methods
+                .iter()
+                .filter(|candidate| {
+                    candidate
+                        .overload
+                        .as_ref()
+                        .is_some_and(|candidate_overload| {
+                            candidate_overload.public_name == overload.public_name
+                        })
+                })
+                .collect();
+            emit_overload_group_js(&mut out, &group, &iface_var);
+            continue;
+        }
+        match method.kind {
+            ProjectedComMethodKind::Normal
+            | ProjectedComMethodKind::FixedCapacityBytes { .. }
+            | ProjectedComMethodKind::OwningCallerOutput { .. } => {
+                emit_method_js(&mut out, method, &iface_var)
+            }
+            ProjectedComMethodKind::CallerSuppliedDynamicIid {
+                iid_param_index,
+                output_param_index,
+            } => emit_dynamic_iid_method_js(
+                &mut out,
+                method,
+                iid_param_index,
+                output_param_index,
+                &iface_var,
+            ),
+            ProjectedComMethodKind::SynthesizedGetForWindow {
+                iid_param_index,
+                output_param_index,
+                ref target_iid,
+            } => emit_synthesized_interop_method_js(
+                &mut out,
+                method,
+                iid_param_index,
+                output_param_index,
+                target_iid,
+                &iface_var,
+                meta,
+            ),
+            ProjectedComMethodKind::DispatchInvoke {
+                result_param_index,
+                excep_info_param_index,
+                arg_err_param_index,
+            } => emit_dispatch_invoke_method_js(
+                &mut out,
+                method,
+                result_param_index,
+                excep_info_param_index,
+                arg_err_param_index,
+                &iface_var,
+            ),
+            ProjectedComMethodKind::EnumeratorNext { .. } => {
+                emit_enumerator_next_method_js(&mut out, method, &iface_var)
+            }
+        }
+    }
+    out.push_str("}\n");
+    out.push_str(&format!(
+        "function {wrap_owned}(obj) {{\n    DynCom.bindComObject(obj);\n    return Object.assign(Object.create({}.prototype), {{ _obj: obj }});\n}}\n",
+        meta.name
+    ));
+    out
+}
+
+fn render_sink_implementation_js(
+    out: &mut String,
+    meta: &ProjectedComInterface,
+    wrap_owned: &str,
+    get_iface_var: &str,
+) {
+    let sink = meta.sink.as_ref().expect("sink plan");
+    let handler_names = sink
+        .methods
+        .iter()
+        .map(|sink_method| sink_method.handler_name.as_str())
+        .collect::<Vec<_>>();
+    out.push_str(&format!(
+        "    /** Describe an apartment-bound COM interface implementation for composition with other generated interfaces. */\n    static implementation(handlers) {{\n        if (handlers === null || typeof handlers !== 'object' || Array.isArray(handlers)) throw new TypeError('{} implementation handlers must be an object');\n",
+        meta.name
+    ));
+    out.push_str(&format!(
+        "        for (const name of [{}]) {{\n            if (typeof handlers[name] !== 'function') throw new TypeError(`${{name}} must be a function`);\n        }}\n",
+        handler_names
+            .iter()
+            .map(|name| format!("'{name}'"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    ));
+    out.push_str("        const dispatch = (vtableIndex, ...args) => {\n            switch (vtableIndex) {\n");
+    for sink_method in &sink.methods {
+        let method = meta
+            .methods
+            .iter()
+            .find(|method| method.vtable_index == sink_method.vtable_index)
+            .expect("validated sink method");
+        out.push_str(&format!(
+            "                case {}: {{\n                    const callback = handlers.{};\n",
+            sink_method.vtable_index, sink_method.handler_name
+        ));
+        let callback_args = method
+            .params
+            .iter()
+            .filter(|param| param.surface_input)
+            .enumerate()
+            .map(|(index, param)| unwrap_callback_arg_js(&param.typ, &format!("args[{index}]")))
+            .collect::<Vec<_>>()
+            .join(", ");
+        out.push_str(&format!(
+            "                    const result = callback.call(handlers{}{});\n                    if (result !== null && (typeof result === 'object' || typeof result === 'function') && typeof result.then === 'function') throw new TypeError('COM implementation handlers must return synchronously');\n",
+            if callback_args.is_empty() { "" } else { ", " },
+            callback_args
+        ));
+        let output_results = method
+            .results
+            .iter()
+            .filter(|result| matches!(result.source, ResultSource::Param(_)))
+            .collect::<Vec<_>>();
+        match sink_method.return_convention {
+            ComSinkReturnConvention::HResult => match sink_method.output_count {
+                0 => {
+                    out.push_str("                    return result === undefined ? 0 : result;\n")
+                }
+                1 => {
+                    let wrapped = wrap_callback_result_js(method, output_results[0], "value");
+                    out.push_str(&format!(
+                        "                    const explicit = Array.isArray(result);\n                    const hresult = explicit ? result[0] : 0;\n                    const value = explicit ? result[1] : result;\n                    return [hresult, {wrapped}];\n"
+                    ));
+                }
+                output_count => {
+                    let wrapped = output_results
+                        .iter()
+                        .enumerate()
+                        .map(|(index, result)| {
+                            wrap_callback_result_js(method, result, &format!("values[{index}]"))
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    out.push_str(&format!(
+                        "                    const explicit = result !== null && typeof result === 'object' && !Array.isArray(result) && 'hresult' in result;\n                    const hresult = explicit ? result.hresult : 0;\n                    const values = explicit ? result.values : result;\n                    if (!Array.isArray(values) || values.length !== {output_count}) throw new TypeError('COM sink handler must return {output_count} output values');\n                    return [hresult, {wrapped}];\n"
+                    ));
+                }
+            },
+            ComSinkReturnConvention::SemanticHResult => {
+                if sink_method.output_count == 0 {
+                    out.push_str("                    return result;\n");
+                } else {
+                    let wrapped = output_results
+                        .iter()
+                        .enumerate()
+                        .map(|(index, result)| {
+                            wrap_callback_result_js(
+                                method,
+                                result,
+                                &format!("result[{}]", index + 1),
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let expected = sink_method.output_count + 1;
+                    out.push_str(&format!(
+                        "                    if (!Array.isArray(result) || result.length !== {expected}) throw new TypeError('COM sink semantic HRESULT handler must return {expected} values');\n                    return [result[0], {wrapped}];\n"
+                    ));
+                }
+            }
+            ComSinkReturnConvention::Void => match sink_method.output_count {
+                0 => out.push_str("                    return undefined;\n"),
+                1 => {
+                    let wrapped = wrap_callback_result_js(method, output_results[0], "result");
+                    out.push_str(&format!("                    return [{wrapped}];\n"));
+                }
+                output_count => {
+                    let wrapped = output_results
+                        .iter()
+                        .enumerate()
+                        .map(|(index, result)| {
+                            wrap_callback_result_js(method, result, &format!("result[{index}]"))
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    out.push_str(&format!(
+                        "                    if (!Array.isArray(result) || result.length !== {output_count}) throw new TypeError('COM sink void handler must return {output_count} output values');\n                    return [{wrapped}];\n"
+                    ));
+                }
+            },
+            ComSinkReturnConvention::Direct => {
+                let direct = method
+                    .results
+                    .iter()
+                    .find(|result| matches!(result.source, ResultSource::DirectReturn))
+                    .expect("validated direct sink return");
+                if sink_method.output_count == 0 {
+                    let wrapped = wrap_arg_js(&direct.typ, "result");
+                    out.push_str(&format!("                    return {wrapped};\n"));
+                } else {
+                    let wrapped = method
+                        .results
+                        .iter()
+                        .enumerate()
+                        .map(|(index, result)| {
+                            wrap_callback_result_js(method, result, &format!("result[{index}]"))
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let expected = sink_method.output_count + 1;
+                    out.push_str(&format!(
+                        "                    if (!Array.isArray(result) || result.length !== {expected}) throw new TypeError('COM sink direct-return handler must return {expected} values');\n                    return [{wrapped}];\n"
+                    ));
+                }
+            }
+        }
+        out.push_str("                }\n");
+    }
+    out.push_str("                default: throw new RangeError(`Unexpected COM sink vtable index ${vtableIndex}`);\n            }\n        };\n");
+    out.push_str(&format!(
+        "        return Object.freeze({{ interfaceType: {}(), iid: '{}', dispatch }});\n    }}\n",
+        get_iface_var,
+        meta.iid.to_ascii_lowercase()
+    ));
+    out.push_str(&format!(
+        "    /** Create an apartment-bound COM object, optionally implementing additional generated interfaces. */\n    static implement(handlers, ...additional) {{\n        const primary = {}.implementation(handlers);\n        if (additional.length === 0) return {}(DynCom.createIUnknownSink(primary.interfaceType, primary.dispatch));\n        const implementations = [primary, ...additional];\n        const byIid = new Map();\n        for (const implementation of implementations) {{\n            if (implementation === null || typeof implementation !== 'object' || implementation.interfaceType == null || typeof implementation.iid !== 'string' || typeof implementation.dispatch !== 'function') throw new TypeError('Invalid generated COM implementation descriptor');\n            const iid = implementation.iid.toLowerCase();\n            if (byIid.has(iid)) throw new TypeError(`Duplicate COM implementation IID ${{implementation.iid}}`);\n            byIid.set(iid, implementation);\n        }}\n        const identity = DynCom.createComObject(implementations.map(implementation => implementation.interfaceType), (iid, vtableIndex, ...args) => {{\n            const implementation = byIid.get(iid.toLowerCase());\n            if (implementation === undefined) throw new RangeError(`Unexpected COM implementation IID ${{iid}}`);\n            return implementation.dispatch(vtableIndex, ...args);\n        }});\n        try {{\n            return {}(identity.cast(IID_{}));\n        }} finally {{\n            identity.release();\n        }}\n    }}\n",
+        meta.name, wrap_owned, wrap_owned, meta.name
+    ));
+}
+
+fn build_method_sig_js(method: &ProjectedComMethod) -> String {
+    let mut parts = Vec::new();
+    for (index, param) in method.params.iter().enumerate() {
+        if let Some(plan) = method
+            .typed_buffers
+            .iter()
+            .find(|plan| plan.buffer_param_index == index)
+        {
+            parts.push(typed_buffer_signature_js(plan));
+            continue;
+        }
+        match param.direction {
+            ComParamDirection::In => parts.push(format!(
+                ".{}({})",
+                if param.nullable {
+                    "addNullableIn"
+                } else {
+                    "addIn"
+                },
+                param_abi_type_js(param)
+            )),
+            ComParamDirection::InOut => parts.push(format!(
+                ".{}({})",
+                if param.nullable {
+                    "addNullableInOut"
+                } else {
+                    "addInOut"
+                },
+                param_abi_type_js(param)
+            )),
+
+            ComParamDirection::OutStringBuffer => parts.push(".addIn(DynCom.pointerType())".into()),
+            ComParamDirection::Out => {
+                if method.string_buffer.as_ref().is_some_and(|plan| {
+                    index > plan.count_param_index && plan.optional_param_indices.contains(&index)
+                }) {
+                    parts.push(".addIn(DynCom.pointerType())".into());
+                } else {
+                    parts.push(format!(
+                        ".addOut({})",
+                        out_abi_type_js(method, index, &param.typ)
+                    ));
+                }
+            }
+            ComParamDirection::OptionalOut => {
+                parts.push(format!(
+                    ".addOptionalOut({})",
+                    out_abi_type_js(method, index, &param.typ)
+                ));
+            }
+            ComParamDirection::InputBuffer
+            | ComParamDirection::CallerOutputBuffer
+            | ComParamDirection::CalleeAllocatedBuffer => {
+                unreachable!("typed buffer parameters have an explicit signature plan")
+            }
+        }
+    }
+
+    fn typed_buffer_signature_js(plan: &TypedBufferPlan) -> String {
+        match plan.relation {
+            TypedBufferRelation::Input {
+                count_param_index,
+                actual_length_param_index,
+                unit,
+            } => {
+                if let ComType::StringArray { encoding, .. } = plan.element {
+                    assert_eq!(actual_length_param_index, None);
+                    assert_eq!(unit, BufferCountUnit::Elements);
+                    format!(
+                        ".addInputStringArray({}, {count_param_index})",
+                        matches!(encoding, StringEncoding::Wide)
+                    )
+                } else {
+                    let element = abi_type_js(&plan.element);
+                    format!(
+                        ".addInputBuffer({element}, {count_param_index}, {}, {})",
+                        optional_index_js(actual_length_param_index),
+                        count_unit_is_bytes(unit)
+                    )
+                }
+            }
+            TypedBufferRelation::CallerOutput {
+                capacity_param_index,
+                actual_length_param_index,
+                unit,
+                sizing,
+            } => {
+                let element = abi_type_js(&plan.element);
+                format!(
+                    ".addCallerOutputBuffer({element}, {capacity_param_index}, {}, {}, {})",
+                    optional_index_js(actual_length_param_index),
+                    count_unit_is_bytes(unit),
+                    matches!(sizing, TypedBufferSizing::TwoCall { .. })
+                )
+            }
+            TypedBufferRelation::EnumeratorNext {
+                capacity_param_index,
+                fetched_param_index,
+                ..
+            } => {
+                let element = abi_type_js(&plan.element);
+                format!(
+                    ".addEnumeratorNextBuffer({element}, {capacity_param_index}, {fetched_param_index})"
+                )
+            }
+            TypedBufferRelation::CalleeAllocated {
+                count_param_index,
+                unit,
+            } => {
+                let element = abi_type_js(&plan.element);
+                format!(
+                    ".addCoTaskMemOutputBuffer({element}, {count_param_index}, {})",
+                    count_unit_is_bytes(unit)
+                )
+            }
+        }
+    }
+
+    fn optional_index_js(index: Option<usize>) -> String {
+        index.map_or_else(|| "undefined".into(), |index| index.to_string())
+    }
+
+    fn count_unit_is_bytes(unit: BufferCountUnit) -> bool {
+        match unit {
+            BufferCountUnit::Elements => false,
+            BufferCountUnit::Bytes => true,
+        }
+    }
+    match &method.return_convention {
+        ComReturnConvention::HResult => {}
+        ComReturnConvention::SemanticHResult
+            if matches!(method.kind, ProjectedComMethodKind::EnumeratorNext { .. }) =>
+        {
+            if method.vtable_index == 3 {
+                parts.push(".preserveEnumeratorNextHresult()".into())
+            } else {
+                parts.push(format!(
+                    ".preserveEnumeratorNextHresultAt({})",
+                    method.vtable_index
+                ))
+            }
+        }
+        ComReturnConvention::SemanticHResult => parts.push(".preserveHresult()".into()),
+        ComReturnConvention::DispatchInvokeHResult => {
+            parts.push(".captureDispatchInvokeHresult()".into())
+        }
+        ComReturnConvention::Void => parts.push(".returnsVoid()".into()),
+        ComReturnConvention::Direct(typ) => parts.push(format!(".returns({})", abi_type_js(typ))),
+    }
+    if parts.is_empty() {
+        "new DynComMethodSig()".into()
+    } else {
+        format!("new DynComMethodSig(){}", parts.join(""))
+    }
+}
+
+/// Selects the ABI output type for an `Out` parameter, using the projected
+/// result's ownership/conversion facts (not the parameter's raw type name) to
+/// pick a semantically correct, provenance-tagged pointer type where the
+/// runtime needs to know how to (or whether it may) reclaim the output value.
+/// Any pointer output that isn't classified with a known ownership contract
+/// falls back to the unclassified `pointerType()`, which the runtime does not
+/// allow callers to adopt as an owned value.
+fn param_abi_type_js(param: &ProjectedComParam) -> String {
+    if param.nullable && param.typ == ComType::Bstr {
+        return "DynCom.nullableBstrType()".into();
+    }
+    if param.nullable
+        && let ComType::NativePodPointer { layout } = &param.typ
+    {
+        return format!(
+            "DynCom.nativeStructPointerType({}, true)",
+            native_pod_layout_js(layout)
+        );
+    }
+    abi_type_js(&param.typ)
+}
+
+fn wrap_param_arg_js(param: &ProjectedComParam, variable: &str) -> String {
+    let wrapped = wrap_arg_js(&param.typ, variable);
+    if param.nullable {
+        return match param.typ {
+            ComType::NativePodPointer { .. } => {
+                format!("{variable} === null ? DynCom.nullNativeStructPointer() : {wrapped}")
+            }
+            ComType::ManagedInterface { .. } => {
+                format!("{variable} === null ? DynCom.nullComValue() : {wrapped}")
+            }
+            ComType::AllocatorPointer
+            | ComType::ConsumedAllocatorPointer
+            | ComType::InspectedAllocatorPointer => wrapped,
+            ComType::RawPointer | ComType::GuidPointer | ComType::PointerAlias { .. } => {
+                format!("{variable} === null ? DynCom.pointer(null) : {wrapped}")
+            }
+            ComType::Bstr => format!("{variable} === null ? DynCom.nullBstr() : {wrapped}"),
+            _ => unreachable!("nullable projection was validated"),
+        };
+    }
+    wrapped
+}
+
+fn wrap_callback_result_js(
+    method: &ProjectedComMethod,
+    result: &ProjectedComResult,
+    variable: &str,
+) -> String {
+    match result.source {
+        ResultSource::Param(index) => wrap_param_arg_js(&method.params[index], variable),
+        ResultSource::DirectReturn => wrap_arg_js(&result.typ, variable),
+    }
+}
+
+fn param_input_type_dts(param: &ProjectedComParam) -> String {
+    let typ = input_type_dts(&param.typ);
+    if param.nullable {
+        format!("{typ} | null")
+    } else {
+        typ
+    }
+}
+
+fn out_abi_type_js(method: &ProjectedComMethod, param_index: usize, typ: &ComType) -> String {
+    if method.params[param_index].nullable
+        && let ComType::SafeArray { element } = typ
+    {
+        return safe_array_abi_type_js(*element, true);
+    }
+    let conversion = method
+        .results
+        .iter()
+        .find(|result| result.source == ResultSource::Param(param_index))
+        .map(|result| &result.conversion);
+    match conversion {
+        Some(ResultConversion::DynamicIidAdoption) => "DynCom.ownedComPointerType()".into(),
+        Some(ResultConversion::BorrowedHandle) => "DynCom.borrowedHandleOutputType()".into(),
+        Some(ResultConversion::Bstr) => "DynCom.bstrType()".into(),
+        Some(ResultConversion::CoTaskMemString(_) | ResultConversion::CoTaskMemData) => {
+            "DynCom.coTaskMemPointerType()".into()
+        }
+        Some(
+            ResultConversion::ManagedCom
+            | ResultConversion::HString
+            | ResultConversion::Value
+            | ResultConversion::Buffer
+            | ResultConversion::PlainArray
+            | ResultConversion::EnumeratorArray { .. }
+            | ResultConversion::OwningArray { .. }
+            | ResultConversion::Variant
+            | ResultConversion::SafeArray
+            | ResultConversion::PropVariant
+            | ResultConversion::ExcepInfo
+            | ResultConversion::StatStg
+            | ResultConversion::MallocAllocation
+            | ResultConversion::MallocReallocation,
+        )
+        | None => abi_type_js(typ),
+    }
+}
+
+fn input_params(method: &ProjectedComMethod) -> Vec<(usize, &ProjectedComParam)> {
+    method
+        .params
+        .iter()
+        .enumerate()
+        .filter(|(_, param)| param.surface_input)
+        .collect()
+}
+
+fn emit_method_js(out: &mut String, method: &ProjectedComMethod, iface_var: &str) {
+    emit_method_doc_js(out, &method.doc);
+    emit_method_js_named(out, method, iface_var, &method.camel_name);
+}
+
+fn emit_dispatch_invoke_method_js(
+    out: &mut String,
+    method: &ProjectedComMethod,
+    result_param_index: usize,
+    excep_info_param_index: usize,
+    arg_err_param_index: usize,
+    iface_var: &str,
+) {
+    let inputs = input_params(method);
+    let mut params = inputs
+        .iter()
+        .enumerate()
+        .map(|(surface, (_, param))| js_param_name(&param.name, surface))
+        .collect::<Vec<_>>();
+    params.push("options = {}".into());
+    out.push_str(&format!(
+        "    {}({}) {{\n",
+        method.camel_name,
+        params.join(", ")
+    ));
+    for option in ["result", "excepInfo", "argErr"] {
+        out.push_str(&format!(
+            "        if (options.{option} !== undefined && typeof options.{option} !== 'boolean') throw new TypeError('IDispatch Invoke option `{option}` must be boolean');\n"
+        ));
+    }
+    out.push_str("        const _requestResult = options.result ?? true;\n");
+    out.push_str("        const _requestExcepInfo = options.excepInfo ?? true;\n");
+    out.push_str("        const _requestArgErr = options.argErr ?? true;\n");
+
+    let args = method
+        .params
+        .iter()
+        .enumerate()
+        .filter_map(|(index, param)| match param.direction {
+            ComParamDirection::OptionalOut if index == result_param_index => {
+                Some("DynCom.boolValue(_requestResult)".into())
+            }
+            ComParamDirection::OptionalOut if index == excep_info_param_index => {
+                Some("DynCom.boolValue(_requestExcepInfo)".into())
+            }
+            ComParamDirection::OptionalOut if index == arg_err_param_index => {
+                Some("DynCom.boolValue(_requestArgErr)".into())
+            }
+            ComParamDirection::OptionalOut => {
+                unreachable!("validated IDispatch::Invoke has exactly three optional outputs")
+            }
+            _ if param.surface_input => {
+                let surface = inputs
+                    .iter()
+                    .position(|(input_index, _)| *input_index == index)
+                    .expect("projected visible dispatch input");
+                Some(wrap_param_arg_js(
+                    param,
+                    &js_param_name(&param.name, surface),
+                ))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    out.push_str(&format!(
+        "        const _call = {iface_var}.method({}).invokeDispatch(this._obj, [{}]);\n",
+        method.vtable_index,
+        args.join(", ")
+    ));
+    out.push_str("        const _resultValue = _call.takeResult();\n");
+    out.push_str("        const _excepInfoValue = _call.takeExcepInfo();\n");
+    out.push_str("        if (_call.hresult < 0) {\n");
+    out.push_str("            const _excepInfo = _excepInfoValue == null ? undefined : DynCom.takeExcepInfo(_excepInfoValue);\n");
+    out.push_str("            const _hresult = `0x${(_call.hresult >>> 0).toString(16).padStart(8, '0').toUpperCase()}`;\n");
+    out.push_str("            const _description = _excepInfo?.description;\n");
+    out.push_str("            const _error = new Error(`IDispatch::Invoke failed with HRESULT ${_hresult}${_description ? `: ${_description}` : ''}`);\n");
+    out.push_str("            _error.hresult = _call.hresult;\n");
+    out.push_str("            if (_excepInfo !== undefined) _error.excepInfo = _excepInfo;\n");
+    out.push_str("            if (_call.argErr != null) _error.argErr = _call.argErr;\n");
+    out.push_str("            if (_call.finalizationError != null) _error.cause = new Error(`EXCEPINFO deferred fill failed: ${_call.finalizationError}`);\n");
+    out.push_str("            throw _error;\n");
+    out.push_str("        }\n");
+    out.push_str("        const _result = {};\n");
+    let result_index = method
+        .results
+        .iter()
+        .position(|result| result.source == ResultSource::Param(result_param_index))
+        .expect("optional dispatch result has a projected result");
+    let conversion = unwrap_method_result_js(method, &method.results[result_index], "_resultValue");
+    out.push_str(&format!(
+        "        if (_resultValue != null) _result.result = {conversion};\n"
+    ));
+    out.push_str("        return _result;\n");
+    out.push_str("    }\n");
+}
+
+fn emit_enumerator_next_method_js(out: &mut String, method: &ProjectedComMethod, iface_var: &str) {
+    let ProjectedComMethodKind::EnumeratorNext {
+        buffer_param_index,
+        fetched_param_index,
+        fetched_optional_for_single,
+        ..
+    } = &method.kind
+    else {
+        unreachable!("EnumeratorNext renderer requires EnumeratorNext IR")
+    };
+    let plan = method
+        .typed_buffers
+        .iter()
+        .find(|plan| plan.buffer_param_index == *buffer_param_index)
+        .expect("EnumeratorNext buffer plan");
+    let result = method
+        .results
+        .iter()
+        .find(|result| result.source == ResultSource::Param(*buffer_param_index))
+        .expect("EnumeratorNext values result");
+    emit_method_doc_js(out, &method.doc);
+    out.push_str(&format!("    {}(count) {{\n", method.camel_name));
+    out.push_str("        if (!Number.isInteger(count) || count <= 0 || count > 0xFFFFFFFF) throw new RangeError('IEnum::Next count must be an integer from 1 through 4294967295');\n");
+    out.push_str(&format!(
+        "        const _values = DynCom.enumeratorOutputArray({}, BigInt(count));\n",
+        abi_type_js(&plan.element)
+    ));
+    let mut args = vec!["_values".to_string()];
+    if *fetched_optional_for_single {
+        assert_eq!(
+            method.params[*fetched_param_index].direction,
+            ComParamDirection::OptionalOut
+        );
+        args.push("DynCom.boolValue(true)".into());
+    }
+    out.push_str(&format!(
+        "        const _out = {iface_var}.method({}).invokeAll(this._obj, [{}]);\n",
+        method.vtable_index,
+        args.join(", ")
+    ));
+    out.push_str(&format!(
+        "        return {};\n",
+        unwrap_method_result_js(method, result, "_out[1]")
+    ));
+    out.push_str("    }\n");
+}
+
+/// Emits a one-line `@see` JSDoc comment above a method when metadata
+/// supplied a doc reference (win32metadata's `DocumentationAttribute`, a
+/// `learn.microsoft.com` URL — see `com_metadata::parse_methods`). Renders
+/// nothing when `doc` is `None`; the renderer never invents documentation.
+fn emit_method_doc_js(out: &mut String, doc: &Option<String>) {
+    if let Some(url) = doc {
+        out.push_str(&format!("    /** @see {{@link {url}}} */\n"));
+    }
+}
+
+/// Renders a single method body under `js_name`. Used both for standalone
+/// methods (`js_name == method.camel_name`) and for each private per-overload
+/// implementation of a grouped overload set (`js_name ==
+/// overload.impl_name`), so the JS body-emission logic is shared regardless
+/// of whether the method is dispatched to directly or via the public
+/// overload dispatcher.
+fn emit_method_js_named(
+    out: &mut String,
+    method: &ProjectedComMethod,
+    iface_var: &str,
+    js_name: &str,
+) {
+    let inputs = input_params(method);
+    let params = inputs
+        .iter()
+        .enumerate()
+        .map(|(surface, (index, param))| {
+            let name = js_param_name(&param.name, surface);
+            if let Some(plan) = &method.string_buffer {
+                if plan.optional_param_indices.contains(index) {
+                    return if *index == plan.count_param_index {
+                        format!("{name} = 260")
+                    } else {
+                        format!("{name} = 0")
+                    };
+                }
+            }
+            name
+        })
+        .collect::<Vec<_>>();
+    out.push_str(&format!("    {js_name}({}) {{\n", params.join(", ")));
+    if let Some(plan) = &method.string_buffer {
+        emit_string_buffer_method_body(out, method, plan, &inputs, iface_var);
+        out.push_str("    }\n");
+        return;
+    }
+    if let ProjectedComMethodKind::OwningCallerOutput {
+        buffer_param_index,
+        capacity_param_index,
+    } = method.kind
+    {
+        emit_owning_caller_output_method_body(
+            out,
+            method,
+            buffer_param_index,
+            capacity_param_index,
+            &inputs,
+            iface_var,
+        );
+        out.push_str("    }\n");
+        return;
+    }
+    if let Some(plan) = method.typed_buffers.iter().find(|plan| {
+        matches!(
+            plan.relation,
+            TypedBufferRelation::CallerOutput {
+                sizing: TypedBufferSizing::FixedCapacity,
+                ..
+            }
+        )
+    }) {
+        emit_fixed_capacity_buffer_method_body(out, method, plan, &inputs, iface_var);
+        out.push_str("    }\n");
+        return;
+    }
+    if let Some(plan) = method.typed_buffers.iter().find(|plan| {
+        matches!(
+            plan.relation,
+            TypedBufferRelation::CallerOutput {
+                sizing: TypedBufferSizing::TwoCall { .. },
+                ..
+            }
+        )
+    }) {
+        emit_two_call_buffer_method_body(out, method, plan, &inputs, iface_var);
+        out.push_str("    }\n");
+        return;
+    }
+    for group in &method.shared_counts {
+        match group {
+            SharedCountPlan::StringInputScalarOutput {
+                count_param_index,
+                string_input_param_index,
+                scalar_output_param_index,
+            } => {
+                let input = &method.params[*string_input_param_index];
+                let input_surface = inputs
+                    .iter()
+                    .position(|(index, _)| *index == *string_input_param_index)
+                    .expect("shared string input is visible");
+                let input_name = js_param_name(&input.name, input_surface);
+                out.push_str(&format!(
+                    "        const _sharedInput{count_param_index} = {};\n",
+                    wrap_param_arg_js(input, &input_name)
+                ));
+                let output_plan = method
+                    .typed_buffers
+                    .iter()
+                    .find(|plan| plan.buffer_param_index == *scalar_output_param_index)
+                    .expect("shared scalar output has a typed-buffer plan");
+                out.push_str(&format!(
+                    "        const _sharedOutput{count_param_index} = DynCom.callerOutputArray({}, DynCom.bufferCount(_sharedInput{count_param_index}));\n",
+                    abi_type_js(&output_plan.element)
+                ));
+            }
+            SharedCountPlan::Parallel {
+                count_param_index,
+                input_param_indices,
+                output_param_indices,
+            } => {
+                for input_index in input_param_indices {
+                    let input = &method.params[*input_index];
+                    let input_surface = inputs
+                        .iter()
+                        .position(|(index, _)| *index == *input_index)
+                        .expect("shared parallel input is visible");
+                    let input_name = js_param_name(&input.name, input_surface);
+                    out.push_str(&format!(
+                        "        const _sharedInput{input_index} = {};\n",
+                        wrap_param_arg_js(input, &input_name)
+                    ));
+                }
+                let first_input = input_param_indices
+                    .first()
+                    .expect("parallel shared count has an input");
+                let input_plan = method
+                    .typed_buffers
+                    .iter()
+                    .find(|plan| plan.buffer_param_index == *first_input)
+                    .expect("parallel shared input has a typed-buffer plan");
+                out.push_str(&format!(
+                    "        const _sharedCount{count_param_index} = DynCom.bufferElementCount(_sharedInput{first_input}, {});\n",
+                    abi_type_js(&input_plan.element)
+                ));
+                for output_index in output_param_indices {
+                    let output_plan = method
+                        .typed_buffers
+                        .iter()
+                        .find(|plan| plan.buffer_param_index == *output_index)
+                        .expect("shared parallel output has a typed-buffer plan");
+                    out.push_str(&format!(
+                        "        const _sharedOutput{output_index} = DynCom.callerOutputArray({}, _sharedCount{count_param_index});\n",
+                        abi_type_js(&output_plan.element)
+                    ));
+                }
+            }
+        }
+    }
+    let malloc_reallocation = method
+        .results
+        .iter()
+        .any(|result| result.conversion == ResultConversion::MallocReallocation);
+    if malloc_reallocation {
+        let size_surface = inputs
+            .iter()
+            .position(|(index, _)| *index == 1)
+            .expect("validated IMalloc::Realloc size input");
+        let size_name = js_param_name(&method.params[1].name, size_surface);
+        out.push_str(&format!(
+            "        const _mallocSize = BigInt({size_name});\n"
+        ));
+    }
+    let args = method
+        .params
+        .iter()
+        .enumerate()
+        .filter_map(|(index, param)| {
+            if malloc_reallocation && index == 1 {
+                return Some("DynCom.usize(_mallocSize)".into());
+            }
+            for group in &method.shared_counts {
+                match group {
+                    SharedCountPlan::StringInputScalarOutput {
+                        count_param_index,
+                        string_input_param_index,
+                        scalar_output_param_index,
+                    } if *string_input_param_index == index => {
+                        return Some(format!("_sharedInput{count_param_index}"));
+                    }
+                    SharedCountPlan::StringInputScalarOutput {
+                        count_param_index,
+                        scalar_output_param_index,
+                        ..
+                    } if *scalar_output_param_index == index => {
+                        return Some(format!("_sharedOutput{count_param_index}"));
+                    }
+                    SharedCountPlan::Parallel {
+                        input_param_indices,
+                        ..
+                    } if input_param_indices.contains(&index) => {
+                        return Some(format!("_sharedInput{index}"));
+                    }
+                    SharedCountPlan::Parallel {
+                        output_param_indices,
+                        ..
+                    } if output_param_indices.contains(&index) => {
+                        return Some(format!("_sharedOutput{index}"));
+                    }
+                    _ => {}
+                }
+            }
+            if !param.surface_input {
+                return None;
+            }
+            let surface = inputs
+                .iter()
+                .position(|(input_index, _)| *input_index == index)
+                .expect("projected visible input");
+            Some(wrap_param_arg_js(
+                param,
+                &js_param_name(&param.name, surface),
+            ))
+        })
+        .collect::<Vec<_>>();
+    emit_invocation_and_results(out, method, iface_var, &args);
+    out.push_str("    }\n");
+}
+
+fn emit_owning_caller_output_method_body(
+    out: &mut String,
+    method: &ProjectedComMethod,
+    buffer_param_index: usize,
+    capacity_param_index: usize,
+    inputs: &[(usize, &ProjectedComParam)],
+    iface_var: &str,
+) {
+    let plan = method
+        .typed_buffers
+        .iter()
+        .find(|plan| plan.buffer_param_index == buffer_param_index)
+        .expect("owning caller-output buffer plan");
+    let capacity_surface = inputs
+        .iter()
+        .position(|(index, _)| *index == capacity_param_index)
+        .expect("owning caller-output capacity is visible");
+    let capacity_name = js_param_name(&method.params[capacity_param_index].name, capacity_surface);
+    let capacity_expression = if count_type_uses_bigint(&method.params[capacity_param_index].typ) {
+        out.push_str(&format!(
+            "        if (typeof {capacity_name} !== 'bigint' || {capacity_name} < 0n) throw new RangeError('Owning COM array capacity must be a non-negative bigint');\n"
+        ));
+        capacity_name.clone()
+    } else {
+        out.push_str(&format!(
+            "        if (!Number.isSafeInteger({capacity_name}) || {capacity_name} < 0) throw new RangeError('Owning COM array capacity must be a non-negative safe integer');\n"
+        ));
+        format!("BigInt({capacity_name})")
+    };
+    out.push_str(&format!(
+        "        const _values = DynCom.callerOutputArray({}, {capacity_expression});\n",
+        abi_type_js(&plan.element)
+    ));
+    let args = method
+        .params
+        .iter()
+        .enumerate()
+        .filter_map(|(index, param)| {
+            if index == buffer_param_index {
+                return Some("_values".into());
+            }
+            if index == capacity_param_index || !param.surface_input {
+                return None;
+            }
+            let surface = inputs
+                .iter()
+                .position(|(input_index, _)| *input_index == index)
+                .expect("projected visible input");
+            Some(wrap_param_arg_js(
+                param,
+                &js_param_name(&param.name, surface),
+            ))
+        })
+        .collect::<Vec<_>>();
+    emit_invocation_and_results(out, method, iface_var, &args);
+}
+
+fn count_type_uses_bigint(typ: &ComType) -> bool {
+    matches!(
+        typ,
+        ComType::NativeIsize
+            | ComType::NativeUsize
+            | ComType::Primitive(ComPrimitive::I64 | ComPrimitive::U64)
+            | ComType::ScalarAlias {
+                underlying: super::super::ir::ComScalarRepr::NativeIsize
+                    | super::super::ir::ComScalarRepr::NativeUsize
+                    | super::super::ir::ComScalarRepr::Primitive(
+                        ComPrimitive::I64 | ComPrimitive::U64
+                    ),
+                ..
+            }
+    )
+}
+
+fn emit_fixed_capacity_buffer_method_body(
+    out: &mut String,
+    method: &ProjectedComMethod,
+    plan: &TypedBufferPlan,
+    inputs: &[(usize, &ProjectedComParam)],
+    iface_var: &str,
+) {
+    let ProjectedComMethodKind::FixedCapacityBytes { guid_param_index } = method.kind else {
+        unreachable!("fixed-capacity bytes require explicit projected method semantics")
+    };
+    let TypedBufferRelation::CallerOutput {
+        capacity_param_index,
+        unit: BufferCountUnit::Bytes,
+        sizing: TypedBufferSizing::FixedCapacity,
+        ..
+    } = plan.relation
+    else {
+        unreachable!("fixed-capacity projection is restricted to byte buffers")
+    };
+    assert!(matches!(
+        plan.element,
+        ComType::Primitive(super::super::ir::ComPrimitive::U8)
+    ));
+    let capacity_surface = inputs
+        .iter()
+        .position(|(index, _)| *index == capacity_param_index)
+        .expect("fixed capacity is a visible projected input");
+    let capacity_name = js_param_name(&method.params[capacity_param_index].name, capacity_surface);
+    out.push_str(&format!(
+        "        if (!Number.isSafeInteger({capacity_name}) || {capacity_name} < 0) throw new RangeError('COM buffer capacity must be a non-negative safe integer');\n"
+    ));
+    out.push_str(&format!(
+        "        const _capacity = DynCom.bufferAllocationLength(BigInt({capacity_name}));\n"
+    ));
+    out.push_str(&format!(
+        "        const _buffer = DynCom.callerOutputArray({}, BigInt(_capacity));\n",
+        abi_type_js(&plan.element)
+    ));
+    let args = method
+        .params
+        .iter()
+        .enumerate()
+        .filter_map(|(index, param)| {
+            if index == plan.buffer_param_index {
+                return Some("_buffer".into());
+            }
+            if index == capacity_param_index || !param.surface_input {
+                return None;
+            }
+            let surface = inputs
+                .iter()
+                .position(|(input_index, _)| *input_index == index)
+                .expect("projected visible input");
+            if index == guid_param_index {
+                return Some(format!(
+                    "DynCom.iidPointer(WinGuid.parse({}))",
+                    js_param_name(&param.name, surface)
+                ));
+            }
+            Some(wrap_param_arg_js(
+                param,
+                &js_param_name(&param.name, surface),
+            ))
+        })
+        .collect::<Vec<_>>();
+    emit_invocation_and_results(out, method, iface_var, &args);
+}
+
+fn emit_two_call_buffer_method_body(
+    out: &mut String,
+    method: &ProjectedComMethod,
+    plan: &TypedBufferPlan,
+    inputs: &[(usize, &ProjectedComParam)],
+    iface_var: &str,
+) {
+    let TypedBufferRelation::CallerOutput {
+        unit: BufferCountUnit::Bytes,
+        sizing: TypedBufferSizing::TwoCall { max_retries },
+        ..
+    } = plan.relation
+    else {
+        unreachable!("two-call buffer projection is restricted to byte buffers")
+    };
+    let buffer_result_index = method
+        .results
+        .iter()
+        .position(|result| result.source == ResultSource::Param(plan.buffer_param_index))
+        .expect("two-call buffer has a projected result");
+    let args = method
+        .params
+        .iter()
+        .enumerate()
+        .filter_map(|(index, param)| {
+            if index == plan.buffer_param_index {
+                return Some(
+                    "(_capacity === 0 ? DynCom.nullBuffer() : DynCom.buffer(_buffer))".into(),
+                );
+            }
+            if !param.surface_input {
+                return None;
+            }
+            let surface = inputs
+                .iter()
+                .position(|(input_index, _)| *input_index == index)
+                .expect("projected visible input");
+            Some(wrap_param_arg_js(
+                param,
+                &js_param_name(&param.name, surface),
+            ))
+        })
+        .collect::<Vec<_>>();
+    out.push_str("        let _capacity = 0;\n");
+    out.push_str(&format!(
+        "        for (let _attempt = 0; _attempt <= {max_retries}; _attempt++) {{\n"
+    ));
+    out.push_str("            const _buffer = Buffer.alloc(_capacity);\n");
+    match method.results.len() {
+        0 => unreachable!("two-call buffers always produce a result"),
+        1 => out.push_str(&format!(
+            "            const _out = {iface_var}.method({}).invoke(this._obj, [{}]);\n",
+            method.vtable_index,
+            args.join(", ")
+        )),
+        _ => out.push_str(&format!(
+            "            const _out = {iface_var}.method({}).invokeAll(this._obj, [{}]);\n",
+            method.vtable_index,
+            args.join(", ")
+        )),
+    }
+    let buffer_expression = if method.results.len() == 1 {
+        "_out".into()
+    } else {
+        format!("_out[{buffer_result_index}]")
+    };
+    out.push_str(&format!(
+        "            const _actual = DynCom.bufferCount({buffer_expression});\n"
+    ));
+    out.push_str("            if (_actual <= BigInt(_capacity)) {\n");
+    match method.results.len() {
+        1 => out.push_str(&format!(
+            "                return {};\n",
+            unwrap_method_result_js(method, &method.results[0], "_out")
+        )),
+        _ => {
+            let values = method
+                .results
+                .iter()
+                .enumerate()
+                .map(|(index, result)| {
+                    unwrap_method_result_js(method, result, &format!("_out[{index}]"))
+                })
+                .collect::<Vec<_>>();
+            out.push_str(&format!(
+                "                return [{}];\n",
+                values.join(", ")
+            ));
+        }
+    }
+    out.push_str("            }\n");
+    out.push_str("            _capacity = DynCom.bufferAllocationLength(_actual);\n");
+    out.push_str("        }\n");
+    out.push_str(
+        "        throw new Error('COM buffer size changed during bounded two-call retry');\n",
+    );
+}
+
+/// Renders one same-name overload group: every branch's private
+/// implementation (named per `OverloadInfo::impl_name`, e.g.
+/// `_setOpacity_7`), followed by a single public dispatcher method that picks
+/// a branch using only the validated, distinguishable dispatch decision
+/// computed during projection (`OverloadInfo::dispatch`) — never a
+/// renderer-invented heuristic.
+fn emit_overload_group_js(out: &mut String, group: &[&ProjectedComMethod], iface_var: &str) {
+    for method in group {
+        let overload = method
+            .overload
+            .as_ref()
+            .expect("group members are always overloaded");
+        emit_method_js_named(out, method, iface_var, &overload.impl_name);
+    }
+    let public_name = &group[0]
+        .overload
+        .as_ref()
+        .expect("group members are always overloaded")
+        .public_name;
+    // Attach the first branch's doc reference (if any) to the public
+    // dispatcher, since that's the method callers actually see and call.
+    emit_method_doc_js(out, &group.iter().find_map(|method| method.doc.clone()));
+    out.push_str(&format!("    {public_name}(...args) {{\n"));
+    for method in group {
+        let overload = method
+            .overload
+            .as_ref()
+            .expect("group members are always overloaded");
+        let arity = input_params(method).len();
+        let condition = match overload.dispatch {
+            OverloadDispatch::Arity => format!("args.length === {arity}"),
+            OverloadDispatch::ArityAndShape {
+                key_param_index,
+                shape,
+            } => format!(
+                "args.length === {arity} && {}",
+                dispatch_shape_check_js(shape, key_param_index)
+            ),
+        };
+        out.push_str(&format!(
+            "        if ({condition}) return this.{}(...args);\n",
+            overload.impl_name
+        ));
+    }
+    out.push_str(&format!(
+        "        throw new TypeError(`No overload of {public_name} matches the given arguments`);\n"
+    ));
+    out.push_str("    }\n");
+}
+
+fn dispatch_shape_check_js(shape: DispatchShape, index: usize) -> String {
+    match shape {
+        DispatchShape::Boolean => format!("typeof args[{index}] === 'boolean'"),
+        DispatchShape::Number => format!("typeof args[{index}] === 'number'"),
+        DispatchShape::BigInt => format!("typeof args[{index}] === 'bigint'"),
+        DispatchShape::String => format!("typeof args[{index}] === 'string'"),
+        DispatchShape::Object => {
+            format!("(args[{index}] !== null && typeof args[{index}] === 'object')")
+        }
+    }
+}
+
+fn emit_string_buffer_method_body(
+    out: &mut String,
+    method: &ProjectedComMethod,
+    plan: &super::super::ir::StringBufferPlan,
+    inputs: &[(usize, &ProjectedComParam)],
+    iface_var: &str,
+) {
+    let count_surface = inputs
+        .iter()
+        .position(|(index, _)| *index == plan.count_param_index)
+        .expect("validated count input");
+    let count_name = js_param_name(&method.params[plan.count_param_index].name, count_surface);
+    if plan.encoding == StringEncoding::Ansi {
+        out.push_str("        throw new Error('PSTR out buffers are not yet decoded safely');\n");
+        return;
+    }
+    let args = method
+        .params
+        .iter()
+        .enumerate()
+        .filter_map(|(index, param)| {
+            if index == plan.buffer_param_index {
+                Some("DynCom.pointer(_buffer)".into())
+            } else if param.direction.is_input() {
+                let surface = inputs
+                    .iter()
+                    .position(|(input_index, _)| *input_index == index)
+                    .expect("validated input");
+                Some(wrap_param_arg_js(
+                    param,
+                    &js_param_name(&param.name, surface),
+                ))
+            } else if index > plan.count_param_index && plan.optional_param_indices.contains(&index)
+            {
+                Some("DynCom.pointer(0n)".into())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    out.push_str(&format!(
+        "        {count_name} = _normalizeStringBufferCount({count_name}, '{count_name}');\n"
+    ));
+    out.push_str(&format!(
+        "        const _buffer = Buffer.alloc({count_name} * 2);\n"
+    ));
+    match method.results.len() {
+        0 => out.push_str(&format!(
+            "        {iface_var}.method({}).invoke(this._obj, [{}]);\n",
+            method.vtable_index,
+            args.join(", ")
+        )),
+        1 => out.push_str(&format!(
+            "        const _out = {iface_var}.method({}).invoke(this._obj, [{}]);\n",
+            method.vtable_index,
+            args.join(", ")
+        )),
+        _ => out.push_str(&format!(
+            "        const _out = {iface_var}.method({}).invokeAll(this._obj, [{}]);\n",
+            method.vtable_index,
+            args.join(", ")
+        )),
+    }
+    out.push_str("        const _text = _decodeWideString(_buffer);\n");
+    match method.results.len() {
+        0 => out.push_str("        return _text;\n"),
+        1 => out.push_str(&format!(
+            "        return [_text, {}];\n",
+            unwrap_method_result_js(method, &method.results[0], "_out")
+        )),
+        _ => {
+            let values = method
+                .results
+                .iter()
+                .enumerate()
+                .map(|(index, result)| {
+                    unwrap_method_result_js(method, result, &format!("_out[{index}]"))
+                })
+                .collect::<Vec<_>>();
+            out.push_str(&format!("        return [_text, {}];\n", values.join(", ")));
+        }
+    }
+}
+
+fn emit_invocation_and_results(
+    out: &mut String,
+    method: &ProjectedComMethod,
+    iface_var: &str,
+    args: &[String],
+) {
+    match method.results.len() {
+        0 => out.push_str(&format!(
+            "        {iface_var}.method({}).invoke(this._obj, [{}]);\n",
+            method.vtable_index,
+            args.join(", ")
+        )),
+        1 => {
+            out.push_str(&format!(
+                "        const _out = {iface_var}.method({}).invoke(this._obj, [{}]);\n",
+                method.vtable_index,
+                args.join(", ")
+            ));
+            out.push_str(&format!(
+                "        return {};\n",
+                unwrap_method_result_js(method, &method.results[0], "_out")
+            ));
+        }
+        _ => {
+            out.push_str(&format!(
+                "        const _r = {iface_var}.method({}).invokeAll(this._obj, [{}]);\n",
+                method.vtable_index,
+                args.join(", ")
+            ));
+            let values = method
+                .results
+                .iter()
+                .enumerate()
+                .map(|(index, result)| {
+                    unwrap_method_result_js(method, result, &format!("_r[{index}]"))
+                })
+                .collect::<Vec<_>>();
+            out.push_str(&format!("        return [{}];\n", values.join(", ")));
+        }
+    }
+}
+
+fn emit_dynamic_iid_method_js(
+    out: &mut String,
+    method: &ProjectedComMethod,
+    iid_param_index: usize,
+    output_param_index: usize,
+    iface_var: &str,
+) {
+    let inputs = input_params(method);
+    let surface = inputs
+        .iter()
+        .enumerate()
+        .map(|(surface, (_, param))| js_param_name(&param.name, surface))
+        .collect::<Vec<_>>();
+    let iid_surface = inputs
+        .iter()
+        .position(|(index, _)| *index == iid_param_index)
+        .expect("caller-supplied IID is a visible input");
+    let iid_name = js_param_name(&method.params[iid_param_index].name, iid_surface);
+    let args = dynamic_iid_args(method, &inputs, iid_param_index, "DynCom.iidPointer(_iid)");
+    out.push_str(&format!(
+        "    {}({}) {{\n        const _iid = WinGuid.parse({iid_name});\n",
+        method.camel_name,
+        surface.join(", ")
+    ));
+    emit_dynamic_iid_invocation(out, method, output_param_index, iface_var, &args, "_iid");
+    out.push_str("    }\n");
+}
+
+fn emit_synthesized_interop_method_js(
+    out: &mut String,
+    method: &ProjectedComMethod,
+    iid_param_index: usize,
+    output_param_index: usize,
+    _target_iid: &str,
+    iface_var: &str,
+    meta: &ProjectedComInterface,
+) {
+    let inputs = input_params(method);
+    let params = inputs
+        .iter()
+        .enumerate()
+        .map(|(surface, (_, param))| js_param_name(&param.name, surface))
+        .collect::<Vec<_>>();
+    let class_name = match &meta.activation {
+        ActivationPlan::WinRtFactory { class_name, .. } => class_name,
+        _ => unreachable!("validated interop activation"),
+    };
+    let iid_expression = format!("IID_{class_name}_default");
+    let iid_arg = format!("DynCom.iidPointer({iid_expression})");
+    let args = dynamic_iid_args(method, &inputs, iid_param_index, &iid_arg);
+    out.push_str(&format!(
+        "    {}({}) {{\n",
+        method.camel_name,
+        params.join(", ")
+    ));
+    if method.results.len() == 1 {
+        out.push_str(&format!(
+            "        const _raw = {iface_var}.method({}).invoke(this._obj, [{}]);\n",
+            method.vtable_index,
+            args.join(", ")
+        ));
+        out.push_str(&format!(
+            "        const _out = {};\n        return _out;\n",
+            unwrap_dynamic_iid_result_js(
+                method,
+                &method.results[0],
+                "_raw",
+                output_param_index,
+                &iid_expression,
+            )
+        ));
+    } else {
+        emit_dynamic_iid_invocation(
+            out,
+            method,
+            output_param_index,
+            iface_var,
+            &args,
+            &iid_expression,
+        );
+    }
+    out.push_str("    }\n");
+}
+
+fn dynamic_iid_args(
+    method: &ProjectedComMethod,
+    inputs: &[(usize, &ProjectedComParam)],
+    iid_param_index: usize,
+    iid_arg: &str,
+) -> Vec<String> {
+    method
+        .params
+        .iter()
+        .enumerate()
+        .filter_map(|(index, param)| {
+            if index == iid_param_index {
+                return Some(iid_arg.to_string());
+            }
+            if !param.surface_input {
+                return None;
+            }
+            let surface = inputs
+                .iter()
+                .position(|(input_index, _)| *input_index == index)
+                .expect("projected visible input");
+            Some(wrap_param_arg_js(
+                param,
+                &js_param_name(&param.name, surface),
+            ))
+        })
+        .collect()
+}
+
+fn emit_dynamic_iid_invocation(
+    out: &mut String,
+    method: &ProjectedComMethod,
+    output_param_index: usize,
+    iface_var: &str,
+    args: &[String],
+    iid_expression: &str,
+) {
+    match method.results.len() {
+        0 => unreachable!("dynamic-IID methods always have an owned interface result"),
+        1 => {
+            out.push_str(&format!(
+                "        const _out = {iface_var}.method({}).invoke(this._obj, [{}]);\n",
+                method.vtable_index,
+                args.join(", ")
+            ));
+            out.push_str(&format!(
+                "        return {};\n",
+                unwrap_dynamic_iid_result_js(
+                    method,
+                    &method.results[0],
+                    "_out",
+                    output_param_index,
+                    iid_expression,
+                )
+            ));
+        }
+        _ => {
+            out.push_str(&format!(
+                "        const _r = {iface_var}.method({}).invokeAll(this._obj, [{}]);\n",
+                method.vtable_index,
+                args.join(", ")
+            ));
+            let values = method
+                .results
+                .iter()
+                .enumerate()
+                .map(|(index, result)| {
+                    unwrap_dynamic_iid_result_js(
+                        method,
+                        result,
+                        &format!("_r[{index}]"),
+                        output_param_index,
+                        iid_expression,
+                    )
+                })
+                .collect::<Vec<_>>();
+            out.push_str(&format!("        return [{}];\n", values.join(", ")));
+        }
+    }
+}
+
+fn unwrap_dynamic_iid_result_js(
+    method: &ProjectedComMethod,
+    result: &ProjectedComResult,
+    expression: &str,
+    output_param_index: usize,
+    iid_expression: &str,
+) -> String {
+    if result.source == ResultSource::Param(output_param_index) {
+        assert_eq!(
+            result.conversion,
+            ResultConversion::DynamicIidAdoption,
+            "dynamic-IID output must carry explicit adoption provenance"
+        );
+        format!("DynCom.adoptComPointer({expression}, {iid_expression})")
+    } else {
+        unwrap_method_result_js(method, result, expression)
+    }
+}
+
+fn render_dts(meta: &ProjectedComInterface) -> String {
+    let mut out = String::new();
+    out.push_str("// Generated by dynwinrt-codegen — do not edit\n");
+    let public_types = if meta.sink.is_some() {
+        "DynComImplementation, WinGuid"
+    } else {
+        "WinGuid"
+    };
+    out.push_str(&format!(
+        "import type {{ {public_types} }} from '{}';\n",
+        com_public_import_name_for_module(&meta.namespace)
+    ));
+    for en in &meta.referenced_enums {
+        let import =
+            relative_module_specifier(&meta.namespace, &meta.name, &en.namespace, &en.name);
+        out.push_str(&format!("import {{ {} }} from '{}';\n", en.name, import));
+    }
+    for interface in collect_enumerator_interfaces(meta) {
+        if interface.name != meta.name || interface.namespace != meta.namespace {
+            let import = relative_module_specifier(
+                &meta.namespace,
+                &meta.name,
+                &interface.namespace,
+                &interface.name,
+            );
+            out.push_str(&format!(
+                "import type {{ {} }} from '{}';\n",
+                interface.name, import
+            ));
+        }
+    }
+    if meta.sink.is_some() || needs_bridge_import(meta) {
+        out.push_str(&format!(
+            "import type {{ DynWinRtValue }} from '{}';\n",
+            com_public_import_name_for_module(&meta.namespace)
+        ));
+    }
+    if !collect_native_pods(meta).is_empty() {
+        let types = if collect_native_pod_arrays(meta).is_empty() {
+            "DynComNativeStruct"
+        } else {
+            "DynComNativeStruct, DynComNativeStructArray"
+        };
+        out.push_str(&format!(
+            "import type {{ {types} }} from '{}';\n",
+            com_public_import_name_for_module(&meta.namespace)
+        ));
+    }
+    let runtime_types = collect_runtime_types(meta);
+    if !runtime_types.is_empty() {
+        out.push_str(&format!(
+            "import type {{ {} }} from '{}';\n",
+            runtime_types.join(", "),
+            com_public_import_name_for_module(&meta.namespace)
+        ));
+    }
+    out.push('\n');
+    for (name, underlying) in collect_scalar_aliases(meta) {
+        out.push_str(&format!(
+            "/** Transparent Win32 scalar typedef. */\nexport type {name} = {};\n",
+            scalar_type_dts(underlying)
+        ));
+    }
+    if !collect_scalar_aliases(meta).is_empty() {
+        out.push('\n');
+    }
+    for (name, kind) in collect_pointer_aliases(meta) {
+        match kind {
+            PointerAliasKind::HandleValue => out.push_str(&format!("/** Opaque Win32 handle value. Pass a raw pointer value as a `bigint` (full pointer width) or `number` (safe integer). */\nexport type {name} = bigint | number;\n")),
+            PointerAliasKind::DataPointer => out.push_str(&format!("/** Retained native data storage. The backing-store address is passed for the duration of the call; arbitrary numeric addresses require the explicit unsafe runtime. */\nexport type {name} = Buffer | Uint8Array;\n")),
+            PointerAliasKind::StringPointer(encoding) => {
+                let description = match encoding {
+                    StringEncoding::Wide => "Pass a JS `string` (encoded automatically), or a `Buffer`/`Uint8Array` holding UTF-16LE bytes including the NUL terminator. Arbitrary numeric addresses require the explicit unsafe runtime.",
+                    StringEncoding::Ansi => "Pass an ASCII JS `string` (encoded automatically), or a `Buffer`/`Uint8Array` holding explicitly ANSI-encoded bytes including the NUL terminator. Non-ASCII text must use pre-encoded bytes; arbitrary numeric addresses require the explicit unsafe runtime.",
+                };
+                out.push_str(&format!(
+                    "/** Win32 NUL-terminated string pointer. {description} */\nexport type {name} = string | Buffer | Uint8Array;\n"
+                ));
+            }
+        }
+    }
+    if !collect_pointer_aliases(meta).is_empty() {
+        out.push('\n');
+    }
+    let native_pod_arrays = collect_native_pod_arrays(meta);
+    for layout in collect_native_pods(meta) {
+        out.push_str(&format!(
+            "/** Validated native POD bytes ({}-specific size selected at runtime). */\nexport type {} = DynComNativeStruct & {{ readonly __dynComNativeStructLayout: '{}.{}' }};\nexport declare function create{}(bytes?: Buffer): {};\n",
+            layout.namespace, layout.name, layout.namespace, layout.name, layout.name, layout.name
+        ));
+        if native_pod_arrays.contains(&(layout.namespace.clone(), layout.name.clone())) {
+            out.push_str(&format!(
+                "export type {}Array = DynComNativeStructArray & {{ readonly __dynComNativeStructArrayLayout: '{}.{}' }};\nexport declare function create{}Array(bytes: Buffer): {}Array;\n",
+                layout.name, layout.namespace, layout.name, layout.name, layout.name
+            ));
+        }
+    }
+    if !collect_native_pods(meta).is_empty() {
+        out.push('\n');
+    }
+    for layout in collect_native_unions(meta) {
+        out.push_str(&format!(
+            "/** Validated native POD union bytes. Construction requires the exact active field. */\nexport type {} = DynComNativeUnion & {{ readonly __dynComNativeUnionLayout: '{}.{}' }};\nexport declare function create{}(activeField: {}, bytes?: Buffer): {};\n",
+            layout.name,
+            layout.namespace,
+            layout.name,
+            layout.name,
+            layout
+                .x64
+                .fields
+                .iter()
+                .map(|field| format!("'{}'", field.name))
+                .collect::<Vec<_>>()
+                .join(" | "),
+            layout.name
+        ));
+    }
+    if !collect_native_unions(meta).is_empty() {
+        out.push('\n');
+    }
+    if let Some(sink) = &meta.sink {
+        out.push_str(&format!(
+            "export interface {}Implementation {{\n",
+            meta.name
+        ));
+        for sink_method in &sink.methods {
+            let method = meta
+                .methods
+                .iter()
+                .find(|method| method.vtable_index == sink_method.vtable_index)
+                .expect("validated sink method");
+            let return_type = match sink_method.return_convention {
+                ComSinkReturnConvention::HResult => match sink_method.output_count {
+                    0 => "void | number".into(),
+                    1 => {
+                        let result = dts_return_type(method);
+                        format!("{result} | readonly [hresult: number, value: {result}]")
+                    }
+                    _ => {
+                        let result = dts_return_type(method);
+                        format!("{result} | {{ hresult: number; values: {result} }}")
+                    }
+                },
+                ComSinkReturnConvention::SemanticHResult
+                | ComSinkReturnConvention::Void
+                | ComSinkReturnConvention::Direct => dts_return_type(method),
+            };
+            out.push_str(&format!(
+                "    {}: ({}) => {};\n",
+                sink_method.handler_name,
+                dts_params(method).join(", "),
+                return_type
+            ));
+        }
+        out.push_str("}\n\n");
+    }
+    out.push_str(&format!(
+        "export declare const IID_{}: WinGuid;\n\nexport declare class {} {{\n",
+        meta.name, meta.name
+    ));
+    out.push_str(&format!(
+        "    static readonly IID: typeof IID_{};\n",
+        meta.name
+    ));
+    out.push_str("    protected constructor(obj: unknown);\n");
+    match &meta.activation {
+        ActivationPlan::None => {}
+        ActivationPlan::Coclass { .. } => {}
+        ActivationPlan::WinRtFactory { .. } => out.push_str(&format!(
+            "    /** Activate the projected WinRT class and QI to the interop.\n     * `initializeCom()` must be called once (e.g. at process startup) before this is used. */\n    static create(): {};\n",
+            meta.name
+        )),
+    }
+    out.push_str(&format!("    /** Wrap an existing native COM pointer (for QueryInterface bridging). */\n    static _fromNative(obj: unknown): {};\n", meta.name));
+    if meta.sink.is_some() {
+        out.push_str("    /** Borrowed native value for passing this implementation to generated COM methods. Do not release it separately. */\n    readonly nativeValue: DynWinRtValue;\n");
+        out.push_str("    /** Query another generated interface implemented by the same COM identity. */\n    as<T>(InterfaceClass: { readonly IID: unknown; _fromNative(obj: unknown): T }): T;\n");
+        out.push_str(&format!(
+        "    /** Describe this interface implementation for composition with other generated interfaces. */\n    static implementation(handlers: {}Implementation): DynComImplementation;\n",
+        meta.name
+    ));
+        out.push_str(&format!(
+        "    /** Create an apartment-bound COM object, optionally implementing additional generated interfaces. */\n    static implement(handlers: {}Implementation, ...additional: DynComImplementation[]): {};\n",
+        meta.name, meta.name
+    ));
+    }
+    out.push_str("    /** Release the underlying native COM reference. Safe to call more than once. */\n    release(): void;\n");
+    let mut emitted_groups = std::collections::HashSet::new();
+    for method in &meta.methods {
+        if let Some(overload) = &method.overload {
+            if !emitted_groups.insert(overload.public_name.clone()) {
+                continue;
+            }
+            let group_methods: Vec<_> = meta
+                .methods
+                .iter()
+                .filter(|candidate| {
+                    candidate
+                        .overload
+                        .as_ref()
+                        .is_some_and(|candidate_overload| {
+                            candidate_overload.public_name == overload.public_name
+                        })
+                })
+                .collect();
+            emit_method_doc_dts(&mut out, &group_methods.iter().find_map(|m| m.doc.clone()));
+            for group_method in &group_methods {
+                out.push_str(&format!(
+                    "    {}({}): {};\n",
+                    overload.public_name,
+                    dts_params(group_method).join(", "),
+                    dts_return_type(group_method)
+                ));
+            }
+            continue;
+        }
+        let (params, ret) = match method.kind {
+            ProjectedComMethodKind::Normal
+            | ProjectedComMethodKind::FixedCapacityBytes { .. }
+            | ProjectedComMethodKind::OwningCallerOutput { .. } => {
+                (dts_params(method), dts_return_type(method))
+            }
+            ProjectedComMethodKind::CallerSuppliedDynamicIid {
+                iid_param_index, ..
+            } => (
+                dts_dynamic_iid_params(method, iid_param_index),
+                dts_return_type(method),
+            ),
+            ProjectedComMethodKind::SynthesizedGetForWindow { .. } => {
+                (dts_params(method), dts_return_type(method))
+            }
+            ProjectedComMethodKind::DispatchInvoke { .. } => {
+                let mut params = dts_params(method);
+                params.push(
+                    "options?: { result?: boolean; excepInfo?: boolean; argErr?: boolean }".into(),
+                );
+                (params, "{ result?: DynComVariant }".into())
+            }
+            ProjectedComMethodKind::EnumeratorNext { .. } => {
+                (vec!["count: number".into()], dts_return_type(method))
+            }
+        };
+        emit_method_doc_dts(&mut out, &method.doc);
+        out.push_str(&format!(
+            "    {}({}): {};\n",
+            method.camel_name,
+            params.join(", "),
+            ret
+        ));
+    }
+    out.push_str("}\n");
+    out
+}
+
+/// Emits a one-line `@see` TSDoc comment above a `.d.ts` method signature
+/// when metadata supplied a doc reference. Mirrors `emit_method_doc_js`;
+/// renders nothing when `doc` is `None`.
+fn emit_method_doc_dts(out: &mut String, doc: &Option<String>) {
+    if let Some(url) = doc {
+        out.push_str(&format!("    /** @see {{@link {url}}} */\n"));
+    }
+}
+
+fn dts_dynamic_iid_params(method: &ProjectedComMethod, iid_param_index: usize) -> Vec<String> {
+    method
+        .params
+        .iter()
+        .enumerate()
+        .filter(|(_, param)| param.surface_input)
+        .enumerate()
+        .map(|(surface, (index, param))| {
+            format!(
+                "{}: {}",
+                js_param_name(&param.name, surface),
+                if index == iid_param_index {
+                    "string".into()
+                } else {
+                    param_input_type_dts(param)
+                }
+            )
+        })
+        .collect()
+}
+
+fn dts_params(method: &ProjectedComMethod) -> Vec<String> {
+    method
+        .params
+        .iter()
+        .enumerate()
+        .filter(|(_, param)| param.surface_input)
+        .enumerate()
+        .map(|(surface, (index, param))| {
+            let mut name = js_param_name(&param.name, surface);
+            if method
+                .string_buffer
+                .as_ref()
+                .is_some_and(|plan| plan.optional_param_indices.contains(&index))
+            {
+                name.push('?');
+            }
+            let typ = match method.kind {
+                ProjectedComMethodKind::FixedCapacityBytes { guid_param_index }
+                    if index == guid_param_index =>
+                {
+                    "string".into()
+                }
+                _ => param_input_type_dts(param),
+            };
+            format!("{name}: {typ}")
+        })
+        .collect()
+}
+
+fn dts_return_type(method: &ProjectedComMethod) -> String {
+    if method.string_buffer.is_some() {
+        return if method.results.is_empty() {
+            "string".into()
+        } else {
+            format!(
+                "[string, {}]",
+                method
+                    .results
+                    .iter()
+                    .map(|result| method_result_type_dts(method, result))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+    }
+    match method.results.len() {
+        0 => "void".into(),
+        1 => method_result_type_dts(method, &method.results[0]),
+        _ => format!(
+            "[{}]",
+            method
+                .results
+                .iter()
+                .map(|result| method_result_type_dts(method, result))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
+fn nullable_result_param<'a>(
+    method: &'a ProjectedComMethod,
+    result: &ProjectedComResult,
+) -> Option<&'a ProjectedComParam> {
+    let ResultSource::Param(index) = result.source else {
+        return None;
+    };
+    method.params[index]
+        .nullable
+        .then_some(&method.params[index])
+}
+
+fn unwrap_method_result_js(
+    method: &ProjectedComMethod,
+    result: &ProjectedComResult,
+    expression: &str,
+) -> String {
+    match nullable_result_param(method, result).map(|param| &param.typ) {
+        Some(ComType::NativePodPointer { .. }) => {
+            let converted = unwrap_result_js(result, "value");
+            format!(
+                "((value) => DynCom.isNullNativeStructPointer(value) ? null : {converted})({expression})"
+            )
+        }
+        Some(ComType::SafeArray { .. }) => {
+            format!("DynCom.takeNullableSafeArray({expression})")
+        }
+        Some(_) => unreachable!("nullable result projection was validated"),
+        None => unwrap_result_js(result, expression),
+    }
+}
+
+fn method_result_type_dts(method: &ProjectedComMethod, result: &ProjectedComResult) -> String {
+    let typ = result_type_dts(result);
+    if nullable_result_param(method, result).is_some() {
+        format!("{typ} | null")
+    } else {
+        typ
+    }
+}
+
+fn collect_pointer_aliases(meta: &ProjectedComInterface) -> Vec<(String, PointerAliasKind)> {
+    let mut aliases = BTreeMap::new();
+    for method in &meta.methods {
+        for typ in
+            method
+                .params
+                .iter()
+                .map(|param| &param.typ)
+                .chain(match &method.return_convention {
+                    ComReturnConvention::Direct(typ) => Some(typ),
+                    _ => None,
+                })
+        {
+            match typ {
+                ComType::PointerAlias { name, kind, .. } => {
+                    aliases.insert(name.clone(), *kind);
+                }
+
+                ComType::Primitive(_)
+                | ComType::NativeIsize
+                | ComType::NativeUsize
+                | ComType::Win32Bool
+                | ComType::HResult
+                | ComType::Guid
+                | ComType::HString
+                | ComType::Enum { .. }
+                | ComType::ScalarAlias { .. }
+                | ComType::RawPointer
+                | ComType::AllocatorPointer
+                | ComType::ConsumedAllocatorPointer
+                | ComType::InspectedAllocatorPointer
+                | ComType::GuidPointer
+                | ComType::Bstr
+                | ComType::NativePod { .. }
+                | ComType::NativePodPointer { .. }
+                | ComType::NativeUnionPointer { .. }
+                | ComType::Variant
+                | ComType::VariantByValue
+                | ComType::SafeArray { .. }
+                | ComType::PropVariant
+                | ComType::DispatchParams
+                | ComType::ExcepInfo
+                | ComType::StatStg
+                | ComType::ManagedInterface { .. }
+                | ComType::CoTaskMemWideString
+                | ComType::StringArray { .. }
+                | ComType::TypedBuffer { .. }
+                | ComType::OwningArray { .. } => {}
+            }
+        }
+    }
+    aliases.into_iter().collect()
+}
+
+fn collect_enumerator_interfaces(meta: &ProjectedComInterface) -> Vec<ProjectedInterfaceRef> {
+    let mut interfaces = std::collections::BTreeSet::new();
+    for method in &meta.methods {
+        if let ProjectedComMethodKind::EnumeratorNext {
+            interface: Some(interface),
+            ..
+        } = &method.kind
+        {
+            interfaces.insert(interface.clone());
+        }
+        for typ in method
+            .params
+            .iter()
+            .map(|param| &param.typ)
+            .chain(method.results.iter().map(|result| &result.typ))
+        {
+            if let ComType::OwningArray {
+                interface: Some(interface),
+                ..
+            } = typ
+            {
+                interfaces.insert(interface.clone());
+            }
+        }
+    }
+    interfaces.into_iter().collect()
+}
+
+fn collect_native_pods(meta: &ProjectedComInterface) -> Vec<super::super::ir::NativePodLayout> {
+    let mut layouts = BTreeMap::new();
+    for method in &meta.methods {
+        for typ in method
+            .params
+            .iter()
+            .map(|param| &param.typ)
+            .chain(method.results.iter().map(|result| &result.typ))
+            .chain(match &method.return_convention {
+                ComReturnConvention::Direct(typ) => Some(typ),
+                _ => None,
+            })
+        {
+            match typ {
+                ComType::NativePod { layout } | ComType::NativePodPointer { layout } => {
+                    layouts.insert(
+                        (layout.namespace.clone(), layout.name.clone()),
+                        layout.clone(),
+                    );
+                }
+                ComType::TypedBuffer { element } => {
+                    if let ComType::NativePod { layout } = element.as_ref() {
+                        layouts.insert(
+                            (layout.namespace.clone(), layout.name.clone()),
+                            layout.clone(),
+                        );
+                    }
+                }
+                ComType::OwningArray { element, .. } => {
+                    if let ComType::NativePod { layout } = element.as_ref() {
+                        layouts.insert(
+                            (layout.namespace.clone(), layout.name.clone()),
+                            layout.clone(),
+                        );
+                    }
+                }
+                ComType::Primitive(_)
+                | ComType::NativeIsize
+                | ComType::NativeUsize
+                | ComType::Win32Bool
+                | ComType::HResult
+                | ComType::Guid
+                | ComType::HString
+                | ComType::Enum { .. }
+                | ComType::ScalarAlias { .. }
+                | ComType::RawPointer
+                | ComType::AllocatorPointer
+                | ComType::ConsumedAllocatorPointer
+                | ComType::InspectedAllocatorPointer
+                | ComType::GuidPointer
+                | ComType::PointerAlias { .. }
+                | ComType::Bstr
+                | ComType::NativeUnionPointer { .. }
+                | ComType::Variant
+                | ComType::VariantByValue
+                | ComType::SafeArray { .. }
+                | ComType::PropVariant
+                | ComType::DispatchParams
+                | ComType::ExcepInfo
+                | ComType::StatStg
+                | ComType::ManagedInterface { .. }
+                | ComType::CoTaskMemWideString
+                | ComType::StringArray { .. } => {}
+            }
+        }
+    }
+    layouts.into_values().collect()
+}
+
+fn collect_native_pod_arrays(
+    meta: &ProjectedComInterface,
+) -> std::collections::BTreeSet<(String, String)> {
+    let mut layouts = std::collections::BTreeSet::new();
+    for method in &meta.methods {
+        for typ in method.params.iter().map(|param| &param.typ) {
+            if let ComType::TypedBuffer { element } = typ
+                && let ComType::NativePod { layout } = element.as_ref()
+            {
+                layouts.insert((layout.namespace.clone(), layout.name.clone()));
+            }
+        }
+    }
+    layouts
+}
+
+fn collect_native_unions(meta: &ProjectedComInterface) -> Vec<super::super::ir::NativeUnionLayout> {
+    let mut layouts = BTreeMap::new();
+    for method in &meta.methods {
+        for typ in method
+            .params
+            .iter()
+            .map(|param| &param.typ)
+            .chain(method.results.iter().map(|result| &result.typ))
+            .chain(match &method.return_convention {
+                ComReturnConvention::Direct(typ) => Some(typ),
+                _ => None,
+            })
+        {
+            if let ComType::NativeUnionPointer { layout } = typ {
+                layouts.insert(
+                    (layout.namespace.clone(), layout.name.clone()),
+                    layout.clone(),
+                );
+            }
+        }
+    }
+    layouts.into_values().collect()
+}
+
+fn collect_runtime_types(meta: &ProjectedComInterface) -> Vec<&'static str> {
+    let mut types = std::collections::BTreeSet::new();
+    for method in &meta.methods {
+        for typ in method
+            .params
+            .iter()
+            .map(|param| &param.typ)
+            .chain(method.results.iter().map(|result| &result.typ))
+        {
+            match typ {
+                ComType::NativeUnionPointer { .. } => {
+                    types.insert("DynComNativeUnion");
+                }
+                ComType::Variant => {
+                    types.insert("DynComVariant");
+                }
+                ComType::VariantByValue => {
+                    types.insert("DynComVariant");
+                }
+                ComType::SafeArray { .. } => {
+                    types.insert("DynComSafeArray");
+                }
+                ComType::PropVariant => {
+                    types.insert("DynComPropVariant");
+                }
+                ComType::DispatchParams => {
+                    types.insert("DynComDispatchParams");
+                }
+                ComType::ExcepInfo => {
+                    types.insert("DynComExcepInfo");
+                }
+                ComType::StatStg => {
+                    types.insert("DynComStatStg");
+                }
+                ComType::AllocatorPointer
+                | ComType::ConsumedAllocatorPointer
+                | ComType::InspectedAllocatorPointer => {
+                    types.insert("DynComAllocation");
+                }
+                ComType::OwningArray { element, .. } => match element.as_ref() {
+                    ComType::Variant => {
+                        types.insert("DynComVariant");
+                    }
+                    _ => {}
+                },
+                _ => {}
+            }
+        }
+    }
+    types.into_iter().collect()
+}
+
+fn collect_scalar_aliases(
+    meta: &ProjectedComInterface,
+) -> Vec<(String, super::super::ir::ComScalarRepr)> {
+    let mut aliases = BTreeMap::new();
+    for method in &meta.methods {
+        for typ in method
+            .params
+            .iter()
+            .map(|param| &param.typ)
+            .chain(method.results.iter().map(|result| &result.typ))
+            .chain(match &method.return_convention {
+                ComReturnConvention::Direct(typ) => Some(typ),
+                _ => None,
+            })
+        {
+            collect_scalar_alias(typ, &mut aliases);
+        }
+    }
+    aliases.into_iter().collect()
+}
+
+fn collect_scalar_alias(
+    typ: &ComType,
+    aliases: &mut BTreeMap<String, super::super::ir::ComScalarRepr>,
+) {
+    match typ {
+        ComType::ScalarAlias {
+            name, underlying, ..
+        } => {
+            aliases.insert(name.clone(), *underlying);
+        }
+        ComType::TypedBuffer { element } | ComType::OwningArray { element, .. } => {
+            collect_scalar_alias(element, aliases)
+        }
+        ComType::Primitive(_)
+        | ComType::NativeIsize
+        | ComType::NativeUsize
+        | ComType::Win32Bool
+        | ComType::HResult
+        | ComType::Guid
+        | ComType::HString
+        | ComType::Enum { .. }
+        | ComType::RawPointer
+        | ComType::AllocatorPointer
+        | ComType::ConsumedAllocatorPointer
+        | ComType::InspectedAllocatorPointer
+        | ComType::GuidPointer
+        | ComType::PointerAlias { .. }
+        | ComType::Bstr
+        | ComType::NativePod { .. }
+        | ComType::NativePodPointer { .. }
+        | ComType::NativeUnionPointer { .. }
+        | ComType::Variant
+        | ComType::VariantByValue
+        | ComType::SafeArray { .. }
+        | ComType::PropVariant
+        | ComType::DispatchParams
+        | ComType::ExcepInfo
+        | ComType::StatStg
+        | ComType::ManagedInterface { .. }
+        | ComType::CoTaskMemWideString
+        | ComType::StringArray { .. } => {}
+    }
+}
+
+fn needs_bridge_import(meta: &ProjectedComInterface) -> bool {
+    matches!(meta.activation, ActivationPlan::WinRtFactory { .. })
+        || meta.methods.iter().any(|method| {
+            !matches!(method.kind, ProjectedComMethodKind::Normal)
+                || method
+                    .params
+                    .iter()
+                    .any(|param| type_needs_bridge_import(&param.typ))
+                || method
+                    .results
+                    .iter()
+                    .any(|result| type_needs_bridge_import(&result.typ))
+                || method.results.iter().any(|result| {
+                    matches!(
+                        result.conversion,
+                        ResultConversion::ManagedCom
+                            | ResultConversion::CoTaskMemData
+                            | ResultConversion::DynamicIidAdoption
+                    )
+                })
+                || matches!(
+                    &method.return_convention,
+                    ComReturnConvention::Direct(typ) if type_needs_bridge_import(typ)
+                )
+        })
+}
+
+fn type_needs_bridge_import(typ: &ComType) -> bool {
+    match typ {
+        ComType::ManagedInterface { .. } => true,
+        ComType::TypedBuffer { element } => type_needs_bridge_import(element),
+        ComType::OwningArray { element, interface } => {
+            interface.is_none() && type_needs_bridge_import(element)
+        }
+        _ => false,
+    }
+}
+
+fn com_runtime_import_name() -> String {
+    let import_name = crate::codegen::project::get_import_name();
+    if import_name == "@microsoft/dynwinrt" {
+        format!("{import_name}/com/unsafe")
+    } else if import_name == "@microsoft/dynwinrt/com" {
+        format!("{import_name}/unsafe")
+    } else if let Some(import_name) =
+        replace_exact_module_basename(&import_name, "com.js", "com-unsafe.js")
+    {
+        import_name
+    } else {
+        import_name
+    }
+}
+
+fn com_runtime_import_name_for_module(namespace: &str) -> String {
+    super::super::rebase_runtime_import(
+        com_runtime_import_name(),
+        super::super::canonical_namespace_depth(namespace),
+    )
+}
+
+fn com_public_import_name() -> String {
+    let import_name = crate::codegen::project::get_import_name();
+    if import_name == "@microsoft/dynwinrt" {
+        format!("{import_name}/com")
+    } else if import_name == "@microsoft/dynwinrt/com/unsafe" {
+        "@microsoft/dynwinrt/com".into()
+    } else if let Some(import_name) =
+        replace_exact_module_basename(&import_name, "com-unsafe.js", "com.js")
+    {
+        import_name
+    } else {
+        import_name
+    }
+}
+
+fn com_public_import_name_for_module(namespace: &str) -> String {
+    super::super::rebase_runtime_import(
+        com_public_import_name(),
+        super::super::canonical_namespace_depth(namespace),
+    )
+}
+
+pub(crate) fn com_raw_runtime_import_name() -> String {
+    let import_name = crate::codegen::project::get_import_name();
+    match import_name.as_str() {
+        "@microsoft/dynwinrt" => format!("{import_name}/com/unsafe/raw"),
+        "@microsoft/dynwinrt/com" => format!("{import_name}/unsafe/raw"),
+        "@microsoft/dynwinrt/com/unsafe" => format!("{import_name}/raw"),
+        "@microsoft/dynwinrt/com/unsafe/raw" => import_name,
+        _ => replace_exact_module_basename(&import_name, "com.js", "com-unsafe-raw.js")
+            .or_else(|| {
+                replace_exact_module_basename(&import_name, "com-unsafe.js", "com-unsafe-raw.js")
+            })
+            .unwrap_or(import_name),
+    }
+}
+
+pub(crate) fn com_raw_runtime_import_name_for_depth(parent_depth: usize) -> String {
+    super::super::rebase_runtime_import(com_raw_runtime_import_name(), parent_depth)
+}
+
+fn replace_exact_module_basename(value: &str, from: &str, to: &str) -> Option<String> {
+    let (prefix, basename) = value
+        .rfind(|character| character == '/' || character == '\\')
+        .map_or(("", value), |index| value.split_at(index + 1));
+    (basename == from).then(|| format!("{prefix}{to}"))
+}
+
+fn render_enum_files(en: &ProjectedComEnum) -> (String, String) {
+    let mut js = String::from("// Generated by dynwinrt-codegen — do not edit\n");
+    js.push_str(&format!("export const {} = Object.freeze({{\n", en.name));
+    for member in &en.members {
+        js.push_str(&format!(
+            "    {}: {},\n",
+            member.name,
+            render_enum_value(&member.value, en.underlying)
+        ));
+    }
+    js.push_str("});\n");
+    let mut dts = String::from("// Generated by dynwinrt-codegen — do not edit\n");
+    dts.push_str(&format!(
+        "export type {} = (typeof {})[keyof typeof {}];\n",
+        en.name, en.name, en.name
+    ));
+    dts.push_str(&format!("export declare const {}: {{\n", en.name));
+    for member in &en.members {
+        dts.push_str(&format!(
+            "    readonly {}: {};\n",
+            member.name,
+            render_enum_value(&member.value, en.underlying)
+        ));
+    }
+    dts.push_str("};\n");
+    (com_esm_to_cjs(&js, &en.namespace), dts)
+}
+
+fn render_enum_value(value: &ProjectedEnumValue, underlying: ComEnumUnderlying) -> String {
+    let suffix = if matches!(underlying, ComEnumUnderlying::I64 | ComEnumUnderlying::U64) {
+        "n"
+    } else {
+        ""
+    };
+    match value {
+        ProjectedEnumValue::Signed(value) => format!("{value}{suffix}"),
+        ProjectedEnumValue::Unsigned(value) => format!("{value}{suffix}"),
+    }
+}
+
+#[cfg(test)]
+#[path = "render_tests.rs"]
+mod tests;

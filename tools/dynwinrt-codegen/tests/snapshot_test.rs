@@ -7,13 +7,14 @@
 //! To update snapshots after an intentional output change, run:
 //!   cargo run -p dynwinrt-codegen -- generate --namespace Windows.Foundation --class-name Uri --output tests/snapshots/uri
 
+mod common;
+
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
 use dynwinrt_codegen::codegen::common::to_snake_case_filename;
-use dynwinrt_codegen::codegen::python_stub;
-use dynwinrt_codegen::codegen::{project, render_dts, render_js};
+use dynwinrt_codegen::codegen::{javascript, project, python, python_stub, render_dts, render_js};
 use dynwinrt_codegen::meta;
 use dynwinrt_codegen::types::TypeMeta;
 
@@ -35,8 +36,68 @@ fn snapshot_uri_class() {
     let deps = meta::resolve_dependencies(winmd, &classes, &[], &[]);
     let mut all_classes = classes;
     all_classes.extend(deps.classes);
-    let all_interfaces = deps.interfaces;
-    let all_enums = deps.enums;
+    let mut all_interfaces = deps.interfaces;
+    let mut all_enums = deps.enums;
+    let identities = all_classes
+        .iter()
+        .map(|class| {
+            javascript::JavaScriptTypeIdentity::new(
+                &class.namespace,
+                &class.name,
+                javascript::JavaScriptTypeKind::Class,
+            )
+        })
+        .chain(all_interfaces.iter().map(|interface| {
+            let kind = if interface
+                .methods
+                .iter()
+                .any(|method| method.name == ".ctor")
+                && interface
+                    .methods
+                    .iter()
+                    .any(|method| method.name == "Invoke")
+            {
+                javascript::JavaScriptTypeKind::Delegate
+            } else {
+                javascript::JavaScriptTypeKind::Interface
+            };
+            if let Some(piid) = &interface.generic_piid {
+                javascript::JavaScriptTypeIdentity::with_variant(
+                    &interface.namespace,
+                    &javascript::parameterized_interface_name(
+                        &interface.namespace,
+                        &interface.name,
+                        piid,
+                        &interface.generic_args,
+                    ),
+                    kind,
+                    &javascript::parameterized_reference_identity(piid, &interface.generic_args),
+                )
+            } else {
+                javascript::JavaScriptTypeIdentity::new(&interface.namespace, &interface.name, kind)
+            }
+        }))
+        .chain(all_enums.iter().filter_map(|typ| {
+            let TypeMeta::Enum {
+                namespace, name, ..
+            } = typ
+            else {
+                return None;
+            };
+            Some(javascript::JavaScriptTypeIdentity::new(
+                namespace,
+                name,
+                javascript::JavaScriptTypeKind::Enum,
+            ))
+        }))
+        .collect::<Vec<_>>();
+    let context = javascript::create_javascript_projection_context(identities).unwrap();
+    javascript::apply_javascript_projected_names(
+        &context,
+        &mut all_classes,
+        &mut all_interfaces,
+        &mut all_enums,
+    );
 
     let mut known_types: HashSet<String> = HashSet::new();
     for c in &all_classes {
@@ -60,14 +121,24 @@ fn snapshot_uri_class() {
         .map(|i| i.name.clone())
         .collect();
 
-    let shared_iids: HashSet<String> = HashSet::new();
+    let shared_iids = all_interfaces
+        .iter()
+        .filter(|interface| interface.generic_piid.is_none())
+        .map(|interface| interface.iid.clone())
+        .collect::<HashSet<_>>();
     let (delegate_sigs, delegate_sig_refs, delegate_param_wraps) =
-        project::build_delegate_signatures(&all_interfaces, &delegate_type_names, &known_types);
+        project::build_delegate_signatures(
+            &context,
+            &all_interfaces,
+            &delegate_type_names,
+            &known_types,
+        );
 
     // Generate all files into a map (.js + .d.ts pair per type)
     let mut generated: HashMap<String, String> = HashMap::new();
     for iface in &all_interfaces {
-        let projected = project::project_interface(
+        let mut projected = project::project_interface(
+            &context,
             iface,
             &known_types,
             &delegate_type_names,
@@ -75,13 +146,20 @@ fn snapshot_uri_class() {
             &delegate_sig_refs,
             &delegate_param_wraps,
         );
-        let js = render_js::render(&projected);
+        let target = context.configure_projected_file(&mut projected).unwrap();
+        let mut js = render_js::render(&projected);
+        let lifetime = javascript::root_relative_module(&target.canonical_module, "lifetime");
+        js = js.replace(
+            "require('./lifetime.js')",
+            &format!("require('{lifetime}.js')"),
+        );
         let dts = render_dts::render(&projected);
-        generated.insert(format!("{}.js", iface.name), js);
-        generated.insert(format!("{}.d.ts", iface.name), dts);
+        generated.insert(format!("{}.js", target.canonical_module), js);
+        generated.insert(format!("{}.d.ts", target.canonical_module), dts);
     }
     for class in &all_classes {
-        let projected = project::project_class(
+        let mut projected = project::project_class(
+            &context,
             class,
             &known_types,
             &delegate_type_names,
@@ -90,11 +168,27 @@ fn snapshot_uri_class() {
             &delegate_sig_refs,
             &delegate_param_wraps,
         );
-        let js = render_js::render(&projected);
+        let target = context.configure_projected_file(&mut projected).unwrap();
+        let mut js = render_js::render(&projected);
+        let lifetime = javascript::root_relative_module(&target.canonical_module, "lifetime");
+        js = js.replace(
+            "require('./lifetime.js')",
+            &format!("require('{lifetime}.js')"),
+        );
         let dts = render_dts::render(&projected);
-        generated.insert(format!("{}.js", class.name), js);
-        generated.insert(format!("{}.d.ts", class.name), dts);
+        generated.insert(format!("{}.js", target.canonical_module), js);
+        generated.insert(format!("{}.d.ts", target.canonical_module), dts);
     }
+    let uri_js = generated
+        .get("windows/foundation/Uri.js")
+        .expect("generated Uri.js");
+    assert!(uri_js.contains(
+        "const IID_ARG_Windows_Foundation_Uri = WinGuid.parse('9e365e57-48b2-4160-956f-c7385120bbfc');"
+    ));
+    assert!(uri_js.contains("_unwrap(pUri).cast(IID_ARG_Windows_Foundation_Uri)"));
+    assert!(
+        !uri_js.contains("_unwrap(pUri).cast(DynWinRtType.runtimeClass('Windows.Foundation.Uri'")
+    );
 
     // Compare against snapshots
     let snapshot_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots/uri");
@@ -103,6 +197,14 @@ fn snapshot_uri_class() {
         "Snapshot directory not found: {}",
         snapshot_dir.display()
     );
+    if std::env::var_os("DYNWINRT_UPDATE_SNAPSHOTS").is_some() {
+        for (filename, actual) in &generated {
+            let path = snapshot_dir.join(filename);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, actual)
+                .unwrap_or_else(|error| panic!("Failed to update {filename}: {error}"));
+        }
+    }
 
     let mut mismatches = Vec::new();
     for (filename, actual) in &generated {
@@ -119,14 +221,29 @@ fn snapshot_uri_class() {
         }
     }
 
-    // Check for extra snapshot files not in generated output
-    if let Ok(entries) = fs::read_dir(&snapshot_dir) {
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if (name.ends_with(".js") || name.ends_with(".d.ts")) && !generated.contains_key(&name)
+    // Check for extra snapshot files not in generated output.
+    let mut snapshot_files = Vec::new();
+    let mut directories = vec![snapshot_dir.clone()];
+    while let Some(directory) = directories.pop() {
+        for entry in fs::read_dir(directory).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                directories.push(path);
+            } else if path.extension().is_some_and(|extension| extension == "js")
+                || path.to_string_lossy().ends_with(".d.ts")
             {
-                mismatches.push(format!("  extra snapshot not generated: {}", name));
+                snapshot_files.push(path);
             }
+        }
+    }
+    for path in snapshot_files {
+        let relative = path
+            .strip_prefix(&snapshot_dir)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        if !generated.contains_key(&relative) {
+            mismatches.push(format!("  extra snapshot not generated: {relative}"));
         }
     }
 
@@ -152,7 +269,7 @@ fn snapshot_uri_pyi_class() {
         }
     };
 
-    let deps = meta::resolve_dependencies(winmd, &classes, &[], &[]);
+    let deps = meta::resolve_python_dependencies(winmd, &classes, &[], &[]);
     let mut all_classes = classes;
     all_classes.extend(deps.classes);
     let all_interfaces = deps.interfaces;
@@ -179,22 +296,30 @@ fn snapshot_uri_pyi_class() {
         .map(|i| i.name.clone())
         .collect();
     let shared_iids: HashSet<String> = HashSet::new();
+    let context = common::projection_context(
+        &all_classes,
+        &all_interfaces,
+        &known_types,
+        &delegate_type_names,
+    );
 
     let mut generated: HashMap<String, String> = HashMap::new();
     for iface in &all_interfaces {
-        let code = python_stub::generate_interface_stub(iface, &known_types, &delegate_type_names);
+        let code = python_stub::generate_interface_stub(&context, iface);
         generated.insert(format!("{}.pyi", to_snake_case_filename(&iface.name)), code);
     }
     for class in &all_classes {
-        let code = python_stub::generate_class_stub(
-            class,
-            &known_types,
-            &delegate_type_names,
-            &shared_iids,
-        );
+        let code = python_stub::generate_class_stub(&context, class, &shared_iids);
         generated.insert(format!("{}.pyi", to_snake_case_filename(&class.name)), code);
     }
-    let index = python_stub::generate_index_stub(&all_classes, &all_interfaces, &all_enums);
+    let index_context = common::packaged_projection_context(
+        &all_classes,
+        &all_interfaces,
+        &known_types,
+        &delegate_type_names,
+    );
+    let index =
+        python_stub::generate_index_stub(&index_context, &all_classes, &all_interfaces, &all_enums);
     generated.insert("__init__.pyi".to_string(), index);
 
     let snapshot_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots/uri_pyi");
@@ -203,6 +328,11 @@ fn snapshot_uri_pyi_class() {
         "Snapshot directory not found: {}",
         snapshot_dir.display()
     );
+    if std::env::var_os("DYNWINRT_UPDATE_PY_SNAPSHOTS").is_some() {
+        for (filename, actual) in &generated {
+            fs::write(snapshot_dir.join(filename), actual).expect("write Python stub snapshot");
+        }
+    }
 
     let mut mismatches = Vec::new();
     for (filename, actual) in &generated {
@@ -233,7 +363,6 @@ fn snapshot_uri_pyi_class() {
 /// Guards Phase 3 refactor (common.rs split + Lang trait) from drifting output.
 #[test]
 fn snapshot_uri_py_class() {
-    use dynwinrt_codegen::codegen::python;
     let winmd = WINDOWS_WINMD;
     let classes = match meta::parse_class(winmd, "Windows.Foundation", "Uri") {
         Some(c) => vec![c],
@@ -242,7 +371,7 @@ fn snapshot_uri_py_class() {
             return;
         }
     };
-    let deps = meta::resolve_dependencies(winmd, &classes, &[], &[]);
+    let deps = meta::resolve_python_dependencies(winmd, &classes, &[], &[]);
     let mut all_classes = classes;
     all_classes.extend(deps.classes);
     let all_interfaces = deps.interfaces;
@@ -269,17 +398,29 @@ fn snapshot_uri_py_class() {
         .map(|i| i.name.clone())
         .collect();
     let shared_iids: HashSet<String> = HashSet::new();
+    let context = common::projection_context(
+        &all_classes,
+        &all_interfaces,
+        &known_types,
+        &delegate_type_names,
+    );
 
     let mut generated: HashMap<String, String> = HashMap::new();
     for iface in &all_interfaces {
-        let code = python::generate_interface(iface, &known_types, &delegate_type_names);
+        let code = python::generate_interface(&context, iface);
         generated.insert(format!("{}.py", to_snake_case_filename(&iface.name)), code);
     }
     for class in &all_classes {
-        let code = python::generate_class(class, &known_types, &delegate_type_names, &shared_iids);
+        let code = python::generate_class(&context, class, &shared_iids);
         generated.insert(format!("{}.py", to_snake_case_filename(&class.name)), code);
     }
-    let index = python::generate_index(&all_classes, &all_interfaces, &all_enums);
+    let index_context = common::packaged_projection_context(
+        &all_classes,
+        &all_interfaces,
+        &known_types,
+        &delegate_type_names,
+    );
+    let index = python::generate_index(&index_context, &all_classes, &all_interfaces, &all_enums);
     generated.insert("__init__.py".to_string(), index);
 
     let snapshot_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots/uri_py");
@@ -288,6 +429,11 @@ fn snapshot_uri_py_class() {
         "Snapshot directory not found: {}",
         snapshot_dir.display()
     );
+    if std::env::var_os("DYNWINRT_UPDATE_PY_SNAPSHOTS").is_some() {
+        for (filename, actual) in &generated {
+            fs::write(snapshot_dir.join(filename), actual).expect("write Python snapshot");
+        }
+    }
 
     let mut mismatches = Vec::new();
     for (filename, actual) in &generated {
@@ -315,6 +461,64 @@ fn snapshot_uri_py_class() {
             mismatches.join("\n")
         );
     }
+}
+
+/// Snapshot a method-rich Python class outside Windows.Foundation.
+#[test]
+fn snapshot_data_writer_py_class() {
+    let classes = match meta::parse_class(WINDOWS_WINMD, "Windows.Storage.Streams", "DataWriter") {
+        Some(class) => vec![class],
+        None => {
+            eprintln!("Skipping snapshot test: Windows.winmd not found");
+            return;
+        }
+    };
+    let deps = meta::resolve_python_dependencies(WINDOWS_WINMD, &classes, &[], &[]);
+    let mut all_classes = classes;
+    all_classes.extend(deps.classes);
+    let interfaces = deps.interfaces;
+    let enums = deps.enums;
+
+    let mut known_types = HashSet::new();
+    known_types.extend(all_classes.iter().map(|class| class.name.clone()));
+    known_types.extend(interfaces.iter().map(|interface| interface.name.clone()));
+    known_types.extend(enums.iter().filter_map(|typ| match typ {
+        TypeMeta::Enum { name, .. } => Some(name.clone()),
+        _ => None,
+    }));
+    let delegate_type_names = interfaces
+        .iter()
+        .filter(|interface| {
+            interface
+                .methods
+                .iter()
+                .any(|method| method.name == ".ctor")
+                && interface
+                    .methods
+                    .iter()
+                    .any(|method| method.name == "Invoke")
+        })
+        .map(|interface| interface.name.clone())
+        .collect::<HashSet<_>>();
+    let class = all_classes
+        .iter()
+        .find(|class| class.name == "DataWriter")
+        .expect("DataWriter class");
+    let actual = common::generate_class(class, &known_types, &delegate_type_names, &HashSet::new());
+
+    let snapshot_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots/data_writer_py");
+    let snapshot_path = snapshot_dir.join("data_writer.py");
+    if std::env::var_os("DYNWINRT_UPDATE_PY_SNAPSHOTS").is_some() {
+        fs::create_dir_all(&snapshot_dir).expect("create DataWriter snapshot directory");
+        fs::write(&snapshot_path, &actual).expect("write DataWriter Python snapshot");
+    }
+    let expected = fs::read_to_string(&snapshot_path).unwrap_or_else(|error| {
+        panic!(
+            "Failed to read snapshot {}: {error}. Set DYNWINRT_UPDATE_PY_SNAPSHOTS=1 to create it.",
+            snapshot_path.display()
+        )
+    });
+    assert_eq!(actual, expected, "DataWriter Python snapshot changed");
 }
 
 /// Verify generated TypeScript for async (and async-with-progress) methods
@@ -364,13 +568,14 @@ fn ts_async_methods_emit_abort_signal_scaffolding() {
         .collect();
     let shared: HashSet<String> = HashSet::new();
     let (dw_delegate_sigs, dw_delegate_sig_refs, dw_delegate_param_wraps) =
-        project::build_delegate_signatures(&dw_ifaces, &delegates, &known);
+        project::build_delegate_signatures(&Default::default(), &dw_ifaces, &delegates, &known);
 
     let dw_class = dw_all_classes
         .iter()
         .find(|c| c.name == "DataWriter")
         .expect("DataWriter class");
     let dw_projected = project::project_class(
+        &Default::default(),
         dw_class,
         &known,
         &delegates,
@@ -439,13 +644,19 @@ fn ts_async_methods_emit_abort_signal_scaffolding() {
         .map(|i| i.name.clone())
         .collect();
     let (hc_delegate_sigs, hc_delegate_sig_refs, hc_delegate_param_wraps) =
-        project::build_delegate_signatures(&hc_ifaces, &hc_delegates, &hc_known);
+        project::build_delegate_signatures(
+            &Default::default(),
+            &hc_ifaces,
+            &hc_delegates,
+            &hc_known,
+        );
 
     let hc_class = hc_all_classes
         .iter()
         .find(|c| c.name == "HttpClient")
         .expect("HttpClient class");
     let hc_projected = project::project_class(
+        &Default::default(),
         hc_class,
         &hc_known,
         &hc_delegates,
@@ -527,6 +738,7 @@ fn ts_async_methods_emit_abort_signal_scaffolding() {
     // and IIterator_Certificate via TLS/cookie deps.
     if let Some(iv) = hc_ifaces.iter().find(|i| i.name == "IVector_String") {
         let projected = project::project_interface(
+            &Default::default(),
             iv,
             &hc_known,
             &hc_delegates,
@@ -560,6 +772,7 @@ fn ts_async_methods_emit_abort_signal_scaffolding() {
         .find(|i| i.name.starts_with("IVectorView_"))
     {
         let projected = project::project_interface(
+            &Default::default(),
             iv,
             &hc_known,
             &hc_delegates,
@@ -582,6 +795,7 @@ fn ts_async_methods_emit_abort_signal_scaffolding() {
 
     if let Some(it) = hc_ifaces.iter().find(|i| i.name.starts_with("IIterator_")) {
         let projected = project::project_interface(
+            &Default::default(),
             it,
             &hc_known,
             &hc_delegates,
@@ -604,6 +818,7 @@ fn ts_async_methods_emit_abort_signal_scaffolding() {
 
     if let Some(it) = hc_ifaces.iter().find(|i| i.name.starts_with("IIterable_")) {
         let projected = project::project_interface(
+            &Default::default(),
             it,
             &hc_known,
             &hc_delegates,
@@ -650,6 +865,7 @@ fn ts_async_methods_emit_abort_signal_scaffolding() {
         .find(|c| c.name == "Uri")
         .expect("Uri class");
     let uri_projected = project::project_class(
+        &Default::default(),
         uri_class,
         &uri_known,
         &HashSet::new(),
@@ -670,5 +886,88 @@ fn ts_async_methods_emit_abort_signal_scaffolding() {
     assert!(
         uri_code.contains("get [Symbol.toStringTag]() { return 'Uri'; }"),
         "Expected [Symbol.toStringTag] = 'Uri' in Uri.js"
+    );
+}
+
+#[test]
+fn data_package_view_projects_text_async_overloads_and_hstring_results() {
+    let classes = match meta::parse_class(
+        WINDOWS_WINMD,
+        "Windows.ApplicationModel.DataTransfer",
+        "DataPackageView",
+    ) {
+        Some(class) => vec![class],
+        None => {
+            eprintln!("Skipping: Windows.winmd not found");
+            return;
+        }
+    };
+    let deps = meta::resolve_dependencies(WINDOWS_WINMD, &classes, &[], &[]);
+    let mut all_classes = classes;
+    all_classes.extend(deps.classes);
+    let interfaces = deps.interfaces;
+    let enums = deps.enums;
+    let mut known = HashSet::new();
+    for class in &all_classes {
+        known.insert(class.name.clone());
+    }
+    for interface in &interfaces {
+        known.insert(interface.name.clone());
+    }
+    for enum_type in &enums {
+        if let TypeMeta::Enum { name, .. } = enum_type {
+            known.insert(name.clone());
+        }
+    }
+    let delegates: HashSet<String> = interfaces
+        .iter()
+        .filter(|interface| {
+            interface
+                .methods
+                .iter()
+                .any(|method| method.name == ".ctor")
+                && interface
+                    .methods
+                    .iter()
+                    .any(|method| method.name == "Invoke")
+        })
+        .map(|interface| interface.name.clone())
+        .collect();
+    let shared = HashSet::new();
+    let (delegate_sigs, delegate_sig_refs, delegate_param_wraps) =
+        project::build_delegate_signatures(&Default::default(), &interfaces, &delegates, &known);
+    let class = all_classes
+        .iter()
+        .find(|class| class.name == "DataPackageView")
+        .expect("DataPackageView class");
+    let projected = project::project_class(
+        &Default::default(),
+        class,
+        &known,
+        &delegates,
+        &shared,
+        &delegate_sigs,
+        &delegate_sig_refs,
+        &delegate_param_wraps,
+    );
+    let code = render_js::render(&projected);
+    let declarations = render_dts::render(&projected);
+
+    assert!(code.contains(
+        ".addMethod(\"GetTextAsync\", new DynWinRtMethodSig().addOut(DynWinRtType.iAsyncOperation(DynWinRtType.hstring())))"
+    ));
+    assert!(code.contains(
+        ".addMethod(\"GetCustomTextAsync\", new DynWinRtMethodSig().addIn(DynWinRtType.hstring()).addOut(DynWinRtType.iAsyncOperation(DynWinRtType.hstring())))"
+    ));
+    assert!(code.contains("async _getTextAsync_1(signal)"));
+    assert!(code.contains("async _getTextAsync_2(formatId, signal)"));
+    assert!(code.matches("return _v.toString();").count() >= 2);
+    assert!(code.contains(
+        "if (args.length >= 1 && args[0] !== undefined && !(args[0] instanceof AbortSignal))"
+    ));
+    assert!(declarations.contains("getTextAsync(signal?: AbortSignal): Promise<string>;"));
+    assert!(
+        declarations
+            .contains("getTextAsync(formatId: string, signal?: AbortSignal): Promise<string>;")
     );
 }

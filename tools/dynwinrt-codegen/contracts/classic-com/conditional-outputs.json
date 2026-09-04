@@ -1,0 +1,127 @@
+{
+  "schemaVersion": 2,
+  "contracts": [
+    {
+      "entryId": "wmi.conditional-output.entry.windows-win32-system-wmi.iwbemservices.9556dc99828c11cfa37e00aa003240c7.opennamespace.slot-3.v1",
+      "familyId": "wmi.conditional-output.v1",
+      "kind": "conditional-output",
+      "reason": "IWbemServices::OpenNamespace declares two mutually exclusive optional [out] COM interface slots; the selected slot starts null and transfers an owned +1 result",
+      "selector": {
+        "interface": {
+          "namespace": "Windows.Win32.System.Wmi",
+          "name": "IWbemServices",
+          "iid": "9556dc99-828c-11cf-a37e-00aa003240c7"
+        },
+        "declaringIid": "9556dc99-828c-11cf-a37e-00aa003240c7",
+        "method": "OpenNamespace",
+        "absoluteSlot": 3,
+        "parameterCount": 5,
+        "parameters": [
+          {
+            "index": 0,
+            "name": "strNamespace",
+            "nativeType": "Windows.Win32.Foundation.BSTR",
+            "pointerDepth": 0,
+            "direction": "in",
+            "optional": false,
+            "constness": "unspecified",
+            "constAttribute": true
+          },
+          {
+            "index": 1,
+            "name": "lFlags",
+            "nativeType": "Windows.Win32.System.Wmi.WBEM_GENERIC_FLAG_TYPE",
+            "pointerDepth": 0,
+            "direction": "in",
+            "optional": false,
+            "constness": "unspecified",
+            "constAttribute": false
+          },
+          {
+            "index": 2,
+            "name": "pCtx",
+            "nativeType": "Windows.Win32.System.Wmi.IWbemContext",
+            "pointerDepth": 0,
+            "direction": "in",
+            "optional": false,
+            "constness": "unspecified",
+            "constAttribute": false
+          },
+          {
+            "index": 3,
+            "name": "ppWorkingNamespace",
+            "nativeType": "Windows.Win32.System.Wmi.IWbemServices",
+            "pointerDepth": 1,
+            "direction": "inout",
+            "optional": true,
+            "constness": "mutable",
+            "constAttribute": false
+          },
+          {
+            "index": 4,
+            "name": "ppResult",
+            "nativeType": "Windows.Win32.System.Wmi.IWbemCallResult",
+            "pointerDepth": 1,
+            "direction": "inout",
+            "optional": true,
+            "constness": "mutable",
+            "constAttribute": false
+          }
+        ],
+        "sourceFingerprint": "EA3628EB9E45E1A0BAA0BC9F6DA1FD82FE938091EF1730E25E3CCEEA9EFD316B"
+      },
+      "contract": {
+        "publicInputParameterIndices": [0],
+        "contextParameterIndex": 2,
+        "contextMustBeNativeNull": true,
+        "flagsParameterIndex": 1,
+        "flagsOptionName": "lFlags",
+        "synchronous": {
+          "flags": 0,
+          "outputParameterIndex": 3,
+          "optionName": "workingNamespace"
+        },
+        "semisynchronous": {
+          "flags": 16,
+          "outputParameterIndex": 4,
+          "optionName": "result"
+        },
+        "outputs": [
+          {
+            "parameterIndex": 3,
+            "interfaceIid": "9556dc99-828c-11cf-a37e-00aa003240c7",
+            "argumentOptional": true,
+            "nullableOnSuccess": false,
+            "ownership": "owned-com-plus-one"
+          },
+          {
+            "parameterIndex": 4,
+            "interfaceIid": "44aca675-e8fc-11d0-a07c-00c04fb68820",
+            "argumentOptional": true,
+            "nullableOnSuccess": false,
+            "ownership": "owned-com-plus-one"
+          }
+        ]
+      },
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/wbemcli/nf-wbemcli-iwbemservices-opennamespace",
+          "file": null
+        },
+        {
+          "kind": "sdk-header",
+          "url": null,
+          "file": "WbemCli.h/WbemIdl.idl"
+        }
+      ],
+      "validatedMetadata": [
+        {
+          "package": "Microsoft.Windows.SDK.Win32Metadata",
+          "version": "71.0.14-preview",
+          "sha256": "B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D"
+        }
+      ]
+    }
+  ]
+}

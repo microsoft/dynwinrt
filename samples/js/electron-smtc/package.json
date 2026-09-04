@@ -1,0 +1,22 @@
+{
+  "name": "dynwinrt-electron-smtc-sample",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Electron SMTC and GSMTC loopback sample using dynwinrt",
+  "main": "main.js",
+  "scripts": {
+    "generate": "powershell -NoProfile -ExecutionPolicy Bypass -File ./generate.ps1",
+    "setup-identity": "powershell -NoProfile -ExecutionPolicy Bypass -File ./setup-identity.ps1",
+    "check": "npm run generate && npm run setup-identity && electron . --validate",
+    "demo": "npm run setup-identity && electron . --demo",
+    "start": "npm run setup-identity && electron .",
+    "postinstall": "install-electron"
+  },
+  "dependencies": {
+    "@microsoft/dynwinrt": "file:../../../bindings/js"
+  },
+  "devDependencies": {
+    "@microsoft/winappcli": "^0.5.0",
+    "electron": "^43.3.0"
+  }
+}

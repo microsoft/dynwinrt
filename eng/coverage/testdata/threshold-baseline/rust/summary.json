@@ -1,0 +1,11 @@
+{
+  "data": [
+    {
+      "totals": {
+        "lines": { "percent": 46.67 },
+        "functions": { "percent": 53.21 },
+        "regions": { "percent": 44.98 }
+      }
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+[build-system]
+requires = ["maturin>=1.11,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "dynwinrt-codegen"
+description = "WinRT metadata reader and typed wrapper code generator for dynwinrt"
+readme = { file = "python/README.md", content-type = "text/markdown" }
+requires-python = ">=3.8,<3.15"
+license = {text = "MIT"}
+authors = [
+    {name = "Microsoft"},
+]
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+]
+dynamic = ["version"]
+
+[project.urls]
+Homepage = "https://github.com/microsoft/dynwinrt"
+Repository = "https://github.com/microsoft/dynwinrt"
+Issues = "https://github.com/microsoft/dynwinrt/issues"
+
+[tool.maturin]
+bindings = "bin"

@@ -13,7 +13,17 @@ verifies the results against known expected values.
 Requires: Windows 10/11 with standard SDK (no extra installs needed).
 """
 
-from dynwinrt_py import (
+import asyncio
+from collections.abc import Coroutine
+import gc
+import http.server
+import threading
+import time
+import weakref
+
+import pytest
+
+from dynwinrt import (
     DynWinRTType,
     DynWinRTMethodSig,
     DynWinRTValue,
@@ -21,7 +31,9 @@ from dynwinrt_py import (
     DynWinRTStruct,
     WinGUID,
     ro_initialize,
+    unbox_object,
 )
+from dynwinrt.dynwinrt import _DynWinRTAsyncWithProgress
 
 # Initialize WinRT once for the entire module
 ro_initialize(1)
@@ -51,6 +63,37 @@ def _register(name, iid_str, methods):
     for mname, _, _ in methods:
         handles[mname] = itype.method_by_name(mname)
     return itype, iid, handles
+
+
+def _start_progress_server():
+    payload = ("dynwinrt-struct-progress-" * 16_384).encode()
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            try:
+                for offset in range(0, len(payload), 8_192):
+                    self.wfile.write(payload[offset : offset + 8_192])
+                    self.wfile.flush()
+                    time.sleep(0.005)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            self.close_connection = True
+
+        def log_message(self, _format, *_args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address
+    return server, thread, payload.decode(), f"http://{host}:{port}/progress"
 
 
 # ======================================================================
@@ -281,6 +324,27 @@ class TestPropertyValue:
             ("CreateChar16", [DynWinRTType.char16()], [obj]),  # [16]
             ("CreateBoolean", [bool_t], [obj]),    # [17]
             ("CreateString", [hstr], [obj]),       # [18]
+            ("CreateInspectable", [obj], [obj]),   # [19]
+            ("SkippedCreateGuid", [], []),         # [20]
+            ("CreateDateTime", [DynWinRTType.struct_type(
+                "Windows.Foundation.DateTime", [DynWinRTType.i64_type()]
+            )], [obj]),                            # [21]
+            ("SkippedCreateTimeSpan", [], []),     # [22]
+            ("SkippedCreatePoint", [], []),        # [23]
+            ("SkippedCreateSize", [], []),         # [24]
+            ("SkippedCreateRect", [], []),         # [25]
+            ("CreateUInt8Array", [DynWinRTType.array_type(DynWinRTType.u8_type())], [obj]), # [26]
+            ("SkippedCreateInt16Array", [], []),   # [27]
+            ("SkippedCreateUInt16Array", [], []),  # [28]
+            ("CreateInt32Array", [DynWinRTType.array_type(i32)], [obj]), # [29]
+            ("SkippedCreateUInt32Array", [], []),  # [30]
+            ("SkippedCreateInt64Array", [], []),   # [31]
+            ("SkippedCreateUInt64Array", [], []),  # [32]
+            ("SkippedCreateSingleArray", [], []),  # [33]
+            ("SkippedCreateDoubleArray", [], []),  # [34]
+            ("CreateChar16Array", [DynWinRTType.array_type(
+                DynWinRTType.char16()
+            )], [obj]),                             # [35]
         ]
         _, statics_iid, statics_h = _register("E2E_IPropertyValueStatics", self.IPVSTATICS_IID, statics_methods)
 
@@ -335,6 +399,86 @@ class TestPropertyValue:
         pv = statics_h["CreateString"].invoke(factory, [DynWinRTValue.from_hstring("hello dynwinrt")])
         pv_cast = pv.cast(pv_iid)
         assert pv_h["GetString"].get_string(pv_cast) == "hello dynwinrt"
+
+    def test_explicit_unbox_object_for_device_property_values(self):
+        statics_h, _, _, factory = self._setup()
+        boxed_string = statics_h["CreateString"].invoke(
+            factory, [DynWinRTValue.from_hstring("BLE Device")]
+        )
+        boxed_int64 = statics_h["CreateInt64"].invoke(
+            factory, [DynWinRTValue.from_i64(-(2**63))]
+        )
+        boxed_char = statics_h["CreateChar16"].invoke(
+            factory, [DynWinRTValue.from_u16(0xD800)]
+        )
+        boxed_bytes = statics_h["CreateUInt8Array"].invoke(
+            factory,
+            [DynWinRTArray.from_u8_values([0, 1, 127, 255]).to_value()],
+        )
+        boxed_ints = statics_h["CreateInt32Array"].invoke(
+            factory,
+            [DynWinRTArray.from_i32_values([-1, 0, 42]).to_value()],
+        )
+        boxed_chars = statics_h["CreateChar16Array"].invoke(
+            factory,
+            [DynWinRTArray.from_u16_values([0xD800, 0x61]).to_value()],
+        )
+
+        assert unbox_object(boxed_string) == "BLE Device"
+        assert unbox_object(boxed_int64) == -(2**63)
+        assert ord(unbox_object(boxed_char)) == 0xD800
+        assert unbox_object(boxed_bytes) == bytes([0, 1, 127, 255])
+        assert unbox_object(boxed_ints) == [-1, 0, 42]
+        assert [ord(value) for value in unbox_object(boxed_chars)] == [
+            0xD800,
+            0x61,
+        ]
+        assert unbox_object(None) is None
+        assert unbox_object(DynWinRTValue.null_value()) is None
+
+        uri_factory = DynWinRTValue.activation_factory("Windows.Foundation.Uri")
+        identity = uri_factory.identity_raw()
+        assert unbox_object(uri_factory) is uri_factory
+        assert uri_factory.identity_raw() == identity
+
+        date_time = DynWinRTStruct.create(
+            DynWinRTType.struct_type(
+                "Windows.Foundation.DateTime", [DynWinRTType.i64_type()]
+            )
+        )
+        date_time.set_i64(0, 0)
+        unsupported = statics_h["CreateDateTime"].invoke(
+            factory, [date_time.to_value()]
+        )
+        import pytest
+
+        with pytest.raises(OSError, match="Unsupported WinRT IPropertyValue type"):
+            unbox_object(unsupported)
+
+        key_type = DynWinRTType.hstring()
+        object_type = DynWinRTType.object()
+        properties = DynWinRTValue.create_map(
+            [DynWinRTValue.from_hstring("System.Devices.DeviceInstanceId")],
+            [boxed_string],
+            key_type,
+            object_type,
+        )
+        map_type = DynWinRTType.parameterized(
+            WinGUID.parse("3c2925fe-8519-45c1-aa79-197b6718c1c1"),
+            [key_type, object_type],
+        )
+        map_interface = DynWinRTType.register_interface(
+            "IMap_String_Object_UnboxTest", map_type.iid()
+        ).add_method(
+            "Lookup",
+            DynWinRTMethodSig().add_in(key_type).add_out(object_type),
+        )
+        device_property = map_interface.method_by_name("Lookup").invoke(
+            properties.cast(map_type.iid()),
+            [DynWinRTValue.from_hstring("System.Devices.DeviceInstanceId")],
+        )
+        assert unbox_object(device_property) == "BLE Device"
+        assert unbox_object(boxed_string) == "BLE Device"
 
     def test_is_numeric_scalar(self):
         """IsNumericScalar returns False for both int and string PropertyValues
@@ -422,7 +566,180 @@ class TestBuffer:
 
 
 # ======================================================================
-# 5. Uri (extended) — more thorough string/int/bool coverage
+# 5. HttpClient — struct-valued async progress with nested IReference
+# ======================================================================
+
+class TestHttpProgress:
+    def test_struct_progress_survives_asyncio_dispatch(self):
+        u64 = DynWinRTType.u64_type()
+        progress_stage = DynWinRTType.enum_type("Windows.Web.Http.HttpProgressStage")
+        reference_u64 = DynWinRTType.parameterized(
+            WinGUID.parse("61c17706-2d65-11e0-9ae8-d48564015472"),
+            [u64],
+        )
+        http_progress = DynWinRTType.struct_type(
+            "Windows.Web.Http.HttpProgress",
+            [
+                progress_stage,
+                u64,
+                reference_u64,
+                u64,
+                reference_u64,
+                DynWinRTType.u32_type(),
+            ],
+        )
+        reference = DynWinRTType.register_interface(
+            "IReference_UInt64_StructProgressTest",
+            reference_u64.iid(),
+        ).add_method("get_Value", DynWinRTMethodSig().add_out(u64))
+
+        activation_iid = WinGUID.parse("00000035-0000-0000-c000-000000000046")
+        activation = DynWinRTType.register_interface(
+            "IActivationFactoryStructProgressTest",
+            activation_iid,
+        ).add_method(
+            "ActivateInstance",
+            DynWinRTMethodSig().add_out(DynWinRTType.object()),
+        )
+        client = activation.method(6).invoke(
+            DynWinRTValue.activation_factory("Windows.Web.Http.HttpClient").cast(
+                activation_iid
+            ),
+            [],
+        )
+
+        client_iid = WinGUID.parse("7fda1151-3574-4880-a8ba-e6b1e0061f3d")
+        client_type = DynWinRTType.register_interface(
+            "IHttpClientStructProgressTest",
+            client_iid,
+        )
+        for name in (
+            "DeleteAsync",
+            "GetAsync",
+            "GetWithOptionAsync",
+            "GetBufferAsync",
+            "GetInputStreamAsync",
+        ):
+            client_type = client_type.add_method(name, DynWinRTMethodSig())
+        client_type = client_type.add_method(
+            "GetStringAsync",
+            DynWinRTMethodSig()
+            .add_in(DynWinRTType.object())
+            .add_out(
+                DynWinRTType.i_async_operation_with_progress(
+                    DynWinRTType.hstring(),
+                    http_progress,
+                )
+            ),
+        )
+
+        uri_factory_iid = WinGUID.parse("44a9796f-723e-4fdf-a218-033e75b0c084")
+        uri_factory = DynWinRTType.register_interface(
+            "IUriRuntimeClassFactoryStructProgressTest",
+            uri_factory_iid,
+        ).add_method(
+            "CreateUri",
+            DynWinRTMethodSig()
+            .add_in(DynWinRTType.hstring())
+            .add_out(DynWinRTType.object()),
+        )
+
+        server, thread, payload, url = _start_progress_server()
+        try:
+            uri = uri_factory.method(6).invoke(
+                DynWinRTValue.activation_factory("Windows.Foundation.Uri").cast(
+                    uri_factory_iid
+                ),
+                [DynWinRTValue.from_hstring(url)],
+            )
+            def create_operation():
+                return client_type.method(11).invoke(client.cast(client_iid), [uri])
+
+            operation = create_operation()
+
+            async def run_operation():
+                snapshots = []
+
+                def convert_progress(value):
+                    progress = value.as_struct()
+                    total_value = progress.get_object(4)
+                    total = (
+                        None
+                        if total_value.is_null()
+                        else reference.method(6).invoke(total_value, []).to_u64()
+                    )
+                    return {
+                        "stage": progress.get_i32(0),
+                        "bytes_received": progress.get_u64(3),
+                        "total_bytes_to_receive": total,
+                        "retries": progress.get_u32(5),
+                    }
+
+                projected = _DynWinRTAsyncWithProgress(
+                    operation,
+                    lambda value: value.to_string(),
+                    convert_progress,
+                )
+                projected.progress(snapshots.append)
+                assert isinstance(projected, Coroutine)
+                body = await asyncio.create_task(projected)
+                await asyncio.sleep(0.05)
+
+                cancel_raw = create_operation()
+                cancel_projected = _DynWinRTAsyncWithProgress(
+                    cancel_raw,
+                    lambda value: value.to_string(),
+                    convert_progress,
+                )
+                progress_seen = asyncio.Event()
+
+                class ProgressObserver:
+                    def __call__(self, _value):
+                        progress_seen.set()
+
+                observer = ProgressObserver()
+                observer_ref = weakref.ref(observer)
+                cancel_projected.progress(observer)
+                cancel_task = asyncio.create_task(cancel_projected)
+                await asyncio.wait_for(progress_seen.wait(), timeout=5)
+                assert cancel_task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await cancel_task
+                with pytest.raises(asyncio.CancelledError):
+                    await cancel_projected
+                cancel_projected.release()
+                del observer, cancel_projected, cancel_task
+                await asyncio.sleep(0)
+                gc.collect()
+                assert observer_ref() is None
+                return body, snapshots, cancel_raw, observer_ref
+
+            body, snapshots, cancel_raw, observer_ref = asyncio.run(run_operation())
+            with pytest.raises(asyncio.CancelledError):
+                cancel_raw.wait()
+            cancel_raw.release()
+            gc.collect()
+            assert observer_ref() is None
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+        assert body == payload
+        assert any(
+            progress["bytes_received"] > 0
+            and progress["total_bytes_to_receive"] == len(payload)
+            for progress in snapshots
+        )
+        assert all(
+            isinstance(progress["stage"], int)
+            and isinstance(progress["retries"], int)
+            for progress in snapshots
+        )
+
+
+# ======================================================================
+# 6. Uri (extended) — more thorough string/int/bool coverage
 # ======================================================================
 
 class TestUriExtended:

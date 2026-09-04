@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 use pyo3::exceptions::asyncio::CancelledError as PyCancelledError;
-use pyo3::exceptions::{PyOSError, PyRuntimeError};
+use pyo3::exceptions::{PyIndexError, PyOSError, PyRuntimeError};
 use pyo3::prelude::*;
 
 pub(crate) fn map_windows_error(error: windows::core::Error) -> PyErr {
@@ -27,6 +27,9 @@ pub(crate) fn map_dynwinrt_error(error: dynwinrt::Error) -> PyErr {
         dynwinrt::Error::WindowsError(error) => map_windows_error(error),
         dynwinrt::Error::Canceled => {
             PyCancelledError::new_err("WinRT async operation was canceled")
+        }
+        dynwinrt::Error::IndexOutOfBounds { index, len } => {
+            PyIndexError::new_err(format!("Index {index} out of bounds (len {len})"))
         }
         other => PyRuntimeError::new_err(other.message()),
     }

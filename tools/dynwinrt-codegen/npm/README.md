@@ -1,6 +1,6 @@
 # @microsoft/dynwinrt-codegen
 
-**Generate typed JavaScript + TypeScript bindings for any Windows Runtime (WinRT) API from `.winmd` metadata.**
+**Generate typed JavaScript + TypeScript bindings for Windows Runtime (WinRT) APIs from `.winmd` metadata.**
 
 Pair this with the [`@microsoft/dynwinrt`](https://www.npmjs.com/package/@microsoft/dynwinrt) runtime to call modern Windows APIs (WinAppSDK, Windows AI, notifications, storage, networking, …) **directly from JavaScript / TypeScript** — full IntelliSense, no native build step, no C# projection, no per-Windows-version recompile.
 
@@ -21,7 +21,11 @@ const model = await LanguageModel.createAsync();
 
 You get IntelliSense in your IDE, type errors at `tsc` time, and the underlying COM call dispatched dynamically at runtime — no MSBuild involved.
 
-The trade-off: `dynwinrt-codegen` is designed for **data-style WinRT APIs** (AI, storage, notifications, networking, globalization, …) and skips XAML / WinUI namespaces, which need composable-class aggregation patterns the codegen doesn't implement. For everything else, this is the easiest path from JavaScript to native Windows.
+`dynwinrt-codegen` primarily targets **data-style WinRT APIs** (AI, storage,
+notifications, networking, globalization, …). It also generates WinUI
+`Application + Window` helpers and public composable classes; the application
+must provide an STA UI thread, Windows App SDK bootstrap or package identity,
+and lifecycle management.
 
 ## CLI usage
 
@@ -68,7 +72,8 @@ For each WinRT class, the codegen emits:
 - **An interface registration** (`DynWinRtType.registerInterface()`) wired to the COM vtable
 - **A JavaScript-backed `IElementFactory.create()` helper** for WinUI
   ItemsRepeater realization and recycling
-- **`IAsyncOperation<T>` awaitables** with `.progress(cb)` for streaming results
+- **Promise-based async operations**, with `.progress(cb)` on operations that
+  expose WinRT progress
 - **Generic collections** (`IVector<T>`, `IMap<K,V>`, `IIterable<T>`)
 - **Creatable observable vectors** that expose both `IObservableVector<T>`
   events and `IVector<T>` mutation helpers
@@ -76,6 +81,12 @@ For each WinRT class, the codegen emits:
 - **Enums** (`Object.freeze`'d in JS, `enum` in `.d.ts`)
 - **Delegate types** (IID + parameter signatures) for event handlers
 - **An `index.js` + `index.d.ts`** re-exporting every emitted symbol from one place
+
+Classic COM generation from `Windows.Win32.winmd` is available as a preview.
+Only interfaces with complete validated ABI, layout, ownership, and cleanup
+contracts are emitted under the generated `com/` subpackage; unsupported
+interfaces fail closed. See the
+[Classic COM usage guide](https://github.com/microsoft/dynwinrt/blob/main/docs/guides/windows/classic-com-usage.md).
 
 ## Platform
 

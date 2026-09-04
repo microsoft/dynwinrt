@@ -18,7 +18,7 @@ pub const IVECTOR_VIEW: GUID = GUID::from_u128(0xbbe1fa4c_b0e3_4583_baef_1f1b2e4
 pub const IITERABLE: GUID = GUID::from_u128(0xfaa585ea_6214_4217_afda_7f46de5869b3);
 pub const IITERATOR: GUID = GUID::from_u128(0x6a79e863_4300_459a_9966_cbb660963ee1);
 pub const IMAP: GUID = GUID::from_u128(0x3c2925fe_8519_45c1_aa79_197b6718c1c1);
-pub const IMAP_VIEW: GUID = GUID::from_u128(0xe9bdaaf0_cbf6_4c39_de49_316b34326a17);
+pub const IMAP_VIEW: GUID = GUID::from_u128(0xe480ce40_a338_4ada_adcf_272272e48cb9);
 pub const IKEY_VALUE_PAIR: GUID = GUID::from_u128(0x02b51929_c1c4_4a7e_8940_0312b5c18500);
 pub const IOBSERVABLE_VECTOR: GUID = GUID::from_u128(0x5917eb53_50b4_4a0d_b309_65862b3f1dbc);
 pub const VECTOR_CHANGED_EVENT_HANDLER: GUID =
@@ -137,19 +137,7 @@ impl TypeKind {
             TypeKind::U64 => Some(Type::u64()),
             TypeKind::F32 => Some(Type::f32()),
             TypeKind::F64 => Some(Type::f64()),
-            TypeKind::Guid => Some(Type::structure(vec![
-                Type::u32(),
-                Type::u16(),
-                Type::u16(),
-                Type::u8(),
-                Type::u8(),
-                Type::u8(),
-                Type::u8(),
-                Type::u8(),
-                Type::u8(),
-                Type::u8(),
-                Type::u8(),
-            ])),
+            TypeKind::Guid => Some(crate::abi::guid_libffi_type()),
             _ => None,
         }
     }
@@ -246,4 +234,23 @@ pub(crate) fn pinterface_signature_from_strings(piid_sig: &str, arg_sigs: &[Stri
     }
     s.push(')');
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The WinRT `IMapView`2` parameterized-interface IID. This MUST equal the
+    /// value the code generator uses (`IMAP_VIEW_PIID =
+    /// "e480ce40-a338-4ada-adcf-272272e48cb9"`), or `MetadataTable::map_iids()`
+    /// computes wrong `IMapView<K,V>` IIDs at runtime and map-view projections
+    /// fail to QueryInterface. Regression guard against the prior mismatched
+    /// constant.
+    #[test]
+    fn imap_view_piid_is_canonical() {
+        assert_eq!(
+            IMAP_VIEW,
+            GUID::from_u128(0xe480ce40_a338_4ada_adcf_272272e48cb9)
+        );
+    }
 }

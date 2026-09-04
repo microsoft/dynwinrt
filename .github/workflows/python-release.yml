@@ -1,0 +1,461 @@
+name: Python release artifacts
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/python-release.yml'
+      - 'bindings/py/**'
+      - 'crates/dynwinrt/**'
+      - 'eng/release/python/prepare_python_release.py'
+      - 'eng/release/python/test_python_*_wheel.ps1'
+      - 'eng/release/python/verify_python_release.py'
+      - 'tools/dynwinrt-codegen/**'
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: Version to build
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: python-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      python_version: ${{ steps.version.outputs.python_version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate release metadata and tag
+        id: version
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          python -m pip install "packaging>=24,<27" --quiet
+          $cargo = Get-Content bindings\py\Cargo.toml -Raw
+          $sourceVersion = [regex]::Match($cargo, '(?m)^version = "([^"]+)"$').Groups[1].Value
+          if (-not $sourceVersion) { throw 'Could not read bindings/py Cargo version' }
+
+          python eng\release\python\verify_python_release.py source
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $version = $sourceVersion
+          if ($env:REF_TYPE -eq 'tag') {
+            if ($env:REF_NAME -notmatch '^v(.+)$') {
+              throw "Release tags must match v<version>, got '$env:REF_NAME'"
+            }
+            $version = $Matches[1]
+          }
+
+          if ($env:RELEASE_VERSION) {
+            if ($env:REF_TYPE -eq 'tag' -and $env:RELEASE_VERSION -ne $version) {
+              throw "Confirmed release_version '$env:RELEASE_VERSION' does not match tag version '$version'"
+            }
+            $version = $env:RELEASE_VERSION
+          }
+
+          $env:EFFECTIVE_VERSION = $version
+          $pythonVersion = (python -c "import os; from packaging.version import Version; print(Version(os.environ['EFFECTIVE_VERSION']))").Trim()
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Write-Host "Effective Python version: $pythonVersion"
+
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "python_version=$pythonVersion" >> $env:GITHUB_OUTPUT
+
+  runtime-x64:
+    needs: validate
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { python: '3.11', tag: cp311 }
+          - { python: '3.12', tag: cp312 }
+          - { python: '3.13', tag: cp313 }
+          - { python: '3.14', tag: cp314 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          architecture: x64
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build and inspect runtime wheel
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          python -c "import platform, sys; assert platform.machine().lower() in ('amd64', 'x86_64'); assert f'{sys.version_info.major}.{sys.version_info.minor}' == '${{ matrix.python }}'"
+          python -m pip install "maturin>=1.11,<2" "packaging>=24,<27" --quiet
+          python eng\release\python\prepare_python_release.py --version $env:VERSION
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python eng\release\python\verify_python_release.py source --release-version $env:VERSION
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Remove-Item artifacts\runtime -Recurse -Force -ErrorAction SilentlyContinue
+          python -m maturin build --release --locked `
+            --manifest-path bindings\py\Cargo.toml `
+            --interpreter python `
+            --out artifacts\runtime
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $wheel = @(Get-ChildItem artifacts\runtime\*.whl)
+          if ($wheel.Count -ne 1) { throw "Expected one runtime wheel, found $($wheel.Count)" }
+          python eng\release\python\verify_python_release.py wheel `
+            --wheel $wheel[0].FullName `
+            --package dynwinrt `
+            --version $env:VERSION `
+            --python-tag '${{ matrix.tag }}' `
+            --abi-tag '${{ matrix.tag }}' `
+            --platform-tag win_amd64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-runtime-${{ matrix.tag }}-x64
+          path: artifacts\runtime\*.whl
+          if-no-files-found: error
+
+  runtime-arm64:
+    if: github.event_name != 'pull_request'
+    needs: validate
+    runs-on: windows-11-vs2026-arm
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { python: '3.11', tag: cp311 }
+          - { python: '3.12', tag: cp312 }
+          - { python: '3.13', tag: cp313 }
+          - { python: '3.14', tag: cp314 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          architecture: arm64
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build and inspect native ARM64 runtime wheel
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          python -c "import platform, struct, sys; assert platform.machine().lower() in ('arm64', 'aarch64'); assert struct.calcsize('P') == 8; assert f'{sys.version_info.major}.{sys.version_info.minor}' == '${{ matrix.python }}'"
+          python -m pip install "maturin>=1.11,<2" "packaging>=24,<27" --quiet
+          python eng\release\python\prepare_python_release.py --version $env:VERSION
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python eng\release\python\verify_python_release.py source --release-version $env:VERSION
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Remove-Item artifacts\runtime -Recurse -Force -ErrorAction SilentlyContinue
+          python -m maturin build --release --locked `
+            --manifest-path bindings\py\Cargo.toml `
+            --interpreter python `
+            --out artifacts\runtime
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $wheel = @(Get-ChildItem artifacts\runtime\*.whl)
+          if ($wheel.Count -ne 1) { throw "Expected one runtime wheel, found $($wheel.Count)" }
+          python eng\release\python\verify_python_release.py wheel `
+            --wheel $wheel[0].FullName `
+            --package dynwinrt `
+            --version $env:VERSION `
+            --python-tag '${{ matrix.tag }}' `
+            --abi-tag '${{ matrix.tag }}' `
+            --platform-tag win_arm64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-runtime-${{ matrix.tag }}-arm64
+          path: artifacts\runtime\*.whl
+          if-no-files-found: error
+
+  codegen-x64:
+    needs: validate
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.8'
+          architecture: x64
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build and inspect standalone codegen wheel
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          python -m pip install "maturin>=1.11,<2" "packaging>=24,<27" --quiet
+          python eng\release\python\prepare_python_release.py --version $env:VERSION
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python eng\release\python\verify_python_release.py source --release-version $env:VERSION
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Remove-Item artifacts\codegen -Recurse -Force -ErrorAction SilentlyContinue
+          python -m maturin build --release --locked `
+            --manifest-path tools\dynwinrt-codegen\Cargo.toml `
+            --out artifacts\codegen
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $wheel = @(Get-ChildItem artifacts\codegen\*.whl)
+          if ($wheel.Count -ne 1) { throw "Expected one codegen wheel, found $($wheel.Count)" }
+          python eng\release\python\verify_python_release.py wheel `
+            --wheel $wheel[0].FullName `
+            --package dynwinrt-codegen `
+            --version $env:VERSION `
+            --python-tag py3 `
+            --abi-tag none `
+            --platform-tag win_amd64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-codegen-x64
+          path: artifacts\codegen\*.whl
+          if-no-files-found: error
+
+  codegen-arm64:
+    if: github.event_name != 'pull_request'
+    needs: validate
+    runs-on: windows-11-vs2026-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          architecture: arm64
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build and inspect native ARM64 standalone codegen wheel
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          python -c "import platform, struct; assert platform.machine().lower() in ('arm64', 'aarch64'); assert struct.calcsize('P') == 8"
+          python -m pip install "maturin>=1.11,<2" "packaging>=24,<27" --quiet
+          python eng\release\python\prepare_python_release.py --version $env:VERSION
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python eng\release\python\verify_python_release.py source --release-version $env:VERSION
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Remove-Item artifacts\codegen -Recurse -Force -ErrorAction SilentlyContinue
+          python -m maturin build --release --locked `
+            --manifest-path tools\dynwinrt-codegen\Cargo.toml `
+            --out artifacts\codegen
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $wheel = @(Get-ChildItem artifacts\codegen\*.whl)
+          if ($wheel.Count -ne 1) { throw "Expected one codegen wheel, found $($wheel.Count)" }
+          python eng\release\python\verify_python_release.py wheel `
+            --wheel $wheel[0].FullName `
+            --package dynwinrt-codegen `
+            --version $env:VERSION `
+            --python-tag py3 `
+            --abi-tag none `
+            --platform-tag win_arm64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-codegen-arm64
+          path: artifacts\codegen\*.whl
+          if-no-files-found: error
+
+  consume-codegen-x64:
+    needs: [validate, codegen-x64]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.8'
+          architecture: x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-codegen-x64
+          path: artifacts\codegen
+      - name: Consume standalone wheel without Rust
+        shell: pwsh
+        run: |
+          python -m pip install "packaging>=24,<27" --quiet
+          $wheel = @(Get-ChildItem artifacts\codegen\*.whl)
+          python eng\release\python\verify_python_release.py wheel --wheel $wheel[0].FullName `
+            --package dynwinrt-codegen --version '${{ needs.validate.outputs.version }}' `
+            --python-tag py3 --abi-tag none --platform-tag win_amd64
+          .\eng\release\python\test_python_codegen_wheel.ps1 -Python (Get-Command python).Source `
+            -WheelDirectory artifacts\codegen `
+            -Version '${{ needs.validate.outputs.version }}' -Architecture x64
+
+  consume-codegen-arm64:
+    if: github.event_name != 'pull_request'
+    needs: [validate, codegen-arm64]
+    runs-on: windows-11-vs2026-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          architecture: arm64
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-codegen-arm64
+          path: artifacts\codegen
+      - name: Consume native standalone wheel without Rust
+        shell: pwsh
+        run: |
+          python -m pip install "packaging>=24,<27" --quiet
+          .\eng\release\python\test_python_codegen_wheel.ps1 -Python (Get-Command python).Source `
+            -WheelDirectory artifacts\codegen `
+            -Version '${{ needs.validate.outputs.version }}' -Architecture arm64
+
+  consume-runtime-x64:
+    needs: [validate, runtime-x64, codegen-x64]
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { python: '3.11', tag: cp311 }
+          - { python: '3.12', tag: cp312 }
+          - { python: '3.13', tag: cp313 }
+          - { python: '3.14', tag: cp314 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          architecture: x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-runtime-${{ matrix.tag }}-x64
+          path: artifacts\runtime
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-codegen-x64
+          path: artifacts\codegen
+      - name: Import wheel and call Windows.Foundation.Uri
+        shell: pwsh
+        run: |
+          .\eng\release\python\test_python_runtime_wheel.ps1 -Python (Get-Command python).Source `
+            -RuntimeWheelDirectory artifacts\runtime `
+            -CodegenWheelDirectory artifacts\codegen `
+            -Version '${{ needs.validate.outputs.version }}' `
+            -PythonPackageVersion '${{ needs.validate.outputs.python_version }}' `
+            -Architecture x64 -PythonMinor '${{ matrix.python }}'
+
+  consume-runtime-arm64:
+    if: github.event_name != 'pull_request'
+    needs: [validate, runtime-arm64, codegen-arm64]
+    runs-on: windows-11-vs2026-arm
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { python: '3.11', tag: cp311 }
+          - { python: '3.12', tag: cp312 }
+          - { python: '3.13', tag: cp313 }
+          - { python: '3.14', tag: cp314 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          architecture: arm64
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-runtime-${{ matrix.tag }}-arm64
+          path: artifacts\runtime
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-codegen-arm64
+          path: artifacts\codegen
+      - name: Import native wheel and call Windows.Foundation.Uri
+        shell: pwsh
+        run: |
+          .\eng\release\python\test_python_runtime_wheel.ps1 -Python (Get-Command python).Source `
+            -RuntimeWheelDirectory artifacts\runtime `
+            -CodegenWheelDirectory artifacts\codegen `
+            -Version '${{ needs.validate.outputs.version }}' `
+            -PythonPackageVersion '${{ needs.validate.outputs.python_version }}' `
+            -Architecture arm64 -PythonMinor '${{ matrix.python }}'
+
+  assemble-release:
+    if: github.event_name != 'pull_request'
+    needs:
+      - validate
+      - consume-codegen-x64
+      - consume-codegen-arm64
+      - consume-runtime-x64
+      - consume-runtime-arm64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: python-runtime-*
+          path: dist\runtime
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: python-codegen-*
+          path: dist\codegen
+          merge-multiple: true
+      - name: Require the complete tested release set
+        shell: pwsh
+        run: |
+          $runtime = @(Get-ChildItem dist\runtime\*.whl)
+          $codegen = @(Get-ChildItem dist\codegen\*.whl)
+          if ($runtime.Count -ne 8) { throw "Expected 8 runtime wheels, found $($runtime.Count)" }
+          if ($codegen.Count -ne 2) { throw "Expected 2 codegen wheels, found $($codegen.Count)" }
+          $all = @($runtime + $codegen)
+          if (($all.Name | Sort-Object -Unique).Count -ne 10) {
+            throw 'Release wheel filenames are not unique'
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-release-${{ needs.validate.outputs.version }}
+          path: dist\**\*.whl
+          if-no-files-found: error
+          retention-days: 30
+
+  github-release:
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: [validate, assemble-release]
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-release-${{ needs.validate.outputs.version }}
+          path: dist
+      - name: Attach tested wheels to GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          $wheels = (Get-ChildItem dist\*.whl -Recurse).FullName
+          $releaseFound = $false
+          for ($attempt = 1; $attempt -le 120; $attempt++) {
+            & gh release view $env:TAG --repo $env:GH_REPO *> $null
+            if ($LASTEXITCODE -eq 0) {
+              $releaseFound = $true
+              break
+            }
+            Write-Host "Waiting for the JavaScript release $env:TAG ($attempt/120)..."
+            Start-Sleep -Seconds 30
+          }
+
+          if (-not $releaseFound) {
+            throw "JavaScript GitHub release $env:TAG was not found after 60 minutes"
+          }
+
+          $arguments = @('release', 'upload', $env:TAG, '--repo', $env:GH_REPO, '--clobber')
+          $arguments += $wheels
+          & gh @arguments
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

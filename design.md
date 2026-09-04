@@ -1,5 +1,13 @@
 # Dynamic Projection for JavaScript and Python
 
+> **Status: historical design record.** This document preserves the original
+> motivation and alternatives considered for dynwinrt. The shipped
+> implementation uses design-time generation: `dynwinrt-codegen` reads WinMD
+> and emits JavaScript/TypeScript or Python wrappers, while the native runtime
+> executes their registered ABI signatures. It does not lazily parse WinMD when
+> an application accesses a namespace. See the root [README](README.md) and
+> current [roadmap](docs/status/TODO.md) for supported behavior.
+
 ## Objective
 
 The primary objective of this project is to expose WinRT Windows APIs to dynamic languages, specifically JavaScript and Python, while ensuring a seamless developer experience. This approach eliminates the need for native compilation (such as C++ compilers) and removes strict version coupling between the projection and the Windows App SDK (WASDK) components.
@@ -8,7 +16,10 @@ The primary objective of this project is to expose WinRT Windows APIs to dynamic
 
 ### Versioning Complexity
 
-Current static projections, such as existing PyWinRT, necessitate the generation and compilation of native code for specific versions of WinRT components. This requirement results in a complex compatibility matrix and mandates the release of new projection packages for every WASDK release, and more importantly, does not expose full WinRT APIs to developers due to AOT compilation constraints.
+Static projections such as PyWinRT generate and compile native code for specific
+WinRT components. This creates a compatibility matrix and requires projection
+packages to track Python, architecture, Windows SDK, and Windows App SDK
+releases.
 
 ### Developer Experience (DX)
 
@@ -56,9 +67,9 @@ This infrastructure can be mostly shared across dynamic languages.
 
 This component bridges the gap between raw WinMD metadata and the runtime projection, operating in two distinct modes:
 
-#### Mode A: Fully Lazy Assessment (Runtime)
+#### Mode A: Fully Lazy Assessment (Runtime, not shipped)
 
-In this mode, the runtime parses `.winmd` files on the fly as APIs are accessed.
+This alternative would parse `.winmd` files on the fly as APIs are accessed.
 *   **Advantages**: Proven stability in previous JavaScript projections and simpler distribution (no generation step required).
 *   **Disadvantages**: Incurs runtime parsing overhead (potentially negligible compared to marshalling) and lacks IDE IntelliSense support.
 
@@ -76,15 +87,19 @@ The usage workflow involves two stages:
 The runtime is distributed as a generic library for the target language (e.g., `npm install @microsoft/dynwinrt` or `pip install dynwinrt`).
 
 ### Step 2: Projection Usage
-Developers have two options for using the projection:
-1.  **Direct Usage**: The runtime directly supports runtime interface specifications. Developers can use libraries directly by lazily loading namespaces with distributed WinMDs. The runtime parses the WinMDs and generates necessary interface shapes on the fly.
-2.  **Generated Bindings**: Alternatively, developers can execute a tool (e.g., `npx dynwinrt-codegen generate ...`) to generate bindings and types specifically for the WinMDs they intend to use.
+The shipped workflow uses generated bindings. Developers run
+`dynwinrt-codegen generate ...` to create wrappers and types for the WinMDs
+they intend to use, then load those wrappers with the generic runtime package.
+The lower-level runtime interface-registration API remains available, but no
+lazy namespace/WinMD loader is shipped.
 
 ## Performance Considerations
 
 ### Overhead Analysis
 
-The primary performance costs are attributed to WinMD parsing (in lazy mode) and the overhead of dynamic WinRT method invocation (dynamic dispatch). This invocation overhead is expected to be comparable to existing marshalling costs associated with crossing the JavaScript/Python boundary.
+The shipped design-time mode removes WinMD parsing from application startup.
+Runtime costs are native-language boundary conversion, ABI marshaling, and
+dynamic vtable dispatch.
 
 ### Optimization Strategies
 
@@ -158,11 +173,13 @@ HRESULT Method_Out_Pointer(void* funPtr, ComPtr self, void* outValue) {
 }
 ```
 
-### Known Challenges
+### Original challenges and current tracking
 
-*   **Signature Casting**: Proper handling of GUID casting is required, particularly for type-safety and generics.
-*   **Representation Mapping**: Special handling is needed for JavaScript/Python representations; for example, `IVector` may need to map to a function rather than a simple interface instance.
-*   **Async Operations**: While mentioned, the handling of asynchronous operations requires robust implementation details.
+Parameterized IIDs, language-native collections, async operations, delegates,
+structs, nullable references, and generated type information are implemented.
+Remaining correctness, coverage, lifecycle, and developer-experience work is
+tracked in [`docs/status/TODO.md`](docs/status/TODO.md) and
+[`docs/status/PYTHON_CHECKLIST.md`](docs/status/PYTHON_CHECKLIST.md).
 
 ## References
 
@@ -170,4 +187,3 @@ HRESULT Method_Out_Pointer(void* funPtr, ComPtr self, void* outValue) {
 *   [PyWinRT](https://github.com/pywinrt/pywinrt) Static C++/WinRT-based projections demonstrated significant versioning and distribution challenges.
 *  [lazy-winrt](https://github.com/JesseCol/lazy-winrt) **"Lazy-WinRT" Prototype**: This prototype validated the feasibility and potential performance of parsing WinMDs and invoking methods dynamically.
 *  [dynwinrt](https://github.com/microsoft/dynwinrt) — Rust-based implementation inspired by Lazy-WinRT. Ships the core runtime, JS bindings via `napi-rs`, Python bindings via `PyO3`, and the `dynwinrt-codegen` code-generation tool.
-

@@ -5,22 +5,24 @@
 use dynwinrt::{InterfaceSignature, MetadataTable, MethodSignature, WinRTValue};
 use windows::Devices::Geolocation::{BasicGeoposition, Geopoint, IGeopoint, IGeopointFactory};
 use windows::Foundation::{IPropertyValue, IUriRuntimeClass, IUriRuntimeClassFactory};
-use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize};
+use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize, RoUninitialize};
 use windows_core::{GUID, HRESULT, HSTRING, Interface};
 
-fn init_winrt() {
-    // The process may already be initialized by another test. `RoInitialize`
-    // returns `Ok` for S_FALSE (already initialized in the same apartment), and
-    // `RPC_E_CHANGED_MODE` when it is already initialized in a different
-    // apartment — both are acceptable for these headless WinRT calls. Any other
-    // failure is a genuine problem and must not be silently ignored.
-    const RPC_E_CHANGED_MODE: HRESULT = HRESULT(0x8001_0106u32 as i32);
-    if let Err(e) = unsafe { RoInitialize(RO_INIT_MULTITHREADED) } {
-        assert_eq!(
-            e.code(),
-            RPC_E_CHANGED_MODE,
-            "RoInitialize failed unexpectedly (only RPC_E_CHANGED_MODE is benign): {e:?}"
-        );
+const TYPE_E_TYPEMISMATCH: HRESULT = HRESULT(0x8002_8CA0u32 as i32);
+
+struct RoInitializeGuard;
+
+impl RoInitializeGuard {
+    fn initialize_mta() -> Self {
+        unsafe { RoInitialize(RO_INIT_MULTITHREADED) }
+            .expect("RoInitialize(RO_INIT_MULTITHREADED) must succeed for the regression harness");
+        Self
+    }
+}
+
+impl Drop for RoInitializeGuard {
+    fn drop(&mut self) {
+        unsafe { RoUninitialize() };
     }
 }
 
@@ -334,8 +336,6 @@ fn check_property_value_dynamic_type_mismatch_returns_golden_error() -> windows_
     let err = value_iface.methods[19]
         .call_dynamic(int_obj.as_raw(), &[])
         .expect_err("GetString on an Int32 PropertyValue should fail");
-    // GetString on a non-string IPropertyValue fails with TYPE_E_TYPEMISMATCH.
-    const TYPE_E_TYPEMISMATCH: HRESULT = HRESULT(0x8002_8CA0u32 as i32);
     assert_eq!(err.code(), TYPE_E_TYPEMISMATCH);
 
     Ok(())
@@ -407,7 +407,7 @@ fn check_geopoint_struct_layout_and_dynamic_position_round_trip_are_golden()
 
 #[test]
 fn winrt_regression_harness_golden_behaviors() -> windows_core::Result<()> {
-    init_winrt();
+    let _apartment = RoInitializeGuard::initialize_mta();
 
     check_winrt_uri_factory_dynamic_properties_are_golden()?;
     check_winrt_uri_empty_path_is_golden()?;

@@ -1,10 +1,15 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+pub mod com;
 pub mod common;
-pub mod javascript;
-pub mod python;
-pub(crate) mod shared;
+mod javascript_layout;
+pub mod package;
+pub mod winrt;
+
+// Preserve the existing public module paths while callers migrate to
+// `codegen::winrt::{javascript, python}`.
+pub use winrt::{javascript, python};
 
 // Preserve the existing public API while the implementations live under
 // language-specific modules.
@@ -29,7 +34,7 @@ pub mod render_js {
 }
 
 pub mod render_package_json {
-    pub use super::javascript::render::package_json::*;
+    pub use super::package::*;
 }
 
 pub mod typescript {

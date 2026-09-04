@@ -1,128 +1,149 @@
 # dynwinrt-codegen
 
-Read Windows metadata (`.winmd`) files and generate typed bindings that use `@microsoft/dynwinrt` at runtime.
+`dynwinrt-codegen` reads Windows metadata (`.winmd`) and generates typed
+bindings for [dynwinrt](https://github.com/microsoft/dynwinrt):
+
+- WinRT JavaScript (`.js`) with TypeScript declarations (`.d.ts`)
+- WinRT Python (`.py`) with type stubs (`.pyi`) and a `py.typed` marker
+- Supported Classic COM APIs from `Windows.Win32.winmd` as JavaScript and
+  TypeScript
+
+The command is available for Windows x64 and ARM64. Generated JavaScript uses
+`@microsoft/dynwinrt`; generated Python uses `dynwinrt`.
 
 ## Install
 
-```bash
-npm install -D @microsoft/dynwinrt-codegen
+### Python
+
+```powershell
+python -m pip install --pre dynwinrt-codegen
+dynwinrt-codegen generate --namespace Windows.Foundation --class-name Uri `
+  --lang py --output .\generated
 ```
 
-## Usage
+The Python distribution is a standalone native command. Its
+`py3-none-win_amd64` and `py3-none-win_arm64` wheels require Python 3.8–3.14
+but do not require Cargo or Rust. Generated Python package manifests require
+CPython 3.11–3.14 and pin `dynwinrt` to the generator's exact version.
 
-```bash
-npx dynwinrt-codegen generate [OPTIONS]
+### npm
+
+```powershell
+npm install @microsoft/dynwinrt
+npm install --save-dev @microsoft/dynwinrt-codegen
+npx dynwinrt-codegen generate --namespace Windows.Foundation --class-name Uri `
+  --output .\generated
 ```
 
-### Arguments
+## Generate
 
-| Argument | Required | Description |
-|---|---|---|
-| `--winmd` | No | Path to `.winmd` file(s), separated by `;`. Auto-detects Windows SDK if omitted |
-| `--folder` | No | Directory containing `.winmd` files |
-| `--namespace` | No | Generate only this namespace. If omitted, generates all non-Windows namespaces |
-| `--class-name` | No | Class name(s) to generate, comma-separated (requires `--namespace`). E.g. `StorageFile` or `StorageFile,StorageFolder` |
-| `--ref` | No | Additional `.winmd` files for type resolution only (no code generated). Paths separated by `;` |
-| `--lang` | No | Target language: `js` (default, emits `.js` + `.d.ts`) or `py` (emits `.py`, optionally `.pyi`) |
-| `--output` | No | Output directory (default: `./generated`) |
-| `--dry-run` | No | Validate metadata and resolve dependencies without writing files |
+```text
+dynwinrt-codegen generate [OPTIONS]
+```
 
-With `--lang js` (default), the tool emits plain ESM JavaScript (`.js`) plus matching ambient TypeScript declarations (`.d.ts`). No TypeScript compiler is needed — the output works for both JS and TS consumers. JSDoc comments are preserved so VS Code IntelliSense shows API descriptions.
+Use `npx dynwinrt-codegen` instead of `dynwinrt-codegen` when running the npm
+package.
 
-> **Note:** Legacy flags `--lang ts`, `--lang cjs`, `--source-map`, `--declaration`, and `--no-declaration` are accepted by the npm CLI wrapper for backwards compatibility but are silently mapped to `--lang js` behavior.
+| Option | Description |
+|---|---|
+| `--winmd PATH[;PATH...]` | Metadata file paths. Sibling `.winmd` files are discovered automatically. The Windows SDK is auto-detected when no input supplies `Windows.*` metadata. |
+| `--winmd-list FILE` | Newline-separated metadata paths to emit; blank lines and `#` comments are ignored. |
+| `--folder DIR` | Load every `.winmd` file directly inside a directory. |
+| `--namespace NS` | Generate one namespace. Without it, generate all non-`Windows.*` namespaces in the input. |
+| `--class-name NAME[,NAME...]` | Generate specific classes or public interfaces. Use fully qualified names, or unqualified names together with `--namespace`. |
+| `--ref PATH[;PATH...]` | Metadata used only for type resolution. Sibling discovery is disabled for references. |
+| `--ref-list FILE` | Newline-separated reference metadata paths; blank lines and `#` comments are ignored. |
+| `--lang js\|py` | `js` emits CommonJS `.js`, an ESM facade, and `.d.ts` files (default); `py` emits `.py`, `.pyi`, and `py.typed`. |
+| `--output DIR` | Dedicated codegen-owned output directory (default `./generated`). Existing contents may be replaced or removed. |
+| `--import-name NAME` | Runtime package imported by generated JavaScript (default `@microsoft/dynwinrt`). |
+| `--dry-run` | Validate metadata, dependencies, ABI contracts, and layout without writing files. |
+| `--pyi` | With `--lang py`, explicitly request the default type stubs; retained for compatibility. |
+| `--no-pyi` | With `--lang py`, omit `.pyi` files and `py.typed`. |
 
 ### Examples
 
-Generate JavaScript (ESM) bindings from a WinAppSDK metadata folder:
+Generate two Windows SDK classes as JavaScript and TypeScript:
 
-```bash
-npx dynwinrt-codegen generate \
-  --folder path/to/metadata \
-  --output ./generated-js \
-  --lang js
+```powershell
+dynwinrt-codegen generate `
+  --namespace Windows.Storage `
+  --class-name StorageFile,StorageFolder `
+  --output .\generated
 ```
 
-Generate bindings for a specific class (emits `.js` + `.d.ts`):
+Generate Python from a restored metadata folder:
 
-```bash
-npx dynwinrt-codegen generate \
-  --namespace Windows.Storage \
-  --class-name StorageFile \
-  --output ./generated
+```powershell
+dynwinrt-codegen generate `
+  --folder C:\path\to\metadata `
+  --lang py `
+  --output .\generated-python
 ```
 
-Generate multiple classes in one pass (shares the winmd index):
+Load emitted metadata and reference metadata from list files:
 
-```bash
-npx dynwinrt-codegen generate \
-  --namespace Windows.Storage \
-  --class-name StorageFile,StorageFolder \
-  --output ./generated
+```powershell
+dynwinrt-codegen generate `
+  --winmd-list .\winmd-inputs.txt `
+  --ref-list .\winmd-references.txt `
+  --output .\generated
 ```
 
-Generate all namespaces from multiple `.winmd` files:
+Validate a generation request without changing the output directory:
 
-```bash
-npx dynwinrt-codegen generate \
-  --winmd "path/to/Windows.winmd;path/to/Microsoft.WindowsAppSDK.winmd" \
-  --output ./generated
-```
-
-Validate metadata without writing files:
-
-```bash
-npx dynwinrt-codegen generate \
-  --folder path/to/metadata \
+```powershell
+dynwinrt-codegen generate `
+  --folder C:\path\to\metadata `
   --dry-run
 ```
 
-## Output
+### Other commands
 
-For each WinRT class, the tool generates:
+`dynwinrt-codegen capabilities` prints the command's supported features, one
+machine-readable value per line.
 
-- **Interface registration** -- `DynWinRtType.registerInterface()` with all methods and type signatures
-- **Wrapper class** -- typed class with properties and methods
-- **Constructors** -- unambiguous public WinRT activations projected as idiomatic JavaScript constructors
-- **Factory methods** -- original static activation methods retained for compatibility
-- **Enums** -- enum declarations
-- **Collection types** -- `IVector<T>`, `IVectorView<T>`, `IMap<K,V>`, etc.
-- **Index file** -- re-exporting all generated types
+`dynwinrt-codegen com-census --winmd <PATH> [--json]` measures how many eligible
+interfaces in `Windows.Win32.winmd` have complete safe Classic COM generation.
 
-Dependencies are resolved automatically -- specifying `--class StorageFile` will also generate referenced types like `Uri`, enums, and interfaces.
+## Generated output
 
-## Build from Source
+The generator resolves transitive dependencies and emits namespace index files.
+WinRT output includes typed classes and interfaces, public activation
+constructors, static factory methods, enums, structs, delegates, async
+operations, and generic collections.
 
-```bash
+JavaScript implementation modules are CommonJS, with `index.mjs` facades for
+ESM consumers, and need no TypeScript compilation step. Python output uses
+snake_case names and includes type information by default. Documentation from
+sibling XML files is included when available.
+
+Classic COM generation is available only with `--lang js`. It is isolated in a
+`com` subpackage and fails closed when metadata does not provide enough ABI,
+layout, ownership, or cleanup information. See the
+[Classic COM usage guide](https://github.com/microsoft/dynwinrt/blob/main/docs/guides/windows/classic-com-usage.md).
+
+The output directory belongs to codegen; do not store handwritten files in it.
+After changing metadata files, SDK versions, or reference inputs, regenerate the
+complete output. Python module components longer than 120 characters are
+shortened with a stable readable prefix and hash suffix while public type names
+remain unchanged.
+
+The npm wrapper accepts the legacy `--source-map`, `--declaration`, and
+`--no-declaration` flags as no-ops. The Rust command accepts only `js` and `py`
+for `--lang`.
+
+## Build and test from source
+
+From the repository root:
+
+```powershell
 cargo build -p dynwinrt-codegen --release
-```
-
-The compiled executable needs to be copied into the npm package before publishing:
-
-```bash
-# x64
-cargo build -p dynwinrt-codegen --release
-cp target/release/dynwinrt-codegen.exe tools/dynwinrt-codegen/npm/bin/x64/
-
-# arm64
-cargo build -p dynwinrt-codegen --release --target aarch64-pc-windows-msvc
-cp target/aarch64-pc-windows-msvc/release/dynwinrt-codegen.exe tools/dynwinrt-codegen/npm/bin/arm64/
-```
-
-Then publish:
-
-```bash
-cd tools/dynwinrt-codegen/npm
-npm publish
-```
-
-In CI, this is handled automatically by the build workflow.
-
-## Testing
-
-```bash
 cargo test -p dynwinrt-codegen
 ```
 
-Tests include:
-- Unit tests for type mapping, dependency resolution, and code generation helpers
-- Snapshot test for `Windows.Foundation.Uri` (regenerate with `cargo run -p dynwinrt-codegen -- generate --namespace Windows.Foundation --class-name Uri --lang js --output tests/snapshots/uri`)
+Official npm and PyPI packages are built and published by the repository release
+pipelines.
+
+## License
+
+[MIT](https://github.com/microsoft/dynwinrt/blob/main/LICENSE)

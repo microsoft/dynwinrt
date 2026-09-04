@@ -1,0 +1,4 @@
+generated/
+sample.png
+.mypy_cache/
+__pycache__/

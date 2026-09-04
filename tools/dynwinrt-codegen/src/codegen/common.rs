@@ -10,16 +10,70 @@ pub use super::python::naming::to_snake_case_filename;
 
 #[cfg(test)]
 mod tests {
-    use crate::codegen::javascript::naming::*;
-    use crate::codegen::javascript::signature::*;
-    use crate::codegen::javascript::structs::*;
-    use crate::codegen::python::naming::*;
-    use crate::codegen::python::signature::*;
-    use crate::codegen::python::structs::*;
-    use crate::codegen::shared::imports::*;
+    use crate::codegen::winrt::javascript::naming::*;
+    use crate::codegen::winrt::python::naming::*;
+    use crate::codegen::winrt::python::signature::*;
+    use crate::codegen::winrt::python::structs::*;
+    use crate::codegen::winrt::shared::imports::*;
     use crate::meta::{MethodMeta, ParamDirection, ParamMeta};
     use crate::types::TypeMeta;
     use std::collections::HashSet;
+    use std::sync::LazyLock;
+
+    fn js_context() -> &'static crate::codegen::winrt::javascript::JavaScriptProjectionContext {
+        static CONTEXT: LazyLock<crate::codegen::winrt::javascript::JavaScriptProjectionContext> =
+            LazyLock::new(|| {
+                crate::codegen::winrt::javascript::create_javascript_projection_context([])
+                    .expect("empty test projection context")
+            });
+        &CONTEXT
+    }
+
+    fn ts_struct_field_type(typ: &TypeMeta) -> String {
+        crate::codegen::winrt::javascript::structs::ts_struct_field_type(js_context(), typ)
+    }
+
+    fn struct_field_getter(typ: &TypeMeta, index: usize) -> String {
+        crate::codegen::winrt::javascript::structs::struct_field_getter(js_context(), typ, index)
+    }
+
+    fn struct_field_setter(typ: &TypeMeta, index: usize, value: &str) -> String {
+        crate::codegen::winrt::javascript::structs::struct_field_setter(
+            js_context(),
+            typ,
+            index,
+            value,
+        )
+    }
+
+    fn ts_dynwinrt_type(typ: &TypeMeta) -> String {
+        crate::codegen::winrt::javascript::signature::ts_dynwinrt_type(js_context(), typ)
+    }
+
+    fn build_method_sig(method: &MethodMeta) -> String {
+        crate::codegen::winrt::javascript::signature::build_method_sig(js_context(), method)
+    }
+
+    fn wrap_arg(name: &str, typ: &TypeMeta) -> String {
+        crate::codegen::winrt::javascript::signature::wrap_arg(js_context(), name, typ)
+    }
+
+    fn convert_return(
+        expr: &str,
+        typ: Option<&TypeMeta>,
+        is_async: bool,
+        known: &HashSet<String>,
+        deferred: &HashSet<String>,
+    ) -> String {
+        crate::codegen::winrt::javascript::signature::convert_return(
+            js_context(),
+            expr,
+            typ,
+            is_async,
+            known,
+            deferred,
+        )
+    }
 
     #[test]
     fn to_camel_case_basic() {
@@ -108,6 +162,38 @@ mod tests {
         assert_eq!(
             ts_dynwinrt_type(&TypeMeta::AsyncOperation(Box::new(TypeMeta::String))),
             "DynWinRtType.iAsyncOperation(DynWinRtType.hstring())"
+        );
+    }
+
+    #[test]
+    fn runtime_class_collection_preserves_default_interface_signature() {
+        let device_information = TypeMeta::RuntimeClass {
+            namespace: "Windows.Devices.Enumeration".into(),
+            name: "DeviceInformation".into(),
+            default_interface: Some(Box::new(TypeMeta::Interface {
+                namespace: "Windows.Devices.Enumeration".into(),
+                name: "IDeviceInformation".into(),
+                iid: "aba0fb95-4398-489d-8e44-e6130927011f".into(),
+            })),
+        };
+        let collection = TypeMeta::RuntimeClass {
+            namespace: "Windows.Devices.Enumeration".into(),
+            name: "DeviceInformationCollection".into(),
+            default_interface: Some(Box::new(TypeMeta::Parameterized {
+                namespace: "Windows.Foundation.Collections".into(),
+                name: "IVectorView".into(),
+                piid: "bbe1fa4c-b0e3-4583-baef-1f1b2e483e56".into(),
+                args: vec![device_information],
+            })),
+        };
+
+        assert_eq!(
+            ts_dynwinrt_type(&collection),
+            "DynWinRtType.runtimeClass('Windows.Devices.Enumeration.DeviceInformationCollection', DynWinRtType.parameterized(WinGuid.parse('bbe1fa4c-b0e3-4583-baef-1f1b2e483e56'), [DynWinRtType.runtimeClass('Windows.Devices.Enumeration.DeviceInformation', DynWinRtType.interface(WinGuid.parse('aba0fb95-4398-489d-8e44-e6130927011f')))]))"
+        );
+        assert_eq!(
+            py_dynwinrt_type(&collection),
+            "DynWinRTType.runtime_class('Windows.Devices.Enumeration.DeviceInformationCollection', DynWinRTType.parameterized(WinGUID.parse('bbe1fa4c-b0e3-4583-baef-1f1b2e483e56'), [DynWinRTType.runtime_class('Windows.Devices.Enumeration.DeviceInformation', DynWinRTType.interface(WinGUID.parse('aba0fb95-4398-489d-8e44-e6130927011f')))]))"
         );
     }
 
@@ -220,6 +306,55 @@ mod tests {
         assert_eq!(
             wrap_arg("o", &TypeMeta::Object),
             "(o == null ? DynWinRtValue.nullValue() : _unwrap(o))"
+        );
+    }
+
+    #[test]
+    fn wraps_runtime_class_inputs_with_the_expected_iid() {
+        let geometry = TypeMeta::RuntimeClass {
+            namespace: "Microsoft.UI.Xaml.Media".into(),
+            name: "Geometry".into(),
+            default_interface: Some(Box::new(TypeMeta::Interface {
+                namespace: "Microsoft.UI.Xaml.Media".into(),
+                name: "IGeometry".into(),
+                iid: "dc102dcc-3be2-5414-8599-94b6e76ef39b".into(),
+            })),
+        };
+        let expected_cast = "_unwrap(value).cast(IID_ARG_Microsoft_UI_Xaml_Media_Geometry)";
+
+        assert_eq!(
+            wrap_arg("value", &geometry),
+            format!("(value == null ? DynWinRtValue.nullValue() : {expected_cast})")
+        );
+
+        let vector = TypeMeta::Parameterized {
+            namespace: "Windows.Foundation.Collections".into(),
+            name: "IVector".into(),
+            piid: "913337e9-11a1-4345-a3a2-4e7f956e222d".into(),
+            args: vec![geometry.clone()],
+        };
+        assert!(wrap_arg("values", &vector).contains(&format!(
+            "map(_i => {})",
+            expected_cast.replace("value", "_i")
+        )));
+
+        let array = TypeMeta::Array(Box::new(geometry));
+        assert!(wrap_arg("values", &array).contains(&format!(
+            "map(_i => {})",
+            expected_cast.replace("value", "_i")
+        )));
+    }
+
+    #[test]
+    fn runtime_class_inputs_without_a_default_iid_remain_unwrapped() {
+        let opaque = TypeMeta::RuntimeClass {
+            namespace: "Contoso".into(),
+            name: "Opaque".into(),
+            default_interface: None,
+        };
+        assert_eq!(
+            wrap_arg("value", &opaque),
+            "(value == null ? DynWinRtValue.nullValue() : _unwrap(value))"
         );
     }
 
@@ -527,26 +662,32 @@ mod tests {
 
     #[test]
     fn py_convert_return_basic() {
-        let known = HashSet::new();
+        let context = PythonProjectionContext::default();
         assert_eq!(
-            py_convert_return("r", Some(&TypeMeta::String), false, &known),
+            py_convert_return("r", Some(&TypeMeta::String), false, &context),
             "r.to_string()"
         );
         assert_eq!(
-            py_convert_return("r", Some(&TypeMeta::I32), false, &known),
+            py_convert_return("r", Some(&TypeMeta::I32), false, &context),
             "r.to_number()"
         );
         assert_eq!(
-            py_convert_return("r", Some(&TypeMeta::Bool), false, &known),
+            py_convert_return("r", Some(&TypeMeta::U32), false, &context),
+            "r.to_u32()"
+        );
+        assert_eq!(
+            py_convert_return("r", Some(&TypeMeta::U64), false, &context),
+            "r.to_u64()"
+        );
+        assert_eq!(
+            py_convert_return("r", Some(&TypeMeta::Bool), false, &context),
             "r.to_bool()"
         );
-        assert_eq!(py_convert_return("r", None, false, &known), "r");
+        assert_eq!(py_convert_return("r", None, false, &context), "r");
     }
 
     #[test]
     fn py_convert_return_with_known_class() {
-        let mut known = HashSet::new();
-        known.insert("Uri".to_string());
         let rt = TypeMeta::RuntimeClass {
             namespace: "Windows.Foundation".into(),
             name: "Uri".into(),
@@ -556,13 +697,14 @@ mod tests {
                 iid: "abc".into(),
             })),
         };
+        let context = PythonProjectionContext::packaged([rt.type_identity()]).unwrap();
         assert_eq!(
-            py_convert_return("r", Some(&rt), false, &known),
-            "_dynwinrt_symbol('uri', 'Uri')._from_native(r)"
+            py_convert_return("r", Some(&rt), false, &context),
+            "(lambda value: None if value.is_null() else _dynwinrt_symbol('windows__foundation__uri', 'Uri')._from_native(value))(r)"
         );
         assert_eq!(
-            py_convert_array_return("r", &rt, &known),
-            "_dynwinrt_wrap_values('uri', 'Uri', r.to_values())"
+            py_convert_array_return("r", &rt, &context),
+            "_dynwinrt_wrap_values('windows__foundation__uri', 'Uri', r.to_values())"
         );
     }
 
@@ -578,14 +720,14 @@ mod tests {
             deprecated: None,
         };
         assert_eq!(
-            py_convert_return("r", Some(&en), false, &HashSet::new()),
+            py_convert_return("r", Some(&en), false, &PythonProjectionContext::default()),
             "r.to_number()"
         );
 
-        let known = HashSet::from(["DayOfWeek".to_string()]);
+        let context = PythonProjectionContext::packaged([en.type_identity()]).unwrap();
         assert_eq!(
-            py_convert_return("r", Some(&en), false, &known),
-            "_dynwinrt_enum('day_of_week', 'DayOfWeek', r.to_number())"
+            py_convert_return("r", Some(&en), false, &context),
+            "_dynwinrt_enum('windows__globalization__day_of_week', 'DayOfWeek', r.to_number())"
         );
     }
 
@@ -629,16 +771,23 @@ mod tests {
 
     #[test]
     fn py_struct_field_getter_expressions() {
+        let context = PythonProjectionContext::default();
         assert_eq!(
-            py_struct_field_getter(&TypeMeta::Bool, 0),
+            py_struct_field_getter(&context, &TypeMeta::Bool, 0),
             "s.get_u8(0) != 0"
         );
-        assert_eq!(py_struct_field_getter(&TypeMeta::I32, 2), "s.get_i32(2)");
         assert_eq!(
-            py_struct_field_getter(&TypeMeta::String, 1),
+            py_struct_field_getter(&context, &TypeMeta::I32, 2),
+            "s.get_i32(2)"
+        );
+        assert_eq!(
+            py_struct_field_getter(&context, &TypeMeta::String, 1),
             "s.get_hstring(1)"
         );
-        assert_eq!(py_struct_field_getter(&TypeMeta::F64, 3), "s.get_f64(3)");
+        assert_eq!(
+            py_struct_field_getter(&context, &TypeMeta::F64, 3),
+            "s.get_f64(3)"
+        );
     }
 
     #[test]
@@ -659,9 +808,10 @@ mod tests {
 
     #[test]
     fn py_struct_field_type_mappings() {
-        assert_eq!(py_struct_field_type(&TypeMeta::Bool), "bool");
-        assert_eq!(py_struct_field_type(&TypeMeta::String), "str");
-        assert_eq!(py_struct_field_type(&TypeMeta::I32), "int");
-        assert_eq!(py_struct_field_type(&TypeMeta::F64), "float");
+        let context = PythonProjectionContext::default();
+        assert_eq!(py_struct_field_type(&context, &TypeMeta::Bool), "bool");
+        assert_eq!(py_struct_field_type(&context, &TypeMeta::String), "str");
+        assert_eq!(py_struct_field_type(&context, &TypeMeta::I32), "int");
+        assert_eq!(py_struct_field_type(&context, &TypeMeta::F64), "float");
     }
 }
