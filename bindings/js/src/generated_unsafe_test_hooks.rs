@@ -8,12 +8,21 @@ use std::{
 
 use napi::bindgen_prelude::BigInt;
 use napi_derive::napi;
-use windows::core::{IUnknown, IUnknown_Vtbl, Interface, GUID, HRESULT};
+use windows::{
+  core::{IUnknown, IUnknown_Vtbl, Interface, GUID, HRESULT, PCWSTR},
+  Win32::System::{
+    Com::SAFEARRAY,
+    Variant::VARIANT,
+    Wmi::{
+      IWbemCallResult_Vtbl, IWbemClassObject_Vtbl, IWbemServices_Vtbl, WBEM_COMPARISON_FLAG,
+      WBEM_CONDITION_FLAG_TYPE, WBEM_GENERIC_FLAG_TYPE,
+    },
+  },
+};
 
 use crate::DynWinRTValue;
 
 const IID_IWBEM_SERVICES: GUID = GUID::from_u128(0x9556dc99_828c_11cf_a37e_00aa003240c7);
-const IID_IWBEM_CONTEXT: GUID = GUID::from_u128(0x44aca674_e8fc_11d0_a07c_00c04fb68820);
 const IID_IWBEM_CALL_RESULT: GUID = GUID::from_u128(0x44aca675_e8fc_11d0_a07c_00c04fb68820);
 const IID_IWBEM_CLASS_OBJECT: GUID = GUID::from_u128(0xdc12a681_737f_11cf_884d_00aa004b2e24);
 const IID_ITHUMBNAIL_PROVIDER: GUID = GUID::from_u128(0xe357fccd_a995_4576_b01f_234630154e96);
@@ -44,6 +53,8 @@ static EXEC_METHOD_CALLS: AtomicU32 = AtomicU32::new(0);
 static QUERY_OBJECT_SINK_CALLS: AtomicU32 = AtomicU32::new(0);
 static LAST_FLAGS: AtomicI32 = AtomicI32::new(0);
 static CURRENT_REF_COUNT: AtomicU32 = AtomicU32::new(0);
+static CLASS_OBJECT_END_ENUMERATION_CALLS: AtomicU32 = AtomicU32::new(0);
+static CALL_RESULT_GET_STATUS_CALLS: AtomicU32 = AtomicU32::new(0);
 static LAST_OUTPUT_ADDRESS: AtomicUsize = AtomicUsize::new(0);
 static AUDIO_IS_FORMAT_SUPPORTED_CALLS: AtomicU32 = AtomicU32::new(0);
 static AUDIO_INITIALIZE_CALLS: AtomicU32 = AtomicU32::new(0);
@@ -74,77 +85,51 @@ static DATA_OBJECT_LAST_SET_DATA_HANDLE: AtomicUsize = AtomicUsize::new(0);
 static DATA_OBJECT_CURRENT_REF_COUNT: AtomicU32 = AtomicU32::new(0);
 
 #[repr(C)]
-struct GeneratedIWbemServicesVtbl {
-  base__: IUnknown_Vtbl,
-  open_namespace: unsafe extern "system" fn(
-    *mut c_void,
-    *mut u16,
-    i32,
-    *mut c_void,
-    *mut *mut c_void,
-    *mut *mut c_void,
-  ) -> HRESULT,
-  cancel_async_call: unsafe extern "system" fn(*mut c_void, *mut c_void) -> HRESULT,
-  query_object_sink: unsafe extern "system" fn(*mut c_void, i32, *mut *mut c_void) -> HRESULT,
-  get_object: unsafe extern "system" fn(
-    *mut c_void,
-    *mut u16,
-    i32,
-    *mut c_void,
-    *mut *mut c_void,
-    *mut *mut c_void,
-  ) -> HRESULT,
-  get_object_async: unsafe extern "system" fn(*mut c_void) -> HRESULT,
-  put_class: unsafe extern "system" fn(
-    *mut c_void,
-    *mut c_void,
-    i32,
-    *mut c_void,
-    *mut *mut c_void,
-  ) -> HRESULT,
-  put_class_async: unsafe extern "system" fn(*mut c_void) -> HRESULT,
-  delete_class:
-    unsafe extern "system" fn(*mut c_void, *mut u16, i32, *mut c_void, *mut *mut c_void) -> HRESULT,
-  delete_class_async: unsafe extern "system" fn(*mut c_void) -> HRESULT,
-  create_class_enum: unsafe extern "system" fn(*mut c_void) -> HRESULT,
-  create_class_enum_async: unsafe extern "system" fn(*mut c_void) -> HRESULT,
-  put_instance: unsafe extern "system" fn(
-    *mut c_void,
-    *mut c_void,
-    i32,
-    *mut c_void,
-    *mut *mut c_void,
-  ) -> HRESULT,
-  put_instance_async: unsafe extern "system" fn(*mut c_void) -> HRESULT,
-  delete_instance:
-    unsafe extern "system" fn(*mut c_void, *mut u16, i32, *mut c_void, *mut *mut c_void) -> HRESULT,
-  delete_instance_async: unsafe extern "system" fn(*mut c_void) -> HRESULT,
-  create_instance_enum: unsafe extern "system" fn(*mut c_void) -> HRESULT,
-  create_instance_enum_async: unsafe extern "system" fn(*mut c_void) -> HRESULT,
-  exec_query: unsafe extern "system" fn(*mut c_void) -> HRESULT,
-  exec_query_async: unsafe extern "system" fn(*mut c_void) -> HRESULT,
-  exec_notification_query: unsafe extern "system" fn(*mut c_void) -> HRESULT,
-  exec_notification_query_async: unsafe extern "system" fn(*mut c_void) -> HRESULT,
-  exec_method: unsafe extern "system" fn(
-    *mut c_void,
-    *mut u16,
-    *mut u16,
-    i32,
-    *mut c_void,
-    *mut c_void,
-    *mut *mut c_void,
-    *mut *mut c_void,
-  ) -> HRESULT,
-}
-
-#[repr(C)]
 struct GeneratedIWbemServicesFake {
-  vtable: *const GeneratedIWbemServicesVtbl,
+  services_vtable: *const IWbemServices_Vtbl,
+  class_object_vtable: *const IWbemClassObject_Vtbl,
+  call_result_vtable: *const IWbemCallResult_Vtbl,
   references: AtomicU32,
 }
 
-unsafe extern "system" fn query_interface(
-  this: *mut c_void,
+unsafe fn owner_from_class_object(this: *mut c_void) -> *mut GeneratedIWbemServicesFake {
+  unsafe {
+    this
+      .cast::<u8>()
+      .sub(std::mem::offset_of!(
+        GeneratedIWbemServicesFake,
+        class_object_vtable
+      ))
+      .cast()
+  }
+}
+
+unsafe fn owner_from_call_result(this: *mut c_void) -> *mut GeneratedIWbemServicesFake {
+  unsafe {
+    this
+      .cast::<u8>()
+      .sub(std::mem::offset_of!(
+        GeneratedIWbemServicesFake,
+        call_result_vtable
+      ))
+      .cast()
+  }
+}
+
+unsafe fn services_pointer(owner: *mut GeneratedIWbemServicesFake) -> *mut c_void {
+  owner.cast()
+}
+
+unsafe fn class_object_pointer(owner: *mut GeneratedIWbemServicesFake) -> *mut c_void {
+  unsafe { std::ptr::addr_of_mut!((*owner).class_object_vtable).cast() }
+}
+
+unsafe fn call_result_pointer(owner: *mut GeneratedIWbemServicesFake) -> *mut c_void {
+  unsafe { std::ptr::addr_of_mut!((*owner).call_result_vtable).cast() }
+}
+
+unsafe fn query_interface_owner(
+  owner: *mut GeneratedIWbemServicesFake,
   iid: *const GUID,
   result: *mut *mut c_void,
 ) -> HRESULT {
@@ -154,51 +139,121 @@ unsafe extern "system" fn query_interface(
   }
   unsafe {
     *result = std::ptr::null_mut();
-    if *iid != IUnknown::IID
-      && *iid != IID_IWBEM_SERVICES
-      && *iid != IID_IWBEM_CONTEXT
-      && *iid != IID_IWBEM_CALL_RESULT
-      && *iid != IID_IWBEM_CLASS_OBJECT
-    {
+    *result = if *iid == IUnknown::IID || *iid == IID_IWBEM_SERVICES {
+      services_pointer(owner)
+    } else if *iid == IID_IWBEM_CLASS_OBJECT {
+      class_object_pointer(owner)
+    } else if *iid == IID_IWBEM_CALL_RESULT {
+      call_result_pointer(owner)
+    } else {
       return E_NOINTERFACE;
-    }
-    *result = this;
-    add_ref(this);
+    };
+    add_ref_owner(owner);
   }
   HRESULT(0)
 }
 
-unsafe extern "system" fn add_ref(this: *mut c_void) -> u32 {
+unsafe extern "system" fn services_query_interface(
+  this: *mut c_void,
+  iid: *const GUID,
+  result: *mut *mut c_void,
+) -> HRESULT {
+  unsafe { query_interface_owner(this.cast(), iid, result) }
+}
+
+unsafe extern "system" fn class_object_query_interface(
+  this: *mut c_void,
+  iid: *const GUID,
+  result: *mut *mut c_void,
+) -> HRESULT {
+  unsafe { query_interface_owner(owner_from_class_object(this), iid, result) }
+}
+
+unsafe extern "system" fn call_result_query_interface(
+  this: *mut c_void,
+  iid: *const GUID,
+  result: *mut *mut c_void,
+) -> HRESULT {
+  unsafe { query_interface_owner(owner_from_call_result(this), iid, result) }
+}
+
+unsafe fn add_ref_owner(owner: *mut GeneratedIWbemServicesFake) -> u32 {
   ADD_REF_CALLS.fetch_add(1, Ordering::SeqCst);
-  let object = unsafe { &*this.cast::<GeneratedIWbemServicesFake>() };
+  let object = unsafe { &*owner };
   let count = object.references.fetch_add(1, Ordering::SeqCst) + 1;
   CURRENT_REF_COUNT.store(count, Ordering::SeqCst);
   count
 }
 
-unsafe extern "system" fn release(this: *mut c_void) -> u32 {
+unsafe extern "system" fn services_add_ref(this: *mut c_void) -> u32 {
+  unsafe { add_ref_owner(this.cast()) }
+}
+
+unsafe extern "system" fn class_object_add_ref(this: *mut c_void) -> u32 {
+  unsafe { add_ref_owner(owner_from_class_object(this)) }
+}
+
+unsafe extern "system" fn call_result_add_ref(this: *mut c_void) -> u32 {
+  unsafe { add_ref_owner(owner_from_call_result(this)) }
+}
+
+unsafe fn release_owner(owner: *mut GeneratedIWbemServicesFake) -> u32 {
   RELEASE_CALLS.fetch_add(1, Ordering::SeqCst);
-  let object = unsafe { &*this.cast::<GeneratedIWbemServicesFake>() };
+  let object = unsafe { &*owner };
   let count = object.references.fetch_sub(1, Ordering::SeqCst) - 1;
   CURRENT_REF_COUNT.store(count, Ordering::SeqCst);
   if count == 0 {
     unsafe {
-      drop(Box::from_raw(this.cast::<GeneratedIWbemServicesFake>()));
+      drop(Box::from_raw(owner));
     }
   }
   count
 }
 
+unsafe extern "system" fn services_release(this: *mut c_void) -> u32 {
+  unsafe { release_owner(this.cast()) }
+}
+
+unsafe extern "system" fn class_object_release(this: *mut c_void) -> u32 {
+  unsafe { release_owner(owner_from_class_object(this)) }
+}
+
+unsafe extern "system" fn call_result_release(this: *mut c_void) -> u32 {
+  unsafe { release_owner(owner_from_call_result(this)) }
+}
+
+#[derive(Clone, Copy)]
+enum WbemOutputView {
+  Services,
+  ClassObject,
+  CallResult,
+}
+
+unsafe fn write_owned_view(
+  owner: *mut GeneratedIWbemServicesFake,
+  output: *mut *mut c_void,
+  view: WbemOutputView,
+) {
+  unsafe {
+    add_ref_owner(owner);
+    *output = match view {
+      WbemOutputView::Services => services_pointer(owner),
+      WbemOutputView::ClassObject => class_object_pointer(owner),
+      WbemOutputView::CallResult => call_result_pointer(owner),
+    };
+  }
+}
+
 unsafe extern "system" fn open_namespace(
   this: *mut c_void,
-  _namespace: *mut u16,
-  flags: i32,
+  _namespace: *mut c_void,
+  flags: WBEM_GENERIC_FLAG_TYPE,
   context: *mut c_void,
   working_namespace: *mut *mut c_void,
   result: *mut *mut c_void,
 ) -> HRESULT {
   OPEN_NAMESPACE_CALLS.fetch_add(1, Ordering::SeqCst);
-  OPEN_NAMESPACE_LAST_FLAGS.store(flags, Ordering::SeqCst);
+  OPEN_NAMESPACE_LAST_FLAGS.store(flags.0, Ordering::SeqCst);
   OPEN_NAMESPACE_CONTEXT_ARGUMENT_NULL.store(u32::from(context.is_null()), Ordering::SeqCst);
   OPEN_NAMESPACE_WORKING_ARGUMENT_NULL
     .store(u32::from(working_namespace.is_null()), Ordering::SeqCst);
@@ -213,25 +268,22 @@ unsafe extern "system" fn open_namespace(
   {
     return E_POINTER;
   }
+  let owner = this.cast::<GeneratedIWbemServicesFake>();
   match WMI_CONDITIONAL_MODE.load(Ordering::SeqCst) {
-    0 if flags == 0 && !working_namespace.is_null() && result.is_null() => {
-      add_ref(this);
-      unsafe { *working_namespace = this };
+    0 if flags.0 == 0 && !working_namespace.is_null() && result.is_null() => {
+      unsafe { write_owned_view(owner, working_namespace, WbemOutputView::Services) };
       HRESULT(0)
     }
-    1 if flags == 0x10 && working_namespace.is_null() && !result.is_null() => {
-      add_ref(this);
-      unsafe { *result = this };
+    1 if flags.0 == 0x10 && working_namespace.is_null() && !result.is_null() => {
+      unsafe { write_owned_view(owner, result, WbemOutputView::CallResult) };
       HRESULT(0)
     }
     -1 => {
       if !working_namespace.is_null() {
-        add_ref(this);
-        unsafe { *working_namespace = this };
+        unsafe { write_owned_view(owner, working_namespace, WbemOutputView::Services) };
       }
       if !result.is_null() {
-        add_ref(this);
-        unsafe { *result = this };
+        unsafe { write_owned_view(owner, result, WbemOutputView::CallResult) };
       }
       HRESULT(0x80004005u32 as i32)
     }
@@ -241,11 +293,11 @@ unsafe extern "system" fn open_namespace(
 
 unsafe fn complete_conditional_call(
   this: *mut c_void,
-  flags: i32,
+  flags: WBEM_GENERIC_FLAG_TYPE,
   context: *mut c_void,
   synchronous_output: *mut *mut c_void,
   semisynchronous_output: *mut *mut c_void,
-  synchronous_returns_value: bool,
+  synchronous_view: Option<WbemOutputView>,
 ) -> HRESULT {
   if !context.is_null()
     || (!synchronous_output.is_null() && unsafe { !(*synchronous_output).is_null() })
@@ -253,30 +305,33 @@ unsafe fn complete_conditional_call(
   {
     return E_POINTER;
   }
+  let owner = this.cast::<GeneratedIWbemServicesFake>();
   match WMI_CONDITIONAL_MODE.load(Ordering::SeqCst) {
-    0 if flags == 0
+    0 if flags.0 == 0
       && semisynchronous_output.is_null()
-      && (synchronous_returns_value == !synchronous_output.is_null()) =>
+      && (synchronous_view.is_some() == !synchronous_output.is_null()) =>
     {
-      if synchronous_returns_value {
-        add_ref(this);
-        unsafe { *synchronous_output = this };
+      if let Some(view) = synchronous_view {
+        unsafe { write_owned_view(owner, synchronous_output, view) };
       }
       HRESULT(0)
     }
-    1 if flags == 0x10 && synchronous_output.is_null() && !semisynchronous_output.is_null() => {
-      add_ref(this);
-      unsafe { *semisynchronous_output = this };
+    1 if flags.0 == 0x10 && synchronous_output.is_null() && !semisynchronous_output.is_null() => {
+      unsafe {
+        write_owned_view(owner, semisynchronous_output, WbemOutputView::CallResult);
+      }
       HRESULT(0)
     }
     -1 => {
       if !synchronous_output.is_null() {
-        add_ref(this);
-        unsafe { *synchronous_output = this };
+        if let Some(view) = synchronous_view {
+          unsafe { write_owned_view(owner, synchronous_output, view) };
+        }
       }
       if !semisynchronous_output.is_null() {
-        add_ref(this);
-        unsafe { *semisynchronous_output = this };
+        unsafe {
+          write_owned_view(owner, semisynchronous_output, WbemOutputView::CallResult);
+        }
       }
       HRESULT(0x80004005u32 as i32)
     }
@@ -286,8 +341,8 @@ unsafe fn complete_conditional_call(
 
 unsafe extern "system" fn get_object(
   this: *mut c_void,
-  object_path: *mut u16,
-  flags: i32,
+  object_path: *mut c_void,
+  flags: WBEM_GENERIC_FLAG_TYPE,
   context: *mut c_void,
   object: *mut *mut c_void,
   result: *mut *mut c_void,
@@ -296,13 +351,22 @@ unsafe extern "system" fn get_object(
   if object_path.is_null() {
     return E_POINTER;
   }
-  unsafe { complete_conditional_call(this, flags, context, object, result, true) }
+  unsafe {
+    complete_conditional_call(
+      this,
+      flags,
+      context,
+      object,
+      result,
+      Some(WbemOutputView::ClassObject),
+    )
+  }
 }
 
 unsafe extern "system" fn put_class(
   this: *mut c_void,
   object: *mut c_void,
-  flags: i32,
+  flags: WBEM_GENERIC_FLAG_TYPE,
   context: *mut c_void,
   result: *mut *mut c_void,
 ) -> HRESULT {
@@ -310,13 +374,13 @@ unsafe extern "system" fn put_class(
   if object.is_null() {
     return E_POINTER;
   }
-  unsafe { complete_conditional_call(this, flags, context, std::ptr::null_mut(), result, false) }
+  unsafe { complete_conditional_call(this, flags, context, std::ptr::null_mut(), result, None) }
 }
 
 unsafe extern "system" fn delete_class(
   this: *mut c_void,
-  class_name: *mut u16,
-  flags: i32,
+  class_name: *mut c_void,
+  flags: WBEM_GENERIC_FLAG_TYPE,
   context: *mut c_void,
   result: *mut *mut c_void,
 ) -> HRESULT {
@@ -324,13 +388,13 @@ unsafe extern "system" fn delete_class(
   if class_name.is_null() {
     return E_POINTER;
   }
-  unsafe { complete_conditional_call(this, flags, context, std::ptr::null_mut(), result, false) }
+  unsafe { complete_conditional_call(this, flags, context, std::ptr::null_mut(), result, None) }
 }
 
 unsafe extern "system" fn put_instance(
   this: *mut c_void,
   instance: *mut c_void,
-  flags: i32,
+  flags: WBEM_GENERIC_FLAG_TYPE,
   context: *mut c_void,
   result: *mut *mut c_void,
 ) -> HRESULT {
@@ -338,13 +402,13 @@ unsafe extern "system" fn put_instance(
   if instance.is_null() {
     return E_POINTER;
   }
-  unsafe { complete_conditional_call(this, flags, context, std::ptr::null_mut(), result, false) }
+  unsafe { complete_conditional_call(this, flags, context, std::ptr::null_mut(), result, None) }
 }
 
 unsafe extern "system" fn delete_instance(
   this: *mut c_void,
-  object_path: *mut u16,
-  flags: i32,
+  object_path: *mut c_void,
+  flags: WBEM_GENERIC_FLAG_TYPE,
   context: *mut c_void,
   result: *mut *mut c_void,
 ) -> HRESULT {
@@ -352,14 +416,14 @@ unsafe extern "system" fn delete_instance(
   if object_path.is_null() {
     return E_POINTER;
   }
-  unsafe { complete_conditional_call(this, flags, context, std::ptr::null_mut(), result, false) }
+  unsafe { complete_conditional_call(this, flags, context, std::ptr::null_mut(), result, None) }
 }
 
 unsafe extern "system" fn exec_method(
   this: *mut c_void,
-  object_path: *mut u16,
-  method_name: *mut u16,
-  flags: i32,
+  object_path: *mut c_void,
+  method_name: *mut c_void,
+  flags: WBEM_GENERIC_FLAG_TYPE,
   context: *mut c_void,
   input: *mut c_void,
   output: *mut *mut c_void,
@@ -369,10 +433,69 @@ unsafe extern "system" fn exec_method(
   if object_path.is_null() || method_name.is_null() || input.is_null() {
     return E_POINTER;
   }
-  unsafe { complete_conditional_call(this, flags, context, output, result, true) }
+  unsafe {
+    complete_conditional_call(
+      this,
+      flags,
+      context,
+      output,
+      result,
+      Some(WbemOutputView::ClassObject),
+    )
+  }
 }
 
-unsafe extern "system" fn unimplemented_wbem_method(_this: *mut c_void) -> HRESULT {
+unsafe extern "system" fn unimplemented_wbem_async_single(
+  _this: *mut c_void,
+  _value: *mut c_void,
+  _flags: WBEM_GENERIC_FLAG_TYPE,
+  _context: *mut c_void,
+  _response_handler: *mut c_void,
+) -> HRESULT {
+  E_NOTIMPL
+}
+
+unsafe extern "system" fn unimplemented_wbem_enum(
+  _this: *mut c_void,
+  _filter: *mut c_void,
+  _flags: WBEM_GENERIC_FLAG_TYPE,
+  _context: *mut c_void,
+  _result: *mut *mut c_void,
+) -> HRESULT {
+  E_NOTIMPL
+}
+
+unsafe extern "system" fn unimplemented_wbem_query(
+  _this: *mut c_void,
+  _query_language: *mut c_void,
+  _query: *mut c_void,
+  _flags: WBEM_GENERIC_FLAG_TYPE,
+  _context: *mut c_void,
+  _result: *mut *mut c_void,
+) -> HRESULT {
+  E_NOTIMPL
+}
+
+unsafe extern "system" fn unimplemented_wbem_query_async(
+  _this: *mut c_void,
+  _query_language: *mut c_void,
+  _query: *mut c_void,
+  _flags: WBEM_GENERIC_FLAG_TYPE,
+  _context: *mut c_void,
+  _response_handler: *mut c_void,
+) -> HRESULT {
+  E_NOTIMPL
+}
+
+unsafe extern "system" fn unimplemented_wbem_exec_method_async(
+  _this: *mut c_void,
+  _object_path: *mut c_void,
+  _method_name: *mut c_void,
+  _flags: WBEM_GENERIC_FLAG_TYPE,
+  _context: *mut c_void,
+  _input: *mut c_void,
+  _response_handler: *mut c_void,
+) -> HRESULT {
   E_NOTIMPL
 }
 
@@ -382,50 +505,237 @@ unsafe extern "system" fn cancel_async_call(_this: *mut c_void, _sink: *mut c_vo
 
 unsafe extern "system" fn query_object_sink(
   _this: *mut c_void,
-  flags: i32,
+  flags: WBEM_GENERIC_FLAG_TYPE,
   result: *mut *mut c_void,
 ) -> HRESULT {
   if result.is_null() {
     return E_POINTER;
   }
   QUERY_OBJECT_SINK_CALLS.fetch_add(1, Ordering::SeqCst);
-  LAST_FLAGS.store(flags, Ordering::SeqCst);
-  let output = std::ptr::with_exposed_provenance_mut::<c_void>(0x1234);
-  LAST_OUTPUT_ADDRESS.store(output.expose_provenance(), Ordering::SeqCst);
+  LAST_FLAGS.store(flags.0, Ordering::SeqCst);
   unsafe {
-    *result = output;
+    *result = std::ptr::null_mut();
+  }
+  LAST_OUTPUT_ADDRESS.store(0, Ordering::SeqCst);
+  E_NOTIMPL
+}
+
+static SERVICES_VTABLE: IWbemServices_Vtbl = IWbemServices_Vtbl {
+  base__: IUnknown_Vtbl {
+    QueryInterface: services_query_interface,
+    AddRef: services_add_ref,
+    Release: services_release,
+  },
+  OpenNamespace: open_namespace,
+  CancelAsyncCall: cancel_async_call,
+  QueryObjectSink: query_object_sink,
+  GetObject: get_object,
+  GetObjectAsync: unimplemented_wbem_async_single,
+  PutClass: put_class,
+  PutClassAsync: unimplemented_wbem_async_single,
+  DeleteClass: delete_class,
+  DeleteClassAsync: unimplemented_wbem_async_single,
+  CreateClassEnum: unimplemented_wbem_enum,
+  CreateClassEnumAsync: unimplemented_wbem_async_single,
+  PutInstance: put_instance,
+  PutInstanceAsync: unimplemented_wbem_async_single,
+  DeleteInstance: delete_instance,
+  DeleteInstanceAsync: unimplemented_wbem_async_single,
+  CreateInstanceEnum: unimplemented_wbem_enum,
+  CreateInstanceEnumAsync: unimplemented_wbem_async_single,
+  ExecQuery: unimplemented_wbem_query,
+  ExecQueryAsync: unimplemented_wbem_query_async,
+  ExecNotificationQuery: unimplemented_wbem_query,
+  ExecNotificationQueryAsync: unimplemented_wbem_query_async,
+  ExecMethod: exec_method,
+  ExecMethodAsync: unimplemented_wbem_exec_method_async,
+};
+
+unsafe extern "system" fn class_object_out(
+  _this: *mut c_void,
+  _result: *mut *mut c_void,
+) -> HRESULT {
+  E_NOTIMPL
+}
+
+unsafe extern "system" fn class_object_get(
+  _this: *mut c_void,
+  _name: PCWSTR,
+  _flags: i32,
+  _value: *mut VARIANT,
+  _kind: *mut i32,
+  _flavor: *mut i32,
+) -> HRESULT {
+  E_NOTIMPL
+}
+
+unsafe extern "system" fn class_object_put(
+  _this: *mut c_void,
+  _name: PCWSTR,
+  _flags: i32,
+  _value: *const VARIANT,
+  _kind: i32,
+) -> HRESULT {
+  E_NOTIMPL
+}
+
+unsafe extern "system" fn class_object_name(_this: *mut c_void, _name: PCWSTR) -> HRESULT {
+  E_NOTIMPL
+}
+
+unsafe extern "system" fn class_object_get_names(
+  _this: *mut c_void,
+  _qualifier_name: PCWSTR,
+  _flags: WBEM_CONDITION_FLAG_TYPE,
+  _qualifier_value: *const VARIANT,
+  _names: *mut *mut SAFEARRAY,
+) -> HRESULT {
+  E_NOTIMPL
+}
+
+unsafe extern "system" fn class_object_flags(_this: *mut c_void, _flags: i32) -> HRESULT {
+  E_NOTIMPL
+}
+
+unsafe extern "system" fn class_object_next(
+  _this: *mut c_void,
+  _flags: i32,
+  _name: *mut *mut c_void,
+  _value: *mut VARIANT,
+  _kind: *mut i32,
+  _flavor: *mut i32,
+) -> HRESULT {
+  E_NOTIMPL
+}
+
+unsafe extern "system" fn class_object_end_enumeration(_this: *mut c_void) -> HRESULT {
+  CLASS_OBJECT_END_ENUMERATION_CALLS.fetch_add(1, Ordering::SeqCst);
+  HRESULT(0)
+}
+
+unsafe extern "system" fn class_object_named_out(
+  _this: *mut c_void,
+  _name: PCWSTR,
+  _result: *mut *mut c_void,
+) -> HRESULT {
+  E_NOTIMPL
+}
+
+unsafe extern "system" fn class_object_flags_out(
+  _this: *mut c_void,
+  _flags: i32,
+  _result: *mut *mut c_void,
+) -> HRESULT {
+  E_NOTIMPL
+}
+
+unsafe extern "system" fn class_object_compare(
+  _this: *mut c_void,
+  _flags: WBEM_COMPARISON_FLAG,
+  _other: *mut c_void,
+) -> HRESULT {
+  E_NOTIMPL
+}
+
+unsafe extern "system" fn class_object_get_method(
+  _this: *mut c_void,
+  _name: PCWSTR,
+  _flags: i32,
+  _input: *mut *mut c_void,
+  _output: *mut *mut c_void,
+) -> HRESULT {
+  E_NOTIMPL
+}
+
+unsafe extern "system" fn class_object_put_method(
+  _this: *mut c_void,
+  _name: PCWSTR,
+  _flags: i32,
+  _input: *mut c_void,
+  _output: *mut c_void,
+) -> HRESULT {
+  E_NOTIMPL
+}
+
+unsafe extern "system" fn class_object_next_method(
+  _this: *mut c_void,
+  _flags: i32,
+  _name: *mut *mut c_void,
+  _input: *mut *mut c_void,
+  _output: *mut *mut c_void,
+) -> HRESULT {
+  E_NOTIMPL
+}
+
+unsafe extern "system" fn class_object_end_method_enumeration(_this: *mut c_void) -> HRESULT {
+  E_NOTIMPL
+}
+
+static CLASS_OBJECT_VTABLE: IWbemClassObject_Vtbl = IWbemClassObject_Vtbl {
+  base__: IUnknown_Vtbl {
+    QueryInterface: class_object_query_interface,
+    AddRef: class_object_add_ref,
+    Release: class_object_release,
+  },
+  GetQualifierSet: class_object_out,
+  Get: class_object_get,
+  Put: class_object_put,
+  Delete: class_object_name,
+  GetNames: class_object_get_names,
+  BeginEnumeration: class_object_flags,
+  Next: class_object_next,
+  EndEnumeration: class_object_end_enumeration,
+  GetPropertyQualifierSet: class_object_named_out,
+  Clone: class_object_out,
+  GetObjectText: class_object_flags_out,
+  SpawnDerivedClass: class_object_flags_out,
+  SpawnInstance: class_object_flags_out,
+  CompareTo: class_object_compare,
+  GetPropertyOrigin: class_object_named_out,
+  InheritsFrom: class_object_name,
+  GetMethod: class_object_get_method,
+  PutMethod: class_object_put_method,
+  DeleteMethod: class_object_name,
+  BeginMethodEnumeration: class_object_flags,
+  NextMethod: class_object_next_method,
+  EndMethodEnumeration: class_object_end_method_enumeration,
+  GetMethodQualifierSet: class_object_named_out,
+  GetMethodOrigin: class_object_named_out,
+};
+
+unsafe extern "system" fn call_result_object(
+  _this: *mut c_void,
+  _timeout: i32,
+  _result: *mut *mut c_void,
+) -> HRESULT {
+  E_NOTIMPL
+}
+
+unsafe extern "system" fn call_result_get_status(
+  _this: *mut c_void,
+  _timeout: i32,
+  status: *mut i32,
+) -> HRESULT {
+  if status.is_null() {
+    return E_POINTER;
+  }
+  CALL_RESULT_GET_STATUS_CALLS.fetch_add(1, Ordering::SeqCst);
+  unsafe {
+    *status = 0;
   }
   HRESULT(0)
 }
 
-static VTABLE: GeneratedIWbemServicesVtbl = GeneratedIWbemServicesVtbl {
+static CALL_RESULT_VTABLE: IWbemCallResult_Vtbl = IWbemCallResult_Vtbl {
   base__: IUnknown_Vtbl {
-    QueryInterface: query_interface,
-    AddRef: add_ref,
-    Release: release,
+    QueryInterface: call_result_query_interface,
+    AddRef: call_result_add_ref,
+    Release: call_result_release,
   },
-  open_namespace,
-  cancel_async_call,
-  query_object_sink,
-  get_object,
-  get_object_async: unimplemented_wbem_method,
-  put_class,
-  put_class_async: unimplemented_wbem_method,
-  delete_class,
-  delete_class_async: unimplemented_wbem_method,
-  create_class_enum: unimplemented_wbem_method,
-  create_class_enum_async: unimplemented_wbem_method,
-  put_instance,
-  put_instance_async: unimplemented_wbem_method,
-  delete_instance,
-  delete_instance_async: unimplemented_wbem_method,
-  create_instance_enum: unimplemented_wbem_method,
-  create_instance_enum_async: unimplemented_wbem_method,
-  exec_query: unimplemented_wbem_method,
-  exec_query_async: unimplemented_wbem_method,
-  exec_notification_query: unimplemented_wbem_method,
-  exec_notification_query_async: unimplemented_wbem_method,
-  exec_method,
+  GetResultObject: call_result_object,
+  GetResultString: call_result_object,
+  GetResultServices: call_result_object,
+  GetCallStatus: call_result_get_status,
 };
 
 #[napi(object)]
@@ -450,6 +760,8 @@ pub struct GeneratedUnsafeComStats {
   pub last_flags: i32,
   pub current_ref_count: u32,
   pub last_output_address: u32,
+  pub class_object_end_enumeration_calls: u32,
+  pub call_result_get_status_calls: u32,
 }
 
 #[napi]
@@ -475,13 +787,65 @@ pub fn create_generated_iwbem_services_fake() -> napi::Result<DynWinRTValue> {
   LAST_FLAGS.store(0, Ordering::SeqCst);
   CURRENT_REF_COUNT.store(1, Ordering::SeqCst);
   LAST_OUTPUT_ADDRESS.store(0, Ordering::SeqCst);
+  CLASS_OBJECT_END_ENUMERATION_CALLS.store(0, Ordering::SeqCst);
+  CALL_RESULT_GET_STATUS_CALLS.store(0, Ordering::SeqCst);
 
   let object = Box::new(GeneratedIWbemServicesFake {
-    vtable: &VTABLE,
+    services_vtable: &SERVICES_VTABLE,
+    class_object_vtable: &CLASS_OBJECT_VTABLE,
+    call_result_vtable: &CALL_RESULT_VTABLE,
     references: AtomicU32::new(1),
   });
   let unknown = unsafe { IUnknown::from_raw(Box::into_raw(object).cast()) };
   crate::com::apartment_bound_com_object(unknown)
+}
+
+#[napi]
+pub fn probe_generated_iwbem_services_unimplemented_slots(
+  value: &DynWinRTValue,
+) -> napi::Result<()> {
+  let raw = match &value.0 {
+    dynwinrt::WinRTValue::Object(object) => object.as_raw(),
+    _ => {
+      return Err(napi::Error::from_reason(
+        "IWbemServices probe requires a managed COM object",
+      ));
+    }
+  };
+  let vtable = unsafe { *(raw.cast::<*const IWbemServices_Vtbl>()) };
+  let mut object_sink = std::ptr::null_mut();
+  let query_object_sink =
+    unsafe { ((*vtable).QueryObjectSink)(raw, WBEM_GENERIC_FLAG_TYPE(0), &mut object_sink) };
+  let get_object_async = unsafe {
+    ((*vtable).GetObjectAsync)(
+      raw,
+      std::ptr::null_mut(),
+      WBEM_GENERIC_FLAG_TYPE(0),
+      std::ptr::null_mut(),
+      std::ptr::null_mut(),
+    )
+  };
+  let exec_method_async = unsafe {
+    ((*vtable).ExecMethodAsync)(
+      raw,
+      std::ptr::null_mut(),
+      std::ptr::null_mut(),
+      WBEM_GENERIC_FLAG_TYPE(0),
+      std::ptr::null_mut(),
+      std::ptr::null_mut(),
+      std::ptr::null_mut(),
+    )
+  };
+  if query_object_sink != E_NOTIMPL
+    || !object_sink.is_null()
+    || get_object_async != E_NOTIMPL
+    || exec_method_async != E_NOTIMPL
+  {
+    return Err(napi::Error::from_reason(
+      "IWbemServices unimplemented slot probe returned an unexpected HRESULT",
+    ));
+  }
+  Ok(())
 }
 
 #[napi]
@@ -512,6 +876,8 @@ pub fn generated_unsafe_com_stats() -> GeneratedUnsafeComStats {
     last_flags: LAST_FLAGS.load(Ordering::SeqCst),
     current_ref_count: CURRENT_REF_COUNT.load(Ordering::SeqCst),
     last_output_address: LAST_OUTPUT_ADDRESS.load(Ordering::SeqCst) as u32,
+    class_object_end_enumeration_calls: CLASS_OBJECT_END_ENUMERATION_CALLS.load(Ordering::SeqCst),
+    call_result_get_status_calls: CALL_RESULT_GET_STATUS_CALLS.load(Ordering::SeqCst),
   }
 }
 

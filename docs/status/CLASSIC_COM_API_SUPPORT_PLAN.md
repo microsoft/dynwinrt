@@ -292,10 +292,12 @@ planned bytes before overwrite.
 
 CI also generates real official safe `IWbemServices`, `IDataObject`, and
 `IAudioClient` wrappers plus an `IWinMLEvaluationContextUnsafe` companion. The
-test-hook COM implementations measure QueryInterface/AddRef/Release,
-conditional output selection, owned storage cleanup, and raw pointer-slot
-mutation without requiring live WMI or audio hardware while testing the actual
-generated CJS, ESM, and declaration artifacts.
+WMI test object uses the official `IWbemServices_Vtbl` through slot 25 and
+ABI-correct `IWbemClassObject` and `IWbemCallResult` tear-offs with one
+canonical IUnknown and shared reference counting. The test hooks also validate
+conditional output selection, data/audio storage cleanup, raw pointer-slot
+mutation, CJS, ESM, and declarations without requiring live WMI or audio
+hardware.
 
 Generated companions are outbound only. They do not infer output ownership,
 provide callbacks or `implement()`, solve acquisition or apartment transfer, or
