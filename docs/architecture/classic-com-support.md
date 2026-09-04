@@ -1348,6 +1348,7 @@ hardware, and whether it adds a distinct ABI shape.
 | `IMalloc` | COM task allocator | Complete generation is gated by exact IID/slot/shape evidence. Opaque values reject forged/stale addresses; destructive and size operations enforce allocator identity, while `DidAlloc` permits borrowed cross-allocator inspection. |
 | `IPersistFile` | Loading and saving persistent COM objects | Core tests query it from `IShellLinkW`; Node activates the Shell Link coclass directly as `IPersistFile` and verifies `GetClassID`. |
 | `IShellLinkW` | Shortcut creation and inspection | Core runtime tests cover strings, `u16`, enums, and scalar outputs; generated Node coverage round-trips `GetPath` with nested `FILETIME` and fixed WCHAR-array `WIN32_FIND_DATAW` POD storage. |
+| `IThumbnailProvider` | Shell thumbnails | A generated-wrapper integration test receives a real HBITMAP from a fake COM vtable, transfers it into `DynComOwnedHandle`, and verifies explicit `DeleteObject` release plus best-effort Drop cleanup. |
 | `FileOpenDialog` | Desktop file selection | Node test covers coclass construction and option round-trip without showing UI. |
 | `FileOperation` | Shell copy/move/delete operations | Node test covers coclass construction, unsigned flags, and state without modifying files. |
 | `IWICImagingFactory` | Windows Imaging Component | Node test activates WIC and creates an interface-valued stream. |

@@ -15,6 +15,8 @@ use crate::DynWinRTValue;
 const IID_IWBEM_SERVICES: GUID = GUID::from_u128(0x9556dc99_828c_11cf_a37e_00aa003240c7);
 const IID_IWBEM_CONTEXT: GUID = GUID::from_u128(0x44aca674_e8fc_11d0_a07c_00c04fb68820);
 const IID_IWBEM_CALL_RESULT: GUID = GUID::from_u128(0x44aca675_e8fc_11d0_a07c_00c04fb68820);
+const IID_IWBEM_CLASS_OBJECT: GUID = GUID::from_u128(0xdc12a681_737f_11cf_884d_00aa004b2e24);
+const IID_ITHUMBNAIL_PROVIDER: GUID = GUID::from_u128(0xe357fccd_a995_4576_b01f_234630154e96);
 const IID_IAUDIO_CLIENT: GUID = GUID::from_u128(0x1cb9ad4c_dbfa_4c32_b178_c2f568a703b2);
 const E_NOINTERFACE: HRESULT = HRESULT(0x80004002u32 as i32);
 const E_POINTER: HRESULT = HRESULT(0x80004003u32 as i32);
@@ -24,13 +26,19 @@ static QUERY_INTERFACE_CALLS: AtomicU32 = AtomicU32::new(0);
 static ADD_REF_CALLS: AtomicU32 = AtomicU32::new(0);
 static RELEASE_CALLS: AtomicU32 = AtomicU32::new(0);
 static OPEN_NAMESPACE_CALLS: AtomicU32 = AtomicU32::new(0);
-static OPEN_NAMESPACE_MODE: AtomicI32 = AtomicI32::new(0);
 static OPEN_NAMESPACE_WORKING_SLOT_NULL: AtomicU32 = AtomicU32::new(0);
 static OPEN_NAMESPACE_WORKING_ARGUMENT_NULL: AtomicU32 = AtomicU32::new(0);
 static OPEN_NAMESPACE_RESULT_SLOT_NULL: AtomicU32 = AtomicU32::new(0);
 static OPEN_NAMESPACE_RESULT_ARGUMENT_NULL: AtomicU32 = AtomicU32::new(0);
 static OPEN_NAMESPACE_CONTEXT_ARGUMENT_NULL: AtomicU32 = AtomicU32::new(0);
 static OPEN_NAMESPACE_LAST_FLAGS: AtomicI32 = AtomicI32::new(0);
+static WMI_CONDITIONAL_MODE: AtomicI32 = AtomicI32::new(0);
+static GET_OBJECT_CALLS: AtomicU32 = AtomicU32::new(0);
+static PUT_CLASS_CALLS: AtomicU32 = AtomicU32::new(0);
+static DELETE_CLASS_CALLS: AtomicU32 = AtomicU32::new(0);
+static PUT_INSTANCE_CALLS: AtomicU32 = AtomicU32::new(0);
+static DELETE_INSTANCE_CALLS: AtomicU32 = AtomicU32::new(0);
+static EXEC_METHOD_CALLS: AtomicU32 = AtomicU32::new(0);
 static QUERY_OBJECT_SINK_CALLS: AtomicU32 = AtomicU32::new(0);
 static LAST_FLAGS: AtomicI32 = AtomicI32::new(0);
 static CURRENT_REF_COUNT: AtomicU32 = AtomicU32::new(0);
@@ -43,6 +51,8 @@ static AUDIO_GET_SERVICE_MODE: AtomicI32 = AtomicI32::new(0);
 static AUDIO_ADD_REF_CALLS: AtomicU32 = AtomicU32::new(0);
 static AUDIO_RELEASE_CALLS: AtomicU32 = AtomicU32::new(0);
 static AUDIO_CURRENT_REF_COUNT: AtomicU32 = AtomicU32::new(0);
+static THUMBNAIL_CALLS: AtomicU32 = AtomicU32::new(0);
+static THUMBNAIL_CURRENT_REF_COUNT: AtomicU32 = AtomicU32::new(0);
 
 #[repr(C)]
 struct GeneratedIWbemServicesVtbl {
@@ -57,6 +67,55 @@ struct GeneratedIWbemServicesVtbl {
   ) -> HRESULT,
   cancel_async_call: unsafe extern "system" fn(*mut c_void, *mut c_void) -> HRESULT,
   query_object_sink: unsafe extern "system" fn(*mut c_void, i32, *mut *mut c_void) -> HRESULT,
+  get_object: unsafe extern "system" fn(
+    *mut c_void,
+    *mut u16,
+    i32,
+    *mut c_void,
+    *mut *mut c_void,
+    *mut *mut c_void,
+  ) -> HRESULT,
+  get_object_async: unsafe extern "system" fn(*mut c_void) -> HRESULT,
+  put_class: unsafe extern "system" fn(
+    *mut c_void,
+    *mut c_void,
+    i32,
+    *mut c_void,
+    *mut *mut c_void,
+  ) -> HRESULT,
+  put_class_async: unsafe extern "system" fn(*mut c_void) -> HRESULT,
+  delete_class:
+    unsafe extern "system" fn(*mut c_void, *mut u16, i32, *mut c_void, *mut *mut c_void) -> HRESULT,
+  delete_class_async: unsafe extern "system" fn(*mut c_void) -> HRESULT,
+  create_class_enum: unsafe extern "system" fn(*mut c_void) -> HRESULT,
+  create_class_enum_async: unsafe extern "system" fn(*mut c_void) -> HRESULT,
+  put_instance: unsafe extern "system" fn(
+    *mut c_void,
+    *mut c_void,
+    i32,
+    *mut c_void,
+    *mut *mut c_void,
+  ) -> HRESULT,
+  put_instance_async: unsafe extern "system" fn(*mut c_void) -> HRESULT,
+  delete_instance:
+    unsafe extern "system" fn(*mut c_void, *mut u16, i32, *mut c_void, *mut *mut c_void) -> HRESULT,
+  delete_instance_async: unsafe extern "system" fn(*mut c_void) -> HRESULT,
+  create_instance_enum: unsafe extern "system" fn(*mut c_void) -> HRESULT,
+  create_instance_enum_async: unsafe extern "system" fn(*mut c_void) -> HRESULT,
+  exec_query: unsafe extern "system" fn(*mut c_void) -> HRESULT,
+  exec_query_async: unsafe extern "system" fn(*mut c_void) -> HRESULT,
+  exec_notification_query: unsafe extern "system" fn(*mut c_void) -> HRESULT,
+  exec_notification_query_async: unsafe extern "system" fn(*mut c_void) -> HRESULT,
+  exec_method: unsafe extern "system" fn(
+    *mut c_void,
+    *mut u16,
+    *mut u16,
+    i32,
+    *mut c_void,
+    *mut c_void,
+    *mut *mut c_void,
+    *mut *mut c_void,
+  ) -> HRESULT,
 }
 
 #[repr(C)]
@@ -80,6 +139,7 @@ unsafe extern "system" fn query_interface(
       && *iid != IID_IWBEM_SERVICES
       && *iid != IID_IWBEM_CONTEXT
       && *iid != IID_IWBEM_CALL_RESULT
+      && *iid != IID_IWBEM_CLASS_OBJECT
     {
       return E_NOINTERFACE;
     }
@@ -134,7 +194,7 @@ unsafe extern "system" fn open_namespace(
   {
     return E_POINTER;
   }
-  match OPEN_NAMESPACE_MODE.load(Ordering::SeqCst) {
+  match WMI_CONDITIONAL_MODE.load(Ordering::SeqCst) {
     0 if flags == 0 && !working_namespace.is_null() && result.is_null() => {
       add_ref(this);
       unsafe { *working_namespace = this };
@@ -158,6 +218,143 @@ unsafe extern "system" fn open_namespace(
     }
     _ => E_NOTIMPL,
   }
+}
+
+unsafe fn complete_conditional_call(
+  this: *mut c_void,
+  flags: i32,
+  context: *mut c_void,
+  synchronous_output: *mut *mut c_void,
+  semisynchronous_output: *mut *mut c_void,
+  synchronous_returns_value: bool,
+) -> HRESULT {
+  if !context.is_null()
+    || (!synchronous_output.is_null() && unsafe { !(*synchronous_output).is_null() })
+    || (!semisynchronous_output.is_null() && unsafe { !(*semisynchronous_output).is_null() })
+  {
+    return E_POINTER;
+  }
+  match WMI_CONDITIONAL_MODE.load(Ordering::SeqCst) {
+    0 if flags == 0
+      && semisynchronous_output.is_null()
+      && (synchronous_returns_value == !synchronous_output.is_null()) =>
+    {
+      if synchronous_returns_value {
+        add_ref(this);
+        unsafe { *synchronous_output = this };
+      }
+      HRESULT(0)
+    }
+    1 if flags == 0x10 && synchronous_output.is_null() && !semisynchronous_output.is_null() => {
+      add_ref(this);
+      unsafe { *semisynchronous_output = this };
+      HRESULT(0)
+    }
+    -1 => {
+      if !synchronous_output.is_null() {
+        add_ref(this);
+        unsafe { *synchronous_output = this };
+      }
+      if !semisynchronous_output.is_null() {
+        add_ref(this);
+        unsafe { *semisynchronous_output = this };
+      }
+      HRESULT(0x80004005u32 as i32)
+    }
+    _ => E_NOTIMPL,
+  }
+}
+
+unsafe extern "system" fn get_object(
+  this: *mut c_void,
+  object_path: *mut u16,
+  flags: i32,
+  context: *mut c_void,
+  object: *mut *mut c_void,
+  result: *mut *mut c_void,
+) -> HRESULT {
+  GET_OBJECT_CALLS.fetch_add(1, Ordering::SeqCst);
+  if object_path.is_null() {
+    return E_POINTER;
+  }
+  unsafe { complete_conditional_call(this, flags, context, object, result, true) }
+}
+
+unsafe extern "system" fn put_class(
+  this: *mut c_void,
+  object: *mut c_void,
+  flags: i32,
+  context: *mut c_void,
+  result: *mut *mut c_void,
+) -> HRESULT {
+  PUT_CLASS_CALLS.fetch_add(1, Ordering::SeqCst);
+  if object.is_null() {
+    return E_POINTER;
+  }
+  unsafe { complete_conditional_call(this, flags, context, std::ptr::null_mut(), result, false) }
+}
+
+unsafe extern "system" fn delete_class(
+  this: *mut c_void,
+  class_name: *mut u16,
+  flags: i32,
+  context: *mut c_void,
+  result: *mut *mut c_void,
+) -> HRESULT {
+  DELETE_CLASS_CALLS.fetch_add(1, Ordering::SeqCst);
+  if class_name.is_null() {
+    return E_POINTER;
+  }
+  unsafe { complete_conditional_call(this, flags, context, std::ptr::null_mut(), result, false) }
+}
+
+unsafe extern "system" fn put_instance(
+  this: *mut c_void,
+  instance: *mut c_void,
+  flags: i32,
+  context: *mut c_void,
+  result: *mut *mut c_void,
+) -> HRESULT {
+  PUT_INSTANCE_CALLS.fetch_add(1, Ordering::SeqCst);
+  if instance.is_null() {
+    return E_POINTER;
+  }
+  unsafe { complete_conditional_call(this, flags, context, std::ptr::null_mut(), result, false) }
+}
+
+unsafe extern "system" fn delete_instance(
+  this: *mut c_void,
+  object_path: *mut u16,
+  flags: i32,
+  context: *mut c_void,
+  result: *mut *mut c_void,
+) -> HRESULT {
+  DELETE_INSTANCE_CALLS.fetch_add(1, Ordering::SeqCst);
+  if object_path.is_null() {
+    return E_POINTER;
+  }
+  unsafe { complete_conditional_call(this, flags, context, std::ptr::null_mut(), result, false) }
+}
+
+unsafe extern "system" fn exec_method(
+  this: *mut c_void,
+  object_path: *mut u16,
+  method_name: *mut u16,
+  flags: i32,
+  context: *mut c_void,
+  input: *mut c_void,
+  output: *mut *mut c_void,
+  result: *mut *mut c_void,
+) -> HRESULT {
+  EXEC_METHOD_CALLS.fetch_add(1, Ordering::SeqCst);
+  if object_path.is_null() || method_name.is_null() || input.is_null() {
+    return E_POINTER;
+  }
+  unsafe { complete_conditional_call(this, flags, context, output, result, true) }
+}
+
+unsafe extern "system" fn unimplemented_wbem_method(_this: *mut c_void) -> HRESULT {
+  E_NOTIMPL
 }
 
 unsafe extern "system" fn cancel_async_call(_this: *mut c_void, _sink: *mut c_void) -> HRESULT {
@@ -191,6 +388,25 @@ static VTABLE: GeneratedIWbemServicesVtbl = GeneratedIWbemServicesVtbl {
   open_namespace,
   cancel_async_call,
   query_object_sink,
+  get_object,
+  get_object_async: unimplemented_wbem_method,
+  put_class,
+  put_class_async: unimplemented_wbem_method,
+  delete_class,
+  delete_class_async: unimplemented_wbem_method,
+  create_class_enum: unimplemented_wbem_method,
+  create_class_enum_async: unimplemented_wbem_method,
+  put_instance,
+  put_instance_async: unimplemented_wbem_method,
+  delete_instance,
+  delete_instance_async: unimplemented_wbem_method,
+  create_instance_enum: unimplemented_wbem_method,
+  create_instance_enum_async: unimplemented_wbem_method,
+  exec_query: unimplemented_wbem_method,
+  exec_query_async: unimplemented_wbem_method,
+  exec_notification_query: unimplemented_wbem_method,
+  exec_notification_query_async: unimplemented_wbem_method,
+  exec_method,
 };
 
 #[napi(object)]
@@ -205,6 +421,12 @@ pub struct GeneratedUnsafeComStats {
   pub open_namespace_result_argument_null: bool,
   pub open_namespace_context_argument_null: bool,
   pub open_namespace_last_flags: i32,
+  pub get_object_calls: u32,
+  pub put_class_calls: u32,
+  pub delete_class_calls: u32,
+  pub put_instance_calls: u32,
+  pub delete_instance_calls: u32,
+  pub exec_method_calls: u32,
   pub query_object_sink_calls: u32,
   pub last_flags: i32,
   pub current_ref_count: u32,
@@ -217,13 +439,19 @@ pub fn create_generated_iwbem_services_fake() -> napi::Result<DynWinRTValue> {
   ADD_REF_CALLS.store(0, Ordering::SeqCst);
   RELEASE_CALLS.store(0, Ordering::SeqCst);
   OPEN_NAMESPACE_CALLS.store(0, Ordering::SeqCst);
-  OPEN_NAMESPACE_MODE.store(0, Ordering::SeqCst);
+  WMI_CONDITIONAL_MODE.store(0, Ordering::SeqCst);
   OPEN_NAMESPACE_WORKING_SLOT_NULL.store(0, Ordering::SeqCst);
   OPEN_NAMESPACE_WORKING_ARGUMENT_NULL.store(0, Ordering::SeqCst);
   OPEN_NAMESPACE_RESULT_SLOT_NULL.store(0, Ordering::SeqCst);
   OPEN_NAMESPACE_RESULT_ARGUMENT_NULL.store(0, Ordering::SeqCst);
   OPEN_NAMESPACE_CONTEXT_ARGUMENT_NULL.store(0, Ordering::SeqCst);
   OPEN_NAMESPACE_LAST_FLAGS.store(0, Ordering::SeqCst);
+  GET_OBJECT_CALLS.store(0, Ordering::SeqCst);
+  PUT_CLASS_CALLS.store(0, Ordering::SeqCst);
+  DELETE_CLASS_CALLS.store(0, Ordering::SeqCst);
+  PUT_INSTANCE_CALLS.store(0, Ordering::SeqCst);
+  DELETE_INSTANCE_CALLS.store(0, Ordering::SeqCst);
+  EXEC_METHOD_CALLS.store(0, Ordering::SeqCst);
   QUERY_OBJECT_SINK_CALLS.store(0, Ordering::SeqCst);
   LAST_FLAGS.store(0, Ordering::SeqCst);
   CURRENT_REF_COUNT.store(1, Ordering::SeqCst);
@@ -255,6 +483,12 @@ pub fn generated_unsafe_com_stats() -> GeneratedUnsafeComStats {
       .load(Ordering::SeqCst)
       != 0,
     open_namespace_last_flags: OPEN_NAMESPACE_LAST_FLAGS.load(Ordering::SeqCst),
+    get_object_calls: GET_OBJECT_CALLS.load(Ordering::SeqCst),
+    put_class_calls: PUT_CLASS_CALLS.load(Ordering::SeqCst),
+    delete_class_calls: DELETE_CLASS_CALLS.load(Ordering::SeqCst),
+    put_instance_calls: PUT_INSTANCE_CALLS.load(Ordering::SeqCst),
+    delete_instance_calls: DELETE_INSTANCE_CALLS.load(Ordering::SeqCst),
+    exec_method_calls: EXEC_METHOD_CALLS.load(Ordering::SeqCst),
     query_object_sink_calls: QUERY_OBJECT_SINK_CALLS.load(Ordering::SeqCst),
     last_flags: LAST_FLAGS.load(Ordering::SeqCst),
     current_ref_count: CURRENT_REF_COUNT.load(Ordering::SeqCst),
@@ -263,14 +497,123 @@ pub fn generated_unsafe_com_stats() -> GeneratedUnsafeComStats {
 }
 
 #[napi]
-pub fn set_generated_iwbem_services_open_namespace_mode(mode: i32) -> napi::Result<()> {
+pub fn set_generated_iwbem_services_conditional_mode(mode: i32) -> napi::Result<()> {
   if !matches!(mode, -1..=1) {
     return Err(napi::Error::from_reason(
-      "IWbemServices::OpenNamespace test mode must be -1, 0, or 1",
+      "IWbemServices conditional test mode must be -1, 0, or 1",
     ));
   }
-  OPEN_NAMESPACE_MODE.store(mode, Ordering::SeqCst);
+  WMI_CONDITIONAL_MODE.store(mode, Ordering::SeqCst);
   Ok(())
+}
+
+#[repr(C)]
+struct GeneratedThumbnailProviderVtbl {
+  base__: IUnknown_Vtbl,
+  get_thumbnail: unsafe extern "system" fn(*mut c_void, u32, *mut *mut c_void, *mut i32) -> HRESULT,
+}
+
+#[repr(C)]
+struct GeneratedThumbnailProviderFake {
+  vtable: *const GeneratedThumbnailProviderVtbl,
+  references: AtomicU32,
+}
+
+unsafe extern "system" fn thumbnail_query_interface(
+  this: *mut c_void,
+  iid: *const GUID,
+  result: *mut *mut c_void,
+) -> HRESULT {
+  if iid.is_null() || result.is_null() {
+    return E_POINTER;
+  }
+  unsafe {
+    *result = std::ptr::null_mut();
+    if *iid != IUnknown::IID && *iid != IID_ITHUMBNAIL_PROVIDER {
+      return E_NOINTERFACE;
+    }
+    *result = this;
+    thumbnail_add_ref(this);
+  }
+  HRESULT(0)
+}
+
+unsafe extern "system" fn thumbnail_add_ref(this: *mut c_void) -> u32 {
+  let object = unsafe { &*this.cast::<GeneratedThumbnailProviderFake>() };
+  let count = object.references.fetch_add(1, Ordering::SeqCst) + 1;
+  THUMBNAIL_CURRENT_REF_COUNT.store(count, Ordering::SeqCst);
+  count
+}
+
+unsafe extern "system" fn thumbnail_release(this: *mut c_void) -> u32 {
+  let object = unsafe { &*this.cast::<GeneratedThumbnailProviderFake>() };
+  let count = object.references.fetch_sub(1, Ordering::SeqCst) - 1;
+  THUMBNAIL_CURRENT_REF_COUNT.store(count, Ordering::SeqCst);
+  if count == 0 {
+    unsafe {
+      drop(Box::from_raw(this.cast::<GeneratedThumbnailProviderFake>()));
+    }
+  }
+  count
+}
+
+unsafe extern "system" fn get_thumbnail(
+  _this: *mut c_void,
+  size: u32,
+  bitmap: *mut *mut c_void,
+  alpha_type: *mut i32,
+) -> HRESULT {
+  THUMBNAIL_CALLS.fetch_add(1, Ordering::SeqCst);
+  if size == 0 || bitmap.is_null() || alpha_type.is_null() {
+    return E_POINTER;
+  }
+  if unsafe { !(*bitmap).is_null() } {
+    return E_POINTER;
+  }
+  let bitmap_value = unsafe { windows::Win32::Graphics::Gdi::CreateBitmap(1, 1, 1, 1, None) };
+  if bitmap_value.is_invalid() {
+    return HRESULT(0x80004005u32 as i32);
+  }
+  unsafe {
+    *bitmap = bitmap_value.0;
+    *alpha_type = 2;
+  }
+  HRESULT(0)
+}
+
+static THUMBNAIL_VTABLE: GeneratedThumbnailProviderVtbl = GeneratedThumbnailProviderVtbl {
+  base__: IUnknown_Vtbl {
+    QueryInterface: thumbnail_query_interface,
+    AddRef: thumbnail_add_ref,
+    Release: thumbnail_release,
+  },
+  get_thumbnail,
+};
+
+#[napi(object)]
+pub struct GeneratedThumbnailProviderStats {
+  pub calls: u32,
+  pub current_ref_count: u32,
+}
+
+#[napi]
+pub fn create_generated_thumbnail_provider_fake() -> napi::Result<DynWinRTValue> {
+  THUMBNAIL_CALLS.store(0, Ordering::SeqCst);
+  THUMBNAIL_CURRENT_REF_COUNT.store(1, Ordering::SeqCst);
+  let object = Box::new(GeneratedThumbnailProviderFake {
+    vtable: &THUMBNAIL_VTABLE,
+    references: AtomicU32::new(1),
+  });
+  let unknown = unsafe { IUnknown::from_raw(Box::into_raw(object).cast()) };
+  crate::com::apartment_bound_com_object(unknown)
+}
+
+#[napi]
+pub fn generated_thumbnail_provider_stats() -> GeneratedThumbnailProviderStats {
+  GeneratedThumbnailProviderStats {
+    calls: THUMBNAIL_CALLS.load(Ordering::SeqCst),
+    current_ref_count: THUMBNAIL_CURRENT_REF_COUNT.load(Ordering::SeqCst),
+  }
 }
 
 #[repr(C)]
