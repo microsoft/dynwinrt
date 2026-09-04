@@ -11,7 +11,7 @@ Before each public release:
 2. Merge the release preparation to `main`.
 3. Tag that exact `main` commit.
 
-Do not edit `.pipelines/release.yml` for each release. The Azure DevOps
-`GitHubRelease@1` task reads the notes from the tagged checkout, so the contents
-are snapshotted from the tag commit. Its automatic changelog remains enabled
-and is appended after the curated notes.
+Do not edit `.pipelines/release.yml` for each release. The Azure DevOps release
+job explicitly checks out the tagged commit before `GitHubRelease@1` reads the
+notes, so the contents are snapshotted from the tag commit. Its automatic
+changelog remains enabled and is appended after the curated notes.

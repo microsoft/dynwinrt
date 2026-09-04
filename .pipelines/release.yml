@@ -61,6 +61,12 @@ extends:
               targetType: filePath
               filePath: eng/release/validate_release_notes.ps1
 
+          - task: PowerShell@2
+            displayName: Test GitHub release notes validation
+            inputs:
+              targetType: filePath
+              filePath: eng/release/test_validate_release_notes.ps1
+
           - task: UseNode@1
             displayName: Setup Node.js 24
             inputs:
@@ -346,6 +352,9 @@ extends:
             artifactName: npm-packages
             targetPath: $(Pipeline.Workspace)/npm-packages
         steps:
+          - checkout: self
+            fetchDepth: 1
+
           - task: GitHubRelease@1
             displayName: Create GitHub Release
             inputs:
