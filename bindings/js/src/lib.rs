@@ -1230,16 +1230,24 @@ impl DynWinRTValue {
     }
   }
 
-  fn release_native_pointer_output(&mut self) {
+  fn release_native_pointer_output(&mut self) -> napi::Result<()> {
     let ptr = match &self.0 {
       dynwinrt::WinRTValue::RawPtr(ptr) => *ptr,
-      _ => return,
+      _ => return Ok(()),
     };
     let provenance = self.2;
+    if let com::PointerProvenance::OwnedHandleOutput(cleanup) = provenance {
+      if !ptr.is_null() {
+        com::DynComOwnedHandle::cleanup_address(ptr.addr(), cleanup)?;
+      }
+      self.0 = dynwinrt::WinRTValue::Null;
+      self.2 = com::PointerProvenance::None;
+      return Ok(());
+    }
     self.0 = dynwinrt::WinRTValue::Null;
     self.2 = com::PointerProvenance::None;
     if ptr.is_null() {
-      return;
+      return Ok(());
     }
     match provenance {
       com::PointerProvenance::ComOutput => {
@@ -1251,17 +1259,13 @@ impl DynWinRTValue {
       com::PointerProvenance::BstrOutput => {
         drop(unsafe { windows::core::BSTR::from_raw(ptr.cast()) });
       }
-      com::PointerProvenance::OwnedHandleOutput(
-        dynwinrt::com::OwnedHandleCleanup::DeleteObject,
-      ) => unsafe {
-        let _ =
-          windows::Win32::Graphics::Gdi::DeleteObject(windows::Win32::Graphics::Gdi::HGDIOBJ(ptr));
-      },
+      com::PointerProvenance::OwnedHandleOutput(_) => unreachable!(),
       com::PointerProvenance::None
       | com::PointerProvenance::Borrowed
       | com::PointerProvenance::DetachedCom
       | com::PointerProvenance::UnclassifiedOutput => {}
     }
+    Ok(())
   }
 }
 
@@ -1291,7 +1295,7 @@ impl Drop for DynWinRTValue {
         value.leak_for_shutdown();
       }
     } else {
-      self.release_native_pointer_output();
+      let _ = self.release_native_pointer_output();
     }
   }
 }
@@ -1303,7 +1307,7 @@ impl DynWinRTValue {
     if self.6.is_some() {
       self.ensure_com_apartment()?;
     }
-    self.release_native_pointer_output();
+    self.release_native_pointer_output()?;
     self.0 = dynwinrt::WinRTValue::Null;
     self.1 = None;
     self.2 = com::PointerProvenance::None;
@@ -2158,6 +2162,39 @@ mod js_boundary_tests {
     ] {
       assert!(ensure_progress_type_supported(&unsupported).is_err());
     }
+  }
+
+  #[test]
+  fn failed_explicit_bitmap_release_preserves_owner_for_retry() {
+    let bitmap = unsafe { windows::Win32::Graphics::Gdi::CreateBitmap(1, 1, 1, 1, None) };
+    assert!(!bitmap.is_invalid());
+    let pointer = bitmap.0;
+
+    let mut value = DynWinRTValue::from_com_result(
+      dynwinrt::WinRTValue::RawPtr(pointer),
+      dynwinrt::com::PointerOutputKind::OwnedHandle(
+        dynwinrt::com::OwnedHandleCleanup::DeleteObject,
+      ),
+    );
+    com::DynComOwnedHandle::fail_next_cleanup_for_test();
+    let error = value.release().unwrap_err();
+    assert!(error.reason.contains("DeleteObject failed"));
+    assert!(matches!(
+      value.0,
+      dynwinrt::WinRTValue::RawPtr(raw) if raw == pointer
+    ));
+    assert_eq!(
+      value.2,
+      com::PointerProvenance::OwnedHandleOutput(dynwinrt::com::OwnedHandleCleanup::DeleteObject)
+    );
+
+    value.release().unwrap();
+    assert!(matches!(value.0, dynwinrt::WinRTValue::Null));
+    assert_eq!(value.2, com::PointerProvenance::None);
+    assert!(!unsafe {
+      windows::Win32::Graphics::Gdi::DeleteObject(windows::Win32::Graphics::Gdi::HGDIOBJ(pointer))
+    }
+    .as_bool());
   }
 }
 
