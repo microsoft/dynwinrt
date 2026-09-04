@@ -94,6 +94,7 @@ pub enum ExactFamilyId {
     ReservedNullInput,
     ParameterDirection,
     ShellCommandString,
+    AudioConditionalOutput,
 }
 
 impl ExactFamilyId {
@@ -113,6 +114,7 @@ impl ExactFamilyId {
             Self::ReservedNullInput => "com.reserved-null-input.v1",
             Self::ParameterDirection => "com.parameter-direction.v1",
             Self::ShellCommandString => "shell.flag-selected-string.v1",
+            Self::AudioConditionalOutput => "audio.conditional-output.v1",
         }
     }
 
@@ -132,6 +134,7 @@ impl ExactFamilyId {
             Self::ReservedNullInput,
             Self::ParameterDirection,
             Self::ShellCommandString,
+            Self::AudioConditionalOutput,
         ]
         .into_iter()
         .find(|family| family.id() == value)
@@ -475,12 +478,15 @@ pub(crate) fn statically_declared_exact_entry_ids() -> Result<BTreeSet<String>, 
 }
 
 const ADDITIONAL_EXACT_ENTRY_IDS: &[&str] = &[
+    "audio.conditional-output.entry.windows-win32-media-audio.iaudioclient.1cb9ad4cdbfa4c32b178c2f568a703b2.isformatsupported.slot-7.v1",
     "automation.idispatch-invoke.entry.windows-win32-system-com.idispatch.0002040000000000c000000000000046.invoke.slot-6.v1",
     "buffers.bounded-two-call.entry.windows-win32-media-mediafoundation.imfattributes.2cd2d921c44744a7a13c4adabfc247e3.getblob.slot-15.v1",
     "buffers.bounded-two-call.entry.windows-win32-storage-imapi.idiscrecorder.85ac9776ca884cf2894e09598c078a41.getrecorderguid.slot-4.param-0-pbyuniqueid.v1",
     "buffers.counted-buffer.entry.windows-win32-storage-imapi.idiscrecorder.85ac9776ca884cf2894e09598c078a41.init.slot-3.param-0-pbyuniqueid.v1",
     "buffers.counted-buffer.entry.windows-win32-storage-packaging-opc.iopcsignaturecustomobject.5d77a19e62c144e7becd45da5ae51a56.getxml.slot-3.param-0-xmlmarkup.v1",
     "buffers.counted-buffer.entry.windows-win32-system-com.itypeinfo.0002040100000000c000000000000046.getnames.slot-7.param-1-rgbstrnames.v1",
+    "com.ownership.entry.windows-win32-media-audio.iaudioclient.1cb9ad4cdbfa4c32b178c2f568a703b2.getmixformat.slot-8.v1",
+    "com.ownership.entry.windows-win32-media-audio.iaudioclient3.7ed4ee078e674cd48c1a2b7a5987ad42.getcurrentsharedmodeengineperiod.slot-19.v1",
     "com.ownership.entry.windows-win32-storage-packaging-opc.iopcsignaturecustomobject.5d77a19e62c144e7becd45da5ae51a56.getxml.slot-3.param-0-xmlmarkup.v1",
     "com.ownership.entry.windows-win32-system-com.idataobject.0000010e00000000c000000000000046.setdata.slot-7.v1",
     "com.ownership.entry.windows-win32-system-com.imalloc.0000000200000000c000000000000046.alloc.slot-3.v1",
@@ -1140,7 +1146,7 @@ mod tests {
         serde_json::from_str::<serde_json::Value>(SCHEMA_JSON).unwrap();
         let registry = load_registry().unwrap();
         let ids = statically_declared_exact_entry_ids().unwrap();
-        assert_eq!(ids.len(), 496);
+        assert_eq!(ids.len(), 499);
         assert_eq!(registry.conditional_outputs.len(), 7);
         assert_eq!(registry.ownership_outputs.len(), 148);
         assert_eq!(

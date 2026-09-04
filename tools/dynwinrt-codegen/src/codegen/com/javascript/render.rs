@@ -456,6 +456,9 @@ fn render_js(meta: &ProjectedComInterface) -> String {
             ProjectedComMethodKind::ConditionalInterfaceOutput { .. } => {
                 emit_conditional_interface_output_method_js(&mut out, method, &iface_var)
             }
+            ProjectedComMethodKind::AudioFormatSupport { .. } => {
+                emit_audio_format_support_method_js(&mut out, method, &iface_var)
+            }
         }
     }
     out.push_str("}\n");
@@ -890,6 +893,7 @@ fn out_abi_type_js(method: &ProjectedComMethod, param_index: usize, typ: &ComTyp
             | ResultConversion::StatStg
             | ResultConversion::FormatEtc
             | ResultConversion::StgMedium
+            | ResultConversion::AudioFormat
             | ResultConversion::MallocAllocation
             | ResultConversion::MallocReallocation,
         )
@@ -909,6 +913,85 @@ fn input_params(method: &ProjectedComMethod) -> Vec<(usize, &ProjectedComParam)>
 fn emit_method_js(out: &mut String, method: &ProjectedComMethod, iface_var: &str) {
     emit_method_doc_js(out, &method.doc);
     emit_method_js_named(out, method, iface_var, &method.camel_name);
+}
+
+fn emit_audio_format_support_method_js(
+    out: &mut String,
+    method: &ProjectedComMethod,
+    iface_var: &str,
+) {
+    let ProjectedComMethodKind::AudioFormatSupport {
+        share_mode_param_index,
+        closest_match_param_index,
+    } = method.kind
+    else {
+        unreachable!("audio format support emitter requires exact method semantics")
+    };
+    let inputs = input_params(method);
+    let params = inputs
+        .iter()
+        .enumerate()
+        .map(|(surface, (_, param))| js_param_name(&param.name, surface))
+        .collect::<Vec<_>>();
+    let share_mode_surface = inputs
+        .iter()
+        .position(|(index, _)| *index == share_mode_param_index)
+        .expect("audio share mode must be a visible input");
+    let share_mode_name = &params[share_mode_surface];
+    emit_method_doc_js(out, &method.doc);
+    out.push_str(&format!(
+        "    {}({}) {{\n",
+        method.camel_name,
+        params.join(", ")
+    ));
+    out.push_str(&format!(
+        "        if ({share_mode_name} !== 0 && {share_mode_name} !== 1) throw new RangeError('AUDCLNT_SHAREMODE must be 0 (shared) or 1 (exclusive)');\n"
+    ));
+    out.push_str(&format!(
+        "        const _requestClosest = {share_mode_name} === 0;\n"
+    ));
+    let args = method
+        .params
+        .iter()
+        .enumerate()
+        .filter_map(|(index, param)| {
+            if index == closest_match_param_index {
+                return Some("DynCom.boolValue(_requestClosest)".into());
+            }
+            if !param.surface_input {
+                return None;
+            }
+            let surface = inputs
+                .iter()
+                .position(|(input_index, _)| *input_index == index)
+                .expect("projected visible audio input");
+            Some(wrap_param_arg_js(
+                param,
+                &js_param_name(&param.name, surface),
+            ))
+        })
+        .collect::<Vec<_>>();
+    out.push_str(&format!(
+        "        const _r = {iface_var}.method({}).invokeAll(this._obj, [{}]);\n",
+        method.vtable_index,
+        args.join(", ")
+    ));
+    let status = unwrap_method_result_js(method, &method.results[0], "_r[0]");
+    out.push_str(&format!("        const _status = {status};\n"));
+    out.push_str(
+        "        const _closest = _requestClosest ? DynCom.takeNullableAudioFormat(_r[1]) : null;\n",
+    );
+    out.push_str(
+        "        if (_status !== 0 && _status !== 1) throw new Error(`Unexpected IsFormatSupported success HRESULT ${_status}`);\n",
+    );
+    out.push_str(
+        "        if (_status === 1 && _closest === null) throw new Error('IsFormatSupported returned S_FALSE without a closest shared-mode format');\n",
+    );
+    out.push_str(
+        "        if (_status === 0 && _closest !== null) throw new Error('IsFormatSupported returned S_OK with an unexpected closest format');\n",
+    );
+    out.push_str("        return [_status, _closest];\n");
+    out.push_str("    }\n");
 }
 
 fn emit_dispatch_invoke_method_js(
@@ -2423,6 +2506,10 @@ fn render_dts(meta: &ProjectedComInterface) -> String {
             | ProjectedComMethodKind::DataObjectSetData { .. } => {
                 (dts_params(method), dts_return_type(method))
             }
+            ProjectedComMethodKind::AudioFormatSupport { .. } => (
+                dts_params(method),
+                "readonly [number, DynComAudioFormat | null]".into(),
+            ),
             ProjectedComMethodKind::CallerSuppliedDynamicIid {
                 iid_param_index, ..
             } => (
@@ -2638,6 +2725,7 @@ fn collect_pointer_aliases(meta: &ProjectedComInterface) -> Vec<(String, Pointer
                 | ComType::StatStg
                 | ComType::FormatEtc
                 | ComType::StgMedium
+                | ComType::AudioFormat
                 | ComType::ManagedInterface { .. }
                 | ComType::CoTaskMemWideString
                 | ComType::StringArray { .. }
@@ -2740,6 +2828,7 @@ fn collect_native_pods(meta: &ProjectedComInterface) -> Vec<super::super::ir::Na
                 | ComType::StatStg
                 | ComType::FormatEtc
                 | ComType::StgMedium
+                | ComType::AudioFormat
                 | ComType::ManagedInterface { .. }
                 | ComType::CoTaskMemWideString
                 | ComType::StringArray { .. } => {}
@@ -2836,6 +2925,9 @@ fn collect_runtime_types(meta: &ProjectedComInterface) -> Vec<&'static str> {
                 ComType::StgMedium => {
                     types.insert("DynComStgMedium");
                 }
+                ComType::AudioFormat => {
+                    types.insert("DynComAudioFormat");
+                }
                 ComType::AllocatorPointer
                 | ComType::ConsumedAllocatorPointer
                 | ComType::InspectedAllocatorPointer => {
@@ -2916,6 +3008,7 @@ fn collect_scalar_alias(
         | ComType::StatStg
         | ComType::FormatEtc
         | ComType::StgMedium
+        | ComType::AudioFormat
         | ComType::ManagedInterface { .. }
         | ComType::CoTaskMemWideString
         | ComType::StringArray { .. } => {}

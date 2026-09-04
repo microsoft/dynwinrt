@@ -4559,10 +4559,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(report.summary.eligible_interfaces, 7_929);
-        assert_eq!(report.summary.safe_complete, 5_692);
-        assert_eq!(report.summary.safe_evidence.safe_complete, 5_692);
-        assert_eq!(report.summary.safe_evidence.standard_derived, 5_336);
-        assert_eq!(report.summary.safe_evidence.exact_registry_dependent, 356);
+        assert_eq!(report.summary.safe_complete, 5_697);
+        assert_eq!(report.summary.safe_evidence.safe_complete, 5_697);
+        assert_eq!(report.summary.safe_evidence.standard_derived, 5_338);
+        assert_eq!(report.summary.safe_evidence.exact_registry_dependent, 359);
         assert_eq!(
             report.summary.safe_evidence.standard_derived
                 + report.summary.safe_evidence.exact_registry_dependent,
@@ -4570,34 +4570,34 @@ mod tests {
         );
         assert_eq!(
             report.summary.safe_evidence.metadata_fact_occurrences,
-            5_976
+            5_982
         );
         assert_eq!(
             report.summary.safe_evidence.com_standard_fact_occurrences,
-            26_119
+            26_134
         );
-        assert_eq!(report.summary.safe_evidence.registered_exact_entries, 496);
+        assert_eq!(report.summary.safe_evidence.registered_exact_entries, 499);
         assert_eq!(
             report.summary.safe_evidence.metadata_matched_exact_entries,
-            496
+            499
         );
         assert_eq!(
             report.summary.safe_evidence.safe_consumed_exact_entries,
-            405
+            408
         );
         assert_eq!(
             report
                 .summary
                 .safe_evidence
                 .exact_entry_interface_dependencies,
-            656
+            663
         );
         assert_eq!(
             report
                 .summary
                 .safe_evidence
                 .exact_family_interface_dependencies,
-            405
+            411
         );
         assert_eq!(
             report.summary.safe_evidence.by_contract_kind,
@@ -4605,12 +4605,12 @@ mod tests {
                 ("borrowed-handle".into(), 54),
                 ("bounded-two-call".into(), 16),
                 ("compound-dispatch".into(), 1),
-                ("conditional-output".into(), 7),
+                ("conditional-output".into(), 10),
                 ("counted-buffer".into(), 16),
                 ("enumerator-next".into(), 74),
                 ("flag-selected-buffer".into(), 3),
                 ("null-input".into(), 2),
-                ("ownership".into(), 173),
+                ("ownership".into(), 177),
                 ("parameter-direction".into(), 45),
                 ("safearray".into(), 263),
                 ("semantic-hresult".into(), 2),
@@ -4618,7 +4618,11 @@ mod tests {
         );
         assert_eq!(
             report.summary.safe_evidence.by_family_id["com.ownership.v1"],
-            117
+            120
+        );
+        assert_eq!(
+            report.summary.safe_evidence.by_family_id["audio.conditional-output.v1"],
+            3
         );
         assert_eq!(
             report.summary.safe_evidence.by_family_id["windows.borrowed-hwnd-output.v1"],
@@ -4632,7 +4636,7 @@ mod tests {
             report.summary.safe_evidence.by_family_id["automation.idispatch-invoke.v1"],
             1
         );
-        assert_eq!(report.summary.safe_evidence.by_entry_id.len(), 405);
+        assert_eq!(report.summary.safe_evidence.by_entry_id.len(), 408);
         assert!(
             report
                 .summary
@@ -4677,7 +4681,7 @@ mod tests {
                 .values()
                 .filter(|entry| entry.safe_consumed)
                 .count(),
-            405
+            408
         );
         let status = &report.summary.safe_evidence.exact_entry_status;
         assert_eq!(
@@ -4705,6 +4709,13 @@ mod tests {
             status
                 .values()
                 .filter(|entry| entry.family_id == "automation.idispatch-invoke.v1")
+                .count(),
+            1
+        );
+        assert_eq!(
+            status
+                .values()
+                .filter(|entry| entry.family_id == "audio.conditional-output.v1")
                 .count(),
             1
         );
@@ -4827,7 +4838,7 @@ mod tests {
                 ),
                 (
                     412 - usize::from(target == CensusTarget::I686),
-                    1_437 - 23 * usize::from(target == CensusTarget::I686),
+                    1_432 - 23 * usize::from(target == CensusTarget::I686),
                     388 + 24 * usize::from(target == CensusTarget::I686)
                 )
             );

@@ -38,6 +38,7 @@ pub(crate) enum NativeCallValue {
     StatStg(crate::com::StatStgValue),
     FormatEtc(crate::com::FormatEtcValue),
     StgMedium(crate::com::StgMediumValue),
+    AudioFormat(crate::com::AudioFormatValue),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,6 +79,7 @@ pub(crate) enum ParameterType {
     StatStg,
     FormatEtc,
     StgMedium,
+    AudioFormat,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -240,6 +242,10 @@ impl ParameterType {
         Self::StgMedium
     }
 
+    pub(crate) fn audio_format() -> Self {
+        Self::AudioFormat
+    }
+
     pub(crate) fn as_winrt(&self) -> Option<&TypeHandle> {
         match self {
             Self::WinRT(typ) => Some(typ),
@@ -258,7 +264,8 @@ impl ParameterType {
             | Self::ExcepInfo
             | Self::StatStg
             | Self::FormatEtc
-            | Self::StgMedium => None,
+            | Self::StgMedium
+            | Self::AudioFormat => None,
         }
     }
 
@@ -279,7 +286,8 @@ impl ParameterType {
             | Self::ExcepInfo
             | Self::StatStg
             | Self::FormatEtc
-            | Self::StgMedium => None,
+            | Self::StgMedium
+            | Self::AudioFormat => None,
         }
     }
 
@@ -372,6 +380,10 @@ impl ParameterType {
         matches!(self, Self::StgMedium)
     }
 
+    pub(crate) fn is_audio_format(&self) -> bool {
+        matches!(self, Self::AudioFormat)
+    }
+
     pub(crate) fn is_array(&self) -> bool {
         self.as_winrt().is_some_and(TypeHandle::is_array)
     }
@@ -440,7 +452,8 @@ impl ParameterType {
             | Self::ExcepInfo
             | Self::StatStg
             | Self::FormatEtc
-            | Self::StgMedium => AbiType::Ptr,
+            | Self::StgMedium
+            | Self::AudioFormat => AbiType::Ptr,
             Self::NativeStruct(_) | Self::NativeUnion(_) | Self::VariantByValue => {
                 panic!("aggregate values do not have a scalar AbiType")
             }
@@ -462,7 +475,8 @@ impl ParameterType {
             | Self::ExcepInfo
             | Self::StatStg
             | Self::FormatEtc
-            | Self::StgMedium => libffi::middle::Type::pointer(),
+            | Self::StgMedium
+            | Self::AudioFormat => libffi::middle::Type::pointer(),
             Self::NativeStruct(layout) => layout.libffi_type(),
             Self::NativeUnion(layout) => layout.libffi_type(),
             Self::VariantByValue => variant_by_value_libffi_type(),
@@ -499,7 +513,8 @@ impl ParameterType {
             | Self::ExcepInfo
             | Self::StatStg
             | Self::FormatEtc
-            | Self::StgMedium => {
+            | Self::StgMedium
+            | Self::AudioFormat => {
                 panic!("native POD storage is allocated by the dynamic executor")
             }
         }
@@ -523,7 +538,8 @@ impl ParameterType {
             | Self::ExcepInfo
             | Self::StatStg
             | Self::FormatEtc
-            | Self::StgMedium => {
+            | Self::StgMedium
+            | Self::AudioFormat => {
                 unreachable!("native POD output conversion uses NativeStructValue")
             }
         }
@@ -562,7 +578,8 @@ impl ParameterType {
                 | Self::ExcepInfo
                 | Self::StatStg
                 | Self::FormatEtc
-                | Self::StgMedium,
+                | Self::StgMedium
+                | Self::AudioFormat,
                 _,
             ) => {
                 unreachable!("native POD output conversion uses NativeStructValue")
@@ -583,6 +600,7 @@ impl ParameterType {
             Self::StatStg => OutputCleanup::None,
             Self::FormatEtc => OutputCleanup::None,
             Self::StgMedium => OutputCleanup::None,
+            Self::AudioFormat => OutputCleanup::None,
             Self::Bstr { .. } => OutputCleanup::BstrFree,
             Self::CoTaskMemWideString => OutputCleanup::CoTaskMemFree,
             Self::WinRT(_)
@@ -855,6 +873,7 @@ impl AbiMethodSignature {
                 || p.typ.is_stat_stg()
                 || p.typ.is_format_etc()
                 || p.typ.is_stg_medium()
+                || p.typ.is_audio_format()
         });
 
         // Check if the single in-param (if any) is a simple non-HString, non-Struct type
@@ -1390,7 +1409,8 @@ impl call::ArgumentList for ComInvocationArgs<'_> {
             | crate::com::Value::ExcepInfo(_)
             | crate::com::Value::StatStg(_)
             | crate::com::Value::FormatEtc(_)
-            | crate::com::Value::StgMedium(_) => {
+            | crate::com::Value::StgMedium(_)
+            | crate::com::Value::AudioFormat(_) => {
                 panic!("COM-local argument requested as a WinRT value")
             }
             crate::com::Value::Buffer(_) => {
@@ -1461,6 +1481,13 @@ impl call::ArgumentList for ComInvocationArgs<'_> {
             _ => None,
         }
     }
+
+    fn get_audio_format(&self, index: usize) -> Option<&crate::com::AudioFormatValue> {
+        match &self.original[index] {
+            crate::com::Value::AudioFormat(value) => Some(value),
+            _ => None,
+        }
+    }
 }
 
 impl Method {
@@ -1498,6 +1525,7 @@ impl Method {
                 || parameter.typ.is_stat_stg()
                 || parameter.typ.is_format_etc()
                 || parameter.typ.is_stg_medium()
+                || parameter.typ.is_audio_format()
         }) || self.direct_return_type().is_some_and(|typ| {
             typ.native_struct_layout().is_some()
                 || typ.native_union_layout().is_some()
@@ -1511,6 +1539,7 @@ impl Method {
                 || typ.is_stat_stg()
                 || typ.is_format_etc()
                 || typ.is_stg_medium()
+                || typ.is_audio_format()
         })
     }
 
@@ -2012,7 +2041,8 @@ impl Method {
                         | NativeCallValue::ExcepInfo(_)
                         | NativeCallValue::StatStg(_)
                         | NativeCallValue::FormatEtc(_)
-                        | NativeCallValue::StgMedium(_) => Err(invalid_argument(
+                        | NativeCallValue::StgMedium(_)
+                        | NativeCallValue::AudioFormat(_) => Err(invalid_argument(
                             "COM-local result reached the WinRT invocation path",
                         )),
                     })
@@ -2222,6 +2252,15 @@ impl Method {
                 continue;
             }
 
+            if parameter.typ.is_audio_format() {
+                if !matches!(&args[input_index], crate::com::Value::AudioFormat(_)) {
+                    return Err(invalid_argument(
+                        "Argument type mismatch: expected WAVEFORMATEX",
+                    ));
+                }
+                continue;
+            }
+
             let crate::com::Value::WinRt(value) = &args[input_index] else {
                 return Err(invalid_argument(
                     "COM-local value passed to a scalar or pointer parameter",
@@ -2290,6 +2329,7 @@ impl Method {
                     NativeCallValue::StatStg(value) => crate::com::Value::StatStg(value),
                     NativeCallValue::FormatEtc(value) => crate::com::Value::FormatEtc(value),
                     NativeCallValue::StgMedium(value) => crate::com::Value::StgMedium(value),
+                    NativeCallValue::AudioFormat(value) => crate::com::Value::AudioFormat(value),
                 })
                 .collect()
         })

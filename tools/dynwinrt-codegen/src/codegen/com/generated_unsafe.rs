@@ -2319,13 +2319,13 @@ mod tests {
         };
         let coverage = measure_stage2_coverage(&winmd).unwrap();
         println!("{}", serde_json::to_string(&coverage).unwrap());
-        assert_eq!(coverage.x64_manual_interfaces, 1_437);
-        assert_eq!(coverage.x64_manual_interfaces_with_executable_method, 1_433);
+        assert_eq!(coverage.x64_manual_interfaces, 1_432);
+        assert_eq!(coverage.x64_manual_interfaces_with_executable_method, 1_428);
         assert_eq!(
             coverage.x64_manual_interfaces_with_executable_manual_method,
-            1_432
+            1_427
         );
-        assert_eq!(coverage.executable_manual_methods, 6_067);
+        assert_eq!(coverage.executable_manual_methods, 6_048);
         assert_eq!(coverage.remaining_manual_methods, 0);
         assert_eq!(coverage.runtime_blocked_methods, 1_160);
     }

@@ -1414,9 +1414,9 @@ Windows.Win32.Media.Audio,IAudioAutoGainControl,85401fd4-6de4-4b9d-9869-2d6753a8
 Windows.Win32.Media.Audio,IAudioBass,a2b1a1d9-4db3-425d-a2b2-bd335cb3e2e5,true,standard_derived,
 Windows.Win32.Media.Audio,IAudioCaptureClient,c8adbd64-e71e-48a0-a4de-185c395cd317,false,,missing_allocator
 Windows.Win32.Media.Audio,IAudioChannelConfig,bb11c46f-ec28-493c-b88a-5db88062ce98,true,standard_derived,
-Windows.Win32.Media.Audio,IAudioClient,1cb9ad4c-dbfa-4c32-b178-c2f568a703b2,false,,external_pointee_storage
-Windows.Win32.Media.Audio,IAudioClient2,726778cd-f60a-4eda-82de-e47610cd78aa,false,,external_pointee_storage
-Windows.Win32.Media.Audio,IAudioClient3,7ed4ee07-8e67-4cd4-8c1a-2b7a5987ad42,false,,external_pointee_storage
+Windows.Win32.Media.Audio,IAudioClient,1cb9ad4c-dbfa-4c32-b178-c2f568a703b2,true,exact_registry_dependent,
+Windows.Win32.Media.Audio,IAudioClient2,726778cd-f60a-4eda-82de-e47610cd78aa,true,exact_registry_dependent,
+Windows.Win32.Media.Audio,IAudioClient3,7ed4ee07-8e67-4cd4-8c1a-2b7a5987ad42,true,exact_registry_dependent,
 Windows.Win32.Media.Audio,IAudioClientDuckingControl,c789d381-a28c-4168-b28f-d3a837924dc3,true,standard_derived,
 Windows.Win32.Media.Audio,IAudioClock,cd63314f-3fba-4a1b-812c-ef96358728e7,true,standard_derived,
 Windows.Win32.Media.Audio,IAudioClock2,6f49ff73-6727-49ac-a008-d98cf5e70048,true,standard_derived,
@@ -1491,7 +1491,7 @@ Windows.Win32.Media.DeviceManager,IComponentAuthenticate,a9889c00-6d2b-11d3-8496
 Windows.Win32.Media.DeviceManager,IMDSPDevice,1dcb3a12-33ed-11d3-8470-00c04f79dbc0,false,,external_pointee_storage
 Windows.Win32.Media.DeviceManager,IMDSPDevice2,420d16ad-c97d-4e00-82aa-00e9f4335ddd,false,,external_pointee_storage
 Windows.Win32.Media.DeviceManager,IMDSPDevice3,1a839845-fc55-487c-976f-ee38ac0e8c4e,false,,external_pointee_storage
-Windows.Win32.Media.DeviceManager,IMDSPDeviceControl,1dcb3a14-33ed-11d3-8470-00c04f79dbc0,false,,external_pointee_storage
+Windows.Win32.Media.DeviceManager,IMDSPDeviceControl,1dcb3a14-33ed-11d3-8470-00c04f79dbc0,true,standard_derived,
 Windows.Win32.Media.DeviceManager,IMDSPDirectTransfer,c2fe57a8-9304-478c-9ee4-47e397b912d7,true,standard_derived,
 Windows.Win32.Media.DeviceManager,IMDSPEnumDevice,1dcb3a11-33ed-11d3-8470-00c04f79dbc0,true,standard_derived,
 Windows.Win32.Media.DeviceManager,IMDSPEnumStorage,1dcb3a15-33ed-11d3-8470-00c04f79dbc0,true,standard_derived,
@@ -1519,7 +1519,7 @@ Windows.Win32.Media.DeviceManager,ISCPSession,88a3e6ed-eee4-4619-bbb3-fd4fb62715
 Windows.Win32.Media.DeviceManager,IWMDMDevice,1dcb3a02-33ed-11d3-8470-00c04f79dbc0,false,,external_pointee_storage
 Windows.Win32.Media.DeviceManager,IWMDMDevice2,e34f3d37-9d67-4fc1-9252-62d28b2f8b55,false,,external_pointee_storage
 Windows.Win32.Media.DeviceManager,IWMDMDevice3,6c03e4fe-05db-4dda-9e3c-06233a6d5d65,false,,external_pointee_storage
-Windows.Win32.Media.DeviceManager,IWMDMDeviceControl,1dcb3a04-33ed-11d3-8470-00c04f79dbc0,false,,external_pointee_storage
+Windows.Win32.Media.DeviceManager,IWMDMDeviceControl,1dcb3a04-33ed-11d3-8470-00c04f79dbc0,true,standard_derived,
 Windows.Win32.Media.DeviceManager,IWMDMDeviceSession,82af0a65-9d96-412c-83e5-3c43e4b06cc7,true,standard_derived,
 Windows.Win32.Media.DeviceManager,IWMDMEnumDevice,1dcb3a01-33ed-11d3-8470-00c04f79dbc0,true,standard_derived,
 Windows.Win32.Media.DeviceManager,IWMDMEnumStorage,1dcb3a05-33ed-11d3-8470-00c04f79dbc0,true,standard_derived,

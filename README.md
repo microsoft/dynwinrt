@@ -142,12 +142,13 @@ is not a general Automation or native Win32 projection, and it does not project
 flat DLL exports.
 
 The current CI baseline against
-`Microsoft.Windows.SDK.Win32Metadata` 71.0.14-preview is **5,692 of 7,929
-eligible interfaces (71.79%)** with complete safe code generation. Supported
+`Microsoft.Windows.SDK.Win32Metadata` 71.0.14-preview is **5,697 of 7,929
+eligible interfaces (71.85%)** with complete safe code generation. Supported
 contracts include generated coclass activation and QueryInterface views,
 managed interface ownership, native POD layouts, typed counted buffers,
 BSTR/HSTRING, validated VARIANT, SAFEARRAY and PROPVARIANT subsets, the
-target-device-independent `TYMED_HGLOBAL` FORMATETC/STGMEDIUM subset, and
+target-device-independent `TYMED_HGLOBAL` FORMATETC/STGMEDIUM subset,
+variable-length WAVEFORMATEX audio formats with exact CoTaskMem outputs, and
 synchronous JavaScript implementations of fully supported callback interfaces.
 Seventeen stock-Windows Node E2E runners exercise representative Shell,
 Automation, stream, callback, HWND, and WinRT interop scenarios.
@@ -155,7 +156,7 @@ Automation, stream, callback, HWND, and WinRT interop scenarios.
 Safety takes priority over coverage. If metadata does not fully describe an
 interface's ABI, layout, ownership, allocator, or cleanup contract, generation
 fails before emitting a partial wrapper. Material gaps still include several
-common graphics, audio, WMI, non-HGLOBAL/device-specific clipboard and
+common graphics, advanced audio, WMI, non-HGLOBAL/device-specific clipboard and
 drag-and-drop, derived Automation, union, BYREF/InOut, and output-ownership
 shapes.
 
