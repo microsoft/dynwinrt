@@ -38,6 +38,10 @@ Generate the local projection package and copy the bootstrap DLL:
   -BootstrapDll C:\fixtures\winappsdk\x64\Microsoft.WindowsAppRuntime.Bootstrap.dll
 ```
 
+`generate.ps1` copies the bootstrap DLL to `.runtime\`. Before calling
+`init_winappsdk(2, 3)`, `app.py` sets `WINAPPSDK_BOOTSTRAP_DLL_PATH` to that
+local copy.
+
 Pass `-Codegen ..\..\..\target\release\dynwinrt-codegen.exe` when testing a
 source build. Run with the Python environment that contains `dynwinrt`:
 

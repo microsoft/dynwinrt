@@ -34,5 +34,9 @@ npm install
 npm start
 ```
 
+`generate.ps1` copies the bootstrap DLL to `.runtime\`. Before calling
+`initWinappsdk(2, 3)`, `app.mjs` sets `WINAPPSDK_BOOTSTRAP_DLL_PATH` to that
+local copy.
+
 Closing the window exits the WinUI application and releases the projected
 objects and event subscriptions.
