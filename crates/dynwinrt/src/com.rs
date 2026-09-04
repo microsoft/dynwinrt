@@ -645,6 +645,261 @@ impl StatStgValue {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FormatEtcValue {
+    clipboard_format: u16,
+    aspect: u32,
+    index: i32,
+    tymed: u32,
+}
+
+impl FormatEtcValue {
+    pub fn hglobal(clipboard_format: u16, aspect: u32, index: i32) -> result::Result<Self> {
+        if clipboard_format == 0 {
+            return Err(invalid_argument(
+                "FORMATETC clipboard format must be non-zero",
+            ));
+        }
+        if !matches!(aspect, 1 | 2 | 4 | 8) {
+            return Err(invalid_argument(
+                "FORMATETC aspect must contain exactly one DVASPECT value",
+            ));
+        }
+        Ok(Self {
+            clipboard_format,
+            aspect,
+            index,
+            tymed: windows::Win32::System::Com::TYMED_HGLOBAL.0 as u32,
+        })
+    }
+
+    pub const fn clipboard_format(&self) -> u16 {
+        self.clipboard_format
+    }
+
+    pub const fn aspect(&self) -> u32 {
+        self.aspect
+    }
+
+    pub const fn index(&self) -> i32 {
+        self.index
+    }
+
+    pub const fn tymed(&self) -> u32 {
+        self.tymed
+    }
+
+    pub(crate) fn to_raw(&self) -> windows::Win32::System::Com::FORMATETC {
+        windows::Win32::System::Com::FORMATETC {
+            cfFormat: self.clipboard_format,
+            ptd: std::ptr::null_mut(),
+            dwAspect: self.aspect,
+            lindex: self.index,
+            tymed: self.tymed,
+        }
+    }
+
+    fn from_raw(raw: &windows::Win32::System::Com::FORMATETC) -> result::Result<Self> {
+        if !raw.ptd.is_null() {
+            return Err(invalid_argument(
+                "FORMATETC target-device output is not supported",
+            ));
+        }
+        if raw.tymed != windows::Win32::System::Com::TYMED_HGLOBAL.0 as u32 {
+            return Err(invalid_argument(
+                "FORMATETC currently supports only TYMED_HGLOBAL",
+            ));
+        }
+        Self::hglobal(raw.cfFormat, raw.dwAspect, raw.lindex)
+    }
+}
+
+pub(crate) struct FormatEtcOutput {
+    raw: Box<windows::Win32::System::Com::FORMATETC>,
+}
+
+impl FormatEtcOutput {
+    pub(crate) fn new() -> Self {
+        Self {
+            raw: Box::new(unsafe { std::mem::zeroed() }),
+        }
+    }
+
+    pub(crate) fn as_mut_ptr(&mut self) -> *mut c_void {
+        (&mut *self.raw as *mut windows::Win32::System::Com::FORMATETC).cast()
+    }
+
+    pub(crate) fn into_value(mut self) -> result::Result<FormatEtcValue> {
+        let value = FormatEtcValue::from_raw(&self.raw);
+        self.free_target_device();
+        value
+    }
+
+    fn free_target_device(&mut self) {
+        if self.raw.ptd.is_null() {
+            return;
+        }
+        unsafe {
+            windows::Win32::System::Com::CoTaskMemFree(Some(self.raw.ptd.cast()));
+        }
+        self.raw.ptd = std::ptr::null_mut();
+    }
+}
+
+impl Drop for FormatEtcOutput {
+    fn drop(&mut self) {
+        self.free_target_device();
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StgMediumValue {
+    hglobal_bytes: Arc<[u8]>,
+}
+
+impl StgMediumValue {
+    pub fn hglobal(bytes: Vec<u8>) -> result::Result<Self> {
+        if bytes.is_empty() {
+            return Err(invalid_argument(
+                "TYMED_HGLOBAL storage must contain at least one byte",
+            ));
+        }
+        Ok(Self {
+            hglobal_bytes: bytes.into(),
+        })
+    }
+
+    pub fn bytes(&self) -> &[u8] {
+        &self.hglobal_bytes
+    }
+}
+
+pub(crate) struct StgMediumStorage {
+    raw: Box<windows::Win32::System::Com::STGMEDIUM>,
+    owned_input_hglobal: Option<windows::Win32::Foundation::HGLOBAL>,
+}
+
+impl StgMediumStorage {
+    pub(crate) fn output() -> Self {
+        Self {
+            raw: Box::new(unsafe { std::mem::zeroed() }),
+            owned_input_hglobal: None,
+        }
+    }
+
+    pub(crate) fn from_value(value: &StgMediumValue) -> result::Result<Self> {
+        use windows::Win32::System::Memory::{GMEM_MOVEABLE, GMEM_ZEROINIT, GlobalAlloc};
+
+        let handle =
+            unsafe { GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, value.hglobal_bytes.len()) }
+                .map_err(result::Error::WindowsError)?;
+        let data = unsafe { windows::Win32::System::Memory::GlobalLock(handle) };
+        if data.is_null() {
+            unsafe {
+                let _ = windows::Win32::Foundation::GlobalFree(Some(handle));
+            }
+            return Err(invalid_argument("GlobalLock failed for TYMED_HGLOBAL"));
+        }
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                value.hglobal_bytes.as_ptr(),
+                data.cast::<u8>(),
+                value.hglobal_bytes.len(),
+            );
+            let _ = windows::Win32::System::Memory::GlobalUnlock(handle);
+        }
+        Ok(Self {
+            raw: Box::new(windows::Win32::System::Com::STGMEDIUM {
+                tymed: windows::Win32::System::Com::TYMED_HGLOBAL.0 as u32,
+                u: windows::Win32::System::Com::STGMEDIUM_0 { hGlobal: handle },
+                pUnkForRelease: std::mem::ManuallyDrop::new(None),
+            }),
+            owned_input_hglobal: Some(handle),
+        })
+    }
+
+    pub(crate) fn as_mut_ptr(&mut self) -> *mut c_void {
+        (&mut *self.raw as *mut windows::Win32::System::Com::STGMEDIUM).cast()
+    }
+
+    pub(crate) fn into_value(mut self) -> result::Result<StgMediumValue> {
+        if self.raw.tymed != windows::Win32::System::Com::TYMED_HGLOBAL.0 as u32 {
+            return Err(invalid_argument(
+                "STGMEDIUM currently supports only TYMED_HGLOBAL",
+            ));
+        }
+        let handle = unsafe { self.raw.u.hGlobal };
+        if let Some(owned_input_hglobal) = self.owned_input_hglobal
+            && (handle.0 != owned_input_hglobal.0 || self.raw.pUnkForRelease.is_some())
+        {
+            return Err(invalid_argument(
+                "caller-owned TYMED_HGLOBAL storage was replaced by the callee",
+            ));
+        }
+        if handle.0.is_null() {
+            return Err(invalid_argument(
+                "TYMED_HGLOBAL returned a null storage handle",
+            ));
+        }
+        let size = unsafe { windows::Win32::System::Memory::GlobalSize(handle) };
+        if size == 0 {
+            return Err(invalid_argument(
+                "TYMED_HGLOBAL returned invalid or empty storage",
+            ));
+        }
+        let data = unsafe { windows::Win32::System::Memory::GlobalLock(handle) };
+        if data.is_null() {
+            return Err(invalid_argument(
+                "GlobalLock failed for returned TYMED_HGLOBAL",
+            ));
+        }
+        let bytes = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), size) }.to_vec();
+        unsafe {
+            let _ = windows::Win32::System::Memory::GlobalUnlock(handle);
+        }
+        self.release();
+        Ok(StgMediumValue {
+            hglobal_bytes: bytes.into(),
+        })
+    }
+
+    fn release(&mut self) {
+        if let Some(handle) = self.owned_input_hglobal.take() {
+            let mut owned = windows::Win32::System::Com::STGMEDIUM {
+                tymed: windows::Win32::System::Com::TYMED_HGLOBAL.0 as u32,
+                u: windows::Win32::System::Com::STGMEDIUM_0 { hGlobal: handle },
+                pUnkForRelease: std::mem::ManuallyDrop::new(None),
+            };
+            unsafe {
+                windows::Win32::System::Ole::ReleaseStgMedium(&mut owned);
+                std::ptr::write_bytes(
+                    (&mut *self.raw as *mut windows::Win32::System::Com::STGMEDIUM).cast::<u8>(),
+                    0,
+                    size_of::<windows::Win32::System::Com::STGMEDIUM>(),
+                );
+            }
+            return;
+        }
+        if self.raw.tymed == 0 && self.raw.pUnkForRelease.is_none() {
+            return;
+        }
+        unsafe {
+            windows::Win32::System::Ole::ReleaseStgMedium(&mut *self.raw);
+            std::ptr::write_bytes(
+                (&mut *self.raw as *mut windows::Win32::System::Com::STGMEDIUM).cast::<u8>(),
+                0,
+                size_of::<windows::Win32::System::Com::STGMEDIUM>(),
+            );
+        }
+    }
+}
+
+impl Drop for StgMediumStorage {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
 #[cfg(test)]
 static STATSTG_TEST_FREES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
@@ -992,6 +1247,8 @@ pub enum Value {
     DispatchParams(DispatchParamsValue),
     ExcepInfo(ExcepInfoValue),
     StatStg(StatStgValue),
+    FormatEtc(FormatEtcValue),
+    StgMedium(StgMediumValue),
     Buffer(ComBufferValue),
 }
 
@@ -1008,6 +1265,8 @@ fn is_null_input_value(value: &Value) -> bool {
         | Value::DispatchParams(_)
         | Value::ExcepInfo(_)
         | Value::StatStg(_)
+        | Value::FormatEtc(_)
+        | Value::StgMedium(_)
         | Value::Buffer(_) => false,
     }
 }
@@ -1757,7 +2016,9 @@ impl BufferElementPlan {
             | ParameterType::PropVariant
             | ParameterType::DispatchParams
             | ParameterType::ExcepInfo
-            | ParameterType::StatStg => {
+            | ParameterType::StatStg
+            | ParameterType::FormatEtc
+            | ParameterType::StgMedium => {
                 return Err(invalid_argument(
                     "Automation buffer elements require dedicated ownership and cleanup plans",
                 ));
@@ -2051,6 +2312,24 @@ impl Type {
     pub fn stat_stg() -> Self {
         Self {
             abi: ParameterType::stat_stg(),
+            pointer_output: PointerOutputKind::None,
+            allow_direct_aggregate_return: false,
+            aggregate_capability: None,
+        }
+    }
+
+    pub fn format_etc() -> Self {
+        Self {
+            abi: ParameterType::format_etc(),
+            pointer_output: PointerOutputKind::None,
+            allow_direct_aggregate_return: false,
+            aggregate_capability: None,
+        }
+    }
+
+    pub fn stg_medium() -> Self {
+        Self {
+            abi: ParameterType::stg_medium(),
             pointer_output: PointerOutputKind::None,
             allow_direct_aggregate_return: false,
             aggregate_capability: None,
@@ -2991,6 +3270,7 @@ impl CallbackMethodPlan {
             | ParameterType::DispatchParams
             | ParameterType::ExcepInfo
             | ParameterType::StatStg => Some(crate::native_callback::CallbackAbiType::Pointer),
+            ParameterType::FormatEtc | ParameterType::StgMedium => None,
             ParameterType::NativeStruct(layout) => {
                 Some(crate::native_callback::CallbackAbiType::NativeStruct(
                     format!("{layout:?}"),
@@ -3444,7 +3724,10 @@ impl CallbackMethodPlan {
                         .map_err(|_| SINK_E_FAIL)
                 }
             }
-            ParameterType::NativeUnion(_) | ParameterType::VariantByValue => Err(SINK_E_FAIL),
+            ParameterType::NativeUnion(_)
+            | ParameterType::VariantByValue
+            | ParameterType::FormatEtc
+            | ParameterType::StgMedium => Err(SINK_E_FAIL),
         }
     }
 
@@ -4095,7 +4378,9 @@ impl ComCallPlan {
                 | Value::PropVariant(_)
                 | Value::DispatchParams(_)
                 | Value::ExcepInfo(_)
-                | Value::StatStg(_) => Err(invalid_argument(
+                | Value::StatStg(_)
+                | Value::FormatEtc(_)
+                | Value::StgMedium(_) => Err(invalid_argument(
                     "COM-local result requires the COM value invocation path",
                 )),
                 Value::Buffer(_) => Err(invalid_argument(
@@ -4291,7 +4576,9 @@ impl ComCallPlan {
                     | Value::PropVariant(_)
                     | Value::DispatchParams(_)
                     | Value::ExcepInfo(_)
-                    | Value::StatStg(_) => Err(invalid_argument(
+                    | Value::StatStg(_)
+                    | Value::FormatEtc(_)
+                    | Value::StgMedium(_) => Err(invalid_argument(
                         "COM-local value passed to a scalar COM method",
                     )),
                     Value::Buffer(_) => Err(invalid_argument(
@@ -5793,6 +6080,27 @@ fn validate_automation_contracts(
         {
             return Err(invalid_argument(
                 "STATSTG outputs require an HRESULT return convention",
+            ));
+        }
+        if parameter.typ.abi.is_format_etc()
+            && !matches!(
+                parameter.direction,
+                ComParameterDirection::In
+                    | ComParameterDirection::Out
+                    | ComParameterDirection::OptionalOut
+            )
+        {
+            return Err(invalid_argument("FORMATETC does not support in/out"));
+        }
+        if (parameter.typ.abi.is_format_etc() || parameter.typ.abi.is_stg_medium())
+            && parameter.direction != ComParameterDirection::In
+            && !matches!(
+                return_plan,
+                ComReturnPlan::HResult | ComReturnPlan::SemanticHResult
+            )
+        {
+            return Err(invalid_argument(
+                "FORMATETC/STGMEDIUM outputs require an HRESULT return convention",
             ));
         }
         if parameter.typ.abi.is_excep_info()
@@ -10481,6 +10789,124 @@ mod tests {
             .invoke_values((&mut object as *mut FakeComObject).cast(), args)
     }
 
+    static LAST_STG_MEDIUM_HANDLE: AtomicUsize = AtomicUsize::new(0);
+    static REPLACED_STG_MEDIUM_HANDLE: AtomicUsize = AtomicUsize::new(0);
+
+    unsafe extern "system" fn write_hglobal_medium(
+        _this: *mut c_void,
+        format: *const windows::Win32::System::Com::FORMATETC,
+        medium: *mut windows::Win32::System::Com::STGMEDIUM,
+    ) -> HRESULT {
+        if format.is_null()
+            || medium.is_null()
+            || unsafe { (*format).tymed } != windows::Win32::System::Com::TYMED_HGLOBAL.0 as u32
+        {
+            return HRESULT(0x80070057u32 as i32);
+        }
+        let handle = unsafe {
+            windows::Win32::System::Memory::GlobalAlloc(
+                windows::Win32::System::Memory::GMEM_MOVEABLE
+                    | windows::Win32::System::Memory::GMEM_ZEROINIT,
+                4,
+            )
+        }
+        .unwrap();
+        let data = unsafe { windows::Win32::System::Memory::GlobalLock(handle) };
+        unsafe {
+            std::ptr::copy_nonoverlapping([1u8, 2, 3, 4].as_ptr(), data.cast::<u8>(), 4);
+            let _ = windows::Win32::System::Memory::GlobalUnlock(handle);
+            medium.write(windows::Win32::System::Com::STGMEDIUM {
+                tymed: windows::Win32::System::Com::TYMED_HGLOBAL.0 as u32,
+                u: windows::Win32::System::Com::STGMEDIUM_0 { hGlobal: handle },
+                pUnkForRelease: std::mem::ManuallyDrop::new(None),
+            });
+        }
+        LAST_STG_MEDIUM_HANDLE.store(handle.0.addr(), Ordering::SeqCst);
+        HRESULT(0)
+    }
+
+    unsafe extern "system" fn write_hglobal_medium_then_fail(
+        this: *mut c_void,
+        format: *const windows::Win32::System::Com::FORMATETC,
+        medium: *mut windows::Win32::System::Com::STGMEDIUM,
+    ) -> HRESULT {
+        let result = unsafe { write_hglobal_medium(this, format, medium) };
+        if result.is_err() {
+            result
+        } else {
+            HRESULT(0x80004005u32 as i32)
+        }
+    }
+
+    unsafe extern "system" fn fill_hglobal_medium(
+        _this: *mut c_void,
+        format: *const windows::Win32::System::Com::FORMATETC,
+        medium: *mut windows::Win32::System::Com::STGMEDIUM,
+    ) -> HRESULT {
+        if format.is_null()
+            || medium.is_null()
+            || unsafe { (*format).tymed } != windows::Win32::System::Com::TYMED_HGLOBAL.0 as u32
+            || unsafe { (*medium).tymed } != windows::Win32::System::Com::TYMED_HGLOBAL.0 as u32
+        {
+            return HRESULT(0x80070057u32 as i32);
+        }
+        let handle = unsafe { (*medium).u.hGlobal };
+        let data = unsafe { windows::Win32::System::Memory::GlobalLock(handle) };
+        if data.is_null() || unsafe { windows::Win32::System::Memory::GlobalSize(handle) } < 4 {
+            return HRESULT(0x80030070u32 as i32);
+        }
+        unsafe {
+            std::ptr::copy_nonoverlapping([9u8, 8, 7, 6].as_ptr(), data.cast::<u8>(), 4);
+            let _ = windows::Win32::System::Memory::GlobalUnlock(handle);
+        }
+        HRESULT(0)
+    }
+
+    unsafe extern "system" fn replace_hglobal_medium(
+        _this: *mut c_void,
+        _format: *const windows::Win32::System::Com::FORMATETC,
+        medium: *mut windows::Win32::System::Com::STGMEDIUM,
+    ) -> HRESULT {
+        if medium.is_null() {
+            return HRESULT(0x80070057u32 as i32);
+        }
+        let original = unsafe { (*medium).u.hGlobal };
+        let replacement = unsafe {
+            windows::Win32::System::Memory::GlobalAlloc(
+                windows::Win32::System::Memory::GMEM_MOVEABLE
+                    | windows::Win32::System::Memory::GMEM_ZEROINIT,
+                4,
+            )
+        }
+        .unwrap();
+        LAST_STG_MEDIUM_HANDLE.store(original.0.addr(), Ordering::SeqCst);
+        REPLACED_STG_MEDIUM_HANDLE.store(replacement.0.addr(), Ordering::SeqCst);
+        unsafe {
+            (*medium).u.hGlobal = replacement;
+        }
+        HRESULT(0)
+    }
+
+    unsafe extern "system" fn write_canonical_format(
+        _this: *mut c_void,
+        input: *const windows::Win32::System::Com::FORMATETC,
+        output: *mut windows::Win32::System::Com::FORMATETC,
+    ) -> HRESULT {
+        if input.is_null() || output.is_null() {
+            return HRESULT(0x80004003u32 as i32);
+        }
+        unsafe {
+            output.write(windows::Win32::System::Com::FORMATETC {
+                cfFormat: (*input).cfFormat,
+                ptd: std::ptr::null_mut(),
+                dwAspect: (*input).dwAspect,
+                lindex: (*input).lindex,
+                tymed: (*input).tymed,
+            });
+        }
+        HRESULT(0)
+    }
+
     fn invoke_test_stat_stg(function: *mut c_void, flags: u32) -> result::Result<Vec<Value>> {
         let table = MetadataTable::new();
         invoke_test_pod(
@@ -13335,6 +13761,131 @@ mod tests {
             error
                 .message()
                 .contains("STATSTG outputs require an HRESULT")
+        );
+    }
+
+    #[test]
+    fn format_etc_and_stg_medium_hglobal_calls_copy_and_release_native_storage() {
+        let table = MetadataTable::new();
+        assert!(FormatEtcValue::hglobal(13, 0, -1).is_err());
+        assert!(FormatEtcValue::hglobal(13, 3, -1).is_err());
+        assert!(FormatEtcValue::hglobal(13, 16, -1).is_err());
+        assert!(FormatEtcValue::hglobal(0, 1, -1).is_err());
+        assert!(StgMediumValue::hglobal(Vec::new()).is_err());
+        let format = FormatEtcValue::hglobal(13, 1, -1).unwrap();
+        let error = invoke_test_pod(
+            write_hglobal_medium as *mut c_void,
+            MethodSignature::new(&table)
+                .add_in(Type::format_etc())
+                .add_out(Type::stg_medium()),
+            &[Value::WinRt(WinRTValue::I32(13))],
+        )
+        .unwrap_err();
+        assert!(error.message().contains("FORMATETC"));
+        LAST_STG_MEDIUM_HANDLE.store(0, Ordering::SeqCst);
+        let output = invoke_test_pod(
+            write_hglobal_medium as *mut c_void,
+            MethodSignature::new(&table)
+                .add_in(Type::format_etc())
+                .add_out(Type::stg_medium()),
+            &[Value::FormatEtc(format.clone())],
+        )
+        .unwrap();
+        let Value::StgMedium(medium) = &output[0] else {
+            panic!("expected STGMEDIUM output");
+        };
+        assert_eq!(medium.bytes(), [1, 2, 3, 4]);
+        let released = windows::Win32::Foundation::HGLOBAL(std::ptr::with_exposed_provenance_mut(
+            LAST_STG_MEDIUM_HANDLE.load(Ordering::SeqCst),
+        ));
+        assert_eq!(
+            unsafe { windows::Win32::System::Memory::GlobalSize(released) },
+            0
+        );
+
+        let input_medium = StgMediumValue::hglobal(vec![0; 4]).unwrap();
+        let output = invoke_test_pod(
+            fill_hglobal_medium as *mut c_void,
+            MethodSignature::new(&table)
+                .add_in(Type::format_etc())
+                .add_in_out(Type::stg_medium()),
+            &[
+                Value::FormatEtc(format.clone()),
+                Value::StgMedium(input_medium),
+            ],
+        )
+        .unwrap();
+        let Value::StgMedium(medium) = &output[0] else {
+            panic!("expected STGMEDIUM in/out result");
+        };
+        assert_eq!(medium.bytes(), [9, 8, 7, 6]);
+
+        LAST_STG_MEDIUM_HANDLE.store(0, Ordering::SeqCst);
+        REPLACED_STG_MEDIUM_HANDLE.store(0, Ordering::SeqCst);
+        let error = invoke_test_pod(
+            replace_hglobal_medium as *mut c_void,
+            MethodSignature::new(&table)
+                .add_in(Type::format_etc())
+                .add_in_out(Type::stg_medium()),
+            &[
+                Value::FormatEtc(format.clone()),
+                Value::StgMedium(StgMediumValue::hglobal(vec![0; 4]).unwrap()),
+            ],
+        )
+        .unwrap_err();
+        assert!(error.message().contains("was replaced by the callee"));
+        let original = windows::Win32::Foundation::HGLOBAL(std::ptr::with_exposed_provenance_mut(
+            LAST_STG_MEDIUM_HANDLE.load(Ordering::SeqCst),
+        ));
+        assert_eq!(
+            unsafe { windows::Win32::System::Memory::GlobalSize(original) },
+            0
+        );
+        let replacement =
+            windows::Win32::Foundation::HGLOBAL(std::ptr::with_exposed_provenance_mut(
+                REPLACED_STG_MEDIUM_HANDLE.load(Ordering::SeqCst),
+            ));
+        assert_eq!(
+            unsafe { windows::Win32::System::Memory::GlobalSize(replacement) },
+            4
+        );
+        unsafe {
+            let _ = windows::Win32::Foundation::GlobalFree(Some(replacement));
+        }
+        assert_eq!(
+            unsafe { windows::Win32::System::Memory::GlobalSize(replacement) },
+            0
+        );
+
+        let output = invoke_test_pod(
+            write_canonical_format as *mut c_void,
+            MethodSignature::new(&table)
+                .add_in(Type::format_etc())
+                .add_out(Type::format_etc()),
+            &[Value::FormatEtc(format.clone())],
+        )
+        .unwrap();
+        let Value::FormatEtc(canonical) = &output[0] else {
+            panic!("expected FORMATETC output");
+        };
+        assert_eq!(canonical, &format);
+
+        LAST_STG_MEDIUM_HANDLE.store(0, Ordering::SeqCst);
+        let error = invoke_test_pod(
+            write_hglobal_medium_then_fail as *mut c_void,
+            MethodSignature::new(&table)
+                .add_in(Type::format_etc())
+                .add_out(Type::stg_medium()),
+            &[Value::FormatEtc(format)],
+        )
+        .unwrap_err();
+        assert!(error.message().contains("80004005"));
+        let released = windows::Win32::Foundation::HGLOBAL(std::ptr::with_exposed_provenance_mut(
+            LAST_STG_MEDIUM_HANDLE.load(Ordering::SeqCst),
+        ));
+        assert_eq!(
+            unsafe { windows::Win32::System::Memory::GlobalSize(released) },
+            0
         );
     }
 

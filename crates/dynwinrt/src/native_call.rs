@@ -36,6 +36,8 @@ pub(crate) enum NativeCallValue {
     PropVariant(crate::com::PropVariantValue),
     ExcepInfo(crate::com::ExcepInfoValue),
     StatStg(crate::com::StatStgValue),
+    FormatEtc(crate::com::FormatEtcValue),
+    StgMedium(crate::com::StgMediumValue),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,6 +76,8 @@ pub(crate) enum ParameterType {
     DispatchParams,
     ExcepInfo,
     StatStg,
+    FormatEtc,
+    StgMedium,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -228,6 +232,14 @@ impl ParameterType {
         Self::StatStg
     }
 
+    pub(crate) fn format_etc() -> Self {
+        Self::FormatEtc
+    }
+
+    pub(crate) fn stg_medium() -> Self {
+        Self::StgMedium
+    }
+
     pub(crate) fn as_winrt(&self) -> Option<&TypeHandle> {
         match self {
             Self::WinRT(typ) => Some(typ),
@@ -244,7 +256,9 @@ impl ParameterType {
             | Self::PropVariant
             | Self::DispatchParams
             | Self::ExcepInfo
-            | Self::StatStg => None,
+            | Self::StatStg
+            | Self::FormatEtc
+            | Self::StgMedium => None,
         }
     }
 
@@ -263,7 +277,9 @@ impl ParameterType {
             | Self::PropVariant
             | Self::DispatchParams
             | Self::ExcepInfo
-            | Self::StatStg => None,
+            | Self::StatStg
+            | Self::FormatEtc
+            | Self::StgMedium => None,
         }
     }
 
@@ -348,6 +364,14 @@ impl ParameterType {
         matches!(self, Self::StatStg)
     }
 
+    pub(crate) fn is_format_etc(&self) -> bool {
+        matches!(self, Self::FormatEtc)
+    }
+
+    pub(crate) fn is_stg_medium(&self) -> bool {
+        matches!(self, Self::StgMedium)
+    }
+
     pub(crate) fn is_array(&self) -> bool {
         self.as_winrt().is_some_and(TypeHandle::is_array)
     }
@@ -376,6 +400,7 @@ impl ParameterType {
                 | Self::NativeStruct(_)
                 | Self::NativeStructPointer { .. }
                 | Self::NativeUnion(_)
+                | Self::StgMedium
         ) || matches!(
             self,
             Self::WinRT(typ)
@@ -413,7 +438,9 @@ impl ParameterType {
             | Self::PropVariant
             | Self::DispatchParams
             | Self::ExcepInfo
-            | Self::StatStg => AbiType::Ptr,
+            | Self::StatStg
+            | Self::FormatEtc
+            | Self::StgMedium => AbiType::Ptr,
             Self::NativeStruct(_) | Self::NativeUnion(_) | Self::VariantByValue => {
                 panic!("aggregate values do not have a scalar AbiType")
             }
@@ -433,7 +460,9 @@ impl ParameterType {
             | Self::PropVariant
             | Self::DispatchParams
             | Self::ExcepInfo
-            | Self::StatStg => libffi::middle::Type::pointer(),
+            | Self::StatStg
+            | Self::FormatEtc
+            | Self::StgMedium => libffi::middle::Type::pointer(),
             Self::NativeStruct(layout) => layout.libffi_type(),
             Self::NativeUnion(layout) => layout.libffi_type(),
             Self::VariantByValue => variant_by_value_libffi_type(),
@@ -468,7 +497,9 @@ impl ParameterType {
             | Self::PropVariant
             | Self::DispatchParams
             | Self::ExcepInfo
-            | Self::StatStg => {
+            | Self::StatStg
+            | Self::FormatEtc
+            | Self::StgMedium => {
                 panic!("native POD storage is allocated by the dynamic executor")
             }
         }
@@ -490,7 +521,9 @@ impl ParameterType {
             | Self::PropVariant
             | Self::DispatchParams
             | Self::ExcepInfo
-            | Self::StatStg => {
+            | Self::StatStg
+            | Self::FormatEtc
+            | Self::StgMedium => {
                 unreachable!("native POD output conversion uses NativeStructValue")
             }
         }
@@ -527,7 +560,9 @@ impl ParameterType {
                 | Self::PropVariant
                 | Self::DispatchParams
                 | Self::ExcepInfo
-                | Self::StatStg,
+                | Self::StatStg
+                | Self::FormatEtc
+                | Self::StgMedium,
                 _,
             ) => {
                 unreachable!("native POD output conversion uses NativeStructValue")
@@ -546,6 +581,8 @@ impl ParameterType {
             Self::PropVariant => OutputCleanup::PropVariantClear,
             Self::ExcepInfo => OutputCleanup::None,
             Self::StatStg => OutputCleanup::None,
+            Self::FormatEtc => OutputCleanup::None,
+            Self::StgMedium => OutputCleanup::None,
             Self::Bstr { .. } => OutputCleanup::BstrFree,
             Self::CoTaskMemWideString => OutputCleanup::CoTaskMemFree,
             Self::WinRT(_)
@@ -816,6 +853,8 @@ impl AbiMethodSignature {
                 || p.typ.is_dispatch_params()
                 || p.typ.is_excep_info()
                 || p.typ.is_stat_stg()
+                || p.typ.is_format_etc()
+                || p.typ.is_stg_medium()
         });
 
         // Check if the single in-param (if any) is a simple non-HString, non-Struct type
@@ -1349,7 +1388,9 @@ impl call::ArgumentList for ComInvocationArgs<'_> {
             | crate::com::Value::PropVariant(_)
             | crate::com::Value::DispatchParams(_)
             | crate::com::Value::ExcepInfo(_)
-            | crate::com::Value::StatStg(_) => {
+            | crate::com::Value::StatStg(_)
+            | crate::com::Value::FormatEtc(_)
+            | crate::com::Value::StgMedium(_) => {
                 panic!("COM-local argument requested as a WinRT value")
             }
             crate::com::Value::Buffer(_) => {
@@ -1406,6 +1447,20 @@ impl call::ArgumentList for ComInvocationArgs<'_> {
             _ => None,
         }
     }
+
+    fn get_format_etc(&self, index: usize) -> Option<&crate::com::FormatEtcValue> {
+        match &self.original[index] {
+            crate::com::Value::FormatEtc(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    fn get_stg_medium(&self, index: usize) -> Option<&crate::com::StgMediumValue> {
+        match &self.original[index] {
+            crate::com::Value::StgMedium(value) => Some(value),
+            _ => None,
+        }
+    }
 }
 
 impl Method {
@@ -1441,6 +1496,8 @@ impl Method {
                 || parameter.typ.is_dispatch_params()
                 || parameter.typ.is_excep_info()
                 || parameter.typ.is_stat_stg()
+                || parameter.typ.is_format_etc()
+                || parameter.typ.is_stg_medium()
         }) || self.direct_return_type().is_some_and(|typ| {
             typ.native_struct_layout().is_some()
                 || typ.native_union_layout().is_some()
@@ -1452,6 +1509,8 @@ impl Method {
                 || typ.is_dispatch_params()
                 || typ.is_excep_info()
                 || typ.is_stat_stg()
+                || typ.is_format_etc()
+                || typ.is_stg_medium()
         })
     }
 
@@ -1951,7 +2010,9 @@ impl Method {
                         | NativeCallValue::SafeArray(_)
                         | NativeCallValue::PropVariant(_)
                         | NativeCallValue::ExcepInfo(_)
-                        | NativeCallValue::StatStg(_) => Err(invalid_argument(
+                        | NativeCallValue::StatStg(_)
+                        | NativeCallValue::FormatEtc(_)
+                        | NativeCallValue::StgMedium(_) => Err(invalid_argument(
                             "COM-local result reached the WinRT invocation path",
                         )),
                     })
@@ -2143,6 +2204,24 @@ impl Method {
                 continue;
             }
 
+            if parameter.typ.is_format_etc() {
+                if !matches!(&args[input_index], crate::com::Value::FormatEtc(_)) {
+                    return Err(invalid_argument(
+                        "Argument type mismatch: expected FORMATETC",
+                    ));
+                }
+                continue;
+            }
+
+            if parameter.typ.is_stg_medium() {
+                if !matches!(&args[input_index], crate::com::Value::StgMedium(_)) {
+                    return Err(invalid_argument(
+                        "Argument type mismatch: expected STGMEDIUM",
+                    ));
+                }
+                continue;
+            }
+
             let crate::com::Value::WinRt(value) = &args[input_index] else {
                 return Err(invalid_argument(
                     "COM-local value passed to a scalar or pointer parameter",
@@ -2209,6 +2288,8 @@ impl Method {
                     NativeCallValue::PropVariant(value) => crate::com::Value::PropVariant(value),
                     NativeCallValue::ExcepInfo(value) => crate::com::Value::ExcepInfo(value),
                     NativeCallValue::StatStg(value) => crate::com::Value::StatStg(value),
+                    NativeCallValue::FormatEtc(value) => crate::com::Value::FormatEtc(value),
+                    NativeCallValue::StgMedium(value) => crate::com::Value::StgMedium(value),
                 })
                 .collect()
         })

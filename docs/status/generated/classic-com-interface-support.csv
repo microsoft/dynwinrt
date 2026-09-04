@@ -274,7 +274,7 @@ Windows.Win32.Devices.ImageAcquisition,IEnumWiaItem,5e8383fc-3391-11d2-9a33-00c0
 Windows.Win32.Devices.ImageAcquisition,IEnumWiaItem2,59970af4-cd0d-44d9-ab24-52295630e582,true,exact_registry_dependent,
 Windows.Win32.Devices.ImageAcquisition,IWiaAppErrorHandler,6c16186c-d0a6-400c-80f4-d26986a0e734,true,exact_registry_dependent,
 Windows.Win32.Devices.ImageAcquisition,IWiaDataCallback,a558a866-a5b0-11d2-a08f-00c04f72dc3c,true,standard_derived,
-Windows.Win32.Devices.ImageAcquisition,IWiaDataTransfer,a6cef998-a5b0-11d2-a08f-00c04f72dc3c,false,,incomplete_pointee_layout_for_storage
+Windows.Win32.Devices.ImageAcquisition,IWiaDataTransfer,a6cef998-a5b0-11d2-a08f-00c04f72dc3c,true,standard_derived,
 Windows.Win32.Devices.ImageAcquisition,IWiaDevMgr,5eb2502a-8cf1-11d1-bf92-0060081ed811,false,,safe_projection_incomplete
 Windows.Win32.Devices.ImageAcquisition,IWiaDevMgr2,79c07cf1-cbdd-41ee-8ec3-f00080cada7a,false,,safe_projection_incomplete
 Windows.Win32.Devices.ImageAcquisition,IWiaDrvItem,1f02b5c5-b00c-11d2-a094-00c04f72dc3c,false,,missing_allocator
@@ -4076,8 +4076,8 @@ Windows.Win32.System.ClrHosting,IObjectHandle,c460e2b4-e199-412a-8456-84dc3e4838
 Windows.Win32.System.ClrHosting,ITypeName,b81ff171-20f3-11d2-8dcc-00a0c9b00522,true,standard_derived,
 Windows.Win32.System.ClrHosting,ITypeNameBuilder,b81ff171-20f3-11d2-8dcc-00a0c9b00523,true,standard_derived,
 Windows.Win32.System.ClrHosting,ITypeNameFactory,b81ff171-20f3-11d2-8dcc-00a0c9b00521,true,standard_derived,
-Windows.Win32.System.Com,AsyncIAdviseSink,00000150-0000-0000-c000-000000000046,false,,external_pointee_storage
-Windows.Win32.System.Com,AsyncIAdviseSink2,00000151-0000-0000-c000-000000000046,false,,external_pointee_storage
+Windows.Win32.System.Com,AsyncIAdviseSink,00000150-0000-0000-c000-000000000046,true,standard_derived,
+Windows.Win32.System.Com,AsyncIAdviseSink2,00000151-0000-0000-c000-000000000046,true,standard_derived,
 Windows.Win32.System.Com,AsyncIMultiQI,000e0020-0000-0000-c000-000000000046,false,,incomplete_pointee_layout_for_storage
 Windows.Win32.System.Com,AsyncIPipeByte,db2f3acb-2f86-11d1-8e04-00c04fb9989a,true,standard_derived,
 Windows.Win32.System.Com,AsyncIPipeDouble,db2f3acf-2f86-11d1-8e04-00c04fb9989a,true,standard_derived,
@@ -4110,8 +4110,8 @@ Windows.Win32.System.Com.Events,IPublisherFilter,465e5cc0-7b26-11d1-88fb-0080c7d
 Windows.Win32.System.Com,IActivationFilter,00000017-0000-0000-c000-000000000046,true,standard_derived,
 Windows.Win32.System.Com,IAddrExclusionControl,00000148-0000-0000-c000-000000000046,true,standard_derived,
 Windows.Win32.System.Com,IAddrTrackingControl,00000147-0000-0000-c000-000000000046,true,standard_derived,
-Windows.Win32.System.Com,IAdviseSink,0000010f-0000-0000-c000-000000000046,false,,external_pointee_storage
-Windows.Win32.System.Com,IAdviseSink2,00000125-0000-0000-c000-000000000046,false,,external_pointee_storage
+Windows.Win32.System.Com,IAdviseSink,0000010f-0000-0000-c000-000000000046,true,standard_derived,
+Windows.Win32.System.Com,IAdviseSink2,00000125-0000-0000-c000-000000000046,true,standard_derived,
 Windows.Win32.System.Com,IAgileObject,94ea2b94-e9cc-49e0-c0ff-ee64ca8f5b90,true,standard_derived,
 Windows.Win32.System.Com,IAsyncManager,0000002a-0000-0000-c000-000000000046,true,standard_derived,
 Windows.Win32.System.Com,IAsyncRpcChannelBuffer,a5029fb6-3c34-11d1-9c99-00c04fb998aa,false,,missing_allocator
@@ -4136,8 +4136,8 @@ Windows.Win32.System.Com,IConnectionPoint,b196b286-bab4-101a-b69c-00aa00341d07,t
 Windows.Win32.System.Com,IConnectionPointContainer,b196b284-bab4-101a-b69c-00aa00341d07,true,standard_derived,
 Windows.Win32.System.Com,IContext,000001c0-0000-0000-c000-000000000046,true,standard_derived,
 Windows.Win32.System.Com,IContextCallback,000001da-0000-0000-c000-000000000046,false,,nested_pointer_lifetime
-Windows.Win32.System.Com,IDataAdviseHolder,00000110-0000-0000-c000-000000000046,false,,external_pointee_storage
-Windows.Win32.System.Com,IDataObject,0000010e-0000-0000-c000-000000000046,false,,incomplete_pointee_layout_for_storage
+Windows.Win32.System.Com,IDataAdviseHolder,00000110-0000-0000-c000-000000000046,true,standard_derived,
+Windows.Win32.System.Com,IDataObject,0000010e-0000-0000-c000-000000000046,true,exact_registry_dependent,
 Windows.Win32.System.Com,IDispatch,00020400-0000-0000-c000-000000000046,true,exact_registry_dependent,
 Windows.Win32.System.Com,IEnumCATEGORYINFO,0002e011-0000-0000-c000-000000000046,false,,safe_projection_incomplete
 Windows.Win32.System.Com,IEnumConnectionPoints,b196b285-bab4-101a-b69c-00aa00341d07,true,exact_registry_dependent,
@@ -5075,7 +5075,7 @@ Windows.Win32.System.Mmc,Views,d6b8c29d-a1ff-4d72-aab0-e381e9b9338d,true,standar
 Windows.Win32.System.Mmc,_AppEvents,de46cbdd-53f5-4635-af54-4fe71e923d3f,true,standard_derived,
 Windows.Win32.System.Mmc,_Application,a3afb9cc-b653-4741-86ab-f0470ec1384c,true,standard_derived,
 Windows.Win32.System.Mmc,_EventConnector,c0bccd30-de44-4528-8403-a05a6a1cc8ea,true,standard_derived,
-Windows.Win32.System.Ole,IAdviseSinkEx,3af24290-0c96-11ce-a0cf-00aa00600ab8,false,,external_pointee_storage
+Windows.Win32.System.Ole,IAdviseSinkEx,3af24290-0c96-11ce-a0cf-00aa00600ab8,true,standard_derived,
 Windows.Win32.System.Ole,ICanHandleException,c5598e60-b307-11d1-b27d-006008c3fbfb,false,,safe_projection_incomplete
 Windows.Win32.System.Ole,IClassFactory2,b196b28f-bab4-101a-b69c-00aa00341d07,true,standard_derived,
 Windows.Win32.System.Ole,IContinue,0000012a-0000-0000-c000-000000000046,true,standard_derived,
@@ -5103,8 +5103,8 @@ Windows.Win32.System.Ole,IGetVBAObject,91733a60-3f4c-101b-a3f6-00aa0034e4e9,fals
 Windows.Win32.System.Ole,IObjectIdentity,ca04b7e6-0d21-11d1-8cc5-00c04fc2b085,true,standard_derived,
 Windows.Win32.System.Ole,IObjectWithSite,fc4801a3-2ba9-11cf-a229-00aa003d7352,true,standard_derived,
 Windows.Win32.System.Ole,IOleAdviseHolder,00000111-0000-0000-c000-000000000046,true,standard_derived,
-Windows.Win32.System.Ole,IOleCache,0000011e-0000-0000-c000-000000000046,false,,external_pointee_storage
-Windows.Win32.System.Ole,IOleCache2,00000128-0000-0000-c000-000000000046,false,,external_pointee_storage
+Windows.Win32.System.Ole,IOleCache,0000011e-0000-0000-c000-000000000046,true,standard_derived,
+Windows.Win32.System.Ole,IOleCache2,00000128-0000-0000-c000-000000000046,true,standard_derived,
 Windows.Win32.System.Ole,IOleCacheControl,00000129-0000-0000-c000-000000000046,true,standard_derived,
 Windows.Win32.System.Ole,IOleClientSite,00000118-0000-0000-c000-000000000046,true,standard_derived,
 Windows.Win32.System.Ole,IOleCommandTarget,b722bccb-4e68-101b-a2bc-00aa00404770,false,,incomplete_pointee_layout_for_storage
@@ -6906,7 +6906,7 @@ Windows.Win32.UI.TextServices,ITfPersistentPropertyLoaderACP,4ef89150-0807-11d3-
 Windows.Win32.UI.TextServices,ITfPreservedKeyNotifySink,6f77c993-d2b1-446e-853e-5912efc8a286,true,standard_derived,
 Windows.Win32.UI.TextServices,ITfProperty,e2449660-9542-11d2-bf46-00105a2799b5,true,standard_derived,
 Windows.Win32.UI.TextServices,ITfPropertyStore,6834b120-88cb-11d2-bf45-00105a2799b5,true,standard_derived,
-Windows.Win32.UI.TextServices,ITfQueryEmbedded,0fab9bdb-d250-4169-84e5-6be118fdd7a8,false,,external_pointee_storage
+Windows.Win32.UI.TextServices,ITfQueryEmbedded,0fab9bdb-d250-4169-84e5-6be118fdd7a8,true,standard_derived,
 Windows.Win32.UI.TextServices,ITfRange,aa80e7ff-2021-11d2-93e0-0060b067b86e,false,,external_pointee_storage
 Windows.Win32.UI.TextServices,ITfRangeACP,057a6296-029b-4154-b79a-0d461d4ea94c,false,,external_pointee_storage
 Windows.Win32.UI.TextServices,ITfRangeBackup,463a506d-6992-49d2-9b88-93d55e70bb16,true,standard_derived,

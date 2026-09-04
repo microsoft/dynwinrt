@@ -1206,6 +1206,28 @@ impl DynWinRTValue {
         ))),
         None,
       ),
+      dynwinrt::com::Value::FormatEtc(value) => Self(
+        dynwinrt::WinRTValue::Null,
+        None,
+        com::PointerProvenance::None,
+        None,
+        None,
+        Some(com::AutomationValue::new(dynwinrt::com::Value::FormatEtc(
+          value,
+        ))),
+        None,
+      ),
+      dynwinrt::com::Value::StgMedium(value) => Self(
+        dynwinrt::WinRTValue::Null,
+        None,
+        com::PointerProvenance::None,
+        None,
+        None,
+        Some(com::AutomationValue::new(dynwinrt::com::Value::StgMedium(
+          value,
+        ))),
+        None,
+      ),
       dynwinrt::com::Value::Buffer(value) => Self(
         dynwinrt::WinRTValue::Null,
         None,

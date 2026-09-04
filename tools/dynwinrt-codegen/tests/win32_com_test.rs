@@ -2127,6 +2127,70 @@ fn thumbnail_provider_returns_a_delete_object_owned_handle() {
 }
 
 #[test]
+fn data_object_projects_hglobal_format_and_medium_values() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+    let interface = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.System.Com",
+        "IDataObject",
+    )
+    .expect("IDataObject must exist");
+    let set_data_contract = interface
+        .raw_methods
+        .as_ref()
+        .unwrap()
+        .iter()
+        .find(|method| method.metadata_name == "SetData")
+        .and_then(|method| method.exact_contract.as_ref())
+        .expect("SetData must carry exact ownership evidence");
+    assert_eq!(
+        set_data_contract.kind,
+        com_metadata::RawExactMethodContractKind::DataObjectSetData
+    );
+    assert_eq!(set_data_contract.ownership_transfer_param_index, Some(2));
+    assert!(
+        set_data_contract
+            .citation
+            .ends_with("nf-objidl-idataobject-setdata")
+    );
+    let output = com::generate_com_interface_files(&interface, &win32_winmd())
+        .unwrap_or_else(|error| panic!("IDataObject: {error}"));
+    assert!(
+        output
+            .dts
+            .contains("getData(pformatetcIn: DynComFormatEtc): DynComStgMedium;")
+    );
+    assert!(output.dts.contains(
+        "getDataHere(pformatetc: DynComFormatEtc, pmedium: DynComStgMedium): DynComStgMedium;"
+    ));
+    assert!(
+        output
+            .dts
+            .contains("setData(pformatetc: DynComFormatEtc, pmedium: DynComStgMedium): void;")
+    );
+    assert!(!output.dts.contains("fRelease"));
+    assert!(
+        output
+            .js
+            .contains("DynCom.stgMedium(pmedium), DynCom.i32(0)")
+    );
+
+    let advise_sink = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.System.Com",
+        "IAdviseSink",
+    )
+    .expect("IAdviseSink must exist");
+    let advise_output = com::generate_com_interface_files(&advise_sink, &win32_winmd())
+        .unwrap_or_else(|error| panic!("IAdviseSink: {error}"));
+    assert!(!advise_output.js.contains("static implementation(handlers)"));
+    assert!(!advise_output.dts.contains("IAdviseSinkImplementation"));
+}
+
+#[test]
 fn high_value_exact_contracts_generate_complete_safe_interfaces() {
     if !win32_available() {
         eprintln!("Skipping: Win32 winmd not available");

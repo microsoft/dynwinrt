@@ -381,6 +381,7 @@ pub enum RawExactMethodContractKind {
     StatStg,
     Malloc,
     FlagSelectedString,
+    DataObjectSetData,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -396,6 +397,8 @@ pub struct RawExactMethodContract {
     pub actual_length_param_index: Option<usize>,
     pub discriminator_param_index: Option<usize>,
     pub reserved_null_param_index: Option<usize>,
+    pub ownership_transfer_param_index: Option<usize>,
+    pub source_fingerprint: Option<&'static str>,
     pub citation: &'static str,
     pub reason: &'static str,
 }
@@ -409,7 +412,9 @@ impl RawExactMethodContract {
             RawExactMethodContractKind::UnsafePrivateData => {
                 crate::contract_registry::ExactFamilyId::PrivateDataHazard
             }
-            RawExactMethodContractKind::StatStg | RawExactMethodContractKind::Malloc => {
+            RawExactMethodContractKind::StatStg
+            | RawExactMethodContractKind::Malloc
+            | RawExactMethodContractKind::DataObjectSetData => {
                 crate::contract_registry::ExactFamilyId::Ownership
             }
             RawExactMethodContractKind::FlagSelectedString => {
@@ -437,7 +442,9 @@ impl RawExactMethodContract {
             RawExactMethodContractKind::UnsafePrivateData => {
                 crate::contract_registry::ContractKind::Hazard
             }
-            RawExactMethodContractKind::StatStg | RawExactMethodContractKind::Malloc => {
+            RawExactMethodContractKind::StatStg
+            | RawExactMethodContractKind::Malloc
+            | RawExactMethodContractKind::DataObjectSetData => {
                 crate::contract_registry::ContractKind::Ownership
             }
             RawExactMethodContractKind::FlagSelectedString => {
@@ -1308,7 +1315,10 @@ pub(crate) fn collect_exact_registry_entries(
                 family_id: contract.family_id(),
                 contract_kind: contract.contract_kind(),
                 selector: method_selector(),
-                source_fingerprint: method_fingerprint.clone(),
+                source_fingerprint: contract
+                    .source_fingerprint
+                    .unwrap_or(&method_fingerprint)
+                    .into(),
                 reason: contract.reason.into(),
                 citation: contract.citation.into(),
             });
@@ -2170,6 +2180,7 @@ fn apply_exact_method_contract(
         }
         RawExactMethodContractKind::StatStg => {}
         RawExactMethodContractKind::Malloc => {}
+        RawExactMethodContractKind::DataObjectSetData => {}
         RawExactMethodContractKind::FlagSelectedString => {
             let buffer = contract.buffer_param_index;
             let capacity = contract.capacity_param_index;
@@ -2315,6 +2326,14 @@ fn registered_exact_method_contract(
             "IMalloc::HeapMinimize has no parameters and no return value",
             "https://learn.microsoft.com/windows/win32/api/objidl/nf-objidl-imalloc-heapminimize",
         ),
+        ("Windows.Win32.System.Com", "IDataObject", "SetData") => (
+            RawExactMethodContractKind::DataObjectSetData,
+            1,
+            0,
+            None,
+            "IDataObject::SetData transfers STGMEDIUM ownership only when fRelease is TRUE; the safe projection pins fRelease to FALSE so call-local HGLOBAL storage remains caller-owned",
+            "https://learn.microsoft.com/windows/win32/api/objidl/nf-objidl-idataobject-setdata",
+        ),
         ("Windows.Win32.Graphics.Dxgi", "IDXGIObject", "GetPrivateData") => (
             RawExactMethodContractKind::UnsafePrivateData,
             2,
@@ -2382,7 +2401,7 @@ fn registered_exact_method_contract(
             "ID3D11DeviceChild" | "ID3D11Device" => "Windows.Win32.Graphics.Direct3D11",
             "ID3D12Object" => "Windows.Win32.Graphics.Direct3D12",
             "IDMLObject" => "Windows.Win32.AI.MachineLearning.DirectML",
-            "IStream" => "Windows.Win32.System.Com",
+            "IStream" | "IDataObject" => "Windows.Win32.System.Com",
             "IStorage" => "Windows.Win32.System.Com.StructuredStorage",
             "IContextMenu" => "Windows.Win32.UI.Shell",
             "IMalloc" => "Windows.Win32.System.Com",
@@ -2401,6 +2420,7 @@ fn registered_exact_method_contract(
             "IStorage" => "IStorage",
             "IContextMenu" => "IContextMenu",
             "IMalloc" => "IMalloc",
+            "IDataObject" => "IDataObject",
             _ => unreachable!("matched exact method interface"),
         },
         declaring_iid: match kind {
@@ -2426,6 +2446,7 @@ fn registered_exact_method_contract(
             RawExactMethodContractKind::FlagSelectedString => {
                 "000214e4-0000-0000-c000-000000000046"
             }
+            RawExactMethodContractKind::DataObjectSetData => "0000010e-0000-0000-c000-000000000046",
         },
         method_name: match kind {
             RawExactMethodContractKind::FixedCapacityBytes => "GetBlob",
@@ -2441,6 +2462,7 @@ fn registered_exact_method_contract(
                 _ => unreachable!("matched exact IMalloc method"),
             },
             RawExactMethodContractKind::FlagSelectedString => "GetCommandString",
+            RawExactMethodContractKind::DataObjectSetData => "SetData",
         },
         vtable_index: match (interface, method) {
             ("IMFAttributes", "GetBlob") => 15,
@@ -2459,6 +2481,7 @@ fn registered_exact_method_contract(
             ("IMalloc", "GetSize") => 6,
             ("IMalloc", "DidAlloc") => 7,
             ("IMalloc", "HeapMinimize") => 8,
+            ("IDataObject", "SetData") => 7,
             _ => unreachable!("matched exact method identity"),
         },
         buffer_param_index: buffer,
@@ -2468,6 +2491,10 @@ fn registered_exact_method_contract(
             .then_some(1),
         reserved_null_param_index: (kind == RawExactMethodContractKind::FlagSelectedString)
             .then_some(2),
+        ownership_transfer_param_index: (kind == RawExactMethodContractKind::DataObjectSetData)
+            .then_some(2),
+        source_fingerprint: (kind == RawExactMethodContractKind::DataObjectSetData)
+            .then_some("7AF093CB4139DC99AFD713365806F4914690BBCE84928887BAECD35E97B823B1"),
         citation,
         reason,
     })
@@ -2602,6 +2629,20 @@ pub(crate) fn validate_exact_method_contract(
     .ok_or_else(|| "exact method contract is not registered".to_string())?;
     if &expected != contract {
         return Err("exact method contract evidence does not match the registry".into());
+    }
+    if let Some(expected_fingerprint) = contract.source_fingerprint {
+        let mut source = raw.clone();
+        source.exact_contract = None;
+        let actual_fingerprint = raw_method_fingerprint(&source);
+        if actual_fingerprint != expected_fingerprint {
+            return Err(format!(
+                "{}.{} source fingerprint changed: expected {}, found {}",
+                contract.declaring_interface,
+                contract.method_name,
+                expected_fingerprint,
+                actual_fingerprint
+            ));
+        }
     }
     if raw.declaring_namespace != contract.declaring_namespace
         || raw.declaring_interface != contract.declaring_interface
@@ -2739,6 +2780,56 @@ pub(crate) fn validate_exact_method_contract(
                 && raw_u32_scalar(&raw.params[capacity], RawParamDirection::In, false)
                 && raw_hresult(&raw.return_type)
         }
+        RawExactMethodContractKind::DataObjectSetData => {
+            raw.params.len() == 3
+                && raw.params[0].name == "pformatetc"
+                && raw.params[0].direction == RawParamDirection::In
+                && !raw.params[0].optional
+                && raw.params[0].typ.pointer_depth == 1
+                && matches!(
+                    &raw.params[0].typ.native_type,
+                    RawNativeType::Named {
+                        namespace,
+                        name,
+                        kind: RawNamedKind::Struct,
+                        ..
+                    } if namespace == "Windows.Win32.System.Com" && name == "FORMATETC"
+                )
+                && raw.params[1].name == "pmedium"
+                && raw.params[1].direction == RawParamDirection::In
+                && !raw.params[1].optional
+                && raw.params[1].typ.pointer_depth == 1
+                && matches!(
+                    &raw.params[1].typ.native_type,
+                    RawNativeType::Named {
+                        namespace,
+                        name,
+                        kind: RawNamedKind::Struct,
+                        ..
+                    } if namespace == "Windows.Win32.System.Com" && name == "STGMEDIUM"
+                )
+                && raw.params[2].name == "fRelease"
+                && raw.params[2].direction == RawParamDirection::In
+                && !raw.params[2].optional
+                && raw.params[2].typ.pointer_depth == 0
+                && matches!(
+                    &raw.params[2].typ.native_type,
+                    RawNativeType::Named {
+                        namespace,
+                        name,
+                        ..
+                    } if namespace == "Windows.Win32.Foundation" && name == "BOOL"
+                )
+                && raw.params[2]
+                    .typ
+                    .underlying
+                    .as_deref()
+                    .is_some_and(|underlying| {
+                        underlying.pointer_depth == 0
+                            && matches!(underlying.native_type, RawNativeType::I32)
+                    })
+                && raw_hresult(&raw.return_type)
+        }
     };
     let indices_valid = match contract.kind {
         RawExactMethodContractKind::FixedCapacityBytes
@@ -2761,6 +2852,13 @@ pub(crate) fn validate_exact_method_contract(
                     .is_some_and(|index| index < raw.params.len())
         }
         RawExactMethodContractKind::Malloc => true,
+        RawExactMethodContractKind::DataObjectSetData => {
+            contract.buffer_param_index == 1
+                && contract.ownership_transfer_param_index == Some(2)
+                && contract.actual_length_param_index.is_none()
+                && contract.discriminator_param_index.is_none()
+                && contract.reserved_null_param_index.is_none()
+        }
     };
     if !valid_shape
         || raw.semantic_hresult.is_some()
@@ -4543,6 +4641,8 @@ mod tests {
                 actual_length_param_index: None,
                 discriminator_param_index: None,
                 reserved_null_param_index: None,
+                ownership_transfer_param_index: None,
+                source_fingerprint: None,
                 citation: "test://drift",
                 reason: "drift",
             })
@@ -4862,6 +4962,40 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn data_object_set_data_exact_contract_is_fingerprint_pinned() {
+        let Some(winmd) = std::env::var("DYNWINRT_WIN32_WINMD")
+            .ok()
+            .filter(|path| std::path::Path::new(path).exists())
+        else {
+            return;
+        };
+        let interface =
+            parse_com_interface(&winmd, "Windows.Win32.System.Com", "IDataObject").unwrap();
+        let raw = interface
+            .raw_methods
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find(|method| method.metadata_name == "SetData")
+            .unwrap();
+        let contract = raw.exact_contract.as_ref().unwrap();
+        let mut source = raw.clone();
+        source.exact_contract = None;
+        assert_eq!(
+            raw_method_fingerprint(&source),
+            contract.source_fingerprint.unwrap()
+        );
+        validate_exact_method_contract(
+            "Windows.Win32.System.Com",
+            "IDataObject",
+            "0000010e-0000-0000-c000-000000000046",
+            raw,
+            contract,
+        )
+        .unwrap();
     }
 
     #[test]

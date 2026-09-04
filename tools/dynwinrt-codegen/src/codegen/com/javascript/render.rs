@@ -408,7 +408,8 @@ fn render_js(meta: &ProjectedComInterface) -> String {
         match method.kind {
             ProjectedComMethodKind::Normal
             | ProjectedComMethodKind::FixedCapacityBytes { .. }
-            | ProjectedComMethodKind::OwningCallerOutput { .. } => {
+            | ProjectedComMethodKind::OwningCallerOutput { .. }
+            | ProjectedComMethodKind::DataObjectSetData { .. } => {
                 emit_method_js(&mut out, method, &iface_var)
             }
             ProjectedComMethodKind::CallerSuppliedDynamicIid {
@@ -887,6 +888,8 @@ fn out_abi_type_js(method: &ProjectedComMethod, param_index: usize, typ: &ComTyp
             | ResultConversion::PropVariant
             | ResultConversion::ExcepInfo
             | ResultConversion::StatStg
+            | ResultConversion::FormatEtc
+            | ResultConversion::StgMedium
             | ResultConversion::MallocAllocation
             | ResultConversion::MallocReallocation,
         )
@@ -1228,6 +1231,14 @@ fn emit_method_js_named(
             }
             if matches!(param.typ, ComType::ExactNullPointer) {
                 return Some("DynCom.exactNullPointer(null)".into());
+            }
+            if matches!(
+                method.kind,
+                ProjectedComMethodKind::DataObjectSetData {
+                    release_param_index
+                } if release_param_index == index
+            ) {
+                return Some("DynCom.i32(0)".into());
             }
             for group in &method.shared_counts {
                 match group {
@@ -2408,7 +2419,8 @@ fn render_dts(meta: &ProjectedComInterface) -> String {
         let (params, ret) = match method.kind {
             ProjectedComMethodKind::Normal
             | ProjectedComMethodKind::FixedCapacityBytes { .. }
-            | ProjectedComMethodKind::OwningCallerOutput { .. } => {
+            | ProjectedComMethodKind::OwningCallerOutput { .. }
+            | ProjectedComMethodKind::DataObjectSetData { .. } => {
                 (dts_params(method), dts_return_type(method))
             }
             ProjectedComMethodKind::CallerSuppliedDynamicIid {
@@ -2624,6 +2636,8 @@ fn collect_pointer_aliases(meta: &ProjectedComInterface) -> Vec<(String, Pointer
                 | ComType::DispatchParams
                 | ComType::ExcepInfo
                 | ComType::StatStg
+                | ComType::FormatEtc
+                | ComType::StgMedium
                 | ComType::ManagedInterface { .. }
                 | ComType::CoTaskMemWideString
                 | ComType::StringArray { .. }
@@ -2724,6 +2738,8 @@ fn collect_native_pods(meta: &ProjectedComInterface) -> Vec<super::super::ir::Na
                 | ComType::DispatchParams
                 | ComType::ExcepInfo
                 | ComType::StatStg
+                | ComType::FormatEtc
+                | ComType::StgMedium
                 | ComType::ManagedInterface { .. }
                 | ComType::CoTaskMemWideString
                 | ComType::StringArray { .. } => {}
@@ -2814,6 +2830,12 @@ fn collect_runtime_types(meta: &ProjectedComInterface) -> Vec<&'static str> {
                 ComType::StatStg => {
                     types.insert("DynComStatStg");
                 }
+                ComType::FormatEtc => {
+                    types.insert("DynComFormatEtc");
+                }
+                ComType::StgMedium => {
+                    types.insert("DynComStgMedium");
+                }
                 ComType::AllocatorPointer
                 | ComType::ConsumedAllocatorPointer
                 | ComType::InspectedAllocatorPointer => {
@@ -2892,6 +2914,8 @@ fn collect_scalar_alias(
         | ComType::DispatchParams
         | ComType::ExcepInfo
         | ComType::StatStg
+        | ComType::FormatEtc
+        | ComType::StgMedium
         | ComType::ManagedInterface { .. }
         | ComType::CoTaskMemWideString
         | ComType::StringArray { .. } => {}

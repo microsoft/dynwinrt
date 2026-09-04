@@ -335,11 +335,12 @@ Current code registries are migrated without changing behavior:
 - semantic HRESULT exceptions;
 - `IWbemServices::OpenNamespace`;
 - `IDispatch::Invoke` compound behavior;
-- `STATSTG` and allocator-specific outputs; and
+- `STATSTG` and allocator-specific outputs;
+- `IDataObject::SetData` caller-retained STGMEDIUM ownership; and
 - exact fail-closed hazards such as `GetPrivateData`.
 
 Migration or promotion is complete only when generated safe snapshots, the
-5,681/7,929 safe census, generated unsafe manifests, and all live tests agree
+5,692/7,929 safe census, generated unsafe manifests, and all live tests agree
 with the exact evidence dependencies.
 
 ## User contracts
@@ -400,19 +401,19 @@ The safe-complete evidence census is:
 
 | Evidence class | Safe interfaces |
 | --- | ---: |
-| `standard_derived` | 5,326 |
-| `exact_registry_dependent` | 355 |
-| **Total** | **5,681** |
+| `standard_derived` | 5,336 |
+| `exact_registry_dependent` | 356 |
+| **Total** | **5,692** |
 
-The registry contains **495 declared entries**, all 495 match the pinned
-metadata, and 404 distinct entries are consumed by safe plans. Safe plans have
-655 entry/interface dependencies and 404 family/interface dependencies.
-Per-interface dependency-set totals also include 5,974 metadata-attribute
-dependencies and 26,076 COM-standard-rule dependencies.
+The registry contains **496 declared entries**, all 496 match the pinned
+metadata, and 405 distinct entries are consumed by safe plans. Safe plans have
+656 entry/interface dependencies and 405 family/interface dependencies.
+Per-interface dependency-set totals also include 5,976 metadata-attribute
+dependencies and 26,119 COM-standard-rule dependencies.
 
 | Exact contract kind | Safe-interface dependencies |
 | --- | ---: |
-| `ownership` | 172 |
+| `ownership` | 173 |
 | `parameter-direction` | 45 |
 | `bounded-two-call` | 16 |
 | `conditional-output` | 7 |
@@ -435,7 +436,7 @@ Family rollups deliberately count each interface once per family:
 | `com.sequential-stream-buffer.v1` | 2 | 2 | 7 |
 | `buffers.counted-buffer.v1` | 3 | 2 | 2 |
 | `buffers.bounded-two-call.v1` | 2 | 2 | 16 |
-| `com.ownership.v1` | 162 | 111 | 116 |
+| `com.ownership.v1` | 163 | 112 | 117 |
 | `com.parameter-direction.v1` | 3 | 3 | 15 |
 | `com.reserved-null-input.v1` | 2 | 2 | 1 |
 | `com.semantic-hresult.v1` | 1 | 1 | 2 |
@@ -453,11 +454,11 @@ Universal rule dependencies are:
 | `com.automation.bstr-replacement.v1` | 99 |
 | `com.enumerator-next.generic.v1` | 25 |
 | `com.handle.borrowed-no-cleanup.v1` | 45 |
-| `com.hresult.failure.v1` | 5,568 |
-| `com.interface.input-borrow.v1` | 1,881 |
-| `com.interface.typed-output-plus-one.v1` | 3,453 |
-| `com.iunknown.identity-refcount.v1` | 5,681 |
-| `com.query-interface.output-plus-one.v1` | 5,681 |
+| `com.hresult.failure.v1` | 5,574 |
+| `com.interface.input-borrow.v1` | 1,891 |
+| `com.interface.typed-output-plus-one.v1` | 3,458 |
+| `com.iunknown.identity-refcount.v1` | 5,692 |
+| `com.query-interface.output-plus-one.v1` | 5,692 |
 | `com.standard-cleanup.matching-allocator.v1` | 1,436 |
 
 These are dependency counts: an inherited contract can be consumed by several

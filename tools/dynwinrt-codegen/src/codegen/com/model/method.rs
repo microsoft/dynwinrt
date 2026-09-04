@@ -53,6 +53,9 @@ pub(in crate::codegen::com) enum ComMethodSpecialContract {
         synchronous_flags: i32,
         semisynchronous_flags: i32,
     },
+    DataObjectSetData {
+        release_param: ParamIndex,
+    },
     Malloc,
 }
 
@@ -165,6 +168,8 @@ impl ComMethodContract {
                             ..
                         }
                         | ComAbiType::StatStg
+                        | ComAbiType::FormatEtc
+                        | ComAbiType::StgMedium
                     )
                 {
                     return Err(ModelError::InvalidContract(format!(

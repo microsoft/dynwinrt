@@ -4,8 +4,8 @@
 general Automation or native Win32 projection.
 
 > **Status: preview, under active development.** The current CI baseline against
-> `Microsoft.Windows.SDK.Win32Metadata` 71.0.14-preview is 5,681 complete safe
-> interface projections out of 7,929 eligible interfaces (71.65%). Earlier
+> `Microsoft.Windows.SDK.Win32Metadata` 71.0.14-preview is 5,692 complete safe
+> interface projections out of 7,929 eligible interfaces (71.79%). Earlier
 > inventory and demand-snapshot sections retain the metadata versions and dates
 > stated in those sections.
 
@@ -613,6 +613,7 @@ and `@microsoft/dynwinrt/com`.
 | DISPPARAMS / EXCEPINFO | Exact `IDispatch::Invoke` input/output contracts, dedicated JS wrappers, optional null outputs, deferred fill, and failure cleanup | Output/InOut DISPPARAMS, input/InOut EXCEPINFO, nested occurrences, and arbitrary deferred/function-pointer contracts |
 | SAFEARRAY | Rank 1–8, signed bounds, typed scalar/bool/BSTR/interface/VARIANT elements, SafeArray API validation and cleanup | Unsupported element VARTYPEs, rank > 8, untyped arrays whose VARTYPE cannot be proven, and Automation InOut replacement |
 | PROPVARIANT | Scalar numeric/bool, LPWSTR, CLSID, FILETIME, blob, and supported vectors with PropVariantClear | Nested VARIANT vectors, streams/interfaces, arrays, clipboard/storage types, BYREF, and unknown VARTYPEs |
+| FORMATETC / STGMEDIUM | Dedicated target-device-independent `TYMED_HGLOBAL` values; owned outputs use `ReleaseStgMedium`; `GetDataHere` preserves caller allocation; exact IID/slot/shape/fingerprint evidence pins `SetData.fRelease=FALSE` | `DVTARGETDEVICE`, non-HGLOBAL media, JavaScript callback implementation, and ownership-transfer input |
 | Allocator ownership | COM Release, BSTR output/replacement and array elements, VARIANT clear, CoTaskMem buffers/PWSTR elements, boxed GUID, retained JS buffers | LocalFree, custom allocators, allocator interfaces, unknown ownership |
 | Interface pointers | Typed input/output interfaces, QueryInterface, dynamic IID output, and generated multi-interface callback objects with inherited IID aliases | Interface in/out replacement, aggregation, and `IInspectable` implementation |
 | Apartments | Explicit initialization, non-agile owner-thread implementations, synchronous same-thread callbacks, and rejection before entering JS on a foreign thread | Cross-apartment marshaling, GIT/agility handling, and callback dispatch |
@@ -630,7 +631,8 @@ and `@microsoft/dynwinrt/com`.
 - unsupported SAFEARRAY element types/ranks and InOut replacement;
 - BSTR pointer nesting, scalar input `BSTR*`, callee-allocated outer arrays
   without exact allocators, and unknown/custom BSTR allocation contracts;
-- FORMATETC and STGMEDIUM;
+- `DVTARGETDEVICE`, non-HGLOBAL FORMATETC/STGMEDIUM alternatives, and
+  FORMATETC/STGMEDIUM callback methods;
 - callback methods containing unmodeled ownership, Automation, union, array,
   or interface-replacement contracts;
 - cross-thread/apartment marshaling; and
@@ -656,6 +658,7 @@ and `@microsoft/dynwinrt/com`.
 | VARIANT | Supported subset | Dedicated `DynComVariant`; supported tags are VT_EMPTY, VT_NULL, I1/UI1/I2/UI2/I4/UI4/I8/UI8/INT/UINT, R4/R8, BOOL, BSTR, UNKNOWN, DISPATCH, and arrays of supported SAFEARRAY elements. Pointer contracts remain distinct from required input-only by-value aggregates. |
 | SAFEARRAY | Supported subset | `DynComSafeArray` preserves rank/bounds and validates VARTYPE and element width through SafeArray APIs. Supported elements are the scalar integer/float family, VARIANT_BOOL, BSTR, IUnknown, IDispatch, and VARIANT. |
 | PROPVARIANT | Supported subset | `DynComPropVariant` supports the scalar family, LPWSTR, CLSID, FILETIME, BLOB, and vectors of numeric/bool/string/GUID/FILETIME elements. |
+| FORMATETC / STGMEDIUM | Supported HGLOBAL subset | `DynComFormatEtc.hglobal()` represents one exact DVASPECT with `ptd == NULL`; `DynComStgMedium.hglobal()` copies bytes into call-local movable HGLOBAL storage. Outputs are copied before `ReleaseStgMedium`, `GetDataHere` rejects replacement of caller-owned storage, and generated `IDataObject::SetData` fixes `fRelease` to `FALSE`. |
 | DISPPARAMS / EXCEPINFO | Supported for `IDispatch::Invoke` | `DynComDispatchParams` accepts natural-order `DynComVariant[]` plus optional named DISPIDs. `DynComExcepInfo` exposes code/source/description/helpFile/helpContext/scode. Optional Invoke outputs pass native null when not requested. |
 | Typed interface parameters and outputs | Supported | Interface outputs carry an owned COM reference. |
 | Opaque pointers and handle-shaped typedefs | Supported with limits | They are pointer values, not COM objects. Cleanup remains type-specific. |
@@ -704,8 +707,8 @@ of every type in the 24 MB metadata file.
 | Unsupported `PROPVARIANT` alternatives | Property System | Streams/interfaces, arrays, clipboard/storage alternatives, nested VT_VECTOR\|VT_VARIANT, BYREF, and unknown combinations are rejected. | Runtime validation + Win32 winmd signature |
 | Native structs with nested owned pointers outside dedicated contracts | Storage and Shell APIs | `STATSTG` has a dedicated output-only model that adopts and frees its CoTaskMem name on every success and failure path. Arbitrary nested pointer structs still fail closed. | Runtime ownership tests + Win32 winmd signature |
 | Unsupported `SAFEARRAY` shapes | Automation and Office-style COM APIs | Exact declaration-registry entries support documented `VT_I4`, `VT_UI1`, `VT_UI4`, `VT_R8`, `VT_BSTR`, `VT_VARIANT`, and `VT_UNKNOWN` plus an exact interface IID. Unknown VARTYPE, signature drift, input `SAFEARRAY**`, InOut replacement, unsupported records/dispatch contracts, rank > 8, inconsistent bounds/length/element width, and unproven nullable outputs are rejected. | Exact Microsoft citations + SafeArray API validation + Win32 winmd signatures |
-| `FORMATETC` / `STGMEDIUM` | `IDataObject`, clipboard, drag-and-drop | `STGMEDIUM` is a union of handles and interfaces with type-specific release behavior. | Win32 winmd + codegen diagnostic |
-| Untagged/by-value/output/nested unions, bitfields, flexible arrays, and nested owned-resource structs | `STGMEDIUM`, `STRRET`, `BINDPTR`, audio/media formats | Tagged pointer-input unions support only safely POD fields. Missing discriminants, nested unions, BSTR/interfaces/resources, bitfields, and flexible tails fail closed. | Win32 winmd + codegen diagnostics |
+| Unsupported `FORMATETC` / `STGMEDIUM` alternatives | `IDataObject`, clipboard, drag-and-drop | The dedicated model currently accepts only target-device-independent `TYMED_HGLOBAL`. `DVTARGETDEVICE`, GDI, metafile, file, stream, storage, and callback shapes remain closed until their own layout and ownership contracts exist. | Win32 winmd + Microsoft FORMATETC/STGMEDIUM contracts |
+| Untagged/by-value/output/nested unions, bitfields, flexible arrays, and nested owned-resource structs | `STRRET`, `BINDPTR`, audio/media formats | Dedicated STGMEDIUM handling does not generalize to arbitrary unions. Tagged pointer-input unions support only safely POD fields. Missing discriminants, nested unions, BSTR/interfaces/resources, bitfields, and flexible tails fail closed. | Win32 winmd + codegen diagnostics |
 | Unknown packing or non-authoritative explicit offsets | Explicit/packed native records | Exact x86/x64/ARM64 size, alignment, and field offsets are mandatory. Missing facts fail closed rather than assuming the host compiler's defaults. | Layout validation policy |
 | Writable caller-sized native arrays outside the modeled subset | Owning, pointer-element, native-POD, or incompletely described arrays | `IDispatch::GetIDsOfNames` is supported in the complete interface when one metadata count unambiguously groups borrowed string pointers with plain scalar output. Missing count direction, element layout/ownership, or an unambiguous group still fails closed. | Win32 winmd `NativeArrayInfo` + semantic validation |
 | Unsupported BSTR pointer nesting, replacement arrays, or callee-allocated outer arrays | Automation collection APIs | Exact counted input/caller-output BSTR arrays are supported; deeper/replacement shapes still require authoritative outer allocation and per-element contracts. | Win32 winmd signature + ownership analysis |
@@ -718,10 +721,11 @@ of every type in the 24 MB metadata file.
 | General out-of-process activation controls | Custom `CLSCTX` scenarios | The unsafe runtime's `DynCom.coCreateInstance()` currently uses `CLSCTX_INPROC_SERVER`. | Runtime/public-API boundary |
 | Flat Win32 DLL exports | `CreateFile`, registry functions, GDI, etc. | These are not COM interfaces and need a separate DLL-export/handle model. | Architecture boundary |
 
-Consequently, `IDataObject` remains an important, widely encountered interface
-that is not currently supported as a complete generated binding.
-`IPropertyStore` and `IDispatch` are complete; derived Automation interfaces
-still validate all of their additional methods independently.
+Consequently, `IDataObject` now generates completely for the closed HGLOBAL
+subset. Unsupported target-device and storage-medium inputs cannot be
+constructed, while an unsupported native output is cleaned and rejected during
+decoding. `IPropertyStore` and `IDispatch` are complete; derived Automation
+interfaces still validate all of their additional methods independently.
 
 ## Complete-interface census after by-value VARIANT
 
@@ -1222,13 +1226,14 @@ parameters to be exact Out values, and separating counted character pointers
 from terminated strings, the HWND-specific census was **5,567 / 7,929**. The
 exact CoTaskMem output-ownership, parameter-direction, and null-input
 registries subsequently promote 114 additional complete interfaces, bringing
-the current literal census to
-**5,681 / 7,929 = 71.648379%**. The result remains above the 70% target without
-admitting any creator-owned, destroyable, InOut, undocumented, optional, or
-`HWND**` shape.
+that census to 5,681. The dedicated target-device-independent
+`TYMED_HGLOBAL` FORMATETC/STGMEDIUM model promotes 11 more interfaces, bringing
+the current literal census to **5,692 / 7,929 = 71.787111%**. The result remains
+above the 70% target without admitting any unmodeled target-device, storage
+medium, ownership-transfer, or callback shape.
 
 CI reproduces this number with `dynwinrt-codegen com-census --json` and fails
-if the denominator changes, complete generation drops below 5,681, or coverage
+if the denominator changes, complete generation drops below 5,692, or coverage
 falls below 70%.
 
 ## Public-code frequency snapshot
@@ -1276,7 +1281,7 @@ against the resolved namespace.
 |---:|---|---:|---:|---|---|
 | 1 | `ID3D11Device` | 27,552 | 87 | Yes | Fail closed: untyped output ownership |
 | 2 | `IDXGIFactory` | 17,432 | 83 | Yes | Fail closed: untyped output ownership |
-| 3 | `IDataObject` | 10,648 | 44 | Yes | Fail closed: `STGMEDIUM` has unmodeled discriminant/resource ownership |
+| 3 | `IDataObject` | 10,648 | 44 | Yes | Generates completely for target-device-independent `TYMED_HGLOBAL`; generated fake-vtable coverage exercises GetData/GetDataHere/Query/GetCanonical/SetData |
 | 4 | `IMalloc` | 10,624 | 56 | Yes | Generates completely and is live-tested through `CoGetMalloc` |
 | 5 | `IClassFactory` | 6,712 | 70 | Yes | Generates completely and is live-tested through `CoGetClassObject` |
 | 6 | `IDispatch` via `IID_IDispatch` | 6,408 | 46 | Yes | Complete inherited interface generates; `Invoke` uses dedicated DISPPARAMS/EXCEPINFO and explicit optional-output requests |
@@ -1309,13 +1314,14 @@ against the resolved namespace.
 
 - **29 of 30** candidates are defined as `IUnknown`-rooted interfaces in
   Windows.Win32.winmd. `ICoreWebView2` is the only external-metadata case.
-- **23 of 29** Win32-metadata candidates pass complete codegen validation.
-  **6 of 29** fail closed on an unsupported ABI or ownership shape.
+- **24 of 29** Win32-metadata candidates pass complete codegen validation.
+  **5 of 29** fail closed on an unsupported ABI or ownership shape.
 - Among the **top 10** by `.cpp` hits, only `IClassFactory`,
-  `IDispatch`, `IPersistFile`, `IConnectionPoint`, `IWICImagingFactory`, and
-  `IMalloc` pass complete codegen.
+  `IDataObject`, `IDispatch`, `IPersistFile`, `IConnectionPoint`,
+  `IWICImagingFactory`, and `IMalloc` pass complete codegen.
 - The largest unsupported demand clusters are:
-  - discriminated resource unions and non-POD layout (`IDataObject`, parts of Shell and streams);
+  - discriminated resource unions and non-POD layout (parts of Shell, streams,
+    and non-HGLOBAL data-transfer media);
   - Automation contracts beyond the exact supported `IDispatch` compounds
     (XML and Task Scheduler BYREF/InOut and nested ownership);
   - explicit output ownership (`DXGI`, audio);
@@ -1330,7 +1336,7 @@ against the resolved namespace.
 
 This means the current suite provides useful ABI breadth, but it
 does **not** cover every high-frequency interface. In particular,
-`IDataObject`, graphics interfaces, audio, and live real-object
+graphics interfaces, audio, non-HGLOBAL data transfer, and live real-object
 `IDispatch::Invoke` coverage remain material gaps.
 
 ## Engineering priority map
@@ -1363,7 +1369,7 @@ hardware, and whether it adds a distinct ABI shape.
 | `IAudioClient` | Low-level audio streaming | Fails closed because its format and output-pointer shapes are not fully modeled. |
 | `IDispatch` | Automation and scripting | Complete inherited real-metadata generation passes. `GetIDsOfNames` projects as `string[] -> number[]`; `Invoke` accepts `DynComDispatchParams` and explicit result/excepInfo/argErr request options, returning dedicated owning wrappers. Derived Automation interfaces remain independently validated. |
 | `IPropertyStore` | Shell/property metadata | Complete generation and live ShellLink `SetValue`/`GetValue`/`Commit` coverage pass with dedicated PROPVARIANT ownership. |
-| `IDataObject` | Clipboard and drag-and-drop | Unsupported until FORMATETC and STGMEDIUM are modeled. |
+| `IDataObject` | Clipboard and drag-and-drop | Complete safe generation for target-device-independent `TYMED_HGLOBAL`; generated fake-vtable coverage verifies owned GetData output, caller-owned GetDataHere storage, semantic HRESULT, canonical FORMATETC, and borrowed SetData input. |
 
 ## Automated coverage
 

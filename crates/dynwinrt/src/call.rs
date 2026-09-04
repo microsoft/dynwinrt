@@ -406,6 +406,14 @@ pub(crate) trait ArgumentList {
     fn get_dispatch_params(&self, _index: usize) -> Option<&crate::com::DispatchParamsValue> {
         None
     }
+
+    fn get_format_etc(&self, _index: usize) -> Option<&crate::com::FormatEtcValue> {
+        None
+    }
+
+    fn get_stg_medium(&self, _index: usize) -> Option<&crate::com::StgMediumValue> {
+        None
+    }
 }
 
 impl ArgumentList for [WinRTValue] {
@@ -724,6 +732,10 @@ where
         std::collections::BTreeMap::<usize, crate::com::ExcepInfoValue>::new();
     let mut stat_stg_out_values =
         std::collections::BTreeMap::<usize, crate::com::StatStgOutput>::new();
+    let mut format_etc_out_values =
+        std::collections::BTreeMap::<usize, crate::com::FormatEtcOutput>::new();
+    let mut stg_medium_out_values =
+        std::collections::BTreeMap::<usize, crate::com::StgMediumStorage>::new();
     let mut optional_out_requests: Vec<Option<bool>> = Vec::with_capacity(out_count);
 
     // Array storage: Box'd for pointer stability (addresses don't change after creation)
@@ -740,6 +752,8 @@ where
     let mut bstr_in_slots: Vec<BstrCallValue> = Vec::new();
     let mut native_union_in_slots: Vec<Option<NativeUnionStorage>> = Vec::new();
     let mut variant_by_value_in_slots: Vec<crate::com::automation::VariantCopyValue> = Vec::new();
+    let mut format_etc_in_slots: Vec<Box<windows::Win32::System::Com::FORMATETC>> = Vec::new();
+    let mut stg_medium_in_slots: Vec<crate::com::StgMediumStorage> = Vec::new();
 
     // FillArray storage: caller-allocated buffers
     let mut fill_array_slots: Vec<Box<FillArraySlot>> = Vec::new();
@@ -1010,6 +1024,51 @@ where
                 stat_stg_out_values.insert(p.value_index, value);
                 array_out_map.push(None);
                 fill_array_map.push(None);
+            } else if p.typ.is_format_etc() {
+                if p.is_in_out() {
+                    return Err(windows_core::Error::new(
+                        windows_core::HRESULT(0x80070057u32 as i32),
+                        "FORMATETC in/out is not supported",
+                    ));
+                }
+                let mut value = crate::com::FormatEtcOutput::new();
+                out_ptrs.push(value.as_mut_ptr().cast());
+                out_values.push(AbiValue::Pointer(std::ptr::null_mut()));
+                struct_out_values.push(None);
+                guid_out_values.push(None);
+                native_struct_out_values.push(None);
+                variant_out_values.push(None);
+                safe_array_out_values.push(None);
+                prop_variant_out_values.push(None);
+                format_etc_out_values.insert(p.value_index, value);
+                array_out_map.push(None);
+                fill_array_map.push(None);
+            } else if p.typ.is_stg_medium() {
+                let mut value = if p.is_in_out() {
+                    crate::com::StgMediumStorage::from_value(
+                        args.get_stg_medium(p.input_index.expect("STGMEDIUM input index"))
+                            .expect("validated STGMEDIUM in/out value"),
+                    )
+                    .map_err(|error| {
+                        windows_core::Error::new(
+                            windows_core::HRESULT(0x80070057u32 as i32),
+                            &error.message(),
+                        )
+                    })?
+                } else {
+                    crate::com::StgMediumStorage::output()
+                };
+                out_ptrs.push(value.as_mut_ptr().cast());
+                out_values.push(AbiValue::Pointer(std::ptr::null_mut()));
+                struct_out_values.push(None);
+                guid_out_values.push(None);
+                native_struct_out_values.push(None);
+                variant_out_values.push(None);
+                safe_array_out_values.push(None);
+                prop_variant_out_values.push(None);
+                stg_medium_out_values.insert(p.value_index, value);
+                array_out_map.push(None);
+                fill_array_map.push(None);
             } else if p.typ.is_struct() {
                 let val = if p.is_in_out() {
                     args.get_value(p.input_index.expect("in/out input index"))
@@ -1110,6 +1169,25 @@ where
                     )
                 })?,
             );
+        } else if p.is_input() && !p.is_out() && p.typ.is_format_etc() {
+            format_etc_in_slots.push(Box::new(
+                args.get_format_etc(p.input_index.expect("FORMATETC input index"))
+                    .expect("validated FORMATETC input")
+                    .to_raw(),
+            ));
+        } else if p.is_input() && !p.is_out() && p.typ.is_stg_medium() {
+            stg_medium_in_slots.push(
+                crate::com::StgMediumStorage::from_value(
+                    args.get_stg_medium(p.input_index.expect("STGMEDIUM input index"))
+                        .expect("validated STGMEDIUM input"),
+                )
+                .map_err(|error| {
+                    windows_core::Error::new(
+                        windows_core::HRESULT(0x80070057u32 as i32),
+                        &error.message(),
+                    )
+                })?,
+            );
         }
     }
     let native_struct_in_ptrs = native_struct_in_slots
@@ -1200,6 +1278,14 @@ where
                 .cast::<c_void>()
         })
         .collect::<Vec<_>>();
+    let format_etc_in_ptrs = format_etc_in_slots
+        .iter_mut()
+        .map(|value| (&mut **value as *mut windows::Win32::System::Com::FORMATETC).cast::<c_void>())
+        .collect::<Vec<_>>();
+    let stg_medium_in_ptrs = stg_medium_in_slots
+        .iter_mut()
+        .map(crate::com::StgMediumStorage::as_mut_ptr)
+        .collect::<Vec<_>>();
 
     // Phase 2: Build ffi_args
     let mut array_in_idx = 0usize;
@@ -1212,6 +1298,8 @@ where
     let mut safe_array_in_idx = 0usize;
     let mut prop_variant_in_idx = 0usize;
     let mut dispatch_params_in_idx = 0usize;
+    let mut format_etc_in_idx = 0usize;
+    let mut stg_medium_in_idx = 0usize;
     for p in parameters {
         if p.is_out() {
             if let Some(slot_idx) = fill_array_map[p.value_index] {
@@ -1259,6 +1347,12 @@ where
                 variant_by_value_in_slots[variant_by_value_in_idx].as_ref()
             ));
             variant_by_value_in_idx += 1;
+        } else if p.typ.is_format_etc() {
+            ffi_args.push(arg(&format_etc_in_ptrs[format_etc_in_idx]));
+            format_etc_in_idx += 1;
+        } else if p.typ.is_stg_medium() {
+            ffi_args.push(arg(&stg_medium_in_ptrs[stg_medium_in_idx]));
+            stg_medium_in_idx += 1;
         } else if p.typ.is_variant() {
             ffi_args.push(arg(&variant_in_ptrs[variant_in_idx]));
             variant_in_idx += 1;
@@ -1616,6 +1710,24 @@ where
                     result_values.push(NativeCallValue::ExcepInfo(value));
                 } else if let Some(value) = stat_stg_out_values.remove(&p.value_index) {
                     result_values.push(NativeCallValue::StatStg(value.into_value().map_err(
+                        |error| {
+                            windows_core::Error::new(
+                                windows_core::HRESULT(0x80070057u32 as i32),
+                                &error.message(),
+                            )
+                        },
+                    )?));
+                } else if let Some(value) = format_etc_out_values.remove(&p.value_index) {
+                    result_values.push(NativeCallValue::FormatEtc(value.into_value().map_err(
+                        |error| {
+                            windows_core::Error::new(
+                                windows_core::HRESULT(0x80070057u32 as i32),
+                                &error.message(),
+                            )
+                        },
+                    )?));
+                } else if let Some(value) = stg_medium_out_values.remove(&p.value_index) {
+                    result_values.push(NativeCallValue::StgMedium(value.into_value().map_err(
                         |error| {
                             windows_core::Error::new(
                                 windows_core::HRESULT(0x80070057u32 as i32),

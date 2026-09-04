@@ -32,15 +32,15 @@ B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D
 | Result                                               | Interfaces | Percentage |
 | ---------------------------------------------------- | ---------: | ---------: |
 | Externally addressable Classic COM interfaces        |      7,929 |       100% |
-| Complete safe generation                             |      5,681 |     71.65% |
-| Rejected because at least one contract is incomplete |      2,248 |     28.35% |
+| Complete safe generation                             |      5,692 |     71.79% |
+| Rejected because at least one contract is incomplete |      2,237 |     28.21% |
 
 The denominator contains addressable COM interface identities, not flat Win32
 DLL exports. A complete interface means that its full inherited vtable can be
 generated without guessing ABI, layout, count relationships, ownership, or
 cleanup.
 
-The 5,681 figure is semantic codegen coverage, not a claim that every interface
+The 5,692 figure is semantic codegen coverage, not a claim that every interface
 has a dedicated live Windows test or can be activated on every machine.
 
 Reproduce the census with:
@@ -341,31 +341,31 @@ versus 16 (`WBEM_FLAG_RETURN_IMMEDIATELY`), adopt the requested non-null `+1`, a
 release dirty failure output. Generic interface InOut parameters remain manual
 replacement contracts.
 
-**1,442 of 1,446** x64 manual-contract interfaces now have at least one portable
-executable generated high-level method. **1,441** have an executable manual
+**1,433 of 1,437** x64 manual-contract interfaces now have at least one portable
+executable generated high-level method. **1,432** have an executable manual
 method, one retains only metadata-complete methods, and four have no portable
 executable method because every candidate is blocked on another generated
-target. Across the portable generated surface there are **6,083 executable
+target. Across the portable generated surface there are **6,067 executable
 manual methods**, **0 remaining portable manual-classified methods omitted**,
-and **1,163 runtime-blocked methods** still omitted.
+and **1,160 runtime-blocked methods** still omitted.
 
 ### Safe contract evidence census
 
 Stage 1 of the
 [Classic COM contract evidence registry](../architecture/classic-com-contract-evidence-registry.md)
-classifies all 5,681 safe-complete interfaces exactly once:
+classifies all 5,692 safe-complete interfaces exactly once:
 
 | Evidence class | Interfaces |
 | --- | ---: |
-| `standard_derived` | 5,326 |
-| `exact_registry_dependent` | 355 |
+| `standard_derived` | 5,336 |
+| `exact_registry_dependent` | 356 |
 
-The registry declares 495 selector-specific entries; all 495 match pinned
-metadata, 404 distinct entries are safe-consumed, and safe plans contain 655
-entry/interface plus 404 family/interface dependencies. They also consume
-5,974 metadata-attribute and 26,076 universal COM-rule dependency sets.
+The registry declares 496 selector-specific entries; all 496 match pinned
+metadata, 405 distinct entries are safe-consumed, and safe plans contain 656
+entry/interface plus 405 family/interface dependencies. They also consume
+5,976 metadata-attribute and 26,119 universal COM-rule dependency sets.
 Entry/interface dependencies by kind are SAFEARRAY 263, enumerator-next 74,
-borrowed-handle 54, ownership 172, parameter-direction 45, bounded-two-call 16,
+borrowed-handle 54, ownership 173, parameter-direction 45, bounded-two-call 16,
 counted-buffer 16, conditional-output 7, flag-selected-buffer 3, null-input 2,
 semantic-HRESULT 2, and compound-dispatch 1. Complete per-entry status,
 per-family rollups, and per-interface entry IDs are retained in the summary
@@ -393,18 +393,18 @@ allocator, or ownership declaration can corrupt memory or crash the process.
 For `Microsoft.Windows.SDK.Win32Metadata` 71.0.14-preview
 (`Windows.Win32.winmd` SHA-256
 `B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D`),
-the safe census is 5,681 of 7,929 interfaces. The separate outbound raw census
-classifies the 2,248 safe-incomplete interfaces as:
+the safe census is 5,692 of 7,929 interfaces. The separate outbound raw census
+classifies the 2,237 safe-incomplete interfaces as:
 
 | Target | Metadata-complete | Manual contract | Runtime-blocked |
 | ------ | ----------------: | --------------: | --------------: |
-| x64    |               412 |           1,446 |             390 |
-| i686   |               411 |           1,423 |             414 |
-| ARM64  |               412 |           1,446 |             390 |
+| x64    |               412 |           1,437 |             388 |
+| i686   |               411 |           1,414 |             412 |
+| ARM64  |               412 |           1,437 |             388 |
 
-Including safe-complete interfaces, x64 and ARM64 have 6,093
-metadata-complete, 1,446 manual, and 390 blocked interfaces. i686 has 6,092
-metadata-complete, 1,423 manual, and 414 blocked interfaces.
+Including safe-complete interfaces, x64 and ARM64 have 6,104
+metadata-complete, 1,437 manual, and 388 blocked interfaces. i686 has 6,103
+metadata-complete, 1,414 manual, and 412 blocked interfaces.
 
 Pointer-shaped types are analyzed recursively. A missing pointee layout for an
 external input pointer is manual-contract; the same missing layout for a
@@ -414,14 +414,14 @@ writable/readable `T*` caller-storage contract is runtime-blocked. Thus
 layout is complete.
 
 Cleanup availability is no longer represented by ambiguous booleans. Per
-target, 2,251 interfaces require no cleanup, 4,536 use a Phase 1 standard
-cleanup, none use a known external cleanup, and 1,142 have unknown cleanup.
+target, 2,237 interfaces require no cleanup, 4,530 use a Phase 1 standard
+cleanup, none use a known external cleanup, and 1,162 have unknown cleanup.
 Every missing output ownership/allocator contract has `cleanup_unknown`.
 External pointer/callback requirements affect 1,089 x64/ARM64 interfaces and
 1,090 i686 interfaces; 6,804 require external acquisition and all 7,929 retain
 the current-apartment rule.
 
-For all 5,681 safe-complete interfaces, cleanup is derived from the validated
+For all 5,692 safe-complete interfaces, cleanup is derived from the validated
 projected result conversions rather than the raw analyzer. Pure values,
 borrowed handles, caller buffers, and plain arrays are `none_required`.
 Managed COM/dynamic-IID adoption, BSTR, HSTRING, CoTaskMem, VARIANT,
@@ -508,7 +508,7 @@ as ABI support. The legacy `com-census --json` output remains unchanged.
 ## Copyable user-facing statement
 
 > dynwinrt supports the Classic COM interface portion of Windows.Win32
-> metadata. With Win32Metadata 71.0.14-preview, 5,681 of 7,929 addressable COM
+> metadata. With Win32Metadata 71.0.14-preview, 5,692 of 7,929 addressable COM
 > interfaces pass complete safe generation. Safe symbols never fall back to an
 > unsafe implementation; ordinary generation may instead emit an explicitly
 > named `*Unsafe` outbound companion containing only metadata-complete methods.

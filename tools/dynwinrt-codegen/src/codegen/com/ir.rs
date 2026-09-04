@@ -213,6 +213,8 @@ pub(super) enum ComType {
     DispatchParams,
     ExcepInfo,
     StatStg,
+    FormatEtc,
+    StgMedium,
     ManagedInterface {
         iid: String,
     },
@@ -310,6 +312,8 @@ pub(super) enum ResultConversion {
     PropVariant,
     ExcepInfo,
     StatStg,
+    FormatEtc,
+    StgMedium,
     MallocAllocation,
     MallocReallocation,
 }
@@ -452,6 +456,9 @@ pub(super) enum ProjectedComMethodKind {
         synchronous_flags: i32,
         semisynchronous_flags: i32,
     },
+    DataObjectSetData {
+        release_param_index: usize,
+    },
 }
 
 /// The JS runtime `typeof`/shape category a validated value uses at a call
@@ -568,7 +575,10 @@ pub(super) fn dispatch_shape(typ: &ComType) -> Option<DispatchShape> {
             | ComScalarRepr::NativeUsize => Some(DispatchShape::BigInt),
             ComScalarRepr::Primitive(_) => Some(DispatchShape::Number),
         },
-        ComType::ManagedInterface { .. } | ComType::DispatchParams => Some(DispatchShape::Object),
+        ComType::ManagedInterface { .. }
+        | ComType::DispatchParams
+        | ComType::FormatEtc
+        | ComType::StgMedium => Some(DispatchShape::Object),
         // Raw/aliased pointers and BSTR accept multiple overlapping JS input
         // shapes (`bigint`, `number`, `Buffer`, `Uint8Array`, or `string`)
         // depending on position, so they can collide with any other category
