@@ -492,12 +492,14 @@ const ADDITIONAL_EXACT_ENTRY_IDS: &[&str] = &[
     "com.ownership.entry.windows-win32-system-com.ipersistfile.0000010b00000000c000000000000046.getcurfile.slot-8.param-0-ppszfilename.v1",
     "com.ownership.entry.windows-win32-system-com.istream.0000000c00000000c000000000000046.stat.slot-12.v1",
     "com.ownership.entry.windows-win32-system-com-structuredstorage.istorage.0000000b00000000c000000000000046.stat.slot-17.v1",
+    "com.ownership.entry.windows-win32-system-ole.iolecache.0000011e00000000c000000000000046.setdata.slot-7.v1",
     "shell.flag-selected-string.entry.windows-win32-ui-shell.icontextmenu.000214e400000000c000000000000046.getcommandstring.slot-5.v1",
     "com.ownership.entry.windows-win32-ui-shell.ifiledialog.42f85136db7e439c85f1e4075d135fc8.getfilename.slot-16.param-0-pszname.v1",
     "com.ownership.entry.windows-win32-ui-shell.ishellitem.43826d1ee71842eebc55a1e261c37bfe.getdisplayname.slot-5.param-1-ppszname.v1",
     "com.ownership.entry.windows-win32-ui-shell.ishelllinka.000214ee00000000c000000000000046.getidlist.slot-4.param-0-ppidl.v1",
     "com.ownership.entry.windows-win32-ui-shell.ishelllinkw.000214f900000000c000000000000046.getidlist.slot-4.param-0-ppidl.v1",
     "com.semantic-hresult.entry.windows-win32-system-com.ipersistfile.0000010b00000000c000000000000046.getcurfile.slot-8.v1",
+    "com.semantic-hresult.entry.windows-win32-system-com.idataobject.0000010e00000000c000000000000046.getcanonicalformatetc.slot-6.v1",
     "com.sequential-stream-buffer.entry.windows-win32-system-com.isequentialstream.0c733a302a1c11ceade500aa0044773d.read.slot-3.param-0-pv.v1",
     "com.sequential-stream-buffer.entry.windows-win32-system-com.isequentialstream.0c733a302a1c11ceade500aa0044773d.write.slot-4.param-0-pv.v1",
     "graphics.private-data-hazard.entry.windows-win32-ai-machinelearning-directml.idmlobject.c8263aac9e0c4a2d9b8e007521a3317c.getprivatedata.slot-3.v1",
@@ -1140,7 +1142,7 @@ mod tests {
         serde_json::from_str::<serde_json::Value>(SCHEMA_JSON).unwrap();
         let registry = load_registry().unwrap();
         let ids = statically_declared_exact_entry_ids().unwrap();
-        assert_eq!(ids.len(), 496);
+        assert_eq!(ids.len(), 498);
         assert_eq!(registry.conditional_outputs.len(), 7);
         assert_eq!(registry.ownership_outputs.len(), 148);
         assert_eq!(

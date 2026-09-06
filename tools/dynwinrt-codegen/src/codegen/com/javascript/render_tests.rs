@@ -201,6 +201,84 @@ fn renderer_serializes_validated_com_sink_plan() {
 }
 
 #[test]
+fn storage_medium_result_rules_and_borrowing_are_serialized_from_ir() {
+    let format_param = |name: &str, direction| ProjectedComParam {
+        name: name.into(),
+        typ: ComType::FormatEtc,
+        direction,
+        surface_input: direction == ComParamDirection::In,
+        surface_result: direction == ComParamDirection::Out,
+        nullable: false,
+    };
+    let mut method = ProjectedComMethod {
+        name: "Normalize".into(),
+        camel_name: "normalize".into(),
+        vtable_index: 6,
+        params: vec![
+            format_param("input", ComParamDirection::In),
+            format_param("output", ComParamDirection::Out),
+        ],
+        return_convention: ComReturnConvention::SemanticHResult,
+        results: vec![
+            ProjectedComResult {
+                typ: ComType::HResult,
+                source: ResultSource::DirectReturn,
+                conversion: ResultConversion::Value,
+            },
+            ProjectedComResult {
+                typ: ComType::FormatEtc,
+                source: ResultSource::Param(1),
+                conversion: ResultConversion::FormatEtc,
+            },
+        ],
+        string_buffer: None,
+        typed_buffers: Vec::new(),
+        shared_counts: Vec::new(),
+        kind: ProjectedComMethodKind::CanonicalFormatEtc {
+            input_param_index: 0,
+            output_param_index: 1,
+        },
+        doc: None,
+        overload: None,
+    };
+    assert_eq!(
+        super::build_method_sig_js(&method),
+        "new DynComMethodSig().addIn(DynCom.formatEtcType()).addOut(DynCom.formatEtcType()).preserveHresult().canonicalFormatEtcResult(0, 1)"
+    );
+    method.kind = ProjectedComMethodKind::Normal;
+    assert!(!super::build_method_sig_js(&method).contains("canonicalFormatEtcResult"));
+
+    method.name = "Store".into();
+    method.camel_name = "store".into();
+    method.kind = ProjectedComMethodKind::BorrowedStgMediumInput {
+        release_param_index: 2,
+    };
+    method.params[1] = ProjectedComParam {
+        name: "medium".into(),
+        typ: ComType::StgMedium,
+        direction: ComParamDirection::In,
+        surface_input: true,
+        surface_result: false,
+        nullable: false,
+    };
+    method.params.push(ProjectedComParam {
+        name: "transfer".into(),
+        typ: ComType::Win32Bool,
+        direction: ComParamDirection::In,
+        surface_input: false,
+        surface_result: false,
+        nullable: false,
+    });
+    method.return_convention = ComReturnConvention::HResult;
+    method.results.clear();
+    let mut js = String::new();
+    emit_method_js(&mut js, &method, "_iface");
+    assert!(js.contains("store(input, medium)"));
+    assert!(js.contains("DynCom.stgMedium(medium), DynCom.i32(0)"));
+    assert!(!dts_params(&method).join(", ").contains("transfer"));
+}
+
+#[test]
 fn renderer_serializes_direct_and_void_com_sink_returns() {
     let methods = vec![
         ProjectedComMethod {

@@ -735,12 +735,38 @@ impl FormatEtcOutput {
         value
     }
 
+    pub(crate) fn into_canonical_value(
+        mut self,
+        input: &FormatEtcValue,
+        hresult: HRESULT,
+    ) -> result::Result<FormatEtcValue> {
+        use windows::Win32::Foundation::{DATA_S_SAMEFORMATETC, S_OK};
+
+        if hresult == DATA_S_SAMEFORMATETC {
+            // The output is unused; this status does not transfer a target-device owner.
+            self.raw.ptd = std::ptr::null_mut();
+            return Ok(input.clone());
+        }
+        let value = if hresult == S_OK {
+            // Canonicalization does not select a transfer medium.
+            self.raw.tymed = input.tymed();
+            FormatEtcValue::from_raw(&self.raw)
+        } else {
+            Err(invalid_argument(format!(
+                "unexpected canonical FORMATETC success HRESULT {:#010x}",
+                hresult.0 as u32
+            )))
+        };
+        self.free_target_device();
+        value
+    }
+
     fn free_target_device(&mut self) {
         if self.raw.ptd.is_null() {
             return;
         }
         unsafe {
-            windows::Win32::System::Com::CoTaskMemFree(Some(self.raw.ptd.cast()));
+            OutputCleanup::CoTaskMemFree.cleanup(self.raw.ptd.cast());
         }
         self.raw.ptd = std::ptr::null_mut();
     }
@@ -5616,6 +5642,13 @@ pub struct MethodSignature {
     parameters: Vec<ComParameterSpec>,
     return_plan: ComReturnPlan,
     enumerator_next_vtable_index: Option<usize>,
+    canonical_format_etc: Option<CanonicalFormatEtcContract>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CanonicalFormatEtcContract {
+    input_param_index: usize,
+    output_param_index: usize,
 }
 
 impl MethodSignature {
@@ -5625,6 +5658,7 @@ impl MethodSignature {
             parameters: Vec::new(),
             return_plan: ComReturnPlan::HResult,
             enumerator_next_vtable_index: None,
+            canonical_format_etc: None,
         }
     }
 
@@ -5860,6 +5894,18 @@ impl MethodSignature {
         self
     }
 
+    pub fn canonical_format_etc_result(
+        mut self,
+        input_param_index: usize,
+        output_param_index: usize,
+    ) -> Self {
+        self.canonical_format_etc = Some(CanonicalFormatEtcContract {
+            input_param_index,
+            output_param_index,
+        });
+        self
+    }
+
     fn validate_registration(
         &self,
         interface_iid: GUID,
@@ -5956,6 +6002,24 @@ impl MethodSignature {
         validate_automation_contracts(&self.parameters, &self.return_plan)?;
         validate_in_out_ownership(&self.parameters)?;
         validate_buffer_contracts(&self.parameters)?;
+        if let Some(contract) = self.canonical_format_etc {
+            let valid = contract.input_param_index == 0
+                && contract.output_param_index == 1
+                && self.parameters.len() == 2
+                && matches!(self.return_plan, ComReturnPlan::SemanticHResult)
+                && self.parameters[0].direction == ComParameterDirection::In
+                && self.parameters[1].direction == ComParameterDirection::Out
+                && self.parameters.iter().all(|parameter| {
+                    parameter.typ.abi.is_format_etc()
+                        && parameter.buffer.is_none()
+                        && !parameter.nullable
+                });
+            if !valid {
+                return Err(invalid_argument(
+                    "canonical FORMATETC results require exactly FORMATETC In/Out parameters at 0/1 and a semantic HRESULT",
+                ));
+            }
+        }
         let enumerator_buffers = self
             .parameters
             .iter()
@@ -6015,8 +6079,14 @@ impl MethodSignature {
                 cleanup: typ.output_cleanup(),
             },
         };
-        let native =
-            lower_completed_method(&self.table, vtable_index, native_parameters, native_return);
+        let native = lower_completed_method(
+            &self.table,
+            vtable_index,
+            native_parameters,
+            native_return,
+            self.canonical_format_etc
+                .map(|contract| (contract.input_param_index, contract.output_param_index)),
+        );
         Ok(RegisteredMethod {
             plan: ComCallPlan::new(native, self.parameters, self.return_plan),
             callback_plan,
@@ -13886,6 +13956,185 @@ mod tests {
         assert_eq!(
             unsafe { windows::Win32::System::Memory::GlobalSize(released) },
             0
+        );
+    }
+
+    #[test]
+    fn canonical_format_etc_result_rules_preserve_status_and_cleanup() {
+        use windows::Win32::Foundation::{DATA_S_SAMEFORMATETC, S_OK};
+        use windows::Win32::System::Com::{CoTaskMemAlloc, DVTARGETDEVICE, FORMATETC};
+
+        #[repr(C)]
+        struct CanonicalCall {
+            vtable: *const *mut c_void,
+            status: HRESULT,
+            write_output: bool,
+            target_device: bool,
+            clipboard_format: u16,
+            aspect: u32,
+            tymed: u32,
+        }
+
+        unsafe extern "system" fn canonical(
+            this: *mut c_void,
+            input: *const FORMATETC,
+            output: *mut FORMATETC,
+        ) -> HRESULT {
+            let call = unsafe { &*this.cast::<CanonicalCall>() };
+            if input.is_null() || output.is_null() {
+                return HRESULT(0x80004003u32 as i32);
+            }
+            if call.write_output {
+                let target = if call.target_device {
+                    let target = unsafe { CoTaskMemAlloc(size_of::<DVTARGETDEVICE>()) };
+                    if target.is_null() {
+                        return HRESULT(0x8007000eu32 as i32);
+                    }
+                    unsafe {
+                        std::ptr::write_bytes(target.cast::<u8>(), 0, size_of::<DVTARGETDEVICE>())
+                    };
+                    target.cast()
+                } else {
+                    std::ptr::null_mut()
+                };
+                unsafe {
+                    output.write(FORMATETC {
+                        cfFormat: call.clipboard_format,
+                        ptd: target,
+                        dwAspect: call.aspect,
+                        lindex: -1,
+                        tymed: call.tymed,
+                    });
+                }
+            }
+            call.status
+        }
+
+        let table = MetadataTable::new();
+        let input = FormatEtcValue::hglobal(13, 1, -1).unwrap();
+        let ordinary = || {
+            MethodSignature::new(&table)
+                .add_in(Type::format_etc())
+                .add_out(Type::format_etc())
+                .preserve_hresult()
+        };
+        let method = ordinary()
+            .canonical_format_etc_result(0, 1)
+            .build(0)
+            .unwrap();
+        let vtable = [canonical as *mut c_void];
+        let mut call = CanonicalCall {
+            vtable: vtable.as_ptr(),
+            status: S_OK,
+            write_output: true,
+            target_device: false,
+            clipboard_format: 1,
+            aspect: 2,
+            tymed: 0,
+        };
+        let invoke = |call: &mut CanonicalCall| {
+            method.plan.invoke_values(
+                (call as *mut CanonicalCall).cast(),
+                &[Value::FormatEtc(input.clone())],
+            )
+        };
+        for tymed in [0, u32::MAX] {
+            call.tymed = tymed;
+            let result = invoke(&mut call).unwrap();
+            assert!(matches!(&result[0], Value::WinRt(WinRTValue::HResult(hr)) if *hr == S_OK));
+            let Value::FormatEtc(format) = &result[1] else {
+                panic!("expected canonical FORMATETC value");
+            };
+            assert_eq!(format.clipboard_format(), 1);
+            assert_eq!(format.aspect(), 2);
+            assert_eq!(format.tymed(), input.tymed());
+        }
+
+        call.status = DATA_S_SAMEFORMATETC;
+        call.clipboard_format = 0;
+        call.aspect = 0;
+        for write_output in [false, true] {
+            call.write_output = write_output;
+            let result = invoke(&mut call).unwrap();
+            assert!(
+                matches!(&result[0], Value::WinRt(WinRTValue::HResult(hr)) if *hr == DATA_S_SAMEFORMATETC)
+            );
+            assert!(matches!(&result[1], Value::FormatEtc(format) if format == &input));
+        }
+
+        call.write_output = true;
+        call.clipboard_format = 1;
+        call.aspect = 2;
+        call.tymed = 0;
+        call.target_device = true;
+        for (status, message) in [
+            (S_OK, "target-device output is not supported"),
+            (HRESULT(0x80004005u32 as i32), "80004005"),
+            (HRESULT(1), "unexpected canonical FORMATETC success HRESULT"),
+        ] {
+            call.status = status;
+            crate::native_call::reset_co_task_mem_test_frees();
+            let error = invoke(&mut call).unwrap_err();
+            assert!(error.message().contains(message), "{}", error.message());
+            assert_eq!(crate::native_call::co_task_mem_test_frees(), 1);
+        }
+
+        call.status = S_OK;
+        call.target_device = false;
+        let error = ordinary()
+            .build(0)
+            .unwrap()
+            .plan
+            .invoke_values(
+                (&mut call as *mut CanonicalCall).cast(),
+                &[Value::FormatEtc(input)],
+            )
+            .unwrap_err();
+        assert!(error.message().contains("only TYMED_HGLOBAL"));
+    }
+
+    #[test]
+    fn canonical_format_etc_signature_rejects_other_shapes() {
+        let table = MetadataTable::new();
+        let valid = || {
+            MethodSignature::new(&table)
+                .add_in(Type::format_etc())
+                .add_out(Type::format_etc())
+                .preserve_hresult()
+        };
+        for (input, output) in [(1, 0), (0, 0), (0, usize::MAX)] {
+            assert!(
+                valid()
+                    .canonical_format_etc_result(input, output)
+                    .build(0)
+                    .is_err()
+            );
+        }
+        assert!(
+            MethodSignature::new(&table)
+                .add_in(Type::format_etc())
+                .add_out(Type::format_etc())
+                .canonical_format_etc_result(0, 1)
+                .build(0)
+                .is_err()
+        );
+        assert!(
+            MethodSignature::new(&table)
+                .add_in(Type::stg_medium())
+                .add_out(Type::format_etc())
+                .preserve_hresult()
+                .canonical_format_etc_result(0, 1)
+                .build(0)
+                .is_err()
+        );
+        assert!(
+            MethodSignature::new(&table)
+                .add_nullable_in(Type::format_etc())
+                .add_out(Type::format_etc())
+                .preserve_hresult()
+                .canonical_format_etc_result(0, 1)
+                .build(0)
+                .is_err()
         );
     }
 

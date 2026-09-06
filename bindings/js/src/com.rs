@@ -2026,6 +2026,20 @@ impl DynComMethodSig {
   }
 
   #[napi]
+  pub fn canonical_format_etc_result(
+    &self,
+    input_param_index: f64,
+    output_param_index: f64,
+  ) -> napi::Result<Self> {
+    let input = checked_unsigned_number(input_param_index, u32::MAX.into(), "inputParamIndex")?;
+    let output = checked_unsigned_number(output_param_index, u32::MAX.into(), "outputParamIndex")?;
+    Ok(Self(self.0.clone().canonical_format_etc_result(
+      input as usize,
+      output as usize,
+    )))
+  }
+
+  #[napi]
   pub fn add_in_out(&self, typ: &DynComType) -> Self {
     Self(self.0.clone().add_in_out(typ.0.clone()))
   }

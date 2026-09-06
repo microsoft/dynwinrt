@@ -658,7 +658,7 @@ and `@microsoft/dynwinrt/com`.
 | VARIANT | Supported subset | Dedicated `DynComVariant`; supported tags are VT_EMPTY, VT_NULL, I1/UI1/I2/UI2/I4/UI4/I8/UI8/INT/UINT, R4/R8, BOOL, BSTR, UNKNOWN, DISPATCH, and arrays of supported SAFEARRAY elements. Pointer contracts remain distinct from required input-only by-value aggregates. |
 | SAFEARRAY | Supported subset | `DynComSafeArray` preserves rank/bounds and validates VARTYPE and element width through SafeArray APIs. Supported elements are the scalar integer/float family, VARIANT_BOOL, BSTR, IUnknown, IDispatch, and VARIANT. |
 | PROPVARIANT | Supported subset | `DynComPropVariant` supports the scalar family, LPWSTR, CLSID, FILETIME, BLOB, and vectors of numeric/bool/string/GUID/FILETIME elements. |
-| FORMATETC / STGMEDIUM | Supported HGLOBAL subset | `DynComFormatEtc.hglobal()` represents one exact DVASPECT with `ptd == NULL`; `DynComStgMedium.hglobal()` copies bytes into call-local movable HGLOBAL storage. Outputs are copied before `ReleaseStgMedium`, `GetDataHere` rejects replacement of caller-owned storage, and generated `IDataObject::SetData` fixes `fRelease` to `FALSE`. |
+| FORMATETC / STGMEDIUM | Supported HGLOBAL subset | `DynComFormatEtc.hglobal()` represents one exact DVASPECT with `ptd == NULL`; `DynComStgMedium.hglobal()` copies bytes into call-local movable HGLOBAL storage. Outputs are copied before `ReleaseStgMedium`, `GetDataHere` rejects replacement of caller-owned storage, and generated `IDataObject::SetData` and `IOleCache::SetData` (including `IOleCache2`) fix `fRelease` to `FALSE`. |
 | DISPPARAMS / EXCEPINFO | Supported for `IDispatch::Invoke` | `DynComDispatchParams` accepts natural-order `DynComVariant[]` plus optional named DISPIDs. `DynComExcepInfo` exposes code/source/description/helpFile/helpContext/scode. Optional Invoke outputs pass native null when not requested. |
 | Typed interface parameters and outputs | Supported | Interface outputs carry an owned COM reference. |
 | Opaque pointers and handle-shaped typedefs | Supported with limits | They are pointer values, not COM objects. Cleanup remains type-specific. |
@@ -679,6 +679,14 @@ and `@microsoft/dynwinrt/com`.
 | Referenced interface types | Supported when IID metadata is loaded | Missing external definitions fail closed and direct callers to pass the defining winmd with `--ref`. |
 | Dynamic-IID `void**` outputs | Supported for explicit required REFIID shapes | The method must return ordinary HRESULT and contain exactly one required const `GUID*` named `iid`/`riid` plus one required mutable `void**`/Object** output with +1 COM ownership. Their explicit parameter indices may be non-adjacent/non-terminal. Optional, duplicate, array, FreeWith, InOut, by-value/mutable/deeper GUID, and wrong-depth output shapes fail closed. |
 | Explicit apartment initialization | Supported | `initializeCom()` never silently chooses an apartment for the caller. |
+
+`IDataObject::GetCanonicalFormatEtc` has a separate result contract. For `S_OK`,
+the runtime ignores the native output's `tymed` and retains the caller's
+supported transfer medium while decoding the remaining canonical fields.
+For `DATA_S_SAMEFORMATETC`, the returned value is a copy of the input; the unused
+output is not decoded or adopted. The native HRESULT is preserved in both
+cases. Other FORMATETC outputs retain the strict HGLOBAL validator, and
+unsupported target-device output is cleaned and rejected.
 
 The generator emits native POD storage only after every architecture-specific
 layout fact has been validated. A `Buffer` in this path represents the struct's

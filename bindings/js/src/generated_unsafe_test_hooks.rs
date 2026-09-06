@@ -9,9 +9,10 @@ use std::{
 use napi::bindgen_prelude::BigInt;
 use napi_derive::napi;
 use windows::{
-  core::{IUnknown, IUnknown_Vtbl, Interface, GUID, HRESULT, PCWSTR},
+  core::{IUnknown, IUnknown_Vtbl, Interface, BOOL, GUID, HRESULT, PCWSTR},
   Win32::System::{
     Com::SAFEARRAY,
+    Ole::{IOleCache, IOleCache2, IOleCache2_Vtbl, IOleCache_Vtbl, UPDFCACHE_FLAGS},
     Variant::VARIANT,
     Wmi::{
       IWbemCallResult_Vtbl, IWbemClassObject_Vtbl, IWbemServices_Vtbl, WBEM_COMPARISON_FLAG,
@@ -69,12 +70,18 @@ static DATA_OBJECT_GET_DATA_CALLS: AtomicU32 = AtomicU32::new(0);
 static DATA_OBJECT_GET_DATA_HERE_CALLS: AtomicU32 = AtomicU32::new(0);
 static DATA_OBJECT_QUERY_GET_DATA_CALLS: AtomicU32 = AtomicU32::new(0);
 static DATA_OBJECT_CANONICAL_CALLS: AtomicU32 = AtomicU32::new(0);
+static DATA_OBJECT_CANONICAL_MODE: AtomicI32 = AtomicI32::new(0);
 static DATA_OBJECT_SET_DATA_CALLS: AtomicU32 = AtomicU32::new(0);
 static DATA_OBJECT_LAST_SET_RELEASE: AtomicI32 = AtomicI32::new(-1);
 static DATA_OBJECT_LAST_OUTPUT_HANDLE: AtomicUsize = AtomicUsize::new(0);
 static DATA_OBJECT_LAST_GET_DATA_HERE_HANDLE: AtomicUsize = AtomicUsize::new(0);
 static DATA_OBJECT_LAST_SET_DATA_HANDLE: AtomicUsize = AtomicUsize::new(0);
 static DATA_OBJECT_CURRENT_REF_COUNT: AtomicU32 = AtomicU32::new(0);
+static OLE_CACHE_SET_DATA_CALLS: AtomicU32 = AtomicU32::new(0);
+static OLE_CACHE_BORROWED_INPUT_CALLS: AtomicU32 = AtomicU32::new(0);
+static OLE_CACHE_LAST_SET_RELEASE: AtomicI32 = AtomicI32::new(-1);
+static OLE_CACHE_LAST_SET_DATA_HANDLE: AtomicUsize = AtomicUsize::new(0);
+static OLE_CACHE_CURRENT_REF_COUNT: AtomicU32 = AtomicU32::new(0);
 
 #[repr(C)]
 struct GeneratedIWbemServicesFake {
@@ -1151,6 +1158,15 @@ unsafe fn read_hglobal_bytes(
   Some(bytes)
 }
 
+fn hglobal_handle_released(address: usize) -> bool {
+  address != 0
+    && unsafe {
+      windows::Win32::System::Memory::GlobalSize(windows::Win32::Foundation::HGLOBAL(
+        std::ptr::with_exposed_provenance_mut(address),
+      ))
+    } == 0
+}
+
 unsafe extern "system" fn data_object_get_data(
   _this: *mut c_void,
   format: *const windows::Win32::System::Com::FORMATETC,
@@ -1210,16 +1226,39 @@ unsafe extern "system" fn data_object_get_canonical_format_etc(
   if !valid_hglobal_format(input) || output.is_null() {
     return E_POINTER;
   }
+  let mode = DATA_OBJECT_CANONICAL_MODE.load(Ordering::SeqCst);
+  match mode {
+    -1 => return HRESULT(0x80004005u32 as i32),
+    2 => return HRESULT(0x40130),
+    3 => {
+      // DATA_S_SAMEFORMATETC must not decode these invalid scalar fields.
+      unsafe {
+        output.write(windows::Win32::System::Com::FORMATETC {
+          cfFormat: 0,
+          ptd: std::ptr::null_mut(),
+          dwAspect: u32::MAX,
+          lindex: i32::MIN,
+          tymed: u32::MAX,
+        });
+      }
+      return HRESULT(0x40130);
+    }
+    _ => {}
+  }
   unsafe {
     output.write(windows::Win32::System::Com::FORMATETC {
-      cfFormat: (*input).cfFormat,
+      cfFormat: 1,
       ptd: std::ptr::null_mut(),
-      dwAspect: (*input).dwAspect,
-      lindex: (*input).lindex,
-      tymed: (*input).tymed,
+      dwAspect: 4,
+      lindex: 7,
+      tymed: match mode {
+        0 => 0,
+        1 => u32::MAX,
+        _ => windows::Win32::System::Com::TYMED_HGLOBAL.0 as u32,
+      },
     });
   }
-  HRESULT(0)
+  HRESULT(if mode == 4 { 1 } else { 0 })
 }
 
 unsafe extern "system" fn data_object_set_data(
@@ -1311,6 +1350,7 @@ pub fn create_generated_data_object_fake() -> napi::Result<DynWinRTValue> {
   DATA_OBJECT_GET_DATA_HERE_CALLS.store(0, Ordering::SeqCst);
   DATA_OBJECT_QUERY_GET_DATA_CALLS.store(0, Ordering::SeqCst);
   DATA_OBJECT_CANONICAL_CALLS.store(0, Ordering::SeqCst);
+  DATA_OBJECT_CANONICAL_MODE.store(0, Ordering::SeqCst);
   DATA_OBJECT_SET_DATA_CALLS.store(0, Ordering::SeqCst);
   DATA_OBJECT_LAST_SET_RELEASE.store(-1, Ordering::SeqCst);
   DATA_OBJECT_LAST_OUTPUT_HANDLE.store(0, Ordering::SeqCst);
@@ -1326,15 +1366,18 @@ pub fn create_generated_data_object_fake() -> napi::Result<DynWinRTValue> {
 }
 
 #[napi]
+pub fn set_generated_data_object_canonical_mode(mode: i32) -> napi::Result<()> {
+  if !matches!(mode, -1..=4) {
+    return Err(napi::Error::from_reason(
+      "IDataObject canonical test mode must be between -1 and 4",
+    ));
+  }
+  DATA_OBJECT_CANONICAL_MODE.store(mode, Ordering::SeqCst);
+  Ok(())
+}
+
+#[napi]
 pub fn generated_data_object_stats() -> GeneratedDataObjectStats {
-  let handle_released = |address| {
-    address != 0
-      && unsafe {
-        windows::Win32::System::Memory::GlobalSize(windows::Win32::Foundation::HGLOBAL(
-          std::ptr::with_exposed_provenance_mut(address),
-        ))
-      } == 0
-  };
   GeneratedDataObjectStats {
     get_data_calls: DATA_OBJECT_GET_DATA_CALLS.load(Ordering::SeqCst),
     get_data_here_calls: DATA_OBJECT_GET_DATA_HERE_CALLS.load(Ordering::SeqCst),
@@ -1342,14 +1385,176 @@ pub fn generated_data_object_stats() -> GeneratedDataObjectStats {
     canonical_calls: DATA_OBJECT_CANONICAL_CALLS.load(Ordering::SeqCst),
     set_data_calls: DATA_OBJECT_SET_DATA_CALLS.load(Ordering::SeqCst),
     last_set_release: DATA_OBJECT_LAST_SET_RELEASE.load(Ordering::SeqCst),
-    output_released: handle_released(DATA_OBJECT_LAST_OUTPUT_HANDLE.load(Ordering::SeqCst)),
-    get_data_here_input_released: handle_released(
+    output_released: hglobal_handle_released(DATA_OBJECT_LAST_OUTPUT_HANDLE.load(Ordering::SeqCst)),
+    get_data_here_input_released: hglobal_handle_released(
       DATA_OBJECT_LAST_GET_DATA_HERE_HANDLE.load(Ordering::SeqCst),
     ),
-    set_data_input_released: handle_released(
+    set_data_input_released: hglobal_handle_released(
       DATA_OBJECT_LAST_SET_DATA_HANDLE.load(Ordering::SeqCst),
     ),
     current_ref_count: DATA_OBJECT_CURRENT_REF_COUNT.load(Ordering::SeqCst),
+  }
+}
+
+#[repr(C)]
+struct GeneratedOleCacheFake {
+  vtable: *const IOleCache2_Vtbl,
+  references: AtomicU32,
+}
+
+unsafe extern "system" fn ole_cache_query_interface(
+  this: *mut c_void,
+  iid: *const GUID,
+  result: *mut *mut c_void,
+) -> HRESULT {
+  if iid.is_null() || result.is_null() {
+    return E_POINTER;
+  }
+  unsafe {
+    *result = std::ptr::null_mut();
+    if *iid != IUnknown::IID && *iid != IOleCache::IID && *iid != IOleCache2::IID {
+      return E_NOINTERFACE;
+    }
+    *result = this;
+    ole_cache_add_ref(this);
+  }
+  HRESULT(0)
+}
+
+unsafe extern "system" fn ole_cache_add_ref(this: *mut c_void) -> u32 {
+  let object = unsafe { &*this.cast::<GeneratedOleCacheFake>() };
+  let count = object.references.fetch_add(1, Ordering::SeqCst) + 1;
+  OLE_CACHE_CURRENT_REF_COUNT.store(count, Ordering::SeqCst);
+  count
+}
+
+unsafe extern "system" fn ole_cache_release(this: *mut c_void) -> u32 {
+  let object = unsafe { &*this.cast::<GeneratedOleCacheFake>() };
+  let count = object.references.fetch_sub(1, Ordering::SeqCst) - 1;
+  OLE_CACHE_CURRENT_REF_COUNT.store(count, Ordering::SeqCst);
+  if count == 0 {
+    unsafe {
+      drop(Box::from_raw(this.cast::<GeneratedOleCacheFake>()));
+    }
+  }
+  count
+}
+
+unsafe extern "system" fn ole_cache_cache(
+  _this: *mut c_void,
+  _format: *const windows::Win32::System::Com::FORMATETC,
+  _flags: u32,
+  _connection: *mut u32,
+) -> HRESULT {
+  E_NOTIMPL
+}
+
+unsafe extern "system" fn ole_cache_uncache(_this: *mut c_void, _connection: u32) -> HRESULT {
+  E_NOTIMPL
+}
+
+unsafe extern "system" fn ole_cache_enum_cache(
+  _this: *mut c_void,
+  _result: *mut *mut c_void,
+) -> HRESULT {
+  E_NOTIMPL
+}
+
+unsafe extern "system" fn ole_cache_init_cache(
+  _this: *mut c_void,
+  _data_object: *mut c_void,
+) -> HRESULT {
+  E_NOTIMPL
+}
+
+unsafe extern "system" fn ole_cache_set_data(
+  _this: *mut c_void,
+  format: *const windows::Win32::System::Com::FORMATETC,
+  medium: *const windows::Win32::System::Com::STGMEDIUM,
+  release_medium: BOOL,
+) -> HRESULT {
+  OLE_CACHE_SET_DATA_CALLS.fetch_add(1, Ordering::SeqCst);
+  OLE_CACHE_LAST_SET_RELEASE.store(release_medium.0, Ordering::SeqCst);
+  // Reject ownership transfer before touching the borrowed allocation.
+  if release_medium.0 != 0 {
+    return HRESULT(0x80070057u32 as i32);
+  }
+  if !valid_hglobal_format(format)
+    || medium.is_null()
+    || unsafe { (*medium).pUnkForRelease.is_some() }
+    || unsafe { read_hglobal_bytes(medium) }.as_deref() != Some(&[5, 6, 7, 8])
+  {
+    return HRESULT(0x80070057u32 as i32);
+  }
+  OLE_CACHE_LAST_SET_DATA_HANDLE.store(unsafe { (*medium).u.hGlobal }.0.addr(), Ordering::SeqCst);
+  OLE_CACHE_BORROWED_INPUT_CALLS.fetch_add(1, Ordering::SeqCst);
+  HRESULT(0)
+}
+
+unsafe extern "system" fn ole_cache_update_cache(
+  _this: *mut c_void,
+  _data_object: *mut c_void,
+  _flags: UPDFCACHE_FLAGS,
+  _reserved: *const c_void,
+) -> HRESULT {
+  E_NOTIMPL
+}
+
+unsafe extern "system" fn ole_cache_discard_cache(_this: *mut c_void, _options: u32) -> HRESULT {
+  E_NOTIMPL
+}
+
+static OLE_CACHE_VTABLE: IOleCache2_Vtbl = IOleCache2_Vtbl {
+  base__: IOleCache_Vtbl {
+    base__: IUnknown_Vtbl {
+      QueryInterface: ole_cache_query_interface,
+      AddRef: ole_cache_add_ref,
+      Release: ole_cache_release,
+    },
+    Cache: ole_cache_cache,
+    Uncache: ole_cache_uncache,
+    EnumCache: ole_cache_enum_cache,
+    InitCache: ole_cache_init_cache,
+    SetData: ole_cache_set_data,
+  },
+  UpdateCache: ole_cache_update_cache,
+  DiscardCache: ole_cache_discard_cache,
+};
+
+#[napi(object)]
+pub struct GeneratedOleCacheStats {
+  pub set_data_calls: u32,
+  pub borrowed_input_calls: u32,
+  pub last_set_release: i32,
+  pub set_data_input_released: bool,
+  pub current_ref_count: u32,
+}
+
+#[napi]
+pub fn create_generated_ole_cache_fake() -> napi::Result<DynWinRTValue> {
+  OLE_CACHE_SET_DATA_CALLS.store(0, Ordering::SeqCst);
+  OLE_CACHE_BORROWED_INPUT_CALLS.store(0, Ordering::SeqCst);
+  OLE_CACHE_LAST_SET_RELEASE.store(-1, Ordering::SeqCst);
+  OLE_CACHE_LAST_SET_DATA_HANDLE.store(0, Ordering::SeqCst);
+  OLE_CACHE_CURRENT_REF_COUNT.store(1, Ordering::SeqCst);
+  let object = Box::new(GeneratedOleCacheFake {
+    vtable: &OLE_CACHE_VTABLE,
+    references: AtomicU32::new(1),
+  });
+  let unknown = unsafe { IUnknown::from_raw(Box::into_raw(object).cast()) };
+  crate::com::apartment_bound_com_object(unknown)
+}
+
+#[napi]
+pub fn generated_ole_cache_stats() -> GeneratedOleCacheStats {
+  GeneratedOleCacheStats {
+    set_data_calls: OLE_CACHE_SET_DATA_CALLS.load(Ordering::SeqCst),
+    borrowed_input_calls: OLE_CACHE_BORROWED_INPUT_CALLS.load(Ordering::SeqCst),
+    last_set_release: OLE_CACHE_LAST_SET_RELEASE.load(Ordering::SeqCst),
+    set_data_input_released: hglobal_handle_released(
+      OLE_CACHE_LAST_SET_DATA_HANDLE.load(Ordering::SeqCst),
+    ),
+    current_ref_count: OLE_CACHE_CURRENT_REF_COUNT.load(Ordering::SeqCst),
   }
 }
 

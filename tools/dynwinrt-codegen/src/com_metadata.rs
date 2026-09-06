@@ -381,7 +381,8 @@ pub enum RawExactMethodContractKind {
     StatStg,
     Malloc,
     FlagSelectedString,
-    DataObjectSetData,
+    BorrowedStgMediumInput,
+    CanonicalFormatEtc,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -414,8 +415,11 @@ impl RawExactMethodContract {
             }
             RawExactMethodContractKind::StatStg
             | RawExactMethodContractKind::Malloc
-            | RawExactMethodContractKind::DataObjectSetData => {
+            | RawExactMethodContractKind::BorrowedStgMediumInput => {
                 crate::contract_registry::ExactFamilyId::Ownership
+            }
+            RawExactMethodContractKind::CanonicalFormatEtc => {
+                crate::contract_registry::ExactFamilyId::SemanticHresult
             }
             RawExactMethodContractKind::FlagSelectedString => {
                 crate::contract_registry::ExactFamilyId::ShellCommandString
@@ -444,8 +448,11 @@ impl RawExactMethodContract {
             }
             RawExactMethodContractKind::StatStg
             | RawExactMethodContractKind::Malloc
-            | RawExactMethodContractKind::DataObjectSetData => {
+            | RawExactMethodContractKind::BorrowedStgMediumInput => {
                 crate::contract_registry::ContractKind::Ownership
+            }
+            RawExactMethodContractKind::CanonicalFormatEtc => {
+                crate::contract_registry::ContractKind::SemanticHresult
             }
             RawExactMethodContractKind::FlagSelectedString => {
                 crate::contract_registry::ContractKind::FlagSelectedBuffer
@@ -2180,7 +2187,8 @@ fn apply_exact_method_contract(
         }
         RawExactMethodContractKind::StatStg => {}
         RawExactMethodContractKind::Malloc => {}
-        RawExactMethodContractKind::DataObjectSetData => {}
+        RawExactMethodContractKind::BorrowedStgMediumInput
+        | RawExactMethodContractKind::CanonicalFormatEtc => {}
         RawExactMethodContractKind::FlagSelectedString => {
             let buffer = contract.buffer_param_index;
             let capacity = contract.capacity_param_index;
@@ -2327,12 +2335,28 @@ fn registered_exact_method_contract(
             "https://learn.microsoft.com/windows/win32/api/objidl/nf-objidl-imalloc-heapminimize",
         ),
         ("Windows.Win32.System.Com", "IDataObject", "SetData") => (
-            RawExactMethodContractKind::DataObjectSetData,
+            RawExactMethodContractKind::BorrowedStgMediumInput,
             1,
             0,
             None,
             "IDataObject::SetData transfers STGMEDIUM ownership only when fRelease is TRUE; the safe projection pins fRelease to FALSE so call-local HGLOBAL storage remains caller-owned",
             "https://learn.microsoft.com/windows/win32/api/objidl/nf-objidl-idataobject-setdata",
+        ),
+        ("Windows.Win32.System.Ole", "IOleCache", "SetData") => (
+            RawExactMethodContractKind::BorrowedStgMediumInput,
+            1,
+            0,
+            None,
+            "IOleCache::SetData transfers STGMEDIUM ownership when fRelease is TRUE; the safe projection fixes FALSE so the cache borrows call-local storage",
+            "https://learn.microsoft.com/windows/win32/api/oleidl/nf-oleidl-iolecache-setdata",
+        ),
+        ("Windows.Win32.System.Com", "IDataObject", "GetCanonicalFormatEtc") => (
+            RawExactMethodContractKind::CanonicalFormatEtc,
+            1,
+            0,
+            None,
+            "IDataObject::GetCanonicalFormatEtc ignores tymed on S_OK and returns the input format on DATA_S_SAMEFORMATETC without decoding the unused output",
+            "https://learn.microsoft.com/windows/win32/api/objidl/nf-objidl-idataobject-getcanonicalformatetc",
         ),
         ("Windows.Win32.Graphics.Dxgi", "IDXGIObject", "GetPrivateData") => (
             RawExactMethodContractKind::UnsafePrivateData,
@@ -2402,6 +2426,7 @@ fn registered_exact_method_contract(
             "ID3D12Object" => "Windows.Win32.Graphics.Direct3D12",
             "IDMLObject" => "Windows.Win32.AI.MachineLearning.DirectML",
             "IStream" | "IDataObject" => "Windows.Win32.System.Com",
+            "IOleCache" => "Windows.Win32.System.Ole",
             "IStorage" => "Windows.Win32.System.Com.StructuredStorage",
             "IContextMenu" => "Windows.Win32.UI.Shell",
             "IMalloc" => "Windows.Win32.System.Com",
@@ -2421,6 +2446,7 @@ fn registered_exact_method_contract(
             "IContextMenu" => "IContextMenu",
             "IMalloc" => "IMalloc",
             "IDataObject" => "IDataObject",
+            "IOleCache" => "IOleCache",
             _ => unreachable!("matched exact method interface"),
         },
         declaring_iid: match kind {
@@ -2446,7 +2472,14 @@ fn registered_exact_method_contract(
             RawExactMethodContractKind::FlagSelectedString => {
                 "000214e4-0000-0000-c000-000000000046"
             }
-            RawExactMethodContractKind::DataObjectSetData => "0000010e-0000-0000-c000-000000000046",
+            RawExactMethodContractKind::BorrowedStgMediumInput => match interface {
+                "IDataObject" => "0000010e-0000-0000-c000-000000000046",
+                "IOleCache" => "0000011e-0000-0000-c000-000000000046",
+                _ => unreachable!("matched exact borrowed STGMEDIUM input"),
+            },
+            RawExactMethodContractKind::CanonicalFormatEtc => {
+                "0000010e-0000-0000-c000-000000000046"
+            }
         },
         method_name: match kind {
             RawExactMethodContractKind::FixedCapacityBytes => "GetBlob",
@@ -2462,7 +2495,8 @@ fn registered_exact_method_contract(
                 _ => unreachable!("matched exact IMalloc method"),
             },
             RawExactMethodContractKind::FlagSelectedString => "GetCommandString",
-            RawExactMethodContractKind::DataObjectSetData => "SetData",
+            RawExactMethodContractKind::BorrowedStgMediumInput => "SetData",
+            RawExactMethodContractKind::CanonicalFormatEtc => "GetCanonicalFormatEtc",
         },
         vtable_index: match (interface, method) {
             ("IMFAttributes", "GetBlob") => 15,
@@ -2481,7 +2515,8 @@ fn registered_exact_method_contract(
             ("IMalloc", "GetSize") => 6,
             ("IMalloc", "DidAlloc") => 7,
             ("IMalloc", "HeapMinimize") => 8,
-            ("IDataObject", "SetData") => 7,
+            ("IDataObject" | "IOleCache", "SetData") => 7,
+            ("IDataObject", "GetCanonicalFormatEtc") => 6,
             _ => unreachable!("matched exact method identity"),
         },
         buffer_param_index: buffer,
@@ -2491,10 +2526,21 @@ fn registered_exact_method_contract(
             .then_some(1),
         reserved_null_param_index: (kind == RawExactMethodContractKind::FlagSelectedString)
             .then_some(2),
-        ownership_transfer_param_index: (kind == RawExactMethodContractKind::DataObjectSetData)
+        ownership_transfer_param_index: (kind
+            == RawExactMethodContractKind::BorrowedStgMediumInput)
             .then_some(2),
-        source_fingerprint: (kind == RawExactMethodContractKind::DataObjectSetData)
-            .then_some("7AF093CB4139DC99AFD713365806F4914690BBCE84928887BAECD35E97B823B1"),
+        source_fingerprint: match (interface, method) {
+            ("IDataObject", "SetData") => {
+                Some("7AF093CB4139DC99AFD713365806F4914690BBCE84928887BAECD35E97B823B1")
+            }
+            ("IOleCache", "SetData") => {
+                Some("AACEA7AC7F8360EE26C559E2EC69F254DF944977174AB767769B40AF899D5573")
+            }
+            ("IDataObject", "GetCanonicalFormatEtc") => {
+                Some("CD6292C4AFD80B76A7C3BA8122D4D98DA02105748829B7F63543A045AE92DDEA")
+            }
+            _ => None,
+        },
         citation,
         reason,
     })
@@ -2610,6 +2656,28 @@ fn raw_hresult(typ: &RawComType) -> bool {
             .underlying
             .as_deref()
             .is_some_and(|underlying| matches!(underlying.native_type, RawNativeType::I32))
+}
+
+pub(crate) fn validate_storage_medium_contract_presence(raw: &RawComMethod) -> Result<(), String> {
+    let required = registered_exact_method_contract(
+        &raw.declaring_namespace,
+        &raw.declaring_interface,
+        &raw.metadata_name,
+    )
+    .is_some_and(|contract| {
+        matches!(
+            contract.kind,
+            RawExactMethodContractKind::BorrowedStgMediumInput
+                | RawExactMethodContractKind::CanonicalFormatEtc
+        )
+    });
+    if required && raw.exact_contract.is_none() {
+        return Err(format!(
+            "{}.{} requires its exact storage-medium contract",
+            raw.declaring_interface, raw.metadata_name
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn validate_exact_method_contract(
@@ -2780,7 +2848,7 @@ pub(crate) fn validate_exact_method_contract(
                 && raw_u32_scalar(&raw.params[capacity], RawParamDirection::In, false)
                 && raw_hresult(&raw.return_type)
         }
-        RawExactMethodContractKind::DataObjectSetData => {
+        RawExactMethodContractKind::BorrowedStgMediumInput => {
             raw.params.len() == 3
                 && raw.params[0].name == "pformatetc"
                 && raw.params[0].direction == RawParamDirection::In
@@ -2830,6 +2898,10 @@ pub(crate) fn validate_exact_method_contract(
                     })
                 && raw_hresult(&raw.return_type)
         }
+        RawExactMethodContractKind::CanonicalFormatEtc => {
+            raw_method_shape(raw)
+                == "GetCanonicalFormatEtc@6(pformatectIn:in:required:noconstattr:Windows.Win32.System.Com.FORMATETC[Struct]/ptr1/Mutable,pformatetcOut:out:required:noconstattr:Windows.Win32.System.Com.FORMATETC[Struct]/ptr1/Mutable)->Windows.Win32.Foundation.HRESULT[Struct]/ptr0/Unspecified/underlying=i32/ptr0/Unspecified:semantic_hresult:not_enumerator_next"
+        }
     };
     let indices_valid = match contract.kind {
         RawExactMethodContractKind::FixedCapacityBytes
@@ -2852,16 +2924,24 @@ pub(crate) fn validate_exact_method_contract(
                     .is_some_and(|index| index < raw.params.len())
         }
         RawExactMethodContractKind::Malloc => true,
-        RawExactMethodContractKind::DataObjectSetData => {
+        RawExactMethodContractKind::BorrowedStgMediumInput => {
             contract.buffer_param_index == 1
                 && contract.ownership_transfer_param_index == Some(2)
                 && contract.actual_length_param_index.is_none()
                 && contract.discriminator_param_index.is_none()
                 && contract.reserved_null_param_index.is_none()
         }
+        RawExactMethodContractKind::CanonicalFormatEtc => {
+            contract.buffer_param_index == 1
+                && contract.ownership_transfer_param_index.is_none()
+                && contract.actual_length_param_index.is_none()
+                && contract.discriminator_param_index.is_none()
+                && contract.reserved_null_param_index.is_none()
+        }
     };
     if !valid_shape
-        || raw.semantic_hresult.is_some()
+        || (raw.semantic_hresult.is_some()
+            && contract.kind != RawExactMethodContractKind::CanonicalFormatEtc)
         || raw.enumerator_next.is_some()
         || !indices_valid
     {
@@ -4996,6 +5076,69 @@ mod tests {
             contract,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn storage_medium_contracts_pin_borrowing_and_canonical_results() {
+        let Some(winmd) = std::env::var("DYNWINRT_WIN32_WINMD")
+            .ok()
+            .filter(|path| std::path::Path::new(path).exists())
+        else {
+            return;
+        };
+        let mut errors = Vec::new();
+        for (namespace, name, method_name) in [
+            ("Windows.Win32.System.Ole", "IOleCache", "SetData"),
+            ("Windows.Win32.System.Ole", "IOleCache2", "SetData"),
+            (
+                "Windows.Win32.System.Com",
+                "IDataObject",
+                "GetCanonicalFormatEtc",
+            ),
+        ] {
+            let interface = parse_com_interface(&winmd, namespace, name).unwrap();
+            let method = interface
+                .raw_methods
+                .as_ref()
+                .unwrap()
+                .iter()
+                .find(|method| method.metadata_name == method_name)
+                .unwrap();
+            let contract = method.exact_contract.as_ref().unwrap();
+            if let Err(error) = validate_exact_method_contract(
+                namespace,
+                name,
+                &interface.interface.iid,
+                method,
+                contract,
+            ) {
+                errors.push(format!("{error}: {}", raw_method_shape(method)));
+            }
+            for mutation in 0..6 {
+                let mut drift = method.clone();
+                match mutation {
+                    0 => drift.declaring_iid = "00000000-0000-0000-0000-000000000001".into(),
+                    1 => drift.vtable_index += 1,
+                    2 => drift.params[0].typ.pointer_depth += 1,
+                    3 => drift.params[0].direction = RawParamDirection::InOut,
+                    4 => drift.params[0].optional = true,
+                    5 => drift.params[0].const_attribute = !drift.params[0].const_attribute,
+                    _ => unreachable!(),
+                }
+                assert!(
+                    validate_exact_method_contract(
+                        namespace,
+                        name,
+                        &interface.interface.iid,
+                        &drift,
+                        contract,
+                    )
+                    .is_err(),
+                    "{name}.{method_name} admitted contract mutation {mutation}"
+                );
+            }
+        }
+        assert!(errors.is_empty(), "{errors:#?}");
     }
 
     #[test]

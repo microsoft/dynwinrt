@@ -358,17 +358,17 @@ classifies all 5,692 safe-complete interfaces exactly once:
 
 | Evidence class | Interfaces |
 | --- | ---: |
-| `standard_derived` | 5,336 |
-| `exact_registry_dependent` | 356 |
+| `standard_derived` | 5,334 |
+| `exact_registry_dependent` | 358 |
 
-The registry declares 496 selector-specific entries; all 496 match pinned
-metadata, 405 distinct entries are safe-consumed, and safe plans contain 656
-entry/interface plus 405 family/interface dependencies. They also consume
+The registry declares 498 selector-specific entries; all 498 match pinned
+metadata, 407 distinct entries are safe-consumed, and safe plans contain 659
+entry/interface plus 408 family/interface dependencies. They also consume
 5,976 metadata-attribute and 26,119 universal COM-rule dependency sets.
 Entry/interface dependencies by kind are SAFEARRAY 263, enumerator-next 74,
-borrowed-handle 54, ownership 173, parameter-direction 45, bounded-two-call 16,
+borrowed-handle 54, ownership 175, parameter-direction 45, bounded-two-call 16,
 counted-buffer 16, conditional-output 7, flag-selected-buffer 3, null-input 2,
-semantic-HRESULT 2, and compound-dispatch 1. Complete per-entry status,
+semantic-HRESULT 3, and compound-dispatch 1. Complete per-entry status,
 per-family rollups, and per-interface entry IDs are retained in the summary
 and interface CSV.
 These are dependency counts, not net contribution; no ablation claim is made.
@@ -378,6 +378,9 @@ entries remain typed COM standard rules. Twenty-five safe interfaces consume
 the generic enumerator rule because one contract is inherited.
 ISequentialStream `Read`/`Write` and IDispatch `Invoke` are distinct exact
 entries with full selectors, fingerprints, and citations.
+The storage-medium contracts also pin `IOleCache::SetData` (including inherited
+`IOleCache2` calls) to caller-retained ownership and describe the distinct
+`IDataObject::GetCanonicalFormatEtc` success/result semantics.
 
 The strict embedded registry lives in
 `tools/dynwinrt-codegen/contracts/classic-com/`. JSON is the sole source for

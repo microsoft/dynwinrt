@@ -1718,14 +1718,21 @@ where
                         },
                     )?));
                 } else if let Some(value) = format_etc_out_values.remove(&p.value_index) {
-                    result_values.push(NativeCallValue::FormatEtc(value.into_value().map_err(
-                        |error| {
-                            windows_core::Error::new(
-                                windows_core::HRESULT(0x80070057u32 as i32),
-                                &error.message(),
-                            )
-                        },
-                    )?));
+                    let value = if let Some(input_index) = p.canonical_format_input {
+                        value.into_canonical_value(
+                            args.get_format_etc(input_index)
+                                .expect("validated canonical FORMATETC input"),
+                            native_hresult.expect("canonical FORMATETC uses a semantic HRESULT"),
+                        )
+                    } else {
+                        value.into_value()
+                    };
+                    result_values.push(NativeCallValue::FormatEtc(value.map_err(|error| {
+                        windows_core::Error::new(
+                            windows_core::HRESULT(0x80070057u32 as i32),
+                            &error.message(),
+                        )
+                    })?));
                 } else if let Some(value) = stg_medium_out_values.remove(&p.value_index) {
                     result_values.push(NativeCallValue::StgMedium(value.into_value().map_err(
                         |error| {

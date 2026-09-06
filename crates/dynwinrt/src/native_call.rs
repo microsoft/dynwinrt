@@ -626,6 +626,7 @@ pub enum ParamKind {
 pub struct Parameter {
     pub(crate) typ: ParameterType,
     pub(crate) output_cleanup: OutputCleanup,
+    pub(crate) canonical_format_input: Option<usize>,
     /// Index in the method result vector for out and FillArray parameters.
     pub value_index: usize,
     /// Index in the caller-provided argument slice. FillArray parameters have
@@ -723,6 +724,7 @@ impl AbiMethodSignature {
             kind: ParamKind::In,
             typ,
             output_cleanup: OutputCleanup::None,
+            canonical_format_input: None,
             value_index: input_index,
             input_index: Some(input_index),
         });
@@ -744,6 +746,7 @@ impl AbiMethodSignature {
             kind: ParamKind::Out,
             typ,
             output_cleanup,
+            canonical_format_input: None,
             value_index: self.out_count,
             input_index: None,
         });
@@ -762,6 +765,7 @@ impl AbiMethodSignature {
             kind: ParamKind::OptionalOut,
             typ,
             output_cleanup,
+            canonical_format_input: None,
             value_index: self.out_count,
             input_index: Some(input_index),
         });
@@ -790,6 +794,7 @@ impl AbiMethodSignature {
             kind: ParamKind::InOut,
             typ,
             output_cleanup,
+            canonical_format_input: None,
             value_index: self.out_count,
             input_index: Some(input_index),
         });
@@ -804,6 +809,7 @@ impl AbiMethodSignature {
             kind: ParamKind::OutFillArray,
             typ,
             output_cleanup: OutputCleanup::None,
+            canonical_format_input: None,
             value_index: self.out_count,
             input_index: Some(input_index),
         });
@@ -956,6 +962,7 @@ pub(crate) fn lower_completed_method(
     index: usize,
     parameters: Vec<(ParamKind, ParameterType, OutputCleanup)>,
     return_kind: MethodReturn,
+    canonical_format_etc: Option<(usize, usize)>,
 ) -> Method {
     let mut signature = AbiMethodSignature::new(table);
     for (kind, typ, cleanup) in parameters {
@@ -974,6 +981,13 @@ pub(crate) fn lower_completed_method(
         };
     }
     signature.return_kind = return_kind;
+    if let Some((input, output)) = canonical_format_etc {
+        signature.parameters[output].canonical_format_input = Some(
+            signature.parameters[input]
+                .input_index
+                .expect("validated canonical FORMATETC input parameter"),
+        );
+    }
     signature.build(index)
 }
 

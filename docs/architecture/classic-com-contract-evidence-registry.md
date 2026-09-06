@@ -336,7 +336,8 @@ Current code registries are migrated without changing behavior:
 - `IWbemServices::OpenNamespace`;
 - `IDispatch::Invoke` compound behavior;
 - `STATSTG` and allocator-specific outputs;
-- `IDataObject::SetData` caller-retained STGMEDIUM ownership; and
+- `IDataObject::SetData` and `IOleCache::SetData` caller-retained STGMEDIUM ownership;
+- `IDataObject::GetCanonicalFormatEtc` output validity and ignored `tymed`; and
 - exact fail-closed hazards such as `GetPrivateData`.
 
 Migration or promotion is complete only when generated safe snapshots, the
@@ -401,19 +402,19 @@ The safe-complete evidence census is:
 
 | Evidence class | Safe interfaces |
 | --- | ---: |
-| `standard_derived` | 5,336 |
-| `exact_registry_dependent` | 356 |
+| `standard_derived` | 5,334 |
+| `exact_registry_dependent` | 358 |
 | **Total** | **5,692** |
 
-The registry contains **496 declared entries**, all 496 match the pinned
-metadata, and 405 distinct entries are consumed by safe plans. Safe plans have
-656 entry/interface dependencies and 405 family/interface dependencies.
+The registry contains **498 declared entries**, all 498 match the pinned
+metadata, and 407 distinct entries are consumed by safe plans. Safe plans have
+659 entry/interface dependencies and 408 family/interface dependencies.
 Per-interface dependency-set totals also include 5,976 metadata-attribute
 dependencies and 26,119 COM-standard-rule dependencies.
 
 | Exact contract kind | Safe-interface dependencies |
 | --- | ---: |
-| `ownership` | 173 |
+| `ownership` | 175 |
 | `parameter-direction` | 45 |
 | `bounded-two-call` | 16 |
 | `conditional-output` | 7 |
@@ -423,7 +424,7 @@ dependencies and 26,119 COM-standard-rule dependencies.
 | `enumerator-next` | 74 |
 | `borrowed-handle` | 54 |
 | `counted-buffer` | 16 |
-| `semantic-hresult` | 2 |
+| `semantic-hresult` | 3 |
 | `compound-dispatch` | 1 |
 
 Family rollups deliberately count each interface once per family:
@@ -436,10 +437,10 @@ Family rollups deliberately count each interface once per family:
 | `com.sequential-stream-buffer.v1` | 2 | 2 | 7 |
 | `buffers.counted-buffer.v1` | 3 | 2 | 2 |
 | `buffers.bounded-two-call.v1` | 2 | 2 | 16 |
-| `com.ownership.v1` | 163 | 112 | 117 |
+| `com.ownership.v1` | 164 | 113 | 119 |
 | `com.parameter-direction.v1` | 3 | 3 | 15 |
 | `com.reserved-null-input.v1` | 2 | 2 | 1 |
-| `com.semantic-hresult.v1` | 1 | 1 | 2 |
+| `com.semantic-hresult.v1` | 2 | 2 | 3 |
 | `automation.idispatch-invoke.v1` | 1 | 1 | 1 |
 | `graphics.private-data-hazard.v1` | 7 | 0 | 0 |
 | `shell.flag-selected-string.v1` | 1 | 1 | 3 |

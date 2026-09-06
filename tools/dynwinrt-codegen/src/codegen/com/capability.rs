@@ -4561,8 +4561,8 @@ mod tests {
         assert_eq!(report.summary.eligible_interfaces, 7_929);
         assert_eq!(report.summary.safe_complete, 5_692);
         assert_eq!(report.summary.safe_evidence.safe_complete, 5_692);
-        assert_eq!(report.summary.safe_evidence.standard_derived, 5_336);
-        assert_eq!(report.summary.safe_evidence.exact_registry_dependent, 356);
+        assert_eq!(report.summary.safe_evidence.standard_derived, 5_334);
+        assert_eq!(report.summary.safe_evidence.exact_registry_dependent, 358);
         assert_eq!(
             report.summary.safe_evidence.standard_derived
                 + report.summary.safe_evidence.exact_registry_dependent,
@@ -4576,28 +4576,28 @@ mod tests {
             report.summary.safe_evidence.com_standard_fact_occurrences,
             26_119
         );
-        assert_eq!(report.summary.safe_evidence.registered_exact_entries, 496);
+        assert_eq!(report.summary.safe_evidence.registered_exact_entries, 498);
         assert_eq!(
             report.summary.safe_evidence.metadata_matched_exact_entries,
-            496
+            498
         );
         assert_eq!(
             report.summary.safe_evidence.safe_consumed_exact_entries,
-            405
+            407
         );
         assert_eq!(
             report
                 .summary
                 .safe_evidence
                 .exact_entry_interface_dependencies,
-            656
+            659
         );
         assert_eq!(
             report
                 .summary
                 .safe_evidence
                 .exact_family_interface_dependencies,
-            405
+            408
         );
         assert_eq!(
             report.summary.safe_evidence.by_contract_kind,
@@ -4610,15 +4610,15 @@ mod tests {
                 ("enumerator-next".into(), 74),
                 ("flag-selected-buffer".into(), 3),
                 ("null-input".into(), 2),
-                ("ownership".into(), 173),
+                ("ownership".into(), 175),
                 ("parameter-direction".into(), 45),
                 ("safearray".into(), 263),
-                ("semantic-hresult".into(), 2),
+                ("semantic-hresult".into(), 3),
             ])
         );
         assert_eq!(
             report.summary.safe_evidence.by_family_id["com.ownership.v1"],
-            117
+            119
         );
         assert_eq!(
             report.summary.safe_evidence.by_family_id["windows.borrowed-hwnd-output.v1"],
@@ -4632,7 +4632,7 @@ mod tests {
             report.summary.safe_evidence.by_family_id["automation.idispatch-invoke.v1"],
             1
         );
-        assert_eq!(report.summary.safe_evidence.by_entry_id.len(), 405);
+        assert_eq!(report.summary.safe_evidence.by_entry_id.len(), 407);
         assert!(
             report
                 .summary
@@ -4677,7 +4677,7 @@ mod tests {
                 .values()
                 .filter(|entry| entry.safe_consumed)
                 .count(),
-            405
+            407
         );
         let status = &report.summary.safe_evidence.exact_entry_status;
         assert_eq!(
