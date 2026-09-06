@@ -507,6 +507,8 @@ fn validate_projected_surface_names(meta: &ProjectedComInterface) -> Result<(), 
                 | ComType::DispatchParams
                 | ComType::ExcepInfo
                 | ComType::StatStg
+                | ComType::FormatEtc
+                | ComType::StgMedium
                 | ComType::ManagedInterface { .. }
                 | ComType::CoTaskMemWideString
                 | ComType::StringArray { .. } => {}
@@ -687,6 +689,18 @@ fn project_method(
             semisynchronous_output_param_index: semisynchronous_output.map(|index| index.index()),
             synchronous_flags,
             semisynchronous_flags,
+        },
+        Some(ComMethodSpecialContract::BorrowedStgMediumInput { release_param }) => {
+            ProjectedComMethodKind::BorrowedStgMediumInput {
+                release_param_index: release_param.index(),
+            }
+        }
+        Some(ComMethodSpecialContract::CanonicalFormatEtc {
+            input_param,
+            output_param,
+        }) => ProjectedComMethodKind::CanonicalFormatEtc {
+            input_param_index: input_param.index(),
+            output_param_index: output_param.index(),
         },
         Some(ComMethodSpecialContract::Malloc) | None => project_dynamic_method_kind(
             method.name(),
@@ -983,7 +997,18 @@ fn project_method(
         ) {
             surface_input = false;
         }
-        if direction == ComParamDirection::InOut && !is_scalar_in_out(&typ) {
+        if matches!(
+            &kind,
+            ProjectedComMethodKind::BorrowedStgMediumInput {
+                release_param_index
+            } if *release_param_index == index
+        ) {
+            surface_input = false;
+        }
+        if direction == ComParamDirection::InOut
+            && !is_scalar_in_out(&typ)
+            && !matches!(typ, ComType::StgMedium)
+        {
             return Err(format!(
                 "{}: unsupported [in, out] parameter `{}`",
                 context(),
@@ -1256,6 +1281,32 @@ fn project_method(
                     )?
                 },
             });
+        }
+    }
+
+    if let ProjectedComMethodKind::CanonicalFormatEtc {
+        input_param_index,
+        output_param_index,
+    } = kind
+    {
+        if input_param_index != 0
+            || output_param_index != 1
+            || params.len() != 2
+            || return_convention != ComReturnConvention::SemanticHResult
+            || params[0].typ != ComType::FormatEtc
+            || params[0].direction != ComParamDirection::In
+            || params[0].nullable
+            || params[1].typ != ComType::FormatEtc
+            || params[1].direction != ComParamDirection::Out
+            || results.len() != 2
+            || results[0].source != ResultSource::DirectReturn
+            || results[1].source != ResultSource::Param(1)
+            || results[1].conversion != ResultConversion::FormatEtc
+        {
+            return Err(format!(
+                "{}: canonical FORMATETC requires the exact semantic HRESULT and input/output result plan",
+                context()
+            ));
         }
     }
 
@@ -1642,6 +1693,8 @@ fn project_value_type(
         ComAbiType::DispatchParams => Ok(ComType::DispatchParams),
         ComAbiType::ExcepInfo => Ok(ComType::ExcepInfo),
         ComAbiType::StatStg => Ok(ComType::StatStg),
+        ComAbiType::FormatEtc => Ok(ComType::FormatEtc),
+        ComAbiType::StgMedium => Ok(ComType::StgMedium),
         ComAbiType::NativeUnion(_) | ComAbiType::FunctionPointer(_) | ComAbiType::Unknown(_) => {
             Err(format!(
                 "unsupported Classic-COM semantic type {}",
@@ -2042,6 +2095,8 @@ fn project_native_pod_field_type(
         | ComAbiType::DispatchParams
         | ComAbiType::ExcepInfo
         | ComAbiType::StatStg
+        | ComAbiType::FormatEtc
+        | ComAbiType::StgMedium
         | ComAbiType::FunctionPointer(_)
         | ComAbiType::Unknown(_) => Err(format!(
             "unsupported nested native POD field {}",
@@ -2816,6 +2871,16 @@ fn result_conversion(
         }
         (ComOwnership::StatStgOwned, Cleanup::StatStgClear) if matches!(typ, ComType::StatStg) => {
             Ok(ResultConversion::StatStg)
+        }
+        (ComOwnership::FormatEtcOwned, Cleanup::FormatEtcClear)
+            if matches!(typ, ComType::FormatEtc) =>
+        {
+            Ok(ResultConversion::FormatEtc)
+        }
+        (ComOwnership::StgMediumOwned, Cleanup::ReleaseStgMedium)
+            if matches!(typ, ComType::StgMedium) =>
+        {
+            Ok(ResultConversion::StgMedium)
         }
         (ownership, cleanup) => Err(format!(
             "{}: unsupported projected ownership {ownership:?} with cleanup {cleanup:?}",

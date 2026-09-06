@@ -80,19 +80,19 @@
   "parsed_interface_identities": 7944,
   "eligible_interfaces": 7929,
   "not_addressable": 15,
-  "safe_complete": 5681,
-  "safe_incomplete": 2248,
+  "safe_complete": 5692,
+  "safe_incomplete": 2237,
   "safeEvidence": {
-    "safeComplete": 5681,
-    "standardDerived": 5326,
-    "exactRegistryDependent": 355,
-    "metadataFactOccurrences": 5974,
-    "comStandardFactOccurrences": 26076,
-    "registeredExactEntries": 495,
-    "metadataMatchedExactEntries": 495,
-    "safeConsumedExactEntries": 404,
-    "exactEntryInterfaceDependencies": 655,
-    "exactFamilyInterfaceDependencies": 404,
+    "safeComplete": 5692,
+    "standardDerived": 5334,
+    "exactRegistryDependent": 358,
+    "metadataFactOccurrences": 5976,
+    "comStandardFactOccurrences": 26119,
+    "registeredExactEntries": 498,
+    "metadataMatchedExactEntries": 498,
+    "safeConsumedExactEntries": 407,
+    "exactEntryInterfaceDependencies": 659,
+    "exactFamilyInterfaceDependencies": 408,
     "byContractKind": {
       "borrowed-handle": 54,
       "bounded-two-call": 16,
@@ -102,10 +102,10 @@
       "enumerator-next": 74,
       "flag-selected-buffer": 3,
       "null-input": 2,
-      "ownership": 172,
+      "ownership": 175,
       "parameter-direction": 45,
       "safearray": 263,
-      "semantic-hresult": 2
+      "semantic-hresult": 3
     },
     "byEntryId": {
       "automation.idispatch-invoke.entry.windows-win32-system-com.idispatch.0002040000000000c000000000000046.invoke.slot-6.v1": 1,
@@ -445,6 +445,7 @@
       "com.ownership.entry.windows-win32-storage-xps.ixpsomvisualbrush.97e294af5b3746b48057874d2f64119b.getvisuallookup.slot-21.param-0-lookup.v1": 1,
       "com.ownership.entry.windows-win32-system-com-structuredstorage.istorage.0000000b00000000c000000000000046.stat.slot-17.v1": 1,
       "com.ownership.entry.windows-win32-system-com.icatinformation.0002e01300000000c000000000000046.getcategorydesc.slot-4.param-2-pszdesc.v1": 1,
+      "com.ownership.entry.windows-win32-system-com.idataobject.0000010e00000000c000000000000046.setdata.slot-7.v1": 1,
       "com.ownership.entry.windows-win32-system-com.imalloc.0000000200000000c000000000000046.alloc.slot-3.v1": 1,
       "com.ownership.entry.windows-win32-system-com.imalloc.0000000200000000c000000000000046.didalloc.slot-7.v1": 1,
       "com.ownership.entry.windows-win32-system-com.imalloc.0000000200000000c000000000000046.free.slot-5.v1": 1,
@@ -454,6 +455,7 @@
       "com.ownership.entry.windows-win32-system-com.ipersistfile.0000010b00000000c000000000000046.getcurfile.slot-8.param-0-ppszfilename.v1": 2,
       "com.ownership.entry.windows-win32-system-com.istream.0000000c00000000c000000000000046.stat.slot-12.v1": 5,
       "com.ownership.entry.windows-win32-system-mmc.iheaderctrl.43136eb3d36c11cfadbc00aa00a80033.getcolumntext.slot-6.param-1-ptext.v1": 1,
+      "com.ownership.entry.windows-win32-system-ole.iolecache.0000011e00000000c000000000000046.setdata.slot-7.v1": 2,
       "com.ownership.entry.windows-win32-system-search.imetadata.780102b0c43b4876bc7b5e9ba5c88794.getdata.slot-3.param-0-ppszkey.v1": 1,
       "com.ownership.entry.windows-win32-system-search.imetadata.780102b0c43b4876bc7b5e9ba5c88794.getdata.slot-3.param-1-ppszvalue.v1": 1,
       "com.ownership.entry.windows-win32-system-search.inamedentity.abdbd0b17d5449fbab5cbff4130004cd.defaultphrase.slot-4.param-0-ppszphrase.v1": 1,
@@ -483,6 +485,7 @@
       "com.parameter-direction.entry.windows-win32-media-mediafoundation.imfattributes.2cd2d921c44744a7a13c4adabfc247e3.getstring.slot-12.param-3-pcchlength.v1": 15,
       "com.reserved-null-input.entry.windows-win32-system-com-structuredstorage.istorage.0000000b00000000c000000000000046.enumelements.slot-11.param-1-reserved2.v1": 1,
       "com.reserved-null-input.entry.windows-win32-system-com-structuredstorage.istorage.0000000b00000000c000000000000046.openstream.slot-4.param-1-reserved1.v1": 1,
+      "com.semantic-hresult.entry.windows-win32-system-com.idataobject.0000010e00000000c000000000000046.getcanonicalformatetc.slot-6.v1": 1,
       "com.semantic-hresult.entry.windows-win32-system-com.ipersistfile.0000010b00000000c000000000000046.getcurfile.slot-8.v1": 2,
       "com.sequential-stream-buffer.entry.windows-win32-system-com.isequentialstream.0c733a302a1c11ceade500aa0044773d.read.slot-3.param-0-pv.v1": 7,
       "com.sequential-stream-buffer.entry.windows-win32-system-com.isequentialstream.0c733a302a1c11ceade500aa0044773d.write.slot-4.param-0-pv.v1": 7,
@@ -519,18 +522,18 @@
       "buffers.bounded-two-call.v1": 16,
       "buffers.counted-buffer.v1": 2,
       "com.enumerator-next-exception.v1": 74,
-      "com.ownership.v1": 116,
+      "com.ownership.v1": 119,
       "com.parameter-direction.v1": 15,
       "com.reserved-null-input.v1": 1,
-      "com.semantic-hresult.v1": 2,
+      "com.semantic-hresult.v1": 3,
       "com.sequential-stream-buffer.v1": 7,
       "shell.flag-selected-string.v1": 3,
       "windows.borrowed-hwnd-output.v1": 45,
       "wmi.conditional-output.v1": 1
     },
     "byMetadataAttribute": {
-      "CanReturnMultipleSuccessValuesAttribute": 42,
-      "ConstAttribute": 3327,
+      "CanReturnMultipleSuccessValuesAttribute": 43,
+      "ConstAttribute": 3328,
       "FreeWithAttribute": 3,
       "NativeArrayInfoAttribute": 2602
     },
@@ -540,11 +543,11 @@
       "com.automation.bstr-replacement.v1": 99,
       "com.enumerator-next.generic.v1": 25,
       "com.handle.borrowed-no-cleanup.v1": 45,
-      "com.hresult.failure.v1": 5568,
-      "com.interface.input-borrow.v1": 1881,
-      "com.interface.typed-output-plus-one.v1": 3453,
-      "com.iunknown.identity-refcount.v1": 5681,
-      "com.query-interface.output-plus-one.v1": 5681,
+      "com.hresult.failure.v1": 5574,
+      "com.interface.input-borrow.v1": 1891,
+      "com.interface.typed-output-plus-one.v1": 3458,
+      "com.iunknown.identity-refcount.v1": 5692,
+      "com.query-interface.output-plus-one.v1": 5692,
       "com.standard-cleanup.matching-allocator.v1": 1436
     },
     "exactEntryStatus": {
@@ -4966,7 +4969,7 @@
           "slot": 15,
           "parameter": null
         },
-        "sourceFingerprint": "1B89A2E869A1ED374C21050F3BB13F09929D6D9F9B5943EAAFC345EFDA825014",
+        "sourceFingerprint": "A5343D6AEAFA7833E8F245B3F31FF29258F3282002CA64CAD896AC24FB509DF9",
         "citation": "https://learn.microsoft.com/windows/win32/api/mfobjects/nf-mfobjects-imfattributes-getblob",
         "registered": true,
         "metadataMatched": true,
@@ -8881,7 +8884,7 @@
           "slot": 17,
           "parameter": null
         },
-        "sourceFingerprint": "22517D81811094DCECE75634DC1BA343E41E60AD54433B9124934646A2D56877",
+        "sourceFingerprint": "1DB59BBEEDA81F2FC282009B93D5BFB15CAD142B71CD0F3E3A0DC5DC0F430270",
         "citation": "https://learn.microsoft.com/windows/win32/api/objidl/nf-objidl-istorage-stat",
         "registered": true,
         "metadataMatched": true,
@@ -8909,6 +8912,24 @@
         "safeConsumed": true,
         "interfaceDependencies": 1
       },
+      "com.ownership.entry.windows-win32-system-com.idataobject.0000010e00000000c000000000000046.setdata.slot-7.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.System.Com",
+          "interface": "IDataObject",
+          "iid": "0000010e-0000-0000-c000-000000000046",
+          "method": "SetData",
+          "slot": 7,
+          "parameter": null
+        },
+        "sourceFingerprint": "7AF093CB4139DC99AFD713365806F4914690BBCE84928887BAECD35E97B823B1",
+        "citation": "https://learn.microsoft.com/windows/win32/api/objidl/nf-objidl-idataobject-setdata",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
       "com.ownership.entry.windows-win32-system-com.imalloc.0000000200000000c000000000000046.alloc.slot-3.v1": {
         "familyId": "com.ownership.v1",
         "contractKind": "ownership",
@@ -8920,7 +8941,7 @@
           "slot": 3,
           "parameter": null
         },
-        "sourceFingerprint": "2A96941D7141039452FE007E69FB04C3AA6CE28DFF7B96115B6C919DC6B42A69",
+        "sourceFingerprint": "095F011D5BE23DA24EA7CA4309C53CCF4ECB8B8B60BCA0846742499F1E84898A",
         "citation": "https://learn.microsoft.com/windows/win32/api/objidl/nf-objidl-imalloc-alloc",
         "registered": true,
         "metadataMatched": true,
@@ -8938,7 +8959,7 @@
           "slot": 7,
           "parameter": null
         },
-        "sourceFingerprint": "A74ACDD3DD6DEE7213EEDC685F8FF23C6009DBAC882459F3684399B4269D4FD8",
+        "sourceFingerprint": "395A986979A14C11BCB10FC14BFEB496896FAD070892908170A75ED6F660B940",
         "citation": "https://learn.microsoft.com/windows/win32/api/objidl/nf-objidl-imalloc-didalloc",
         "registered": true,
         "metadataMatched": true,
@@ -8956,7 +8977,7 @@
           "slot": 5,
           "parameter": null
         },
-        "sourceFingerprint": "0D9A3FDC75ED4D0CACDD6EB87FD4B37CDDC76AE3A7FE6A092684BCC423EC65E6",
+        "sourceFingerprint": "E1C7995289D17394650CF05A60AFF69254C558CED37A4B40551AFF7254B41E30",
         "citation": "https://learn.microsoft.com/windows/win32/api/objidl/nf-objidl-imalloc-free",
         "registered": true,
         "metadataMatched": true,
@@ -8974,7 +8995,7 @@
           "slot": 6,
           "parameter": null
         },
-        "sourceFingerprint": "60D609C9AA79872157DA36E7E382AD705F616A2F8FA5F30703ED370BF225668C",
+        "sourceFingerprint": "87ED4B22DC04424CA8CAA93DE49034399E71D2238B0650048EB0849FBEBE23B8",
         "citation": "https://learn.microsoft.com/windows/win32/api/objidl/nf-objidl-imalloc-getsize",
         "registered": true,
         "metadataMatched": true,
@@ -8992,7 +9013,7 @@
           "slot": 8,
           "parameter": null
         },
-        "sourceFingerprint": "9E45919984C17476FC1E0B6203DAFC5CDE37B14901CFBBB7EC67B46DAEAFDBC0",
+        "sourceFingerprint": "14D3F94202737A2BC0DC15525A628D507EEBDE97ED85C3D03F746E131A6F5E1B",
         "citation": "https://learn.microsoft.com/windows/win32/api/objidl/nf-objidl-imalloc-heapminimize",
         "registered": true,
         "metadataMatched": true,
@@ -9010,7 +9031,7 @@
           "slot": 4,
           "parameter": null
         },
-        "sourceFingerprint": "5B38A32AADFCAE023617814069CB356DB3FD8FDA0397144711B3A3807A446016",
+        "sourceFingerprint": "A915CB91303E7DBD93152D531CA1E514EA47903D755FDFE9D391B9D0C5147821",
         "citation": "https://learn.microsoft.com/windows/win32/api/objidl/nf-objidl-imalloc-realloc",
         "registered": true,
         "metadataMatched": true,
@@ -9049,7 +9070,7 @@
           "slot": 12,
           "parameter": null
         },
-        "sourceFingerprint": "718E5AFEC6B381CDF9A3AEB64F7FE25127C2C71D12B3E006E9547E4073AC5F26",
+        "sourceFingerprint": "476DC766C1F33B1B7F54C76E908DEA8DE9CB2D3B9BE2FFE76B8D34A2498A0A9C",
         "citation": "https://learn.microsoft.com/windows/win32/api/objidl/nf-objidl-istream-stat",
         "registered": true,
         "metadataMatched": true,
@@ -9076,6 +9097,24 @@
         "metadataMatched": true,
         "safeConsumed": true,
         "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-system-ole.iolecache.0000011e00000000c000000000000046.setdata.slot-7.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.System.Ole",
+          "interface": "IOleCache",
+          "iid": "0000011e-0000-0000-c000-000000000046",
+          "method": "SetData",
+          "slot": 7,
+          "parameter": null
+        },
+        "sourceFingerprint": "AACEA7AC7F8360EE26C559E2EC69F254DF944977174AB767769B40AF899D5573",
+        "citation": "https://learn.microsoft.com/windows/win32/api/oleidl/nf-oleidl-iolecache-setdata",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 2
       },
       "com.ownership.entry.windows-win32-system-search.imetadata.780102b0c43b4876bc7b5e9ba5c88794.getdata.slot-3.param-0-ppszkey.v1": {
         "familyId": "com.ownership.v1",
@@ -9854,6 +9893,24 @@
         "safeConsumed": true,
         "interfaceDependencies": 1
       },
+      "com.semantic-hresult.entry.windows-win32-system-com.idataobject.0000010e00000000c000000000000046.getcanonicalformatetc.slot-6.v1": {
+        "familyId": "com.semantic-hresult.v1",
+        "contractKind": "semantic-hresult",
+        "selector": {
+          "namespace": "Windows.Win32.System.Com",
+          "interface": "IDataObject",
+          "iid": "0000010e-0000-0000-c000-000000000046",
+          "method": "GetCanonicalFormatEtc",
+          "slot": 6,
+          "parameter": null
+        },
+        "sourceFingerprint": "CD6292C4AFD80B76A7C3BA8122D4D98DA02105748829B7F63543A045AE92DDEA",
+        "citation": "https://learn.microsoft.com/windows/win32/api/objidl/nf-objidl-idataobject-getcanonicalformatetc",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
       "com.semantic-hresult.entry.windows-win32-system-com.ipersistfile.0000010b00000000c000000000000046.getcurfile.slot-8.v1": {
         "familyId": "com.semantic-hresult.v1",
         "contractKind": "semantic-hresult",
@@ -9925,7 +9982,7 @@
           "slot": 3,
           "parameter": null
         },
-        "sourceFingerprint": "AC437FAE3FE761589AEB3C27EDDBC3F5ECBAC3D34464872BA0064D5E668C17AA",
+        "sourceFingerprint": "635D64CF667EC5716BD113C798140DA01A17182B87BD964CF1DDC2418C7A4122",
         "citation": "https://learn.microsoft.com/windows/win32/api/directml/nf-directml-idmlobject-getprivatedata",
         "registered": true,
         "metadataMatched": true,
@@ -9943,7 +10000,7 @@
           "slot": 66,
           "parameter": null
         },
-        "sourceFingerprint": "DA0CC272AF987868D2497EFFE79A96349D84D51D7E4C11E8567974815A6F0A28",
+        "sourceFingerprint": "F725DBA168899774D4D4E42041028F8F933A834C4F44235DD23B5F9EEF4FBE29",
         "citation": "https://learn.microsoft.com/windows/win32/api/d3d10/nf-d3d10-id3d10device-getprivatedata",
         "registered": true,
         "metadataMatched": true,
@@ -9961,7 +10018,7 @@
           "slot": 4,
           "parameter": null
         },
-        "sourceFingerprint": "2E96AE1D44B409A41A9509E45B1DB3C6AA3A59E2AAA66ABE544021DFC363F8E0",
+        "sourceFingerprint": "2BF68FF1CFEE2BFB2255C78CFC2E74227E03C700566123EDA480A0DD7398E2F4",
         "citation": "https://learn.microsoft.com/windows/win32/api/d3d10/nf-d3d10-id3d10devicechild-getprivatedata",
         "registered": true,
         "metadataMatched": true,
@@ -9979,7 +10036,7 @@
           "slot": 34,
           "parameter": null
         },
-        "sourceFingerprint": "8DA4BA24A6A660589252D8690C3D1C30B53A5070A6D987D917097BF4558EC213",
+        "sourceFingerprint": "3106265D0B36373DB200256806A73708755E6A7838AB1E572AA7698F2EE98F15",
         "citation": "https://learn.microsoft.com/windows/win32/api/d3d11/nf-d3d11-id3d11device-getprivatedata",
         "registered": true,
         "metadataMatched": true,
@@ -9997,7 +10054,7 @@
           "slot": 4,
           "parameter": null
         },
-        "sourceFingerprint": "6FFBA22644296AB929DD001ECCC7AAD2B1EB1949BB0878BF0C2CDF7F063EAF53",
+        "sourceFingerprint": "75B1995A6A2E5E455E66836B32275D64603A694AE4BC6D7CBEA7949FBCF7C9FD",
         "citation": "https://learn.microsoft.com/windows/win32/api/d3d11/nf-d3d11-id3d11devicechild-getprivatedata",
         "registered": true,
         "metadataMatched": true,
@@ -10015,7 +10072,7 @@
           "slot": 3,
           "parameter": null
         },
-        "sourceFingerprint": "D1901D622093A53FE505636B00289593DC41B95D73811CEFF4BB33E669501731",
+        "sourceFingerprint": "50437F3F872990B745233579660A36F6024535195C2382E3D228685DF38920BA",
         "citation": "https://learn.microsoft.com/windows/win32/api/d3d12/nf-d3d12-id3d12object-getprivatedata",
         "registered": true,
         "metadataMatched": true,
@@ -10033,7 +10090,7 @@
           "slot": 5,
           "parameter": null
         },
-        "sourceFingerprint": "822F781335150C935D2F6B91F34727F8B9923E0EFCCE751563E0ECFDD49FD5A0",
+        "sourceFingerprint": "477DC2A7CFE0A0B8707FC20233F24582DA183BCAA6666972ECB8756EAB638AE4",
         "citation": "https://learn.microsoft.com/windows/win32/api/dxgi/nf-dxgi-idxgiobject-getprivatedata",
         "registered": true,
         "metadataMatched": true,
@@ -10051,7 +10108,7 @@
           "slot": 5,
           "parameter": null
         },
-        "sourceFingerprint": "94F522A39E514578ED19BD294398A38591677F63BB11A3047C5545D3DE77AD1A",
+        "sourceFingerprint": "3A53EA122647781A17DBD92F9E2FEA185CB9D355008BB1D6271D7D447A800766",
         "citation": "https://learn.microsoft.com/windows/win32/api/shobjidl_core/nf-shobjidl_core-icontextmenu-getcommandstring",
         "registered": true,
         "metadataMatched": true,
@@ -10651,37 +10708,37 @@
   },
   "targets": {
     "arm64": {
-      "raw_metadata_complete": 6093,
-      "raw_manual_contract": 1446,
-      "raw_runtime_blocked": 390,
+      "raw_metadata_complete": 6104,
+      "raw_manual_contract": 1437,
+      "raw_runtime_blocked": 388,
       "safe_incomplete_raw_metadata_complete": 412,
-      "safe_incomplete_raw_manual_contract": 1446,
-      "safe_incomplete_raw_runtime_blocked": 390
+      "safe_incomplete_raw_manual_contract": 1437,
+      "safe_incomplete_raw_runtime_blocked": 388
     },
     "i686": {
-      "raw_metadata_complete": 6092,
-      "raw_manual_contract": 1423,
-      "raw_runtime_blocked": 414,
+      "raw_metadata_complete": 6103,
+      "raw_manual_contract": 1414,
+      "raw_runtime_blocked": 412,
       "safe_incomplete_raw_metadata_complete": 411,
-      "safe_incomplete_raw_manual_contract": 1423,
-      "safe_incomplete_raw_runtime_blocked": 414
+      "safe_incomplete_raw_manual_contract": 1414,
+      "safe_incomplete_raw_runtime_blocked": 412
     },
     "x64": {
-      "raw_metadata_complete": 6093,
-      "raw_manual_contract": 1446,
-      "raw_runtime_blocked": 390,
+      "raw_metadata_complete": 6104,
+      "raw_manual_contract": 1437,
+      "raw_runtime_blocked": 388,
       "safe_incomplete_raw_metadata_complete": 412,
-      "safe_incomplete_raw_manual_contract": 1446,
-      "safe_incomplete_raw_runtime_blocked": 390
+      "safe_incomplete_raw_manual_contract": 1437,
+      "safe_incomplete_raw_runtime_blocked": 388
     }
   },
   "blocker_reason_counts": {
     "arm64": {
-      "incomplete_pointee_layout_for_storage": 339,
+      "incomplete_pointee_layout_for_storage": 337,
       "missing_declaring_iid": 46,
       "missing_interface_iid": 73,
       "missing_layout": 5,
-      "pointee_missing_layout": 242,
+      "pointee_missing_layout": 240,
       "pointee_unknown_native_type": 4,
       "pointee_unsupported_bitfield": 16,
       "pointee_unsupported_flexible_array": 45,
@@ -10690,11 +10747,11 @@
       "unsupported_layout_kind": 4
     },
     "i686": {
-      "incomplete_pointee_layout_for_storage": 363,
+      "incomplete_pointee_layout_for_storage": 361,
       "missing_declaring_iid": 46,
       "missing_interface_iid": 73,
       "missing_layout": 5,
-      "pointee_missing_layout": 242,
+      "pointee_missing_layout": 240,
       "pointee_unknown_native_type": 4,
       "pointee_unsupported_bitfield": 16,
       "pointee_unsupported_flexible_array": 45,
@@ -10703,11 +10760,11 @@
       "unsupported_layout_kind": 4
     },
     "x64": {
-      "incomplete_pointee_layout_for_storage": 339,
+      "incomplete_pointee_layout_for_storage": 337,
       "missing_declaring_iid": 46,
       "missing_interface_iid": 73,
       "missing_layout": 5,
-      "pointee_missing_layout": 242,
+      "pointee_missing_layout": 240,
       "pointee_unknown_native_type": 4,
       "pointee_unsupported_bitfield": 16,
       "pointee_unsupported_flexible_array": 45,
@@ -10718,52 +10775,52 @@
   },
   "manual_reason_counts": {
     "arm64": {
-      "external_pointee_storage": 986,
+      "external_pointee_storage": 976,
       "missing_allocator": 1044,
       "missing_count_relation": 83,
       "missing_handle_ownership": 211,
       "missing_interface_replacement_contract": 42,
       "missing_output_ownership": 1044,
-      "nested_pointer_lifetime": 570,
+      "nested_pointer_lifetime": 560,
       "opaque_pointee_contract": 289,
-      "pointee_missing_layout": 412,
+      "pointee_missing_layout": 404,
       "pointee_recursive_layout": 25,
       "pointee_unsupported_bitfield": 16,
-      "pointee_unsupported_flexible_array": 111,
+      "pointee_unsupported_flexible_array": 101,
       "pointee_unsupported_layout_kind": 33,
       "pointee_unsupported_packing": 110,
       "variant_safearray_element_contract": 2
     },
     "i686": {
-      "external_pointee_storage": 987,
+      "external_pointee_storage": 977,
       "missing_allocator": 1044,
       "missing_count_relation": 83,
       "missing_handle_ownership": 211,
       "missing_interface_replacement_contract": 42,
       "missing_output_ownership": 1044,
-      "nested_pointer_lifetime": 544,
+      "nested_pointer_lifetime": 534,
       "opaque_pointee_contract": 289,
-      "pointee_missing_layout": 399,
+      "pointee_missing_layout": 391,
       "pointee_recursive_layout": 25,
       "pointee_unsupported_bitfield": 16,
-      "pointee_unsupported_flexible_array": 111,
+      "pointee_unsupported_flexible_array": 101,
       "pointee_unsupported_layout_kind": 33,
       "pointee_unsupported_packing": 146,
       "variant_safearray_element_contract": 2
     },
     "x64": {
-      "external_pointee_storage": 986,
+      "external_pointee_storage": 976,
       "missing_allocator": 1044,
       "missing_count_relation": 83,
       "missing_handle_ownership": 211,
       "missing_interface_replacement_contract": 42,
       "missing_output_ownership": 1044,
-      "nested_pointer_lifetime": 570,
+      "nested_pointer_lifetime": 560,
       "opaque_pointee_contract": 289,
-      "pointee_missing_layout": 412,
+      "pointee_missing_layout": 404,
       "pointee_recursive_layout": 25,
       "pointee_unsupported_bitfield": 16,
-      "pointee_unsupported_flexible_array": 111,
+      "pointee_unsupported_flexible_array": 101,
       "pointee_unsupported_layout_kind": 33,
       "pointee_unsupported_packing": 110,
       "variant_safearray_element_contract": 2
@@ -10819,9 +10876,9 @@
     },
     {
       "category": "NativeStruct",
-      "direct_occurrences": 9126,
-      "expanded_occurrences": 20547,
-      "named_types": 1548
+      "direct_occurrences": 9089,
+      "expanded_occurrences": 20502,
+      "named_types": 1546
     },
     {
       "category": "NativeUnion",

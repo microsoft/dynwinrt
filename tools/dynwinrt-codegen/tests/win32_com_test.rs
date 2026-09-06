@@ -2127,6 +2127,136 @@ fn thumbnail_provider_returns_a_delete_object_owned_handle() {
 }
 
 #[test]
+fn data_object_projects_hglobal_format_and_medium_values() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+    let interface = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.System.Com",
+        "IDataObject",
+    )
+    .expect("IDataObject must exist");
+    let set_data_contract = interface
+        .raw_methods
+        .as_ref()
+        .unwrap()
+        .iter()
+        .find(|method| method.metadata_name == "SetData")
+        .and_then(|method| method.exact_contract.as_ref())
+        .expect("SetData must carry exact ownership evidence");
+    assert_eq!(
+        set_data_contract.kind,
+        com_metadata::RawExactMethodContractKind::BorrowedStgMediumInput
+    );
+    assert_eq!(set_data_contract.ownership_transfer_param_index, Some(2));
+    assert!(
+        set_data_contract
+            .citation
+            .ends_with("nf-objidl-idataobject-setdata")
+    );
+    let output = com::generate_com_interface_files(&interface, &win32_winmd())
+        .unwrap_or_else(|error| panic!("IDataObject: {error}"));
+    assert!(
+        output
+            .dts
+            .contains("getData(pformatetcIn: DynComFormatEtc): DynComStgMedium;")
+    );
+    assert!(output.dts.contains(
+        "getDataHere(pformatetc: DynComFormatEtc, pmedium: DynComStgMedium): DynComStgMedium;"
+    ));
+    assert!(
+        output
+            .dts
+            .contains("setData(pformatetc: DynComFormatEtc, pmedium: DynComStgMedium): void;")
+    );
+    assert!(!output.dts.contains("fRelease"));
+    assert!(
+        output
+            .js
+            .contains("DynCom.stgMedium(pmedium), DynCom.i32(0)")
+    );
+    assert!(output.js.contains(".canonicalFormatEtcResult(0, 1)"));
+    let mut missing_canonical = interface.clone();
+    missing_canonical
+        .raw_methods
+        .as_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|method| method.metadata_name == "GetCanonicalFormatEtc")
+        .unwrap()
+        .exact_contract = None;
+    assert!(com::generate_com_interface_files(&missing_canonical, &win32_winmd()).is_err());
+
+    let advise_sink = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.System.Com",
+        "IAdviseSink",
+    )
+    .expect("IAdviseSink must exist");
+    let advise_output = com::generate_com_interface_files(&advise_sink, &win32_winmd())
+        .unwrap_or_else(|error| panic!("IAdviseSink: {error}"));
+    assert!(!advise_output.js.contains("static implementation(handlers)"));
+    assert!(!advise_output.dts.contains("IAdviseSinkImplementation"));
+}
+
+#[test]
+fn ole_cache_inherited_set_data_is_borrowed_and_fails_closed_on_drift() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+    for name in ["IOleCache", "IOleCache2"] {
+        let interface =
+            com_metadata::parse_com_interface(&win32_winmd(), "Windows.Win32.System.Ole", name)
+                .unwrap();
+        let output = com::generate_com_interface_files(&interface, &win32_winmd()).unwrap();
+        assert!(
+            output
+                .dts
+                .contains("setData(pformatetc: DynComFormatEtc, pmedium: DynComStgMedium): void;")
+        );
+        assert!(!output.dts.contains("fRelease"));
+        assert!(
+            output
+                .js
+                .contains("DynCom.stgMedium(pmedium), DynCom.i32(0)")
+        );
+        let index = interface
+            .raw_methods
+            .as_ref()
+            .unwrap()
+            .iter()
+            .position(|method| method.metadata_name == "SetData")
+            .unwrap();
+        let contract = interface.raw_methods.as_ref().unwrap()[index]
+            .exact_contract
+            .as_ref()
+            .unwrap();
+        assert_eq!(contract.declaring_interface, "IOleCache");
+        assert_eq!(
+            contract.declaring_iid,
+            "0000011e-0000-0000-c000-000000000046"
+        );
+        for mutation in 0..3 {
+            let mut drift = interface.clone();
+            let method = &mut drift.raw_methods.as_mut().unwrap()[index];
+            match mutation {
+                0 => method.exact_contract = None,
+                1 => method.params[2].typ.pointer_depth = 1,
+                2 => method.params[1].direction = com_metadata::RawParamDirection::InOut,
+                _ => unreachable!(),
+            }
+            assert!(
+                com::generate_com_interface_files(&drift, &win32_winmd()).is_err(),
+                "{name}.SetData admitted mutation {mutation}"
+            );
+        }
+    }
+}
+
+#[test]
 fn high_value_exact_contracts_generate_complete_safe_interfaces() {
     if !win32_available() {
         eprintln!("Skipping: Win32 winmd not available");

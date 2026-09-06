@@ -294,6 +294,8 @@ fn map_method(
         .map_err(ModelError::InvalidContract)?;
     crate::com_metadata::validate_attached_safe_array_evidence(raw)
         .map_err(ModelError::InvalidContract)?;
+    crate::com_metadata::validate_storage_medium_contract_presence(raw)
+        .map_err(ModelError::InvalidContract)?;
     if let Some(contract) = &raw.exact_contract {
         crate::com_metadata::validate_exact_method_contract(
             interface_namespace,
@@ -376,62 +378,77 @@ fn map_method(
     if let Some(contract) = dynamic_iid {
         method = method.with_dynamic_iid_contract(contract)?;
     }
-    let method = if let Some(contract) = &raw.exact_interface_output_call {
-        if contract.public_input_param_indices.len() > 3 {
-            return Err(ModelError::InvalidContract(
-                "conditional interface output supports at most three public inputs".into(),
-            ));
-        }
-        let mut public_input_params = [None; 3];
-        for (target, source) in public_input_params
-            .iter_mut()
-            .zip(&contract.public_input_param_indices)
-        {
-            *target = Some(ParamIndex::new(*source));
-        }
-        method.with_special_contract(ComMethodSpecialContract::ConditionalInterfaceOutput {
-            public_input_params,
-            flags_param: ParamIndex::new(contract.flags_param_index),
-            context_param: ParamIndex::new(contract.context_param_index),
-            synchronous_output: contract.synchronous_output_param_index.map(ParamIndex::new),
-            semisynchronous_output: contract
-                .semisynchronous_output_param_index
-                .map(ParamIndex::new),
-            synchronous_flags: contract.synchronous_flags,
-            semisynchronous_flags: contract.semisynchronous_flag_value,
-        })
-    } else {
-        match raw.exact_contract.as_ref().map(|contract| contract.kind) {
-            Some(RawExactMethodContractKind::FixedCapacityBytes) => {
-                method.with_special_contract(ComMethodSpecialContract::FixedCapacityBytes {
-                    guid_param: ParamIndex::new(0),
-                })
+    let method =
+        if let Some(contract) = &raw.exact_interface_output_call {
+            if contract.public_input_param_indices.len() > 3 {
+                return Err(ModelError::InvalidContract(
+                    "conditional interface output supports at most three public inputs".into(),
+                ));
             }
-            Some(RawExactMethodContractKind::UnsafePrivateData) => {
-                unreachable!("unsafe private-data contracts fail before method mapping")
+            let mut public_input_params = [None; 3];
+            for (target, source) in public_input_params
+                .iter_mut()
+                .zip(&contract.public_input_param_indices)
+            {
+                *target = Some(ParamIndex::new(*source));
             }
-            Some(RawExactMethodContractKind::StatStg) => method,
-            Some(RawExactMethodContractKind::Malloc) => {
-                method.with_special_contract(ComMethodSpecialContract::Malloc)
+            method.with_special_contract(ComMethodSpecialContract::ConditionalInterfaceOutput {
+                public_input_params,
+                flags_param: ParamIndex::new(contract.flags_param_index),
+                context_param: ParamIndex::new(contract.context_param_index),
+                synchronous_output: contract.synchronous_output_param_index.map(ParamIndex::new),
+                semisynchronous_output: contract
+                    .semisynchronous_output_param_index
+                    .map(ParamIndex::new),
+                synchronous_flags: contract.synchronous_flags,
+                semisynchronous_flags: contract.semisynchronous_flag_value,
+            })
+        } else {
+            match raw.exact_contract.as_ref().map(|contract| contract.kind) {
+                Some(RawExactMethodContractKind::FixedCapacityBytes) => method
+                    .with_special_contract(ComMethodSpecialContract::FixedCapacityBytes {
+                        guid_param: ParamIndex::new(0),
+                    }),
+                Some(RawExactMethodContractKind::UnsafePrivateData) => {
+                    unreachable!("unsafe private-data contracts fail before method mapping")
+                }
+                Some(RawExactMethodContractKind::StatStg) => method,
+                Some(RawExactMethodContractKind::Malloc) => {
+                    method.with_special_contract(ComMethodSpecialContract::Malloc)
+                }
+                Some(RawExactMethodContractKind::FlagSelectedString) => {
+                    let contract = raw.exact_contract.as_ref().unwrap();
+                    method.with_special_contract(ComMethodSpecialContract::FlagSelectedString {
+                        discriminator_param: ParamIndex::new(
+                            contract.discriminator_param_index.unwrap(),
+                        ),
+                        reserved_null_param: ParamIndex::new(
+                            contract.reserved_null_param_index.unwrap(),
+                        ),
+                        buffer_param: ParamIndex::new(contract.buffer_param_index),
+                        capacity_param: ParamIndex::new(contract.capacity_param_index),
+                        string_flags: [4, 5],
+                        validation_flag: 6,
+                    })
+                }
+                Some(RawExactMethodContractKind::BorrowedStgMediumInput) => {
+                    let contract = raw.exact_contract.as_ref().unwrap();
+                    method.with_special_contract(ComMethodSpecialContract::BorrowedStgMediumInput {
+                        release_param: ParamIndex::new(
+                            contract
+                                .ownership_transfer_param_index
+                                .expect("validated SetData ownership-transfer parameter"),
+                        ),
+                    })
+                }
+                Some(RawExactMethodContractKind::CanonicalFormatEtc) => method
+                    .with_special_contract(ComMethodSpecialContract::CanonicalFormatEtc {
+                        input_param: ParamIndex::new(0),
+                        output_param: ParamIndex::new(1),
+                    }),
+                None => method,
             }
-            Some(RawExactMethodContractKind::FlagSelectedString) => {
-                let contract = raw.exact_contract.as_ref().unwrap();
-                method.with_special_contract(ComMethodSpecialContract::FlagSelectedString {
-                    discriminator_param: ParamIndex::new(
-                        contract.discriminator_param_index.unwrap(),
-                    ),
-                    reserved_null_param: ParamIndex::new(
-                        contract.reserved_null_param_index.unwrap(),
-                    ),
-                    buffer_param: ParamIndex::new(contract.buffer_param_index),
-                    capacity_param: ParamIndex::new(contract.capacity_param_index),
-                    string_flags: [4, 5],
-                    validation_flag: 6,
-                })
-            }
-            None => method,
-        }
-    };
+        };
     Ok(method)
 }
 
@@ -498,6 +515,44 @@ fn map_param(
                 raw_native_name(&raw.typ)?,
                 None,
                 ComAbiType::ExactNullPointer,
+            )?,
+            None,
+        )
+    } else if matches!(
+        &raw.typ.native_type,
+        RawNativeType::Named {
+            namespace,
+            name,
+            ..
+        } if namespace == "Windows.Win32.System.Com"
+            && name == "FORMATETC"
+            && raw.typ.pointer_depth == 1
+    ) {
+        (
+            insert_abi(
+                model,
+                Some(QualifiedName::new("Windows.Win32.System.Com", "FORMATETC")?),
+                None,
+                ComAbiType::FormatEtc,
+            )?,
+            None,
+        )
+    } else if matches!(
+        &raw.typ.native_type,
+        RawNativeType::Named {
+            namespace,
+            name,
+            ..
+        } if namespace == "Windows.Win32.System.Com"
+            && name == "STGMEDIUM"
+            && raw.typ.pointer_depth == 1
+    ) {
+        (
+            insert_abi(
+                model,
+                Some(QualifiedName::new("Windows.Win32.System.Com", "STGMEDIUM")?),
+                None,
+                ComAbiType::StgMedium,
             )?,
             None,
         )
@@ -967,6 +1022,8 @@ pub(in crate::codegen::com) fn census_raw_base_category(raw: &RawComType) -> &'s
             ComAbiType::DispatchParams => "DispatchParams",
             ComAbiType::ExcepInfo => "ExcepInfo",
             ComAbiType::StatStg => "StatStg",
+            ComAbiType::FormatEtc => "FormatEtc",
+            ComAbiType::StgMedium => "StgMedium",
             ComAbiType::FunctionPointer(_) => "FunctionPointer",
             ComAbiType::Unknown(_) => "Unknown",
         };
@@ -1164,6 +1221,12 @@ fn map_raw_named_struct(
     }
     if namespace == "Windows.Win32.System.Com" && name == "EXCEPINFO" {
         return insert_abi(model, raw_native_name(raw)?, None, ComAbiType::ExcepInfo);
+    }
+    if namespace == "Windows.Win32.System.Com" && name == "FORMATETC" {
+        return insert_abi(model, raw_native_name(raw)?, None, ComAbiType::FormatEtc);
+    }
+    if namespace == "Windows.Win32.System.Com" && name == "STGMEDIUM" {
+        return insert_abi(model, raw_native_name(raw)?, None, ComAbiType::StgMedium);
     }
     if namespace == "Windows.Win32.System.Com.StructuredStorage" && name == "PROPVARIANT" {
         return insert_abi(model, raw_native_name(raw)?, None, ComAbiType::PropVariant);
@@ -1462,6 +1525,8 @@ fn validate_pod_field_type(
         | ComAbiType::DispatchParams
         | ComAbiType::ExcepInfo
         | ComAbiType::StatStg
+        | ComAbiType::FormatEtc
+        | ComAbiType::StgMedium
         | ComAbiType::FunctionPointer(_)
         | ComAbiType::Unknown(_) => Err(ModelError::Unsupported(UnsupportedReason::UnknownLayout)),
     }
@@ -1531,6 +1596,8 @@ fn abi_size_alignment(
         | ComAbiType::DispatchParams
         | ComAbiType::ExcepInfo
         | ComAbiType::StatStg
+        | ComAbiType::FormatEtc
+        | ComAbiType::StgMedium
         | ComAbiType::Unknown(_) => {
             return Err(ModelError::Unsupported(UnsupportedReason::UnknownLayout));
         }
@@ -1748,6 +1815,8 @@ fn buffer_element_ownership(
         | ComAbiType::DispatchParams
         | ComAbiType::ExcepInfo
         | ComAbiType::StatStg
+        | ComAbiType::FormatEtc
+        | ComAbiType::StgMedium
         | ComAbiType::FunctionPointer(_)
         | ComAbiType::Unknown(_) => BufferElementOwnership::Unknown,
     };
@@ -1883,6 +1952,20 @@ fn map_ownership(
         }
         ComAbiType::StatStg if direction == Direction::Out => {
             Ok((ComOwnership::StatStgOwned, Cleanup::StatStgClear))
+        }
+        ComAbiType::FormatEtc if direction == Direction::Out => {
+            Ok((ComOwnership::FormatEtcOwned, Cleanup::FormatEtcClear))
+        }
+        ComAbiType::StgMedium if direction == Direction::Out => {
+            Ok((ComOwnership::StgMediumOwned, Cleanup::ReleaseStgMedium))
+        }
+        ComAbiType::FormatEtc if direction == Direction::InOut => Err(
+            ModelError::Unsupported(UnsupportedReason::Other(
+                "FORMATETC in/out requires a dedicated replacement contract".into(),
+            )),
+        ),
+        ComAbiType::FormatEtc | ComAbiType::StgMedium => {
+            Ok((ComOwnership::Borrowed, Cleanup::None))
         }
         ComAbiType::DispatchParams if direction == Direction::Out => Err(
             ModelError::Unsupported(UnsupportedReason::Other(

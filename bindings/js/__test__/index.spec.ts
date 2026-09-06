@@ -23,6 +23,7 @@ import {
   unboxObject,
 } from '../dist/winrt.js'
 import * as winrtRuntime from '../dist/winrt.js'
+import { DynComFormatEtc, DynComStgMedium } from '../dist/com.js'
 import * as comRuntime from '../dist/com.js'
 import {
   DynCom,
@@ -149,6 +150,7 @@ test('package facades exactly partition native exports', (t) => {
     'DynComDispatchParams',
     'DynComAllocation',
     'DynComExcepInfo',
+    'DynComFormatEtc',
     'DynComNativeStruct',
     'DynComNativeStructArray',
     'DynComNativeUnion',
@@ -156,6 +158,7 @@ test('package facades exactly partition native exports', (t) => {
     'DynComPropVariant',
     'DynComSafeArray',
     'DynComStatStg',
+    'DynComStgMedium',
     'DynComVariant',
     'DynWinRtValue',
     'WinGuid',
@@ -209,6 +212,23 @@ test('package facades exactly partition native exports', (t) => {
   for (const name of moduleKeys(unsafeComRuntime)) {
     t.true(moduleKeys(rawComRuntime).includes(name), `${name} must remain available from /com/unsafe/raw`)
   }
+})
+
+test('FORMATETC and STGMEDIUM expose a closed HGLOBAL semantic subset', (t) => {
+  const format = DynComFormatEtc.hglobal(13)
+  t.is(format.clipboardFormat, 13)
+  t.is(format.aspect, 1)
+  t.is(format.index, -1)
+  t.is(format.tymed, 1)
+
+  const medium = DynComStgMedium.hglobal(Buffer.from([1, 2, 3, 4]))
+  t.is(medium.tymed, 1)
+  t.deepEqual(medium.toBuffer(), Buffer.from([1, 2, 3, 4]))
+  t.throws(() => DynComFormatEtc.hglobal(0), { message: /non-zero/ })
+  t.throws(() => DynComFormatEtc.hglobal(0x1_0000), { message: /u16/ })
+  t.throws(() => DynComFormatEtc.hglobal(13, 3), { message: /DVASPECT/ })
+  t.throws(() => DynComFormatEtc.hglobal(13, 16), { message: /DVASPECT/ })
+  t.throws(() => DynComStgMedium.hglobal(Buffer.alloc(0)), { message: /at least one byte/ })
 })
 
 test('raw COM memory and pointers expose checked owner-retaining primitives', (t) => {
