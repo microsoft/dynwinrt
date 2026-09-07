@@ -655,12 +655,24 @@ Required tests include:
 9. x64 and i686 live raw calls;
 10. ARM64 compile/gate behavior;
 11. deterministic support manifest generation; and
-12. complete safe COM and WinRT regression suites.
+12. complete safe COM and WinRT regression suites; and
+13. actual Node resolution of mixed WinRT, COM barrel, and unsafe canonical
+    package exports.
 
 The generated-artifact integration fixture combines safe WMI with unsafe Audio.
-The WMI test-hook validates sync/semisync OptionalOut selection, native-null
-context, failure cleanup, QueryInterface/AddRef/Release balance, CJS, ESM, and
-emitted declarations without requiring a live WMI service.
+The complete seven-method WMI conditional-output family executes through a
+complete official `IWbemServices_Vtbl`. ABI-correct `IWbemClassObject` and
+`IWbemCallResult` tear-offs expose canonical IUnknown identity and shared
+reference counting; the fixture calls methods on both returned interfaces. It
+also probes unimplemented slots 7 and 25, validates sync/semisync OptionalOut
+selection, no-output sync calls, `ExecMethod` multi-input calls, native-null
+context, failure cleanup, CJS, ESM, and emitted declarations without requiring
+a live WMI service.
+
+The same fixture invokes generated `IThumbnailProvider.getThumbnail()` against
+a fake COM object that returns a real HBITMAP. It validates transfer into
+`DynComOwnedHandle`, explicit `DeleteObject` release, idempotence, and COM
+reference balance; a Rust regression separately covers the Drop path.
 
 The unsafe portion uses official `IAudioClientUnsafe::isFormatSupported` and
 `getService` vtable slots. It covers

@@ -6645,6 +6645,21 @@ mod tests {
   }
 
   #[test]
+  fn delete_object_owned_handle_drop_releases_bitmap() {
+    let bitmap = unsafe { windows::Win32::Graphics::Gdi::CreateBitmap(1, 1, 1, 1, None) };
+    assert!(!bitmap.is_invalid());
+    let pointer = bitmap.0;
+    drop(DynComOwnedHandle::new(
+      pointer.addr(),
+      dynwinrt::com::OwnedHandleCleanup::DeleteObject,
+    ));
+    assert!(!unsafe {
+      windows::Win32::Graphics::Gdi::DeleteObject(windows::Win32::Graphics::Gdi::HGDIOBJ(pointer))
+    }
+    .as_bool());
+  }
+
+  #[test]
   fn delete_object_owned_handle_rejects_other_pointer_provenance() {
     let mut value = DynWinRTValue::from_com_result(
       dynwinrt::WinRTValue::RawPtr(0x1234usize as *mut std::ffi::c_void),
