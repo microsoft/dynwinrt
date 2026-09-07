@@ -33,6 +33,14 @@ impl ComReturnKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::codegen::com) enum ComMethodSpecialContract {
+    RestrictedActivation {
+        iid_param: ParamIndex,
+        context_param: ParamIndex,
+        null_param: ParamIndex,
+        output_param: ParamIndex,
+        context: u32,
+        allowed_iids: [&'static str; 5],
+    },
     FixedCapacityBytes {
         guid_param: ParamIndex,
     },

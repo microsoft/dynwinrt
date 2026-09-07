@@ -142,8 +142,8 @@ is not a general Automation or native Win32 projection, and it does not project
 flat DLL exports.
 
 The current CI baseline against
-`Microsoft.Windows.SDK.Win32Metadata` 71.0.14-preview is **5,696 of 7,929
-eligible interfaces (71.84%)** with complete safe code generation. Supported
+`Microsoft.Windows.SDK.Win32Metadata` 71.0.14-preview is **5,697 of 7,929
+eligible interfaces (71.85%)** with complete safe code generation. Supported
 contracts include generated coclass activation and QueryInterface views,
 managed interface ownership, native POD layouts, typed counted buffers,
 BSTR/HSTRING, validated VARIANT, SAFEARRAY and PROPVARIANT subsets, the
@@ -168,6 +168,15 @@ under `com/`, while the COM barrel keeps globally unique short exports.
 COM-only generated packages also require the explicit `com/` entrypoint; the
 generated package root and `@microsoft/dynwinrt` runtime root remain
 WinRT-only.
+
+`projectAs(value, InterfaceClass)` safely queries a borrowed managed native
+value or generated wrapper into a separately owned wrapper of a registered
+generated safe COM interface; it accepts neither raw pointers nor unsafe
+target classes. `IMMDevice` now supports typed `activate(InterfaceClass)` for
+the documented in-process, null-parameter audio endpoint subset and
+`getId(): string`. The usage guide shows endpoint discovery through
+`activate(IAudioClient)` and `DynComAudioFormat.pcm()` format negotiation,
+without a per-interface native adapter.
 
 - [Classic COM JavaScript usage guide](docs/guides/windows/classic-com-usage.md)
 - [Supported ABI, coverage, limitations, and ownership model](docs/architecture/classic-com-support.md)

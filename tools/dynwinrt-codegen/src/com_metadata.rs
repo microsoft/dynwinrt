@@ -387,6 +387,7 @@ pub enum RawExactMethodContractKind {
     AudioFormatOwnedOutput,
     AudioFormatSupport,
     NullableAudioFormatInput,
+    RestrictedEndpointActivation,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -430,6 +431,9 @@ impl RawExactMethodContract {
             RawExactMethodContractKind::NullableAudioFormatInput => {
                 crate::contract_registry::ExactFamilyId::NullableInput
             }
+            RawExactMethodContractKind::RestrictedEndpointActivation => {
+                crate::contract_registry::ExactFamilyId::Ownership
+            }
             RawExactMethodContractKind::CanonicalFormatEtc => {
                 crate::contract_registry::ExactFamilyId::SemanticHresult
             }
@@ -470,6 +474,9 @@ impl RawExactMethodContract {
             }
             RawExactMethodContractKind::NullableAudioFormatInput => {
                 crate::contract_registry::ContractKind::NullInput
+            }
+            RawExactMethodContractKind::RestrictedEndpointActivation => {
+                crate::contract_registry::ContractKind::Ownership
             }
             RawExactMethodContractKind::CanonicalFormatEtc => {
                 crate::contract_registry::ContractKind::SemanticHresult
@@ -2210,6 +2217,7 @@ fn apply_exact_method_contract(
         RawExactMethodContractKind::AudioFormatOwnedOutput => {}
         RawExactMethodContractKind::AudioFormatSupport => {}
         RawExactMethodContractKind::NullableAudioFormatInput => {}
+        RawExactMethodContractKind::RestrictedEndpointActivation => {}
         RawExactMethodContractKind::BorrowedStgMediumInput
         | RawExactMethodContractKind::PreservedStgMediumInOut
         | RawExactMethodContractKind::CanonicalFormatEtc => {}
@@ -2390,6 +2398,14 @@ fn registered_exact_method_contract(
                 "https://learn.microsoft.com/windows/win32/api/mswmdm/nf-mswmdm-iwmdmdevicecontrol-record"
             },
         ),
+        ("Windows.Win32.Media.Audio", "IMMDevice", "Activate") => (
+            RawExactMethodContractKind::RestrictedEndpointActivation,
+            3,
+            0,
+            None,
+            "IMMDevice::Activate returns a counted interface reference for the requested IID; the safe subset uses CLSCTX_INPROC_SERVER and null activation parameters for documented endpoint interfaces",
+            "https://learn.microsoft.com/windows/win32/api/mmdeviceapi/nf-mmdeviceapi-immdevice-activate",
+        ),
         ("Windows.Win32.Media.Audio", "IAudioClient", "IsFormatSupported") => (
             RawExactMethodContractKind::AudioFormatSupport,
             2,
@@ -2498,7 +2514,7 @@ fn registered_exact_method_contract(
             "ID3D12Object" => "Windows.Win32.Graphics.Direct3D12",
             "IDMLObject" => "Windows.Win32.AI.MachineLearning.DirectML",
             "IStream" | "IDataObject" => "Windows.Win32.System.Com",
-            "IAudioClient" | "IAudioClient3" => "Windows.Win32.Media.Audio",
+            "IAudioClient" | "IAudioClient3" | "IMMDevice" => "Windows.Win32.Media.Audio",
             "IMDSPDeviceControl" | "IWMDMDeviceControl" => "Windows.Win32.Media.DeviceManager",
             "IOleCache" => "Windows.Win32.System.Ole",
             "IStorage" => "Windows.Win32.System.Com.StructuredStorage",
@@ -2522,12 +2538,16 @@ fn registered_exact_method_contract(
             "IDataObject" => "IDataObject",
             "IAudioClient" => "IAudioClient",
             "IAudioClient3" => "IAudioClient3",
+            "IMMDevice" => "IMMDevice",
             "IMDSPDeviceControl" => "IMDSPDeviceControl",
             "IWMDMDeviceControl" => "IWMDMDeviceControl",
             "IOleCache" => "IOleCache",
             _ => unreachable!("matched exact method interface"),
         },
         declaring_iid: match kind {
+            RawExactMethodContractKind::RestrictedEndpointActivation => {
+                "d666063f-1587-4e43-81f1-b948e807363f"
+            }
             RawExactMethodContractKind::FixedCapacityBytes => {
                 "2cd2d921-c447-44a7-a13c-4adabfc247e3"
             }
@@ -2578,6 +2598,7 @@ fn registered_exact_method_contract(
             }
         },
         method_name: match kind {
+            RawExactMethodContractKind::RestrictedEndpointActivation => "Activate",
             RawExactMethodContractKind::FixedCapacityBytes => "GetBlob",
             RawExactMethodContractKind::UnsafePrivateData => "GetPrivateData",
             RawExactMethodContractKind::StatStg => "Stat",
@@ -2603,6 +2624,7 @@ fn registered_exact_method_contract(
             RawExactMethodContractKind::CanonicalFormatEtc => "GetCanonicalFormatEtc",
         },
         vtable_index: match (interface, method) {
+            ("IMMDevice", "Activate") => 3,
             ("IMFAttributes", "GetBlob") => 15,
             ("IDXGIObject", "GetPrivateData") => 5,
             ("ID3D10DeviceChild", "GetPrivateData") => 4,
@@ -2642,6 +2664,9 @@ fn registered_exact_method_contract(
             == RawExactMethodContractKind::BorrowedStgMediumInput)
             .then_some(2),
         source_fingerprint: match (interface, method) {
+            ("IMMDevice", "Activate") => {
+                Some("5025E3C25B95D89F92271233B0761D56DF1041F985D6C1D0BAFE0FC4DEDD26E3")
+            }
             ("IMDSPDeviceControl", "Record") => {
                 Some("346C3A5C69100EF034C6B1773533C7B9AB74C66F05581FF8D1D02370C9506F52")
             }
@@ -2801,6 +2826,7 @@ pub(crate) fn validate_required_exact_contract_presence(raw: &RawComMethod) -> R
                 | RawExactMethodContractKind::PreservedStgMediumInOut
                 | RawExactMethodContractKind::CanonicalFormatEtc
                 | RawExactMethodContractKind::NullableAudioFormatInput
+                | RawExactMethodContractKind::RestrictedEndpointActivation
         )
     });
     if required && raw.exact_contract.is_none() {
@@ -2874,6 +2900,10 @@ pub(crate) fn validate_exact_method_contract(
         ));
     }
     let valid_shape = match contract.kind {
+        RawExactMethodContractKind::RestrictedEndpointActivation => {
+            raw_method_shape(raw)
+                == "Activate@3(iid:in:required:constattr:System.Guid[Unknown]/ptr1/Mutable,dwClsCtx:in:required:noconstattr:Windows.Win32.System.Com.CLSCTX[Enum]/ptr0/Unspecified/underlying=u32/ptr0/Unspecified,pActivationParams:in:optional:noconstattr:Windows.Win32.System.Com.StructuredStorage.PROPVARIANT[Struct]/ptr1/Mutable,ppInterface:out:required:noconstattr:void/ptr2/Mutable)->Windows.Win32.Foundation.HRESULT[Struct]/ptr0/Unspecified/underlying=i32/ptr0/Unspecified:plain_hresult:not_enumerator_next"
+        }
         RawExactMethodContractKind::FixedCapacityBytes => {
             raw.params.len() == 4
                 && raw.params[0].name == "guidKey"
@@ -3057,6 +3087,14 @@ pub(crate) fn validate_exact_method_contract(
         }
     };
     let indices_valid = match contract.kind {
+        RawExactMethodContractKind::RestrictedEndpointActivation => {
+            contract.buffer_param_index == 3
+                && contract.capacity_param_index == 0
+                && contract.actual_length_param_index.is_none()
+                && contract.discriminator_param_index.is_none()
+                && contract.reserved_null_param_index.is_none()
+                && contract.ownership_transfer_param_index.is_none()
+        }
         RawExactMethodContractKind::FixedCapacityBytes
         | RawExactMethodContractKind::UnsafePrivateData
         | RawExactMethodContractKind::StatStg => {
@@ -5252,6 +5290,50 @@ mod tests {
             contract,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn endpoint_activation_contract_is_exact() {
+        let Ok(winmd) = std::env::var("DYNWINRT_WIN32_WINMD") else {
+            return;
+        };
+        let interface =
+            parse_com_interface(&winmd, "Windows.Win32.Media.Audio", "IMMDevice").unwrap();
+        let method = interface
+            .raw_methods
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find(|method| method.metadata_name == "Activate")
+            .unwrap();
+        let contract = method.exact_contract.as_ref().unwrap_or_else(|| {
+            panic!(
+                "missing endpoint activation contract: {} ({})",
+                raw_method_shape(method),
+                raw_method_fingerprint(method)
+            )
+        });
+        validate_exact_method_contract(
+            "Windows.Win32.Media.Audio",
+            "IMMDevice",
+            &interface.interface.iid,
+            method,
+            contract,
+        )
+        .unwrap();
+        let get_id = interface
+            .raw_methods
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find(|method| method.metadata_name == "GetId")
+            .unwrap();
+        assert!(
+            !get_id.output_ownership_contracts.is_empty(),
+            "missing GetId ownership: {} ({})",
+            raw_method_shape(get_id),
+            raw_method_fingerprint(get_id)
+        );
     }
 
     #[test]

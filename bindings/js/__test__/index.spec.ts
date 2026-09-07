@@ -190,19 +190,22 @@ test('package facades exactly partition native exports', (t) => {
   t.deepEqual(moduleKeys(winrtCjsRuntime), expectedWinrt)
   t.deepEqual(
     moduleKeys(comCjsRuntime),
-    nativeKeys.filter((name) => safeComNames.has(name)),
+    [...nativeKeys.filter((name) => safeComNames.has(name)), 'projectAs'].sort(),
   )
   t.deepEqual(
     moduleKeys(unsafeComRuntime),
-    nativeKeys.filter((name) => unsafeComNames.has(name)),
+    [...nativeKeys.filter((name) => unsafeComNames.has(name)), 'projectAs', '__registerComProjection', '__comProjectionIid'].sort(),
   )
   t.deepEqual(
     moduleKeys(rawComRuntime),
-    nativeKeys.filter((name) => rawComNames.has(name)),
+    [...nativeKeys.filter((name) => rawComNames.has(name)), 'projectAs', '__registerComProjection', '__comProjectionIid'].sort(),
   )
 
   t.is(winrtCjsRuntime.WinGuid, comCjsRuntime.WinGuid)
   t.is(comCjsRuntime.initializeCom, unsafeComRuntime.initializeCom)
+  t.is(comCjsRuntime.projectAs, unsafeComRuntime.projectAs)
+  t.false(Object.prototype.hasOwnProperty.call(winrtCjsRuntime, 'projectAs'))
+  t.false(Object.prototype.hasOwnProperty.call(comCjsRuntime, '__registerComProjection'))
   t.false(Object.prototype.hasOwnProperty.call(comCjsRuntime, 'DynWinRTValue'))
   t.false(Object.prototype.hasOwnProperty.call(comCjsRuntime, 'WinGUID'))
   t.false(Object.prototype.hasOwnProperty.call(unsafeComRuntime, 'DynWinRTValue'))

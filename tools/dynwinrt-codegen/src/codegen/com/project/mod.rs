@@ -647,6 +647,31 @@ fn project_method(
     let context = || method.name().to_string();
     let dynamic_iid = method.dynamic_iid_contract();
     let mut kind = match method.special_contract() {
+        Some(ComMethodSpecialContract::RestrictedActivation {
+            iid_param,
+            context_param,
+            null_param,
+            output_param,
+            context: cls_context,
+            allowed_iids,
+        }) => {
+            if dynamic_iid.map(|plan| (plan.iid_param_index(), plan.output_param_index()))
+                != Some((iid_param, output_param))
+            {
+                return Err(format!(
+                    "{}: restricted activation requires an exact dynamic IID result",
+                    context()
+                ));
+            }
+            ProjectedComMethodKind::RestrictedActivation {
+                iid_param_index: iid_param.index(),
+                context_param_index: context_param.index(),
+                null_param_index: null_param.index(),
+                output_param_index: output_param.index(),
+                context: cls_context,
+                allowed_iids,
+            }
+        }
         Some(ComMethodSpecialContract::FixedCapacityBytes { guid_param }) => {
             if dynamic_iid.is_some() {
                 return Err(format!(
@@ -901,6 +926,13 @@ fn project_method(
                 | ComParamDirection::CalleeAllocatedBuffer
         );
         if matches!(typ, ComType::ExactNullPointer) {
+            surface_input = false;
+        }
+        if matches!(
+            kind,
+            ProjectedComMethodKind::RestrictedActivation { context_param_index, .. }
+                if context_param_index == index
+        ) {
             surface_input = false;
         }
         if matches!(
@@ -1319,6 +1351,45 @@ fn project_method(
                     )?
                 },
             });
+        }
+    }
+
+    if let ProjectedComMethodKind::RestrictedActivation {
+        iid_param_index,
+        context_param_index,
+        null_param_index,
+        output_param_index,
+        context,
+        ..
+    } = kind
+    {
+        if (
+            iid_param_index,
+            context_param_index,
+            null_param_index,
+            output_param_index,
+        ) != (0, 1, 2, 3)
+            || context != 1
+            || params.len() != 4
+            || params[0].typ != ComType::GuidPointer
+            || params[0].direction != ComParamDirection::In
+            || !matches!(
+                params[1].typ,
+                ComType::Enum {
+                    underlying: ComEnumUnderlying::U32,
+                    ..
+                }
+            )
+            || params[1].direction != ComParamDirection::In
+            || params[2].typ != ComType::ExactNullPointer
+            || params[2].direction != ComParamDirection::In
+            || params[3].direction != ComParamDirection::Out
+            || return_convention != ComReturnConvention::HResult
+            || results.len() != 1
+            || results[0].source != ResultSource::Param(3)
+            || results[0].conversion != ResultConversion::DynamicIidAdoption
+        {
+            return Err("restricted activation lost its validated input/output plan".into());
         }
     }
 
@@ -3203,6 +3274,25 @@ fn input_params_of(method: &ProjectedComMethod) -> Vec<(usize, &ProjectedComPara
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn endpoint_activation_preserves_the_semantic_call_plan() {
+        let Ok(winmd) = std::env::var("DYNWINRT_WIN32_WINMD") else {
+            return;
+        };
+        let meta = crate::com_metadata::parse_com_interface(
+            &winmd,
+            "Windows.Win32.Media.Audio",
+            "IMMDevice",
+        )
+        .unwrap();
+        let validated = model::validate_interface(&meta).unwrap();
+        let projected = project_validated_interface(&validated, &winmd).unwrap();
+        assert!(matches!(
+            projected.methods[0].kind,
+            ProjectedComMethodKind::RestrictedActivation { .. }
+        ));
+    }
 
     #[test]
     fn guid_format_preserves_canonical_semantic_identity() {

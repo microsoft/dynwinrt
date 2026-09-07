@@ -176,7 +176,7 @@ enum Commands {
 }
 
 const COM_MANIFEST_FILE: &str = ".dynwinrt-com-manifest.json";
-const COM_MANIFEST_VERSION: u32 = 2;
+const COM_MANIFEST_VERSION: u32 = 3;
 
 #[derive(Debug, Default, Deserialize, Serialize)]
 struct ComGenerationManifest {
@@ -8994,8 +8994,9 @@ mod tests {
 
         let error = has_com_output(&output).unwrap_err();
         assert!(
-            error.contains("have no version 2 generation manifest")
-                && error.contains("delete and regenerate"),
+            error.contains(&format!(
+                "have no version {COM_MANIFEST_VERSION} generation manifest"
+            )) && error.contains("delete and regenerate"),
             "{error}"
         );
 

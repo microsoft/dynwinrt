@@ -4,8 +4,8 @@
 general Automation or native Win32 projection.
 
 > **Status: preview, under active development.** The current CI baseline against
-> `Microsoft.Windows.SDK.Win32Metadata` 71.0.14-preview is 5,696 complete safe
-> interface projections out of 7,929 eligible interfaces (71.84%). Earlier
+> `Microsoft.Windows.SDK.Win32Metadata` 71.0.14-preview is 5,697 complete safe
+> interface projections out of 7,929 eligible interfaces (71.85%). Earlier
 > inventory and demand-snapshot sections retain the metadata versions and dates
 > stated in those sections.
 
@@ -491,11 +491,13 @@ not be described as solving every problem in the map above.
 | Authoritative count-param detection | Relationships come solely from `NativeArrayInfo(CountParamIndex)` or an exact cited override registry. Documented overrides cover `ISequentialStream::Read`/`Write`, `IDiscRecorder::GetRecorderGUID`, `IOpcSignatureCustomObject::GetXml`, and the fixed-capacity/actual-byte `IMFAttributes::GetBlob` contract. The previous substring/adjacency heuristic remains removed. |
 | Private-data ownership guard | Actual metadata contains seven declaring `GetPrivateData(REFGUID, UINT*, void*)` interfaces. Their documentation permits returning an AddRef'd interface set by `SetPrivateDataInterface`; Direct3D 10 also documents destructive NULL behavior, and DXGI does not mark the data pointer optional. They remain exact, cited fail-closed hazards rather than being projected as leaking `Buffer` methods. |
 | Atomic multi-interface writes | When a single `generate` invocation projects several COM interfaces, every interface is projected into memory first; files (and the `com/` index/package barrel) are only written once the whole batch has projected successfully. A later interface's projection failure no longer leaves an earlier interface's files partially written to disk. |
-| Coclass projection | GUID-bearing Classic COM coclasses such as `TaskbarList`, `FileOperation`, and `FileOpenDialog` generate as independently constructible JS classes (`new TaskbarList()`). Interface wrappers remain non-publicly constructible and expose an IID descriptor plus `_fromNative` for runtime QueryInterface views. |
+| Coclass projection | GUID-bearing Classic COM coclasses such as `TaskbarList`, `FileOperation`, and `FileOpenDialog` generate as independently constructible JS classes (`new TaskbarList()`). Interface wrappers remain non-publicly constructible and register private descriptors for safe `projectAs` QueryInterface views. |
 | Interface views | Generated coclasses expose `as(InterfaceClass)`, `tryAs(InterfaceClass)`, and `supports(InterfaceClass)`. These execute real QueryInterface calls; `tryAs` returns `null` only for `E_NOINTERFACE`, while other errors remain visible. |
+| Safe projection entry | `projectAs(value, InterfaceClass)` on `/com` borrows a managed native value or generated wrapper and returns a separately owned QueryInterface wrapper. The target must be a registered generated safe COM interface class; arbitrary raw pointers and unsafe target classes are rejected. Generated modules register descriptors through private `/com/unsafe` helpers, not application-supplied ABI declarations. |
+| Audio endpoint entry | Exact `IMMDevice::Activate` evidence projects `activate(InterfaceClass)` with an inferred target wrapper, fixed `CLSCTX_INPROC_SERVER = 1`, and native NULL activation parameters. Exact `GetId` ownership projects `getId(): string` and frees the CoTaskMem allocation. These are semantic plans over shared runtime primitives, not per-interface native adapters. |
 | Conservative primary interface | Windows.Win32 coclass TypeDefs do not carry `InterfaceImpl`/`DefaultAttribute` rows. The generator associates only exact metadata naming candidates, constructs the real interface inheritance graph, and selects a primary only when there is one unique most-derived leaf. Multiple unrelated leaves fail closed rather than choosing by numeric suffix. |
 | CommonJS and ESM | COM implementation files use the same CommonJS format as generated WinRT files. `com/index.js` is the CommonJS barrel, while `com/index.mjs` is the ESM facade. Package exports provide explicit `require` and `import` conditions for the COM barrel and deep imports. |
-| Explicit raw opt-in | Manual ABI declarations and caller-supplied COM pointers are isolated under `@microsoft/dynwinrt/com/unsafe`. The default COM facade exports only initialization and managed value/layout wrappers—not `DynCom`, signatures, interfaces, native types, or `DynComUnsafe`; generated safe bindings continue to fail closed. |
+| Explicit raw opt-in | Manual ABI declarations and caller-supplied COM pointers are isolated under `@microsoft/dynwinrt/com/unsafe`. The default COM facade exports initialization, `projectAs`, and managed value/layout wrappers—not `DynCom`, signatures, interfaces, native types, or `DynComUnsafe`; generated safe bindings continue to fail closed. |
 
 ### Generated package layout
 
@@ -545,9 +547,22 @@ taskbar.release();
 
 Separate WinRT and COM invocations may target the same output directory in
 either order. The generated package manifest is rebuilt from both domains
-without adding COM exports to the WinRT root. Generated layout/schema version
-changes require deleting and regenerating the complete bindings directory;
-in-place cross-version migration is intentionally unsupported.
+without adding COM exports to the WinRT root.
+
+PR1 raises the generated COM file-ownership manifest
+`com/.dynwinrt-com-manifest.json` from version 2 to **version 3**. Every
+generated safe class now registers a descriptor through private
+`@microsoft/dynwinrt/com/unsafe` helpers. Public `projectAs` remains on the
+runtime `@microsoft/dynwinrt/com` entrypoint, and generated
+`IMMDevice.activate(InterfaceClass)` uses that private descriptor registry.
+Unregistered/unsafe targets and numeric, Buffer, or native `RawPtr` sources are
+rejected. Other generated `.as(...)` paths remain unchanged.
+
+Existing bindings must be deleted and completely regenerated with the
+matching updated runtime and codegen. Regenerate the complete bindings
+directory, including all selected roots; in-place cross-version migration,
+editing the manifest version, and mixing old/new generated classes are not
+supported. This does not change WinRT semantics or the runtime root API.
 
 winappCli project aliases use `#winapp/bindings/com` for the COM barrel and
 canonical deep imports such as
@@ -680,7 +695,22 @@ and `@microsoft/dynwinrt/com`.
 | HSTRING inputs and scalar outputs | Supported | JavaScript strings are converted to owning HSTRING values; returned HSTRING values are decoded and released automatically. |
 | Referenced interface types | Supported when IID metadata is loaded | Missing external definitions fail closed and direct callers to pass the defining winmd with `--ref`. |
 | Dynamic-IID `void**` outputs | Supported for explicit required REFIID shapes | The method must return ordinary HRESULT and contain exactly one required const `GUID*` named `iid`/`riid` plus one required mutable `void**`/Object** output with +1 COM ownership. Their explicit parameter indices may be non-adjacent/non-terminal. Optional, duplicate, array, FreeWith, InOut, by-value/mutable/deeper GUID, and wrong-depth output shapes fail closed. |
+| Typed endpoint activation | Exact-contract support | `IMMDevice.activate(InterfaceClass)` accepts only registered generated safe classes for the documented null-parameter IID subset below. The caller cannot supply CLSCTX flags or an activation-parameter pointer. |
 | Explicit apartment initialization | Supported | `initializeCom()` never silently chooses an apartment for the caller. |
+
+`IMMDevice` is safe-complete with exact IID
+`d666063f-1587-4e43-81f1-b948e807363f`, slot-3 `Activate`, and full-method
+fingerprint evidence. Its activation targets are limited to `IAudioClient`,
+`IAudioEndpointVolume`, `IAudioMeterInformation`, `IAudioSessionManager`, and
+`IAudioSessionManager2`; other/custom targets, asynchronous activation, and
+loopback or other parameterized activation remain outside this safe subset.
+The separate slot-5 `GetId` JSON ownership entry supplies its CoTaskMem string
+contract. Both entries belong to `com.ownership.v1`; see the
+[contract evidence registry](classic-com-contract-evidence-registry.md).
+The [audio endpoint example](../guides/windows/classic-com-usage.md#55-audio-endpoint-activation)
+uses `projectAs` and `activate(IAudioClient)` without exposing raw pointers.
+Existing safe `IAudioClient`, `IAudioClient2`, and `IAudioClient3` format
+contracts remain unchanged.
 
 `IMDSPDeviceControl::Record` and `IWMDMDeviceControl::Record` have exact
 nullable audio-input contracts. Their declarations accept
@@ -1255,13 +1285,15 @@ that census to 5,681. The dedicated target-device-independent
 `TYMED_HGLOBAL` FORMATETC/STGMEDIUM model promotes 10 more interfaces after
 restricting InOut to proven caller-allocation-preserving contracts, bringing
 that census to 5,691. The variable-length WAVEFORMATEX model and three pinned
-audio method contracts promote five more interfaces, bringing the current
-literal census to **5,696 / 7,929 = 71.837558%**. The result remains above the
+audio method contracts promote five more interfaces, bringing that census to
+5,696. The exact `IMMDevice::Activate` and `GetId` contracts promote one more
+complete interface, bringing the current literal census to
+**5,697 / 7,929 = 71.850170%**. The result remains above the
 70% target without admitting any unmodeled target-device, storage-medium,
 audio-output ownership, ownership-transfer, or callback shape.
 
 CI reproduces this number with `dynwinrt-codegen com-census --json` and fails
-if the denominator changes, complete generation drops below 5,696, or coverage
+if the denominator changes, complete generation drops below 5,697, or coverage
 falls below 70%.
 
 ## Public-code frequency snapshot
@@ -1392,7 +1424,7 @@ hardware, and whether it adds a distinct ABI shape.
 | `IClassFactory` | Low-level COM activation | Complete generation and public `CoGetClassObject` acquisition are live-tested with paired server locking and owned `CreateInstance` output. |
 | `IBindCtx` / `IRunningObjectTable` | Monikers and object binding | Both generate. `BIND_OPTS` carries an exact size initializer, and explicit bytes with a zero or incorrect `cbStruct` fail before native dispatch. |
 | `ICreateErrorInfo` / `IErrorInfo` | COM rich error information | Complete generation and acquisition are live-tested for GUID, wide strings, owned BSTR output, thread-local storage, and one-shot consumption. |
-| `IMMDeviceEnumerator` | Audio endpoint discovery | Generates today, but live behavior depends on available audio endpoints. |
+| `IMMDeviceEnumerator` / `IMMDevice` | Audio endpoint discovery and activation | Complete safe generation includes typed null-parameter activation for the documented IID subset and CoTaskMem-owned device IDs projected as strings. `projectAs` wraps borrowed managed device values with an independent QI owner; live behavior depends on audio services and endpoints. |
 | `IWbemServices` | WMI queries and method invocation | Complete generation uses exact sync/semisync output selection; selected outputs are owned COM references and `pCtx` is native null in the closed safe overloads. |
 | `IAudioClient` / `IAudioClient2` / `IAudioClient3` | Low-level audio streaming | Complete safe generation uses `DynComAudioFormat`; exact fingerprinted contracts model shared/exclusive closest-format selection and CoTaskMem-owned format outputs. Generated fake-vtable coverage is hardware-independent. |
 | `IDispatch` | Automation and scripting | Complete inherited real-metadata generation passes. `GetIDsOfNames` projects as `string[] -> number[]`; `Invoke` accepts `DynComDispatchParams` and explicit result/excepInfo/argErr request options, returning dedicated owning wrappers. Derived Automation interfaces remain independently validated. |
@@ -1519,7 +1551,8 @@ COM interface references and Win32 handles must not be treated the same.
 | Value source | Ownership in dynwinrt | Cleanup |
 |---|---|---|
 | `CoCreateInstance` result | Owned `+1` COM reference | Automatic `Release` on `DynWinRtValue` drop/GC, or explicit `release()`. |
-| `QueryInterface` / `cast()` result | Owned `+1` COM reference | Automatic `Release`, independently of the source wrapper. |
+| `QueryInterface` / `cast()` / `projectAs()` result | Owned `+1` COM reference | Automatic `Release`, independently of the borrowed source value or wrapper. |
+| Generated `IMMDevice.activate()` result | Owned `+1` COM reference for the registered allowed target | Automatic `Release`; the intermediate activation owner is released after projection, including on projection failure. |
 | Typed interface out parameter | Owned `+1` COM reference from the callee | Automatic `Release`. |
 | Interface passed as `[in]` | Borrowed for the duration of the call | No ownership transfer unless the callee explicitly retains it with `AddRef`. |
 | Numeric raw pointer | Borrowed | Never automatically released or freed. |

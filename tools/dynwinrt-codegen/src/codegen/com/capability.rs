@@ -4559,10 +4559,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(report.summary.eligible_interfaces, 7_929);
-        assert_eq!(report.summary.safe_complete, 5_696);
-        assert_eq!(report.summary.safe_evidence.safe_complete, 5_696);
+        assert_eq!(report.summary.safe_complete, 5_697);
+        assert_eq!(report.summary.safe_incomplete, 2_232);
+        assert_eq!(report.summary.safe_evidence.safe_complete, 5_697);
         assert_eq!(report.summary.safe_evidence.standard_derived, 5_333);
-        assert_eq!(report.summary.safe_evidence.exact_registry_dependent, 363);
+        assert_eq!(report.summary.safe_evidence.exact_registry_dependent, 364);
         assert_eq!(
             report.summary.safe_evidence.standard_derived
                 + report.summary.safe_evidence.exact_registry_dependent,
@@ -4570,34 +4571,34 @@ mod tests {
         );
         assert_eq!(
             report.summary.safe_evidence.metadata_fact_occurrences,
-            5_982
+            5_983
         );
         assert_eq!(
             report.summary.safe_evidence.com_standard_fact_occurrences,
-            26_129
+            26_134
         );
-        assert_eq!(report.summary.safe_evidence.registered_exact_entries, 504);
+        assert_eq!(report.summary.safe_evidence.registered_exact_entries, 506);
         assert_eq!(
             report.summary.safe_evidence.metadata_matched_exact_entries,
-            504
+            506
         );
         assert_eq!(
             report.summary.safe_evidence.safe_consumed_exact_entries,
-            413
+            415
         );
         assert_eq!(
             report
                 .summary
                 .safe_evidence
                 .exact_entry_interface_dependencies,
-            669
+            671
         );
         assert_eq!(
             report
                 .summary
                 .safe_evidence
                 .exact_family_interface_dependencies,
-            416
+            417
         );
         assert_eq!(
             report.summary.safe_evidence.by_contract_kind,
@@ -4610,7 +4611,7 @@ mod tests {
                 ("enumerator-next".into(), 74),
                 ("flag-selected-buffer".into(), 3),
                 ("null-input".into(), 4),
-                ("ownership".into(), 180),
+                ("ownership".into(), 182),
                 ("parameter-direction".into(), 45),
                 ("safearray".into(), 263),
                 ("semantic-hresult".into(), 3),
@@ -4618,7 +4619,7 @@ mod tests {
         );
         assert_eq!(
             report.summary.safe_evidence.by_family_id["com.ownership.v1"],
-            122
+            123
         );
         assert_eq!(
             report.summary.safe_evidence.by_family_id["audio.conditional-output.v1"],
@@ -4640,7 +4641,7 @@ mod tests {
             report.summary.safe_evidence.by_family_id["automation.idispatch-invoke.v1"],
             1
         );
-        assert_eq!(report.summary.safe_evidence.by_entry_id.len(), 413);
+        assert_eq!(report.summary.safe_evidence.by_entry_id.len(), 415);
         assert!(
             report
                 .summary
@@ -4685,9 +4686,23 @@ mod tests {
                 .values()
                 .filter(|entry| entry.safe_consumed)
                 .count(),
-            413
+            415
         );
         let status = &report.summary.safe_evidence.exact_entry_status;
+        assert_eq!(
+            status
+                .values()
+                .filter(|entry| entry.family_id == "com.ownership.v1")
+                .count(),
+            169
+        );
+        assert_eq!(
+            status
+                .values()
+                .filter(|entry| entry.family_id == "com.ownership.v1" && entry.safe_consumed)
+                .count(),
+            118
+        );
         assert_eq!(
             status
                 .values()
@@ -4758,6 +4773,25 @@ mod tests {
         assert!(matches!(
             promoted_audio.evidence_class,
             Some(SafeEvidenceClass::ExactRegistryDependent)
+        ));
+        let endpoint = report
+            .interfaces
+            .iter()
+            .find(|interface| {
+                interface.namespace == "Windows.Win32.Media.Audio" && interface.name == "IMMDevice"
+            })
+            .unwrap();
+        assert!(endpoint.safe_complete);
+        assert!(matches!(
+            endpoint.evidence_class,
+            Some(SafeEvidenceClass::ExactRegistryDependent)
+        ));
+        assert_eq!(endpoint.exact_entry_ids.len(), 2);
+        assert!(endpoint.exact_entry_ids.contains(
+            &"com.ownership.entry.windows-win32-media-audio.immdevice.d666063f15874e4381f1b948e807363f.activate.slot-3.v1".into()
+        ));
+        assert!(endpoint.exact_entry_ids.contains(
+            &"com.ownership.entry.windows-win32-media-audio.immdevice.d666063f15874e4381f1b948e807363f.getid.slot-5.param-0-ppstrid.v1".into()
         ));
         let data_object = report
             .interfaces
@@ -4855,7 +4889,7 @@ mod tests {
                 ),
                 (
                     412 - usize::from(target == CensusTarget::I686),
-                    1_432 - 23 * usize::from(target == CensusTarget::I686),
+                    1_431 - 23 * usize::from(target == CensusTarget::I686),
                     389 + 24 * usize::from(target == CensusTarget::I686)
                 )
             );
@@ -4962,6 +4996,7 @@ mod tests {
             "IDispatch",
             "IPropertyStore",
             "IClassFactory",
+            "IMMDevice",
         ] {
             let interface = report
                 .interfaces

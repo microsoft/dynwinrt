@@ -80,19 +80,19 @@
   "parsed_interface_identities": 7944,
   "eligible_interfaces": 7929,
   "not_addressable": 15,
-  "safe_complete": 5696,
-  "safe_incomplete": 2233,
+  "safe_complete": 5697,
+  "safe_incomplete": 2232,
   "safeEvidence": {
-    "safeComplete": 5696,
+    "safeComplete": 5697,
     "standardDerived": 5333,
-    "exactRegistryDependent": 363,
-    "metadataFactOccurrences": 5982,
-    "comStandardFactOccurrences": 26129,
-    "registeredExactEntries": 504,
-    "metadataMatchedExactEntries": 504,
-    "safeConsumedExactEntries": 413,
-    "exactEntryInterfaceDependencies": 669,
-    "exactFamilyInterfaceDependencies": 416,
+    "exactRegistryDependent": 364,
+    "metadataFactOccurrences": 5983,
+    "comStandardFactOccurrences": 26134,
+    "registeredExactEntries": 506,
+    "metadataMatchedExactEntries": 506,
+    "safeConsumedExactEntries": 415,
+    "exactEntryInterfaceDependencies": 671,
+    "exactFamilyInterfaceDependencies": 417,
     "byContractKind": {
       "borrowed-handle": 54,
       "bounded-two-call": 16,
@@ -102,7 +102,7 @@
       "enumerator-next": 74,
       "flag-selected-buffer": 3,
       "null-input": 4,
-      "ownership": 180,
+      "ownership": 182,
       "parameter-direction": 45,
       "safearray": 263,
       "semantic-hresult": 3
@@ -380,6 +380,8 @@
       "com.ownership.entry.windows-win32-media-audio.iaudioeffectsmanager.4460b3ae4b44452786767548a8acd260.getaudioeffects.slot-5.param-0-effects.v1": 1,
       "com.ownership.entry.windows-win32-media-audio.iaudiosessioncontrol.f4b1a59972664319a8cae70acb11e8cd.getdisplayname.slot-4.param-0-pretval.v1": 1,
       "com.ownership.entry.windows-win32-media-audio.iaudiosessioncontrol.f4b1a59972664319a8cae70acb11e8cd.geticonpath.slot-6.param-0-pretval.v1": 1,
+      "com.ownership.entry.windows-win32-media-audio.immdevice.d666063f15874e4381f1b948e807363f.activate.slot-3.v1": 1,
+      "com.ownership.entry.windows-win32-media-audio.immdevice.d666063f15874e4381f1b948e807363f.getid.slot-5.param-0-ppstrid.v1": 1,
       "com.ownership.entry.windows-win32-media-directshow-tv.iatsc-ett.5a142cc9b8cf4a86a040e9cadf3ef3e7.getextendedmessagetext.slot-7.param-1-pptext.v1": 1,
       "com.ownership.entry.windows-win32-media-directshow-tv.iatsc-vct.26879a1832f946c691f0fb6479270e8c.getrecordname.slot-8.param-1-pwsname.v1": 1,
       "com.ownership.entry.windows-win32-media-directshow-tv.iatsccontentadvisorydescriptor.ff76e60c028343eaba32b422238547ee.getrecordratingdescriptiontext.slot-10.param-2-pptext.v1": 1,
@@ -530,7 +532,7 @@
       "buffers.counted-buffer.v1": 2,
       "com.enumerator-next-exception.v1": 74,
       "com.nullable-input.v1": 2,
-      "com.ownership.v1": 122,
+      "com.ownership.v1": 123,
       "com.parameter-direction.v1": 15,
       "com.reserved-null-input.v1": 1,
       "com.semantic-hresult.v1": 3,
@@ -541,7 +543,7 @@
     },
     "byMetadataAttribute": {
       "CanReturnMultipleSuccessValuesAttribute": 46,
-      "ConstAttribute": 3331,
+      "ConstAttribute": 3332,
       "FreeWithAttribute": 3,
       "NativeArrayInfoAttribute": 2602
     },
@@ -551,12 +553,12 @@
       "com.automation.bstr-replacement.v1": 99,
       "com.enumerator-next.generic.v1": 25,
       "com.handle.borrowed-no-cleanup.v1": 45,
-      "com.hresult.failure.v1": 5578,
+      "com.hresult.failure.v1": 5579,
       "com.interface.input-borrow.v1": 1890,
-      "com.interface.typed-output-plus-one.v1": 3457,
-      "com.iunknown.identity-refcount.v1": 5696,
-      "com.query-interface.output-plus-one.v1": 5696,
-      "com.standard-cleanup.matching-allocator.v1": 1436
+      "com.interface.typed-output-plus-one.v1": 3458,
+      "com.iunknown.identity-refcount.v1": 5697,
+      "com.query-interface.output-plus-one.v1": 5697,
+      "com.standard-cleanup.matching-allocator.v1": 1437
     },
     "exactEntryStatus": {
       "audio.conditional-output.entry.windows-win32-media-audio.iaudioclient.1cb9ad4cdbfa4c32b178c2f568a703b2.isformatsupported.slot-7.v1": {
@@ -6745,6 +6747,45 @@
         "safeConsumed": false,
         "interfaceDependencies": 0
       },
+      "com.ownership.entry.windows-win32-media-audio.immdevice.d666063f15874e4381f1b948e807363f.activate.slot-3.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Media.Audio",
+          "interface": "IMMDevice",
+          "iid": "d666063f-1587-4e43-81f1-b948e807363f",
+          "method": "Activate",
+          "slot": 3,
+          "parameter": null
+        },
+        "sourceFingerprint": "5025E3C25B95D89F92271233B0761D56DF1041F985D6C1D0BAFE0FC4DEDD26E3",
+        "citation": "https://learn.microsoft.com/windows/win32/api/mmdeviceapi/nf-mmdeviceapi-immdevice-activate",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "com.ownership.entry.windows-win32-media-audio.immdevice.d666063f15874e4381f1b948e807363f.getid.slot-5.param-0-ppstrid.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.Media.Audio",
+          "interface": "IMMDevice",
+          "iid": "d666063f-1587-4e43-81f1-b948e807363f",
+          "method": "GetId",
+          "slot": 5,
+          "parameter": [
+            0,
+            "ppstrId"
+          ]
+        },
+        "sourceFingerprint": "38AF4F595BEEADA67D0D49EB1B04F2CC354C8A06813B286CCAE4B5EF44BFCD99",
+        "citation": "microsoft-learn:https://learn.microsoft.com/windows/win32/api/mmdeviceapi/nf-mmdeviceapi-immdevice-getid",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
       "com.ownership.entry.windows-win32-media-audio.ipart.ae2de0e45bca4f2daa465d13f8fdb3a9.getglobalid.slot-5.param-0-ppwstrglobalid.v1": {
         "familyId": "com.ownership.v1",
         "contractKind": "ownership",
@@ -10824,27 +10865,27 @@
   },
   "targets": {
     "arm64": {
-      "raw_metadata_complete": 6108,
-      "raw_manual_contract": 1432,
+      "raw_metadata_complete": 6109,
+      "raw_manual_contract": 1431,
       "raw_runtime_blocked": 389,
       "safe_incomplete_raw_metadata_complete": 412,
-      "safe_incomplete_raw_manual_contract": 1432,
+      "safe_incomplete_raw_manual_contract": 1431,
       "safe_incomplete_raw_runtime_blocked": 389
     },
     "i686": {
-      "raw_metadata_complete": 6107,
-      "raw_manual_contract": 1409,
+      "raw_metadata_complete": 6108,
+      "raw_manual_contract": 1408,
       "raw_runtime_blocked": 413,
       "safe_incomplete_raw_metadata_complete": 411,
-      "safe_incomplete_raw_manual_contract": 1409,
+      "safe_incomplete_raw_manual_contract": 1408,
       "safe_incomplete_raw_runtime_blocked": 413
     },
     "x64": {
-      "raw_metadata_complete": 6108,
-      "raw_manual_contract": 1432,
+      "raw_metadata_complete": 6109,
+      "raw_manual_contract": 1431,
       "raw_runtime_blocked": 389,
       "safe_incomplete_raw_metadata_complete": 412,
-      "safe_incomplete_raw_manual_contract": 1432,
+      "safe_incomplete_raw_manual_contract": 1431,
       "safe_incomplete_raw_runtime_blocked": 389
     }
   },
@@ -10892,11 +10933,11 @@
   "manual_reason_counts": {
     "arm64": {
       "external_pointee_storage": 971,
-      "missing_allocator": 1041,
+      "missing_allocator": 1040,
       "missing_count_relation": 83,
       "missing_handle_ownership": 211,
       "missing_interface_replacement_contract": 42,
-      "missing_output_ownership": 1041,
+      "missing_output_ownership": 1040,
       "nested_pointer_lifetime": 560,
       "opaque_pointee_contract": 289,
       "pointee_missing_layout": 404,
@@ -10909,11 +10950,11 @@
     },
     "i686": {
       "external_pointee_storage": 972,
-      "missing_allocator": 1041,
+      "missing_allocator": 1040,
       "missing_count_relation": 83,
       "missing_handle_ownership": 211,
       "missing_interface_replacement_contract": 42,
-      "missing_output_ownership": 1041,
+      "missing_output_ownership": 1040,
       "nested_pointer_lifetime": 534,
       "opaque_pointee_contract": 289,
       "pointee_missing_layout": 391,
@@ -10926,11 +10967,11 @@
     },
     "x64": {
       "external_pointee_storage": 971,
-      "missing_allocator": 1041,
+      "missing_allocator": 1040,
       "missing_count_relation": 83,
       "missing_handle_ownership": 211,
       "missing_interface_replacement_contract": 42,
-      "missing_output_ownership": 1041,
+      "missing_output_ownership": 1040,
       "nested_pointer_lifetime": 560,
       "opaque_pointee_contract": 289,
       "pointee_missing_layout": 404,
@@ -10946,8 +10987,8 @@
     "arm64": {
       "cleanup_known_external": 0,
       "cleanup_none_required": 2237,
-      "cleanup_standard_supported": 4533,
-      "cleanup_unknown": 1159,
+      "cleanup_standard_supported": 4534,
+      "cleanup_unknown": 1158,
       "requires_current_apartment": 7929,
       "requires_external_acquisition": 6804,
       "requires_external_pointer_or_callback": 1089
@@ -10955,8 +10996,8 @@
     "i686": {
       "cleanup_known_external": 0,
       "cleanup_none_required": 2237,
-      "cleanup_standard_supported": 4533,
-      "cleanup_unknown": 1159,
+      "cleanup_standard_supported": 4534,
+      "cleanup_unknown": 1158,
       "requires_current_apartment": 7929,
       "requires_external_acquisition": 6804,
       "requires_external_pointer_or_callback": 1090
@@ -10964,8 +11005,8 @@
     "x64": {
       "cleanup_known_external": 0,
       "cleanup_none_required": 2237,
-      "cleanup_standard_supported": 4533,
-      "cleanup_unknown": 1159,
+      "cleanup_standard_supported": 4534,
+      "cleanup_unknown": 1158,
       "requires_current_apartment": 7929,
       "requires_external_acquisition": 6804,
       "requires_external_pointer_or_callback": 1089

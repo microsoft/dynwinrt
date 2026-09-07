@@ -11,7 +11,7 @@
       "path": "ownership-outputs.json",
       "kind": "ownership",
       "familyIds": ["com.ownership.v1"],
-      "sha256": "96C76D7A2762FC077D73AF74050B7F585DB71B4E5A2E583FD50F212F82164C0C"
+      "sha256": "0D3A9B890BD89710B47487DAF12A1860C02DEE25279D2A82C1D228FB3AE727E6"
     }
   ]
 }

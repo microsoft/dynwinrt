@@ -1215,6 +1215,11 @@ fn adopt_com_pointer(
   iid: Option<&WinGUID>,
 ) -> napi::Result<DynWinRTValue> {
   let ptr = take_native_output_pointer(value, PointerProvenance::ComOutput, "COM interface")?;
+  if ptr.is_null() {
+    return Err(napi::Error::from_reason(
+      "Owned COM interface output was null",
+    ));
+  }
   let adopted = unsafe { dynwinrt::com::adopt_com_pointer(ptr) };
   match iid {
     Some(iid) => adopted

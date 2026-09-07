@@ -413,6 +413,14 @@ pub(super) struct ProjectedInterfaceRef {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum ProjectedComMethodKind {
     Normal,
+    RestrictedActivation {
+        iid_param_index: usize,
+        context_param_index: usize,
+        null_param_index: usize,
+        output_param_index: usize,
+        context: u32,
+        allowed_iids: [&'static str; 5],
+    },
     FixedCapacityBytes {
         guid_param_index: usize,
     },

@@ -481,6 +481,7 @@ pub(crate) fn statically_declared_exact_entry_ids() -> Result<BTreeSet<String>, 
 }
 
 const ADDITIONAL_EXACT_ENTRY_IDS: &[&str] = &[
+    "com.ownership.entry.windows-win32-media-audio.immdevice.d666063f15874e4381f1b948e807363f.activate.slot-3.v1",
     "com.nullable-input.entry.windows-win32-media-devicemanager.imdspdevicecontrol.1dcb3a1433ed11d3847000c04f79dbc0.record.slot-6.v1",
     "com.nullable-input.entry.windows-win32-media-devicemanager.iwmdmdevicecontrol.1dcb3a0433ed11d3847000c04f79dbc0.record.slot-6.v1",
     "audio.conditional-output.entry.windows-win32-media-audio.iaudioclient.1cb9ad4cdbfa4c32b178c2f568a703b2.isformatsupported.slot-7.v1",
@@ -1154,9 +1155,9 @@ mod tests {
         serde_json::from_str::<serde_json::Value>(SCHEMA_JSON).unwrap();
         let registry = load_registry().unwrap();
         let ids = statically_declared_exact_entry_ids().unwrap();
-        assert_eq!(ids.len(), 504);
+        assert_eq!(ids.len(), 506);
         assert_eq!(registry.conditional_outputs.len(), 7);
-        assert_eq!(registry.ownership_outputs.len(), 148);
+        assert_eq!(registry.ownership_outputs.len(), 149);
         assert_eq!(
             registry.conditional_outputs[0].entry_id,
             "wmi.conditional-output.entry.windows-win32-system-wmi.iwbemservices.9556dc99828c11cfa37e00aa003240c7.opennamespace.slot-3.v1"

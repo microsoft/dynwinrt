@@ -32,15 +32,15 @@ B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D
 | Result                                               | Interfaces | Percentage |
 | ---------------------------------------------------- | ---------: | ---------: |
 | Externally addressable Classic COM interfaces        |      7,929 |       100% |
-| Complete safe generation                             |      5,696 |     71.84% |
-| Rejected because at least one contract is incomplete |      2,233 |     28.16% |
+| Complete safe generation                             |      5,697 |     71.85% |
+| Rejected because at least one contract is incomplete |      2,232 |     28.15% |
 
 The denominator contains addressable COM interface identities, not flat Win32
 DLL exports. A complete interface means that its full inherited vtable can be
 generated without guessing ABI, layout, count relationships, ownership, or
 cleanup.
 
-The 5,696 figure is semantic codegen coverage, not a claim that every interface
+The 5,697 figure is semantic codegen coverage, not a claim that every interface
 has a dedicated live Windows test or can be activated on every machine.
 
 Reproduce the census with:
@@ -105,7 +105,22 @@ modeled contracts.
 | Counted buffers      | Typed input buffers, caller-owned output buffers, capacity/actual-length patterns, exact bounded sizing, and known CoTaskMem outputs.       |
 | Automation values    | Defined subsets of VARIANT, SAFEARRAY, PROPVARIANT, DISPPARAMS, and EXCEPINFO.                                                              |
 | Return conventions   | Ordinary and semantic HRESULT, direct scalar, direct void, and exact registered direct-pointer contracts such as `IMalloc`.                 |
-| COM object semantics | Coclass activation, inherited interfaces, QI views, automatic release, and idempotent explicit release.                                     |
+| COM object semantics | Coclass activation, inherited interfaces, `projectAs` QI views of managed values or wrappers, automatic release, and idempotent explicit release. |
+
+The safe `/com` entrypoint exports `projectAs(value, InterfaceClass)`. It
+borrows a managed native value or generated wrapper and returns an independent
+QueryInterface owner of a registered generated safe COM interface. Raw
+pointers and unsafe target classes are rejected.
+
+`IMMDevice` is now safe-complete: `activate(InterfaceClass)` infers the returned
+wrapper, fixes `CLSCTX_INPROC_SERVER = 1`, and passes native NULL activation
+parameters. The supported targets are `IAudioClient`, `IAudioEndpointVolume`,
+`IAudioMeterInformation`, `IAudioSessionManager`, and `IAudioSessionManager2`.
+Other/custom targets, async activation, and loopback or other parameterized
+activation remain outside this subset. `getId()` returns a string with exact
+CoTaskMem cleanup. This uses generated semantic plans and shared runtime
+primitives, not per-interface native adapters; the WinRT root is unchanged.
+See the [audio endpoint example](../guides/windows/classic-com-usage.md#55-audio-endpoint-activation).
 
 ## JavaScript interface implementation
 
@@ -343,11 +358,11 @@ versus 16 (`WBEM_FLAG_RETURN_IMMEDIATELY`), adopt the requested non-null `+1`, a
 release dirty failure output. Generic interface InOut parameters remain manual
 replacement contracts.
 
-**1,428 of 1,432** x64 manual-contract interfaces now have at least one portable
-executable generated high-level method. **1,427** have an executable manual
+**1,427 of 1,431** x64 manual-contract interfaces now have at least one portable
+executable generated high-level method. **1,426** have an executable manual
 method, one retains only metadata-complete methods, and four have no portable
 executable method because every candidate is blocked on another generated
-target. Across the portable generated surface there are **6,048 executable
+target. Across the portable generated surface there are **6,046 executable
 manual methods**, **0 remaining portable manual-classified methods omitted**,
 and **1,161 runtime-blocked methods** still omitted.
 
@@ -355,19 +370,19 @@ and **1,161 runtime-blocked methods** still omitted.
 
 Stage 1 of the
 [Classic COM contract evidence registry](../architecture/classic-com-contract-evidence-registry.md)
-classifies all 5,696 safe-complete interfaces exactly once:
+classifies all 5,697 safe-complete interfaces exactly once:
 
 | Evidence class | Interfaces |
 | --- | ---: |
 | `standard_derived` | 5,333 |
-| `exact_registry_dependent` | 363 |
+| `exact_registry_dependent` | 364 |
 
-The registry declares 504 selector-specific entries; all 504 match pinned
-metadata, 413 distinct entries are safe-consumed, and safe plans contain 669
-entry/interface plus 416 family/interface dependencies. They also consume
-5,982 metadata-attribute and 26,129 universal COM-rule dependency sets.
+The registry declares 506 selector-specific entries; all 506 match pinned
+metadata, 415 distinct entries are safe-consumed, and safe plans contain 671
+entry/interface plus 417 family/interface dependencies. They also consume
+5,983 metadata-attribute and 26,134 universal COM-rule dependency sets.
 Entry/interface dependencies by kind are SAFEARRAY 263, enumerator-next 74,
-borrowed-handle 54, ownership 180, parameter-direction 45, bounded-two-call 16,
+borrowed-handle 54, ownership 182, parameter-direction 45, bounded-two-call 16,
 counted-buffer 16, conditional-output 10, flag-selected-buffer 3, null-input 4,
 semantic-HRESULT 3, and compound-dispatch 1. Complete per-entry status,
 per-family rollups, and per-interface entry IDs are retained in the summary
@@ -386,6 +401,11 @@ variable-format outputs.
 The two device-control `Record` methods have separate exact nullable-input
 contracts: `null` selects the device default format without allocating a
 placeholder WAVEFORMATEX. Other audio-format inputs remain required.
+`IMMDevice::Activate` adds an exact IID/slot-3/full-fingerprint activation
+contract, and `IMMDevice::GetId` adds a JSON-backed slot-5 CoTaskMem ownership
+entry. Both are consumed by the complete safe endpoint plan. The
+`com.ownership.v1` family now has 169 registered entries, 118 safe-used
+entries, and 123 family/interface dependencies.
 
 The storage-medium contracts also pin `IOleCache::SetData` (including inherited
 `IOleCache2` calls) to caller-retained ownership and describe the distinct
@@ -397,7 +417,7 @@ semantics are modeled.
 
 The strict embedded registry lives in
 `tools/dynwinrt-codegen/contracts/classic-com/`. JSON is the sole source for
-seven selector-derived IWbemServices conditional-output contracts and 148
+seven selector-derived IWbemServices conditional-output contracts and 149
 documented output-ownership contracts. Each entry includes its selector,
 pre-contract fingerprint, evidence, and validated metadata hash.
 
@@ -410,18 +430,18 @@ allocator, or ownership declaration can corrupt memory or crash the process.
 For `Microsoft.Windows.SDK.Win32Metadata` 71.0.14-preview
 (`Windows.Win32.winmd` SHA-256
 `B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D`),
-the safe census is 5,696 of 7,929 interfaces. The separate outbound raw census
-classifies the 2,233 safe-incomplete interfaces as:
+the safe census is 5,697 of 7,929 interfaces. The separate outbound raw census
+classifies the 2,232 safe-incomplete interfaces as:
 
 | Target | Metadata-complete | Manual contract | Runtime-blocked |
 | ------ | ----------------: | --------------: | --------------: |
-| x64    |               412 |           1,432 |             389 |
-| i686   |               411 |           1,409 |             413 |
-| ARM64  |               412 |           1,432 |             389 |
+| x64    |               412 |           1,431 |             389 |
+| i686   |               411 |           1,408 |             413 |
+| ARM64  |               412 |           1,431 |             389 |
 
-Including safe-complete interfaces, x64 and ARM64 have 6,108
-metadata-complete, 1,432 manual, and 389 blocked interfaces. i686 has 6,107
-metadata-complete, 1,409 manual, and 413 blocked interfaces.
+Including safe-complete interfaces, x64 and ARM64 have 6,109
+metadata-complete, 1,431 manual, and 389 blocked interfaces. i686 has 6,108
+metadata-complete, 1,408 manual, and 413 blocked interfaces.
 
 Pointer-shaped types are analyzed recursively. A missing pointee layout for an
 external input pointer is manual-contract; the same missing layout for a
@@ -431,14 +451,14 @@ writable/readable `T*` caller-storage contract is runtime-blocked. Thus
 layout is complete.
 
 Cleanup availability is no longer represented by ambiguous booleans. Per
-target, 2,237 interfaces require no cleanup, 4,533 use a Phase 1 standard
-cleanup, none use a known external cleanup, and 1,159 have unknown cleanup.
+target, 2,237 interfaces require no cleanup, 4,534 use a Phase 1 standard
+cleanup, none use a known external cleanup, and 1,158 have unknown cleanup.
 Every missing output ownership/allocator contract has `cleanup_unknown`.
 External pointer/callback requirements affect 1,089 x64/ARM64 interfaces and
 1,090 i686 interfaces; 6,804 require external acquisition and all 7,929 retain
 the current-apartment rule.
 
-For all 5,696 safe-complete interfaces, cleanup is derived from the validated
+For all 5,697 safe-complete interfaces, cleanup is derived from the validated
 projected result conversions rather than the raw analyzer. Pure values,
 borrowed handles, caller buffers, and plain arrays are `none_required`.
 Managed COM/dynamic-IID adoption, BSTR, HSTRING, CoTaskMem, VARIANT,
@@ -525,7 +545,7 @@ as ABI support. The legacy `com-census --json` output remains unchanged.
 ## Copyable user-facing statement
 
 > dynwinrt supports the Classic COM interface portion of Windows.Win32
-> metadata. With Win32Metadata 71.0.14-preview, 5,696 of 7,929 addressable COM
+> metadata. With Win32Metadata 71.0.14-preview, 5,697 of 7,929 addressable COM
 > interfaces pass complete safe generation. Safe symbols never fall back to an
 > unsafe implementation; ordinary generation may instead emit an explicitly
 > named `*Unsafe` outbound companion containing only metadata-complete methods.

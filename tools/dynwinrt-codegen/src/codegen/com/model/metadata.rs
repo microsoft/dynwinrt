@@ -404,6 +404,21 @@ fn map_method(
         })
     } else {
         match raw.exact_contract.as_ref().map(|contract| contract.kind) {
+            Some(RawExactMethodContractKind::RestrictedEndpointActivation) => method
+                .with_special_contract(ComMethodSpecialContract::RestrictedActivation {
+                    iid_param: ParamIndex::new(0),
+                    context_param: ParamIndex::new(1),
+                    null_param: ParamIndex::new(2),
+                    output_param: ParamIndex::new(3),
+                    context: 1,
+                    allowed_iids: [
+                        "1cb9ad4c-dbfa-4c32-b178-c2f568a703b2",
+                        "5cdf2c82-841e-4546-9722-0cf74078229a",
+                        "c02216f6-8c67-4b5b-9d00-d008e73e0064",
+                        "bfa971f1-4d5e-40bb-935e-967039bfbee4",
+                        "77aa99a0-1bd6-484f-8bc7-2c654c9a9b6f",
+                    ],
+                }),
             Some(RawExactMethodContractKind::FixedCapacityBytes) => {
                 method.with_special_contract(ComMethodSpecialContract::FixedCapacityBytes {
                     guid_param: ParamIndex::new(0),
@@ -494,7 +509,11 @@ fn map_param(
         || raw_method
             .exact_interface_output_call
             .as_ref()
-            .is_some_and(|contract| contract.context_param_index == param_index);
+            .is_some_and(|contract| contract.context_param_index == param_index)
+        || raw_method.exact_contract.as_ref().is_some_and(|contract| {
+            contract.kind == RawExactMethodContractKind::RestrictedEndpointActivation
+                && param_index == 2
+        });
     let effective_direction = documented_bstr_direction_override(
         interface_namespace,
         interface_name,

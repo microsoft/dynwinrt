@@ -1452,7 +1452,7 @@ Windows.Win32.Media.Audio,IControlChangeNotify,a09513ed-c709-4d21-bd7b-5f34c47f3
 Windows.Win32.Media.Audio,IControlInterface,45d37c3f-5140-444a-ae24-400789f3cbf3,false,,missing_allocator
 Windows.Win32.Media.Audio,IDeviceSpecificProperty,3b22bcbf-2586-4af0-8583-205d391b807c,false,,external_pointee_storage
 Windows.Win32.Media.Audio,IDeviceTopology,2a07407e-6497-4a18-9787-32f79bd0d98f,false,,missing_allocator
-Windows.Win32.Media.Audio,IMMDevice,d666063f-1587-4e43-81f1-b948e807363f,false,,missing_allocator
+Windows.Win32.Media.Audio,IMMDevice,d666063f-1587-4e43-81f1-b948e807363f,true,exact_registry_dependent,
 Windows.Win32.Media.Audio,IMMDeviceActivator,3b0d0ea4-d0a9-4b0e-935b-09516746fac0,false,,missing_allocator
 Windows.Win32.Media.Audio,IMMDeviceCollection,0bd7a1be-7a1a-44db-8397-cc5392387b5e,true,standard_derived,
 Windows.Win32.Media.Audio,IMMDeviceEnumerator,a95664d2-9614-4f35-a746-de8db63617e6,true,standard_derived,
