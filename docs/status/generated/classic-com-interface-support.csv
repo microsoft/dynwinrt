@@ -5103,8 +5103,8 @@ Windows.Win32.System.Ole,IGetVBAObject,91733a60-3f4c-101b-a3f6-00aa0034e4e9,fals
 Windows.Win32.System.Ole,IObjectIdentity,ca04b7e6-0d21-11d1-8cc5-00c04fc2b085,true,standard_derived,
 Windows.Win32.System.Ole,IObjectWithSite,fc4801a3-2ba9-11cf-a229-00aa003d7352,true,standard_derived,
 Windows.Win32.System.Ole,IOleAdviseHolder,00000111-0000-0000-c000-000000000046,true,standard_derived,
-Windows.Win32.System.Ole,IOleCache,0000011e-0000-0000-c000-000000000046,true,standard_derived,
-Windows.Win32.System.Ole,IOleCache2,00000128-0000-0000-c000-000000000046,true,standard_derived,
+Windows.Win32.System.Ole,IOleCache,0000011e-0000-0000-c000-000000000046,true,exact_registry_dependent,
+Windows.Win32.System.Ole,IOleCache2,00000128-0000-0000-c000-000000000046,true,exact_registry_dependent,
 Windows.Win32.System.Ole,IOleCacheControl,00000129-0000-0000-c000-000000000046,true,standard_derived,
 Windows.Win32.System.Ole,IOleClientSite,00000118-0000-0000-c000-000000000046,true,standard_derived,
 Windows.Win32.System.Ole,IOleCommandTarget,b722bccb-4e68-101b-a2bc-00aa00404770,false,,incomplete_pointee_layout_for_storage

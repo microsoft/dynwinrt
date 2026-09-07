@@ -409,7 +409,8 @@ fn render_js(meta: &ProjectedComInterface) -> String {
             ProjectedComMethodKind::Normal
             | ProjectedComMethodKind::FixedCapacityBytes { .. }
             | ProjectedComMethodKind::OwningCallerOutput { .. }
-            | ProjectedComMethodKind::DataObjectSetData { .. } => {
+            | ProjectedComMethodKind::BorrowedStgMediumInput { .. }
+            | ProjectedComMethodKind::CanonicalFormatEtc { .. } => {
                 emit_method_js(&mut out, method, &iface_var)
             }
             ProjectedComMethodKind::CallerSuppliedDynamicIid {
@@ -777,6 +778,15 @@ fn build_method_sig_js(method: &ProjectedComMethod) -> String {
         }
         ComReturnConvention::Void => parts.push(".returnsVoid()".into()),
         ComReturnConvention::Direct(typ) => parts.push(format!(".returns({})", abi_type_js(typ))),
+    }
+    if let ProjectedComMethodKind::CanonicalFormatEtc {
+        input_param_index,
+        output_param_index,
+    } = method.kind
+    {
+        parts.push(format!(
+            ".canonicalFormatEtcResult({input_param_index}, {output_param_index})"
+        ));
     }
     if parts.is_empty() {
         "new DynComMethodSig()".into()
@@ -1317,7 +1327,7 @@ fn emit_method_js_named(
             }
             if matches!(
                 method.kind,
-                ProjectedComMethodKind::DataObjectSetData {
+                ProjectedComMethodKind::BorrowedStgMediumInput {
                     release_param_index
                 } if release_param_index == index
             ) {
@@ -2503,7 +2513,8 @@ fn render_dts(meta: &ProjectedComInterface) -> String {
             ProjectedComMethodKind::Normal
             | ProjectedComMethodKind::FixedCapacityBytes { .. }
             | ProjectedComMethodKind::OwningCallerOutput { .. }
-            | ProjectedComMethodKind::DataObjectSetData { .. } => {
+            | ProjectedComMethodKind::BorrowedStgMediumInput { .. }
+            | ProjectedComMethodKind::CanonicalFormatEtc { .. } => {
                 (dts_params(method), dts_return_type(method))
             }
             ProjectedComMethodKind::AudioFormatSupport { .. } => (

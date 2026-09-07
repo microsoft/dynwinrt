@@ -458,12 +458,16 @@ pub(super) enum ProjectedComMethodKind {
         synchronous_flags: i32,
         semisynchronous_flags: i32,
     },
-    DataObjectSetData {
+    BorrowedStgMediumInput {
         release_param_index: usize,
     },
     AudioFormatSupport {
         share_mode_param_index: usize,
         closest_match_param_index: usize,
+    },
+    CanonicalFormatEtc {
+        input_param_index: usize,
+        output_param_index: usize,
     },
 }
 

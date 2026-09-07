@@ -53,12 +53,16 @@ pub(in crate::codegen::com) enum ComMethodSpecialContract {
         synchronous_flags: i32,
         semisynchronous_flags: i32,
     },
-    DataObjectSetData {
+    BorrowedStgMediumInput {
         release_param: ParamIndex,
     },
     AudioFormatSupport {
         share_mode_param: ParamIndex,
         closest_match_param: ParamIndex,
+    },
+    CanonicalFormatEtc {
+        input_param: ParamIndex,
+        output_param: ParamIndex,
     },
     Malloc,
 }

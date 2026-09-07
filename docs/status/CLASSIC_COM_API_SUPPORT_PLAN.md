@@ -359,17 +359,17 @@ classifies all 5,697 safe-complete interfaces exactly once:
 
 | Evidence class | Interfaces |
 | --- | ---: |
-| `standard_derived` | 5,338 |
-| `exact_registry_dependent` | 359 |
+| `standard_derived` | 5,336 |
+| `exact_registry_dependent` | 361 |
 
-The registry declares 499 selector-specific entries; all 499 match pinned
-metadata, 408 distinct entries are safe-consumed, and safe plans contain 663
-entry/interface plus 411 family/interface dependencies. They also consume
+The registry declares 501 selector-specific entries; all 501 match pinned
+metadata, 410 distinct entries are safe-consumed, and safe plans contain 666
+entry/interface plus 414 family/interface dependencies. They also consume
 5,982 metadata-attribute and 26,134 universal COM-rule dependency sets.
 Entry/interface dependencies by kind are SAFEARRAY 263, enumerator-next 74,
-borrowed-handle 54, ownership 177, parameter-direction 45, bounded-two-call 16,
+borrowed-handle 54, ownership 179, parameter-direction 45, bounded-two-call 16,
 counted-buffer 16, conditional-output 10, flag-selected-buffer 3, null-input 2,
-semantic-HRESULT 2, and compound-dispatch 1. Complete per-entry status,
+semantic-HRESULT 3, and compound-dispatch 1. Complete per-entry status,
 per-family rollups, and per-interface entry IDs are retained in the summary
 and interface CSV.
 These are dependency counts, not net contribution; no ablation claim is made.
@@ -383,6 +383,10 @@ entries with full selectors, fingerprints, and citations.
 output contract, while `GetMixFormat` and
 `IAudioClient3::GetCurrentSharedModeEnginePeriod` add exact CoTaskMem-owned
 variable-format outputs.
+
+The storage-medium contracts also pin `IOleCache::SetData` (including inherited
+`IOleCache2` calls) to caller-retained ownership and describe the distinct
+`IDataObject::GetCanonicalFormatEtc` success/result semantics.
 
 The strict embedded registry lives in
 `tools/dynwinrt-codegen/contracts/classic-com/`. JSON is the sole source for

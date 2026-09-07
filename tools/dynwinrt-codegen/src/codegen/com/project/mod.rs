@@ -691,8 +691,8 @@ fn project_method(
             synchronous_flags,
             semisynchronous_flags,
         },
-        Some(ComMethodSpecialContract::DataObjectSetData { release_param }) => {
-            ProjectedComMethodKind::DataObjectSetData {
+        Some(ComMethodSpecialContract::BorrowedStgMediumInput { release_param }) => {
+            ProjectedComMethodKind::BorrowedStgMediumInput {
                 release_param_index: release_param.index(),
             }
         }
@@ -702,6 +702,13 @@ fn project_method(
         }) => ProjectedComMethodKind::AudioFormatSupport {
             share_mode_param_index: share_mode_param.index(),
             closest_match_param_index: closest_match_param.index(),
+        },
+        Some(ComMethodSpecialContract::CanonicalFormatEtc {
+            input_param,
+            output_param,
+        }) => ProjectedComMethodKind::CanonicalFormatEtc {
+            input_param_index: input_param.index(),
+            output_param_index: output_param.index(),
         },
         Some(ComMethodSpecialContract::Malloc) | None => project_dynamic_method_kind(
             method.name(),
@@ -1007,7 +1014,7 @@ fn project_method(
         }
         if matches!(
             &kind,
-            ProjectedComMethodKind::DataObjectSetData {
+            ProjectedComMethodKind::BorrowedStgMediumInput {
                 release_param_index
             } if *release_param_index == index
         ) {
@@ -1338,6 +1345,32 @@ fn project_method(
             "{}: audio format support no longer matches its exact projected result contract",
             context()
         ));
+    }
+
+    if let ProjectedComMethodKind::CanonicalFormatEtc {
+        input_param_index,
+        output_param_index,
+    } = kind
+    {
+        if input_param_index != 0
+            || output_param_index != 1
+            || params.len() != 2
+            || return_convention != ComReturnConvention::SemanticHResult
+            || params[0].typ != ComType::FormatEtc
+            || params[0].direction != ComParamDirection::In
+            || params[0].nullable
+            || params[1].typ != ComType::FormatEtc
+            || params[1].direction != ComParamDirection::Out
+            || results.len() != 2
+            || results[0].source != ResultSource::DirectReturn
+            || results[1].source != ResultSource::Param(1)
+            || results[1].conversion != ResultConversion::FormatEtc
+        {
+            return Err(format!(
+                "{}: canonical FORMATETC requires the exact semantic HRESULT and input/output result plan",
+                context()
+            ));
+        }
     }
 
     Ok(ProjectedComMethod {
