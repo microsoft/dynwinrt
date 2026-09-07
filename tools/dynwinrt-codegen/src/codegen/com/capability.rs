@@ -4559,9 +4559,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(report.summary.eligible_interfaces, 7_929);
-        assert_eq!(report.summary.safe_complete, 5_692);
-        assert_eq!(report.summary.safe_evidence.safe_complete, 5_692);
-        assert_eq!(report.summary.safe_evidence.standard_derived, 5_334);
+        assert_eq!(report.summary.safe_complete, 5_691);
+        assert_eq!(report.summary.safe_evidence.safe_complete, 5_691);
+        assert_eq!(report.summary.safe_evidence.standard_derived, 5_333);
         assert_eq!(report.summary.safe_evidence.exact_registry_dependent, 358);
         assert_eq!(
             report.summary.safe_evidence.standard_derived
@@ -4574,23 +4574,23 @@ mod tests {
         );
         assert_eq!(
             report.summary.safe_evidence.com_standard_fact_occurrences,
-            26_119
+            26_114
         );
-        assert_eq!(report.summary.safe_evidence.registered_exact_entries, 498);
+        assert_eq!(report.summary.safe_evidence.registered_exact_entries, 499);
         assert_eq!(
             report.summary.safe_evidence.metadata_matched_exact_entries,
-            498
+            499
         );
         assert_eq!(
             report.summary.safe_evidence.safe_consumed_exact_entries,
-            407
+            408
         );
         assert_eq!(
             report
                 .summary
                 .safe_evidence
                 .exact_entry_interface_dependencies,
-            659
+            660
         );
         assert_eq!(
             report
@@ -4610,7 +4610,7 @@ mod tests {
                 ("enumerator-next".into(), 74),
                 ("flag-selected-buffer".into(), 3),
                 ("null-input".into(), 2),
-                ("ownership".into(), 175),
+                ("ownership".into(), 176),
                 ("parameter-direction".into(), 45),
                 ("safearray".into(), 263),
                 ("semantic-hresult".into(), 3),
@@ -4632,7 +4632,7 @@ mod tests {
             report.summary.safe_evidence.by_family_id["automation.idispatch-invoke.v1"],
             1
         );
-        assert_eq!(report.summary.safe_evidence.by_entry_id.len(), 407);
+        assert_eq!(report.summary.safe_evidence.by_entry_id.len(), 408);
         assert!(
             report
                 .summary
@@ -4677,7 +4677,7 @@ mod tests {
                 .values()
                 .filter(|entry| entry.safe_consumed)
                 .count(),
-            407
+            408
         );
         let status = &report.summary.safe_evidence.exact_entry_status;
         assert_eq!(
@@ -4759,6 +4759,19 @@ mod tests {
         assert!(data_object.exact_entry_ids.contains(
             &"com.ownership.entry.windows-win32-system-com.idataobject.0000010e00000000c000000000000046.setdata.slot-7.v1".into()
         ));
+        assert!(data_object.exact_entry_ids.contains(
+            &"com.ownership.entry.windows-win32-system-com.idataobject.0000010e00000000c000000000000046.getdatahere.slot-4.v1".into()
+        ));
+        let wia = report
+            .interfaces
+            .iter()
+            .find(|interface| {
+                interface.namespace == "Windows.Win32.Devices.ImageAcquisition"
+                    && interface.name == "IWiaDataTransfer"
+            })
+            .unwrap();
+        assert!(!wia.safe_complete);
+        assert!(wia.evidence_class.is_none());
         assert_eq!(
             promoted_audio
                 .exact_entry_ids
@@ -4828,7 +4841,7 @@ mod tests {
                 (
                     412 - usize::from(target == CensusTarget::I686),
                     1_437 - 23 * usize::from(target == CensusTarget::I686),
-                    388 + 24 * usize::from(target == CensusTarget::I686)
+                    389 + 24 * usize::from(target == CensusTarget::I686)
                 )
             );
         }

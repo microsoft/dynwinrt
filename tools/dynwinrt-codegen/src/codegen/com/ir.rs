@@ -459,6 +459,9 @@ pub(super) enum ProjectedComMethodKind {
     BorrowedStgMediumInput {
         release_param_index: usize,
     },
+    PreservedStgMediumInOut {
+        medium_param_index: usize,
+    },
     CanonicalFormatEtc {
         input_param_index: usize,
         output_param_index: usize,

@@ -4,8 +4,8 @@
 general Automation or native Win32 projection.
 
 > **Status: preview, under active development.** The current CI baseline against
-> `Microsoft.Windows.SDK.Win32Metadata` 71.0.14-preview is 5,692 complete safe
-> interface projections out of 7,929 eligible interfaces (71.79%). Earlier
+> `Microsoft.Windows.SDK.Win32Metadata` 71.0.14-preview is 5,691 complete safe
+> interface projections out of 7,929 eligible interfaces (71.77%). Earlier
 > inventory and demand-snapshot sections retain the metadata versions and dates
 > stated in those sections.
 
@@ -613,7 +613,7 @@ and `@microsoft/dynwinrt/com`.
 | DISPPARAMS / EXCEPINFO | Exact `IDispatch::Invoke` input/output contracts, dedicated JS wrappers, optional null outputs, deferred fill, and failure cleanup | Output/InOut DISPPARAMS, input/InOut EXCEPINFO, nested occurrences, and arbitrary deferred/function-pointer contracts |
 | SAFEARRAY | Rank 1–8, signed bounds, typed scalar/bool/BSTR/interface/VARIANT elements, SafeArray API validation and cleanup | Unsupported element VARTYPEs, rank > 8, untyped arrays whose VARTYPE cannot be proven, and Automation InOut replacement |
 | PROPVARIANT | Scalar numeric/bool, LPWSTR, CLSID, FILETIME, blob, and supported vectors with PropVariantClear | Nested VARIANT vectors, streams/interfaces, arrays, clipboard/storage types, BYREF, and unknown VARTYPEs |
-| FORMATETC / STGMEDIUM | Dedicated target-device-independent `TYMED_HGLOBAL` values; owned outputs use `ReleaseStgMedium`; `GetDataHere` preserves caller allocation; exact IID/slot/shape/fingerprint evidence pins `SetData.fRelease=FALSE` | `DVTARGETDEVICE`, non-HGLOBAL media, JavaScript callback implementation, and ownership-transfer input |
+| FORMATETC / STGMEDIUM | Dedicated target-device-independent `TYMED_HGLOBAL` values; owned outputs use `ReleaseStgMedium`; exact `IDataObject::GetDataHere` evidence permits caller-allocation-preserving InOut; exact IID/slot/shape/fingerprint evidence pins `SetData.fRelease=FALSE` | `DVTARGETDEVICE`, non-HGLOBAL media, unproven InOut contracts, JavaScript callback implementation, and ownership-transfer input |
 | Allocator ownership | COM Release, BSTR output/replacement and array elements, VARIANT clear, CoTaskMem buffers/PWSTR elements, boxed GUID, retained JS buffers | LocalFree, custom allocators, allocator interfaces, unknown ownership |
 | Interface pointers | Typed input/output interfaces, QueryInterface, dynamic IID output, and generated multi-interface callback objects with inherited IID aliases | Interface in/out replacement, aggregation, and `IInspectable` implementation |
 | Apartments | Explicit initialization, non-agile owner-thread implementations, synchronous same-thread callbacks, and rejection before entering JS on a foreign thread | Cross-apartment marshaling, GIT/agility handling, and callback dispatch |
@@ -687,6 +687,14 @@ For `DATA_S_SAMEFORMATETC`, the returned value is a copy of the input; the unuse
 output is not decoded or adopted. The native HRESULT is preserved in both
 cases. Other FORMATETC outputs retain the strict HGLOBAL validator, and
 unsupported target-device output is cleaned and rejected.
+
+STGMEDIUM InOut is not a type-wide capability. Its safe projection requires
+exact caller-allocation-preservation evidence, currently registered only for
+`IDataObject::GetDataHere`. The callee must not resize or replace the HGLOBAL,
+and the caller retains cleanup responsibility. `IWiaDataTransfer::idtGetData`
+has a separate property-selected file-transfer and filename-output contract;
+it is not safe-generated. Its unsafe/raw capabilities remain subject to the
+existing layout and contract restrictions.
 
 The generator emits native POD storage only after every architecture-specific
 layout fact has been validated. A `Buffer` in this path represents the struct's
@@ -1235,13 +1243,14 @@ from terminated strings, the HWND-specific census was **5,567 / 7,929**. The
 exact CoTaskMem output-ownership, parameter-direction, and null-input
 registries subsequently promote 114 additional complete interfaces, bringing
 that census to 5,681. The dedicated target-device-independent
-`TYMED_HGLOBAL` FORMATETC/STGMEDIUM model promotes 11 more interfaces, bringing
-the current literal census to **5,692 / 7,929 = 71.787111%**. The result remains
+`TYMED_HGLOBAL` FORMATETC/STGMEDIUM model promotes 10 more interfaces after
+restricting InOut to proven caller-allocation-preserving contracts, bringing
+the current literal census to **5,691 / 7,929 = 71.774499%**. The result remains
 above the 70% target without admitting any unmodeled target-device, storage
 medium, ownership-transfer, or callback shape.
 
 CI reproduces this number with `dynwinrt-codegen com-census --json` and fails
-if the denominator changes, complete generation drops below 5,692, or coverage
+if the denominator changes, complete generation drops below 5,691, or coverage
 falls below 70%.
 
 ## Public-code frequency snapshot

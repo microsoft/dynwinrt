@@ -378,77 +378,84 @@ fn map_method(
     if let Some(contract) = dynamic_iid {
         method = method.with_dynamic_iid_contract(contract)?;
     }
-    let method =
-        if let Some(contract) = &raw.exact_interface_output_call {
-            if contract.public_input_param_indices.len() > 3 {
-                return Err(ModelError::InvalidContract(
-                    "conditional interface output supports at most three public inputs".into(),
-                ));
+    let method = if let Some(contract) = &raw.exact_interface_output_call {
+        if contract.public_input_param_indices.len() > 3 {
+            return Err(ModelError::InvalidContract(
+                "conditional interface output supports at most three public inputs".into(),
+            ));
+        }
+        let mut public_input_params = [None; 3];
+        for (target, source) in public_input_params
+            .iter_mut()
+            .zip(&contract.public_input_param_indices)
+        {
+            *target = Some(ParamIndex::new(*source));
+        }
+        method.with_special_contract(ComMethodSpecialContract::ConditionalInterfaceOutput {
+            public_input_params,
+            flags_param: ParamIndex::new(contract.flags_param_index),
+            context_param: ParamIndex::new(contract.context_param_index),
+            synchronous_output: contract.synchronous_output_param_index.map(ParamIndex::new),
+            semisynchronous_output: contract
+                .semisynchronous_output_param_index
+                .map(ParamIndex::new),
+            synchronous_flags: contract.synchronous_flags,
+            semisynchronous_flags: contract.semisynchronous_flag_value,
+        })
+    } else {
+        match raw.exact_contract.as_ref().map(|contract| contract.kind) {
+            Some(RawExactMethodContractKind::FixedCapacityBytes) => {
+                method.with_special_contract(ComMethodSpecialContract::FixedCapacityBytes {
+                    guid_param: ParamIndex::new(0),
+                })
             }
-            let mut public_input_params = [None; 3];
-            for (target, source) in public_input_params
-                .iter_mut()
-                .zip(&contract.public_input_param_indices)
-            {
-                *target = Some(ParamIndex::new(*source));
+            Some(RawExactMethodContractKind::UnsafePrivateData) => {
+                unreachable!("unsafe private-data contracts fail before method mapping")
             }
-            method.with_special_contract(ComMethodSpecialContract::ConditionalInterfaceOutput {
-                public_input_params,
-                flags_param: ParamIndex::new(contract.flags_param_index),
-                context_param: ParamIndex::new(contract.context_param_index),
-                synchronous_output: contract.synchronous_output_param_index.map(ParamIndex::new),
-                semisynchronous_output: contract
-                    .semisynchronous_output_param_index
-                    .map(ParamIndex::new),
-                synchronous_flags: contract.synchronous_flags,
-                semisynchronous_flags: contract.semisynchronous_flag_value,
-            })
-        } else {
-            match raw.exact_contract.as_ref().map(|contract| contract.kind) {
-                Some(RawExactMethodContractKind::FixedCapacityBytes) => method
-                    .with_special_contract(ComMethodSpecialContract::FixedCapacityBytes {
-                        guid_param: ParamIndex::new(0),
-                    }),
-                Some(RawExactMethodContractKind::UnsafePrivateData) => {
-                    unreachable!("unsafe private-data contracts fail before method mapping")
-                }
-                Some(RawExactMethodContractKind::StatStg) => method,
-                Some(RawExactMethodContractKind::Malloc) => {
-                    method.with_special_contract(ComMethodSpecialContract::Malloc)
-                }
-                Some(RawExactMethodContractKind::FlagSelectedString) => {
-                    let contract = raw.exact_contract.as_ref().unwrap();
-                    method.with_special_contract(ComMethodSpecialContract::FlagSelectedString {
-                        discriminator_param: ParamIndex::new(
-                            contract.discriminator_param_index.unwrap(),
-                        ),
-                        reserved_null_param: ParamIndex::new(
-                            contract.reserved_null_param_index.unwrap(),
-                        ),
-                        buffer_param: ParamIndex::new(contract.buffer_param_index),
-                        capacity_param: ParamIndex::new(contract.capacity_param_index),
-                        string_flags: [4, 5],
-                        validation_flag: 6,
-                    })
-                }
-                Some(RawExactMethodContractKind::BorrowedStgMediumInput) => {
-                    let contract = raw.exact_contract.as_ref().unwrap();
-                    method.with_special_contract(ComMethodSpecialContract::BorrowedStgMediumInput {
-                        release_param: ParamIndex::new(
-                            contract
-                                .ownership_transfer_param_index
-                                .expect("validated SetData ownership-transfer parameter"),
-                        ),
-                    })
-                }
-                Some(RawExactMethodContractKind::CanonicalFormatEtc) => method
-                    .with_special_contract(ComMethodSpecialContract::CanonicalFormatEtc {
-                        input_param: ParamIndex::new(0),
-                        output_param: ParamIndex::new(1),
-                    }),
-                None => method,
+            Some(RawExactMethodContractKind::StatStg) => method,
+            Some(RawExactMethodContractKind::Malloc) => {
+                method.with_special_contract(ComMethodSpecialContract::Malloc)
             }
-        };
+            Some(RawExactMethodContractKind::FlagSelectedString) => {
+                let contract = raw.exact_contract.as_ref().unwrap();
+                method.with_special_contract(ComMethodSpecialContract::FlagSelectedString {
+                    discriminator_param: ParamIndex::new(
+                        contract.discriminator_param_index.unwrap(),
+                    ),
+                    reserved_null_param: ParamIndex::new(
+                        contract.reserved_null_param_index.unwrap(),
+                    ),
+                    buffer_param: ParamIndex::new(contract.buffer_param_index),
+                    capacity_param: ParamIndex::new(contract.capacity_param_index),
+                    string_flags: [4, 5],
+                    validation_flag: 6,
+                })
+            }
+            Some(RawExactMethodContractKind::BorrowedStgMediumInput) => {
+                let contract = raw.exact_contract.as_ref().unwrap();
+                method.with_special_contract(ComMethodSpecialContract::BorrowedStgMediumInput {
+                    release_param: ParamIndex::new(
+                        contract
+                            .ownership_transfer_param_index
+                            .expect("validated SetData ownership-transfer parameter"),
+                    ),
+                })
+            }
+            Some(RawExactMethodContractKind::PreservedStgMediumInOut) => {
+                let contract = raw.exact_contract.as_ref().unwrap();
+                method.with_special_contract(ComMethodSpecialContract::PreservedStgMediumInOut {
+                    medium_param: ParamIndex::new(contract.buffer_param_index),
+                })
+            }
+            Some(RawExactMethodContractKind::CanonicalFormatEtc) => {
+                method.with_special_contract(ComMethodSpecialContract::CanonicalFormatEtc {
+                    input_param: ParamIndex::new(0),
+                    output_param: ParamIndex::new(1),
+                })
+            }
+            None => method,
+        }
+    };
     Ok(method)
 }
 

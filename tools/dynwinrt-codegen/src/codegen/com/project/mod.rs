@@ -695,6 +695,11 @@ fn project_method(
                 release_param_index: release_param.index(),
             }
         }
+        Some(ComMethodSpecialContract::PreservedStgMediumInOut { medium_param }) => {
+            ProjectedComMethodKind::PreservedStgMediumInOut {
+                medium_param_index: medium_param.index(),
+            }
+        }
         Some(ComMethodSpecialContract::CanonicalFormatEtc {
             input_param,
             output_param,
@@ -1007,7 +1012,13 @@ fn project_method(
         }
         if direction == ComParamDirection::InOut
             && !is_scalar_in_out(&typ)
-            && !matches!(typ, ComType::StgMedium)
+            && !matches!(
+                (&typ, &kind),
+                (
+                    ComType::StgMedium,
+                    ProjectedComMethodKind::PreservedStgMediumInOut { medium_param_index }
+                ) if *medium_param_index == index
+            )
         {
             return Err(format!(
                 "{}: unsupported [in, out] parameter `{}`",
