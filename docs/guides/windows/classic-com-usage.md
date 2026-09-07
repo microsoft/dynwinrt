@@ -800,6 +800,37 @@ external WIC locks are not supported. See the
 [exact lifecycle/evidence contract](../../architecture/classic-com-support.md#bounded-borrowed-buffer-copies)
 for supported formats, HRESULT handling, and validation.
 
+### 5.8 Explicit overload names
+
+Existing overloads that codegen can distinguish by JavaScript arity/shape keep
+their current names and dispatch unchanged. PR4 also admits previously
+rejected groups of otherwise fully validated **normal COM methods** whose
+JavaScript signatures collide or use projected buffers. Every member receives
+`<camelName>AtSlot<absoluteVtableSlot>`; there is no ambiguous unsuffixed method
+and no extra slot argument to pass.
+
+For example, generate `Windows.Win32.Graphics.Direct2D.ID2D1Device1` and inspect
+its `.d.ts`. Its two inherited `CreateDeviceContext` slots become distinct
+`createDeviceContextAtSlot...` methods instead of `createDeviceContext`.
+Schematically, where `N` and `M` mean the actual absolute metadata slots:
+
+```text
+createDeviceContextAtSlotN(options)
+createDeviceContextAtSlotM(options)
+```
+
+Use the exact name and typed signature from the generated declaration for the
+native overload you need. These deterministic names preserve the native slot,
+arguments, result conversion, and lifetime contract; changing JavaScript
+values is not a way to select an absent unsuffixed method.
+
+Alias collisions with actual projected member names fail closed.
+Synthesized, dynamic-IID, and other non-normal groups still reject, as do
+incomplete ABI or ownership contracts. This is not a universal overload
+parser. PR4 preserves already-supported generated APIs byte-for-byte and
+requires no new manifest version; the manifest 4 / support schema 12 upgrade
+requirements for older borrowed-copy output still apply.
+
 ## 6. JavaScript projections of common native types
 
 | Native semantics                  | JavaScript/TypeScript                                                 |

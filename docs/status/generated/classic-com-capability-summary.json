@@ -80,19 +80,19 @@
   "parsed_interface_identities": 7944,
   "eligible_interfaces": 7929,
   "not_addressable": 15,
-  "safe_complete": 5697,
-  "safe_incomplete": 2232,
+  "safe_complete": 5721,
+  "safe_incomplete": 2208,
   "safeEvidence": {
-    "safeComplete": 5697,
-    "standardDerived": 5332,
-    "exactRegistryDependent": 365,
-    "metadataFactOccurrences": 5983,
-    "comStandardFactOccurrences": 26134,
+    "safeComplete": 5721,
+    "standardDerived": 5355,
+    "exactRegistryDependent": 366,
+    "metadataFactOccurrences": 6012,
+    "comStandardFactOccurrences": 26247,
     "registeredExactEntries": 532,
     "metadataMatchedExactEntries": 532,
     "safeConsumedExactEntries": 431,
-    "exactEntryInterfaceDependencies": 693,
-    "exactFamilyInterfaceDependencies": 424,
+    "exactEntryInterfaceDependencies": 694,
+    "exactFamilyInterfaceDependencies": 425,
     "byContractKind": {
       "borrowed-handle": 54,
       "borrowed-storage": 15,
@@ -104,7 +104,7 @@
       "enumerator-next": 74,
       "flag-selected-buffer": 3,
       "null-input": 4,
-      "ownership": 182,
+      "ownership": 183,
       "parameter-direction": 45,
       "safearray": 263,
       "semantic-hresult": 3
@@ -404,7 +404,7 @@
       "com.ownership.entry.windows-win32-media-directshow-tv.iatsc-vct.26879a1832f946c691f0fb6479270e8c.getrecordname.slot-8.param-1-pwsname.v1": 1,
       "com.ownership.entry.windows-win32-media-directshow-tv.iatsccontentadvisorydescriptor.ff76e60c028343eaba32b422238547ee.getrecordratingdescriptiontext.slot-10.param-2-pptext.v1": 1,
       "com.ownership.entry.windows-win32-media-directshow-tv.idvb-st.4d5b9f232a0245debcda5d5dbfbfbe62.getdata.slot-5.param-0-ppdata.v1": 1,
-      "com.ownership.entry.windows-win32-media-directshow-tv.igenericdescriptor.6a5918f8a77a4f61aed05702bdcda3e6.getbody.slot-6.param-0-ppbval.v1": 1,
+      "com.ownership.entry.windows-win32-media-directshow-tv.igenericdescriptor.6a5918f8a77a4f61aed05702bdcda3e6.getbody.slot-6.param-0-ppbval.v1": 2,
       "com.ownership.entry.windows-win32-media-directshow-tv.istreambufferconfigure.ce14dfae40984af7bbf7d6511f835414.getdirectory.slot-4.param-0-ppszdirectoryname.v1": 3,
       "com.ownership.entry.windows-win32-media-directshow-tv.istreambufferconfigure3.7e2d2a1e71924bd780c1061fd1d10402.getnamespace.slot-16.param-0-ppsznamespace.v1": 1,
       "com.ownership.entry.windows-win32-media-directshow.iamdeviceremoval.f90a6130b65811d2ae490000f8754b99.deviceinfo.slot-3.param-1-pwszsymboliclink.v1": 1,
@@ -552,7 +552,7 @@
       "buffers.counted-buffer.v1": 2,
       "com.enumerator-next-exception.v1": 74,
       "com.nullable-input.v1": 2,
-      "com.ownership.v1": 123,
+      "com.ownership.v1": 124,
       "com.parameter-direction.v1": 15,
       "com.reserved-null-input.v1": 1,
       "com.semantic-hresult.v1": 3,
@@ -563,9 +563,9 @@
     },
     "byMetadataAttribute": {
       "CanReturnMultipleSuccessValuesAttribute": 46,
-      "ConstAttribute": 3332,
+      "ConstAttribute": 3351,
       "FreeWithAttribute": 3,
-      "NativeArrayInfoAttribute": 2602
+      "NativeArrayInfoAttribute": 2612
     },
     "byStandardRuleId": {
       "com.activation.output-plus-one.v1": 976,
@@ -573,12 +573,12 @@
       "com.automation.bstr-replacement.v1": 99,
       "com.enumerator-next.generic.v1": 25,
       "com.handle.borrowed-no-cleanup.v1": 45,
-      "com.hresult.failure.v1": 5579,
-      "com.interface.input-borrow.v1": 1890,
-      "com.interface.typed-output-plus-one.v1": 3458,
-      "com.iunknown.identity-refcount.v1": 5697,
-      "com.query-interface.output-plus-one.v1": 5697,
-      "com.standard-cleanup.matching-allocator.v1": 1437
+      "com.hresult.failure.v1": 5603,
+      "com.interface.input-borrow.v1": 1908,
+      "com.interface.typed-output-plus-one.v1": 3480,
+      "com.iunknown.identity-refcount.v1": 5721,
+      "com.query-interface.output-plus-one.v1": 5721,
+      "com.standard-cleanup.matching-allocator.v1": 1438
     },
     "exactEntryStatus": {
       "audio.conditional-output.entry.windows-win32-media-audio.iaudioclient.1cb9ad4cdbfa4c32b178c2f568a703b2.isformatsupported.slot-7.v1": {
@@ -7419,7 +7419,7 @@
         "registered": true,
         "metadataMatched": true,
         "safeConsumed": true,
-        "interfaceDependencies": 1
+        "interfaceDependencies": 2
       },
       "com.ownership.entry.windows-win32-media-directshow-tv.istreambufferconfigure.ce14dfae40984af7bbf7d6511f835414.getdirectory.slot-4.param-0-ppszdirectoryname.v1": {
         "familyId": "com.ownership.v1",
@@ -11356,7 +11356,7 @@
       "raw_metadata_complete": 6109,
       "raw_manual_contract": 1431,
       "raw_runtime_blocked": 389,
-      "safe_incomplete_raw_metadata_complete": 412,
+      "safe_incomplete_raw_metadata_complete": 388,
       "safe_incomplete_raw_manual_contract": 1431,
       "safe_incomplete_raw_runtime_blocked": 389
     },
@@ -11364,7 +11364,7 @@
       "raw_metadata_complete": 6108,
       "raw_manual_contract": 1408,
       "raw_runtime_blocked": 413,
-      "safe_incomplete_raw_metadata_complete": 411,
+      "safe_incomplete_raw_metadata_complete": 387,
       "safe_incomplete_raw_manual_contract": 1408,
       "safe_incomplete_raw_runtime_blocked": 413
     },
@@ -11372,7 +11372,7 @@
       "raw_metadata_complete": 6109,
       "raw_manual_contract": 1431,
       "raw_runtime_blocked": 389,
-      "safe_incomplete_raw_metadata_complete": 412,
+      "safe_incomplete_raw_metadata_complete": 388,
       "safe_incomplete_raw_manual_contract": 1431,
       "safe_incomplete_raw_runtime_blocked": 389
     }

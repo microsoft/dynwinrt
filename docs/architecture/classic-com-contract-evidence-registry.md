@@ -348,7 +348,7 @@ Current code registries are migrated without changing behavior:
 - exact fail-closed hazards such as `GetPrivateData`.
 
 Migration or promotion is complete only when generated safe snapshots, the
-5,697/7,929 safe census, generated unsafe manifests, and all live tests agree
+5,721/7,929 safe census, generated unsafe manifests, and all live tests agree
 with the exact evidence dependencies.
 
 ## User contracts
@@ -434,19 +434,27 @@ The safe-complete evidence census is:
 
 | Evidence class | Safe interfaces |
 | --- | ---: |
-| `standard_derived` | 5,332 |
-| `exact_registry_dependent` | 365 |
-| **Total** | **5,697** |
+| `standard_derived` | 5,355 |
+| `exact_registry_dependent` | 366 |
+| **Total** | **5,721** |
 
 The registry contains **532 declared entries**, all 532 match the pinned
 metadata, and 431 distinct entries are consumed by complete safe plans. These plans have
-693 entry/interface dependencies and 424 family/interface dependencies.
-Per-interface dependency-set totals also include 5,983 metadata-attribute
-dependencies and 26,134 COM-standard-rule dependencies.
+694 entry/interface dependencies and 425 family/interface dependencies.
+Per-interface dependency-set totals also include 6,012 metadata-attribute
+dependencies and 26,247 COM-standard-rule dependencies.
+
+PR4's explicit overload names promote 24 previously raw-metadata-complete
+interfaces: 23 standard-derived and one exact-registry-dependent.
+`IGenericDescriptor2` now consumes the existing `IGenericDescriptor::GetBody`
+slot-6 ownership entry, bringing that entry's interface dependencies from one
+to two. No entries are added: registered/matched and distinct safe-consumed
+entry counts remain 532 and 431. The new names select already validated
+normal methods; they do not supply missing ABI, ownership, or lifetime facts.
 
 | Exact contract kind | Safe-interface dependencies |
 | --- | ---: |
-| `ownership` | 182 |
+| `ownership` | 183 |
 | `parameter-direction` | 45 |
 | `bounded-two-call` | 16 |
 | `conditional-output` | 10 |
@@ -471,7 +479,7 @@ Family rollups deliberately count each interface once per family:
 | `com.sequential-stream-buffer.v1` | 2 | 2 | 7 |
 | `buffers.counted-buffer.v1` | 3 | 2 | 2 |
 | `buffers.bounded-two-call.v1` | 2 | 2 | 16 |
-| `com.ownership.v1` | 169 | 118 | 123 |
+| `com.ownership.v1` | 169 | 118 | 124 |
 | `com.parameter-direction.v1` | 3 | 3 | 15 |
 | `com.reserved-null-input.v1` | 2 | 2 | 1 |
 | `com.nullable-input.v1` | 2 | 2 | 2 |
@@ -504,12 +512,12 @@ Universal rule dependencies are:
 | `com.automation.bstr-replacement.v1` | 99 |
 | `com.enumerator-next.generic.v1` | 25 |
 | `com.handle.borrowed-no-cleanup.v1` | 45 |
-| `com.hresult.failure.v1` | 5,579 |
-| `com.interface.input-borrow.v1` | 1,890 |
-| `com.interface.typed-output-plus-one.v1` | 3,458 |
-| `com.iunknown.identity-refcount.v1` | 5,697 |
-| `com.query-interface.output-plus-one.v1` | 5,697 |
-| `com.standard-cleanup.matching-allocator.v1` | 1,437 |
+| `com.hresult.failure.v1` | 5,603 |
+| `com.interface.input-borrow.v1` | 1,908 |
+| `com.interface.typed-output-plus-one.v1` | 3,480 |
+| `com.iunknown.identity-refcount.v1` | 5,721 |
+| `com.query-interface.output-plus-one.v1` | 5,721 |
+| `com.standard-cleanup.matching-allocator.v1` | 1,438 |
 
 These are dependency counts: an inherited contract can be consumed by several
 interfaces, and one interface can consume several IDs or kinds. They are not
@@ -556,3 +564,7 @@ helpers. Delete existing generated bindings and completely regenerate every
 selected root with matching updated runtime/codegen versions; there is no
 in-place migration or support for mixed old/new generated classes. The
 contract-data schema is unaffected, as are other generated `.as(...)` paths.
+
+PR4 requires no further manifest change. Already-supported safe output,
+including distinguishable overload dispatch, remains byte-identical;
+previously rejected overload groups had no valid safe surface to migrate.

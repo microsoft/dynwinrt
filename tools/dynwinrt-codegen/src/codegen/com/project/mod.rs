@@ -3184,7 +3184,7 @@ fn input_arity(method: &ProjectedComMethod) -> usize {
 }
 
 fn group_overloads(
-    methods: Vec<ProjectedComMethod>,
+    mut methods: Vec<ProjectedComMethod>,
     interface_name: &str,
 ) -> Result<Vec<ProjectedComMethod>, String> {
     let mut order = Vec::new();
@@ -3200,12 +3200,17 @@ fn group_overloads(
             .push(index);
     }
 
+    let mut public_names = methods
+        .iter()
+        .map(|method| method.camel_name.clone())
+        .collect::<std::collections::BTreeSet<_>>();
     let mut overloads = vec![None; methods.len()];
     for name in &order {
         let indices = &groups[name];
         if indices.len() < 2 {
             continue;
         }
+        let mut explicit = false;
         for &index in indices {
             let method = &methods[index];
             if method.kind != ProjectedComMethodKind::Normal {
@@ -3217,12 +3222,7 @@ fn group_overloads(
                 ));
             }
             if method.string_buffer.is_some() || !method.typed_buffers.is_empty() {
-                return Err(format!(
-                    "{interface_name}.{name}: cannot project {} overloads sharing the name `{name}` \
-                     because at least one uses a projected buffer, which is not a \
-                     safely dispatchable JS shape",
-                    indices.len()
-                ));
+                explicit = true;
             }
         }
 
@@ -3235,13 +3235,20 @@ fn group_overloads(
                 .push(index);
         }
 
+        let mut planned = Vec::new();
         for (arity, bucket) in arity_buckets {
+            if explicit {
+                break;
+            }
             if bucket.len() == 1 {
-                overloads[bucket[0]] = Some(OverloadInfo {
-                    public_name: name.clone(),
-                    impl_name: format!("_{name}_{}", methods[bucket[0]].vtable_index),
-                    dispatch: OverloadDispatch::Arity,
-                });
+                planned.push((
+                    bucket[0],
+                    OverloadInfo {
+                        public_name: name.clone(),
+                        impl_name: format!("_{name}_{}", methods[bucket[0]].vtable_index),
+                        dispatch: OverloadDispatch::Arity,
+                    },
+                ));
                 continue;
             }
             let key_param_index = (0..arity).find(|&key_index| {
@@ -3258,25 +3265,48 @@ fn group_overloads(
                 })
             });
             let Some(key_param_index) = key_param_index else {
-                return Err(format!(
-                    "{interface_name}.{name}: {} overloads share arity {arity} but no parameter \
-                     position has mutually distinguishable JS shapes (arity/type/category); \
-                     overload dispatch cannot be safely generated",
-                    bucket.len()
-                ));
+                explicit = true;
+                break;
             };
             for &index in &bucket {
                 let (_, param) = input_params_of(&methods[index])[key_param_index];
                 let shape =
                     dispatch_shape(&param.typ).expect("validated distinguishable shape above");
-                overloads[index] = Some(OverloadInfo {
-                    public_name: name.clone(),
-                    impl_name: format!("_{name}_{}", methods[index].vtable_index),
-                    dispatch: OverloadDispatch::ArityAndShape {
-                        key_param_index,
-                        shape,
+                planned.push((
+                    index,
+                    OverloadInfo {
+                        public_name: name.clone(),
+                        impl_name: format!("_{name}_{}", methods[index].vtable_index),
+                        dispatch: OverloadDispatch::ArityAndShape {
+                            key_param_index,
+                            shape,
+                        },
                     },
+                ));
+            }
+        }
+        if explicit {
+            for &index in indices {
+                let method = &mut methods[index];
+                let alias = format!("{name}AtSlot{}", method.vtable_index);
+                if !public_names.insert(alias.clone()) {
+                    return Err(format!(
+                        "{interface_name}.{name}: explicit overload name `{alias}` collides with another projected member"
+                    ));
+                }
+                method.camel_name = alias;
+                let note = format!(
+                    "Explicit overload of `{name}` at native vtable slot {}. The ambiguous unsuffixed method is not exposed.",
+                    method.vtable_index
+                );
+                method.doc = Some(match method.doc.take() {
+                    Some(doc) => format!("{doc}\n\n{note}"),
+                    None => note,
                 });
+            }
+        } else {
+            for (index, plan) in planned {
+                overloads[index] = Some(plan);
             }
         }
     }
@@ -3303,6 +3333,226 @@ fn input_params_of(method: &ProjectedComMethod) -> Vec<(usize, &ProjectedComPara
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn overload_method(name: &str, slot: usize, types: Vec<ComType>) -> ProjectedComMethod {
+        ProjectedComMethod {
+            name: name.into(),
+            camel_name: camel_case(name),
+            vtable_index: slot,
+            params: types
+                .into_iter()
+                .enumerate()
+                .map(|(index, typ)| ProjectedComParam {
+                    name: format!("value{index}"),
+                    typ,
+                    direction: ComParamDirection::In,
+                    surface_input: true,
+                    surface_result: false,
+                    nullable: false,
+                })
+                .collect(),
+            return_convention: ComReturnConvention::HResult,
+            results: Vec::new(),
+            string_buffer: None,
+            typed_buffers: Vec::new(),
+            shared_counts: Vec::new(),
+            kind: ProjectedComMethodKind::Normal,
+            doc: None,
+            overload: None,
+        }
+    }
+
+    #[test]
+    fn ambiguous_overloads_get_stable_explicit_slot_names() {
+        let methods = vec![
+            overload_method("Pick", 3, Vec::new()),
+            overload_method("Pick", 4, vec![ComType::Primitive(ComPrimitive::I32)]),
+            overload_method("Pick", 8, vec![ComType::Primitive(ComPrimitive::F64)]),
+        ];
+        let projected = group_overloads(methods.clone(), "IExample").unwrap();
+        assert_eq!(
+            projected
+                .iter()
+                .map(|method| method.camel_name.as_str())
+                .collect::<Vec<_>>(),
+            ["pickAtSlot3", "pickAtSlot4", "pickAtSlot8"]
+        );
+        assert!(projected.iter().all(|method| method.overload.is_none()));
+        assert!(projected.iter().all(|method| method.name == "Pick"));
+        let mut reordered = methods;
+        reordered.reverse();
+        let reordered = group_overloads(reordered, "IExample").unwrap();
+        for method in reordered {
+            assert_eq!(
+                method.camel_name,
+                format!("pickAtSlot{}", method.vtable_index)
+            );
+            assert!(
+                method
+                    .doc
+                    .unwrap()
+                    .contains("ambiguous unsuffixed method is not exposed")
+            );
+        }
+    }
+
+    #[test]
+    fn distinguishable_overload_dispatch_is_unchanged() {
+        for methods in [
+            vec![
+                overload_method("Pick", 3, Vec::new()),
+                overload_method("Pick", 4, vec![ComType::Primitive(ComPrimitive::I32)]),
+            ],
+            vec![
+                overload_method("Pick", 3, vec![ComType::Primitive(ComPrimitive::Bool)]),
+                overload_method("Pick", 4, vec![ComType::Primitive(ComPrimitive::I32)]),
+            ],
+        ] {
+            let projected = group_overloads(methods, "IExample").unwrap();
+            assert!(projected.iter().all(|method| method.camel_name == "pick"));
+            assert!(projected.iter().all(|method| method.overload.is_some()));
+        }
+    }
+
+    #[test]
+    fn explicit_overload_names_never_overwrite_a_declared_member() {
+        let error = group_overloads(
+            vec![
+                overload_method("Pick", 3, vec![ComType::Primitive(ComPrimitive::I32)]),
+                overload_method("Pick", 4, vec![ComType::Primitive(ComPrimitive::U32)]),
+                overload_method("PickAtSlot3", 5, Vec::new()),
+            ],
+            "IExample",
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("pickAtSlot3") && error.contains("collides"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn explicit_overloads_do_not_relax_synthesized_method_contracts() {
+        let ordinary = overload_method("Pick", 3, Vec::new());
+        let mut synthesized = overload_method("Pick", 4, Vec::new());
+        synthesized.kind = ProjectedComMethodKind::FixedCapacityBytes {
+            guid_param_index: 0,
+        };
+        let error = group_overloads(vec![ordinary, synthesized], "IExample").unwrap_err();
+        assert!(error.contains("synthesized/dynamic-IID"), "{error}");
+    }
+
+    #[test]
+    fn explicit_overload_javascript_routes_without_runtime_guessing() {
+        let methods = group_overloads(
+            vec![
+                overload_method("Pick", 3, vec![ComType::Primitive(ComPrimitive::I32)]),
+                overload_method("Pick", 4, vec![ComType::Primitive(ComPrimitive::F64)]),
+            ],
+            "IOverloads",
+        )
+        .unwrap();
+        let interface = ProjectedComInterface {
+            name: "IOverloads".into(),
+            namespace: "Tests".into(),
+            iid: "73552640-8c23-43df-93f7-24d7842430f1".into(),
+            base_iids: Vec::new(),
+            is_iunknown_rooted: true,
+            methods,
+            activation: ActivationPlan::None,
+            referenced_enums: Vec::new(),
+            sink: None,
+            evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
+            borrowed_storage: None,
+        };
+        let output =
+            crate::codegen::com::javascript::render::render_com_interface(&interface).unwrap();
+        let source = serde_json::to_string(&output.js).unwrap();
+        let script = format!(
+            r#"
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const calls = [];
+const registrations = [];
+class Sig {{ addIn() {{ return this; }} }}
+const runtime = {{
+  DynComMethodSig: Sig,
+  WinGuid: {{ parse: value => value }},
+  __registerComProjection() {{}},
+  DynCom: {{
+    i32Type() {{}}, f64Type() {{}}, bindComObject() {{}},
+    i32: value => ['i32', value], f64: value => ['f64', value],
+    registerIUnknownInterface() {{
+      return {{
+        addMethodAt(slot, name) {{ registrations.push([slot, name]); return this; }},
+        method(slot) {{ return {{ invoke(_object, args) {{ calls.push([slot, args]); }} }}; }}
+      }};
+    }}
+  }}
+}};
+const exported = {{}};
+vm.runInNewContext({source}, {{ require: () => runtime, exports: exported }});
+const raw = {{ cast() {{ return this; }}, release() {{}} }};
+const value = exported.IOverloads._fromNative(raw);
+assert.equal(value.pick, undefined);
+value.pickAtSlot3(7);
+value.pickAtSlot4(1.5);
+assert.deepEqual(registrations, [[3, 'Pick'], [4, 'Pick']]);
+assert.deepEqual(JSON.parse(JSON.stringify(calls)), [[3, [['i32', 7]]], [4, [['f64', 1.5]]]]);
+"#
+        );
+        let result = std::process::Command::new("node")
+            .arg("-e")
+            .arg(script)
+            .output()
+            .expect("Node is required for explicit overload routing coverage");
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+
+    #[test]
+    fn buffer_overloads_use_explicit_entries_without_losing_their_plan() {
+        let mut buffer = overload_method(
+            "Put",
+            4,
+            vec![ComType::TypedBuffer {
+                element: Box::new(ComType::Primitive(ComPrimitive::U8)),
+            }],
+        );
+        buffer.params[0].direction = ComParamDirection::InputBuffer;
+        buffer.params.push(ProjectedComParam {
+            name: "count".into(),
+            typ: ComType::Primitive(ComPrimitive::U32),
+            direction: ComParamDirection::In,
+            surface_input: false,
+            surface_result: false,
+            nullable: false,
+        });
+        let plan = TypedBufferPlan {
+            buffer_param_index: 0,
+            element: ComType::Primitive(ComPrimitive::U8),
+            relation: TypedBufferRelation::Input {
+                count_param_index: 1,
+                actual_length_param_index: None,
+                unit: ProjectedBufferCountUnit::Bytes,
+            },
+        };
+        buffer.typed_buffers.push(plan.clone());
+        let result = group_overloads(
+            vec![
+                overload_method("Put", 3, vec![ComType::Primitive(ComPrimitive::I32)]),
+                buffer,
+            ],
+            "IExample",
+        )
+        .unwrap();
+        assert_eq!(result[0].camel_name, "putAtSlot3");
+        assert_eq!(result[1].camel_name, "putAtSlot4");
+        assert_eq!(result[1].typed_buffers, [plan]);
+    }
 
     #[test]
     fn endpoint_activation_preserves_the_semantic_call_plan() {

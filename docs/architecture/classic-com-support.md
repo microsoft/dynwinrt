@@ -4,8 +4,8 @@
 general Automation or native Win32 projection.
 
 > **Status: preview, under active development.** The current CI baseline against
-> `Microsoft.Windows.SDK.Win32Metadata` 71.0.14-preview is 5,697 complete safe
-> interface projections out of 7,929 eligible interfaces (71.85%). Earlier
+> `Microsoft.Windows.SDK.Win32Metadata` 71.0.14-preview is 5,721 complete safe
+> interface projections out of 7,929 eligible interfaces (72.15%). Earlier
 > inventory and demand-snapshot sections retain the metadata versions and dates
 > stated in those sections.
 
@@ -154,6 +154,31 @@ renderer cannot see `TypeMeta` or metadata attributes and has no default
 pointer/Buffer fallback; it only serializes the validated projected IR with
 exhaustive type matches.
 
+## Explicit COM overload names
+
+Existing overload groups with distinguishable JavaScript arity/shape retain
+their exact dispatch and generated API. PR4 handles previously rejected
+groups only when every member is an otherwise fully validated **normal COM
+method**. Groups with colliding JavaScript signatures or projected buffers
+receive deterministic public names
+`<camelName>AtSlot<absoluteVtableSlot>` for **every** member; the ambiguous
+unsuffixed method is absent.
+
+The slot is the absolute inherited vtable slot, not an overload ordinal.
+For example, `ID2D1Device1::CreateDeviceContext` produces two explicit
+`createDeviceContextAtSlot...` members; the generated declarations give their
+exact names and return types. Native method names, slots, ABI signatures,
+conversions, and lifetime plans are unchanged. Projection selects the names in
+IR; the renderer only serializes them and adds no runtime type or ABI guesses.
+
+Alias collisions with actual projected members fail closed. Synthesized,
+dynamic-IID, and other non-normal method groups still reject; this is not a
+universal overloaded-method parser or a way around incomplete native
+contracts. See the [usage guide](../guides/windows/classic-com-usage.md#58-explicit-overload-names).
+PR4 does not change COM manifest version 4 or unsafe support schema 12:
+already-supported safe output remains byte-identical, and the newly admitted
+groups previously had no valid safe surface.
+
 ## Bounded native one-shot completion
 
 The first supported flat export is the exact
@@ -262,8 +287,8 @@ interface projections. They do not expose `GetBuffer`, `ReleaseBuffer`, `Lock`,
 or `Unlock` independently. WIC retains its previously complete native interface
 surface (including acquisition of an opaque owned lock) and adds the copy
 operation. An external lock never gains byte access or writable rights from
-this operation. The complete safe census remains **5,697 / 7,929**; it does not
-count the three copy-only facades as newly complete interfaces.
+this operation. The three copy-only facades remain excluded from the current
+**5,721 / 7,929** complete safe census.
 
 ### Private context and lifecycle
 
@@ -730,7 +755,7 @@ not be described as solving every problem in the map above.
 | Fail-closed generation | Unknown/unsafe layouts, untagged/by-value/output unions, bitfields, flexible arrays, nested owned fields, unsupported VARTYPE/BYREF/SAFEARRAY/PROPVARIANT combinations, unsupported arrays, pointer outputs, ownership, and in/out shapes stop generation with a targeted error. |
 | Consumable output | Classic COM files live under `com/`, with `./com` and `./com/*` package exports. The generated package root is always WinRT-only; COM-only output deliberately has no root entrypoint. |
 | Explicit vtable registration | Every generated method is registered with `.addMethodAt(vtableIndex, name, signature)`, keyed by its actual metadata-derived vtable slot. Methods are never deduplicated by name, so same-name overloads at different slots both register correctly. |
-| Same-name overload projection | Overloads (e.g. `IDCompositionEffectGroup::SetOpacity`) are grouped once during projection (not by renderer heuristics). A single public JS method dispatches to a private per-slot implementation using only a validated, mutually-distinguishable arity/shape key (`typeof`-based: boolean/number/bigint/string/object); ambiguous groups fail generation closed with a diagnostic naming the interface, method, and reason. The `.d.ts` emits one TypeScript overload signature per branch, contiguously. |
+| Same-name overload projection | Existing distinguishable overloads (e.g. `IDCompositionEffectGroup::SetOpacity`) retain their single public dispatcher, validated arity/shape keys, and contiguous TypeScript overload signatures. Previously rejected groups of fully validated normal methods use explicit `<camelName>AtSlot<absoluteVtableSlot>` names for every member and omit the ambiguous unsuffixed name. Projection selects these names; the renderer does not infer ABI semantics. Collisions and non-normal groups fail closed. |
 | Lifecycle ergonomics | Generated interface wrappers declare a protected constructor (`protected constructor(obj: unknown);`) so only generated coclasses can subclass them. Coclasses expose a public zero-argument constructor, and every wrapper provides an idempotent `release()` that delegates to the managed native value. Factory-activated interop wrappers retain `static create()` with JSDoc reminding callers to initialize COM first. |
 | Doc-link rendering | When win32metadata attaches a `DocumentationAttribute` (a `learn.microsoft.com` URL) to a method, the generator renders it as an `@see {@link ...}` comment in both `.js` and `.d.ts`. No raw metadata is imported into the renderer — the URL is threaded through `ProjectedComMethod.doc`, populated once during projection. |
 | Acronym-aware parameter casing | Parameter names are lowered using the same acronym-run-aware rule as method names, so a Hungarian-prefixed trailing acronym like `hwndMDI` projects as `mdi` (not the previous naive `mDI`). |
@@ -1545,13 +1570,15 @@ restricting InOut to proven caller-allocation-preserving contracts, bringing
 that census to 5,691. The variable-length WAVEFORMATEX model and three pinned
 audio method contracts promote five more interfaces, bringing that census to
 5,696. The exact `IMMDevice::Activate` and `GetId` contracts promote one more
-complete interface, bringing the current literal census to
-**5,697 / 7,929 = 71.850170%**. The result remains above the
+complete interface, bringing that census to 5,697, unchanged by PR2 completion
+and PR3 copy-only facades. PR4's explicit overload names move 24 previously
+raw-metadata-complete interfaces into the safe set, bringing the current
+literal census to **5,721 / 7,929 = 72.152857%**. The result remains above the
 70% target without admitting any unmodeled target-device, storage-medium,
 audio-output ownership, ownership-transfer, or callback shape.
 
 CI reproduces this number with `dynwinrt-codegen com-census --json` and fails
-if the denominator changes, complete generation drops below 5,697, or coverage
+if the denominator changes, complete generation drops below 5,721, or coverage
 falls below 70%.
 
 ## Public-code frequency snapshot
