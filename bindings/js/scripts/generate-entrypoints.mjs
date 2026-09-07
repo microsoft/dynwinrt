@@ -19,6 +19,7 @@ if (nativeExports.length === 0) {
 const comExports = new Set([
   'DynComDispatchParams',
   'DynComAllocation',
+  'DynComAudioFormat',
   'DynComExcepInfo',
   'DynComFormatEtc',
   'DynComNativeStruct',

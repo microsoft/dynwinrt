@@ -294,7 +294,7 @@ fn map_method(
         .map_err(ModelError::InvalidContract)?;
     crate::com_metadata::validate_attached_safe_array_evidence(raw)
         .map_err(ModelError::InvalidContract)?;
-    crate::com_metadata::validate_storage_medium_contract_presence(raw)
+    crate::com_metadata::validate_required_exact_contract_presence(raw)
         .map_err(ModelError::InvalidContract)?;
     if let Some(contract) = &raw.exact_contract {
         crate::com_metadata::validate_exact_method_contract(
@@ -453,6 +453,21 @@ fn map_method(
                     output_param: ParamIndex::new(1),
                 })
             }
+            Some(
+                RawExactMethodContractKind::AudioFormatOwnedOutput
+                | RawExactMethodContractKind::NullableAudioFormatInput,
+            ) => method,
+            Some(RawExactMethodContractKind::AudioFormatSupport) => {
+                let contract = raw.exact_contract.as_ref().unwrap();
+                method.with_special_contract(ComMethodSpecialContract::AudioFormatSupport {
+                    share_mode_param: ParamIndex::new(
+                        contract
+                            .discriminator_param_index
+                            .expect("validated audio share-mode discriminator"),
+                    ),
+                    closest_match_param: ParamIndex::new(contract.buffer_param_index),
+                })
+            }
             None => method,
         }
     };
@@ -522,6 +537,28 @@ fn map_param(
                 raw_native_name(&raw.typ)?,
                 None,
                 ComAbiType::ExactNullPointer,
+            )?,
+            None,
+        )
+    } else if matches!(
+        &raw.typ.native_type,
+        RawNativeType::Named {
+            namespace,
+            name,
+            ..
+        } if namespace == "Windows.Win32.Media.Audio"
+            && name == "WAVEFORMATEX"
+            && matches!(raw.typ.pointer_depth, 1 | 2)
+    ) {
+        (
+            insert_abi(
+                model,
+                Some(QualifiedName::new(
+                    "Windows.Win32.Media.Audio",
+                    "WAVEFORMATEX",
+                )?),
+                None,
+                ComAbiType::AudioFormat,
             )?,
             None,
         )
@@ -696,7 +733,13 @@ fn map_param(
         param_index,
         dynamic_iid_output,
     )?;
-    let nullable = if !exact_null_input
+    let exact_nullable_audio_input = raw_method.exact_contract.as_ref().is_some_and(|contract| {
+        contract.kind == RawExactMethodContractKind::NullableAudioFormatInput
+            && contract.buffer_param_index == param_index
+    });
+    let nullable = if exact_nullable_audio_input {
+        Nullability::Nullable
+    } else if !exact_null_input
         && (raw.optional
             || known_nullable_param_override(
                 interface_namespace,
@@ -1031,6 +1074,7 @@ pub(in crate::codegen::com) fn census_raw_base_category(raw: &RawComType) -> &'s
             ComAbiType::StatStg => "StatStg",
             ComAbiType::FormatEtc => "FormatEtc",
             ComAbiType::StgMedium => "StgMedium",
+            ComAbiType::AudioFormat => "AudioFormat",
             ComAbiType::FunctionPointer(_) => "FunctionPointer",
             ComAbiType::Unknown(_) => "Unknown",
         };
@@ -1534,6 +1578,7 @@ fn validate_pod_field_type(
         | ComAbiType::StatStg
         | ComAbiType::FormatEtc
         | ComAbiType::StgMedium
+        | ComAbiType::AudioFormat
         | ComAbiType::FunctionPointer(_)
         | ComAbiType::Unknown(_) => Err(ModelError::Unsupported(UnsupportedReason::UnknownLayout)),
     }
@@ -1605,6 +1650,7 @@ fn abi_size_alignment(
         | ComAbiType::StatStg
         | ComAbiType::FormatEtc
         | ComAbiType::StgMedium
+        | ComAbiType::AudioFormat
         | ComAbiType::Unknown(_) => {
             return Err(ModelError::Unsupported(UnsupportedReason::UnknownLayout));
         }
@@ -1824,6 +1870,7 @@ fn buffer_element_ownership(
         | ComAbiType::StatStg
         | ComAbiType::FormatEtc
         | ComAbiType::StgMedium
+        | ComAbiType::AudioFormat
         | ComAbiType::FunctionPointer(_)
         | ComAbiType::Unknown(_) => BufferElementOwnership::Unknown,
     };
@@ -1966,12 +2013,37 @@ fn map_ownership(
         ComAbiType::StgMedium if direction == Direction::Out => {
             Ok((ComOwnership::StgMediumOwned, Cleanup::ReleaseStgMedium))
         }
+        ComAbiType::AudioFormat
+            if direction == Direction::Out
+                && raw_method.exact_contract.as_ref().is_some_and(|contract| {
+                    matches!(
+                        contract.kind,
+                        RawExactMethodContractKind::AudioFormatOwnedOutput
+                            | RawExactMethodContractKind::AudioFormatSupport
+                    ) && contract.buffer_param_index == param_index
+                }) =>
+        {
+            Ok((
+                ComOwnership::AudioFormatOwned,
+                Cleanup::CoTaskMemAudioFormat,
+            ))
+        }
+        ComAbiType::AudioFormat if direction == Direction::Out => Err(ModelError::Unsupported(
+            UnsupportedReason::Other(
+                "WAVEFORMATEX output requires exact CoTaskMem ownership evidence".into(),
+            ),
+        )),
         ComAbiType::FormatEtc if direction == Direction::InOut => Err(
             ModelError::Unsupported(UnsupportedReason::Other(
                 "FORMATETC in/out requires a dedicated replacement contract".into(),
             )),
         ),
-        ComAbiType::FormatEtc | ComAbiType::StgMedium => {
+        ComAbiType::AudioFormat if direction == Direction::InOut => Err(
+            ModelError::Unsupported(UnsupportedReason::Other(
+                "WAVEFORMATEX in/out requires a dedicated replacement contract".into(),
+            )),
+        ),
+        ComAbiType::FormatEtc | ComAbiType::StgMedium | ComAbiType::AudioFormat => {
             Ok((ComOwnership::Borrowed, Cleanup::None))
         }
         ComAbiType::DispatchParams if direction == Direction::Out => Err(

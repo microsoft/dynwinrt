@@ -606,8 +606,8 @@ does not mutate persistent system state.
 ### Final Phase 1 outbound matrix
 
 The matrix uses real synchronous fake vtables and the exact Windows
-`extern "system"` ABI. It proves raw reach; none of these interfaces become
-safe-generated:
+`extern "system"` ABI. It proves raw reach independently of later safe
+promotion:
 
 | Scenario                             | Verified raw contract                                                                                                                                                                                                                                                                                                                                                                                         |
 | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -632,8 +632,9 @@ runtime gate. Public consumption examples live in
 `bindings/js/__test__/raw-phase1.spec.ts`.
 
 This provides broad in-process, current-apartment, outbound raw COM coverage
-for completed scalar, pointer, memory, and struct contracts. It does not make
-`IDataObject`, `IAudioClient`, private-data APIs, or WMI safe-generated.
+for completed scalar, pointer, memory, and struct contracts. Later dedicated
+semantic models make `IDataObject`, `IAudioClient`, and WMI safe-generated;
+private-data APIs remain unsafe because their payload ownership is ambiguous.
 
 Phase 1 can be called complete for the documented in-process,
 current-apartment, outbound raw ABI subset on x64 and i686. The precise ABI

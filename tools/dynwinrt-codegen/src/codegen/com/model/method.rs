@@ -56,6 +56,10 @@ pub(in crate::codegen::com) enum ComMethodSpecialContract {
     BorrowedStgMediumInput {
         release_param: ParamIndex,
     },
+    AudioFormatSupport {
+        share_mode_param: ParamIndex,
+        closest_match_param: ParamIndex,
+    },
     PreservedStgMediumInOut {
         medium_param: ParamIndex,
     },
@@ -191,6 +195,7 @@ impl ComMethodContract {
                         | ComAbiType::StatStg
                         | ComAbiType::FormatEtc
                         | ComAbiType::StgMedium
+                        | ComAbiType::AudioFormat
                     )
                 {
                     return Err(ModelError::InvalidContract(format!(

@@ -49,9 +49,9 @@ generated/
     │   ├── ITaskbarList3.js
     │   └── ITaskbarList3.d.ts
     └── unsafe/
-        ├── windows/win32/media/audio/
-        │   ├── IAudioClientUnsafe.js
-        │   └── IAudioClientUnsafe.d.ts
+        ├── windows/win32/ai/machine-learning/win-ml/
+        │   ├── IWinMLEvaluationContextUnsafe.js
+        │   └── IWinMLEvaluationContextUnsafe.d.ts
         ├── index.js
         ├── index.mjs
         ├── index.d.ts
@@ -83,16 +83,16 @@ Rules:
 The unsafe boundary is carried by the module path and class suffix:
 
 ```js
-import { IAudioClientUnsafe } from "./generated/com/unsafe/index.js";
+import { IWinMLEvaluationContextUnsafe } from "./generated/com/unsafe/index.js";
 ```
 
 Methods keep their natural projected names:
 
 ```js
-audio.isFormatSupported(...);
+context.getValueByName(...);
 ```
 
-Do not emit a class named `IAudioClient` for an unsafe projection. Method names
+Do not emit a class without the `Unsafe` suffix for an unsafe projection. Method names
 need an `Unsafe` suffix only if safe and unsafe methods are ever placed on the
 same class; the preferred design keeps them in separate companion classes.
 
@@ -199,12 +199,12 @@ Generated unsafe companions do not add raw callback implementation.
 An unsafe companion wraps an existing managed native value:
 
 ```ts
-export declare class IAudioClientUnsafe {
+export declare class IWinMLEvaluationContextUnsafe {
   private constructor();
 
   static from(
     value: DynWinRtValue | { readonly nativeValue: DynWinRtValue },
-  ): IAudioClientUnsafe;
+  ): IWinMLEvaluationContextUnsafe;
   static readonly iid: WinGuid;
   static readonly support: UnsafeInterfaceSupport;
   readonly nativeValue: DynWinRtValue;
@@ -212,11 +212,11 @@ export declare class IAudioClientUnsafe {
   /**
    * @unsafe Metadata-complete outbound ABI.
    */
-  isFormatSupported(
-    shareMode: number,
-    format: UnsafePointee,
-    closestMatch: UnsafePointerOutput,
-  ): readonly [number, UnsafeOwnedPointer | null];
+  bindValue(descriptor: UnsafePointee): void;
+  getValueByName(
+    name: DynComRawMemory | DynComRawPointer,
+    descriptor: UnsafePointerOutput,
+  ): UnsafeOwnedPointer;
 
   release(): void;
 }
@@ -459,18 +459,18 @@ Generation emits `generated/com/unsafe/support.json`:
           "sha256": "..."
         }
       },
-      "interfaceName": "Windows.Win32.Media.Audio.IAudioClient",
-      "interfaceIid": "1cb9ad4c-dbfa-4c32-b178-c2f568a703b2",
+      "interfaceName": "Windows.Win32.AI.MachineLearning.WinML.IWinMLEvaluationContext",
+      "interfaceIid": "95848f9e-583d-4054-af12-916387cd8426",
       "root": "IUnknown",
       "baseIids": [],
-      "unsafeClass": "IAudioClientUnsafe",
-      "modulePath": "windows/win32/media/audio/IAudioClientUnsafe",
+      "unsafeClass": "IWinMLEvaluationContextUnsafe",
+      "modulePath": "windows/win32/ai/machine-learning/win-ml/IWinMLEvaluationContextUnsafe",
       "methods": [
         {
-          "name": "Initialize",
-          "projectedName": "initialize",
-          "declaringIid": "1cb9ad4c-dbfa-4c32-b178-c2f568a703b2",
-          "absoluteSlot": 4,
+          "name": "BindValue",
+          "projectedName": "bindValue",
+          "declaringIid": "95848f9e-583d-4054-af12-916387cd8426",
+          "absoluteSlot": 3,
           "signatureFingerprint": "...",
           "status": "manual_contract_required",
           "reasons": ["..."],
@@ -521,7 +521,7 @@ also returns nonzero.
 Example output:
 
 ```text
-[dry-run] Would generate IAudioClientUnsafe (metadata-complete: 8, manual: 4, blocked: 0)
+[dry-run] Would generate IWinMLEvaluationContextUnsafe (metadata-complete: 1, manual: 2, blocked: 0)
 [dry-run] Report-only MFASYNCRESULTUnsafe {"metadataComplete":0,"manual":0,"blocked":5,"reasons":["missing_interface_iid"]}
 ```
 
@@ -659,7 +659,8 @@ Required tests include:
 13. actual Node resolution of mixed WinRT, COM barrel, and unsafe canonical
     package exports.
 
-The generated-artifact integration fixture combines safe WMI with unsafe Audio.
+The generated-artifact integration fixture combines safe WMI, IDataObject, and
+IAudioClient projections with an unsafe WinML companion.
 The complete seven-method WMI conditional-output family executes through a
 complete official `IWbemServices_Vtbl`. ABI-correct `IWbemClassObject` and
 `IWbemCallResult` tear-offs expose canonical IUnknown identity and shared
@@ -674,12 +675,11 @@ a fake COM object that returns a real HBITMAP. It validates transfer into
 `DynComOwnedHandle`, explicit `DeleteObject` release, idempotence, and COM
 reference balance; a Rust regression separately covers the Drop path.
 
-The unsafe portion uses official `IAudioClientUnsafe::isFormatSupported` and
-`getService` vtable slots. It covers
-CoTaskMem closest-format success/failure cleanup, BSTR/Local/Global dirty
-failure cleanup, COM-owned output cleanup, required/nullable output, strategy
-mismatch before dispatch, one-shot reuse, handle/raw/count strategies, and all
-three interface-replacement modes.
+The unsafe portion uses official
+`IWinMLEvaluationContextUnsafe::bindValue` and `getValueByName` vtable slots.
+It covers CoTaskMem/BSTR/Local/Global dirty failure cleanup, COM-owned output
+cleanup, required/nullable output, strategy mismatch before dispatch, one-shot
+reuse, handle/raw/count strategies, and all three interface-replacement modes.
 
 ## Rollout plan
 

@@ -167,6 +167,7 @@ pub(in crate::codegen::com) enum ComAbiType {
     StatStg,
     FormatEtc,
     StgMedium,
+    AudioFormat,
     FunctionPointer(SignatureId),
     Unknown(UnsupportedReason),
 }

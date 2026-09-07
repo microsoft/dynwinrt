@@ -201,6 +201,50 @@ fn renderer_serializes_validated_com_sink_plan() {
 }
 
 #[test]
+fn nullable_audio_format_inputs_serialize_the_validated_contract() {
+    let mut method = ProjectedComMethod {
+        name: "UseFormat".into(),
+        camel_name: "useFormat".into(),
+        vtable_index: 6,
+        params: vec![ProjectedComParam {
+            name: "format".into(),
+            typ: ComType::AudioFormat,
+            direction: ComParamDirection::In,
+            surface_input: true,
+            surface_result: false,
+            nullable: true,
+        }],
+        return_convention: ComReturnConvention::HResult,
+        results: Vec::new(),
+        string_buffer: None,
+        typed_buffers: Vec::new(),
+        shared_counts: Vec::new(),
+        kind: ProjectedComMethodKind::Normal,
+        doc: None,
+        overload: None,
+    };
+    assert_eq!(
+        super::build_method_sig_js(&method),
+        "new DynComMethodSig().addNullableIn(DynCom.audioFormatType())"
+    );
+    assert_eq!(dts_params(&method), ["format: DynComAudioFormat | null"]);
+    assert_eq!(
+        wrap_param_arg_js(&method.params[0], "format"),
+        "format === null ? DynCom.nullAudioFormat() : DynCom.audioFormat(format)"
+    );
+    method.params[0].nullable = false;
+    assert_eq!(
+        super::build_method_sig_js(&method),
+        "new DynComMethodSig().addIn(DynCom.audioFormatType())"
+    );
+    assert_eq!(dts_params(&method), ["format: DynComAudioFormat"]);
+    assert_eq!(
+        wrap_param_arg_js(&method.params[0], "format"),
+        "DynCom.audioFormat(format)"
+    );
+}
+
+#[test]
 fn storage_medium_result_rules_and_borrowing_are_serialized_from_ir() {
     let format_param = |name: &str, direction| ProjectedComParam {
         name: name.into(),

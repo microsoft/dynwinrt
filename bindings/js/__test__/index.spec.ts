@@ -23,7 +23,7 @@ import {
   unboxObject,
 } from '../dist/winrt.js'
 import * as winrtRuntime from '../dist/winrt.js'
-import { DynComFormatEtc, DynComStgMedium } from '../dist/com.js'
+import { DynComAudioFormat, DynComFormatEtc, DynComStgMedium } from '../dist/com.js'
 import * as comRuntime from '../dist/com.js'
 import {
   DynCom,
@@ -149,6 +149,7 @@ test('package facades exactly partition native exports', (t) => {
   const safeComNames = new Set([
     'DynComDispatchParams',
     'DynComAllocation',
+    'DynComAudioFormat',
     'DynComExcepInfo',
     'DynComFormatEtc',
     'DynComNativeStruct',
@@ -229,6 +230,37 @@ test('FORMATETC and STGMEDIUM expose a closed HGLOBAL semantic subset', (t) => {
   t.throws(() => DynComFormatEtc.hglobal(13, 3), { message: /DVASPECT/ })
   t.throws(() => DynComFormatEtc.hglobal(13, 16), { message: /DVASPECT/ })
   t.throws(() => DynComStgMedium.hglobal(Buffer.alloc(0)), { message: /at least one byte/ })
+})
+
+test('WAVEFORMATEX values preserve validated variable-length audio formats', (t) => {
+  const pcm = DynComAudioFormat.pcm(2, 48_000, 16)
+  t.is(pcm.formatTag, 1)
+  t.is(pcm.channels, 2)
+  t.is(pcm.samplesPerSecond, 48_000)
+  t.is(pcm.averageBytesPerSecond, 192_000)
+  t.is(pcm.blockAlign, 4)
+  t.is(pcm.bitsPerSample, 16)
+  t.deepEqual(pcm.extraData, Buffer.alloc(0))
+  t.is(pcm.toBuffer().length, 18)
+  t.deepEqual(DynComAudioFormat.fromBuffer(pcm.toBuffer()).toBuffer(), pcm.toBuffer())
+
+  const extensible = DynComAudioFormat.waveFormatEx(
+    0xfffe,
+    2,
+    48_000,
+    192_000,
+    4,
+    16,
+    Buffer.alloc(22),
+  )
+  t.is(extensible.formatTag, 0xfffe)
+  t.is(extensible.extraData.length, 22)
+  t.throws(() => DynComAudioFormat.pcm(2, 48_000, 12), { message: /multiple of eight/ })
+  t.throws(() => DynComAudioFormat.fromBuffer(Buffer.alloc(17)), { message: /18-byte header/ })
+  t.throws(
+    () => DynComAudioFormat.waveFormatEx(0xfffe, 2, 48_000, 192_000, 4, 16, Buffer.alloc(21)),
+    { message: /22 extension bytes/ },
+  )
 })
 
 test('raw COM memory and pointers expose checked owner-retaining primitives', (t) => {
