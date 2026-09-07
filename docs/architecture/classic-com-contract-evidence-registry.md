@@ -434,13 +434,13 @@ The safe-complete evidence census is:
 
 | Evidence class | Safe interfaces |
 | --- | ---: |
-| `standard_derived` | 5,333 |
-| `exact_registry_dependent` | 364 |
+| `standard_derived` | 5,332 |
+| `exact_registry_dependent` | 365 |
 | **Total** | **5,697** |
 
-The registry contains **506 declared entries**, all 506 match the pinned
-metadata, and 415 distinct entries are consumed by safe plans. Safe plans have
-671 entry/interface dependencies and 417 family/interface dependencies.
+The registry contains **532 declared entries**, all 532 match the pinned
+metadata, and 431 distinct entries are consumed by complete safe plans. These plans have
+693 entry/interface dependencies and 424 family/interface dependencies.
 Per-interface dependency-set totals also include 5,983 metadata-attribute
 dependencies and 26,134 COM-standard-rule dependencies.
 
@@ -458,6 +458,8 @@ dependencies and 26,134 COM-standard-rule dependencies.
 | `counted-buffer` | 16 |
 | `semantic-hresult` | 3 |
 | `compound-dispatch` | 1 |
+| `borrowed-storage` | 15 |
+| `contextual-effect` | 7 |
 
 Family rollups deliberately count each interface once per family:
 
@@ -479,6 +481,19 @@ Family rollups deliberately count each interface once per family:
 | `shell.flag-selected-string.v1` | 1 | 1 | 3 |
 | `wmi.conditional-output.v1` | 7 | 7 | 1 |
 | `audio.conditional-output.v1` | 1 | 1 | 3 |
+| `audio.context-effect.v1` | 3 | 3 | 3 |
+| `buffers.borrowed-copy.v1` | 23 | 13 | 4 |
+
+The new selectors are defined in
+[`com_borrowed_metadata.rs`](../../tools/dynwinrt-codegen/src/com_borrowed_metadata.rs).
+They preserve full method fingerprints, exact declaring IID/slot, citations,
+and the pinned Win32Metadata SHA256. Three effects observe actual successful
+Audio initialization/GetService calls; 23 entries validate the storage and
+complete vtable evidence used by the copy plans. WIC's previously complete
+interface remains complete, now with an exact-evidence copy augmentation.
+The Audio render/capture and linear MF copy-only facades remain **excluded**
+from the complete-interface count. Their useful copy operations are not a
+claim that their unrestricted native methods are safely projected.
 
 Universal rule dependencies are:
 
@@ -526,14 +541,15 @@ controlled contract-family ablation, remains later registry migration work.
 
 The strict contract data schema and its registry `manifest.json` remain
 version 2. The capability summary is version 3, and generated unsafe support
-manifests are version 11.
+manifests are version 12.
 Seven WMI conditional-output entries and 149 output-ownership entries are
-JSON-backed; the other 350 registered entries remain code-defined. All code and
+JSON-backed; the other 376 registered entries remain code-defined. All code and
 data entries use the same selector-derived `entryId`, typed `familyId`,
 selector/fingerprint/citation catalog, and pinned-metadata validation path.
 
-Separately, PR1 raises the generated COM file-ownership manifest
-`com/.dynwinrt-com-manifest.json` from version 2 to version 3. Generated safe
+Separately, PR1 raised the generated COM file-ownership manifest
+`com/.dynwinrt-com-manifest.json` from version 2 to version 3; borrowed-copy
+context effects now require version 4. Generated safe
 classes must register descriptors for the public runtime `/com` `projectAs`
 entrypoint and typed `IMMDevice.activate` through private `/com/unsafe`
 helpers. Delete existing generated bindings and completely regenerate every

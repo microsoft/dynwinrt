@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+mod borrowed;
 mod interop;
 mod legacy_diagnostics;
 mod legacy_types;
@@ -44,10 +45,36 @@ pub(super) fn project_com_interface(
     meta: &ComInterfaceMeta,
     winmd_paths: &str,
 ) -> Result<ProjectedComInterface, String> {
+    let storage = model::borrowed::validate(meta, winmd_paths)?
+        .map(borrowed::project)
+        .transpose()?;
+    if storage.as_ref().is_some_and(|storage| storage.copy_only) {
+        let mut projected = project_com_reference_interface(meta)?;
+        projected.evidence_dependencies = storage.as_ref().unwrap().evidence_dependencies.clone();
+        projected.borrowed_storage = storage;
+        return Ok(projected);
+    }
     let validated = model::validate_interface(meta)
         .map_err(|error| diagnostic_compatibility(meta, winmd_paths, error))?;
-    project_validated_interface(&validated, winmd_paths)
-        .map_err(|error| diagnostic_compatibility(meta, winmd_paths, error))
+    let mut projected = project_validated_interface(&validated, winmd_paths)
+        .map_err(|error| diagnostic_compatibility(meta, winmd_paths, error))?;
+    if storage
+        .as_ref()
+        .is_some_and(|storage| !storage.context_effects.is_empty())
+    {
+        projected.sink = None;
+    }
+    if let Some(storage) = storage.as_ref() {
+        for (id, family) in &storage.evidence_dependencies.exact_entry_families {
+            projected.evidence_dependencies.add_exact(
+                id.clone(),
+                *family,
+                storage.evidence_dependencies.exact_entry_kinds[id],
+            );
+        }
+    }
+    projected.borrowed_storage = storage;
+    Ok(projected)
 }
 
 pub(super) fn project_com_reference_interface(
@@ -69,6 +96,7 @@ pub(super) fn project_com_reference_interface(
         activation: ActivationPlan::None,
         referenced_enums: Vec::new(),
         sink: None,
+        borrowed_storage: None,
         evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
     };
     validate_projected_surface_names(&projected)?;
@@ -172,6 +200,7 @@ fn project_validated_interface(
         activation,
         referenced_enums,
         sink,
+        borrowed_storage: None,
         evidence_dependencies,
     };
     validate_projected_surface_names(&projected)?;
@@ -3755,6 +3784,7 @@ mod tests {
             referenced_enums: Vec::new(),
             sink: None,
             evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
+            borrowed_storage: None,
         };
 
         let error = validate_projected_surface_names(&interface).unwrap_err();
@@ -3900,6 +3930,7 @@ mod tests {
             ],
             sink: None,
             evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
+            borrowed_storage: None,
         };
         assert!(validate_projected_surface_names(&interface).is_err());
 
@@ -3935,6 +3966,7 @@ mod tests {
     #[test]
     fn coclass_rejects_conflicting_enum_filenames() {
         let interface = |name: &str, namespace: &str| ProjectedComInterface {
+            borrowed_storage: None,
             name: name.into(),
             namespace: "Tests".into(),
             iid: "00000000-0000-0000-c000-000000000046".into(),

@@ -29,6 +29,7 @@ pub use com_raw::{
   DynComRawStructLayout, DynComRawUnionLayout,
 };
 mod async_promise;
+mod com_borrowed;
 mod com_completion;
 #[cfg(feature = "test-hooks")]
 mod com_completion_test_hooks;
@@ -966,12 +967,72 @@ pub struct DynWinRTValue(
   Option<com::AutomationValue>,
   Option<ComApartmentBinding>,
 );
+// COM carriers check their owner before accessing/cloning the private Rc sidecar.
+// Off-thread destruction leaks that sidecar and its COM owners instead of
+// changing an Rc count or releasing an apartment reference on the wrong thread.
 unsafe impl Send for DynWinRTValue {}
 unsafe impl Sync for DynWinRTValue {}
 
 #[derive(Clone)]
 struct ComApartmentBinding {
   owner_thread: std::thread::ThreadId,
+  context: ComContextSlot,
+  identity_error: Option<String>,
+}
+
+type ComContextSlot = std::rc::Rc<std::cell::RefCell<Option<dynwinrt::com::borrowed::Identity>>>;
+
+thread_local! {
+  // Empty slots are pinned by their managed carriers' owned interface refs.
+  // Populated slots additionally own the core canonical-identity sidecar.
+  // Sharing slots at carrier creation keeps pre-existing independent aliases
+  // from forgetting provenance or poison when the first copier is released.
+  static COM_CONTEXT_SLOTS: std::cell::RefCell<std::collections::HashMap<usize,
+    std::rc::Weak<std::cell::RefCell<Option<dynwinrt::com::borrowed::Identity>>>>> =
+    std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+impl ComApartmentBinding {
+  fn for_object(object: &IUnknown) -> Self {
+    let owner_thread = std::thread::current().id();
+    let mut pointer = std::ptr::null_mut();
+    let hr = unsafe { object.query(&IUnknown::IID, &mut pointer) };
+    if hr.is_err() || pointer.is_null() {
+      return Self {
+        owner_thread,
+        context: Default::default(),
+        identity_error: Some(format!(
+          "COM canonical identity is unavailable (HRESULT 0x{:08X}, null={})",
+          hr.0 as u32,
+          pointer.is_null()
+        )),
+      };
+    }
+    let canonical = unsafe { IUnknown::from_raw(pointer) };
+    let key = canonical.as_raw().addr();
+    let context = COM_CONTEXT_SLOTS.with(|slots| {
+      let mut slots = slots.borrow_mut();
+      if let Some(slot) = slots.get(&key).and_then(std::rc::Weak::upgrade) {
+        return slot;
+      }
+      slots.retain(|_, slot| slot.strong_count() != 0);
+      let slot: ComContextSlot = Default::default();
+      slots.insert(key, std::rc::Rc::downgrade(&slot));
+      slot
+    });
+    Self {
+      owner_thread,
+      context,
+      identity_error: None,
+    }
+  }
+
+  fn ensure_identity(&self) -> napi::Result<()> {
+    if let Some(error) = &self.identity_error {
+      return Err(napi::Error::from_reason(error.clone()));
+    }
+    Ok(())
+  }
 }
 
 impl DynWinRTValue {
@@ -988,24 +1049,28 @@ impl DynWinRTValue {
   }
 
   pub(crate) fn bind_current_com_apartment(&mut self) -> napi::Result<()> {
+    let current = std::thread::current().id();
+    if self
+      .6
+      .as_ref()
+      .is_some_and(|binding| binding.owner_thread != current)
+    {
+      return Err(napi::Error::from_reason(
+        "Classic COM object is already bound to a different apartment thread",
+      ));
+    }
     if self.0.as_object().is_none() {
       return Err(napi::Error::from_reason(
         "Classic COM apartment binding requires a managed COM object",
       ));
     }
-    let current = std::thread::current().id();
-    match &self.6 {
-      Some(binding) if binding.owner_thread != current => Err(napi::Error::from_reason(
-        "Classic COM object is already bound to a different apartment thread",
-      )),
-      Some(_) => Ok(()),
-      None => {
-        self.6 = Some(ComApartmentBinding {
-          owner_thread: current,
-        });
-        Ok(())
-      }
+    if self.6.is_none() {
+      self.6 = Some(ComApartmentBinding::for_object(
+        &self.0.as_object().expect("checked COM object"),
+      ));
     }
+    self.existing_com_context()?;
+    Ok(())
   }
 
   pub(crate) fn ensure_com_apartment(&self) -> napi::Result<()> {
@@ -1027,6 +1092,73 @@ impl DynWinRTValue {
     } else {
       Ok(())
     }
+  }
+
+  fn com_context(&self) -> napi::Result<dynwinrt::com::borrowed::Identity> {
+    self.ensure_com_apartment()?;
+    let binding = self.6.as_ref().expect("checked apartment");
+    binding.ensure_identity()?;
+    if let Some(context) = binding.context.borrow().as_ref() {
+      return Ok(context.clone());
+    }
+    let object = self
+      .0
+      .as_object()
+      .ok_or_else(|| napi::Error::from_reason("COM object is released"))?;
+    let context = dynwinrt::com::borrowed::Identity::for_object(&object)
+      .map_err(|error| napi::Error::from_reason(error.message()))?;
+    *binding.context.borrow_mut() = Some(context.clone());
+    Ok(context)
+  }
+
+  fn existing_com_context(&self) -> napi::Result<Option<dynwinrt::com::borrowed::Identity>> {
+    self.ensure_com_apartment()?;
+    let binding = self.6.as_ref().expect("checked apartment");
+    binding.ensure_identity()?;
+    if let Some(context) = binding.context.borrow().as_ref() {
+      return Ok(Some(context.clone()));
+    }
+    if !dynwinrt::com::borrowed::has_live_contexts()
+      .map_err(|error| napi::Error::from_reason(error.message()))?
+    {
+      return Ok(None);
+    }
+    let object = self
+      .0
+      .as_object()
+      .ok_or_else(|| napi::Error::from_reason("COM object is released"))?;
+    let context = dynwinrt::com::borrowed::Identity::lookup(&object)
+      .map_err(|error| napi::Error::from_reason(error.message()))?;
+    *binding.context.borrow_mut() = context.clone();
+    Ok(context)
+  }
+
+  fn ensure_tracked_com_idle(&self) -> napi::Result<()> {
+    if let Some(context) = self.existing_com_context()? {
+      context
+        .ensure_idle()
+        .map_err(|error| napi::Error::from_reason(error.message()))?;
+    }
+    Ok(())
+  }
+
+  fn retain_com_context(&mut self, context: dynwinrt::com::borrowed::Identity) -> napi::Result<()> {
+    let object = match &self.0 {
+      dynwinrt::WinRTValue::Object(object) => object,
+      dynwinrt::WinRTValue::RawPtr(pointer) if self.2 == com::PointerProvenance::ComOutput => {
+        unsafe { IUnknown::from_raw_borrowed(pointer) }
+          .ok_or_else(|| napi::Error::from_reason("COM context output is null"))?
+      }
+      _ => {
+        return Err(napi::Error::from_reason(
+          "COM context requires an owned interface output",
+        ))
+      }
+    };
+    let binding = ComApartmentBinding::for_object(object);
+    *binding.context.borrow_mut() = Some(context);
+    self.6 = Some(binding);
+    self.6.as_ref().unwrap().ensure_identity()
   }
 
   fn with_pointer_owner(value: dynwinrt::WinRTValue, owner: com::NativePointerOwner) -> Self {
@@ -1102,9 +1234,11 @@ impl DynWinRTValue {
     } else {
       com::PointerProvenance::None
     };
-    let apartment = matches!(value, dynwinrt::WinRTValue::Object(_)).then(|| ComApartmentBinding {
-      owner_thread: std::thread::current().id(),
-    });
+    let apartment = if let dynwinrt::WinRTValue::Object(object) = &value {
+      Some(ComApartmentBinding::for_object(object))
+    } else {
+      None
+    };
     Self(value, None, provenance, None, None, None, apartment)
   }
 
@@ -1314,6 +1448,9 @@ impl Drop for DynWinRTValue {
     {
       let value = mem::replace(&mut self.0, dynwinrt::WinRTValue::Null);
       mem::forget(value);
+      if let Some(binding) = self.6.take() {
+        mem::forget(binding);
+      }
       return;
     }
     // After Application.Start returns, XAML has already torn down its thread
@@ -1329,6 +1466,9 @@ impl Drop for DynWinRTValue {
       }
       if let Some(value) = &mut self.5 {
         value.leak_for_shutdown();
+      }
+      if let Some(binding) = self.6.take() {
+        mem::forget(binding);
       }
     } else {
       let _ = self.release_native_pointer_output();
@@ -2916,6 +3056,11 @@ fn invoke_direct_js_callback<R>(
   build_args: impl FnOnce(napi::sys::napi_env) -> napi::Result<Vec<napi::sys::napi_value>>,
   parse_result: impl FnOnce(napi::sys::napi_env, napi::sys::napi_value) -> napi::Result<R>,
 ) -> napi::Result<R> {
+  if dynwinrt::com::borrowed::callbacks_suppressed() {
+    return Err(napi::Error::from_reason(
+      "JavaScript callbacks are forbidden during a native borrowed-copy transaction",
+    ));
+  }
   if direct.lifecycle.is_closing() {
     return Err(napi::Error::from_reason(
       "Cannot invoke a callback while the Node environment is closing",

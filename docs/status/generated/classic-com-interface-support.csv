@@ -1183,7 +1183,7 @@ Windows.Win32.Graphics.GdiPlus,IImageBytes,025d1823-6c7d-447b-bbdb-a3cbc3dfa2fc,
 Windows.Win32.Graphics.Imaging.D2D,IWICImageEncoder,04c75bf8-3ce1-473b-acc5-3cc4f5e94999,true,standard_derived,
 Windows.Win32.Graphics.Imaging.D2D,IWICImagingFactory2,7b816b45-1996-4476-b132-de9e247c8af0,true,standard_derived,
 Windows.Win32.Graphics.Imaging.D2D,IWICImagingFactory3,489b3d8b-624a-4258-b678-7eece70f299d,true,standard_derived,
-Windows.Win32.Graphics.Imaging,IWICBitmap,00000121-a8f2-4877-ba0a-fd2b6645fb94,true,standard_derived,
+Windows.Win32.Graphics.Imaging,IWICBitmap,00000121-a8f2-4877-ba0a-fd2b6645fb94,true,exact_registry_dependent,
 Windows.Win32.Graphics.Imaging,IWICBitmapClipper,e4fbcf03-223d-4e81-9333-d635556dd1b5,true,standard_derived,
 Windows.Win32.Graphics.Imaging,IWICBitmapCodecInfo,e87a44c4-b76e-4c47-8b09-298eb12a2714,false,,safe_projection_incomplete
 Windows.Win32.Graphics.Imaging,IWICBitmapCodecProgressNotification,64c1024e-c3cf-4462-8078-88c2b11c46d9,false,,external_pointee_storage

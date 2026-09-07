@@ -374,20 +374,30 @@ classifies all 5,697 safe-complete interfaces exactly once:
 
 | Evidence class | Interfaces |
 | --- | ---: |
-| `standard_derived` | 5,333 |
-| `exact_registry_dependent` | 364 |
+| `standard_derived` | 5,332 |
+| `exact_registry_dependent` | 365 |
 
-The registry declares 506 selector-specific entries; all 506 match pinned
-metadata, 415 distinct entries are safe-consumed, and safe plans contain 671
-entry/interface plus 417 family/interface dependencies. They also consume
+The registry declares 532 selector-specific entries; all 532 match pinned
+metadata, 431 distinct entries are consumed by complete safe plans, which contain 693
+entry/interface plus 424 family/interface dependencies. They also consume
 5,983 metadata-attribute and 26,134 universal COM-rule dependency sets.
 Entry/interface dependencies by kind are SAFEARRAY 263, enumerator-next 74,
 borrowed-handle 54, ownership 182, parameter-direction 45, bounded-two-call 16,
 counted-buffer 16, conditional-output 10, flag-selected-buffer 3, null-input 4,
-semantic-HRESULT 3, and compound-dispatch 1. Complete per-entry status,
+semantic-HRESULT 3, compound-dispatch 1, borrowed-storage 15, and contextual-effect 7. Complete per-entry status,
 per-family rollups, and per-interface entry IDs are retained in the summary
 and interface CSV.
 These are dependency counts, not net contribution; no ablation claim is made.
+
+Borrowed buffers now have synchronous **owned-copy** transactions for WASAPI
+render/capture, STA WIC BGRA8 locks, and linear `IMFMediaBuffer`. Audio requires
+observed successful initialization and GetService provenance; external
+initialization alone grants no copy capability. Render/capture and linear MF
+remain copy-only facades and do not increase the safe-complete census. WIC
+preserves its existing native methods and adds a read-copy operation.
+Exclusive event-driven render, native-backed JS views, writable external WIC
+locks, and general signed-pitch/plane `IMF2DBuffer`/`IMF2DBuffer2` access remain
+unsupported. See [the bounded copy contract](../architecture/classic-com-support.md#bounded-borrowed-buffer-copies).
 
 Generic scalar BSTR output/replacement and 24 `STANDARD_NEXT` enumerator
 entries remain typed COM standard rules. Twenty-five safe interfaces consume

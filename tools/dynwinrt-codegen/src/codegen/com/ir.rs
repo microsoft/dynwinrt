@@ -727,7 +727,46 @@ pub(super) struct ProjectedComInterface {
     pub(super) activation: ActivationPlan,
     pub(super) referenced_enums: Vec<ProjectedComEnum>,
     pub(super) sink: Option<ComSinkPlan>,
+    pub(super) borrowed_storage: Option<ProjectedBorrowedStorage>,
     pub(super) evidence_dependencies: crate::contract_registry::EvidenceDependencies,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ProjectedBorrowedStorage {
+    pub copy: Option<ProjectedBorrowedCopy>,
+    pub context_effects: std::collections::BTreeMap<usize, String>,
+    pub copy_only: bool,
+    pub evidence_dependencies: crate::contract_registry::EvidenceDependencies,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ProjectedBorrowedCopy {
+    pub descriptor: String,
+    pub operations: Vec<ProjectedBorrowedOperation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ProjectedBorrowedOperation {
+    pub name: &'static str,
+    pub runtime_method: &'static str,
+    pub arguments: CopyArguments,
+    pub result: CopyResult,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CopyArguments {
+    None,
+    Bytes,
+    Frames,
+    Rectangle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CopyResult {
+    Void,
+    Bytes,
+    Packet,
+    Bitmap,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -13,7 +13,7 @@
     "raw_manual_contract": "Pointer ABI execution is expressible, but the caller must supply listed semantic/lifetime facts or externally created pointee storage. Missing layout for caller-created readable/writable T* storage is not manual; it is blocked.",
     "raw_metadata_complete": "Every outbound ABI fact is present and expressible by the Phase 1 raw runtime.",
     "raw_runtime_blocked": "At least one inherited or declared method uses a target ABI shape rejected by the current raw runtime.",
-    "safe_complete": "Existing complete safe generator succeeds for the full inherited interface.",
+    "safe_complete": "Complete safe generation succeeds for the full inherited interface; bounded copy-only facades are excluded.",
     "standard_derived": "A safe-complete interface whose validated plan consumes only WinMD facts and universal COM standard rules."
   },
   "reason_definitions": {
@@ -84,20 +84,22 @@
   "safe_incomplete": 2232,
   "safeEvidence": {
     "safeComplete": 5697,
-    "standardDerived": 5333,
-    "exactRegistryDependent": 364,
+    "standardDerived": 5332,
+    "exactRegistryDependent": 365,
     "metadataFactOccurrences": 5983,
     "comStandardFactOccurrences": 26134,
-    "registeredExactEntries": 506,
-    "metadataMatchedExactEntries": 506,
-    "safeConsumedExactEntries": 415,
-    "exactEntryInterfaceDependencies": 671,
-    "exactFamilyInterfaceDependencies": 417,
+    "registeredExactEntries": 532,
+    "metadataMatchedExactEntries": 532,
+    "safeConsumedExactEntries": 431,
+    "exactEntryInterfaceDependencies": 693,
+    "exactFamilyInterfaceDependencies": 424,
     "byContractKind": {
       "borrowed-handle": 54,
+      "borrowed-storage": 15,
       "bounded-two-call": 16,
       "compound-dispatch": 1,
       "conditional-output": 10,
+      "contextual-effect": 7,
       "counted-buffer": 16,
       "enumerator-next": 74,
       "flag-selected-buffer": 3,
@@ -109,6 +111,9 @@
     },
     "byEntryId": {
       "audio.conditional-output.entry.windows-win32-media-audio.iaudioclient.1cb9ad4cdbfa4c32b178c2f568a703b2.isformatsupported.slot-7.v1": 3,
+      "audio.context-effect.entry.windows-win32-media-audio.iaudioclient.1cb9ad4cdbfa4c32b178c2f568a703b2.getservice.slot-14.v1": 3,
+      "audio.context-effect.entry.windows-win32-media-audio.iaudioclient.1cb9ad4cdbfa4c32b178c2f568a703b2.initialize.slot-3.v1": 3,
+      "audio.context-effect.entry.windows-win32-media-audio.iaudioclient3.7ed4ee078e674cd48c1a2b7a5987ad42.initializesharedaudiostream.slot-20.v1": 1,
       "automation.idispatch-invoke.entry.windows-win32-system-com.idispatch.0002040000000000c000000000000046.invoke.slot-6.v1": 1,
       "automation.safearray.entry.windows-win32-media-directshow-tv.iesisdbcasresponseevent.2017cb03dc0f4c2483ca36307b2cd19f.getresponsedata.slot-11.param-0-pbdata.v1": 1,
       "automation.safearray.entry.windows-win32-media-directshow-tv.ieslicenserenewalresultevent.d5a48ef5a81b4df0acaa5e35e7ea45d4.getentitlementtoken.slot-17.param-0-pbdata.v1": 1,
@@ -291,6 +296,19 @@
       "automation.safearray.entry.windows-win32-ui-accessibility.iuiautomationtextedittextchangedeventhandler.92faa680e7044156931ae32d5bb38f3f.handletextedittextchangedevent.slot-3.param-2-eventstrings.v1": 1,
       "automation.safearray.entry.windows-win32-ui-accessibility.iuiautomationtextrange.a543cc6af4ae494b8239c814481187a8.getboundingrectangles.slot-10.param-0-boundingrects.v1": 3,
       "automation.safearray.entry.windows-win32-ui-accessibility.iuiautomationtextrange3.6a315d6955124c2e85f053fce6dd4bc2.getattributevalues.slot-24.param-2-attributevalues.v1": 1,
+      "buffers.borrowed-copy.entry.windows-win32-graphics-imaging.iwicbitmap.00000121a8f24877ba0afd2b6645fb94.lock.slot-8.v1": 1,
+      "buffers.borrowed-copy.entry.windows-win32-graphics-imaging.iwicbitmap.00000121a8f24877ba0afd2b6645fb94.setpalette.slot-9.v1": 1,
+      "buffers.borrowed-copy.entry.windows-win32-graphics-imaging.iwicbitmap.00000121a8f24877ba0afd2b6645fb94.setresolution.slot-10.v1": 1,
+      "buffers.borrowed-copy.entry.windows-win32-graphics-imaging.iwicbitmaplock.00000123a8f24877ba0afd2b6645fb94.getdatapointer.slot-5.v1": 1,
+      "buffers.borrowed-copy.entry.windows-win32-graphics-imaging.iwicbitmaplock.00000123a8f24877ba0afd2b6645fb94.getpixelformat.slot-6.v1": 1,
+      "buffers.borrowed-copy.entry.windows-win32-graphics-imaging.iwicbitmaplock.00000123a8f24877ba0afd2b6645fb94.getsize.slot-3.v1": 1,
+      "buffers.borrowed-copy.entry.windows-win32-graphics-imaging.iwicbitmaplock.00000123a8f24877ba0afd2b6645fb94.getstride.slot-4.v1": 1,
+      "buffers.borrowed-copy.entry.windows-win32-graphics-imaging.iwicbitmapsource.00000120a8f24877ba0afd2b6645fb94.copypalette.slot-6.v1": 1,
+      "buffers.borrowed-copy.entry.windows-win32-graphics-imaging.iwicbitmapsource.00000120a8f24877ba0afd2b6645fb94.copypixels.slot-7.v1": 1,
+      "buffers.borrowed-copy.entry.windows-win32-graphics-imaging.iwicbitmapsource.00000120a8f24877ba0afd2b6645fb94.getpixelformat.slot-4.v1": 1,
+      "buffers.borrowed-copy.entry.windows-win32-graphics-imaging.iwicbitmapsource.00000120a8f24877ba0afd2b6645fb94.getresolution.slot-5.v1": 1,
+      "buffers.borrowed-copy.entry.windows-win32-graphics-imaging.iwicbitmapsource.00000120a8f24877ba0afd2b6645fb94.getsize.slot-3.v1": 1,
+      "buffers.borrowed-copy.entry.windows-win32-media-audio.iaudioclient.1cb9ad4cdbfa4c32b178c2f568a703b2.getbuffersize.slot-4.v1": 3,
       "buffers.bounded-two-call.entry.windows-win32-media-mediafoundation.imfattributes.2cd2d921c44744a7a13c4adabfc247e3.getblob.slot-15.v1": 15,
       "buffers.bounded-two-call.entry.windows-win32-storage-imapi.idiscrecorder.85ac9776ca884cf2894e09598c078a41.getrecorderguid.slot-4.param-0-pbyuniqueid.v1": 1,
       "buffers.counted-buffer.entry.windows-win32-storage-imapi.idiscrecorder.85ac9776ca884cf2894e09598c078a41.init.slot-3.param-0-pbyuniqueid.v1": 1,
@@ -526,8 +544,10 @@
     },
     "byFamilyId": {
       "audio.conditional-output.v1": 3,
+      "audio.context-effect.v1": 3,
       "automation.idispatch-invoke.v1": 1,
       "automation.safearray.v1": 121,
+      "buffers.borrowed-copy.v1": 4,
       "buffers.bounded-two-call.v1": 16,
       "buffers.counted-buffer.v1": 2,
       "com.enumerator-next-exception.v1": 74,
@@ -578,6 +598,60 @@
         "metadataMatched": true,
         "safeConsumed": true,
         "interfaceDependencies": 3
+      },
+      "audio.context-effect.entry.windows-win32-media-audio.iaudioclient.1cb9ad4cdbfa4c32b178c2f568a703b2.getservice.slot-14.v1": {
+        "familyId": "audio.context-effect.v1",
+        "contractKind": "contextual-effect",
+        "selector": {
+          "namespace": "Windows.Win32.Media.Audio",
+          "interface": "IAudioClient",
+          "iid": "1cb9ad4c-dbfa-4c32-b178-c2f568a703b2",
+          "method": "GetService",
+          "slot": 14,
+          "parameter": null
+        },
+        "sourceFingerprint": "6362D65B61F18446F4E990C84DA998C4A7DE08517C7405981DF823854227CA7E",
+        "citation": "https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudioclient-getservice",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 3
+      },
+      "audio.context-effect.entry.windows-win32-media-audio.iaudioclient.1cb9ad4cdbfa4c32b178c2f568a703b2.initialize.slot-3.v1": {
+        "familyId": "audio.context-effect.v1",
+        "contractKind": "contextual-effect",
+        "selector": {
+          "namespace": "Windows.Win32.Media.Audio",
+          "interface": "IAudioClient",
+          "iid": "1cb9ad4c-dbfa-4c32-b178-c2f568a703b2",
+          "method": "Initialize",
+          "slot": 3,
+          "parameter": null
+        },
+        "sourceFingerprint": "7F14AD1E6E6E178A91283B68002988D362898FCAC97823B866D61FAFF5766039",
+        "citation": "https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudioclient-initialize",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 3
+      },
+      "audio.context-effect.entry.windows-win32-media-audio.iaudioclient3.7ed4ee078e674cd48c1a2b7a5987ad42.initializesharedaudiostream.slot-20.v1": {
+        "familyId": "audio.context-effect.v1",
+        "contractKind": "contextual-effect",
+        "selector": {
+          "namespace": "Windows.Win32.Media.Audio",
+          "interface": "IAudioClient3",
+          "iid": "7ed4ee07-8e67-4cd4-8c1a-2b7a5987ad42",
+          "method": "InitializeSharedAudioStream",
+          "slot": 20,
+          "parameter": null
+        },
+        "sourceFingerprint": "08879857019485B6813E45F4BEB2941E4D83ACF80CA55AA4538F50B08C1B9531",
+        "citation": "https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudioclient3-initializesharedaudiostream",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
       },
       "automation.idispatch-invoke.entry.windows-win32-system-com.idispatch.0002040000000000c000000000000046.invoke.slot-6.v1": {
         "familyId": "automation.idispatch-invoke.v1",
@@ -4981,6 +5055,420 @@
         },
         "sourceFingerprint": "5D1B6F13C37C2005B6FA61143366CEBE91ED0BFCCFB89385712784DFADCE2AB4",
         "citation": "https://learn.microsoft.com/windows/win32/api/msimeapi/nf-msimeapi-iimeplugindictdictionarylist-getdictionariesinuse",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "buffers.borrowed-copy.entry.windows-win32-graphics-imaging.iwicbitmap.00000121a8f24877ba0afd2b6645fb94.lock.slot-8.v1": {
+        "familyId": "buffers.borrowed-copy.v1",
+        "contractKind": "borrowed-storage",
+        "selector": {
+          "namespace": "Windows.Win32.Graphics.Imaging",
+          "interface": "IWICBitmap",
+          "iid": "00000121-a8f2-4877-ba0a-fd2b6645fb94",
+          "method": "Lock",
+          "slot": 8,
+          "parameter": null
+        },
+        "sourceFingerprint": "BE432E367AC62157C546DB3F21AE11B89025F930D4AE397ECC5B6A6F2016D154",
+        "citation": "https://learn.microsoft.com/en-us/windows/win32/api/wincodec/nf-wincodec-iwicbitmap-lock",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "buffers.borrowed-copy.entry.windows-win32-graphics-imaging.iwicbitmap.00000121a8f24877ba0afd2b6645fb94.setpalette.slot-9.v1": {
+        "familyId": "buffers.borrowed-copy.v1",
+        "contractKind": "borrowed-storage",
+        "selector": {
+          "namespace": "Windows.Win32.Graphics.Imaging",
+          "interface": "IWICBitmap",
+          "iid": "00000121-a8f2-4877-ba0a-fd2b6645fb94",
+          "method": "SetPalette",
+          "slot": 9,
+          "parameter": null
+        },
+        "sourceFingerprint": "D714FBE65EE1E239F04D9046C2270572CC8DE81094FCE549D81FF50242BC6F8F",
+        "citation": "https://learn.microsoft.com/en-us/windows/win32/api/wincodec/nf-wincodec-iwicbitmap-setpalette",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "buffers.borrowed-copy.entry.windows-win32-graphics-imaging.iwicbitmap.00000121a8f24877ba0afd2b6645fb94.setresolution.slot-10.v1": {
+        "familyId": "buffers.borrowed-copy.v1",
+        "contractKind": "borrowed-storage",
+        "selector": {
+          "namespace": "Windows.Win32.Graphics.Imaging",
+          "interface": "IWICBitmap",
+          "iid": "00000121-a8f2-4877-ba0a-fd2b6645fb94",
+          "method": "SetResolution",
+          "slot": 10,
+          "parameter": null
+        },
+        "sourceFingerprint": "394965547E9C14CB338B9AD84677C27CA1D54BF22E4CDBA79A46D26F31C25EB6",
+        "citation": "https://learn.microsoft.com/en-us/windows/win32/api/wincodec/nf-wincodec-iwicbitmap-setresolution",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "buffers.borrowed-copy.entry.windows-win32-graphics-imaging.iwicbitmaplock.00000123a8f24877ba0afd2b6645fb94.getdatapointer.slot-5.v1": {
+        "familyId": "buffers.borrowed-copy.v1",
+        "contractKind": "borrowed-storage",
+        "selector": {
+          "namespace": "Windows.Win32.Graphics.Imaging",
+          "interface": "IWICBitmapLock",
+          "iid": "00000123-a8f2-4877-ba0a-fd2b6645fb94",
+          "method": "GetDataPointer",
+          "slot": 5,
+          "parameter": null
+        },
+        "sourceFingerprint": "FB4F6B8BD302FCA2BB91B231BF957E10D37AC979C39A88992E2526E53349F66C",
+        "citation": "https://learn.microsoft.com/en-us/windows/win32/api/wincodec/nf-wincodec-iwicbitmaplock-getdatapointer",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "buffers.borrowed-copy.entry.windows-win32-graphics-imaging.iwicbitmaplock.00000123a8f24877ba0afd2b6645fb94.getpixelformat.slot-6.v1": {
+        "familyId": "buffers.borrowed-copy.v1",
+        "contractKind": "borrowed-storage",
+        "selector": {
+          "namespace": "Windows.Win32.Graphics.Imaging",
+          "interface": "IWICBitmapLock",
+          "iid": "00000123-a8f2-4877-ba0a-fd2b6645fb94",
+          "method": "GetPixelFormat",
+          "slot": 6,
+          "parameter": null
+        },
+        "sourceFingerprint": "A065B19968592FDA319A1A9DAC7EC1EB51CE63F5D3FFA62C6DD38E92742065E6",
+        "citation": "https://learn.microsoft.com/en-us/windows/win32/api/wincodec/nf-wincodec-iwicbitmaplock-getpixelformat",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "buffers.borrowed-copy.entry.windows-win32-graphics-imaging.iwicbitmaplock.00000123a8f24877ba0afd2b6645fb94.getsize.slot-3.v1": {
+        "familyId": "buffers.borrowed-copy.v1",
+        "contractKind": "borrowed-storage",
+        "selector": {
+          "namespace": "Windows.Win32.Graphics.Imaging",
+          "interface": "IWICBitmapLock",
+          "iid": "00000123-a8f2-4877-ba0a-fd2b6645fb94",
+          "method": "GetSize",
+          "slot": 3,
+          "parameter": null
+        },
+        "sourceFingerprint": "5FBF3161D277C77796793A167F68999C7B678A182FCBB823CD721DC4BAC83F64",
+        "citation": "https://learn.microsoft.com/en-us/windows/win32/api/wincodec/nf-wincodec-iwicbitmaplock-getsize",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "buffers.borrowed-copy.entry.windows-win32-graphics-imaging.iwicbitmaplock.00000123a8f24877ba0afd2b6645fb94.getstride.slot-4.v1": {
+        "familyId": "buffers.borrowed-copy.v1",
+        "contractKind": "borrowed-storage",
+        "selector": {
+          "namespace": "Windows.Win32.Graphics.Imaging",
+          "interface": "IWICBitmapLock",
+          "iid": "00000123-a8f2-4877-ba0a-fd2b6645fb94",
+          "method": "GetStride",
+          "slot": 4,
+          "parameter": null
+        },
+        "sourceFingerprint": "0DC2598054C7BCB1D19940355D5BE568D508B332E269D00956BAF22DC854F799",
+        "citation": "https://learn.microsoft.com/en-us/windows/win32/api/wincodec/nf-wincodec-iwicbitmaplock-getstride",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "buffers.borrowed-copy.entry.windows-win32-graphics-imaging.iwicbitmapsource.00000120a8f24877ba0afd2b6645fb94.copypalette.slot-6.v1": {
+        "familyId": "buffers.borrowed-copy.v1",
+        "contractKind": "borrowed-storage",
+        "selector": {
+          "namespace": "Windows.Win32.Graphics.Imaging",
+          "interface": "IWICBitmapSource",
+          "iid": "00000120-a8f2-4877-ba0a-fd2b6645fb94",
+          "method": "CopyPalette",
+          "slot": 6,
+          "parameter": null
+        },
+        "sourceFingerprint": "CBBEDB597008ED4EA9032EE361F19AC676DA973DA93A1CB8B0B7D67E24CA4A8C",
+        "citation": "https://learn.microsoft.com/en-us/windows/win32/api/wincodec/nf-wincodec-iwicbitmapsource-copypalette",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "buffers.borrowed-copy.entry.windows-win32-graphics-imaging.iwicbitmapsource.00000120a8f24877ba0afd2b6645fb94.copypixels.slot-7.v1": {
+        "familyId": "buffers.borrowed-copy.v1",
+        "contractKind": "borrowed-storage",
+        "selector": {
+          "namespace": "Windows.Win32.Graphics.Imaging",
+          "interface": "IWICBitmapSource",
+          "iid": "00000120-a8f2-4877-ba0a-fd2b6645fb94",
+          "method": "CopyPixels",
+          "slot": 7,
+          "parameter": null
+        },
+        "sourceFingerprint": "78BA461831509B5574CB3F8485FE071B875E1AA1FF4ABC4EBB4ADE74A1AE0A9A",
+        "citation": "https://learn.microsoft.com/en-us/windows/win32/api/wincodec/nf-wincodec-iwicbitmapsource-copypixels",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "buffers.borrowed-copy.entry.windows-win32-graphics-imaging.iwicbitmapsource.00000120a8f24877ba0afd2b6645fb94.getpixelformat.slot-4.v1": {
+        "familyId": "buffers.borrowed-copy.v1",
+        "contractKind": "borrowed-storage",
+        "selector": {
+          "namespace": "Windows.Win32.Graphics.Imaging",
+          "interface": "IWICBitmapSource",
+          "iid": "00000120-a8f2-4877-ba0a-fd2b6645fb94",
+          "method": "GetPixelFormat",
+          "slot": 4,
+          "parameter": null
+        },
+        "sourceFingerprint": "D45F675B2B76A3A9BE908AFBAC03BF4CEC2BD5D8162C1BF28F01FA558B2B6F98",
+        "citation": "https://learn.microsoft.com/en-us/windows/win32/api/wincodec/nf-wincodec-iwicbitmapsource-getpixelformat",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "buffers.borrowed-copy.entry.windows-win32-graphics-imaging.iwicbitmapsource.00000120a8f24877ba0afd2b6645fb94.getresolution.slot-5.v1": {
+        "familyId": "buffers.borrowed-copy.v1",
+        "contractKind": "borrowed-storage",
+        "selector": {
+          "namespace": "Windows.Win32.Graphics.Imaging",
+          "interface": "IWICBitmapSource",
+          "iid": "00000120-a8f2-4877-ba0a-fd2b6645fb94",
+          "method": "GetResolution",
+          "slot": 5,
+          "parameter": null
+        },
+        "sourceFingerprint": "3545A1714671B8C7223BF21693848300001272CDD14E1BE6C188680EA5BD75DD",
+        "citation": "https://learn.microsoft.com/en-us/windows/win32/api/wincodec/nf-wincodec-iwicbitmapsource-getresolution",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "buffers.borrowed-copy.entry.windows-win32-graphics-imaging.iwicbitmapsource.00000120a8f24877ba0afd2b6645fb94.getsize.slot-3.v1": {
+        "familyId": "buffers.borrowed-copy.v1",
+        "contractKind": "borrowed-storage",
+        "selector": {
+          "namespace": "Windows.Win32.Graphics.Imaging",
+          "interface": "IWICBitmapSource",
+          "iid": "00000120-a8f2-4877-ba0a-fd2b6645fb94",
+          "method": "GetSize",
+          "slot": 3,
+          "parameter": null
+        },
+        "sourceFingerprint": "F0CBF53A188710273FE737C1A06CDA40FA799C4326F3CA9BF68988E5072B5DA2",
+        "citation": "https://learn.microsoft.com/en-us/windows/win32/api/wincodec/nf-wincodec-iwicbitmapsource-getsize",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
+      "buffers.borrowed-copy.entry.windows-win32-media-audio.iaudiocaptureclient.c8adbd64e71e48a0a4de185c395cd317.getbuffer.slot-3.v1": {
+        "familyId": "buffers.borrowed-copy.v1",
+        "contractKind": "borrowed-storage",
+        "selector": {
+          "namespace": "Windows.Win32.Media.Audio",
+          "interface": "IAudioCaptureClient",
+          "iid": "c8adbd64-e71e-48a0-a4de-185c395cd317",
+          "method": "GetBuffer",
+          "slot": 3,
+          "parameter": null
+        },
+        "sourceFingerprint": "DDD954B2807361F2D50D38C8054846A02577E820B6D42E0B82130F785AA3E370",
+        "citation": "https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudiocaptureclient-getbuffer",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "buffers.borrowed-copy.entry.windows-win32-media-audio.iaudiocaptureclient.c8adbd64e71e48a0a4de185c395cd317.getnextpacketsize.slot-5.v1": {
+        "familyId": "buffers.borrowed-copy.v1",
+        "contractKind": "borrowed-storage",
+        "selector": {
+          "namespace": "Windows.Win32.Media.Audio",
+          "interface": "IAudioCaptureClient",
+          "iid": "c8adbd64-e71e-48a0-a4de-185c395cd317",
+          "method": "GetNextPacketSize",
+          "slot": 5,
+          "parameter": null
+        },
+        "sourceFingerprint": "C540B744DB900C7D5EDAD03422FC17E7034A822832F4A39DC2DD8519B0978209",
+        "citation": "https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudiocaptureclient-getnextpacketsize",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "buffers.borrowed-copy.entry.windows-win32-media-audio.iaudiocaptureclient.c8adbd64e71e48a0a4de185c395cd317.releasebuffer.slot-4.v1": {
+        "familyId": "buffers.borrowed-copy.v1",
+        "contractKind": "borrowed-storage",
+        "selector": {
+          "namespace": "Windows.Win32.Media.Audio",
+          "interface": "IAudioCaptureClient",
+          "iid": "c8adbd64-e71e-48a0-a4de-185c395cd317",
+          "method": "ReleaseBuffer",
+          "slot": 4,
+          "parameter": null
+        },
+        "sourceFingerprint": "82D3C575E5031A345E01026F01E600C8887B081DF6F79CA514B49B78F01E5E17",
+        "citation": "https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudiocaptureclient-releasebuffer",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "buffers.borrowed-copy.entry.windows-win32-media-audio.iaudioclient.1cb9ad4cdbfa4c32b178c2f568a703b2.getbuffersize.slot-4.v1": {
+        "familyId": "buffers.borrowed-copy.v1",
+        "contractKind": "borrowed-storage",
+        "selector": {
+          "namespace": "Windows.Win32.Media.Audio",
+          "interface": "IAudioClient",
+          "iid": "1cb9ad4c-dbfa-4c32-b178-c2f568a703b2",
+          "method": "GetBufferSize",
+          "slot": 4,
+          "parameter": null
+        },
+        "sourceFingerprint": "9F0C09DD69B785A9B4A339ECD2A1970E8574BDBA0F173E3ACF630407A9AB14BE",
+        "citation": "https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudioclient-getbuffersize",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 3
+      },
+      "buffers.borrowed-copy.entry.windows-win32-media-audio.iaudiorenderclient.f294acfc31464483a7bfaddca7c260e2.getbuffer.slot-3.v1": {
+        "familyId": "buffers.borrowed-copy.v1",
+        "contractKind": "borrowed-storage",
+        "selector": {
+          "namespace": "Windows.Win32.Media.Audio",
+          "interface": "IAudioRenderClient",
+          "iid": "f294acfc-3146-4483-a7bf-addca7c260e2",
+          "method": "GetBuffer",
+          "slot": 3,
+          "parameter": null
+        },
+        "sourceFingerprint": "E99E87341B5820E896608A563B67ABCF2A0F9BD833202788950D9FAE8F69E2DB",
+        "citation": "https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudiorenderclient-getbuffer",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "buffers.borrowed-copy.entry.windows-win32-media-audio.iaudiorenderclient.f294acfc31464483a7bfaddca7c260e2.releasebuffer.slot-4.v1": {
+        "familyId": "buffers.borrowed-copy.v1",
+        "contractKind": "borrowed-storage",
+        "selector": {
+          "namespace": "Windows.Win32.Media.Audio",
+          "interface": "IAudioRenderClient",
+          "iid": "f294acfc-3146-4483-a7bf-addca7c260e2",
+          "method": "ReleaseBuffer",
+          "slot": 4,
+          "parameter": null
+        },
+        "sourceFingerprint": "C79B7868B7940E7D879DC90CA1BAC56E386DA7C8E0F7790DFAB7FB8971E0D767",
+        "citation": "https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudiorenderclient-releasebuffer",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "buffers.borrowed-copy.entry.windows-win32-media-mediafoundation.imfmediabuffer.045fa593879942b8bc8d8968c6453507.getcurrentlength.slot-5.v1": {
+        "familyId": "buffers.borrowed-copy.v1",
+        "contractKind": "borrowed-storage",
+        "selector": {
+          "namespace": "Windows.Win32.Media.MediaFoundation",
+          "interface": "IMFMediaBuffer",
+          "iid": "045fa593-8799-42b8-bc8d-8968c6453507",
+          "method": "GetCurrentLength",
+          "slot": 5,
+          "parameter": null
+        },
+        "sourceFingerprint": "AABA562CD26F16571A75D54894E001700500994E98949B4E7A7DA1B6CDE61862",
+        "citation": "https://learn.microsoft.com/en-us/windows/win32/api/mfobjects/nf-mfobjects-imfmediabuffer-getcurrentlength",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "buffers.borrowed-copy.entry.windows-win32-media-mediafoundation.imfmediabuffer.045fa593879942b8bc8d8968c6453507.getmaxlength.slot-7.v1": {
+        "familyId": "buffers.borrowed-copy.v1",
+        "contractKind": "borrowed-storage",
+        "selector": {
+          "namespace": "Windows.Win32.Media.MediaFoundation",
+          "interface": "IMFMediaBuffer",
+          "iid": "045fa593-8799-42b8-bc8d-8968c6453507",
+          "method": "GetMaxLength",
+          "slot": 7,
+          "parameter": null
+        },
+        "sourceFingerprint": "738D4850D037E6B9F76F28C7D0403B4D9BDF97F3B04C9B8E5A0EFBA18A3A962C",
+        "citation": "https://learn.microsoft.com/en-us/windows/win32/api/mfobjects/nf-mfobjects-imfmediabuffer-getmaxlength",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "buffers.borrowed-copy.entry.windows-win32-media-mediafoundation.imfmediabuffer.045fa593879942b8bc8d8968c6453507.lock.slot-3.v1": {
+        "familyId": "buffers.borrowed-copy.v1",
+        "contractKind": "borrowed-storage",
+        "selector": {
+          "namespace": "Windows.Win32.Media.MediaFoundation",
+          "interface": "IMFMediaBuffer",
+          "iid": "045fa593-8799-42b8-bc8d-8968c6453507",
+          "method": "Lock",
+          "slot": 3,
+          "parameter": null
+        },
+        "sourceFingerprint": "1B9E2C63825F73EE5599F05E9EA180D52FD22F02EDD33BB23028711DDF335172",
+        "citation": "https://learn.microsoft.com/en-us/windows/win32/api/mfobjects/nf-mfobjects-imfmediabuffer-lock",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "buffers.borrowed-copy.entry.windows-win32-media-mediafoundation.imfmediabuffer.045fa593879942b8bc8d8968c6453507.setcurrentlength.slot-6.v1": {
+        "familyId": "buffers.borrowed-copy.v1",
+        "contractKind": "borrowed-storage",
+        "selector": {
+          "namespace": "Windows.Win32.Media.MediaFoundation",
+          "interface": "IMFMediaBuffer",
+          "iid": "045fa593-8799-42b8-bc8d-8968c6453507",
+          "method": "SetCurrentLength",
+          "slot": 6,
+          "parameter": null
+        },
+        "sourceFingerprint": "75AB892B1685032D840B1E5FECB9CD9A87F8E1865492D24796996674372864CA",
+        "citation": "https://learn.microsoft.com/en-us/windows/win32/api/mfobjects/nf-mfobjects-imfmediabuffer-setcurrentlength",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": false,
+        "interfaceDependencies": 0
+      },
+      "buffers.borrowed-copy.entry.windows-win32-media-mediafoundation.imfmediabuffer.045fa593879942b8bc8d8968c6453507.unlock.slot-4.v1": {
+        "familyId": "buffers.borrowed-copy.v1",
+        "contractKind": "borrowed-storage",
+        "selector": {
+          "namespace": "Windows.Win32.Media.MediaFoundation",
+          "interface": "IMFMediaBuffer",
+          "iid": "045fa593-8799-42b8-bc8d-8968c6453507",
+          "method": "Unlock",
+          "slot": 4,
+          "parameter": null
+        },
+        "sourceFingerprint": "83FB2903C23EBD4BB98C182C6575135225ABD0C3EA78183CDADFB3B027B8107B",
+        "citation": "https://learn.microsoft.com/en-us/windows/win32/api/mfobjects/nf-mfobjects-imfmediabuffer-unlock",
         "registered": true,
         "metadataMatched": true,
         "safeConsumed": false,
@@ -10861,7 +11349,7 @@
         "interfaceDependencies": 1
       }
     },
-    "countSemantics": "registeredExactEntries counts declared selector-specific entries; metadataMatchedExactEntries counts entries matched against pinned metadata; safeConsumedExactEntries counts distinct entries used by safe plans; exactEntryInterfaceDependencies counts every safe entry/interface pair; exactFamilyInterfaceDependencies counts each family once per safe interface. None is a net-contribution or ablation count."
+    "countSemantics": "registeredExactEntries counts declared selector-specific entries; metadataMatchedExactEntries counts entries matched against pinned metadata; safeConsumedExactEntries counts distinct entries used by complete-interface safe plans; exactEntryInterfaceDependencies counts every complete-safe entry/interface pair; exactFamilyInterfaceDependencies counts each family once per complete-safe interface. Copy-only facade dependencies are registered and metadata-matched but are excluded from complete-interface consumption counts. None is a net-contribution or ablation count."
   },
   "targets": {
     "arm64": {

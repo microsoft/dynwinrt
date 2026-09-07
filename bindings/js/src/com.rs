@@ -755,6 +755,7 @@ fn typed_buffer_info(
       "DynCom.buffer(): expected Buffer or TypedArray",
     ));
   }
+
   let mut typed_array_type = 0;
   let mut length = 0usize;
   let mut data = std::ptr::null_mut();
@@ -801,6 +802,33 @@ fn typed_buffer_info(
     raw_bytes: is_buffer,
     typed_array_type,
   })
+}
+
+pub(super) fn stage_copy_bytes(value: Unknown) -> napi::Result<Vec<u8>> {
+  let info = typed_buffer_info(value.value().env, value.value().value)?;
+  if info.typed_array_type != napi::sys::TypedarrayType::uint8_array as i32 {
+    return Err(napi::Error::from_reason(
+      "Owned-copy input must be Buffer or Uint8Array",
+    ));
+  }
+  if info.byte_length > 64 * 1024 * 1024 {
+    return Err(napi::Error::from_reason(
+      "Owned-copy input exceeds the 64 MiB safety cap",
+    ));
+  }
+  let mut bytes = Vec::new();
+  bytes
+    .try_reserve_exact(info.byte_length)
+    .map_err(|_| napi::Error::from_reason("Unable to stage owned copy"))?;
+  if info.byte_length != 0 {
+    if info.pointer == 0 {
+      return Err(napi::Error::from_reason("Owned-copy input storage is null"));
+    }
+    bytes.extend_from_slice(unsafe {
+      std::slice::from_raw_parts(info.pointer as *const u8, info.byte_length)
+    });
+  }
+  Ok(bytes)
 }
 
 fn com_buffer(value: Unknown) -> napi::Result<DynWinRTValue> {
@@ -1214,7 +1242,9 @@ fn adopt_com_pointer(
   value: &mut DynWinRTValue,
   iid: Option<&WinGUID>,
 ) -> napi::Result<DynWinRTValue> {
+  value.ensure_existing_com_apartment()?;
   let ptr = take_native_output_pointer(value, PointerProvenance::ComOutput, "COM interface")?;
+  let binding = value.6.take();
   if ptr.is_null() {
     return Err(napi::Error::from_reason(
       "Owned COM interface output was null",
@@ -1228,11 +1258,17 @@ fn adopt_com_pointer(
       .map_err(|error| napi::Error::from_reason(error.message()))
       .and_then(|mut value| {
         value.bind_current_com_apartment()?;
+        if binding.is_some() {
+          value.6 = binding;
+        }
         Ok(value)
       }),
     None => {
       let mut value = DynWinRTValue::new(adopted);
       value.bind_current_com_apartment()?;
+      if binding.is_some() {
+        value.6 = binding;
+      }
       Ok(value)
     }
   }
@@ -2020,6 +2056,12 @@ impl DynComMethodSig {
   }
 
   #[napi]
+  pub fn with_context_effect(&self, descriptor: String) -> napi::Result<Self> {
+    let effect = super::com_borrowed::parse_effect(&descriptor)?;
+    Ok(Self(self.0.clone().with_context_effect(effect)))
+  }
+
+  #[napi]
   pub fn add_in(&self, typ: &DynComType) -> Self {
     Self(self.0.clone().add_in(typ.0.clone()))
   }
@@ -2342,9 +2384,57 @@ impl DynComDispatchInvokeResult {
 
 #[napi]
 impl DynComMethodHandle {
+  fn invoke_managed(
+    &self,
+    obj: &DynWinRTValue,
+    args: Vec<&DynWinRTValue>,
+  ) -> napi::Result<Vec<DynWinRTValue>> {
+    if !self.0.has_context_effect() {
+      obj.ensure_tracked_com_idle()?;
+      let raw = obj
+        .0
+        .as_object()
+        .ok_or_else(|| napi::Error::from_reason("COM invocation requires a live object"))?
+        .as_raw();
+      return with_com_invocation_args(&args, |args| {
+        unsafe { self.0.invoke_values_with_output_kinds(raw, args) }.map_err(com_error)
+      })
+      .map(|values| {
+        values
+          .into_iter()
+          .map(|(value, kind)| DynWinRTValue::from_com_value(value, kind))
+          .collect()
+      });
+    }
+    let context = obj.com_context()?;
+    let view = obj
+      .0
+      .as_object()
+      .ok_or_else(|| napi::Error::from_reason("COM invocation requires a live object"))?
+      .clone();
+    let result = with_com_invocation_args(&args, |args| {
+      unsafe { dynwinrt::com::borrowed::invoke_managed(&self.0, &context, &view, args) }
+        .map_err(com_error)
+    })?;
+    Ok(
+      result
+        .values
+        .into_iter()
+        .map(|(value, kind)| {
+          let mut value = DynWinRTValue::from_com_value(value, kind);
+          if let Some(context) = result.output_context.as_ref() {
+            value.retain_com_context(context.clone())?;
+          }
+          Ok(value)
+        })
+        .collect::<napi::Result<Vec<_>>>()?,
+    )
+  }
+
   #[napi]
   pub fn get_string(&self, obj: &DynWinRTValue) -> napi::Result<String> {
     obj.ensure_com_apartment()?;
+    obj.ensure_tracked_com_idle()?;
     let raw = obj
       .0
       .as_object()
@@ -2367,20 +2457,12 @@ impl DynComMethodHandle {
         "invoke() cannot discard multiple COM results; use invokeAll()",
       ));
     }
-    let raw = obj
-      .0
-      .as_object()
-      .ok_or_else(|| napi::Error::from_reason("invoke() requires a COM object"))?
-      .as_raw();
-    let mut results = with_com_invocation_args(&args, |args| {
-      unsafe { self.0.invoke_values_with_output_kinds(raw, args) }
-        .map_err(|error| napi::Error::from_reason(error.message()))
-    })?;
-    let (value, kind) = results.drain(..).next().unwrap_or((
-      dynwinrt::com::Value::WinRt(dynwinrt::WinRTValue::I32(0)),
-      dynwinrt::com::PointerOutputKind::None,
-    ));
-    Ok(DynWinRTValue::from_com_value(value, kind))
+    let mut results = self.invoke_managed(obj, args)?;
+    Ok(
+      results
+        .pop()
+        .unwrap_or_else(|| DynWinRTValue::new(dynwinrt::WinRTValue::I32(0))),
+    )
   }
 
   #[napi]
@@ -2389,22 +2471,7 @@ impl DynComMethodHandle {
     obj: &DynWinRTValue,
     args: Vec<&DynWinRTValue>,
   ) -> napi::Result<Vec<DynWinRTValue>> {
-    obj.ensure_com_apartment()?;
-    let raw = obj
-      .0
-      .as_object()
-      .ok_or_else(|| napi::Error::from_reason("invokeAll() requires a COM object"))?
-      .as_raw();
-    with_com_invocation_args(&args, |args| {
-      unsafe { self.0.invoke_values_with_output_kinds(raw, args) }
-        .map_err(|error| napi::Error::from_reason(error.message()))
-    })
-    .map(|results| {
-      results
-        .into_iter()
-        .map(|(value, kind)| DynWinRTValue::from_com_value(value, kind))
-        .collect()
-    })
+    self.invoke_managed(obj, args)
   }
 
   #[napi]
@@ -2414,6 +2481,7 @@ impl DynComMethodHandle {
     args: Vec<&DynWinRTValue>,
   ) -> napi::Result<DynComDispatchInvokeResult> {
     obj.ensure_com_apartment()?;
+    obj.ensure_tracked_com_idle()?;
     let raw = obj
       .0
       .as_object()
@@ -2471,6 +2539,7 @@ impl DynComRaw {
   ) -> napi::Result<Vec<DynWinRTValue>> {
     dispatch.entered.set(false);
     obj.ensure_com_apartment()?;
+    obj.ensure_tracked_com_idle()?;
     let raw = obj
       .0
       .as_object()

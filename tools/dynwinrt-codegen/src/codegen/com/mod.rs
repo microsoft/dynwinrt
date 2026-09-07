@@ -154,6 +154,7 @@ pub fn generate_com_interface_files(
         if !generated.insert((namespace.clone(), name.clone())) {
             continue;
         }
+
         let referenced = crate::com_metadata::parse_com_interface(winmd_paths, &namespace, &name)
             .ok_or_else(|| {
             format!("owning array element interface {namespace}.{name} could not be resolved")
@@ -177,6 +178,20 @@ pub fn generate_com_interface_files(
         }
     }
     output.extra_files = extras.into_iter().collect();
+    Ok(output)
+}
+
+/// Bounded copy facades must never be counted as complete native interfaces.
+pub fn generate_complete_com_interface_files(
+    meta: &ComInterfaceMeta,
+    winmd_paths: &str,
+) -> Result<ComGeneratedOutput, String> {
+    let output = generate_com_interface_files(meta, winmd_paths)?;
+    if crate::com_metadata::borrowed::is_copy_only(meta) {
+        return Err(
+            "Bounded owned-copy projection only; full native interface remains unsupported".into(),
+        );
+    }
     Ok(output)
 }
 

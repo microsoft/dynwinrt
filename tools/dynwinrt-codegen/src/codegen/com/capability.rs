@@ -14,8 +14,6 @@ use crate::com_metadata::{
     RawParamDirection, RawSafeArrayOwnership, RawStringEncoding,
 };
 
-use super::generate_com_interface_files;
-
 pub const OFFICIAL_METADATA_VERSION: &str = "71.0.14-preview";
 pub const OFFICIAL_METADATA_SHA256: &str =
     "B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D";
@@ -643,7 +641,7 @@ fn build_report(
         registered_entry_records.extend(crate::com_metadata::collect_exact_registry_entries(
             interface,
         ));
-        let safe_result = generate_com_interface_files(interface, winmd);
+        let safe_result = super::generate_complete_com_interface_files(interface, winmd);
         let safe_complete = safe_result.is_ok();
         let safe_error = safe_result
             .err()
@@ -2852,7 +2850,7 @@ fn summarize(
         by_metadata_attribute,
         by_standard_rule_id,
         exact_entry_status,
-        count_semantics: "registeredExactEntries counts declared selector-specific entries; metadataMatchedExactEntries counts entries matched against pinned metadata; safeConsumedExactEntries counts distinct entries used by safe plans; exactEntryInterfaceDependencies counts every safe entry/interface pair; exactFamilyInterfaceDependencies counts each family once per safe interface. None is a net-contribution or ablation count.".into(),
+        count_semantics: "registeredExactEntries counts declared selector-specific entries; metadataMatchedExactEntries counts entries matched against pinned metadata; safeConsumedExactEntries counts distinct entries used by complete-interface safe plans; exactEntryInterfaceDependencies counts every complete-safe entry/interface pair; exactFamilyInterfaceDependencies counts each family once per complete-safe interface. Copy-only facade dependencies are registered and metadata-matched but are excluded from complete-interface consumption counts. None is a net-contribution or ablation count.".into(),
     };
 
     CapabilitySummary {
@@ -2862,7 +2860,7 @@ fn summarize(
         definitions: BTreeMap::from([
             (
                 "safe_complete".into(),
-                "Existing complete safe generator succeeds for the full inherited interface.".into(),
+                "Complete safe generation succeeds for the full inherited interface; bounded copy-only facades are excluded.".into(),
             ),
             (
                 "standard_derived".into(),
@@ -4562,8 +4560,8 @@ mod tests {
         assert_eq!(report.summary.safe_complete, 5_697);
         assert_eq!(report.summary.safe_incomplete, 2_232);
         assert_eq!(report.summary.safe_evidence.safe_complete, 5_697);
-        assert_eq!(report.summary.safe_evidence.standard_derived, 5_333);
-        assert_eq!(report.summary.safe_evidence.exact_registry_dependent, 364);
+        assert_eq!(report.summary.safe_evidence.standard_derived, 5_332);
+        assert_eq!(report.summary.safe_evidence.exact_registry_dependent, 365);
         assert_eq!(
             report.summary.safe_evidence.standard_derived
                 + report.summary.safe_evidence.exact_registry_dependent,
@@ -4577,36 +4575,38 @@ mod tests {
             report.summary.safe_evidence.com_standard_fact_occurrences,
             26_134
         );
-        assert_eq!(report.summary.safe_evidence.registered_exact_entries, 506);
+        assert_eq!(report.summary.safe_evidence.registered_exact_entries, 532);
         assert_eq!(
             report.summary.safe_evidence.metadata_matched_exact_entries,
-            506
+            532
         );
         assert_eq!(
             report.summary.safe_evidence.safe_consumed_exact_entries,
-            415
+            431
         );
         assert_eq!(
             report
                 .summary
                 .safe_evidence
                 .exact_entry_interface_dependencies,
-            671
+            693
         );
         assert_eq!(
             report
                 .summary
                 .safe_evidence
                 .exact_family_interface_dependencies,
-            417
+            424
         );
         assert_eq!(
             report.summary.safe_evidence.by_contract_kind,
             BTreeMap::from([
                 ("borrowed-handle".into(), 54),
+                ("borrowed-storage".into(), 15),
                 ("bounded-two-call".into(), 16),
                 ("compound-dispatch".into(), 1),
                 ("conditional-output".into(), 10),
+                ("contextual-effect".into(), 7),
                 ("counted-buffer".into(), 16),
                 ("enumerator-next".into(), 74),
                 ("flag-selected-buffer".into(), 3),
@@ -4641,7 +4641,7 @@ mod tests {
             report.summary.safe_evidence.by_family_id["automation.idispatch-invoke.v1"],
             1
         );
-        assert_eq!(report.summary.safe_evidence.by_entry_id.len(), 415);
+        assert_eq!(report.summary.safe_evidence.by_entry_id.len(), 431);
         assert!(
             report
                 .summary
@@ -4686,7 +4686,7 @@ mod tests {
                 .values()
                 .filter(|entry| entry.safe_consumed)
                 .count(),
-            415
+            431
         );
         let status = &report.summary.safe_evidence.exact_entry_status;
         assert_eq!(

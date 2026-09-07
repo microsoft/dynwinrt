@@ -29,6 +29,9 @@ use crate::{
 
 #[path = "com_automation.rs"]
 pub(crate) mod automation;
+#[path = "com_borrowed.rs"]
+#[doc(hidden)]
+pub mod borrowed;
 #[path = "com_completion.rs"]
 #[doc(hidden)]
 pub mod completion;
@@ -5855,6 +5858,7 @@ pub struct MethodSignature {
     return_plan: ComReturnPlan,
     enumerator_next_vtable_index: Option<usize>,
     canonical_format_etc: Option<CanonicalFormatEtcContract>,
+    context_effect: Option<borrowed::ContextEffect>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -5871,6 +5875,7 @@ impl MethodSignature {
             return_plan: ComReturnPlan::HResult,
             enumerator_next_vtable_index: None,
             canonical_format_etc: None,
+            context_effect: None,
         }
     }
 
@@ -6127,6 +6132,15 @@ impl MethodSignature {
         method_name: &str,
         vtable_index: usize,
     ) -> result::Result<()> {
+        if let Some(effect) = self.context_effect {
+            borrowed::validate_effect_signature(
+                self,
+                effect,
+                interface_iid,
+                method_name,
+                vtable_index,
+            )?;
+        }
         const IID_IDISPATCH: GUID = GUID::from_u128(0x00020400_0000_0000_c000_000000000046);
         if matches!(self.return_plan, ComReturnPlan::EnumeratorNextHResult) {
             let exact_contract = interface_iid != GUID::zeroed()
@@ -6208,6 +6222,13 @@ impl MethodSignature {
     }
 
     fn build(self, vtable_index: usize) -> result::Result<RegisteredMethod> {
+        let context_hresult_plan = if self.context_effect.is_some() {
+            let mut captured = self.clone();
+            captured.context_effect = None;
+            Some(captured.preserve_hresult().build(vtable_index)?.plan)
+        } else {
+            None
+        };
         for parameter in &self.parameters {
             parameter.typ.validate_outbound_aggregate_policy()?;
         }
@@ -6305,6 +6326,8 @@ impl MethodSignature {
         Ok(RegisteredMethod {
             plan: ComCallPlan::new(native, self.parameters, self.return_plan),
             callback_plan,
+            context_effect: self.context_effect,
+            context_hresult_plan,
         })
     }
 }
@@ -6787,6 +6810,8 @@ fn require_direction(
 struct RegisteredMethod {
     plan: ComCallPlan,
     callback_plan: CallbackMethodPlan,
+    context_effect: Option<borrowed::ContextEffect>,
+    context_hresult_plan: Option<ComCallPlan>,
 }
 
 type RegisteredMethods = BTreeMap<usize, (String, Arc<RegisteredMethod>)>;
@@ -6893,6 +6918,11 @@ impl Interface {
         let mut backends = Vec::with_capacity(methods.len());
         let mut plans = Vec::with_capacity(methods.len());
         for (index, (&slot, (name, method))) in methods.iter().enumerate() {
+            if method.context_effect.is_some() {
+                return Err(invalid_argument(
+                    "Context-effect methods cannot be implemented by a language callback",
+                ));
+            }
             if slot != self.base_slot + index {
                 return Err(invalid_argument(format!(
                     "COM sink method '{name}' uses non-contiguous vtable slot {slot}",
@@ -6942,6 +6972,10 @@ impl std::fmt::Debug for MethodHandle {
 }
 
 impl MethodHandle {
+    pub fn has_context_effect(&self) -> bool {
+        self.0.context_effect.is_some()
+    }
+
     pub fn result_count(&self) -> usize {
         self.0.plan.results.len()
     }

@@ -176,7 +176,7 @@ enum Commands {
 }
 
 const COM_MANIFEST_FILE: &str = ".dynwinrt-com-manifest.json";
-const COM_MANIFEST_VERSION: u32 = 3;
+const COM_MANIFEST_VERSION: u32 = 4;
 
 #[derive(Debug, Default, Deserialize, Serialize)]
 struct ComGenerationManifest {
@@ -274,7 +274,7 @@ fn run_com_census(winmd: &str, json: bool) -> Result<(), String> {
         .collect::<Vec<_>>();
     let complete = eligible
         .iter()
-        .filter(|interface| com::generate_com_interface_files(interface, winmd).is_ok())
+        .filter(|interface| com::generate_complete_com_interface_files(interface, winmd).is_ok())
         .count();
     let result = ComCensusResult {
         metadata: winmd.to_string(),
@@ -8999,20 +8999,44 @@ mod tests {
     }
 
     #[test]
+    fn com_context_manifest_mismatch_requires_clean_regeneration() {
+        let output = test_directory("com-context-manifest").join("com");
+        fs::create_dir_all(&output).unwrap();
+        for version in [1, 2, 3] {
+            let content = serde_json::to_string(&ComGenerationManifest {
+                version,
+                roots: BTreeMap::new(),
+            })
+            .unwrap();
+            fs::write(output.join(COM_MANIFEST_FILE), &content).unwrap();
+            let error =
+                prepare_com_generation_manifest(&output, &BTreeMap::new(), &BTreeMap::new())
+                    .unwrap_err();
+            assert!(error.contains("delete and regenerate"), "{error}");
+            assert!(has_com_output(&output).is_err());
+            assert_eq!(
+                fs::read_to_string(output.join(COM_MANIFEST_FILE)).unwrap(),
+                content
+            );
+        }
+        fs::remove_dir_all(output.parent().unwrap()).unwrap();
+    }
+
+    #[test]
     fn unsafe_support_schema_mismatch_requires_clean_regeneration() {
         let output = test_directory("unsafe-schema-mismatch").join("com");
         let unsafe_dir = output.join("unsafe");
         fs::create_dir_all(&unsafe_dir).unwrap();
         fs::write(
             unsafe_dir.join("support.json"),
-            "{\"schemaVersion\":10,\"interfaces\":[]}\n",
+            "{\"schemaVersion\":11,\"interfaces\":[]}\n",
         )
         .unwrap();
 
         let error = prepare_generated_unsafe_package(&output, &[]).unwrap_err();
         assert!(
-            error.contains("Unsupported generated unsafe support schema 10")
-                && error.contains("expected 11"),
+            error.contains("Unsupported generated unsafe support schema 11")
+                && error.contains("expected 12"),
             "{error}"
         );
 

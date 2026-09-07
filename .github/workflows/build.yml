@@ -73,6 +73,8 @@ jobs:
           "DYNWINRT_REQUIRE_WIN32_METADATA=1" >> $env:GITHUB_ENV
       - name: Test core library
         run: cargo test -p dynwinrt
+      - name: Test borrowed-copy ABI on live i686
+        run: cargo test -p dynwinrt --target i686-pc-windows-msvc --lib borrowed_copy
       - name: Test dynwinrt-codegen
         run: cargo test -p dynwinrt-codegen
       - name: Test raw union MSVC C oracle (x64)
@@ -118,6 +120,12 @@ jobs:
           ) {
             throw "Classic COM compact interface support index changed"
           }
+          foreach ($name in @('IAudioRenderClient', 'IAudioCaptureClient', 'IMFMediaBuffer')) {
+            $copyOnly = @($support | Where-Object { $_.name -eq $name })
+            if ($copyOnly.Count -ne 1 -or $copyOnly[0].safe_complete -ne 'false') {
+              throw "Bounded copy facade $name was incorrectly counted as complete"
+            }
+          }
           $expected = @{
             x64 = @(412, 1431, 389)
             i686 = @(411, 1408, 413)
@@ -135,15 +143,15 @@ jobs:
           }
           if (
             $result.safeEvidence.safeComplete -ne 5697 -or
-            $result.safeEvidence.standardDerived -ne 5333 -or
-            $result.safeEvidence.exactRegistryDependent -ne 364 -or
+            $result.safeEvidence.standardDerived -ne 5332 -or
+            $result.safeEvidence.exactRegistryDependent -ne 365 -or
             $result.safeEvidence.metadataFactOccurrences -ne 5983 -or
             $result.safeEvidence.comStandardFactOccurrences -ne 26134 -or
-            $result.safeEvidence.registeredExactEntries -ne 506 -or
-            $result.safeEvidence.metadataMatchedExactEntries -ne 506 -or
-            $result.safeEvidence.safeConsumedExactEntries -ne 415 -or
-            $result.safeEvidence.exactEntryInterfaceDependencies -ne 671 -or
-            $result.safeEvidence.exactFamilyInterfaceDependencies -ne 417
+            $result.safeEvidence.registeredExactEntries -ne 532 -or
+            $result.safeEvidence.metadataMatchedExactEntries -ne 532 -or
+            $result.safeEvidence.safeConsumedExactEntries -ne 431 -or
+            $result.safeEvidence.exactEntryInterfaceDependencies -ne 693 -or
+            $result.safeEvidence.exactFamilyInterfaceDependencies -ne 424
           ) {
             throw "Classic COM safe evidence dependency census changed"
           }
@@ -154,7 +162,9 @@ jobs:
             @($statuses | Where-Object { $_.familyId -eq 'com.ownership.v1' -and $_.safeConsumed }).Count -ne 118 -or
             @($statuses | Where-Object { $_.familyId -eq 'windows.borrowed-hwnd-output.v1' }).Count -ne 22 -or
             @($statuses | Where-Object { $_.familyId -eq 'com.enumerator-next-exception.v1' }).Count -ne 73 -or
-            @($statuses | Where-Object { $_.familyId -eq 'audio.conditional-output.v1' }).Count -ne 1
+            @($statuses | Where-Object { $_.familyId -eq 'audio.conditional-output.v1' }).Count -ne 1 -or
+            @($statuses | Where-Object { $_.familyId -eq 'audio.context-effect.v1' }).Count -ne 3 -or
+            @($statuses | Where-Object { $_.familyId -eq 'buffers.borrowed-copy.v1' }).Count -ne 23
           ) {
             throw "Classic COM exact registry entry validation changed"
           }
@@ -290,6 +300,9 @@ jobs:
       - name: Test metadata-driven native COM one-shot completion
         working-directory: bindings/js
         run: npm run test:native-completion
+      - name: Test metadata-driven COM borrowed copies
+        working-directory: bindings/js
+        run: npm run test:borrowed-copy
 
   # dynwinrt-codegen (x64 + arm64)
   dynwinrt-codegen:

@@ -445,10 +445,10 @@ Generation emits `generated/com/unsafe/support.json`:
 
 ```json
 {
-  "schemaVersion": 11,
+  "schemaVersion": 12,
   "interfaces": [
     {
-      "schemaVersion": 11,
+      "schemaVersion": 12,
       "metadata": {
         "setSha256": "...",
         "files": ["..."],

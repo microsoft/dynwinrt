@@ -241,6 +241,175 @@ reads the default speaker endpoint's channel count through the real export.
 Caller/UI-thread requirements remain those of
 [ActivateAudioInterfaceAsync](https://learn.microsoft.com/en-us/windows/win32/api/mmdeviceapi/nf-mmdeviceapi-activateaudiointerfaceasync).
 
+## Bounded borrowed-buffer copies
+
+Audio, WIC, and linear Media Foundation storage share a COM-local
+`BorrowedCopyPlan`. These are **synchronous owned-copy transactions**, not
+native-backed Node `Buffer`/`ArrayBuffer` views or caller-asserted pointer leases.
+They preserve the metadata → semantic contract → completed MethodHandle/libffi
+call → projection boundary. The runtime contains no per-interface SDK calling
+adapter; typed SDK acquisition is confined to stock-Windows tests.
+
+| Generated receiver | Owned-copy operations | Extent and finalization |
+| --- | --- | --- |
+| `IAudioRenderClient` | `writeFramesCopy(data)`, `writeSilence(frames)` | Frames use the format from observed successful initialization and must fit native `GetBufferSize`. Release the complete request, or zero frames on abort. |
+| `IAudioCaptureClient` | `readPacketCopy()` | Native packet frames × proven initialized block alignment, bounded by native capacity. Return an owned data packet, a tagged silent packet, or `null` for empty. Release the full packet after copying, zero on abort. |
+| `IWICBitmap` | `readLockedBgra8Copy(rect)` | Acquire a READ lock, obtain native size/stride/pixel format/byte count, copy row pixels without padding, release the owned lock reference. |
+| `IMFMediaBuffer` | `readCopy()`, `replaceCopy(data)` | Request both native current and maximum lengths. Copy current bytes, or replace within maximum and call `SetCurrentLength`; always Unlock after successful Lock. |
+
+Render/capture and MF are explicitly **copy-only facades**, not complete native
+interface projections. They do not expose `GetBuffer`, `ReleaseBuffer`, `Lock`,
+or `Unlock` independently. WIC retains its previously complete native interface
+surface (including acquisition of an opaque owned lock) and adds the copy
+operation. An external lock never gains byte access or writable rights from
+this operation. The complete safe census remains **5,697 / 7,929**; it does not
+count the three copy-only facades as newly complete interfaces.
+
+### Private context and lifecycle
+
+The plan describes receiver IID, acquire method, private output-cell storage,
+native extent source, access, owner, normal/abort finalizers, and apartment
+prerequisites. All signatures and cleanup recipes are prepared before native
+acquisition. Output cells are private stable storage, not language values: the
+executor cannot read them before the transaction classifies the HRESULT.
+
+```text
+Idle -> Acquiring -> Active -> Finalizing -> Idle
+                  \ unexpected success / cleanup failure -> Poisoned
+```
+
+The canonical-IUnknown sidecar is private to COM carriers. Owner-thread
+registry entries are weak; each live sidecar strongly retains its canonical
+identity, preventing stale address-key reuse. A second process-local weak map
+contains only pointer-free owner-thread tokens and rejects independent
+cross-thread claims for the same canonical identity. No native reference or
+Rc state crosses that map, and no registry lock spans native dispatch.
+Managed COM carriers also share an initially empty context slot from creation,
+pinned by their owned references. Thus aliases created before the first copy
+still retain its later provenance or poison after the first copier is released,
+without adding a canonical-reference pin to unrelated ordinary COM calls.
+A service retains its originating
+client context and exact client interface view, without a reverse sidecar
+reference or cycle. QI, `projectAs`, and independently rewrapped aliases recover
+the same context while any managed holder retains it. Conflicting mappings
+fail closed.
+
+The receiver and required owner gates enter `Acquiring` **before** native
+dispatch. No registry/state lock is held across a native call. A successful
+acquire arms cleanup before pointer/range validation or allocation. Direct JS
+callback entry is rejected while the synchronous transaction is in progress;
+no JS callback receives a borrow. Finalization is taken exactly once before it
+runs. Failure poisons the shared context, suppresses all output bytes, and
+never triggers a speculative Drop retry. Writes are **not** promised atomic
+rollback, particularly if `SetCurrentLength` fails after copying.
+
+Operations reject off the owning thread before touching native references.
+Wrong-thread COM carrier destruction retains the existing leak-rather-than-
+wrong-apartment-release policy, including the private sidecar.
+
+### Audio initialization is the extent proof
+
+Only actual successful calls carrying the exact metadata effect can record
+provenance:
+
+* `IAudioClient::Initialize`, slot 3, format argument 4, share-mode argument 0,
+  stream-flags argument 1;
+* `IAudioClient3::InitializeSharedAudioStream`, slot 20, format argument 2,
+  stream-flags argument 0, implicit shared mode;
+* `IAudioClient::GetService`, slot 14, binds the returned render/capture
+  service to that client only after actual native success and verified service QI.
+
+These effects are inherited by the generated `IAudioClient2`/`IAudioClient3`
+views. Failed or `AUDCLNT_E_ALREADY_INITIALIZED` calls neither create nor
+overwrite the immutable record. There is no attach-format, assume-initialized,
+or record-success API. An externally initialized client without observed
+provenance cannot use the copy operations. `GetMixFormat` and a caller's
+`blockAlign` are not proof: `AUTOCONVERTPCM` can make the initialized format
+different from the engine mix format even in shared mode.
+
+Copy capability is granted only for validated PCM 8/16/24/32-bit containers,
+IEEE float 32/64-bit containers, and supported 22-byte
+WAVEFORMATEXTENSIBLE equivalents. Channels, valid/container bits, optional
+channel mask, block alignment, sample rate and average byte rate must agree.
+Other valid WAVEFORMATEX values retain initialization support but do not grant
+byte-copy capability. Checked arithmetic and a 64 MiB operation cap restrict,
+but never establish, a native extent.
+
+For render, IID `f294acfc-3146-4483-a7bf-addca7c260e2`, the plan uses GetBuffer
+slot 3 and ReleaseBuffer slot 4. Input is staged into owned Rust bytes before
+acquisition; frames are derived from that byte count. Zero requests do not
+acquire/release a buffer. Silence uses `AUDCLNT_BUFFERFLAGS_SILENT` without
+touching the payload pointer. **Exclusive event-driven render is excluded**
+because a zero-frame abort is not valid for that mode.
+
+For capture, IID `c8adbd64-e71e-48a0-a4de-185c395cd317`, GetBuffer slot 3 has five
+output cells, and ReleaseBuffer is slot 4. The exact semantic-HRESULT override
+recognizes only S_OK as acquisition and `AUDCLNT_S_BUFFER_EMPTY` as no
+acquisition. Empty returns without reading any output cell or releasing a
+packet. Unknown success poisons rather than guessing. SILENT ignores the data
+pointer, including NULL; TIMESTAMP_ERROR makes timestamps unavailable.
+The plan never calls shared-only GetNextPacketSize, so it also handles
+exclusive capture. Automated capture coverage is **fake-only**, never hardware
+recording.
+
+### WIC and MF limits
+
+`IWICBitmap` IID `00000121-a8f2-4877-ba0a-fd2b6645fb94` uses absolute slot 8
+Lock with an explicit validated rectangle and fixed READ flags=1.
+Its owned `IWICBitmapLock` IID `00000123-a8f2-4877-ba0a-fd2b6645fb94` supplies
+GetSize/Stride/DataPointer/PixelFormat at slots 3/4/5/6.
+The current apartment must be STA because GetDataPointer is unavailable in
+MTA. Only BGRA8 GUID `6fddc324-4e03-4bfe-b185-3d77768dc90f` is accepted.
+The last-row span `(height - 1) * stride + width * 4` must fit the native byte
+count; final-row padding is not required or read. The returned Buffer contains
+packed rows. There is no invented Unlock: cleanup releases the acquired lock.
+
+`IMFMediaBuffer` IID `045fa593-8799-42b8-bc8d-8968c6453507` uses Lock/Unlock at
+slots 3/4 and SetCurrentLength at slot 6. Both Lock length outputs are requested,
+`current <= max` is checked, and the returned pointer is never freed with
+CoTaskMemFree. Lock is not native cross-thread synchronization: the gate
+coordinates this library's aliases, not arbitrary external users.
+General signed-pitch/plane `IMF2DBuffer`/`IMF2DBuffer2` views remain unsupported.
+Caller-provided height or stride is never treated as native memory bounds.
+
+### Evidence and regeneration
+
+[`com_borrowed_metadata.rs`](../../tools/dynwinrt-codegen/src/com_borrowed_metadata.rs)
+contains all 26 exact selectors, full source fingerprints and Microsoft
+citations. The configured metadata must include Win32Metadata
+**71.0.14-preview**, SHA256
+`B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D`.
+The complete inherited interfaces and required owner/lock dependencies are
+validated, not just acquisition methods. Runtime descriptors are versioned and
+closed; absent/drifted signatures, storage roles, prerequisites or finalizers
+fail before acquisition. Renderers only serialize the projected IR.
+
+COM file-ownership manifest **4** and unsafe support schema **12** require deletion and full regeneration
+of older output. Do not mix pre-effect audio wrappers with new copy facades.
+Coverage includes native fake tear-offs with complete SDK-correct vtables,
+truthful QI, alias/context lifetime, failed initialization and differing mix
+formats, no-JS reentrancy, exact-once poisoned cleanup, all packet states,
+WIC final-row/stride cases, MF failure paths, and live stock-Windows WIC/MF.
+Both x64 and live i686 execute the same runtime tests.
+
+Retained PR3 validation:
+
+| Check | Result |
+| --- | --- |
+| Core + codegen suites | All pass, including WinRT snapshots and 306 core / 421 codegen / 66 CLI unit tests; the existing WinAppSDK-dependent initialization test remains ignored. |
+| Borrowed-copy native ABI | 20 tests pass on x64 and 20 on live i686; i686 N-API binding compile passes. |
+| Node functional regressions | 89 pass, including eight copy scenarios, ten one-shot scenarios, existing generated ownership contracts, package/type checks and callback regressions. |
+| Stock-Windows E2E | 38 WinRT and 17 Classic COM scenarios pass. WIC and linear MF copy transactions also pass against real OS objects in the native suite. |
+| Census determinism | Two independent runs produce seven byte-identical artifacts; the complete count remains 5,697. |
+
+The separate WinUI scheduled-start test has a timing-sensitive 1,000 ms
+`nextTick` assertion. AVA runs intermittently exceeded it on this host.
+An exact build of parent commit `247383c` reproduced the same failure
+(1,729.8 ms); the current build also passed in isolation. Three paired direct
+runs of the unchanged harness passed for both parent and current runtimes
+(roughly 132–150 ms). No timing threshold, WinUI implementation, or
+preceding-PR invariant was relaxed.
+
 ## Size of Windows.Win32.winmd
 
 The counts below are exact for
@@ -637,8 +806,9 @@ Separate WinRT and COM invocations may target the same output directory in
 either order. The generated package manifest is rebuilt from both domains
 without adding COM exports to the WinRT root.
 
-PR1 raises the generated COM file-ownership manifest
-`com/.dynwinrt-com-manifest.json` from version 2 to **version 3**. Every
+PR1 raised the generated COM file-ownership manifest
+`com/.dynwinrt-com-manifest.json` from version 2 to version 3. Borrowed-copy
+context effects now require **version 4**. Every
 generated safe class now registers a descriptor through private
 `@microsoft/dynwinrt/com/unsafe` helpers. Public `projectAs` remains on the
 runtime `@microsoft/dynwinrt/com` entrypoint, and generated
