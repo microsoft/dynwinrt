@@ -58,6 +58,9 @@ const moduleKeys = (value: object) =>
 
 test('Classic COM is isolated from the WinRT root entrypoint', (t) => {
   t.false(Object.prototype.hasOwnProperty.call(winrtRuntime, 'DynCom'))
+  t.false(Object.prototype.hasOwnProperty.call(winrtRuntime, 'DynComAsync'))
+  t.false(Object.prototype.hasOwnProperty.call(comRuntime, 'DynComAsync'))
+  t.false(Object.prototype.hasOwnProperty.call(comRuntime, '__activateAudioInterfaceAsync'))
   t.false(Object.prototype.hasOwnProperty.call(comRuntime, 'DynCom'))
   t.false(Object.prototype.hasOwnProperty.call(comRuntime, 'DynComUnsafe'))
   t.false(Object.prototype.hasOwnProperty.call(comRuntime, 'DynComMethodSig'))
@@ -194,11 +197,11 @@ test('package facades exactly partition native exports', (t) => {
   )
   t.deepEqual(
     moduleKeys(unsafeComRuntime),
-    [...nativeKeys.filter((name) => unsafeComNames.has(name)), 'projectAs', '__registerComProjection', '__comProjectionIid'].sort(),
+    [...nativeKeys.filter((name) => unsafeComNames.has(name)), 'projectAs', '__registerComProjection', '__comProjectionIid', '__activateAudioInterfaceAsync'].sort(),
   )
   t.deepEqual(
     moduleKeys(rawComRuntime),
-    [...nativeKeys.filter((name) => rawComNames.has(name)), 'projectAs', '__registerComProjection', '__comProjectionIid'].sort(),
+    [...nativeKeys.filter((name) => rawComNames.has(name)), 'projectAs', '__registerComProjection', '__comProjectionIid', '__activateAudioInterfaceAsync'].sort(),
   )
 
   t.is(winrtCjsRuntime.WinGuid, comCjsRuntime.WinGuid)

@@ -599,8 +599,10 @@ The generated implementation boundary is:
 
 If any method contains an unmodeled Automation/union/ownership/allocator
 contract, codegen omits `implement()` for the entire interface. Cross-apartment
-dispatch, connection-point helpers, COM aggregation, custom marshaling, and
-COM server registration remain unsupported.
+JavaScript dispatch, connection-point helpers, COM aggregation, custom
+marshaling, and COM server registration remain unsupported. The native-only
+one-shot completion in [section 5.6](#56-native-one-shot-audio-activation)
+does not relax these JavaScript callback restrictions.
 
 ### 5.5 Audio endpoint activation
 
@@ -643,8 +645,8 @@ activation parameters. The target must be a registered generated safe class
 for exactly one of `IAudioClient`, `IAudioEndpointVolume`,
 `IAudioMeterInformation`, `IAudioSessionManager`, or `IAudioSessionManager2`.
 Generate and import whichever target the application needs. Other/custom
-targets, async activation, and loopback or other parameterized activation
-remain outside this safe subset.
+targets and loopback or other parameterized activation remain outside this
+synchronous subset. The separate bounded async entry point is described below.
 
 `getId()` returns a natural string and frees the native CoTaskMem allocation.
 The existing safe `IAudioClient`/`IAudioClient2`/`IAudioClient3` format methods,
@@ -652,6 +654,82 @@ including `getMixFormat()`, and the exact nullable device-control `record()`
 contracts remain unchanged. This path uses validated generated contracts and
 shared runtime primitives, not per-interface native adapters; the WinRT root
 entrypoint is unchanged.
+
+### 5.6 Native one-shot audio activation
+
+Generate the DLL-export consumer, which also validates and emits both supported
+result interface classes:
+
+```powershell
+npx dynwinrt-codegen generate `
+  --winmd $winmd `
+  --namespace Windows.Win32.Media.Audio `
+  --class-name ActivateAudioInterfaceAsync `
+  --output .\generated `
+  --dry-run
+# Remove --dry-run to write the bindings.
+```
+
+```js
+import { initializeCom } from "@microsoft/dynwinrt/com";
+import {
+  activateAudioInterfaceAsync,
+  IAudioEndpointVolume,
+} from "./generated/com/index.js";
+
+initializeCom(0); // Choose the caller's apartment before starting activation.
+const volume = await activateAudioInterfaceAsync(
+  renderDeviceInterfacePath, // e.g. an audio-render ID from MediaDevice
+  IAudioEndpointVolume,
+);
+try {
+  console.log(volume.getChannelCount()); // No recording or volume changes.
+} finally {
+  volume.release();
+}
+```
+
+`activateAudioInterfaceAsync(path, GeneratedInterfaceClass): Promise<T>` is
+available only in the generated COM modules, not the WinRT npm root. The
+target must be the registered safe `IAudioClient` or `IAudioEndpointVolume`
+class. A successful result has independent owned lifetime and uses the same
+`projectAs` registry as synchronous COM acquisition.
+
+The start runs immediately on the calling/owner apartment; it is **not**
+moved to an MTA worker to evade Windows consent or UI-thread requirements.
+[Microsoft documents UI-thread consent requirements and explicitly safe
+render-device activations](https://learn.microsoft.com/en-us/windows/win32/api/mmdeviceapi/nf-mmdeviceapi-activateaudiointerfaceasync).
+`initializeCom(0)` alone does not provide an application UI thread or a consent
+window. Applications must select the correct thread and device path.
+
+This first subset always passes native NULL for `activationParams`. Extra
+arguments, custom `PROPVARIANT`/loopback blobs, unregistered or unsupported
+target classes, and embedded NUL in the device path are rejected. There is no
+generic DLL-export, callback scheduling, aggregation, or cancellation API.
+Dropping a Promise is **not** OS cancellation. At most 256 native completions
+may be pending per Node environment; pending work keeps its dispatcher alive
+until completion or environment teardown.
+
+Windows invokes a private native-only completion signal, not a JavaScript
+handler. The original operation and result stay on the owner thread.
+Ordinary generated `implement()`/`implementation()` callbacks still reject
+foreign-thread calls with `RPC_E_WRONG_THREAD`.
+
+Errors distinguish `stage: "start"` (export HRESULT), `"result"` (outer
+`GetActivateResult` HRESULT or a NULL-success contract violation),
+`"activation"` (inner activation HRESULT), and `"projection"` (result QI).
+Native HRESULT failures preserve the signed numeric `hresult` property and
+hexadecimal value in the message. Written owned outputs are released on both
+HRESULT failure paths. Two successful HRESULTs with a NULL interface reject
+instead of resolving an empty wrapper.
+
+Run deterministic fake-export/FTM/apartment/lifecycle coverage with
+`npm run test:native-completion` in `bindings\js`, with
+`DYNWINRT_WIN32_WINMD` set. It does not access an audio device or microphone.
+An optional live smoke is enabled by `DYNWINRT_TEST_AUDIO_RENDER=1`. It requires
+a default speaker endpoint and only activates `IAudioEndpointVolume` and reads
+its channel count; it does not record audio, access a microphone, or modify
+endpoint settings.
 
 ## 6. JavaScript projections of common native types
 

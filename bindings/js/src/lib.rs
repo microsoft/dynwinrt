@@ -29,6 +29,9 @@ pub use com_raw::{
   DynComRawStructLayout, DynComRawUnionLayout,
 };
 mod async_promise;
+mod com_completion;
+#[cfg(feature = "test-hooks")]
+mod com_completion_test_hooks;
 #[cfg(feature = "test-hooks")]
 mod generated_unsafe_test_hooks;
 mod managed_tsfn;

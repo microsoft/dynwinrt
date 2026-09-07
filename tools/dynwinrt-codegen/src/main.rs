@@ -525,7 +525,14 @@ fn run() -> Result<(), String> {
                 let mut requested_winrt_interfaces = Vec::new();
                 let mut com_interfaces: Vec<com_metadata::ComInterfaceMeta> = Vec::new();
                 let mut com_coclasses: Vec<com_metadata::ComCoclassMeta> = Vec::new();
+                let mut native_audio_completion = false;
                 for (ns, cls) in &class_requests {
+                    if ns == com_metadata::completion::AUDIO_NAMESPACE
+                        && cls == com_metadata::completion::AUDIO_EXPORT
+                    {
+                        native_audio_completion = true;
+                        continue;
+                    }
                     if let Some(com_iface) = com_metadata::parse_com_interface(&winmd, ns, cls) {
                         // Route through classic-COM path when:
                         //   1) The interface is IUnknown-rooted (base +3), OR
@@ -585,8 +592,15 @@ fn run() -> Result<(), String> {
                 // JS files into a Python output directory would produce the
                 // wrong artifact types with no diagnostic. Reject the
                 // combination up front.
-                if lang != "js" && (!com_interfaces.is_empty() || !com_coclasses.is_empty()) {
+                if lang != "js"
+                    && (!com_interfaces.is_empty()
+                        || !com_coclasses.is_empty()
+                        || native_audio_completion)
+                {
                     let mut offenders: Vec<String> = Vec::new();
+                    if native_audio_completion {
+                        offenders.push("Windows.Win32.Media.Audio.ActivateAudioInterfaceAsync (native COM completion)".into());
+                    }
                     for ci in &com_interfaces {
                         offenders.push(format!(
                             "{}.{} (classic-COM interface)",
@@ -613,7 +627,10 @@ fn run() -> Result<(), String> {
 
                 // Classic COM occupies its own ESM subpackage so its symbols
                 // cannot collide with or leak into the WinRT root barrel.
-                if !com_interfaces.is_empty() || !com_coclasses.is_empty() {
+                if !com_interfaces.is_empty()
+                    || !com_coclasses.is_empty()
+                    || native_audio_completion
+                {
                     let com_output_dir = output_dir.join("com");
                     let mut unsafe_metadata = None;
 
@@ -627,6 +644,26 @@ fn run() -> Result<(), String> {
                     // delete anything here.
                     let mut generated =
                         Vec::with_capacity(com_interfaces.len() + com_coclasses.len());
+                    if native_audio_completion {
+                        let out = com::generate_audio_completion_files(&winmd)?;
+                        let module = com::canonical_module_path(
+                            com_metadata::completion::AUDIO_NAMESPACE,
+                            com_metadata::completion::AUDIO_EXPORT,
+                        )?;
+                        let mut files = vec![
+                            (format!("{module}.js"), out.js),
+                            (format!("{module}.d.ts"), out.dts),
+                        ];
+                        files.extend(out.extra_files);
+                        generated.push(PlannedComRoot {
+                            root: "Windows.Win32.Media.Audio.ActivateAudioInterfaceAsync".into(),
+                            name: com_metadata::completion::AUDIO_EXPORT.into(),
+                            files,
+                            unsafe_support: None,
+                            summary: None,
+                            no_callable_error: None,
+                        });
+                    }
                     for com_iface in &com_interfaces {
                         let root = format!(
                             "{}.{}",

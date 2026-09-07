@@ -287,6 +287,9 @@ jobs:
       - name: Test actual generated unsafe COM companion
         working-directory: bindings/js
         run: npm run test:generated-unsafe
+      - name: Test metadata-driven native COM one-shot completion
+        working-directory: bindings/js
+        run: npm run test:native-completion
 
   # dynwinrt-codegen (x64 + arm64)
   dynwinrt-codegen:

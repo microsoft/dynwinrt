@@ -7,6 +7,9 @@ description = "Dynamic WinRT API invocation — call any Windows Runtime method 
 repository = "https://github.com/microsoft/dynwinrt"
 authors = ["Microsoft"]
 
+[features]
+test-hooks = []
+
 [dependencies]
 libffi = "5.1.0"
 libffi-sys = "4.1.0"

@@ -11,6 +11,9 @@ pub use crate::contract_registry::ContractKind as RawContractKind;
 pub use crate::contract_registry::ExactFamilyId as RawExactFamilyId;
 use crate::types::TypeMeta;
 
+#[path = "com_completion_metadata.rs"]
+pub mod completion;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RawConstness {
     Const,

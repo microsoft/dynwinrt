@@ -154,6 +154,93 @@ renderer cannot see `TypeMeta` or metadata attributes and has no default
 pointer/Buffer fallback; it only serializes the validated projected IR with
 exhaustive type matches.
 
+## Bounded native one-shot completion
+
+The first supported flat export is the exact
+`Windows.Win32.Media.Audio.Apis.ActivateAudioInterfaceAsync` relationship.
+It is separate from general interface projection and does not increase the
+complete-interface census. No general native-export or COM server API is
+introduced.
+
+The configured `Windows.Win32.winmd` must contain the following complete
+contracts. The retained regression uses Win32Metadata **71.0.14-preview**,
+SHA256 `B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D`.
+
+| Entry | Verified native ABI and contract |
+| --- | --- |
+| `MMDevAPI.dll!ActivateAudioInterfaceAsync` | System ABI, ordinary HRESULT return, exactly five arguments and **no `this`**: const NUL-terminated UTF-16 path; REFIID; optional `PROPVARIANT*` restricted to NULL; borrowed completion-handler interface; required cell receiving an owned operation `+1`. |
+| `IActivateAudioInterfaceCompletionHandler` | IID `41d949ab-9862-444a-80f6-c261334da5eb`, direct IUnknown inheritance, only slot 3 `ActivateCompleted`, ordinary HRESULT, one borrowed operation-interface input. |
+| `IActivateAudioInterfaceAsyncOperation` | IID `72a22d78-cde4-431d-b8cc-843a71199b6d`, direct IUnknown inheritance, only slot 3 `GetActivateResult`, ordinary outer HRESULT, required `HRESULT*` and `IUnknown**` output cells. |
+
+The export parser preserves named types, pointer depth, direction, optional
+and Const attributes, import library, entry point, and calling convention.
+The COM projector validates the whole relationship before emitting a
+versioned, closed runtime descriptor, plus the complete safe `IAudioClient`
+and `IAudioEndpointVolume` projections. Unknown signatures and contract drift
+fail during dry-run/generation and again at runtime descriptor validation.
+No renderer infers ownership from method names.
+
+Metadata does not mark the *contained* `activatedInterface` pointer nullable.
+The exact
+[GetActivateResult contract](https://learn.microsoft.com/en-us/windows/win32/api/mmdeviceapi/nf-mmdeviceapi-iactivateaudiointerfaceasyncoperation-getactivateresult)
+documents NULL on inner activation failure; its receiving cell is still
+required. The native collector interprets start HRESULT, outer result HRESULT,
+inner activation HRESULT, and NULL independently, with RAII cleanup of written
+owned outputs even on failure. Successful result QI and the public `projectAs`
+registry run on the owner thread.
+The owned result is not placed in a JavaScript native-value carrier until
+that carrier has a registered finalizer. A failing N-API class construction
+during worker shutdown therefore still releases the result on its owner.
+
+`com_completion.rs` prepares bounded libffi export/result plans using the
+existing system-ABI CIF helper. The allowlisted DLL is resolved from System32
+and pinned for late native completion after Node teardown. It does not call a
+compiled per-interface SDK adapter, invent a COM receiver, or permit
+production function-address injection. The signal's own code module is also
+pinned before publication, so a callback cannot jump into an unloaded addon
+after the last Node environment using it has closed.
+
+The private signal sink reuses `DynamicComSink`'s HRESULT/interface-input
+static thunk. It has canonical IUnknown identity, the exact callback IID,
+IAgileObject, and a real IMarshal delegated to an aggregated
+[CoCreateFreeThreadedMarshaler](https://learn.microsoft.com/en-us/windows/win32/api/combaseapi/nf-combaseapi-cocreatefreethreadedmarshaler).
+This is an internal implementation detail, not general aggregation support.
+The free-threaded state contains only a pointer-free publication/completion
+rendezvous and a native token notifier, never an operation, result, or JS
+callback. A temporary in-flight reference protects the sink; callback input
+QI/borrowed references are released in that callback's apartment.
+
+Node keeps the original start-returned operation, handler, deferred, and plan
+in an owner-thread-local record that is not Send/Sync. The native signal only
+enqueues a process-unique token through `ManagedTsfn`'s native-dispatch mode.
+Publication gates early callbacks, duplicate callbacks notify once, and no
+operation→handler→operation cycle is formed. Owner dispatch collects results
+only after the signal; it neither casts to WinRT IAsyncInfo nor assumes that
+the operation or audio result is agile. Ordinary JS callback owner-thread
+guards and WinRT async dispatch are unchanged.
+
+One-shot notifier disposal releases the TSFN even if Windows retains the
+handler. There are at most 256 pending records per environment, including
+reservations made before a potentially reentrant start call. Cleanup
+closes every signal before releasing owner COM references; late/stale tokens
+cannot address a new record in a recycled environment. Dropping the JS Promise
+does not cancel native work. No timeout, AbortSignal, loopback parameters, or
+arbitrary cross-apartment JS scheduling is exposed.
+
+Deterministic tests use an ABI-correct five-argument fake export, complete
+operation and audio-result vtables, actual FTM QI, and initialized MTA delivery
+through
+[RoGetAgileReference/Resolve](https://learn.microsoft.com/en-us/windows/win32/api/combaseapi/nf-combaseapi-rogetagilereference).
+Fake non-agile results are created only in owner-thread GetActivateResult.
+Coverage includes early/duplicate completion, all HRESULT/NULL stages,
+exactly-once lifetime, stale/recycled tokens, callback-in-flight teardown,
+addon lifetime after the last environment closes, pending-work bounds, and
+event-loop exit. This deterministic suite does not activate hardware or
+record audio. The separate opt-in `DYNWINRT_TEST_AUDIO_RENDER=1` smoke only
+reads the default speaker endpoint's channel count through the real export.
+Caller/UI-thread requirements remain those of
+[ActivateAudioInterfaceAsync](https://learn.microsoft.com/en-us/windows/win32/api/mmdeviceapi/nf-mmdeviceapi-activateaudiointerfaceasync).
+
 ## Size of Windows.Win32.winmd
 
 The counts below are exact for
@@ -190,8 +277,9 @@ callable entries, the most useful count is:
 
 These numbers describe the metadata, not dynwinrt support:
 
-- The current Classic COM work targets interface methods. It does **not**
-  project the 17,760 flat DLL exports.
+- Classic COM primarily targets interface methods. Apart from the bounded
+  native-completion export above, it does **not** project the 17,760 flat DLL
+  exports.
 - An interface declaration may describe a caller-implemented callback rather
   than an OS object that can be activated and called.
 - The interface count includes graphics, media, WMI, Automation, Shell, and

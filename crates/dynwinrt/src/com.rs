@@ -29,6 +29,9 @@ use crate::{
 
 #[path = "com_automation.rs"]
 pub(crate) mod automation;
+#[path = "com_completion.rs"]
+#[doc(hidden)]
+pub mod completion;
 pub use automation::{
     DispatchParamsValue, ExcepInfoValue, PropVariantData, PropVariantType, PropVariantValue,
     PropVariantVector, PropVariantVectorType, SafeArrayBound, SafeArrayElementType,
@@ -7181,11 +7184,14 @@ struct DynamicComSink {
     iids: Vec<GUID>,
     iid_map: Vec<(GUID, usize)>,
     callback_plans: Vec<Vec<CallbackMethodPlan>>,
+    // Present only on the private, native-only one-shot signal sink.
+    free_threaded_marshaler: Option<IUnknown>,
 }
 
 // The refcount is atomic, the vtable is immutable after publication, and the
 // callback is explicitly Send + Sync. Language bindings may impose a stricter
-// apartment/thread policy before invoking their callback.
+// apartment/thread policy before invoking their callback. The optional inner
+// is the actual free-threaded marshaler, never an apartment-bound COM object.
 unsafe impl Send for DynamicComSink {}
 unsafe impl Sync for DynamicComSink {}
 
@@ -7270,6 +7276,14 @@ impl DynamicComSink {
         interfaces: Vec<CallbackInterfaceDefinition>,
         callback: SinkCallback,
     ) -> result::Result<IUnknown> {
+        Self::create_impl(interfaces, callback, false)
+    }
+
+    fn create_impl(
+        interfaces: Vec<CallbackInterfaceDefinition>,
+        callback: SinkCallback,
+        native_signal: bool,
+    ) -> result::Result<IUnknown> {
         if interfaces.is_empty() {
             return Err(invalid_argument(
                 "COM object requires at least one interface",
@@ -7346,10 +7360,20 @@ impl DynamicComSink {
             iids,
             iid_map,
             callback_plans: all_plans,
+            free_threaded_marshaler: None,
         });
         let owner = (&mut *sink) as *mut Self;
         for view in &mut sink.interfaces {
             view.owner = owner;
+        }
+        if native_signal {
+            let raw = owner.cast();
+            let identity = unsafe { IUnknown::from_raw_borrowed(&raw) }
+                .expect("allocated native signal identity");
+            sink.free_threaded_marshaler = Some(
+                unsafe { windows::Win32::System::Com::CoCreateFreeThreadedMarshaler(identity) }
+                    .map_err(result::Error::WindowsError)?,
+            );
         }
         Ok(unsafe { IUnknown::from_raw(Box::into_raw(sink).cast()) })
     }
@@ -7394,7 +7418,15 @@ impl DynamicComSink {
         result: *mut *mut c_void,
     ) -> HRESULT {
         let sink = unsafe { &*owner };
-        let pointer = if *iid == IUnknown::IID {
+        if let Some(marshaler) = &sink.free_threaded_marshaler
+            && *iid == windows_core::imp::IMarshal::IID
+        {
+            return unsafe { marshaler.query(iid, result) };
+        }
+        let pointer = if *iid == IUnknown::IID
+            || (sink.free_threaded_marshaler.is_some()
+                && *iid == windows_core::imp::IAgileObject::IID)
+        {
             owner.cast()
         } else if let Some((_, index)) = sink.iid_map.iter().find(|(candidate, _)| candidate == iid)
         {
@@ -7462,6 +7494,16 @@ impl DynamicComSink {
         catch_unwind(AssertUnwindSafe(|| {
             let view = unsafe { Self::view_from_ptr(this) };
             let sink = unsafe { &*view.owner };
+            let _in_flight = if sink.free_threaded_marshaler.is_some() {
+                let identity = view.owner.cast();
+                Some(
+                    unsafe { IUnknown::from_raw_borrowed(&identity) }
+                        .expect("native signal identity")
+                        .clone(),
+                )
+            } else {
+                None
+            };
             let callback = sink.callback.clone();
             let values = [unsafe { Self::borrowed_interface(value) }];
             let result = callback(

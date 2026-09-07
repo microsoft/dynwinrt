@@ -3,9 +3,62 @@
 
 //! Validated Classic-COM semantic IR.
 //!
-//! Nothing in this module depends on the shared WinRT metadata model.  A value
+//! Nothing in this module depends on the shared WinRT metadata model. A value
 //! can enter this IR only after its ABI shape, ownership, and projection have
 //! been validated by `project`.
+
+#[derive(Debug, serde::Serialize)]
+pub(super) struct ProjectedNativeCompletion {
+    #[serde(skip)]
+    pub namespace: &'static str,
+    #[serde(skip)]
+    pub function_name: &'static str,
+    pub version: u32,
+    pub kind: &'static str,
+    pub library: String,
+    pub export: String,
+    pub calling_convention: &'static str,
+    pub has_this: bool,
+    pub start_parameters: Vec<NativeCompletionStartParameter>,
+    pub handler: NativeCompletionHandler,
+    pub result: NativeCompletionResult,
+    pub allowed_targets: Vec<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(super) enum NativeCompletionStartParameter {
+    Utf16Path,
+    RefIid,
+    NullPropVariant,
+    NativeSignal,
+    OwnedOperation,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub(super) struct NativeCompletionHandler {
+    pub iid: String,
+    pub root: &'static str,
+    pub slot: usize,
+    pub input: &'static str,
+    pub return_type: &'static str,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub(super) struct NativeCompletionResult {
+    pub iid: String,
+    pub root: &'static str,
+    pub slot: usize,
+    pub outputs: Vec<NativeCompletionResultParameter>,
+    pub return_type: &'static str,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(super) enum NativeCompletionResultParameter {
+    Hresult,
+    NullableOwnedInterface,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ComPrimitive {

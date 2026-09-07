@@ -47,4 +47,17 @@ function projectAs(value, type) {
   }
 }
 
-module.exports = { projectAs, registerProjection, projectionIid }
+async function activateAudioInterfaceAsync(descriptor, deviceInterfacePath, type) {
+  const iid = projectionIid(type)
+  if (typeof deviceInterfacePath !== 'string' || deviceInterfacePath.includes('\0')) {
+    throw new TypeError('A device interface path must be a string without embedded NUL')
+  }
+  const owned = await native.DynComAsync.activateAudioInterface(descriptor, deviceInterfacePath, iid)
+  try {
+    return projectAs(owned, type)
+  } finally {
+    owned.release()
+  }
+}
+
+module.exports = { projectAs, registerProjection, projectionIid, activateAudioInterfaceAsync }

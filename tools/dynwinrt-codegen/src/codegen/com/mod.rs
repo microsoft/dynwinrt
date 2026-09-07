@@ -4,6 +4,7 @@
 //! Classic-COM metadata projection and JavaScript generation.
 
 pub mod capability;
+mod completion;
 mod generated_unsafe;
 mod ir;
 mod javascript;
@@ -13,6 +14,7 @@ mod typedef_inventory;
 
 use crate::com_metadata::{ComCoclassMeta, ComInterfaceMeta};
 
+pub use completion::{generate_audio_completion_files, validate_audio_completion};
 pub use generated_unsafe::{
     Stage2Coverage, UNSAFE_SUPPORT_SCHEMA_VERSION, UnsafeGeneratedOutput, UnsafeInterfaceSupport,
     generate_unsafe_interface_files, generate_unsafe_interface_files_with_metadata,
