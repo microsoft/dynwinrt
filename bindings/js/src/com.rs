@@ -40,6 +40,8 @@ enum AutomationValueKind {
   DispatchParams(dynwinrt::com::DispatchParamsValue),
   ExcepInfo(dynwinrt::com::ExcepInfoValue),
   StatStg(dynwinrt::com::StatStgValue),
+  FormatEtc(dynwinrt::com::FormatEtcValue),
+  StgMedium(dynwinrt::com::StgMediumValue),
 }
 
 pub(super) struct AutomationValue {
@@ -58,6 +60,8 @@ impl AutomationValue {
       dynwinrt::com::Value::DispatchParams(value) => AutomationValueKind::DispatchParams(value),
       dynwinrt::com::Value::ExcepInfo(value) => AutomationValueKind::ExcepInfo(value),
       dynwinrt::com::Value::StatStg(value) => AutomationValueKind::StatStg(value),
+      dynwinrt::com::Value::FormatEtc(value) => AutomationValueKind::FormatEtc(value),
+      dynwinrt::com::Value::StgMedium(value) => AutomationValueKind::StgMedium(value),
       _ => unreachable!("AutomationValue requires an automation COM value"),
     };
     Self {
@@ -95,6 +99,8 @@ impl AutomationValue {
       }
       AutomationValueKind::ExcepInfo(value) => dynwinrt::com::Value::ExcepInfo(value.clone()),
       AutomationValueKind::StatStg(value) => dynwinrt::com::Value::StatStg(value.clone()),
+      AutomationValueKind::FormatEtc(value) => dynwinrt::com::Value::FormatEtc(value.clone()),
+      AutomationValueKind::StgMedium(value) => dynwinrt::com::Value::StgMedium(value.clone()),
     })
   }
 
@@ -149,6 +155,28 @@ impl AutomationValue {
       value => {
         self.value = value;
         Err(napi::Error::from_reason("Value is not COM STATSTG"))
+      }
+    }
+  }
+
+  pub(super) fn take_format_etc(&mut self) -> napi::Result<dynwinrt::com::FormatEtcValue> {
+    self.ensure_owner_thread()?;
+    match self.value.take() {
+      Some(AutomationValueKind::FormatEtc(value)) => Ok(value),
+      value => {
+        self.value = value;
+        Err(napi::Error::from_reason("Value is not COM FORMATETC"))
+      }
+    }
+  }
+
+  pub(super) fn take_stg_medium(&mut self) -> napi::Result<dynwinrt::com::StgMediumValue> {
+    self.ensure_owner_thread()?;
+    match self.value.take() {
+      Some(AutomationValueKind::StgMedium(value)) => Ok(value),
+      value => {
+        self.value = value;
+        Err(napi::Error::from_reason("Value is not COM STGMEDIUM"))
       }
     }
   }
@@ -1998,6 +2026,20 @@ impl DynComMethodSig {
   }
 
   #[napi]
+  pub fn canonical_format_etc_result(
+    &self,
+    input_param_index: f64,
+    output_param_index: f64,
+  ) -> napi::Result<Self> {
+    let input = checked_unsigned_number(input_param_index, u32::MAX.into(), "inputParamIndex")?;
+    let output = checked_unsigned_number(output_param_index, u32::MAX.into(), "outputParamIndex")?;
+    Ok(Self(self.0.clone().canonical_format_etc_result(
+      input as usize,
+      output as usize,
+    )))
+  }
+
+  #[napi]
   pub fn add_in_out(&self, typ: &DynComType) -> Self {
     Self(self.0.clone().add_in_out(typ.0.clone()))
   }
@@ -3065,6 +3107,76 @@ impl DynComExcepInfo {
 pub struct DynComStatStg {
   owner_thread: std::thread::ThreadId,
   value: Option<dynwinrt::com::StatStgValue>,
+}
+
+#[napi]
+pub struct DynComFormatEtc {
+  value: dynwinrt::com::FormatEtcValue,
+}
+
+#[napi]
+impl DynComFormatEtc {
+  #[napi(factory)]
+  pub fn hglobal(
+    clipboard_format: u32,
+    aspect: Option<u32>,
+    index: Option<i32>,
+  ) -> napi::Result<Self> {
+    let clipboard_format = u16::try_from(clipboard_format)
+      .map_err(|_| napi::Error::from_reason("clipboardFormat must fit in u16"))?;
+    dynwinrt::com::FormatEtcValue::hglobal(
+      clipboard_format,
+      aspect.unwrap_or(1),
+      index.unwrap_or(-1),
+    )
+    .map(|value| Self { value })
+    .map_err(|error| napi::Error::from_reason(error.message()))
+  }
+
+  #[napi(getter)]
+  pub fn clipboard_format(&self) -> u32 {
+    u32::from(self.value.clipboard_format())
+  }
+
+  #[napi(getter)]
+  pub fn aspect(&self) -> u32 {
+    self.value.aspect()
+  }
+
+  #[napi(getter)]
+  pub fn index(&self) -> i32 {
+    self.value.index()
+  }
+
+  #[napi(getter)]
+  pub fn tymed(&self) -> u32 {
+    self.value.tymed()
+  }
+}
+
+#[napi]
+pub struct DynComStgMedium {
+  value: dynwinrt::com::StgMediumValue,
+}
+
+#[napi]
+impl DynComStgMedium {
+  #[napi(factory)]
+  pub fn hglobal(bytes: Buffer) -> napi::Result<Self> {
+    dynwinrt::com::StgMediumValue::hglobal(bytes.to_vec())
+      .map(|value| Self { value })
+      .map_err(|error| napi::Error::from_reason(error.message()))
+  }
+
+  #[napi(getter)]
+  pub fn tymed(&self) -> u32 {
+    windows::Win32::System::Com::TYMED_HGLOBAL.0 as u32
+  }
+
+  #[napi]
+  pub fn to_buffer(&self) -> Buffer {
+    Buffer::from(self.value.bytes().to_vec())
+  }
 }
 
 #[napi]
@@ -4801,6 +4913,16 @@ impl DynCom {
   }
 
   #[napi]
+  pub fn format_etc_type() -> DynComType {
+    DynComType(dynwinrt::com::Type::format_etc())
+  }
+
+  #[napi]
+  pub fn stg_medium_type() -> DynComType {
+    DynComType(dynwinrt::com::Type::stg_medium())
+  }
+
+  #[napi]
   pub fn interface_type(iid: &WinGUID) -> DynComType {
     DynComType(dynwinrt::com::Type::winrt(TABLE.interface(iid.0)))
   }
@@ -5633,6 +5755,22 @@ impl DynCom {
   }
 
   #[napi]
+  pub fn format_etc(value: &DynComFormatEtc) -> DynWinRTValue {
+    DynWinRTValue::from_com_value(
+      dynwinrt::com::Value::FormatEtc(value.value.clone()),
+      dynwinrt::com::PointerOutputKind::None,
+    )
+  }
+
+  #[napi]
+  pub fn stg_medium(value: &DynComStgMedium) -> DynWinRTValue {
+    DynWinRTValue::from_com_value(
+      dynwinrt::com::Value::StgMedium(value.value.clone()),
+      dynwinrt::com::PointerOutputKind::None,
+    )
+  }
+
+  #[napi]
   pub fn take_variant(value: &mut DynWinRTValue) -> napi::Result<DynComVariant> {
     let result = value
       .5
@@ -5695,6 +5833,28 @@ impl DynCom {
       .take_stat_stg()?;
     value.5 = None;
     Ok(DynComStatStg::new(result))
+  }
+
+  #[napi]
+  pub fn take_format_etc(value: &mut DynWinRTValue) -> napi::Result<DynComFormatEtc> {
+    let result = value
+      .5
+      .as_mut()
+      .ok_or_else(|| napi::Error::from_reason("Value is not COM FORMATETC"))?
+      .take_format_etc()?;
+    value.5 = None;
+    Ok(DynComFormatEtc { value: result })
+  }
+
+  #[napi]
+  pub fn take_stg_medium(value: &mut DynWinRTValue) -> napi::Result<DynComStgMedium> {
+    let result = value
+      .5
+      .as_mut()
+      .ok_or_else(|| napi::Error::from_reason("Value is not COM STGMEDIUM"))?
+      .take_stg_medium()?;
+    value.5 = None;
+    Ok(DynComStgMedium { value: result })
   }
 
   #[napi]
