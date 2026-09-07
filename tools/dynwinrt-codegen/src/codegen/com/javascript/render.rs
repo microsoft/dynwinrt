@@ -410,6 +410,7 @@ fn render_js(meta: &ProjectedComInterface) -> String {
             | ProjectedComMethodKind::FixedCapacityBytes { .. }
             | ProjectedComMethodKind::OwningCallerOutput { .. }
             | ProjectedComMethodKind::BorrowedStgMediumInput { .. }
+            | ProjectedComMethodKind::PreservedStgMediumInOut { .. }
             | ProjectedComMethodKind::CanonicalFormatEtc { .. } => {
                 emit_method_js(&mut out, method, &iface_var)
             }
@@ -2514,6 +2515,7 @@ fn render_dts(meta: &ProjectedComInterface) -> String {
             | ProjectedComMethodKind::FixedCapacityBytes { .. }
             | ProjectedComMethodKind::OwningCallerOutput { .. }
             | ProjectedComMethodKind::BorrowedStgMediumInput { .. }
+            | ProjectedComMethodKind::PreservedStgMediumInOut { .. }
             | ProjectedComMethodKind::CanonicalFormatEtc { .. } => {
                 (dts_params(method), dts_return_type(method))
             }

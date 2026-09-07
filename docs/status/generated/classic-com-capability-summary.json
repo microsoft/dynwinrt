@@ -80,18 +80,18 @@
   "parsed_interface_identities": 7944,
   "eligible_interfaces": 7929,
   "not_addressable": 15,
-  "safe_complete": 5697,
-  "safe_incomplete": 2232,
+  "safe_complete": 5696,
+  "safe_incomplete": 2233,
   "safeEvidence": {
-    "safeComplete": 5697,
-    "standardDerived": 5336,
+    "safeComplete": 5696,
+    "standardDerived": 5335,
     "exactRegistryDependent": 361,
     "metadataFactOccurrences": 5982,
-    "comStandardFactOccurrences": 26134,
-    "registeredExactEntries": 501,
-    "metadataMatchedExactEntries": 501,
-    "safeConsumedExactEntries": 410,
-    "exactEntryInterfaceDependencies": 666,
+    "comStandardFactOccurrences": 26129,
+    "registeredExactEntries": 502,
+    "metadataMatchedExactEntries": 502,
+    "safeConsumedExactEntries": 411,
+    "exactEntryInterfaceDependencies": 667,
     "exactFamilyInterfaceDependencies": 414,
     "byContractKind": {
       "borrowed-handle": 54,
@@ -102,7 +102,7 @@
       "enumerator-next": 74,
       "flag-selected-buffer": 3,
       "null-input": 2,
-      "ownership": 179,
+      "ownership": 180,
       "parameter-direction": 45,
       "safearray": 263,
       "semantic-hresult": 3
@@ -448,6 +448,7 @@
       "com.ownership.entry.windows-win32-storage-xps.ixpsomvisualbrush.97e294af5b3746b48057874d2f64119b.getvisuallookup.slot-21.param-0-lookup.v1": 1,
       "com.ownership.entry.windows-win32-system-com-structuredstorage.istorage.0000000b00000000c000000000000046.stat.slot-17.v1": 1,
       "com.ownership.entry.windows-win32-system-com.icatinformation.0002e01300000000c000000000000046.getcategorydesc.slot-4.param-2-pszdesc.v1": 1,
+      "com.ownership.entry.windows-win32-system-com.idataobject.0000010e00000000c000000000000046.getdatahere.slot-4.v1": 1,
       "com.ownership.entry.windows-win32-system-com.idataobject.0000010e00000000c000000000000046.setdata.slot-7.v1": 1,
       "com.ownership.entry.windows-win32-system-com.imalloc.0000000200000000c000000000000046.alloc.slot-3.v1": 1,
       "com.ownership.entry.windows-win32-system-com.imalloc.0000000200000000c000000000000046.didalloc.slot-7.v1": 1,
@@ -547,11 +548,11 @@
       "com.automation.bstr-replacement.v1": 99,
       "com.enumerator-next.generic.v1": 25,
       "com.handle.borrowed-no-cleanup.v1": 45,
-      "com.hresult.failure.v1": 5579,
-      "com.interface.input-borrow.v1": 1891,
-      "com.interface.typed-output-plus-one.v1": 3458,
-      "com.iunknown.identity-refcount.v1": 5697,
-      "com.query-interface.output-plus-one.v1": 5697,
+      "com.hresult.failure.v1": 5578,
+      "com.interface.input-borrow.v1": 1890,
+      "com.interface.typed-output-plus-one.v1": 3457,
+      "com.iunknown.identity-refcount.v1": 5696,
+      "com.query-interface.output-plus-one.v1": 5696,
       "com.standard-cleanup.matching-allocator.v1": 1436
     },
     "exactEntryStatus": {
@@ -8970,6 +8971,24 @@
         "safeConsumed": true,
         "interfaceDependencies": 1
       },
+      "com.ownership.entry.windows-win32-system-com.idataobject.0000010e00000000c000000000000046.getdatahere.slot-4.v1": {
+        "familyId": "com.ownership.v1",
+        "contractKind": "ownership",
+        "selector": {
+          "namespace": "Windows.Win32.System.Com",
+          "interface": "IDataObject",
+          "iid": "0000010e-0000-0000-c000-000000000046",
+          "method": "GetDataHere",
+          "slot": 4,
+          "parameter": null
+        },
+        "sourceFingerprint": "65165D814B216835E273E9342B4CBEC2A4F6F1A68477F3F07036C2479BDADBFF",
+        "citation": "https://learn.microsoft.com/windows/win32/api/objidl/nf-objidl-idataobject-getdatahere",
+        "registered": true,
+        "metadataMatched": true,
+        "safeConsumed": true,
+        "interfaceDependencies": 1
+      },
       "com.ownership.entry.windows-win32-system-com.idataobject.0000010e00000000c000000000000046.setdata.slot-7.v1": {
         "familyId": "com.ownership.v1",
         "contractKind": "ownership",
@@ -10766,37 +10785,37 @@
   },
   "targets": {
     "arm64": {
-      "raw_metadata_complete": 6109,
+      "raw_metadata_complete": 6108,
       "raw_manual_contract": 1432,
-      "raw_runtime_blocked": 388,
+      "raw_runtime_blocked": 389,
       "safe_incomplete_raw_metadata_complete": 412,
       "safe_incomplete_raw_manual_contract": 1432,
-      "safe_incomplete_raw_runtime_blocked": 388
+      "safe_incomplete_raw_runtime_blocked": 389
     },
     "i686": {
-      "raw_metadata_complete": 6108,
+      "raw_metadata_complete": 6107,
       "raw_manual_contract": 1409,
-      "raw_runtime_blocked": 412,
+      "raw_runtime_blocked": 413,
       "safe_incomplete_raw_metadata_complete": 411,
       "safe_incomplete_raw_manual_contract": 1409,
-      "safe_incomplete_raw_runtime_blocked": 412
+      "safe_incomplete_raw_runtime_blocked": 413
     },
     "x64": {
-      "raw_metadata_complete": 6109,
+      "raw_metadata_complete": 6108,
       "raw_manual_contract": 1432,
-      "raw_runtime_blocked": 388,
+      "raw_runtime_blocked": 389,
       "safe_incomplete_raw_metadata_complete": 412,
       "safe_incomplete_raw_manual_contract": 1432,
-      "safe_incomplete_raw_runtime_blocked": 388
+      "safe_incomplete_raw_runtime_blocked": 389
     }
   },
   "blocker_reason_counts": {
     "arm64": {
-      "incomplete_pointee_layout_for_storage": 337,
+      "incomplete_pointee_layout_for_storage": 338,
       "missing_declaring_iid": 46,
       "missing_interface_iid": 73,
       "missing_layout": 5,
-      "pointee_missing_layout": 240,
+      "pointee_missing_layout": 241,
       "pointee_unknown_native_type": 4,
       "pointee_unsupported_bitfield": 16,
       "pointee_unsupported_flexible_array": 45,
@@ -10805,11 +10824,11 @@
       "unsupported_layout_kind": 4
     },
     "i686": {
-      "incomplete_pointee_layout_for_storage": 361,
+      "incomplete_pointee_layout_for_storage": 362,
       "missing_declaring_iid": 46,
       "missing_interface_iid": 73,
       "missing_layout": 5,
-      "pointee_missing_layout": 240,
+      "pointee_missing_layout": 241,
       "pointee_unknown_native_type": 4,
       "pointee_unsupported_bitfield": 16,
       "pointee_unsupported_flexible_array": 45,
@@ -10818,11 +10837,11 @@
       "unsupported_layout_kind": 4
     },
     "x64": {
-      "incomplete_pointee_layout_for_storage": 337,
+      "incomplete_pointee_layout_for_storage": 338,
       "missing_declaring_iid": 46,
       "missing_interface_iid": 73,
       "missing_layout": 5,
-      "pointee_missing_layout": 240,
+      "pointee_missing_layout": 241,
       "pointee_unknown_native_type": 4,
       "pointee_unsupported_bitfield": 16,
       "pointee_unsupported_flexible_array": 45,

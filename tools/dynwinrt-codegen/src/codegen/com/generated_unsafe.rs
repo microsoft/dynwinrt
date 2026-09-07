@@ -2327,7 +2327,7 @@ mod tests {
         );
         assert_eq!(coverage.executable_manual_methods, 6_048);
         assert_eq!(coverage.remaining_manual_methods, 0);
-        assert_eq!(coverage.runtime_blocked_methods, 1_160);
+        assert_eq!(coverage.runtime_blocked_methods, 1_161);
     }
 
     #[test]

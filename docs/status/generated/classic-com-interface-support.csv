@@ -274,7 +274,7 @@ Windows.Win32.Devices.ImageAcquisition,IEnumWiaItem,5e8383fc-3391-11d2-9a33-00c0
 Windows.Win32.Devices.ImageAcquisition,IEnumWiaItem2,59970af4-cd0d-44d9-ab24-52295630e582,true,exact_registry_dependent,
 Windows.Win32.Devices.ImageAcquisition,IWiaAppErrorHandler,6c16186c-d0a6-400c-80f4-d26986a0e734,true,exact_registry_dependent,
 Windows.Win32.Devices.ImageAcquisition,IWiaDataCallback,a558a866-a5b0-11d2-a08f-00c04f72dc3c,true,standard_derived,
-Windows.Win32.Devices.ImageAcquisition,IWiaDataTransfer,a6cef998-a5b0-11d2-a08f-00c04f72dc3c,true,standard_derived,
+Windows.Win32.Devices.ImageAcquisition,IWiaDataTransfer,a6cef998-a5b0-11d2-a08f-00c04f72dc3c,false,,incomplete_pointee_layout_for_storage
 Windows.Win32.Devices.ImageAcquisition,IWiaDevMgr,5eb2502a-8cf1-11d1-bf92-0060081ed811,false,,safe_projection_incomplete
 Windows.Win32.Devices.ImageAcquisition,IWiaDevMgr2,79c07cf1-cbdd-41ee-8ec3-f00080cada7a,false,,safe_projection_incomplete
 Windows.Win32.Devices.ImageAcquisition,IWiaDrvItem,1f02b5c5-b00c-11d2-a094-00c04f72dc3c,false,,missing_allocator

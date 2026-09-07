@@ -382,6 +382,7 @@ pub enum RawExactMethodContractKind {
     Malloc,
     FlagSelectedString,
     BorrowedStgMediumInput,
+    PreservedStgMediumInOut,
     CanonicalFormatEtc,
     AudioFormatOwnedOutput,
     AudioFormatSupport,
@@ -418,7 +419,8 @@ impl RawExactMethodContract {
             RawExactMethodContractKind::StatStg
             | RawExactMethodContractKind::Malloc
             | RawExactMethodContractKind::BorrowedStgMediumInput
-            | RawExactMethodContractKind::AudioFormatOwnedOutput => {
+            | RawExactMethodContractKind::AudioFormatOwnedOutput
+            | RawExactMethodContractKind::PreservedStgMediumInOut => {
                 crate::contract_registry::ExactFamilyId::Ownership
             }
             RawExactMethodContractKind::AudioFormatSupport => {
@@ -455,7 +457,8 @@ impl RawExactMethodContract {
             RawExactMethodContractKind::StatStg
             | RawExactMethodContractKind::Malloc
             | RawExactMethodContractKind::BorrowedStgMediumInput
-            | RawExactMethodContractKind::AudioFormatOwnedOutput => {
+            | RawExactMethodContractKind::AudioFormatOwnedOutput
+            | RawExactMethodContractKind::PreservedStgMediumInOut => {
                 crate::contract_registry::ContractKind::Ownership
             }
             RawExactMethodContractKind::AudioFormatSupport => {
@@ -2200,6 +2203,7 @@ fn apply_exact_method_contract(
         RawExactMethodContractKind::AudioFormatOwnedOutput => {}
         RawExactMethodContractKind::AudioFormatSupport => {}
         RawExactMethodContractKind::BorrowedStgMediumInput
+        | RawExactMethodContractKind::PreservedStgMediumInOut
         | RawExactMethodContractKind::CanonicalFormatEtc => {}
         RawExactMethodContractKind::FlagSelectedString => {
             let buffer = contract.buffer_param_index;
@@ -2345,6 +2349,14 @@ fn registered_exact_method_contract(
             None,
             "IMalloc::HeapMinimize has no parameters and no return value",
             "https://learn.microsoft.com/windows/win32/api/objidl/nf-objidl-imalloc-heapminimize",
+        ),
+        ("Windows.Win32.System.Com", "IDataObject", "GetDataHere") => (
+            RawExactMethodContractKind::PreservedStgMediumInOut,
+            1,
+            0,
+            None,
+            "IDataObject::GetDataHere fills caller-allocated storage without resizing or replacing the HGLOBAL and must leave pUnkForRelease null; the caller retains cleanup responsibility",
+            "https://learn.microsoft.com/windows/win32/api/objidl/nf-objidl-idataobject-getdatahere",
         ),
         ("Windows.Win32.System.Com", "IDataObject", "SetData") => (
             RawExactMethodContractKind::BorrowedStgMediumInput,
@@ -2528,7 +2540,8 @@ fn registered_exact_method_contract(
                 "IOleCache" => "0000011e-0000-0000-c000-000000000046",
                 _ => unreachable!("matched exact borrowed STGMEDIUM input"),
             },
-            RawExactMethodContractKind::CanonicalFormatEtc => {
+            RawExactMethodContractKind::PreservedStgMediumInOut
+            | RawExactMethodContractKind::CanonicalFormatEtc => {
                 "0000010e-0000-0000-c000-000000000046"
             }
         },
@@ -2553,6 +2566,7 @@ fn registered_exact_method_contract(
             },
             RawExactMethodContractKind::AudioFormatSupport => "IsFormatSupported",
             RawExactMethodContractKind::BorrowedStgMediumInput => "SetData",
+            RawExactMethodContractKind::PreservedStgMediumInOut => "GetDataHere",
             RawExactMethodContractKind::CanonicalFormatEtc => "GetCanonicalFormatEtc",
         },
         vtable_index: match (interface, method) {
@@ -2576,6 +2590,7 @@ fn registered_exact_method_contract(
             ("IAudioClient", "GetMixFormat") => 8,
             ("IAudioClient3", "GetCurrentSharedModeEnginePeriod") => 19,
             ("IDataObject" | "IOleCache", "SetData") => 7,
+            ("IDataObject", "GetDataHere") => 4,
             ("IDataObject", "GetCanonicalFormatEtc") => 6,
             _ => unreachable!("matched exact method identity"),
         },
@@ -2593,6 +2608,9 @@ fn registered_exact_method_contract(
             == RawExactMethodContractKind::BorrowedStgMediumInput)
             .then_some(2),
         source_fingerprint: match (interface, method) {
+            ("IDataObject", "GetDataHere") => {
+                Some("65165D814B216835E273E9342B4CBEC2A4F6F1A68477F3F07036C2479BDADBFF")
+            }
             ("IDataObject", "SetData") => {
                 Some("7AF093CB4139DC99AFD713365806F4914690BBCE84928887BAECD35E97B823B1")
             }
@@ -2740,6 +2758,7 @@ pub(crate) fn validate_storage_medium_contract_presence(raw: &RawComMethod) -> R
         matches!(
             contract.kind,
             RawExactMethodContractKind::BorrowedStgMediumInput
+                | RawExactMethodContractKind::PreservedStgMediumInOut
                 | RawExactMethodContractKind::CanonicalFormatEtc
         )
     });
@@ -2983,6 +3002,10 @@ pub(crate) fn validate_exact_method_contract(
             raw_method_shape(raw)
                 == "IsFormatSupported@7(ShareMode:in:required:noconstattr:Windows.Win32.Media.Audio.AUDCLNT_SHAREMODE[Enum]/ptr0/Unspecified/underlying=i32/ptr0/Unspecified,pFormat:in:required:constattr:Windows.Win32.Media.Audio.WAVEFORMATEX[Struct]/ptr1/Mutable,ppClosestMatch:out:optional:noconstattr:Windows.Win32.Media.Audio.WAVEFORMATEX[Struct]/ptr2/Mutable)->Windows.Win32.Foundation.HRESULT[Struct]/ptr0/Unspecified/underlying=i32/ptr0/Unspecified:semantic_hresult:not_enumerator_next"
         }
+        RawExactMethodContractKind::PreservedStgMediumInOut => {
+            raw_method_shape(raw)
+                == "GetDataHere@4(pformatetc:in:required:noconstattr:Windows.Win32.System.Com.FORMATETC[Struct]/ptr1/Mutable,pmedium:inout:required:noconstattr:Windows.Win32.System.Com.STGMEDIUM[Struct]/ptr1/Mutable)->Windows.Win32.Foundation.HRESULT[Struct]/ptr0/Unspecified/underlying=i32/ptr0/Unspecified:plain_hresult:not_enumerator_next"
+        }
         RawExactMethodContractKind::CanonicalFormatEtc => {
             raw_method_shape(raw)
                 == "GetCanonicalFormatEtc@6(pformatectIn:in:required:noconstattr:Windows.Win32.System.Com.FORMATETC[Struct]/ptr1/Mutable,pformatetcOut:out:required:noconstattr:Windows.Win32.System.Com.FORMATETC[Struct]/ptr1/Mutable)->Windows.Win32.Foundation.HRESULT[Struct]/ptr0/Unspecified/underlying=i32/ptr0/Unspecified:semantic_hresult:not_enumerator_next"
@@ -3026,7 +3049,8 @@ pub(crate) fn validate_exact_method_contract(
                 && contract.discriminator_param_index == Some(0)
                 && contract.ownership_transfer_param_index.is_none()
         }
-        RawExactMethodContractKind::CanonicalFormatEtc => {
+        RawExactMethodContractKind::PreservedStgMediumInOut
+        | RawExactMethodContractKind::CanonicalFormatEtc => {
             contract.buffer_param_index == 1
                 && contract.ownership_transfer_param_index.is_none()
                 && contract.actual_length_param_index.is_none()
@@ -5276,6 +5300,7 @@ mod tests {
         };
         let mut errors = Vec::new();
         for (namespace, name, method_name) in [
+            ("Windows.Win32.System.Com", "IDataObject", "GetDataHere"),
             ("Windows.Win32.System.Ole", "IOleCache", "SetData"),
             ("Windows.Win32.System.Ole", "IOleCache2", "SetData"),
             (
@@ -5292,7 +5317,13 @@ mod tests {
                 .iter()
                 .find(|method| method.metadata_name == method_name)
                 .unwrap();
-            let contract = method.exact_contract.as_ref().unwrap();
+            let contract = method.exact_contract.as_ref().unwrap_or_else(|| {
+                panic!(
+                    "{name}.{method_name} is missing its exact storage-medium contract: {} ({})",
+                    raw_method_shape(method),
+                    raw_method_fingerprint(method),
+                )
+            });
             if let Err(error) = validate_exact_method_contract(
                 namespace,
                 name,
@@ -5302,7 +5333,7 @@ mod tests {
             ) {
                 errors.push(format!("{error}: {}", raw_method_shape(method)));
             }
-            for mutation in 0..6 {
+            for mutation in 0..9 {
                 let mut drift = method.clone();
                 match mutation {
                     0 => drift.declaring_iid = "00000000-0000-0000-0000-000000000001".into(),
@@ -5311,6 +5342,9 @@ mod tests {
                     3 => drift.params[0].direction = RawParamDirection::InOut,
                     4 => drift.params[0].optional = true,
                     5 => drift.params[0].const_attribute = !drift.params[0].const_attribute,
+                    6 => drift.params[1].typ.pointer_depth += 1,
+                    7 => drift.params[1].optional = !drift.params[1].optional,
+                    8 => drift.params[1].const_attribute = !drift.params[1].const_attribute,
                     _ => unreachable!(),
                 }
                 assert!(

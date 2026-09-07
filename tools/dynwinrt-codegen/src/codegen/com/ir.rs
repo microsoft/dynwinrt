@@ -465,6 +465,9 @@ pub(super) enum ProjectedComMethodKind {
         share_mode_param_index: usize,
         closest_match_param_index: usize,
     },
+    PreservedStgMediumInOut {
+        medium_param_index: usize,
+    },
     CanonicalFormatEtc {
         input_param_index: usize,
         output_param_index: usize,

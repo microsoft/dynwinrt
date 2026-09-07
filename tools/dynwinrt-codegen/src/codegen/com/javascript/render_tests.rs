@@ -248,6 +248,35 @@ fn storage_medium_result_rules_and_borrowing_are_serialized_from_ir() {
     method.kind = ProjectedComMethodKind::Normal;
     assert!(!super::build_method_sig_js(&method).contains("canonicalFormatEtcResult"));
 
+    method.name = "Fill".into();
+    method.camel_name = "fill".into();
+    method.kind = ProjectedComMethodKind::PreservedStgMediumInOut {
+        medium_param_index: 1,
+    };
+    method.params[1] = ProjectedComParam {
+        name: "medium".into(),
+        typ: ComType::StgMedium,
+        direction: ComParamDirection::InOut,
+        surface_input: true,
+        surface_result: true,
+        nullable: false,
+    };
+    method.return_convention = ComReturnConvention::HResult;
+    method.results = vec![ProjectedComResult {
+        typ: ComType::StgMedium,
+        source: ResultSource::Param(1),
+        conversion: ResultConversion::StgMedium,
+    }];
+    assert_eq!(
+        super::build_method_sig_js(&method),
+        "new DynComMethodSig().addIn(DynCom.formatEtcType()).addInOut(DynCom.stgMediumType())"
+    );
+    let mut js = String::new();
+    emit_method_js(&mut js, &method, "_iface");
+    assert!(js.contains("fill(input, medium)"));
+    assert!(js.contains("return DynCom.takeStgMedium(_out);"), "{js}");
+    assert_eq!(dts_return_type(&method), "DynComStgMedium");
+
     method.name = "Store".into();
     method.camel_name = "store".into();
     method.kind = ProjectedComMethodKind::BorrowedStgMediumInput {

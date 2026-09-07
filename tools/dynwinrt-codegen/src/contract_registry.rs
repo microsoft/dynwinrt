@@ -488,6 +488,7 @@ const ADDITIONAL_EXACT_ENTRY_IDS: &[&str] = &[
     "com.ownership.entry.windows-win32-media-audio.iaudioclient.1cb9ad4cdbfa4c32b178c2f568a703b2.getmixformat.slot-8.v1",
     "com.ownership.entry.windows-win32-media-audio.iaudioclient3.7ed4ee078e674cd48c1a2b7a5987ad42.getcurrentsharedmodeengineperiod.slot-19.v1",
     "com.ownership.entry.windows-win32-storage-packaging-opc.iopcsignaturecustomobject.5d77a19e62c144e7becd45da5ae51a56.getxml.slot-3.param-0-xmlmarkup.v1",
+    "com.ownership.entry.windows-win32-system-com.idataobject.0000010e00000000c000000000000046.getdatahere.slot-4.v1",
     "com.ownership.entry.windows-win32-system-com.idataobject.0000010e00000000c000000000000046.setdata.slot-7.v1",
     "com.ownership.entry.windows-win32-system-com.imalloc.0000000200000000c000000000000046.alloc.slot-3.v1",
     "com.ownership.entry.windows-win32-system-com.imalloc.0000000200000000c000000000000046.didalloc.slot-7.v1",
@@ -1148,7 +1149,7 @@ mod tests {
         serde_json::from_str::<serde_json::Value>(SCHEMA_JSON).unwrap();
         let registry = load_registry().unwrap();
         let ids = statically_declared_exact_entry_ids().unwrap();
-        assert_eq!(ids.len(), 501);
+        assert_eq!(ids.len(), 502);
         assert_eq!(registry.conditional_outputs.len(), 7);
         assert_eq!(registry.ownership_outputs.len(), 148);
         assert_eq!(

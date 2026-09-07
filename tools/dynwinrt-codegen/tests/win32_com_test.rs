@@ -2235,6 +2235,84 @@ fn audio_clients_project_variable_wave_formats_and_exact_ownership() {
 }
 
 #[test]
+fn storage_medium_in_out_requires_exact_preservation_evidence() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+    let interface = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.System.Com",
+        "IDataObject",
+    )
+    .unwrap();
+    let index = interface
+        .raw_methods
+        .as_ref()
+        .unwrap()
+        .iter()
+        .position(|method| method.metadata_name == "GetDataHere")
+        .unwrap();
+    let contract = interface.raw_methods.as_ref().unwrap()[index]
+        .exact_contract
+        .as_ref()
+        .unwrap();
+    assert_eq!(
+        contract.kind,
+        com_metadata::RawExactMethodContractKind::PreservedStgMediumInOut
+    );
+    assert_eq!(contract.buffer_param_index, 1);
+    assert_eq!(contract.vtable_index, 4);
+    for mutation in 0..6 {
+        let mut drift = interface.clone();
+        let method = &mut drift.raw_methods.as_mut().unwrap()[index];
+        match mutation {
+            0 => method.exact_contract = None,
+            1 => {
+                method.exact_contract = None;
+                method.metadata_name = "FillMedium".into();
+                method.projected_name = "FillMedium".into();
+            }
+            2 => method.params[1].direction = com_metadata::RawParamDirection::Out,
+            3 => method.params[1].typ.pointer_depth = 2,
+            4 => method.params[1].optional = true,
+            5 => method.exact_contract.as_mut().unwrap().buffer_param_index = 0,
+            _ => unreachable!(),
+        }
+        assert!(
+            com::generate_com_interface_files(&drift, &win32_winmd()).is_err(),
+            "GetDataHere admitted mutation {mutation}"
+        );
+    }
+    let wia = com_metadata::parse_com_interface(
+        &win32_winmd(),
+        "Windows.Win32.Devices.ImageAcquisition",
+        "IWiaDataTransfer",
+    )
+    .unwrap();
+    let method = wia
+        .raw_methods
+        .as_ref()
+        .unwrap()
+        .iter()
+        .find(|method| method.metadata_name == "idtGetData")
+        .unwrap();
+    assert_eq!(
+        method.params[0].direction,
+        com_metadata::RawParamDirection::InOut
+    );
+    assert_eq!(method.params[0].typ.pointer_depth, 1);
+    assert!(method.exact_contract.is_none());
+    let error = com::generate_com_interface_files(&wia, &win32_winmd()).unwrap_err();
+    assert!(
+        error.contains(
+            "STGMEDIUM in/out requires exact contract evidence for caller-allocated preservation"
+        ),
+        "{error}"
+    );
+}
+
+#[test]
 fn ole_cache_inherited_set_data_is_borrowed_and_fails_closed_on_drift() {
     if !win32_available() {
         eprintln!("Skipping: Win32 winmd not available");
