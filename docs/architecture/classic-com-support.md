@@ -614,7 +614,7 @@ and `@microsoft/dynwinrt/com`.
 | SAFEARRAY | Rank 1–8, signed bounds, typed scalar/bool/BSTR/interface/VARIANT elements, SafeArray API validation and cleanup | Unsupported element VARTYPEs, rank > 8, untyped arrays whose VARTYPE cannot be proven, and Automation InOut replacement |
 | PROPVARIANT | Scalar numeric/bool, LPWSTR, CLSID, FILETIME, blob, and supported vectors with PropVariantClear | Nested VARIANT vectors, streams/interfaces, arrays, clipboard/storage types, BYREF, and unknown VARTYPEs |
 | FORMATETC / STGMEDIUM | Dedicated target-device-independent `TYMED_HGLOBAL` values; owned outputs use `ReleaseStgMedium`; exact `IDataObject::GetDataHere` evidence permits caller-allocation-preserving InOut; exact IID/slot/shape/fingerprint evidence pins `SetData.fRelease=FALSE` | `DVTARGETDEVICE`, non-HGLOBAL media, unproven InOut contracts, JavaScript callback implementation, and ownership-transfer input |
-| Audio formats | Variable-length WAVEFORMATEX/WAVEFORMATEXTENSIBLE bytes with validated `cbSize`; PCM factory; exact shared/exclusive `IsFormatSupported` output selection; CoTaskMem-owned format outputs | Format-specific codec payload interpretation and JavaScript callback implementation |
+| Audio formats | Variable-length WAVEFORMATEX/WAVEFORMATEXTENSIBLE bytes with validated `cbSize`; PCM factory; exact shared/exclusive `IsFormatSupported` output selection; CoTaskMem-owned format outputs; exact nullable device-control `Record` inputs | Format-specific codec payload interpretation and JavaScript callback implementation |
 | Allocator ownership | COM Release, BSTR output/replacement and array elements, VARIANT clear, CoTaskMem buffers/PWSTR elements, boxed GUID, retained JS buffers | LocalFree, custom allocators, allocator interfaces, unknown ownership |
 | Interface pointers | Typed input/output interfaces, QueryInterface, dynamic IID output, and generated multi-interface callback objects with inherited IID aliases | Interface in/out replacement, aggregation, and `IInspectable` implementation |
 | Apartments | Explicit initialization, non-agile owner-thread implementations, synchronous same-thread callbacks, and rejection before entering JS on a foreign thread | Cross-apartment marshaling, GIT/agility handling, and callback dispatch |
@@ -660,7 +660,7 @@ and `@microsoft/dynwinrt/com`.
 | SAFEARRAY | Supported subset | `DynComSafeArray` preserves rank/bounds and validates VARTYPE and element width through SafeArray APIs. Supported elements are the scalar integer/float family, VARIANT_BOOL, BSTR, IUnknown, IDispatch, and VARIANT. |
 | PROPVARIANT | Supported subset | `DynComPropVariant` supports the scalar family, LPWSTR, CLSID, FILETIME, BLOB, and vectors of numeric/bool/string/GUID/FILETIME elements. |
 | FORMATETC / STGMEDIUM | Supported HGLOBAL subset | `DynComFormatEtc.hglobal()` represents one exact DVASPECT with `ptd == NULL`; `DynComStgMedium.hglobal()` copies bytes into call-local movable HGLOBAL storage. Outputs are copied before `ReleaseStgMedium`, `GetDataHere` rejects replacement of caller-owned storage, and generated `IDataObject::SetData` and `IOleCache::SetData` (including `IOleCache2`) fix `fRelease` to `FALSE`. |
-| WAVEFORMATEX / WAVEFORMATEXTENSIBLE | Supported | `DynComAudioFormat` validates the packed 18-byte header plus exact `cbSize` extension, provides a PCM factory and field accessors, and preserves unknown codec extension bytes. Exact contracts pass `IsFormatSupported.ppClosestMatch` only in shared mode and free GetMixFormat/current-engine-format outputs with `CoTaskMemFree`. |
+| WAVEFORMATEX / WAVEFORMATEXTENSIBLE | Supported | `DynComAudioFormat` validates the packed 18-byte header plus exact `cbSize` extension, provides a PCM factory and field accessors, and preserves unknown codec extension bytes. Exact contracts pass `IsFormatSupported.ppClosestMatch` only in shared mode and free GetMixFormat/current-engine-format outputs with `CoTaskMemFree`. The two device-control `Record` methods accept an explicit format or `null` for the device default. |
 | DISPPARAMS / EXCEPINFO | Supported for `IDispatch::Invoke` | `DynComDispatchParams` accepts natural-order `DynComVariant[]` plus optional named DISPIDs. `DynComExcepInfo` exposes code/source/description/helpFile/helpContext/scode. Optional Invoke outputs pass native null when not requested. |
 | Typed interface parameters and outputs | Supported | Interface outputs carry an owned COM reference. |
 | Opaque pointers and handle-shaped typedefs | Supported with limits | They are pointer values, not COM objects. Cleanup remains type-specific. |
@@ -681,6 +681,13 @@ and `@microsoft/dynwinrt/com`.
 | Referenced interface types | Supported when IID metadata is loaded | Missing external definitions fail closed and direct callers to pass the defining winmd with `--ref`. |
 | Dynamic-IID `void**` outputs | Supported for explicit required REFIID shapes | The method must return ordinary HRESULT and contain exactly one required const `GUID*` named `iid`/`riid` plus one required mutable `void**`/Object** output with +1 COM ownership. Their explicit parameter indices may be non-adjacent/non-terminal. Optional, duplicate, array, FreeWith, InOut, by-value/mutable/deeper GUID, and wrong-depth output shapes fail closed. |
 | Explicit apartment initialization | Supported | `initializeCom()` never silently chooses an apartment for the caller. |
+
+`IMDSPDeviceControl::Record` and `IWMDMDeviceControl::Record` have exact
+nullable audio-input contracts. Their declarations accept
+`DynComAudioFormat | null`, the COM signature retains input nullability, and
+the executor passes a native NULL without constructing a dummy format.
+Required inputs such as `IAudioClient::Initialize` and `IsFormatSupported`
+remain non-nullable; unknown or drifted Record evidence fails generation.
 
 `IDataObject::GetCanonicalFormatEtc` has a separate result contract. For `S_OK`,
 the runtime ignores the native output's `tymed` and retains the caller's

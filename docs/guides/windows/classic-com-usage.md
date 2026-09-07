@@ -231,6 +231,12 @@ const [status, closest] = audio.isFormatSupported(0, pcm);
 const mixFormat = audio.getMixFormat();
 ```
 
+For `IMDSPDeviceControl` and `IWMDMDeviceControl`, `record(null)` selects the
+device's default recording format after the required capability and seek
+setup. `record(pcm)` supplies an explicit format. This nullable contract does
+not apply to `IAudioClient.initialize` or `isFormatSupported`, whose format
+inputs remain required.
+
 `IDXGIObjectUnsafe.getPrivateData` keeps its exact caller-storage API because
 metadata proves the ABI but not whether the payload is bytes or an AddRef'd
 interface. Pass ordinary bounded memory for bytes. For an interface payload,

@@ -8,6 +8,12 @@ use std::{
 
 use napi::bindgen_prelude::BigInt;
 use napi_derive::napi;
+use windows::Win32::Media::{
+  Audio::WAVEFORMATEX,
+  DeviceManager::{
+    IMDSPDeviceControl, IMDSPDeviceControl_Vtbl, IWMDMDeviceControl, IWMDMDeviceControl_Vtbl,
+  },
+};
 use windows::{
   core::{IUnknown, IUnknown_Vtbl, Interface, BOOL, GUID, HRESULT, PCWSTR},
   Win32::System::{
@@ -1564,6 +1570,241 @@ pub fn generated_ole_cache_stats() -> GeneratedOleCacheStats {
     ),
     current_ref_count: OLE_CACHE_CURRENT_REF_COUNT.load(Ordering::SeqCst),
   }
+}
+
+struct DeviceControlCounters {
+  record_calls: AtomicU32,
+  null_format_calls: AtomicU32,
+  explicit_format_calls: AtomicU32,
+  add_ref_calls: AtomicU32,
+  release_calls: AtomicU32,
+  current_ref_count: AtomicU32,
+}
+
+impl DeviceControlCounters {
+  const fn new() -> Self {
+    Self {
+      record_calls: AtomicU32::new(0),
+      null_format_calls: AtomicU32::new(0),
+      explicit_format_calls: AtomicU32::new(0),
+      add_ref_calls: AtomicU32::new(0),
+      release_calls: AtomicU32::new(0),
+      current_ref_count: AtomicU32::new(0),
+    }
+  }
+
+  fn reset(&self) {
+    for counter in [
+      &self.record_calls,
+      &self.null_format_calls,
+      &self.explicit_format_calls,
+      &self.add_ref_calls,
+      &self.release_calls,
+    ] {
+      counter.store(0, Ordering::SeqCst);
+    }
+    self.current_ref_count.store(1, Ordering::SeqCst);
+  }
+
+  fn snapshot(&self) -> GeneratedDeviceControlStats {
+    GeneratedDeviceControlStats {
+      record_calls: self.record_calls.load(Ordering::SeqCst),
+      null_format_calls: self.null_format_calls.load(Ordering::SeqCst),
+      explicit_format_calls: self.explicit_format_calls.load(Ordering::SeqCst),
+      add_ref_calls: self.add_ref_calls.load(Ordering::SeqCst),
+      release_calls: self.release_calls.load(Ordering::SeqCst),
+      current_ref_count: self.current_ref_count.load(Ordering::SeqCst),
+    }
+  }
+}
+
+static MDSP_DEVICE_CONTROL_COUNTERS: DeviceControlCounters = DeviceControlCounters::new();
+static WMDM_DEVICE_CONTROL_COUNTERS: DeviceControlCounters = DeviceControlCounters::new();
+
+#[repr(C)]
+struct GeneratedDeviceControlFake {
+  vtable: *const IUnknown_Vtbl,
+  iid: GUID,
+  references: AtomicU32,
+  counters: &'static DeviceControlCounters,
+}
+
+unsafe extern "system" fn device_control_query_interface(
+  this: *mut c_void,
+  iid: *const GUID,
+  result: *mut *mut c_void,
+) -> HRESULT {
+  if iid.is_null() || result.is_null() {
+    return E_POINTER;
+  }
+  unsafe {
+    *result = std::ptr::null_mut();
+    let object = &*this.cast::<GeneratedDeviceControlFake>();
+    if *iid != IUnknown::IID && *iid != object.iid {
+      return E_NOINTERFACE;
+    }
+    *result = this;
+    device_control_add_ref(this);
+  }
+  HRESULT(0)
+}
+
+unsafe extern "system" fn device_control_add_ref(this: *mut c_void) -> u32 {
+  let object = unsafe { &*this.cast::<GeneratedDeviceControlFake>() };
+  object.counters.add_ref_calls.fetch_add(1, Ordering::SeqCst);
+  let count = object.references.fetch_add(1, Ordering::SeqCst) + 1;
+  object
+    .counters
+    .current_ref_count
+    .store(count, Ordering::SeqCst);
+  count
+}
+
+unsafe extern "system" fn device_control_release(this: *mut c_void) -> u32 {
+  let object = unsafe { &*this.cast::<GeneratedDeviceControlFake>() };
+  object.counters.release_calls.fetch_add(1, Ordering::SeqCst);
+  let count = object.references.fetch_sub(1, Ordering::SeqCst) - 1;
+  object
+    .counters
+    .current_ref_count
+    .store(count, Ordering::SeqCst);
+  if count == 0 {
+    unsafe {
+      drop(Box::from_raw(this.cast::<GeneratedDeviceControlFake>()));
+    }
+  }
+  count
+}
+
+unsafe extern "system" fn device_control_get_u32(_this: *mut c_void, _value: *mut u32) -> HRESULT {
+  E_NOTIMPL
+}
+
+unsafe extern "system" fn device_control_no_args(_this: *mut c_void) -> HRESULT {
+  E_NOTIMPL
+}
+
+unsafe extern "system" fn device_control_record(
+  this: *mut c_void,
+  format: *const WAVEFORMATEX,
+) -> HRESULT {
+  let counters = unsafe { &*this.cast::<GeneratedDeviceControlFake>() }.counters;
+  counters.record_calls.fetch_add(1, Ordering::SeqCst);
+  if format.is_null() {
+    counters.null_format_calls.fetch_add(1, Ordering::SeqCst);
+    return HRESULT(0);
+  }
+  // WAVEFORMATEX is packed; copy the header without forming aligned field references.
+  let header = unsafe { format.read_unaligned() };
+  if header.wFormatTag != 1
+    || header.nChannels != 2
+    || header.nSamplesPerSec != 48_000
+    || header.nAvgBytesPerSec != 192_000
+    || header.nBlockAlign != 4
+    || header.wBitsPerSample != 16
+    || header.cbSize != 0
+  {
+    return HRESULT(0x80070057u32 as i32);
+  }
+  counters
+    .explicit_format_calls
+    .fetch_add(1, Ordering::SeqCst);
+  HRESULT(0)
+}
+
+unsafe extern "system" fn device_control_seek(
+  _this: *mut c_void,
+  _mode: u32,
+  _offset: i32,
+) -> HRESULT {
+  E_NOTIMPL
+}
+
+static MDSP_DEVICE_CONTROL_VTABLE: IMDSPDeviceControl_Vtbl = IMDSPDeviceControl_Vtbl {
+  base__: IUnknown_Vtbl {
+    QueryInterface: device_control_query_interface,
+    AddRef: device_control_add_ref,
+    Release: device_control_release,
+  },
+  GetDCStatus: device_control_get_u32,
+  GetCapabilities: device_control_get_u32,
+  Play: device_control_no_args,
+  Record: device_control_record,
+  Pause: device_control_no_args,
+  Resume: device_control_no_args,
+  Stop: device_control_no_args,
+  Seek: device_control_seek,
+};
+
+static WMDM_DEVICE_CONTROL_VTABLE: IWMDMDeviceControl_Vtbl = IWMDMDeviceControl_Vtbl {
+  base__: IUnknown_Vtbl {
+    QueryInterface: device_control_query_interface,
+    AddRef: device_control_add_ref,
+    Release: device_control_release,
+  },
+  GetStatus: device_control_get_u32,
+  GetCapabilities: device_control_get_u32,
+  Play: device_control_no_args,
+  Record: device_control_record,
+  Pause: device_control_no_args,
+  Resume: device_control_no_args,
+  Stop: device_control_no_args,
+  Seek: device_control_seek,
+};
+
+fn create_generated_device_control_fake(
+  vtable: &'static IUnknown_Vtbl,
+  iid: GUID,
+  counters: &'static DeviceControlCounters,
+) -> napi::Result<DynWinRTValue> {
+  counters.reset();
+  // Each object has its own full SDK vtable and advertises only its matching IID.
+  let object = Box::new(GeneratedDeviceControlFake {
+    vtable,
+    iid,
+    references: AtomicU32::new(1),
+    counters,
+  });
+  let unknown = unsafe { IUnknown::from_raw(Box::into_raw(object).cast()) };
+  crate::com::apartment_bound_com_object(unknown)
+}
+
+#[napi(object)]
+pub struct GeneratedDeviceControlStats {
+  pub record_calls: u32,
+  pub null_format_calls: u32,
+  pub explicit_format_calls: u32,
+  pub add_ref_calls: u32,
+  pub release_calls: u32,
+  pub current_ref_count: u32,
+}
+
+#[napi]
+pub fn create_generated_mdsp_device_control_fake() -> napi::Result<DynWinRTValue> {
+  create_generated_device_control_fake(
+    &MDSP_DEVICE_CONTROL_VTABLE.base__,
+    IMDSPDeviceControl::IID,
+    &MDSP_DEVICE_CONTROL_COUNTERS,
+  )
+}
+
+#[napi]
+pub fn create_generated_wmdm_device_control_fake() -> napi::Result<DynWinRTValue> {
+  create_generated_device_control_fake(
+    &WMDM_DEVICE_CONTROL_VTABLE.base__,
+    IWMDMDeviceControl::IID,
+    &WMDM_DEVICE_CONTROL_COUNTERS,
+  )
+}
+
+#[napi]
+pub fn generated_mdsp_device_control_stats() -> GeneratedDeviceControlStats {
+  MDSP_DEVICE_CONTROL_COUNTERS.snapshot()
+}
+
+#[napi]
+pub fn generated_wmdm_device_control_stats() -> GeneratedDeviceControlStats {
+  WMDM_DEVICE_CONTROL_COUNTERS.snapshot()
 }
 
 #[repr(C)]

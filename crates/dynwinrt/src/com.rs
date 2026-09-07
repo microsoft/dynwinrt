@@ -2239,7 +2239,7 @@ impl BufferElementPlan {
             | ParameterType::StatStg
             | ParameterType::FormatEtc
             | ParameterType::StgMedium
-            | ParameterType::AudioFormat => {
+            | ParameterType::AudioFormat { .. } => {
                 return Err(invalid_argument(
                     "Automation buffer elements require dedicated ownership and cleanup plans",
                 ));
@@ -2559,7 +2559,7 @@ impl Type {
 
     pub fn audio_format() -> Self {
         Self {
-            abi: ParameterType::audio_format(),
+            abi: ParameterType::audio_format(false),
             pointer_output: PointerOutputKind::None,
             allow_direct_aggregate_return: false,
             aggregate_capability: None,
@@ -3500,9 +3500,9 @@ impl CallbackMethodPlan {
             | ParameterType::DispatchParams
             | ParameterType::ExcepInfo
             | ParameterType::StatStg => Some(crate::native_callback::CallbackAbiType::Pointer),
-            ParameterType::FormatEtc | ParameterType::StgMedium | ParameterType::AudioFormat => {
-                None
-            }
+            ParameterType::FormatEtc
+            | ParameterType::StgMedium
+            | ParameterType::AudioFormat { .. } => None,
             ParameterType::NativeStruct(layout) => {
                 Some(crate::native_callback::CallbackAbiType::NativeStruct(
                     format!("{layout:?}"),
@@ -3960,7 +3960,7 @@ impl CallbackMethodPlan {
             | ParameterType::VariantByValue
             | ParameterType::FormatEtc
             | ParameterType::StgMedium
-            | ParameterType::AudioFormat => Err(SINK_E_FAIL),
+            | ParameterType::AudioFormat { .. } => Err(SINK_E_FAIL),
         }
     }
 
@@ -5882,7 +5882,10 @@ impl MethodSignature {
         self
     }
 
-    pub fn add_nullable_in(mut self, typ: Type) -> Self {
+    pub fn add_nullable_in(mut self, mut typ: Type) -> Self {
+        if let ParameterType::AudioFormat { nullable_input } = &mut typ.abi {
+            *nullable_input = true;
+        }
         self.parameters.push(ComParameterSpec {
             direction: ComParameterDirection::In,
             typ,
@@ -14293,6 +14296,111 @@ mod tests {
             unsafe { windows::Win32::System::Memory::GlobalSize(released) },
             0
         );
+    }
+
+    #[test]
+    fn audio_format_nullable_inputs_preserve_null_slots_and_required_contracts() {
+        #[repr(C)]
+        struct AudioInputs {
+            vtable: *const *mut c_void,
+            calls: u32,
+            fail: bool,
+        }
+
+        unsafe extern "system" fn observe(
+            this: *mut c_void,
+            first: *const c_void,
+            second: *const c_void,
+        ) -> HRESULT {
+            let state = unsafe { &mut *this.cast::<AudioInputs>() };
+            state.calls += 1;
+            if state.fail {
+                return HRESULT(0x80004005u32 as i32);
+            }
+            for pointer in [first, second] {
+                if !pointer.is_null() {
+                    let status = unsafe { inspect_audio_format(this, pointer) };
+                    if status.is_err() {
+                        return status;
+                    }
+                }
+            }
+            HRESULT(i32::from(first.is_null()) | (i32::from(second.is_null()) << 1))
+        }
+
+        let table = MetadataTable::new();
+        let method = MethodSignature::new(&table)
+            .add_nullable_in(Type::audio_format())
+            .add_nullable_in(Type::audio_format())
+            .preserve_hresult()
+            .build(0)
+            .unwrap();
+        let required = MethodSignature::new(&table)
+            .add_in(Type::audio_format())
+            .add_nullable_in(Type::audio_format())
+            .preserve_hresult()
+            .build(0)
+            .unwrap();
+        let vtable = [observe as *mut c_void];
+        let mut state = AudioInputs {
+            vtable: vtable.as_ptr(),
+            calls: 0,
+            fail: false,
+        };
+        let format = AudioFormatValue::pcm(2, 48_000, 16).unwrap();
+        let original = format.bytes().to_vec();
+        for mask in 0..4 {
+            let arguments = (0..2)
+                .map(|index| {
+                    if mask & (1 << index) != 0 {
+                        Value::WinRt(WinRTValue::Null)
+                    } else {
+                        Value::AudioFormat(format.clone())
+                    }
+                })
+                .collect::<Vec<_>>();
+            let output = method
+                .plan
+                .invoke_values((&mut state as *mut AudioInputs).cast(), &arguments)
+                .unwrap();
+            assert!(
+                matches!(output.as_slice(), [Value::WinRt(WinRTValue::HResult(hr))] if hr.0 == mask)
+            );
+        }
+        assert_eq!(state.calls, 4);
+        let null = || Value::WinRt(WinRTValue::Null);
+        let error = required
+            .plan
+            .invoke_values((&mut state as *mut AudioInputs).cast(), &[null(), null()])
+            .unwrap_err();
+        assert!(
+            error
+                .message()
+                .contains("required COM parameter 0 cannot be null")
+        );
+        for invalid in [
+            Value::WinRt(WinRTValue::I32(0)),
+            Value::WinRt(WinRTValue::RawPtr(std::ptr::null_mut())),
+        ] {
+            assert!(
+                method
+                    .plan
+                    .invoke_values((&mut state as *mut AudioInputs).cast(), &[invalid, null()])
+                    .is_err()
+            );
+        }
+        assert_eq!(state.calls, 4);
+        state.fail = true;
+        let error = method
+            .plan
+            .invoke_values(
+                (&mut state as *mut AudioInputs).cast(),
+                &[null(), Value::AudioFormat(format.clone())],
+            )
+            .unwrap_err();
+        assert!(error.message().contains("80004005"));
+        assert_eq!(state.calls, 5);
+        assert_eq!(format.bytes(), original);
     }
 
     #[test]

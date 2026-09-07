@@ -79,7 +79,9 @@ pub(crate) enum ParameterType {
     StatStg,
     FormatEtc,
     StgMedium,
-    AudioFormat,
+    AudioFormat {
+        nullable_input: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -242,8 +244,8 @@ impl ParameterType {
         Self::StgMedium
     }
 
-    pub(crate) fn audio_format() -> Self {
-        Self::AudioFormat
+    pub(crate) fn audio_format(nullable_input: bool) -> Self {
+        Self::AudioFormat { nullable_input }
     }
 
     pub(crate) fn as_winrt(&self) -> Option<&TypeHandle> {
@@ -265,7 +267,7 @@ impl ParameterType {
             | Self::StatStg
             | Self::FormatEtc
             | Self::StgMedium
-            | Self::AudioFormat => None,
+            | Self::AudioFormat { .. } => None,
         }
     }
 
@@ -287,7 +289,7 @@ impl ParameterType {
             | Self::StatStg
             | Self::FormatEtc
             | Self::StgMedium
-            | Self::AudioFormat => None,
+            | Self::AudioFormat { .. } => None,
         }
     }
 
@@ -381,7 +383,16 @@ impl ParameterType {
     }
 
     pub(crate) fn is_audio_format(&self) -> bool {
-        matches!(self, Self::AudioFormat)
+        matches!(self, Self::AudioFormat { .. })
+    }
+
+    pub(crate) fn is_nullable_audio_format_input(&self) -> bool {
+        matches!(
+            self,
+            Self::AudioFormat {
+                nullable_input: true
+            }
+        )
     }
 
     pub(crate) fn is_array(&self) -> bool {
@@ -453,7 +464,7 @@ impl ParameterType {
             | Self::StatStg
             | Self::FormatEtc
             | Self::StgMedium
-            | Self::AudioFormat => AbiType::Ptr,
+            | Self::AudioFormat { .. } => AbiType::Ptr,
             Self::NativeStruct(_) | Self::NativeUnion(_) | Self::VariantByValue => {
                 panic!("aggregate values do not have a scalar AbiType")
             }
@@ -476,7 +487,7 @@ impl ParameterType {
             | Self::StatStg
             | Self::FormatEtc
             | Self::StgMedium
-            | Self::AudioFormat => libffi::middle::Type::pointer(),
+            | Self::AudioFormat { .. } => libffi::middle::Type::pointer(),
             Self::NativeStruct(layout) => layout.libffi_type(),
             Self::NativeUnion(layout) => layout.libffi_type(),
             Self::VariantByValue => variant_by_value_libffi_type(),
@@ -514,7 +525,7 @@ impl ParameterType {
             | Self::StatStg
             | Self::FormatEtc
             | Self::StgMedium
-            | Self::AudioFormat => {
+            | Self::AudioFormat { .. } => {
                 panic!("native POD storage is allocated by the dynamic executor")
             }
         }
@@ -539,7 +550,7 @@ impl ParameterType {
             | Self::StatStg
             | Self::FormatEtc
             | Self::StgMedium
-            | Self::AudioFormat => {
+            | Self::AudioFormat { .. } => {
                 unreachable!("native POD output conversion uses NativeStructValue")
             }
         }
@@ -579,7 +590,7 @@ impl ParameterType {
                 | Self::StatStg
                 | Self::FormatEtc
                 | Self::StgMedium
-                | Self::AudioFormat,
+                | Self::AudioFormat { .. },
                 _,
             ) => {
                 unreachable!("native POD output conversion uses NativeStructValue")
@@ -600,7 +611,7 @@ impl ParameterType {
             Self::StatStg => OutputCleanup::None,
             Self::FormatEtc => OutputCleanup::None,
             Self::StgMedium => OutputCleanup::None,
-            Self::AudioFormat => OutputCleanup::None,
+            Self::AudioFormat { .. } => OutputCleanup::None,
             Self::Bstr { .. } => OutputCleanup::BstrFree,
             Self::CoTaskMemWideString => OutputCleanup::CoTaskMemFree,
             Self::WinRT(_)
@@ -2267,7 +2278,13 @@ impl Method {
             }
 
             if parameter.typ.is_audio_format() {
-                if !matches!(&args[input_index], crate::com::Value::AudioFormat(_)) {
+                let is_format = matches!(&args[input_index], crate::com::Value::AudioFormat(_));
+                let is_nullable_input = parameter.typ.is_nullable_audio_format_input()
+                    && matches!(
+                        &args[input_index],
+                        crate::com::Value::WinRt(WinRTValue::Null)
+                    );
+                if !is_format && !is_nullable_input {
                     return Err(invalid_argument(
                         "Argument type mismatch: expected WAVEFORMATEX",
                     ));

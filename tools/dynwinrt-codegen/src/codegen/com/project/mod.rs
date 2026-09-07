@@ -1190,11 +1190,12 @@ fn project_method(
                 | ComType::Bstr
                 | ComType::ManagedInterface { .. }
                 | ComType::SafeArray { .. }
-        ) || (direction == ComParamDirection::InputBuffer
-            && matches!(
-                typ,
-                ComType::TypedBuffer { .. } | ComType::StringArray { .. }
-            ))
+        ) || (direction == ComParamDirection::In && matches!(typ, ComType::AudioFormat))
+            || (direction == ComParamDirection::InputBuffer
+                && matches!(
+                    typ,
+                    ComType::TypedBuffer { .. } | ComType::StringArray { .. }
+                ))
     }
 
     let mut return_convention = match method.return_kind() {

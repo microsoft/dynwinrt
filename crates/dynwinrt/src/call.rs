@@ -1215,11 +1215,13 @@ where
                 })?,
             );
         } else if p.is_input() && !p.is_out() && p.typ.is_audio_format() {
-            audio_format_in_ptrs.push(
-                args.get_audio_format(p.input_index.expect("WAVEFORMATEX input index"))
-                    .expect("validated WAVEFORMATEX input")
-                    .as_ptr(),
-            );
+            let input_index = p.input_index.expect("WAVEFORMATEX input index");
+            let pointer = match args.get_audio_format(input_index) {
+                Some(format) => format.as_ptr(),
+                None if p.typ.is_nullable_audio_format_input() => std::ptr::null(),
+                None => panic!("validated WAVEFORMATEX input"),
+            };
+            audio_format_in_ptrs.push(pointer);
         }
     }
     let native_struct_in_ptrs = native_struct_in_slots

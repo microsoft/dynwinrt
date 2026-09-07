@@ -294,7 +294,7 @@ fn map_method(
         .map_err(ModelError::InvalidContract)?;
     crate::com_metadata::validate_attached_safe_array_evidence(raw)
         .map_err(ModelError::InvalidContract)?;
-    crate::com_metadata::validate_storage_medium_contract_presence(raw)
+    crate::com_metadata::validate_required_exact_contract_presence(raw)
         .map_err(ModelError::InvalidContract)?;
     if let Some(contract) = &raw.exact_contract {
         crate::com_metadata::validate_exact_method_contract(
@@ -453,7 +453,10 @@ fn map_method(
                     output_param: ParamIndex::new(1),
                 })
             }
-            Some(RawExactMethodContractKind::AudioFormatOwnedOutput) => method,
+            Some(
+                RawExactMethodContractKind::AudioFormatOwnedOutput
+                | RawExactMethodContractKind::NullableAudioFormatInput,
+            ) => method,
             Some(RawExactMethodContractKind::AudioFormatSupport) => {
                 let contract = raw.exact_contract.as_ref().unwrap();
                 method.with_special_contract(ComMethodSpecialContract::AudioFormatSupport {
@@ -730,7 +733,13 @@ fn map_param(
         param_index,
         dynamic_iid_output,
     )?;
-    let nullable = if !exact_null_input
+    let exact_nullable_audio_input = raw_method.exact_contract.as_ref().is_some_and(|contract| {
+        contract.kind == RawExactMethodContractKind::NullableAudioFormatInput
+            && contract.buffer_param_index == param_index
+    });
+    let nullable = if exact_nullable_audio_input {
+        Nullability::Nullable
+    } else if !exact_null_input
         && (raw.optional
             || known_nullable_param_override(
                 interface_namespace,

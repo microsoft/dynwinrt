@@ -1491,7 +1491,7 @@ Windows.Win32.Media.DeviceManager,IComponentAuthenticate,a9889c00-6d2b-11d3-8496
 Windows.Win32.Media.DeviceManager,IMDSPDevice,1dcb3a12-33ed-11d3-8470-00c04f79dbc0,false,,external_pointee_storage
 Windows.Win32.Media.DeviceManager,IMDSPDevice2,420d16ad-c97d-4e00-82aa-00e9f4335ddd,false,,external_pointee_storage
 Windows.Win32.Media.DeviceManager,IMDSPDevice3,1a839845-fc55-487c-976f-ee38ac0e8c4e,false,,external_pointee_storage
-Windows.Win32.Media.DeviceManager,IMDSPDeviceControl,1dcb3a14-33ed-11d3-8470-00c04f79dbc0,true,standard_derived,
+Windows.Win32.Media.DeviceManager,IMDSPDeviceControl,1dcb3a14-33ed-11d3-8470-00c04f79dbc0,true,exact_registry_dependent,
 Windows.Win32.Media.DeviceManager,IMDSPDirectTransfer,c2fe57a8-9304-478c-9ee4-47e397b912d7,true,standard_derived,
 Windows.Win32.Media.DeviceManager,IMDSPEnumDevice,1dcb3a11-33ed-11d3-8470-00c04f79dbc0,true,standard_derived,
 Windows.Win32.Media.DeviceManager,IMDSPEnumStorage,1dcb3a15-33ed-11d3-8470-00c04f79dbc0,true,standard_derived,
@@ -1519,7 +1519,7 @@ Windows.Win32.Media.DeviceManager,ISCPSession,88a3e6ed-eee4-4619-bbb3-fd4fb62715
 Windows.Win32.Media.DeviceManager,IWMDMDevice,1dcb3a02-33ed-11d3-8470-00c04f79dbc0,false,,external_pointee_storage
 Windows.Win32.Media.DeviceManager,IWMDMDevice2,e34f3d37-9d67-4fc1-9252-62d28b2f8b55,false,,external_pointee_storage
 Windows.Win32.Media.DeviceManager,IWMDMDevice3,6c03e4fe-05db-4dda-9e3c-06233a6d5d65,false,,external_pointee_storage
-Windows.Win32.Media.DeviceManager,IWMDMDeviceControl,1dcb3a04-33ed-11d3-8470-00c04f79dbc0,true,standard_derived,
+Windows.Win32.Media.DeviceManager,IWMDMDeviceControl,1dcb3a04-33ed-11d3-8470-00c04f79dbc0,true,exact_registry_dependent,
 Windows.Win32.Media.DeviceManager,IWMDMDeviceSession,82af0a65-9d96-412c-83e5-3c43e4b06cc7,true,standard_derived,
 Windows.Win32.Media.DeviceManager,IWMDMEnumDevice,1dcb3a01-33ed-11d3-8470-00c04f79dbc0,true,standard_derived,
 Windows.Win32.Media.DeviceManager,IWMDMEnumStorage,1dcb3a05-33ed-11d3-8470-00c04f79dbc0,true,standard_derived,

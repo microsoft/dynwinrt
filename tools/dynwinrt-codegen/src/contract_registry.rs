@@ -92,6 +92,7 @@ pub enum ExactFamilyId {
     SequentialStreamBuffer,
     DispatchInvoke,
     ReservedNullInput,
+    NullableInput,
     ParameterDirection,
     ShellCommandString,
     AudioConditionalOutput,
@@ -112,6 +113,7 @@ impl ExactFamilyId {
             Self::SequentialStreamBuffer => "com.sequential-stream-buffer.v1",
             Self::DispatchInvoke => "automation.idispatch-invoke.v1",
             Self::ReservedNullInput => "com.reserved-null-input.v1",
+            Self::NullableInput => "com.nullable-input.v1",
             Self::ParameterDirection => "com.parameter-direction.v1",
             Self::ShellCommandString => "shell.flag-selected-string.v1",
             Self::AudioConditionalOutput => "audio.conditional-output.v1",
@@ -132,6 +134,7 @@ impl ExactFamilyId {
             Self::SequentialStreamBuffer,
             Self::DispatchInvoke,
             Self::ReservedNullInput,
+            Self::NullableInput,
             Self::ParameterDirection,
             Self::ShellCommandString,
             Self::AudioConditionalOutput,
@@ -478,6 +481,8 @@ pub(crate) fn statically_declared_exact_entry_ids() -> Result<BTreeSet<String>, 
 }
 
 const ADDITIONAL_EXACT_ENTRY_IDS: &[&str] = &[
+    "com.nullable-input.entry.windows-win32-media-devicemanager.imdspdevicecontrol.1dcb3a1433ed11d3847000c04f79dbc0.record.slot-6.v1",
+    "com.nullable-input.entry.windows-win32-media-devicemanager.iwmdmdevicecontrol.1dcb3a0433ed11d3847000c04f79dbc0.record.slot-6.v1",
     "audio.conditional-output.entry.windows-win32-media-audio.iaudioclient.1cb9ad4cdbfa4c32b178c2f568a703b2.isformatsupported.slot-7.v1",
     "automation.idispatch-invoke.entry.windows-win32-system-com.idispatch.0002040000000000c000000000000046.invoke.slot-6.v1",
     "buffers.bounded-two-call.entry.windows-win32-media-mediafoundation.imfattributes.2cd2d921c44744a7a13c4adabfc247e3.getblob.slot-15.v1",
@@ -1149,7 +1154,7 @@ mod tests {
         serde_json::from_str::<serde_json::Value>(SCHEMA_JSON).unwrap();
         let registry = load_registry().unwrap();
         let ids = statically_declared_exact_entry_ids().unwrap();
-        assert_eq!(ids.len(), 502);
+        assert_eq!(ids.len(), 504);
         assert_eq!(registry.conditional_outputs.len(), 7);
         assert_eq!(registry.ownership_outputs.len(), 148);
         assert_eq!(

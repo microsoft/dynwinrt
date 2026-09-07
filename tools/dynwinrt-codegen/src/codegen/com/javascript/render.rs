@@ -842,6 +842,9 @@ fn wrap_param_arg_js(param: &ProjectedComParam, variable: &str) -> String {
                 matches!(encoding, StringEncoding::Wide)
             ),
             ComType::Bstr => format!("{variable} === null ? DynCom.nullBstr() : {wrapped}"),
+            ComType::AudioFormat => {
+                format!("{variable} === null ? DynCom.nullAudioFormat() : {wrapped}")
+            }
             _ => unreachable!("nullable projection was validated"),
         };
     }

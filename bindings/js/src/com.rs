@@ -5895,6 +5895,14 @@ impl DynCom {
   }
 
   #[napi]
+  pub fn null_audio_format() -> DynWinRTValue {
+    DynWinRTValue::from_com_value(
+      dynwinrt::com::Value::WinRt(dynwinrt::WinRTValue::Null),
+      dynwinrt::com::PointerOutputKind::None,
+    )
+  }
+
+  #[napi]
   pub fn take_variant(value: &mut DynWinRTValue) -> napi::Result<DynComVariant> {
     let result = value
       .5

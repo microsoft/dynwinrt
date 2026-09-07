@@ -340,7 +340,9 @@ Current code registries are migrated without changing behavior:
 - `IDataObject::SetData` and `IOleCache::SetData` caller-retained STGMEDIUM ownership;
 - `IDataObject::GetCanonicalFormatEtc` output validity and ignored `tymed`;
 - `IAudioClient` shared/exclusive format negotiation and CoTaskMem format
-  outputs; and
+  outputs;
+- `IMDSPDeviceControl::Record` and `IWMDMDeviceControl::Record` nullable
+  audio-format inputs selecting the device default; and
 - exact fail-closed hazards such as `GetPrivateData`.
 
 Migration or promotion is complete only when generated safe snapshots, the
@@ -405,13 +407,13 @@ The safe-complete evidence census is:
 
 | Evidence class | Safe interfaces |
 | --- | ---: |
-| `standard_derived` | 5,335 |
-| `exact_registry_dependent` | 361 |
+| `standard_derived` | 5,333 |
+| `exact_registry_dependent` | 363 |
 | **Total** | **5,696** |
 
-The registry contains **502 declared entries**, all 502 match the pinned
-metadata, and 411 distinct entries are consumed by safe plans. Safe plans have
-667 entry/interface dependencies and 414 family/interface dependencies.
+The registry contains **504 declared entries**, all 504 match the pinned
+metadata, and 413 distinct entries are consumed by safe plans. Safe plans have
+669 entry/interface dependencies and 416 family/interface dependencies.
 Per-interface dependency-set totals also include 5,982 metadata-attribute
 dependencies and 26,129 COM-standard-rule dependencies.
 
@@ -422,7 +424,7 @@ dependencies and 26,129 COM-standard-rule dependencies.
 | `bounded-two-call` | 16 |
 | `conditional-output` | 10 |
 | `flag-selected-buffer` | 3 |
-| `null-input` | 2 |
+| `null-input` | 4 |
 | `safearray` | 263 |
 | `enumerator-next` | 74 |
 | `borrowed-handle` | 54 |
@@ -443,6 +445,7 @@ Family rollups deliberately count each interface once per family:
 | `com.ownership.v1` | 167 | 116 | 122 |
 | `com.parameter-direction.v1` | 3 | 3 | 15 |
 | `com.reserved-null-input.v1` | 2 | 2 | 1 |
+| `com.nullable-input.v1` | 2 | 2 | 2 |
 | `com.semantic-hresult.v1` | 2 | 2 | 3 |
 | `automation.idispatch-invoke.v1` | 1 | 1 | 1 |
 | `graphics.private-data-hazard.v1` | 7 | 0 | 0 |

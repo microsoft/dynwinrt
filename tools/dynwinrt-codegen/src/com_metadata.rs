@@ -386,6 +386,7 @@ pub enum RawExactMethodContractKind {
     CanonicalFormatEtc,
     AudioFormatOwnedOutput,
     AudioFormatSupport,
+    NullableAudioFormatInput,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -426,6 +427,9 @@ impl RawExactMethodContract {
             RawExactMethodContractKind::AudioFormatSupport => {
                 crate::contract_registry::ExactFamilyId::AudioConditionalOutput
             }
+            RawExactMethodContractKind::NullableAudioFormatInput => {
+                crate::contract_registry::ExactFamilyId::NullableInput
+            }
             RawExactMethodContractKind::CanonicalFormatEtc => {
                 crate::contract_registry::ExactFamilyId::SemanticHresult
             }
@@ -463,6 +467,9 @@ impl RawExactMethodContract {
             }
             RawExactMethodContractKind::AudioFormatSupport => {
                 crate::contract_registry::ContractKind::ConditionalOutput
+            }
+            RawExactMethodContractKind::NullableAudioFormatInput => {
+                crate::contract_registry::ContractKind::NullInput
             }
             RawExactMethodContractKind::CanonicalFormatEtc => {
                 crate::contract_registry::ContractKind::SemanticHresult
@@ -2202,6 +2209,7 @@ fn apply_exact_method_contract(
         RawExactMethodContractKind::Malloc => {}
         RawExactMethodContractKind::AudioFormatOwnedOutput => {}
         RawExactMethodContractKind::AudioFormatSupport => {}
+        RawExactMethodContractKind::NullableAudioFormatInput => {}
         RawExactMethodContractKind::BorrowedStgMediumInput
         | RawExactMethodContractKind::PreservedStgMediumInOut
         | RawExactMethodContractKind::CanonicalFormatEtc => {}
@@ -2366,6 +2374,22 @@ fn registered_exact_method_contract(
             "IDataObject::SetData transfers STGMEDIUM ownership only when fRelease is TRUE; the safe projection pins fRelease to FALSE so call-local HGLOBAL storage remains caller-owned",
             "https://learn.microsoft.com/windows/win32/api/objidl/nf-objidl-idataobject-setdata",
         ),
+        (
+            "Windows.Win32.Media.DeviceManager",
+            "IMDSPDeviceControl" | "IWMDMDeviceControl",
+            "Record",
+        ) => (
+            RawExactMethodContractKind::NullableAudioFormatInput,
+            0,
+            0,
+            None,
+            "Record accepts a null WAVEFORMATEX pointer to select the device default format; explicit formats are borrowed for the call",
+            if interface == "IMDSPDeviceControl" {
+                "https://learn.microsoft.com/windows/win32/api/mswmdm/nf-mswmdm-imdspdevicecontrol-record"
+            } else {
+                "https://learn.microsoft.com/windows/win32/api/mswmdm/nf-mswmdm-iwmdmdevicecontrol-record"
+            },
+        ),
         ("Windows.Win32.Media.Audio", "IAudioClient", "IsFormatSupported") => (
             RawExactMethodContractKind::AudioFormatSupport,
             2,
@@ -2475,6 +2499,7 @@ fn registered_exact_method_contract(
             "IDMLObject" => "Windows.Win32.AI.MachineLearning.DirectML",
             "IStream" | "IDataObject" => "Windows.Win32.System.Com",
             "IAudioClient" | "IAudioClient3" => "Windows.Win32.Media.Audio",
+            "IMDSPDeviceControl" | "IWMDMDeviceControl" => "Windows.Win32.Media.DeviceManager",
             "IOleCache" => "Windows.Win32.System.Ole",
             "IStorage" => "Windows.Win32.System.Com.StructuredStorage",
             "IContextMenu" => "Windows.Win32.UI.Shell",
@@ -2497,6 +2522,8 @@ fn registered_exact_method_contract(
             "IDataObject" => "IDataObject",
             "IAudioClient" => "IAudioClient",
             "IAudioClient3" => "IAudioClient3",
+            "IMDSPDeviceControl" => "IMDSPDeviceControl",
+            "IWMDMDeviceControl" => "IWMDMDeviceControl",
             "IOleCache" => "IOleCache",
             _ => unreachable!("matched exact method interface"),
         },
@@ -2535,6 +2562,11 @@ fn registered_exact_method_contract(
             RawExactMethodContractKind::AudioFormatSupport => {
                 unreachable!("audio format support belongs to IAudioClient")
             }
+            RawExactMethodContractKind::NullableAudioFormatInput => match interface {
+                "IMDSPDeviceControl" => "1dcb3a14-33ed-11d3-8470-00c04f79dbc0",
+                "IWMDMDeviceControl" => "1dcb3a04-33ed-11d3-8470-00c04f79dbc0",
+                _ => unreachable!("matched exact nullable audio input"),
+            },
             RawExactMethodContractKind::BorrowedStgMediumInput => match interface {
                 "IDataObject" => "0000010e-0000-0000-c000-000000000046",
                 "IOleCache" => "0000011e-0000-0000-c000-000000000046",
@@ -2565,6 +2597,7 @@ fn registered_exact_method_contract(
                 _ => unreachable!("matched exact audio format output"),
             },
             RawExactMethodContractKind::AudioFormatSupport => "IsFormatSupported",
+            RawExactMethodContractKind::NullableAudioFormatInput => "Record",
             RawExactMethodContractKind::BorrowedStgMediumInput => "SetData",
             RawExactMethodContractKind::PreservedStgMediumInOut => "GetDataHere",
             RawExactMethodContractKind::CanonicalFormatEtc => "GetCanonicalFormatEtc",
@@ -2589,6 +2622,7 @@ fn registered_exact_method_contract(
             ("IAudioClient", "IsFormatSupported") => 7,
             ("IAudioClient", "GetMixFormat") => 8,
             ("IAudioClient3", "GetCurrentSharedModeEnginePeriod") => 19,
+            ("IMDSPDeviceControl" | "IWMDMDeviceControl", "Record") => 6,
             ("IDataObject" | "IOleCache", "SetData") => 7,
             ("IDataObject", "GetDataHere") => 4,
             ("IDataObject", "GetCanonicalFormatEtc") => 6,
@@ -2608,6 +2642,12 @@ fn registered_exact_method_contract(
             == RawExactMethodContractKind::BorrowedStgMediumInput)
             .then_some(2),
         source_fingerprint: match (interface, method) {
+            ("IMDSPDeviceControl", "Record") => {
+                Some("346C3A5C69100EF034C6B1773533C7B9AB74C66F05581FF8D1D02370C9506F52")
+            }
+            ("IWMDMDeviceControl", "Record") => {
+                Some("68EB1BDA9994CE96C21642D9D336EBBF7BC38DD14C04E799A9091025D0D55871")
+            }
             ("IDataObject", "GetDataHere") => {
                 Some("65165D814B216835E273E9342B4CBEC2A4F6F1A68477F3F07036C2479BDADBFF")
             }
@@ -2748,7 +2788,7 @@ fn raw_hresult(typ: &RawComType) -> bool {
             .is_some_and(|underlying| matches!(underlying.native_type, RawNativeType::I32))
 }
 
-pub(crate) fn validate_storage_medium_contract_presence(raw: &RawComMethod) -> Result<(), String> {
+pub(crate) fn validate_required_exact_contract_presence(raw: &RawComMethod) -> Result<(), String> {
     let required = registered_exact_method_contract(
         &raw.declaring_namespace,
         &raw.declaring_interface,
@@ -2760,11 +2800,12 @@ pub(crate) fn validate_storage_medium_contract_presence(raw: &RawComMethod) -> R
             RawExactMethodContractKind::BorrowedStgMediumInput
                 | RawExactMethodContractKind::PreservedStgMediumInOut
                 | RawExactMethodContractKind::CanonicalFormatEtc
+                | RawExactMethodContractKind::NullableAudioFormatInput
         )
     });
     if required && raw.exact_contract.is_none() {
         return Err(format!(
-            "{}.{} requires its exact storage-medium contract",
+            "{}.{} requires exact contract evidence for its input/output semantics",
             raw.declaring_interface, raw.metadata_name
         ));
     }
@@ -2989,6 +3030,10 @@ pub(crate) fn validate_exact_method_contract(
                     })
                 && raw_hresult(&raw.return_type)
         }
+        RawExactMethodContractKind::NullableAudioFormatInput => {
+            raw_method_shape(raw)
+                == "Record@6(pFormat:in:required:noconstattr:Windows.Win32.Media.Audio.WAVEFORMATEX[Struct]/ptr1/Mutable)->Windows.Win32.Foundation.HRESULT[Struct]/ptr0/Unspecified/underlying=i32/ptr0/Unspecified:plain_hresult:not_enumerator_next"
+        }
         RawExactMethodContractKind::AudioFormatOwnedOutput => {
             if contract.method_name == "GetMixFormat" {
                 raw_method_shape(raw)
@@ -3038,6 +3083,14 @@ pub(crate) fn validate_exact_method_contract(
                 && contract.actual_length_param_index.is_none()
                 && contract.discriminator_param_index.is_none()
                 && contract.reserved_null_param_index.is_none()
+        }
+        RawExactMethodContractKind::NullableAudioFormatInput => {
+            contract.buffer_param_index == 0
+                && contract.capacity_param_index == 0
+                && contract.actual_length_param_index.is_none()
+                && contract.discriminator_param_index.is_none()
+                && contract.reserved_null_param_index.is_none()
+                && contract.ownership_transfer_param_index.is_none()
         }
         RawExactMethodContractKind::AudioFormatOwnedOutput => {
             contract.buffer_param_index == 0
@@ -5199,6 +5252,54 @@ mod tests {
             contract,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn audio_record_nullability_contracts_are_exact() {
+        let Some(winmd) = std::env::var("DYNWINRT_WIN32_WINMD")
+            .ok()
+            .filter(|path| std::path::Path::new(path).exists())
+        else {
+            return;
+        };
+        let mut missing = Vec::new();
+        for name in ["IMDSPDeviceControl", "IWMDMDeviceControl"] {
+            let namespace = "Windows.Win32.Media.DeviceManager";
+            let interface = parse_com_interface(&winmd, namespace, name).unwrap();
+            let raw = interface
+                .raw_methods
+                .as_ref()
+                .unwrap()
+                .iter()
+                .find(|method| method.metadata_name == "Record")
+                .unwrap();
+            if let Some(contract) = &raw.exact_contract {
+                assert_eq!(
+                    contract.kind,
+                    RawExactMethodContractKind::NullableAudioFormatInput
+                );
+                assert_eq!(contract.buffer_param_index, 0);
+                validate_exact_method_contract(
+                    namespace,
+                    name,
+                    &interface.interface.iid,
+                    raw,
+                    contract,
+                )
+                .unwrap();
+            } else {
+                missing.push(format!(
+                    "{name} {}: {} ({})",
+                    interface.interface.iid,
+                    raw_method_shape(raw),
+                    raw_method_fingerprint(raw)
+                ));
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "missing nullable Record evidence: {missing:#?}"
+        );
     }
 
     #[test]

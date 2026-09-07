@@ -2202,6 +2202,69 @@ fn data_object_projects_hglobal_format_and_medium_values() {
 }
 
 #[test]
+fn device_control_record_projects_exact_nullable_audio_formats() {
+    if !win32_available() {
+        eprintln!("Skipping: Win32 winmd not available");
+        return;
+    }
+    for name in ["IMDSPDeviceControl", "IWMDMDeviceControl"] {
+        let interface = com_metadata::parse_com_interface(
+            &win32_winmd(),
+            "Windows.Win32.Media.DeviceManager",
+            name,
+        )
+        .unwrap();
+        let output = com::generate_com_interface_files(&interface, &win32_winmd()).unwrap();
+        assert!(
+            output
+                .dts
+                .contains("record(pFormat: DynComAudioFormat | null): void;")
+        );
+        assert!(
+            output
+                .js
+                .contains(".addNullableIn(DynCom.audioFormatType())")
+        );
+        assert!(
+            output.js.contains(
+                "pFormat === null ? DynCom.nullAudioFormat() : DynCom.audioFormat(pFormat)"
+            )
+        );
+        let index = interface
+            .raw_methods
+            .as_ref()
+            .unwrap()
+            .iter()
+            .position(|method| method.metadata_name == "Record")
+            .unwrap();
+        let raw = &interface.raw_methods.as_ref().unwrap()[index];
+        assert!(!raw.params[0].optional);
+        assert_eq!(
+            raw.exact_contract.as_ref().unwrap().kind,
+            com_metadata::RawExactMethodContractKind::NullableAudioFormatInput
+        );
+        for mutation in 0..7 {
+            let mut drift = interface.clone();
+            let raw = &mut drift.raw_methods.as_mut().unwrap()[index];
+            match mutation {
+                0 => raw.exact_contract = None,
+                1 => raw.vtable_index += 1,
+                2 => raw.params[0].typ.pointer_depth = 2,
+                3 => raw.params[0].direction = com_metadata::RawParamDirection::Out,
+                4 => raw.params[0].optional = true,
+                5 => raw.params[0].const_attribute = true,
+                6 => raw.exact_contract.as_mut().unwrap().buffer_param_index = 1,
+                _ => unreachable!(),
+            }
+            assert!(
+                com::generate_com_interface_files(&drift, &win32_winmd()).is_err(),
+                "{name}.Record admitted mutation {mutation}"
+            );
+        }
+    }
+}
+
+#[test]
 fn audio_clients_project_variable_wave_formats_and_exact_ownership() {
     if !win32_available() {
         eprintln!("Skipping: Win32 winmd not available");
