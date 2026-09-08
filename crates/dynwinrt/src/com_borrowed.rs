@@ -612,6 +612,22 @@ pub unsafe fn invoke_managed(
     view: &IUnknown,
     args: &[Value],
 ) -> result::Result<ManagedCallOutput> {
+    unsafe { invoke_managed_guarded(method, context, view, args, || Ok(())) }
+}
+
+/// # Safety
+/// The receiver and pointer-shaped inputs must satisfy the registered native ABI.
+#[doc(hidden)]
+pub unsafe fn invoke_managed_guarded<F>(
+    method: &MethodHandle,
+    context: &Identity,
+    view: &IUnknown,
+    args: &[Value],
+    before_dispatch: F,
+) -> result::Result<ManagedCallOutput>
+where
+    F: FnOnce() -> windows_core::Result<()>,
+{
     context.ensure_idle()?;
     let transaction = method
         .0
@@ -623,7 +639,13 @@ pub unsafe fn invoke_managed(
     }
     let Some(effect) = method.0.context_effect else {
         return Ok(ManagedCallOutput {
-            values: unsafe { method.invoke_values_with_output_kinds(view.as_raw(), args)? },
+            values: unsafe {
+                method.invoke_values_with_output_kinds_guarded(
+                    view.as_raw(),
+                    args,
+                    before_dispatch,
+                )?
+            },
             output_context: None,
         });
     };
@@ -681,7 +703,7 @@ pub unsafe fn invoke_managed(
         .context_hresult_plan
         .as_ref()
         .expect("validated context call")
-        .invoke_values_with_output_kinds(view.as_raw(), args)?;
+        .invoke_values_with_output_kinds_guarded(view.as_raw(), args, before_dispatch)?;
     let hresult = values.remove(0).0;
     let hr = match hresult {
         Value::WinRt(WinRTValue::I32(value)) => value,

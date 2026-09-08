@@ -804,6 +804,13 @@ Cleanup failure throws, discards copy results and permanently poisons the
 shared context; it is not retried by a finalizer. Writes may have taken effect
 before a later error, so do not assume transactional rollback.
 
+A busy or poisoned object also cannot be passed to another COM object's method.
+The same rule applies to aliases and supported interface-bearing containers:
+an array built before a cleanup failure is checked again when used, and
+releasing the original wrapper does not clear state retained by that array.
+Release managed holders normally after a failure; do not try to reuse the
+object through `IMFSample.addBuffer()` or another input path.
+
 Render/capture and MF are intentionally copy-only facades, not complete native
 interfaces. General `IMF2DBuffer`/`IMF2DBuffer2` pitch/plane access and writable
 external WIC locks are not supported. See the

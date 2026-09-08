@@ -327,6 +327,21 @@ reference or cycle. QI, `projectAs`, and independently rewrapped aliases recover
 the same context while any managed holder retains it. Conflicting mappings
 fail closed.
 
+Ordinary COM invocation also admits every managed interface argument, not just
+the receiver. The shared input boundary checks apartment ownership and the
+current busy/poisoned state before conversion and native dispatch. Supported
+interface-bearing containers retain the same canonical-identity context slots
+as their elements; they do not gain a fresh lifecycle by cloning native
+references. A container created while idle must still reject a subsequently
+poisoned element, including after the original wrappers have been released.
+This is a common argument rule, not an `IMFSample::AddBuffer` special case.
+Standard identity handling and deterministic release remain available for
+cleanup; ordinary invocation does not make every unrelated idle object busy.
+The final admission check runs after native argument coercion, including QI,
+so reentrancy cannot invalidate an earlier check unnoticed. Rejection keeps
+the dispatch marker clear and releases call-local storage. The private lowering
+hook is generic; COM state policy stays in the COM binding layer.
+
 The receiver and required owner gates enter `Acquiring` **before** native
 dispatch. No registry/state lock is held across a native call. A successful
 acquire arms cleanup before pointer/range validation or allocation. Direct JS

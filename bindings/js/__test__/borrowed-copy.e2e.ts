@@ -24,7 +24,7 @@ test.before((t) => {
     '--winmd',
     winmd!,
     '--class-name',
-    'Windows.Win32.Media.Audio.IAudioClient,Windows.Win32.Media.Audio.IAudioClient3,Windows.Win32.Media.Audio.IAudioRenderClient,Windows.Win32.Media.Audio.IAudioCaptureClient,Windows.Win32.Graphics.Imaging.IWICBitmap,Windows.Win32.Media.MediaFoundation.IMFMediaBuffer',
+    'Windows.Win32.Media.Audio.IAudioClient,Windows.Win32.Media.Audio.IAudioClient3,Windows.Win32.Media.Audio.IAudioRenderClient,Windows.Win32.Media.Audio.IAudioCaptureClient,Windows.Win32.Graphics.Imaging.IWICBitmap,Windows.Win32.Media.MediaFoundation.IMFMediaBuffer,Windows.Win32.Media.MediaFoundation.IMFSample',
     '--output',
     output,
   ]
@@ -42,11 +42,15 @@ test.before((t) => {
   writeFileSync(
     join(output, 'borrowed-types.mts'),
     [
-      "import { IAudioRenderClient, IAudioCaptureClient, IWICBitmap, IMFMediaBuffer } from './com/index.js'",
+      "import { IAudioRenderClient, IAudioCaptureClient, IWICBitmap, IMFMediaBuffer, IMFSample } from './com/index.js'",
+      "import type { DynWinRtValue } from '@microsoft/dynwinrt/com'",
       'declare const render: IAudioRenderClient',
       'declare const capture: IAudioCaptureClient',
       'declare const bitmap: IWICBitmap',
       'declare const media: IMFMediaBuffer',
+      'declare const sample: IMFSample',
+      'declare const mediaValue: DynWinRtValue',
+      'sample.addBuffer(mediaValue)',
       'render.writeFramesCopy(new Uint8Array(8)); render.writeSilence(2)',
       'const packet = capture.readPacketCopy(); if (packet?.kind === "data") packet.data?.subarray(0)',
       'const pixels: Buffer = bitmap.readLockedBgra8Copy({ x: 0, y: 0, width: 2, height: 2 }).data',
