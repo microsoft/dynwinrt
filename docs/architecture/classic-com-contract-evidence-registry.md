@@ -406,6 +406,20 @@ entries:
   the JSON ownership entry copies the returned UTF-16 string and pairs the
   allocation with `CoTaskMemFree`, yielding `getId(): string`.
 
+The activation targets are named records in
+`tools/dynwinrt-codegen/src/com_activation_registry.rs`, not an anonymous
+fixed-length IID array in the language model. Each record carries its interface
+identity, authoritative citation, reason, and the in-process/native-NULL/owned
+result conditions. Semantic lowering rejects missing or ambiguous evidence and
+passes only the validated context and target IIDs to the projected IR; the
+renderer does not interpret evidence.
+
+These records are part of the existing exact `IMMDevice::Activate` contract,
+not additional safe-interface or per-entry census contributions. The migration
+keeps the same five targets and does not add `IDeviceTopology` or general
+activation. Activation-policy eligibility, wrapper completeness, and actual
+device support remain separate requirements.
+
 The activation target must be a registered generated safe class with the IID
 of `IAudioClient`, `IAudioEndpointVolume`, `IAudioMeterInformation`,
 `IAudioSessionManager`, or `IAudioSessionManager2`. Other/custom targets,
