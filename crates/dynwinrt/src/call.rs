@@ -649,7 +649,7 @@ pub(crate) fn call_method_dynamic<A, F>(
 ) -> windows_core::Result<Vec<NativeCallValue>>
 where
     A: ArgumentList + ?Sized,
-    F: FnOnce(),
+    F: FnOnce() -> windows_core::Result<()>,
 {
     match call_method_dynamic_impl(
         vtable_index,
@@ -669,7 +669,7 @@ where
     }
 }
 
-pub(crate) fn call_method_dynamic_captured<A: ArgumentList + ?Sized>(
+pub(crate) fn call_method_dynamic_captured<A: ArgumentList + ?Sized, F>(
     vtable_index: usize,
     obj: *mut c_void,
     parameters: &[Parameter],
@@ -677,7 +677,11 @@ pub(crate) fn call_method_dynamic_captured<A: ArgumentList + ?Sized>(
     out_count: usize,
     return_kind: &MethodReturn,
     cif: &libffi::middle::Cif,
-) -> windows_core::Result<CapturedHResultCall> {
+    before_dispatch: F,
+) -> windows_core::Result<CapturedHResultCall>
+where
+    F: FnOnce() -> windows_core::Result<()>,
+{
     match call_method_dynamic_impl(
         vtable_index,
         obj,
@@ -686,7 +690,7 @@ pub(crate) fn call_method_dynamic_captured<A: ArgumentList + ?Sized>(
         out_count,
         return_kind,
         cif,
-        || {},
+        before_dispatch,
     )? {
         DynamicCallOutcome::Captured(call) => Ok(call),
         DynamicCallOutcome::Values(_) => Err(windows_core::Error::new(
@@ -708,7 +712,7 @@ fn call_method_dynamic_impl<A, F>(
 ) -> windows_core::Result<DynamicCallOutcome>
 where
     A: ArgumentList + ?Sized,
-    F: FnOnce(),
+    F: FnOnce() -> windows_core::Result<()>,
 {
     use crate::metadata_table::ValueTypeData;
     use libffi::middle::CodePtr;
@@ -1413,7 +1417,7 @@ where
     let mut mark_dispatched = || {
         mark_dispatched
             .take()
-            .expect("native dispatch marker must run exactly once")();
+            .expect("native dispatch marker must run exactly once")()
     };
     let call_result: windows_core::Result<(
         Option<NativeCallValue>,
@@ -1421,12 +1425,12 @@ where
     )> = unsafe {
         match return_kind {
             MethodReturn::HResult => {
-                mark_dispatched();
+                mark_dispatched()?;
                 let hr: windows_core::HRESULT = cif.call(CodePtr(fptr), &ffi_args);
                 Ok((None, Some(hr)))
             }
             MethodReturn::SemanticHResult => {
-                mark_dispatched();
+                mark_dispatched()?;
                 let hr: windows_core::HRESULT = cif.call(CodePtr(fptr), &ffi_args);
                 Ok((
                     hr.is_ok()
@@ -1435,24 +1439,24 @@ where
                 ))
             }
             MethodReturn::PreservedHResult => {
-                mark_dispatched();
+                mark_dispatched()?;
                 let hr: windows_core::HRESULT = cif.call(CodePtr(fptr), &ffi_args);
                 Ok((Some(NativeCallValue::WinRt(WinRTValue::HResult(hr))), None))
             }
             MethodReturn::CapturedHResult(_) => {
-                mark_dispatched();
+                mark_dispatched()?;
                 let hr: windows_core::HRESULT = cif.call(CodePtr(fptr), &ffi_args);
                 Ok((None, Some(hr)))
             }
             MethodReturn::Void => {
-                mark_dispatched();
+                mark_dispatched()?;
                 cif.call::<()>(CodePtr(fptr), &ffi_args);
                 Ok((None, None))
             }
             MethodReturn::Value { typ, .. } => {
                 if let crate::native_call::ParameterType::NativeStruct(layout) = typ {
                     NativeStructStorage::zeroed(layout).and_then(|mut storage| {
-                        mark_dispatched();
+                        mark_dispatched()?;
                         cif.call_return_into(CodePtr(fptr), &ffi_args, storage.as_ret());
                         storage.validate_canaries()?;
                         crate::com::NativeStructValue::new(layout.clone(), storage.to_vec())
@@ -1466,7 +1470,7 @@ where
                     })
                 } else if let crate::native_call::ParameterType::NativeUnion(layout) = typ {
                     NativeUnionStorage::zeroed(layout).and_then(|mut storage| {
-                        mark_dispatched();
+                        mark_dispatched()?;
                         cif.call_return_into(CodePtr(fptr), &ffi_args, storage.as_ret());
                         storage.validate_canaries()?;
                         crate::com::NativeUnionValue::from_returned_bytes(
@@ -1482,7 +1486,7 @@ where
                         })
                     })
                 } else {
-                    mark_dispatched();
+                    mark_dispatched()?;
                     let value = match typ.abi_type() {
                         AbiType::Bool => AbiValue::Bool(cif.call(CodePtr(fptr), &ffi_args)),
                         AbiType::I8 => AbiValue::I8(cif.call(CodePtr(fptr), &ffi_args)),

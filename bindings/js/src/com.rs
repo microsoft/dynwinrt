@@ -8,6 +8,10 @@ use windows::core::{IUnknown, Interface as _, GUID};
 
 use super::{com_raw::DynComRaw, DynWinRTType, DynWinRTValue, WinGUID, TABLE};
 
+#[cfg(all(test, feature = "test-hooks"))]
+#[path = "com_input_tests.rs"]
+mod input_tests;
+
 #[allow(dead_code)]
 pub(super) enum NativePointerOwner {
   Uint8Array {
@@ -72,7 +76,7 @@ impl AutomationValue {
     }
   }
 
-  fn ensure_owner_thread(&self) -> napi::Result<()> {
+  pub(super) fn ensure_owner_thread(&self) -> napi::Result<()> {
     if matches!(self.value, Some(AutomationValueKind::Bstr(_)))
       || std::thread::current().id() == self.owner_thread
     {
@@ -1471,16 +1475,82 @@ pub(super) fn collect_native_invocation_leases(
   })
 }
 
+#[cfg(test)]
 pub(super) fn with_com_invocation_args<T>(
   args: &[&DynWinRTValue],
   invoke: impl FnOnce(&[dynwinrt::com::Value]) -> napi::Result<T>,
 ) -> napi::Result<T> {
+  with_com_invocation_args_guarded(args, |args, _| invoke(args))
+}
+
+struct ComInputGuard {
+  pins: Vec<super::com_input::InputBindings>,
+  bindings: Vec<super::ComApartmentBinding>,
+}
+
+impl ComInputGuard {
+  fn pin(args: &[&DynWinRTValue]) -> napi::Result<Self> {
+    // Admit the whole batch before cloning even its first interface reference.
+    for arg in args {
+      arg.check_com_input_state()?;
+    }
+    Ok(Self {
+      pins: args
+        .iter()
+        .filter_map(|arg| arg.7.as_ref())
+        .map(super::com_input::InputBindings::pin)
+        .collect::<napi::Result<Vec<_>>>()?,
+      bindings: args
+        .iter()
+        .filter_map(|arg| arg.6.as_ref().cloned())
+        .collect(),
+    })
+  }
+
+  fn check(&self) -> napi::Result<()> {
+    for pin in &self.pins {
+      pin.ensure_idle()?;
+    }
+    for binding in &self.bindings {
+      binding.ensure_idle()?;
+    }
+    Ok(())
+  }
+
+  fn check_native(&self) -> windows::core::Result<()> {
+    self.check().map_err(|error| {
+      windows::core::Error::new(
+        windows::core::HRESULT(0x80070057u32 as i32),
+        error.reason.as_str(),
+      )
+    })
+  }
+}
+
+fn admit_com_inputs(args: &[&DynWinRTValue]) -> napi::Result<ComInputGuard> {
+  let guard = ComInputGuard::pin(args)?;
+  for arg in args {
+    arg.admit_com_input()?;
+  }
+  guard.check()?;
+  Ok(guard)
+}
+
+fn with_com_invocation_args_guarded<T>(
+  args: &[&DynWinRTValue],
+  invoke: impl FnOnce(
+    &[dynwinrt::com::Value],
+    &dyn Fn() -> windows::core::Result<()>,
+  ) -> napi::Result<T>,
+) -> napi::Result<T> {
+  let guard = admit_com_inputs(args)?;
   let _leases = collect_native_invocation_leases(args)?;
-  let args = args
+  let converted = args
     .iter()
     .map(|arg| arg.to_com_value())
     .collect::<napi::Result<Vec<_>>>()?;
-  invoke(&args)
+  guard.check()?;
+  invoke(&converted, &|| guard.check_native())
 }
 
 pub(super) fn take_native_output_pointer(
@@ -1963,6 +2033,7 @@ fn optional_com_object(
 ) -> napi::Result<Option<windows::core::IUnknown>> {
   value
     .map(|value| {
+      value.admit_com_input()?;
       value
         .0
         .as_object()
@@ -2391,19 +2462,28 @@ impl DynComMethodHandle {
   ) -> napi::Result<Vec<DynWinRTValue>> {
     if !self.0.has_context_effect() {
       obj.ensure_tracked_com_idle()?;
-      let raw = obj
+      let receiver_guard = ComInputGuard::pin(&[obj])?;
+      let view = obj
         .0
         .as_object()
-        .ok_or_else(|| napi::Error::from_reason("COM invocation requires a live object"))?
-        .as_raw();
-      return with_com_invocation_args(&args, |args| {
-        unsafe { self.0.invoke_values_with_output_kinds(raw, args) }.map_err(com_error)
-      })
-      .map(|values| {
-        values
-          .into_iter()
-          .map(|(value, kind)| DynWinRTValue::from_com_value(value, kind))
-          .collect()
+        .ok_or_else(|| napi::Error::from_reason("COM invocation requires a live object"))?;
+      receiver_guard.check()?;
+      return with_com_invocation_args_guarded(&args, |args, check| {
+        unsafe {
+          self
+            .0
+            .invoke_values_with_output_kinds_guarded(view.as_raw(), args, || {
+              receiver_guard.check_native()?;
+              check()
+            })
+        }
+        .map_err(com_error)
+        .map(|values| {
+          values
+            .into_iter()
+            .map(|(value, kind)| DynWinRTValue::from_com_value(value, kind))
+            .collect()
+        })
       });
     }
     let context = obj.com_context()?;
@@ -2412,11 +2492,11 @@ impl DynComMethodHandle {
       .as_object()
       .ok_or_else(|| napi::Error::from_reason("COM invocation requires a live object"))?
       .clone();
-    let result = with_com_invocation_args(&args, |args| {
-      unsafe { dynwinrt::com::borrowed::invoke_managed(&self.0, &context, &view, args) }
-        .map_err(com_error)
-    })?;
-    Ok(
+    with_com_invocation_args_guarded(&args, |args, check| {
+      let result = unsafe {
+        dynwinrt::com::borrowed::invoke_managed_guarded(&self.0, &context, &view, args, check)
+      }
+      .map_err(com_error)?;
       result
         .values
         .into_iter()
@@ -2427,20 +2507,21 @@ impl DynComMethodHandle {
           }
           Ok(value)
         })
-        .collect::<napi::Result<Vec<_>>>()?,
-    )
+        .collect::<napi::Result<Vec<_>>>()
+    })
   }
 
   #[napi]
   pub fn get_string(&self, obj: &DynWinRTValue) -> napi::Result<String> {
     obj.ensure_com_apartment()?;
     obj.ensure_tracked_com_idle()?;
-    let raw = obj
+    let receiver_guard = ComInputGuard::pin(&[obj])?;
+    let view = obj
       .0
       .as_object()
-      .ok_or_else(|| napi::Error::from_reason("getString() requires a COM object"))?
-      .as_raw();
-    unsafe { self.0.call_getter_hstring(raw) }
+      .ok_or_else(|| napi::Error::from_reason("getString() requires a COM object"))?;
+    receiver_guard.check()?;
+    unsafe { self.0.call_getter_hstring(view.as_raw()) }
       .map(|value| value.to_string())
       .map_err(|error| napi::Error::from_reason(error.message()))
   }
@@ -2482,31 +2563,38 @@ impl DynComMethodHandle {
   ) -> napi::Result<DynComDispatchInvokeResult> {
     obj.ensure_com_apartment()?;
     obj.ensure_tracked_com_idle()?;
-    let raw = obj
+    let receiver_guard = ComInputGuard::pin(&[obj])?;
+    let view = obj
       .0
       .as_object()
-      .ok_or_else(|| napi::Error::from_reason("invokeDispatch() requires a COM object"))?
-      .as_raw();
-    let result = with_com_invocation_args(&args, |args| {
-      unsafe { self.0.invoke_dispatch(raw, args) }.map_err(com_error)
-    })?;
-    let (hresult, result, excep_info, arg_err, finalization_error) = result.into_parts();
-    Ok(DynComDispatchInvokeResult {
-      hresult: hresult.0,
-      result: result.map(|value| {
-        DynWinRTValue::from_com_value(
-          dynwinrt::com::Value::Variant(value),
-          dynwinrt::com::PointerOutputKind::None,
-        )
-      }),
-      excep_info: excep_info.map(|value| {
-        DynWinRTValue::from_com_value(
-          dynwinrt::com::Value::ExcepInfo(value),
-          dynwinrt::com::PointerOutputKind::None,
-        )
-      }),
-      arg_err,
-      finalization_error: finalization_error.map(|error| error.message()),
+      .ok_or_else(|| napi::Error::from_reason("invokeDispatch() requires a COM object"))?;
+    receiver_guard.check()?;
+    with_com_invocation_args_guarded(&args, |args, check| {
+      let result = unsafe {
+        self.0.invoke_dispatch_guarded(view.as_raw(), args, || {
+          receiver_guard.check_native()?;
+          check()
+        })
+      }
+      .map_err(com_error)?;
+      let (hresult, result, excep_info, arg_err, finalization_error) = result.into_parts();
+      Ok(DynComDispatchInvokeResult {
+        hresult: hresult.0,
+        result: result.map(|value| {
+          DynWinRTValue::from_com_value(
+            dynwinrt::com::Value::Variant(value),
+            dynwinrt::com::PointerOutputKind::None,
+          )
+        }),
+        excep_info: excep_info.map(|value| {
+          DynWinRTValue::from_com_value(
+            dynwinrt::com::Value::ExcepInfo(value),
+            dynwinrt::com::PointerOutputKind::None,
+          )
+        }),
+        arg_err,
+        finalization_error: finalization_error.map(|error| error.message()),
+      })
     })
   }
 }
@@ -2540,24 +2628,30 @@ impl DynComRaw {
     dispatch.entered.set(false);
     obj.ensure_com_apartment()?;
     obj.ensure_tracked_com_idle()?;
-    let raw = obj
+    let receiver_guard = ComInputGuard::pin(&[obj])?;
+    let view = obj
       .0
       .as_object()
-      .ok_or_else(|| napi::Error::from_reason("invokeAllTracked() requires a COM object"))?
-      .as_raw();
-    with_com_invocation_args(&args, |args| {
+      .ok_or_else(|| napi::Error::from_reason("invokeAllTracked() requires a COM object"))?;
+    receiver_guard.check()?;
+    with_com_invocation_args_guarded(&args, |args, check| {
       unsafe {
         method
           .0
-          .invoke_values_with_output_kinds_tracked(raw, args, || dispatch.entered.set(true))
+          .invoke_values_with_output_kinds_guarded(view.as_raw(), args, || {
+            receiver_guard.check_native()?;
+            check()?;
+            dispatch.entered.set(true);
+            Ok(())
+          })
       }
       .map_err(|error| napi::Error::from_reason(error.message()))
-    })
-    .map(|results| {
-      results
-        .into_iter()
-        .map(|(value, kind)| DynWinRTValue::from_com_value(value, kind))
-        .collect()
+      .map(|results| {
+        results
+          .into_iter()
+          .map(|(value, kind)| DynWinRTValue::from_com_value(value, kind))
+          .collect()
+      })
     })
   }
 }
@@ -2770,14 +2864,21 @@ impl DynComNativeUnion {
 #[napi]
 pub struct DynComVariant {
   value: Option<dynwinrt::com::VariantValue>,
+  inputs: super::com_input::InputBindings,
 }
 
 impl DynComVariant {
   fn new(value: dynwinrt::com::VariantValue) -> Self {
-    Self { value: Some(value) }
+    let inputs =
+      super::com_input::InputBindings::capture(&dynwinrt::com::Value::Variant(value.clone()));
+    Self {
+      value: Some(value),
+      inputs,
+    }
   }
 
   fn value(&self) -> napi::Result<&dynwinrt::com::VariantValue> {
+    self.inputs.ensure_idle()?;
     self
       .value
       .as_ref()
@@ -2787,7 +2888,7 @@ impl DynComVariant {
 
 impl Drop for DynComVariant {
   fn drop(&mut self) {
-    if super::winui_dispatcher_loop_exited() {
+    if !self.inputs.is_owner() || super::winui_dispatcher_loop_exited() {
       if let Some(value) = self.value.take() {
         std::mem::forget(value);
       }
@@ -2995,8 +3096,11 @@ impl DynComVariant {
   }
 
   #[napi]
-  pub fn release(&mut self) {
+  pub fn release(&mut self) -> napi::Result<()> {
+    self.inputs.ensure_owner()?;
     self.value = None;
+    self.inputs = super::com_input::InputBindings::deferred();
+    Ok(())
   }
 }
 
@@ -3004,13 +3108,18 @@ impl DynComVariant {
 pub struct DynComDispatchParams {
   owner_thread: std::thread::ThreadId,
   value: Option<dynwinrt::com::DispatchParamsValue>,
+  inputs: super::com_input::InputBindings,
 }
 
 impl DynComDispatchParams {
   fn from_value(value: dynwinrt::com::DispatchParamsValue) -> Self {
+    let inputs = super::com_input::InputBindings::capture(&dynwinrt::com::Value::DispatchParams(
+      value.clone(),
+    ));
     Self {
       owner_thread: std::thread::current().id(),
       value: Some(value),
+      inputs,
     }
   }
 
@@ -3020,6 +3129,7 @@ impl DynComDispatchParams {
         "Apartment-bound DISPPARAMS used from a different thread",
       ));
     }
+    self.inputs.ensure_idle()?;
     self
       .value
       .as_ref()
@@ -3098,6 +3208,7 @@ impl DynComDispatchParams {
       ));
     }
     self.value = None;
+    self.inputs = super::com_input::InputBindings::deferred();
     Ok(())
   }
 }
@@ -3783,14 +3894,21 @@ pub struct DynComSafeArrayBound {
 #[napi]
 pub struct DynComSafeArray {
   value: Option<dynwinrt::com::SafeArrayValue>,
+  inputs: super::com_input::InputBindings,
 }
 
 impl DynComSafeArray {
   fn new(value: dynwinrt::com::SafeArrayValue) -> Self {
-    Self { value: Some(value) }
+    let inputs =
+      super::com_input::InputBindings::capture(&dynwinrt::com::Value::SafeArray(value.clone()));
+    Self {
+      value: Some(value),
+      inputs,
+    }
   }
 
   fn value(&self) -> napi::Result<&dynwinrt::com::SafeArrayValue> {
+    self.inputs.ensure_idle()?;
     self
       .value
       .as_ref()
@@ -3833,7 +3951,7 @@ impl DynComSafeArray {
 
 impl Drop for DynComSafeArray {
   fn drop(&mut self) {
-    if super::winui_dispatcher_loop_exited() {
+    if !self.inputs.is_owner() || super::winui_dispatcher_loop_exited() {
       if let Some(value) = self.value.take() {
         std::mem::forget(value);
       }
@@ -3993,6 +4111,7 @@ impl DynComSafeArray {
     values: Vec<&DynWinRTValue>,
     bounds: Option<Vec<DynComSafeArrayBound>>,
   ) -> napi::Result<Self> {
+    let _guard = admit_com_inputs(&values)?;
     let values = values
       .into_iter()
       .map(|value| {
@@ -4009,6 +4128,7 @@ impl DynComSafeArray {
     values: Vec<&DynWinRTValue>,
     bounds: Option<Vec<DynComSafeArrayBound>>,
   ) -> napi::Result<Self> {
+    let _guard = admit_com_inputs(&values)?;
     let values = values
       .into_iter()
       .map(|value| {
@@ -4049,6 +4169,7 @@ impl DynComSafeArray {
     values: Vec<&DynWinRTValue>,
     bounds: Option<Vec<DynComSafeArrayBound>>,
   ) -> napi::Result<Self> {
+    let _guard = admit_com_inputs(&values)?;
     let values = values
       .into_iter()
       .map(|value| {
@@ -4226,8 +4347,11 @@ impl DynComSafeArray {
   }
 
   #[napi]
-  pub fn release(&mut self) {
+  pub fn release(&mut self) -> napi::Result<()> {
+    self.inputs.ensure_owner()?;
     self.value = None;
+    self.inputs = super::com_input::InputBindings::deferred();
+    Ok(())
   }
 }
 
@@ -5431,6 +5555,7 @@ impl DynCom {
     iid: &WinGUID,
     values: Vec<&DynWinRTValue>,
   ) -> napi::Result<DynWinRTValue> {
+    let _guard = admit_com_inputs(&values)?;
     let values = values
       .into_iter()
       .map(|value| {
@@ -5667,12 +5792,20 @@ impl DynCom {
 
   #[napi]
   pub fn take_com_array(value: &mut DynWinRTValue) -> napi::Result<Vec<DynWinRTValue>> {
+    value.admit_com_input()?;
     value
       .4
       .take()
       .ok_or_else(|| napi::Error::from_reason("Value is not a managed COM array result"))?
       .into_com_values()
-      .map(|values| values.into_iter().map(DynWinRTValue::new).collect())
+      .map(|values| {
+        values
+          .into_iter()
+          .map(|value| {
+            DynWinRTValue::from_com_result(value, dynwinrt::com::PointerOutputKind::None)
+          })
+          .collect()
+      })
       .map_err(com_error)
   }
 
@@ -5695,6 +5828,7 @@ impl DynCom {
 
   #[napi]
   pub fn take_variant_array(value: &mut DynWinRTValue) -> napi::Result<Vec<DynComVariant>> {
+    value.admit_com_input()?;
     value
       .4
       .take()
@@ -5978,24 +6112,30 @@ impl DynCom {
 
   #[napi]
   pub fn take_variant(value: &mut DynWinRTValue) -> napi::Result<DynComVariant> {
+    value.admit_com_input()?;
     let result = value
       .5
       .as_mut()
       .ok_or_else(|| napi::Error::from_reason("Value is not a COM VARIANT"))?
       .take_variant()?;
     value.5 = None;
-    Ok(DynComVariant::new(result))
+    let result = DynComVariant::new(result);
+    value.7 = None;
+    Ok(result)
   }
 
   #[napi]
   pub fn take_safe_array(value: &mut DynWinRTValue) -> napi::Result<DynComSafeArray> {
+    value.admit_com_input()?;
     let result = value
       .5
       .as_mut()
       .ok_or_else(|| napi::Error::from_reason("Value is not a COM SAFEARRAY"))?
       .take_safe_array()?;
     value.5 = None;
-    Ok(DynComSafeArray::new(result))
+    let result = DynComSafeArray::new(result);
+    value.7 = None;
+    Ok(result)
   }
 
   #[napi]

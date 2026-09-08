@@ -960,6 +960,14 @@ impl Default for CopyFixture {
 
 impl CopyFixture {
     pub fn object(&self, kind: &str) -> result::Result<IUnknown> {
+        if kind == "sample" {
+            if self.objects.is_empty() {
+                return Err(error("Fixture owners have been released"));
+            }
+            return unsafe { windows::Win32::Media::MediaFoundation::MFCreateSample() }?
+                .cast()
+                .map_err(result::Error::WindowsError);
+        }
         if kind == "mediaUnknown" {
             return super::query(&self.object("media")?, &IUnknown::IID);
         }
@@ -1055,7 +1063,6 @@ impl CopyFixture {
         }));
         Ok(())
     }
-    #[cfg(test)]
     pub fn hook(&self, hook: Option<Rc<dyn Fn(&str)>>) {
         *self.control.hook.borrow_mut() = hook;
     }

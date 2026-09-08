@@ -8,7 +8,7 @@ repository = "https://github.com/microsoft/dynwinrt"
 authors = ["Microsoft"]
 
 [features]
-test-hooks = []
+test-hooks = ["windows/Win32_Media_MediaFoundation"]
 
 [dependencies]
 dynwinrt-com-contracts = { path = "../dynwinrt-com-contracts", version = "0.1.0" }

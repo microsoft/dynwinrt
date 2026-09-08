@@ -10,7 +10,8 @@ const com = require('../dist/com.js')
 const unsafe = require('../dist/com-unsafe.js')
 const generatedRoot = process.env.DYNWINRT_BORROWED_GENERATED
 const generated = require(join(generatedRoot, 'com', 'index.js'))
-const { IAudioClient, IAudioClient3, IAudioRenderClient, IAudioCaptureClient, IWICBitmap, IMFMediaBuffer } = generated
+const { IAudioClient, IAudioClient3, IAudioRenderClient, IAudioCaptureClient, IWICBitmap, IMFMediaBuffer, IMFSample } =
+  generated
 const { DynComAudioFormat, projectAs } = com
 const scenario = process.argv[2]
 
@@ -166,6 +167,29 @@ if (scenario === 'audio') {
   const f = fixture()
   const media = wrap(f, 'media', IMFMediaBuffer)
   const alias = wrap(f, 'mediaUnknown', IMFMediaBuffer)
+  const input = f.object('media')
+  const inputAlias = f.object('mediaUnknown')
+  const sample = wrap(f, 'sample', IMFSample)
+  sample.addBuffer(inputAlias)
+  assert.equal(sample.getBufferCount(), 1)
+  const inputArray = native.DynCom.interfaceArray(IMFMediaBuffer.IID, [inputAlias])
+  const inputVariant = native.DynComVariant.unknown(inputAlias)
+  const iid = native.WinGuid.parse('109302ce-8b8e-4e90-ad9c-5b988abc94b1')
+  const receiverType = native.DynCom.registerIUnknownInterface('ArgumentGuardReceiver', iid).addMethodAt(
+    3,
+    'Accept',
+    new native.DynComMethodSig().addIn(native.DynCom.interfaceType(IMFMediaBuffer.IID)),
+  )
+  let calls = 0
+  const receiver = native.DynCom.createIUnknownSink(receiverType, (_slot, argument) => {
+    calls++
+    argument.release()
+    return 0
+  })
+  native.DynCom.bindComObject(receiver)
+  const accept = receiverType.method(3)
+  accept.invokeAll(receiver, [inputAlias])
+  assert.equal(calls, 1)
   const copy = media.readCopy()
   assert.deepEqual(copy, Buffer.from([0, 1, 2, 3]))
   media.replaceCopy(Buffer.from([9, 8, 7]))
@@ -182,10 +206,29 @@ if (scenario === 'audio') {
   f.configure('mediaUnlockHr', 0x80004005)
   assert.throws(() => media.readCopy())
   const unlocks = count(f, 'media.unlock')
+  assert.throws(() => sample.addBuffer(input), /poisoned/i)
+  assert.throws(() => sample.addBuffer(inputAlias), /poisoned/i)
+  assert.equal(sample.getBufferCount(), 1, 'poisoned input must not be retained by IMFSample')
+  sample.removeAllBuffers()
+  sample.release()
+  for (const value of [input, inputAlias, inputArray]) {
+    assert.throws(() => accept.invokeAll(receiver, [value]), /poisoned/i)
+  }
+  assert.throws(() => native.DynCom.variant(inputVariant), /poisoned/i)
+  assert.throws(() => native.DynCom.interfaceArray(IMFMediaBuffer.IID, [inputAlias]), /poisoned/i)
+  assert.equal(calls, 1, 'poisoned arguments must not enter the other receiver')
   media.release()
   assert.throws(() => alias.readCopy(), /poisoned/i)
   assert.equal(count(f, 'media.unlock'), unlocks)
   alias.release()
+  input.release()
+  inputAlias.release()
+  inputVariant.release()
+  f.releaseOwners()
+  assert.throws(() => accept.invokeAll(receiver, [inputArray]), /poisoned/i)
+  inputArray.release()
+  assert.equal(count(f, 'drop.media'), 1)
+  receiver.release()
 } else if (scenario === 'wic' || scenario === 'mta') {
   const f = fixture()
   const bitmap = wrap(f, 'bitmap', IWICBitmap)
