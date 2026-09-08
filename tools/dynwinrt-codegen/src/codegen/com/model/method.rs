@@ -31,7 +31,7 @@ impl ComReturnKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::codegen::com) enum ComMethodSpecialContract {
     RestrictedActivation {
         iid_param: ParamIndex,
@@ -39,7 +39,7 @@ pub(in crate::codegen::com) enum ComMethodSpecialContract {
         null_param: ParamIndex,
         output_param: ParamIndex,
         context: u32,
-        allowed_iids: [&'static str; 5],
+        allowed_iids: Vec<String>,
     },
     FixedCapacityBytes {
         guid_param: ParamIndex,
@@ -453,10 +453,8 @@ impl ComMethodContract {
         self.return_kind
     }
 
-    pub(in crate::codegen::com) const fn special_contract(
-        &self,
-    ) -> Option<ComMethodSpecialContract> {
-        self.special_contract
+    pub(in crate::codegen::com) fn special_contract(&self) -> Option<ComMethodSpecialContract> {
+        self.special_contract.clone()
     }
 
     pub(in crate::codegen::com) const fn dynamic_iid_contract(&self) -> Option<DynamicIidContract> {

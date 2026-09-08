@@ -472,7 +472,7 @@ pub(super) enum ProjectedComMethodKind {
         null_param_index: usize,
         output_param_index: usize,
         context: u32,
-        allowed_iids: [&'static str; 5],
+        allowed_iids: Vec<String>,
     },
     FixedCapacityBytes {
         guid_param_index: usize,
