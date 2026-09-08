@@ -646,6 +646,14 @@ Generate and import whichever target the application needs. Other/custom
 targets, async activation, and loopback or other parameterized activation
 remain outside this safe subset.
 
+The five targets are named, cited records in
+`tools/dynwinrt-codegen/src/com_activation_registry.rs`, each carrying the
+in-process/native-NULL/owned-interface conditions of this method contract.
+This is the current projection policy, not an exhaustive Windows activation
+list. Registering activation evidence does not establish a target wrapper's
+complete safe support or guarantee that a device implements the requested IID.
+This registry migration preserves the existing five targets and generated API.
+
 `getId()` returns a natural string and frees the native CoTaskMem allocation.
 The existing safe `IAudioClient`/`IAudioClient2`/`IAudioClient3` format methods,
 including `getMixFormat()`, and the exact nullable device-control `record()`
