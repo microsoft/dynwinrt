@@ -6,14 +6,12 @@ use super::super::{
         CopyArguments, CopyResult, ProjectedBorrowedCopy, ProjectedBorrowedOperation,
         ProjectedBorrowedStorage,
     },
-    model::borrowed::{CopyFamily, ValidatedStorage},
+    model::borrowed::ValidatedStorage,
 };
+use dynwinrt_com_contracts::{InputKind, ResultMapping};
 
 pub(super) fn project(storage: ValidatedStorage) -> Result<ProjectedBorrowedStorage, String> {
-    let copy_only = storage
-        .copy
-        .as_ref()
-        .is_some_and(|(family, _)| *family != CopyFamily::BitmapBgra8);
+    let copy_only = storage.copy.as_ref().is_some_and(|copy| copy.copy_only);
     let context_effects = storage
         .effects
         .into_iter()
@@ -22,7 +20,7 @@ pub(super) fn project(storage: ValidatedStorage) -> Result<ProjectedBorrowedStor
                 slot,
                 serde_json::to_string(&serde_json::json!({
                     "version": 1,
-                    "effect": evidence.effect,
+                    "effect": evidence.effect.as_deref(),
                     "metadata_sha256": crate::com_metadata::borrowed::METADATA_SHA256,
                     "fingerprint": evidence.fingerprint,
                 }))
@@ -32,33 +30,27 @@ pub(super) fn project(storage: ValidatedStorage) -> Result<ProjectedBorrowedStor
         .collect::<Result<_, String>>()?;
     let copy = storage
         .copy
-        .map(|(family, plan)| {
-            let op = |name, arguments, result| ProjectedBorrowedOperation {
-                name,
-                runtime_method: name,
-                arguments,
-                result,
-            };
-            let operations = match family {
-                CopyFamily::AudioRender => vec![
-                    op("writeFramesCopy", CopyArguments::Bytes, CopyResult::Void),
-                    op("writeSilence", CopyArguments::Frames, CopyResult::Void),
-                ],
-                CopyFamily::AudioCapture => vec![op(
-                    "readPacketCopy",
-                    CopyArguments::None,
-                    CopyResult::Packet,
-                )],
-                CopyFamily::BitmapBgra8 => vec![op(
-                    "readLockedBgra8Copy",
-                    CopyArguments::Rectangle,
-                    CopyResult::Bitmap,
-                )],
-                CopyFamily::MediaBuffer => vec![
-                    op("readCopy", CopyArguments::None, CopyResult::Bytes),
-                    op("replaceCopy", CopyArguments::Bytes, CopyResult::Void),
-                ],
-            };
+        .map(|plan| {
+            let operations = plan
+                .operations
+                .iter()
+                .map(|op| ProjectedBorrowedOperation {
+                    name: op.api.name(),
+                    runtime_method: op.api.name(),
+                    arguments: match op.arguments {
+                        InputKind::None => CopyArguments::None,
+                        InputKind::Bytes => CopyArguments::Bytes,
+                        InputKind::Frames => CopyArguments::Frames,
+                        InputKind::Rectangle => CopyArguments::Rectangle,
+                    },
+                    result: match op.result {
+                        ResultMapping::Void => CopyResult::Void,
+                        ResultMapping::Bytes => CopyResult::Bytes,
+                        ResultMapping::Packet { .. } => CopyResult::Packet,
+                        ResultMapping::Bitmap { .. } => CopyResult::Bitmap,
+                    },
+                })
+                .collect();
             Ok::<_, String>(ProjectedBorrowedCopy {
                 descriptor: serde_json::to_string(&plan).map_err(|error| error.to_string())?,
                 operations,
@@ -79,6 +71,32 @@ mod tests {
         generate_com_interface_files, generate_complete_com_interface_files,
     };
     use crate::com_metadata::{borrowed as evidence, parse_com_interface};
+
+    fn compare_public_baseline(name: &str, declarations: &str) {
+        let Ok(root) = std::env::var("DYNWINRT_BORROWED_DECLARATION_BASELINE") else {
+            return;
+        };
+        fn find(root: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
+            for file in std::fs::read_dir(root).unwrap() {
+                let file = file.unwrap();
+                let path = file.path();
+                if file.file_type().unwrap().is_dir() {
+                    if let Some(found) = find(&path, name) {
+                        return Some(found);
+                    }
+                } else if file.file_name() == format!("{name}.d.ts").as_str() {
+                    return Some(path);
+                }
+            }
+            None
+        }
+        let path = find(std::path::Path::new(&root), name).expect("baseline declaration");
+        assert_eq!(
+            std::fs::read_to_string(path).unwrap(),
+            declarations,
+            "{name} public declarations must remain byte-for-byte unchanged"
+        );
+    }
 
     #[test]
     fn borrowed_copy_projection_is_bounded_and_renderer_is_ir_driven() {
@@ -105,6 +123,7 @@ mod tests {
         ] {
             let metadata = parse_com_interface(&paths, namespace, name).unwrap();
             let output = generate_com_interface_files(&metadata, &paths).unwrap();
+            compare_public_baseline(name, &output.dts);
             for method in public_methods {
                 assert!(output.js.contains(&format!(" {method}(")));
                 assert!(output.dts.contains(&format!(" {method}(")));
@@ -152,6 +171,7 @@ mod tests {
                 if name == "IAudioClient3" { 3 } else { 2 }
             );
             let output = generate_complete_com_interface_files(&metadata, &paths).unwrap();
+            compare_public_baseline(name, &output.dts);
             assert!(output.js.contains(".withContextEffect("));
             assert!(
                 output.js.contains("audio-initialize") && output.js.contains("audio-get-service")

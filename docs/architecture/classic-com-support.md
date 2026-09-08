@@ -267,11 +267,44 @@ count the three copy-only facades as newly complete interfaces.
 
 ### Private context and lifecycle
 
-The plan describes receiver IID, acquire method, private output-cell storage,
-native extent source, access, owner, normal/abort finalizers, and apartment
-prerequisites. All signatures and cleanup recipes are prepared before native
-acquisition. Output cells are private stable storage, not language values: the
-executor cannot read them before the transaction classifies the HRESULT.
+The native-independent
+[`dynwinrt-com-contracts` registry](../../crates/dynwinrt-com-contracts/src/registry.json)
+is the single reviewed source for complete interface identities, native
+IID/slot/ABI-cell evidence, operation/result mappings, and lifecycle recipes.
+Codegen selects records by exact identity; the runtime admits only an exact
+packaged record. A matching-looking JSON object or a new record ID does not
+authorize native memory access.
+
+The version-2 recipe actually drives execution:
+
+* named `calls` reference reviewed `evidence` and bind each native argument to
+  a typed input source or named output cell;
+* `before`, `acquire`, and `after` order queries and acquisition; typed byte,
+  frame, layout, rectangle, row, flag, timestamp, and owner references must have
+  available producers, compatible ABI cells and matching native owners;
+* the closed `frame-extent`, `native-extent`, and `row-extent` constructors prove
+  the copy bounds, while `transfer` chooses read, write, silent-packet skipping,
+  or no-payload silence;
+* `commit` consumes the proven replacement length, and `cleanup` supplies the
+  actual normal/abort arguments or names the unique acquired owner to Release;
+* `result` names the bounded dimensions, frames, flags and timestamps to project.
+
+The pure validator checks the entire recipe, including abort availability
+before acquisition, full/zero frame release, access, result shape and owner
+lifetime, before preparing any native call. Reviewed evidence designates each
+acquisition's finalizer and the units of each native scalar cell; a same-width
+flags/count swap or unrelated cleanup call cannot satisfy the graph proof.
+Runtime native lengths still
+require checked arithmetic and pointer/extent validation after successful
+acquisition. All calls use completed MethodHandles/libffi, with no family
+execution switch or per-interface SDK adapter. The public methods are thin
+operation selectors. This is not an arbitrary-execution DSL: no pointer input,
+caller byte extent, user callback, loop, allocator selection or new production
+interface is introduced.
+
+Output cells are private stable storage, not language values: the executor
+cannot publish/read them before classifying the exact HRESULT. Cleanup is
+armed before inspecting acquired outputs or allocating/copying result bytes.
 
 ```text
 Idle -> Acquiring -> Active -> Finalizing -> Idle
@@ -374,25 +407,40 @@ Caller-provided height or stride is never treated as native memory bounds.
 
 ### Evidence and regeneration
 
+The shared packaged registry contains the same 26 exact selectors, full source
+fingerprints and Microsoft citations.
 [`com_borrowed_metadata.rs`](../../tools/dynwinrt-codegen/src/com_borrowed_metadata.rs)
-contains all 26 exact selectors, full source fingerprints and Microsoft
-citations. The configured metadata must include Win32Metadata
+checks them against the configured metadata, which must include Win32Metadata
 **71.0.14-preview**, SHA256
 `B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D`.
 The complete inherited interfaces and required owner/lock dependencies are
 validated, not just acquisition methods. Runtime descriptors are versioned and
 closed; absent/drifted signatures, storage roles, prerequisites or finalizers
 fail before acquisition. Renderers only serialize the projected IR.
+Borrowed descriptors are now **version 2**, and the generated COM ownership
+manifest is **version 5**. Old descriptors/manifests require complete
+regeneration; there is no silent or incremental migration. Evidence IDs,
+fingerprints, support sets and public declarations are unchanged; embedded
+descriptor JavaScript and the ownership-manifest version necessarily differ.
 
-COM file-ownership manifest **4** and unsafe support schema **12** require deletion and full regeneration
-of older output. Do not mix pre-effect audio wrappers with new copy facades.
+Hardware-free tests add test-only records for new linear, frame-writer,
+frame-reader and row-copy interfaces (plus their owner/context views).
+Every native copy call uses a different IID and slot, reordered argument/output
+bindings, and renamed/reordered calls. Real copies and full/zero or owner
+cleanup execute without changing production model/executor dispatch. The
+fixtures also exercise ABI-sized storage on x64/i686, short last rows,
+silent/empty packets, commit failure and exactly-once poisoning. Test registry
+injection is absent from production and JS test-hooks builds.
+
+COM file-ownership manifest **5** and unsafe support schema **12** require deletion
+and full regeneration of older output. Do not mix pre-effect audio wrappers with new copy facades.
 Coverage includes native fake tear-offs with complete SDK-correct vtables,
 truthful QI, alias/context lifetime, failed initialization and differing mix
 formats, no-JS reentrancy, exact-once poisoned cleanup, all packet states,
 WIC final-row/stride cases, MF failure paths, and live stock-Windows WIC/MF.
 Both x64 and live i686 execute the same runtime tests.
 
-Retained PR3 validation:
+Retained PR3 validation before the version-2 execution-plan refactor:
 
 | Check | Result |
 | --- | --- |
@@ -808,7 +856,8 @@ without adding COM exports to the WinRT root.
 
 PR1 raised the generated COM file-ownership manifest
 `com/.dynwinrt-com-manifest.json` from version 2 to version 3. Borrowed-copy
-context effects now require **version 4**. Every
+context effects introduced **version 4**; typed borrowed-copy recipes now
+require **version 5**. Every
 generated safe class now registers a descriptor through private
 `@microsoft/dynwinrt/com/unsafe` helpers. Public `projectAs` remains on the
 runtime `@microsoft/dynwinrt/com` entrypoint, and generated
