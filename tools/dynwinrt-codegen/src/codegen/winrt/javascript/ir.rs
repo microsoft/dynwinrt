@@ -276,6 +276,7 @@ pub struct ProjectedIface {
     pub has_parameterized_cast: bool,
     pub members: Vec<ProjectedMember>,
     pub is_delegate: bool,
+    pub(crate) implementation: super::super::shared::implementation::ImplementationProjection,
 }
 
 pub struct ProjectedIidConst {
@@ -316,6 +317,13 @@ pub struct ProjectedFile {
 }
 
 impl ProjectedFile {
+    pub fn public_type_exports(&self) -> BTreeSet<String> {
+        self.ifaces
+            .iter()
+            .flat_map(|iface| iface.implementation.exports.iter().cloned())
+            .collect()
+    }
+
     pub fn public_exports(&self) -> BTreeSet<String> {
         let mut exports = BTreeSet::new();
         exports.extend(self.classes.iter().map(|class| class.name.clone()));
@@ -377,6 +385,7 @@ pub struct GeneratedModule {
     pub declarations: Option<String>,
     pub imports: Vec<PlannedImport>,
     pub public_exports: BTreeSet<String>,
+    pub public_type_exports: BTreeSet<String>,
     pub primary_export: Option<String>,
     pub internal_exports: BTreeSet<String>,
     pub compatibility_aliases: BTreeSet<String>,
@@ -392,6 +401,7 @@ impl GeneratedModule {
             declarations: None,
             imports: Vec::new(),
             public_exports: BTreeSet::new(),
+            public_type_exports: BTreeSet::new(),
             primary_export: None,
             internal_exports: BTreeSet::new(),
             compatibility_aliases: BTreeSet::new(),
@@ -411,6 +421,7 @@ impl GenerationPlan {
             && (previous.javascript != module.javascript
                 || previous.declarations != module.declarations
                 || previous.public_exports != module.public_exports
+                || previous.public_type_exports != module.public_type_exports
                 || previous.internal_exports != module.internal_exports)
         {
             return Err(format!(
@@ -463,6 +474,18 @@ impl GenerationPlan {
                 output.push_str(&format!(
                     "export {{ {} }} from './{}.js';\n",
                     exports.join(", "),
+                    module.canonical_module
+                ));
+            }
+            if !module.public_type_exports.is_empty() {
+                output.push_str(&format!(
+                    "export type {{ {} }} from './{}.js';\n",
+                    module
+                        .public_type_exports
+                        .iter()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(", "),
                     module.canonical_module
                 ));
             }

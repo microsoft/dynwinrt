@@ -85,6 +85,20 @@ names, native Python values, asyncio-compatible awaitables, and type stubs.
 - [Python codegen package guide](tools/dynwinrt-codegen/python/README.md)
 - [Python runtime guide](bindings/py/README.md)
 
+### Implementing WinRT interfaces
+
+Node.js and Python can supply synchronous handlers for complete non-generic
+WinRT interfaces. Generated `.implementation(...)` descriptors compose multiple
+interfaces into a standalone IInspectable object, and `.implement(...)` creates
+its owner. Public typed interface views can be passed to ordinary native
+consumers without a WinUI composable base or OS registration.
+
+The first release is non-agile and owner-thread-only. Reference release and
+object-wide callback disposal are separate operations. See
+[WinRT interface implementations](docs/guides/windows/winrt-interface-implementations.md)
+for both language APIs, supported method/property/event/array/output contracts,
+ownership, and the separate IBackgroundTask deployment concerns.
+
 ### WinUI `Application + Window`
 
 When `Microsoft.UI.Xaml.Application` is selected, codegen emits helpers for

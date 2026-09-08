@@ -7,6 +7,12 @@ from ._typing import (
     DynWinRTType, DynWinRTValue, DynWinRTArray, DynWinRTStruct, DynWinRtDelegate,
     _DynWinRTProjector,
 )
+from typing import Protocol, TypedDict
+from dynwinrt import (
+    DynWinRTInterfacePlan, DynWinRTImplementationMethod,
+    DynWinRTImplementation, DynWinRTImplementationDescriptor,
+)
+from abc import ABCMeta
 from typing import Protocol, Self, TypeVar
 
 _InterfaceT = TypeVar('_InterfaceT')
@@ -15,10 +21,21 @@ _InterfaceT = TypeVar('_InterfaceT')
 IID_IWwwFormUrlDecoderEntry: WinGUID
 
 
+class IWwwFormUrlDecoderEntryHandlers(Protocol):
+    """Synchronous handlers; multi-output results are named dicts and FillArray inputs are capacities."""
+    def get_name(self) -> str: ...
+    def get_value(self) -> str: ...
+
+class _IWwwFormUrlDecoderEntryImplementationFactory(ABCMeta):
+    def implementation(cls, handlers: IWwwFormUrlDecoderEntryHandlers) -> DynWinRTImplementationDescriptor: ...
+    def implement(cls, handlers: IWwwFormUrlDecoderEntryHandlers, *additional: DynWinRTImplementationDescriptor) -> DynWinRTImplementation: ...
+    def from_implementation(cls, owner: DynWinRTImplementation) -> IWwwFormUrlDecoderEntry: ...
+
+
 class _IWwwFormUrlDecoderEntryIdentity(Protocol):
     def _dynwinrt_iid_windows_foundation_iwwwformurldecoderentry(self) -> None: ...
 
-class IWwwFormUrlDecoderEntry(_IWwwFormUrlDecoderEntryIdentity, Protocol):
+class IWwwFormUrlDecoderEntry(_IWwwFormUrlDecoderEntryIdentity, Protocol, metaclass=_IWwwFormUrlDecoderEntryImplementationFactory):
 
     @classmethod
     def from_value(cls, obj: DynWinRTValue) -> Self: ...

@@ -211,6 +211,7 @@ pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &Interf
         out.push_str(&format!("{}_PARAM_TYPES: list[DynWinRTType]\n", iface.name));
         return out;
     }
+    let implementation = super::implementation::project(context, iface);
 
     let used_structs = collect_used_structs_from_iface(iface);
 
@@ -218,6 +219,10 @@ pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &Interf
     out.push_str(HEADER);
     out.push_str(FUTURE_ANNOTATIONS);
     out.push_str(IMPORT_LINE);
+    if implementation.supported {
+        out.push_str(super::implementation::IMPORTS);
+        out.push_str("from abc import ABCMeta\n");
+    }
     let collection_kind = interface_kind(iface);
     let is_protocol = collection_kind.is_none();
     out.push_str("from typing import Protocol, Self, TypeVar\n");
@@ -242,7 +247,14 @@ pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &Interf
     let delegate_names = super::collect_referenced_delegate_names(&iface.methods, context);
     let runtime_delegate_names = super::collect_runtime_delegate_names(&iface.methods, context);
 
-    let collection_identities = collect_used_generic_identities_from_methods(&iface.methods);
+    let mut collection_identities = collect_used_generic_identities_from_methods(&iface.methods);
+    for delegate in &iface.implementation_metadata.delegates {
+        collection_identities.extend(collect_used_generic_identities_from_methods(
+            std::slice::from_ref(&delegate.invoke),
+        ));
+    }
+    collection_identities.sort();
+    collection_identities.dedup();
     let observable_vector = observable_vector_identity(iface);
     for identity in &collection_identities {
         let identity = context.normalize_identity(identity);
@@ -348,6 +360,13 @@ pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &Interf
         }
     }
 
+    out.push_str(&implementation.declarations);
+    let implementation_metaclass = format!("_{}ImplementationFactory", iface.name);
+    if implementation.supported {
+        out.push_str(&format!("\nclass {implementation_metaclass}(ABCMeta):\n"));
+        out.push_str(&implementation.factory_declarations);
+    }
+
     let collection_base =
         collection_kind
             .and_then(abc_name)
@@ -380,6 +399,9 @@ pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &Interf
     }
     let mut seen_bases = HashSet::new();
     bases.retain(|base| seen_bases.insert(base.clone()));
+    if implementation.supported {
+        bases.push(format!("metaclass={implementation_metaclass}"));
+    }
     if bases.is_empty() {
         out.push_str(&format!("\nclass {}:\n", iface.name));
     } else {
@@ -393,6 +415,9 @@ pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &Interf
         },
         "    ",
     ));
+    if !implementation.supported {
+        out.push_str(&implementation.factory_declarations);
+    }
     if !is_protocol {
         out.push_str("    def __init__(self, obj: DynWinRTValue) -> None: ...\n");
     }
@@ -1590,6 +1615,9 @@ pub fn generate_index_stub(
                 module = module,
                 iname = name
             ));
+            for helper in super::implementation::exports(context, iface) {
+                out.push_str(&format!("from .{module} import {helper} as {helper}\n"));
+            }
         }
     }
 
@@ -1659,6 +1687,12 @@ pub fn generate_public_index_stub(
                 name,
                 name
             ));
+            for helper in super::implementation::exports(context, interface) {
+                out.push_str(&format!(
+                    "from .{} import {helper} as {helper}\n",
+                    context.public_qualified_module(&identity),
+                ));
+            }
         }
     }
 

@@ -4,7 +4,9 @@
 use pyo3::prelude::*;
 
 mod async_runtime;
+mod delegate_method;
 mod errors;
+mod implementation;
 mod runtime;
 mod values;
 
@@ -560,12 +562,14 @@ def _dynwinrt_dispatch_progress(dispatch_state, value):
         m.add_class::<super::runtime::DynWinRTOverrideInterface>()?;
         m.add_class::<super::runtime::DynWinRTXamlRegistration>()?;
         m.add_class::<super::runtime::DynWinRTValue>()?;
+        m.add_class::<super::delegate_method::DynWinRTDelegateMethod>()?;
         m.add_class::<super::runtime::DynWinRTArray>()?;
         m.add_class::<super::runtime::DynWinRTStruct>()?;
         m.add_class::<super::runtime::DynWinRtDelegate>()?;
         m.add_class::<super::runtime::DynWinRtElementFactory>()?;
         m.add_class::<super::async_runtime::DynWinRTAsync>()?;
         m.add_class::<super::async_runtime::DynWinRTAsyncWithProgress>()?;
+        super::implementation::init(m)?;
         m.py().run(
             c"
 _Coroutine.register(_DynWinRTAsync)
@@ -598,6 +602,7 @@ for _name in (
    'WinRTAsyncWithProgress',
    'WinRTCoroutine',
    'WinRTCoroutineWithProgress',
+   'DynWinRTImplementationDescriptor',
    'ProjectedLifetimeScope',
    'projected_lifetime_scope',
    'project_as',

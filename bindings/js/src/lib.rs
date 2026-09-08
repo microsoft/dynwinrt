@@ -33,8 +33,16 @@ mod async_promise;
 mod generated_unsafe_test_hooks;
 mod managed_tsfn;
 mod scheduled_start;
+mod winrt_delegate_method;
+pub use winrt_delegate_method::DynWinRtDelegateMethod;
+mod winrt_implementation;
+pub use winrt_implementation::{
+  DynWinRtImplementation, DynWinRtImplementationMethod, DynWinRtInterfacePlan,
+};
 #[cfg(feature = "test-hooks")]
 mod tsfn_test_hooks;
+#[cfg(feature = "test-hooks")]
+mod winrt_implementation_test_hooks;
 
 /// Shared MetadataTable — created once, used everywhere.
 static TABLE: std::sync::LazyLock<Arc<dynwinrt::MetadataTable>> =
@@ -1417,6 +1425,18 @@ impl DynWinRTValue {
   pub fn i32(value: i32) -> DynWinRTValue {
     DynWinRTValue::new(dynwinrt::WinRTValue::I32(value))
   }
+  /// Create a semantic HRESULT value from a signed 32-bit status code.
+  #[napi]
+  pub fn hresult(value: f64) -> napi::Result<DynWinRTValue> {
+    Ok(DynWinRTValue::new(dynwinrt::WinRTValue::HResult(
+      windows::core::HRESULT(js_i32(value, "hresult")?),
+    )))
+  }
+  /// Alias for hresult(), preserving the exact native HRESULT value type.
+  #[napi(js_name = "fromHResult")]
+  pub fn from_hresult(value: f64) -> napi::Result<DynWinRTValue> {
+    Self::hresult(value)
+  }
   #[napi]
   pub fn u32(value: u32) -> DynWinRTValue {
     DynWinRTValue::new(dynwinrt::WinRTValue::U32(value))
@@ -1656,6 +1676,22 @@ impl DynWinRTValue {
     let mut result = DynWinRTValue::new(result);
     result.6 = self.6.clone();
     Ok(result)
+  }
+
+  /// Invoke a metadata-described WinRT delegate at IUnknown slot 3.
+  /// Returns every output in signature order ([] for void), retaining the target
+  /// and arguments across native calls. FillArray inputs require typed Array
+  /// storage, just like outbound invokeAll; they are not U32 capacities.
+  #[napi(strict)]
+  pub fn invoke_delegate(
+    &self,
+    #[napi(ts_arg_type = "WinGuid")] iid: Unknown<'_>,
+    #[napi(ts_arg_type = "DynWinRtMethodSig")] signature: Unknown<'_>,
+    #[napi(ts_arg_type = "DynWinRtValue[]")] args: Vec<Unknown<'_>>,
+  ) -> napi::Result<Vec<DynWinRTValue>> {
+    self.ensure_existing_com_apartment()?;
+    let target = self.0.clone();
+    winrt_delegate_method::invoke_delegate_value(target, iid, signature, args)
   }
 
   #[napi]
@@ -2066,6 +2102,22 @@ impl DynWinRTArray {
     let wvals: Vec<dynwinrt::WinRTValue> =
       values.into_iter().map(dynwinrt::WinRTValue::I32).collect();
     DynWinRTArray(dynwinrt::ArrayData::from_values(TABLE.i32_type(), &wvals))
+  }
+
+  /// Build an array whose native element type is HRESULT, not I32.
+  #[napi]
+  pub fn from_hresult_values(values: Vec<f64>) -> napi::Result<DynWinRTArray> {
+    let values = values
+      .into_iter()
+      .map(|value| {
+        js_i32(value, "fromHresultValues")
+          .map(|value| dynwinrt::WinRTValue::HResult(windows::core::HRESULT(value)))
+      })
+      .collect::<napi::Result<Vec<_>>>()?;
+    Ok(DynWinRTArray(dynwinrt::ArrayData::from_values(
+      TABLE.hresult(),
+      &values,
+    )))
   }
 
   #[napi]
@@ -3107,10 +3159,23 @@ impl DynWinRtDelegate {
     Ok(DynWinRtDelegate(value))
   }
 
-  /// Get the delegate as a DynWinRtValue for passing to WinRT methods.
+  /// Drop this owner's native reference without disconnecting native holders.
+  /// Event registration code should release both this owner and its temporary
+  /// toValue() result after the native event source has retained the delegate.
   #[napi]
-  pub fn to_value(&self) -> DynWinRTValue {
-    DynWinRTValue::new(self.0.clone())
+  pub fn release(&mut self) {
+    self.0 = dynwinrt::WinRTValue::Null;
+  }
+
+  /// Get an independently owned value for passing the delegate to WinRT.
+  #[napi]
+  pub fn to_value(&self) -> napi::Result<DynWinRTValue> {
+    if matches!(self.0, dynwinrt::WinRTValue::Null) {
+      return Err(napi::Error::from_reason(
+        "WinRT delegate owner has been released",
+      ));
+    }
+    Ok(DynWinRTValue::new(self.0.clone()))
   }
 }
 

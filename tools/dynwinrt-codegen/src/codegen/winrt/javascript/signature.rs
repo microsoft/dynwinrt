@@ -434,6 +434,11 @@ pub(crate) fn wrap_arg(
                 TypeMeta::I32 | TypeMeta::Enum { .. } => {
                     format!("DynWinRtArray.fromI32Values({name})")
                 }
+                TypeMeta::Struct {
+                    name: struct_name, ..
+                } if struct_name == "HResult" => {
+                    format!("DynWinRtArray.fromHresultValues({name})")
+                }
                 TypeMeta::U32 => format!("DynWinRtArray.fromU32Values({name})"),
                 TypeMeta::I64 => format!("DynWinRtArray.fromI64Values({name})"),
                 TypeMeta::U64 => format!("DynWinRtArray.fromU64Values({name})"),
@@ -457,7 +462,7 @@ pub(crate) fn wrap_arg(
         TypeMeta::Struct {
             name: struct_name, ..
         } if struct_name == "HResult" => {
-            format!("DynWinRtValue.i32({})", name)
+            format!("DynWinRtValue.hresult({})", name)
         }
         TypeMeta::Struct {
             name: struct_name, ..
@@ -494,7 +499,7 @@ fn wrap_reference_value(
         ),
         TypeMeta::Struct {
             name: struct_name, ..
-        } if struct_name == "HResult" => format!("DynWinRtValue.i32({})", name),
+        } if struct_name == "HResult" => format!("DynWinRtValue.hresult({})", name),
         TypeMeta::Struct {
             name: struct_name, ..
         } => format!("_pack{}({}).toValue()", struct_name, name),
@@ -538,6 +543,9 @@ fn vector_item_wrap_expr(
     elem: &TypeMeta,
 ) -> String {
     match elem {
+        TypeMeta::Struct { name, .. } if name == "HResult" => {
+            format!("DynWinRtValue.hresult({})", var)
+        }
         TypeMeta::Struct { name, .. } if name != "HResult" => {
             format!("_pack{}({}).toValue()", name, var)
         }

@@ -15,7 +15,10 @@ use crate::errors::{map_dynwinrt_error, map_dynwinrt_error_with_context, map_win
 static TABLE: std::sync::LazyLock<Arc<dynwinrt::MetadataTable>> =
     std::sync::LazyLock::new(|| dynwinrt::MetadataTable::new());
 
-fn wrap_python_callback_context(py: Python<'_>, callback: Py<PyAny>) -> PyResult<Py<PyAny>> {
+pub(crate) fn wrap_python_callback_context(
+    py: Python<'_>,
+    callback: Py<PyAny>,
+) -> PyResult<Py<PyAny>> {
     Ok(py
         .import("dynwinrt.dynwinrt")?
         .getattr("_dynwinrt_wrap_delegate_callback")?
@@ -1257,6 +1260,10 @@ impl DynWinRTValue {
         DynWinRTValue(dynwinrt::WinRTValue::I32(value))
     }
     #[staticmethod]
+    fn from_hresult(value: i32) -> DynWinRTValue {
+        DynWinRTValue(dynwinrt::WinRTValue::HResult(windows::core::HRESULT(value)))
+    }
+    #[staticmethod]
     fn from_u32(value: u32) -> DynWinRTValue {
         DynWinRTValue(dynwinrt::WinRTValue::U32(value))
     }
@@ -1601,6 +1608,16 @@ impl DynWinRTValue {
             .cast(&iid.0)
             .map(DynWinRTValue)
             .map_err(map_dynwinrt_error)
+    }
+
+    /// Invoke metadata-described Invoke on an IUnknown-rooted WinRT delegate.
+    fn invoke_delegate(
+        slf: &Bound<'_, Self>,
+        iid: &WinGUID,
+        signature: &DynWinRTMethodSig,
+        args: Vec<DynWinRTValue>,
+    ) -> PyResult<Vec<DynWinRTValue>> {
+        crate::delegate_method::DynWinRTDelegateMethod::create(iid, signature)?.invoke(slf, args)
     }
 
     /// Call IActivationFactory::ActivateInstance (vtable[6]) to create a default instance.
@@ -2259,7 +2276,7 @@ impl DynWinRTStruct {
 #[pyclass]
 pub struct DynWinRtDelegate(dynwinrt::WinRTValue);
 
-const PYWINRT_E_UNRAISABLE_PYTHON_EXCEPTION: windows::core::HRESULT =
+pub(crate) const PYWINRT_E_UNRAISABLE_PYTHON_EXCEPTION: windows::core::HRESULT =
     windows::core::HRESULT(0xA0EE4005_u32 as i32);
 
 fn create_python_delegate(
@@ -2546,6 +2563,7 @@ mod tests {
 
     #[test]
     fn python_delegate_reports_unraisable_callback_errors() {
+        let _serial = crate::errors::UNRAISABLE_HOOK_TEST_LOCK.lock().unwrap();
         Python::initialize();
         Python::attach(|py| {
             let locals = PyDict::new(py);

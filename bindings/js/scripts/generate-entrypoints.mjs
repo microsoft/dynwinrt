@@ -207,10 +207,16 @@ const rawComDeclarations = [
   '}',
 ]
 
-writeFacade(
-  'winrt',
-  nativeExports.filter((name) => !name.startsWith('DynCom') && name !== 'initializeCom'),
+const winrtExports = nativeExports.filter(
+  (name) => !name.startsWith('DynCom') && name !== 'initializeCom',
 )
+writeFacade('winrt', winrtExports, [...winrtExports, 'DynWinRtImplementationMethod'], [], [
+  '/** A generated interface plan and its synchronous, metadata-ordered dispatcher. */',
+  'export interface DynWinRtImplementationDescriptor {',
+  "  readonly plan: import('./index.js').DynWinRtInterfacePlan",
+  "  readonly dispatch: (vtableIndex: number, args: import('./index.js').DynWinRtValue[]) => import('./index.js').DynWinRtValue[]",
+  '}',
+])
 writeFacade(
   'com',
   nativeExports.filter((name) => comExports.has(name)),

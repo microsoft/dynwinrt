@@ -157,7 +157,7 @@ fn interface_generation_uses_projected_identity_cache() {
         "missing native-wrap __new__:\n{py}"
     );
     assert!(
-        py.contains("def _set_native(self, obj: DynWinRTValue):"),
+        py.contains("def _set_native(self, obj: DynWinRTValue, *, cache=True):"),
         "missing native initializer:\n{py}"
     );
     assert!(

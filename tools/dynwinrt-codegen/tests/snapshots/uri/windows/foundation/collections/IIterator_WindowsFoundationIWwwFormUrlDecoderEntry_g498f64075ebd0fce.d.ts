@@ -2,10 +2,15 @@
 import { WinGuid } from '@microsoft/dynwinrt';
 import { IWwwFormUrlDecoderEntry } from '../IWwwFormUrlDecoderEntry.js';
 
+
 export declare const IID_IIterator_WindowsFoundationIWwwFormUrlDecoderEntry_g498f64075ebd0fce: WinGuid;
 
 export declare class IIterator_WindowsFoundationIWwwFormUrlDecoderEntry_g498f64075ebd0fce {
     private constructor();
+    /** Windows.Foundation.Collections.IIterator_WindowsFoundationIWwwFormUrlDecoderEntry_g498f64075ebd0fce cannot be implemented: generic interface implementations are not supported */
+    static implementation(handlers: never): never;
+    /** Windows.Foundation.Collections.IIterator_WindowsFoundationIWwwFormUrlDecoderEntry_g498f64075ebd0fce cannot be implemented: generic interface implementations are not supported */
+    static implement(handlers: never, ...additional: never[]): never;
 
     /** @internal Cast a raw WinRT object to this interface. */
     static from(obj: any): IIterator_WindowsFoundationIWwwFormUrlDecoderEntry_g498f64075ebd0fce;

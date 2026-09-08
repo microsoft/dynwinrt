@@ -7,6 +7,12 @@ from ._typing import (
     DynWinRTType, DynWinRTValue, DynWinRTArray, DynWinRTStruct, DynWinRtDelegate,
     _DynWinRTProjector,
 )
+from typing import Protocol, TypedDict
+from dynwinrt import (
+    DynWinRTInterfacePlan, DynWinRTImplementationMethod,
+    DynWinRTImplementation, DynWinRTImplementationDescriptor,
+)
+from abc import ABCMeta
 from typing import Protocol, Self, TypeVar
 
 _InterfaceT = TypeVar('_InterfaceT')
@@ -15,10 +21,21 @@ _InterfaceT = TypeVar('_InterfaceT')
 IID_IUriRuntimeClassWithAbsoluteCanonicalUri: WinGUID
 
 
+class IUriRuntimeClassWithAbsoluteCanonicalUriHandlers(Protocol):
+    """Synchronous handlers; multi-output results are named dicts and FillArray inputs are capacities."""
+    def get_absolute_canonical_uri(self) -> str: ...
+    def get_display_iri(self) -> str: ...
+
+class _IUriRuntimeClassWithAbsoluteCanonicalUriImplementationFactory(ABCMeta):
+    def implementation(cls, handlers: IUriRuntimeClassWithAbsoluteCanonicalUriHandlers) -> DynWinRTImplementationDescriptor: ...
+    def implement(cls, handlers: IUriRuntimeClassWithAbsoluteCanonicalUriHandlers, *additional: DynWinRTImplementationDescriptor) -> DynWinRTImplementation: ...
+    def from_implementation(cls, owner: DynWinRTImplementation) -> IUriRuntimeClassWithAbsoluteCanonicalUri: ...
+
+
 class _IUriRuntimeClassWithAbsoluteCanonicalUriIdentity(Protocol):
     def _dynwinrt_iid_windows_foundation_iuriruntimeclasswithabsolutecanonicaluri(self) -> None: ...
 
-class IUriRuntimeClassWithAbsoluteCanonicalUri(_IUriRuntimeClassWithAbsoluteCanonicalUriIdentity, Protocol):
+class IUriRuntimeClassWithAbsoluteCanonicalUri(_IUriRuntimeClassWithAbsoluteCanonicalUriIdentity, Protocol, metaclass=_IUriRuntimeClassWithAbsoluteCanonicalUriImplementationFactory):
 
     @classmethod
     def from_value(cls, obj: DynWinRTValue) -> Self: ...

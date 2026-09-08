@@ -3,6 +3,7 @@
 
 pub(crate) mod docs;
 pub mod generator;
+mod implementation;
 pub mod ir;
 pub(crate) mod method;
 pub(crate) mod naming;
@@ -1267,6 +1268,13 @@ fn apply_projected_interface_names(
     }
     for method in &mut interface.methods {
         apply_projected_method_names(context, method);
+    }
+    for required in &mut interface.implementation_metadata.required_interfaces {
+        apply_projected_type_names(context, required);
+    }
+    for delegate in &mut interface.implementation_metadata.delegates {
+        apply_projected_type_names(context, &mut delegate.typ);
+        apply_projected_method_names(context, &mut delegate.invoke);
     }
 }
 

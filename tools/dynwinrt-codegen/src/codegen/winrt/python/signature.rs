@@ -399,7 +399,7 @@ pub(crate) fn py_wrap_arg(name: &str, typ: &TypeMeta) -> String {
         TypeMeta::Struct {
             name: struct_name, ..
         } if struct_name == "HResult" => {
-            format!("DynWinRTValue.from_i32({})", name)
+            format!("DynWinRTValue.from_hresult({})", name)
         }
         TypeMeta::Struct {
             name: struct_name, ..
@@ -438,7 +438,7 @@ pub(crate) fn py_wrap_native_value(name: &str, typ: &TypeMeta) -> String {
         TypeMeta::Struct {
             name: struct_name, ..
         } if struct_name == "HResult" => {
-            format!("DynWinRTValue.from_i32({})", name)
+            format!("DynWinRTValue.from_hresult({})", name)
         }
         TypeMeta::Struct {
             name: struct_name, ..

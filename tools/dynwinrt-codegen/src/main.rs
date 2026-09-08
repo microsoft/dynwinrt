@@ -2301,7 +2301,13 @@ fn load_effective_generation_plan(
             if line.is_empty() || line.starts_with("//") {
                 continue;
             }
-            let (names, module) = parse_root_export_metadata(line).ok_or_else(|| {
+            let type_only = line.starts_with("export type ");
+            let metadata_line = if type_only {
+                line.replacen("export type ", "export ", 1)
+            } else {
+                line.to_string()
+            };
+            let (names, module) = parse_root_export_metadata(&metadata_line).ok_or_else(|| {
                 format!(
                     "Invalid retained JavaScript root export metadata in {}: `{line}`",
                     index_path.display()
@@ -2317,7 +2323,11 @@ fn load_effective_generation_plan(
                 retained.public_exports.extend(names);
                 plan.insert(retained)?;
             } else if let Some(retained) = plan.modules.get_mut(&module) {
-                retained.public_exports.extend(names);
+                if type_only {
+                    retained.public_type_exports.extend(names);
+                } else {
+                    retained.public_exports.extend(names);
+                }
             } else {
                 return Err(format!(
                     "Retained JavaScript root export metadata references missing canonical module `{module}`"
@@ -2410,6 +2420,7 @@ fn emit_javascript_projected_file(
     use dynwinrt_codegen::codegen::projected::{GeneratedModule, PlannedImport};
 
     let public_exports = projected.public_exports();
+    let public_type_exports = projected.public_type_exports();
     let internal_exports = projected.internal_exports();
     let dependencies = projected
         .imports
@@ -2548,6 +2559,7 @@ fn emit_javascript_projected_file(
         declarations: Some(dts),
         imports,
         public_exports,
+        public_type_exports,
         primary_export: (target.identity.kind != javascript::JavaScriptTypeKind::Delegate)
             .then(|| target.projected_name.clone()),
         internal_exports,
@@ -2906,6 +2918,7 @@ fn generate_js_files(
             declarations: Some(stub_dts),
             imports: Vec::new(),
             public_exports: [target.projected_name.clone()].into_iter().collect(),
+            public_type_exports: Default::default(),
             primary_export: Some(target.projected_name.clone()),
             internal_exports: BTreeSet::new(),
             compatibility_aliases: target.compatibility_aliases.clone(),
@@ -4216,7 +4229,40 @@ fn write_python_facade(
         .strip_prefix("from .")
         .and_then(|line| line.split_once(" import "))
         .ok_or_else(|| format!("Generated index import for `{type_name}` is invalid"))?;
-    let exports = exports.split('#').next().unwrap_or(exports).trim();
+    let mut exports = exports
+        .split('#')
+        .next()
+        .unwrap_or(exports)
+        .trim()
+        .to_string();
+    let mut additional_exports = Vec::new();
+    for line in implementation_index
+        .lines()
+        .filter(|line| line.starts_with("from ."))
+        .skip(1)
+    {
+        let (extra_source, extra) = line
+            .strip_prefix("from .")
+            .and_then(|line| line.split_once(" import "))
+            .ok_or_else(|| format!("Generated helper import for `{type_name}` is invalid"))?;
+        if extra_source != source {
+            return Err(format!(
+                "Generated helper exports for `{type_name}` must use the same implementation module"
+            ));
+        }
+        let extra = extra.split('#').next().unwrap_or(extra).trim();
+        for export in extra.split(',') {
+            additional_exports.push(
+                export
+                    .trim()
+                    .split_once(" as ")
+                    .map_or_else(|| export.trim(), |(_, alias)| alias.trim())
+                    .to_string(),
+            );
+        }
+        exports.push_str(", ");
+        exports.push_str(extra);
+    }
     let exported_type = exports.split(',').any(|export| {
         export
             .trim()
@@ -4260,6 +4306,13 @@ fn write_python_facade(
         package_exports.push(package_export);
     } else if !exports.is_empty() {
         package_exports.push(format!("from .{public_module} import {exports}"));
+    }
+    for helper in additional_exports {
+        package_exports.push(if extension == "pyi" {
+            format!("from .{public_module} import {helper} as {helper}")
+        } else {
+            format!("from .{public_module} import {helper}")
+        });
     }
     Ok(())
 }

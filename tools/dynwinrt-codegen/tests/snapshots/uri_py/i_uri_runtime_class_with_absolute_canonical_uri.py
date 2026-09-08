@@ -14,6 +14,11 @@ from ._runtime import (
     _dynwinrt_symbol, _dynwinrt_track_projected, _dynwinrt_uuid,
     _dynwinrt_vector, _dynwinrt_wrap_values,
 )
+from typing import Protocol, TypedDict
+from dynwinrt import (
+    DynWinRTInterfacePlan, DynWinRTImplementationMethod,
+    DynWinRTImplementation, DynWinRTImplementationDescriptor,
+)
 
 IID_IUriRuntimeClassWithAbsoluteCanonicalUri = WinGUID.parse('758d9661-221c-480f-a339-50656673f46f')
 
@@ -23,19 +28,156 @@ _IUriRuntimeClassWithAbsoluteCanonicalUri = DynWinRTType.register_interface(
     .add_method("get_DisplayIri", DynWinRTMethodSig().add_out(DynWinRTType.hstring()))
 
 
+class IUriRuntimeClassWithAbsoluteCanonicalUriHandlers(Protocol):
+    """Synchronous handlers; multi-output results are named dicts and FillArray inputs are capacities."""
+    def get_absolute_canonical_uri(self) -> str: ...
+    def get_display_iri(self) -> str: ...
+
+import inspect as _implementation_inspect
+
+
+def _implementation_check(value, valid, label):
+    if not valid:
+        raise TypeError(f'{label}: invalid implementation result')
+    return value
+
+
+def _implementation_field(value, name, label):
+    if not isinstance(value, dict) or name not in value:
+        raise TypeError(f'{label}: expected a result dict containing {name}')
+    return value[name]
+
+
+def _implementation_array(value, label, bytes_allowed=False, capacity=None):
+    if not isinstance(value, (list, tuple)) and not (bytes_allowed and isinstance(value, (bytes, bytearray))):
+        raise TypeError(f'{label}: expected an array')
+    if capacity is not None and len(value) != capacity:
+        raise ValueError(f'{label}: FillArray result must match capacity {capacity}')
+    return list(value)
+
+
+def _implementation_reference(value, iid, label):
+    if value is None:
+        return DynWinRTValue.null_value()
+    raw = getattr(value, '_obj', value)
+    if not isinstance(raw, DynWinRTValue):
+        raise TypeError(f'{label}: expected a managed WinRT value or None')
+    return DynWinRTValue.null_value() if raw.is_null() else raw.cast(iid)
+
+
+def _implementation_sync(value, label):
+    if _implementation_inspect.isawaitable(value) or _implementation_inspect.isasyncgen(value):
+        if _implementation_inspect.iscoroutine(value):
+            value.close()
+        raise TypeError(f'{label}: implementation callbacks must return synchronously, not a coroutine or awaitable')
+    return value
+
+
+def _implementation_handler(handlers, name, count, label):
+    try:
+        member = _implementation_inspect.getattr_static(handlers, name)
+    except AttributeError:
+        raise TypeError(f'{label}: missing synchronous handler {name}') from None
+    if isinstance(member, property):
+        raise TypeError(f'{label}: property accessors are not callback handlers: {name}')
+    callback = getattr(handlers, name)
+    if not callable(callback):
+        raise TypeError(f'{label}: missing synchronous handler {name}')
+    if (_implementation_inspect.iscoroutinefunction(callback)
+            or _implementation_inspect.isasyncgenfunction(callback)
+            or _implementation_inspect.iscoroutinefunction(getattr(callback, '__call__', None))
+            or _implementation_inspect.isasyncgenfunction(getattr(callback, '__call__', None))):
+        raise TypeError(f'{label}.{name}: async handlers are not supported')
+    try:
+        signature = _implementation_inspect.signature(callback)
+    except ValueError:
+        pass
+    else:
+        try:
+            signature.bind(*([None] * count))
+        except TypeError as error:
+            raise TypeError(f'{label}.{name}: invalid handler signature: {error}') from None
+    return callback
+
+
+_implementation_plan = None
+
+def _get_implementation_plan():
+    global _implementation_plan
+    if _implementation_plan is None:
+        _implementation_plan = DynWinRTInterfacePlan.create("Windows.Foundation.IUriRuntimeClassWithAbsoluteCanonicalUri", DynWinRTType.interface(WinGUID.parse("758d9661-221c-480f-a339-50656673f46f")), [
+            DynWinRTImplementationMethod("get_AbsoluteCanonicalUri", 6, DynWinRTMethodSig().add_out(DynWinRTType.hstring())),
+            DynWinRTImplementationMethod("get_DisplayIri", 7, DynWinRTMethodSig().add_out(DynWinRTType.hstring()))
+        ], [])
+    return _implementation_plan
+
+
 class IUriRuntimeClassWithAbsoluteCanonicalUri:
     _dynwinrt_interface_type = True
+    @staticmethod
+    def implementation(handlers: IUriRuntimeClassWithAbsoluteCanonicalUriHandlers) -> DynWinRTImplementationDescriptor:
+        h6 = _implementation_handler(handlers, "get_absolute_canonical_uri", 0, "Windows.Foundation.IUriRuntimeClassWithAbsoluteCanonicalUri")
+        h7 = _implementation_handler(handlers, "get_display_iri", 0, "Windows.Foundation.IUriRuntimeClassWithAbsoluteCanonicalUri")
+        plan = _get_implementation_plan()
+        def dispatch(vtable_index, args):
+            if not isinstance(args, list):
+                raise TypeError('implementation arguments must be a list')
+            if vtable_index == 6:
+                if len(args) != 0:
+                    raise TypeError('implementation argument count mismatch')
+                result = _implementation_sync(h6(), "Windows.Foundation.IUriRuntimeClassWithAbsoluteCanonicalUri.get_absolute_canonical_uri")
+                return [DynWinRTValue.from_hstring((lambda v: _implementation_check(v, isinstance(v, str), "Windows.Foundation.IUriRuntimeClassWithAbsoluteCanonicalUri.get_absolute_canonical_uri.result"))(result))]
+            if vtable_index == 7:
+                if len(args) != 0:
+                    raise TypeError('implementation argument count mismatch')
+                result = _implementation_sync(h7(), "Windows.Foundation.IUriRuntimeClassWithAbsoluteCanonicalUri.get_display_iri")
+                return [DynWinRTValue.from_hstring((lambda v: _implementation_check(v, isinstance(v, str), "Windows.Foundation.IUriRuntimeClassWithAbsoluteCanonicalUri.get_display_iri.result"))(result))]
+            raise ValueError('unknown implementation vtable slot')
+        return DynWinRTImplementationDescriptor(plan, dispatch)
+
+    @classmethod
+    def implement(cls, handlers: IUriRuntimeClassWithAbsoluteCanonicalUriHandlers, *additional: DynWinRTImplementationDescriptor) -> DynWinRTImplementation:
+        descriptors = (cls.implementation(handlers), *additional)
+        if any(not isinstance(descriptor, DynWinRTImplementationDescriptor) for descriptor in descriptors):
+            raise TypeError('invalid implementation descriptor')
+        plans = [descriptor.plan for descriptor in descriptors]
+        dispatchers = tuple(descriptor.dispatch for descriptor in descriptors)
+        def callback(interface_index, vtable_index, args):
+            if not isinstance(interface_index, int) or interface_index < 0 or interface_index >= len(dispatchers):
+                raise ValueError('unknown implementation interface index')
+            return dispatchers[interface_index](vtable_index, args)
+        return DynWinRTImplementation.create(plans, callback)
+
+    @classmethod
+    def from_implementation(cls, owner: DynWinRTImplementation) -> 'IUriRuntimeClassWithAbsoluteCanonicalUri':
+        """Query an independently owned view, tracked by the current lifetime scope."""
+        if not isinstance(owner, DynWinRTImplementation):
+            raise TypeError('from_implementation requires a DynWinRTImplementation controller')
+        value = owner.to_value()
+        try:
+            native = value.cast(IID_IUriRuntimeClassWithAbsoluteCanonicalUri)
+            try:
+                view = object.__new__(cls)
+                cls._set_native(view, native, cache=False)
+                return view
+            except BaseException:
+                native.release()
+                raise
+        finally:
+            value.release()
+
     _dynwinrt_interface_iid = IID_IUriRuntimeClassWithAbsoluteCanonicalUri
     def __new__(cls, *args, **kwargs):
         if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):
             return _dynwinrt_projected_from_native(cls, args[0], '_set_native')
         return super().__new__(cls)
 
-    def _set_native(self, obj: DynWinRTValue):
+    def _set_native(self, obj: DynWinRTValue, *, cache=True):
         self._obj = obj
         self._dynwinrt_native_ready = True
         _dynwinrt_track_projected(self, 'Windows.Foundation.IUriRuntimeClassWithAbsoluteCanonicalUri')
-        _dynwinrt_cache_projected(self)
+        if cache:
+            _dynwinrt_cache_projected(self)
 
     def __init__(self, obj: DynWinRTValue):
         if getattr(self, '_dynwinrt_native_ready', False):

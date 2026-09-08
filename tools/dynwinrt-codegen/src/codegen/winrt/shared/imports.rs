@@ -188,6 +188,14 @@ fn collect_methods_type_imports(
 pub(crate) fn collect_iface_type_imports(iface: &InterfaceMeta) -> HashSet<TypeRef> {
     let mut imports = HashSet::new();
     collect_methods_type_imports(&iface.methods, &iface.name, false, &mut imports);
+    for delegate in &iface.implementation_metadata.delegates {
+        collect_methods_type_imports(
+            std::slice::from_ref(&delegate.invoke),
+            &iface.name,
+            false,
+            &mut imports,
+        );
+    }
     imports
 }
 

@@ -72,10 +72,26 @@ pub struct InterfaceMeta {
     pub generic_name: Option<String>,
     /// For parameterized interfaces: the type arguments used to instantiate.
     pub generic_args: Vec<TypeMeta>,
+    /// Reverse-call evidence kept separate from the permissive outbound projection.
+    pub implementation_metadata: InterfaceImplementationMetadata,
     /// XML doc summary (populated from sibling .xml).
     pub doc: Option<String>,
     /// XML `<deprecated>` text.
     pub deprecated: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct InterfaceImplementationMetadata {
+    pub diagnostics: Vec<String>,
+    pub required_interfaces: Vec<TypeMeta>,
+    pub is_generic_definition: bool,
+    pub delegates: Vec<ImplementationDelegateMeta>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ImplementationDelegateMeta {
+    pub typ: TypeMeta,
+    pub invoke: MethodMeta,
 }
 
 impl InterfaceMeta {
@@ -1537,9 +1553,73 @@ fn parse_interface_methods(
         generic_args.iter().map(type_meta_to_winmd_type).collect();
 
     let mut methods = Vec::new();
+    let mut implementation_metadata = InterfaceImplementationMetadata {
+        is_generic_definition: def.generic_params().next().is_some() && generic_args.is_empty(),
+        ..Default::default()
+    };
+    if !def
+        .flags()
+        .contains(windows_metadata::TypeAttributes::WindowsRuntime)
+    {
+        implementation_metadata
+            .diagnostics
+            .push("not a Windows Runtime interface; Classic COM uses a separate planner".into());
+    }
     for (i, method) in def.methods().enumerate() {
         let vtable_index = 6 + i;
         let sig = method.signature(&winmd_generics);
+        if sig.flags != windows_metadata::MethodCallAttributes::HASTHIS {
+            implementation_metadata.diagnostics.push(format!(
+                "{} requires a non-generic instance WinRT calling convention",
+                method.name()
+            ));
+        }
+        if method
+            .impl_flags()
+            .contains(windows_metadata::MethodImplAttributes::PreserveSig)
+        {
+            implementation_metadata.diagnostics.push(format!(
+                "{} has a direct native return rather than the WinRT HRESULT convention",
+                method.name()
+            ));
+        }
+        for (position, typ) in sig.types.iter().enumerate() {
+            if let Err(reason) =
+                validate_implementation_metadata_type(typ, index, generic_args, &mut HashSet::new())
+            {
+                implementation_metadata.diagnostics.push(format!(
+                    "{} parameter {}: {reason}",
+                    method.name(),
+                    position + 1
+                ));
+            } else {
+                collect_implementation_delegates(
+                    typ,
+                    index,
+                    generic_args,
+                    &mut implementation_metadata,
+                );
+            }
+        }
+        if sig.return_type != windows_metadata::Type::Void {
+            if let Err(reason) = validate_implementation_metadata_type(
+                &sig.return_type,
+                index,
+                generic_args,
+                &mut HashSet::new(),
+            ) {
+                implementation_metadata
+                    .diagnostics
+                    .push(format!("{} return: {reason}", method.name()));
+            } else {
+                collect_implementation_delegates(
+                    &sig.return_type,
+                    index,
+                    generic_args,
+                    &mut implementation_metadata,
+                );
+            }
+        }
 
         let raw_name = method.name().to_string();
         let overload_name = method.find_attribute("OverloadAttribute").and_then(|a| {
@@ -1552,6 +1632,14 @@ fn parse_interface_methods(
 
         let mut params = Vec::new();
         let param_defs: Vec<_> = method.params().filter(|p| p.sequence() > 0).collect();
+        if param_defs.len() != sig.types.len() {
+            implementation_metadata.diagnostics.push(format!(
+                "{}: incomplete parameter contracts ({} types, {} parameter records)",
+                method.name(),
+                sig.types.len(),
+                param_defs.len()
+            ));
+        }
         let mut clr_sig_types: Vec<String> = Vec::new();
         for (j, param_def) in param_defs.iter().enumerate() {
             if j < sig.types.len() {
@@ -1560,6 +1648,24 @@ fn parse_interface_methods(
                 let is_out = param_def
                     .flags()
                     .contains(windows_metadata::ParamAttributes::Out);
+                if !is_out && matches!(sig.types[j], windows_metadata::Type::ArrayRef(_)) {
+                    implementation_metadata.diagnostics.push(format!(
+                        "{} parameter {}: ReceiveArray requires an Out contract",
+                        method.name(),
+                        param_def.name()
+                    ));
+                }
+                if is_out
+                    && param_def
+                        .flags()
+                        .contains(windows_metadata::ParamAttributes::In)
+                {
+                    implementation_metadata.diagnostics.push(format!(
+                        "{} parameter {}: InOut is not a WinRT implementation contract",
+                        method.name(),
+                        param_def.name()
+                    ));
+                }
                 let direction = if is_out {
                     if matches!(sig.types[j], windows_metadata::Type::Array(_)) {
                         // [out] Array = FillArray (caller allocates buffer, callee fills)
@@ -1656,6 +1762,46 @@ fn parse_interface_methods(
         })
         .map(|(_, base)| base)
         .collect();
+    let mut pending = def
+        .interface_impls()
+        .map(|base| base.interface(&winmd_generics))
+        .collect::<Vec<_>>();
+    let mut seen_requirements = HashSet::new();
+    while let Some(required) = pending.pop() {
+        let windows_metadata::Type::Name(named) = &required else {
+            implementation_metadata
+                .diagnostics
+                .push("unknown required interface contract".into());
+            continue;
+        };
+        let typ = map_winmd_type_with_generics(&required, index, generic_args);
+        if matches!(&typ, TypeMeta::Interface { iid, .. } if
+            iid.eq_ignore_ascii_case("00000000-0000-0000-c000-000000000046")
+                || iid.eq_ignore_ascii_case("af86e2e0-b12d-4c6a-9c5a-d7aa65101e90"))
+        {
+            continue;
+        }
+        if !seen_requirements.insert(typ.type_identity()) {
+            continue;
+        }
+        implementation_metadata.required_interfaces.push(typ);
+        let lookup_name = named.name.split('`').next().unwrap_or(&named.name);
+        if let Some(required_def) = index.get(&named.namespace, lookup_name).next() {
+            pending.extend(
+                required_def
+                    .interface_impls()
+                    .map(|base| base.interface(&named.generics)),
+            );
+        } else {
+            implementation_metadata.diagnostics.push(format!(
+                "required interface {}.{} is not present in loaded metadata",
+                named.namespace, named.name
+            ));
+        }
+    }
+    implementation_metadata
+        .required_interfaces
+        .sort_by_key(|typ| typ.type_identity());
     Some(InterfaceMeta {
         name: output_name.to_string(),
         namespace: namespace.to_string(),
@@ -1665,9 +1811,265 @@ fn parse_interface_methods(
         generic_piid,
         generic_name: None,
         generic_args: generic_args_vec,
+        implementation_metadata,
         doc: None,
         deprecated: None,
     })
+}
+
+fn collect_implementation_delegates(
+    typ: &windows_metadata::Type,
+    index: &reader::Index,
+    generic_args: &[TypeMeta],
+    output: &mut InterfaceImplementationMetadata,
+) {
+    use windows_metadata::Type;
+    match typ {
+        Type::Array(inner) | Type::ArrayRef(inner) => {
+            collect_implementation_delegates(inner, index, generic_args, output);
+        }
+        Type::Name(named) => {
+            for argument in &named.generics {
+                collect_implementation_delegates(argument, index, generic_args, output);
+            }
+            let lookup_name = named.name.split('`').next().unwrap_or(&named.name);
+            let Some(def) = index.get(&named.namespace, lookup_name).next() else {
+                return;
+            };
+            if def
+                .extends()
+                .is_some_and(|base| base.namespace() == "System" && base.name() == "ValueType")
+            {
+                for field in def.fields() {
+                    collect_implementation_delegates(&field.ty(), index, generic_args, output);
+                }
+                return;
+            }
+            if !def.extends().is_some_and(|base| {
+                base.namespace() == "System"
+                    && matches!(base.name(), "Delegate" | "MulticastDelegate")
+            }) {
+                return;
+            }
+            let delegate_type = map_winmd_type_with_generics(typ, index, generic_args);
+            if output
+                .delegates
+                .iter()
+                .any(|delegate| delegate.typ == delegate_type)
+            {
+                return;
+            }
+            let Some(invoke) = def.methods().find(|method| method.name() == "Invoke") else {
+                output.diagnostics.push(format!(
+                    "{}.{} has no delegate Invoke contract",
+                    named.namespace, named.name
+                ));
+                return;
+            };
+            let signature = invoke.signature(&named.generics);
+            if signature.flags != windows_metadata::MethodCallAttributes::HASTHIS
+                || invoke
+                    .impl_flags()
+                    .contains(windows_metadata::MethodImplAttributes::PreserveSig)
+            {
+                output.diagnostics.push(format!(
+                    "{}.{} Invoke has an unsupported native calling convention",
+                    named.namespace, named.name
+                ));
+            }
+            let parameter_defs = invoke
+                .params()
+                .filter(|parameter| parameter.sequence() > 0)
+                .collect::<Vec<_>>();
+            if parameter_defs.len() != signature.types.len() {
+                output.diagnostics.push(format!(
+                    "{}.{} has incomplete delegate parameter contracts",
+                    named.namespace, named.name
+                ));
+                return;
+            }
+            let params = parameter_defs
+                .iter()
+                .zip(&signature.types)
+                .map(|(parameter, typ)| {
+                    let out = parameter
+                        .flags()
+                        .contains(windows_metadata::ParamAttributes::Out);
+                    if (out
+                        && parameter
+                            .flags()
+                            .contains(windows_metadata::ParamAttributes::In))
+                        || (!out && matches!(typ, Type::ArrayRef(_)))
+                    {
+                        output.diagnostics.push(format!(
+                            "{}.{} Invoke parameter {} has an unsupported direction contract",
+                            named.namespace,
+                            named.name,
+                            parameter.name()
+                        ));
+                    }
+                    ParamMeta {
+                        name: parameter.name().into(),
+                        typ: map_winmd_type_with_generics(typ, index, generic_args),
+                        direction: if out {
+                            if matches!(typ, Type::Array(_)) {
+                                ParamDirection::OutFill
+                            } else {
+                                ParamDirection::Out
+                            }
+                        } else {
+                            ParamDirection::In
+                        },
+                    }
+                })
+                .collect();
+            let return_type = (signature.return_type != Type::Void)
+                .then(|| map_winmd_type_with_generics(&signature.return_type, index, generic_args));
+            output.delegates.push(ImplementationDelegateMeta {
+                typ: delegate_type,
+                invoke: MethodMeta {
+                    name: "Invoke".into(),
+                    raw_name: "Invoke".into(),
+                    vtable_index: 3,
+                    params,
+                    return_type,
+                    ..Default::default()
+                },
+            });
+            for typ in signature
+                .types
+                .iter()
+                .chain((signature.return_type != Type::Void).then_some(&signature.return_type))
+            {
+                if let Err(reason) = validate_implementation_metadata_type(
+                    typ,
+                    index,
+                    generic_args,
+                    &mut HashSet::new(),
+                ) {
+                    output.diagnostics.push(format!(
+                        "{}.{} Invoke: {reason}",
+                        named.namespace, named.name
+                    ));
+                } else {
+                    collect_implementation_delegates(typ, index, generic_args, output);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn validate_implementation_metadata_type(
+    typ: &windows_metadata::Type,
+    index: &reader::Index,
+    generic_args: &[TypeMeta],
+    visiting: &mut HashSet<(String, String)>,
+) -> Result<(), String> {
+    use windows_metadata::Type;
+    match typ {
+        Type::Bool
+        | Type::I8
+        | Type::U8
+        | Type::I16
+        | Type::U16
+        | Type::I32
+        | Type::U32
+        | Type::I64
+        | Type::U64
+        | Type::F32
+        | Type::F64
+        | Type::Char
+        | Type::String
+        | Type::Object => Ok(()),
+        Type::Generic(position) if (*position as usize) < generic_args.len() => Ok(()),
+        Type::Generic(_) => Err("open generic type has no closed ABI".into()),
+        Type::Array(element) | Type::ArrayRef(element) => {
+            if matches!(element.as_ref(), Type::Array(_) | Type::ArrayRef(_)) {
+                return Err("nested arrays are not a WinRT array contract".into());
+            }
+            validate_implementation_metadata_type(element, index, generic_args, visiting)
+        }
+        Type::Name(named) => {
+            if named.namespace == "System" && named.name == "Guid" {
+                return Ok(());
+            }
+            let lookup_name = named.name.split('`').next().unwrap_or(&named.name);
+            let Some(def) = index.get(&named.namespace, lookup_name).next() else {
+                return Err(format!(
+                    "unresolved type {}.{}",
+                    named.namespace, named.name
+                ));
+            };
+            if !def
+                .flags()
+                .contains(windows_metadata::TypeAttributes::WindowsRuntime)
+            {
+                return Err(format!(
+                    "{}.{} is not a WinRT metadata type",
+                    named.namespace, named.name
+                ));
+            }
+            for argument in &named.generics {
+                validate_implementation_metadata_type(argument, index, generic_args, visiting)?;
+            }
+            if def
+                .extends()
+                .is_some_and(|base| base.namespace() == "System" && base.name() == "ValueType")
+            {
+                let identity = (named.namespace.clone(), named.name.clone());
+                if !visiting.insert(identity.clone()) {
+                    return Err(format!(
+                        "recursive struct layout {}.{}",
+                        named.namespace, named.name
+                    ));
+                }
+                if !def
+                    .flags()
+                    .contains(windows_metadata::TypeAttributes::SequentialLayout)
+                {
+                    return Err(format!(
+                        "non-sequential struct layout {}.{} is unsupported",
+                        named.namespace, named.name
+                    ));
+                }
+                if let Some(layout) = def.class_layout() {
+                    if layout.packing_size() != 0 || layout.class_size() != 0 {
+                        return Err(format!(
+                            "non-default struct layout {}.{} is unsupported",
+                            named.namespace, named.name
+                        ));
+                    }
+                }
+                for field in def.fields() {
+                    let field_type = field.ty();
+                    if matches!(
+                        field_type,
+                        Type::Array(_) | Type::ArrayRef(_) | Type::ArrayFixed(_, _)
+                    ) {
+                        return Err(format!(
+                            "array field {}.{}.{} has no WinRT value layout",
+                            named.namespace,
+                            named.name,
+                            field.name()
+                        ));
+                    }
+                    validate_implementation_metadata_type(
+                        &field_type,
+                        index,
+                        generic_args,
+                        visiting,
+                    )
+                    .map_err(|reason| format!("field {}: {reason}", field.name()))?;
+                }
+                visiting.remove(&identity);
+            }
+            Ok(())
+        }
+        _ => Err(format!(
+            "unsupported native type {typ:?}; it cannot be treated as Object"
+        )),
+    }
 }
 
 /// Produce a .NET-style CLR type name for XML doc signature keys.
@@ -2063,6 +2465,38 @@ fn resolve_named_type(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn implementation_metadata_does_not_erase_unknown_native_shapes_into_object() {
+        use windows_metadata::Type;
+        let index = reader::Index::new(Vec::new());
+        for typ in [
+            Type::Generic(0),
+            Type::PtrMut(Box::new(Type::I32), 1),
+            Type::PtrConst(Box::new(Type::Void), 1),
+            Type::ArrayFixed(Box::new(Type::U8), 4),
+            Type::Array(Box::new(Type::Array(Box::new(Type::I32)))),
+        ] {
+            assert!(
+                validate_implementation_metadata_type(&typ, &index, &[], &mut HashSet::new())
+                    .is_err(),
+                "{typ:?}"
+            );
+        }
+        assert!(
+            validate_implementation_metadata_type(&Type::Object, &index, &[], &mut HashSet::new())
+                .is_ok()
+        );
+        assert!(
+            validate_implementation_metadata_type(
+                &Type::Generic(0),
+                &index,
+                &[TypeMeta::I32],
+                &mut HashSet::new()
+            )
+            .is_ok()
+        );
+    }
 
     #[test]
     fn make_parameterized_name_single_arg() {

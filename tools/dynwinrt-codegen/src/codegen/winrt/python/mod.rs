@@ -4,6 +4,7 @@
 pub(crate) mod collections;
 mod docs;
 mod generator;
+mod implementation;
 pub(crate) mod method;
 pub(crate) mod naming;
 mod native_types;

@@ -10,6 +10,7 @@ checkout, then run each sample's `generate.ps1` before `run.ps1`.
 | [`ocr-image`](ocr-image/) | Self-contained image creation, bitmap decoding, and Windows OCR |
 | [`app-lifecycle-single-instance`](app-lifecycle-single-instance/) | Multi-process activation redirection with Windows App SDK AppLifecycle |
 | [`cryptography`](cryptography/) | SHA-256, `IBuffer`, text encoding, and hex conversion |
+| [`interface-implementation`](interface-implementation/) | Standalone Python-backed WinRT interfaces, native IBackgroundTask calls, and multi-interface lifetime |
 | [`device-watcher`](device-watcher/) | Device enumeration and thread-safe typed event subscriptions |
 | [`text-to-speech`](text-to-speech/) | `asyncio`, speech synthesis, media playback, and typed events |
 | [`app-notification`](app-notification/) | Windows App SDK bootstrap, notification builder, display, activation, and cleanup |

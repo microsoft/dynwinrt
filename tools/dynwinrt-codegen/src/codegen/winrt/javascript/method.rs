@@ -307,6 +307,7 @@ pub(crate) fn ts_array_element_type(inner: &TypeMeta, known_types: &HashSet<Stri
         TypeMeta::I64 | TypeMeta::U64 => "bigint[]".to_string(),
         TypeMeta::Struct { name, .. } if name == "HResult" => "number[]".to_string(),
         TypeMeta::Struct { name, .. } => format!("{}[]", name),
+        TypeMeta::Object => "Array<DynWinRtValue | null>".to_string(),
         TypeMeta::RuntimeClass { name, .. } if known_types.contains(name) => format!("{}[]", name),
         TypeMeta::Interface { name, .. } if known_types.contains(name) => format!("{}[]", name),
         _ => "DynWinRtValue[]".to_string(),

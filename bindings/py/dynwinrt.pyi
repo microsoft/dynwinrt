@@ -27,6 +27,11 @@ __all__ = [
     "DynWinRTType",
     "DynWinRTMethodSig",
     "DynWinRTMethodHandle",
+    "DynWinRTImplementationMethod",
+    "DynWinRTInterfacePlan",
+    "DynWinRTImplementation",
+    "DynWinRTImplementationDescriptor",
+    "DynWinRTDelegateMethod",
     "DynWinRTOverrideInterface",
     "DynWinRTXamlRegistration",
     "DynWinRTValue",
@@ -232,6 +237,84 @@ class DynWinRTMethodSig:
 
 
 @final
+class DynWinRTDelegateMethod:
+    @staticmethod
+    def create(
+        iid: WinGUID, signature: DynWinRTMethodSig
+    ) -> DynWinRTDelegateMethod: ...
+    def invoke(
+        self, value: DynWinRTValue, args: Sequence[DynWinRTValue]
+    ) -> List[DynWinRTValue]: ...
+
+
+@final
+class DynWinRTImplementationMethod:
+    def __new__(
+        cls, name: str, vtable_index: int, signature: DynWinRTMethodSig
+    ) -> DynWinRTImplementationMethod: ...
+    @property
+    def name(self) -> str: ...
+    @property
+    def vtable_index(self) -> int: ...
+    @property
+    def signature(self) -> DynWinRTMethodSig: ...
+
+
+@final
+class DynWinRTInterfacePlan:
+    @staticmethod
+    def create(
+        name: str,
+        interface_type: DynWinRTType,
+        methods: Sequence[DynWinRTImplementationMethod],
+        required_iids: Sequence[WinGUID] = ...,
+    ) -> DynWinRTInterfacePlan: ...
+    @property
+    def name(self) -> str: ...
+    @property
+    def interface_type(self) -> DynWinRTType: ...
+    @property
+    def methods(self) -> List[DynWinRTImplementationMethod]: ...
+    @property
+    def required_iids(self) -> List[WinGUID]: ...
+
+
+@final
+class DynWinRTImplementationDescriptor:
+    def __init__(
+        self,
+        plan: DynWinRTInterfacePlan,
+        dispatch: Callable[[int, List[DynWinRTValue]], List[DynWinRTValue]],
+    ) -> None: ...
+    @property
+    def plan(self) -> DynWinRTInterfacePlan: ...
+    def dispatch(
+        self, vtable_index: int, args: List[DynWinRTValue]
+    ) -> List[DynWinRTValue]: ...
+
+
+@final
+class DynWinRTImplementation:
+    @staticmethod
+    def create(
+        interfaces: Sequence[DynWinRTInterfacePlan],
+        callback: Callable[[int, int, List[DynWinRTValue]], List[DynWinRTValue]],
+        runtime_class_name: Optional[str] = ...,
+    ) -> DynWinRTImplementation: ...
+    def to_value(self) -> DynWinRTValue: ...
+    def release(self) -> None: ...
+    def dispose(self) -> None: ...
+    def disconnect(self) -> None: ...
+    @property
+    def is_closed(self) -> bool: ...
+    def take_error(self) -> Optional[str]: ...
+    def __enter__(self) -> DynWinRTImplementation: ...
+    def __exit__(
+        self, _exc_type: object, _exc_value: object, _traceback: object
+    ) -> Literal[False]: ...
+
+
+@final
 class DynWinRTOverrideInterface:
     def __new__(
         cls,
@@ -303,6 +386,8 @@ class DynWinRTValue:
     @staticmethod
     def from_i32(value: int) -> DynWinRTValue: ...
     @staticmethod
+    def from_hresult(value: int) -> DynWinRTValue: ...
+    @staticmethod
     def from_u32(value: int) -> DynWinRTValue: ...
     @staticmethod
     def from_i64(value: int) -> DynWinRTValue: ...
@@ -356,6 +441,12 @@ class DynWinRTValue:
     def as_raw(self) -> int: ...
     def identity_raw(self) -> int: ...
     def cast(self, iid: WinGUID) -> DynWinRTValue: ...
+    def invoke_delegate(
+        self,
+        iid: WinGUID,
+        signature: DynWinRTMethodSig,
+        args: Sequence[DynWinRTValue],
+    ) -> List[DynWinRTValue]: ...
     def activate(self) -> DynWinRTValue: ...
     def call_0(
         self, method_index: int, return_type: DynWinRTType
