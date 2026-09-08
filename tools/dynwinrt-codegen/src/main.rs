@@ -176,7 +176,7 @@ enum Commands {
 }
 
 const COM_MANIFEST_FILE: &str = ".dynwinrt-com-manifest.json";
-const COM_MANIFEST_VERSION: u32 = 4;
+const COM_MANIFEST_VERSION: u32 = 5;
 
 #[derive(Debug, Default, Deserialize, Serialize)]
 struct ComGenerationManifest {
@@ -9002,7 +9002,7 @@ mod tests {
     fn com_context_manifest_mismatch_requires_clean_regeneration() {
         let output = test_directory("com-context-manifest").join("com");
         fs::create_dir_all(&output).unwrap();
-        for version in [1, 2, 3] {
+        for version in [1, 2, 3, 4] {
             let content = serde_json::to_string(&ComGenerationManifest {
                 version,
                 roots: BTreeMap::new(),

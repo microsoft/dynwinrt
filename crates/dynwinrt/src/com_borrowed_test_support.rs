@@ -16,6 +16,10 @@ use std::{
 };
 use windows_core::{GUID, HRESULT, IUnknown, IUnknown_Vtbl, Interface as _};
 
+#[cfg(test)]
+#[path = "com_borrowed_reordered_support.rs"]
+pub(super) mod reordered;
+
 const FAIL: HRESULT = HRESULT(0x80004005u32 as i32);
 const INVALID: HRESULT = HRESULT(0x80070057u32 as i32);
 const POINTER: HRESULT = HRESULT(0x80004003u32 as i32);
@@ -507,7 +511,7 @@ unsafe extern "system" fn current_period(
         mix_format(this, format)
     }
 }
-static CLIENT_VTABLE: ClientVtable = ClientVtable {
+const CLIENT_VTABLE: ClientVtable = ClientVtable {
     base: UNKNOWN,
     initialize,
     size,
@@ -587,7 +591,7 @@ unsafe extern "system" fn render_release(this: *mut c_void, frames: u32, flags: 
     control.render_active.set(false);
     OK
 }
-static RENDER_VTABLE: RenderVtable = RenderVtable {
+const RENDER_VTABLE: RenderVtable = RenderVtable {
     base: UNKNOWN,
     get: render_get,
     release: render_release,
@@ -681,7 +685,7 @@ unsafe extern "system" fn capture_next(this: *mut c_void, output: *mut u32) -> H
     }
     OK
 }
-static CAPTURE_VTABLE: CaptureVtable = CaptureVtable {
+const CAPTURE_VTABLE: CaptureVtable = CaptureVtable {
     base: UNKNOWN,
     get: capture_get,
     release: capture_release,
@@ -780,7 +784,7 @@ unsafe extern "system" fn bitmap_lock(
     }
     HRESULT(control.wic_lock_hr.get())
 }
-static BITMAP_VTABLE: BitmapVtable = BitmapVtable {
+const BITMAP_VTABLE: BitmapVtable = BitmapVtable {
     base: UNKNOWN,
     size: bitmap_size,
     format: bitmap_format,
@@ -831,7 +835,7 @@ unsafe extern "system" fn lock_data(
     }
     OK
 }
-static LOCK_VTABLE: LockVtable = LockVtable {
+const LOCK_VTABLE: LockVtable = LockVtable {
     base: UNKNOWN,
     size: bitmap_size,
     stride: lock_stride,
@@ -921,7 +925,7 @@ unsafe extern "system" fn media_max(this: *mut c_void, output: *mut u32) -> HRES
     }
     OK
 }
-static MEDIA_VTABLE: MediaVtable = MediaVtable {
+const MEDIA_VTABLE: MediaVtable = MediaVtable {
     base: UNKNOWN,
     lock: media_lock,
     unlock: media_unlock,

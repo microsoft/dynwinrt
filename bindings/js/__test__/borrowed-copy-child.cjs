@@ -246,19 +246,32 @@ if (scenario === 'audio') {
   assert.equal(descriptor.exposure, 'owned-copy-only')
   assert.equal(descriptor.access, 'read-write')
   assert.equal(descriptor.owner, 'receiver')
-  assert.deepEqual(descriptor.acquire.storage, ['borrowed-bytes', 'out-u32', 'out-u32'])
+  assert.equal(descriptor.version, 2)
+  const acquisition = descriptor.calls.find((call) => call.id === descriptor.operations[0].acquire)
+  assert.deepEqual(
+    acquisition.bindings.map((binding) => binding.storage),
+    ['borrowed-bytes', 'out-u32', 'out-u32'],
+  )
+  assert.equal(acquisition.evidence, 'IMFMediaBuffer.Lock')
+  assert.equal(descriptor.operations[0].after[0].current, 'current')
+  assert.equal(descriptor.operations[1].after[0].length, 'input.bytes')
+  assert.equal(descriptor.operations[1].commit[0], 'set-length')
+  assert.throws(
+    () => unsafe.DynComBorrowedCopyPlan.prepare(JSON.stringify({ ...descriptor, version: 1 })),
+    /fully regenerate/i,
+  )
   for (const edit of [
     (d) => {
       d.version++
     },
     (d) => {
-      d.acquire.slot++
+      d.calls[0].slot = 42
     },
     (d) => {
-      d.audio_origin_required = true
+      d.audio_origin = { role: 'render' }
     },
     (d) => {
-      d.finalize = null
+      d.operations[0].cleanup = null
     },
     (d) => {
       d.metadata_sha256 = 'unknown'
@@ -274,6 +287,24 @@ if (scenario === 'audio') {
     },
     (d) => {
       d.empty_hresult = 0x08890001
+    },
+    (d) => {
+      d.calls[0].evidence = 'unknown.Lock'
+    },
+    (d) => {
+      d.calls[0].bindings[1].unit = 'frames'
+    },
+    (d) => {
+      d.calls[0].bindings[1].name = d.calls[0].bindings[2].name
+    },
+    (d) => {
+      d.operations[0].after[0].length = 'uninitialized'
+    },
+    (d) => {
+      d.operations[1].commit = []
+    },
+    (d) => {
+      d.id = 'matching-looking-json'
     },
   ]) {
     const changed = structuredClone(descriptor)

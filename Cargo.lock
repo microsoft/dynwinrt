@@ -351,6 +351,7 @@ name = "dynwinrt"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "dynwinrt-com-contracts",
  "futures",
  "libffi",
  "libffi-sys",
@@ -370,6 +371,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "csv",
+ "dynwinrt-com-contracts",
  "fs2",
  "regex",
  "roxmltree",
@@ -378,6 +380,14 @@ dependencies = [
  "sha2",
  "windows",
  "windows-metadata",
+]
+
+[[package]]
+name = "dynwinrt-com-contracts"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -11,6 +11,7 @@ authors = ["Microsoft"]
 test-hooks = []
 
 [dependencies]
+dynwinrt-com-contracts = { path = "../dynwinrt-com-contracts", version = "0.1.0" }
 libffi = "5.1.0"
 libffi-sys = "4.1.0"
 paste = "1"

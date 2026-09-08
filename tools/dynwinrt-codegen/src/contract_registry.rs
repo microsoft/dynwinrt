@@ -441,9 +441,9 @@ pub(crate) fn validate_exact_entry_catalog(
 pub(crate) fn statically_declared_exact_entry_ids() -> Result<BTreeSet<String>, String> {
     let mut ids = BTreeSet::new();
     ids.extend(
-        crate::com_metadata::borrowed::EVIDENCE
+        crate::com_metadata::borrowed::all_evidence()
             .iter()
-            .map(|entry| entry.entry().entry_id),
+            .map(|entry| crate::com_metadata::borrowed::catalog_entry(entry).entry_id),
     );
     ids.extend(
         crate::com_safe_array_registry::all_safe_array_evidence()

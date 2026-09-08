@@ -4,6 +4,9 @@
 use super::testing::CopyFixture;
 use super::*;
 
+#[path = "com_borrowed_plan_tests.rs"]
+mod planner;
+
 fn plan(kind: CopyKind) -> BorrowedCopyPlan {
     BorrowedCopyPlan::prepare(&MetadataTable::new(), BorrowedCopyContract::expected(kind)).unwrap()
 }
@@ -147,13 +150,17 @@ fn borrowed_copy_descriptor_drift_and_effect_signature_reject_before_dispatch() 
         CopyKind::MediaBuffer,
     ] {
         let mut descriptor = BorrowedCopyContract::expected(kind);
-        descriptor.acquire.slot += 1;
+        descriptor.calls[0].evidence.push_str(".slot-drift");
         assert!(BorrowedCopyPlan::prepare(&MetadataTable::new(), descriptor).is_err());
         let mut descriptor = BorrowedCopyContract::expected(kind);
-        descriptor.acquire.storage.clear();
+        descriptor.calls[0].bindings.clear();
         assert!(BorrowedCopyPlan::prepare(&MetadataTable::new(), descriptor).is_err());
         let mut descriptor = BorrowedCopyContract::expected(kind);
-        descriptor.audio_origin_required = !descriptor.audio_origin_required;
+        descriptor.audio_origin = if descriptor.audio_origin.is_some() {
+            None
+        } else {
+            BorrowedCopyContract::expected(CopyKind::AudioRender).audio_origin
+        };
         assert!(BorrowedCopyPlan::prepare(&MetadataTable::new(), descriptor).is_err());
     }
     let table = MetadataTable::new();

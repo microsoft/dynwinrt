@@ -564,14 +564,19 @@ controlled contract-family ablation, remains later registry migration work.
 The strict contract data schema and its registry `manifest.json` remain
 version 2. The capability summary is version 3, and generated unsafe support
 manifests are version 12.
-Seven WMI conditional-output entries and 149 output-ownership entries are
-JSON-backed; the other 376 registered entries remain code-defined. All code and
-data entries use the same selector-derived `entryId`, typed `familyId`,
+Seven WMI conditional-output entries and 149 output-ownership entries use the
+grouped contract-data registry. Of the other 376 registered entries, 26
+borrowed-copy/context entries now live in the native-independent packaged
+`dynwinrt-com-contracts` JSON registry; their existing exact-entry catalog and
+dependency classification are preserved. The other 350 remain code-defined.
+All entries use the same selector-derived `entryId`, typed `familyId`,
 selector/fingerprint/citation catalog, and pinned-metadata validation path.
 
 Separately, PR1 raised the generated COM file-ownership manifest
 `com/.dynwinrt-com-manifest.json` from version 2 to version 3; borrowed-copy
-context effects now require version 4. Generated safe
+context effects introduced version 4, and version-2 typed copy recipes now
+require manifest version 5. This changes neither evidence IDs nor support
+counts. Generated safe
 classes must register descriptors for the public runtime `/com` `projectAs`
 entrypoint and typed `IMMDevice.activate` through private `/com/unsafe`
 helpers. Delete existing generated bindings and completely regenerate every
