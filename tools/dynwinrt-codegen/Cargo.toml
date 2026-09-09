@@ -8,6 +8,7 @@ repository = "https://github.com/microsoft/dynwinrt"
 authors = ["Microsoft"]
 
 [dependencies]
+dynwinrt-com-contracts = { path = "../../crates/dynwinrt-com-contracts", version = "0.1.0" }
 windows-metadata = "0.59.0"
 clap = { version = "4", features = ["derive"] }
 csv = "1"

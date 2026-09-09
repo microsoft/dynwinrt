@@ -17,7 +17,7 @@ use super::capability::{
 };
 use super::javascript::naming::camel_case;
 
-pub const UNSAFE_SUPPORT_SCHEMA_VERSION: u32 = 11;
+pub const UNSAFE_SUPPORT_SCHEMA_VERSION: u32 = 12;
 
 #[derive(Debug, Clone)]
 pub struct UnsafeGeneratedOutput {
@@ -68,7 +68,7 @@ pub fn measure_stage2_coverage(winmd_paths: &str) -> Result<Stage2Coverage, Stri
         runtime_blocked_methods: 0,
     };
     for interface in &interfaces {
-        if super::generate_com_interface_files(interface, winmd_paths).is_ok() {
+        if super::generate_complete_com_interface_files(interface, winmd_paths).is_ok() {
             continue;
         }
         let methods = classify_interface_methods(interface)?;
@@ -2319,13 +2319,13 @@ mod tests {
         };
         let coverage = measure_stage2_coverage(&winmd).unwrap();
         println!("{}", serde_json::to_string(&coverage).unwrap());
-        assert_eq!(coverage.x64_manual_interfaces, 1_432);
-        assert_eq!(coverage.x64_manual_interfaces_with_executable_method, 1_428);
+        assert_eq!(coverage.x64_manual_interfaces, 1_431);
+        assert_eq!(coverage.x64_manual_interfaces_with_executable_method, 1_427);
         assert_eq!(
             coverage.x64_manual_interfaces_with_executable_manual_method,
-            1_427
+            1_426
         );
-        assert_eq!(coverage.executable_manual_methods, 6_048);
+        assert_eq!(coverage.executable_manual_methods, 6_046);
         assert_eq!(coverage.remaining_manual_methods, 0);
         assert_eq!(coverage.runtime_blocked_methods, 1_161);
     }

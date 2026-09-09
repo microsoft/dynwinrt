@@ -4,8 +4,8 @@
 general Automation or native Win32 projection.
 
 > **Status: preview, under active development.** The current CI baseline against
-> `Microsoft.Windows.SDK.Win32Metadata` 71.0.14-preview is 5,696 complete safe
-> interface projections out of 7,929 eligible interfaces (71.84%). Earlier
+> `Microsoft.Windows.SDK.Win32Metadata` 71.0.14-preview is 5,721 complete safe
+> interface projections out of 7,929 eligible interfaces (72.15%). Earlier
 > inventory and demand-snapshot sections retain the metadata versions and dates
 > stated in those sections.
 
@@ -154,6 +154,350 @@ renderer cannot see `TypeMeta` or metadata attributes and has no default
 pointer/Buffer fallback; it only serializes the validated projected IR with
 exhaustive type matches.
 
+## Explicit COM overload names
+
+Existing overload groups with distinguishable JavaScript arity/shape retain
+their exact dispatch and generated API. PR4 handles previously rejected
+groups only when every member is an otherwise fully validated **normal COM
+method**. Groups with colliding JavaScript signatures or projected buffers
+receive deterministic public names
+`<camelName>AtSlot<absoluteVtableSlot>` for **every** member; the ambiguous
+unsuffixed method is absent.
+
+The slot is the absolute inherited vtable slot, not an overload ordinal.
+For example, `ID2D1Device1::CreateDeviceContext` produces two explicit
+`createDeviceContextAtSlot...` members; the generated declarations give their
+exact names and return types. Native method names, slots, ABI signatures,
+conversions, and lifetime plans are unchanged. Projection selects the names in
+IR; the renderer only serializes them and adds no runtime type or ABI guesses.
+
+Alias collisions with actual projected members fail closed. Synthesized,
+dynamic-IID, and other non-normal method groups still reject; this is not a
+universal overloaded-method parser or a way around incomplete native
+contracts. See the [usage guide](../guides/windows/classic-com-usage.md#58-explicit-overload-names).
+PR4 does not change COM manifest version 4 or unsafe support schema 12:
+already-supported safe output remains byte-identical, and the newly admitted
+groups previously had no valid safe surface.
+
+## Bounded native one-shot completion
+
+The first supported flat export is the exact
+`Windows.Win32.Media.Audio.Apis.ActivateAudioInterfaceAsync` relationship.
+It is separate from general interface projection and does not increase the
+complete-interface census. No general native-export or COM server API is
+introduced.
+
+The configured `Windows.Win32.winmd` must contain the following complete
+contracts. The retained regression uses Win32Metadata **71.0.14-preview**,
+SHA256 `B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D`.
+
+| Entry | Verified native ABI and contract |
+| --- | --- |
+| `MMDevAPI.dll!ActivateAudioInterfaceAsync` | System ABI, ordinary HRESULT return, exactly five arguments and **no `this`**: const NUL-terminated UTF-16 path; REFIID; optional `PROPVARIANT*` restricted to NULL; borrowed completion-handler interface; required cell receiving an owned operation `+1`. |
+| `IActivateAudioInterfaceCompletionHandler` | IID `41d949ab-9862-444a-80f6-c261334da5eb`, direct IUnknown inheritance, only slot 3 `ActivateCompleted`, ordinary HRESULT, one borrowed operation-interface input. |
+| `IActivateAudioInterfaceAsyncOperation` | IID `72a22d78-cde4-431d-b8cc-843a71199b6d`, direct IUnknown inheritance, only slot 3 `GetActivateResult`, ordinary outer HRESULT, required `HRESULT*` and `IUnknown**` output cells. |
+
+The export parser preserves named types, pointer depth, direction, optional
+and Const attributes, import library, entry point, and calling convention.
+The COM projector validates the whole relationship before emitting a
+versioned, closed runtime descriptor, plus the complete safe `IAudioClient`
+and `IAudioEndpointVolume` projections. Unknown signatures and contract drift
+fail during dry-run/generation and again at runtime descriptor validation.
+No renderer infers ownership from method names.
+
+Metadata does not mark the *contained* `activatedInterface` pointer nullable.
+The exact
+[GetActivateResult contract](https://learn.microsoft.com/en-us/windows/win32/api/mmdeviceapi/nf-mmdeviceapi-iactivateaudiointerfaceasyncoperation-getactivateresult)
+documents NULL on inner activation failure; its receiving cell is still
+required. The native collector interprets start HRESULT, outer result HRESULT,
+inner activation HRESULT, and NULL independently, with RAII cleanup of written
+owned outputs even on failure. Successful result QI and the public `projectAs`
+registry run on the owner thread.
+The owned result is not placed in a JavaScript native-value carrier until
+that carrier has a registered finalizer. A failing N-API class construction
+during worker shutdown therefore still releases the result on its owner.
+
+`com_completion.rs` prepares bounded libffi export/result plans using the
+existing system-ABI CIF helper. The allowlisted DLL is resolved from System32
+and pinned for late native completion after Node teardown. It does not call a
+compiled per-interface SDK adapter, invent a COM receiver, or permit
+production function-address injection. The signal's own code module is also
+pinned before publication, so a callback cannot jump into an unloaded addon
+after the last Node environment using it has closed.
+
+The private signal sink reuses `DynamicComSink`'s HRESULT/interface-input
+static thunk. It has canonical IUnknown identity, the exact callback IID,
+IAgileObject, and a real IMarshal delegated to an aggregated
+[CoCreateFreeThreadedMarshaler](https://learn.microsoft.com/en-us/windows/win32/api/combaseapi/nf-combaseapi-cocreatefreethreadedmarshaler).
+This is an internal implementation detail, not general aggregation support.
+The free-threaded state contains only a pointer-free publication/completion
+rendezvous and a native token notifier, never an operation, result, or JS
+callback. A temporary in-flight reference protects the sink; callback input
+QI/borrowed references are released in that callback's apartment.
+
+Node keeps the original start-returned operation, handler, deferred, and plan
+in an owner-thread-local record that is not Send/Sync. The native signal only
+enqueues a process-unique token through `ManagedTsfn`'s native-dispatch mode.
+Publication gates early callbacks, duplicate callbacks notify once, and no
+operation→handler→operation cycle is formed. Owner dispatch collects results
+only after the signal; it neither casts to WinRT IAsyncInfo nor assumes that
+the operation or audio result is agile. Ordinary JS callback owner-thread
+guards and WinRT async dispatch are unchanged.
+
+One-shot notifier disposal releases the TSFN even if Windows retains the
+handler. There are at most 256 pending records per environment, including
+reservations made before a potentially reentrant start call. Cleanup
+closes every signal before releasing owner COM references; late/stale tokens
+cannot address a new record in a recycled environment. Dropping the JS Promise
+does not cancel native work. No timeout, AbortSignal, loopback parameters, or
+arbitrary cross-apartment JS scheduling is exposed.
+
+Deterministic tests use an ABI-correct five-argument fake export, complete
+operation and audio-result vtables, actual FTM QI, and initialized MTA delivery
+through
+[RoGetAgileReference/Resolve](https://learn.microsoft.com/en-us/windows/win32/api/combaseapi/nf-combaseapi-rogetagilereference).
+Fake non-agile results are created only in owner-thread GetActivateResult.
+Coverage includes early/duplicate completion, all HRESULT/NULL stages,
+exactly-once lifetime, stale/recycled tokens, callback-in-flight teardown,
+addon lifetime after the last environment closes, pending-work bounds, and
+event-loop exit. This deterministic suite does not activate hardware or
+record audio. The separate opt-in `DYNWINRT_TEST_AUDIO_RENDER=1` smoke only
+reads the default speaker endpoint's channel count through the real export.
+Caller/UI-thread requirements remain those of
+[ActivateAudioInterfaceAsync](https://learn.microsoft.com/en-us/windows/win32/api/mmdeviceapi/nf-mmdeviceapi-activateaudiointerfaceasync).
+
+## Bounded borrowed-buffer copies
+
+Audio, WIC, and linear Media Foundation storage share a COM-local
+`BorrowedCopyPlan`. These are **synchronous owned-copy transactions**, not
+native-backed Node `Buffer`/`ArrayBuffer` views or caller-asserted pointer leases.
+They preserve the metadata → semantic contract → completed MethodHandle/libffi
+call → projection boundary. The runtime contains no per-interface SDK calling
+adapter; typed SDK acquisition is confined to stock-Windows tests.
+
+| Generated receiver | Owned-copy operations | Extent and finalization |
+| --- | --- | --- |
+| `IAudioRenderClient` | `writeFramesCopy(data)`, `writeSilence(frames)` | Frames use the format from observed successful initialization and must fit native `GetBufferSize`. Release the complete request, or zero frames on abort. |
+| `IAudioCaptureClient` | `readPacketCopy()` | Native packet frames × proven initialized block alignment, bounded by native capacity. Return an owned data packet, a tagged silent packet, or `null` for empty. Release the full packet after copying, zero on abort. |
+| `IWICBitmap` | `readLockedBgra8Copy(rect)` | Acquire a READ lock, obtain native size/stride/pixel format/byte count, copy row pixels without padding, release the owned lock reference. |
+| `IMFMediaBuffer` | `readCopy()`, `replaceCopy(data)` | Request both native current and maximum lengths. Copy current bytes, or replace within maximum and call `SetCurrentLength`; always Unlock after successful Lock. |
+
+Render/capture and MF are explicitly **copy-only facades**, not complete native
+interface projections. They do not expose `GetBuffer`, `ReleaseBuffer`, `Lock`,
+or `Unlock` independently. WIC retains its previously complete native interface
+surface (including acquisition of an opaque owned lock) and adds the copy
+operation. An external lock never gains byte access or writable rights from
+this operation. The three copy-only facades remain excluded from the current
+**5,721 / 7,929** complete safe census.
+
+### Private context and lifecycle
+
+The native-independent
+[`dynwinrt-com-contracts` registry](../../crates/dynwinrt-com-contracts/src/registry.json)
+is the single reviewed source for complete interface identities, native
+IID/slot/ABI-cell evidence, operation/result mappings, and lifecycle recipes.
+Codegen selects records by exact identity; the runtime admits only an exact
+packaged record. A matching-looking JSON object or a new record ID does not
+authorize native memory access.
+
+The version-2 recipe actually drives execution:
+
+* named `calls` reference reviewed `evidence` and bind each native argument to
+  a typed input source or named output cell;
+* `before`, `acquire`, and `after` order queries and acquisition; typed byte,
+  frame, layout, rectangle, row, flag, timestamp, and owner references must have
+  available producers, compatible ABI cells and matching native owners;
+* the closed `frame-extent`, `native-extent`, and `row-extent` constructors prove
+  the copy bounds, while `transfer` chooses read, write, silent-packet skipping,
+  or no-payload silence;
+* `commit` consumes the proven replacement length, and `cleanup` supplies the
+  actual normal/abort arguments or names the unique acquired owner to Release;
+* `result` names the bounded dimensions, frames, flags and timestamps to project.
+
+The pure validator checks the entire recipe, including abort availability
+before acquisition, full/zero frame release, access, result shape and owner
+lifetime, before preparing any native call. Reviewed evidence designates each
+acquisition's finalizer and the units of each native scalar cell; a same-width
+flags/count swap or unrelated cleanup call cannot satisfy the graph proof.
+Runtime native lengths still
+require checked arithmetic and pointer/extent validation after successful
+acquisition. All calls use completed MethodHandles/libffi, with no family
+execution switch or per-interface SDK adapter. The public methods are thin
+operation selectors. This is not an arbitrary-execution DSL: no pointer input,
+caller byte extent, user callback, loop, allocator selection or new production
+interface is introduced.
+
+Output cells are private stable storage, not language values: the executor
+cannot publish/read them before classifying the exact HRESULT. Cleanup is
+armed before inspecting acquired outputs or allocating/copying result bytes.
+
+```text
+Idle -> Acquiring -> Active -> Finalizing -> Idle
+                  \ unexpected success / cleanup failure -> Poisoned
+```
+
+The canonical-IUnknown sidecar is private to COM carriers. Owner-thread
+registry entries are weak; each live sidecar strongly retains its canonical
+identity, preventing stale address-key reuse. A second process-local weak map
+contains only pointer-free owner-thread tokens and rejects independent
+cross-thread claims for the same canonical identity. No native reference or
+Rc state crosses that map, and no registry lock spans native dispatch.
+Managed COM carriers also share an initially empty context slot from creation,
+pinned by their owned references. Thus aliases created before the first copy
+still retain its later provenance or poison after the first copier is released,
+without adding a canonical-reference pin to unrelated ordinary COM calls.
+A service retains its originating
+client context and exact client interface view, without a reverse sidecar
+reference or cycle. QI, `projectAs`, and independently rewrapped aliases recover
+the same context while any managed holder retains it. Conflicting mappings
+fail closed.
+
+Ordinary COM invocation also admits every managed interface argument, not just
+the receiver. The shared input boundary checks apartment ownership and the
+current busy/poisoned state before conversion and native dispatch. Supported
+interface-bearing containers retain the same canonical-identity context slots
+as their elements; they do not gain a fresh lifecycle by cloning native
+references. A container created while idle must still reject a subsequently
+poisoned element, including after the original wrappers have been released.
+This is a common argument rule, not an `IMFSample::AddBuffer` special case.
+Standard identity handling and deterministic release remain available for
+cleanup; ordinary invocation does not make every unrelated idle object busy.
+The final admission check runs after native argument coercion, including QI,
+so reentrancy cannot invalidate an earlier check unnoticed. Rejection keeps
+the dispatch marker clear and releases call-local storage. The private lowering
+hook is generic; COM state policy stays in the COM binding layer.
+
+The receiver and required owner gates enter `Acquiring` **before** native
+dispatch. No registry/state lock is held across a native call. A successful
+acquire arms cleanup before pointer/range validation or allocation. Direct JS
+callback entry is rejected while the synchronous transaction is in progress;
+no JS callback receives a borrow. Finalization is taken exactly once before it
+runs. Failure poisons the shared context, suppresses all output bytes, and
+never triggers a speculative Drop retry. Writes are **not** promised atomic
+rollback, particularly if `SetCurrentLength` fails after copying.
+
+Operations reject off the owning thread before touching native references.
+Wrong-thread COM carrier destruction retains the existing leak-rather-than-
+wrong-apartment-release policy, including the private sidecar.
+
+### Audio initialization is the extent proof
+
+Only actual successful calls carrying the exact metadata effect can record
+provenance:
+
+* `IAudioClient::Initialize`, slot 3, format argument 4, share-mode argument 0,
+  stream-flags argument 1;
+* `IAudioClient3::InitializeSharedAudioStream`, slot 20, format argument 2,
+  stream-flags argument 0, implicit shared mode;
+* `IAudioClient::GetService`, slot 14, binds the returned render/capture
+  service to that client only after actual native success and verified service QI.
+
+These effects are inherited by the generated `IAudioClient2`/`IAudioClient3`
+views. Failed or `AUDCLNT_E_ALREADY_INITIALIZED` calls neither create nor
+overwrite the immutable record. There is no attach-format, assume-initialized,
+or record-success API. An externally initialized client without observed
+provenance cannot use the copy operations. `GetMixFormat` and a caller's
+`blockAlign` are not proof: `AUTOCONVERTPCM` can make the initialized format
+different from the engine mix format even in shared mode.
+
+Copy capability is granted only for validated PCM 8/16/24/32-bit containers,
+IEEE float 32/64-bit containers, and supported 22-byte
+WAVEFORMATEXTENSIBLE equivalents. Channels, valid/container bits, optional
+channel mask, block alignment, sample rate and average byte rate must agree.
+Other valid WAVEFORMATEX values retain initialization support but do not grant
+byte-copy capability. Checked arithmetic and a 64 MiB operation cap restrict,
+but never establish, a native extent.
+
+For render, IID `f294acfc-3146-4483-a7bf-addca7c260e2`, the plan uses GetBuffer
+slot 3 and ReleaseBuffer slot 4. Input is staged into owned Rust bytes before
+acquisition; frames are derived from that byte count. Zero requests do not
+acquire/release a buffer. Silence uses `AUDCLNT_BUFFERFLAGS_SILENT` without
+touching the payload pointer. **Exclusive event-driven render is excluded**
+because a zero-frame abort is not valid for that mode.
+
+For capture, IID `c8adbd64-e71e-48a0-a4de-185c395cd317`, GetBuffer slot 3 has five
+output cells, and ReleaseBuffer is slot 4. The exact semantic-HRESULT override
+recognizes only S_OK as acquisition and `AUDCLNT_S_BUFFER_EMPTY` as no
+acquisition. Empty returns without reading any output cell or releasing a
+packet. Unknown success poisons rather than guessing. SILENT ignores the data
+pointer, including NULL; TIMESTAMP_ERROR makes timestamps unavailable.
+The plan never calls shared-only GetNextPacketSize, so it also handles
+exclusive capture. Automated capture coverage is **fake-only**, never hardware
+recording.
+
+### WIC and MF limits
+
+`IWICBitmap` IID `00000121-a8f2-4877-ba0a-fd2b6645fb94` uses absolute slot 8
+Lock with an explicit validated rectangle and fixed READ flags=1.
+Its owned `IWICBitmapLock` IID `00000123-a8f2-4877-ba0a-fd2b6645fb94` supplies
+GetSize/Stride/DataPointer/PixelFormat at slots 3/4/5/6.
+The current apartment must be STA because GetDataPointer is unavailable in
+MTA. Only BGRA8 GUID `6fddc324-4e03-4bfe-b185-3d77768dc90f` is accepted.
+The last-row span `(height - 1) * stride + width * 4` must fit the native byte
+count; final-row padding is not required or read. The returned Buffer contains
+packed rows. There is no invented Unlock: cleanup releases the acquired lock.
+
+`IMFMediaBuffer` IID `045fa593-8799-42b8-bc8d-8968c6453507` uses Lock/Unlock at
+slots 3/4 and SetCurrentLength at slot 6. Both Lock length outputs are requested,
+`current <= max` is checked, and the returned pointer is never freed with
+CoTaskMemFree. Lock is not native cross-thread synchronization: the gate
+coordinates this library's aliases, not arbitrary external users.
+General signed-pitch/plane `IMF2DBuffer`/`IMF2DBuffer2` views remain unsupported.
+Caller-provided height or stride is never treated as native memory bounds.
+
+### Evidence and regeneration
+
+The shared packaged registry contains the same 26 exact selectors, full source
+fingerprints and Microsoft citations.
+[`com_borrowed_metadata.rs`](../../tools/dynwinrt-codegen/src/com_borrowed_metadata.rs)
+checks them against the configured metadata, which must include Win32Metadata
+**71.0.14-preview**, SHA256
+`B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D`.
+The complete inherited interfaces and required owner/lock dependencies are
+validated, not just acquisition methods. Runtime descriptors are versioned and
+closed; absent/drifted signatures, storage roles, prerequisites or finalizers
+fail before acquisition. Renderers only serialize the projected IR.
+Borrowed descriptors are now **version 2**, and the generated COM ownership
+manifest is **version 5**. Old descriptors/manifests require complete
+regeneration; there is no silent or incremental migration. Evidence IDs,
+fingerprints, support sets and public declarations are unchanged; embedded
+descriptor JavaScript and the ownership-manifest version necessarily differ.
+
+Hardware-free tests add test-only records for new linear, frame-writer,
+frame-reader and row-copy interfaces (plus their owner/context views).
+Every native copy call uses a different IID and slot, reordered argument/output
+bindings, and renamed/reordered calls. Real copies and full/zero or owner
+cleanup execute without changing production model/executor dispatch. The
+fixtures also exercise ABI-sized storage on x64/i686, short last rows,
+silent/empty packets, commit failure and exactly-once poisoning. Test registry
+injection is absent from production and JS test-hooks builds.
+
+COM file-ownership manifest **5** and unsafe support schema **12** require deletion
+and full regeneration of older output. Do not mix pre-effect audio wrappers with new copy facades.
+Coverage includes native fake tear-offs with complete SDK-correct vtables,
+truthful QI, alias/context lifetime, failed initialization and differing mix
+formats, no-JS reentrancy, exact-once poisoned cleanup, all packet states,
+WIC final-row/stride cases, MF failure paths, and live stock-Windows WIC/MF.
+Both x64 and live i686 execute the same runtime tests.
+
+Retained PR3 validation before the version-2 execution-plan refactor:
+
+| Check | Result |
+| --- | --- |
+| Core + codegen suites | All pass, including WinRT snapshots and 306 core / 421 codegen / 66 CLI unit tests; the existing WinAppSDK-dependent initialization test remains ignored. |
+| Borrowed-copy native ABI | 20 tests pass on x64 and 20 on live i686; i686 N-API binding compile passes. |
+| Node functional regressions | 89 pass, including eight copy scenarios, ten one-shot scenarios, existing generated ownership contracts, package/type checks and callback regressions. |
+| Stock-Windows E2E | 38 WinRT and 17 Classic COM scenarios pass. WIC and linear MF copy transactions also pass against real OS objects in the native suite. |
+| Census determinism | Two independent runs produce seven byte-identical artifacts; the complete count remains 5,697. |
+
+The separate WinUI scheduled-start test has a timing-sensitive 1,000 ms
+`nextTick` assertion. AVA runs intermittently exceeded it on this host.
+An exact build of parent commit `247383c` reproduced the same failure
+(1,729.8 ms); the current build also passed in isolation. Three paired direct
+runs of the unchanged harness passed for both parent and current runtimes
+(roughly 132–150 ms). No timing threshold, WinUI implementation, or
+preceding-PR invariant was relaxed.
+
 ## Size of Windows.Win32.winmd
 
 The counts below are exact for
@@ -190,8 +534,9 @@ callable entries, the most useful count is:
 
 These numbers describe the metadata, not dynwinrt support:
 
-- The current Classic COM work targets interface methods. It does **not**
-  project the 17,760 flat DLL exports.
+- Classic COM primarily targets interface methods. Apart from the bounded
+  native-completion export above, it does **not** project the 17,760 flat DLL
+  exports.
 - An interface declaration may describe a caller-implemented callback rather
   than an OS object that can be activated and called.
 - The interface count includes graphics, media, WMI, Automation, Shell, and
@@ -473,7 +818,7 @@ not be described as solving every problem in the map above.
 | Fail-closed generation | Unknown/unsafe layouts, untagged/by-value/output unions, bitfields, flexible arrays, nested owned fields, unsupported VARTYPE/BYREF/SAFEARRAY/PROPVARIANT combinations, unsupported arrays, pointer outputs, ownership, and in/out shapes stop generation with a targeted error. |
 | Consumable output | Classic COM files live under `com/`, with `./com` and `./com/*` package exports. The generated package root is always WinRT-only; COM-only output deliberately has no root entrypoint. |
 | Explicit vtable registration | Every generated method is registered with `.addMethodAt(vtableIndex, name, signature)`, keyed by its actual metadata-derived vtable slot. Methods are never deduplicated by name, so same-name overloads at different slots both register correctly. |
-| Same-name overload projection | Overloads (e.g. `IDCompositionEffectGroup::SetOpacity`) are grouped once during projection (not by renderer heuristics). A single public JS method dispatches to a private per-slot implementation using only a validated, mutually-distinguishable arity/shape key (`typeof`-based: boolean/number/bigint/string/object); ambiguous groups fail generation closed with a diagnostic naming the interface, method, and reason. The `.d.ts` emits one TypeScript overload signature per branch, contiguously. |
+| Same-name overload projection | Existing distinguishable overloads (e.g. `IDCompositionEffectGroup::SetOpacity`) retain their single public dispatcher, validated arity/shape keys, and contiguous TypeScript overload signatures. Previously rejected groups of fully validated normal methods use explicit `<camelName>AtSlot<absoluteVtableSlot>` names for every member and omit the ambiguous unsuffixed name. Projection selects these names; the renderer does not infer ABI semantics. Collisions and non-normal groups fail closed. |
 | Lifecycle ergonomics | Generated interface wrappers declare a protected constructor (`protected constructor(obj: unknown);`) so only generated coclasses can subclass them. Coclasses expose a public zero-argument constructor, and every wrapper provides an idempotent `release()` that delegates to the managed native value. Factory-activated interop wrappers retain `static create()` with JSDoc reminding callers to initialize COM first. |
 | Doc-link rendering | When win32metadata attaches a `DocumentationAttribute` (a `learn.microsoft.com` URL) to a method, the generator renders it as an `@see {@link ...}` comment in both `.js` and `.d.ts`. No raw metadata is imported into the renderer — the URL is threaded through `ProjectedComMethod.doc`, populated once during projection. |
 | Acronym-aware parameter casing | Parameter names are lowered using the same acronym-run-aware rule as method names, so a Hungarian-prefixed trailing acronym like `hwndMDI` projects as `mdi` (not the previous naive `mDI`). |
@@ -491,11 +836,13 @@ not be described as solving every problem in the map above.
 | Authoritative count-param detection | Relationships come solely from `NativeArrayInfo(CountParamIndex)` or an exact cited override registry. Documented overrides cover `ISequentialStream::Read`/`Write`, `IDiscRecorder::GetRecorderGUID`, `IOpcSignatureCustomObject::GetXml`, and the fixed-capacity/actual-byte `IMFAttributes::GetBlob` contract. The previous substring/adjacency heuristic remains removed. |
 | Private-data ownership guard | Actual metadata contains seven declaring `GetPrivateData(REFGUID, UINT*, void*)` interfaces. Their documentation permits returning an AddRef'd interface set by `SetPrivateDataInterface`; Direct3D 10 also documents destructive NULL behavior, and DXGI does not mark the data pointer optional. They remain exact, cited fail-closed hazards rather than being projected as leaking `Buffer` methods. |
 | Atomic multi-interface writes | When a single `generate` invocation projects several COM interfaces, every interface is projected into memory first; files (and the `com/` index/package barrel) are only written once the whole batch has projected successfully. A later interface's projection failure no longer leaves an earlier interface's files partially written to disk. |
-| Coclass projection | GUID-bearing Classic COM coclasses such as `TaskbarList`, `FileOperation`, and `FileOpenDialog` generate as independently constructible JS classes (`new TaskbarList()`). Interface wrappers remain non-publicly constructible and expose an IID descriptor plus `_fromNative` for runtime QueryInterface views. |
+| Coclass projection | GUID-bearing Classic COM coclasses such as `TaskbarList`, `FileOperation`, and `FileOpenDialog` generate as independently constructible JS classes (`new TaskbarList()`). Interface wrappers remain non-publicly constructible and register private descriptors for safe `projectAs` QueryInterface views. |
 | Interface views | Generated coclasses expose `as(InterfaceClass)`, `tryAs(InterfaceClass)`, and `supports(InterfaceClass)`. These execute real QueryInterface calls; `tryAs` returns `null` only for `E_NOINTERFACE`, while other errors remain visible. |
+| Safe projection entry | `projectAs(value, InterfaceClass)` on `/com` borrows a managed native value or generated wrapper and returns a separately owned QueryInterface wrapper. The target must be a registered generated safe COM interface class; arbitrary raw pointers and unsafe target classes are rejected. Generated modules register descriptors through private `/com/unsafe` helpers, not application-supplied ABI declarations. |
+| Audio endpoint entry | Exact `IMMDevice::Activate` evidence projects `activate(InterfaceClass)` with an inferred target wrapper, fixed `CLSCTX_INPROC_SERVER = 1`, and native NULL activation parameters. Exact `GetId` ownership projects `getId(): string` and frees the CoTaskMem allocation. These are semantic plans over shared runtime primitives, not per-interface native adapters. |
 | Conservative primary interface | Windows.Win32 coclass TypeDefs do not carry `InterfaceImpl`/`DefaultAttribute` rows. The generator associates only exact metadata naming candidates, constructs the real interface inheritance graph, and selects a primary only when there is one unique most-derived leaf. Multiple unrelated leaves fail closed rather than choosing by numeric suffix. |
 | CommonJS and ESM | COM implementation files use the same CommonJS format as generated WinRT files. `com/index.js` is the CommonJS barrel, while `com/index.mjs` is the ESM facade. Package exports provide explicit `require` and `import` conditions for the COM barrel and deep imports. |
-| Explicit raw opt-in | Manual ABI declarations and caller-supplied COM pointers are isolated under `@microsoft/dynwinrt/com/unsafe`. The default COM facade exports only initialization and managed value/layout wrappers—not `DynCom`, signatures, interfaces, native types, or `DynComUnsafe`; generated safe bindings continue to fail closed. |
+| Explicit raw opt-in | Manual ABI declarations and caller-supplied COM pointers are isolated under `@microsoft/dynwinrt/com/unsafe`. The default COM facade exports initialization, `projectAs`, and managed value/layout wrappers—not `DynCom`, signatures, interfaces, native types, or `DynComUnsafe`; generated safe bindings continue to fail closed. |
 
 ### Generated package layout
 
@@ -545,9 +892,24 @@ taskbar.release();
 
 Separate WinRT and COM invocations may target the same output directory in
 either order. The generated package manifest is rebuilt from both domains
-without adding COM exports to the WinRT root. Generated layout/schema version
-changes require deleting and regenerating the complete bindings directory;
-in-place cross-version migration is intentionally unsupported.
+without adding COM exports to the WinRT root.
+
+PR1 raised the generated COM file-ownership manifest
+`com/.dynwinrt-com-manifest.json` from version 2 to version 3. Borrowed-copy
+context effects introduced **version 4**; typed borrowed-copy recipes now
+require **version 5**. Every
+generated safe class now registers a descriptor through private
+`@microsoft/dynwinrt/com/unsafe` helpers. Public `projectAs` remains on the
+runtime `@microsoft/dynwinrt/com` entrypoint, and generated
+`IMMDevice.activate(InterfaceClass)` uses that private descriptor registry.
+Unregistered/unsafe targets and numeric, Buffer, or native `RawPtr` sources are
+rejected. Other generated `.as(...)` paths remain unchanged.
+
+Existing bindings must be deleted and completely regenerated with the
+matching updated runtime and codegen. Regenerate the complete bindings
+directory, including all selected roots; in-place cross-version migration,
+editing the manifest version, and mixing old/new generated classes are not
+supported. This does not change WinRT semantics or the runtime root API.
 
 winappCli project aliases use `#winapp/bindings/com` for the COM barrel and
 canonical deep imports such as
@@ -680,7 +1042,22 @@ and `@microsoft/dynwinrt/com`.
 | HSTRING inputs and scalar outputs | Supported | JavaScript strings are converted to owning HSTRING values; returned HSTRING values are decoded and released automatically. |
 | Referenced interface types | Supported when IID metadata is loaded | Missing external definitions fail closed and direct callers to pass the defining winmd with `--ref`. |
 | Dynamic-IID `void**` outputs | Supported for explicit required REFIID shapes | The method must return ordinary HRESULT and contain exactly one required const `GUID*` named `iid`/`riid` plus one required mutable `void**`/Object** output with +1 COM ownership. Their explicit parameter indices may be non-adjacent/non-terminal. Optional, duplicate, array, FreeWith, InOut, by-value/mutable/deeper GUID, and wrong-depth output shapes fail closed. |
+| Typed endpoint activation | Exact-contract support | `IMMDevice.activate(InterfaceClass)` accepts only registered generated safe classes for the documented null-parameter IID subset below. The caller cannot supply CLSCTX flags or an activation-parameter pointer. |
 | Explicit apartment initialization | Supported | `initializeCom()` never silently chooses an apartment for the caller. |
+
+`IMMDevice` is safe-complete with exact IID
+`d666063f-1587-4e43-81f1-b948e807363f`, slot-3 `Activate`, and full-method
+fingerprint evidence. Its activation targets are limited to `IAudioClient`,
+`IAudioEndpointVolume`, `IAudioMeterInformation`, `IAudioSessionManager`, and
+`IAudioSessionManager2`; other/custom targets, asynchronous activation, and
+loopback or other parameterized activation remain outside this safe subset.
+The separate slot-5 `GetId` JSON ownership entry supplies its CoTaskMem string
+contract. Both entries belong to `com.ownership.v1`; see the
+[contract evidence registry](classic-com-contract-evidence-registry.md).
+The [audio endpoint example](../guides/windows/classic-com-usage.md#55-audio-endpoint-activation)
+uses `projectAs` and `activate(IAudioClient)` without exposing raw pointers.
+Existing safe `IAudioClient`, `IAudioClient2`, and `IAudioClient3` format
+contracts remain unchanged.
 
 `IMDSPDeviceControl::Record` and `IWMDMDeviceControl::Record` have exact
 nullable audio-input contracts. Their declarations accept
@@ -1255,13 +1632,17 @@ that census to 5,681. The dedicated target-device-independent
 `TYMED_HGLOBAL` FORMATETC/STGMEDIUM model promotes 10 more interfaces after
 restricting InOut to proven caller-allocation-preserving contracts, bringing
 that census to 5,691. The variable-length WAVEFORMATEX model and three pinned
-audio method contracts promote five more interfaces, bringing the current
-literal census to **5,696 / 7,929 = 71.837558%**. The result remains above the
+audio method contracts promote five more interfaces, bringing that census to
+5,696. The exact `IMMDevice::Activate` and `GetId` contracts promote one more
+complete interface, bringing that census to 5,697, unchanged by PR2 completion
+and PR3 copy-only facades. PR4's explicit overload names move 24 previously
+raw-metadata-complete interfaces into the safe set, bringing the current
+literal census to **5,721 / 7,929 = 72.152857%**. The result remains above the
 70% target without admitting any unmodeled target-device, storage-medium,
 audio-output ownership, ownership-transfer, or callback shape.
 
 CI reproduces this number with `dynwinrt-codegen com-census --json` and fails
-if the denominator changes, complete generation drops below 5,696, or coverage
+if the denominator changes, complete generation drops below 5,721, or coverage
 falls below 70%.
 
 ## Public-code frequency snapshot
@@ -1392,7 +1773,7 @@ hardware, and whether it adds a distinct ABI shape.
 | `IClassFactory` | Low-level COM activation | Complete generation and public `CoGetClassObject` acquisition are live-tested with paired server locking and owned `CreateInstance` output. |
 | `IBindCtx` / `IRunningObjectTable` | Monikers and object binding | Both generate. `BIND_OPTS` carries an exact size initializer, and explicit bytes with a zero or incorrect `cbStruct` fail before native dispatch. |
 | `ICreateErrorInfo` / `IErrorInfo` | COM rich error information | Complete generation and acquisition are live-tested for GUID, wide strings, owned BSTR output, thread-local storage, and one-shot consumption. |
-| `IMMDeviceEnumerator` | Audio endpoint discovery | Generates today, but live behavior depends on available audio endpoints. |
+| `IMMDeviceEnumerator` / `IMMDevice` | Audio endpoint discovery and activation | Complete safe generation includes typed null-parameter activation for the documented IID subset and CoTaskMem-owned device IDs projected as strings. `projectAs` wraps borrowed managed device values with an independent QI owner; live behavior depends on audio services and endpoints. |
 | `IWbemServices` | WMI queries and method invocation | Complete generation uses exact sync/semisync output selection; selected outputs are owned COM references and `pCtx` is native null in the closed safe overloads. |
 | `IAudioClient` / `IAudioClient2` / `IAudioClient3` | Low-level audio streaming | Complete safe generation uses `DynComAudioFormat`; exact fingerprinted contracts model shared/exclusive closest-format selection and CoTaskMem-owned format outputs. Generated fake-vtable coverage is hardware-independent. |
 | `IDispatch` | Automation and scripting | Complete inherited real-metadata generation passes. `GetIDsOfNames` projects as `string[] -> number[]`; `Invoke` accepts `DynComDispatchParams` and explicit result/excepInfo/argErr request options, returning dedicated owning wrappers. Derived Automation interfaces remain independently validated. |
@@ -1519,7 +1900,8 @@ COM interface references and Win32 handles must not be treated the same.
 | Value source | Ownership in dynwinrt | Cleanup |
 |---|---|---|
 | `CoCreateInstance` result | Owned `+1` COM reference | Automatic `Release` on `DynWinRtValue` drop/GC, or explicit `release()`. |
-| `QueryInterface` / `cast()` result | Owned `+1` COM reference | Automatic `Release`, independently of the source wrapper. |
+| `QueryInterface` / `cast()` / `projectAs()` result | Owned `+1` COM reference | Automatic `Release`, independently of the borrowed source value or wrapper. |
+| Generated `IMMDevice.activate()` result | Owned `+1` COM reference for the registered allowed target | Automatic `Release`; the intermediate activation owner is released after projection, including on projection failure. |
 | Typed interface out parameter | Owned `+1` COM reference from the callee | Automatic `Release`. |
 | Interface passed as `[in]` | Borrowed for the duration of the call | No ownership transfer unless the callee explicitly retains it with `AddRef`. |
 | Numeric raw pointer | Borrowed | Never automatically released or freed. |

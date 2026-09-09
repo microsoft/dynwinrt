@@ -341,12 +341,14 @@ Current code registries are migrated without changing behavior:
 - `IDataObject::GetCanonicalFormatEtc` output validity and ignored `tymed`;
 - `IAudioClient` shared/exclusive format negotiation and CoTaskMem format
   outputs;
+- `IMMDevice::Activate` typed null-parameter activation and
+  `IMMDevice::GetId` CoTaskMem string ownership;
 - `IMDSPDeviceControl::Record` and `IWMDMDeviceControl::Record` nullable
   audio-format inputs selecting the device default; and
 - exact fail-closed hazards such as `GetPrivateData`.
 
 Migration or promotion is complete only when generated safe snapshots, the
-5,696/7,929 safe census, generated unsafe manifests, and all live tests agree
+5,721/7,929 safe census, generated unsafe manifests, and all live tests agree
 with the exact evidence dependencies.
 
 ## User contracts
@@ -383,12 +385,51 @@ method fingerprint, selector, exact flags, mutually exclusive outputs,
 ownership, citations, and validated metadata hash. The old Rust constants were
 removed.
 
-`ownership-outputs.json` contains 147 parameter-specific CoTaskMem contracts
+`ownership-outputs.json` contains 148 parameter-specific CoTaskMem contracts
 and one exact `HBITMAP`/`DeleteObject` contract. Attachment occurs only after the complete raw
 method is built and only when its namespace, interface IID, method, absolute
 slot, full parameter selector, and pre-contract fingerprint all match. These
 entries promote complete interfaces without applying allocator or handle
 ownership inference to any unrelated pointer output.
+
+PR1 completes `IMMDevice` (IID
+`d666063f-1587-4e43-81f1-b948e807363f`) with two exact `com.ownership.v1`
+entries:
+
+- `Activate`, absolute slot 3, source fingerprint
+  `5025E3C25B95D89F92271233B0761D56DF1041F985D6C1D0BAFE0FC4DEDD26E3`:
+  the code-defined contract validates the full native signature and owned
+  dynamic-IID output. The safe projection fixes `CLSCTX_INPROC_SERVER` to `1`
+  and `pActivationParams` to native NULL.
+- `GetId`, absolute slot 5, parameter `0: ppstrId`, source fingerprint
+  `38AF4F595BEEADA67D0D49EB1B04F2CC354C8A06813B286CCAE4B5EF44BFCD99`:
+  the JSON ownership entry copies the returned UTF-16 string and pairs the
+  allocation with `CoTaskMemFree`, yielding `getId(): string`.
+
+The activation targets are named records in
+`tools/dynwinrt-codegen/src/com_activation_registry.rs`, not an anonymous
+fixed-length IID array in the language model. Each record carries its interface
+identity, authoritative citation, reason, and the in-process/native-NULL/owned
+result conditions. Semantic lowering rejects missing or ambiguous evidence and
+passes only the validated context and target IIDs to the projected IR; the
+renderer does not interpret evidence.
+
+These records are part of the existing exact `IMMDevice::Activate` contract,
+not additional safe-interface or per-entry census contributions. The migration
+keeps the same five targets and does not add `IDeviceTopology` or general
+activation. Activation-policy eligibility, wrapper completeness, and actual
+device support remain separate requirements.
+
+The activation target must be a registered generated safe class with the IID
+of `IAudioClient`, `IAudioEndpointVolume`, `IAudioMeterInformation`,
+`IAudioSessionManager`, or `IAudioSessionManager2`. Other/custom targets,
+asynchronous activation, and loopback or other parameterized activation are
+outside this subset. The selectors cite Microsoft's
+[`IMMDevice::Activate`](https://learn.microsoft.com/windows/win32/api/mmdeviceapi/nf-mmdeviceapi-immdevice-activate)
+and
+[`IMMDevice::GetId`](https://learn.microsoft.com/windows/win32/api/mmdeviceapi/nf-mmdeviceapi-immdevice-getid)
+contracts. Metadata drift fails closed; neither entry introduces a
+per-interface native adapter or changes the WinRT root API.
 
 Three exact parameter-direction entries, two reserved-null input entries, one
 flag-selected caller-buffer entry, one `IStorage::Stat` entry, and seven WMI
@@ -407,19 +448,27 @@ The safe-complete evidence census is:
 
 | Evidence class | Safe interfaces |
 | --- | ---: |
-| `standard_derived` | 5,333 |
-| `exact_registry_dependent` | 363 |
-| **Total** | **5,696** |
+| `standard_derived` | 5,355 |
+| `exact_registry_dependent` | 366 |
+| **Total** | **5,721** |
 
-The registry contains **504 declared entries**, all 504 match the pinned
-metadata, and 413 distinct entries are consumed by safe plans. Safe plans have
-669 entry/interface dependencies and 416 family/interface dependencies.
-Per-interface dependency-set totals also include 5,982 metadata-attribute
-dependencies and 26,129 COM-standard-rule dependencies.
+The registry contains **532 declared entries**, all 532 match the pinned
+metadata, and 431 distinct entries are consumed by complete safe plans. These plans have
+694 entry/interface dependencies and 425 family/interface dependencies.
+Per-interface dependency-set totals also include 6,012 metadata-attribute
+dependencies and 26,247 COM-standard-rule dependencies.
+
+PR4's explicit overload names promote 24 previously raw-metadata-complete
+interfaces: 23 standard-derived and one exact-registry-dependent.
+`IGenericDescriptor2` now consumes the existing `IGenericDescriptor::GetBody`
+slot-6 ownership entry, bringing that entry's interface dependencies from one
+to two. No entries are added: registered/matched and distinct safe-consumed
+entry counts remain 532 and 431. The new names select already validated
+normal methods; they do not supply missing ABI, ownership, or lifetime facts.
 
 | Exact contract kind | Safe-interface dependencies |
 | --- | ---: |
-| `ownership` | 180 |
+| `ownership` | 183 |
 | `parameter-direction` | 45 |
 | `bounded-two-call` | 16 |
 | `conditional-output` | 10 |
@@ -431,6 +480,8 @@ dependencies and 26,129 COM-standard-rule dependencies.
 | `counted-buffer` | 16 |
 | `semantic-hresult` | 3 |
 | `compound-dispatch` | 1 |
+| `borrowed-storage` | 15 |
+| `contextual-effect` | 7 |
 
 Family rollups deliberately count each interface once per family:
 
@@ -442,7 +493,7 @@ Family rollups deliberately count each interface once per family:
 | `com.sequential-stream-buffer.v1` | 2 | 2 | 7 |
 | `buffers.counted-buffer.v1` | 3 | 2 | 2 |
 | `buffers.bounded-two-call.v1` | 2 | 2 | 16 |
-| `com.ownership.v1` | 167 | 116 | 122 |
+| `com.ownership.v1` | 169 | 118 | 124 |
 | `com.parameter-direction.v1` | 3 | 3 | 15 |
 | `com.reserved-null-input.v1` | 2 | 2 | 1 |
 | `com.nullable-input.v1` | 2 | 2 | 2 |
@@ -452,6 +503,19 @@ Family rollups deliberately count each interface once per family:
 | `shell.flag-selected-string.v1` | 1 | 1 | 3 |
 | `wmi.conditional-output.v1` | 7 | 7 | 1 |
 | `audio.conditional-output.v1` | 1 | 1 | 3 |
+| `audio.context-effect.v1` | 3 | 3 | 3 |
+| `buffers.borrowed-copy.v1` | 23 | 13 | 4 |
+
+The new selectors are defined in
+[`com_borrowed_metadata.rs`](../../tools/dynwinrt-codegen/src/com_borrowed_metadata.rs).
+They preserve full method fingerprints, exact declaring IID/slot, citations,
+and the pinned Win32Metadata SHA256. Three effects observe actual successful
+Audio initialization/GetService calls; 23 entries validate the storage and
+complete vtable evidence used by the copy plans. WIC's previously complete
+interface remains complete, now with an exact-evidence copy augmentation.
+The Audio render/capture and linear MF copy-only facades remain **excluded**
+from the complete-interface count. Their useful copy operations are not a
+claim that their unrestricted native methods are safely projected.
 
 Universal rule dependencies are:
 
@@ -462,12 +526,12 @@ Universal rule dependencies are:
 | `com.automation.bstr-replacement.v1` | 99 |
 | `com.enumerator-next.generic.v1` | 25 |
 | `com.handle.borrowed-no-cleanup.v1` | 45 |
-| `com.hresult.failure.v1` | 5,578 |
-| `com.interface.input-borrow.v1` | 1,890 |
-| `com.interface.typed-output-plus-one.v1` | 3,457 |
-| `com.iunknown.identity-refcount.v1` | 5,696 |
-| `com.query-interface.output-plus-one.v1` | 5,696 |
-| `com.standard-cleanup.matching-allocator.v1` | 1,436 |
+| `com.hresult.failure.v1` | 5,603 |
+| `com.interface.input-borrow.v1` | 1,908 |
+| `com.interface.typed-output-plus-one.v1` | 3,480 |
+| `com.iunknown.identity-refcount.v1` | 5,721 |
+| `com.query-interface.output-plus-one.v1` | 5,721 |
+| `com.standard-cleanup.matching-allocator.v1` | 1,438 |
 
 These are dependency counts: an inherited contract can be consumed by several
 interfaces, and one interface can consume several IDs or kinds. They are not
@@ -497,9 +561,29 @@ stable typed provenance ID/kind and participates in the dependency census only
 when consumed. Moving those declarations into grouped JSON files, and adding
 controlled contract-family ablation, remains later registry migration work.
 
-The strict contract data schema and manifest are version 2. The capability
-summary is version 3, and generated unsafe support manifests are version 11.
-Seven WMI conditional-output entries and 148 output-ownership entries are
-JSON-backed; the other 340 registered entries remain code-defined. All code and
-data entries use the same selector-derived `entryId`, typed `familyId`,
+The strict contract data schema and its registry `manifest.json` remain
+version 2. The capability summary is version 3, and generated unsafe support
+manifests are version 12.
+Seven WMI conditional-output entries and 149 output-ownership entries use the
+grouped contract-data registry. Of the other 376 registered entries, 26
+borrowed-copy/context entries now live in the native-independent packaged
+`dynwinrt-com-contracts` JSON registry; their existing exact-entry catalog and
+dependency classification are preserved. The other 350 remain code-defined.
+All entries use the same selector-derived `entryId`, typed `familyId`,
 selector/fingerprint/citation catalog, and pinned-metadata validation path.
+
+Separately, PR1 raised the generated COM file-ownership manifest
+`com/.dynwinrt-com-manifest.json` from version 2 to version 3; borrowed-copy
+context effects introduced version 4, and version-2 typed copy recipes now
+require manifest version 5. This changes neither evidence IDs nor support
+counts. Generated safe
+classes must register descriptors for the public runtime `/com` `projectAs`
+entrypoint and typed `IMMDevice.activate` through private `/com/unsafe`
+helpers. Delete existing generated bindings and completely regenerate every
+selected root with matching updated runtime/codegen versions; there is no
+in-place migration or support for mixed old/new generated classes. The
+contract-data schema is unaffected, as are other generated `.as(...)` paths.
+
+PR4 requires no further manifest change. Already-supported safe output,
+including distinguishable overload dispatch, remains byte-identical;
+previously rejected overload groups had no valid safe surface to migrate.

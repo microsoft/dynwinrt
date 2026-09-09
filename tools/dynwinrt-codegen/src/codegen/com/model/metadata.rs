@@ -404,6 +404,19 @@ fn map_method(
         })
     } else {
         match raw.exact_contract.as_ref().map(|contract| contract.kind) {
+            Some(RawExactMethodContractKind::RestrictedEndpointActivation) => {
+                let (context, allowed_iids) = map_activation_targets(
+                    crate::com_activation_registry::imm_device_activate_targets(),
+                )?;
+                method.with_special_contract(ComMethodSpecialContract::RestrictedActivation {
+                    iid_param: ParamIndex::new(0),
+                    context_param: ParamIndex::new(1),
+                    null_param: ParamIndex::new(2),
+                    output_param: ParamIndex::new(3),
+                    context,
+                    allowed_iids,
+                })
+            }
             Some(RawExactMethodContractKind::FixedCapacityBytes) => {
                 method.with_special_contract(ComMethodSpecialContract::FixedCapacityBytes {
                     guid_param: ParamIndex::new(0),
@@ -474,6 +487,46 @@ fn map_method(
     Ok(method)
 }
 
+fn map_activation_targets(
+    entries: &[crate::com_activation_registry::ActivationTargetEvidence],
+) -> Result<(u32, Vec<String>), ModelError> {
+    use crate::com_activation_registry::{
+        ActivationConditions, ActivationContext, ActivationOutput, ActivationParameters,
+    };
+
+    let required = ActivationConditions {
+        context: ActivationContext::InProcess,
+        parameters: ActivationParameters::NativeNull,
+        output: ActivationOutput::OwnedRequestedInterface,
+    };
+    if entries.is_empty() {
+        return Err(ModelError::InvalidContract(
+            "restricted activation requires target contract evidence".into(),
+        ));
+    }
+    let mut identities = std::collections::HashSet::new();
+    let mut names = std::collections::HashSet::new();
+    let mut iids = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let iid = ComGuid::parse(entry.iid)?;
+        if iid.is_zero()
+            || !identities.insert(iid)
+            || !names.insert((entry.namespace, entry.interface))
+            || entry.conditions != required
+            || entry.reason.trim().is_empty()
+            || !entry.citation.starts_with("https://learn.microsoft.com/")
+        {
+            return Err(ModelError::InvalidContract(format!(
+                "{}.{} has invalid, duplicate, or incompatible activation target evidence",
+                entry.namespace, entry.interface
+            )));
+        }
+        QualifiedName::new(entry.namespace, entry.interface)?;
+        iids.push(entry.iid.to_ascii_lowercase());
+    }
+    Ok((required.context.native_value(), iids))
+}
+
 fn map_param(
     model: &mut ComModel,
     interface_namespace: &str,
@@ -494,7 +547,11 @@ fn map_param(
         || raw_method
             .exact_interface_output_call
             .as_ref()
-            .is_some_and(|contract| contract.context_param_index == param_index);
+            .is_some_and(|contract| contract.context_param_index == param_index)
+        || raw_method.exact_contract.as_ref().is_some_and(|contract| {
+            contract.kind == RawExactMethodContractKind::RestrictedEndpointActivation
+                && param_index == 2
+        });
     let effective_direction = documented_bstr_direction_override(
         interface_namespace,
         interface_name,
@@ -2534,6 +2591,51 @@ fn is_explicit_pointer_alias(namespace: &str, name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn activation_target_registry_lowers_without_a_fixed_target_count() {
+        let entries = crate::com_activation_registry::imm_device_activate_targets();
+        let (context, iids) = map_activation_targets(entries).unwrap();
+        assert_eq!(context, 1);
+        assert_eq!(
+            iids,
+            entries.iter().map(|entry| entry.iid).collect::<Vec<_>>()
+        );
+        let (context, subset) = map_activation_targets(&entries[..2]).unwrap();
+        assert_eq!(context, 1);
+        assert_eq!(subset.len(), 2);
+        let mut mixed_case = entries.to_vec();
+        mixed_case[0].iid = "1CB9AD4C-DBFA-4C32-B178-C2F568A703B2";
+        assert_eq!(map_activation_targets(&mixed_case).unwrap().1, iids);
+    }
+
+    #[test]
+    fn activation_target_registry_rejects_missing_or_ambiguous_evidence() {
+        let entries = crate::com_activation_registry::imm_device_activate_targets();
+        assert!(map_activation_targets(&[]).is_err());
+        for mutation in 0..9 {
+            let mut invalid = entries.to_vec();
+            match mutation {
+                0 => invalid[1].iid = invalid[0].iid,
+                1 => {
+                    invalid[1].namespace = invalid[0].namespace;
+                    invalid[1].interface = invalid[0].interface;
+                }
+                2 => invalid[0].iid = "not-an-iid",
+                3 => invalid[0].iid = "00000000-0000-0000-0000-000000000000",
+                4 => invalid[0].citation = "",
+                5 => invalid[0].reason = " ",
+                6 => invalid[0].namespace = "",
+                7 => invalid[0].interface = "",
+                8 => invalid[1].iid = "1CB9AD4C-DBFA-4C32-B178-C2F568A703B2",
+                _ => unreachable!(),
+            }
+            assert!(
+                map_activation_targets(&invalid).is_err(),
+                "accepted mutation {mutation}"
+            );
+        }
+    }
 
     #[test]
     fn const_attribute_does_not_erase_mixed_pointer_qualifiers() {

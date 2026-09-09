@@ -12,6 +12,7 @@
 #![allow(dead_code)]
 
 pub(super) mod abi;
+pub(super) mod borrowed;
 pub(super) mod contract;
 pub(super) mod diagnostics;
 pub(super) mod ids;

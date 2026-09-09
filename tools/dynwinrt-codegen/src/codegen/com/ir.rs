@@ -3,9 +3,62 @@
 
 //! Validated Classic-COM semantic IR.
 //!
-//! Nothing in this module depends on the shared WinRT metadata model.  A value
+//! Nothing in this module depends on the shared WinRT metadata model. A value
 //! can enter this IR only after its ABI shape, ownership, and projection have
 //! been validated by `project`.
+
+#[derive(Debug, serde::Serialize)]
+pub(super) struct ProjectedNativeCompletion {
+    #[serde(skip)]
+    pub namespace: &'static str,
+    #[serde(skip)]
+    pub function_name: &'static str,
+    pub version: u32,
+    pub kind: &'static str,
+    pub library: String,
+    pub export: String,
+    pub calling_convention: &'static str,
+    pub has_this: bool,
+    pub start_parameters: Vec<NativeCompletionStartParameter>,
+    pub handler: NativeCompletionHandler,
+    pub result: NativeCompletionResult,
+    pub allowed_targets: Vec<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(super) enum NativeCompletionStartParameter {
+    Utf16Path,
+    RefIid,
+    NullPropVariant,
+    NativeSignal,
+    OwnedOperation,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub(super) struct NativeCompletionHandler {
+    pub iid: String,
+    pub root: &'static str,
+    pub slot: usize,
+    pub input: &'static str,
+    pub return_type: &'static str,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub(super) struct NativeCompletionResult {
+    pub iid: String,
+    pub root: &'static str,
+    pub slot: usize,
+    pub outputs: Vec<NativeCompletionResultParameter>,
+    pub return_type: &'static str,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(super) enum NativeCompletionResultParameter {
+    Hresult,
+    NullableOwnedInterface,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ComPrimitive {
@@ -413,6 +466,14 @@ pub(super) struct ProjectedInterfaceRef {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum ProjectedComMethodKind {
     Normal,
+    RestrictedActivation {
+        iid_param_index: usize,
+        context_param_index: usize,
+        null_param_index: usize,
+        output_param_index: usize,
+        context: u32,
+        allowed_iids: Vec<String>,
+    },
     FixedCapacityBytes {
         guid_param_index: usize,
     },
@@ -479,8 +540,9 @@ pub(super) enum ProjectedComMethodKind {
 /// overload dispatch — anything that can present as more than one shape (or
 /// that overlaps another candidate's shape, e.g. `Buffer` inputs being
 /// `typeof 'object'` just like a projected COM object) is deliberately left
-/// unclassified (`None` from `dispatch_shape`) so overload grouping fails
-/// closed instead of guessing.
+/// unclassified (`None` from `dispatch_shape`). The projection can emit explicit
+/// slot-named entries for validated ordinary methods, but never guesses an
+/// implicit dispatcher.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum DispatchShape {
     Boolean,
@@ -558,7 +620,7 @@ pub(super) struct ComSinkPlan {
 /// overload-dispatch purposes. Returns `None` for any type whose JS
 /// representation is ambiguous or overlaps another candidate shape (pointer
 /// types accept `Buffer`/`bigint`/`number` in ways that collide with other
-/// categories), so overload grouping can fail closed rather than guess.
+/// categories), so overload grouping cannot invent an implicit dispatcher.
 pub(super) fn dispatch_shape(typ: &ComType) -> Option<DispatchShape> {
     match typ {
         ComType::Primitive(ComPrimitive::Bool) | ComType::Win32Bool => Some(DispatchShape::Boolean),
@@ -666,7 +728,46 @@ pub(super) struct ProjectedComInterface {
     pub(super) activation: ActivationPlan,
     pub(super) referenced_enums: Vec<ProjectedComEnum>,
     pub(super) sink: Option<ComSinkPlan>,
+    pub(super) borrowed_storage: Option<ProjectedBorrowedStorage>,
     pub(super) evidence_dependencies: crate::contract_registry::EvidenceDependencies,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ProjectedBorrowedStorage {
+    pub copy: Option<ProjectedBorrowedCopy>,
+    pub context_effects: std::collections::BTreeMap<usize, String>,
+    pub copy_only: bool,
+    pub evidence_dependencies: crate::contract_registry::EvidenceDependencies,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ProjectedBorrowedCopy {
+    pub descriptor: String,
+    pub operations: Vec<ProjectedBorrowedOperation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ProjectedBorrowedOperation {
+    pub name: &'static str,
+    pub runtime_method: &'static str,
+    pub arguments: CopyArguments,
+    pub result: CopyResult,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CopyArguments {
+    None,
+    Bytes,
+    Frames,
+    Rectangle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CopyResult {
+    Void,
+    Bytes,
+    Packet,
+    Bitmap,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
