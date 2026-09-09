@@ -66,7 +66,7 @@ function nativeStringable(runtime, owner) {
         new runtime.DynWinRtMethodSig().addOut(runtime.DynWinRtType.hstring()));
 }
 
-function taskInstanceHandlers(state) {
+function taskInstanceHandlers(state, g) {
     // IBackgroundTaskInstance has exactly nine slots, 6 through 14. In
     // particular, Canceled is not a made-up success with a fabricated token.
     return {
@@ -75,7 +75,12 @@ function taskInstanceHandlers(state) {
         getProgress() { state.gets++; return state.progress; },
         setProgress(value) { state.sets++; state.progress = value; },
         getTriggerDetails: notImplemented,
-        addCanceled: notImplemented,
+        addCanceled(handler) {
+            // This controlled source rejects registration and retains no
+            // delegate. Release the visible owned callback view deterministically.
+            g.releaseProjected(handler);
+            notImplemented();
+        },
         removeCanceled: notImplemented,
         getSuspendedCount: notImplemented,
         getDeferral: notImplemented,
@@ -197,7 +202,7 @@ const cases = {
 
     background_task({ g, runtime, own }) {
         const state = { progress: 17, gets: 0, sets: 0, getIds: 0 };
-        const instanceOwner = own(g.IBackgroundTaskInstance.implement(taskInstanceHandlers(state)));
+        const instanceOwner = own(g.IBackgroundTaskInstance.implement(taskInstanceHandlers(state, g)));
         const instance = instanceOwner.value;
         let runs = 0;
         const taskOwner = own(g.IBackgroundTask.implement({
@@ -223,17 +228,19 @@ const cases = {
             'Windows.Foundation.EventRegistrationToken', [runtime.DynWinRtType.i64()],
         ));
         token.setI64(0, 1n);
+        let canceled = 0;
         for (const action of [
             () => retainedInstance.task,
             () => retainedInstance.triggerDetails,
             () => retainedInstance.suspendedCount,
             () => retainedInstance.getDeferral(),
-            () => retainedInstance.onCanceled(() => {}),
+            () => retainedInstance.onCanceled(() => { canceled++; }),
             () => retainedInstance.offCanceled(token.toValue()),
         ]) {
             expectHresult(action, E_FAIL);
             takeError(instanceOwner, /unused standalone/i);
         }
+        assert.equal(canceled, 0, 'A rejected subscription must not invoke its delegate');
     },
 
     multi_interface_lifetime({ g, own }) {

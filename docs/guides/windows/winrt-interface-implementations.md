@@ -162,6 +162,11 @@ native delegate. Retain it to deliver the event by calling
 handler receives that token and should remove and release its stored delegate.
 These calls invoke the delegate's native slot 3; they are not direct calls to
 the original subscriber's language function.
+An implementation-side handler that rejects registration without retaining
+the received delegate can release that visible owned view with
+`releaseProjected(handler)` before throwing, for deterministic cleanup instead
+of waiting for JavaScript GC. This does not transfer responsibility for the
+generator's hidden subscription temporaries to application code.
 
 Generated Node subscriptions release their creator and temporary delegate
 references after the native add method returns. The native event source owns
