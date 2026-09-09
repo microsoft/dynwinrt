@@ -138,18 +138,20 @@ can omit the bootstrap call.
 Classic COM support is functional and tested, but remains a **preview under
 active development**. It targets a conservatively validated subset of
 `IUnknown`- and `IInspectable`-rooted interfaces from `Windows.Win32.winmd`; it
-is not a general Automation or native Win32 projection, and it does not project
-flat DLL exports.
+is not a general Automation or native Win32 projection, and it does not provide
+general flat DLL export projection.
 
 The current CI baseline against
-`Microsoft.Windows.SDK.Win32Metadata` 71.0.14-preview is **5,697 of 7,929
-eligible interfaces (71.85%)** with complete safe code generation. Supported
+`Microsoft.Windows.SDK.Win32Metadata` 71.0.14-preview is **5,721 of 7,929
+eligible interfaces (72.15%)** with complete safe code generation. Supported
 contracts include generated coclass activation and QueryInterface views,
 managed interface ownership, native POD layouts, typed counted buffers,
 BSTR/HSTRING, validated VARIANT, SAFEARRAY and PROPVARIANT subsets, the
 target-device-independent `TYMED_HGLOBAL` FORMATETC/STGMEDIUM subset,
 variable-length WAVEFORMATEX audio formats with exact CoTaskMem outputs, and
 synchronous JavaScript implementations of fully supported callback interfaces.
+Separate bounded one-shot audio activation and owned-copy transactions are
+also available; copy-only facades are not counted as complete interfaces.
 Seventeen stock-Windows Node E2E runners exercise representative Shell,
 Automation, stream, callback, HWND, and WinRT interop scenarios.
 
@@ -177,6 +179,14 @@ the documented in-process, null-parameter audio endpoint subset and
 `getId(): string`. The usage guide shows endpoint discovery through
 `activate(IAudioClient)` and `DynComAudioFormat.pcm()` format negotiation,
 without a per-interface native adapter.
+
+Existing distinguishable overloads keep their APIs unchanged. Otherwise fully
+validated normal COM overload groups with colliding JavaScript signatures or
+projected buffers now expose every member as
+`<camelName>AtSlot<absoluteVtableSlot>`, with no ambiguous unsuffixed method.
+This naming-only projection promotes 24 interfaces; it does not guess ABI
+contracts or provide a universal overload parser. See the
+[overload usage and limits](docs/guides/windows/classic-com-usage.md#58-explicit-overload-names).
 
 - [Classic COM JavaScript usage guide](docs/guides/windows/classic-com-usage.md)
 - [Supported ABI, coverage, limitations, and ownership model](docs/architecture/classic-com-support.md)

@@ -13,6 +13,7 @@ on:
       - 'bindings/js/**'
       - 'bindings/py/**'
       - 'crates/dynwinrt/**'
+      - 'crates/dynwinrt-com-contracts/**'
       - 'eng/coverage/**'
       - 'tests/e2e/**'
       - 'tools/dynwinrt-codegen/**'

@@ -540,8 +540,9 @@ pub(super) enum ProjectedComMethodKind {
 /// overload dispatch — anything that can present as more than one shape (or
 /// that overlaps another candidate's shape, e.g. `Buffer` inputs being
 /// `typeof 'object'` just like a projected COM object) is deliberately left
-/// unclassified (`None` from `dispatch_shape`) so overload grouping fails
-/// closed instead of guessing.
+/// unclassified (`None` from `dispatch_shape`). The projection can emit explicit
+/// slot-named entries for validated ordinary methods, but never guesses an
+/// implicit dispatcher.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum DispatchShape {
     Boolean,
@@ -619,7 +620,7 @@ pub(super) struct ComSinkPlan {
 /// overload-dispatch purposes. Returns `None` for any type whose JS
 /// representation is ambiguous or overlaps another candidate shape (pointer
 /// types accept `Buffer`/`bigint`/`number` in ways that collide with other
-/// categories), so overload grouping can fail closed rather than guess.
+/// categories), so overload grouping cannot invent an implicit dispatcher.
 pub(super) fn dispatch_shape(typ: &ComType) -> Option<DispatchShape> {
     match typ {
         ComType::Primitive(ComPrimitive::Bool) | ComType::Win32Bool => Some(DispatchShape::Boolean),
@@ -727,7 +728,46 @@ pub(super) struct ProjectedComInterface {
     pub(super) activation: ActivationPlan,
     pub(super) referenced_enums: Vec<ProjectedComEnum>,
     pub(super) sink: Option<ComSinkPlan>,
+    pub(super) borrowed_storage: Option<ProjectedBorrowedStorage>,
     pub(super) evidence_dependencies: crate::contract_registry::EvidenceDependencies,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ProjectedBorrowedStorage {
+    pub copy: Option<ProjectedBorrowedCopy>,
+    pub context_effects: std::collections::BTreeMap<usize, String>,
+    pub copy_only: bool,
+    pub evidence_dependencies: crate::contract_registry::EvidenceDependencies,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ProjectedBorrowedCopy {
+    pub descriptor: String,
+    pub operations: Vec<ProjectedBorrowedOperation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ProjectedBorrowedOperation {
+    pub name: &'static str,
+    pub runtime_method: &'static str,
+    pub arguments: CopyArguments,
+    pub result: CopyResult,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CopyArguments {
+    None,
+    Bytes,
+    Frames,
+    Rectangle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CopyResult {
+    Void,
+    Bytes,
+    Packet,
+    Bitmap,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

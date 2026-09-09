@@ -29,6 +29,9 @@ use crate::{
 
 #[path = "com_automation.rs"]
 pub(crate) mod automation;
+#[path = "com_borrowed.rs"]
+#[doc(hidden)]
+pub mod borrowed;
 #[path = "com_completion.rs"]
 #[doc(hidden)]
 pub mod completion;
@@ -1472,6 +1475,126 @@ pub enum Value {
     StgMedium(StgMediumValue),
     AudioFormat(AudioFormatValue),
     Buffer(ComBufferValue),
+}
+
+/// Visits only typed, owned interface values, never unclassified pointer bits.
+/// The caller must already have admitted the value's apartment before traversal.
+#[doc(hidden)]
+pub fn visit_winrt_interfaces(
+    value: &WinRTValue,
+    visitor: &mut dyn FnMut(&IUnknown) -> result::Result<()>,
+) -> result::Result<()> {
+    match value {
+        WinRTValue::Object(object) => visitor(object)?,
+        WinRTValue::Async(value) => visitor((&value.info).into())?,
+        WinRTValue::ArrayOfIUnknown(array) => {
+            for object in array.0.iter().flatten() {
+                visitor(object)?;
+            }
+        }
+        WinRTValue::Array(array) => {
+            for index in 0..array.len() {
+                visit_winrt_interfaces(&array.try_get(index)?, visitor)?;
+            }
+        }
+        WinRTValue::Struct(value) => {
+            let typ = value.type_handle();
+            for index in 0..typ.field_count() {
+                let field = typ.field_type(index);
+                if field.kind().is_com_pointer() {
+                    if let Some(object) = value.get_field_object(index)? {
+                        visitor(&object)?;
+                    }
+                } else if matches!(field.kind(), crate::TypeKind::Struct(_)) {
+                    visit_winrt_interfaces(
+                        &WinRTValue::Struct(value.get_field_struct_checked(index)?),
+                        visitor,
+                    )?;
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+impl Value {
+    #[doc(hidden)]
+    pub fn visit_interfaces(
+        &self,
+        visitor: &mut dyn FnMut(&IUnknown) -> result::Result<()>,
+    ) -> result::Result<()> {
+        match self {
+            Self::WinRt(value) => visit_winrt_interfaces(value, visitor)?,
+            Self::Variant(value) => visit_variant_interfaces(value, visitor)?,
+            Self::SafeArray(value) => visit_safe_array_interfaces(value, visitor)?,
+            Self::DispatchParams(value) => {
+                for argument in value.arguments()? {
+                    visit_variant_interfaces(&argument, visitor)?;
+                }
+            }
+            Self::Buffer(value) => match &value.storage {
+                ComBufferStorage::InterfaceArray { values, .. } => {
+                    for value in values {
+                        visitor(value)?;
+                    }
+                }
+                ComBufferStorage::OwnedCom { values } => {
+                    for value in values {
+                        visit_winrt_interfaces(value, visitor)?;
+                    }
+                }
+                ComBufferStorage::VariantArray { values }
+                | ComBufferStorage::OwnedVariants { values } => {
+                    for value in values {
+                        visit_variant_interfaces(value, visitor)?;
+                    }
+                }
+                _ => {}
+            },
+            // The supported PROPVARIANT set is scalar/vector POD and owned
+            // strings; STGMEDIUM is copied HGLOBAL bytes, not stream/storage.
+            Self::Bstr(_)
+            | Self::NativeStruct(_)
+            | Self::NativeUnion(_)
+            | Self::PropVariant(_)
+            | Self::ExcepInfo(_)
+            | Self::StatStg(_)
+            | Self::FormatEtc(_)
+            | Self::StgMedium(_)
+            | Self::AudioFormat(_) => {}
+        }
+        Ok(())
+    }
+}
+
+fn visit_variant_interfaces(
+    value: &VariantValue,
+    visitor: &mut dyn FnMut(&IUnknown) -> result::Result<()>,
+) -> result::Result<()> {
+    match value.data()? {
+        VariantData::Unknown(Some(object)) | VariantData::Dispatch(Some(object)) => {
+            visitor(&object)?
+        }
+        VariantData::SafeArray(value) => visit_safe_array_interfaces(&value, visitor)?,
+        _ => {}
+    }
+    Ok(())
+}
+
+fn visit_safe_array_interfaces(
+    value: &SafeArrayValue,
+    visitor: &mut dyn FnMut(&IUnknown) -> result::Result<()>,
+) -> result::Result<()> {
+    for element in value.elements()? {
+        match element {
+            SafeArrayElementValue::Unknown(Some(object))
+            | SafeArrayElementValue::Dispatch(Some(object)) => visitor(&object)?,
+            SafeArrayElementValue::Variant(value) => visit_variant_interfaces(&value, visitor)?,
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 fn is_null_input_value(value: &Value) -> bool {
@@ -4640,6 +4763,21 @@ impl ComCallPlan {
     where
         F: FnOnce(),
     {
+        self.invoke_values_guarded(obj, args, || {
+            mark_dispatched();
+            Ok(())
+        })
+    }
+
+    fn invoke_values_guarded<F>(
+        &self,
+        obj: *mut c_void,
+        args: &[Value],
+        mark_dispatched: F,
+    ) -> result::Result<Vec<Value>>
+    where
+        F: FnOnce() -> windows_core::Result<()>,
+    {
         if matches!(self.return_plan, ComReturnPlan::DispatchInvokeHResult(_)) {
             return Err(invalid_argument(
                 "IDispatch::Invoke captured HRESULT calls require invoke_dispatch()",
@@ -5091,6 +5229,18 @@ impl ComCallPlan {
         obj: *mut c_void,
         args: &[Value],
     ) -> result::Result<DispatchInvokeResult> {
+        self.invoke_dispatch_guarded(obj, args, || Ok(()))
+    }
+
+    fn invoke_dispatch_guarded<F>(
+        &self,
+        obj: *mut c_void,
+        args: &[Value],
+        before_dispatch: F,
+    ) -> result::Result<DispatchInvokeResult>
+    where
+        F: FnOnce() -> windows_core::Result<()>,
+    {
         let ComReturnPlan::DispatchInvokeHResult(plan) = &self.return_plan else {
             return Err(invalid_argument(
                 "method does not use the IDispatch::Invoke captured HRESULT convention",
@@ -5108,7 +5258,7 @@ impl ComCallPlan {
 
         let captured = self
             .native
-            .call_com_dynamic_captured(obj, args)
+            .call_com_dynamic_captured(obj, args, before_dispatch)
             .map_err(result::Error::WindowsError)?;
         let mut outputs = captured.outputs;
         let result = match outputs[plan.result_output_index].take() {
@@ -5227,7 +5377,19 @@ impl ComCallPlan {
         obj: *mut c_void,
         args: &[Value],
     ) -> result::Result<Vec<(Value, PointerOutputKind)>> {
-        let values = self.invoke_values(obj, args)?;
+        self.invoke_values_with_output_kinds_guarded(obj, args, || Ok(()))
+    }
+
+    fn invoke_values_with_output_kinds_guarded<F>(
+        &self,
+        obj: *mut c_void,
+        args: &[Value],
+        before_dispatch: F,
+    ) -> result::Result<Vec<(Value, PointerOutputKind)>>
+    where
+        F: FnOnce() -> windows_core::Result<()>,
+    {
+        let values = self.invoke_values_guarded(obj, args, before_dispatch)?;
         if values.len() != self.results.len() {
             return Err(invalid_argument(format!(
                 "COM result plan mismatch: native call returned {} value(s), plan describes {}",
@@ -5855,6 +6017,7 @@ pub struct MethodSignature {
     return_plan: ComReturnPlan,
     enumerator_next_vtable_index: Option<usize>,
     canonical_format_etc: Option<CanonicalFormatEtcContract>,
+    context_effect: Option<borrowed::ContextEffect>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -5871,6 +6034,7 @@ impl MethodSignature {
             return_plan: ComReturnPlan::HResult,
             enumerator_next_vtable_index: None,
             canonical_format_etc: None,
+            context_effect: None,
         }
     }
 
@@ -6127,6 +6291,15 @@ impl MethodSignature {
         method_name: &str,
         vtable_index: usize,
     ) -> result::Result<()> {
+        if let Some(effect) = self.context_effect {
+            borrowed::validate_effect_signature(
+                self,
+                effect,
+                interface_iid,
+                method_name,
+                vtable_index,
+            )?;
+        }
         const IID_IDISPATCH: GUID = GUID::from_u128(0x00020400_0000_0000_c000_000000000046);
         if matches!(self.return_plan, ComReturnPlan::EnumeratorNextHResult) {
             let exact_contract = interface_iid != GUID::zeroed()
@@ -6208,6 +6381,13 @@ impl MethodSignature {
     }
 
     fn build(self, vtable_index: usize) -> result::Result<RegisteredMethod> {
+        let context_hresult_plan = if self.context_effect.is_some() {
+            let mut captured = self.clone();
+            captured.context_effect = None;
+            Some(captured.preserve_hresult().build(vtable_index)?.plan)
+        } else {
+            None
+        };
         for parameter in &self.parameters {
             parameter.typ.validate_outbound_aggregate_policy()?;
         }
@@ -6305,6 +6485,8 @@ impl MethodSignature {
         Ok(RegisteredMethod {
             plan: ComCallPlan::new(native, self.parameters, self.return_plan),
             callback_plan,
+            context_effect: self.context_effect,
+            context_hresult_plan,
         })
     }
 }
@@ -6787,6 +6969,8 @@ fn require_direction(
 struct RegisteredMethod {
     plan: ComCallPlan,
     callback_plan: CallbackMethodPlan,
+    context_effect: Option<borrowed::ContextEffect>,
+    context_hresult_plan: Option<ComCallPlan>,
 }
 
 type RegisteredMethods = BTreeMap<usize, (String, Arc<RegisteredMethod>)>;
@@ -6893,6 +7077,11 @@ impl Interface {
         let mut backends = Vec::with_capacity(methods.len());
         let mut plans = Vec::with_capacity(methods.len());
         for (index, (&slot, (name, method))) in methods.iter().enumerate() {
+            if method.context_effect.is_some() {
+                return Err(invalid_argument(
+                    "Context-effect methods cannot be implemented by a language callback",
+                ));
+            }
             if slot != self.base_slot + index {
                 return Err(invalid_argument(format!(
                     "COM sink method '{name}' uses non-contiguous vtable slot {slot}",
@@ -6942,6 +7131,10 @@ impl std::fmt::Debug for MethodHandle {
 }
 
 impl MethodHandle {
+    pub fn has_context_effect(&self) -> bool {
+        self.0.context_effect.is_some()
+    }
+
     pub fn result_count(&self) -> usize {
         self.0.plan.results.len()
     }
@@ -6993,10 +7186,33 @@ impl MethodHandle {
     where
         F: FnOnce(),
     {
+        unsafe {
+            self.invoke_values_with_output_kinds_guarded(obj, args, || {
+                mark_dispatched();
+                Ok(())
+            })
+        }
+    }
+
+    /// Like the tracked invocation, but permits a final admission check after
+    /// native argument preparation (including interface QI) and before dispatch.
+    ///
+    /// # Safety
+    /// `obj` must satisfy the same live interface contract as `invoke`.
+    #[doc(hidden)]
+    pub unsafe fn invoke_values_with_output_kinds_guarded<F>(
+        &self,
+        obj: *mut c_void,
+        args: &[Value],
+        before_dispatch: F,
+    ) -> result::Result<Vec<(Value, PointerOutputKind)>>
+    where
+        F: FnOnce() -> windows_core::Result<()>,
+    {
         let values = self
             .0
             .plan
-            .invoke_values_tracked(obj, args, mark_dispatched)?;
+            .invoke_values_guarded(obj, args, before_dispatch)?;
         if values.len() != self.0.plan.results.len() {
             return Err(invalid_argument(format!(
                 "COM result plan mismatch: native call returned {} value(s), plan describes {}",
@@ -7026,6 +7242,23 @@ impl MethodHandle {
         args: &[Value],
     ) -> result::Result<DispatchInvokeResult> {
         self.0.plan.invoke_dispatch(obj, args)
+    }
+
+    /// # Safety
+    /// `obj` must satisfy the live IDispatch contract of `invoke_dispatch`.
+    #[doc(hidden)]
+    pub unsafe fn invoke_dispatch_guarded<F>(
+        &self,
+        obj: *mut c_void,
+        args: &[Value],
+        before_dispatch: F,
+    ) -> result::Result<DispatchInvokeResult>
+    where
+        F: FnOnce() -> windows_core::Result<()>,
+    {
+        self.0
+            .plan
+            .invoke_dispatch_guarded(obj, args, before_dispatch)
     }
 
     /// # Safety

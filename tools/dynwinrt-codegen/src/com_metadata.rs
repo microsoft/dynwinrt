@@ -11,6 +11,8 @@ pub use crate::contract_registry::ContractKind as RawContractKind;
 pub use crate::contract_registry::ExactFamilyId as RawExactFamilyId;
 use crate::types::TypeMeta;
 
+#[path = "com_borrowed_metadata.rs"]
+pub mod borrowed;
 #[path = "com_completion_metadata.rs"]
 pub mod completion;
 
@@ -1189,6 +1191,9 @@ pub(crate) fn collect_evidence_dependencies(
     use crate::contract_registry::{ComStandardRule, EvidenceDependencies};
 
     let mut dependencies = EvidenceDependencies::default();
+    for entry in borrowed::catalog_entries(interface) {
+        dependencies.add_exact(entry.entry_id, entry.family_id, entry.contract_kind);
+    }
     dependencies.add_standard(ComStandardRule::IUnknownIdentityRefcount);
     dependencies.add_standard(ComStandardRule::QueryInterfaceOutputPlusOne);
     if interface.coclass_clsid.is_some() {
@@ -1297,7 +1302,7 @@ pub(crate) fn collect_exact_registry_entries(
 ) -> Vec<crate::contract_registry::ExactRegistryEntry> {
     use crate::contract_registry::{ExactEntrySelector, ExactRegistryEntry};
 
-    let mut entries = Vec::new();
+    let mut entries = borrowed::catalog_entries(interface);
     for method in interface.raw_methods.as_deref().unwrap_or_default() {
         let method_fingerprint = method
             .exact_interface_output_call

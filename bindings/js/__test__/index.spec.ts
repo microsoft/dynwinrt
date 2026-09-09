@@ -170,6 +170,7 @@ test('package facades exactly partition native exports', (t) => {
   ])
   const unsafeComNames = new Set([
     ...safeComNames,
+    'DynComBorrowedCopyPlan',
     'DynCom',
     'DynComDispatchInvokeResult',
     'DynComInterface',

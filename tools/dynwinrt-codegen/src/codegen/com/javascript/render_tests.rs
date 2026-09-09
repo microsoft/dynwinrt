@@ -37,6 +37,7 @@ fn renderer_api_accepts_only_projected_ir() {
         referenced_enums: Vec::new(),
         sink: None,
         evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
+        borrowed_storage: None,
     };
     let output = render_com_interface(&projected).unwrap();
     assert!(output.js.contains("registerIUnknownInterface"));
@@ -157,6 +158,7 @@ fn renderer_serializes_validated_com_sink_plan() {
             ],
         }),
         evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
+        borrowed_storage: None,
     };
 
     let output = render_com_interface(&projected).unwrap();
@@ -413,6 +415,7 @@ fn renderer_serializes_direct_and_void_com_sink_returns() {
             ],
         }),
         evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
+        borrowed_storage: None,
     };
 
     let output = render_com_interface(&projected).unwrap();
@@ -517,6 +520,7 @@ fn renderer_projects_borrowed_hwnd_output_as_numeric_handle() {
         referenced_enums: Vec::new(),
         sink: None,
         evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
+        borrowed_storage: None,
     };
 
     let output = render_com_interface(&projected).unwrap();
@@ -586,6 +590,7 @@ fn canonical_iunknown_arrays_use_managed_values_without_nominal_wrappers() {
         referenced_enums: Vec::new(),
         sink: None,
         evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
+        borrowed_storage: None,
     };
     let output = render_com_interface(&projected).unwrap();
     assert!(
@@ -632,6 +637,7 @@ fn renderer_projects_bstr_replacement_as_a_string_roundtrip() {
         referenced_enums: Vec::new(),
         sink: None,
         evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
+        borrowed_storage: None,
     };
     let output = render_com_interface(&projected).unwrap();
 
@@ -680,6 +686,7 @@ fn renderer_allows_null_only_for_nullable_bstr_inputs() {
         referenced_enums: Vec::new(),
         sink: None,
         evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
+        borrowed_storage: None,
     };
     let output = render_com_interface(&projected).unwrap();
 
@@ -800,6 +807,7 @@ fn renderer_keeps_dynamic_iid_native_order_and_all_results() {
         referenced_enums: Vec::new(),
         sink: None,
         evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
+        borrowed_storage: None,
     })
     .unwrap();
 
@@ -856,6 +864,7 @@ fn renderer_emits_distinct_by_value_variant_inputs() {
         referenced_enums: Vec::new(),
         sink: None,
         evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
+        borrowed_storage: None,
     };
 
     let output = render_com_interface(&projected).unwrap();
@@ -911,6 +920,7 @@ fn typed_buffer_scalar_aliases_are_collected_for_declarations() {
         referenced_enums: Vec::new(),
         sink: None,
         evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
+        borrowed_storage: None,
     };
 
     assert_eq!(
@@ -996,6 +1006,7 @@ fn renderer_serializes_fixed_capacity_bytes_from_projected_ir() {
         referenced_enums: Vec::new(),
         sink: None,
         evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
+        borrowed_storage: None,
     };
 
     let output = render_com_interface(&projected).unwrap();
@@ -1102,6 +1113,7 @@ fn parallel_arrays_use_semantic_element_counts_and_guid_conversion() {
         referenced_enums: Vec::new(),
         sink: None,
         evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
+        borrowed_storage: None,
     };
 
     let output = render_com_interface(&projected).unwrap();
@@ -1231,6 +1243,7 @@ fn renderer_emits_tagged_unions_and_automation_runtime_transfers() {
         referenced_enums: Vec::new(),
         sink: None,
         evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
+        borrowed_storage: None,
     };
 
     let output = render_com_interface(&projected).unwrap();
@@ -1312,6 +1325,7 @@ fn renderer_emits_explicit_idispatch_invoke_options_and_compound_types() {
         referenced_enums: Vec::new(),
         sink: None,
         evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
+        borrowed_storage: None,
     })
     .unwrap();
 
@@ -1364,6 +1378,7 @@ fn coclass_renderer_uses_new_and_runtime_query_interface_views() {
         referenced_enums: Vec::new(),
         sink: None,
         evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
+        borrowed_storage: None,
     };
     let coclass = ProjectedComCoclass {
         name: "Test".into(),
@@ -1417,6 +1432,7 @@ fn coclass_renderer_rejects_exact_canonical_interface_path_collisions() {
         referenced_enums: Vec::new(),
         sink: None,
         evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
+        borrowed_storage: None,
     };
     let first = interface("Tests.FooBar", "00000000-0000-0000-0000-000000000001");
     let second = interface("Tests.Foo-Bar", "00000000-0000-0000-0000-000000000002");
@@ -1451,6 +1467,7 @@ fn renderer_returns_invalid_referenced_identity_errors() {
         }],
         sink: None,
         evidence_dependencies: crate::contract_registry::EvidenceDependencies::default(),
+        borrowed_storage: None,
     };
 
     let error = render_com_interface(&projected).unwrap_err();

@@ -56,6 +56,7 @@ const opaqueComDeclarations = [
 ]
 const comUnsafeExports = new Set([
   ...comExports,
+  'DynComBorrowedCopyPlan',
   'DynCom',
   'DynComDispatchInvokeResult',
   'DynComInterface',

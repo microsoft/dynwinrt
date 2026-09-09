@@ -38,6 +38,8 @@ pub enum ContractKind {
     NullInput,
     ParameterDirection,
     FlagSelectedBuffer,
+    BorrowedStorage,
+    ContextualEffect,
 }
 
 impl ContractKind {
@@ -56,6 +58,8 @@ impl ContractKind {
             Self::NullInput => "null-input",
             Self::ParameterDirection => "parameter-direction",
             Self::FlagSelectedBuffer => "flag-selected-buffer",
+            Self::BorrowedStorage => "borrowed-storage",
+            Self::ContextualEffect => "contextual-effect",
         }
     }
 }
@@ -96,6 +100,8 @@ pub enum ExactFamilyId {
     ParameterDirection,
     ShellCommandString,
     AudioConditionalOutput,
+    BorrowedCopy,
+    AudioContext,
 }
 
 impl ExactFamilyId {
@@ -117,6 +123,8 @@ impl ExactFamilyId {
             Self::ParameterDirection => "com.parameter-direction.v1",
             Self::ShellCommandString => "shell.flag-selected-string.v1",
             Self::AudioConditionalOutput => "audio.conditional-output.v1",
+            Self::BorrowedCopy => "buffers.borrowed-copy.v1",
+            Self::AudioContext => "audio.context-effect.v1",
         }
     }
 
@@ -138,6 +146,8 @@ impl ExactFamilyId {
             Self::ParameterDirection,
             Self::ShellCommandString,
             Self::AudioConditionalOutput,
+            Self::BorrowedCopy,
+            Self::AudioContext,
         ]
         .into_iter()
         .find(|family| family.id() == value)
@@ -430,6 +440,11 @@ pub(crate) fn validate_exact_entry_catalog(
 
 pub(crate) fn statically_declared_exact_entry_ids() -> Result<BTreeSet<String>, String> {
     let mut ids = BTreeSet::new();
+    ids.extend(
+        crate::com_metadata::borrowed::all_evidence()
+            .iter()
+            .map(|entry| crate::com_metadata::borrowed::catalog_entry(entry).entry_id),
+    );
     ids.extend(
         crate::com_safe_array_registry::all_safe_array_evidence()
             .iter()
@@ -1155,7 +1170,7 @@ mod tests {
         serde_json::from_str::<serde_json::Value>(SCHEMA_JSON).unwrap();
         let registry = load_registry().unwrap();
         let ids = statically_declared_exact_entry_ids().unwrap();
-        assert_eq!(ids.len(), 506);
+        assert_eq!(ids.len(), 532);
         assert_eq!(registry.conditional_outputs.len(), 7);
         assert_eq!(registry.ownership_outputs.len(), 149);
         assert_eq!(
