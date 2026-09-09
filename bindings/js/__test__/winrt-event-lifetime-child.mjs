@@ -54,8 +54,14 @@ const owner = DynWinRtImplementation.create([referencePlan, closePlan], (index, 
   }
   if (slot === 6) return [DynWinRtValue.u32(4096)]
   if (slot === 7) {
-    if (mode === 'add-failure') throw new Error('expected subscription rejection')
+    if (mode === 'add-failure') {
+      // Low-level callback arguments own retained references. This rejecting
+      // source keeps none; release its input rather than waiting for V8 GC.
+      args[0].release()
+      throw new Error('expected subscription rejection')
+    }
     retained = args[0]
+    if (mode === 'add-failure-retained') throw new Error('expected subscription rejection')
     const token = DynWinRtStruct.create(tokenType)
     token.setI64(0, 1n)
     return [token.toValue()]
@@ -92,9 +98,18 @@ function onClosed(callback) {
 }
 
 try {
-  if (mode === 'add-failure') {
-    assert.throws(() => onClosed(() => {}), /expected subscription rejection/)
-    assert.equal(retained, undefined)
+  if (mode === 'add-failure' || mode === 'add-failure-retained') {
+    assert.throws(() => onClosed(() => { delivered++ }), /expected subscription rejection/)
+    if (mode === 'add-failure-retained') {
+      assert.ok(retained)
+      retained.invokeDelegate(delegateIid, invokeSignature, [sender, DynWinRtValue.nullValue()])
+      assert.equal(delivered, 1)
+      retained.release()
+      retained = undefined
+    } else {
+      assert.equal(retained, undefined)
+      assert.equal(delivered, 0)
+    }
   } else {
     assert.ok(mode === 'remove' || mode === 'once')
     const unsubscribe = onClosed((nativeSender, args) => {

@@ -434,7 +434,7 @@ test('delegate owner release is idempotent and preserves independently retained 
   retained.release()
 })
 
-for (const mode of ['remove', 'once', 'add-failure']) {
+for (const mode of ['remove', 'once', 'add-failure', 'add-failure-retained']) {
   test.serial(`generated event ownership exits naturally after ${mode}`, (t) => {
     const child = spawnSync(process.execPath, [
       fileURLToPath(new URL('./winrt-event-lifetime-child.mjs', import.meta.url)), mode,

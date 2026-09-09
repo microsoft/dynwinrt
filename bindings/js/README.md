@@ -119,6 +119,14 @@ must have exactly that length. Async functions, promises, and thenable results
 are unsupported. Dispatch errors fail the native call; `takeError()` returns and
 clears the latest diagnostic, or `null` when there is none.
 
+In this low-level callback API, incoming reference values own retained native
+references. A callback that rejects an input without retaining it should release
+that `DynWinRtValue`, including on a throwing path. Waiting for garbage collection
+can keep a delegate's event-loop resource alive. Conversely, a value deliberately
+retained before throwing stays valid until explicitly released or collected.
+This is not a requirement to release hidden arguments of generated typed
+handlers: the generated adapters retain their own conversion/lifetime contract.
+
 Low-level owner `release()` and garbage collection drop only its native reference.
 Separately retained native values keep their callbacks alive. `disconnect()`
 closes every view while retaining the owner reference; `dispose()` disconnects
