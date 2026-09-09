@@ -4,6 +4,8 @@
 use dynwinrt_codegen::{codegen::com, com_metadata};
 use std::{fs, path::Path, process::Command};
 
+mod support;
+
 #[test]
 fn ambiguous_native_overloads_expose_exact_callable_slots() {
     let Ok(winmd) = std::env::var("DYNWINRT_WIN32_WINMD") else {
@@ -152,18 +154,14 @@ fn generated_explicit_overload_declarations_typecheck() {
         ),
     )
     .unwrap();
+    support::write_com_runtime_stub(&output);
     let config = serde_json::json!({
         "compilerOptions": {
             "target": "ES2022", "module": "Node16", "moduleResolution": "Node16",
             "strict": true, "noEmit": true, "skipLibCheck": false,
-            "baseUrl": output,
-            "typeRoots": [package.join(r"node_modules\@types")],
-            "paths": {
-                "@microsoft/dynwinrt/com": [package.join(r"dist\com.d.ts")],
-                "@microsoft/dynwinrt/com/unsafe": [package.join(r"dist\com-unsafe.d.ts")]
-            }
+            "types": []
         },
-        "include": ["usage.ts", "com/**/*.d.ts"]
+        "include": ["globals.d.ts", "usage.ts", "com/**/*.d.ts"]
     });
     fs::write(
         output.join("tsconfig.json"),
