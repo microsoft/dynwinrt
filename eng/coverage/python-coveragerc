@@ -5,14 +5,16 @@ relative_files = True
 
 [report]
 include =
-    */dynwinrt/*
-    tests/e2e/e2e_generated/python_bindings/*
+    */site-packages/dynwinrt/*
+    */bindings/py/src/*.py
+    */tests/e2e/e2e_generated/python_bindings/*
+    */tests/e2e/e2e_generated/implementations/python_bindings/*
 omit =
     */__pycache__/*
     */site-packages/coverage/*
-    bindings/py/tests/*
-    tests/e2e/runners/*
-    tests/e2e/typecheck/*
+    */bindings/py/tests/*
+    */tests/e2e/runners/*
+    */tests/e2e/typecheck/*
 show_missing = True
 skip_empty = True
 

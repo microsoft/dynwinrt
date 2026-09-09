@@ -35,9 +35,13 @@ $output = if ([IO.Path]::IsPathRooted($OutputDirectory)) {
 }
 $rustReport = Join-Path $output "rust"
 $pythonReport = Join-Path $output "python"
+$pythonRuntimeReport = Join-Path $pythonReport "runtime"
+$pythonWinrtReport = Join-Path $pythonReport "generated-winrt"
+$pythonImplementationReport = Join-Path $pythonReport "generated-implementations"
 $jsReport = Join-Path $output "javascript"
 $jsRuntimeReport = Join-Path $jsReport "runtime"
 $jsWinrtReport = Join-Path $jsReport "generated-winrt"
+$jsImplementationReport = Join-Path $jsReport "generated-implementations"
 $jsComReport = Join-Path $jsReport "generated-classic-com"
 $jsTemp = Join-Path $output "raw\javascript"
 $rustRaw = Join-Path $output "raw\rust"
@@ -48,7 +52,7 @@ $outputMarkerText = "Managed by eng/coverage/coverage.ps1"
 $pipelineError = $null
 $pythonStartup = $null
 $originalLocation = (Get-Location).Path
-$scratchRoot = Join-Path ([IO.Path]::GetTempPath()) "dynwinrt-coverage-$PID-$([guid]::NewGuid().ToString('N'))"
+$scratchRoot = Join-Path $output ".scratch-$PID-$([guid]::NewGuid().ToString('N'))"
 $pythonEnvironment = Join-Path $scratchRoot "python"
 $jsDist = Join-Path $root "bindings\js\dist"
 $jsDistBackup = Join-Path $scratchRoot "js-dist"
@@ -236,7 +240,7 @@ function Test-LcovSourceCovered {
     foreach ($record in ($Lcov -split "(?m)^end_of_record\r?\n?")) {
         if (
             $record -match "(?m)^SF:.*$SourcePattern.*$" -and
-            $record -match "(?m)^LH:(\d+)$" -and
+            $record -match "(?m)^LH:(\d+)\r?$" -and
             [int]$matches[1] -gt 0
         ) {
             return $true
@@ -283,6 +287,38 @@ function Write-JavaScriptCoverageReport {
     }
 }
 
+function Get-JavaScriptCoverageLayers {
+    param([switch]$All)
+    [pscustomobject]@{
+        Name = "JavaScript runtime"
+        Path = $jsRuntimeReport
+        Includes = @("bindings/js/dist/**/*.js")
+        RequiredSourcePattern = "bindings[\\/]js[\\/]dist[\\/]index\.js"
+    }
+    if ($All -or $winrtCoverageExpected) {
+        [pscustomobject]@{
+            Name = "Generated WinRT projections"
+            Path = $jsWinrtReport
+            Includes = @("tests/e2e/e2e_generated/ts/**/*.js")
+            RequiredSourcePattern = "tests[\\/]e2e[\\/]e2e_generated[\\/]ts[\\/]"
+        }
+        [pscustomobject]@{
+            Name = "Generated WinRT implementations"
+            Path = $jsImplementationReport
+            Includes = @("tests/e2e/e2e_generated/implementations/js/**/*.js")
+            RequiredSourcePattern = "tests[\\/]e2e[\\/]e2e_generated[\\/]implementations[\\/]js[\\/]"
+        }
+    }
+    if ($All -or $comCoverageExpected) {
+        [pscustomobject]@{
+            Name = "Generated Classic COM projections"
+            Path = $jsComReport
+            Includes = @("tests/e2e/e2e_generated/com/**/*.js")
+            RequiredSourcePattern = "tests[\\/]e2e[\\/]e2e_generated[\\/]com[\\/]"
+        }
+    }
+}
+
 function Write-Reports {
     Stop-PythonCoverage
     Remove-Item Env:NODE_V8_COVERAGE -ErrorAction SilentlyContinue
@@ -313,13 +349,21 @@ function Write-Reports {
         }
 
         $lcov = Get-Content -LiteralPath (Join-Path $rustReport "lcov.info") -Raw
-        foreach ($requiredSource in @(
+        $requiredNativeSources = @(
             "bindings/js/src/lib.rs",
             "bindings/py/src/runtime.rs"
-        )) {
+        )
+        if ($winrtCoverageExpected) {
+            $requiredNativeSources += @(
+                "bindings/js/src/winrt_implementation.rs",
+                "bindings/py/src/implementation.rs",
+                "crates/dynwinrt/src/winrt_implementation/"
+            )
+        }
+        foreach ($requiredSource in $requiredNativeSources) {
             $pattern = [regex]::Escape($requiredSource).Replace("/", "[\\/]")
-            if ($lcov -notmatch $pattern) {
-                throw "Rust coverage did not include native binding source: $requiredSource"
+            if (-not (Test-LcovSourceCovered $lcov $pattern)) {
+                throw "Rust coverage did not execute native binding source: $requiredSource"
             }
         }
     } else {
@@ -328,44 +372,16 @@ function Write-Reports {
 
     $pythonData = @(Get-ChildItem -LiteralPath $pythonReport -Filter ".coverage.*" -File -ErrorAction SilentlyContinue)
     if ($pythonData.Count -gt 0) {
-        Invoke-Step "Combine Python coverage" {
-            & $script:pythonExe -m coverage combine --keep $pythonReport
+        $pythonReportArgs = @(
+            "--root", $root,
+            "--output", $pythonReport,
+            "--config", $pythonConfig
+        )
+        if ($winrtCoverageExpected) {
+            $pythonReportArgs += "--require-generated"
         }
-        $allPythonData = Join-Path $pythonReport "all-data.json"
-        & $script:pythonExe -m coverage json --ignore-errors -o $allPythonData
-        if ($LASTEXITCODE -ne 0) {
-            throw "Inspecting Python coverage data failed"
-        }
-        $coverageJson = Get-Content -LiteralPath $allPythonData -Raw | ConvertFrom-Json -AsHashtable
-        $measuredFiles = @($coverageJson["files"].Keys)
-        $productFiles = @($measuredFiles | Where-Object {
-            $_ -match "tests[\\/]e2e[\\/]e2e_generated[\\/]python_bindings" -or
-            ($_ -match "dynwinrt" -and $_ -notmatch "bindings[\\/]py[\\/]tests")
-        })
-        if ($productFiles.Count -gt 0) {
-            Invoke-Step "Python HTML coverage report" {
-                & $script:pythonExe -m coverage html --rcfile $pythonConfig `
-                    -d (Join-Path $pythonReport "html")
-            }
-            Invoke-Step "Python XML coverage report" {
-                & $script:pythonExe -m coverage xml --rcfile $pythonConfig `
-                    -o (Join-Path $pythonReport "coverage.xml")
-            }
-            Invoke-Step "Python LCOV coverage report" {
-                & $script:pythonExe -m coverage lcov --rcfile $pythonConfig `
-                    -o (Join-Path $pythonReport "lcov.info")
-            }
-            Invoke-Step "Python JSON coverage summary" {
-                & $script:pythonExe -m coverage json --rcfile $pythonConfig `
-                    -o (Join-Path $pythonReport "coverage.json")
-            }
-            & $script:pythonExe -m coverage report --rcfile $pythonConfig
-        } else {
-            if ($SkipE2E) {
-                Write-Warning "No generated Python projection files were measured; skipping Python reports"
-            } else {
-                throw "No generated Python projection files were measured"
-            }
+        Invoke-Step "Python aggregate and per-family coverage reports" {
+            & $script:pythonExe (Join-Path $PSScriptRoot "python_coverage.py") @pythonReportArgs
         }
     } else {
         throw "No Python coverage data was produced"
@@ -373,37 +389,20 @@ function Write-Reports {
 
     $jsData = @(Get-ChildItem -LiteralPath $jsTemp -Filter "*.json" -File -ErrorAction SilentlyContinue)
     if ($jsData.Count -gt 0) {
-        $aggregateIncludes = @("bindings/js/dist/**/*.js")
-        if ($winrtCoverageExpected) {
-            $aggregateIncludes += "tests/e2e/e2e_generated/ts/**/*.js"
-        }
-        if ($comCoverageExpected) {
-            $aggregateIncludes += "tests/e2e/e2e_generated/com/**/*.js"
-        }
+        $layers = @(Get-JavaScriptCoverageLayers)
+        $aggregateIncludes = @($layers | ForEach-Object { $_.Includes })
 
         Write-JavaScriptCoverageReport `
             -Name "JavaScript aggregate" `
             -ReportDirectory $jsReport `
             -Includes $aggregateIncludes `
             -RequiredSourcePattern "bindings[\\/]js[\\/]dist[\\/]index\.js"
-        Write-JavaScriptCoverageReport `
-            -Name "JavaScript runtime" `
-            -ReportDirectory $jsRuntimeReport `
-            -Includes @("bindings/js/dist/**/*.js") `
-            -RequiredSourcePattern "bindings[\\/]js[\\/]dist[\\/]index\.js"
-        if ($winrtCoverageExpected) {
+        foreach ($layer in $layers) {
             Write-JavaScriptCoverageReport `
-                -Name "Generated WinRT" `
-                -ReportDirectory $jsWinrtReport `
-                -Includes @("tests/e2e/e2e_generated/ts/**/*.js") `
-                -RequiredSourcePattern "tests[\\/]e2e[\\/]e2e_generated[\\/]ts[\\/]"
-        }
-        if ($comCoverageExpected) {
-            Write-JavaScriptCoverageReport `
-                -Name "Generated Classic COM" `
-                -ReportDirectory $jsComReport `
-                -Includes @("tests/e2e/e2e_generated/com/**/*.js") `
-                -RequiredSourcePattern "tests[\\/]e2e[\\/]e2e_generated[\\/]com[\\/]"
+                -Name $layer.Name `
+                -ReportDirectory $layer.Path `
+                -Includes $layer.Includes `
+                -RequiredSourcePattern $layer.RequiredSourcePattern
         }
     } else {
         throw "No V8 coverage data was produced"
@@ -411,17 +410,28 @@ function Write-Reports {
 }
 
 function Get-CoverageSummaryMarkdown {
+    param([switch]$CheckThresholds)
     $rows = @()
 
     $rustSummary = Join-Path $rustReport "summary.json"
     if (Test-Path -LiteralPath $rustSummary) {
         $totals = (Get-Content -LiteralPath $rustSummary -Raw | ConvertFrom-Json).data[0].totals
-        Assert-MinimumCoverage "Rust" $totals.lines.percent $MinRustLineCoverage
+        if ($CheckThresholds) {
+            Assert-MinimumCoverage "Rust" $totals.lines.percent $MinRustLineCoverage
+        }
         $rows += "| Rust, including native .pyd/.node | $([math]::Round($totals.lines.percent, 2))% | $([math]::Round($totals.functions.percent, 2))% | $([math]::Round($totals.regions.percent, 2))% regions |"
     }
 
-    $pythonSummary = Join-Path $pythonReport "coverage.json"
-    if (Test-Path -LiteralPath $pythonSummary) {
+    foreach ($pythonLayer in @(
+        [pscustomobject]@{ Name = "Python aggregate"; Path = $pythonReport }
+        [pscustomobject]@{ Name = "Python runtime"; Path = $pythonRuntimeReport }
+        [pscustomobject]@{ Name = "Generated Python WinRT projections"; Path = $pythonWinrtReport }
+        [pscustomobject]@{ Name = "Generated Python WinRT implementations"; Path = $pythonImplementationReport }
+    )) {
+        $pythonSummary = Join-Path $pythonLayer.Path "coverage.json"
+        if (-not (Test-Path -LiteralPath $pythonSummary)) {
+            continue
+        }
         $totals = (Get-Content -LiteralPath $pythonSummary -Raw | ConvertFrom-Json -AsHashtable)["totals"]
         $linePercent = if ($totals["num_statements"]) {
             [math]::Round(100 * $totals["covered_lines"] / $totals["num_statements"], 2)
@@ -433,20 +443,20 @@ function Get-CoverageSummaryMarkdown {
         } else {
             100
         }
-        Assert-MinimumCoverage "Generated Python" $linePercent $MinPythonLineCoverage
-        $rows += "| Generated Python projections | $linePercent% | n/a | $branchPercent% branches |"
+        if ($CheckThresholds -and $pythonLayer.Name -eq "Python aggregate") {
+            Assert-MinimumCoverage "Generated Python" $linePercent $MinPythonLineCoverage
+        }
+        $rows += "| $($pythonLayer.Name) | $linePercent% | n/a | $branchPercent% branches |"
     }
 
     foreach ($javascriptLayer in @(
         [pscustomobject]@{ Name = "JavaScript aggregate"; Path = $jsReport }
-        [pscustomobject]@{ Name = "JavaScript runtime"; Path = $jsRuntimeReport }
-        [pscustomobject]@{ Name = "Generated WinRT projections"; Path = $jsWinrtReport }
-        [pscustomobject]@{ Name = "Generated Classic COM projections"; Path = $jsComReport }
+        Get-JavaScriptCoverageLayers -All
     )) {
         $jsSummary = Join-Path $javascriptLayer.Path "coverage-summary.json"
         if (Test-Path -LiteralPath $jsSummary) {
             $totals = (Get-Content -LiteralPath $jsSummary -Raw | ConvertFrom-Json).total
-            if ($javascriptLayer.Name -eq "JavaScript aggregate") {
+            if ($CheckThresholds -and $javascriptLayer.Name -eq "JavaScript aggregate") {
                 Assert-MinimumCoverage `
                     $javascriptLayer.Name `
                     $totals.lines.pct `
@@ -473,11 +483,12 @@ function Write-CoverageSummary {
     if ($summary.Count -gt 0) {
         Set-Content -LiteralPath (Join-Path $output "summary.md") -Value $summary -Encoding utf8
     }
+    Get-CoverageSummaryMarkdown -CheckThresholds | Out-Null
 }
 
 if ($ValidateOnly) {
     Set-Location $root
-    $summary = @(Get-CoverageSummaryMarkdown)
+    $summary = @(Get-CoverageSummaryMarkdown -CheckThresholds)
     if ($summary.Count -eq 0) {
         throw "No coverage summaries were found under $output"
     }
@@ -573,6 +584,9 @@ try {
                 "mypy>=1.13,<2" `
                 "pytest>=8.3.5" `
                 --quiet
+        }
+        Invoke-Step "Python coverage report regression tests" {
+            & $script:pythonExe -m unittest discover -s eng\coverage -p test_python_coverage.py
         }
         Invoke-Step "Install JavaScript dependencies" {
             Push-Location (Join-Path $root "bindings\js")
@@ -682,6 +696,7 @@ try {
                     -CargoProfile coverage `
                     -CargoTarget $script:cargoTarget `
                     -Python $script:pythonExe `
+                    -Suite all `
                     -Lang $languages
             }
         }
@@ -731,6 +746,7 @@ try {
     Write-Host "    Runtime:  $(Join-Path $jsRuntimeReport 'index.html')"
     if ($winrtCoverageExpected) {
         Write-Host "    WinRT:    $(Join-Path $jsWinrtReport 'index.html')"
+        Write-Host "    Impl:     $(Join-Path $jsImplementationReport 'index.html')"
     }
     if ($comCoverageExpected) {
         Write-Host "    COM:      $(Join-Path $jsComReport 'index.html')"
