@@ -26,6 +26,9 @@ def test_wheel_exports_typed_implementation_surface():
         assert name in dynwinrt.__all__
         assert hasattr(dynwinrt, name)
         assert f"class {name}:" in stub
+    assert "DynWinRTImplementationHandle" in dynwinrt.__all__
+    assert "class DynWinRTImplementationHandle(Generic[_Projected_co])" in stub
+    assert dynwinrt.DynWinRTImplementationHandle[int]
     signature = inspect.signature(dynwinrt.DynWinRTInterfacePlan.create)
     assert signature.parameters["required_iids"].default == ()
     assert "def from_hresult(" in stub

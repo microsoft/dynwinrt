@@ -91,6 +91,21 @@ does not disconnect independently retained native references. Explicit
 reference. Already-dispatched callbacks may finish, including returning their
 fully validated outputs; later calls return `RO_E_CLOSED`.
 
+Generated `implement` factories now wrap that unchanged low-level controller
+in a language-neutral-in-semantics typed management facade. Its lazy `.value`
+caches one owning primary QI view, rather than performing QI on every access.
+Facade release clears its primary view and controller reference; disposal first
+disconnects the native object. Neither path can recreate the primary view.
+Independent-view helpers accept either facade or low-level controller.
+Python outbound method handles retain their receiver natively without keeping
+a PyO3 borrow across callback entry, so disposing the primary view from inside
+its own callback remains valid.
+
+Common Python reverse-conversion helpers live once in each generated package's
+`_runtime.py`, shared by its interface modules. They are ordinary measured
+generated code, not excluded coverage support. Method-specific ABI plans and
+typed conversions remain with their interface.
+
 Language bindings additionally gate dispatch on their environment/interpreter
 lifetime. Callback roots belong to the native object, not merely the original
 language wrapper. Shutdown disconnects language callback state before its

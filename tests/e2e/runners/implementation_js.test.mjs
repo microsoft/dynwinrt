@@ -28,8 +28,8 @@ test('crash, timeout, missing result, and malformed result are failures', () => 
 });
 
 test('the whole requested native scenario matrix stays enabled', () => {
-    assert.equal(caseIds.length, 16);
-    assert.equal(caseIds[0], 'background_task');
+    assert.equal(caseIds.length, 19);
+    assert.equal(caseIds[0], 'management_handle');
     for (const name of ['memory_buffer_event', 'array_contracts', 'fill_array', 'named_outputs']) {
         assert.ok(caseIds.includes(name));
     }

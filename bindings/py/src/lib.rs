@@ -603,6 +603,7 @@ for _name in (
    'WinRTCoroutine',
    'WinRTCoroutineWithProgress',
    'DynWinRTImplementationDescriptor',
+   'DynWinRTImplementationHandle',
    'ProjectedLifetimeScope',
    'projected_lifetime_scope',
    'project_as',

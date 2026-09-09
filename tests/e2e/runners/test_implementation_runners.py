@@ -35,8 +35,8 @@ class ImplementationRunnerTests(unittest.TestCase):
                 self.assertFalse(decode_child_result("case", stdout, "", exit_code)["pass"])
 
     def test_complete_matrix_and_nine_method_background_fixture(self):
-        self.assertEqual(len(CASES), 16)
-        self.assertEqual(next(iter(CASES)), "background_task")
+        self.assertEqual(len(CASES), 19)
+        self.assertEqual(next(iter(CASES)), "management_handle")
         for case in ("memory_buffer_event", "array_contracts", "fill_array", "named_outputs"):
             self.assertIn(case, CASES)
         self.assertIn("nullable_reference_results", CASES)

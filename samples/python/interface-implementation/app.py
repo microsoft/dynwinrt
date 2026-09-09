@@ -66,50 +66,46 @@ class Task:
 
 def main() -> None:
     with RoApartment(1), projected_lifetime_scope():
-        instance_owner = IBackgroundTaskInstance.implement(TaskInstance())
         handlers = Task()
-        owner = IBackgroundTask.implement(
-            handlers,
-            IStringable.implementation(handlers),
-            IClosable.implementation(handlers),
-        )
-        instance = IBackgroundTaskInstance.from_implementation(instance_owner)
-        task = IBackgroundTask.from_implementation(owner)
-        text = IStringable.from_implementation(owner)
-        duplicate_text = IStringable.from_implementation(owner)
-        closable = IClosable.from_implementation(owner)
-        try:
-            assert text is not duplicate_text
-            release_projected(duplicate_text)
-            # Run and its nested progress property calls traverse native vtables.
-            task.run(instance)
-            assert instance.progress == 1
-            print(text.to_string())
-            owner.release()
-            task.run(instance)
-            assert instance.progress == 2
-            closable.close()
-            assert handlers.closes == 1
-            release_projected(closable)
-            assert not owner.is_closed
-            print(text.to_string())
-            owner.dispose()
+        with IBackgroundTaskInstance.implement(TaskInstance()) as instance_impl, IBackgroundTask.implement(
+            handlers, interfaces=[(IStringable, handlers), (IClosable, handlers)]
+        ) as impl:
+            # Primary views are owned by the handles and require no separate release.
+            assert impl.value is impl.value
+            impl.value.run(instance_impl.value)
+            assert instance_impl.value.progress == 1
+            text = IStringable.from_implementation(impl)
+            duplicate_text = IStringable.from_implementation(impl)
+            closable = IClosable.from_implementation(impl)
             try:
-                text.to_string()
-            except OSError as error:
-                if error.winerror != -2147483629:  # RO_E_CLOSED
-                    raise
-                diagnostic = owner.take_error()
-                assert isinstance(diagnostic, str) and "0x80000013" in diagnostic
-                print(diagnostic)
-            else:
-                raise AssertionError("A disposed implementation accepted a native callback")
-        finally:
-            owner.dispose()
-            instance_owner.dispose()
-            for view in (closable, duplicate_text, text, task, instance):
-                release_projected(view)
-        assert owner.is_closed
+                assert text is not duplicate_text
+                release_projected(duplicate_text)
+                print(text.to_string())
+                independent_task = IBackgroundTask.from_implementation(impl)
+                impl.release()
+                independent_task.run(instance_impl.value)
+                release_projected(independent_task)
+                assert instance_impl.value.progress == 2
+                closable.close()
+                assert handlers.closes == 1
+                release_projected(closable)
+                assert not impl.is_closed
+                print(text.to_string())
+                impl.dispose()
+                try:
+                    text.to_string()
+                except OSError as error:
+                    if error.winerror != -2147483629:  # RO_E_CLOSED
+                        raise
+                    diagnostic = impl.take_error()
+                    assert isinstance(diagnostic, str) and "0x80000013" in diagnostic
+                    print(diagnostic)
+                else:
+                    raise AssertionError("A disposed implementation accepted a native callback")
+            finally:
+                for view in (closable, duplicate_text, text):
+                    release_projected(view)
+        assert impl.is_closed
 
 
 if __name__ == "__main__":

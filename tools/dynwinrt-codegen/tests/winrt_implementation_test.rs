@@ -261,13 +261,14 @@ fn implementation_renderers_preserve_abi_order_and_emit_typed_named_results() {
     assert!(js.contains("bufferCapacity") || dts.contains("bufferCapacity"));
     assert!(
         js.contains("FillArray result must match capacity")
-            && py.contains("FillArray result must match capacity")
+            && python::generate_runtime_support_module()
+                .contains("FillArray result must match capacity")
     );
     assert!(dts.contains("private constructor();"));
-    assert!(dts.contains("static fromImplementation(owner: DynWinRtImplementation): IContract;"));
+    assert!(dts.contains("static fromImplementation(owner: DynWinRtImplementation | DynWinRtImplementationHandle<unknown>): IContract;"));
     assert!(
         pyi.contains(
-            "def from_implementation(cls, owner: DynWinRTImplementation) -> IContract: ..."
+            "def from_implementation(cls, owner: DynWinRTImplementation | DynWinRTImplementationHandle[object]) -> IContract: ..."
         )
     );
     assert!(js.contains("const value = owner.toValue();"));
@@ -366,8 +367,8 @@ fn implementation_invalid_contracts_keep_outbound_generation_and_reject_factorie
         assert!(js.contains("class IContract") && py.contains("class IContract"));
         assert!(dts.contains("handlers: never") && !pyi.contains("def implement("));
         assert!(
-            !js.contains("DynWinRtImplementation.create")
-                && !py.contains("DynWinRTImplementation.create")
+            !js.contains("DynWinRtImplementationHandle.create")
+                && !py.contains("DynWinRTImplementationHandle._create")
         );
     }
 }
@@ -390,8 +391,8 @@ fn implementation_stock_winmd_covers_background_strings_closing_properties_event
         assert_eq!(iface.methods[0].vtable_index, 6);
         let [js, dts, py, pyi] = generated(iface);
         assert!(
-            js.contains("DynWinRtImplementation.create")
-                && py.contains("DynWinRTImplementation.create"),
+            js.contains("DynWinRtImplementationHandle.create")
+                && py.contains("DynWinRTImplementationHandle._create"),
             "{js}\n{py}"
         );
         assert!(js.contains(&format!("name: \"{method}\", vtableIndex: 6")));
@@ -432,11 +433,11 @@ fn implementation_stock_winmd_covers_background_strings_closing_properties_event
     }));
     let [js, _, py, _] = generated(&reader);
     assert!(
-        js.contains("addOutFill") && js.contains("DynWinRtImplementation.create"),
+        js.contains("addOutFill") && js.contains("DynWinRtImplementationHandle.create"),
         "{js}"
     );
     assert!(
-        py.contains("add_out_fill") && py.contains("DynWinRTImplementation.create"),
+        py.contains("add_out_fill") && py.contains("DynWinRTImplementationHandle._create"),
         "{py}"
     );
     let properties = foundation
@@ -446,11 +447,11 @@ fn implementation_stock_winmd_covers_background_strings_closing_properties_event
     let [js, _, py, _] = generated(properties);
     assert!(
         js.contains("DynWinRtArray.fromObjectValues")
-            && js.contains("DynWinRtImplementation.create")
+            && js.contains("DynWinRtImplementationHandle.create")
     );
     assert!(
         py.contains("DynWinRTArray.from_object_values")
-            && py.contains("DynWinRTImplementation.create")
+            && py.contains("DynWinRTImplementationHandle._create")
     );
     let transforms =
         meta::parse_class(WINDOWS_WINMD, "Windows.UI.Xaml.Media", "GeneralTransform").unwrap();
@@ -464,8 +465,8 @@ fn implementation_stock_winmd_covers_background_strings_closing_properties_event
     }));
     let [js, dts, py, pyi] = generated(&transform);
     assert!(
-        js.contains("DynWinRtImplementation.create")
-            && py.contains("DynWinRTImplementation.create")
+        js.contains("DynWinRtImplementationHandle.create")
+            && py.contains("DynWinRTImplementationHandle._create")
     );
     assert!(dts.contains("result: boolean") && pyi.contains("result: bool"));
     let streams = meta::parse_interfaces(WINDOWS_WINMD, "Windows.Storage.Streams");
@@ -490,8 +491,8 @@ fn implementation_stock_winmd_covers_background_strings_closing_properties_event
     );
     let [js, dts, py, pyi] = generated(random_access);
     assert!(
-        js.contains("DynWinRtImplementation.create")
-            && py.contains("DynWinRTImplementation.create")
+        js.contains("DynWinRtImplementationHandle.create")
+            && py.contains("DynWinRTImplementationHandle._create")
     );
     assert!(dts.contains("Required QI views") && pyi.contains("Required QI views"));
     for iid in [
@@ -508,7 +509,8 @@ fn implementation_javascript_projection_validates_handlers_results_arrays_and_di
     let [js, _, _, _] = generated(&fixture());
     let test = r#"
 const assert = require('node:assert/strict');
-const input = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
+const payload = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
+const input = payload.code;
 // Projection-only doubles: native vtables/ownership are covered by the native and E2E suites.
 class Value {
     constructor(kind, value) {
@@ -559,8 +561,10 @@ for (const name of ['addIn', 'addOut', 'addOutFill']) Signature.prototype[name] 
 class Plan { static create(name, type, methods, required) { return Object.assign(new Plan(), { name, type, methods, required }); } }
 let published = 0;
 class Implementation {
-    static create(plans, callback) { published++; return Object.assign(new Implementation(), { plans, callback, references: 1 }); }
+    static create(plans, callback) { published++; return (Implementation.last = Object.assign(new Implementation(), { plans, callback, references: 1 })); }
     toValue() { return (this.lastValue = new Value('object', { owner: this })); }
+    release() { if (!this.released) { this.references--; this.released = true; } }
+    disconnect() { this.isClosed = true; }
 }
 function releaseProjected(view) { view._obj.release(); }
 const ArrayValue = {
@@ -570,6 +574,9 @@ const ArrayValue = {
     fromHresultValues(values) { return this.fromObjectValues(values.map(Value.hresult)); },
 };
 const runtime = { DynWinRtValue: Value, DynWinRtType: Type, DynWinRtMethodSig: Signature, DynWinRtInterfacePlan: Plan, DynWinRtImplementation: Implementation, DynWinRtArray: ArrayValue, WinGuid: { parse: value => value } };
+const handleModule = { exports: {} };
+new Function('require', 'module', payload.handle)(() => runtime, handleModule);
+runtime.DynWinRtImplementationHandle = handleModule.exports.DynWinRtImplementationHandle;
 const moduleObject = { exports: {} };
 new Function('require', 'module', 'exports', input)((name) => runtime, moduleObject, moduleObject.exports);
 const IContract = moduleObject.exports.IContract;
@@ -625,9 +632,10 @@ assert.throws(() => IContract.implementation({ ...handlers, getTitle: () => ({ t
 assert.throws(() => IContract.implementation({ ...handlers, transform: () => ({ label: 'bad', buffer: [], result: true }) }).dispatch(8, [values, Value.u32(3)]), /match capacity/);
 assert.throws(() => IContract.implementation({ ...handlers, transform: () => ({ label: 'bad', buffer: [2147483648], result: true }) }).dispatch(8, [values, Value.u32(1)]), /invalid implementation result/);
 assert.throws(() => IContract.implementation({ ...handlers, transform: () => ({ buffer: [1], result: true }) }).dispatch(8, [values, Value.u32(1)]), /missing data field/);
-const owner = IContract.implement(handlers);
+const handle = IContract.implement(handlers);
+const owner = Implementation.last;
 assert.equal(owner.callback(0, 6, [])[0].value, 'changed');
-assert.throws(() => owner.callback(-1, 6, []), /unknown implementation interface index/);
+assert.throws(() => owner.callback(-1, 6, []), /Unknown implementation interface index/);
 const view = IContract.fromImplementation(owner);
 assert(view instanceof IContract);
 assert.equal(owner.lastValue.releases, 1);
@@ -658,7 +666,15 @@ assert.equal(owner.references, 1);
 assert.throws(() => IContract.fromImplementation({}), /requires a DynWinRtImplementation controller/);
 console.log('JavaScript projection assertions passed');
 "#;
-    let output = run("node", &["-e", test], &serde_json::to_string(&js).unwrap());
+    let output = run(
+        "node",
+        &["-e", test],
+        &serde_json::json!({
+            "code": js,
+            "handle": include_str!("../../../bindings/js/runtime/winrt-implementation.cjs"),
+        })
+        .to_string(),
+    );
     assert!(output.contains("assertions passed"));
 }
 
@@ -744,7 +760,8 @@ fn implementation_python_projection_validates_handlers_results_arrays_and_dispat
     let [_, _, py, _] = generated(&fixture());
     let test = r#"
 import sys, json, types, typing, datetime, uuid, weakref
-source = json.load(sys.stdin)
+payload = json.load(sys.stdin)
+source = payload['code']
 # Projection-only doubles, not native ABI fixtures.
 class Value:
     def __init__(self, kind, value):
@@ -815,10 +832,13 @@ class Implementation:
         owner = Implementation()
         owner.plans, owner.callback = plans, callback
         owner.references = 1
+        Implementation.last = owner
         return owner
     def to_value(self):
         self.last_value = Value('object', types.SimpleNamespace(owner=self))
         return self.last_value
+    def release(self): self.references -= 1
+    def disconnect(self): self.is_closed = True
 def release_projected(view): view._obj.release()
 class Array:
     def __init__(self, values): self.values = values
@@ -849,6 +869,10 @@ for name, value in dict(
 binding = types.ModuleType('dynwinrt')
 for name, value in dict(DynWinRTInterfacePlan=Plan, DynWinRTImplementationMethod=Method,
     DynWinRTImplementation=Implementation, DynWinRTImplementationDescriptor=Descriptor).items(): setattr(binding, name, value)
+binding.DynWinRTValue = Value
+binding.release_projected = release_projected
+exec(payload['handle'], binding.__dict__)
+exec('import inspect as _implementation_inspect' + payload['support'].split('import inspect as _implementation_inspect', 1)[1], runtime.__dict__)
 package = types.ModuleType('generated'); package.__path__ = []
 sys.modules.update({'generated': package, 'generated._runtime': runtime, 'dynwinrt': binding})
 namespace = {'__name__': 'generated.contract', '__package__': 'generated'}
@@ -928,9 +952,10 @@ raises('match capacity', lambda: Contract.implementation(ShortBuffer()).dispatch
 class LargeInteger(Handlers):
     def transform(self, values, capacity): return {'label':'bad','buffer':[2147483648],'result':True}
 raises('invalid implementation result', lambda: Contract.implementation(LargeInteger()).dispatch(8,[values,Value.from_u32(1)]))
-owner = Contract.implement(handlers)
+handle = Contract.implement(handlers)
+owner = Implementation.last
 assert owner.callback(0,6,[])[0].value == 'changed'
-raises('unknown implementation interface index', lambda: owner.callback(-1,6,[]))
+raises('Unknown implementation interface index', lambda: owner.callback(-1,6,[]))
 view = Contract.from_implementation(owner)
 assert isinstance(view, Contract)
 assert owner.last_value.releases == 1
@@ -969,7 +994,12 @@ print('Python projection assertions passed')
     let output = run(
         "python",
         &["-c", test],
-        &serde_json::to_string(&py).unwrap(),
+        &serde_json::json!({
+            "code": py,
+            "handle": include_str!("../../../bindings/py/src/implementation.py"),
+            "support": python::generate_runtime_support_module(),
+        })
+        .to_string(),
     );
     assert!(output.contains("assertions passed"));
 }
@@ -1067,20 +1097,18 @@ fn implementation_cli_emits_background_instance_public_views() {
     );
     assert!(artifacts[0].1.contains("private constructor();"));
     assert!(artifacts[0].1.contains(
-        "static fromImplementation(owner: DynWinRtImplementation): IBackgroundTaskInstance;"
+        "static fromImplementation(owner: DynWinRtImplementation | DynWinRtImplementationHandle<unknown>): IBackgroundTaskInstance;"
     ));
-    assert!(
-        artifacts[1]
-            .0
-            .contains("def from_implementation(cls, owner: DynWinRTImplementation)")
-    );
+    assert!(artifacts[1].0.contains(
+        "def from_implementation(cls, owner: DynWinRTImplementation | DynWinRTImplementationHandle)"
+    ));
     assert!(
         artifacts[1]
             .0
             .contains("finally:\n            value.release()")
     );
     assert!(artifacts[1].1.contains(
-        "def from_implementation(cls, owner: DynWinRTImplementation) -> IBackgroundTaskInstance: ..."
+        "def from_implementation(cls, owner: DynWinRTImplementation | DynWinRTImplementationHandle[object]) -> IBackgroundTaskInstance: ..."
     ));
 }
 

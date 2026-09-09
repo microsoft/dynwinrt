@@ -1,5 +1,5 @@
 from collections.abc import Coroutine
-from typing import Any, Awaitable, Callable, List, Literal, Mapping, Optional, Protocol, Sequence, TypeVar, Union, final, overload
+from typing import Any, Awaitable, Callable, Generic, List, Literal, Mapping, Optional, Protocol, Sequence, TypeVar, Union, final, overload
 from uuid import UUID
 
 _T = TypeVar("_T", covariant=True)
@@ -7,6 +7,7 @@ _P = TypeVar("_P", covariant=True)
 _Tracked = TypeVar("_Tracked")
 _Projected_co = TypeVar("_Projected_co", covariant=True)
 _ProjectableClass = TypeVar("_ProjectableClass", bound="_DynWinRTProjectableClass")
+_Handlers_contra = TypeVar("_Handlers_contra", contravariant=True)
 
 
 class _DynWinRTProjector(Protocol[_Projected_co]):
@@ -31,6 +32,7 @@ __all__ = [
     "DynWinRTInterfacePlan",
     "DynWinRTImplementation",
     "DynWinRTImplementationDescriptor",
+    "DynWinRTImplementationHandle",
     "DynWinRTDelegateMethod",
     "DynWinRTOverrideInterface",
     "DynWinRTXamlRegistration",
@@ -312,6 +314,24 @@ class DynWinRTImplementation:
     def __exit__(
         self, _exc_type: object, _exc_value: object, _traceback: object
     ) -> Literal[False]: ...
+
+class _DynWinRTImplementationFactory(Protocol[_Handlers_contra]):
+    def implementation(self, handlers: _Handlers_contra) -> DynWinRTImplementationDescriptor: ...
+
+@final
+class DynWinRTImplementationHandle(Generic[_Projected_co]):
+    def __init__(self, owner: DynWinRTImplementation, projector: Callable[[DynWinRTImplementation], _Projected_co]) -> None: ...
+    @property
+    def value(self) -> _Projected_co: ...
+    def to_value(self) -> DynWinRTValue: ...
+    def release(self) -> None: ...
+    def disconnect(self) -> None: ...
+    def dispose(self) -> None: ...
+    @property
+    def is_closed(self) -> bool: ...
+    def take_error(self) -> Optional[str]: ...
+    def __enter__(self) -> DynWinRTImplementationHandle[_Projected_co]: ...
+    def __exit__(self, _exc_type: object, _exc_value: object, _traceback: object) -> Literal[False]: ...
 
 
 @final

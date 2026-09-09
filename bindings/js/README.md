@@ -72,10 +72,28 @@ name while the root barrel uses a namespace-qualified name, such as
 ### Standalone WinRT interface implementations
 
 Metadata-generated standalone WinRT interfaces expose `implementation(handlers)`
-and `implement(handlers, ...additionalDescriptors)`. The latter returns a
-`DynWinRtImplementation` owner; use the public
-`GeneratedInterface.fromImplementation(owner)` factory to create an
-independently owned typed view. Low-level users must select an interface with
+and `implement(handlers, ...additionalDescriptors)`. The latter creates a native
+instance and returns `DynWinRtImplementationHandle<GeneratedInterface>`:
+
+```js
+const impl = IBackgroundTask.implement(taskHandlers, {
+  interfaces: [[IStringable, textHandlers]],
+})
+try {
+  impl.value.run(instanceView)
+} finally {
+  impl.dispose()
+}
+```
+
+`.value` is a stable, lazily created typed primary view, managed by the handle.
+`release()` releases its primary view and owner without disconnecting other
+native references; `dispose()` additionally disconnects the object. Neither
+allows `.value` to recreate a view afterward. The common pattern does not need
+`releaseProjected(impl.value)`.
+`GeneratedInterface.fromImplementation(impl)` remains the advanced,
+independently owned view path; positional descriptors and raw native owners
+remain supported. Low-level users must select an interface with
 `value.cast(iid)` before invoking that interface's method handles: `toValue()`
 returns the canonical `IInspectable`, not an arbitrary interface's vtable.
 These are local, synchronous, non-agile WinRT objects, not COM class
@@ -101,7 +119,7 @@ must have exactly that length. Async functions, promises, and thenable results
 are unsupported. Dispatch errors fail the native call; `takeError()` returns and
 clears the latest diagnostic, or `null` when there is none.
 
-`release()` and owner garbage collection drop only the owner's native reference.
+Low-level owner `release()` and garbage collection drop only its native reference.
 Separately retained native values keep their callbacks alive. `disconnect()`
 closes every view while retaining the owner reference; `dispose()` disconnects
 and releases it, and both are idempotent. Disposing during a callback allows that

@@ -7,7 +7,7 @@ from collections.abc import Callable
 from typing import Never, TypedDict
 from uuid import UUID
 
-from dynwinrt import DynWinRTImplementation, DynWinRTValue, release_projected
+from dynwinrt import DynWinRTImplementationHandle, DynWinRTValue, release_projected
 from python_bindings.windows.application_model.background import (
     IBackgroundTask, IBackgroundTaskInstance,
 )
@@ -59,11 +59,17 @@ class TaskHandlers:
 
 def check_owner() -> None:
     handlers = TaskHandlers()
-    instance: DynWinRTImplementation = IBackgroundTaskInstance.implement(InstanceHandlers())
-    owner: DynWinRTImplementation = IBackgroundTask.implement(
+    instance: DynWinRTImplementationHandle[IBackgroundTaskInstance] = IBackgroundTaskInstance.implement(InstanceHandlers())
+    owner: DynWinRTImplementationHandle[IBackgroundTask] = IBackgroundTask.implement(
         handlers, IStringable.implementation(handlers), IClosable.implementation(handlers)
     )
     task: IBackgroundTask = IBackgroundTask.from_implementation(owner)
+    with IBackgroundTask.implement(handlers, interfaces=[(IStringable, handlers), (IClosable, handlers)]) as impl:
+        primary: IBackgroundTask = impl.value
+        primary.run(instance.value)
+        impl.run(instance.value)  # type: ignore[attr-defined]
+        impl.value = task  # type: ignore[misc]
+    IBackgroundTask.implement(handlers, interfaces=[(IStringable, WrongText())])  # type: ignore[misc]
     task.run(IBackgroundTaskInstance.from_implementation(instance))
     text: IStringable = IStringable.from_implementation(owner)
     close: IClosable = IClosable.from_implementation(owner)

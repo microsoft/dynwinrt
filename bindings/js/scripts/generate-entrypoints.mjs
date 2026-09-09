@@ -217,6 +217,21 @@ writeFacade('winrt', winrtExports, [...winrtExports, 'DynWinRtImplementationMeth
   "  readonly plan: import('./index.js').DynWinRtInterfacePlan",
   "  readonly dispatch: (vtableIndex: number, args: import('./index.js').DynWinRtValue[]) => import('./index.js').DynWinRtValue[]",
   '}',
+  'export interface DynWinRtImplementationType { implementation(handlers: never): DynWinRtImplementationDescriptor }',
+  'type ImplementationHandlers<T> = T extends { implementation(handlers: infer H): DynWinRtImplementationDescriptor } ? H : never',
+  'export type DynWinRtImplementationOptions<T extends readonly DynWinRtImplementationType[]> = {',
+  '  readonly interfaces: { readonly [K in keyof T]: readonly [T[K], NoInfer<ImplementationHandlers<T[K]>>] }',
+  '}',
+  'export declare class DynWinRtImplementationHandle<T> {',
+  '  private constructor()',
+  '  readonly value: T',
+  "  toValue(): import('./index.js').DynWinRtValue",
+  '  release(): void',
+  '  disconnect(): void',
+  '  dispose(): void',
+  '  readonly isClosed: boolean',
+  '  takeError(): string | null',
+  '}',
 ])
 writeFacade(
   'com',
@@ -244,6 +259,10 @@ writeFacade(
 )
 
 writeFileSync(
+  join(distDir, 'winrt-implementation.cjs'),
+  readFileSync(join(packageDir, 'runtime', 'winrt-implementation.cjs'), 'utf8'),
+)
+writeFileSync(
   join(distDir, 'com-projection.js'),
   readFileSync(join(packageDir, 'runtime', 'com-projection.cjs'), 'utf8'),
 )
@@ -266,6 +285,9 @@ function writeFacade(
     "'use strict'",
     "const native = require('./index.js')",
     ...exports.map((value) => `module.exports.${value} = native.${value}`),
+    ...(name === 'winrt' ? [
+      "module.exports.DynWinRtImplementationHandle = require('./winrt-implementation.cjs').DynWinRtImplementationHandle",
+    ] : []),
     ...(comProjection ? [
       "const projection = require('./com-projection.js')",
       'module.exports.projectAs = projection.projectAs',

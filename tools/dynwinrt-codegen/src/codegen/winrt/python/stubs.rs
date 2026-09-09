@@ -222,6 +222,7 @@ pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &Interf
     if implementation.supported {
         out.push_str(super::implementation::IMPORTS);
         out.push_str("from abc import ABCMeta\n");
+        out.push_str("from typing import TypeVar\nfrom dynwinrt import _DynWinRTImplementationFactory\n_ImplementationHandlers = TypeVar('_ImplementationHandlers')\n");
     }
     let collection_kind = interface_kind(iface);
     let is_protocol = collection_kind.is_none();

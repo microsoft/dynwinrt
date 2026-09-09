@@ -126,7 +126,10 @@ def _dynwinrt_can_cast(value, iid):
 \n";
 
 pub fn generate_runtime_support_module() -> String {
-    format!("{HEADER}{FUTURE_ANNOTATIONS}{RUNTIME_SUPPORT_BODY}")
+    format!(
+        "{HEADER}{FUTURE_ANNOTATIONS}{RUNTIME_SUPPORT_BODY}{}",
+        super::implementation::HELPERS
+    )
 }
 
 const ASYNC_IMPORT_LINE: &str = "\

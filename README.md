@@ -90,7 +90,9 @@ names, native Python values, asyncio-compatible awaitables, and type stubs.
 Node.js and Python can supply synchronous handlers for complete non-generic
 WinRT interfaces. Generated `.implementation(...)` descriptors compose multiple
 interfaces into a standalone IInspectable object, and `.implement(...)` creates
-its owner. Public typed interface views can be passed to ordinary native
+its management handle. `impl.value` is a stable typed primary interface, and
+`impl.dispose()` manages cleanup (Python also supports `with ... as impl`).
+Public typed interface views can be passed to ordinary native
 consumers without a WinUI composable base or OS registration.
 
 The first release is non-agile and owner-thread-only. Reference release and

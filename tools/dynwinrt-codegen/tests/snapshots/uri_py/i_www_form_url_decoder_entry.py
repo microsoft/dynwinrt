@@ -18,6 +18,7 @@ from typing import Protocol, TypedDict
 from dynwinrt import (
     DynWinRTInterfacePlan, DynWinRTImplementationMethod,
     DynWinRTImplementation, DynWinRTImplementationDescriptor,
+    DynWinRTImplementationHandle,
 )
 
 IID_IWwwFormUrlDecoderEntry = WinGUID.parse('125e7431-f678-4e8e-b670-20a9b06c512d')
@@ -32,73 +33,10 @@ class IWwwFormUrlDecoderEntryHandlers(Protocol):
     """Synchronous handlers; multi-output results are named dicts and FillArray inputs are capacities."""
     def get_name(self) -> str: ...
     def get_value(self) -> str: ...
-
-import inspect as _implementation_inspect
-
-
-def _implementation_check(value, valid, label):
-    if not valid:
-        raise TypeError(f'{label}: invalid implementation result')
-    return value
-
-
-def _implementation_field(value, name, label):
-    if not isinstance(value, dict) or name not in value:
-        raise TypeError(f'{label}: expected a result dict containing {name}')
-    return value[name]
-
-
-def _implementation_array(value, label, bytes_allowed=False, capacity=None):
-    if not isinstance(value, (list, tuple)) and not (bytes_allowed and isinstance(value, (bytes, bytearray))):
-        raise TypeError(f'{label}: expected an array')
-    if capacity is not None and len(value) != capacity:
-        raise ValueError(f'{label}: FillArray result must match capacity {capacity}')
-    return list(value)
-
-
-def _implementation_reference(value, iid, label):
-    if value is None:
-        return DynWinRTValue.null_value()
-    raw = getattr(value, '_obj', value)
-    if not isinstance(raw, DynWinRTValue):
-        raise TypeError(f'{label}: expected a managed WinRT value or None')
-    return DynWinRTValue.null_value() if raw.is_null() else raw.cast(iid)
-
-
-def _implementation_sync(value, label):
-    if _implementation_inspect.isawaitable(value) or _implementation_inspect.isasyncgen(value):
-        if _implementation_inspect.iscoroutine(value):
-            value.close()
-        raise TypeError(f'{label}: implementation callbacks must return synchronously, not a coroutine or awaitable')
-    return value
-
-
-def _implementation_handler(handlers, name, count, label):
-    try:
-        member = _implementation_inspect.getattr_static(handlers, name)
-    except AttributeError:
-        raise TypeError(f'{label}: missing synchronous handler {name}') from None
-    if isinstance(member, property):
-        raise TypeError(f'{label}: property accessors are not callback handlers: {name}')
-    callback = getattr(handlers, name)
-    if not callable(callback):
-        raise TypeError(f'{label}: missing synchronous handler {name}')
-    if (_implementation_inspect.iscoroutinefunction(callback)
-            or _implementation_inspect.isasyncgenfunction(callback)
-            or _implementation_inspect.iscoroutinefunction(getattr(callback, '__call__', None))
-            or _implementation_inspect.isasyncgenfunction(getattr(callback, '__call__', None))):
-        raise TypeError(f'{label}.{name}: async handlers are not supported')
-    try:
-        signature = _implementation_inspect.signature(callback)
-    except ValueError:
-        pass
-    else:
-        try:
-            signature.bind(*([None] * count))
-        except TypeError as error:
-            raise TypeError(f'{label}.{name}: invalid handler signature: {error}') from None
-    return callback
-
+from ._runtime import (
+    _implementation_check, _implementation_field, _implementation_array,
+    _implementation_reference, _implementation_sync, _implementation_handler,
+)
 
 _implementation_plan = None
 
@@ -136,23 +74,14 @@ class IWwwFormUrlDecoderEntry:
         return DynWinRTImplementationDescriptor(plan, dispatch)
 
     @classmethod
-    def implement(cls, handlers: IWwwFormUrlDecoderEntryHandlers, *additional: DynWinRTImplementationDescriptor) -> DynWinRTImplementation:
-        descriptors = (cls.implementation(handlers), *additional)
-        if any(not isinstance(descriptor, DynWinRTImplementationDescriptor) for descriptor in descriptors):
-            raise TypeError('invalid implementation descriptor')
-        plans = [descriptor.plan for descriptor in descriptors]
-        dispatchers = tuple(descriptor.dispatch for descriptor in descriptors)
-        def callback(interface_index, vtable_index, args):
-            if not isinstance(interface_index, int) or interface_index < 0 or interface_index >= len(dispatchers):
-                raise ValueError('unknown implementation interface index')
-            return dispatchers[interface_index](vtable_index, args)
-        return DynWinRTImplementation.create(plans, callback)
+    def implement(cls, handlers: IWwwFormUrlDecoderEntryHandlers, *additional: DynWinRTImplementationDescriptor, interfaces=()) -> DynWinRTImplementationHandle:
+        return DynWinRTImplementationHandle._create(cls, handlers, additional, interfaces)
 
     @classmethod
-    def from_implementation(cls, owner: DynWinRTImplementation) -> 'IWwwFormUrlDecoderEntry':
+    def from_implementation(cls, owner: DynWinRTImplementation | DynWinRTImplementationHandle) -> 'IWwwFormUrlDecoderEntry':
         """Query an independently owned view, tracked by the current lifetime scope."""
-        if not isinstance(owner, DynWinRTImplementation):
-            raise TypeError('from_implementation requires a DynWinRTImplementation controller')
+        if not isinstance(owner, (DynWinRTImplementation, DynWinRTImplementationHandle)):
+            raise TypeError('from_implementation requires a DynWinRTImplementation controller or handle')
         value = owner.to_value()
         try:
             native = value.cast(IID_IWwwFormUrlDecoderEntry)

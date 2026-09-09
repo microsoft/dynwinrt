@@ -360,6 +360,10 @@ if ("py" -in $Lang) {
         --output $pyResult
     if ($LASTEXITCODE -ne 0) { $totalFail++ } else { $totalPass++ }
     if (Test-Path $pyResult) { $allResults += (Get-Content $pyResult -Raw | ConvertFrom-Json) }
+    & $pythonExe (Join-Path $runnersDir "implementation_py.py") `
+        --generated $pyBindingsDir --cases "management_handle,property_views,multi_interface_lifetime,memory_buffer_event" `
+        --output (Join-Path $e2eDir "standard_implementation_py.json")
+    if ($LASTEXITCODE -ne 0) { $totalFail++ } else { $totalPass++ }
 }
 
 if ("ts" -in $Lang) {
@@ -377,6 +381,11 @@ if ("ts" -in $Lang) {
         --output $tsResult
     if ($LASTEXITCODE -ne 0) { $totalFail++ } else { $totalPass++ }
     if (Test-Path $tsResult) { $allResults += (Get-Content $tsResult -Raw | ConvertFrom-Json) }
+    & node (Join-Path $runnersDir "implementation_js.mjs") `
+        --generated (Join-Path $e2eDir "ts") --runtime (Join-Path $root "bindings\js\dist\winrt.js") `
+        --cases "management_handle,property_views,multi_interface_lifetime,memory_buffer_event" `
+        --output (Join-Path $e2eDir "standard_implementation_ts.json")
+    if ($LASTEXITCODE -ne 0) { $totalFail++ } else { $totalPass++ }
 }
 
 if ("com" -in $Lang) {

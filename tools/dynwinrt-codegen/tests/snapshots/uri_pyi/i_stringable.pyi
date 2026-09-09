@@ -11,8 +11,12 @@ from typing import Protocol, TypedDict
 from dynwinrt import (
     DynWinRTInterfacePlan, DynWinRTImplementationMethod,
     DynWinRTImplementation, DynWinRTImplementationDescriptor,
+    DynWinRTImplementationHandle,
 )
 from abc import ABCMeta
+from typing import TypeVar
+from dynwinrt import _DynWinRTImplementationFactory
+_ImplementationHandlers = TypeVar('_ImplementationHandlers')
 from typing import Protocol, Self, TypeVar
 
 _InterfaceT = TypeVar('_InterfaceT')
@@ -27,8 +31,8 @@ class IStringableHandlers(Protocol):
 
 class _IStringableImplementationFactory(ABCMeta):
     def implementation(cls, handlers: IStringableHandlers) -> DynWinRTImplementationDescriptor: ...
-    def implement(cls, handlers: IStringableHandlers, *additional: DynWinRTImplementationDescriptor) -> DynWinRTImplementation: ...
-    def from_implementation(cls, owner: DynWinRTImplementation) -> IStringable: ...
+    def implement(cls, handlers: IStringableHandlers, *additional: DynWinRTImplementationDescriptor, interfaces: Sequence[tuple[_DynWinRTImplementationFactory[_ImplementationHandlers], _ImplementationHandlers]] = ...) -> DynWinRTImplementationHandle[IStringable]: ...
+    def from_implementation(cls, owner: DynWinRTImplementation | DynWinRTImplementationHandle[object]) -> IStringable: ...
 
 
 class _IStringableIdentity(Protocol):

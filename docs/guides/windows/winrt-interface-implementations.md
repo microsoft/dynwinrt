@@ -11,19 +11,19 @@ handler declaration describes exactly which methods and results to provide.
 
 ## Construction and typed interface views
 
-`Interface.implementation(handlers)` describes one implemented interface.
-`Interface.implement(handlers, ...additional)` creates a native owner from one
-or more descriptors. The returned `DynWinRtImplementation` (Node) or
-`DynWinRTImplementation` (Python) is distinct from a typed interface view.
+`Interface.implement(handlers)` creates a native implementation **instance**
+and returns a management handle: `DynWinRtImplementationHandle<Interface>` in
+Node or `DynWinRTImplementationHandle[Interface]` in Python. Its read-only
+`.value` is the generated primary interface, not the handler object or a raw
+native value. Calling it traverses the ordinary native WinRT ABI.
 
-Use `Interface.fromImplementation(owner)` in Node, or
-`Interface.from_implementation(owner)` in Python, to obtain a public typed view.
-This keeps the owner valid and creates an independently owned interface
-reference. The view is accepted by ordinary generated methods taking that
-interface; no type assertion or internal `_fromNative` helper is needed.
-Repeated conversions to the same IID return independent views. Python's new
-conversion remains tracked by the current projected lifetime scope, but does
-not reuse or replace the ordinary `from_value` identity cache.
+The primary view is created lazily and cached: repeated `.value` accesses
+return the same object. `release()` releases both that view, if created, and
+the handle's native-owner reference. `dispose()` also disconnects future
+callbacks object-wide. After either operation `.value` raises; it never
+recreates a released view. The common pattern needs no separate view-release
+call. Lifecycle methods live on the handle, so interface members named
+`close`, `release`, or `dispose` do not collide.
 
 ### Node.js
 
@@ -37,23 +37,14 @@ cargo run -p dynwinrt-codegen -- generate `
 
 ```js
 import { roInitialize } from '@microsoft/dynwinrt';
-import { IClosable, IStringable, releaseProjected } from './generated/index.js';
+import { IStringable } from './generated/index.js';
 
 roInitialize(1);
-const owner = IStringable.implement(
-    { toString: () => 'Implemented in JavaScript' },
-    IClosable.implementation({ close: () => console.log('Native Close call') }),
-);
-const text = IStringable.fromImplementation(owner);
-const closable = IClosable.fromImplementation(owner);
+const impl = IStringable.implement({ toString: () => 'Implemented in JavaScript' });
 try {
-    console.log(text.toString()); // Outbound native call, then reverse callback.
-    owner.release();             // These two interface references remain valid.
-    closable.close();
+    console.log(impl.value.toString()); // Native call, then reverse callback.
 } finally {
-    owner.dispose();            // Disconnect every retained view's callbacks.
-    releaseProjected(closable);
-    releaseProjected(text);
+    impl.dispose();
 }
 ```
 
@@ -73,31 +64,15 @@ cargo run -p dynwinrt-codegen -- generate `
 ```
 
 ```python
-from dynwinrt import RoApartment, release_projected
-from generated.windows.foundation import IClosable, IStringable
+from dynwinrt import RoApartment
+from generated.windows.foundation import IStringable
 
 class TextHandler:
     def to_string(self) -> str:
         return "Implemented in Python"
 
-class CloseHandler:
-    def close(self) -> None:
-        print("Native Close call")
-
-with RoApartment(1):
-    owner = IStringable.implement(
-        TextHandler(), IClosable.implementation(CloseHandler())
-    )
-    text = IStringable.from_implementation(owner)
-    closable = IClosable.from_implementation(owner)
-    try:
-        print(text.to_string())  # Crosses the native vtable in both directions.
-        owner.release()
-        closable.close()
-    finally:
-        owner.dispose()
-        release_projected(closable)
-        release_projected(text)
+with RoApartment(1), IStringable.implement(TextHandler()) as impl:
+    print(impl.value.to_string())  # Crosses the native vtable in both directions.
 ```
 
 Python handler objects may use ordinary bound methods. Generated `.pyi`
@@ -109,6 +84,36 @@ not merely reference release.
 Python implementations currently require the main CPython interpreter;
 subinterpreter-owned callbacks are rejected at construction. Captured
 `contextvars` follow the existing Python callback-context convention.
+
+### Multiple interfaces and advanced views
+
+Routine multi-interface construction keeps the primary type inferred:
+
+```js
+const impl = IBackgroundTask.implement(taskHandlers, {
+    interfaces: [[IStringable, textHandlers]],
+});
+impl.value.run(instanceView);
+```
+
+```python
+with IBackgroundTask.implement(handler, interfaces=[(IStringable, text_handler)]) as impl:
+    impl.value.run(instance_view)
+```
+
+Each entry explicitly supplies a generated interface and its handlers. Complete
+metadata validation, duplicate IIDs, and required-interface checks happen before
+native publication. Existing positional `.implementation(...)` descriptors are
+still supported, and may be preferable for reusable heterogeneous compositions.
+
+`Interface.fromImplementation(impl)` / `Interface.from_implementation(impl)`
+remains the advanced independent-view path; it accepts either a typed handle
+or the low-level native owner. Each call owns a separate QI reference that is
+released with `releaseProjected(view)` / `release_projected(view)`. Independent
+views survive handle `release()`, but not object-wide `dispose()`.
+Python views remain tracked by their projection lifetime scope; the ordinary
+`from_value` cache behavior is unchanged. Scope exit can release a handle's
+cached primary view; accessing it does not silently create a new one.
 
 ## Supported contracts
 
@@ -179,7 +184,8 @@ interfaces rather than exposing private factory interfaces.
 | `toValue()` / `to_value()` | Create an owned low-level native value for explicit interop |
 | Public typed view conversion | Create an owned typed view without consuming the owner |
 | `releaseProjected(view)` / `release_projected(view)` | Release that view without disposing the controller or other views |
-| `release()` on the implementation owner | Drop only that owner's native reference |
+| `impl.value` | Stable, handle-managed primary interface view |
+| `release()` on the typed handle | Release its primary view and native-owner reference, without disconnecting other native owners |
 | `disconnect()` | Disconnect callbacks for the whole implemented object |
 | `dispose()` | Disconnect the whole object, then release the owner's reference |
 | `takeError()` / `take_error()` | Retrieve and clear the last contextual native callback error |
@@ -208,6 +214,12 @@ Python can collect an owner-only callback cycle when that owner holds the sole
 native reference. Native aliases or native weak-reference use are treated
 conservatively and may require explicit disposal. Native reference cleanup can
 run on another thread without granting permission to invoke handlers there.
+This includes a handler that captures its typed handle after the primary view
+has been created: that view is another native reference. Use `dispose()` or
+Python's handle context manager to break such cycles deterministically.
+When a handle is collected without a capture cycle, its native owner and
+unreferenced primary view are collected normally; independently retained native
+references remain callable.
 
 Language exceptions are reported as real failing HRESULTs. The owner's error
 accessor provides interface/slot context; Python also reports the original

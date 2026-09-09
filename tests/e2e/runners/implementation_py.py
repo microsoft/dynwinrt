@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import ExitStack, contextmanager
+from datetime import datetime, timedelta, timezone
 import gc
 import importlib
 import importlib.util
@@ -159,10 +160,151 @@ class CloseHandlers:
         pass
 
 
+def management_handle(g, dw, own):
+    class Text:
+        calls = 0
+
+        def to_string(self):
+            self.calls += 1
+            return "typed primary"
+
+    handler = Text()
+    with g.IStringable.implement(handler, interfaces=[(g.IClosable, CloseHandlers())]) as impl:
+        assert impl.value is impl.value
+        assert isinstance(impl.value, g.IStringable)
+        assert impl.value.to_string() == "typed primary"
+        extra = g.IStringable.from_implementation(impl)
+        assert extra is not impl.value
+        primary = impl.value
+        closer = g.IClosable.from_implementation(impl)
+        closer.close()
+        impl.release()
+        expect_error(lambda: impl.value, "released")
+        expect_error(primary.to_string, "object|released")
+        assert extra.to_string() == "typed primary"
+    expect_hresult(extra.to_string, RO_E_CLOSED)
+    assert handler.calls == 2
+    dw.release_projected(extra)
+    dw.release_projected(closer)
+    lazy = own(g.IStringable.implement(Text()))
+    lazy.release()
+    expect_error(lambda: lazy.value, "released")
+    assert lazy.is_closed
+    for entries in ([(g.IStringable, object())], [(None, handler)], [(g.IClosable,)], [(g.IStringable, handler)]):
+        expect_error(lambda: g.IStringable.implement(handler, interfaces=entries), "handler|entry|entries|duplicate")
+
+    class Broken(g.IStringable):
+        failed_owner = None
+
+        @classmethod
+        def from_implementation(cls, owner):
+            cls.failed_owner = owner
+            raise ValueError("primary view failure")
+
+    broken = own(Broken.implement(Text()))
+    expect_error(lambda: broken.value, "primary view failure")
+    assert Broken.failed_owner.is_closed
+    expect_error(lambda: broken.value, "closed|released")
+    class BrokenInitializer(g.IStringable):
+        def _set_native(self, native, *, cache=True):
+            raise ValueError("native view initializer failed")
+    failed_init = own(BrokenInitializer.implement(Text()))
+    expect_error(lambda: failed_init.value, "native view initializer failed")
+    assert failed_init.is_closed
+    expect_error(lambda: failed_init.value, "closed|released")
+    class WrongResult:
+        def to_string(self): return 17
+    wrong = own(g.IStringable.implement(WrongResult()))
+    expect_hresult(wrong.value.to_string, PYTHON_CALLBACK_ERROR)
+    take_error(wrong, "invalid implementation result")
+
+    class ReleasedDuringProjection(g.IStringable):
+        @classmethod
+        def from_implementation(cls, owner):
+            value = super().from_implementation(owner)
+            reentrant.release()
+            return value
+
+    reentrant = own(ReleasedDuringProjection.implement(Text()))
+    expect_error(lambda: reentrant.value, "released during")
+    assert reentrant.is_closed
+    class DisposeInCallback:
+        def to_string(self):
+            disposing.dispose()
+            return "entered callback completed"
+    disposing = own(g.IStringable.implement(DisposeInCallback()))
+    assert disposing.value.to_string() == "entered callback completed"
+    assert disposing.is_closed
+    expect_error(lambda: disposing.value, "closed|released")
+    gc_impl = g.IStringable.implement(Text())
+    primary = gc_impl.value
+    raw = gc_impl.to_value()
+    reference = weakref.ref(gc_impl)
+    del primary, gc_impl
+    gc.collect()
+    assert reference() is None
+    retained = g.IStringable.from_value(raw)
+    raw.release()
+    assert retained.to_string() == "typed primary"
+    dw.release_projected(retained)
+
+def property_views(g, dw, own):
+    class Properties:
+        length = 0
+        def get_capacity(self): return 12
+        def get_length(self): return self.length
+        def set_length(self, value):
+            if value > 12: raise ValueError("capacity exceeded")
+            self.length = value
+        def get_absolute_canonical_uri(self): return "https://example.test/\u96ea"
+        def get_display_iri(self): return "https://example.test/\u96ea"
+        def get_name(self): return "query"
+        def get_value(self): return "value\0\u96ea"
+
+    handlers = Properties()
+    with g.IBuffer.implement(handlers, interfaces=[
+        (g.IUriRuntimeClassWithAbsoluteCanonicalUri, handlers),
+        (g.IWwwFormUrlDecoderEntry, handlers),
+    ]) as impl:
+        uri = g.IUriRuntimeClassWithAbsoluteCanonicalUri.from_implementation(impl)
+        entry = g.IWwwFormUrlDecoderEntry.from_implementation(impl)
+        try:
+            assert impl.value.capacity == 12 and impl.value.length == 0
+            impl.value.length = 7
+            assert impl.value.length == handlers.length == 7
+            assert uri.absolute_canonical_uri == "https://example.test/\u96ea"
+            assert uri.display_iri == "https://example.test/\u96ea"
+            assert entry.name == "query" and entry.value == "value\0\u96ea"
+            # Legacy cached constructors must remain independent of the new
+            # handle-managed primary and independent-view APIs.
+            raw = impl.to_value()
+            try:
+                cached = g.IBuffer.from_value(raw)
+                assert cached is g.IBuffer.from_value(raw)
+                assert cached is not impl.value
+                assert cached.length == 7
+                uri_alias = cached.as_interface(g.IUriRuntimeClassWithAbsoluteCanonicalUri)
+                entry_alias = uri_alias.as_interface(g.IWwwFormUrlDecoderEntry)
+                assert uri_alias.display_iri == uri.display_iri
+                assert entry_alias.value == entry.value
+                for alias in (cached, uri_alias, entry_alias):
+                    dw.release_projected(alias)
+            finally:
+                raw.release()
+            expect_hresult(lambda: setattr(impl.value, "length", 13), PYTHON_CALLBACK_ERROR)
+            take_error(impl, "capacity exceeded")
+            assert impl.value.length == 7
+            impl.value.length = 0
+            assert impl.value.length == 0
+        finally:
+            dw.release_projected(uri)
+            dw.release_projected(entry)
+
+
 def background_task(g, dw, own):
     state = TaskInstanceHandlers()
     instance_owner = own(g.IBackgroundTaskInstance.implement(state))
-    instance = g.IBackgroundTaskInstance.from_implementation(instance_owner)
+    instance = instance_owner.value
 
     class Task:
         runs = 0
@@ -175,13 +317,15 @@ def background_task(g, dw, own):
 
     handlers = Task()
     owner = own(g.IBackgroundTask.implement(handlers))
-    task = g.IBackgroundTask.from_implementation(owner)
+    task = owner.value
     task.run(instance)
     assert (state.progress, state.gets, state.sets, state.get_ids) == (22, 1, 1, 1)
     assert handlers.runs == 1
+    retained_instance = g.IBackgroundTaskInstance.from_implementation(instance_owner)
+    retained_task = g.IBackgroundTask.from_implementation(owner)
     instance_owner.release()
     owner.release()
-    task.run(instance)
+    retained_task.run(retained_instance)
     assert (state.progress, state.gets, state.sets, state.get_ids) == (27, 2, 2, 2)
     assert handlers.runs == 2
     token = dw.DynWinRTStruct.create(dw.DynWinRTType.struct_type(
@@ -189,12 +333,12 @@ def background_task(g, dw, own):
     ))
     token.set_i64(0, 1)
     for action in (
-        lambda: instance.task,
-        lambda: instance.trigger_details,
-        lambda: instance.suspended_count,
-        lambda: instance.get_deferral(),
-        lambda: instance.on_canceled(lambda *_: None),
-        lambda: instance.off_canceled(token.to_value()),
+        lambda: retained_instance.task,
+        lambda: retained_instance.trigger_details,
+        lambda: retained_instance.suspended_count,
+        lambda: retained_instance.get_deferral(),
+        lambda: retained_instance.on_canceled(lambda *_: None),
+        lambda: retained_instance.off_canceled(token.to_value()),
     ):
         error = expect_hresult(action, PYTHON_CALLBACK_ERROR)
         assert "NotImplementedError" in str(error) and "Unused standalone" in str(error)
@@ -260,7 +404,8 @@ def multi_interface_lifetime(g, dw, own):
 def gc_referent_ids(owner):
     # IDs only: keeping the objects returned by get_referents() would itself
     # retain the callback/handler graph and invalidate a collection assertion.
-    return frozenset(id(value) for value in gc.get_referents(owner))
+    native_owner = getattr(owner, "_owner", owner)
+    return frozenset(id(value) for value in gc.get_referents(native_owner))
 
 
 def generated_owner_cycle(g):
@@ -743,6 +888,51 @@ def array_contracts(g, dw, own):
     dw.release_projected(view)
     dw.release_projected(writer)
 
+def value_shapes(g, dw, own):
+    """Every IPropertyValue scalar/array getter crosses a generated native thunk."""
+    values = {
+        "uint8": 255, "int16": -32768, "uint16": 65535,
+        "int32": -(1 << 31), "uint32": (1 << 32) - 1,
+        "int64": -(1 << 63), "uint64": (1 << 64) - 1,
+        "single": 1.25, "double": -2.5, "char16": "\u96ea",
+        "boolean": True, "string": "value\0\u96ea", "guid": INSTANCE_ID,
+        "date_time": datetime(2026, 9, 9, tzinfo=timezone.utc),
+        "time_span": timedelta(microseconds=-125),
+        "point": g.Point(x=1.25, y=-3.5),
+        "size": g.Size(width=3.5, height=2.25),
+        "rect": g.Rect(x=1.25, y=2.5, width=3.75, height=4.0),
+    }
+    called = set()
+    def getter(name, value):
+        def invoke(self):
+            called.add(name)
+            return value
+        return invoke
+    methods = {
+        "get_type": getter("type", g.PropertyType.Int32),
+        "get_is_numeric_scalar": getter("numeric", True),
+        "get_inspectable_array": getter("inspectable", [None]),
+    }
+    for name, value in values.items():
+        methods["get_" + name] = getter(name, value)
+        methods["get_" + name + "_array"] = getter(name + "[]", [value, value])
+    handlers = type("ValueHandlers", (), methods)()
+    with g.IPropertyValue.implement(handlers) as impl:
+        assert impl.value.type == g.PropertyType.Int32
+        assert impl.value.is_numeric_scalar
+        assert impl.value.get_inspectable_array() == [None]
+        for name, expected in values.items():
+            actual = getattr(impl.value, "get_" + name)()
+            array = getattr(impl.value, "get_" + name + "_array")()
+            if name in ("point", "size", "rect"):
+                fields = {"point": ("x", "y"), "size": ("width", "height"), "rect": ("x", "y", "width", "height")}[name]
+                assert [getattr(actual, field) for field in fields] == [getattr(expected, field) for field in fields]
+                assert [[getattr(item, field) for field in fields] for item in array] == [[getattr(expected, field) for field in fields]] * 2
+            else:
+                assert actual == expected
+                assert array == (bytes([expected, expected]) if name == "uint8" else [expected, expected]), (name, array, expected)
+    assert len(called) == 2 * len(values) + 3
+
 
 def fill_array(g, dw, own):
     capacities = []
@@ -896,10 +1086,10 @@ def nullable_reference_results(g, dw, own):
 
 CASES = {
     case.__name__: case for case in (
-        background_task, multi_interface_lifetime, dispose_disconnects,
+        management_handle, property_views, background_task, multi_interface_lifetime, dispose_disconnects,
         reentrant_dispose, callback_error, async_handler_rejected,
         async_result_rejected, required_interfaces, memory_buffer_event,
-        array_contracts, fill_array, fill_array_wrong_length, named_outputs,
+        array_contracts, value_shapes, fill_array, fill_array_wrong_length, named_outputs,
         nullable_reference_results,
         public_view_success_gc, public_view_failed_cast_gc,
     )
@@ -979,6 +1169,7 @@ def main():
     parser.add_argument("--generated", type=Path, required=True)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--case", choices=CASES)
+    parser.add_argument("--cases", help="Comma-separated native scenarios for an existing generated package")
     args = parser.parse_args()
     generated = args.generated.resolve()
     if args.case:
@@ -992,7 +1183,10 @@ def main():
     print(f"Python {platform.python_version()}, {architecture}, {sys.executable}")
     results = []
     printed_errors = set()
-    for case_id in CASES:
+    selected = args.cases.split(",") if args.cases else list(CASES)
+    if any(case_id not in CASES for case_id in selected):
+        raise ValueError("Unknown implementation scenario in --cases")
+    for case_id in selected:
         command = [
             sys.executable, str(Path(__file__).resolve()),
             "--case", case_id, "--generated", str(generated),

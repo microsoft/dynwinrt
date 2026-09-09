@@ -1464,9 +1464,14 @@ pub fn project_interface(
         imports[0].symbols.extend([
             "DynWinRtInterfacePlan".into(),
             "DynWinRtImplementation".into(),
+            "DynWinRtImplementationHandle".into(),
         ]);
         imports.push(ProjectedImport {
-            symbols: vec!["DynWinRtImplementationDescriptor".into()],
+            symbols: vec![
+                "DynWinRtImplementationDescriptor".into(),
+                "DynWinRtImplementationOptions".into(),
+                "DynWinRtImplementationType".into(),
+            ],
             from: context.runtime_import_name().into(),
             runtime_only: false,
             dts_only: true,

@@ -11,8 +11,12 @@ from typing import Protocol, TypedDict
 from dynwinrt import (
     DynWinRTInterfacePlan, DynWinRTImplementationMethod,
     DynWinRTImplementation, DynWinRTImplementationDescriptor,
+    DynWinRTImplementationHandle,
 )
 from abc import ABCMeta
+from typing import TypeVar
+from dynwinrt import _DynWinRTImplementationFactory
+_ImplementationHandlers = TypeVar('_ImplementationHandlers')
 from typing import Protocol, Self, TypeVar
 
 _InterfaceT = TypeVar('_InterfaceT')
@@ -28,8 +32,8 @@ class IWwwFormUrlDecoderEntryHandlers(Protocol):
 
 class _IWwwFormUrlDecoderEntryImplementationFactory(ABCMeta):
     def implementation(cls, handlers: IWwwFormUrlDecoderEntryHandlers) -> DynWinRTImplementationDescriptor: ...
-    def implement(cls, handlers: IWwwFormUrlDecoderEntryHandlers, *additional: DynWinRTImplementationDescriptor) -> DynWinRTImplementation: ...
-    def from_implementation(cls, owner: DynWinRTImplementation) -> IWwwFormUrlDecoderEntry: ...
+    def implement(cls, handlers: IWwwFormUrlDecoderEntryHandlers, *additional: DynWinRTImplementationDescriptor, interfaces: Sequence[tuple[_DynWinRTImplementationFactory[_ImplementationHandlers], _ImplementationHandlers]] = ...) -> DynWinRTImplementationHandle[IWwwFormUrlDecoderEntry]: ...
+    def from_implementation(cls, owner: DynWinRTImplementation | DynWinRTImplementationHandle[object]) -> IWwwFormUrlDecoderEntry: ...
 
 
 class _IWwwFormUrlDecoderEntryIdentity(Protocol):

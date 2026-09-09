@@ -22,10 +22,17 @@ from typing import Protocol, TypedDict
 from dynwinrt import (
     DynWinRTInterfacePlan, DynWinRTImplementationMethod,
     DynWinRTImplementation, DynWinRTImplementationDescriptor,
+    DynWinRTImplementationHandle,
+)
+";
+pub(super) const HELPER_IMPORTS: &str = "\
+from ._runtime import (
+    _implementation_check, _implementation_field, _implementation_array,
+    _implementation_reference, _implementation_sync, _implementation_handler,
 )
 ";
 
-const HELPERS: &str = r#"
+pub(super) const HELPERS: &str = r#"
 import inspect as _implementation_inspect
 
 
@@ -673,7 +680,7 @@ fn project_validated(
         structs,
         prefix: format!("{}Implementation", iface.name),
     };
-    let mut support = String::from(HELPERS);
+    let mut support = String::from(HELPER_IMPORTS);
     let mut declarations = String::new();
     let mut result_names = HashSet::new();
     for (result_name, method) in plan
@@ -925,13 +932,13 @@ fn project_validated(
         bindings.push("        if not callable(getattr(DynWinRTValue, 'invoke_delegate', None)):\n            raise TypeError('this interface requires WinRT delegate invocation support in the runtime')".into());
     }
     let mut factory_body = format!(
-        "    @staticmethod\n    def implementation(handlers: {}Handlers) -> DynWinRTImplementationDescriptor:\n{}\n        plan = _get_implementation_plan()\n        def dispatch(vtable_index, args):\n            if not isinstance(args, list):\n                raise TypeError('implementation arguments must be a list')\n{dispatch}            raise ValueError('unknown implementation vtable slot')\n        return DynWinRTImplementationDescriptor(plan, dispatch)\n\n    @classmethod\n    def implement(cls, handlers: {}Handlers, *additional: DynWinRTImplementationDescriptor) -> DynWinRTImplementation:\n        descriptors = (cls.implementation(handlers), *additional)\n        if any(not isinstance(descriptor, DynWinRTImplementationDescriptor) for descriptor in descriptors):\n            raise TypeError('invalid implementation descriptor')\n        plans = [descriptor.plan for descriptor in descriptors]\n        dispatchers = tuple(descriptor.dispatch for descriptor in descriptors)\n        def callback(interface_index, vtable_index, args):\n            if not isinstance(interface_index, int) or interface_index < 0 or interface_index >= len(dispatchers):\n                raise ValueError('unknown implementation interface index')\n            return dispatchers[interface_index](vtable_index, args)\n        return DynWinRTImplementation.create(plans, callback)\n\n",
+        "    @staticmethod\n    def implementation(handlers: {}Handlers) -> DynWinRTImplementationDescriptor:\n{}\n        plan = _get_implementation_plan()\n        def dispatch(vtable_index, args):\n            if not isinstance(args, list):\n                raise TypeError('implementation arguments must be a list')\n{dispatch}            raise ValueError('unknown implementation vtable slot')\n        return DynWinRTImplementationDescriptor(plan, dispatch)\n\n    @classmethod\n    def implement(cls, handlers: {}Handlers, *additional: DynWinRTImplementationDescriptor, interfaces=()) -> DynWinRTImplementationHandle:\n        return DynWinRTImplementationHandle._create(cls, handlers, additional, interfaces)\n\n",
         iface.name,
         bindings.join("\n"),
         iface.name
     );
     factory_body.push_str(&format!(
-        "    @classmethod\n    def from_implementation(cls, owner: DynWinRTImplementation) -> '{}':\n        \"\"\"Query an independently owned view, tracked by the current lifetime scope.\"\"\"\n        if not isinstance(owner, DynWinRTImplementation):\n            raise TypeError('from_implementation requires a DynWinRTImplementation controller')\n        value = owner.to_value()\n        try:\n            native = value.cast(IID_{})\n            try:\n                view = object.__new__(cls)\n                cls._set_native(view, native, cache=False)\n                return view\n            except BaseException:\n                native.release()\n                raise\n        finally:\n            value.release()\n\n",
+        "    @classmethod\n    def from_implementation(cls, owner: DynWinRTImplementation | DynWinRTImplementationHandle) -> '{}':\n        \"\"\"Query an independently owned view, tracked by the current lifetime scope.\"\"\"\n        if not isinstance(owner, (DynWinRTImplementation, DynWinRTImplementationHandle)):\n            raise TypeError('from_implementation requires a DynWinRTImplementation controller or handle')\n        value = owner.to_value()\n        try:\n            native = value.cast(IID_{})\n            try:\n                view = object.__new__(cls)\n                cls._set_native(view, native, cache=False)\n                return view\n            except BaseException:\n                native.release()\n                raise\n        finally:\n            value.release()\n\n",
         iface.name, iface.name
     ));
     let requirements = if plan.required_interfaces.is_empty() {
@@ -952,8 +959,8 @@ fn project_validated(
         )
     };
     let factory_declarations = format!(
-        "{requirements}    def implementation(cls, handlers: {}Handlers) -> DynWinRTImplementationDescriptor: ...\n    def implement(cls, handlers: {}Handlers, *additional: DynWinRTImplementationDescriptor) -> DynWinRTImplementation: ...\n    def from_implementation(cls, owner: DynWinRTImplementation) -> {}: ...\n\n",
-        iface.name, iface.name, iface.name
+        "{requirements}    def implementation(cls, handlers: {name}Handlers) -> DynWinRTImplementationDescriptor: ...\n    def implement(cls, handlers: {name}Handlers, *additional: DynWinRTImplementationDescriptor, interfaces: Sequence[tuple[_DynWinRTImplementationFactory[_ImplementationHandlers], _ImplementationHandlers]] = ...) -> DynWinRTImplementationHandle[{name}]: ...\n    def from_implementation(cls, owner: DynWinRTImplementation | DynWinRTImplementationHandle[object]) -> {name}: ...\n\n",
+        name = iface.name
     );
     let mut exports = vec![format!("{}Handlers", iface.name)];
     exports.extend(

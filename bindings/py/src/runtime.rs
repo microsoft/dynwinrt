@@ -913,7 +913,9 @@ impl DynWinRTOverrideInterface {
 #[pymethods]
 impl DynWinRTMethodHandle {
     /// Invoke this method on a COM object.
-    fn invoke(&self, obj: &DynWinRTValue, args: Vec<DynWinRTValue>) -> PyResult<DynWinRTValue> {
+    fn invoke(&self, obj: DynWinRTValue, args: Vec<DynWinRTValue>) -> PyResult<DynWinRTValue> {
+        // Extraction retains the native object without holding a Python borrow
+        // while an implementation callback may release the original wrapper.
         let raw = match &obj.0 {
             dynwinrt::WinRTValue::Object(o) => o.as_raw(),
             _ => return Err(PyRuntimeError::new_err("invoke() requires an Object value")),
@@ -988,7 +990,7 @@ impl DynWinRTMethodHandle {
     /// Used for methods with multiple out params (e.g. IVector.IndexOf → [index, found]).
     fn invoke_all(
         &self,
-        obj: &DynWinRTValue,
+        obj: DynWinRTValue,
         args: Vec<DynWinRTValue>,
     ) -> PyResult<Vec<DynWinRTValue>> {
         let raw = match &obj.0 {
@@ -1085,7 +1087,7 @@ impl DynWinRTMethodHandle {
     // --- Fast paths: skip Vec alloc for common getter patterns ---
 
     /// Getter → string (0 args, zero Vec allocation)
-    fn get_string(&self, obj: &DynWinRTValue) -> PyResult<String> {
+    fn get_string(&self, obj: DynWinRTValue) -> PyResult<String> {
         let raw = obj
             .0
             .as_object()
@@ -1099,7 +1101,7 @@ impl DynWinRTMethodHandle {
     }
 
     /// Getter → i32 (0 args, zero Vec allocation)
-    fn get_i32(&self, obj: &DynWinRTValue) -> PyResult<i32> {
+    fn get_i32(&self, obj: DynWinRTValue) -> PyResult<i32> {
         let raw = obj
             .0
             .as_object()
@@ -1109,7 +1111,7 @@ impl DynWinRTMethodHandle {
     }
 
     /// Getter → bool (0 args, zero Vec allocation)
-    fn get_bool(&self, obj: &DynWinRTValue) -> PyResult<bool> {
+    fn get_bool(&self, obj: DynWinRTValue) -> PyResult<bool> {
         let raw = obj
             .0
             .as_object()
@@ -1119,7 +1121,7 @@ impl DynWinRTMethodHandle {
     }
 
     /// Getter → DynWinRTValue object (0 args, zero Vec allocation)
-    fn get_obj(&self, obj: &DynWinRTValue) -> PyResult<DynWinRTValue> {
+    fn get_obj(&self, obj: DynWinRTValue) -> PyResult<DynWinRTValue> {
         let raw = obj
             .0
             .as_object()
@@ -1132,7 +1134,7 @@ impl DynWinRTMethodHandle {
     }
 
     /// 1-arg invoke with hstring input → DynWinRTValue result
-    fn invoke_hstring(&self, obj: &DynWinRTValue, arg: String) -> PyResult<DynWinRTValue> {
+    fn invoke_hstring(&self, obj: DynWinRTValue, arg: String) -> PyResult<DynWinRTValue> {
         let raw = obj
             .0
             .as_object()
@@ -1148,7 +1150,7 @@ impl DynWinRTMethodHandle {
     }
 
     /// 1-arg invoke with i32 input → DynWinRTValue result
-    fn invoke_i32(&self, obj: &DynWinRTValue, arg: i32) -> PyResult<DynWinRTValue> {
+    fn invoke_i32(&self, obj: DynWinRTValue, arg: i32) -> PyResult<DynWinRTValue> {
         let raw = obj
             .0
             .as_object()

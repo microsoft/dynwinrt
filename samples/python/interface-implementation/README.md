@@ -26,8 +26,13 @@ Generation auto-detects the Windows SDK; `-Winmd` selects an explicit metadata
 file. The generated package is imported from the sample directory and does
 not need to be installed separately.
 
-Releasing the implementation owner's reference leaves independently retained
-typed views usable. Explicit disposal in `finally` disconnects every view's
+The common pattern is `with IBackgroundTask.implement(handler) as impl:`,
+then `impl.value.run(instance_view)`. The primary view is stable and managed
+by the handle; context exit disposes it without a separate view-release call.
+`interfaces=[(Interface, handler), ...]` provides convenient additional views.
+
+Releasing the implementation handle's own references leaves independently retained
+typed views usable. Explicit disposal or context exit disconnects every view's
 future callbacks. Already-entered callbacks may finish. The projected lifetime
 scope releases typed wrappers before the apartment exits. The implementation
 owner's own context-manager exit, when used, performs **dispose**, not release.

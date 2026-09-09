@@ -195,11 +195,10 @@ Python garbage collection.
 Generated, supported non-generic WinRT interfaces provide `.implementation()`
 and `.implement()` factories. They create standalone, `IInspectable`-rooted
 objects; they do not activate or register an OS class, compose a WinUI control,
-or implement Classic COM interfaces. Use the public `from_implementation()`
-factory to obtain a typed view without transferring the owner's reference:
+or implement Classic COM interfaces. `.implement()` returns a generic management
+handle with a stable typed `.value`, not a type cast or the raw handler:
 
 ```python
-from dynwinrt import release_projected
 from generated.windows.foundation import IClosable, IStringable
 
 class Label:
@@ -211,13 +210,9 @@ class Label:
 
 handler = Label()
 with IStringable.implement(
-    handler, IClosable.implementation(handler)
-) as owner:
-    label = IStringable.from_implementation(owner)
-    try:
-        print(label.to_string())
-    finally:
-        release_projected(label)
+    handler, interfaces=[(IClosable, handler)]
+) as impl:
+    print(impl.value.to_string())
 ```
 
 The generated handler protocols describe snake-case methods and their input
@@ -225,7 +220,12 @@ and output types. Additional interface descriptors provide separate native
 views sharing the same object identity. Every required interface must be
 included; an incomplete implementation is rejected before publication.
 `release_projected(view)` releases a view independently without disposing or
-releasing its controller.
+releasing its controller. The advanced `from_implementation(impl)` path accepts
+both new handles and low-level native owners; positional descriptors remain
+supported. The primary `.value` needs no `release_projected` in the common
+pattern. It is created lazily once, and `release()`/`dispose()` release that
+view along with the handle's owner reference. `.value` raises after either
+operation and never recreates a released view.
 
 The low-level runtime surface is:
 
@@ -287,7 +287,8 @@ reported as owner edges only when that owner is the sole native reference.
 This collects ordinary handler/self/owner cycles without treating native
 consumers as collectable Python references. Cycles that retain a native alias,
 or that have requested native weak references, may require **explicit
-`dispose()`**. Callback invocation and `to_value()` require the creating thread;
+`dispose()`**, including a handler capturing a typed handle whose primary view
+has already been created. Callback invocation and `to_value()` require the creating thread;
 foreign-thread `to_value()` raises `OSError` with `RPC_E_WRONG_THREAD`.
 Owner release, disposal, and garbage collection can run on another Python
 thread without leaking the owner's native reference. This does not make

@@ -29,9 +29,15 @@ Pop-Location
 The local npm dependency uses the runtime built in this checkout. Generation
 auto-detects the Windows SDK; pass `-Winmd` to select another Windows.winmd.
 
-The owner and typed views have independent references. `owner.release()`
+The factory returns a management handle. `impl.value` is the stable primary
+interface; use `try/finally` with `impl.dispose()` for the common pattern.
+`interfaces: [[Interface, handlers], ...]` adds explicitly typed interfaces.
+The handle owns and releases its primary view; no `releaseProjected(impl.value)`
+is needed.
+
+The handle and advanced independent views have separate references. `impl.release()`
 releases only the creator's reference, so the retained views continue to work.
-`owner.dispose()` disconnects all future callbacks; the sample confirms a
+`impl.dispose()` disconnects all future callbacks; the sample confirms a
 later native call fails and prints its contextual diagnostic. An already
 entered callback is allowed to finish. IClosable.Close is just another
 handler-defined method, not a hidden alias for owner disposal. The generated

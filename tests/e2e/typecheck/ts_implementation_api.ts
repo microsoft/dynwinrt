@@ -10,7 +10,7 @@ import {
     releaseProjected,
 } from '../e2e_generated/implementations/js/index.js';
 import {
-    DynWinRtArray, DynWinRtImplementation, DynWinRtType, DynWinRtValue,
+    DynWinRtArray, DynWinRtImplementationHandle, DynWinRtType, DynWinRtValue,
 } from '../../../bindings/js/dist/winrt.js';
 
 function unused(..._args: unknown[]): never {
@@ -40,7 +40,7 @@ const instance = IBackgroundTaskInstance.implement({
     getSuspendedCount: unused,
     getDeferral: unused,
 });
-const owner: DynWinRtImplementation = IBackgroundTask.implement({
+const owner: DynWinRtImplementationHandle<IBackgroundTask> = IBackgroundTask.implement({
     run(value) {
         const native: IBackgroundTaskInstance | null = value;
         if (native !== null) {
@@ -51,6 +51,18 @@ const owner: DynWinRtImplementation = IBackgroundTask.implement({
 }, IStringable.implementation({ toString: () => 'typed owner' }),
 IClosable.implementation({ close() {} }));
 const taskView: IBackgroundTask = IBackgroundTask.fromImplementation(owner);
+owner.value.run(instance.value);
+const common = IBackgroundTask.implement({ run: () => {} }, {
+    interfaces: [[IStringable, { toString: () => 'text' }], [IClosable, { close() {} }]],
+});
+const primary: IBackgroundTask = common.value;
+void primary;
+// @ts-expect-error The management handle is not the interface.
+common.run(instance.value);
+// @ts-expect-error Each configured interface checks its own handler type.
+IBackgroundTask.implement({ run() {} }, { interfaces: [[IStringable, { toString: () => 17 }]] });
+// @ts-expect-error The stable primary view is read-only.
+common.value = taskView;
 taskView.run(IBackgroundTaskInstance.fromImplementation(instance));
 const stringView: IStringable = IStringable.fromImplementation(owner);
 const closeView: IClosable = IClosable.fromImplementation(owner);

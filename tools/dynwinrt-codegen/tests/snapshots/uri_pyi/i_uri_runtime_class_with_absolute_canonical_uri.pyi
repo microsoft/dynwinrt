@@ -11,8 +11,12 @@ from typing import Protocol, TypedDict
 from dynwinrt import (
     DynWinRTInterfacePlan, DynWinRTImplementationMethod,
     DynWinRTImplementation, DynWinRTImplementationDescriptor,
+    DynWinRTImplementationHandle,
 )
 from abc import ABCMeta
+from typing import TypeVar
+from dynwinrt import _DynWinRTImplementationFactory
+_ImplementationHandlers = TypeVar('_ImplementationHandlers')
 from typing import Protocol, Self, TypeVar
 
 _InterfaceT = TypeVar('_InterfaceT')
@@ -28,8 +32,8 @@ class IUriRuntimeClassWithAbsoluteCanonicalUriHandlers(Protocol):
 
 class _IUriRuntimeClassWithAbsoluteCanonicalUriImplementationFactory(ABCMeta):
     def implementation(cls, handlers: IUriRuntimeClassWithAbsoluteCanonicalUriHandlers) -> DynWinRTImplementationDescriptor: ...
-    def implement(cls, handlers: IUriRuntimeClassWithAbsoluteCanonicalUriHandlers, *additional: DynWinRTImplementationDescriptor) -> DynWinRTImplementation: ...
-    def from_implementation(cls, owner: DynWinRTImplementation) -> IUriRuntimeClassWithAbsoluteCanonicalUri: ...
+    def implement(cls, handlers: IUriRuntimeClassWithAbsoluteCanonicalUriHandlers, *additional: DynWinRTImplementationDescriptor, interfaces: Sequence[tuple[_DynWinRTImplementationFactory[_ImplementationHandlers], _ImplementationHandlers]] = ...) -> DynWinRTImplementationHandle[IUriRuntimeClassWithAbsoluteCanonicalUri]: ...
+    def from_implementation(cls, owner: DynWinRTImplementation | DynWinRTImplementationHandle[object]) -> IUriRuntimeClassWithAbsoluteCanonicalUri: ...
 
 
 class _IUriRuntimeClassWithAbsoluteCanonicalUriIdentity(Protocol):

@@ -43,6 +43,8 @@ $classes = @(
     "Windows.ApplicationModel.Background.IBackgroundTaskInstance",
     "Windows.Foundation.IStringable",
     "Windows.Foundation.IClosable",
+    "Windows.Foundation.Uri",
+    "Windows.Foundation.WwwFormUrlDecoder",
     "Windows.Foundation.IMemoryBufferReference",
     "Windows.Globalization.NumberFormatting.INumberParser",
     "Windows.Foundation.IPropertyValue",

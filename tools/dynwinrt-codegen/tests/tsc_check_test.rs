@@ -261,6 +261,21 @@ export declare class DynWinRtImplementation {
     readonly isClosed: boolean;
     takeError(): string | null;
 }
+export interface DynWinRtImplementationType { implementation(handlers: never): DynWinRtImplementationDescriptor; }
+type ImplementationHandlers<T> = T extends { implementation(handlers: infer H): DynWinRtImplementationDescriptor } ? H : never;
+export type DynWinRtImplementationOptions<T extends readonly DynWinRtImplementationType[]> = {
+    readonly interfaces: { readonly [K in keyof T]: readonly [T[K], NoInfer<ImplementationHandlers<T[K]>>] };
+};
+export declare class DynWinRtImplementationHandle<T> {
+    private constructor();
+    readonly value: T;
+    toValue(): DynWinRtValue;
+    release(): void;
+    dispose(): void;
+    disconnect(): void;
+    readonly isClosed: boolean;
+    takeError(): string | null;
+}
 export declare class DynWinRtValue {
     toNumber(): number;
     toI64(): number;

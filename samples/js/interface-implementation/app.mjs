@@ -20,7 +20,7 @@ function unavailable() {
 let progress = 0;
 let runs = 0;
 let closes = 0;
-const instanceOwner = IBackgroundTaskInstance.implement({
+const instanceImpl = IBackgroundTaskInstance.implement({
     getInstanceId: () => '4ab7eea7-29a1-4f48-a6da-22894e210ec0',
     getTask: unavailable,
     getProgress: () => progress,
@@ -40,41 +40,41 @@ const handlers = {
     toString: () => `JavaScript task: ${runs} native Run calls`,
     close: () => { closes += 1; },
 };
-const owner = IBackgroundTask.implement(
-    handlers,
-    IStringable.implementation(handlers),
-    IClosable.implementation(handlers),
-);
-const instance = IBackgroundTaskInstance.fromImplementation(instanceOwner);
-const task = IBackgroundTask.fromImplementation(owner);
-const text = IStringable.fromImplementation(owner);
-const duplicateText = IStringable.fromImplementation(owner);
-const closable = IClosable.fromImplementation(owner);
+const impl = IBackgroundTask.implement(handlers, {
+    interfaces: [[IStringable, handlers], [IClosable, handlers]],
+});
+const text = IStringable.fromImplementation(impl);
+const duplicateText = IStringable.fromImplementation(impl);
+const closable = IClosable.fromImplementation(impl);
 
 try {
     assert.notStrictEqual(text, duplicateText);
     releaseProjected(duplicateText);
     // Both the Run call and its progress property calls cross native vtables.
-    task.run(instance);
-    assert.equal(instance.progress, 1);
+    assert.strictEqual(impl.value, impl.value);
+    impl.value.run(instanceImpl.value);
+    assert.equal(instanceImpl.value.progress, 1);
     console.log(text.toString());
 
-    owner.release();
-    task.run(instance);
-    assert.equal(instance.progress, 2);
+    const independentTask = IBackgroundTask.fromImplementation(impl);
+    impl.release();
+    assert.throws(() => impl.value, /released/);
+    independentTask.run(instanceImpl.value);
+    releaseProjected(independentTask);
+    assert.equal(instanceImpl.value.progress, 2);
     closable.close();
     assert.equal(closes, 1);
     releaseProjected(closable);
-    assert.equal(owner.isClosed, false);
+    assert.equal(impl.isClosed, false);
     console.log(text.toString());
 
-    owner.dispose();
+    impl.dispose();
     assert.throws(() => text.toString(), /closed|80000013/i);
-    const diagnostic = owner.takeError();
+    const diagnostic = impl.takeError();
     assert.match(diagnostic, /0x80000013/);
     console.log(diagnostic);
 } finally {
-    owner.dispose();
-    instanceOwner.dispose();
-    for (const view of [closable, duplicateText, text, task, instance]) releaseProjected(view);
+    impl.dispose();
+    instanceImpl.dispose();
+    for (const view of [closable, duplicateText, text]) releaseProjected(view);
 }

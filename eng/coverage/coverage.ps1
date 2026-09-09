@@ -292,7 +292,7 @@ function Get-JavaScriptCoverageLayers {
     [pscustomobject]@{
         Name = "JavaScript runtime"
         Path = $jsRuntimeReport
-        Includes = @("bindings/js/dist/**/*.js")
+        Includes = @("bindings/js/dist/**/*.js", "bindings/js/dist/**/*.cjs")
         RequiredSourcePattern = "bindings[\\/]js[\\/]dist[\\/]index\.js"
     }
     if ($All -or $winrtCoverageExpected) {

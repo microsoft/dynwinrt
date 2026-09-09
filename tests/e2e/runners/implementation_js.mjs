@@ -101,10 +101,104 @@ function readerHandlers(readBytes) {
 }
 
 const cases = {
+    management_handle({ g, runtime, own }) {
+        let calls = 0;
+        const impl = own(g.IStringable.implement(
+            { toString() { calls++; return 'typed primary'; } },
+            { interfaces: [[g.IClosable, { close() { calls++; } }]] },
+        ));
+        assert.strictEqual(impl.value, impl.value);
+        assert.ok(impl.value instanceof g.IStringable);
+        assert.equal(impl.value.toString(), 'typed primary');
+        const extra = g.IStringable.fromImplementation(impl);
+        assert.notStrictEqual(extra, impl.value);
+        const closer = g.IClosable.fromImplementation(impl);
+        closer.close();
+        const primary = impl.value;
+        impl.release();
+        assert.throws(() => impl.value, /released/);
+        assert.throws(() => primary.toString(), /Object|object|released/);
+        assert.equal(extra.toString(), 'typed primary');
+        impl.dispose();
+        expectHresult(() => extra.toString(), RO_E_CLOSED);
+        assert.equal(calls, 3);
+        g.releaseProjected(extra);
+        g.releaseProjected(closer);
+        const lazy = own(g.IStringable.implement({ toString: () => 'never projected' }));
+        lazy.release();
+        assert.throws(() => lazy.value, /released/);
+        assert.equal(lazy.isClosed, true);
+        for (const interfaces of [[[g.IStringable, {}]], [[null, {}]], [[g.IClosable]], [[g.IStringable, { toString: () => '' }]]]) {
+            assert.throws(() => g.IStringable.implement({ toString: () => '' }, { interfaces }), /handler|entry|entries|Duplicate|duplicate/);
+        }
+        let failedOwner;
+        class Broken extends g.IStringable {
+            static fromImplementation(owner) {
+                failedOwner = owner;
+                throw new Error('primary view failure');
+            }
+        }
+        const broken = own(Broken.implement({ toString: () => 'unreachable' }));
+        assert.throws(() => broken.value, /primary view failure/);
+        assert.equal(failedOwner.isClosed, true);
+        assert.throws(() => broken.value, /closed|released/);
+        const wrong = own(g.IStringable.implement({ toString: () => 17 }));
+        expectHresult(() => wrong.value.toString(), E_FAIL);
+        takeError(wrong, /invalid implementation result/);
+        let reentrant;
+        class ReleasedDuringProjection extends g.IStringable {
+            static fromImplementation(owner) {
+                const value = super.fromImplementation(owner);
+                reentrant.release();
+                return value;
+            }
+        }
+        reentrant = own(ReleasedDuringProjection.implement({ toString: () => '' }));
+        assert.throws(() => reentrant.value, /released during/);
+        assert.equal(reentrant.isClosed, true);
+        const disposing = own(g.IStringable.implement({
+            toString() { disposing.dispose(); return 'entered callback completed'; },
+        }));
+        assert.equal(disposing.value.toString(), 'entered callback completed');
+        assert.equal(disposing.isClosed, true);
+        assert.throws(() => disposing.value, /closed|released/);
+    },
+
+    property_views({ g, own }) {
+        let length = 0;
+        const handlers = {
+            getCapacity: () => 12, getLength: () => length,
+            setLength(value) { if (value > 12) throw new Error('capacity exceeded'); length = value; },
+            getAbsoluteCanonicalUri: () => 'https://example.test/\u96ea',
+            getDisplayIri: () => 'https://example.test/\u96ea',
+            getName: () => 'query', getValue: () => 'value\0\u96ea',
+        };
+        const impl = own(g.IBuffer.implement(handlers, {
+            interfaces: [[g.IUriRuntimeClassWithAbsoluteCanonicalUri, handlers], [g.IWwwFormUrlDecoderEntry, handlers]],
+        }));
+        const uri = g.IUriRuntimeClassWithAbsoluteCanonicalUri.fromImplementation(impl);
+        const entry = g.IWwwFormUrlDecoderEntry.fromImplementation(impl);
+        assert.equal(impl.value.capacity, 12);
+        assert.equal(impl.value.length, 0);
+        impl.value.length = 7;
+        assert.equal(impl.value.length, 7);
+        assert.equal(uri.absoluteCanonicalUri, 'https://example.test/\u96ea');
+        assert.equal(uri.displayIri, 'https://example.test/\u96ea');
+        assert.equal(entry.name, 'query');
+        assert.equal(entry.value, 'value\0\u96ea');
+        expectHresult(() => { impl.value.length = 13; }, E_FAIL);
+        takeError(impl, /capacity exceeded/);
+        assert.equal(impl.value.length, 7);
+        impl.value.length = 0;
+        assert.equal(impl.value.length, 0);
+        g.releaseProjected(uri);
+        g.releaseProjected(entry);
+    },
+
     background_task({ g, runtime, own }) {
         const state = { progress: 17, gets: 0, sets: 0, getIds: 0 };
         const instanceOwner = own(g.IBackgroundTaskInstance.implement(taskInstanceHandlers(state)));
-        const instance = g.IBackgroundTaskInstance.fromImplementation(instanceOwner);
+        const instance = instanceOwner.value;
         let runs = 0;
         const taskOwner = own(g.IBackgroundTask.implement({
             run(taskInstance) {
@@ -114,13 +208,15 @@ const cases = {
                 runs++;
             },
         }));
-        const task = g.IBackgroundTask.fromImplementation(taskOwner);
+        const task = taskOwner.value;
         task.run(instance);
         assert.deepEqual(state, { progress: 22, gets: 1, sets: 1, getIds: 1 });
         assert.equal(runs, 1);
+        const retainedInstance = g.IBackgroundTaskInstance.fromImplementation(instanceOwner);
+        const retainedTask = g.IBackgroundTask.fromImplementation(taskOwner);
         instanceOwner.release();
         taskOwner.release();
-        task.run(instance);
+        retainedTask.run(retainedInstance);
         assert.deepEqual(state, { progress: 27, gets: 2, sets: 2, getIds: 2 });
         assert.equal(runs, 2);
         const token = runtime.DynWinRtStruct.create(runtime.DynWinRtType.structType(
@@ -128,12 +224,12 @@ const cases = {
         ));
         token.setI64(0, 1n);
         for (const action of [
-            () => instance.task,
-            () => instance.triggerDetails,
-            () => instance.suspendedCount,
-            () => instance.getDeferral(),
-            () => instance.onCanceled(() => {}),
-            () => instance.offCanceled(token.toValue()),
+            () => retainedInstance.task,
+            () => retainedInstance.triggerDetails,
+            () => retainedInstance.suspendedCount,
+            () => retainedInstance.getDeferral(),
+            () => retainedInstance.onCanceled(() => {}),
+            () => retainedInstance.offCanceled(token.toValue()),
         ]) {
             expectHresult(action, E_FAIL);
             takeError(instanceOwner, /unused standalone/i);
@@ -424,6 +520,40 @@ const cases = {
         g.releaseProjected(writer);
     },
 
+    value_shapes({ g, own }) {
+        const values = {
+            UInt8: 255, Int16: -32768, UInt16: 65535, Int32: -(2 ** 31), UInt32: 2 ** 32 - 1,
+            Int64: -(1n << 63n), UInt64: (1n << 64n) - 1n,
+            Single: 1.25, Double: -2.5, Char16: 0x96ea, Boolean: true,
+            String: 'value\0\u96ea', Guid: instanceId,
+            DateTime: { universalTime: 132537600000000000n }, TimeSpan: { duration: -1250n },
+            Point: { x: 1.25, y: -3.5 }, Size: { width: 3.5, height: 2.25 },
+            Rect: { x: 1.25, y: 2.5, width: 3.75, height: 4 },
+        };
+        const called = new Set();
+        const getter = (name, value) => () => { called.add(name); return value; };
+        const handlers = {
+            getType: getter('type', g.PropertyType.Int32),
+            getIsNumericScalar: getter('numeric', true),
+            getInspectableArray: getter('inspectable', [null]),
+        };
+        for (const [name, value] of Object.entries(values)) {
+            handlers[`get${name}`] = getter(name, value);
+            handlers[`get${name}Array`] = getter(`${name}[]`, [value, value]);
+        }
+        const impl = own(g.IPropertyValue.implement(handlers));
+        assert.equal(impl.value.type, g.PropertyType.Int32);
+        assert.equal(impl.value.isNumericScalar, true);
+        assert.deepEqual(impl.value.getInspectableArray(), [null]);
+        for (const [name, expected] of Object.entries(values)) {
+            const actual = impl.value[`get${name}`]();
+            const array = impl.value[`get${name}Array`]();
+            assert.deepEqual(actual, expected);
+            assert.deepEqual(array, name === 'UInt8' ? Buffer.from([expected, expected]) : [expected, expected]);
+        }
+        assert.equal(called.size, Object.keys(values).length * 2 + 3);
+    },
+
     fill_array({ g, own }) {
         const capacities = [];
         const owner = own(g.IDataReader.implement(readerHandlers(capacity => {
@@ -634,7 +764,9 @@ function main() {
     const results = [];
     const printedErrors = new Set();
     console.log(`Node ${process.version}, ${process.arch}, ${process.execPath}`);
-    for (const id of caseIds) {
+    const selected = args.cases ? args.cases.split(',') : caseIds;
+    if (selected.some(id => !Object.hasOwn(cases, id))) throw new Error('Unknown implementation scenario in --cases');
+    for (const id of selected) {
         const child = spawnSync(process.execPath, [
             filename, '--case', id, '--generated', args.generated, '--runtime', args.runtime,
         ], { encoding: 'utf8', timeout: 90_000, maxBuffer: 8 * 1024 * 1024, windowsHide: true });
