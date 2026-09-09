@@ -58,6 +58,9 @@ const moduleKeys = (value: object) =>
 
 test('Classic COM is isolated from the WinRT root entrypoint', (t) => {
   t.false(Object.prototype.hasOwnProperty.call(winrtRuntime, 'DynCom'))
+  t.false(Object.prototype.hasOwnProperty.call(winrtRuntime, 'DynComAsync'))
+  t.false(Object.prototype.hasOwnProperty.call(comRuntime, 'DynComAsync'))
+  t.false(Object.prototype.hasOwnProperty.call(comRuntime, '__activateAudioInterfaceAsync'))
   t.false(Object.prototype.hasOwnProperty.call(comRuntime, 'DynCom'))
   t.false(Object.prototype.hasOwnProperty.call(comRuntime, 'DynComUnsafe'))
   t.false(Object.prototype.hasOwnProperty.call(comRuntime, 'DynComMethodSig'))
@@ -167,6 +170,7 @@ test('package facades exactly partition native exports', (t) => {
   ])
   const unsafeComNames = new Set([
     ...safeComNames,
+    'DynComBorrowedCopyPlan',
     'DynCom',
     'DynComDispatchInvokeResult',
     'DynComInterface',
@@ -190,19 +194,22 @@ test('package facades exactly partition native exports', (t) => {
   t.deepEqual(moduleKeys(winrtCjsRuntime), expectedWinrt)
   t.deepEqual(
     moduleKeys(comCjsRuntime),
-    nativeKeys.filter((name) => safeComNames.has(name)),
+    [...nativeKeys.filter((name) => safeComNames.has(name)), 'projectAs'].sort(),
   )
   t.deepEqual(
     moduleKeys(unsafeComRuntime),
-    nativeKeys.filter((name) => unsafeComNames.has(name)),
+    [...nativeKeys.filter((name) => unsafeComNames.has(name)), 'projectAs', '__registerComProjection', '__comProjectionIid', '__activateAudioInterfaceAsync'].sort(),
   )
   t.deepEqual(
     moduleKeys(rawComRuntime),
-    nativeKeys.filter((name) => rawComNames.has(name)),
+    [...nativeKeys.filter((name) => rawComNames.has(name)), 'projectAs', '__registerComProjection', '__comProjectionIid', '__activateAudioInterfaceAsync'].sort(),
   )
 
   t.is(winrtCjsRuntime.WinGuid, comCjsRuntime.WinGuid)
   t.is(comCjsRuntime.initializeCom, unsafeComRuntime.initializeCom)
+  t.is(comCjsRuntime.projectAs, unsafeComRuntime.projectAs)
+  t.false(Object.prototype.hasOwnProperty.call(winrtCjsRuntime, 'projectAs'))
+  t.false(Object.prototype.hasOwnProperty.call(comCjsRuntime, '__registerComProjection'))
   t.false(Object.prototype.hasOwnProperty.call(comCjsRuntime, 'DynWinRTValue'))
   t.false(Object.prototype.hasOwnProperty.call(comCjsRuntime, 'WinGUID'))
   t.false(Object.prototype.hasOwnProperty.call(unsafeComRuntime, 'DynWinRTValue'))

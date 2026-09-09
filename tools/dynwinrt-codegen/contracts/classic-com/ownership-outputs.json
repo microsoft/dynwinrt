@@ -2,6 +2,55 @@
   "schemaVersion": 2,
   "contracts": [
     {
+      "entryId": "com.ownership.entry.windows-win32-media-audio.immdevice.d666063f15874e4381f1b948e807363f.getid.slot-5.param-0-ppstrid.v1",
+      "familyId": "com.ownership.v1",
+      "kind": "ownership",
+      "reason": "IMMDevice::GetId allocates the endpoint ID string with task memory; the caller frees it with CoTaskMemFree",
+      "selector": {
+        "interface": {
+          "namespace": "Windows.Win32.Media.Audio",
+          "name": "IMMDevice",
+          "iid": "d666063f-1587-4e43-81f1-b948e807363f"
+        },
+        "declaringIid": "d666063f-1587-4e43-81f1-b948e807363f",
+        "method": "GetId",
+        "absoluteSlot": 5,
+        "parameterCount": 1,
+        "parameters": [
+          {
+            "index": 0,
+            "name": "ppstrId",
+            "nativeType": "Windows.Win32.Foundation.PWSTR",
+            "pointerDepth": 1,
+            "direction": "out",
+            "optional": false,
+            "constness": "mutable",
+            "constAttribute": false
+          }
+        ],
+        "sourceFingerprint": "38AF4F595BEEADA67D0D49EB1B04F2CC354C8A06813B286CCAE4B5EF44BFCD99"
+      },
+      "contract": {
+        "parameterIndex": 0,
+        "ownership": "cotaskmem-owned",
+        "cleanup": "CoTaskMemFree"
+      },
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/mmdeviceapi/nf-mmdeviceapi-immdevice-getid",
+          "file": null
+        }
+      ],
+      "validatedMetadata": [
+        {
+          "package": "Microsoft.Windows.SDK.Win32Metadata",
+          "version": "71.0.14-preview",
+          "sha256": "B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D"
+        }
+      ]
+    },
+    {
       "entryId": "com.ownership.entry.windows-win32-devices-portabledevices.iportabledevice.625e2df863924cf09ad13cfa5f17775c.getpnpdeviceid.slot-11.param-0-ppszpnpdeviceid.v1",
       "familyId": "com.ownership.v1",
       "kind": "ownership",

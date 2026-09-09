@@ -14,8 +14,6 @@ use crate::com_metadata::{
     RawParamDirection, RawSafeArrayOwnership, RawStringEncoding,
 };
 
-use super::generate_com_interface_files;
-
 pub const OFFICIAL_METADATA_VERSION: &str = "71.0.14-preview";
 pub const OFFICIAL_METADATA_SHA256: &str =
     "B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D";
@@ -643,7 +641,7 @@ fn build_report(
         registered_entry_records.extend(crate::com_metadata::collect_exact_registry_entries(
             interface,
         ));
-        let safe_result = generate_com_interface_files(interface, winmd);
+        let safe_result = super::generate_complete_com_interface_files(interface, winmd);
         let safe_complete = safe_result.is_ok();
         let safe_error = safe_result
             .err()
@@ -2852,7 +2850,7 @@ fn summarize(
         by_metadata_attribute,
         by_standard_rule_id,
         exact_entry_status,
-        count_semantics: "registeredExactEntries counts declared selector-specific entries; metadataMatchedExactEntries counts entries matched against pinned metadata; safeConsumedExactEntries counts distinct entries used by safe plans; exactEntryInterfaceDependencies counts every safe entry/interface pair; exactFamilyInterfaceDependencies counts each family once per safe interface. None is a net-contribution or ablation count.".into(),
+        count_semantics: "registeredExactEntries counts declared selector-specific entries; metadataMatchedExactEntries counts entries matched against pinned metadata; safeConsumedExactEntries counts distinct entries used by complete-interface safe plans; exactEntryInterfaceDependencies counts every complete-safe entry/interface pair; exactFamilyInterfaceDependencies counts each family once per complete-safe interface. Copy-only facade dependencies are registered and metadata-matched but are excluded from complete-interface consumption counts. None is a net-contribution or ablation count.".into(),
     };
 
     CapabilitySummary {
@@ -2862,7 +2860,7 @@ fn summarize(
         definitions: BTreeMap::from([
             (
                 "safe_complete".into(),
-                "Existing complete safe generator succeeds for the full inherited interface.".into(),
+                "Complete safe generation succeeds for the full inherited interface; bounded copy-only facades are excluded.".into(),
             ),
             (
                 "standard_derived".into(),
@@ -4559,10 +4557,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(report.summary.eligible_interfaces, 7_929);
-        assert_eq!(report.summary.safe_complete, 5_696);
-        assert_eq!(report.summary.safe_evidence.safe_complete, 5_696);
-        assert_eq!(report.summary.safe_evidence.standard_derived, 5_333);
-        assert_eq!(report.summary.safe_evidence.exact_registry_dependent, 363);
+        assert_eq!(report.summary.safe_complete, 5_721);
+        assert_eq!(report.summary.safe_incomplete, 2_208);
+        assert_eq!(report.summary.safe_evidence.safe_complete, 5_721);
+        assert_eq!(report.summary.safe_evidence.standard_derived, 5_355);
+        assert_eq!(report.summary.safe_evidence.exact_registry_dependent, 366);
         assert_eq!(
             report.summary.safe_evidence.standard_derived
                 + report.summary.safe_evidence.exact_registry_dependent,
@@ -4570,47 +4569,49 @@ mod tests {
         );
         assert_eq!(
             report.summary.safe_evidence.metadata_fact_occurrences,
-            5_982
+            6_012
         );
         assert_eq!(
             report.summary.safe_evidence.com_standard_fact_occurrences,
-            26_129
+            26_247
         );
-        assert_eq!(report.summary.safe_evidence.registered_exact_entries, 504);
+        assert_eq!(report.summary.safe_evidence.registered_exact_entries, 532);
         assert_eq!(
             report.summary.safe_evidence.metadata_matched_exact_entries,
-            504
+            532
         );
         assert_eq!(
             report.summary.safe_evidence.safe_consumed_exact_entries,
-            413
+            431
         );
         assert_eq!(
             report
                 .summary
                 .safe_evidence
                 .exact_entry_interface_dependencies,
-            669
+            694
         );
         assert_eq!(
             report
                 .summary
                 .safe_evidence
                 .exact_family_interface_dependencies,
-            416
+            425
         );
         assert_eq!(
             report.summary.safe_evidence.by_contract_kind,
             BTreeMap::from([
                 ("borrowed-handle".into(), 54),
+                ("borrowed-storage".into(), 15),
                 ("bounded-two-call".into(), 16),
                 ("compound-dispatch".into(), 1),
                 ("conditional-output".into(), 10),
+                ("contextual-effect".into(), 7),
                 ("counted-buffer".into(), 16),
                 ("enumerator-next".into(), 74),
                 ("flag-selected-buffer".into(), 3),
                 ("null-input".into(), 4),
-                ("ownership".into(), 180),
+                ("ownership".into(), 183),
                 ("parameter-direction".into(), 45),
                 ("safearray".into(), 263),
                 ("semantic-hresult".into(), 3),
@@ -4618,7 +4619,7 @@ mod tests {
         );
         assert_eq!(
             report.summary.safe_evidence.by_family_id["com.ownership.v1"],
-            122
+            124
         );
         assert_eq!(
             report.summary.safe_evidence.by_family_id["audio.conditional-output.v1"],
@@ -4640,7 +4641,7 @@ mod tests {
             report.summary.safe_evidence.by_family_id["automation.idispatch-invoke.v1"],
             1
         );
-        assert_eq!(report.summary.safe_evidence.by_entry_id.len(), 413);
+        assert_eq!(report.summary.safe_evidence.by_entry_id.len(), 431);
         assert!(
             report
                 .summary
@@ -4685,9 +4686,23 @@ mod tests {
                 .values()
                 .filter(|entry| entry.safe_consumed)
                 .count(),
-            413
+            431
         );
         let status = &report.summary.safe_evidence.exact_entry_status;
+        assert_eq!(
+            status
+                .values()
+                .filter(|entry| entry.family_id == "com.ownership.v1")
+                .count(),
+            169
+        );
+        assert_eq!(
+            status
+                .values()
+                .filter(|entry| entry.family_id == "com.ownership.v1" && entry.safe_consumed)
+                .count(),
+            118
+        );
         assert_eq!(
             status
                 .values()
@@ -4758,6 +4773,25 @@ mod tests {
         assert!(matches!(
             promoted_audio.evidence_class,
             Some(SafeEvidenceClass::ExactRegistryDependent)
+        ));
+        let endpoint = report
+            .interfaces
+            .iter()
+            .find(|interface| {
+                interface.namespace == "Windows.Win32.Media.Audio" && interface.name == "IMMDevice"
+            })
+            .unwrap();
+        assert!(endpoint.safe_complete);
+        assert!(matches!(
+            endpoint.evidence_class,
+            Some(SafeEvidenceClass::ExactRegistryDependent)
+        ));
+        assert_eq!(endpoint.exact_entry_ids.len(), 2);
+        assert!(endpoint.exact_entry_ids.contains(
+            &"com.ownership.entry.windows-win32-media-audio.immdevice.d666063f15874e4381f1b948e807363f.activate.slot-3.v1".into()
+        ));
+        assert!(endpoint.exact_entry_ids.contains(
+            &"com.ownership.entry.windows-win32-media-audio.immdevice.d666063f15874e4381f1b948e807363f.getid.slot-5.param-0-ppstrid.v1".into()
         ));
         let data_object = report
             .interfaces
@@ -4854,8 +4888,8 @@ mod tests {
                     counts.safe_incomplete_raw_runtime_blocked,
                 ),
                 (
-                    412 - usize::from(target == CensusTarget::I686),
-                    1_432 - 23 * usize::from(target == CensusTarget::I686),
+                    388 - usize::from(target == CensusTarget::I686),
+                    1_431 - 23 * usize::from(target == CensusTarget::I686),
                     389 + 24 * usize::from(target == CensusTarget::I686)
                 )
             );
@@ -4962,6 +4996,7 @@ mod tests {
             "IDispatch",
             "IPropertyStore",
             "IClassFactory",
+            "IMMDevice",
         ] {
             let interface = report
                 .interfaces

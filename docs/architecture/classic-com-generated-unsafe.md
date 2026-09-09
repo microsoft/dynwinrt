@@ -123,6 +123,23 @@ Codegen uses the same capability classifier as `com-capability-census`.
 The complete inherited interface passes the existing safe semantic projection.
 Generate the existing safe class and no unsafe replacement.
 
+PR4 resolves previously rejected overload groups only after every member has a
+fully validated normal COM call plan. Colliding JavaScript arity/shapes or
+projected buffers receive explicit
+`<camelName>AtSlot<absoluteVtableSlot>` names for every member, with no
+ambiguous unsuffixed method. Existing distinguishable dispatch stays
+unchanged; collisions with projected members and synthesized/dynamic-IID/
+non-normal groups still fail closed. Renderers consume the selected IR names
+without guessing runtime types or native semantics.
+
+This promotes 24 raw-metadata-complete interfaces, bringing complete safe
+coverage to **5,721 / 7,929** and leaving **2,208** incomplete interfaces.
+Promoted interfaces receive no duplicate unsafe companion. Native ABI,
+conversion, lifetime, and raw-runtime capabilities remain unchanged, and
+PR3's copy-only facades remain excluded from complete safe coverage.
+Already-supported safe output remains byte-identical, so PR4 needs no
+additional manifest version.
+
 ### Raw metadata complete
 
 Metadata contains every fact needed to express the outbound ABI through Phase 1
@@ -445,10 +462,10 @@ Generation emits `generated/com/unsafe/support.json`:
 
 ```json
 {
-  "schemaVersion": 11,
+  "schemaVersion": 12,
   "interfaces": [
     {
-      "schemaVersion": 11,
+      "schemaVersion": 12,
       "metadata": {
         "setSha256": "...",
         "files": ["..."],
@@ -598,7 +615,7 @@ trailing dots/spaces, and Windows device names (`CON`, `PRN`, `AUX`, `NUL`,
 `CLOCK$`, `CONIN$`, `CONOUT$`, `COM1`-`COM9`, and `LPT1`-`LPT9`), including
 device names with extensions.
 
-Retained schema-11 `modulePath` is never trusted. Codegen rederives it from the
+Retained schema-12 `modulePath` is never trusted. Codegen rederives it from the
 validated qualified interface identity and exact `<Interface>Unsafe` class
 name, requires an exact match, and then checks the case-insensitive path key.
 Case-only namespaces or type names therefore fail instead of aliasing on
@@ -707,17 +724,19 @@ Stage 2 is implemented:
   arguments;
 - parameter requirements come from the same per-target classifier analysis;
 - runtime-blocked methods remain omitted;
-- support schema 11 records every parameter index/name, strategy type, exact
+- support schema 12 records every parameter index/name, strategy type, exact
   reason, native direction/nullability, and known target pointee layouts; and
 - a raw pointer is never substituted for missing ownership.
 
-For official 71.0.14 metadata, **1,442 of 1,446** x64 manual-contract interfaces
-have at least one portable executable generated high-level method. **1,441**
+For official 71.0.14-preview metadata, **1,427 of 1,431** x64 manual-contract interfaces
+have at least one portable executable generated high-level method. **1,426**
 have an executable manual method, one retains only metadata-complete methods,
 and four have no portable executable method because every candidate is blocked
-on another generated target. There are **6,083** portable executable manual
+on another generated target. There are **6,046** portable executable manual
 methods, **0** remaining portable manual-classified methods omitted, and
-**1,163** cross-target runtime-blocked methods still omitted.
+**1,161** cross-target runtime-blocked methods still omitted. The existing
+`official_stage2_coverage_is_exact` test confirms these measurements are
+unchanged by PR4; its promotions come from the raw-metadata-complete bucket.
 
 ### Stage 3
 

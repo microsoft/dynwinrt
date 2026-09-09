@@ -1771,7 +1771,7 @@ impl Method {
         obj: *mut std::ffi::c_void,
         args: &[WinRTValue],
     ) -> windows_core::Result<Vec<WinRTValue>> {
-        self.call_dynamic_tracked(obj, args, || {})
+        self.call_dynamic_tracked(obj, args, || Ok(()))
     }
 
     pub(crate) fn call_dynamic_tracked<F>(
@@ -1781,7 +1781,7 @@ impl Method {
         mark_dispatched: F,
     ) -> windows_core::Result<Vec<WinRTValue>>
     where
-        F: FnOnce(),
+        F: FnOnce() -> windows_core::Result<()>,
     {
         if args.len() != self.info.input_count {
             return Err(invalid_argument(&format!(
@@ -1815,13 +1815,13 @@ impl Method {
         let mut mark_dispatched = || {
             mark_dispatched
                 .take()
-                .expect("native dispatch marker must run exactly once")();
+                .expect("native dispatch marker must run exactly once")()
         };
 
         match &self.strategy {
             CallStrategy::Direct0In0Out => {
                 // 0 in + 0 out: fn(this) -> HRESULT
-                mark_dispatched();
+                mark_dispatched()?;
                 let hr = call::call_winrt_method_0(self.info.index, obj);
                 hr.ok()?;
                 Ok(vec![])
@@ -1830,7 +1830,7 @@ impl Method {
                 // 0 in + 1 out: fn(this, out) -> HRESULT
                 let param = &self.info.parameters[0];
                 let mut out = param.typ.default_value();
-                mark_dispatched();
+                mark_dispatched()?;
                 let hr = call::call_winrt_method_1(self.info.index, obj, out.out_ptr());
                 if hr.is_err() {
                     if let WinRTValue::RawPtr(ptr) = &mut out {
@@ -1851,7 +1851,7 @@ impl Method {
             }
             CallStrategy::Direct1In0Out => {
                 // 1 in + 0 out: fn(this, val) -> HRESULT
-                mark_dispatched();
+                mark_dispatched()?;
                 let hr = call::call_1in(self.info.index, obj, args.get_value(0));
                 hr.ok()?;
                 Ok(vec![])
@@ -1860,7 +1860,7 @@ impl Method {
                 // 1 in + 1 out: fn(this, val, out) -> HRESULT
                 let out_param = self.info.parameters.iter().find(|p| p.is_out()).unwrap();
                 let mut out = out_param.typ.default_value();
-                mark_dispatched();
+                mark_dispatched()?;
                 let hr =
                     call::call_1in_1out(self.info.index, obj, args.get_value(0), out.out_ptr());
                 if hr.is_err() {
@@ -1885,7 +1885,7 @@ impl Method {
                 let mut length: u32 = 0;
                 let mut data_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
                 let fptr = call::get_vtable_function_ptr(obj, self.info.index);
-                mark_dispatched();
+                mark_dispatched()?;
                 let hr: windows_core::HRESULT = unsafe {
                     let method: unsafe extern "system" fn(
                         *mut std::ffi::c_void,
@@ -1928,7 +1928,7 @@ impl Method {
                 let buffer = array_data.serialize_for_abi();
                 let mut out = out_param.typ.default_value();
                 let fptr = call::get_vtable_function_ptr(obj, self.info.index);
-                mark_dispatched();
+                mark_dispatched()?;
                 let hr: windows_core::HRESULT = unsafe {
                     let method: unsafe extern "system" fn(
                         *mut std::ffi::c_void,
@@ -1978,7 +1978,12 @@ impl Method {
                     unsafe { windows::Win32::System::Com::CoTaskMemAlloc(total_bytes) as *mut u8 };
                 assert!(!buffer_ptr.is_null(), "CoTaskMemAlloc failed for FillArray");
                 unsafe { std::ptr::write_bytes(buffer_ptr, 0, total_bytes) };
-                mark_dispatched();
+                let array = crate::array::ArrayData::from_cotaskmem(
+                    elem_type,
+                    buffer_ptr as _,
+                    capacity as usize,
+                );
+                mark_dispatched()?;
                 let hr: windows_core::HRESULT = unsafe {
                     let method: unsafe extern "system" fn(
                         *mut std::ffi::c_void,
@@ -1988,22 +1993,7 @@ impl Method {
                         -> windows_core::HRESULT = std::mem::transmute(fptr);
                     method(obj, capacity, buffer_ptr)
                 };
-                if hr.is_err() {
-                    // Callee may have written elements before failing.
-                    // Buffer was zero-initialized, so null slots are safe to release.
-                    // Use capacity as cleanup length — ArrayData::Drop skips null elements.
-                    let _ = crate::array::ArrayData::from_cotaskmem(
-                        elem_type.clone(),
-                        buffer_ptr as _,
-                        capacity as usize,
-                    );
-                    hr.ok()?;
-                }
-                let array = crate::array::ArrayData::from_cotaskmem(
-                    elem_type,
-                    buffer_ptr as _,
-                    capacity as usize,
-                );
+                hr.ok()?;
                 Ok(vec![WinRTValue::Array(array)])
             }
             CallStrategy::Direct1InFillArray => {
@@ -2026,8 +2016,13 @@ impl Method {
                     unsafe { windows::Win32::System::Com::CoTaskMemAlloc(total_bytes) as *mut u8 };
                 assert!(!buffer_ptr.is_null(), "CoTaskMemAlloc failed for FillArray");
                 unsafe { std::ptr::write_bytes(buffer_ptr, 0, total_bytes) };
+                let array = crate::array::ArrayData::from_cotaskmem(
+                    elem_type,
+                    buffer_ptr as _,
+                    capacity as usize,
+                );
                 let fptr = call::get_vtable_function_ptr(obj, self.info.index);
-                mark_dispatched();
+                mark_dispatched()?;
                 let hr = call::call_fill_array_1in(
                     fptr,
                     obj,
@@ -2035,20 +2030,7 @@ impl Method {
                     capacity,
                     buffer_ptr,
                 );
-                if hr.is_err() {
-                    // Buffer was zero-initialized; use capacity for cleanup.
-                    let _ = crate::array::ArrayData::from_cotaskmem(
-                        elem_type.clone(),
-                        buffer_ptr as _,
-                        capacity as usize,
-                    );
-                    hr.ok()?;
-                }
-                let array = crate::array::ArrayData::from_cotaskmem(
-                    elem_type,
-                    buffer_ptr as _,
-                    capacity as usize,
-                );
+                hr.ok()?;
                 Ok(vec![WinRTValue::Array(array)])
             }
             CallStrategy::Libffi(cif) => call::call_method_dynamic(
@@ -2332,7 +2314,7 @@ impl Method {
         mark_dispatched: F,
     ) -> windows_core::Result<Vec<crate::com::Value>>
     where
-        F: FnOnce(),
+        F: FnOnce() -> windows_core::Result<()>,
     {
         if matches!(self.info.return_kind, MethodReturn::CapturedHResult(_)) {
             return Err(invalid_argument(
@@ -2375,11 +2357,15 @@ impl Method {
         })
     }
 
-    pub(crate) fn call_com_dynamic_captured(
+    pub(crate) fn call_com_dynamic_captured<F>(
         &self,
         obj: *mut std::ffi::c_void,
         args: &[crate::com::Value],
-    ) -> windows_core::Result<call::CapturedHResultCall> {
+        before_dispatch: F,
+    ) -> windows_core::Result<call::CapturedHResultCall>
+    where
+        F: FnOnce() -> windows_core::Result<()>,
+    {
         let invocation_args = self.prepare_com_invocation_args(args)?;
         let CallStrategy::Libffi(cif) = &self.strategy else {
             return Err(invalid_argument(
@@ -2394,6 +2380,7 @@ impl Method {
             self.info.out_count,
             &self.info.return_kind,
             cif,
+            before_dispatch,
         )
     }
 }
@@ -2517,6 +2504,63 @@ mod tests {
         assert_eq!(method.info.parameters[1].input_index, Some(1));
         assert_eq!(method.info.parameters[2].value_index, 1);
         assert_eq!(method.info.parameters[2].input_index, None);
+    }
+
+    #[test]
+    fn rejecting_dispatch_guard_skips_fill_array_fast_paths() {
+        unsafe extern "system" fn fill(
+            this: *mut std::ffi::c_void,
+            _capacity: u32,
+            _data: *mut u8,
+        ) -> windows_core::HRESULT {
+            unsafe { record_i32(this, 0) }
+        }
+        unsafe extern "system" fn fill_after_scalar(
+            this: *mut std::ffi::c_void,
+            _value: u32,
+            capacity: u32,
+            data: *mut u8,
+        ) -> windows_core::HRESULT {
+            unsafe { fill(this, capacity, data) }
+        }
+
+        let table = MetadataTable::new();
+        let array_type = table.array(&table.i32_type());
+        for with_scalar in [false, true] {
+            let mut signature = AbiMethodSignature::new(&table);
+            let mut args = Vec::new();
+            if with_scalar {
+                signature = signature.add_in_type(ParameterType::winrt(table.u32_type()));
+                args.push(WinRTValue::U32(7));
+            }
+            let method = signature
+                .add_out_fill_type(ParameterType::winrt(array_type.clone()))
+                .build(0);
+            assert!(matches!(
+                (&method.strategy, with_scalar),
+                (CallStrategy::DirectFillArray, false) | (CallStrategy::Direct1InFillArray, true)
+            ));
+            args.push(WinRTValue::Array(crate::array::ArrayData::from_values(
+                table.i32_type(),
+                &[WinRTValue::I32(0), WinRTValue::I32(0)],
+            )));
+            let vtable = Box::new([if with_scalar {
+                fill_after_scalar as *mut std::ffi::c_void
+            } else {
+                fill as *mut std::ffi::c_void
+            }]);
+            let mut object = FakeComObject {
+                vtable: vtable.as_ptr(),
+                calls: AtomicU32::new(0),
+            };
+            let error = method
+                .call_dynamic_tracked((&mut object as *mut FakeComObject).cast(), &args, || {
+                    Err(windows_core::HRESULT(0x80004004u32 as i32).into())
+                })
+                .unwrap_err();
+            assert_eq!(error.code().0, 0x80004004u32 as i32);
+            assert_eq!(object.calls.load(Ordering::Relaxed), 0);
+        }
     }
 
     #[test]

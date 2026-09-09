@@ -1,0 +1,857 @@
+{
+  "interfaces": [
+    {
+      "namespace": "Windows.Win32.Media.Audio",
+      "name": "IAudioClient",
+      "iid": "1cb9ad4c-dbfa-4c32-b178-c2f568a703b2",
+      "bases": ["IUnknown"],
+      "base_iids": [],
+      "own_start": 3,
+      "last": 14,
+      "context": true,
+      "catalog": true,
+      "required_evidence": [3, 4, 14]
+    },
+    {
+      "namespace": "Windows.Win32.Media.Audio",
+      "name": "IAudioClient2",
+      "iid": "726778cd-f60a-4eda-82de-e47610cd78aa",
+      "bases": ["IAudioClient", "IUnknown"],
+      "base_iids": ["1cb9ad4c-dbfa-4c32-b178-c2f568a703b2"],
+      "own_start": 15,
+      "last": 17,
+      "context": true,
+      "catalog": true,
+      "required_evidence": [3, 4, 14]
+    },
+    {
+      "namespace": "Windows.Win32.Media.Audio",
+      "name": "IAudioClient3",
+      "iid": "7ed4ee07-8e67-4cd4-8c1a-2b7a5987ad42",
+      "bases": ["IAudioClient2", "IAudioClient", "IUnknown"],
+      "base_iids": [
+        "726778cd-f60a-4eda-82de-e47610cd78aa",
+        "1cb9ad4c-dbfa-4c32-b178-c2f568a703b2"
+      ],
+      "own_start": 18,
+      "last": 20,
+      "context": true,
+      "catalog": true,
+      "required_evidence": [3, 4, 14, 20]
+    },
+    {
+      "namespace": "Windows.Win32.Media.Audio",
+      "name": "IAudioRenderClient",
+      "iid": "f294acfc-3146-4483-a7bf-addca7c260e2",
+      "bases": ["IUnknown"],
+      "base_iids": [],
+      "own_start": 3,
+      "last": 4,
+      "context": false,
+      "catalog": true,
+      "required_evidence": [3, 4]
+    },
+    {
+      "namespace": "Windows.Win32.Media.Audio",
+      "name": "IAudioCaptureClient",
+      "iid": "c8adbd64-e71e-48a0-a4de-185c395cd317",
+      "bases": ["IUnknown"],
+      "base_iids": [],
+      "own_start": 3,
+      "last": 5,
+      "context": false,
+      "catalog": true,
+      "required_evidence": [3, 4, 5]
+    },
+    {
+      "namespace": "Windows.Win32.Graphics.Imaging",
+      "name": "IWICBitmapSource",
+      "iid": "00000120-a8f2-4877-ba0a-fd2b6645fb94",
+      "bases": ["IUnknown"],
+      "base_iids": [],
+      "own_start": 3,
+      "last": 7,
+      "context": false,
+      "catalog": false,
+      "required_evidence": [3, 4, 5, 6, 7]
+    },
+    {
+      "namespace": "Windows.Win32.Graphics.Imaging",
+      "name": "IWICBitmap",
+      "iid": "00000121-a8f2-4877-ba0a-fd2b6645fb94",
+      "bases": ["IWICBitmapSource", "IUnknown"],
+      "base_iids": ["00000120-a8f2-4877-ba0a-fd2b6645fb94"],
+      "own_start": 8,
+      "last": 10,
+      "context": false,
+      "catalog": true,
+      "required_evidence": [3, 4, 5, 6, 7, 8, 9, 10]
+    },
+    {
+      "namespace": "Windows.Win32.Graphics.Imaging",
+      "name": "IWICBitmapLock",
+      "iid": "00000123-a8f2-4877-ba0a-fd2b6645fb94",
+      "bases": ["IUnknown"],
+      "base_iids": [],
+      "own_start": 3,
+      "last": 6,
+      "context": false,
+      "catalog": true,
+      "required_evidence": [3, 4, 5, 6]
+    },
+    {
+      "namespace": "Windows.Win32.Media.MediaFoundation",
+      "name": "IMFMediaBuffer",
+      "iid": "045fa593-8799-42b8-bc8d-8968c6453507",
+      "bases": ["IUnknown"],
+      "base_iids": [],
+      "own_start": 3,
+      "last": 7,
+      "context": false,
+      "catalog": true,
+      "required_evidence": [3, 4, 5, 6, 7]
+    }
+  ],
+  "evidence": [
+    {
+      "id": "IAudioClient.Initialize",
+      "namespace": "Windows.Win32.Media.Audio",
+      "interface": "IAudioClient",
+      "iid": "1cb9ad4c-dbfa-4c32-b178-c2f568a703b2",
+      "method": "Initialize",
+      "slot": 3,
+      "fingerprint": "7F14AD1E6E6E178A91283B68002988D362898FCAC97823B866D61FAFF5766039",
+      "effect": "audio-initialize",
+      "citation": "https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudioclient-initialize",
+      "abi": null
+    },
+    {
+      "id": "IAudioClient.GetService",
+      "namespace": "Windows.Win32.Media.Audio",
+      "interface": "IAudioClient",
+      "iid": "1cb9ad4c-dbfa-4c32-b178-c2f568a703b2",
+      "method": "GetService",
+      "slot": 14,
+      "fingerprint": "6362D65B61F18446F4E990C84DA998C4A7DE08517C7405981DF823854227CA7E",
+      "effect": "audio-get-service",
+      "citation": "https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudioclient-getservice",
+      "abi": null
+    },
+    {
+      "id": "IAudioClient3.InitializeSharedAudioStream",
+      "namespace": "Windows.Win32.Media.Audio",
+      "interface": "IAudioClient3",
+      "iid": "7ed4ee07-8e67-4cd4-8c1a-2b7a5987ad42",
+      "method": "InitializeSharedAudioStream",
+      "slot": 20,
+      "fingerprint": "08879857019485B6813E45F4BEB2941E4D83ACF80CA55AA4538F50B08C1B9531",
+      "effect": "audio-initialize-shared",
+      "citation": "https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudioclient3-initializesharedaudiostream",
+      "abi": null
+    },
+    {
+      "id": "IAudioClient.GetBufferSize",
+      "namespace": "Windows.Win32.Media.Audio",
+      "interface": "IAudioClient",
+      "iid": "1cb9ad4c-dbfa-4c32-b178-c2f568a703b2",
+      "method": "GetBufferSize",
+      "slot": 4,
+      "fingerprint": "9F0C09DD69B785A9B4A339ECD2A1970E8574BDBA0F173E3ACF630407A9AB14BE",
+      "effect": null,
+      "citation": "https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudioclient-getbuffersize",
+      "abi": [{"out-u32": "frames"}]
+    },
+    {
+      "id": "IAudioRenderClient.GetBuffer",
+      "namespace": "Windows.Win32.Media.Audio",
+      "interface": "IAudioRenderClient",
+      "iid": "f294acfc-3146-4483-a7bf-addca7c260e2",
+      "method": "GetBuffer",
+      "slot": 3,
+      "fingerprint": "E99E87341B5820E896608A563B67ABCF2A0F9BD833202788950D9FAE8F69E2DB",
+      "effect": null,
+      "citation": "https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudiorenderclient-getbuffer",
+      "abi": [{"in-u32": "frames"}, "borrowed-bytes"],
+      "acquisition_cleanup": {"kind": "call", "evidence": "IAudioRenderClient.ReleaseBuffer"}
+    },
+    {
+      "id": "IAudioRenderClient.ReleaseBuffer",
+      "namespace": "Windows.Win32.Media.Audio",
+      "interface": "IAudioRenderClient",
+      "iid": "f294acfc-3146-4483-a7bf-addca7c260e2",
+      "method": "ReleaseBuffer",
+      "slot": 4,
+      "fingerprint": "C79B7868B7940E7D879DC90CA1BAC56E386DA7C8E0F7790DFAB7FB8971E0D767",
+      "effect": null,
+      "citation": "https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudiorenderclient-releasebuffer",
+      "abi": [{"in-u32": "frames"}, {"in-u32": "flags"}]
+    },
+    {
+      "id": "IAudioCaptureClient.GetBuffer",
+      "namespace": "Windows.Win32.Media.Audio",
+      "interface": "IAudioCaptureClient",
+      "iid": "c8adbd64-e71e-48a0-a4de-185c395cd317",
+      "method": "GetBuffer",
+      "slot": 3,
+      "fingerprint": "DDD954B2807361F2D50D38C8054846A02577E820B6D42E0B82130F785AA3E370",
+      "effect": null,
+      "citation": "https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudiocaptureclient-getbuffer",
+      "abi": ["borrowed-bytes", {"out-u32": "frames"}, {"out-u32": "flags"}, "out-u64", "out-u64"],
+      "acquisition_cleanup": {"kind": "call", "evidence": "IAudioCaptureClient.ReleaseBuffer"}
+    },
+    {
+      "id": "IAudioCaptureClient.ReleaseBuffer",
+      "namespace": "Windows.Win32.Media.Audio",
+      "interface": "IAudioCaptureClient",
+      "iid": "c8adbd64-e71e-48a0-a4de-185c395cd317",
+      "method": "ReleaseBuffer",
+      "slot": 4,
+      "fingerprint": "82D3C575E5031A345E01026F01E600C8887B081DF6F79CA514B49B78F01E5E17",
+      "effect": null,
+      "citation": "https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudiocaptureclient-releasebuffer",
+      "abi": [{"in-u32": "frames"}]
+    },
+    {
+      "id": "IAudioCaptureClient.GetNextPacketSize",
+      "namespace": "Windows.Win32.Media.Audio",
+      "interface": "IAudioCaptureClient",
+      "iid": "c8adbd64-e71e-48a0-a4de-185c395cd317",
+      "method": "GetNextPacketSize",
+      "slot": 5,
+      "fingerprint": "C540B744DB900C7D5EDAD03422FC17E7034A822832F4A39DC2DD8519B0978209",
+      "effect": null,
+      "citation": "https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudiocaptureclient-getnextpacketsize",
+      "abi": null
+    },
+    {
+      "id": "IWICBitmapSource.GetSize",
+      "namespace": "Windows.Win32.Graphics.Imaging",
+      "interface": "IWICBitmapSource",
+      "iid": "00000120-a8f2-4877-ba0a-fd2b6645fb94",
+      "method": "GetSize",
+      "slot": 3,
+      "fingerprint": "F0CBF53A188710273FE737C1A06CDA40FA799C4326F3CA9BF68988E5072B5DA2",
+      "effect": null,
+      "citation": "https://learn.microsoft.com/en-us/windows/win32/api/wincodec/nf-wincodec-iwicbitmapsource-getsize",
+      "abi": [{"out-u32": "pixels"}, {"out-u32": "pixels"}]
+    },
+    {
+      "id": "IWICBitmapSource.GetPixelFormat",
+      "namespace": "Windows.Win32.Graphics.Imaging",
+      "interface": "IWICBitmapSource",
+      "iid": "00000120-a8f2-4877-ba0a-fd2b6645fb94",
+      "method": "GetPixelFormat",
+      "slot": 4,
+      "fingerprint": "D45F675B2B76A3A9BE908AFBAC03BF4CEC2BD5D8162C1BF28F01FA558B2B6F98",
+      "effect": null,
+      "citation": "https://learn.microsoft.com/en-us/windows/win32/api/wincodec/nf-wincodec-iwicbitmapsource-getpixelformat",
+      "abi": null
+    },
+    {
+      "id": "IWICBitmapSource.GetResolution",
+      "namespace": "Windows.Win32.Graphics.Imaging",
+      "interface": "IWICBitmapSource",
+      "iid": "00000120-a8f2-4877-ba0a-fd2b6645fb94",
+      "method": "GetResolution",
+      "slot": 5,
+      "fingerprint": "3545A1714671B8C7223BF21693848300001272CDD14E1BE6C188680EA5BD75DD",
+      "effect": null,
+      "citation": "https://learn.microsoft.com/en-us/windows/win32/api/wincodec/nf-wincodec-iwicbitmapsource-getresolution",
+      "abi": null
+    },
+    {
+      "id": "IWICBitmapSource.CopyPalette",
+      "namespace": "Windows.Win32.Graphics.Imaging",
+      "interface": "IWICBitmapSource",
+      "iid": "00000120-a8f2-4877-ba0a-fd2b6645fb94",
+      "method": "CopyPalette",
+      "slot": 6,
+      "fingerprint": "CBBEDB597008ED4EA9032EE361F19AC676DA973DA93A1CB8B0B7D67E24CA4A8C",
+      "effect": null,
+      "citation": "https://learn.microsoft.com/en-us/windows/win32/api/wincodec/nf-wincodec-iwicbitmapsource-copypalette",
+      "abi": null
+    },
+    {
+      "id": "IWICBitmapSource.CopyPixels",
+      "namespace": "Windows.Win32.Graphics.Imaging",
+      "interface": "IWICBitmapSource",
+      "iid": "00000120-a8f2-4877-ba0a-fd2b6645fb94",
+      "method": "CopyPixels",
+      "slot": 7,
+      "fingerprint": "78BA461831509B5574CB3F8485FE071B875E1AA1FF4ABC4EBB4ADE74A1AE0A9A",
+      "effect": null,
+      "citation": "https://learn.microsoft.com/en-us/windows/win32/api/wincodec/nf-wincodec-iwicbitmapsource-copypixels",
+      "abi": null
+    },
+    {
+      "id": "IWICBitmap.Lock",
+      "namespace": "Windows.Win32.Graphics.Imaging",
+      "interface": "IWICBitmap",
+      "iid": "00000121-a8f2-4877-ba0a-fd2b6645fb94",
+      "method": "Lock",
+      "slot": 8,
+      "fingerprint": "BE432E367AC62157C546DB3F21AE11B89025F930D4AE397ECC5B6A6F2016D154",
+      "effect": null,
+      "citation": "https://learn.microsoft.com/en-us/windows/win32/api/wincodec/nf-wincodec-iwicbitmap-lock",
+      "abi": ["in-rect", {"in-u32": "flags"}, "owned-interface"],
+      "acquisition_cleanup": {"kind": "release-owner"}
+    },
+    {
+      "id": "IWICBitmap.SetPalette",
+      "namespace": "Windows.Win32.Graphics.Imaging",
+      "interface": "IWICBitmap",
+      "iid": "00000121-a8f2-4877-ba0a-fd2b6645fb94",
+      "method": "SetPalette",
+      "slot": 9,
+      "fingerprint": "D714FBE65EE1E239F04D9046C2270572CC8DE81094FCE549D81FF50242BC6F8F",
+      "effect": null,
+      "citation": "https://learn.microsoft.com/en-us/windows/win32/api/wincodec/nf-wincodec-iwicbitmap-setpalette",
+      "abi": null
+    },
+    {
+      "id": "IWICBitmap.SetResolution",
+      "namespace": "Windows.Win32.Graphics.Imaging",
+      "interface": "IWICBitmap",
+      "iid": "00000121-a8f2-4877-ba0a-fd2b6645fb94",
+      "method": "SetResolution",
+      "slot": 10,
+      "fingerprint": "394965547E9C14CB338B9AD84677C27CA1D54BF22E4CDBA79A46D26F31C25EB6",
+      "effect": null,
+      "citation": "https://learn.microsoft.com/en-us/windows/win32/api/wincodec/nf-wincodec-iwicbitmap-setresolution",
+      "abi": null
+    },
+    {
+      "id": "IWICBitmapLock.GetSize",
+      "namespace": "Windows.Win32.Graphics.Imaging",
+      "interface": "IWICBitmapLock",
+      "iid": "00000123-a8f2-4877-ba0a-fd2b6645fb94",
+      "method": "GetSize",
+      "slot": 3,
+      "fingerprint": "5FBF3161D277C77796793A167F68999C7B678A182FCBB823CD721DC4BAC83F64",
+      "effect": null,
+      "citation": "https://learn.microsoft.com/en-us/windows/win32/api/wincodec/nf-wincodec-iwicbitmaplock-getsize",
+      "abi": [{"out-u32": "pixels"}, {"out-u32": "pixels"}]
+    },
+    {
+      "id": "IWICBitmapLock.GetStride",
+      "namespace": "Windows.Win32.Graphics.Imaging",
+      "interface": "IWICBitmapLock",
+      "iid": "00000123-a8f2-4877-ba0a-fd2b6645fb94",
+      "method": "GetStride",
+      "slot": 4,
+      "fingerprint": "0DC2598054C7BCB1D19940355D5BE568D508B332E269D00956BAF22DC854F799",
+      "effect": null,
+      "citation": "https://learn.microsoft.com/en-us/windows/win32/api/wincodec/nf-wincodec-iwicbitmaplock-getstride",
+      "abi": [{"out-u32": "stride"}]
+    },
+    {
+      "id": "IWICBitmapLock.GetDataPointer",
+      "namespace": "Windows.Win32.Graphics.Imaging",
+      "interface": "IWICBitmapLock",
+      "iid": "00000123-a8f2-4877-ba0a-fd2b6645fb94",
+      "method": "GetDataPointer",
+      "slot": 5,
+      "fingerprint": "FB4F6B8BD302FCA2BB91B231BF957E10D37AC979C39A88992E2526E53349F66C",
+      "effect": null,
+      "citation": "https://learn.microsoft.com/en-us/windows/win32/api/wincodec/nf-wincodec-iwicbitmaplock-getdatapointer",
+      "abi": [{"out-u32": "bytes"}, "borrowed-bytes"]
+    },
+    {
+      "id": "IWICBitmapLock.GetPixelFormat",
+      "namespace": "Windows.Win32.Graphics.Imaging",
+      "interface": "IWICBitmapLock",
+      "iid": "00000123-a8f2-4877-ba0a-fd2b6645fb94",
+      "method": "GetPixelFormat",
+      "slot": 6,
+      "fingerprint": "A065B19968592FDA319A1A9DAC7EC1EB51CE63F5D3FFA62C6DD38E92742065E6",
+      "effect": null,
+      "citation": "https://learn.microsoft.com/en-us/windows/win32/api/wincodec/nf-wincodec-iwicbitmaplock-getpixelformat",
+      "abi": ["out-guid"]
+    },
+    {
+      "id": "IMFMediaBuffer.Lock",
+      "namespace": "Windows.Win32.Media.MediaFoundation",
+      "interface": "IMFMediaBuffer",
+      "iid": "045fa593-8799-42b8-bc8d-8968c6453507",
+      "method": "Lock",
+      "slot": 3,
+      "fingerprint": "1B9E2C63825F73EE5599F05E9EA180D52FD22F02EDD33BB23028711DDF335172",
+      "effect": null,
+      "citation": "https://learn.microsoft.com/en-us/windows/win32/api/mfobjects/nf-mfobjects-imfmediabuffer-lock",
+      "abi": ["borrowed-bytes", {"out-u32": "bytes"}, {"out-u32": "bytes"}],
+      "acquisition_cleanup": {"kind": "call", "evidence": "IMFMediaBuffer.Unlock"}
+    },
+    {
+      "id": "IMFMediaBuffer.Unlock",
+      "namespace": "Windows.Win32.Media.MediaFoundation",
+      "interface": "IMFMediaBuffer",
+      "iid": "045fa593-8799-42b8-bc8d-8968c6453507",
+      "method": "Unlock",
+      "slot": 4,
+      "fingerprint": "83FB2903C23EBD4BB98C182C6575135225ABD0C3EA78183CDADFB3B027B8107B",
+      "effect": null,
+      "citation": "https://learn.microsoft.com/en-us/windows/win32/api/mfobjects/nf-mfobjects-imfmediabuffer-unlock",
+      "abi": []
+    },
+    {
+      "id": "IMFMediaBuffer.GetCurrentLength",
+      "namespace": "Windows.Win32.Media.MediaFoundation",
+      "interface": "IMFMediaBuffer",
+      "iid": "045fa593-8799-42b8-bc8d-8968c6453507",
+      "method": "GetCurrentLength",
+      "slot": 5,
+      "fingerprint": "AABA562CD26F16571A75D54894E001700500994E98949B4E7A7DA1B6CDE61862",
+      "effect": null,
+      "citation": "https://learn.microsoft.com/en-us/windows/win32/api/mfobjects/nf-mfobjects-imfmediabuffer-getcurrentlength",
+      "abi": null
+    },
+    {
+      "id": "IMFMediaBuffer.SetCurrentLength",
+      "namespace": "Windows.Win32.Media.MediaFoundation",
+      "interface": "IMFMediaBuffer",
+      "iid": "045fa593-8799-42b8-bc8d-8968c6453507",
+      "method": "SetCurrentLength",
+      "slot": 6,
+      "fingerprint": "75AB892B1685032D840B1E5FECB9CD9A87F8E1865492D24796996674372864CA",
+      "effect": null,
+      "citation": "https://learn.microsoft.com/en-us/windows/win32/api/mfobjects/nf-mfobjects-imfmediabuffer-setcurrentlength",
+      "abi": [{"in-u32": "bytes"}]
+    },
+    {
+      "id": "IMFMediaBuffer.GetMaxLength",
+      "namespace": "Windows.Win32.Media.MediaFoundation",
+      "interface": "IMFMediaBuffer",
+      "iid": "045fa593-8799-42b8-bc8d-8968c6453507",
+      "method": "GetMaxLength",
+      "slot": 7,
+      "fingerprint": "738D4850D037E6B9F76F28C7D0403B4D9BDF97F3B04C9B8E5A0EFBA18A3A962C",
+      "effect": null,
+      "citation": "https://learn.microsoft.com/en-us/windows/win32/api/mfobjects/nf-mfobjects-imfmediabuffer-getmaxlength",
+      "abi": null
+    }
+  ],
+  "copies": [
+    {
+      "version": 2,
+      "metadata_sha256": "B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D",
+      "exposure": "owned-copy-only",
+      "id": "audio-render",
+      "kind": "audio-render",
+      "receiver": "Windows.Win32.Media.Audio.IAudioRenderClient",
+      "copy_only": true,
+      "dependencies": ["Windows.Win32.Media.Audio.IAudioClient"],
+      "access": "write",
+      "owner": "audio-service-origin",
+      "sta_only": false,
+      "audio_origin": {
+        "role": "render",
+        "interface": "Windows.Win32.Media.Audio.IAudioClient",
+        "layout": "layout",
+        "reject_exclusive_event": true
+      },
+      "acquired_hresult": 0,
+      "empty_hresult": null,
+      "calls": [
+        {
+          "id": "capacity",
+          "evidence": "IAudioClient.GetBufferSize",
+          "target": "audio-origin",
+          "bindings": [
+            { "storage": "out-u32", "name": "capacity", "unit": "frames" }
+          ]
+        },
+        {
+          "id": "acquire",
+          "evidence": "IAudioRenderClient.GetBuffer",
+          "target": "receiver",
+          "bindings": [
+            { "storage": "in-u32", "value": { "frames": "request" } },
+            { "storage": "borrowed-bytes", "name": "data" }
+          ]
+        },
+        {
+          "id": "release",
+          "evidence": "IAudioRenderClient.ReleaseBuffer",
+          "target": "receiver",
+          "bindings": [
+            { "storage": "in-u32", "value": { "frames": "request" } },
+            { "storage": "in-u32", "value": { "constant": 0 } }
+          ]
+        },
+        {
+          "id": "release-silent",
+          "evidence": "IAudioRenderClient.ReleaseBuffer",
+          "target": "receiver",
+          "bindings": [
+            { "storage": "in-u32", "value": { "frames": "request" } },
+            { "storage": "in-u32", "value": { "silent-flag": 2 } }
+          ]
+        }
+      ],
+      "operations": [
+        {
+          "api": "writeFramesCopy",
+          "arguments": "bytes",
+          "before": [
+            {
+              "op": "input-frames",
+              "frames": "request",
+              "layout": "layout",
+              "source": "bytes"
+            },
+            { "op": "return-if-zero", "frames": "request" },
+            { "op": "call", "call": "capacity" },
+            {
+              "op": "frame-extent",
+              "extent": "span",
+              "frames": "request",
+              "capacity": "capacity",
+              "layout": "layout",
+              "nonzero": true
+            }
+          ],
+          "acquire": "acquire",
+          "after": [],
+          "transfer": {
+            "direction": "write",
+            "pointer": "data",
+            "extent": "span"
+          },
+          "commit": [],
+          "cleanup": {
+            "kind": "call",
+            "call": "release",
+            "abort": [{ "constant": 0 }, { "constant": 0 }]
+          },
+          "result": { "kind": "void" }
+        },
+        {
+          "api": "writeSilence",
+          "arguments": "frames",
+          "before": [
+            {
+              "op": "input-frames",
+              "frames": "request",
+              "layout": "layout",
+              "source": "frames"
+            },
+            { "op": "return-if-zero", "frames": "request" },
+            { "op": "call", "call": "capacity" },
+            {
+              "op": "frame-extent",
+              "extent": "span",
+              "frames": "request",
+              "capacity": "capacity",
+              "layout": "layout",
+              "nonzero": true
+            }
+          ],
+          "acquire": "acquire",
+          "after": [],
+          "transfer": { "direction": "no-payload", "extent": "span" },
+          "commit": [],
+          "cleanup": {
+            "kind": "call",
+            "call": "release-silent",
+            "abort": [{ "constant": 0 }, { "constant": 0 }]
+          },
+          "result": { "kind": "void" }
+        }
+      ]
+    },
+    {
+      "version": 2,
+      "metadata_sha256": "B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D",
+      "exposure": "owned-copy-only",
+      "id": "audio-capture",
+      "kind": "audio-capture",
+      "receiver": "Windows.Win32.Media.Audio.IAudioCaptureClient",
+      "copy_only": true,
+      "dependencies": ["Windows.Win32.Media.Audio.IAudioClient"],
+      "access": "read",
+      "owner": "audio-service-origin",
+      "sta_only": false,
+      "audio_origin": {
+        "role": "capture",
+        "interface": "Windows.Win32.Media.Audio.IAudioClient",
+        "layout": "layout",
+        "reject_exclusive_event": false
+      },
+      "acquired_hresult": 0,
+      "empty_hresult": 143196161,
+      "calls": [
+        {
+          "id": "capacity",
+          "evidence": "IAudioClient.GetBufferSize",
+          "target": "audio-origin",
+          "bindings": [
+            { "storage": "out-u32", "name": "capacity", "unit": "frames" }
+          ]
+        },
+        {
+          "id": "acquire",
+          "evidence": "IAudioCaptureClient.GetBuffer",
+          "target": "receiver",
+          "bindings": [
+            { "storage": "borrowed-bytes", "name": "data" },
+            { "storage": "out-u32", "name": "frames", "unit": "frames" },
+            { "storage": "out-u32", "name": "flags", "unit": "flags" },
+            { "storage": "out-u64", "name": "device" },
+            { "storage": "out-u64", "name": "qpc" }
+          ]
+        },
+        {
+          "id": "release",
+          "evidence": "IAudioCaptureClient.ReleaseBuffer",
+          "target": "receiver",
+          "bindings": [{ "storage": "in-u32", "value": { "frames": "frames" } }]
+        }
+      ],
+      "operations": [
+        {
+          "api": "readPacketCopy",
+          "arguments": "none",
+          "before": [{ "op": "call", "call": "capacity" }],
+          "acquire": "acquire",
+          "after": [
+            {
+              "op": "frame-extent",
+              "extent": "span",
+              "frames": "frames",
+              "capacity": "capacity",
+              "layout": "layout",
+              "nonzero": true
+            }
+          ],
+          "transfer": {
+            "direction": "read",
+            "pointer": "data",
+            "extent": "span",
+            "silent": { "flags": "flags", "mask": 2 }
+          },
+          "commit": [],
+          "cleanup": {
+            "kind": "call",
+            "call": "release",
+            "abort": [{ "constant": 0 }]
+          },
+          "result": {
+            "kind": "packet",
+            "frames": "frames",
+            "flags": "flags",
+            "device": "device",
+            "qpc": "qpc",
+            "timestamp_error_mask": 4
+          }
+        }
+      ]
+    },
+    {
+      "version": 2,
+      "metadata_sha256": "B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D",
+      "exposure": "owned-copy-only",
+      "id": "bitmap-bgra8",
+      "kind": "bitmap-bgra8",
+      "receiver": "Windows.Win32.Graphics.Imaging.IWICBitmap",
+      "copy_only": false,
+      "dependencies": ["Windows.Win32.Graphics.Imaging.IWICBitmapLock"],
+      "access": "read",
+      "owner": "acquired-interface",
+      "sta_only": true,
+      "audio_origin": null,
+      "acquired_hresult": 0,
+      "empty_hresult": null,
+      "calls": [
+        {
+          "id": "bitmap-size",
+          "evidence": "IWICBitmapSource.GetSize",
+          "target": "receiver",
+          "bindings": [
+            { "storage": "out-u32", "name": "bitmap-width", "unit": "pixels" },
+            { "storage": "out-u32", "name": "bitmap-height", "unit": "pixels" }
+          ]
+        },
+        {
+          "id": "acquire",
+          "evidence": "IWICBitmap.Lock",
+          "target": "receiver",
+          "bindings": [
+            { "storage": "in-rect", "value": "input.rect" },
+            { "storage": "in-u32", "value": { "constant": 1 } },
+            {
+              "storage": "owned-interface",
+              "name": "lock",
+              "interface": "Windows.Win32.Graphics.Imaging.IWICBitmapLock"
+            }
+          ]
+        },
+        {
+          "id": "lock-size",
+          "evidence": "IWICBitmapLock.GetSize",
+          "target": { "acquired": "lock" },
+          "bindings": [
+            { "storage": "out-u32", "name": "width", "unit": "pixels" },
+            { "storage": "out-u32", "name": "height", "unit": "pixels" }
+          ]
+        },
+        {
+          "id": "stride",
+          "evidence": "IWICBitmapLock.GetStride",
+          "target": { "acquired": "lock" },
+          "bindings": [
+            { "storage": "out-u32", "name": "stride", "unit": "stride" }
+          ]
+        },
+        {
+          "id": "format",
+          "evidence": "IWICBitmapLock.GetPixelFormat",
+          "target": { "acquired": "lock" },
+          "bindings": [{ "storage": "out-guid", "name": "format" }]
+        },
+        {
+          "id": "data",
+          "evidence": "IWICBitmapLock.GetDataPointer",
+          "target": { "acquired": "lock" },
+          "bindings": [
+            { "storage": "out-u32", "name": "count", "unit": "bytes" },
+            { "storage": "borrowed-bytes", "name": "data" }
+          ]
+        }
+      ],
+      "operations": [
+        {
+          "api": "readLockedBgra8Copy",
+          "arguments": "rectangle",
+          "before": [
+            { "op": "call", "call": "bitmap-size" },
+            {
+              "op": "rect-bounds",
+              "rect": "input.rect",
+              "width": "bitmap-width",
+              "height": "bitmap-height"
+            }
+          ],
+          "acquire": "acquire",
+          "after": [
+            { "op": "call", "call": "lock-size" },
+            { "op": "call", "call": "stride" },
+            { "op": "call", "call": "format" },
+            { "op": "call", "call": "data" },
+            {
+              "op": "row-extent",
+              "extent": "span",
+              "rect": "input.rect",
+              "width": "width",
+              "height": "height",
+              "stride": "stride",
+              "count": "count",
+              "format": "format",
+              "format_guid": "6fddc324-4e03-4bfe-b185-3d77768dc90f",
+              "pixel_bytes": 4
+            }
+          ],
+          "transfer": {
+            "direction": "read",
+            "pointer": "data",
+            "extent": "span",
+            "silent": null
+          },
+          "commit": [],
+          "cleanup": { "kind": "release-owner", "owner": "lock" },
+          "result": { "kind": "bitmap", "width": "width", "height": "height" }
+        }
+      ]
+    },
+    {
+      "version": 2,
+      "metadata_sha256": "B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D",
+      "exposure": "owned-copy-only",
+      "id": "media-buffer",
+      "kind": "media-buffer",
+      "receiver": "Windows.Win32.Media.MediaFoundation.IMFMediaBuffer",
+      "copy_only": true,
+      "dependencies": [],
+      "access": "read-write",
+      "owner": "receiver",
+      "sta_only": false,
+      "audio_origin": null,
+      "acquired_hresult": 0,
+      "empty_hresult": null,
+      "calls": [
+        {
+          "id": "acquire",
+          "evidence": "IMFMediaBuffer.Lock",
+          "target": "receiver",
+          "bindings": [
+            { "storage": "borrowed-bytes", "name": "data" },
+            { "storage": "out-u32", "name": "maximum", "unit": "bytes" },
+            { "storage": "out-u32", "name": "current", "unit": "bytes" }
+          ]
+        },
+        {
+          "id": "set-length",
+          "evidence": "IMFMediaBuffer.SetCurrentLength",
+          "target": "receiver",
+          "bindings": [
+            { "storage": "in-u32", "value": { "bytes": "input.bytes" } }
+          ]
+        },
+        {
+          "id": "unlock",
+          "evidence": "IMFMediaBuffer.Unlock",
+          "target": "receiver",
+          "bindings": []
+        }
+      ],
+      "operations": [
+        {
+          "api": "readCopy",
+          "arguments": "none",
+          "before": [],
+          "acquire": "acquire",
+          "after": [
+            {
+              "op": "native-extent",
+              "extent": "span",
+              "current": "current",
+              "capacity": "maximum",
+              "length": "current"
+            }
+          ],
+          "transfer": {
+            "direction": "read",
+            "pointer": "data",
+            "extent": "span",
+            "silent": null
+          },
+          "commit": [],
+          "cleanup": { "kind": "call", "call": "unlock", "abort": [] },
+          "result": { "kind": "bytes" }
+        },
+        {
+          "api": "replaceCopy",
+          "arguments": "bytes",
+          "before": [],
+          "acquire": "acquire",
+          "after": [
+            {
+              "op": "native-extent",
+              "extent": "span",
+              "current": "current",
+              "capacity": "maximum",
+              "length": "input.bytes"
+            }
+          ],
+          "transfer": {
+            "direction": "write",
+            "pointer": "data",
+            "extent": "span"
+          },
+          "commit": ["set-length"],
+          "cleanup": { "kind": "call", "call": "unlock", "abort": [] },
+          "result": { "kind": "void" }
+        }
+      ]
+    }
+  ]
+}

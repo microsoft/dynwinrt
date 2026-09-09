@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 pub mod codegen;
+mod com_activation_registry;
 mod com_borrowed_handle_registry;
 mod com_enumerator_registry;
 pub mod com_metadata;

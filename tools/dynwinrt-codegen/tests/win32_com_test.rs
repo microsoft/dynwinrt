@@ -2202,6 +2202,46 @@ fn data_object_projects_hglobal_format_and_medium_values() {
 }
 
 #[test]
+fn endpoint_activation_projects_a_typed_null_parameter_factory() {
+    if !win32_available() {
+        return;
+    }
+    let interface =
+        com_metadata::parse_com_interface(&win32_winmd(), "Windows.Win32.Media.Audio", "IMMDevice")
+            .unwrap();
+    let output = com::generate_com_interface_files(&interface, &win32_winmd()).unwrap();
+    assert!(output.dts.contains("activate<T>(InterfaceClass:"));
+    assert!(!output.dts.contains("pActivationParams:"));
+    assert!(!output.dts.contains("dwClsCtx:"));
+    assert!(
+        output
+            .js
+            .contains("DynCom.u32(1), DynCom.exactNullPointer(null)")
+    );
+    assert!(output.js.contains("DynCom.ownedComPointerType()"));
+    assert!(output.js.contains("projectAs(_owned, InterfaceClass)"));
+    assert!(
+        output
+            .js
+            .contains("__registerComProjection(IMMDevice, IID_IMMDevice)")
+    );
+    for mutation in 0..6 {
+        let mut drift = interface.clone();
+        let raw = &mut drift.raw_methods.as_mut().unwrap()[0];
+        match mutation {
+            0 => raw.exact_contract = None,
+            1 => raw.params[0].const_attribute = false,
+            2 => raw.params[2].typ.pointer_depth = 2,
+            3 => raw.params[3].optional = true,
+            4 => raw.vtable_index += 1,
+            5 => raw.params[2].direction = com_metadata::RawParamDirection::InOut,
+            _ => unreachable!(),
+        }
+        assert!(com::generate_com_interface_files(&drift, &win32_winmd()).is_err());
+    }
+}
+
+#[test]
 fn device_control_record_projects_exact_nullable_audio_formats() {
     if !win32_available() {
         eprintln!("Skipping: Win32 winmd not available");

@@ -9,15 +9,15 @@ use std::{
 use napi::bindgen_prelude::BigInt;
 use napi_derive::napi;
 use windows::Win32::Media::{
-  Audio::WAVEFORMATEX,
+  Audio::{IMMDevice, IMMDevice_Vtbl, DEVICE_STATE, WAVEFORMATEX},
   DeviceManager::{
     IMDSPDeviceControl, IMDSPDeviceControl_Vtbl, IWMDMDeviceControl, IWMDMDeviceControl_Vtbl,
   },
 };
 use windows::{
-  core::{IUnknown, IUnknown_Vtbl, Interface, BOOL, GUID, HRESULT, PCWSTR},
+  core::{IUnknown, IUnknown_Vtbl, Interface, BOOL, GUID, HRESULT, PCWSTR, PWSTR},
   Win32::System::{
-    Com::SAFEARRAY,
+    Com::{StructuredStorage::PROPVARIANT, CLSCTX, SAFEARRAY, STGM},
     Ole::{IOleCache, IOleCache2, IOleCache2_Vtbl, IOleCache_Vtbl, UPDFCACHE_FLAGS},
     Variant::VARIANT,
     Wmi::{
@@ -74,6 +74,14 @@ static AUDIO_GET_SERVICE_MODE: AtomicI32 = AtomicI32::new(0);
 static AUDIO_ADD_REF_CALLS: AtomicU32 = AtomicU32::new(0);
 static AUDIO_RELEASE_CALLS: AtomicU32 = AtomicU32::new(0);
 static AUDIO_CURRENT_REF_COUNT: AtomicU32 = AtomicU32::new(0);
+static MM_DEVICE_ACTIVATE_CALLS: AtomicU32 = AtomicU32::new(0);
+static MM_DEVICE_VALIDATED_ACTIVATE_CALLS: AtomicU32 = AtomicU32::new(0);
+static MM_DEVICE_ACTIVATE_MODE: AtomicI32 = AtomicI32::new(0);
+static MM_DEVICE_RETURNED_AUDIO_OBJECTS: AtomicU32 = AtomicU32::new(0);
+static MM_DEVICE_GET_ID_CALLS: AtomicU32 = AtomicU32::new(0);
+static MM_DEVICE_ADD_REF_CALLS: AtomicU32 = AtomicU32::new(0);
+static MM_DEVICE_RELEASE_CALLS: AtomicU32 = AtomicU32::new(0);
+static MM_DEVICE_CURRENT_REF_COUNT: AtomicU32 = AtomicU32::new(0);
 static EVALUATION_BIND_VALUE_CALLS: AtomicU32 = AtomicU32::new(0);
 static EVALUATION_GET_VALUE_CALLS: AtomicU32 = AtomicU32::new(0);
 static EVALUATION_OUTPUT_MODE: AtomicI32 = AtomicI32::new(0);
@@ -1830,6 +1838,7 @@ struct GeneratedAudioClientVtbl {
 struct GeneratedAudioClientFake {
   vtable: *const GeneratedAudioClientVtbl,
   references: AtomicU32,
+  supports_audio_client: bool,
 }
 
 unsafe extern "system" fn audio_query_interface(
@@ -1842,7 +1851,8 @@ unsafe extern "system" fn audio_query_interface(
   }
   unsafe {
     *result = std::ptr::null_mut();
-    if *iid != IUnknown::IID && *iid != IID_IAUDIO_CLIENT {
+    let object = &*this.cast::<GeneratedAudioClientFake>();
+    if *iid != IUnknown::IID && (*iid != IID_IAUDIO_CLIENT || !object.supports_audio_client) {
       return E_NOINTERFACE;
     }
     *result = this;
@@ -2098,8 +2108,7 @@ pub struct GeneratedAudioClientStats {
   pub current_ref_count: u32,
 }
 
-#[napi]
-pub fn create_generated_audio_client_fake() -> napi::Result<DynWinRTValue> {
+fn create_generated_audio_client_unknown(supports_audio_client: bool) -> IUnknown {
   AUDIO_INITIALIZE_CALLS.store(0, Ordering::SeqCst);
   AUDIO_IS_FORMAT_SUPPORTED_CALLS.store(0, Ordering::SeqCst);
   AUDIO_GET_MIX_FORMAT_CALLS.store(0, Ordering::SeqCst);
@@ -2114,9 +2123,14 @@ pub fn create_generated_audio_client_fake() -> napi::Result<DynWinRTValue> {
   let object = Box::new(GeneratedAudioClientFake {
     vtable: &AUDIO_VTABLE,
     references: AtomicU32::new(1),
+    supports_audio_client,
   });
-  let unknown = unsafe { IUnknown::from_raw(Box::into_raw(object).cast()) };
-  crate::com::apartment_bound_com_object(unknown)
+  unsafe { IUnknown::from_raw(Box::into_raw(object).cast()) }
+}
+
+#[napi]
+pub fn create_generated_audio_client_fake() -> napi::Result<DynWinRTValue> {
+  crate::com::apartment_bound_com_object(create_generated_audio_client_unknown(true))
 }
 
 #[napi]
@@ -2153,6 +2167,187 @@ pub fn generated_audio_client_stats() -> GeneratedAudioClientStats {
     add_ref_calls: AUDIO_ADD_REF_CALLS.load(Ordering::SeqCst),
     release_calls: AUDIO_RELEASE_CALLS.load(Ordering::SeqCst),
     current_ref_count: AUDIO_CURRENT_REF_COUNT.load(Ordering::SeqCst),
+  }
+}
+
+#[repr(C)]
+struct GeneratedMmDeviceFake {
+  vtable: *const IMMDevice_Vtbl,
+  references: AtomicU32,
+}
+
+unsafe extern "system" fn mm_device_query_interface(
+  this: *mut c_void,
+  iid: *const GUID,
+  result: *mut *mut c_void,
+) -> HRESULT {
+  if iid.is_null() || result.is_null() {
+    return E_POINTER;
+  }
+  unsafe {
+    *result = std::ptr::null_mut();
+    if *iid != IUnknown::IID && *iid != IMMDevice::IID {
+      return E_NOINTERFACE;
+    }
+    *result = this;
+    mm_device_add_ref(this);
+  }
+  HRESULT(0)
+}
+
+unsafe extern "system" fn mm_device_add_ref(this: *mut c_void) -> u32 {
+  MM_DEVICE_ADD_REF_CALLS.fetch_add(1, Ordering::SeqCst);
+  let object = unsafe { &*this.cast::<GeneratedMmDeviceFake>() };
+  let count = object.references.fetch_add(1, Ordering::SeqCst) + 1;
+  MM_DEVICE_CURRENT_REF_COUNT.store(count, Ordering::SeqCst);
+  count
+}
+
+unsafe extern "system" fn mm_device_release(this: *mut c_void) -> u32 {
+  MM_DEVICE_RELEASE_CALLS.fetch_add(1, Ordering::SeqCst);
+  let object = unsafe { &*this.cast::<GeneratedMmDeviceFake>() };
+  let count = object.references.fetch_sub(1, Ordering::SeqCst) - 1;
+  MM_DEVICE_CURRENT_REF_COUNT.store(count, Ordering::SeqCst);
+  if count == 0 {
+    unsafe {
+      drop(Box::from_raw(this.cast::<GeneratedMmDeviceFake>()));
+    }
+  }
+  count
+}
+
+unsafe extern "system" fn mm_device_activate(
+  _this: *mut c_void,
+  iid: *const GUID,
+  context: CLSCTX,
+  activation_params: *const PROPVARIANT,
+  result: *mut *mut c_void,
+) -> HRESULT {
+  MM_DEVICE_ACTIVATE_CALLS.fetch_add(1, Ordering::SeqCst);
+  if iid.is_null() || result.is_null() || context.0 != 1 || !activation_params.is_null() {
+    return HRESULT(0x80070057u32 as i32);
+  }
+  if unsafe { iid.read_unaligned() } != IID_IAUDIO_CLIENT {
+    return E_NOINTERFACE;
+  }
+  if unsafe { !(*result).is_null() } {
+    return E_POINTER;
+  }
+  MM_DEVICE_VALIDATED_ACTIVATE_CALLS.fetch_add(1, Ordering::SeqCst);
+  let mode = MM_DEVICE_ACTIVATE_MODE.load(Ordering::SeqCst);
+  match mode {
+    -1 => return HRESULT(0x80004005u32 as i32),
+    1 => return HRESULT(0),
+    _ => {}
+  }
+  // The negative-QI mode still returns a real object with a complete audio vtable.
+  let audio = create_generated_audio_client_unknown(mode != 2);
+  MM_DEVICE_RETURNED_AUDIO_OBJECTS.fetch_add(1, Ordering::SeqCst);
+  unsafe {
+    result.write(audio.into_raw());
+  }
+  HRESULT(0)
+}
+
+unsafe extern "system" fn mm_device_open_property_store(
+  _this: *mut c_void,
+  _access: STGM,
+  _result: *mut *mut c_void,
+) -> HRESULT {
+  E_NOTIMPL
+}
+
+unsafe extern "system" fn mm_device_get_id(_this: *mut c_void, result: *mut PWSTR) -> HRESULT {
+  MM_DEVICE_GET_ID_CALLS.fetch_add(1, Ordering::SeqCst);
+  if result.is_null() || unsafe { !(*result).0.is_null() } {
+    return E_POINTER;
+  }
+  let id = "dynwinrt-fake-audio-endpoint"
+    .encode_utf16()
+    .chain(std::iter::once(0))
+    .collect::<Vec<_>>();
+  let allocation =
+    unsafe { windows::Win32::System::Com::CoTaskMemAlloc(id.len() * std::mem::size_of::<u16>()) }
+      .cast::<u16>();
+  if allocation.is_null() {
+    return HRESULT(0x8007000eu32 as i32);
+  }
+  unsafe {
+    std::ptr::copy_nonoverlapping(id.as_ptr(), allocation, id.len());
+    result.write(PWSTR(allocation));
+  }
+  HRESULT(0)
+}
+
+unsafe extern "system" fn mm_device_get_state(
+  _this: *mut c_void,
+  _state: *mut DEVICE_STATE,
+) -> HRESULT {
+  E_NOTIMPL
+}
+
+static MM_DEVICE_VTABLE: IMMDevice_Vtbl = IMMDevice_Vtbl {
+  base__: IUnknown_Vtbl {
+    QueryInterface: mm_device_query_interface,
+    AddRef: mm_device_add_ref,
+    Release: mm_device_release,
+  },
+  Activate: mm_device_activate,
+  OpenPropertyStore: mm_device_open_property_store,
+  GetId: mm_device_get_id,
+  GetState: mm_device_get_state,
+};
+
+#[napi(object)]
+pub struct GeneratedMmDeviceStats {
+  pub activate_calls: u32,
+  pub validated_activate_calls: u32,
+  pub returned_audio_objects: u32,
+  pub get_id_calls: u32,
+  pub add_ref_calls: u32,
+  pub release_calls: u32,
+  pub current_ref_count: u32,
+}
+
+#[napi]
+pub fn create_generated_mm_device_fake() -> napi::Result<DynWinRTValue> {
+  MM_DEVICE_ACTIVATE_CALLS.store(0, Ordering::SeqCst);
+  MM_DEVICE_VALIDATED_ACTIVATE_CALLS.store(0, Ordering::SeqCst);
+  MM_DEVICE_ACTIVATE_MODE.store(0, Ordering::SeqCst);
+  MM_DEVICE_RETURNED_AUDIO_OBJECTS.store(0, Ordering::SeqCst);
+  MM_DEVICE_GET_ID_CALLS.store(0, Ordering::SeqCst);
+  MM_DEVICE_ADD_REF_CALLS.store(0, Ordering::SeqCst);
+  MM_DEVICE_RELEASE_CALLS.store(0, Ordering::SeqCst);
+  MM_DEVICE_CURRENT_REF_COUNT.store(1, Ordering::SeqCst);
+  let object = Box::new(GeneratedMmDeviceFake {
+    vtable: &MM_DEVICE_VTABLE,
+    references: AtomicU32::new(1),
+  });
+  let unknown = unsafe { IUnknown::from_raw(Box::into_raw(object).cast()) };
+  crate::com::apartment_bound_com_object(unknown)
+}
+
+#[napi]
+pub fn set_generated_mm_device_activate_mode(mode: i32) -> napi::Result<()> {
+  if !(-1..=2).contains(&mode) {
+    return Err(napi::Error::from_reason(
+      "generated IMMDevice Activate mode must be -1, 0, 1, or 2",
+    ));
+  }
+  MM_DEVICE_ACTIVATE_MODE.store(mode, Ordering::SeqCst);
+  Ok(())
+}
+
+#[napi]
+pub fn generated_mm_device_stats() -> GeneratedMmDeviceStats {
+  GeneratedMmDeviceStats {
+    activate_calls: MM_DEVICE_ACTIVATE_CALLS.load(Ordering::SeqCst),
+    validated_activate_calls: MM_DEVICE_VALIDATED_ACTIVATE_CALLS.load(Ordering::SeqCst),
+    returned_audio_objects: MM_DEVICE_RETURNED_AUDIO_OBJECTS.load(Ordering::SeqCst),
+    get_id_calls: MM_DEVICE_GET_ID_CALLS.load(Ordering::SeqCst),
+    add_ref_calls: MM_DEVICE_ADD_REF_CALLS.load(Ordering::SeqCst),
+    release_calls: MM_DEVICE_RELEASE_CALLS.load(Ordering::SeqCst),
+    current_ref_count: MM_DEVICE_CURRENT_REF_COUNT.load(Ordering::SeqCst),
   }
 }
 
