@@ -57,6 +57,21 @@ class TaskHandlers:
         pass
 
 
+class Task:
+    def run(self, task_instance: IBackgroundTaskInstance | None) -> None:
+        pass
+
+
+class Text:
+    def to_string(self) -> str:
+        return "separate text handler"
+
+
+class Close:
+    def close(self) -> None:
+        pass
+
+
 def check_owner() -> None:
     handlers = TaskHandlers()
     instance: DynWinRTImplementationHandle[IBackgroundTaskInstance] = IBackgroundTaskInstance.implement(InstanceHandlers())
@@ -69,7 +84,10 @@ def check_owner() -> None:
         primary.run(instance.value)
         impl.run(instance.value)  # type: ignore[attr-defined]
         impl.value = task  # type: ignore[misc]
-    IBackgroundTask.implement(handlers, interfaces=[(IStringable, WrongText())])  # type: ignore[misc]
+    with IBackgroundTask.implement(Task(), interfaces=[(IStringable, Text()), (IClosable, Close())]) as mixed:
+        primary = mixed.value
+        primary.run(task_instance=instance.value)
+    IBackgroundTask.implement(handlers, interfaces=[(IStringable, WrongText())])  # type: ignore[list-item]
     task.run(IBackgroundTaskInstance.from_implementation(instance))
     text: IStringable = IStringable.from_implementation(owner)
     close: IClosable = IClosable.from_implementation(owner)

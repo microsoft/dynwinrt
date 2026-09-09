@@ -949,6 +949,46 @@ def test_reentrant_lifetime_operations(operation):
         view.release()
 
 
+@pytest.mark.parametrize("invocation", ["invoke", "invoke_detached"])
+@pytest.mark.parametrize("void_result", [False, True], ids=["hstring-output", "void-output"])
+def test_reentrant_dispose_can_release_the_calling_receiver(invocation, void_result):
+    plan, typ = _closable() if void_result else _stringable()
+    thread_id = threading.get_ident()
+    calls = []
+
+    def callback(*_args):
+        assert threading.get_ident() == thread_id
+        # A generated management handle releases both its primary view and its
+        # native owner on dispose. The call must not retain a Python borrow of
+        # that view; only an independent, call-local native pin may survive.
+        owner.dispose()
+        receiver.release()
+        calls.append("completed")
+        return [] if void_result else [DynWinRTValue.from_hstring("completed after receiver release")]
+
+    owner = DynWinRTImplementation.create([plan], callback)
+    receiver = _view(owner, typ)
+    retained = _view(owner, typ)
+    invoke = getattr(typ.method(6), invocation)
+    try:
+        result = invoke(receiver, [])
+        if void_result:
+            assert result.to_int() == 0
+        else:
+            assert result.to_string() == "completed after receiver release"
+        assert calls == ["completed"]
+        assert receiver.is_null() and owner.is_closed
+        assert owner.take_error() is None
+        with pytest.raises(OSError) as caught:
+            invoke(retained, [])
+        assert caught.value.winerror == CLOSED
+        assert calls == ["completed"]
+    finally:
+        owner.dispose()
+        receiver.release()
+        retained.release()
+
+
 def test_disposal_breaks_handler_cycle_and_allows_finalizer_reentrancy():
     plan, typ = _stringable()
     finalized = []

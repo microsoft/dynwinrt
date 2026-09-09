@@ -105,6 +105,10 @@ Each entry explicitly supplies a generated interface and its handlers. Complete
 metadata validation, duplicate IIDs, and required-interface checks happen before
 native publication. Existing positional `.implementation(...)` descriptors are
 still supported, and may be preferable for reusable heterogeneous compositions.
+Python statically checks heterogeneous convenience lists for interfaces in the
+same generated package. For heterogeneous interfaces from different generated
+packages, use typed positional `.implementation(...)` descriptors; runtime list
+acceptance is unchanged. Homogeneous lists retain their generic typing.
 
 `Interface.fromImplementation(impl)` / `Interface.from_implementation(impl)`
 remains the advanced independent-view path; it accepts either a typed handle
@@ -162,6 +166,9 @@ native delegate. Retain it to deliver the event by calling
 handler receives that token and should remove and release its stored delegate.
 These calls invoke the delegate's native slot 3; they are not direct calls to
 the original subscriber's language function.
+In Python, these received native-delegate callables take positional-only
+arguments, matching their generated Protocols. Ordinary projected methods keep
+their existing keyword-argument support.
 An implementation-side handler that rejects registration without retaining
 the received delegate can release that visible owned view with
 `releaseProjected(handler)` before throwing, for deterministic cleanup instead

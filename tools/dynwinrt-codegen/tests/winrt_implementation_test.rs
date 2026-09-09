@@ -757,9 +757,42 @@ console.log('prototype validation passed');
 
 #[test]
 fn implementation_python_projection_validates_handlers_results_arrays_and_dispatch() {
-    let [_, _, py, _] = generated(&fixture());
+    let mut iface = fixture();
+    let zero_delegate = TypeMeta::Delegate {
+        namespace: "Tests".into(),
+        name: "ZeroCallback".into(),
+        iid: "41c64fe4-5f4d-4cf8-8a39-c8e2a9f396a1".into(),
+    };
+    iface.methods.push(MethodMeta {
+        name: "UseZeroCallback".into(),
+        vtable_index: 16,
+        params: vec![ParamMeta {
+            name: "callback".into(),
+            typ: zero_delegate.clone(),
+            direction: ParamDirection::In,
+        }],
+        return_type: Some(TypeMeta::String),
+        ..Default::default()
+    });
+    iface
+        .implementation_metadata
+        .delegates
+        .push(ImplementationDelegateMeta {
+            typ: zero_delegate,
+            invoke: MethodMeta {
+                name: "Invoke".into(),
+                vtable_index: 3,
+                return_type: Some(TypeMeta::String),
+                ..Default::default()
+            },
+        });
+    let [_, _, py, pyi] = generated(&iface);
+    for source in [&py, &pyi] {
+        assert!(source.contains("def __call__(self, value: int, /) -> str: ..."));
+        assert!(source.contains("def __call__(self, /) -> str: ..."));
+    }
     let test = r#"
-import sys, json, types, typing, datetime, uuid, weakref
+import sys, json, types, typing, datetime, uuid, weakref, ast
 payload = json.load(sys.stdin)
 source = payload['code']
 # Projection-only doubles, not native ABI fixtures.
@@ -783,6 +816,10 @@ class Value:
         if self.kind == 'object' and hasattr(self.value, 'owner'): self.value.owner.references -= 1
         self.kind, self.value = 'null', None
     def invoke_delegate(self, iid, signature, args):
+        if iid == '41c64fe4-5f4d-4cf8-8a39-c8e2a9f396a1':
+            assert [kind for kind, typ in signature.parameters] == ['Out']
+            assert args == []
+            return [Value.from_hstring('zero')]
         if iid == '6df84c34-56fe-47fd-a7d6-2a10e986efc4':
             assert [kind for kind, typ in signature.parameters] == ['OutFill', 'Out']
             assert len(args) == 1
@@ -877,6 +914,12 @@ package = types.ModuleType('generated'); package.__path__ = []
 sys.modules.update({'generated': package, 'generated._runtime': runtime, 'dynwinrt': binding})
 namespace = {'__name__': 'generated.contract', '__package__': 'generated'}
 exec(compile(source, 'contract.py', 'exec'), namespace)
+for declaration in (source, payload['stub']):
+    syntax = ast.parse(declaration)
+    for name, count in [('IContractImplementationDelegate0', 2), ('IContractImplementationDelegate2', 1)]:
+        protocol = next(node for node in ast.walk(syntax) if isinstance(node, ast.ClassDef) and node.name == name)
+        call = next(node for node in protocol.body if isinstance(node, ast.FunctionDef) and node.name == '__call__')
+        assert len(call.args.posonlyargs) == count and call.args.args == []
 Contract = namespace['IContract']
 class Handlers:
     def __init__(self): self.title = 'start'; self.seen = None
@@ -888,6 +931,10 @@ class Handlers:
     def use_callback(self, callback):
         if callback is None: return 'null'
         assert isinstance(callback._obj, Value)
+        raises('unexpected keyword', lambda: callback(value=7))
+        raises('unexpected keyword', lambda: callback(7, value=7))
+        raises('argument count', lambda: callback())
+        raises('argument count', lambda: callback(7, 8))
         return callback(7)
     def get_object(self): return Value.null_value()
     def echo_optional(self, value): return value
@@ -899,6 +946,10 @@ class Handlers:
         return True
     def round_trip_hresult(self, value): return value
     def round_trip_hresults(self, values): return values
+    def use_zero_callback(self, callback):
+        raises('unexpected keyword', lambda: callback(unexpected=7))
+        raises('argument count', lambda: callback(7))
+        return callback()
 def raises(fragment, call):
     try: call()
     except (TypeError, ValueError) as error: assert fragment in str(error), str(error)
@@ -933,6 +984,7 @@ assert descriptor.dispatch(10, [])[0].is_null()
 assert descriptor.dispatch(11, [Value.box_reference(Value.from_i32(8), None)])[0].value.boxed.value == 8
 assert descriptor.dispatch(11, [Value.null_value()])[0].is_null()
 assert descriptor.dispatch(13, [Value('object', {})])[0].value is True
+assert descriptor.dispatch(16, [Value('object', {})])[0].value == 'zero'
 semantic_hresult = descriptor.dispatch(14, [Value.from_hresult(-2147467259)])[0]
 assert semantic_hresult.kind == 'hresult' and semantic_hresult.value == -2147467259
 hresult_array = descriptor.dispatch(15, [Array([Value.from_hresult(-2147467259), Value.from_hresult(0)]).to_value()])[0]
@@ -996,6 +1048,7 @@ print('Python projection assertions passed')
         &["-c", test],
         &serde_json::json!({
             "code": py,
+            "stub": pyi,
             "handle": include_str!("../../../bindings/py/src/implementation.py"),
             "support": python::generate_runtime_support_module(),
         })
@@ -1139,7 +1192,7 @@ fn implementation_public_python_views_type_check_without_internal_constructors()
         .args([
             "generate",
             "--class-name",
-            "Windows.ApplicationModel.Background.IBackgroundTask,Windows.ApplicationModel.Background.IBackgroundTaskInstance,Windows.Foundation.IStringable,Windows.Foundation.IClosable",
+            "Windows.ApplicationModel.Background.IBackgroundTask,Windows.ApplicationModel.Background.IBackgroundTaskInstance,Windows.Foundation.IStringable,Windows.Foundation.IClosable,Windows.Foundation.IMemoryBufferReference",
             "--lang",
             "py",
             "--winmd",
@@ -1200,12 +1253,91 @@ fn implementation_public_python_views_type_check_without_internal_constructors()
             .unwrap()
             .contains(&format!("from .{public_name} import "))
     );
+    // Same-named interfaces in distinct namespaces must remain distinct pairs.
+    // The foreign-only method shapes also exercise the generic fallback rather
+    // than accidentally matching a member of the primary package's closed union.
+    let mut next_iid = 1;
+    let mut synthetic = |namespace: &str, name: &str, method: &str, result: Option<TypeMeta>| {
+        let iid = format!("8755484b-1a1f-48eb-88e9-{next_iid:012x}");
+        next_iid += 1;
+        InterfaceMeta {
+            namespace: namespace.into(),
+            name: name.into(),
+            iid,
+            methods: vec![MethodMeta {
+                name: method.into(),
+                vtable_index: 6,
+                return_type: result,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    };
+    for (name, interfaces) in [
+        (
+            "pairs",
+            vec![
+                synthetic("Root", "ITask", "Run", None),
+                synthetic("Left", "IValue", "ToString", Some(TypeMeta::String)),
+                synthetic("Right", "IValue", "Close", None),
+            ],
+        ),
+        (
+            "foreign",
+            vec![
+                synthetic("External", "IGreeting", "Greet", Some(TypeMeta::String)),
+                synthetic("External", "IShutdown", "Shutdown", None),
+            ],
+        ),
+    ] {
+        let directory = scratch.join(name);
+        std::fs::create_dir_all(&directory).unwrap();
+        let context = python::PythonProjectionContext::packaged(
+            interfaces.iter().map(InterfaceMeta::type_identity),
+        )
+        .unwrap();
+        let root_interfaces = interfaces
+            .iter()
+            .filter(|interface| context.root_name_is_unambiguous(&interface.type_identity()))
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut modules = Vec::new();
+        for interface in &interfaces {
+            let module = context.implementation_module_for_interface(interface);
+            std::fs::write(
+                directory.join(format!("{module}.pyi")),
+                python_stub::generate_interface_stub(&context, interface),
+            )
+            .unwrap();
+            modules.push(module);
+        }
+        for (module, content) in [
+            (
+                "__init__.pyi",
+                python_stub::generate_index_stub(&context, &[], &root_interfaces, &[]),
+            ),
+            ("_typing.pyi", python_stub::generate_typing_support_module()),
+            ("_runtime.pyi", python_stub::generate_runtime_support_stub()),
+            (
+                "_implementation_types.pyi",
+                python_stub::generate_implementation_pair_types(&modules),
+            ),
+        ] {
+            std::fs::write(directory.join(module), content).unwrap();
+        }
+    }
     let consumer = scratch.join("consumer.py");
     std::fs::write(
         &consumer,
         r#"
 from views import IStringable, IClosable, IBackgroundTask, IBackgroundTaskInstance
-from dynwinrt import release_projected
+from dynwinrt import DynWinRTImplementationHandle, release_projected
+from typing import assert_type
+from views import IMemoryBufferReferenceImplementationDelegate0
+from pairs.root__i_task import ITask as LocalTask
+from pairs.left__i_value import IValue as Left
+from pairs.right__i_value import IValue as Right
+from foreign import IGreeting, IShutdown
 
 class Strings:
     def to_string(self) -> str:
@@ -1223,6 +1355,9 @@ class Task:
         if instance is not None:
             instance.progress = 24
 
+def invoke_native_delegate(callback: IMemoryBufferReferenceImplementationDelegate0) -> None:
+    callback(None, None)
+
 def consume_task(value: IBackgroundTask, instance: IBackgroundTaskInstance) -> None:
     value.run(instance)
 
@@ -1235,6 +1370,46 @@ task_owner = IBackgroundTask.implement(Task())
 task_view: IBackgroundTask = IBackgroundTask.from_implementation(task_owner)
 release_projected(task_view)
 task_owner.dispose()
+with IBackgroundTask.implement(
+    Task(), interfaces=[(IStringable, Strings()), (IClosable, Closing())]
+) as implementation:
+    assert_type(implementation, DynWinRTImplementationHandle[IBackgroundTask])
+    assert_type(implementation.value, IBackgroundTask)
+    closer = IClosable.from_implementation(implementation)
+    closer.close()
+    release_projected(closer)
+homogeneous = [(IStringable, Strings())]
+assert_type(
+    IBackgroundTask.implement(Task(), interfaces=homogeneous),
+    DynWinRTImplementationHandle[IBackgroundTask],
+)
+
+class LocalHandler:
+    def run(self) -> None:
+        pass
+
+class Greeting:
+    def greet(self) -> str:
+        return "foreign"
+
+class Shutdown:
+    def shutdown(self) -> None:
+        pass
+
+assert_type(
+    LocalTask.implement(LocalHandler(), interfaces=[(Left, Strings()), (Right, Closing())]),
+    DynWinRTImplementationHandle[LocalTask],
+)
+assert_type(
+    LocalTask.implement(LocalHandler(), interfaces=[(IGreeting, Greeting())]),
+    DynWinRTImplementationHandle[LocalTask],
+)
+assert_type(
+    LocalTask.implement(
+        LocalHandler(), IGreeting.implementation(Greeting()), IShutdown.implementation(Shutdown())
+    ),
+    DynWinRTImplementationHandle[LocalTask],
+)
 "#,
     )
     .unwrap();
@@ -1245,30 +1420,84 @@ task_owner.dispose()
         .join("py")
         .canonicalize()
         .unwrap();
-    let result = Command::new("python")
-        .args([
-            "-m",
-            "mypy",
-            "--strict",
-            "--follow-imports=silent",
-            "--no-incremental",
-            "--cache-dir",
-        ])
-        .arg("mypy-cache")
-        .arg("consumer.py")
-        .current_dir(&scratch)
-        .env("PYTHONUTF8", "1")
-        .env(
-            "MYPYPATH",
-            std::env::join_paths([binding_stubs, std::path::PathBuf::from(".")]).unwrap(),
-        )
-        .output()
-        .expect("run the existing mypy checker");
-    std::fs::remove_dir_all(&scratch).unwrap();
+    let check = |file: &str| {
+        Command::new("python")
+            .args([
+                "-m",
+                "mypy",
+                "--strict",
+                "--follow-imports=silent",
+                "--no-incremental",
+                "--cache-dir",
+                "mypy-cache",
+                file,
+            ])
+            .current_dir(&scratch)
+            .env("PYTHONUTF8", "1")
+            .env(
+                "MYPYPATH",
+                std::env::join_paths([binding_stubs.clone(), std::path::PathBuf::from(".")])
+                    .unwrap(),
+            )
+            .output()
+            .expect("run the existing mypy checker")
+    };
+    let result = check("consumer.py");
     assert!(
         result.status.success(),
         "{}\n{}",
         String::from_utf8_lossy(&result.stdout),
         String::from_utf8_lossy(&result.stderr)
     );
+    let negative = r#"
+from consumer import Task, Strings, Closing
+from views import IBackgroundTask, IStringable, IClosable
+from views import IMemoryBufferReferenceImplementationDelegate0
+from consumer import LocalHandler
+from pairs.root__i_task import ITask as LocalTask
+from pairs.left__i_value import IValue as Left
+from pairs.right__i_value import IValue as Right
+from foreign import IGreeting
+
+class WrongReturn:
+    def to_string(self) -> int:
+        return 1
+
+class WrongSignature:
+    def to_string(self, required: int) -> str:
+        return str(required)
+
+class MissingMethod:
+    pass
+
+IBackgroundTask.implement(Task(), interfaces=[(IStringable, Closing()), (IClosable, Strings())])  # swapped
+IBackgroundTask.implement(Task(), interfaces=[(IStringable, WrongReturn()), (IClosable, Closing())])  # return
+IBackgroundTask.implement(Task(), interfaces=[(IStringable, WrongSignature()), (IClosable, Closing())])  # signature
+IBackgroundTask.implement(Task(), interfaces=[(IStringable, MissingMethod()), (IClosable, Closing())])  # missing
+IBackgroundTask.implement(Task(), interfaces=[(IStringable, WrongReturn())])  # homogeneous
+LocalTask.implement(LocalHandler(), interfaces=[(Left, Closing()), (Right, Strings())])
+LocalTask.implement(LocalHandler(), interfaces=[(IGreeting, Closing())])
+
+def reject_native_delegate_calls(callback: IMemoryBufferReferenceImplementationDelegate0) -> None:
+    callback(sender=None, args=None)
+    callback(None)
+    callback(None, None, None)
+    callback(None, args=None)
+"#;
+    std::fs::write(scratch.join("negative.py"), negative).unwrap();
+    let rejected = check("negative.py");
+    let diagnostics = String::from_utf8_lossy(&rejected.stdout);
+    assert!(!rejected.status.success(), "{diagnostics}");
+    for (index, line) in negative.lines().enumerate() {
+        if line.starts_with("IBackgroundTask.implement(")
+            || line.starts_with("LocalTask.implement(")
+            || line.trim_start().starts_with("callback(")
+        {
+            assert!(
+                diagnostics.contains(&format!("negative.py:{}: error:", index + 1)),
+                "incorrect pair was accepted: {line}\n{diagnostics}"
+            );
+        }
+    }
+    std::fs::remove_dir_all(&scratch).unwrap();
 }

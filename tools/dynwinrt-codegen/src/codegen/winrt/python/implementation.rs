@@ -775,7 +775,7 @@ fn project_validated(
         let params = projector.parameters(method, true)?;
         let comma = if params.is_empty() { "" } else { ", " };
         declarations.push_str(&format!(
-            "\nclass {}Delegate{index}(Protocol):\n    @property\n    def _obj(self) -> DynWinRTValue: ...\n    def __call__(self{comma}{params}) -> {}: ...\n",
+            "\nclass {}Delegate{index}(Protocol):\n    @property\n    def _obj(self) -> DynWinRTValue: ...\n    def __call__(self{comma}{params}, /) -> {}: ...\n",
             projector.prefix, if method.output_count > 1 { format!("{}Delegate{index}Result", projector.prefix) } else { projector.result_type(method, false) }
         ));
         let args = method
@@ -958,8 +958,16 @@ fn project_validated(
                 .join(", ")
         )
     };
+    let package_overload = if context.is_packaged() {
+        format!(
+            "    @overload\n    def implement(cls, handlers: {name}Handlers, *additional: DynWinRTImplementationDescriptor, interfaces: Sequence[_PackageImplementationPair]) -> DynWinRTImplementationHandle[{name}]: ...\n    @overload\n",
+            name = iface.name
+        )
+    } else {
+        String::new()
+    };
     let factory_declarations = format!(
-        "{requirements}    def implementation(cls, handlers: {name}Handlers) -> DynWinRTImplementationDescriptor: ...\n    def implement(cls, handlers: {name}Handlers, *additional: DynWinRTImplementationDescriptor, interfaces: Sequence[tuple[_DynWinRTImplementationFactory[_ImplementationHandlers], _ImplementationHandlers]] = ...) -> DynWinRTImplementationHandle[{name}]: ...\n    def from_implementation(cls, owner: DynWinRTImplementation | DynWinRTImplementationHandle[object]) -> {name}: ...\n\n",
+        "{requirements}    def implementation(cls, handlers: {name}Handlers) -> DynWinRTImplementationDescriptor: ...\n{package_overload}    def implement(cls, handlers: {name}Handlers, *additional: DynWinRTImplementationDescriptor, interfaces: Sequence[tuple[_DynWinRTImplementationFactory[_ImplementationHandlers], _ImplementationHandlers]] = ...) -> DynWinRTImplementationHandle[{name}]: ...\n    def from_implementation(cls, owner: DynWinRTImplementation | DynWinRTImplementationHandle[object]) -> {name}: ...\n\n",
         name = iface.name
     );
     let mut exports = vec![format!("{}Handlers", iface.name)];

@@ -315,10 +315,25 @@ def background_task(g, dw, own):
             task_instance.progress = task_instance.progress + 5
             self.runs += 1
 
+    class Text:
+        def to_string(self):
+            return "separate text handler"
+
     handlers = Task()
-    owner = own(g.IBackgroundTask.implement(handlers))
+    owner = own(g.IBackgroundTask.implement(handlers, interfaces=[
+        (g.IStringable, Text()), (g.IClosable, CloseHandlers()),
+    ]))
+    text = g.IStringable.from_implementation(owner)
+    close = g.IClosable.from_implementation(owner)
+    try:
+        assert text.to_string() == "separate text handler"
+        close.close()
+    finally:
+        dw.release_projected(text)
+        dw.release_projected(close)
     task = owner.value
-    task.run(instance)
+    # Native-delegate positional-only declarations do not change method kwargs.
+    task.run(task_instance=instance)
     assert (state.progress, state.gets, state.sets, state.get_ids) == (22, 1, 1, 1)
     assert handlers.runs == 1
     retained_instance = g.IBackgroundTaskInstance.from_implementation(instance_owner)
@@ -695,6 +710,18 @@ def memory_buffer_event(g, dw, own):
 
     unsubscribe = event_sender.subscribe_closed(on_closed)
     assert handlers.added == 1
+    callback = callbacks[1]
+    for invalid in (
+        lambda: callback(sender=event_sender, args=None),
+        lambda: callback(event_sender, args=None),
+        lambda: callback(),
+        lambda: callback(event_sender),
+        lambda: callback(event_sender, None, None),
+    ):
+        error = expect_error(invalid, "keyword|argument count")
+        assert isinstance(error, TypeError)
+        assert delivered == [], "Argument rejection must happen before native Invoke"
+    del invalid, callback
     owner.release()
     close.close()
     assert delivered == [4096]

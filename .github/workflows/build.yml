@@ -293,6 +293,37 @@ jobs:
             -Codegen .\target\release\dynwinrt-codegen.exe
       - name: Run E2E tests
         run: .\tests\e2e\e2e_test.ps1 -SkipBuild
+      # This optional-SDK behavioral smoke is separate from generated coverage
+      # totals. The receiver/GIL regressions also run in instrumented core and
+      # binding tests; no WinAppSDK runtime bootstrap or UI loop is needed here.
+      - name: Test metadata-generated dispatcher implementation
+        shell: pwsh
+        run: |
+          $packages = Join-Path $env:RUNNER_TEMP 'dispatcher-metadata'
+          nuget install Microsoft.WindowsAppSDK.InteractiveExperiences `
+            -Version 1.8.251104001 -OutputDirectory $packages -DirectDownload -NonInteractive
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $metadata = Join-Path $packages 'Microsoft.WindowsAppSDK.InteractiveExperiences.1.8.251104001\metadata\10.0.18362.0'
+          $hashes = @{
+            'Microsoft.UI.winmd' = 'BA28DFC20E18630F3037AF2B91897082E41F1FA0E1DBB001D900505AB3577FE1'
+            'Microsoft.Foundation.winmd' = '56A37D003D6CD568B4BEFC95990AB28F576F128C00033C0372EAE390123F9C1F'
+            'Microsoft.Graphics.winmd' = '63165F774C2699E5A44E323F932A10BEE7BD5E11F25D82A730F5FB728107EA83'
+          }
+          foreach ($entry in $hashes.GetEnumerator()) {
+            if ((Get-FileHash -LiteralPath (Join-Path $metadata $entry.Key) -Algorithm SHA256).Hash -ne $entry.Value) {
+              throw "Unexpected WinAppSDK metadata: $($entry.Key)"
+            }
+          }
+          $windows = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\UnionMetadata" `
+            -Filter Windows.winmd -File -Recurse | Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $windows) { throw 'Windows SDK metadata is required for the dispatcher smoke' }
+          $output = Join-Path $PWD 'artifacts\dispatcher-implementation-smoke'
+          .\target\release\dynwinrt-codegen.exe generate `
+            --winmd (Join-Path $metadata 'Microsoft.UI.winmd') --ref $windows.FullName `
+            --namespace Microsoft.UI.Dispatching --class-name DispatcherQueue `
+            --lang py --output $output
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .\bindings\py\.venv\Scripts\python.exe .\tests\e2e\runners\dispatcher_implementation_py.py --generated $output
       - name: Test JS TSFN lifecycle and queue handling
         working-directory: bindings/js
         run: npm run test:tsfn

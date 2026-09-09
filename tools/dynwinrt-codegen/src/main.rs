@@ -3875,10 +3875,51 @@ fn generate_py_files(
         }
     }
     if pyi {
+        write_python_implementation_pair_types(output_dir)?;
         let marker = output_dir.join("py.typed");
         write_file(&marker, "")?;
     }
     Ok(())
+}
+
+fn write_python_implementation_pair_types(output_dir: &Path) -> Result<(), String> {
+    // Include retained stubs too: incremental generation must keep the complete
+    // package union. Only the validated interface projection emits this alias;
+    // classes, unsupported interfaces, delegates and user stubs contribute none.
+    let mut modules = BTreeSet::new();
+    for entry in fs::read_dir(output_dir)
+        .map_err(|error| format!("Failed to read {}: {error}", output_dir.display()))?
+    {
+        let entry = entry.map_err(|error| format!("Failed to read Python module: {error}"))?;
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path)
+            .map_err(|error| format!("Failed to inspect {}: {error}", path.display()))?;
+        if !metadata.is_file()
+            || is_link_or_reparse_point(&metadata)
+            || path.extension().is_none_or(|extension| extension != "pyi")
+        {
+            continue;
+        }
+        let content = fs::read_to_string(&path)
+            .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
+        if content.starts_with(GENERATED_PYTHON_HEADER)
+            && content
+                .lines()
+                .any(|line| line.starts_with("_ImplementationPair: TypeAlias = tuple["))
+        {
+            let module = path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .ok_or_else(|| format!("Invalid Python module path {}", path.display()))?;
+            modules.insert(module.to_string());
+        }
+    }
+    write_file(
+        &output_dir.join("_implementation_types.pyi"),
+        &dynwinrt_codegen::codegen::python_stub::generate_implementation_pair_types(
+            &modules.into_iter().collect::<Vec<_>>(),
+        ),
+    )
 }
 
 #[derive(Default)]
@@ -4392,7 +4433,17 @@ fn merge_python_lazy_root_indexes(
 ) -> String {
     let mut exports = BTreeMap::<String, (String, String)>::new();
     collect_python_root_exports(generated, suppressed_names, &mut exports);
-    collect_python_root_exports(existing, suppressed_names, &mut exports);
+    let replaced_modules = exports
+        .values()
+        .map(|(module, _)| module.clone())
+        .collect::<HashSet<_>>();
+    let mut retained = BTreeMap::new();
+    collect_python_root_exports(existing, suppressed_names, &mut retained);
+    for (name, (module, symbol)) in retained {
+        if !replaced_modules.contains(&module) {
+            exports.entry(name).or_insert((module, symbol));
+        }
+    }
 
     let mut out = String::from(GENERATED_PYTHON_HEADER);
     out.push_str("from importlib import import_module as _import_module\n\n");
@@ -4499,7 +4550,18 @@ fn merge_python_indexes(
 ) -> String {
     let mut imports = BTreeSet::new();
     let mut exported_symbols = HashSet::new();
-    for line in generated.lines().chain(existing.lines()) {
+    // A regenerated module supplies its complete current exports. In particular,
+    // do not retain stale Handler/Delegate aliases after implementation support
+    // is removed, while leaving unrelated incremental modules untouched.
+    let replaced_modules = generated
+        .lines()
+        .filter_map(parse_python_import_line)
+        .map(|(module, _)| module)
+        .collect::<HashSet<_>>();
+    let retained = existing.lines().filter(|line| {
+        parse_python_import_line(line).is_none_or(|(module, _)| !replaced_modules.contains(&module))
+    });
+    for line in generated.lines().chain(retained) {
         if line.starts_with("from .") {
             let (line, comment) = line
                 .split_once("  #")
@@ -8672,6 +8734,98 @@ mod tests {
         assert_eq!(python_output_tree(&one_shot), python_output_tree(&phased));
         fs::remove_dir_all(one_shot).unwrap();
         fs::remove_dir_all(phased).unwrap();
+    }
+
+    #[test]
+    fn python_implementation_pair_union_tracks_incremental_support_and_indexes() {
+        let output = test_directory("implementation-pair-incremental");
+        fs::create_dir_all(&output).unwrap();
+        let interface = |namespace: &str, iid: &str| meta::InterfaceMeta {
+            namespace: namespace.into(),
+            name: "IValue".into(),
+            iid: iid.into(),
+            methods: vec![meta::MethodMeta {
+                name: "Text".into(),
+                vtable_index: 6,
+                return_type: Some(TypeMeta::String),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let left = interface("Example.Left", "33333333-3333-3333-3333-333333333333");
+        let right = interface("Example.Right", "44444444-4444-4444-4444-444444444444");
+        let ambiguity = HashSet::from(["IValue".into()]);
+        let context = python::PythonProjectionContext::packaged_with_ambiguities(
+            python_type_identities(&[], &[left.clone(), right.clone()], &[]),
+            ambiguity.iter().cloned(),
+        )
+        .unwrap();
+        let emit = |interfaces: &[meta::InterfaceMeta]| {
+            generate_py_files(
+                &context,
+                &output,
+                &[],
+                interfaces,
+                &[],
+                &[],
+                &HashSet::new(),
+                true,
+            )
+            .unwrap();
+            write_python_package_indexes(&output, &[], interfaces, &[], &ambiguity, true, true)
+                .unwrap();
+        };
+        emit(std::slice::from_ref(&left));
+        let first = fs::read_to_string(output.join("_implementation_types.pyi")).unwrap();
+        assert!(first.contains(".example__left__i_value import _ImplementationPair"));
+        assert!(!first.contains("example__right__i_value"));
+        emit(std::slice::from_ref(&right));
+        let complete = fs::read_to_string(output.join("_implementation_types.pyi")).unwrap();
+        assert!(complete.contains(".example__left__i_value import _ImplementationPair"));
+        assert!(complete.contains(".example__right__i_value import _ImplementationPair"));
+        assert!(!output.join("_implementation_types.py").exists());
+        assert!(
+            !fs::read_to_string(output.join("__init__.py"))
+                .unwrap()
+                .contains("_Pair")
+        );
+        for namespace in ["left", "right"] {
+            let stub = output.join("example").join(namespace).join("__init__.pyi");
+            assert!(fs::read_to_string(stub).unwrap().contains("IValueHandlers"));
+        }
+
+        let mut unsupported = left.clone();
+        unsupported
+            .implementation_metadata
+            .diagnostics
+            .push("Unsupported contract".into());
+        emit(std::slice::from_ref(&unsupported));
+        let reduced = fs::read_to_string(output.join("_implementation_types.pyi")).unwrap();
+        assert!(!reduced.contains("example__left__i_value"));
+        assert!(reduced.contains("example__right__i_value"));
+        for extension in ["py", "pyi"] {
+            let namespace = output.join("example").join("left");
+            for module in ["__init__", "i_value"] {
+                let text =
+                    fs::read_to_string(namespace.join(format!("{module}.{extension}"))).unwrap();
+                assert!(!text.contains("IValueHandlers"), "{text}");
+                assert!(text.contains("IValue"), "{text}");
+            }
+        }
+        emit(std::slice::from_ref(&left));
+        assert_eq!(
+            complete,
+            fs::read_to_string(output.join("_implementation_types.pyi")).unwrap()
+        );
+        emit(std::slice::from_ref(&right));
+        assert_eq!(
+            complete,
+            fs::read_to_string(output.join("_implementation_types.pyi")).unwrap()
+        );
+        remove_all_generated_python_stubs(&output).unwrap();
+        assert!(!output.join("_implementation_types.pyi").exists());
+        assert!(output.join("example__left__i_value.py").exists());
+        fs::remove_dir_all(output).unwrap();
     }
 
     #[test]

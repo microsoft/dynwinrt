@@ -226,6 +226,10 @@ supported. The primary `.value` needs no `release_projected` in the common
 pattern. It is created lazily once, and `release()`/`dispose()` release that
 view along with the handle's owner reference. `.value` raises after either
 operation and never recreates a released view.
+Heterogeneous convenience lists have per-pair static checking for interfaces
+from the same generated package. For heterogeneous combinations across
+generated packages, use positional typed `.implementation(...)` descriptors.
+Runtime list acceptance and the generic homogeneous-list overload are unchanged.
 
 The low-level runtime surface is:
 
@@ -270,6 +274,9 @@ slot 3 on the delegate's `IUnknown` root and returns all outputs as a list
 call, and propagates failed HRESULTs. Arguments use the existing outbound
 `invoke_all()` contract, including preallocated fill-array values; these
 helpers do not infer signatures or turn arbitrary objects into delegates.
+Generated received-delegate callables use positional-only arguments in both
+their Protocol declarations and runtime wrappers; ordinary projected methods
+continue to accept their existing keyword arguments.
 
 ### Implementation lifetime and callback failures
 

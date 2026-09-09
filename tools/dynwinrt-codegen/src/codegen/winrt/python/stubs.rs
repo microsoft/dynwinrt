@@ -74,6 +74,30 @@ pub fn generate_runtime_support_stub() -> String {
     format!("{HEADER}{FUTURE_ANNOTATIONS}")
 }
 
+/// A closed union checks each pair independently, unlike one TypeVar shared by
+/// every element of a Sequence. These imports are stub-only, never eager Python
+/// imports. The caller supplies only emitted, implementation-capable modules.
+pub fn generate_implementation_pair_types(modules: &[String]) -> String {
+    let mut out = format!("{HEADER}{FUTURE_ANNOTATIONS}from typing import Never, TypeAlias\n\n");
+    for (index, module) in modules.iter().enumerate() {
+        out.push_str(&format!(
+            "from .{module} import _ImplementationPair as _Pair{index}\n"
+        ));
+    }
+    let entries = (0..modules.len())
+        .map(|index| format!("_Pair{index}"))
+        .collect::<Vec<_>>();
+    out.push_str(&format!(
+        "\n_ImplementationPair: TypeAlias = {}\n",
+        if entries.is_empty() {
+            "Never".into()
+        } else {
+            entries.join(" | ")
+        }
+    ));
+    out
+}
+
 fn identity_marker(prefix: &str, namespace: &str, name: &str) -> String {
     let identity = format!("{namespace}_{name}")
         .chars()
@@ -223,6 +247,9 @@ pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &Interf
         out.push_str(super::implementation::IMPORTS);
         out.push_str("from abc import ABCMeta\n");
         out.push_str("from typing import TypeVar\nfrom dynwinrt import _DynWinRTImplementationFactory\n_ImplementationHandlers = TypeVar('_ImplementationHandlers')\n");
+        if context.is_packaged() {
+            out.push_str("from typing import TypeAlias\nfrom ._implementation_types import _ImplementationPair as _PackageImplementationPair\n");
+        }
     }
     let collection_kind = interface_kind(iface);
     let is_protocol = collection_kind.is_none();
@@ -364,6 +391,12 @@ pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &Interf
     out.push_str(&implementation.declarations);
     let implementation_metaclass = format!("_{}ImplementationFactory", iface.name);
     if implementation.supported {
+        if context.is_packaged() {
+            out.push_str(&format!(
+                "\n_ImplementationPair: TypeAlias = tuple[_DynWinRTImplementationFactory[{name}Handlers], {name}Handlers]\n",
+                name = iface.name
+            ));
+        }
         out.push_str(&format!("\nclass {implementation_metaclass}(ABCMeta):\n"));
         out.push_str(&implementation.factory_declarations);
     }

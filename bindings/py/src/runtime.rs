@@ -934,7 +934,7 @@ impl DynWinRTMethodHandle {
     fn invoke_detached(
         &self,
         py: Python<'_>,
-        obj: &DynWinRTValue,
+        obj: DynWinRTValue,
         args: Vec<DynWinRTValue>,
     ) -> PyResult<DynWinRTValue> {
         struct SameThreadCall {
@@ -957,8 +957,11 @@ impl DynWinRTMethodHandle {
         unsafe impl Send for SameThreadCall {}
         unsafe impl Send for SameThreadResult {}
 
-        let object = match &obj.0 {
-            dynwinrt::WinRTValue::Object(object) => object.clone(),
+        // Owned extraction ends the Python receiver borrow before dispatch.
+        // Move its native pin into the call so reentrant disposal can release
+        // the original wrapper without shortening the in-flight call lifetime.
+        let object = match obj.0 {
+            dynwinrt::WinRTValue::Object(object) => object,
             _ => {
                 return Err(PyRuntimeError::new_err(
                     "invoke_detached() requires an Object value",
@@ -2561,6 +2564,79 @@ mod tests {
         let array = DynWinRTArray(dynwinrt::ArrayData::from_values(TABLE.hresult(), &values));
 
         assert_eq!(array.to_i32_list().unwrap(), vec![0, 0x80004005u32 as i32]);
+    }
+
+    #[test]
+    fn detached_invocation_releases_the_gil_on_the_same_native_thread() {
+        use dynwinrt::{
+            WinRtImplementation, WinRtImplementationPlan, WinRtInterfaceDefinition,
+            WinRtMethodDefinition, WinRtThreadingPolicy,
+        };
+        use std::sync::Mutex;
+
+        Python::initialize();
+        Python::attach(|py| {
+            let table = dynwinrt::MetadataTable::new();
+            let iid = GUID::from_u128(0x96369f54_8eb6_48f0_abce_c1b211e627c3);
+            let signature = dynwinrt::MethodSignature::new(&table).add_out(table.hstring());
+            let interface = table
+                .register_interface("Windows.Foundation.IStringable", iid)
+                .add_method("ToString", signature.clone());
+            let plan = WinRtImplementationPlan::new(
+                vec![WinRtInterfaceDefinition {
+                    name: "Windows.Foundation.IStringable".into(),
+                    interface_type: interface.clone(),
+                    required_iids: vec![],
+                    methods: vec![WinRtMethodDefinition {
+                        name: "ToString".into(),
+                        vtable_index: 6,
+                        signature,
+                    }],
+                }],
+                WinRtThreadingPolicy::OwnerThread,
+            )
+            .unwrap();
+            let observed = Arc::new(Mutex::new(Vec::new()));
+            let callback_observed = observed.clone();
+            let mut owner = WinRtImplementation::new(
+                plan,
+                Arc::new(move |_, slot, args| {
+                    assert_eq!(slot, 6);
+                    assert!(args.is_empty());
+                    // Observe the native boundary before a Python handler's
+                    // Python::attach would reacquire the GIL and mask its state.
+                    let gil = unsafe { pyo3::ffi::PyGILState_Check() };
+                    callback_observed
+                        .lock()
+                        .unwrap()
+                        .push((gil, std::thread::current().id()));
+                    Ok(vec![dynwinrt::WinRTValue::HString(
+                        "native observer".into(),
+                    )])
+                }),
+                None,
+            )
+            .unwrap();
+            let receiver = DynWinRTValue(owner.to_value().unwrap().cast(&iid).unwrap());
+            let method = DynWinRTMethodHandle(interface.method(6).unwrap());
+            let direct = method.invoke(receiver.clone(), vec![]).unwrap();
+            let detached = method.invoke_detached(py, receiver, vec![]).unwrap();
+            for result in [direct, detached] {
+                assert!(matches!(
+                    result.0,
+                    dynwinrt::WinRTValue::HString(value) if value == "native observer"
+                ));
+            }
+            let invalid = method
+                .invoke_detached(py, DynWinRTValue(dynwinrt::WinRTValue::I32(0)), vec![])
+                .err()
+                .expect("non-object receiver must be rejected");
+            assert!(invalid.is_instance_of::<PyRuntimeError>(py));
+            assert!(invalid.to_string().contains("requires an Object value"));
+            let thread = std::thread::current().id();
+            assert_eq!(*observed.lock().unwrap(), vec![(1, thread), (0, thread)]);
+            owner.dispose().unwrap();
+        });
     }
 
     #[test]

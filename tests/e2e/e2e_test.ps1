@@ -68,8 +68,11 @@ Write-Host "=== dynwinrt E2E Test ===" -ForegroundColor Cyan
 # --------------------------------------------------------------------------
 # Detect available tools
 # --------------------------------------------------------------------------
+$venvPython = Join-Path $root "bindings\py\.venv\Scripts\python.exe"
 $pythonExe = if ($Python) {
     (Resolve-Path -LiteralPath $Python).Path
+} elseif (Test-Path -LiteralPath $venvPython -PathType Leaf) {
+    (Resolve-Path -LiteralPath $venvPython).Path
 } else {
     (Get-Command python -ErrorAction SilentlyContinue).Source
 }
@@ -119,15 +122,6 @@ if ("com" -in $Lang) {
     }
 }
 
-# The focused selector shares the existing build/tool selection, but does not
-# generate standard WinRT or COM fixtures (or delete their retained results).
-if ($Suite -eq "implementations") {
-    & (Join-Path $PSScriptRoot "implementation_test.ps1") `
-        -Lang $Lang -Python $pythonExe -CargoProfile $CargoProfile -CargoTarget $CargoTarget `
-        -KeepGenerated:$KeepGenerated
-    exit $LASTEXITCODE
-}
-
 if ($Lang.Count -eq 0) { Write-Error "No languages available"; exit 1 }
 
 # --------------------------------------------------------------------------
@@ -146,7 +140,7 @@ if (-not $SkipBuild) {
             if (-not (Test-Path $venvPython)) {
                 & $pythonExe -m venv .venv
                 if ($LASTEXITCODE -ne 0) { Write-Error "Python virtual environment creation failed"; exit 1 }
-                & $venvPython -m pip install pytest maturin --quiet
+                & $venvPython -m pip install pytest maturin mypy --quiet
                 if ($LASTEXITCODE -ne 0) { Write-Error "Python test dependency installation failed"; exit 1 }
             }
             $pythonExe = (Resolve-Path -LiteralPath $venvPython).Path
@@ -188,11 +182,15 @@ if (-not $SkipBuild) {
         if ($LASTEXITCODE -ne 0) { Write-Error "runtime entrypoint generation failed"; exit 1 }
         Pop-Location
     }
-} else {
-    $venvPython = Join-Path $root "bindings\py\.venv\Scripts\python.exe"
-    if (-not $Python -and (Test-Path $venvPython)) {
-        $pythonExe = (Resolve-Path -LiteralPath $venvPython).Path
-    }
+}
+
+# Focused and full suites share preparation. Branch before reading or deleting
+# any standard fixtures, preserving their retained output in focused runs.
+if ($Suite -eq "implementations") {
+    & (Join-Path $PSScriptRoot "implementation_test.ps1") `
+        -Lang $Lang -Python $pythonExe -CargoProfile $CargoProfile -CargoTarget $CargoTarget `
+        -KeepGenerated:$KeepGenerated
+    exit $LASTEXITCODE
 }
 
 # --------------------------------------------------------------------------
