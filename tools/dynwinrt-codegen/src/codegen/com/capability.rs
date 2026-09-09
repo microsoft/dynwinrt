@@ -4557,11 +4557,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(report.summary.eligible_interfaces, 7_929);
-        assert_eq!(report.summary.safe_complete, 5_697);
-        assert_eq!(report.summary.safe_incomplete, 2_232);
-        assert_eq!(report.summary.safe_evidence.safe_complete, 5_697);
-        assert_eq!(report.summary.safe_evidence.standard_derived, 5_332);
-        assert_eq!(report.summary.safe_evidence.exact_registry_dependent, 365);
+        assert_eq!(report.summary.safe_complete, 5_721);
+        assert_eq!(report.summary.safe_incomplete, 2_208);
+        assert_eq!(report.summary.safe_evidence.safe_complete, 5_721);
+        assert_eq!(report.summary.safe_evidence.standard_derived, 5_355);
+        assert_eq!(report.summary.safe_evidence.exact_registry_dependent, 366);
         assert_eq!(
             report.summary.safe_evidence.standard_derived
                 + report.summary.safe_evidence.exact_registry_dependent,
@@ -4569,11 +4569,11 @@ mod tests {
         );
         assert_eq!(
             report.summary.safe_evidence.metadata_fact_occurrences,
-            5_983
+            6_012
         );
         assert_eq!(
             report.summary.safe_evidence.com_standard_fact_occurrences,
-            26_134
+            26_247
         );
         assert_eq!(report.summary.safe_evidence.registered_exact_entries, 532);
         assert_eq!(
@@ -4589,14 +4589,14 @@ mod tests {
                 .summary
                 .safe_evidence
                 .exact_entry_interface_dependencies,
-            693
+            694
         );
         assert_eq!(
             report
                 .summary
                 .safe_evidence
                 .exact_family_interface_dependencies,
-            424
+            425
         );
         assert_eq!(
             report.summary.safe_evidence.by_contract_kind,
@@ -4611,7 +4611,7 @@ mod tests {
                 ("enumerator-next".into(), 74),
                 ("flag-selected-buffer".into(), 3),
                 ("null-input".into(), 4),
-                ("ownership".into(), 182),
+                ("ownership".into(), 183),
                 ("parameter-direction".into(), 45),
                 ("safearray".into(), 263),
                 ("semantic-hresult".into(), 3),
@@ -4619,7 +4619,7 @@ mod tests {
         );
         assert_eq!(
             report.summary.safe_evidence.by_family_id["com.ownership.v1"],
-            123
+            124
         );
         assert_eq!(
             report.summary.safe_evidence.by_family_id["audio.conditional-output.v1"],
@@ -4888,7 +4888,7 @@ mod tests {
                     counts.safe_incomplete_raw_runtime_blocked,
                 ),
                 (
-                    412 - usize::from(target == CensusTarget::I686),
+                    388 - usize::from(target == CensusTarget::I686),
                     1_431 - 23 * usize::from(target == CensusTarget::I686),
                     389 + 24 * usize::from(target == CensusTarget::I686)
                 )
