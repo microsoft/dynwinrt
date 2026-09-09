@@ -176,7 +176,7 @@ enum Commands {
 }
 
 const COM_MANIFEST_FILE: &str = ".dynwinrt-com-manifest.json";
-const COM_MANIFEST_VERSION: u32 = 3;
+const COM_MANIFEST_VERSION: u32 = 5;
 
 #[derive(Debug, Default, Deserialize, Serialize)]
 struct ComGenerationManifest {
@@ -274,7 +274,7 @@ fn run_com_census(winmd: &str, json: bool) -> Result<(), String> {
         .collect::<Vec<_>>();
     let complete = eligible
         .iter()
-        .filter(|interface| com::generate_com_interface_files(interface, winmd).is_ok())
+        .filter(|interface| com::generate_complete_com_interface_files(interface, winmd).is_ok())
         .count();
     let result = ComCensusResult {
         metadata: winmd.to_string(),
@@ -525,7 +525,14 @@ fn run() -> Result<(), String> {
                 let mut requested_winrt_interfaces = Vec::new();
                 let mut com_interfaces: Vec<com_metadata::ComInterfaceMeta> = Vec::new();
                 let mut com_coclasses: Vec<com_metadata::ComCoclassMeta> = Vec::new();
+                let mut native_audio_completion = false;
                 for (ns, cls) in &class_requests {
+                    if ns == com_metadata::completion::AUDIO_NAMESPACE
+                        && cls == com_metadata::completion::AUDIO_EXPORT
+                    {
+                        native_audio_completion = true;
+                        continue;
+                    }
                     if let Some(com_iface) = com_metadata::parse_com_interface(&winmd, ns, cls) {
                         // Route through classic-COM path when:
                         //   1) The interface is IUnknown-rooted (base +3), OR
@@ -585,8 +592,15 @@ fn run() -> Result<(), String> {
                 // JS files into a Python output directory would produce the
                 // wrong artifact types with no diagnostic. Reject the
                 // combination up front.
-                if lang != "js" && (!com_interfaces.is_empty() || !com_coclasses.is_empty()) {
+                if lang != "js"
+                    && (!com_interfaces.is_empty()
+                        || !com_coclasses.is_empty()
+                        || native_audio_completion)
+                {
                     let mut offenders: Vec<String> = Vec::new();
+                    if native_audio_completion {
+                        offenders.push("Windows.Win32.Media.Audio.ActivateAudioInterfaceAsync (native COM completion)".into());
+                    }
                     for ci in &com_interfaces {
                         offenders.push(format!(
                             "{}.{} (classic-COM interface)",
@@ -613,7 +627,10 @@ fn run() -> Result<(), String> {
 
                 // Classic COM occupies its own ESM subpackage so its symbols
                 // cannot collide with or leak into the WinRT root barrel.
-                if !com_interfaces.is_empty() || !com_coclasses.is_empty() {
+                if !com_interfaces.is_empty()
+                    || !com_coclasses.is_empty()
+                    || native_audio_completion
+                {
                     let com_output_dir = output_dir.join("com");
                     let mut unsafe_metadata = None;
 
@@ -627,6 +644,26 @@ fn run() -> Result<(), String> {
                     // delete anything here.
                     let mut generated =
                         Vec::with_capacity(com_interfaces.len() + com_coclasses.len());
+                    if native_audio_completion {
+                        let out = com::generate_audio_completion_files(&winmd)?;
+                        let module = com::canonical_module_path(
+                            com_metadata::completion::AUDIO_NAMESPACE,
+                            com_metadata::completion::AUDIO_EXPORT,
+                        )?;
+                        let mut files = vec![
+                            (format!("{module}.js"), out.js),
+                            (format!("{module}.d.ts"), out.dts),
+                        ];
+                        files.extend(out.extra_files);
+                        generated.push(PlannedComRoot {
+                            root: "Windows.Win32.Media.Audio.ActivateAudioInterfaceAsync".into(),
+                            name: com_metadata::completion::AUDIO_EXPORT.into(),
+                            files,
+                            unsafe_support: None,
+                            summary: None,
+                            no_callable_error: None,
+                        });
+                    }
                     for com_iface in &com_interfaces {
                         let root = format!(
                             "{}.{}",
@@ -8962,20 +8999,44 @@ mod tests {
     }
 
     #[test]
+    fn com_context_manifest_mismatch_requires_clean_regeneration() {
+        let output = test_directory("com-context-manifest").join("com");
+        fs::create_dir_all(&output).unwrap();
+        for version in [1, 2, 3, 4] {
+            let content = serde_json::to_string(&ComGenerationManifest {
+                version,
+                roots: BTreeMap::new(),
+            })
+            .unwrap();
+            fs::write(output.join(COM_MANIFEST_FILE), &content).unwrap();
+            let error =
+                prepare_com_generation_manifest(&output, &BTreeMap::new(), &BTreeMap::new())
+                    .unwrap_err();
+            assert!(error.contains("delete and regenerate"), "{error}");
+            assert!(has_com_output(&output).is_err());
+            assert_eq!(
+                fs::read_to_string(output.join(COM_MANIFEST_FILE)).unwrap(),
+                content
+            );
+        }
+        fs::remove_dir_all(output.parent().unwrap()).unwrap();
+    }
+
+    #[test]
     fn unsafe_support_schema_mismatch_requires_clean_regeneration() {
         let output = test_directory("unsafe-schema-mismatch").join("com");
         let unsafe_dir = output.join("unsafe");
         fs::create_dir_all(&unsafe_dir).unwrap();
         fs::write(
             unsafe_dir.join("support.json"),
-            "{\"schemaVersion\":10,\"interfaces\":[]}\n",
+            "{\"schemaVersion\":11,\"interfaces\":[]}\n",
         )
         .unwrap();
 
         let error = prepare_generated_unsafe_package(&output, &[]).unwrap_err();
         assert!(
-            error.contains("Unsupported generated unsafe support schema 10")
-                && error.contains("expected 11"),
+            error.contains("Unsupported generated unsafe support schema 11")
+                && error.contains("expected 12"),
             "{error}"
         );
 

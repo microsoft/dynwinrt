@@ -17,7 +17,7 @@ use super::capability::{
 };
 use super::javascript::naming::camel_case;
 
-pub const UNSAFE_SUPPORT_SCHEMA_VERSION: u32 = 11;
+pub const UNSAFE_SUPPORT_SCHEMA_VERSION: u32 = 12;
 
 #[derive(Debug, Clone)]
 pub struct UnsafeGeneratedOutput {
@@ -68,7 +68,7 @@ pub fn measure_stage2_coverage(winmd_paths: &str) -> Result<Stage2Coverage, Stri
         runtime_blocked_methods: 0,
     };
     for interface in &interfaces {
-        if super::generate_com_interface_files(interface, winmd_paths).is_ok() {
+        if super::generate_complete_com_interface_files(interface, winmd_paths).is_ok() {
             continue;
         }
         let methods = classify_interface_methods(interface)?;

@@ -56,6 +56,7 @@ const opaqueComDeclarations = [
 ]
 const comUnsafeExports = new Set([
   ...comExports,
+  'DynComBorrowedCopyPlan',
   'DynCom',
   'DynComDispatchInvokeResult',
   'DynComInterface',
@@ -265,6 +266,7 @@ function writeFacade(
       ...(name === 'com' ? [] : [
         'module.exports.__registerComProjection = projection.registerProjection',
         'module.exports.__comProjectionIid = projection.projectionIid',
+        'module.exports.__activateAudioInterfaceAsync = projection.activateAudioInterfaceAsync',
       ]),
     ] : []),
     '',
@@ -279,6 +281,7 @@ function writeFacade(
       ...(name === 'com' ? [] : [
         "export declare function __registerComProjection<T>(type: ComInterfaceType<T>, iid: import('./index.js').WinGuid): void",
         "export declare function __comProjectionIid<T>(type: ComInterfaceType<T>): import('./index.js').WinGuid",
+        'export declare function __activateAudioInterfaceAsync<T>(descriptor: string, deviceInterfacePath: string, type: ComInterfaceType<T>): Promise<T>',
       ]),
     ] : []),
     '',

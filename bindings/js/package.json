@@ -92,6 +92,8 @@
     "lint": "oxlint",
     "test": "npm run test:types && ava",
     "test:generated-unsafe": "npm run build:test-hooks && npm run build:entrypoints && ava __test__/generated-unsafe-companion.e2e.ts",
+    "test:native-completion": "npm run build:test-hooks && npm run build:entrypoints && ava __test__/native-completion.e2e.ts",
+    "test:borrowed-copy": "npm run build:test-hooks && npm run build:entrypoints && ava __test__/borrowed-copy.e2e.ts",
     "test:types": "npm run test:types:index && npm run test:types:raw",
     "test:types:index": "tsc --noEmit --strict --target ESNext --module NodeNext --moduleResolution NodeNext __test__/index.spec.ts",
     "test:types:raw": "tsc --noEmit --project __test__/types/tsconfig.json",
