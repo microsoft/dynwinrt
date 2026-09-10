@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+import assert from 'node:assert/strict'
+import { setImmediate } from 'node:timers/promises'
 import { DynWinRtMethodSig, DynWinRtType, DynWinRtValue, WinGuid, roInitialize } from '../dist/winrt.js'
 
 roInitialize(1)
@@ -16,48 +18,44 @@ const outputStream = DynWinRtType.registerInterface(
 ).addMethod(
   'WriteAsync',
   new DynWinRtMethodSig()
-    .addIn(DynWinRtType.object())
+    .addIn(DynWinRtType.interface(WinGuid.parse('905A0FE0-BC53-11DF-8C49-001E4FC686DA')))
     .addOut(DynWinRtType.iAsyncOperationWithProgress(DynWinRtType.u32(), DynWinRtType.u32())),
 )
 
-const bufferFactory = DynWinRtType.registerInterface(
-  'IBufferFactory',
-  WinGuid.parse('71AF914D-C10F-484B-BC50-14BC623B3A27'),
-).addMethod('Create', new DynWinRtMethodSig().addIn(DynWinRtType.u32()).addOut(DynWinRtType.object()))
+const owned = []
+function own(value) {
+  owned.push(value)
+  return value
+}
 
-const bufferType = DynWinRtType.registerInterface('IBuffer', WinGuid.parse('905A0FE0-BC53-11DF-8C49-001E4FC686DA'))
-  .addMethod('get_Capacity', new DynWinRtMethodSig().addOut(DynWinRtType.u32()))
-  .addMethod('get_Length', new DynWinRtMethodSig().addOut(DynWinRtType.u32()))
-  .addMethod('put_Length', new DynWinRtMethodSig().addIn(DynWinRtType.u32()))
+try {
+  const factory = own(DynWinRtValue.activationFactory('Windows.Storage.Streams.InMemoryRandomAccessStream'))
+  const factoryView = own(factory.cast(WinGuid.parse('00000035-0000-0000-C000-000000000046')))
+  const stream = own(activationFactory.method(6).invoke(factoryView, []))
+  const streamOutput = own(stream.cast(WinGuid.parse('905A0FE6-BC53-11DF-8C49-001E4FC686DA')))
 
-const stream = activationFactory
-  .method(6)
-  .invoke(
-    DynWinRtValue.activationFactory('Windows.Storage.Streams.InMemoryRandomAccessStream').cast(
-      WinGuid.parse('00000035-0000-0000-C000-000000000046'),
-    ),
-    [],
-  )
-const streamOutput = stream.cast(WinGuid.parse('905A0FE6-BC53-11DF-8C49-001E4FC686DA'))
+  for (const [length, observeProgress] of [
+    [1024, false],
+    [2048, true],
+  ]) {
+    const buffer = own(DynWinRtValue.fromBuffer(Buffer.alloc(length, 0x5a)))
+    const operation = own(outputStream.method(6).invoke(streamOutput, [buffer]))
+    const progress = []
+    if (observeProgress) {
+      operation.onProgress((value) => progress.push(value.toNumber()))
+    }
 
-const buffer = bufferFactory
-  .method(6)
-  .invoke(
-    DynWinRtValue.activationFactory('Windows.Storage.Streams.Buffer').cast(
-      WinGuid.parse('71AF914D-C10F-484B-BC50-14BC623B3A27'),
-    ),
-    [DynWinRtValue.u32(1024)],
-  )
-bufferType
-  .method(8)
-  .invoke(buffer.cast(WinGuid.parse('905A0FE0-BC53-11DF-8C49-001E4FC686DA')), [DynWinRtValue.u32(1024)])
+    const result = own(await operation.toPromise())
+    assert.equal(result.toNumber(), length)
+    await setImmediate()
 
-const operation = outputStream.method(6).invoke(streamOutput, [buffer])
-operation.onProgress(() => {})
-
-const result = await operation.toPromise()
-if (result.toNumber() !== 1024) {
-  throw new Error(`Expected 1024 bytes written, got ${result.toNumber()}`)
+    // A fast write may finish before registration; any delivered progress is a UInt32 byte count.
+    for (const value of progress) {
+      assert.ok(Number.isInteger(value) && value >= 0 && value <= length)
+    }
+  }
+} finally {
+  for (const value of owned.reverse()) value.release()
 }
 
 console.log('progress-exit-ok')
