@@ -10,7 +10,7 @@ import shutil
 import unittest
 import uuid
 
-from coverage import CoverageData
+from coverage import Coverage, CoverageData
 from coverage.exceptions import NoSource
 
 from python_coverage import normalize_data, normalize_path, write_reports
@@ -19,9 +19,14 @@ from python_coverage import normalize_data, normalize_path, write_reports
 HERE = Path(__file__).resolve().parent
 STANDARD = Path("tests/e2e/e2e_generated/python_bindings")
 IMPLEMENTATIONS = Path("tests/e2e/e2e_generated/implementations/python_bindings")
+RUNTIME = Path("bindings/py/python/dynwinrt/_implementation.py")
 
 
 class PathNormalizationTests(unittest.TestCase):
+    def test_product_trace_and_report_sources_agree(self):
+        coverage = Coverage(config_file=str(HERE / "python-coveragerc"))
+        self.assertEqual(coverage.get_option("run:include"), coverage.get_option("report:include"))
+
     def test_extended_drive_paths_become_repo_relative(self):
         root = Path(r"D:\a\dynwinrt\dynwinrt")
         relative = str(IMPLEMENTATIONS / "windows" / "i_closable.py")
@@ -94,7 +99,7 @@ class ReportTests(unittest.TestCase):
         standard = self.source(STANDARD / "windows__i_closable.py")
         implementation = self.source(IMPLEMENTATIONS / "windows__i_closable.py")
         transitive = self.source(STANDARD / "windows" / "transitive.py", "def unused():\n    return 7\n")
-        runtime = self.source(Path("bindings/py/src/implementation.py"))
+        runtime = self.source(RUNTIME)
         runner = self.source(Path("tests/e2e/runners/runner.py"))
         self.record("standard", {
             str(standard.relative_to(self.root)): [1, 2, 4],
@@ -159,13 +164,13 @@ class ReportTests(unittest.TestCase):
         )
 
     def test_skip_e2e_can_report_runtime_without_generated_sources(self):
-        runtime = self.source(Path("bindings/py/src/implementation.py"))
+        runtime = self.source(RUNTIME)
         self.record("runtime", {str(runtime.relative_to(self.root)): [1, 2, 4]})
         self.report()
         self.assertEqual(self.read_report("runtime/coverage.json")["totals"]["covered_lines"], 3)
 
     def test_installed_runtime_package_is_included(self):
-        runtime = self.source(Path("environment/Lib/site-packages/dynwinrt/implementation.py"))
+        runtime = self.source(Path("environment/Lib/site-packages/dynwinrt/_implementation.py"))
         self.record("runtime", {str(runtime): [1, 2, 4]})
         self.report()
         self.assertEqual(self.read_report("runtime/coverage.json")["totals"]["covered_lines"], 3)
@@ -182,22 +187,25 @@ class ReportTests(unittest.TestCase):
             data = CoverageData(basename=str(self.output / (".coverage." + context)))
             data.set_context(context)
             data.add_arcs({filename: [(-1, 1), (1, 2), (2, target), (target, -1)]})
+            runtime = self.source(RUNTIME, "value = 3\n")
+            data.add_arcs({str(runtime): [(-1, 1), (1, -1)]})
             data.write()
         self.report()
         totals = self.read_report()["totals"]
         self.assertEqual(totals["num_branches"], 2)
         self.assertEqual(totals["covered_branches"], 2)
-        self.assertEqual(totals["covered_lines"], 4)
+        self.assertEqual(totals["covered_lines"], 5)
         combined = CoverageData(basename=str(self.output / ".coverage"))
         combined.read()
-        self.assertEqual(len(combined.measured_files()), 1)
-        filename = next(iter(combined.measured_files()))
+        self.assertEqual(len(combined.measured_files()), 2)
+        filename = next(path for path in combined.measured_files() if "conditional" in path)
         self.assertEqual(set(combined.contexts_by_lineno(filename)[2]), {"truthy", "falsey"})
 
-    def test_no_product_measurements_still_produce_accurate_diagnostics(self):
+    def test_no_runtime_measurements_fail_with_accurate_diagnostics(self):
         runner = self.source(Path("tests/e2e/runners/runner.py"))
         self.record("runner", {str(runner.relative_to(self.root)): [1, 2, 4]})
-        self.report()
+        with self.assertRaisesRegex(RuntimeError, "dynwinrt/_implementation.py"):
+            self.report()
         self.assertEqual(self.read_report("all-data.json")["totals"]["covered_lines"], 3)
         self.assertFalse((self.output / "coverage.json").exists())
 
@@ -211,8 +219,53 @@ class ReportTests(unittest.TestCase):
     def test_extended_long_source_paths_remain_reportable(self):
         long_source = self.source(IMPLEMENTATIONS / ("generic_" + "type_" * 28 + ".py"))
         self.record("long", {"\\\\?\\" + str(long_source): [1, 2, 4]})
+        runtime = self.source(RUNTIME)
+        self.record("runtime", {str(runtime): [1, 2, 4]})
         self.report()
-        self.assertEqual(self.read_report()["totals"]["covered_lines"], 3)
+        self.assertEqual(self.read_report("generated-implementations/coverage.json")["totals"]["covered_lines"], 3)
+
+    def test_generated_families_and_shared_helpers_cannot_replace_runtime_source(self):
+        sources = [
+            self.source(STANDARD / "sample.py"),
+            self.source(STANDARD / "_runtime.py"),
+            self.source(IMPLEMENTATIONS / "sample.py"),
+            self.source(IMPLEMENTATIONS / "_runtime.py"),
+        ]
+        unrelated_runtime = self.source(Path("environment/Lib/site-packages/dynwinrt/__init__.py"))
+        self.record("generated", {str(path): [1, 2, 4] for path in (*sources, unrelated_runtime)})
+        with self.assertRaisesRegex(RuntimeError, "dynwinrt/_implementation.py"):
+            self.report(require_generated=True)
+        self.assertEqual(self.read_report()["totals"]["covered_lines"], 15)
+        for name in ("generated-winrt", "generated-implementations"):
+            report = self.read_report(name + "/coverage.json")
+            self.assertTrue(any(path.endswith("_runtime.py") for path in report["files"]))
+
+    def test_zero_hit_runtime_source_does_not_satisfy_presence_check(self):
+        runtime = self.source(RUNTIME)
+        generated = self.source(STANDARD / "sample.py")
+        self.record("measured", {str(runtime): [], str(generated): [1, 2, 4]})
+        with self.assertRaisesRegex(RuntimeError, "dynwinrt/_implementation.py"):
+            self.report()
+        totals = self.read_report("runtime/coverage.json")["totals"]
+        self.assertEqual(totals["covered_lines"], 0)
+        self.assertEqual(totals["num_statements"], 3)
+
+    def test_required_source_must_be_part_of_the_product_report(self):
+        runtime = self.source(RUNTIME)
+        generated = self.source(STANDARD / "sample.py")
+        self.record("measured", {str(runtime): [1, 2, 4], str(generated): [1, 2, 4]})
+        config = self.root / "exclude-runtime.coveragerc"
+        config.write_text(
+            (HERE / "python-coveragerc").read_text(encoding="utf-8").replace(
+                "omit =\n", "omit =\n    */dynwinrt/_implementation.py\n"
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(RuntimeError, "dynwinrt/_implementation.py"):
+            with contextlib.redirect_stdout(io.StringIO()):
+                write_reports(self.root, self.output, config)
+        diagnostic = self.read_report("all-data.json")
+        self.assertTrue(any(path.endswith("_implementation.py") for path in diagnostic["files"]))
 
 
 if __name__ == "__main__":

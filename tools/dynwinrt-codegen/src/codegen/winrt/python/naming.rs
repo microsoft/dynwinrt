@@ -5,6 +5,9 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
+use super::super::shared::implementation_symbols::{
+    HelperOwner, ImplementationHelper, allocate_helpers, interface_helpers,
+};
 use crate::meta::InterfaceMeta;
 use crate::types::{TypeIdentity, TypeIdentityKind, TypeKind, TypeMeta, TypeRef};
 
@@ -399,6 +402,7 @@ pub struct PythonProjectionContext {
     projections: HashMap<PythonTypeIdentity, PythonProjection>,
     aliases: HashMap<PythonTypeIdentity, PythonTypeIdentity>,
     compatibility_counts: HashMap<String, usize>,
+    implementation_helpers: BTreeMap<String, Vec<ImplementationHelper>>,
 }
 
 impl PythonProjectionContext {
@@ -521,6 +525,7 @@ impl PythonProjectionContext {
             projections,
             aliases,
             compatibility_counts,
+            implementation_helpers: BTreeMap::new(),
         })
     }
 
@@ -545,6 +550,81 @@ impl PythonProjectionContext {
 
     pub fn is_packaged(&self) -> bool {
         self.packaged
+    }
+
+    pub fn configure_implementation_helpers(
+        &mut self,
+        owners: impl IntoIterator<Item = (PythonTypeIdentity, Vec<ImplementationHelper>)>,
+    ) {
+        let owners = owners
+            .into_iter()
+            .map(|(identity, helpers)| HelperOwner {
+                identity: identity.canonical_key(),
+                projected_name: self.projected_name(&identity),
+                qualified_name: semantic_qualifier(&identity),
+                helpers,
+            })
+            .collect::<Vec<_>>();
+        let reserved = self.projections.iter().flat_map(|(identity, projection)| {
+            [
+                projection.projected_name.clone(),
+                projection.reference_name.clone(),
+                legacy_projected_name(identity),
+                format!("IID_{}", projection.projected_name),
+            ]
+        });
+        self.implementation_helpers = allocate_helpers(owners, reserved, false);
+    }
+
+    pub fn implementation_helpers(&self, identity: &PythonTypeIdentity) -> &[ImplementationHelper] {
+        self.implementation_helpers
+            .get(&self.normalize_identity(identity).canonical_key())
+            .map_or(&[], Vec::as_slice)
+    }
+
+    pub(crate) fn implementation_helper_name(
+        &self,
+        interface: &InterfaceMeta,
+        key: &str,
+        suffix: &str,
+    ) -> String {
+        let identity = self
+            .projections
+            .iter()
+            .find(|(identity, projection)| {
+                identity.namespace() == Some(interface.namespace.as_str())
+                    && projection.projected_name == interface.name
+            })
+            .map_or_else(
+                || interface.type_identity(),
+                |(identity, _)| identity.clone(),
+            );
+        if let Some(helper) = self
+            .implementation_helpers(&identity)
+            .iter()
+            .find(|helper| helper.key == key)
+        {
+            return helper.name.clone();
+        }
+        let names = allocate_helpers(
+            [HelperOwner {
+                identity: identity.canonical_key(),
+                projected_name: interface.name.clone(),
+                qualified_name: semantic_qualifier(&identity),
+                helpers: interface_helpers(interface, true),
+            }],
+            self.projections
+                .values()
+                .map(|projection| projection.projected_name.clone()),
+            false,
+        );
+        names
+            .get(&identity.canonical_key())
+            .and_then(|helpers| helpers.iter().find(|helper| helper.key == key))
+            .map_or_else(
+                || format!("{}{suffix}", interface.name),
+                |helper| helper.name.clone(),
+            )
     }
 
     pub fn normalize_identity(&self, identity: &PythonTypeIdentity) -> PythonTypeIdentity {

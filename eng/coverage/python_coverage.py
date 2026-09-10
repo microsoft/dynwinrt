@@ -18,7 +18,13 @@ GENERATED_LAYERS = {
         "tests/e2e/e2e_generated/implementations/python_bindings/*"
     ),
 }
-RUNTIME_INCLUDES = ["*/site-packages/dynwinrt/*", "*/bindings/py/src/*.py"]
+RUNTIME_INCLUDES = [
+    "*/site-packages/dynwinrt/*",
+    "*/bindings/py/src/*.py",
+    "*/bindings/py/python/dynwinrt/*",
+    "*/dynwinrt/*.py",
+]
+REQUIRED_RUNTIME_SOURCES = ("dynwinrt/_implementation.py",)
 
 
 def _without_device_prefix(path: str) -> str:
@@ -104,16 +110,25 @@ def write_reports(
         includes = coverage.get_option("report:include")
         try:
             aggregate = _write_layer(coverage, directory, includes)
-        except NoDataError:
-            if require_generated:
-                raise
-            print("No Python product files were measured; skipping product reports.")
-            return
+        except NoDataError as error:
+            raise RuntimeError(
+                "Python coverage did not execute required runtime sources: "
+                + ", ".join(REQUIRED_RUNTIME_SOURCES)
+            ) from error
 
         files = {
             normalize_path(path, root).replace("\\", "/"): entry
             for path, entry in aggregate["files"].items()
         }
+        missing_runtime = [
+            source for source in REQUIRED_RUNTIME_SOURCES
+            if not any(
+                (path.lower() == source or path.lower().endswith("/" + source))
+                and entry["summary"]["covered_lines"] > 0
+                and entry["summary"]["num_statements"] > 0
+                for path, entry in files.items()
+            )
+        ]
         missing_layers = []
         generated_files = set()
         for name, pattern in GENERATED_LAYERS.items():
@@ -130,10 +145,10 @@ def write_reports(
         if files.keys() - generated_files:
             _write_layer(coverage, directory / "runtime", RUNTIME_INCLUDES)
         coverage.report(include=includes)
-        if missing_layers:
+        if missing_runtime or missing_layers:
             raise RuntimeError(
-                "Python coverage did not execute required source families: "
-                + ", ".join(missing_layers)
+                "Python coverage did not execute required runtime sources or source families: "
+                + ", ".join(missing_runtime + missing_layers)
             )
     finally:
         os.chdir(original_directory)

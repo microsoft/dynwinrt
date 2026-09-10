@@ -231,6 +231,11 @@ from the same generated package. For heterogeneous combinations across
 generated packages, use positional typed `.implementation(...)` descriptors.
 Runtime list acceptance and the generic homogeneous-list overload are unchanged.
 
+The management implementation ships as `dynwinrt/_implementation.py` beside the
+native extension. Tracebacks and coverage use this installed source file; no
+build checkout is needed. The native module's public class identities and
+exports are unchanged.
+
 The low-level runtime surface is:
 
 - `DynWinRTImplementationMethod(name, vtable_index, signature)`: an immutable

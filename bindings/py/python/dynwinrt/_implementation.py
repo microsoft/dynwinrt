@@ -1,6 +1,8 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
+# Loaded into the native module's globals to preserve public type identity.
+
 import inspect as _implementation_inspect
 from typing import Generic as _ImplementationGeneric, TypeVar as _ImplementationTypeVar
 

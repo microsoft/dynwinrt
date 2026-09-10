@@ -393,8 +393,8 @@ pub fn generate_interface_stub(context: &PythonProjectionContext, iface: &Interf
     if implementation.supported {
         if context.is_packaged() {
             out.push_str(&format!(
-                "\n_ImplementationPair: TypeAlias = tuple[_DynWinRTImplementationFactory[{name}Handlers], {name}Handlers]\n",
-                name = iface.name
+                "\n_ImplementationPair: TypeAlias = tuple[_DynWinRTImplementationFactory[{handler}], {handler}]\n",
+                handler = context.implementation_helper_name(iface, "handlers", "Handlers")
             ));
         }
         out.push_str(&format!("\nclass {implementation_metaclass}(ABCMeta):\n"));

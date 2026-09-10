@@ -16,7 +16,28 @@ pub(crate) mod stub_helpers;
 pub mod stubs;
 pub(crate) mod type_helpers;
 
+pub use super::shared::implementation_symbols::ImplementationHelper;
 pub use generator::*;
+pub fn implementation_helper_records(
+    context: &PythonProjectionContext,
+    interface: &crate::meta::InterfaceMeta,
+) -> Vec<ImplementationHelper> {
+    let mut projected = interface.clone();
+    projected.name = context.projected_name_for_interface(interface);
+    let projection = implementation::project(context, &projected);
+    if !projection.supported {
+        return Vec::new();
+    }
+    super::shared::implementation_symbols::interface_helpers(&projected, true)
+        .into_iter()
+        .map(|mut helper| {
+            helper.name =
+                context.implementation_helper_name(&projected, &helper.key, &helper.suffix);
+            helper.implementation_name = helper.name.clone();
+            helper
+        })
+        .collect()
+}
 pub use naming::{
     PythonProjectionContext, PythonTypeIdentity, python_identity_display_name,
     python_namespace_segments, python_public_module_name, python_public_qualified_module_name,

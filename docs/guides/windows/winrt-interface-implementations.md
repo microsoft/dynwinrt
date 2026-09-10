@@ -125,6 +125,10 @@ Support is determined from the entire interface, not only from the method an
 application intends to call. Missing handlers, unresolved required interfaces,
 duplicate views, invalid slots, or unsupported signatures fail before a native
 object is published.
+Validation retains original metadata reference qualifiers: an input scalar
+`BYREF`, a by-reference logical return, or a by-reference struct field is not
+silently treated as a value. Normal scalar outputs and WinRT pass/fill/receive
+array contracts remain supported.
 
 | Contract | Support |
 | --- | --- |
@@ -145,6 +149,17 @@ language object's shape. When a method has multiple logical outputs, the
 generated result has named fields; every field must be present and valid.
 The ABI order is explicit output parameters in metadata order followed by the
 method's logical return value.
+
+Node handlers with no logical outputs use normal TypeScript `void` semantics:
+synchronous expression results such as `closes++`, an assignment, or
+`Map.delete(...)` are ignored. Promises and thenables are still rejected, and
+thrown exceptions still fail the native call. Python void handlers return `None`.
+
+Handler, delegate-callable, and result helpers have names allocated with their
+owning interface identity. If a helper would shadow a real metadata type or
+another helper, codegen qualifies the helper name; real types keep their public
+identity. Use factory type inference or the generated exports instead of
+constructing helper names by concatenating strings.
 
 A fill-array handler receives a **capacity**, not a writable borrowed native
 buffer. Return exactly that many elements. Receive-array storage and element

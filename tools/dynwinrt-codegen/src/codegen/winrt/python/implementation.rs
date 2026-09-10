@@ -175,9 +175,26 @@ struct Projector<'a> {
     plan: &'a WinRtImplementationPlan,
     prefix: String,
     structs: Vec<ImplementationType>,
+    interface: &'a InterfaceMeta,
 }
 
 impl Projector<'_> {
+    fn delegate_name(&self, index: usize) -> String {
+        self.context.implementation_helper_name(
+            self.interface,
+            &format!("delegate:{index}"),
+            &format!("ImplementationDelegate{index}"),
+        )
+    }
+
+    fn delegate_result_name(&self, index: usize) -> String {
+        self.context.implementation_helper_name(
+            self.interface,
+            &format!("delegate-result:{index}"),
+            &format!("ImplementationDelegate{index}Result"),
+        )
+    }
+
     fn delegate_index(&self, typ: &TypeMeta) -> Option<usize> {
         self.plan
             .delegates
@@ -271,8 +288,8 @@ impl Projector<'_> {
     fn annotation(&self, typ: &ImplementationType, writing: bool) -> String {
         if let Some(index) = self.delegate_index(&typ.metadata) {
             return format!(
-                "{}Delegate{index}{} | None",
-                self.prefix,
+                "{}{} | None",
+                self.delegate_name(index),
                 if writing { " | DynWinRTValue" } else { "" }
             );
         }
@@ -346,7 +363,7 @@ impl Projector<'_> {
 
     fn read(&self, typ: &ImplementationType, value: &str) -> String {
         if let Some(index) = self.delegate_index(&typ.metadata) {
-            return format!("_{}Delegate{index}({value})", self.prefix);
+            return format!("_{}({value})", self.delegate_name(index));
         }
         if let Some(inner) = ireference_inner_type(&typ.metadata) {
             let inner = validate_type(inner, false).expect("validated IReference value");
@@ -609,7 +626,11 @@ impl Projector<'_> {
     }
 
     fn result_name(&self, method: &ImplementationMethod) -> String {
-        format!("{}{}Result", self.prefix, method.name)
+        self.context.implementation_helper_name(
+            self.interface,
+            &format!("method-result:{}", method.vtable_index),
+            &format!("Implementation{}Result", method.name),
+        )
     }
 
     fn result_type(&self, method: &ImplementationMethod, writing: bool) -> String {
@@ -679,20 +700,20 @@ fn project_validated(
         plan,
         structs,
         prefix: format!("{}Implementation", iface.name),
+        interface: iface,
     };
     let mut support = String::from(HELPER_IMPORTS);
     let mut declarations = String::new();
     let mut result_names = HashSet::new();
-    for (result_name, method) in plan
-        .methods
-        .iter()
-        .map(|method| (projector.result_name(method), method))
-        .chain(plan.delegates.iter().enumerate().map(|(index, delegate)| {
-            (
-                format!("{}Delegate{index}Result", projector.prefix),
-                &delegate.invoke,
+    for (result_name, method) in
+        plan.methods
+            .iter()
+            .map(|method| (projector.result_name(method), method))
+            .chain(
+                plan.delegates.iter().enumerate().map(|(index, delegate)| {
+                    (projector.delegate_result_name(index), &delegate.invoke)
+                }),
             )
-        }))
     {
         if method.output_count > 1 {
             if !result_names.insert(result_name.clone()) {
@@ -775,8 +796,8 @@ fn project_validated(
         let params = projector.parameters(method, true)?;
         let comma = if params.is_empty() { "" } else { ", " };
         declarations.push_str(&format!(
-            "\nclass {}Delegate{index}(Protocol):\n    @property\n    def _obj(self) -> DynWinRTValue: ...\n    def __call__(self{comma}{params}, /) -> {}: ...\n",
-            projector.prefix, if method.output_count > 1 { format!("{}Delegate{index}Result", projector.prefix) } else { projector.result_type(method, false) }
+            "\nclass {}(Protocol):\n    @property\n    def _obj(self) -> DynWinRTValue: ...\n    def __call__(self{comma}{params}, /) -> {}: ...\n",
+            projector.delegate_name(index), if method.output_count > 1 { projector.delegate_result_name(index) } else { projector.result_type(method, false) }
         ));
         let args = method
             .parameters
@@ -820,12 +841,13 @@ fn project_validated(
             ),
         };
         support.push_str(&format!(
-            "\ndef _{}Delegate{index}(value):\n    if value.is_null():\n        return None\n    def callback(*args):\n        if len(args) != {}:\n            raise TypeError('delegate argument count mismatch')\n        result = value.invoke_delegate({}, {}, [{args}])\n        return {returned}\n    callback._obj = value\n    return callback\n\n",
-            projector.prefix, method.input_count, projector.iid(&delegate.typ), projector.signature(method)
+            "\ndef _{}(value):\n    if value.is_null():\n        return None\n    def callback(*args):\n        if len(args) != {}:\n            raise TypeError('delegate argument count mismatch')\n        result = value.invoke_delegate({}, {}, [{args}])\n        return {returned}\n    callback._obj = value\n    return callback\n\n",
+            projector.delegate_name(index), method.input_count, projector.iid(&delegate.typ), projector.signature(method)
         ));
     }
+    let handler_type = context.implementation_helper_name(iface, "handlers", "Handlers");
     declarations.push_str(&format!(
-        "\nclass {}Handlers(Protocol):\n    \"\"\"Synchronous handlers; multi-output results are named dicts and FillArray inputs are capacities.\"\"\"\n", iface.name
+        "\nclass {handler_type}(Protocol):\n    \"\"\"Synchronous handlers; multi-output results are named dicts and FillArray inputs are capacities.\"\"\"\n"
     ));
     let mut handlers = HashSet::new();
     let mut bindings = Vec::new();
@@ -932,10 +954,8 @@ fn project_validated(
         bindings.push("        if not callable(getattr(DynWinRTValue, 'invoke_delegate', None)):\n            raise TypeError('this interface requires WinRT delegate invocation support in the runtime')".into());
     }
     let mut factory_body = format!(
-        "    @staticmethod\n    def implementation(handlers: {}Handlers) -> DynWinRTImplementationDescriptor:\n{}\n        plan = _get_implementation_plan()\n        def dispatch(vtable_index, args):\n            if not isinstance(args, list):\n                raise TypeError('implementation arguments must be a list')\n{dispatch}            raise ValueError('unknown implementation vtable slot')\n        return DynWinRTImplementationDescriptor(plan, dispatch)\n\n    @classmethod\n    def implement(cls, handlers: {}Handlers, *additional: DynWinRTImplementationDescriptor, interfaces=()) -> DynWinRTImplementationHandle:\n        return DynWinRTImplementationHandle._create(cls, handlers, additional, interfaces)\n\n",
-        iface.name,
-        bindings.join("\n"),
-        iface.name
+        "    @staticmethod\n    def implementation(handlers: {handler_type}) -> DynWinRTImplementationDescriptor:\n{}\n        plan = _get_implementation_plan()\n        def dispatch(vtable_index, args):\n            if not isinstance(args, list):\n                raise TypeError('implementation arguments must be a list')\n{dispatch}            raise ValueError('unknown implementation vtable slot')\n        return DynWinRTImplementationDescriptor(plan, dispatch)\n\n    @classmethod\n    def implement(cls, handlers: {handler_type}, *additional: DynWinRTImplementationDescriptor, interfaces=()) -> DynWinRTImplementationHandle:\n        return DynWinRTImplementationHandle._create(cls, handlers, additional, interfaces)\n\n",
+        bindings.join("\n")
     );
     factory_body.push_str(&format!(
         "    @classmethod\n    def from_implementation(cls, owner: DynWinRTImplementation | DynWinRTImplementationHandle) -> '{}':\n        \"\"\"Query an independently owned view, tracked by the current lifetime scope.\"\"\"\n        if not isinstance(owner, (DynWinRTImplementation, DynWinRTImplementationHandle)):\n            raise TypeError('from_implementation requires a DynWinRTImplementation controller or handle')\n        value = owner.to_value()\n        try:\n            native = value.cast(IID_{})\n            try:\n                view = object.__new__(cls)\n                cls._set_native(view, native, cache=False)\n                return view\n            except BaseException:\n                native.release()\n                raise\n        finally:\n            value.release()\n\n",
@@ -960,20 +980,18 @@ fn project_validated(
     };
     let package_overload = if context.is_packaged() {
         format!(
-            "    @overload\n    def implement(cls, handlers: {name}Handlers, *additional: DynWinRTImplementationDescriptor, interfaces: Sequence[_PackageImplementationPair]) -> DynWinRTImplementationHandle[{name}]: ...\n    @overload\n",
+            "    @overload\n    def implement(cls, handlers: {handler_type}, *additional: DynWinRTImplementationDescriptor, interfaces: Sequence[_PackageImplementationPair]) -> DynWinRTImplementationHandle[{name}]: ...\n    @overload\n",
             name = iface.name
         )
     } else {
         String::new()
     };
     let factory_declarations = format!(
-        "{requirements}    def implementation(cls, handlers: {name}Handlers) -> DynWinRTImplementationDescriptor: ...\n{package_overload}    def implement(cls, handlers: {name}Handlers, *additional: DynWinRTImplementationDescriptor, interfaces: Sequence[tuple[_DynWinRTImplementationFactory[_ImplementationHandlers], _ImplementationHandlers]] = ...) -> DynWinRTImplementationHandle[{name}]: ...\n    def from_implementation(cls, owner: DynWinRTImplementation | DynWinRTImplementationHandle[object]) -> {name}: ...\n\n",
+        "{requirements}    def implementation(cls, handlers: {handler_type}) -> DynWinRTImplementationDescriptor: ...\n{package_overload}    def implement(cls, handlers: {handler_type}, *additional: DynWinRTImplementationDescriptor, interfaces: Sequence[tuple[_DynWinRTImplementationFactory[_ImplementationHandlers], _ImplementationHandlers]] = ...) -> DynWinRTImplementationHandle[{name}]: ...\n    def from_implementation(cls, owner: DynWinRTImplementation | DynWinRTImplementationHandle[object]) -> {name}: ...\n\n",
         name = iface.name
     );
-    let mut exports = vec![format!("{}Handlers", iface.name)];
-    exports.extend(
-        (0..plan.delegates.len()).map(|index| format!("{}Delegate{index}", projector.prefix)),
-    );
+    let mut exports = vec![handler_type];
+    exports.extend((0..plan.delegates.len()).map(|index| projector.delegate_name(index)));
     exports.extend(result_names);
     exports.sort();
     Ok(ImplementationProjection {

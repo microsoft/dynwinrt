@@ -20,7 +20,45 @@ use crate::types::{TypeKind, TypeMeta, TypeRef};
 use serde::{Deserialize, Serialize};
 
 use self::ir::ProjectedFile;
+use super::shared::implementation_symbols::{HelperOwner, allocate_helpers};
+pub use super::shared::implementation_symbols::{ImplementationHelper, interface_helpers};
 use super::shared::structs::{collect_used_structs_from_class, collect_used_structs_from_iface};
+
+pub fn implementation_helper_records(interface: &InterfaceMeta) -> Vec<ImplementationHelper> {
+    let context = JavaScriptProjectionContext::default();
+    let projection = implementation::project(&context, interface, &Default::default());
+    if projection.supported {
+        interface_helpers(interface, false)
+    } else {
+        Vec::new()
+    }
+}
+
+pub fn implementation_reserved_symbols(
+    classes: &[ClassMeta],
+    interfaces: &[InterfaceMeta],
+) -> BTreeSet<String> {
+    classes
+        .iter()
+        .flat_map(collect_used_structs_from_class)
+        .chain(interfaces.iter().flat_map(collect_used_structs_from_iface))
+        .filter_map(|typ| {
+            if let TypeMeta::Struct { name, .. } = typ {
+                Some(name)
+            } else {
+                None
+            }
+        })
+        .flat_map(|name| {
+            [
+                name.clone(),
+                format!("pack{name}"),
+                format!("unpack{name}"),
+                format!("{name}_Type"),
+            ]
+        })
+        .collect()
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -110,6 +148,10 @@ pub struct JavaScriptTypeLayoutRecord {
     pub abi_identity: String,
     #[serde(default)]
     pub compatibility_aliases: BTreeSet<String>,
+    #[serde(default)]
+    pub implementation_helpers: Vec<ImplementationHelper>,
+    #[serde(default)]
+    pub reserved_symbols: BTreeSet<String>,
 }
 
 impl JavaScriptTypeLayoutRecord {
@@ -125,6 +167,8 @@ impl JavaScriptTypeLayoutRecord {
             projected_name,
             abi_identity: abi_identity.into(),
             compatibility_aliases: BTreeSet::new(),
+            implementation_helpers: Vec::new(),
+            reserved_symbols: BTreeSet::new(),
         }
     }
 
@@ -151,6 +195,21 @@ impl JavaScriptTypeLayoutRecord {
                 .compatibility_aliases
                 .iter()
                 .all(|alias| is_metadata_identifier(alias))
+            && self
+                .implementation_helpers
+                .iter()
+                .all(ImplementationHelper::is_valid)
+            && self
+                .implementation_helpers
+                .iter()
+                .map(|helper| &helper.key)
+                .collect::<BTreeSet<_>>()
+                .len()
+                == self.implementation_helpers.len()
+            && self
+                .reserved_symbols
+                .iter()
+                .all(|name| is_metadata_identifier(name))
     }
 }
 
@@ -184,6 +243,7 @@ struct JavaScriptModuleLayout {
 pub struct JavaScriptProjectionContext {
     layout: JavaScriptModuleLayout,
     runtime_import_name: String,
+    implementation_helpers: BTreeMap<String, Vec<ImplementationHelper>>,
 }
 
 impl Default for JavaScriptProjectionContext {
@@ -194,6 +254,90 @@ impl Default for JavaScriptProjectionContext {
 }
 
 impl JavaScriptProjectionContext {
+    pub fn configure_implementation_helpers(&mut self, records: &[JavaScriptTypeLayoutRecord]) {
+        let owners = records.iter().filter_map(|record| {
+            let target = self.target_for_identity(&record.identity)?;
+            Some(HelperOwner {
+                identity: record.identity.to_inventory_line(),
+                projected_name: target.projected_name.clone(),
+                qualified_name: disambiguated_projected_name(&record.identity),
+                helpers: record.implementation_helpers.clone(),
+            })
+        });
+        let reserved = self.output_targets().flat_map(|target| {
+            [
+                target.projected_name.clone(),
+                target.identity.name.clone(),
+                format!("IID_{}", target.projected_name),
+                format!("{}_PARAM_TYPES", target.projected_name),
+            ]
+        });
+        self.implementation_helpers = allocate_helpers(
+            owners,
+            reserved.chain(
+                records
+                    .iter()
+                    .flat_map(|record| record.reserved_symbols.iter().cloned()),
+            ),
+            true,
+        );
+    }
+
+    pub fn implementation_helpers(
+        &self,
+        identity: &JavaScriptTypeIdentity,
+    ) -> &[ImplementationHelper] {
+        self.implementation_helpers
+            .get(&identity.to_inventory_line())
+            .map_or(&[], Vec::as_slice)
+    }
+
+    pub(crate) fn implementation_helper_name(
+        &self,
+        interface: &InterfaceMeta,
+        key: &str,
+        suffix: &str,
+    ) -> String {
+        let native = self.metadata_type_name(&interface.namespace, &interface.name);
+        let identity = JavaScriptTypeIdentity::new(
+            &interface.namespace,
+            native,
+            JavaScriptTypeKind::Interface,
+        );
+        self.implementation_helpers(&identity)
+            .iter()
+            .find(|helper| helper.key == key)
+            .map_or_else(
+                || {
+                    // Standalone projection callers still reserve the real metadata
+                    // names, even when no incremental inventory is involved.
+                    let owner = HelperOwner {
+                        identity: identity.to_inventory_line(),
+                        projected_name: interface.name.clone(),
+                        qualified_name: disambiguated_projected_name(&identity),
+                        helpers: interface_helpers(interface, false),
+                    };
+                    let names = allocate_helpers(
+                        [owner],
+                        self.identities()
+                            .map(|id| self.projected_name(&id.namespace, &id.name, id.kind))
+                            .chain(implementation_reserved_symbols(
+                                &[],
+                                std::slice::from_ref(interface),
+                            )),
+                        true,
+                    );
+                    names
+                        .get(&identity.to_inventory_line())
+                        .and_then(|helpers| helpers.iter().find(|helper| helper.key == key))
+                        .map_or_else(
+                            || format!("{}{suffix}", interface.name),
+                            |helper| helper.name.clone(),
+                        )
+                },
+                |helper| helper.name.clone(),
+            )
+    }
     pub fn runtime_import_name(&self) -> &str {
         &self.runtime_import_name
     }
@@ -1156,13 +1300,17 @@ pub fn create_javascript_projection_context_with_records(
         .map(|(identity, projected)| (projected, identity))
         .collect();
 
-    Ok(JavaScriptProjectionContext {
+    let mut context = JavaScriptProjectionContext {
         layout: JavaScriptModuleLayout {
             targets,
             by_projected_name: projected_owners,
         },
         runtime_import_name: runtime_import_name.into(),
-    })
+        implementation_helpers: BTreeMap::new(),
+    };
+    context
+        .configure_implementation_helpers(&previous_by_identity.into_values().collect::<Vec<_>>());
+    Ok(context)
 }
 
 fn apply_projected_type_names(context: &JavaScriptProjectionContext, typ: &mut TypeMeta) {

@@ -8,6 +8,8 @@ use windows_metadata::{HasAttributes, reader};
 
 use crate::types::{EnumMember, TypeIdentity, TypeIdentityKind, TypeKind, TypeMeta, TypeRef};
 
+mod raw_signature;
+
 pub const WINDOWS_FOUNDATION_COLLECTIONS_NAMESPACE: &str = "Windows.Foundation.Collections";
 pub const PIID_IVECTOR: &str = "913337e9-11a1-4345-a3a2-4e7f956e222d";
 pub const PIID_IOBSERVABLE_VECTOR: &str = "5917eb53-50b4-4a0d-b309-65862b3f1dbc";
@@ -1567,6 +1569,16 @@ fn parse_interface_methods(
     }
     for (i, method) in def.methods().enumerate() {
         let vtable_index = 6 + i;
+        if def
+            .flags()
+            .contains(windows_metadata::TypeAttributes::WindowsRuntime)
+        {
+            implementation_metadata.diagnostics.extend(
+                raw_signature::implementation_diagnostics(&method)
+                    .into_iter()
+                    .map(|reason| format!("{}: {reason}", method.name())),
+            );
+        }
         let sig = method.signature(&winmd_generics);
         if sig.flags != windows_metadata::MethodCallAttributes::HASTHIS {
             implementation_metadata.diagnostics.push(format!(
@@ -1866,6 +1878,11 @@ fn collect_implementation_delegates(
                 ));
                 return;
             };
+            output.diagnostics.extend(
+                raw_signature::implementation_diagnostics(&invoke)
+                    .into_iter()
+                    .map(|reason| format!("{}.{} Invoke: {reason}", named.namespace, named.name)),
+            );
             let signature = invoke.signature(&named.generics);
             if signature.flags != windows_metadata::MethodCallAttributes::HASTHIS
                 || invoke
@@ -2042,6 +2059,14 @@ fn validate_implementation_metadata_type(
                     }
                 }
                 for field in def.fields() {
+                    raw_signature::validate_implementation_field(&field).map_err(|reason| {
+                        format!(
+                            "field {}.{}.{}: {reason}",
+                            named.namespace,
+                            named.name,
+                            field.name()
+                        )
+                    })?;
                     let field_type = field.ty();
                     if matches!(
                         field_type,

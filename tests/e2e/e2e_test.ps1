@@ -140,7 +140,7 @@ if (-not $SkipBuild) {
             if (-not (Test-Path $venvPython)) {
                 & $pythonExe -m venv .venv
                 if ($LASTEXITCODE -ne 0) { Write-Error "Python virtual environment creation failed"; exit 1 }
-                & $venvPython -m pip install pytest maturin mypy --quiet
+                & $venvPython -m pip install pytest maturin mypy "coverage>=7.15,<8" --quiet
                 if ($LASTEXITCODE -ne 0) { Write-Error "Python test dependency installation failed"; exit 1 }
             }
             $pythonExe = (Resolve-Path -LiteralPath $venvPython).Path

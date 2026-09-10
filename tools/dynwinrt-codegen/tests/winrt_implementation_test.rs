@@ -1049,7 +1049,7 @@ print('Python projection assertions passed')
         &serde_json::json!({
             "code": py,
             "stub": pyi,
-            "handle": include_str!("../../../bindings/py/src/implementation.py"),
+            "handle": include_str!("../../../bindings/py/python/dynwinrt/_implementation.py"),
             "support": python::generate_runtime_support_module(),
         })
         .to_string(),

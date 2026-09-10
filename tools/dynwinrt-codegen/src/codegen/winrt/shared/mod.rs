@@ -3,5 +3,6 @@
 
 pub(crate) mod docs;
 pub(crate) mod implementation;
+pub(crate) mod implementation_symbols;
 pub(crate) mod imports;
 pub(crate) mod structs;

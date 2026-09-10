@@ -279,7 +279,7 @@ jobs:
           cd bindings/py
           python -m venv .venv
           .venv/Scripts/Activate.ps1
-          pip install pytest maturin "mypy>=1.13,<2" --quiet
+          pip install pytest maturin "mypy>=1.13,<2" "coverage>=7.15,<8" --quiet
           maturin build --quiet
           pip install (Get-ChildItem ../../target/wheels/*.whl | Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName --force-reinstall --quiet
       - name: Test Python binding
@@ -291,6 +291,12 @@ jobs:
           .\eng\release\python\test_generated_python_long_paths.ps1 `
             -Python .\bindings\py\.venv\Scripts\python.exe `
             -Codegen .\target\release\dynwinrt-codegen.exe
+      - name: Test generated implementation symbol identities
+        shell: pwsh
+        run: |
+          $env:DYNWINRT_TEST_PYTHON = (Resolve-Path .\bindings\py\.venv\Scripts\python.exe).Path
+          $env:DYNWINRT_REQUIRE_IMPLEMENTATION_RUNTIME = '1'
+          cargo test -p dynwinrt-codegen --test implementation_naming_test
       - name: Run E2E tests
         run: .\tests\e2e\e2e_test.ps1 -SkipBuild
       # This optional-SDK behavioral smoke is separate from generated coverage

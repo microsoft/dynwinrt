@@ -111,10 +111,17 @@ struct Projector<'a> {
     context: &'a JavaScriptProjectionContext,
     known: &'a HashSet<String>,
     plan: &'a WinRtImplementationPlan,
-    prefix: String,
+    interface: &'a InterfaceMeta,
 }
 
 impl Projector<'_> {
+    fn delegate_name(&self, index: usize) -> String {
+        self.context.implementation_helper_name(
+            self.interface,
+            &format!("delegate:{index}"),
+            &format!("ImplementationDelegate{index}"),
+        )
+    }
     fn delegate_index(&self, typ: &TypeMeta) -> Option<usize> {
         self.plan
             .delegates
@@ -216,8 +223,8 @@ impl Projector<'_> {
     fn annotation(&self, typ: &ImplementationType, writing: bool) -> String {
         if let Some(index) = self.delegate_index(&typ.metadata) {
             return format!(
-                "{}Delegate{index}{} | null",
-                self.prefix,
+                "{}{} | null",
+                self.delegate_name(index),
                 if writing { " | DynWinRtValue" } else { "" }
             );
         }
@@ -307,7 +314,7 @@ impl Projector<'_> {
 
     fn read(&self, typ: &ImplementationType, value: &str) -> String {
         if let Some(index) = self.delegate_index(&typ.metadata) {
-            return format!("{}Delegate{index}({value})", self.prefix);
+            return format!("{}({value})", self.delegate_name(index));
         }
         if let Some(inner) = ireference_inner_type(&typ.metadata) {
             let inner = validate_type(inner, false).expect("validated IReference value");
@@ -643,15 +650,15 @@ fn project_validated(
         context,
         known,
         plan,
-        prefix: format!("{}Implementation", iface.name),
+        interface: iface,
     };
     let mut support = String::from(HELPERS);
     let mut declarations = String::new();
     for (index, delegate) in plan.delegates.iter().enumerate() {
         let method = &delegate.invoke;
         declarations.push_str(&format!(
-            "export type {}Delegate{index} = (({}) => {}) & {{ readonly _obj: DynWinRtValue }};\n",
-            projector.prefix,
+            "export type {} = (({}) => {}) & {{ readonly _obj: DynWinRtValue }};\n",
+            projector.delegate_name(index),
             projector.parameters(method, true)?,
             projector.result_type(method, false)?
         ));
@@ -697,12 +704,13 @@ fn project_validated(
             ),
         };
         support.push_str(&format!(
-            "\nfunction {}Delegate{index}(value) {{\n    if (value.isNull()) return null;\n    const callback = (...args) => {{\n        if (args.length !== {}) throw new TypeError('delegate argument count mismatch');\n        const result = value.invokeDelegate({}, {}, [{args}]);\n        return {returned};\n    }};\n    Object.defineProperty(callback, '_obj', {{ value }});\n    return callback;\n}}\n",
-            projector.prefix, method.input_count, projector.iid(&delegate.typ), projector.signature(method)
+            "\nfunction {}(value) {{\n    if (value.isNull()) return null;\n    const callback = (...args) => {{\n        if (args.length !== {}) throw new TypeError('delegate argument count mismatch');\n        const result = value.invokeDelegate({}, {}, [{args}]);\n        return {returned};\n    }};\n    Object.defineProperty(callback, '_obj', {{ value }});\n    return callback;\n}}\n",
+            projector.delegate_name(index), method.input_count, projector.iid(&delegate.typ), projector.signature(method)
         ));
     }
+    let handler_type = context.implementation_helper_name(iface, "handlers", "Handlers");
     declarations.push_str(&format!(
-        "\n/** Synchronous owner-thread handlers. Out parameters precede the logical result; FillArray inputs are capacities. */\nexport interface {}Handlers {{\n", iface.name
+        "\n/** Synchronous owner-thread handlers. Out parameters precede the logical result; FillArray inputs are capacities. */\nexport interface {handler_type} {{\n"
     ));
     let mut handlers = HashSet::new();
     let mut bindings = Vec::new();
@@ -786,12 +794,6 @@ fn project_validated(
                 capacity.as_deref(),
             ));
         }
-        if outputs.is_empty() {
-            dispatch.push_str(&format!(
-                "                    if (result !== undefined) throw new TypeError({});\n",
-                quote(&format!("{label}: void handler must return undefined"))
-            ));
-        }
         dispatch.push_str(&format!(
             "                    return [{}];\n                }}\n",
             outputs.join(", ")
@@ -831,13 +833,11 @@ fn project_validated(
         "\n    static fromImplementation(owner) {\n        if (!(owner instanceof DynWinRtImplementation) && !(owner instanceof DynWinRtImplementationHandle)) throw new TypeError('fromImplementation requires a DynWinRtImplementation controller or handle');\n        const value = owner.toValue();\n        try {\n            return this.from(value);\n        } finally {\n            value.release();\n        }\n    }\n",
     );
     let factory_declarations = format!(
-        "    /** Validate synchronous handlers and create an independent interface descriptor.{requirements} */\n    static implementation(handlers: {name}Handlers): DynWinRtImplementationDescriptor;\n    /** Create an instance with a stable typed value and explicit lifetime management.{requirements} */\n    static implement<const T extends readonly DynWinRtImplementationType[]>(handlers: {name}Handlers, options: DynWinRtImplementationOptions<T>): DynWinRtImplementationHandle<{name}>;\n    static implement(handlers: {name}Handlers, ...additional: DynWinRtImplementationDescriptor[]): DynWinRtImplementationHandle<{name}>;\n    /** Query an independent view, without consuming the handle's primary value. */\n    static fromImplementation(owner: DynWinRtImplementation | DynWinRtImplementationHandle<unknown>): {name};\n",
+        "    /** Validate synchronous handlers and create an independent interface descriptor.{requirements} */\n    static implementation(handlers: {handler_type}): DynWinRtImplementationDescriptor;\n    /** Create an instance with a stable typed value and explicit lifetime management.{requirements} */\n    static implement<const T extends readonly DynWinRtImplementationType[]>(handlers: {handler_type}, options: DynWinRtImplementationOptions<T>): DynWinRtImplementationHandle<{name}>;\n    static implement(handlers: {handler_type}, ...additional: DynWinRtImplementationDescriptor[]): DynWinRtImplementationHandle<{name}>;\n    /** Query an independent view, without consuming the handle's primary value. */\n    static fromImplementation(owner: DynWinRtImplementation | DynWinRtImplementationHandle<unknown>): {name};\n",
         name = iface.name
     );
-    let exports = std::iter::once(format!("{}Handlers", iface.name))
-        .chain(
-            (0..plan.delegates.len()).map(|index| format!("{}Delegate{index}", projector.prefix)),
-        )
+    let exports = std::iter::once(handler_type)
+        .chain((0..plan.delegates.len()).map(|index| projector.delegate_name(index)))
         .collect();
     Ok(ImplementationProjection {
         support_code: support,

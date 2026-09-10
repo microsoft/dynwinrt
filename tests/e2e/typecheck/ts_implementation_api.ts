@@ -17,6 +17,17 @@ function unused(..._args: unknown[]): never {
     throw new Error('Typecheck fixture only');
 }
 
+let closes = 0;
+IClosable.implement({ close: () => closes++ });
+let length = 0;
+IBuffer.implement({ getCapacity: () => 12, getLength: () => length, setLength: value => length = value });
+const tokens = new Map<bigint, boolean>();
+IMemoryBufferReference.implement({
+    getCapacity: () => 12,
+    addClosed: () => ({ value: 1n }),
+    removeClosed: token => tokens.delete(token.value),
+}, IClosable.implementation({ close: () => undefined }));
+
 const exactHresult: DynWinRtValue = DynWinRtValue.hresult(-2147467263);
 const hresults: DynWinRtArray = DynWinRtArray.fromHresultValues([0, -2147467263]);
 const genericHresults: DynWinRtArray = DynWinRtArray.fromObjectValues(

@@ -110,7 +110,7 @@ const cases = {
         let calls = 0;
         const impl = own(g.IStringable.implement(
             { toString() { calls++; return 'typed primary'; } },
-            { interfaces: [[g.IClosable, { close() { calls++; } }]] },
+            { interfaces: [[g.IClosable, { close: () => calls++ }]] },
         ));
         assert.strictEqual(impl.value, impl.value);
         assert.ok(impl.value instanceof g.IStringable);
@@ -167,13 +167,18 @@ const cases = {
         assert.equal(disposing.value.toString(), 'entered callback completed');
         assert.equal(disposing.isClosed, true);
         assert.throws(() => disposing.value, /closed|released/);
+        for (const result of [undefined, false, 17, { ignored: true }]) {
+            const ignored = own(g.IClosable.implement({ close: () => result }));
+            assert.equal(ignored.value.close(), undefined);
+            assert.equal(ignored.takeError(), null);
+        }
     },
 
     property_views({ g, own }) {
         let length = 0;
         const handlers = {
             getCapacity: () => 12, getLength: () => length,
-            setLength(value) { if (value > 12) throw new Error('capacity exceeded'); length = value; },
+            setLength(value) { if (value > 12) throw new Error('capacity exceeded'); return length = value; },
             getAbsoluteCanonicalUri: () => 'https://example.test/\u96ea',
             getDisplayIri: () => 'https://example.test/\u96ea',
             getName: () => 'query', getValue: () => 'value\0\u96ea',
@@ -349,6 +354,14 @@ const cases = {
             expectHresult(view.invoke, E_FAIL);
             takeError(owner, /promise|async|synchronous/i);
         } finally { view.release(); }
+        for (const result of [Promise.resolve(), { then() { throw new Error('must not await'); } }]) {
+            const ignored = own(g.IClosable.implement({ close: () => result }));
+            expectHresult(() => ignored.value.close(), E_FAIL);
+            takeError(ignored, /Promise|thenable|synchronously/i);
+        }
+        const throwing = own(g.IClosable.implement({ close() { throw new Error('void still propagates'); } }));
+        expectHresult(() => throwing.value.close(), E_FAIL);
+        takeError(throwing, /void still propagates/);
     },
 
     required_interfaces({ g, own }) {
@@ -388,9 +401,9 @@ const cases = {
                 assert.equal(typeof token.value, 'bigint');
                 const received = callbacks.get(Number(token.value));
                 assert.ok(received);
-                assert.equal(callbacks.delete(Number(token.value)), true);
                 g.releaseProjected(received);
                 removed++;
+                return callbacks.delete(Number(token.value));
             },
         }, g.IClosable.implementation({
             close() {
