@@ -1179,18 +1179,26 @@ test('invoke WinRT through dynamic metadata', (t) => {
     'CreateUri',
     new DynWinRtMethodSig().addIn(DynWinRtType.hstring()).addOut(DynWinRtType.object()),
   )
-  const uriType = DynWinRtType.registerInterface('IUriRuntimeClass', uriIid).addMethod(
-    'get_AbsoluteUri',
-    new DynWinRtMethodSig().addOut(DynWinRtType.hstring()),
-  )
-  const uriFactory = DynWinRtValue.activationFactory('Windows.Foundation.Uri').cast(factoryIid)
+  let uriType = DynWinRtType.registerInterface('IUriRuntimeClass', uriIid)
+  for (const name of ['get_AbsoluteUri', 'get_DisplayUri', 'get_Domain', 'get_Extension', 'get_Fragment', 'get_Host']) {
+    uriType = uriType.addMethod(name, new DynWinRtMethodSig().addOut(DynWinRtType.hstring()))
+  }
+  const activationFactory = DynWinRtValue.activationFactory('Windows.Foundation.Uri')
+  t.teardown(() => activationFactory.release())
+  const uriFactory = activationFactory.cast(factoryIid)
+  t.teardown(() => uriFactory.release())
   const expected = 'https://www.example.com/path?q=1#frag'
-  const uri = uriFactoryType
-    .methodByName('CreateUri')
-    .invoke(uriFactory, [DynWinRtValue.hstring(expected)])
-    .cast(uriIid)
+  const created = uriFactoryType.methodByName('CreateUri').invoke(uriFactory, [DynWinRtValue.hstring(expected)])
+  t.teardown(() => created.release())
+  const uri = created.cast(uriIid)
+  t.teardown(() => uri.release())
 
+  t.is(uriType.method(6).invoke(uri, []).toString(), expected)
   t.is(uriType.methodByName('get_AbsoluteUri').invoke(uri, []).toString(), expected)
+  t.is(uriType.method(11).invoke(uri, []).toString(), 'www.example.com')
+  t.is(uriType.methodByName('get_Host').invoke(uri, []).toString(), 'www.example.com')
+  t.is(uriType.methodByName('get_Fragment').invoke(uri, []).toString(), '#frag')
+  t.is(uriType.methodByName('get_Domain').invoke(uri, []).toString(), uriType.method(8).invoke(uri, []).toString())
 })
 
 test('explicitly unbox WinRT property values without changing raw objects', (t) => {
