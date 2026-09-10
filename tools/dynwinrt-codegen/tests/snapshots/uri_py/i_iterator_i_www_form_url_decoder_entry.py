@@ -31,17 +31,26 @@ _IIterator_IWwwFormUrlDecoderEntry = DynWinRTType.register_interface(
 
 class IIterator_IWwwFormUrlDecoderEntry(_WinRTIteratorMixin):
     _dynwinrt_interface_type = True
+    @staticmethod
+    def implementation(handlers):
+        raise TypeError("Windows.Foundation.Collections.IIterator_IWwwFormUrlDecoderEntry cannot be implemented: generic interface implementations are not supported")
+
+    @staticmethod
+    def implement(handlers, *additional):
+        raise TypeError("Windows.Foundation.Collections.IIterator_IWwwFormUrlDecoderEntry cannot be implemented: generic interface implementations are not supported")
+
     _dynwinrt_interface_iid = IID_IIterator_IWwwFormUrlDecoderEntry
     def __new__(cls, *args, **kwargs):
         if len(args) == 1 and not kwargs and isinstance(args[0], DynWinRTValue):
             return _dynwinrt_projected_from_native(cls, args[0], '_set_native')
         return super().__new__(cls)
 
-    def _set_native(self, obj: DynWinRTValue):
+    def _set_native(self, obj: DynWinRTValue, *, cache=True):
         self._obj = obj.cast(IID_IIterator_IWwwFormUrlDecoderEntry)
         self._dynwinrt_native_ready = True
         _dynwinrt_track_projected(self, 'Windows.Foundation.Collections.IIterator_IWwwFormUrlDecoderEntry')
-        _dynwinrt_cache_projected(self)
+        if cache:
+            _dynwinrt_cache_projected(self)
 
     def __init__(self, obj: DynWinRTValue):
         if getattr(self, '_dynwinrt_native_ready', False):

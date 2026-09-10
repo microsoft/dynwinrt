@@ -1,0 +1,11 @@
+{
+  "name": "dynwinrt-interface-implementation-sample",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node app.mjs"
+  },
+  "dependencies": {
+    "@microsoft/dynwinrt": "file:../../../bindings/js"
+  }
+}

@@ -475,6 +475,7 @@ macro_rules! dispatch_scalar {
             WinRTValue::I16(v) => $call(*v),
             WinRTValue::U16(v) => $call(*v),
             WinRTValue::I32(v) => $call(*v),
+            WinRTValue::HResult(v) => $call(v.0),
             WinRTValue::Enum { value: v, .. } => $call(*v),
             WinRTValue::U32(v) => $call(*v),
             WinRTValue::I64(v) => $call(*v),

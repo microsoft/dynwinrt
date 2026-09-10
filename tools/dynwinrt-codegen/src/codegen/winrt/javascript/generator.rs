@@ -57,6 +57,15 @@ pub fn generate_index(
         if is_delegate {
             continue;
         }
+        let implementation =
+            super::implementation::project(&Default::default(), iface, &HashSet::new());
+        if !implementation.exports.is_empty() {
+            out.push_str(&format!(
+                "export type {{ {} }} from './{}.js';\n",
+                implementation.exports.join(", "),
+                iface.name
+            ));
+        }
         let struct_names: Vec<_> = collect_used_structs_from_iface(iface)
             .iter()
             .flat_map(|s| ts_pack_export_names(s))

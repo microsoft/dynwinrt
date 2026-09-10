@@ -57,7 +57,7 @@ tokio = { version = "1.49.0", features = ["macros", "rt"] }
 
 [dev-dependencies.windows]
 version = ">=0.59, <=0.62"
-features = ["Win32_Graphics_Imaging", "Win32_Media_MediaFoundation"]
+features = ["Win32_Graphics_Imaging", "Win32_Media_MediaFoundation", "ApplicationModel_Background"]
 
 [[bench]]
 name = "bench"

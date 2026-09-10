@@ -148,7 +148,10 @@ test('Classic COM is isolated from the WinRT root entrypoint', (t) => {
 
 test('package facades exactly partition native exports', (t) => {
   const nativeKeys = moduleKeys(nativeRuntime)
-  const expectedWinrt = nativeKeys.filter((name) => !name.startsWith('DynCom') && name !== 'initializeCom')
+  const expectedWinrt = [
+    ...nativeKeys.filter((name) => !name.startsWith('DynCom') && name !== 'initializeCom'),
+    'DynWinRtImplementationHandle',
+  ].sort()
   const safeComNames = new Set([
     'DynComDispatchParams',
     'DynComAllocation',

@@ -735,6 +735,10 @@ impl MethodReturn {
 }
 
 impl AbiMethodSignature {
+    pub(crate) fn parameters(&self) -> &[Parameter] {
+        &self.parameters
+    }
+
     pub(crate) fn new(table: &Arc<MetadataTable>) -> Self {
         AbiMethodSignature {
             out_count: 0,
@@ -1124,6 +1128,18 @@ fn coerce_input_object(
         })
 }
 
+pub(crate) fn array_element_types_match(expected: &TypeHandle, actual: &TypeHandle) -> bool {
+    match (expected.kind(), actual.kind()) {
+        (TypeKind::Struct(_), TypeKind::Struct(_)) | (TypeKind::Enum(_), TypeKind::Enum(_)) => {
+            expected == actual
+        }
+        (TypeKind::Enum(_), TypeKind::I32)
+        | (TypeKind::Char16, TypeKind::U16)
+        | (TypeKind::U16, TypeKind::Char16) => true,
+        (expected, actual) => expected == actual,
+    }
+}
+
 fn coerce_input_array(
     expected: &TypeHandle,
     value: &WinRTValue,
@@ -1144,14 +1160,7 @@ fn coerce_input_array(
         )
     })?;
     let is_object_array = expected_object_iid(&element_type).is_some();
-    let element_type_matches = match (element_type.kind(), array.element_type.kind()) {
-        (TypeKind::Struct(_), TypeKind::Struct(_)) => array.element_type == element_type,
-        (TypeKind::Enum(_), TypeKind::Enum(_)) => array.element_type == element_type,
-        (TypeKind::Enum(_), TypeKind::I32)
-        | (TypeKind::Char16, TypeKind::U16)
-        | (TypeKind::U16, TypeKind::Char16) => true,
-        (expected, actual) => expected == actual,
-    };
+    let element_type_matches = array_element_types_match(&element_type, &array.element_type);
     if !is_object_array && !element_type_matches {
         return Err(windows_core::Error::new(
             windows_core::HRESULT(0x80070057u32 as i32),
@@ -1214,7 +1223,7 @@ fn validate_input_struct(expected: &TypeHandle, value: &WinRTValue) -> windows_c
     Ok(())
 }
 
-fn coerce_scalar_input(
+pub(crate) fn coerce_scalar_input(
     expected: &TypeHandle,
     value: &WinRTValue,
 ) -> windows_core::Result<Option<WinRTValue>> {

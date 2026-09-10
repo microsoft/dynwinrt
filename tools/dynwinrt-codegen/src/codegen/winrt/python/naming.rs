@@ -5,6 +5,9 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
+use super::super::shared::implementation_symbols::{
+    HelperOwner, ImplementationHelper, allocate_helpers, interface_helpers,
+};
 use crate::meta::InterfaceMeta;
 use crate::types::{TypeIdentity, TypeIdentityKind, TypeKind, TypeMeta, TypeRef};
 
@@ -372,10 +375,24 @@ fn qualified_module_name(
 }
 
 fn public_module_name(identity: &PythonTypeIdentity, projected_name: &str) -> String {
-    shorten_module_component_with_hash_input(
-        &to_snake_case(projected_name),
-        &identity.canonical_key(),
-    )
+    let namespace = identity.namespace().unwrap_or_default();
+    let qualified = qualified_module_name(identity, namespace, projected_name);
+    let prefix = python_namespace_segments(namespace).join("__");
+    if prefix.is_empty() {
+        return qualified;
+    }
+    // Budget the namespace as well as the basename. Otherwise a readable flat
+    // module can have a facade path that Windows Python cannot open.
+    qualified
+        .strip_prefix(&format!("{prefix}__"))
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            format!(
+                "type_{:016x}",
+                stable_module_hash(&identity.canonical_key())
+            )
+        })
 }
 
 /// Explicit, immutable naming and lookup state for one Python projection.
@@ -385,6 +402,7 @@ pub struct PythonProjectionContext {
     projections: HashMap<PythonTypeIdentity, PythonProjection>,
     aliases: HashMap<PythonTypeIdentity, PythonTypeIdentity>,
     compatibility_counts: HashMap<String, usize>,
+    implementation_helpers: BTreeMap<String, Vec<ImplementationHelper>>,
 }
 
 impl PythonProjectionContext {
@@ -507,6 +525,7 @@ impl PythonProjectionContext {
             projections,
             aliases,
             compatibility_counts,
+            implementation_helpers: BTreeMap::new(),
         })
     }
 
@@ -531,6 +550,81 @@ impl PythonProjectionContext {
 
     pub fn is_packaged(&self) -> bool {
         self.packaged
+    }
+
+    pub fn configure_implementation_helpers(
+        &mut self,
+        owners: impl IntoIterator<Item = (PythonTypeIdentity, Vec<ImplementationHelper>)>,
+    ) {
+        let owners = owners
+            .into_iter()
+            .map(|(identity, helpers)| HelperOwner {
+                identity: identity.canonical_key(),
+                projected_name: self.projected_name(&identity),
+                qualified_name: semantic_qualifier(&identity),
+                helpers,
+            })
+            .collect::<Vec<_>>();
+        let reserved = self.projections.iter().flat_map(|(identity, projection)| {
+            [
+                projection.projected_name.clone(),
+                projection.reference_name.clone(),
+                legacy_projected_name(identity),
+                format!("IID_{}", projection.projected_name),
+            ]
+        });
+        self.implementation_helpers = allocate_helpers(owners, reserved, false);
+    }
+
+    pub fn implementation_helpers(&self, identity: &PythonTypeIdentity) -> &[ImplementationHelper] {
+        self.implementation_helpers
+            .get(&self.normalize_identity(identity).canonical_key())
+            .map_or(&[], Vec::as_slice)
+    }
+
+    pub(crate) fn implementation_helper_name(
+        &self,
+        interface: &InterfaceMeta,
+        key: &str,
+        suffix: &str,
+    ) -> String {
+        let identity = self
+            .projections
+            .iter()
+            .find(|(identity, projection)| {
+                identity.namespace() == Some(interface.namespace.as_str())
+                    && projection.projected_name == interface.name
+            })
+            .map_or_else(
+                || interface.type_identity(),
+                |(identity, _)| identity.clone(),
+            );
+        if let Some(helper) = self
+            .implementation_helpers(&identity)
+            .iter()
+            .find(|helper| helper.key == key)
+        {
+            return helper.name.clone();
+        }
+        let names = allocate_helpers(
+            [HelperOwner {
+                identity: identity.canonical_key(),
+                projected_name: interface.name.clone(),
+                qualified_name: semantic_qualifier(&identity),
+                helpers: interface_helpers(interface, true),
+            }],
+            self.projections
+                .values()
+                .map(|projection| projection.projected_name.clone()),
+            false,
+        );
+        names
+            .get(&identity.canonical_key())
+            .and_then(|helpers| helpers.iter().find(|helper| helper.key == key))
+            .map_or_else(
+                || format!("{}{suffix}", interface.name),
+                |helper| helper.name.clone(),
+            )
     }
 
     pub fn normalize_identity(&self, identity: &PythonTypeIdentity) -> PythonTypeIdentity {
@@ -712,6 +806,17 @@ impl PythonProjectionContext {
             .to_string()
     }
 
+    pub fn public_qualified_module_for_export(
+        &self,
+        identity: &PythonTypeIdentity,
+        projected_name: &str,
+    ) -> String {
+        let identity = self.normalize_identity(identity);
+        let mut segments = python_namespace_segments(identity.namespace().unwrap_or_default());
+        segments.push(public_module_name(&identity, projected_name));
+        segments.join(".")
+    }
+
     pub fn root_name_is_unambiguous(&self, identity: &PythonTypeIdentity) -> bool {
         self.compatibility_counts
             .get(&legacy_projected_name(identity))
@@ -890,6 +995,84 @@ mod tests {
         assert!(
             context.public_module(&identity).chars().count() <= MAX_PYTHON_MODULE_COMPONENT_LENGTH
         );
+        assert_eq!(
+            context.public_module(&identity),
+            implementation
+                .strip_prefix("windows__foundation__")
+                .unwrap()
+        );
+        assert!(
+            context.public_qualified_module(&identity).chars().count()
+                <= MAX_PYTHON_MODULE_COMPONENT_LENGTH
+        );
+    }
+
+    #[test]
+    fn background_event_delegate_facade_uses_the_qualified_module_budget() {
+        let identity = TypeIdentity::closed_generic(
+            TypeIdentityKind::Delegate,
+            "Windows.Foundation",
+            "TypedEventHandler",
+            [
+                TypeIdentity::named(
+                    TypeIdentityKind::Class,
+                    "Windows.ApplicationModel.Background",
+                    "BackgroundTaskRegistrationGroup",
+                ),
+                TypeIdentity::named(
+                    TypeIdentityKind::Class,
+                    "Windows.ApplicationModel.Activation",
+                    "BackgroundActivatedEventArgs",
+                ),
+            ],
+        );
+        let context = PythonProjectionContext::packaged_with_ambiguities(
+            [identity.clone()],
+            ["BackgroundActivatedEventArgs".to_string()],
+        )
+        .unwrap();
+        let implementation = context.implementation_module(&identity);
+        let public = context.public_module(&identity);
+        assert_eq!(
+            public,
+            implementation
+                .strip_prefix("windows__foundation__")
+                .unwrap()
+        );
+        assert!(
+            context.public_qualified_module(&identity).len() <= MAX_PYTHON_MODULE_COMPONENT_LENGTH
+        );
+        assert!(public.starts_with("typed_event_handler_background_task_registration_group"));
+        assert_eq!(public, context.public_module(&identity));
+        assert_ne!(
+            public,
+            context.public_module(&TypeIdentity::closed_generic(
+                TypeIdentityKind::Delegate,
+                "Windows.Foundation",
+                "TypedEventHandler",
+                [
+                    TypeIdentity::Primitive {
+                        name: "Object".into()
+                    },
+                    TypeIdentity::Primitive {
+                        name: "Object".into()
+                    }
+                ],
+            ))
+        );
+    }
+
+    #[test]
+    fn facade_shortening_keeps_a_valid_name_when_namespace_uses_the_budget() {
+        let identity = TypeIdentity::named(
+            TypeIdentityKind::Interface,
+            "VeryLongNamespace".repeat(12),
+            "IValue",
+        );
+        let context = PythonProjectionContext::packaged([identity.clone()]).unwrap();
+        let public = context.public_module(&identity);
+        assert!(public.starts_with("type_"), "{public}");
+        assert_eq!(public.len(), 5 + MODULE_HASH_HEX_LENGTH);
     }
 
     #[test]

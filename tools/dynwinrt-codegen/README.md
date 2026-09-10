@@ -128,6 +128,21 @@ complete output. Python module components longer than 120 characters are
 shortened with a stable readable prefix and hash suffix while public type names
 remain unchanged.
 
+Implementation helper names are allocated alongside metadata types and follow
+their owning interfaces through incremental renames. Python's package-level
+root exports drop an interface and its helpers when its short name becomes
+ambiguous, while namespace imports remain available. Python's
+heterogeneous interface-pair union is generated from validated inventory
+records, not inferred from `.pyi` text. The first typed incremental generation
+over an older inventory needs the original WinMD/`--ref` inputs for interfaces
+whose implementation records are missing. If those inputs are unavailable,
+generation fails atomically and leaves the previous output usable: supply the
+listed metadata and retry, or fully regenerate the package. New inventories
+retain these records, and `--no-pyi` does not require this typing migration.
+After `--no-pyi`, include the earlier types when regenerating with stubs enabled
+(or fully regenerate the package). A typed append fails rather than publishing
+imports of missing retained declarations or dropping interfaces from the union.
+
 The npm wrapper accepts the legacy `--source-map`, `--declaration`, and
 `--no-declaration` flags as no-ops. The Rust command accepts only `js` and `py`
 for `--lang`.

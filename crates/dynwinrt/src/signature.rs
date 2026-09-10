@@ -20,6 +20,13 @@ use crate::{
 #[derive(Debug, Clone)]
 pub struct MethodSignature(AbiMethodSignature);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WinRtParameterDirection {
+    In,
+    Out,
+    FillArray,
+}
+
 impl MethodSignature {
     pub fn new(table: &Arc<MetadataTable>) -> Self {
         Self(AbiMethodSignature::new(table))
@@ -43,6 +50,37 @@ impl MethodSignature {
 
     pub fn build(self, index: usize) -> Method {
         Method(self.0.build(index))
+    }
+
+    pub(crate) fn implementation_parameters(
+        &self,
+    ) -> windows_core::Result<Vec<(TypeHandle, WinRtParameterDirection)>> {
+        use crate::native_call::ParamKind;
+
+        self.0
+            .parameters()
+            .iter()
+            .map(|parameter| {
+                let direction = match parameter.kind {
+                    ParamKind::In => WinRtParameterDirection::In,
+                    ParamKind::Out => WinRtParameterDirection::Out,
+                    ParamKind::OutFillArray => WinRtParameterDirection::FillArray,
+                    ParamKind::OptionalOut | ParamKind::InOut => {
+                        return Err(windows_core::Error::new(
+                            windows_core::HRESULT(0x80070057u32 as i32),
+                            "WinRT implementations require WinRT input/output contracts",
+                        ));
+                    }
+                };
+                let typ = parameter.typ.as_winrt().ok_or_else(|| {
+                    windows_core::Error::new(
+                        windows_core::HRESULT(0x80070057u32 as i32),
+                        "WinRT implementations cannot contain Classic COM parameter types",
+                    )
+                })?;
+                Ok((typ.clone(), direction))
+            })
+            .collect()
     }
 }
 

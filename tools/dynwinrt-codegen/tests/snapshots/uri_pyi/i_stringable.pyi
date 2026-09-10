@@ -7,6 +7,16 @@ from ._typing import (
     DynWinRTType, DynWinRTValue, DynWinRTArray, DynWinRTStruct, DynWinRtDelegate,
     _DynWinRTProjector,
 )
+from typing import Protocol, TypedDict
+from dynwinrt import (
+    DynWinRTInterfacePlan, DynWinRTImplementationMethod,
+    DynWinRTImplementation, DynWinRTImplementationDescriptor,
+    DynWinRTImplementationHandle,
+)
+from abc import ABCMeta
+from typing import TypeVar
+from dynwinrt import _DynWinRTImplementationFactory
+_ImplementationHandlers = TypeVar('_ImplementationHandlers')
 from typing import Protocol, Self, TypeVar
 
 _InterfaceT = TypeVar('_InterfaceT')
@@ -15,10 +25,20 @@ _InterfaceT = TypeVar('_InterfaceT')
 IID_IStringable: WinGUID
 
 
+class IStringableHandlers(Protocol):
+    """Synchronous handlers; multi-output results are named dicts and FillArray inputs are capacities."""
+    def to_string(self) -> str: ...
+
+class _IStringableImplementationFactory(ABCMeta):
+    def implementation(cls, handlers: IStringableHandlers) -> DynWinRTImplementationDescriptor: ...
+    def implement(cls, handlers: IStringableHandlers, *additional: DynWinRTImplementationDescriptor, interfaces: Sequence[tuple[_DynWinRTImplementationFactory[_ImplementationHandlers], _ImplementationHandlers]] = ...) -> DynWinRTImplementationHandle[IStringable]: ...
+    def from_implementation(cls, owner: DynWinRTImplementation | DynWinRTImplementationHandle[object]) -> IStringable: ...
+
+
 class _IStringableIdentity(Protocol):
     def _dynwinrt_iid_windows_foundation_istringable(self) -> None: ...
 
-class IStringable(_IStringableIdentity, Protocol):
+class IStringable(_IStringableIdentity, Protocol, metaclass=_IStringableImplementationFactory):
 
     @classmethod
     def from_value(cls, obj: DynWinRTValue) -> Self: ...

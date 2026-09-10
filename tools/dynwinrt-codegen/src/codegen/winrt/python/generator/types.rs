@@ -84,6 +84,7 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
     if is_delegate {
         return generate_delegate(iface);
     }
+    let implementation = super::super::implementation::project(context, iface);
 
     let used_structs = collect_used_structs_from_iface(iface);
 
@@ -91,6 +92,9 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
     out.push_str(HEADER);
     out.push_str(FUTURE_ANNOTATIONS);
     out.push_str(IMPORT_LINE);
+    if implementation.supported {
+        out.push_str(super::super::implementation::IMPORTS);
+    }
     let is_element_factory =
         iface.namespace == "Microsoft.UI.Xaml" && iface.name == "IElementFactory";
     if is_element_factory {
@@ -121,7 +125,14 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
         super::super::collect_runtime_delegate_names(&iface.methods, context);
 
     // Import parameterized collection types (skip delegates)
-    let collection_identities = collect_used_generic_identities_from_methods(&iface.methods);
+    let mut collection_identities = collect_used_generic_identities_from_methods(&iface.methods);
+    for delegate in &iface.implementation_metadata.delegates {
+        collection_identities.extend(collect_used_generic_identities_from_methods(
+            std::slice::from_ref(&delegate.invoke),
+        ));
+    }
+    collection_identities.sort();
+    collection_identities.dedup();
     for identity in &collection_identities {
         let identity = context.normalize_identity(identity);
         if identity != iface.type_identity() && !delegate_names.contains(&identity) {
@@ -245,6 +256,9 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
         }
     }
 
+    out.push_str(&implementation.declarations);
+    out.push_str(&implementation.support_code);
+
     // Wrapper class
     if let Some(identity) = &observable_vector {
         let vector_name = context.projected_name(identity);
@@ -269,6 +283,7 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
         ));
     }
     out.push_str("    _dynwinrt_interface_type = True\n");
+    out.push_str(&implementation.factory_body);
     if !iface.iid.is_empty() || iface.generic_piid.is_some() {
         out.push_str(&format!(
             "    _dynwinrt_interface_iid = IID_{}\n",
@@ -283,7 +298,7 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
          \x20           return _dynwinrt_projected_from_native(cls, args[0], '_set_native')\n\
          \x20       return super().__new__(cls)\n\n",
     );
-    out.push_str("    def _set_native(self, obj: DynWinRTValue):\n");
+    out.push_str("    def _set_native(self, obj: DynWinRTValue, *, cache=True):\n");
     if let Some(identity) = &observable_vector {
         let vector_name = context.projected_name(identity);
         out.push_str(&format!(
@@ -307,7 +322,7 @@ pub fn generate_interface(context: &PythonProjectionContext, iface: &InterfaceMe
         "        _dynwinrt_track_projected(self, '{}.{}')\n",
         iface.namespace, iface.name
     ));
-    out.push_str("        _dynwinrt_cache_projected(self)\n");
+    out.push_str("        if cache:\n            _dynwinrt_cache_projected(self)\n");
     out.push('\n');
     out.push_str("    def __init__(self, obj: DynWinRTValue):\n");
     out.push_str(

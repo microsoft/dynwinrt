@@ -126,6 +126,25 @@ impl std::fmt::Debug for ValueTypeData {
 }
 
 impl ValueTypeData {
+    pub(crate) fn try_new(handle: &TypeHandle) -> windows_core::Result<Self> {
+        let layout = handle.layout();
+        let ptr = if layout.size() == 0 {
+            std::ptr::null_mut()
+        } else {
+            let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
+            if ptr.is_null() {
+                return Err(windows_core::Error::from_hresult(windows_core::HRESULT(
+                    0x8007000Eu32 as i32,
+                )));
+            }
+            ptr
+        };
+        Ok(Self {
+            type_handle: handle.clone(),
+            ptr,
+        })
+    }
+
     pub(crate) fn new(handle: &TypeHandle) -> Self {
         let layout = handle.layout();
         let ptr = if layout.size() > 0 {
@@ -221,6 +240,18 @@ impl ValueTypeData {
         if has_non_blittable_fields(&self.type_handle) {
             unsafe {
                 duplicate_non_blittable_fields(&self.type_handle, result as *mut u8);
+            }
+        }
+    }
+
+    /// Transfer already-prepared field ownership without calling native code.
+    /// `result` must be uninitialized storage for this exact struct layout.
+    pub(crate) unsafe fn move_to_abi(self, result: *mut c_void) {
+        let size = self.type_handle.size_of();
+        if size != 0 {
+            unsafe {
+                std::ptr::copy_nonoverlapping(self.ptr, result.cast(), size);
+                std::ptr::write_bytes(self.ptr, 0, size);
             }
         }
     }

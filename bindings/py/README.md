@@ -190,6 +190,132 @@ Generated runtime classes that implement `IClosable` support `with` and an
 idempotent `close()` method. Prefer deterministic cleanup instead of relying on
 Python garbage collection.
 
+## Standalone WinRT interface implementations
+
+Generated, supported non-generic WinRT interfaces provide `.implementation()`
+and `.implement()` factories. They create standalone, `IInspectable`-rooted
+objects; they do not activate or register an OS class, compose a WinUI control,
+or implement Classic COM interfaces. `.implement()` returns a generic management
+handle with a stable typed `.value`, not a type cast or the raw handler:
+
+```python
+from generated.windows.foundation import IClosable, IStringable
+
+class Label:
+    def to_string(self) -> str:
+        return "Python-backed WinRT object"
+
+    def close(self) -> None:
+        pass
+
+handler = Label()
+with IStringable.implement(
+    handler, interfaces=[(IClosable, handler)]
+) as impl:
+    print(impl.value.to_string())
+```
+
+The generated handler protocols describe snake-case methods and their input
+and output types. Additional interface descriptors provide separate native
+views sharing the same object identity. Every required interface must be
+included; an incomplete implementation is rejected before publication.
+`release_projected(view)` releases a view independently without disposing or
+releasing its controller. The advanced `from_implementation(impl)` path accepts
+both new handles and low-level native owners; positional descriptors remain
+supported. The primary `.value` needs no `release_projected` in the common
+pattern. It is created lazily once, and `release()`/`dispose()` release that
+view along with the handle's owner reference. `.value` raises after either
+operation and never recreates a released view.
+Heterogeneous convenience lists have per-pair static checking for interfaces
+from the same generated package. For heterogeneous combinations across
+generated packages, use positional typed `.implementation(...)` descriptors.
+Runtime list acceptance and the generic homogeneous-list overload are unchanged.
+
+The management implementation ships as `dynwinrt/_implementation.py` beside the
+native extension. Tracebacks and coverage use this installed source file; no
+build checkout is needed. The native module's public class identities and
+exports are unchanged.
+
+The low-level runtime surface is:
+
+- `DynWinRTImplementationMethod(name, vtable_index, signature)`: an immutable
+  method definition using the existing `DynWinRTMethodSig`.
+- `DynWinRTInterfacePlan.create(name, interface_type, methods,
+  required_iids=())`: an immutable, validated interface definition. Methods
+  occupy every slot starting at slot 6; required-interface membership is
+  checked when composing the complete implementation.
+- `DynWinRTImplementationDescriptor(plan, dispatch)`: a generated interface
+  plan and synchronous `dispatch(vtable_index, args)` callable.
+- `DynWinRTImplementation.create(interfaces, callback,
+  runtime_class_name=None)`: the native owner. Its callback receives
+  `(interface_index, vtable_index, list[DynWinRTValue])` and must return a
+  `list[DynWinRTValue]` in signature output order, with any logical return last.
+  A void callback returns `[]`, not `None`.
+
+Prefer generated plans rather than hand-authoring native signatures. The
+runtime validates scalar, GUID, HSTRING, complete struct, managed-reference,
+and pass/receive/fill-array contracts. For fill arrays the **callback** receives
+a `UInt32` capacity and must return an array of exactly that length. Existing
+outbound `DynWinRTMethodHandle` calls still take a preallocated array value for
+a fill-array argument. `DynWinRTValue.from_hresult()` constructs an exact
+signed HRESULT value, including for typed HRESULT arrays.
+
+Callbacks are synchronous and run only on the creating native thread, with a
+fresh copy of the `contextvars` context captured at creation. Reentrant calls
+are supported. Async callables and coroutine/awaitable results are rejected;
+no event loop is scheduled or blocked. Already-created native WinRT async
+values can be passed through like other managed native values. Arbitrary
+generic interface implementations, cross-thread dispatch, and Python
+subinterpreters are not supported.
+
+Callable wrappers for received native delegates can prepare a reusable
+`DynWinRTDelegateMethod.create(iid, signature)` and call
+`method.invoke(value, args)`. The convenience
+`value.invoke_delegate(iid, signature, args)` remains available and uses the
+same invocation path. The IID and signature must describe the same WinRT
+delegate's `Invoke` method, including computed closed-generic IIDs. This calls
+slot 3 on the delegate's `IUnknown` root and returns all outputs as a list
+(`[]` for void). It borrows the Python value, owns a native pin through the
+call, and propagates failed HRESULTs. Arguments use the existing outbound
+`invoke_all()` contract, including preallocated fill-array values; these
+helpers do not infer signatures or turn arbitrary objects into delegates.
+Generated received-delegate callables use positional-only arguments in both
+their Protocol declarations and runtime wrappers; ordinary projected methods
+continue to accept their existing keyword arguments.
+
+### Implementation lifetime and callback failures
+
+`to_value()` returns an independently owned native reference. `release()`
+drops only the owner's reference; callbacks remain alive while native
+consumers retain other references, even after the Python owner wrapper is
+gone. `disconnect()` disables all views and releases captured Python handlers
+without dropping the owner's native reference. `dispose()` disconnects and
+releases, and is repeat-safe. The owner context manager calls `dispose()`.
+An in-flight callback can finish safely when it calls any of these methods;
+subsequent calls after disconnection fail with `RO_E_CLOSED`.
+
+GC tracing is deliberately conservative: captured Python references are
+reported as owner edges only when that owner is the sole native reference.
+This collects ordinary handler/self/owner cycles without treating native
+consumers as collectable Python references. Cycles that retain a native alias,
+or that have requested native weak references, may require **explicit
+`dispose()`**, including a handler capturing a typed handle whose primary view
+has already been created. Callback invocation and `to_value()` require the creating thread;
+foreign-thread `to_value()` raises `OSError` with `RPC_E_WRONG_THREAD`.
+Owner release, disposal, and garbage collection can run on another Python
+thread without leaking the owner's native reference. This does not make
+arbitrary wrapped Windows objects agile. Prefer deterministic cleanup;
+unexpected GC cleanup failures are reported to `sys.unraisablehook`.
+Interpreter shutdown separately closes the callback gate and drops
+captured handlers; late native calls cannot enter a finalized interpreter.
+
+Python callback exceptions and invalid Python output containers are reported
+to `sys.unraisablehook` and fail the native call with
+`PYWINRT_E_UNRAISABLE_PYTHON_EXCEPTION` (`0xA0EE4005`). Native output-contract
+mismatches also fail rather than returning fabricated values. `take_error()`
+returns and clears the latest native callback diagnostic; `is_closed` is a
+read-only property.
+
 ## Experimental WinUI support
 
 When the required WinUI metadata is generated, `Application.create()` installs

@@ -3,7 +3,8 @@
 # Licensed under the MIT License.
 #
 # E2E test orchestrator: build, generate, run language-specific runners, collect results.
-# Test logic lives in runners/py_runner.py, runners/ts_runner.ts, and runners/com/*.mjs.
+# Test logic lives in runners/py_runner.py, runners/ts_runner.ts, runners/com/*.mjs,
+# and runners/implementation_{py.py,js.mjs}.
 #
 # Usage:
 #   .\tests\e2e\e2e_test.ps1                    # Full (build + generate + test)
@@ -11,6 +12,8 @@
 #   .\tests\e2e\e2e_test.ps1 -Lang py           # Python only
 #   .\tests\e2e\e2e_test.ps1 -Lang ts           # TypeScript only
 #   .\tests\e2e\e2e_test.ps1 -Lang com          # Classic COM only
+#   .\tests\e2e\e2e_test.ps1 -SkipBuild -Suite implementations -Lang py,ts -KeepGenerated
+#   .\tests\e2e\e2e_test.ps1 -SkipBuild -Suite standard  # Existing WinRT/COM cases only
 
 param(
     [switch]$SkipBuild,
@@ -18,12 +21,18 @@ param(
     [string]$CargoProfile = "release",
     [string]$CargoTarget,
     [string]$Python,
+    [ValidateSet("all", "standard", "implementations")]
+    [string]$Suite = "all",
     [ValidateSet("py", "ts", "com")]
     [string[]]$Lang = @("py", "ts", "com")
 )
 
 $ErrorActionPreference = "Stop"
 $langWasExplicit = $PSBoundParameters.ContainsKey("Lang")
+if ($Suite -eq "implementations") {
+    $Lang = @($Lang | Where-Object { $_ -in @("py", "ts") })
+    if ($Lang.Count -eq 0) { throw "The implementations suite requires -Lang py and/or ts." }
+}
 $root = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 $specsFile = Join-Path $PSScriptRoot "e2e_specs.json"
 $e2eDir = Join-Path $PSScriptRoot "e2e_generated"
@@ -59,8 +68,11 @@ Write-Host "=== dynwinrt E2E Test ===" -ForegroundColor Cyan
 # --------------------------------------------------------------------------
 # Detect available tools
 # --------------------------------------------------------------------------
+$venvPython = Join-Path $root "bindings\py\.venv\Scripts\python.exe"
 $pythonExe = if ($Python) {
     (Resolve-Path -LiteralPath $Python).Path
+} elseif (Test-Path -LiteralPath $venvPython -PathType Leaf) {
+    (Resolve-Path -LiteralPath $venvPython).Path
 } else {
     (Get-Command python -ErrorAction SilentlyContinue).Source
 }
@@ -128,7 +140,7 @@ if (-not $SkipBuild) {
             if (-not (Test-Path $venvPython)) {
                 & $pythonExe -m venv .venv
                 if ($LASTEXITCODE -ne 0) { Write-Error "Python virtual environment creation failed"; exit 1 }
-                & $venvPython -m pip install pytest maturin --quiet
+                & $venvPython -m pip install pytest maturin mypy "coverage>=7.15,<8" --quiet
                 if ($LASTEXITCODE -ne 0) { Write-Error "Python test dependency installation failed"; exit 1 }
             }
             $pythonExe = (Resolve-Path -LiteralPath $venvPython).Path
@@ -157,17 +169,28 @@ if (-not $SkipBuild) {
         if ($LASTEXITCODE -ne 0) { Write-Error "npm install failed"; exit 1 }
         $napi = Join-Path $root "bindings\js\node_modules\.bin\napi.cmd"
         if (-not (Test-Path -LiteralPath $napi)) { Write-Error "NAPI CLI is missing: $napi"; exit 1 }
-        & $napi build --no-const-enum --platform @cargoProfileArgs @cargoTargetArgs -o dist 2>&1 | Out-Null
+        # NAPI uses --profile literally as the artifact directory. Cargo's
+        # built-in dev profile writes to debug, so let NAPI select its default
+        # debug build rather than looking for a nonexistent target/.../dev DLL.
+        [string[]]$napiProfileArgs = @(
+            if ($CargoProfile -eq "release") { "--release" }
+            elseif ($CargoProfile -ne "dev") { "--profile"; $CargoProfile }
+        )
+        & $napi build --no-const-enum --platform @napiProfileArgs @cargoTargetArgs -o dist 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0) { Write-Error "napi build failed"; exit 1 }
         npm run build:entrypoints --silent
         if ($LASTEXITCODE -ne 0) { Write-Error "runtime entrypoint generation failed"; exit 1 }
         Pop-Location
     }
-} else {
-    $venvPython = Join-Path $root "bindings\py\.venv\Scripts\python.exe"
-    if (-not $Python -and (Test-Path $venvPython)) {
-        $pythonExe = (Resolve-Path -LiteralPath $venvPython).Path
-    }
+}
+
+# Focused and full suites share preparation. Branch before reading or deleting
+# any standard fixtures, preserving their retained output in focused runs.
+if ($Suite -eq "implementations") {
+    & (Join-Path $PSScriptRoot "implementation_test.ps1") `
+        -Lang $Lang -Python $pythonExe -CargoProfile $CargoProfile -CargoTarget $CargoTarget `
+        -KeepGenerated:$KeepGenerated
+    exit $LASTEXITCODE
 }
 
 # --------------------------------------------------------------------------
@@ -335,6 +358,10 @@ if ("py" -in $Lang) {
         --output $pyResult
     if ($LASTEXITCODE -ne 0) { $totalFail++ } else { $totalPass++ }
     if (Test-Path $pyResult) { $allResults += (Get-Content $pyResult -Raw | ConvertFrom-Json) }
+    & $pythonExe (Join-Path $runnersDir "implementation_py.py") `
+        --generated $pyBindingsDir --cases "management_handle,property_views,multi_interface_lifetime,memory_buffer_event" `
+        --output (Join-Path $e2eDir "standard_implementation_py.json")
+    if ($LASTEXITCODE -ne 0) { $totalFail++ } else { $totalPass++ }
 }
 
 if ("ts" -in $Lang) {
@@ -352,6 +379,11 @@ if ("ts" -in $Lang) {
         --output $tsResult
     if ($LASTEXITCODE -ne 0) { $totalFail++ } else { $totalPass++ }
     if (Test-Path $tsResult) { $allResults += (Get-Content $tsResult -Raw | ConvertFrom-Json) }
+    & node (Join-Path $runnersDir "implementation_js.mjs") `
+        --generated (Join-Path $e2eDir "ts") --runtime (Join-Path $root "bindings\js\dist\winrt.js") `
+        --cases "management_handle,property_views,multi_interface_lifetime,memory_buffer_event" `
+        --output (Join-Path $e2eDir "standard_implementation_ts.json")
+    if ($LASTEXITCODE -ne 0) { $totalFail++ } else { $totalPass++ }
 }
 
 if ("com" -in $Lang) {
@@ -391,6 +423,21 @@ if ("com" -in $Lang) {
         language = "com"
         passed = $comPassed
         total = $comRunners.Count
+    }
+}
+
+if ($Suite -eq "all" -and ("py" -in $Lang -or "ts" -in $Lang)) {
+    Write-Host "`n--- Generated WinRT implementations ---" -ForegroundColor Yellow
+    $implementationLangs = @($Lang | Where-Object { $_ -in @("py", "ts") })
+    & (Join-Path $PSScriptRoot "implementation_test.ps1") `
+        -Lang $implementationLangs -Python $pythonExe `
+        -CargoProfile $CargoProfile -CargoTarget $CargoTarget -KeepGenerated
+    if ($LASTEXITCODE -ne 0) { $totalFail++ } else { $totalPass++ }
+    foreach ($l in $implementationLangs) {
+        $resultPath = Join-Path $e2eDir "implementations\results_$l.json"
+        if (Test-Path $resultPath) {
+            $allResults += Get-Content $resultPath -Raw | ConvertFrom-Json
+        }
     }
 }
 

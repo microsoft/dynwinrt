@@ -10,6 +10,7 @@ The JavaScript samples use generated bindings and the
 | [`windows-hello`](windows-hello/)                             | Electron, Windows Hello, and HWND-bound Classic COM interop  |
 | [`electron-share-ui`](electron-share-ui/)                     | Electron Share UI with WinRT and Classic COM                 |
 | [`electron-smtc`](electron-smtc/)                             | Electron system media controls and GSMTC loopback            |
+| [`interface-implementation`](interface-implementation/) | Standalone JavaScript-backed WinRT interfaces, native IBackgroundTask calls, and multi-interface lifetime |
 
 The WinUI samples use WinApp CLI to restore matching Windows App SDK metadata,
 runtime packages, bootstrap binaries, and generated npm bindings.

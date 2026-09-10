@@ -321,6 +321,8 @@ fn render_class_dts(out: &mut String, class: &ProjectedClass, file: &ProjectedFi
 }
 
 fn render_iface_dts(out: &mut String, iface: &ProjectedIface, file: &ProjectedFile) {
+    out.push_str(&iface.implementation.declarations);
+    out.push('\n');
     // IID const (only exported ones)
     for iid in &file.iid_consts {
         if iid.exported {
@@ -339,6 +341,7 @@ fn render_iface_dts(out: &mut String, iface: &ProjectedIface, file: &ProjectedFi
 
     // Constructor — private (users should use static from() or factory methods)
     out.push_str("    private constructor();\n");
+    out.push_str(&iface.implementation.factory_declarations);
 
     // static from() — internal, for advanced cross-interface casting
     if iface.has_static_from {
