@@ -814,6 +814,208 @@ fn python_inventory_migration_uses_metadata_not_stub_text_and_fails_atomically()
 }
 
 #[test]
+fn python_root_exports_follow_single_to_ambiguous_owner_visibility() {
+    for pyi in [true, false] {
+        for first in ["Alpha", "Beta"] {
+            check_root_owner_visibility(first, "IStable", pyi, false);
+        }
+    }
+}
+
+#[test]
+fn python_root_visibility_changes_even_when_helper_names_do_not() {
+    check_root_owner_visibility("Alpha", "IWidgetHandlers", true, false);
+}
+
+#[test]
+fn python_root_exports_also_replace_regenerated_owners_with_empty_sets() {
+    check_root_owner_visibility("Alpha", "IStable", true, true);
+}
+
+fn check_root_owner_visibility(first: &str, unrelated: &str, pyi: bool, regenerate_first: bool) {
+    let fixture = Fixture::new();
+    let alpha = ("Alpha", "IWidget", "ReadAlpha", 0x31d44791);
+    let beta = ("Beta", "IWidget", "ReadBeta", 0x31d44792);
+    let stable = ("Third", unrelated, "ReadThird", 0x31d44793);
+    let (first_type, second_type) = if first == "Alpha" {
+        (alpha, beta)
+    } else {
+        (beta, alpha)
+    };
+    let initial = fixture.0.join("initial").join("Initial.winmd");
+    let extra = fixture.0.join("extra").join("Extra.winmd");
+    let third = fixture.0.join("third").join("Third.winmd");
+    let combined = fixture.0.join("combined").join("Combined.winmd");
+    names(&initial, &[first_type]);
+    names(&extra, &[second_type]);
+    names(&third, &[stable]);
+    names(&combined, &[alpha, beta, stable]);
+    let output = fixture.0.join("incremental");
+    let clean = fixture.0.join("clean");
+    let options = if pyi { &[][..] } else { &["--no-pyi"][..] };
+    success(generate(
+        &initial,
+        &output,
+        "py",
+        &format!("{}.IWidget", first_type.0),
+        options,
+    ));
+    assert!(
+        fs::read_to_string(output.join("__init__.py"))
+            .unwrap()
+            .contains("\"IWidgetHandlers\"")
+    );
+    success(generate(
+        &third,
+        &output,
+        "py",
+        &format!("Third.{unrelated}"),
+        options,
+    ));
+    let before = python_inventory(&output);
+    let old_owner = before
+        .iter()
+        .find(|record| record["identity"]["namespace"] == first)
+        .unwrap();
+    let unchanged_module = before
+        .iter()
+        .find(|record| record["identity"]["namespace"] == "Third")
+        .unwrap()["implementation"]["module"]
+        .as_str()
+        .unwrap();
+    let unchanged_source = fs::read(output.join(format!("{unchanged_module}.py"))).unwrap();
+    let selected = if regenerate_first {
+        "Alpha.IWidget,Beta.IWidget".to_string()
+    } else {
+        format!("{}.IWidget", second_type.0)
+    };
+    let extra_options = if regenerate_first {
+        vec!["--ref", initial.to_str().unwrap()]
+    } else {
+        options.to_vec()
+    };
+    success(generate(&extra, &output, "py", &selected, &extra_options));
+    success(generate(
+        &combined,
+        &clean,
+        "py",
+        &format!("Alpha.IWidget,Beta.IWidget,Third.{unrelated}"),
+        options,
+    ));
+    let after = python_inventory(&output);
+    if unrelated == "IWidgetHandlers" {
+        let owner = after
+            .iter()
+            .find(|record| record["identity"]["namespace"] == first)
+            .unwrap();
+        assert_eq!(
+            old_owner["implementation"]["helpers"],
+            owner["implementation"]["helpers"]
+        );
+    }
+    if runtime_available() {
+        success(Command::new(python()).args(["-I", "-c", r#"
+import importlib
+import json
+from pathlib import Path
+import sys
+sys.path.insert(0, sys.argv[1])
+import incremental
+import clean
+namespace = {}
+exec("from incremental import *", namespace)
+exec("from clean import *", {})
+assert set(incremental.__all__) == set(clean.__all__)
+assert incremental._EXPORTS == clean._EXPORTS
+assert "IWidget" not in incremental.__all__
+for name in incremental.__all__:
+    assert namespace[name] is getattr(incremental, name)
+third_name = sys.argv[2]
+assert hasattr(getattr(incremental, third_name), "from_value")
+if third_name != "IWidgetHandlers":
+    assert "IWidgetHandlers" not in incremental.__all__
+records = [json.loads(line) for line in (Path(sys.argv[1]) / "incremental" / ".dynwinrt-generated-types").read_text().splitlines()]
+views = {}
+for ns in ("Alpha", "Beta"):
+    record = next(record for record in records if record["identity"]["namespace"] == ns)
+    facade = importlib.import_module("incremental." + ns.lower() + ".i_widget")
+    namespace_module = importlib.import_module("incremental." + ns.lower())
+    helper = record["implementation"]["handler_export"]
+    assert getattr(facade, helper) is getattr(namespace_module, helper)
+    assert helper not in incremental.__all__
+    views[ns] = facade.IWidget
+class Alpha:
+    def read_alpha(self): return 17
+class Beta:
+    def read_beta(self): return 23
+from dynwinrt import RoApartment, release_projected
+with RoApartment(1), views["Alpha"].implement(Alpha(), interfaces=[(views["Beta"], Beta())]) as impl:
+    assert impl.value.read_alpha() == 17
+    other = views["Beta"].from_implementation(impl)
+    try: assert other.read_beta() == 23
+    finally: release_projected(other)
+"#]).arg(&fixture.0).arg(unrelated).output().unwrap());
+    }
+    assert_eq!(
+        fs::read_to_string(output.join("__init__.py")).unwrap(),
+        fs::read_to_string(clean.join("__init__.py")).unwrap()
+    );
+    assert_eq!(
+        unchanged_source,
+        fs::read(output.join(format!("{unchanged_module}.py"))).unwrap()
+    );
+    if pyi {
+        assert_eq!(
+            fs::read_to_string(output.join("__init__.pyi")).unwrap(),
+            fs::read_to_string(clean.join("__init__.pyi")).unwrap()
+        );
+        assert_eq!(
+            fs::read(output.join("_implementation_types.pyi")).unwrap(),
+            fs::read(clean.join("_implementation_types.pyi")).unwrap()
+        );
+        let handler = |ns: &str| {
+            after
+                .iter()
+                .find(|record| record["identity"]["namespace"] == ns)
+                .unwrap()["implementation"]["handler_export"]
+                .as_str()
+                .unwrap()
+        };
+        typecheck_py(
+            &fixture.0,
+            &format!(
+                r#"
+from incremental import *
+from incremental.alpha.i_widget import IWidget as AlphaWidget, {alpha_handler}
+from incremental.beta.i_widget import IWidget as BetaWidget, {beta_handler}
+from typing import assert_type
+class Alpha:
+    def read_alpha(self) -> int: return 17
+class Beta:
+    def read_beta(self) -> int: return 23
+class Third:
+    def read_third(self) -> int: return 31
+a: {alpha_handler} = Alpha()
+b: {beta_handler} = Beta()
+with AlphaWidget.implement(a, interfaces=[(BetaWidget, b)]) as impl:
+    assert_type(impl.value, AlphaWidget)
+with {unrelated}.implement(Third()) as third:
+    assert_type(third.value, {unrelated})
+"#,
+                alpha_handler = handler("Alpha"),
+                beta_handler = handler("Beta")
+            ),
+        );
+    } else {
+        assert!(!output.join("__init__.pyi").exists());
+        assert!(!output.join("_implementation_types.pyi").exists());
+    }
+    let repeated = snapshot(&output);
+    success(generate(&extra, &output, "py", &selected, &extra_options));
+    assert_eq!(repeated, snapshot(&output));
+}
+
+#[test]
 fn typed_append_after_no_pyi_requires_regenerating_missing_declarations() {
     let fixture = Fixture::new();
     let first = fixture.0.join("first").join("First.winmd");

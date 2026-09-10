@@ -806,6 +806,17 @@ impl PythonProjectionContext {
             .to_string()
     }
 
+    pub fn public_qualified_module_for_export(
+        &self,
+        identity: &PythonTypeIdentity,
+        projected_name: &str,
+    ) -> String {
+        let identity = self.normalize_identity(identity);
+        let mut segments = python_namespace_segments(identity.namespace().unwrap_or_default());
+        segments.push(public_module_name(&identity, projected_name));
+        segments.join(".")
+    }
+
     pub fn root_name_is_unambiguous(&self, identity: &PythonTypeIdentity) -> bool {
         self.compatibility_counts
             .get(&legacy_projected_name(identity))

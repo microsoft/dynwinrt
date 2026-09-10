@@ -130,6 +130,8 @@ remain unchanged.
 
 Implementation helper names are allocated alongside metadata types and follow
 their owning interfaces through incremental renames. Python's package-level
+root exports drop an interface and its helpers when its short name becomes
+ambiguous, while namespace imports remain available. Python's
 heterogeneous interface-pair union is generated from validated inventory
 records, not inferred from `.pyi` text. The first typed incremental generation
 over an older inventory needs the original WinMD/`--ref` inputs for interfaces

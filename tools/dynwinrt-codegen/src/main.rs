@@ -4088,6 +4088,7 @@ fn generate_py_files(
         let marker = output_dir.join("py.typed");
         write_file(&marker, "")?;
     }
+    reconcile_python_implementation_root_exports(context, output_dir, &previous, &types, pyi)?;
     write_python_type_inventory(output_dir, &types)?;
     Ok(())
 }
@@ -4395,31 +4396,79 @@ fn reconcile_retained_python_helpers(
                 &HashSet::new(),
             )?;
         }
-        if context.root_name_is_unambiguous(&typ.identity) {
-            let symbols = std::iter::once(item.interface_export.as_str())
+    }
+    Ok(())
+}
+
+fn reconcile_python_implementation_root_exports(
+    context: &python::PythonProjectionContext,
+    output_dir: &Path,
+    previous: &[PythonGeneratedType],
+    current: &[PythonGeneratedType],
+    pyi: bool,
+) -> Result<(), String> {
+    let mut replaced_modules = HashSet::new();
+    let mut generated = String::from(GENERATED_PYTHON_HEADER);
+    for typ in current {
+        let old = previous
+            .iter()
+            .find(|old| old.identity == typ.identity)
+            .and_then(|old| old.implementation.as_ref());
+        let item = typ.implementation.as_ref();
+        if old.is_none() && item.is_none() {
+            continue;
+        }
+        replaced_modules.extend([
+            format!(".{}", context.implementation_module(&typ.identity)),
+            format!(".{}", context.public_qualified_module(&typ.identity)),
+        ]);
+        for record in old.into_iter().chain(item) {
+            replaced_modules.insert(format!(".{}", record.module));
+            replaced_modules.insert(format!(
+                ".{}",
+                context.public_qualified_module_for_export(&typ.identity, &record.interface_export)
+            ));
+        }
+        if let Some(item) = item
+            .filter(|item| item.pair_eligible && context.root_name_is_unambiguous(&typ.identity))
+        {
+            let module = context.public_qualified_module(&typ.identity);
+            for name in std::iter::once(item.interface_export.as_str())
                 .chain(item.helpers.iter().map(|helper| helper.name.as_str()))
-                .map(|name| format!("{name} as {name}"))
-                .collect::<Vec<_>>()
-                .join(", ");
-            let root = format!(
-                "{GENERATED_PYTHON_HEADER}from .{} import {symbols}\n",
-                context.public_qualified_module(&typ.identity)
-            );
-            write_python_lazy_root_index(
-                &output_dir.join("__init__.py"),
-                &root,
-                true,
-                &HashSet::new(),
-            )?;
-            if pyi {
-                write_python_index(
-                    &output_dir.join("__init__.pyi"),
-                    &root,
-                    true,
-                    &HashSet::new(),
-                )?;
+            {
+                generated.push_str(&format!("from .{module} import {name} as {name}\n"));
             }
         }
+    }
+    if replaced_modules.is_empty() {
+        return Ok(());
+    }
+    // Visibility is independent of helper spelling. An empty set removes
+    // an owner's old root exports without touching its namespace facade.
+    for extension in if pyi { &["py", "pyi"][..] } else { &["py"][..] } {
+        let path = output_dir.join(format!("__init__.{extension}"));
+        let existing = if path.is_file() {
+            fs::read_to_string(&path)
+                .map_err(|error| format!("Failed to read {}: {error}", path.display()))?
+        } else {
+            GENERATED_PYTHON_HEADER.to_string()
+        };
+        let content = if *extension == "py" {
+            merge_python_lazy_root_indexes_replacing(
+                &existing,
+                &generated,
+                &HashSet::new(),
+                &replaced_modules,
+            )
+        } else {
+            merge_python_indexes_replacing(
+                &existing,
+                &generated,
+                &HashSet::new(),
+                &replaced_modules,
+            )
+        };
+        write_file(&path, &content)?;
     }
     Ok(())
 }
@@ -4930,11 +4979,21 @@ fn merge_python_lazy_root_indexes(
     generated: &str,
     suppressed_names: &HashSet<String>,
 ) -> String {
+    merge_python_lazy_root_indexes_replacing(existing, generated, suppressed_names, &HashSet::new())
+}
+
+fn merge_python_lazy_root_indexes_replacing(
+    existing: &str,
+    generated: &str,
+    suppressed_names: &HashSet<String>,
+    replaced_modules: &HashSet<String>,
+) -> String {
     let mut exports = BTreeMap::<String, (String, String)>::new();
     collect_python_root_exports(generated, suppressed_names, &mut exports);
     let replaced_modules = exports
         .values()
         .map(|(module, _)| module.clone())
+        .chain(replaced_modules.iter().cloned())
         .collect::<HashSet<_>>();
     let mut retained = BTreeMap::new();
     collect_python_root_exports(existing, suppressed_names, &mut retained);
@@ -5047,6 +5106,15 @@ fn merge_python_indexes(
     generated: &str,
     suppressed_names: &HashSet<String>,
 ) -> String {
+    merge_python_indexes_replacing(existing, generated, suppressed_names, &HashSet::new())
+}
+
+fn merge_python_indexes_replacing(
+    existing: &str,
+    generated: &str,
+    suppressed_names: &HashSet<String>,
+    replaced_modules: &HashSet<String>,
+) -> String {
     let mut imports = BTreeSet::new();
     let mut exported_symbols = HashSet::new();
     // A regenerated module supplies its complete current exports. In particular,
@@ -5056,6 +5124,7 @@ fn merge_python_indexes(
         .lines()
         .filter_map(parse_python_import_line)
         .map(|(module, _)| module)
+        .chain(replaced_modules.iter().cloned())
         .collect::<HashSet<_>>();
     let retained = existing.lines().filter(|line| {
         parse_python_import_line(line).is_none_or(|(module, _)| !replaced_modules.contains(&module))
@@ -10804,6 +10873,61 @@ mod tests {
         assert!(appended.contains("\"First\": (\".contoso__first\", \"First\")"));
         assert!(appended.contains("\"Third\": (\".contoso__third\", \"Third\")"));
         assert!(!appended.contains("\"Second\": ("));
+    }
+
+    #[test]
+    fn python_root_replacement_removes_empty_owners_and_previous_source_paths() {
+        type Merge = fn(&str, &str, &HashSet<String>, &HashSet<String>) -> String;
+        for merge in [
+            merge_python_lazy_root_indexes_replacing as Merge,
+            merge_python_indexes_replacing as Merge,
+        ] {
+            let prior = format!(
+                "{GENERATED_PYTHON_HEADER}\
+from .old.facade import IWidget as IWidget\n\
+from .old__canonical import IWidgetHandlers as OldHandlers\n\
+from .third.facade import IWidgetHandlers as IWidgetHandlers, Stable as PublicStable\n"
+            );
+            let owned = HashSet::from([
+                ".old.facade".to_string(),
+                ".old__canonical".to_string(),
+                ".new.facade".to_string(),
+            ]);
+            let existing = merge(
+                GENERATED_PYTHON_HEADER,
+                &prior,
+                &HashSet::new(),
+                &HashSet::new(),
+            );
+            for replacement in [
+                GENERATED_PYTHON_HEADER.to_string(),
+                format!(
+                    "{GENERATED_PYTHON_HEADER}from .new.facade import NewWidget as NewWidget\n"
+                ),
+            ] {
+                let merged = merge(&existing, &replacement, &HashSet::new(), &owned);
+                let mut exports = BTreeMap::new();
+                collect_python_root_exports(&merged, &HashSet::new(), &mut exports);
+                assert!(!exports.contains_key("IWidget"));
+                assert!(!exports.contains_key("OldHandlers"));
+                assert_eq!(
+                    exports["IWidgetHandlers"],
+                    (".third.facade".into(), "IWidgetHandlers".into())
+                );
+                assert_eq!(
+                    exports["PublicStable"],
+                    (".third.facade".into(), "Stable".into())
+                );
+                assert_eq!(
+                    exports.contains_key("NewWidget"),
+                    replacement.contains("NewWidget")
+                );
+                assert_eq!(
+                    merged,
+                    merge(&merged, &replacement, &HashSet::new(), &owned)
+                );
+            }
+        }
     }
 
     #[test]
