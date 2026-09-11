@@ -92,6 +92,13 @@ Methods keep their natural projected names:
 context.getValueByName(...);
 ```
 
+Parameter names retain their metadata spelling apart from identifier sanitization
+and escaping JavaScript reserved or strict-mode restricted binding names (for
+example, `var` becomes `var_`). Generation rejects transformed parameter collisions
+and clashes with generated implementation bindings instead of emitting ambiguous
+arguments. JavaScript argument expressions and TypeScript declarations use the
+same escaped names.
+
 Do not emit a class without the `Unsafe` suffix for an unsafe projection. Method names
 need an `Unsafe` suffix only if safe and unsafe methods are ever placed on the
 same class; the preferred design keeps them in separate companion classes.
@@ -117,6 +124,10 @@ Non-executable methods and their exact classifier reasons remain visible in
 ## Classification
 
 Codegen uses the same capability classifier as `com-capability-census`.
+
+Runtime aggregate descriptors use the architecture keys `x86`, `x64`, and `arm64`.
+Census and support-report target keys remain `i686`, `x64`, and `arm64`; this
+serialization boundary does not change the native layouts or target capabilities.
 
 ### Safe complete
 
