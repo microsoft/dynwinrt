@@ -38,6 +38,7 @@ mod com_input;
 mod generated_unsafe_test_hooks;
 mod managed_tsfn;
 mod scheduled_start;
+mod win32;
 mod winrt_delegate_method;
 pub use winrt_delegate_method::DynWinRtDelegateMethod;
 mod winrt_implementation;

@@ -97,6 +97,28 @@ dynwinrt-codegen generate `
   --dry-run
 ```
 
+### Flat Win32 contract slice
+
+The initial flat DLL-export projection is JavaScript-only and supports
+`GetTickCount`, `GetTickCount64`, `RegOpenKeyExW`, `RegQueryValueExW`, and
+`RegCloseKey` from the pinned `Microsoft.Windows.SDK.Win32Metadata`
+`71.0.14-preview` package:
+
+```powershell
+dynwinrt-codegen generate `
+  --winmd $env:DYNWINRT_WIN32_WINMD `
+  --class-name "Windows.Win32.System.SystemInformation.Apis,Windows.Win32.System.Registry.Apis" `
+  --output .\generated
+```
+
+`--namespace Windows.Win32.System.Registry` is equivalent to selecting its
+`Apis` container. Other exports are explicitly omitted; this is not complete
+namespace support. Generated modules live under
+`win32/windows/win32/system/registry/` and
+`win32/windows/win32/system/system-information/`, outside the WinRT root.
+The runtime package must include the matching `win32` entrypoint.
+See the [contract architecture and migration scope](../../docs/architecture/flat-win32-contracts.md).
+
 ### Other commands
 
 `dynwinrt-codegen capabilities` prints the command's supported features, one

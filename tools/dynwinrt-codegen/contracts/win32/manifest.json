@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "metadata": {
+    "package": "Microsoft.Windows.SDK.Win32Metadata",
+    "version": "71.0.14-preview",
+    "sha256": "B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D"
+  },
+  "schema": {
+    "file": "schema.json",
+    "sha256": "D64180AC8595C9253B11758D142DC64F725126A2A715F74C5766450B2BA5000B"
+  },
+  "files": [
+    {
+      "file": "scalar-returns.json",
+      "sha256": "6C185D3F75CEEFEA9FF7113BDF24D5BBD4F18CFE7E333D0C7FA56D33FF1B1F7C"
+    },
+    {
+      "file": "status-returns.json",
+      "sha256": "912BF9B7BC50B50979D43C2B98A2FD72690E39D06326A57071BB3F905E756C94"
+    }
+  ]
+}

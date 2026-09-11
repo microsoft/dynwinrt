@@ -1,0 +1,97 @@
+{
+  "schemaVersion": 1,
+  "entries": [
+    {
+      "id": "win32.status-zero.reg-close-key.v1",
+      "selector": {
+        "namespace": "Windows.Win32.System.Registry",
+        "container": "Apis",
+        "name": "RegCloseKey",
+        "dll": "ADVAPI32.dll",
+        "entryPoint": "RegCloseKey",
+        "callingConvention": "system",
+        "architectures": 7,
+        "sourceFingerprint": "3344E3CE53F9FDF5B94746614FE9808B4F907AA6C5B0D662F4440C3AD4B16BCE"
+      },
+      "contract": {
+        "kind": "status-zero",
+        "parameters": [{ "kind": "consumed-hkey", "cleanup": "reg-close-key" }]
+      },
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/api/winreg/nf-winreg-regclosekey"
+        }
+      ]
+    },
+    {
+      "id": "win32.status-zero.reg-open-key-ex-w.v1",
+      "selector": {
+        "namespace": "Windows.Win32.System.Registry",
+        "container": "Apis",
+        "name": "RegOpenKeyExW",
+        "dll": "ADVAPI32.dll",
+        "entryPoint": "RegOpenKeyExW",
+        "callingConvention": "system",
+        "architectures": 7,
+        "sourceFingerprint": "FC5467309E37CCBB048F8468AA199A5313B44A1E23DB5603C4B93BD28C4AA3E1"
+      },
+      "contract": {
+        "kind": "status-zero",
+        "parameters": [
+          { "kind": "borrowed-hkey", "rejectPerformanceData": true },
+          { "kind": "utf16-input", "nullable": true },
+          { "kind": "u32-input" },
+          { "kind": "u32-input" },
+          {
+            "kind": "owned-hkey-output",
+            "cleanup": "reg-close-key",
+            "borrowedFrom": 0,
+            "predefined": "borrowed",
+            "failure": "unspecified"
+          }
+        ]
+      },
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/api/winreg/nf-winreg-regopenkeyexw"
+        },
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/api/winreg/nf-winreg-regclosekey"
+        }
+      ]
+    },
+    {
+      "id": "win32.status-zero.reg-query-value-ex-w.v1",
+      "selector": {
+        "namespace": "Windows.Win32.System.Registry",
+        "container": "Apis",
+        "name": "RegQueryValueExW",
+        "dll": "ADVAPI32.dll",
+        "entryPoint": "RegQueryValueExW",
+        "callingConvention": "system",
+        "architectures": 7,
+        "sourceFingerprint": "A5C297C41C6C5946003B1EA0F6858B8C640FDA4481FBC4091A0D84975703E048"
+      },
+      "contract": {
+        "kind": "status-zero",
+        "parameters": [
+          { "kind": "borrowed-hkey", "rejectPerformanceData": true },
+          { "kind": "utf16-input", "nullable": true },
+          { "kind": "reserved-null" },
+          { "kind": "u32-output" },
+          { "kind": "optional-byte-output", "countParameter": 5 },
+          { "kind": "byte-capacity-required-size", "bufferParameter": 4 }
+        ]
+      },
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/api/winreg/nf-winreg-regqueryvalueexw"
+        }
+      ]
+    }
+  ]
+}

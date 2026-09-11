@@ -148,8 +148,21 @@ test('Classic COM is isolated from the WinRT root entrypoint', (t) => {
 
 test('package facades exactly partition native exports', (t) => {
   const nativeKeys = moduleKeys(nativeRuntime)
+  const win32NativeNames = new Set([
+    'win32Bind',
+    'win32Close',
+    'win32Closed',
+    'win32Hkey',
+    'win32Invoke',
+  ])
+  t.deepEqual(
+    nativeKeys.filter((name) => name.startsWith('win32')),
+    [...win32NativeNames].sort(),
+  )
   const expectedWinrt = [
-    ...nativeKeys.filter((name) => !name.startsWith('DynCom') && name !== 'initializeCom'),
+    ...nativeKeys.filter(
+      (name) => !name.startsWith('DynCom') && name !== 'initializeCom' && !win32NativeNames.has(name),
+    ),
     'DynWinRtImplementationHandle',
   ].sort()
   const safeComNames = new Set([
@@ -207,6 +220,11 @@ test('package facades exactly partition native exports', (t) => {
     moduleKeys(rawComRuntime),
     [...nativeKeys.filter((name) => rawComNames.has(name)), 'projectAs', '__registerComProjection', '__comProjectionIid', '__activateAudioInterfaceAsync'].sort(),
   )
+  for (const facade of [winrtCjsRuntime, comCjsRuntime, unsafeComRuntime, rawComRuntime]) {
+    for (const name of win32NativeNames) {
+      t.false(Object.prototype.hasOwnProperty.call(facade, name))
+    }
+  }
 
   t.is(winrtCjsRuntime.WinGuid, comCjsRuntime.WinGuid)
   t.is(comCjsRuntime.initializeCom, unsafeComRuntime.initializeCom)

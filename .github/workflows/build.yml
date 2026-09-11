@@ -411,3 +411,7 @@ jobs:
             bindings/js/dist/com-projection.js
             bindings/js/dist/com-unsafe.js
             bindings/js/dist/com-unsafe.d.ts
+            bindings/js/dist/win32.js
+            bindings/js/dist/win32.d.ts
+            bindings/js/dist/win32-unsafe.js
+            bindings/js/dist/win32-unsafe.d.ts

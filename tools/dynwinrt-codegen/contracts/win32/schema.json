@@ -1,0 +1,167 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/microsoft/dynwinrt/contracts/win32/schema.json",
+  "title": "Built-in flat Win32 evidence, version 1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "entries"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "entries": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/entry" }
+    }
+  },
+  "$defs": {
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "selector", "contract", "evidence"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9.-]+$" },
+        "selector": { "$ref": "#/$defs/selector" },
+        "contract": { "$ref": "#/$defs/contract" },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/evidence" }
+        }
+      }
+    },
+    "selector": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "namespace",
+        "container",
+        "name",
+        "dll",
+        "entryPoint",
+        "callingConvention",
+        "architectures",
+        "sourceFingerprint"
+      ],
+      "properties": {
+        "namespace": {
+          "type": "string",
+          "pattern": "^Windows\\.Win32\\.[A-Za-z0-9_.]+$"
+        },
+        "container": { "const": "Apis" },
+        "name": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+        "dll": { "type": "string", "pattern": "^[A-Za-z0-9_-]+\\.dll$" },
+        "entryPoint": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+        },
+        "callingConvention": { "const": "system" },
+        "architectures": { "const": 7 },
+        "sourceFingerprint": { "type": "string", "pattern": "^[0-9A-F]{64}$" }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "url"],
+      "properties": {
+        "kind": { "const": "microsoft-learn" },
+        "url": {
+          "type": "string",
+          "pattern": "^https://learn\\.microsoft\\.com/en-us/windows/win32/api/[^\\s]+$"
+        }
+      }
+    },
+    "contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "parameters"],
+      "properties": {
+        "kind": { "enum": ["direct-scalar", "status-zero"] },
+        "parameters": {
+          "type": "array",
+          "maxItems": 32,
+          "items": { "$ref": "#/$defs/parameter" }
+        }
+      }
+    },
+    "parameter": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {
+            "kind": { "enum": ["u32-input", "reserved-null", "u32-output"] }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "nullable"],
+          "properties": {
+            "kind": { "const": "utf16-input" },
+            "nullable": { "type": "boolean" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "rejectPerformanceData"],
+          "properties": {
+            "kind": { "const": "borrowed-hkey" },
+            "rejectPerformanceData": { "type": "boolean" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "cleanup",
+            "borrowedFrom",
+            "predefined",
+            "failure"
+          ],
+          "properties": {
+            "kind": { "const": "owned-hkey-output" },
+            "cleanup": { "const": "reg-close-key" },
+            "borrowedFrom": { "type": "integer", "minimum": 0, "maximum": 31 },
+            "predefined": { "const": "borrowed" },
+            "failure": { "const": "unspecified" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "cleanup"],
+          "properties": {
+            "kind": { "const": "consumed-hkey" },
+            "cleanup": { "const": "reg-close-key" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "countParameter"],
+          "properties": {
+            "kind": { "const": "optional-byte-output" },
+            "countParameter": { "type": "integer", "minimum": 0, "maximum": 31 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "bufferParameter"],
+          "properties": {
+            "kind": { "const": "byte-capacity-required-size" },
+            "bufferParameter": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 31
+            }
+          }
+        }
+      ]
+    }
+  }
+}

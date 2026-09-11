@@ -12,4 +12,6 @@ mod com_safe_array_registry;
 mod contract_registry;
 pub mod meta;
 pub mod types;
+mod win32_contracts;
+pub mod win32_metadata;
 pub mod xml_doc;
