@@ -2413,7 +2413,12 @@ pub fn raw_aggregate_descriptor(
             ));
         };
         root.insert(
-            target.key().into(),
+            match target {
+                CensusTarget::I686 => "x86",
+                CensusTarget::X64 => "x64",
+                CensusTarget::Arm64 => "arm64",
+            }
+            .into(),
             raw_layout_descriptor_value(variant, target, &mut Vec::new())?,
         );
     }
@@ -3422,6 +3427,79 @@ mod tests {
             raw_referenced_enums: Some(Vec::new()),
             raw_methods,
         }
+    }
+
+    #[test]
+    fn raw_aggregate_descriptors_use_runtime_architectures_without_renaming_census_targets() {
+        for is_union in [false, true] {
+            let layout = RawNativeLayoutSet {
+                recursive: false,
+                variants: vec![RawNativeLayout {
+                    architectures: 7,
+                    kind: if is_union {
+                        RawLayoutKind::Explicit
+                    } else {
+                        RawLayoutKind::Sequential
+                    },
+                    packing: RawPacking::Default,
+                    declared_size: None,
+                    fields: [("tag", RawNativeType::U32), ("value", RawNativeType::USize)]
+                        .into_iter()
+                        .map(|(name, typ)| RawNativeField {
+                            name: name.into(),
+                            typ: raw(typ, 0),
+                            explicit_offset: is_union.then_some(0),
+                            fixed_count: None,
+                            bitfield: false,
+                            flexible_array: false,
+                        })
+                        .collect(),
+                    is_union,
+                }],
+            };
+            let (actual_union, descriptor) =
+                raw_aggregate_descriptor("Tests", "Record", &layout).unwrap();
+            assert_eq!(actual_union, is_union);
+            let descriptor: serde_json::Value = serde_json::from_str(&descriptor).unwrap();
+            assert_eq!(
+                descriptor
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+                ["arm64", "name", "x64", "x86"]
+            );
+            for (target, width) in [("x86", 4), ("x64", 8), ("arm64", 8)] {
+                assert_eq!(
+                    descriptor[target]["size"],
+                    if is_union { width } else { 2 * width }
+                );
+                assert_eq!(descriptor[target]["alignment"], width);
+                assert_eq!(descriptor[target]["fields"][1]["type"]["kind"], "usize");
+                if is_union {
+                    assert_eq!(descriptor[target]["complete"], true);
+                    assert!(descriptor[target]["fields"][1].get("offset").is_none());
+                } else {
+                    assert_eq!(descriptor[target]["fields"][1]["offset"], width);
+                }
+            }
+        }
+        assert_eq!(CensusTarget::I686.key(), "i686");
+        assert_eq!(
+            serde_json::to_string(&CensusTarget::I686).unwrap(),
+            "\"i686\""
+        );
+        let methods =
+            classify_interface_methods(&raw_interface(Some(vec![raw_method(Vec::new())]))).unwrap();
+        assert_eq!(
+            methods[0]
+                .targets
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["arm64", "i686", "x64"]
+        );
     }
 
     #[test]
