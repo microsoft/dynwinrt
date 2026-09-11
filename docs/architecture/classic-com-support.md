@@ -1382,11 +1382,16 @@ Representative evidence:
   and
   [`GetSelectedItems`](https://learn.microsoft.com/windows/win32/api/camerauicontrol/nf-camerauicontrol-icamerauicontrol-getselecteditems).
 
-`ITextProvider::GetSelection` and
+The current nullable output set is `ITextProvider::GetSelection`,
 [`IRawElementProviderFragment::GetEmbeddedFragmentRoots`](https://learn.microsoft.com/windows/win32/api/uiautomationcore/nf-uiautomationcore-irawelementproviderfragment-getembeddedfragmentroots)
-have separate exact evidence that a successful output may be null. Both
-project as `DynComSafeArray | null`; `GetVisibleRanges` and all other
-registered outputs remain required.
+plus `IRawElementProviderFragment::GetRuntimeId` and
+`IDragProvider::GetGrabbedItems`. Their exact evidence permits a successful
+contained `SAFEARRAY*` to be null; the receiving `SAFEARRAY**` cell is still
+required. These four methods project as `DynComSafeArray | null`;
+`GetVisibleRanges` and all other registered outputs remain required.
+The [contract evidence registry](classic-com-contract-evidence-registry.md)
+stores these existing allowances as structured, cited nullability fields in
+`safearrays.json`, without method-name branches or new support.
 
 The complete-interface result is:
 
@@ -1416,7 +1421,7 @@ Generated JavaScript keeps every supported result as `DynComSafeArray`, not a
 natural array, so VARTYPE, exact interface IID, rank, and signed lower bounds
 remain observable. Generated signatures use
 `DynCom.safeArrayType(kind, iid?, nullable?)`;
-owned results transfer through `DynCom.takeSafeArray` or, for the two proven
+owned results transfer through `DynCom.takeSafeArray` or, for the four proven
 nullable methods, `DynCom.takeNullableSafeArray`. `DynComSafeArray.interface`
 creates `VT_UNKNOWN` arrays with `SafeArrayCreateEx`; its `interfaceIid`,
 `bounds`, `elementType`, and conversion methods preserve identity and shape.

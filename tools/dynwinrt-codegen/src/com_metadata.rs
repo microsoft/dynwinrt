@@ -15,6 +15,9 @@ use crate::types::TypeMeta;
 pub mod borrowed;
 #[path = "com_completion_metadata.rs"]
 pub mod completion;
+#[cfg(test)]
+#[path = "com_contract_registry_tests.rs"]
+mod contract_registry_tests;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RawConstness {
@@ -1299,11 +1302,12 @@ pub(crate) fn collect_evidence_dependencies(
 
 pub(crate) fn collect_exact_registry_entries(
     interface: &ComInterfaceMeta,
-) -> Vec<crate::contract_registry::ExactRegistryEntry> {
+) -> Result<Vec<crate::contract_registry::ExactRegistryEntry>, String> {
     use crate::contract_registry::{ExactEntrySelector, ExactRegistryEntry};
 
     let mut entries = borrowed::catalog_entries(interface);
     for method in interface.raw_methods.as_deref().unwrap_or_default() {
+        validate_migrated_source_shape(method)?;
         let method_fingerprint = method
             .exact_interface_output_call
             .as_ref()
@@ -1527,7 +1531,7 @@ pub(crate) fn collect_exact_registry_entries(
             }
         }
     }
-    entries
+    Ok(entries)
 }
 
 fn apply_exact_parameter_direction_overrides(
@@ -1726,6 +1730,7 @@ fn apply_exact_out_parameter_contracts(
             || raw.params.len() != entry.parameter_count
             || compatibility.params.len() != entry.parameter_count
             || source_fingerprint != entry.source_fingerprint
+            || !raw_parameters_match_selector(raw, entry.selector)
         {
             continue;
         }
@@ -1768,6 +1773,7 @@ fn apply_exact_null_input_contracts(raw: &mut RawComMethod) -> bool {
             || raw.vtable_index != entry.vtable_index
             || raw.params.len() != entry.parameter_count
             || source_fingerprint != entry.source_fingerprint
+            || !raw_parameters_match_selector(raw, entry.selector)
         {
             continue;
         }
@@ -1805,6 +1811,29 @@ fn raw_type_registry_name(typ: &RawComType) -> String {
         } => format!("{namespace}.{name}"),
         other => format!("{other:?}").to_ascii_lowercase(),
     }
+}
+
+fn raw_parameters_match_selector(
+    raw: &RawComMethod,
+    selector: &crate::contract_registry::ContractSelector,
+) -> bool {
+    raw.params.len() == selector.parameter_count
+        && selector.parameters.len() == raw.params.len()
+        && selector
+            .parameters
+            .iter()
+            .zip(&raw.params)
+            .enumerate()
+            .all(|(index, (expected, actual))| {
+                expected.index == index
+                    && expected.name == actual.name
+                    && expected.native_type == raw_type_registry_name(&actual.typ)
+                    && expected.pointer_depth == actual.typ.pointer_depth
+                    && expected.direction == raw_direction_key(actual.direction)
+                    && expected.optional == actual.optional
+                    && expected.constness == raw_constness_key(actual.typ.constness)
+                    && expected.const_attribute == actual.const_attribute
+            })
 }
 
 const fn raw_direction_key(direction: RawParamDirection) -> &'static str {
@@ -1919,6 +1948,8 @@ fn validate_safe_array_evidence(
         || evidence.element_iid.is_some()
             != (evidence.element_vartype == RawSafeArrayVartype::Unknown)
         || raw_method_shape(raw) != evidence.raw_method_shape
+        || crate::com_safe_array_registry::contract_for_evidence(evidence)
+            .is_none_or(|entry| !raw_parameters_match_selector(raw, &entry.selector))
     {
         return Err(format!(
             "{}.{} SAFEARRAY signature no longer matches exact documented evidence",
@@ -3357,18 +3388,15 @@ fn known_enumerator_next_override(
         interface_iid,
         vtable_index,
     )?;
-    let (expected_fetched_direction, expected_fetched_optional) =
-        crate::com_enumerator_registry::fetched_shape(interface_namespace, interface_name);
-    let expected_fetched_direction = match expected_fetched_direction {
+    let expected_fetched_optional = expected.fetched_optional;
+    let expected_fetched_direction = match expected.fetched_direction {
         crate::com_enumerator_registry::EnumeratorDirection::Out => RawParamDirection::Out,
         crate::com_enumerator_registry::EnumeratorDirection::InOut => RawParamDirection::InOut,
     };
-    let expected_values_direction =
-        match crate::com_enumerator_registry::values_direction(interface_namespace, interface_name)
-        {
-            crate::com_enumerator_registry::EnumeratorDirection::Out => RawParamDirection::Out,
-            crate::com_enumerator_registry::EnumeratorDirection::InOut => RawParamDirection::InOut,
-        };
+    let expected_values_direction = match expected.values_direction {
+        crate::com_enumerator_registry::EnumeratorDirection::Out => RawParamDirection::Out,
+        crate::com_enumerator_registry::EnumeratorDirection::InOut => RawParamDirection::InOut,
+    };
     let exact_hresult = return_type.pointer_depth == 0
         && matches!(
             &return_type.native_type,
@@ -3490,10 +3518,7 @@ fn known_enumerator_next_override(
         values_param_index: 1,
         fetched_param_index: 2,
         fetched_optional_for_single: expected_fetched_optional,
-        evidence: enumerator_contract_evidence(
-            expected,
-            "the standard IEnum* contract defines pceltFetched as the initialized element count and permits omission only where this exact interface metadata marks it optional",
-        ),
+        evidence: enumerator_contract_evidence(expected, expected.reason),
     })
 }
 
@@ -3567,6 +3592,49 @@ pub(crate) fn validate_attached_enumerator_evidence(raw: &RawComMethod) -> Resul
         return Err(format!(
             "{}.Next EnumeratorNext evidence no longer matches the registry",
             raw.declaring_interface
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_migrated_source_shape(raw: &RawComMethod) -> Result<(), String> {
+    let enumerator = crate::com_enumerator_registry::contract_for_declaration(
+        &raw.declaring_namespace,
+        &raw.declaring_interface,
+    )
+    .filter(|entry| raw.metadata_name == "Next" || raw.vtable_index == entry.next_vtable_index);
+    let selector = if let Some(entry) = enumerator {
+        validate_attached_enumerator_evidence(raw)?;
+        entry.selector
+    } else if let Some(evidence) =
+        crate::com_borrowed_handle_registry::borrowed_hwnd_evidence_for_declaration(
+            &raw.declaring_namespace,
+            &raw.declaring_interface,
+            &raw.metadata_name,
+            raw.vtable_index,
+        )
+    {
+        validate_borrowed_hwnd_output_evidence(raw)?;
+        evidence.selector
+    } else {
+        return Ok(());
+    };
+    if raw.declaring_namespace != selector.interface.namespace
+        || raw.declaring_interface != selector.interface.name
+        || !raw
+            .declaring_iid
+            .eq_ignore_ascii_case(&selector.interface.iid)
+        || !raw
+            .declaring_iid
+            .eq_ignore_ascii_case(&selector.declaring_iid)
+        || raw.metadata_name != selector.method
+        || raw.vtable_index != selector.absolute_slot
+        || !raw_parameters_match_selector(raw, selector)
+        || raw_method_shape(raw) != selector.raw_method_shape()
+    {
+        return Err(format!(
+            "{}.{} signature no longer matches exact contract evidence (registry source shape)",
+            raw.declaring_interface, raw.metadata_name
         ));
     }
     Ok(())

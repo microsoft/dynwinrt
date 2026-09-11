@@ -1,8 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use std::sync::OnceLock;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ExactOutParameterEvidence {
+    pub selector: &'static crate::contract_registry::ContractSelector,
     pub declaring_namespace: &'static str,
     pub declaring_interface: &'static str,
     pub declaring_iid: &'static str,
@@ -39,50 +42,31 @@ impl ExactOutParameterEvidence {
     }
 }
 
-const EXACT_OUT_PARAMETERS: &[ExactOutParameterEvidence] = &[
-    ExactOutParameterEvidence {
-        declaring_namespace: "Windows.Win32.Media.MediaFoundation",
-        declaring_interface: "IMFAttributes",
-        declaring_iid: "2cd2d921-c447-44a7-a13c-4adabfc247e3",
-        method_name: "GetString",
-        vtable_index: 12,
-        parameter_count: 4,
-        parameter_index: 3,
-        parameter_name: "pcchLength",
-        source_fingerprint: "CF4D9EAF95123257840355F21F0623E137623EF95D205B63D5B1BB8758328DB0",
-        reason: "IMFAttributes::GetString documents pcchLength as an optional pure output length",
-        citation: "https://learn.microsoft.com/windows/win32/api/mfobjects/nf-mfobjects-imfattributes-getstring",
-    },
-    ExactOutParameterEvidence {
-        declaring_namespace: "Windows.Win32.Media.MediaFoundation",
-        declaring_interface: "IMFAttributes",
-        declaring_iid: "2cd2d921-c447-44a7-a13c-4adabfc247e3",
-        method_name: "GetItem",
-        vtable_index: 3,
-        parameter_count: 2,
-        parameter_index: 1,
-        parameter_name: "pValue",
-        source_fingerprint: "0D8781FF90DF92EA09042A8386C01B7E8DEE1B2E546B3E616D2498896330BDF0",
-        reason: "IMFAttributes::GetItem documents pValue as an optional pure output copy initialized by the method",
-        citation: "https://learn.microsoft.com/windows/win32/api/mfobjects/nf-mfobjects-imfattributes-getitem",
-    },
-    ExactOutParameterEvidence {
-        declaring_namespace: "Windows.Win32.Media.MediaFoundation",
-        declaring_interface: "IMFAttributes",
-        declaring_iid: "2cd2d921-c447-44a7-a13c-4adabfc247e3",
-        method_name: "GetItemByIndex",
-        vtable_index: 31,
-        parameter_count: 3,
-        parameter_index: 2,
-        parameter_name: "pValue",
-        source_fingerprint: "1D349D3E79CC839831A7F6E87CC2656C2D153A136CB397815850D2417B880DAE",
-        reason: "IMFAttributes::GetItemByIndex documents pValue as an optional pure output copy initialized by the method",
-        citation: "https://learn.microsoft.com/windows/win32/api/mfobjects/nf-mfobjects-imfattributes-getitembyindex",
-    },
-];
-
-pub(crate) const fn entries() -> &'static [ExactOutParameterEvidence] {
-    EXACT_OUT_PARAMETERS
+pub(crate) fn entries() -> &'static [ExactOutParameterEvidence] {
+    static EVIDENCE: OnceLock<Vec<ExactOutParameterEvidence>> = OnceLock::new();
+    EVIDENCE.get_or_init(|| {
+        crate::contract_registry::parameter_direction_contracts()
+            .expect("embedded parameter-direction contract registry must validate")
+            .iter()
+            .map(|entry| {
+                let selector = &entry.selector;
+                ExactOutParameterEvidence {
+                    selector,
+                    declaring_namespace: &selector.interface.namespace,
+                    declaring_interface: &selector.interface.name,
+                    declaring_iid: &selector.declaring_iid,
+                    method_name: &selector.method,
+                    vtable_index: selector.absolute_slot,
+                    parameter_count: selector.parameter_count,
+                    parameter_index: entry.contract.parameter_index,
+                    parameter_name: &selector.parameters[entry.contract.parameter_index].name,
+                    source_fingerprint: &selector.source_fingerprint,
+                    reason: &entry.reason,
+                    citation: entry.microsoft_citation(),
+                }
+            })
+            .collect()
+    })
 }
 
 #[cfg(test)]

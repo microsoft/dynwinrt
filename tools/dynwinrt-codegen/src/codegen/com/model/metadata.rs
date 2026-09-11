@@ -181,6 +181,11 @@ pub(super) fn map_interface(meta: &ComInterfaceMeta) -> Result<SemanticComInterf
         ));
     }
     interface.validate()?;
+    // Preserve existing semantic diagnostics before checking the newly pinned source shapes.
+    for raw in raw_methods {
+        crate::com_metadata::validate_migrated_source_shape(raw)
+            .map_err(ModelError::InvalidContract)?;
+    }
     Ok(interface)
 }
 

@@ -1,0 +1,209 @@
+{
+  "contracts": [
+    {
+      "contract": {
+        "direction": "out",
+        "parameterIndex": 3
+      },
+      "entryId": "com.parameter-direction.entry.windows-win32-media-mediafoundation.imfattributes.2cd2d921c44744a7a13c4adabfc247e3.getstring.slot-12.param-3-pcchlength.v1",
+      "evidence": [
+        {
+          "file": null,
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/mfobjects/nf-mfobjects-imfattributes-getstring"
+        }
+      ],
+      "familyId": "com.parameter-direction.v1",
+      "kind": "parameter-direction",
+      "reason": "IMFAttributes::GetString documents pcchLength as an optional pure output length",
+      "selector": {
+        "absoluteSlot": 12,
+        "declaringIid": "2cd2d921-c447-44a7-a13c-4adabfc247e3",
+        "interface": {
+          "iid": "2cd2d921-c447-44a7-a13c-4adabfc247e3",
+          "name": "IMFAttributes",
+          "namespace": "Windows.Win32.Media.MediaFoundation"
+        },
+        "method": "GetString",
+        "parameterCount": 4,
+        "parameters": [
+          {
+            "constAttribute": true,
+            "constness": "mutable",
+            "direction": "in",
+            "index": 0,
+            "name": "guidKey",
+            "nativeType": "System.Guid",
+            "optional": false,
+            "pointerDepth": 1
+          },
+          {
+            "constAttribute": false,
+            "constness": "unspecified",
+            "direction": "out",
+            "index": 1,
+            "name": "pwszValue",
+            "nativeType": "Windows.Win32.Foundation.PWSTR",
+            "optional": false,
+            "pointerDepth": 0
+          },
+          {
+            "constAttribute": false,
+            "constness": "unspecified",
+            "direction": "in",
+            "index": 2,
+            "name": "cchBufSize",
+            "nativeType": "u32",
+            "optional": false,
+            "pointerDepth": 0
+          },
+          {
+            "constAttribute": false,
+            "constness": "mutable",
+            "direction": "inout",
+            "index": 3,
+            "name": "pcchLength",
+            "nativeType": "u32",
+            "optional": true,
+            "pointerDepth": 1
+          }
+        ],
+        "sourceFingerprint": "CF4D9EAF95123257840355F21F0623E137623EF95D205B63D5B1BB8758328DB0"
+      },
+      "validatedMetadata": [
+        {
+          "package": "Microsoft.Windows.SDK.Win32Metadata",
+          "sha256": "B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D",
+          "version": "71.0.14-preview"
+        }
+      ]
+    },
+    {
+      "contract": {
+        "direction": "out",
+        "parameterIndex": 1
+      },
+      "entryId": "com.parameter-direction.entry.windows-win32-media-mediafoundation.imfattributes.2cd2d921c44744a7a13c4adabfc247e3.getitem.slot-3.param-1-pvalue.v1",
+      "evidence": [
+        {
+          "file": null,
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/mfobjects/nf-mfobjects-imfattributes-getitem"
+        }
+      ],
+      "familyId": "com.parameter-direction.v1",
+      "kind": "parameter-direction",
+      "reason": "IMFAttributes::GetItem documents pValue as an optional pure output copy initialized by the method",
+      "selector": {
+        "absoluteSlot": 3,
+        "declaringIid": "2cd2d921-c447-44a7-a13c-4adabfc247e3",
+        "interface": {
+          "iid": "2cd2d921-c447-44a7-a13c-4adabfc247e3",
+          "name": "IMFAttributes",
+          "namespace": "Windows.Win32.Media.MediaFoundation"
+        },
+        "method": "GetItem",
+        "parameterCount": 2,
+        "parameters": [
+          {
+            "constAttribute": true,
+            "constness": "mutable",
+            "direction": "in",
+            "index": 0,
+            "name": "guidKey",
+            "nativeType": "System.Guid",
+            "optional": false,
+            "pointerDepth": 1
+          },
+          {
+            "constAttribute": false,
+            "constness": "mutable",
+            "direction": "inout",
+            "index": 1,
+            "name": "pValue",
+            "nativeType": "Windows.Win32.System.Com.StructuredStorage.PROPVARIANT",
+            "optional": true,
+            "pointerDepth": 1
+          }
+        ],
+        "sourceFingerprint": "0D8781FF90DF92EA09042A8386C01B7E8DEE1B2E546B3E616D2498896330BDF0"
+      },
+      "validatedMetadata": [
+        {
+          "package": "Microsoft.Windows.SDK.Win32Metadata",
+          "sha256": "B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D",
+          "version": "71.0.14-preview"
+        }
+      ]
+    },
+    {
+      "contract": {
+        "direction": "out",
+        "parameterIndex": 2
+      },
+      "entryId": "com.parameter-direction.entry.windows-win32-media-mediafoundation.imfattributes.2cd2d921c44744a7a13c4adabfc247e3.getitembyindex.slot-31.param-2-pvalue.v1",
+      "evidence": [
+        {
+          "file": null,
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/mfobjects/nf-mfobjects-imfattributes-getitembyindex"
+        }
+      ],
+      "familyId": "com.parameter-direction.v1",
+      "kind": "parameter-direction",
+      "reason": "IMFAttributes::GetItemByIndex documents pValue as an optional pure output copy initialized by the method",
+      "selector": {
+        "absoluteSlot": 31,
+        "declaringIid": "2cd2d921-c447-44a7-a13c-4adabfc247e3",
+        "interface": {
+          "iid": "2cd2d921-c447-44a7-a13c-4adabfc247e3",
+          "name": "IMFAttributes",
+          "namespace": "Windows.Win32.Media.MediaFoundation"
+        },
+        "method": "GetItemByIndex",
+        "parameterCount": 3,
+        "parameters": [
+          {
+            "constAttribute": false,
+            "constness": "unspecified",
+            "direction": "in",
+            "index": 0,
+            "name": "unIndex",
+            "nativeType": "u32",
+            "optional": false,
+            "pointerDepth": 0
+          },
+          {
+            "constAttribute": false,
+            "constness": "mutable",
+            "direction": "out",
+            "index": 1,
+            "name": "pguidKey",
+            "nativeType": "System.Guid",
+            "optional": false,
+            "pointerDepth": 1
+          },
+          {
+            "constAttribute": false,
+            "constness": "mutable",
+            "direction": "inout",
+            "index": 2,
+            "name": "pValue",
+            "nativeType": "Windows.Win32.System.Com.StructuredStorage.PROPVARIANT",
+            "optional": true,
+            "pointerDepth": 1
+          }
+        ],
+        "sourceFingerprint": "1D349D3E79CC839831A7F6E87CC2656C2D153A136CB397815850D2417B880DAE"
+      },
+      "validatedMetadata": [
+        {
+          "package": "Microsoft.Windows.SDK.Win32Metadata",
+          "sha256": "B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D",
+          "version": "71.0.14-preview"
+        }
+      ]
+    }
+  ],
+  "schemaVersion": 2
+}
