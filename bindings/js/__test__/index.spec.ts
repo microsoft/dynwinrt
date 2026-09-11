@@ -43,6 +43,8 @@ import {
   DynComRawStructLayout,
   DynComRawUnionLayout,
 } from '../dist/com-unsafe-raw.js'
+import { DynWin32, DynWin32Function, DynWin32Unsafe } from '../dist/win32-unsafe.js'
+import * as win32Runtime from '../dist/win32.js'
 
 const requireFromTest = createRequire(import.meta.url)
 const nativeRuntime = requireFromTest('../dist/index.js') as Record<string, unknown>
@@ -50,6 +52,8 @@ const winrtCjsRuntime = requireFromTest('../dist/winrt.js') as Record<string, un
 const comCjsRuntime = requireFromTest('../dist/com.js') as Record<string, unknown>
 const unsafeComRuntime = requireFromTest('../dist/com-unsafe.js') as Record<string, unknown>
 const rawComRuntime = requireFromTest('../dist/com-unsafe-raw.js') as Record<string, unknown>
+const win32CjsRuntime = requireFromTest('../dist/win32.js') as Record<string, unknown>
+const unsafeWin32Runtime = requireFromTest('../dist/win32-unsafe.js') as Record<string, unknown>
 
 const moduleKeys = (value: object) =>
   Object.keys(value)
@@ -149,14 +153,33 @@ test('Classic COM is isolated from the WinRT root entrypoint', (t) => {
 test('package facades exactly partition native exports', (t) => {
   const nativeKeys = moduleKeys(nativeRuntime)
   const win32NativeNames = new Set([
+    'DynWin32',
+    'DynWin32Unsafe',
     'win32Bind',
-    'win32Close',
-    'win32Closed',
-    'win32Hkey',
+    'win32CarrierKind',
+    'win32NativeStructBytes',
+    'win32NativeStructLength',
+    'win32ResourceValue',
+    'win32ResourceClosed',
+    'win32ResourceBusy',
+    'win32ResourceActive',
+    'win32ResourceClose',
+    'win32FunctionDll',
+    'win32FunctionEntryPoint',
     'win32Invoke',
+    'win32InvokeWithSubsystem',
+    'win32ResultReturnValue',
+    'win32ResultOutputs',
+    'win32ResultLastError',
+    'win32ResultSucceeded',
+    'win32SubsystemName',
+    'win32SubsystemClosed',
+    'win32SubsystemClose',
+    'win32OverlappedCancel',
+    'win32OverlappedStart',
   ])
   t.deepEqual(
-    nativeKeys.filter((name) => name.startsWith('win32')),
+    nativeKeys.filter((name) => name.startsWith('win32') || name.startsWith('DynWin32')),
     [...win32NativeNames].sort(),
   )
   const expectedWinrt = [
@@ -224,6 +247,14 @@ test('package facades exactly partition native exports', (t) => {
     for (const name of win32NativeNames) {
       t.false(Object.prototype.hasOwnProperty.call(facade, name))
     }
+    const safeWin32Names = [
+      'DynWin32', 'DynWin32NativeStruct', 'DynWin32OverlappedOperation', 'DynWin32Resource',
+      'DynWin32SubsystemContext', 'DynWin32Value', 'DynWinRtValue',
+    ]
+    t.deepEqual(moduleKeys(win32CjsRuntime), safeWin32Names.sort())
+    t.deepEqual(moduleKeys(unsafeWin32Runtime), [
+      ...safeWin32Names, 'DynWin32CallResult', 'DynWin32Function', 'DynWin32Unsafe',
+    ].sort())
   }
 
   t.is(winrtCjsRuntime.WinGuid, comCjsRuntime.WinGuid)
@@ -241,6 +272,125 @@ test('package facades exactly partition native exports', (t) => {
   for (const name of moduleKeys(unsafeComRuntime)) {
     t.true(moduleKeys(rawComRuntime).includes(name), `${name} must remain available from /com/unsafe/raw`)
   }
+})
+
+test('flat Win32 is isolated and raw addresses require the unsafe entrypoint', (t) => {
+  for (const facade of [winrtRuntime, comRuntime]) {
+    t.false(Object.prototype.hasOwnProperty.call(facade, 'DynWin32'))
+  }
+  t.false(Object.prototype.hasOwnProperty.call(win32Runtime, 'DynWin32Unsafe'))
+  t.false(Object.prototype.hasOwnProperty.call(win32Runtime, 'DynWin32Function'))
+  t.false(Object.prototype.hasOwnProperty.call(win32Runtime.DynWin32, 'createNativeStruct'))
+  t.false(Object.prototype.hasOwnProperty.call(win32Runtime.DynWin32, 'initializeMapiUtilities'))
+  t.is(typeof DynWin32.dataPointer, 'function')
+  t.is(typeof win32Runtime.DynWin32Value, 'function')
+  t.throws(() => DynWin32.dataPointer(0x1234n as never), { message: /arbitrary numeric addresses/ })
+  const pointer = DynWin32.dataPointer(Buffer.alloc(4))
+  t.throws(() => DynWin32.toBigint(pointer), { message: /not a 64-bit integer/ })
+  t.truthy(DynWin32Unsafe.pointerAddress(pointer))
+  t.truthy(DynWin32Unsafe.pointer(0x1234n))
+  t.truthy(DynWin32.handle(null, true))
+  t.throws(() => DynWin32.handle(null), { message: /explicitly nullable/ })
+  t.throws(() => DynWin32.dataPointer(Buffer.alloc(0)), { message: /non-empty backing storage/ })
+  t.truthy(DynWin32.dataPointer(Buffer.alloc(0), true))
+})
+
+test('flat Win32 immutable plans validate ABI before native dispatch', (t) => {
+  const mulDiv = DynWin32Function.bind({
+    dll: 'kernel32.dll', entryPoint: 'MulDiv',
+    parameters: Array.from({ length: 3 }, () => ({ type: 'i32', direction: 'in' })),
+    returnType: 'i32', successRule: 'always', captureLastError: false,
+  })
+  const call = mulDiv.invoke([DynWin32.i32(100), DynWin32.i32(3), DynWin32.i32(2)])
+  t.is(DynWin32.toNumber(call.returnValue!), 150)
+  t.deepEqual(call.outputs, [])
+  t.throws(() => call.outputs, { message: /already consumed/ })
+  t.throws(() => mulDiv.invoke([DynWin32.u32(100), DynWin32.i32(3), DynWin32.i32(2)]), {
+    message: /does not match I32/,
+  })
+  const consuming = DynWin32Function.bind({
+    dll: 'advapi32.dll', entryPoint: 'RegCloseKey',
+    parameters: [{ type: 'handle', direction: 'in', consumesResource: true, resourceCleanup: 'regCloseKey' }],
+    returnType: 'i32', successRule: 'zero',
+  })
+  t.throws(() => consuming.invoke([DynWin32.handle(0x80000002n)]), { message: /managed resource object/ })
+})
+
+test('flat Win32 native aggregate storage is aligned and exactly identified', (t) => {
+  const layout = { size: 8, alignment: 4, fields: [] }
+  const descriptor = JSON.stringify({ name: 'Tests.POINT', kind: 'struct', x86: layout, x64: layout, arm64: layout })
+  const bytes = Buffer.from([1, 0, 0, 0, 2, 0, 0, 0])
+  const point = DynWin32.createNativeStruct(descriptor, bytes)
+  t.is(point.length, 8)
+  t.deepEqual(point.bytes, bytes)
+  t.truthy(DynWin32.nativeStruct(point, descriptor))
+  t.throws(() => DynWin32.nativeStruct(point, descriptor.replace('POINT', 'SIZE')), { message: /type mismatch/ })
+  const huge = { size: 16 * 1024 * 1024 + 8, alignment: 8, fields: [] }
+  t.throws(() => DynWin32.createNativeStruct(JSON.stringify({
+    name: 'Tests.HUGE', kind: 'struct', x86: huge, x64: huge, arm64: huge,
+  })), { message: /safety limit/ })
+  t.throws(() => DynWin32.createNativeStruct(`${descriptor}${' '.repeat(1024 * 1024)}`), { message: /descriptor exceeds/ })
+})
+
+test('flat Win32 multi-strings retain double-NUL ownership', (t) => {
+  t.truthy(DynWin32.wideMultiString(['en-US', 'fr-FR']))
+  t.truthy(DynWin32.ansiMultiString(['alpha', 'beta']))
+  t.throws(() => DynWin32.wideMultiString(Buffer.from([65, 0, 0, 0])), { message: /two NUL code units/ })
+  t.throws(() => DynWin32.ansiMultiString(Buffer.from([65, 0])), { message: /two NUL bytes/ })
+  t.truthy(DynWin32.wideMultiString(Buffer.from([65, 0, 0, 0, 0, 0])))
+  t.truthy(DynWin32.ansiMultiString(Buffer.from([65, 0, 0])))
+})
+
+test('flat Win32 subsystem contexts enforce kind and close state', (t) => {
+  const winsock = DynWin32.initializeWinsock()
+  t.is(winsock.subsystem, 'winsock')
+  t.false(winsock.closed)
+  t.notThrows(() => DynWin32.requireSubsystem(winsock, 'winsock'))
+  t.throws(() => DynWin32.requireSubsystem(winsock, 'gdiplus'), { message: /received winsock/ })
+  winsock.close()
+  t.true(winsock.closed)
+  t.throws(() => DynWin32.requireSubsystem(winsock, 'winsock'), { message: /context is closed/ })
+  t.notThrows(() => winsock.close())
+  for (const [initialize, kind] of [
+    [() => DynWin32.initializeGdiPlus(), 'gdiplus'],
+    [() => DynWin32.initializeMediaFoundation(), 'mediaFoundation'],
+  ] as const) {
+    const context = initialize()
+    t.notThrows(() => DynWin32.requireSubsystem(context, kind))
+    context.close()
+  }
+  t.is(typeof DynWin32.initializeMapiUtilities, 'function')
+})
+
+test('flat Win32 pointer-bearing aggregates retain safe field owners', (t) => {
+  const layout = (wide: boolean) => ({
+    size: wide ? 24 : 12, alignment: wide ? 8 : 4,
+    fields: [
+      { name: 'nLength', offset: 0, count: 1, type: { kind: 'u32' } },
+      { name: 'lpSecurityDescriptor', offset: wide ? 8 : 4, count: 1, type: { kind: 'pointer' } },
+      { name: 'bInheritHandle', offset: wide ? 16 : 8, count: 1, type: { kind: 'i32' } },
+    ],
+  })
+  const descriptor = JSON.stringify({
+    name: 'Windows.Win32.Security.SECURITY_ATTRIBUTES', kind: 'struct',
+    x86: layout(false), x64: layout(true), arm64: layout(true),
+  })
+  t.throws(() => DynWin32.createNativeStruct(descriptor, Buffer.alloc(24)), { message: /raw bytes/ })
+  const attributes = DynWin32.createNativeStruct(descriptor)
+  DynWin32.setNativeStructU32(attributes, descriptor, 'nLength', attributes.length)
+  DynWin32.setNativeStructBool32(attributes, descriptor, 'bInheritHandle', true)
+  const storage = new Uint8Array(20)
+  DynWin32.setNativeStructPointer(attributes, descriptor, 'lpSecurityDescriptor', DynWin32.dataPointer(storage))
+  t.throws(() => attributes.bytes, { message: /unavailable/ })
+  t.throws(() => DynWin32.setNativeStructPointer(
+    attributes, descriptor, 'lpSecurityDescriptor', DynWin32Unsafe.pointer(0x1234n),
+  ), { message: /retained Buffer or string storage/ })
+  const aggregate = DynWin32.nativeStruct(attributes, descriptor)
+  structuredClone(storage.buffer, { transfer: [storage.buffer] })
+  const noArgs = DynWin32Function.bind({
+    dll: 'kernel32.dll', entryPoint: 'GetLastError', parameters: [], returnType: 'u32',
+  })
+  t.throws(() => noArgs.invoke([aggregate]), { message: /detached/ })
 })
 
 test('FORMATETC and STGMEDIUM expose a closed HGLOBAL semantic subset', (t) => {

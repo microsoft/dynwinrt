@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "metadata": {
     "package": "Microsoft.Windows.SDK.Win32Metadata",
     "version": "71.0.14-preview",
@@ -7,16 +7,28 @@
   },
   "schema": {
     "file": "schema.json",
-    "sha256": "D64180AC8595C9253B11758D142DC64F725126A2A715F74C5766450B2BA5000B"
+    "sha256": "BFDFB8D101438FC6FFC58D3EC256DECC94C7CBC4B2BF57AED90ED9952402732F"
   },
   "files": [
     {
-      "file": "scalar-returns.json",
-      "sha256": "6C185D3F75CEEFEA9FF7113BDF24D5BBD4F18CFE7E333D0C7FA56D33FF1B1F7C"
+      "file": "function-contracts.json",
+      "sha256": "4195172DCC95369292658F4F96370368F4B6FB3E6584C9F3A025836122A4A87C"
     },
     {
-      "file": "status-returns.json",
-      "sha256": "912BF9B7BC50B50979D43C2B98A2FD72690E39D06326A57071BB3F905E756C94"
+      "file": "subsystem-policies.json",
+      "sha256": "5A85F55046DEF2D92406060A5D6E82CD611829F71C4FB065B5C80D2876AB80E7"
+    },
+    {
+      "file": "native-types.json",
+      "sha256": "076D3855E4601925D150F438A92BAE37A4B7B87F04EA941A0EC7FDBDC98FBF89"
+    },
+    {
+      "file": "aggregate-layouts.json",
+      "sha256": "7D8325BD3957219A726FEF641B08A076C9D4005DDDBA7AE6A49A8A59A563D863"
+    },
+    {
+      "file": "policy-domains.json",
+      "sha256": "A50067F25F729F29E1F02DB366F9D1EADE642407C7820628480F97347938EE57"
     }
   ]
 }

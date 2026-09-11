@@ -113,9 +113,11 @@
     "test:winrt-implementation": "npm run build:test-hooks && npm run build:entrypoints && ava __test__/winrt-implementation.spec.ts",
     "test:native-completion": "npm run build:test-hooks && npm run build:entrypoints && ava __test__/native-completion.e2e.ts",
     "test:borrowed-copy": "npm run build:test-hooks && npm run build:entrypoints && ava __test__/borrowed-copy.e2e.ts",
+    "test:win32-runtime": "npm run test:types:win32 && ava __test__/win32-contracts.spec.ts __test__/index.spec.ts --match \"*Win32*\" --match \"package facades exactly partition native exports\"",
     "test:types": "npm run test:types:index && npm run test:types:raw",
     "test:types:index": "tsc --noEmit --strict --target ESNext --module NodeNext --moduleResolution NodeNext __test__/index.spec.ts __test__/winrt-marshalling.spec.ts __test__/winrt-implementation.spec.ts",
     "test:types:raw": "tsc --noEmit --project __test__/types/tsconfig.json",
+    "test:types:win32": "tsc --noEmit --strict --target ESNext --module NodeNext --moduleResolution NodeNext __test__/win32-contracts.spec.ts",
     "test:tsfn": "npm run build:test-hooks && ava __test__/tsfn.spec.ts",
     "version": "napi version"
   },

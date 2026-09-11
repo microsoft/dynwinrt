@@ -126,6 +126,25 @@ if ("com" -in $Lang -or "win32" -in $Lang) {
 
 if ($Lang.Count -eq 0) { Write-Error "No languages available"; exit 1 }
 
+function Invoke-NodeRunner([string]$runnerPath, [string[]]$runnerArguments = @(), [int]$timeoutSeconds = 180) {
+    $start = [System.Diagnostics.ProcessStartInfo]::new((Get-Command node).Source)
+    $start.UseShellExecute = $false
+    $start.ArgumentList.Add($runnerPath)
+    foreach ($argument in $runnerArguments) { $start.ArgumentList.Add($argument) }
+    $process = [System.Diagnostics.Process]::Start($start)
+    try {
+        if (-not $process.WaitForExit($timeoutSeconds * 1000)) {
+            Write-Host "TIMEOUT: $runnerPath exceeded ${timeoutSeconds}s" -ForegroundColor Red
+            Stop-Process -Id $process.Id -Force
+            $process.WaitForExit()
+            return 124
+        }
+        return $process.ExitCode
+    } finally {
+        $process.Dispose()
+    }
+}
+
 # --------------------------------------------------------------------------
 # Build (optional)
 # --------------------------------------------------------------------------
@@ -337,9 +356,24 @@ if ("com" -in $Lang) {
 # --------------------------------------------------------------------------
 if ("win32" -in $Lang) {
     Write-Host "`n--- Generate contract-driven flat Win32 ---" -ForegroundColor Yellow
+    $win32Classes = @(
+        "Windows.Win32.System.Registry",
+        "Windows.Win32.System.SystemInformation",
+        "Windows.Win32.System.LibraryLoader",
+        "Windows.Win32.Graphics.Gdi",
+        "Windows.Win32.System.Threading",
+        "Windows.Win32.System.Com",
+        "Windows.Win32.Networking.Ldap",
+        "Windows.Win32.Networking.WinSock",
+        "Windows.Win32.NetworkManagement.IpHelper",
+        "Windows.Win32.Graphics.GdiPlus",
+        "Windows.Win32.Media.MediaFoundation",
+        "Windows.Win32.System.Pipes",
+        "Windows.Win32.Storage.FileSystem"
+    ) | ForEach-Object { "$_.Apis" }
     & cargo run -p dynwinrt-codegen @cargoProfileArgs @cargoTargetArgs --quiet -- generate `
         --winmd $win32Winmd `
-        --class-name "Windows.Win32.System.SystemInformation.Apis,Windows.Win32.System.Registry.Apis" `
+        --class-name ($win32Classes -join ",") `
         --output $win32BindingsDir `
         --import-name "../../../../bindings/js/dist/win32.js"
     if ($LASTEXITCODE -ne 0) { Write-Error "Flat Win32 contract generation failed"; exit 1 }
@@ -423,8 +457,8 @@ if ("com" -in $Lang) {
     $comFailed = 0
     foreach ($runner in $comRunners) {
         Write-Host "  $runner"
-        & node (Join-Path $runnersDir "com\$runner")
-        if ($LASTEXITCODE -eq 0) {
+        $runnerExitCode = Invoke-NodeRunner (Join-Path $runnersDir "com\$runner")
+        if ($runnerExitCode -eq 0) {
             $comPassed++
         } else {
             $comFailed++
@@ -446,13 +480,19 @@ if ("win32" -in $Lang) {
         --types node --typeRoots (Join-Path $root "bindings\js\node_modules\@types") `
         (Join-Path $PSScriptRoot "typecheck\win32_contracts.ts")
     if ($LASTEXITCODE -ne 0) { Write-Error "Flat Win32 declarations failed typecheck"; exit 1 }
-    & node (Join-Path $runnersDir "win32\contracts.mjs") --generated $win32BindingsDir
-    $passed = $LASTEXITCODE -eq 0
-    if ($passed) { $totalPass++ } else { $totalFail++ }
+    $win32Runners = @("registry.mjs", "returns.mjs", "subsystems.mjs", "contracts.mjs")
+    $win32Passed = 0
+    foreach ($runner in $win32Runners) {
+        Write-Host "  $runner"
+        $arguments = if ($runner -eq "contracts.mjs") { @("--generated", $win32BindingsDir) } else { @() }
+        $runnerExitCode = Invoke-NodeRunner (Join-Path $runnersDir "win32\$runner") -runnerArguments $arguments
+        if ($runnerExitCode -eq 0) { $win32Passed++ }
+    }
+    if ($win32Passed -eq $win32Runners.Count) { $totalPass++ } else { $totalFail++ }
     $allResults += [pscustomobject]@{
         language = "win32"
-        passed = [int]$passed
-        total = 1
+        passed = $win32Passed
+        total = $win32Runners.Count
     }
 }
 

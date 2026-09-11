@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+mod win32_census;
 mod win32_output;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -78,6 +79,15 @@ enum Commands {
         winmd: String,
 
         /// Emit one machine-readable JSON object.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Measure complete flat Win32 generation from native metadata and contracts.
+    Win32Census {
+        #[arg(long, value_name = "PATH")]
+        winmd: String,
+
         #[arg(long)]
         json: bool,
     },
@@ -342,6 +352,9 @@ fn run() -> Result<(), String> {
         }
         Commands::ComCensus { winmd, json } => {
             run_com_census(&winmd, json)?;
+        }
+        Commands::Win32Census { winmd, json } => {
+            win32_census::run(&winmd, json)?;
         }
         Commands::ComCapabilityCensus {
             winmd,

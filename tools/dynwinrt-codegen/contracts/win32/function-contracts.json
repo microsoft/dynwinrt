@@ -1,0 +1,2404 @@
+{
+  "schemaVersion": 2,
+  "entries": [
+    {
+      "id": "windows.win32.foundation.apis.closehandle.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "CloseHandle",
+        "name": "CloseHandle",
+        "namespace": "Windows.Win32.Foundation",
+        "sourceFingerprint": "6CC40ADE2BD555C000E741D8BD165DC88E59B30DCEAAC602CB321B50DD80700F"
+      },
+      "contracts": [
+        {
+          "kind": "consumed-input",
+          "parameter": 0,
+          "cleanup": "close-handle"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/handleapi/nf-handleapi-closehandle"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.foundation.apis.freelibrary.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "FreeLibrary",
+        "name": "FreeLibrary",
+        "namespace": "Windows.Win32.Foundation",
+        "sourceFingerprint": "DE7EC93DF2DC862859236646159AC421F3E79B671325DD7C423BFEDA3C258E66"
+      },
+      "contracts": [
+        {
+          "kind": "consumed-input",
+          "parameter": 0,
+          "cleanup": "free-library"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/api/libloaderapi/nf-libloaderapi-freelibrary"
+        },
+        {
+          "kind": "sdk-header",
+          "file": "libloaderapi.h"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.globalization.apis.foldstringa.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "FoldStringA",
+        "name": "FoldStringA",
+        "namespace": "Windows.Win32.Globalization",
+        "sourceFingerprint": "6E8160197FABAF9EB6486ABEB6B5E3326685FB1C10B18698E544E0401E8CA3CA"
+      },
+      "contracts": [
+        {
+          "kind": "counted-buffer",
+          "parameter": 3,
+          "countParameter": 4,
+          "nullable": true
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/winnls/nf-winnls-foldstringa"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.globalization.apis.foldstringw.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "FoldStringW",
+        "name": "FoldStringW",
+        "namespace": "Windows.Win32.Globalization",
+        "sourceFingerprint": "1B5D2B3C7C259F5CB05D453BFE27104202E5EA6C9C88274BBE2FE6A5F5FF4162"
+      },
+      "contracts": [
+        {
+          "kind": "counted-buffer",
+          "parameter": 3,
+          "countParameter": 4,
+          "nullable": true
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/stringapiset/nf-stringapiset-foldstringw"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.globalization.apis.getlocaleinfoa.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "GetLocaleInfoA",
+        "name": "GetLocaleInfoA",
+        "namespace": "Windows.Win32.Globalization",
+        "sourceFingerprint": "3EEE9B5DB794DC2181E1018F6F97694D1401C6391A433C94FA2DDA1B9F32BD1C"
+      },
+      "contracts": [
+        {
+          "kind": "counted-buffer",
+          "parameter": 2,
+          "countParameter": 3,
+          "nullable": true
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/winnls/nf-winnls-getlocaleinfoa"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.globalization.apis.getlocaleinfoex.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "GetLocaleInfoEx",
+        "name": "GetLocaleInfoEx",
+        "namespace": "Windows.Win32.Globalization",
+        "sourceFingerprint": "AA5A178482745CF8E284C2A3FB1431ECA16E8CBA18C17BBA57FE8AFE91355D5A"
+      },
+      "contracts": [
+        {
+          "kind": "counted-buffer",
+          "parameter": 2,
+          "countParameter": 3,
+          "nullable": true
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/winnls/nf-winnls-getlocaleinfoex"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.globalization.apis.getlocaleinfow.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "GetLocaleInfoW",
+        "name": "GetLocaleInfoW",
+        "namespace": "Windows.Win32.Globalization",
+        "sourceFingerprint": "FAB4847056D4EDA237D39ABDD2E2DF06A439EDB4DC03BE2CD9B0056FD7729691"
+      },
+      "contracts": [
+        {
+          "kind": "counted-buffer",
+          "parameter": 2,
+          "countParameter": 3,
+          "nullable": true
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/winnls/nf-winnls-getlocaleinfow"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.globalization.apis.lcmapstringa.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "LCMapStringA",
+        "name": "LCMapStringA",
+        "namespace": "Windows.Win32.Globalization",
+        "sourceFingerprint": "F34DF8704356CA87118A20BAA7639BB69CE51FABE1EA6799D1144134E753EF5A"
+      },
+      "contracts": [
+        {
+          "kind": "counted-buffer",
+          "parameter": 4,
+          "countParameter": 5,
+          "nullable": true
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/winnls/nf-winnls-lcmapstringa"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.globalization.apis.lcmapstringex.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "LCMapStringEx",
+        "name": "LCMapStringEx",
+        "namespace": "Windows.Win32.Globalization",
+        "sourceFingerprint": "B847145415B55F611524E6262A75FDE25C30A4E6747AB99946E2FB71630EBD74"
+      },
+      "contracts": [
+        {
+          "kind": "unsupported-count-unit",
+          "parameter": 4
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/winnls/nf-winnls-lcmapstringex"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.globalization.apis.lcmapstringw.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "LCMapStringW",
+        "name": "LCMapStringW",
+        "namespace": "Windows.Win32.Globalization",
+        "sourceFingerprint": "641C40498EB13926BCB3336493FD30D25ABA1A2D948C010F9E9398F3B258A468"
+      },
+      "contracts": [
+        {
+          "kind": "unsupported-count-unit",
+          "parameter": 4
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/winnls/nf-winnls-lcmapstringw"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.storage.filesystem.apis.createfilea.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "CreateFileA",
+        "name": "CreateFileA",
+        "namespace": "Windows.Win32.Storage.FileSystem",
+        "sourceFingerprint": "1B942058C20D35F9BC690E89D2B0BFFC5A95738231CF8F180E9E56E198C127E1"
+      },
+      "contracts": [
+        {
+          "kind": "owned-return",
+          "cleanup": "close-handle"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-createfilea"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.storage.filesystem.apis.createfilew.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "CreateFileW",
+        "name": "CreateFileW",
+        "namespace": "Windows.Win32.Storage.FileSystem",
+        "sourceFingerprint": "3C58D88E04386869F6EEA10BFD485C7E14D831144595EAE2540255FEA1669362"
+      },
+      "contracts": [
+        {
+          "kind": "owned-return",
+          "cleanup": "close-handle"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-createfilew"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.storage.filesystem.apis.readfile.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "ReadFile",
+        "name": "ReadFile",
+        "namespace": "Windows.Win32.Storage.FileSystem",
+        "sourceFingerprint": "4E63EAF55ACE1640DC86F26A27472491850FC58565D69A25020A46DA8D30EC4B"
+      },
+      "contracts": [
+        {
+          "kind": "overlapped-io",
+          "operation": "read",
+          "fileParameter": 0,
+          "bufferParameter": 1,
+          "countParameter": 2,
+          "transferredParameter": 3,
+          "overlappedParameter": 4
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-readfile"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.storage.filesystem.apis.writefile.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "WriteFile",
+        "name": "WriteFile",
+        "namespace": "Windows.Win32.Storage.FileSystem",
+        "sourceFingerprint": "9663326055F7C9CA936AEAC07096EB8B86895052E112C280AACB6EF2CC68462C"
+      },
+      "contracts": [
+        {
+          "kind": "overlapped-io",
+          "operation": "write",
+          "fileParameter": 0,
+          "bufferParameter": 1,
+          "countParameter": 2,
+          "transferredParameter": 3,
+          "overlappedParameter": 4
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-writefile"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.jobobjects.apis.createjobobjecta.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "CreateJobObjectA",
+        "name": "CreateJobObjectA",
+        "namespace": "Windows.Win32.System.JobObjects",
+        "sourceFingerprint": "2336A6B855F785E39D305E35054CCA6D2369E93A564C81D256215AE789B52D0B"
+      },
+      "contracts": [
+        {
+          "kind": "owned-return",
+          "cleanup": "close-handle"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/winbase/nf-winbase-createjobobjecta"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.jobobjects.apis.createjobobjectw.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "CreateJobObjectW",
+        "name": "CreateJobObjectW",
+        "namespace": "Windows.Win32.System.JobObjects",
+        "sourceFingerprint": "9026747185ED522B3B6649C5D21C8ACFA6A5EB6F630BF972791AA272ED1B911B"
+      },
+      "contracts": [
+        {
+          "kind": "owned-return",
+          "cleanup": "close-handle"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/jobapi2/nf-jobapi2-createjobobjectw"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.jobobjects.apis.openjobobjecta.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "OpenJobObjectA",
+        "name": "OpenJobObjectA",
+        "namespace": "Windows.Win32.System.JobObjects",
+        "sourceFingerprint": "6DB94200E6874D8421AB726BD5A3E3833EBC91C1576538FFD3C197D5366ED4FE"
+      },
+      "contracts": [
+        {
+          "kind": "owned-return",
+          "cleanup": "close-handle"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/winbase/nf-winbase-openjobobjecta"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.jobobjects.apis.openjobobjectw.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "OpenJobObjectW",
+        "name": "OpenJobObjectW",
+        "namespace": "Windows.Win32.System.JobObjects",
+        "sourceFingerprint": "F8C0330C7F1441B0842BD970AD0184A65D6E63E6B000792ADAB597DBC9F7C3FE"
+      },
+      "contracts": [
+        {
+          "kind": "owned-return",
+          "cleanup": "close-handle"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/jobapi2/nf-jobapi2-openjobobjectw"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.libraryloader.apis.getmodulehandlea.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "GetModuleHandleA",
+        "name": "GetModuleHandleA",
+        "namespace": "Windows.Win32.System.LibraryLoader",
+        "sourceFingerprint": "E9ADD5CB234A08CF6E35676C6CA3632132176BDD30A2C9211095EAB600A616F2"
+      },
+      "contracts": [
+        {
+          "kind": "borrowed-return"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/libloaderapi/nf-libloaderapi-getmodulehandlea"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.libraryloader.apis.getmodulehandlew.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "GetModuleHandleW",
+        "name": "GetModuleHandleW",
+        "namespace": "Windows.Win32.System.LibraryLoader",
+        "sourceFingerprint": "5F06E8EE9276D70C12FFBFAF6F41EDA84B61BE85DB06FF0923E53DA6C2A358F0"
+      },
+      "contracts": [
+        {
+          "kind": "borrowed-return"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/libloaderapi/nf-libloaderapi-getmodulehandlew"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.libraryloader.apis.loadlibrarya.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "LoadLibraryA",
+        "name": "LoadLibraryA",
+        "namespace": "Windows.Win32.System.LibraryLoader",
+        "sourceFingerprint": "3355058CF7FD3CAF5701661AEC8339C5B81AB92F6E8CC8ABF9EB6E0939C841AE"
+      },
+      "contracts": [
+        {
+          "kind": "owned-return",
+          "cleanup": "free-library"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/libloaderapi/nf-libloaderapi-loadlibrarya"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.libraryloader.apis.loadlibraryexa.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "LoadLibraryExA",
+        "name": "LoadLibraryExA",
+        "namespace": "Windows.Win32.System.LibraryLoader",
+        "sourceFingerprint": "CE07F74039CFC8D364C536BE41125C1610A3FEF4CDA725D298F3A6C24F0A668E"
+      },
+      "contracts": [
+        {
+          "kind": "owned-return",
+          "cleanup": "free-library"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/libloaderapi/nf-libloaderapi-loadlibraryexa"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.libraryloader.apis.loadlibraryexw.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "LoadLibraryExW",
+        "name": "LoadLibraryExW",
+        "namespace": "Windows.Win32.System.LibraryLoader",
+        "sourceFingerprint": "42A15719E920E589D243A233E7CC774A0C055262527009FFA673EF986750C912"
+      },
+      "contracts": [
+        {
+          "kind": "owned-return",
+          "cleanup": "free-library"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/libloaderapi/nf-libloaderapi-loadlibraryexw"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.libraryloader.apis.loadlibraryw.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "LoadLibraryW",
+        "name": "LoadLibraryW",
+        "namespace": "Windows.Win32.System.LibraryLoader",
+        "sourceFingerprint": "392AF912483F46A31BDD9EAC94349DC654B4902DD869F2C87C42DC7DC87FE248"
+      },
+      "contracts": [
+        {
+          "kind": "owned-return",
+          "cleanup": "free-library"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/libloaderapi/nf-libloaderapi-loadlibraryw"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.memory.apis.globalalloc.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "GlobalAlloc",
+        "name": "GlobalAlloc",
+        "namespace": "Windows.Win32.System.Memory",
+        "sourceFingerprint": "CD99A309817DC8A370B95EEF5F95F35C59D362E9062FBD01117744483A63C08A"
+      },
+      "contracts": [
+        {
+          "kind": "owned-return",
+          "cleanup": "global-free"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/winbase/nf-winbase-globalalloc"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.memory.apis.localalloc.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "LocalAlloc",
+        "name": "LocalAlloc",
+        "namespace": "Windows.Win32.System.Memory",
+        "sourceFingerprint": "C2F8327F5EDFE130486001235C7111F82E74622C364EE905E29DBAEAFA9F37C1"
+      },
+      "contracts": [
+        {
+          "kind": "owned-return",
+          "cleanup": "local-free"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/winbase/nf-winbase-localalloc"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.pipes.apis.createnamedpipea.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "CreateNamedPipeA",
+        "name": "CreateNamedPipeA",
+        "namespace": "Windows.Win32.System.Pipes",
+        "sourceFingerprint": "6EDDD8351B30D0BDDF265C0910B7735293F0E8922B5BA740D5B628FD2BA745D5"
+      },
+      "contracts": [
+        {
+          "kind": "owned-return",
+          "cleanup": "close-handle"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/winbase/nf-winbase-createnamedpipea"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.pipes.apis.createnamedpipew.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "CreateNamedPipeW",
+        "name": "CreateNamedPipeW",
+        "namespace": "Windows.Win32.System.Pipes",
+        "sourceFingerprint": "C8350B1B5CC223E59878CE46FDB9902FEA94AF26F3FA04FEB2B895ADE75A53E8"
+      },
+      "contracts": [
+        {
+          "kind": "owned-return",
+          "cleanup": "close-handle"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/namedpipeapi/nf-namedpipeapi-createnamedpipew"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.pipes.apis.createpipe.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "CreatePipe",
+        "name": "CreatePipe",
+        "namespace": "Windows.Win32.System.Pipes",
+        "sourceFingerprint": "93C21BB5691722C0AD8422F722A8CD501425F5F973F3533D3B491DE1511F8687"
+      },
+      "contracts": [
+        {
+          "kind": "owned-output",
+          "parameter": 0,
+          "cleanup": "close-handle"
+        },
+        {
+          "kind": "owned-output",
+          "parameter": 1,
+          "cleanup": "close-handle"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/namedpipeapi/nf-namedpipeapi-createpipe"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.registry.apis.regclosekey.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "ADVAPI32.dll",
+        "entryPoint": "RegCloseKey",
+        "name": "RegCloseKey",
+        "namespace": "Windows.Win32.System.Registry",
+        "sourceFingerprint": "23BF7F0DF79CA3DDBF947190AAACB4F9E68B7404E4ECA28DE7F8A0032917E209"
+      },
+      "contracts": [
+        {
+          "kind": "consumed-input",
+          "parameter": 0,
+          "cleanup": "reg-close-key"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/winreg/nf-winreg-regclosekey"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.registry.apis.regconnectregistrya.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "ADVAPI32.dll",
+        "entryPoint": "RegConnectRegistryA",
+        "name": "RegConnectRegistryA",
+        "namespace": "Windows.Win32.System.Registry",
+        "sourceFingerprint": "DCCE520440A475DC0E0053EE8A2CC1561B6735B989AAA6524DB9472D670ED989"
+      },
+      "contracts": [
+        {
+          "kind": "owned-output",
+          "parameter": 2,
+          "cleanup": "reg-close-key"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/winreg/nf-winreg-regconnectregistrya"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.registry.apis.regconnectregistryexa.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "ADVAPI32.dll",
+        "entryPoint": "RegConnectRegistryExA",
+        "name": "RegConnectRegistryExA",
+        "namespace": "Windows.Win32.System.Registry",
+        "sourceFingerprint": "4B4743262AE4425B4F73C25C9FF9B493CD1AAD260E1D0EB25DEF7BC03ECED6B4"
+      },
+      "contracts": [
+        {
+          "kind": "owned-output",
+          "parameter": 3,
+          "cleanup": "reg-close-key"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.registry.apis.regconnectregistryexw.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "ADVAPI32.dll",
+        "entryPoint": "RegConnectRegistryExW",
+        "name": "RegConnectRegistryExW",
+        "namespace": "Windows.Win32.System.Registry",
+        "sourceFingerprint": "DBA80107C4F83C9EAAE2C13926B2BACDD7A6C27448507B141780B540479A478F"
+      },
+      "contracts": [
+        {
+          "kind": "owned-output",
+          "parameter": 3,
+          "cleanup": "reg-close-key"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.registry.apis.regconnectregistryw.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "ADVAPI32.dll",
+        "entryPoint": "RegConnectRegistryW",
+        "name": "RegConnectRegistryW",
+        "namespace": "Windows.Win32.System.Registry",
+        "sourceFingerprint": "984F1A0F25629D26439D900672798515A85B6037C2EEC03AA6169756EDF1895F"
+      },
+      "contracts": [
+        {
+          "kind": "owned-output",
+          "parameter": 2,
+          "cleanup": "reg-close-key"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/winreg/nf-winreg-regconnectregistryw"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.registry.apis.regcreatekeya.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "ADVAPI32.dll",
+        "entryPoint": "RegCreateKeyA",
+        "name": "RegCreateKeyA",
+        "namespace": "Windows.Win32.System.Registry",
+        "sourceFingerprint": "CC7652620702C927D005DB4BE75BD6640F42E0FEE2D32ECFBF070979B8BDA8A8"
+      },
+      "contracts": [
+        {
+          "kind": "owned-output",
+          "parameter": 2,
+          "cleanup": "reg-close-key"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/winreg/nf-winreg-regcreatekeya"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.registry.apis.regcreatekeyexa.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "ADVAPI32.dll",
+        "entryPoint": "RegCreateKeyExA",
+        "name": "RegCreateKeyExA",
+        "namespace": "Windows.Win32.System.Registry",
+        "sourceFingerprint": "E7031E8B7218EBD69F5892B25878FEAFA1F4A89C0F124BAE7C483D1AFA1D8958"
+      },
+      "contracts": [
+        {
+          "kind": "owned-output",
+          "parameter": 7,
+          "cleanup": "reg-close-key"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/winreg/nf-winreg-regcreatekeyexa"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.registry.apis.regcreatekeyexw.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "ADVAPI32.dll",
+        "entryPoint": "RegCreateKeyExW",
+        "name": "RegCreateKeyExW",
+        "namespace": "Windows.Win32.System.Registry",
+        "sourceFingerprint": "BF190A29FED832DD3CA923F3133D8CF33597EE5C985E91C106E11F561826D198"
+      },
+      "contracts": [
+        {
+          "kind": "owned-output",
+          "parameter": 7,
+          "cleanup": "reg-close-key"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/winreg/nf-winreg-regcreatekeyexw"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.registry.apis.regcreatekeytransacteda.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "ADVAPI32.dll",
+        "entryPoint": "RegCreateKeyTransactedA",
+        "name": "RegCreateKeyTransactedA",
+        "namespace": "Windows.Win32.System.Registry",
+        "sourceFingerprint": "EF98F4AD8A54C5F4DC57BDB781225B3B3A23C2832D986B0AC8A459D589C2BCEF"
+      },
+      "contracts": [
+        {
+          "kind": "owned-output",
+          "parameter": 7,
+          "cleanup": "reg-close-key"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/winreg/nf-winreg-regcreatekeytransacteda"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.registry.apis.regcreatekeytransactedw.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "ADVAPI32.dll",
+        "entryPoint": "RegCreateKeyTransactedW",
+        "name": "RegCreateKeyTransactedW",
+        "namespace": "Windows.Win32.System.Registry",
+        "sourceFingerprint": "3A5D0F8CC86179CA8E0E0EFB6573CEDCA169B43E9DCD4A4BFC29E8CA8B7A0D47"
+      },
+      "contracts": [
+        {
+          "kind": "owned-output",
+          "parameter": 7,
+          "cleanup": "reg-close-key"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/winreg/nf-winreg-regcreatekeytransactedw"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.registry.apis.regcreatekeyw.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "ADVAPI32.dll",
+        "entryPoint": "RegCreateKeyW",
+        "name": "RegCreateKeyW",
+        "namespace": "Windows.Win32.System.Registry",
+        "sourceFingerprint": "1A97220CAE1BC3E99C0A45533386232EDBF56B434824B7AC0C5EB2D77D1AB36B"
+      },
+      "contracts": [
+        {
+          "kind": "owned-output",
+          "parameter": 2,
+          "cleanup": "reg-close-key"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/winreg/nf-winreg-regcreatekeyw"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.registry.apis.regloadappkeya.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "ADVAPI32.dll",
+        "entryPoint": "RegLoadAppKeyA",
+        "name": "RegLoadAppKeyA",
+        "namespace": "Windows.Win32.System.Registry",
+        "sourceFingerprint": "CB78FE1BA7033FE1EFF773B91AD759EFA9A766B7AFF100178C8D304E1536025A"
+      },
+      "contracts": [
+        {
+          "kind": "owned-output",
+          "parameter": 1,
+          "cleanup": "reg-close-key"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/winreg/nf-winreg-regloadappkeya"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.registry.apis.regloadappkeyw.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "ADVAPI32.dll",
+        "entryPoint": "RegLoadAppKeyW",
+        "name": "RegLoadAppKeyW",
+        "namespace": "Windows.Win32.System.Registry",
+        "sourceFingerprint": "2543F342C66EE1B4E1A299BF9F313CECABA9103F1EA7A6993F3FA146B91E0853"
+      },
+      "contracts": [
+        {
+          "kind": "owned-output",
+          "parameter": 1,
+          "cleanup": "reg-close-key"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/winreg/nf-winreg-regloadappkeyw"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.registry.apis.regopencurrentuser.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "ADVAPI32.dll",
+        "entryPoint": "RegOpenCurrentUser",
+        "name": "RegOpenCurrentUser",
+        "namespace": "Windows.Win32.System.Registry",
+        "sourceFingerprint": "33CF725EDFD28F2EC6C0562E9762B5DED6A0038EA661BD7F0F2704438B51B624"
+      },
+      "contracts": [
+        {
+          "kind": "owned-output",
+          "parameter": 1,
+          "cleanup": "reg-close-key"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/winreg/nf-winreg-regopencurrentuser"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.registry.apis.regopenkeya.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "ADVAPI32.dll",
+        "entryPoint": "RegOpenKeyA",
+        "name": "RegOpenKeyA",
+        "namespace": "Windows.Win32.System.Registry",
+        "sourceFingerprint": "41FAA2B895FB290304778CD6A9798A7D4B6AFB6FFA8518DA7662F0EEB2F2D5BC"
+      },
+      "contracts": [
+        {
+          "kind": "owned-output",
+          "parameter": 2,
+          "cleanup": "reg-close-key"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/winreg/nf-winreg-regopenkeya"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.registry.apis.regopenkeyexa.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "ADVAPI32.dll",
+        "entryPoint": "RegOpenKeyExA",
+        "name": "RegOpenKeyExA",
+        "namespace": "Windows.Win32.System.Registry",
+        "sourceFingerprint": "04F69363E76319FC88D4FD9B093A7003F190277E2BE73CA1590C096232449A5D"
+      },
+      "contracts": [
+        {
+          "kind": "owned-output",
+          "parameter": 4,
+          "cleanup": "reg-close-key"
+        },
+        {
+          "kind": "borrowed-predefined-hkey-output",
+          "handleParameter": 0,
+          "stringParameter": 1,
+          "outputParameter": 4
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/winreg/nf-winreg-regopenkeyexa"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.registry.apis.regopenkeyexw.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "ADVAPI32.dll",
+        "entryPoint": "RegOpenKeyExW",
+        "name": "RegOpenKeyExW",
+        "namespace": "Windows.Win32.System.Registry",
+        "sourceFingerprint": "0537F79814DF7AB942B2CCB06C6395F75380F95AEEDB39D827FBAFCB98C765A3"
+      },
+      "contracts": [
+        {
+          "kind": "owned-output",
+          "parameter": 4,
+          "cleanup": "reg-close-key"
+        },
+        {
+          "kind": "borrowed-predefined-hkey-output",
+          "handleParameter": 0,
+          "stringParameter": 1,
+          "outputParameter": 4
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/winreg/nf-winreg-regopenkeyexw"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.registry.apis.regopenkeytransacteda.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "ADVAPI32.dll",
+        "entryPoint": "RegOpenKeyTransactedA",
+        "name": "RegOpenKeyTransactedA",
+        "namespace": "Windows.Win32.System.Registry",
+        "sourceFingerprint": "F1DA368541CAC10758CA8D938B38FC176ED2203F5C956A9C049DD7E6CB72D4C6"
+      },
+      "contracts": [
+        {
+          "kind": "owned-output",
+          "parameter": 4,
+          "cleanup": "reg-close-key"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/winreg/nf-winreg-regopenkeytransacteda"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.registry.apis.regopenkeytransactedw.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "ADVAPI32.dll",
+        "entryPoint": "RegOpenKeyTransactedW",
+        "name": "RegOpenKeyTransactedW",
+        "namespace": "Windows.Win32.System.Registry",
+        "sourceFingerprint": "3F85BC8D2C391D5F811EC25A1BCBAD98426FED10416714CDD32EA5E00321082E"
+      },
+      "contracts": [
+        {
+          "kind": "owned-output",
+          "parameter": 4,
+          "cleanup": "reg-close-key"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/winreg/nf-winreg-regopenkeytransactedw"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.registry.apis.regopenkeyw.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "ADVAPI32.dll",
+        "entryPoint": "RegOpenKeyW",
+        "name": "RegOpenKeyW",
+        "namespace": "Windows.Win32.System.Registry",
+        "sourceFingerprint": "748721A0B36D3F1B21FEC4AA3F7F920DAC9C6A08A1DB3850EC019FF75BA0CBAF"
+      },
+      "contracts": [
+        {
+          "kind": "owned-output",
+          "parameter": 2,
+          "cleanup": "reg-close-key"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/winreg/nf-winreg-regopenkeyw"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.registry.apis.regopenuserclassesroot.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "ADVAPI32.dll",
+        "entryPoint": "RegOpenUserClassesRoot",
+        "name": "RegOpenUserClassesRoot",
+        "namespace": "Windows.Win32.System.Registry",
+        "sourceFingerprint": "3E6BA2195F0967EF3B4D7D47C775B754876996EE0AE81A6055A8B7A62A88C957"
+      },
+      "contracts": [
+        {
+          "kind": "owned-output",
+          "parameter": 3,
+          "cleanup": "reg-close-key"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/winreg/nf-winreg-regopenuserclassesroot"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.registry.apis.regqueryvalueexa.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "ADVAPI32.dll",
+        "entryPoint": "RegQueryValueExA",
+        "name": "RegQueryValueExA",
+        "namespace": "Windows.Win32.System.Registry",
+        "sourceFingerprint": "6E8D7C4ABA09D0A33FB4410EF4E0C01EFF025933BC558A449D3ECB64C22778C8"
+      },
+      "contracts": [
+        {
+          "kind": "hkey-performance-data-count",
+          "handleParameter": 0,
+          "countParameter": 5,
+          "undefinedOn": "more-data"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/api/winreg/nf-winreg-regqueryvalueexa"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.registry.apis.regqueryvalueexw.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "ADVAPI32.dll",
+        "entryPoint": "RegQueryValueExW",
+        "name": "RegQueryValueExW",
+        "namespace": "Windows.Win32.System.Registry",
+        "sourceFingerprint": "5A98B9547E1B91B2D42D08FDBD4945482059FD6D54C50F3C1A5A5D7DB871A394"
+      },
+      "contracts": [
+        {
+          "kind": "hkey-performance-data-count",
+          "handleParameter": 0,
+          "countParameter": 5,
+          "undefinedOn": "more-data"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/api/winreg/nf-winreg-regqueryvalueexw"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.services.apis.closeservicehandle.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "ADVAPI32.dll",
+        "entryPoint": "CloseServiceHandle",
+        "name": "CloseServiceHandle",
+        "namespace": "Windows.Win32.System.Services",
+        "sourceFingerprint": "598E7E838CE2B64E425893B883768815BB31740AEF4747EFD0802922449291AF"
+      },
+      "contracts": [
+        {
+          "kind": "consumed-input",
+          "parameter": 0,
+          "cleanup": "close-service-handle"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/winsvc/nf-winsvc-closeservicehandle"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.services.apis.createservicea.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "ADVAPI32.dll",
+        "entryPoint": "CreateServiceA",
+        "name": "CreateServiceA",
+        "namespace": "Windows.Win32.System.Services",
+        "sourceFingerprint": "0F27068AE840169A47F7C422BEB138429A80157EE031D533F14E51342F020466"
+      },
+      "contracts": [
+        {
+          "kind": "owned-return",
+          "cleanup": "close-service-handle"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/winsvc/nf-winsvc-createservicea"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.services.apis.createservicew.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "ADVAPI32.dll",
+        "entryPoint": "CreateServiceW",
+        "name": "CreateServiceW",
+        "namespace": "Windows.Win32.System.Services",
+        "sourceFingerprint": "45A82382B84B3A9C617EDE1E73E8F5CF2E5B0889F044252A97771CBEBA4E2EC3"
+      },
+      "contracts": [
+        {
+          "kind": "owned-return",
+          "cleanup": "close-service-handle"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/winsvc/nf-winsvc-createservicew"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.services.apis.openscmanagera.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "ADVAPI32.dll",
+        "entryPoint": "OpenSCManagerA",
+        "name": "OpenSCManagerA",
+        "namespace": "Windows.Win32.System.Services",
+        "sourceFingerprint": "94F1AA7F7442AA95EB89141CB0F856DFE56E6173FF734654FA644D45C85DF705"
+      },
+      "contracts": [
+        {
+          "kind": "owned-return",
+          "cleanup": "close-service-handle"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/winsvc/nf-winsvc-openscmanagera"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.services.apis.openscmanagerw.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "ADVAPI32.dll",
+        "entryPoint": "OpenSCManagerW",
+        "name": "OpenSCManagerW",
+        "namespace": "Windows.Win32.System.Services",
+        "sourceFingerprint": "789CA675749C80AA337CDC1194756AD965BA79AC93A3AC7C89FD916AE8CEF203"
+      },
+      "contracts": [
+        {
+          "kind": "owned-return",
+          "cleanup": "close-service-handle"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/winsvc/nf-winsvc-openscmanagerw"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.services.apis.openservicea.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "ADVAPI32.dll",
+        "entryPoint": "OpenServiceA",
+        "name": "OpenServiceA",
+        "namespace": "Windows.Win32.System.Services",
+        "sourceFingerprint": "75D216EAC7DCCAF4BD2C4A0964B7CF9D97DC774A94796E930847E7D7013B1025"
+      },
+      "contracts": [
+        {
+          "kind": "owned-return",
+          "cleanup": "close-service-handle"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/winsvc/nf-winsvc-openservicea"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.services.apis.openservicew.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "ADVAPI32.dll",
+        "entryPoint": "OpenServiceW",
+        "name": "OpenServiceW",
+        "namespace": "Windows.Win32.System.Services",
+        "sourceFingerprint": "158047F11F129209BB366431A6CEDACE761CE5B3475CD981FCC058B5B3576361"
+      },
+      "contracts": [
+        {
+          "kind": "owned-return",
+          "cleanup": "close-service-handle"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/winsvc/nf-winsvc-openservicew"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.threading.apis.createeventa.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "CreateEventA",
+        "name": "CreateEventA",
+        "namespace": "Windows.Win32.System.Threading",
+        "sourceFingerprint": "8309F25D7A2D14855C9BC860EC9C13375F561B6056E3BAB4A0B52375A783E3F7"
+      },
+      "contracts": [
+        {
+          "kind": "owned-return",
+          "cleanup": "close-handle"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/synchapi/nf-synchapi-createeventa"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.threading.apis.createeventexa.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "CreateEventExA",
+        "name": "CreateEventExA",
+        "namespace": "Windows.Win32.System.Threading",
+        "sourceFingerprint": "FEE5AEB21EA4B54D7FCF593451E53BAAAD02320327820152483F74EB118360F8"
+      },
+      "contracts": [
+        {
+          "kind": "owned-return",
+          "cleanup": "close-handle"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/synchapi/nf-synchapi-createeventexa"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.threading.apis.createeventexw.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "CreateEventExW",
+        "name": "CreateEventExW",
+        "namespace": "Windows.Win32.System.Threading",
+        "sourceFingerprint": "2E1FA016D06ABC74A7F4DE0AC5E3B8A9FE9FA2270EEC1051DBC7E8D440A99CC6"
+      },
+      "contracts": [
+        {
+          "kind": "owned-return",
+          "cleanup": "close-handle"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/synchapi/nf-synchapi-createeventexw"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.threading.apis.createeventw.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "CreateEventW",
+        "name": "CreateEventW",
+        "namespace": "Windows.Win32.System.Threading",
+        "sourceFingerprint": "CDBCAD6D0231932002947BF82BBEC943D5F02506AFA401CC661743598BF7BDE7"
+      },
+      "contracts": [
+        {
+          "kind": "owned-return",
+          "cleanup": "close-handle"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/synchapi/nf-synchapi-createeventw"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.threading.apis.createmutexa.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "CreateMutexA",
+        "name": "CreateMutexA",
+        "namespace": "Windows.Win32.System.Threading",
+        "sourceFingerprint": "6B10C1704C76CA5EC63A7455F7C680E09E756C5E3F8FE2970232A23CE3E4B1D2"
+      },
+      "contracts": [
+        {
+          "kind": "owned-return",
+          "cleanup": "close-handle"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/synchapi/nf-synchapi-createmutexa"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.threading.apis.createmutexexa.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "CreateMutexExA",
+        "name": "CreateMutexExA",
+        "namespace": "Windows.Win32.System.Threading",
+        "sourceFingerprint": "BE41A563B926C5B3CDAB6CA6FADCB3B1589E130B5FE2E9706A800F3E781DA305"
+      },
+      "contracts": [
+        {
+          "kind": "owned-return",
+          "cleanup": "close-handle"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/synchapi/nf-synchapi-createmutexexa"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.threading.apis.createmutexexw.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "CreateMutexExW",
+        "name": "CreateMutexExW",
+        "namespace": "Windows.Win32.System.Threading",
+        "sourceFingerprint": "95A4022D3F3F0EAD7E28E2EF9DBAA7FF5672D8D3C951BC760BBDCDABB3AEC556"
+      },
+      "contracts": [
+        {
+          "kind": "owned-return",
+          "cleanup": "close-handle"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/synchapi/nf-synchapi-createmutexexw"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.threading.apis.createmutexw.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "CreateMutexW",
+        "name": "CreateMutexW",
+        "namespace": "Windows.Win32.System.Threading",
+        "sourceFingerprint": "243D943D6D040AF372476F5CF475386FF5F1AA73088DA3DDB0BF72518D484DDB"
+      },
+      "contracts": [
+        {
+          "kind": "owned-return",
+          "cleanup": "close-handle"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/synchapi/nf-synchapi-createmutexw"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.threading.apis.createprocessa.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "CreateProcessA",
+        "name": "CreateProcessA",
+        "namespace": "Windows.Win32.System.Threading",
+        "sourceFingerprint": "0AE596F4AFBF9A92874A4F99C0645B197B107EB9D4A5435DCC27C0128C64903A"
+      },
+      "contracts": [
+        {
+          "kind": "mutable-string",
+          "parameter": 1
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessa"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.threading.apis.createprocessasusera.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "ADVAPI32.dll",
+        "entryPoint": "CreateProcessAsUserA",
+        "name": "CreateProcessAsUserA",
+        "namespace": "Windows.Win32.System.Threading",
+        "sourceFingerprint": "DE23D644ADC995B64C4A39D5AB0B73C81B7FD5A1B74D6EF2998BA541FA63F2AA"
+      },
+      "contracts": [
+        {
+          "kind": "mutable-string",
+          "parameter": 2
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessasusera"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.threading.apis.createprocessasuserw.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "ADVAPI32.dll",
+        "entryPoint": "CreateProcessAsUserW",
+        "name": "CreateProcessAsUserW",
+        "namespace": "Windows.Win32.System.Threading",
+        "sourceFingerprint": "E837F71C2BF818A3186492BB6BA068F835BCB520EBC8C5CF0795D422EABB228B"
+      },
+      "contracts": [
+        {
+          "kind": "mutable-string",
+          "parameter": 2
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessasuserw"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.threading.apis.createprocessw.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "CreateProcessW",
+        "name": "CreateProcessW",
+        "namespace": "Windows.Win32.System.Threading",
+        "sourceFingerprint": "C214D7338D44841FE906328D1106213B3B047E48EB69CDE05A01F2B841B1EBEE"
+      },
+      "contracts": [
+        {
+          "kind": "mutable-string",
+          "parameter": 1
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.threading.apis.createprocesswithlogonw.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "ADVAPI32.dll",
+        "entryPoint": "CreateProcessWithLogonW",
+        "name": "CreateProcessWithLogonW",
+        "namespace": "Windows.Win32.System.Threading",
+        "sourceFingerprint": "FC005BB14175F1141DB053C1F0469D20E61B92F8CDDAFD491F08B210E95A4622"
+      },
+      "contracts": [
+        {
+          "kind": "mutable-string",
+          "parameter": 5
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/winbase/nf-winbase-createprocesswithlogonw"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.threading.apis.createprocesswithtokenw.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "ADVAPI32.dll",
+        "entryPoint": "CreateProcessWithTokenW",
+        "name": "CreateProcessWithTokenW",
+        "namespace": "Windows.Win32.System.Threading",
+        "sourceFingerprint": "84C12BCC53089556BC7FD5FFADEA780763B909BDD090E496F3E050C43EEA391E"
+      },
+      "contracts": [
+        {
+          "kind": "mutable-string",
+          "parameter": 3
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/winbase/nf-winbase-createprocesswithtokenw"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.threading.apis.createsemaphorea.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "CreateSemaphoreA",
+        "name": "CreateSemaphoreA",
+        "namespace": "Windows.Win32.System.Threading",
+        "sourceFingerprint": "23CB5053DF19DA220380E18A9FA1637D1E123EEA2CD3405C7CB757D2418FB830"
+      },
+      "contracts": [
+        {
+          "kind": "owned-return",
+          "cleanup": "close-handle"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/winbase/nf-winbase-createsemaphorea"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.threading.apis.createsemaphoreexa.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "CreateSemaphoreExA",
+        "name": "CreateSemaphoreExA",
+        "namespace": "Windows.Win32.System.Threading",
+        "sourceFingerprint": "C2DA3710E86468EFB092BDACD29E426A84A7475953CE65280544FE6A5C0505BE"
+      },
+      "contracts": [
+        {
+          "kind": "owned-return",
+          "cleanup": "close-handle"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/winbase/nf-winbase-createsemaphoreexa"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.threading.apis.createsemaphoreexw.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "CreateSemaphoreExW",
+        "name": "CreateSemaphoreExW",
+        "namespace": "Windows.Win32.System.Threading",
+        "sourceFingerprint": "84B175BD9E62BD906BC0E052C5A20AADD924E2BEC6EDB5EEC46556F53B9A87D8"
+      },
+      "contracts": [
+        {
+          "kind": "owned-return",
+          "cleanup": "close-handle"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/synchapi/nf-synchapi-createsemaphoreexw"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.threading.apis.createsemaphorew.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "CreateSemaphoreW",
+        "name": "CreateSemaphoreW",
+        "namespace": "Windows.Win32.System.Threading",
+        "sourceFingerprint": "A70562D7B9BE54A8204A4077751B79043755EC7DD5F638CD63D0CEB0AC06973D"
+      },
+      "contracts": [
+        {
+          "kind": "owned-return",
+          "cleanup": "close-handle"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/synchapi/nf-synchapi-createsemaphorew"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.threading.apis.createwaitabletimera.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "CreateWaitableTimerA",
+        "name": "CreateWaitableTimerA",
+        "namespace": "Windows.Win32.System.Threading",
+        "sourceFingerprint": "BFB5FDCC8BD6F9868BA2BF5D98ABF054C3F171ED572CC85BDCD605F2F79B47A6"
+      },
+      "contracts": [
+        {
+          "kind": "owned-return",
+          "cleanup": "close-handle"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/synchapi/nf-synchapi-createwaitabletimerw"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.threading.apis.createwaitabletimerexa.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "CreateWaitableTimerExA",
+        "name": "CreateWaitableTimerExA",
+        "namespace": "Windows.Win32.System.Threading",
+        "sourceFingerprint": "8453D7510D4C71107794B3C0EBCD87722AA66031CAC61839059B67568CADABF2"
+      },
+      "contracts": [
+        {
+          "kind": "owned-return",
+          "cleanup": "close-handle"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/synchapi/nf-synchapi-createwaitabletimerexw"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.threading.apis.createwaitabletimerexw.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "CreateWaitableTimerExW",
+        "name": "CreateWaitableTimerExW",
+        "namespace": "Windows.Win32.System.Threading",
+        "sourceFingerprint": "D475057A6DF56B2EF7059543284D7A5B0CB5224ACBAF3774CFAC4FFA79402CFA"
+      },
+      "contracts": [
+        {
+          "kind": "owned-return",
+          "cleanup": "close-handle"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/synchapi/nf-synchapi-createwaitabletimerexw"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.threading.apis.createwaitabletimerw.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "CreateWaitableTimerW",
+        "name": "CreateWaitableTimerW",
+        "namespace": "Windows.Win32.System.Threading",
+        "sourceFingerprint": "EB234AB9CD46105DA1AA8985690C7F7AB7785DDA64337FE7E2CA388690FC0B9E"
+      },
+      "contracts": [
+        {
+          "kind": "owned-return",
+          "cleanup": "close-handle"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/synchapi/nf-synchapi-createwaitabletimerw"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.threading.apis.openeventa.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "OpenEventA",
+        "name": "OpenEventA",
+        "namespace": "Windows.Win32.System.Threading",
+        "sourceFingerprint": "A6FB025AEB8EEBC617DE6CCC0DE1474C0498759E1DB4111B0E09187B64FF149F"
+      },
+      "contracts": [
+        {
+          "kind": "owned-return",
+          "cleanup": "close-handle"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/synchapi/nf-synchapi-openeventa"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.threading.apis.openeventw.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "OpenEventW",
+        "name": "OpenEventW",
+        "namespace": "Windows.Win32.System.Threading",
+        "sourceFingerprint": "362B4AD8C8B845D29F696EA115788A9D6167D6BC62F86C150E67EA64BE4DF8BE"
+      },
+      "contracts": [
+        {
+          "kind": "owned-return",
+          "cleanup": "close-handle"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/synchapi/nf-synchapi-openeventw"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.threading.apis.openmutexw.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "OpenMutexW",
+        "name": "OpenMutexW",
+        "namespace": "Windows.Win32.System.Threading",
+        "sourceFingerprint": "2993320749D43B5F148DBCB3F8A04F5307C9AA45EB42DDC98BB50AF78C140C8A"
+      },
+      "contracts": [
+        {
+          "kind": "owned-return",
+          "cleanup": "close-handle"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/synchapi/nf-synchapi-openmutexw"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.threading.apis.openprocess.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "OpenProcess",
+        "name": "OpenProcess",
+        "namespace": "Windows.Win32.System.Threading",
+        "sourceFingerprint": "B11BB7949B690F061EE25C5CCC18D0640BB865AB07E5EAEE4551FAE2B71ECA5F"
+      },
+      "contracts": [
+        {
+          "kind": "owned-return",
+          "cleanup": "close-handle"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/processthreadsapi/nf-processthreadsapi-openprocess"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.threading.apis.opensemaphorew.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "OpenSemaphoreW",
+        "name": "OpenSemaphoreW",
+        "namespace": "Windows.Win32.System.Threading",
+        "sourceFingerprint": "C418FA92A2A3D8912D3A29E21F033476D824A5962BEB162E2B2E8ACF484C0DBD"
+      },
+      "contracts": [
+        {
+          "kind": "owned-return",
+          "cleanup": "close-handle"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/synchapi/nf-synchapi-opensemaphorew"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.threading.apis.openthread.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "OpenThread",
+        "name": "OpenThread",
+        "namespace": "Windows.Win32.System.Threading",
+        "sourceFingerprint": "82B5AE735FE831C63219CF232ECA786AFC6E340BCEAEE05EECF2FFCAEA712550"
+      },
+      "contracts": [
+        {
+          "kind": "owned-return",
+          "cleanup": "close-handle"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/processthreadsapi/nf-processthreadsapi-openthread"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.threading.apis.openwaitabletimera.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "OpenWaitableTimerA",
+        "name": "OpenWaitableTimerA",
+        "namespace": "Windows.Win32.System.Threading",
+        "sourceFingerprint": "17303C863D561B3CE3FE16F77814C92BDCE2951F0D1930B6310102C611D3BEA3"
+      },
+      "contracts": [
+        {
+          "kind": "owned-return",
+          "cleanup": "close-handle"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/synchapi/nf-synchapi-openwaitabletimerw"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.threading.apis.openwaitabletimerw.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "OpenWaitableTimerW",
+        "name": "OpenWaitableTimerW",
+        "namespace": "Windows.Win32.System.Threading",
+        "sourceFingerprint": "6DA14581AA0C504D87AD25756344E4C97426E992941FA16133B5C754592750A2"
+      },
+      "contracts": [
+        {
+          "kind": "owned-return",
+          "cleanup": "close-handle"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/synchapi/nf-synchapi-openwaitabletimerw"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.threading.apis.queryfullprocessimagenamea.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "QueryFullProcessImageNameA",
+        "name": "QueryFullProcessImageNameA",
+        "namespace": "Windows.Win32.System.Threading",
+        "sourceFingerprint": "66E2AF97F72B98E3CCC8C5D4E77F15F3DBDB53C09DAF286A41B2F70EA17FDE9F"
+      },
+      "contracts": [
+        {
+          "kind": "counted-buffer",
+          "parameter": 2,
+          "countParameter": 3,
+          "nullable": false
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/winbase/nf-winbase-queryfullprocessimagenamea"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.threading.apis.queryfullprocessimagenamew.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "QueryFullProcessImageNameW",
+        "name": "QueryFullProcessImageNameW",
+        "namespace": "Windows.Win32.System.Threading",
+        "sourceFingerprint": "4CEA5BBAD410D1BD6195A0B0130C3D9994A569A912BDDB753C4BB6BE933F6A56"
+      },
+      "contracts": [
+        {
+          "kind": "counted-buffer",
+          "parameter": 2,
+          "countParameter": 3,
+          "nullable": false
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/winbase/nf-winbase-queryfullprocessimagenamew"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.windowsprogramming.apis.openmutexa.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "OpenMutexA",
+        "name": "OpenMutexA",
+        "namespace": "Windows.Win32.System.WindowsProgramming",
+        "sourceFingerprint": "AB4309CC89F59B55026E71A193A29BD1BA3B62352A55223BF9E97F73B915E2DE"
+      },
+      "contracts": [
+        {
+          "kind": "owned-return",
+          "cleanup": "close-handle"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/synchapi/nf-synchapi-openmutexw"
+        }
+      ]
+    },
+    {
+      "id": "windows.win32.system.windowsprogramming.apis.opensemaphorea.v1",
+      "selector": {
+        "architectures": 7,
+        "callingConvention": "system",
+        "container": "Apis",
+        "dll": "KERNEL32.dll",
+        "entryPoint": "OpenSemaphoreA",
+        "name": "OpenSemaphoreA",
+        "namespace": "Windows.Win32.System.WindowsProgramming",
+        "sourceFingerprint": "6EA53D49927B85E8CBBCB71C31BA1531D262B02D7E01394A32D187D069028B00"
+      },
+      "contracts": [
+        {
+          "kind": "owned-return",
+          "cleanup": "close-handle"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/synchapi/nf-synchapi-opensemaphorew"
+        }
+      ]
+    }
+  ]
+}

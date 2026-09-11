@@ -39,6 +39,12 @@ mod generated_unsafe_test_hooks;
 mod managed_tsfn;
 mod scheduled_start;
 mod win32;
+mod win32_subsystem;
+pub use win32::{
+  DynWin32, DynWin32CallResult, DynWin32Function, DynWin32FunctionSpec, DynWin32NativeStruct,
+  DynWin32ParameterSpec, DynWin32Resource, DynWin32Unsafe, DynWin32Value,
+};
+pub use win32_subsystem::DynWin32SubsystemContext;
 mod winrt_delegate_method;
 pub use winrt_delegate_method::DynWinRtDelegateMethod;
 mod winrt_implementation;

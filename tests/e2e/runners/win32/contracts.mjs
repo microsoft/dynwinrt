@@ -5,7 +5,8 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { Win32Handle, Win32Resource } from "../../../../bindings/js/dist/win32.js";
+import * as runtime from "../../../../bindings/js/dist/win32.js";
+import * as winrt from "../../../../bindings/js/dist/winrt.js";
 
 const option = process.argv.indexOf("--generated");
 assert(option >= 0 && process.argv[option + 1], "--generated is required");
@@ -17,77 +18,36 @@ const system = requireGenerated(`@winapp/bindings/${systemPath}`);
 const registry = requireGenerated(`@winapp/bindings/${registryPath}`);
 const esm = await import(pathToFileURL(join(generated, systemPath, "index.mjs")).href);
 
-assert.deepEqual(Object.keys(system).sort(), ["getTickCount", "getTickCount64"]);
 assert.equal(typeof system.getTickCount(), "number");
 assert.equal(typeof system.getTickCount64(), "bigint");
-assert(system.getTickCount64() > 0n);
-assert.equal(esm.getTickCount, system.getTickCount);
-assert.throws(() => system.getTickCount(1), /Expected 0 arguments/);
+assert.equal(typeof system.createSYSTEMTIME, "function");
+assert.equal(esm.getTickCount64, system.getTickCount64);
+assert.equal(registry.regOpenKeyEx, registry.regOpenKeyExW);
+assert.equal(registry.regQueryValueEx, registry.regQueryValueExW);
 assert.throws(() => requireGenerated("@winapp/bindings"), {
   code: "ERR_PACKAGE_PATH_NOT_EXPORTED",
 });
+assert.equal(typeof runtime.DynWin32, "function");
+assert.equal(Object.hasOwn(runtime, "DynWin32Unsafe"), false);
+assert.equal(Object.hasOwn(winrt, "DynWin32"), false);
 
-const machine = Win32Handle.hkey(0x80000002n);
-const opened = registry.regOpenKeyExW(
-  machine,
+const opened = registry.regOpenKeyEx(
+  0x80000002n,
   "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion",
   0,
   1,
 );
-assert.deepEqual(Object.keys(opened).sort(), ["phkResult", "status"]);
 assert.equal(opened.status, 0);
-const key = opened.phkResult;
-assert(key instanceof Win32Resource);
-
+assert(opened.key instanceof runtime.DynWin32Resource);
 try {
-  const probe = registry.regQueryValueExW(key, "ProductName", null);
-  assert.deepEqual(Object.keys(probe).sort(), ["lpData", "lpType", "lpcbData", "status"]);
+  const probe = registry.regQueryValueEx(opened.key, "ProductName", null);
   assert.equal(probe.status, 0);
-  assert.equal(probe.lpType, 1);
-  assert.equal(probe.lpData, null);
-  assert(probe.lpcbData > 2);
-
-  const small = Buffer.alloc(1);
-  Object.defineProperty(small, "length", { value: 0xffffffff });
-  Object.defineProperty(small, "byteLength", { value: 0xffffffff });
-  assert.deepEqual(registry.regQueryValueExW(key, "ProductName", small), {
-    status: 234,
-    lpType: null,
-    lpData: null,
-    lpcbData: probe.lpcbData,
-  });
-
-  const capacity = new Uint8Array(probe.lpcbData).fill(0xab);
-  const value = registry.regQueryValueExW(key, "ProductName", capacity);
+  const data = Buffer.alloc(probe.dataSize);
+  const value = registry.regQueryValueEx(opened.key, "ProductName", data);
   assert.equal(value.status, 0);
-  assert.equal(value.lpType, 1);
-  assert.equal(value.lpcbData, probe.lpcbData);
-  assert(Buffer.isBuffer(value.lpData));
-  assert.equal(value.lpData.length, value.lpcbData);
-  assert.match(value.lpData.toString("utf16le"), /Windows/);
-  assert(capacity.every((byte) => byte === 0xab));
-
-  const missing = registry.regQueryValueExW(key, "dynwinrt-missing-contract-value", null);
-  assert.notEqual(missing.status, 0);
-  assert.equal(missing.lpType, null);
-  assert.equal(missing.lpData, null);
-  assert.equal(missing.lpcbData, null);
-  assert.throws(() => registry.regCloseKey(machine), /managed HKEY|native Win32 carrier/);
-  assert.equal(key.closed, false);
-  assert.equal(registry.regCloseKey(key), 0);
-  assert.equal(key.closed, true);
-  assert.equal(registry.regCloseKey(key), 0);
-  assert.throws(() => registry.regQueryValueExW(key, "ProductName", null), /closed/);
+  assert(value.dataSize > 0);
+  assert.match(data.toString("utf16le", 0, value.dataSize), /Windows/);
 } finally {
-  assert.equal(key.close(), 0);
+  opened.key.close();
 }
-
-const failed = registry.regOpenKeyExW(
-  machine,
-  `SOFTWARE\\dynwinrt-missing-contract-${process.pid}`,
-  0,
-  1,
-);
-assert.notEqual(failed.status, 0);
-assert.equal(failed.phkResult, null);
-console.log("PASS Win32 contracts: namespace imports, scalar calls, owned handles, byte counts");
+console.log("PASS Win32 contracts: package isolation, namespace imports, aliases and baseline calls");

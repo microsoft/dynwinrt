@@ -1,310 +1,1066 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use super::ir::*;
-use crate::win32_contracts::{
-    Cleanup, Contract, Entry, FailureOutput, ParameterContract as ContractParam,
-    PredefinedOwnership, identifier,
+use std::collections::{BTreeMap, BTreeSet};
+
+use crate::win32_contracts::{BuilderKind, FieldContract, FunctionEffect, Registry};
+use crate::win32_metadata::{
+    RawApis, RawBaseType, RawBufferSize, RawCallingConvention, RawDirection, RawFunction,
+    RawNamedKind, RawScalar,
 };
-use crate::win32_metadata::{Export, NativeType};
 
-fn hkey(typ: &NativeType, pointers: &[bool]) -> bool {
-    typ.name == "Windows.Win32.System.Registry.HKEY"
-        && typ.kind == "typedef"
-        && typ.pointers == pointers
-        && typ
-            .underlying
-            .as_ref()
-            .is_some_and(|underlying| underlying.pointer_to("void"))
-        && typ.attributes.iter().any(|attribute| {
-            attribute.name == "Windows.Win32.Foundation.Metadata.RAIIFreeAttribute"
-                && attribute.value == "01000B526567436C6F73654B65790000"
-        })
-}
+use super::ir::{
+    AbiType, AsyncIoKind, CallPolicy, Cleanup, Conversion, Direction, FunctionContract,
+    InputExpression, NativeBuilderFieldKind, NativeLayout, NativeOutputFieldKind, OmittedFunction,
+    ProjectedApis, ProjectedAsyncFunction, ProjectedCallPolicy, ProjectedFunction,
+    ProjectedNativeBuilder, ProjectedNativeBuilderField, ProjectedNativeOutputField,
+    ProjectedOutput, ProjectionResult, ReturnShape, RuntimeParameter, RuntimePlan, Scalar,
+    StringEncoding, SurfaceParameter, SurfaceType, ValueType,
+};
+use super::model;
 
-fn u32_shape(typ: &NativeType, pointers: &[bool]) -> bool {
-    (typ.name == "u32" && typ.kind == "scalar" && typ.pointers == pointers)
-        || (typ.kind == "enum"
-            && typ.pointers == pointers
-            && typ
-                .underlying
-                .as_ref()
-                .is_some_and(|underlying| underlying.scalar("u32")))
-}
-
-fn camel(name: &str) -> Result<String, String> {
-    if !identifier(name)
-        || [
-            "arguments",
-            "eval",
-            "default",
-            "function",
-            "return",
-            "status",
-        ]
-        .contains(&name)
-    {
-        return Err("win32.unsupported-identifier".into());
-    }
-    let mut result = name.to_owned();
-    result[..1].make_ascii_lowercase();
-    Ok(result)
-}
-
-pub(super) fn function(raw: &Export, entry: &Entry) -> Result<Function, String> {
-    entry.validate_selector(raw)?;
-    let contracts = entry.contract.parameters();
-    if raw.parameters.len() != contracts.len()
-        || raw.signature_flags != "MethodCallAttributes(0)"
-        || raw.calling_convention != "system"
-        || raw.architectures != 7
-    {
-        return Err("win32.incomplete-call-contract".into());
-    }
-    let returns = match &entry.contract {
-        Contract::DirectScalar { .. } if raw.return_type.scalar("u32") => ReturnKind::U32,
-        Contract::DirectScalar { .. } if raw.return_type.scalar("u64") => ReturnKind::U64,
-        Contract::StatusZero { .. }
-            if raw.return_type.kind == "enum"
-                && raw
-                    .return_type
-                    .named("Windows.Win32.Foundation.WIN32_ERROR", &[], "u32") =>
+pub(super) fn project_apis(raw: &RawApis) -> ProjectionResult {
+    let mut async_functions = Vec::new();
+    let mut async_names = BTreeSet::new();
+    for function in &raw.functions {
+        let candidates = raw
+            .functions
+            .iter()
+            .filter(|candidate| candidate.name == function.name)
+            .collect::<Vec<_>>();
+        if let [function] = candidates.as_slice()
+            && let Some(projected) = project_async_function(function)
         {
-            ReturnKind::Status
+            async_names.insert(function.name.clone());
+            async_functions.push(projected);
         }
-        Contract::DirectScalar { .. } | Contract::StatusZero { .. } => {
-            return Err("win32.unsupported-return-contract".into());
-        }
-    };
-    let mut parameters = Vec::new();
-    let mut inputs = Vec::new();
-    let mut outputs = Vec::new();
-    for (index, (raw_param, contract)) in raw.parameters.iter().zip(contracts).enumerate() {
-        let typ = &raw_param.typ;
-        let input = raw_param.input && !raw_param.output;
-        let output = raw_param.output && !raw_param.input;
-        let result: Option<(Argument, Option<InputType>, Option<OutputType>)> = match contract {
-            ContractParam::U32Input {} if input && u32_shape(typ, &[]) => {
-                Some((Argument::U32, Some(InputType::U32), None))
-            }
-            ContractParam::Utf16Input { nullable }
-                if input
-                    && *nullable == raw_param.optional
-                    && raw_param.const_attribute
-                    && typ.kind == "typedef"
-                    && typ.name == "Windows.Win32.Foundation.PWSTR"
-                    && typ.pointers.is_empty()
-                    && typ
-                        .underlying
-                        .as_ref()
-                        .is_some_and(|u| u.pointer_to("char16")) =>
-            {
-                Some((
-                    Argument::Utf16 {
-                        nullable: *nullable,
-                    },
-                    Some(InputType::Utf16 {
-                        nullable: *nullable,
-                    }),
-                    None,
-                ))
-            }
-            ContractParam::BorrowedHkey {
-                reject_performance_data,
-            } if input && !raw_param.optional && hkey(typ, &[]) => Some((
-                Argument::BorrowHkey {
-                    reject_performance_data: *reject_performance_data,
-                },
-                Some(InputType::Hkey),
-                None,
-            )),
-            ContractParam::OwnedHkeyOutput {
-                cleanup: Cleanup::RegCloseKey,
-                borrowed_from,
-                predefined: PredefinedOwnership::Borrowed,
-                failure: FailureOutput::Unspecified,
-            } if output
-                && !raw_param.optional
-                && hkey(typ, &[false])
-                && returns == ReturnKind::Status
-                && matches!(
-                    contracts.get(*borrowed_from),
-                    Some(ContractParam::BorrowedHkey { .. })
-                ) =>
-            {
-                Some((
-                    Argument::OwnHkey {
-                        borrowed_from: *borrowed_from,
-                    },
-                    None,
-                    Some(OutputType::Hkey),
-                ))
-            }
-            ContractParam::ConsumedHkey {
-                cleanup: Cleanup::RegCloseKey,
-            } if input
-                && !raw_param.optional
-                && hkey(typ, &[])
-                && returns == ReturnKind::Status
-                && contracts.len() == 1
-                && raw.dll == "ADVAPI32.dll"
-                && raw.entry_point == "RegCloseKey" =>
-            {
-                Some((Argument::ConsumeHkey, Some(InputType::Resource), None))
-            }
-            ContractParam::ReservedNull {}
-                if raw_param.reserved
-                    && raw_param.optional
-                    && !raw_param.input
-                    && !raw_param.output
-                    && typ.pointer_to("u32") =>
-            {
-                Some((Argument::ReservedNull, None, None))
-            }
-            ContractParam::U32Output {}
-                if output
-                    && !raw_param.const_attribute
-                    && u32_shape(typ, &[false])
-                    && returns == ReturnKind::Status =>
-            {
-                Some((Argument::OutU32, None, Some(OutputType::U32)))
-            }
-            ContractParam::OptionalByteOutput { count_parameter }
-                if output
-                    && raw_param.optional
-                    && !raw_param.const_attribute
-                    && typ.pointer_to("u8")
-                    && returns == ReturnKind::Status
-                    && raw_param.byte_count_parameter.map(usize::from)
-                        == Some(*count_parameter)
-                    && matches!(contracts.get(*count_parameter), Some(ContractParam::ByteCapacityRequiredSize { buffer_parameter }) if *buffer_parameter == index)
-                    && contracts.iter().any(|p| {
-                        matches!(
-                            p,
-                            ContractParam::BorrowedHkey {
-                                reject_performance_data: true
-                            }
-                        )
-                    }) =>
-            {
-                Some((
-                    Argument::Bytes {
-                        count_parameter: *count_parameter,
-                    },
-                    Some(InputType::OptionalBytes),
-                    Some(OutputType::Bytes),
-                ))
-            }
-            ContractParam::ByteCapacityRequiredSize { buffer_parameter }
-                if raw_param.input
-                    && raw_param.output
-                    && raw_param.optional
-                    && !raw_param.const_attribute
-                    && typ.pointer_to("u32")
-                    && matches!(contracts.get(*buffer_parameter), Some(ContractParam::OptionalByteOutput { count_parameter }) if *count_parameter == index) =>
-            {
-                Some((
-                    Argument::ByteCount {
-                        buffer_parameter: *buffer_parameter,
-                    },
-                    None,
-                    Some(OutputType::U32),
-                ))
-            }
-            _ => None,
-        };
-        let Some((argument, input_type, output_type)) = result else {
-            return Err(format!("win32.unsupported-parameter-contract:{index}"));
-        };
-        let name = camel(&raw_param.name)?;
-        if let Some(typ) = input_type {
-            inputs.push(Input {
-                name: name.clone(),
-                typ,
-            });
-        }
-        if let Some(typ) = output_type {
-            outputs.push(Output { name, typ });
-        }
-        parameters.push(argument);
     }
-    Ok(Function {
-        name: camel(&raw.name)?,
-        plan: Plan {
-            version: 1,
-            dll: raw.dll.clone(),
-            entry_point: raw.entry_point.clone(),
-            calling_convention: "system",
-            architectures: raw.architectures,
-            returns,
-            parameters,
+    let sync_raw = RawApis {
+        namespace: raw.namespace.clone(),
+        class_name: raw.class_name.clone(),
+        functions: raw
+            .functions
+            .iter()
+            .filter(|function| !async_names.contains(&function.name))
+            .cloned()
+            .collect(),
+    };
+    let (contracts, mut omitted) = model::validate_apis(&sync_raw);
+    let mut functions = Vec::new();
+    let mut enums = BTreeMap::new();
+    for contract in contracts {
+        match project_function(&contract) {
+            Ok(function) => {
+                for definition in &contract.enums {
+                    enums.insert(
+                        (definition.namespace.clone(), definition.name.clone()),
+                        definition.clone(),
+                    );
+                }
+                functions.push(function);
+            }
+            Err(reason) => omitted.push((
+                format!("{}.{}::{}", raw.namespace, raw.class_name, contract.name),
+                reason,
+            )),
+        }
+    }
+    functions.sort_by(|left, right| left.js_name.cmp(&right.js_name));
+    async_functions.sort_by(|left, right| left.js_name.cmp(&right.js_name));
+    assign_unicode_aliases(&mut functions);
+    let native_builders = project_native_builders(&functions);
+    ProjectionResult {
+        projected: ProjectedApis {
+            namespace: raw.namespace.clone(),
+            class_name: raw.class_name.clone(),
+            functions,
+            enums: enums.into_values().collect(),
+            native_builders,
+            async_functions,
         },
-        inputs,
+        omitted: omitted
+            .into_iter()
+            .map(|(identity, reason)| OmittedFunction { identity, reason })
+            .collect(),
+    }
+}
+
+fn project_async_function(function: &RawFunction) -> Option<ProjectedAsyncFunction> {
+    let registry = Registry::builtin().ok()?;
+    let entry = registry.function_entry(function)?;
+    let policy = registry.function_policy(function).ok()?;
+    let _ = policy;
+    let (kind, roles) = entry.contracts.iter().find_map(|effect| match effect {
+        FunctionEffect::OverlappedIo {
+            operation,
+            file_parameter,
+            buffer_parameter,
+            count_parameter,
+            transferred_parameter,
+            overlapped_parameter,
+        } => Some((
+            *operation,
+            [
+                *file_parameter,
+                *buffer_parameter,
+                *count_parameter,
+                *transferred_parameter,
+                *overlapped_parameter,
+            ],
+        )),
+        _ => None,
+    })?;
+    // The runtime primitive implements the five-argument OVERLAPPED ABI; the
+    // exact import and parameter roles come from pinned evidence.
+    if roles != [0, 1, 2, 3, 4] {
+        return None;
+    }
+    if function.parameters.len() != 5
+        || function.calling_convention != RawCallingConvention::System
+        || function.variadic
+        || !function.architectures.x64
+        || !function.architectures.arm64
+        || !function.supports_last_error
+        || !matches!(
+            function.return_type.base,
+            RawBaseType::Scalar(RawScalar::Bool32)
+        )
+    {
+        return None;
+    }
+    let [file, buffer, count, transferred, overlapped] = function.parameters.as_slice() else {
+        return None;
+    };
+    let file_ok = file.direction == RawDirection::In
+        && file.typ.pointer_depth == 0
+        && matches!(
+            &file.typ.base,
+            RawBaseType::Named {
+                name,
+                kind: RawNamedKind::Handle { .. },
+                ..
+            } if name == "HANDLE"
+        );
+    let buffer_ok = buffer.direction
+        == match kind {
+            AsyncIoKind::Read => RawDirection::Out,
+            AsyncIoKind::Write => RawDirection::In,
+        }
+        && buffer.typ.pointer_depth > 0
+        && matches!(
+            buffer.buffer.as_ref().map(|buffer| &buffer.size),
+            Some(RawBufferSize::ByteCountParam(2))
+        );
+    let count_ok = count.direction == RawDirection::In
+        && count.typ.pointer_depth == 0
+        && matches!(count.typ.base, RawBaseType::Scalar(RawScalar::U32));
+    let transferred_ok = transferred.direction == RawDirection::Out
+        && transferred.typ.pointer_depth == 1
+        && matches!(transferred.typ.base, RawBaseType::Scalar(RawScalar::U32));
+    let overlapped_ok = overlapped.direction == RawDirection::InOut
+        && overlapped.nullable
+        && overlapped.typ.pointer_depth == 1
+        && matches!(
+            &overlapped.typ.base,
+            RawBaseType::Named {
+                name,
+                kind: RawNamedKind::NativeStruct { .. },
+                ..
+            } if name == "OVERLAPPED"
+        );
+    (file_ok && buffer_ok && count_ok && transferred_ok && overlapped_ok).then(|| {
+        ProjectedAsyncFunction {
+            js_name: format!("{}Async", camel_case(&function.name)),
+            kind,
+        }
+    })
+}
+
+fn project_native_builders(functions: &[ProjectedFunction]) -> Vec<ProjectedNativeBuilder> {
+    let mut layouts = BTreeMap::<(String, String), &NativeLayout>::new();
+    for function in functions {
+        for input in &function.inputs {
+            if let InputExpression::NativeAggregate { layout, .. } = input {
+                layouts
+                    .entry((layout.namespace.clone(), layout.name.clone()))
+                    .or_insert(layout);
+            }
+        }
+    }
+    layouts
+        .into_values()
+        .filter_map(project_native_builder)
+        .collect()
+}
+
+fn project_native_builder(layout: &NativeLayout) -> Option<ProjectedNativeBuilder> {
+    let contract = Registry::builtin()
+        .ok()?
+        .type_entry(&layout.namespace, &layout.name)?
+        .aggregate
+        .as_ref()?;
+    let js_name = match contract.builder? {
+        BuilderKind::SecurityAttributes => "SecurityAttributes",
+        BuilderKind::StartupInfoAnsi => "StartupInfoA",
+        BuilderKind::StartupInfoWide => "StartupInfoW",
+        BuilderKind::ProcessInformation => "ProcessInformation",
+    };
+    let surface_name = |name: &str| {
+        for prefix in ["lp", "dw", "b", "h"] {
+            if let Some(rest) = name.strip_prefix(prefix)
+                && rest.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+            {
+                return lower_first(rest);
+            }
+        }
+        lower_first(name)
+    };
+    let mut fields = Vec::new();
+    let mut outputs = Vec::new();
+    for field in &contract.fields {
+        let native_name = field.name.clone();
+        let surface_name = surface_name(&field.name);
+        match field.contract {
+            FieldContract::RetainedPointer { nullable, optional } => {
+                fields.push(ProjectedNativeBuilderField {
+                    native_name,
+                    surface_name,
+                    kind: NativeBuilderFieldKind::DataPointer { nullable },
+                    optional,
+                })
+            }
+            FieldContract::BooleanInput { optional } => fields.push(ProjectedNativeBuilderField {
+                native_name,
+                surface_name,
+                kind: NativeBuilderFieldKind::Boolean,
+                optional,
+            }),
+            FieldContract::OwnedHandle { cleanup } => outputs.push(ProjectedNativeOutputField {
+                native_name,
+                surface_name,
+                kind: NativeOutputFieldKind::Resource { cleanup },
+            }),
+            FieldContract::OutputU32 {} => outputs.push(ProjectedNativeOutputField {
+                native_name,
+                surface_name,
+                kind: NativeOutputFieldKind::U32,
+            }),
+            FieldContract::NullPointer {} | FieldContract::BorrowedHandle {} => {}
+        }
+    }
+    Some(ProjectedNativeBuilder {
+        layout_name: layout.name.clone(),
+        js_name: js_name.into(),
+        size_field: contract.size_field.clone(),
+        fields,
         outputs,
     })
 }
 
-pub(super) fn file(runtime_import: &str, functions: Vec<Function>) -> Result<File, String> {
-    let unsafe_import = if let Some(prefix) = runtime_import
-        .strip_suffix("win32.js")
-        .filter(|prefix| prefix.is_empty() || prefix.ends_with(['/', '\\']))
-    {
-        format!("{prefix}win32-unsafe.js")
-    } else if runtime_import.ends_with("/win32") {
-        format!("{runtime_import}/unsafe")
+fn project_function(contract: &FunctionContract) -> Result<ProjectedFunction, String> {
+    let count_buffers = count_buffer_relations(contract)?;
+    let mut parameters = Vec::<SurfaceParameter>::new();
+    let mut native_surface = vec![None; contract.parameters.len()];
+    let mut inputs = Vec::<InputExpression>::new();
+    let mut runtime_parameters = Vec::<RuntimeParameter>::new();
+    let mut output_index = 0;
+    let mut native_output = vec![None; contract.parameters.len()];
+    let mut outputs = Vec::new();
+
+    for (index, parameter) in contract.parameters.iter().enumerate() {
+        let is_buffer_count = count_buffers.contains_key(&index);
+        if should_surface_input(parameter, is_buffer_count) {
+            let surface_index = parameters.len();
+            let minimum_bytes = parameter
+                .buffer
+                .as_ref()
+                .and_then(|buffer| {
+                    buffer.constant_count.map(|count| {
+                        count.checked_mul(buffer.element_size).ok_or_else(|| {
+                            format!("buffer `{}` fixed size overflows usize", parameter.name)
+                        })
+                    })
+                })
+                .transpose()?
+                .or(matches!(parameter.typ, ValueType::GuidPointer).then_some(16));
+            parameters.push(SurfaceParameter {
+                name: input_name(&parameter.name, surface_index),
+                typ: if parameter.consumes_resource {
+                    SurfaceType::ManagedResource
+                } else if parameter.null_null_terminated
+                    && matches!(parameter.typ, ValueType::StringPointer(_))
+                {
+                    match parameter.typ {
+                        ValueType::StringPointer(encoding) => SurfaceType::MultiString(encoding),
+                        _ => unreachable!("validated NullNullTerminated string pointer"),
+                    }
+                } else {
+                    input_surface_type(&parameter.typ)
+                },
+                nullable: parameter.nullable,
+                minimum_bytes,
+                alignment: parameter
+                    .buffer
+                    .as_ref()
+                    .map(|buffer| buffer.element_alignment)
+                    .or(matches!(parameter.typ, ValueType::GuidPointer).then_some(4)),
+            });
+            native_surface[index] = Some(surface_index);
+        }
+    }
+
+    for (index, parameter) in contract.parameters.iter().enumerate() {
+        let reserved_pointer =
+            parameter.reserved && matches!(parameter.typ, ValueType::DataPointer);
+        let surface_index = native_surface[index];
+
+        let runtime = if let ValueType::NativeStruct { layout } = &parameter.typ {
+            RuntimeParameter {
+                abi: AbiType::Pointer,
+                direction: Direction::In,
+                nullable: false,
+                cleanup: Cleanup::None,
+                consumes_resource: false,
+                resource_cleanup: Cleanup::None,
+                aggregate: Some(layout.clone()),
+            }
+        } else if matches!(
+            &parameter.typ,
+            ValueType::NativeStructPointer { .. } | ValueType::NativeUnionPointer { .. }
+        ) {
+            RuntimeParameter {
+                abi: AbiType::Pointer,
+                direction: Direction::In,
+                nullable: parameter.nullable,
+                cleanup: Cleanup::None,
+                consumes_resource: false,
+                resource_cleanup: Cleanup::None,
+                aggregate: None,
+            }
+        } else if matches!(parameter.typ, ValueType::ScalarPointer { .. }) {
+            RuntimeParameter {
+                abi: AbiType::Pointer,
+                direction: Direction::In,
+                nullable: parameter.nullable,
+                cleanup: Cleanup::None,
+                consumes_resource: false,
+                resource_cleanup: Cleanup::None,
+                aggregate: None,
+            }
+        } else if matches!(parameter.typ, ValueType::GuidPointer) {
+            RuntimeParameter {
+                abi: AbiType::Pointer,
+                direction: Direction::In,
+                nullable: parameter.nullable,
+                cleanup: Cleanup::None,
+                consumes_resource: false,
+                resource_cleanup: Cleanup::None,
+                aggregate: None,
+            }
+        } else if matches!(parameter.typ, ValueType::NullPointer) {
+            RuntimeParameter {
+                abi: AbiType::Pointer,
+                direction: Direction::In,
+                nullable: true,
+                cleanup: Cleanup::None,
+                consumes_resource: false,
+                resource_cleanup: Cleanup::None,
+                aggregate: None,
+            }
+        } else if matches!(parameter.typ, ValueType::ComInterface { .. }) {
+            RuntimeParameter {
+                abi: AbiType::Pointer,
+                direction: Direction::In,
+                nullable: parameter.nullable,
+                cleanup: Cleanup::None,
+                consumes_resource: false,
+                resource_cleanup: Cleanup::None,
+                aggregate: None,
+            }
+        } else if matches!(parameter.typ, ValueType::StringPointerPointer(_)) {
+            RuntimeParameter {
+                abi: AbiType::Pointer,
+                direction: Direction::In,
+                nullable: parameter.nullable,
+                cleanup: Cleanup::None,
+                consumes_resource: false,
+                resource_cleanup: Cleanup::None,
+                aggregate: None,
+            }
+        } else if parameter.buffer.is_some() {
+            RuntimeParameter {
+                abi: AbiType::Pointer,
+                direction: Direction::In,
+                nullable: parameter.nullable,
+                cleanup: Cleanup::None,
+                consumes_resource: false,
+                resource_cleanup: Cleanup::None,
+                aggregate: None,
+            }
+        } else if reserved_pointer {
+            RuntimeParameter {
+                abi: AbiType::Pointer,
+                direction: Direction::In,
+                nullable: true,
+                cleanup: Cleanup::None,
+                consumes_resource: false,
+                resource_cleanup: Cleanup::None,
+                aggregate: None,
+            }
+        } else if parameter.pointer_depth == 0 {
+            RuntimeParameter {
+                abi: parameter.abi,
+                direction: Direction::In,
+                nullable: parameter.nullable,
+                cleanup: Cleanup::None,
+                consumes_resource: parameter.consumes_resource,
+                resource_cleanup: parameter.resource_cleanup,
+                aggregate: None,
+            }
+        } else {
+            RuntimeParameter {
+                abi: parameter.abi,
+                direction: parameter.direction,
+                nullable: parameter.nullable,
+                cleanup: parameter.cleanup,
+                consumes_resource: parameter.consumes_resource,
+                resource_cleanup: if matches!(parameter.direction, Direction::In | Direction::InOut)
+                {
+                    parameter.resource_cleanup
+                } else {
+                    Cleanup::None
+                },
+                aggregate: None,
+            }
+        };
+
+        if matches!(runtime.direction, Direction::In | Direction::InOut) {
+            let expression = if parameter.reserved {
+                if runtime.abi == AbiType::Pointer {
+                    InputExpression::NullPointer
+                } else {
+                    InputExpression::Zero(runtime.abi)
+                }
+            } else if let ValueType::NativeStruct { layout } = &parameter.typ {
+                InputExpression::NativeAggregate {
+                    parameter_index: surface_index.ok_or_else(|| {
+                        format!(
+                            "native aggregate parameter `{}` has no projected input",
+                            parameter.name
+                        )
+                    })?,
+                    layout: layout.clone(),
+                    nullable: false,
+                    by_value: true,
+                }
+            } else if let ValueType::NativeStructPointer { layout }
+            | ValueType::NativeUnionPointer { layout } = &parameter.typ
+            {
+                InputExpression::NativeAggregate {
+                    parameter_index: surface_index.ok_or_else(|| {
+                        format!(
+                            "native aggregate parameter `{}` has no projected input",
+                            parameter.name
+                        )
+                    })?,
+                    layout: layout.clone(),
+                    nullable: parameter.nullable,
+                    by_value: false,
+                }
+            } else if let ValueType::ScalarPointer { scalar } = parameter.typ {
+                InputExpression::ScalarPointer {
+                    parameter_index: surface_index.ok_or_else(|| {
+                        format!(
+                            "scalar pointer parameter `{}` has no projected input",
+                            parameter.name
+                        )
+                    })?,
+                    scalar,
+                    nullable: parameter.nullable,
+                }
+            } else if let ValueType::ComInterface { iid, .. } = &parameter.typ {
+                InputExpression::ComInterface {
+                    parameter_index: surface_index.ok_or_else(|| {
+                        format!(
+                            "COM interface parameter `{}` has no projected input",
+                            parameter.name
+                        )
+                    })?,
+                    iid: iid.clone(),
+                }
+            } else if let ValueType::StringPointerPointer(encoding) = parameter.typ {
+                InputExpression::StringPointerPointer {
+                    parameter_index: surface_index.ok_or_else(|| {
+                        format!(
+                            "string pointer slot `{}` has no projected input",
+                            parameter.name
+                        )
+                    })?,
+                    encoding,
+                    nullable: parameter.nullable,
+                }
+            } else if matches!(parameter.typ, ValueType::NullPointer) {
+                InputExpression::NullPointer
+            } else if let Some(buffer_index) = count_buffers.get(&index).copied() {
+                let buffer = &contract.parameters[buffer_index];
+                let buffer_surface = native_surface[buffer_index]
+                    .ok_or_else(|| format!("buffer `{}` has no projected input", buffer.name))?;
+                let buffer_contract = buffer.buffer.as_ref().expect("count relation");
+                InputExpression::BufferLength {
+                    parameter_index: buffer_surface,
+                    divisor: if buffer_contract.count_is_bytes {
+                        1
+                    } else {
+                        buffer_contract.element_size
+                    },
+                    abi: parameter.abi,
+                }
+            } else {
+                let surface = surface_index.ok_or_else(|| {
+                    format!(
+                        "input parameter `{}` has no projected input",
+                        parameter.name
+                    )
+                })?;
+                InputExpression::Surface {
+                    parameter_index: surface,
+                    conversion: input_conversion(parameter),
+                }
+            };
+            inputs.push(expression);
+        }
+
+        if matches!(runtime.direction, Direction::Out | Direction::InOut) {
+            native_output[index] = Some(output_index);
+            outputs.push(ProjectedOutput {
+                name: output_name(parameter),
+                output_index,
+                typ: output_surface_type(parameter),
+                conversion: output_conversion(parameter),
+            });
+            output_index += 1;
+        }
+        runtime_parameters.push(runtime);
+    }
+
+    let return_shape = if contract.return_is_status {
+        ReturnShape::Object {
+            status: true,
+            return_value: None,
+            outputs,
+            last_error: contract.capture_last_error,
+        }
+    } else if !outputs.is_empty() || contract.capture_last_error {
+        ReturnShape::Object {
+            status: false,
+            return_value: contract.return_type.as_ref().map(|typ| {
+                (
+                    return_surface_type(typ, contract.return_cleanup),
+                    return_conversion(typ, contract.return_cleanup),
+                )
+            }),
+            outputs,
+            last_error: contract.capture_last_error,
+        }
+    } else if let Some(typ) = &contract.return_type {
+        ReturnShape::Direct {
+            typ: return_surface_type(typ, contract.return_cleanup),
+            conversion: return_conversion(typ, contract.return_cleanup),
+        }
     } else {
-        return Err(
-            "win32.runtime-import: expected a /win32 package subpath or local win32.js facade"
-                .into(),
-        );
+        ReturnShape::Void
     };
-    Ok(File {
-        safe_import: runtime_import.into(),
-        unsafe_import,
-        functions,
+
+    let runtime = RuntimePlan {
+        dll: contract.dll.clone(),
+        entry_point: contract.entry_point.clone(),
+        parameters: runtime_parameters,
+        return_abi: contract.return_abi,
+        return_aggregate: contract.return_aggregate.clone(),
+        return_cleanup: contract.return_cleanup,
+        success_rule: contract.success_rule,
+        capture_last_error: contract.capture_last_error,
+        calling_convention: contract.calling_convention,
+    };
+    let mut call_policies = Vec::new();
+    for policy in &contract.call_policies {
+        let surface = |index: usize| {
+            native_surface
+                .get(index)
+                .copied()
+                .flatten()
+                .ok_or_else(|| "call policy requires an exposed input".to_string())
+        };
+        call_policies.push(match *policy {
+            CallPolicy::HkeyPerformanceDataCount {
+                handle_parameter,
+                count_parameter,
+                undefined_status,
+            } => {
+                let slot = runtime
+                    .parameters
+                    .get(count_parameter)
+                    .ok_or("missing conditional count")?;
+                if slot.direction != Direction::InOut || slot.abi != AbiType::U32 {
+                    return Err(
+                        "conditional count validity requires a native u32 InOut slot".into(),
+                    );
+                }
+                ProjectedCallPolicy::HkeyPerformanceDataCount {
+                    handle_parameter: surface(handle_parameter)?,
+                    output_index: native_output[count_parameter]
+                        .ok_or("missing count output projection")?,
+                    undefined_status,
+                }
+            }
+            CallPolicy::BorrowedPredefinedHkeyOutput {
+                handle_parameter,
+                string_parameter,
+                output_parameter,
+            } => {
+                let ValueType::StringPointer(encoding) = contract.parameters[string_parameter].typ
+                else {
+                    return Err("conditional HKEY output requires a native string input".into());
+                };
+                let mut borrowed = runtime.clone();
+                let slot = borrowed
+                    .parameters
+                    .get_mut(output_parameter)
+                    .ok_or("missing conditional output")?;
+                if slot.direction != Direction::Out
+                    || slot.abi != AbiType::Handle
+                    || slot.cleanup != Cleanup::RegCloseKey
+                {
+                    return Err("conditional HKEY output has incompatible ownership".into());
+                }
+                slot.cleanup = Cleanup::None;
+                ProjectedCallPolicy::BorrowedPredefinedHkeyOutput {
+                    handle_parameter: surface(handle_parameter)?,
+                    string_parameter: surface(string_parameter)?,
+                    encoding,
+                    output_index: native_output[output_parameter]
+                        .ok_or("missing HKEY output projection")?,
+                    runtime: Box::new(borrowed),
+                }
+            }
+        });
+    }
+    Ok(ProjectedFunction {
+        metadata_name: contract.name.clone(),
+        js_name: camel_case(&contract.name),
+        unicode_alias: None,
+        parameters,
+        inputs,
+        runtime,
+        return_shape,
+        subsystem: contract.subsystem,
+        call_policies,
     })
+}
+
+fn count_buffer_relations(contract: &FunctionContract) -> Result<BTreeMap<usize, usize>, String> {
+    let mut relations = BTreeMap::new();
+    for (buffer_index, parameter) in contract.parameters.iter().enumerate() {
+        let Some(count_index) = parameter
+            .buffer
+            .as_ref()
+            .and_then(|buffer| buffer.count_parameter)
+        else {
+            continue;
+        };
+        if let Some(existing) = relations.insert(count_index, buffer_index)
+            && existing != buffer_index
+        {
+            return Err(format!(
+                "count parameter {} controls multiple buffers; grouped buffer projection is not implemented",
+                contract.parameters[count_index].name
+            ));
+        }
+    }
+    Ok(relations)
+}
+
+fn should_surface_input(parameter: &super::ir::ParameterContract, is_buffer_count: bool) -> bool {
+    if parameter.reserved || is_buffer_count || matches!(parameter.typ, ValueType::NullPointer) {
+        return false;
+    }
+    parameter.buffer.is_some()
+        || matches!(
+            &parameter.typ,
+            ValueType::NativeStructPointer { .. } | ValueType::NativeUnionPointer { .. }
+        )
+        || matches!(parameter.typ, ValueType::NativeStruct { .. })
+        || matches!(parameter.typ, ValueType::ScalarPointer { .. })
+        || matches!(parameter.typ, ValueType::GuidPointer)
+        || matches!(parameter.direction, Direction::In | Direction::InOut)
+}
+
+fn input_surface_type(typ: &ValueType) -> SurfaceType {
+    match typ {
+        ValueType::Scalar(Scalar::Bool8 | Scalar::Bool32) => SurfaceType::Boolean,
+        ValueType::Scalar(
+            Scalar::I64 | Scalar::U64 | Scalar::NativeIsize | Scalar::NativeUsize,
+        ) => SurfaceType::BigInt,
+        ValueType::Scalar(_) => SurfaceType::Number,
+        ValueType::Enum { name, .. } => SurfaceType::Enum(name.clone()),
+        ValueType::Handle { name, .. } => SurfaceType::Handle(name.clone()),
+        ValueType::DataPointer => SurfaceType::Buffer,
+        ValueType::StringPointer(encoding) => SurfaceType::String(*encoding),
+        ValueType::FunctionPointer => SurfaceType::BigInt,
+        ValueType::NativeStructPointer { layout } => SurfaceType::NativeStruct(layout.name.clone()),
+        ValueType::NativeUnionPointer { layout } => SurfaceType::NativeUnion(layout.name.clone()),
+        ValueType::NativeStruct { layout } => SurfaceType::NativeStruct(layout.name.clone()),
+        ValueType::ScalarPointer { scalar } => scalar_surface_type(*scalar),
+        ValueType::GuidPointer => SurfaceType::Buffer,
+        ValueType::NullPointer => unreachable!("null-only pointer is hidden"),
+        ValueType::ComInterface { name, .. } => SurfaceType::ComInterface(name.clone()),
+        ValueType::StringPointerPointer(encoding) => SurfaceType::String(*encoding),
+    }
+}
+
+fn scalar_surface_type(scalar: Scalar) -> SurfaceType {
+    match scalar {
+        Scalar::Bool8 | Scalar::Bool32 => SurfaceType::Boolean,
+        Scalar::I64 | Scalar::U64 | Scalar::NativeIsize | Scalar::NativeUsize => {
+            SurfaceType::BigInt
+        }
+        Scalar::I8
+        | Scalar::U8
+        | Scalar::I16
+        | Scalar::U16
+        | Scalar::I32
+        | Scalar::U32
+        | Scalar::F32
+        | Scalar::F64 => SurfaceType::Number,
+    }
+}
+
+fn output_surface_type(parameter: &super::ir::ParameterContract) -> SurfaceType {
+    if parameter.cleanup != Cleanup::None {
+        SurfaceType::Resource
+    } else {
+        match &parameter.typ {
+            ValueType::Scalar(Scalar::Bool8 | Scalar::Bool32) => SurfaceType::Boolean,
+            ValueType::Scalar(
+                Scalar::I64 | Scalar::U64 | Scalar::NativeIsize | Scalar::NativeUsize,
+            ) => SurfaceType::BigInt,
+            ValueType::Scalar(_) => SurfaceType::Number,
+            ValueType::Enum { name, .. } => SurfaceType::Enum(name.clone()),
+            ValueType::Handle { name, .. } => SurfaceType::Handle(name.clone()),
+            ValueType::DataPointer | ValueType::FunctionPointer => SurfaceType::BigInt,
+            ValueType::StringPointer(_) => SurfaceType::BigInt,
+            ValueType::NativeStructPointer { layout } => {
+                SurfaceType::NativeStruct(layout.name.clone())
+            }
+            ValueType::NativeUnionPointer { layout } => {
+                SurfaceType::NativeUnion(layout.name.clone())
+            }
+            ValueType::NativeStruct { layout } => SurfaceType::NativeStruct(layout.name.clone()),
+            ValueType::ScalarPointer { scalar } => scalar_surface_type(*scalar),
+            ValueType::GuidPointer => SurfaceType::Buffer,
+            ValueType::NullPointer => unreachable!("null-only pointer has no output"),
+            ValueType::ComInterface { name, .. } => SurfaceType::ComInterface(name.clone()),
+            ValueType::StringPointerPointer(encoding) => SurfaceType::String(*encoding),
+        }
+    }
+}
+
+fn return_surface_type(typ: &ValueType, cleanup: Cleanup) -> SurfaceType {
+    if cleanup != Cleanup::None {
+        SurfaceType::Resource
+    } else {
+        input_surface_type(typ)
+    }
+}
+
+fn input_conversion(parameter: &super::ir::ParameterContract) -> Conversion {
+    if parameter.consumes_resource {
+        return Conversion::ResourceInput(parameter.resource_cleanup);
+    }
+    if parameter.null_null_terminated && matches!(parameter.typ, ValueType::StringPointer(_)) {
+        return match parameter.typ {
+            ValueType::StringPointer(StringEncoding::Wide) => Conversion::WideMultiString,
+            ValueType::StringPointer(StringEncoding::Ansi) => Conversion::AnsiMultiString,
+            _ => unreachable!("validated NullNullTerminated string pointer"),
+        };
+    }
+    match &parameter.typ {
+        ValueType::Scalar(Scalar::Bool8) => Conversion::Boolean8,
+        ValueType::Scalar(Scalar::Bool32) => Conversion::Boolean,
+        ValueType::Scalar(Scalar::I8) => Conversion::I8,
+        ValueType::Scalar(Scalar::U8) => Conversion::U8,
+        ValueType::Scalar(Scalar::I16) => Conversion::I16,
+        ValueType::Scalar(Scalar::U16) => Conversion::U16,
+        ValueType::Scalar(Scalar::I32) => Conversion::I32,
+        ValueType::Scalar(Scalar::U32) => Conversion::U32,
+        ValueType::Scalar(Scalar::I64) => Conversion::I64,
+        ValueType::Scalar(Scalar::U64) => Conversion::U64,
+        ValueType::Scalar(Scalar::F32) => Conversion::F32,
+        ValueType::Scalar(Scalar::F64) => Conversion::F64,
+        ValueType::Scalar(Scalar::NativeIsize) => Conversion::I64,
+        ValueType::Scalar(Scalar::NativeUsize) => Conversion::U64,
+        ValueType::Enum { underlying, .. } => match underlying {
+            super::ir::EnumUnderlying::I8 => Conversion::I8,
+            super::ir::EnumUnderlying::U8 => Conversion::U8,
+            super::ir::EnumUnderlying::I16 => Conversion::I16,
+            super::ir::EnumUnderlying::U16 => Conversion::U16,
+            super::ir::EnumUnderlying::I32 => Conversion::I32,
+            super::ir::EnumUnderlying::U32 => Conversion::U32,
+        },
+        ValueType::Handle { .. } => Conversion::Handle,
+        ValueType::DataPointer => Conversion::DataPointer,
+        ValueType::StringPointer(StringEncoding::Wide) => Conversion::WideString,
+        ValueType::StringPointer(StringEncoding::Ansi) => Conversion::AnsiString,
+        ValueType::FunctionPointer => Conversion::BigInt,
+        ValueType::NativeStructPointer { .. } | ValueType::NativeUnionPointer { .. } => {
+            unreachable!("native aggregate inputs use a dedicated expression")
+        }
+        ValueType::NativeStruct { .. } => {
+            unreachable!("by-value native aggregate inputs use a dedicated expression")
+        }
+        ValueType::ScalarPointer { .. } => {
+            unreachable!("scalar pointer inputs use a dedicated expression")
+        }
+        ValueType::GuidPointer => Conversion::DataPointer,
+        ValueType::NullPointer => unreachable!("null-only pointer has no surface input"),
+        ValueType::ComInterface { .. } => {
+            unreachable!("COM interface inputs use a dedicated expression")
+        }
+        ValueType::StringPointerPointer(_) => {
+            unreachable!("string pointer slots use a dedicated expression")
+        }
+    }
+}
+
+fn output_conversion(parameter: &super::ir::ParameterContract) -> Conversion {
+    if parameter.cleanup != Cleanup::None {
+        Conversion::Resource
+    } else {
+        return_conversion(&parameter.typ, Cleanup::None)
+    }
+}
+
+fn return_conversion(typ: &ValueType, cleanup: Cleanup) -> Conversion {
+    if cleanup != Cleanup::None {
+        return Conversion::Resource;
+    }
+    match typ {
+        ValueType::Scalar(Scalar::Bool8 | Scalar::Bool32) => Conversion::Boolean,
+        ValueType::Scalar(
+            Scalar::I64 | Scalar::U64 | Scalar::NativeIsize | Scalar::NativeUsize,
+        ) => Conversion::BigInt,
+        ValueType::Scalar(_) | ValueType::Enum { .. } => Conversion::Number,
+        ValueType::Handle { .. }
+        | ValueType::DataPointer
+        | ValueType::StringPointer(_)
+        | ValueType::FunctionPointer => Conversion::BigInt,
+        ValueType::NativeStructPointer { .. } | ValueType::NativeUnionPointer { .. } => {
+            unreachable!("native aggregate pointer results are not projected")
+        }
+        ValueType::NativeStruct { .. } => Conversion::NativeAggregate,
+        ValueType::ScalarPointer { .. } => {
+            unreachable!("scalar pointer results are not projected")
+        }
+        ValueType::GuidPointer => {
+            unreachable!("GUID pointer results are caller-owned buffers")
+        }
+        ValueType::NullPointer => unreachable!("null-only pointer cannot be a return"),
+        ValueType::ComInterface { .. } => {
+            unreachable!("COM interface returns require ownership projection")
+        }
+        ValueType::StringPointerPointer(_) => {
+            unreachable!("string pointer slot returns require ownership projection")
+        }
+    }
+}
+
+fn input_name(raw: &str, index: usize) -> String {
+    let stripped = strip_prefix(raw);
+    safe_identifier(if stripped.is_empty() {
+        format!("arg{index}")
+    } else {
+        lower_first(stripped)
+    })
+}
+
+fn output_name(parameter: &super::ir::ParameterContract) -> String {
+    if let ValueType::Handle { name, .. } = &parameter.typ
+        && parameter.name.to_ascii_lowercase().ends_with("result")
+    {
+        return lower_first(name.trim_start_matches('H'));
+    }
+    let mut name = strip_prefix(&parameter.name).to_string();
+    let lower = parameter.name.to_ascii_lowercase();
+    if lower.contains("cb") {
+        name.push_str("Size");
+    } else if lower.contains("cch") || lower.contains("ch") {
+        name.push_str("Length");
+    }
+    if name.eq_ignore_ascii_case("result") {
+        name = "value".into();
+    }
+    safe_identifier(lower_first(&name))
+}
+
+fn strip_prefix(value: &str) -> &str {
+    for prefix in [
+        "lpp", "lpcb", "lpch", "lpcch", "lpdw", "lp", "pp", "phk", "ph", "pcb", "pdw", "pcch",
+        "pch", "p",
+    ] {
+        if let Some(rest) = value.strip_prefix(prefix)
+            && rest
+                .chars()
+                .next()
+                .is_some_and(|character| character.is_ascii_uppercase())
+        {
+            return rest;
+        }
+    }
+    value
+}
+
+fn lower_first(value: &str) -> String {
+    if value
+        .chars()
+        .all(|character| !character.is_ascii_alphabetic() || character.is_ascii_uppercase())
+    {
+        return value.to_ascii_lowercase();
+    }
+    let mut characters = value.chars();
+    let Some(first) = characters.next() else {
+        return String::new();
+    };
+    first.to_ascii_lowercase().to_string() + characters.as_str()
+}
+
+fn safe_identifier(value: String) -> String {
+    if matches!(
+        value.as_str(),
+        "await"
+            | "break"
+            | "case"
+            | "catch"
+            | "class"
+            | "const"
+            | "continue"
+            | "debugger"
+            | "default"
+            | "delete"
+            | "do"
+            | "else"
+            | "enum"
+            | "export"
+            | "extends"
+            | "false"
+            | "finally"
+            | "for"
+            | "function"
+            | "if"
+            | "implements"
+            | "import"
+            | "in"
+            | "instanceof"
+            | "interface"
+            | "let"
+            | "new"
+            | "null"
+            | "package"
+            | "private"
+            | "protected"
+            | "public"
+            | "return"
+            | "static"
+            | "super"
+            | "switch"
+            | "this"
+            | "throw"
+            | "true"
+            | "try"
+            | "typeof"
+            | "var"
+            | "void"
+            | "while"
+            | "with"
+            | "yield"
+            | "status"
+            | "result"
+            | "lastError"
+    ) {
+        format!("{value}_")
+    } else {
+        value
+    }
+}
+
+fn camel_case(value: &str) -> String {
+    let uppercase = value
+        .chars()
+        .take_while(|character| character.is_ascii_uppercase())
+        .count();
+    if uppercase <= 1 {
+        return lower_first(value);
+    }
+    if uppercase == value.len() {
+        return value.to_ascii_lowercase();
+    }
+    value[..uppercase - 1].to_ascii_lowercase() + &value[uppercase - 1..]
+}
+
+fn assign_unicode_aliases(functions: &mut [ProjectedFunction]) {
+    let names = functions
+        .iter()
+        .map(|function| function.js_name.clone())
+        .collect::<BTreeSet<_>>();
+    let mut aliases = BTreeSet::new();
+    for function in functions {
+        let Some(base) = function.js_name.strip_suffix('W') else {
+            continue;
+        };
+        if !base.is_empty() && !names.contains(base) && aliases.insert(base.to_string()) {
+            function.unicode_alias = Some(base.to_string());
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::win32_contracts::Registry;
 
     #[test]
-    fn win32_projection_rejects_nearby_unsupported_shapes() {
-        let Ok(paths) = std::env::var("DYNWINRT_WIN32_WINMD") else {
-            return;
-        };
-        let raw = crate::win32_metadata::read_exports(&paths, "Windows.Win32.System.Registry")
-            .unwrap()
-            .into_iter()
-            .find(|e| e.name == "RegQueryValueExW")
-            .unwrap();
-        let entry = Registry::builtin().unwrap().find(&raw).unwrap();
-        function(&raw, entry).unwrap();
-        let mutations: &[fn(&mut Export)] = &[
-            |e| e.parameters[4].typ.name = "void".into(),
-            |e| e.parameters[4].byte_count_parameter = Some(3),
-            |e| e.parameters[1].const_attribute = false,
-            |e| e.parameters[0].typ.name = "Windows.Win32.Foundation.HANDLE".into(),
-            |e| e.parameters[2].reserved = false,
-            |e| e.parameters[5].output = false,
-        ];
-        for mutate in mutations {
-            let mut changed = raw.clone();
-            mutate(&mut changed);
-            let mut test_entry = entry.clone();
-            // Test semantic validation independently of the production pin.
-            test_entry.selector.source_fingerprint = changed.fingerprint();
-            assert!(function(&changed, &test_entry).is_err());
-        }
-        let mut changed = entry.clone();
-        let Contract::StatusZero { parameters } = &mut changed.contract else {
-            unreachable!()
-        };
-        parameters[0] = ContractParam::BorrowedHkey {
-            reject_performance_data: false,
-        };
-        assert!(function(&raw, &changed).is_err());
+    fn unicode_name_gets_natural_alias() {
+        let mut functions = vec![ProjectedFunction {
+            metadata_name: "RegOpenKeyExW".into(),
+            js_name: "regOpenKeyExW".into(),
+            unicode_alias: None,
+            parameters: vec![],
+            inputs: vec![],
+            runtime: RuntimePlan {
+                dll: "advapi32.dll".into(),
+                entry_point: "RegOpenKeyExW".into(),
+                parameters: vec![],
+                return_abi: Some(AbiType::I32),
+                return_aggregate: None,
+                return_cleanup: Cleanup::None,
+                success_rule: super::super::ir::SuccessRule::ReturnZero,
+                capture_last_error: false,
+                calling_convention: super::super::ir::CallingConvention::System,
+            },
+            return_shape: ReturnShape::Object {
+                status: true,
+                return_value: None,
+                outputs: vec![],
+                last_error: false,
+            },
+            subsystem: None,
+            call_policies: Vec::new(),
+        }];
+        assign_unicode_aliases(&mut functions);
+        assert_eq!(functions[0].unicode_alias.as_deref(), Some("regOpenKeyEx"));
+    }
+
+    #[test]
+    fn javascript_reserved_parameter_names_are_escaped() {
+        assert_eq!(input_name("lpIn", 0), "in_");
+        assert_eq!(input_name("class", 0), "class_");
     }
 }

@@ -72,11 +72,15 @@ _None currently. Reserved for issues that make v0.1 unshippable (crash on happy 
 
 ## P2 — Feature completeness
 
-- [ ] **Contract-driven flat Win32 migration beyond the initial slice**.
-      SystemInformation scalar calls and Registry handle/buffer calls establish
-      the independent Win32 contract pipeline. Migrate additional ABI shapes,
-      allocators, asynchronous I/O and subsystem lifecycles incrementally;
-      do not treat the earlier broad implementation as safe coverage.
+- [x] **Full-capability implementation parity with PR #102**.
+      The independent Win32 contract pipeline must retain every supported
+      export, ABI/ownership contract, alias, native builder, IOCP operation and
+      subsystem context from the frozen #102 head. A five-export foundation or
+      a similar total count is not completion. Keep #102 open and #152 draft
+      until exact parity and the original live scenarios have been verified.
+      The frozen export/semantic gate and original scenarios now pass;
+      replacement PR integration review is separate from this implementation
+      checkpoint.
       See [scope and deferred migration](../architecture/flat-win32-contracts.md).
 
 - [ ] **Struct auto-marshaling**. Users still need `DynWinRtStruct.create()` + `setF64(...)` per field. Codegen generates `_packXxx` helpers for known structs already; the gap is user-defined / ad-hoc structs. Consider generic `pack(schema, obj)`.

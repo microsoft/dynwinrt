@@ -97,12 +97,13 @@ dynwinrt-codegen generate `
   --dry-run
 ```
 
-### Flat Win32 contract slice
+### Contract-driven flat Win32
 
-The initial flat DLL-export projection is JavaScript-only and supports
-`GetTickCount`, `GetTickCount64`, `RegOpenKeyExW`, `RegQueryValueExW`, and
-`RegCloseKey` from the pinned `Microsoft.Windows.SDK.Win32Metadata`
-`71.0.14-preview` package:
+The JavaScript flat DLL-export migration targets the full PR #102 capability
+set from the pinned `Microsoft.Windows.SDK.Win32Metadata` `71.0.14-preview`
+package. A five-export foundation is not a complete replacement. Metadata
+provides generic ABI facts; the independent Win32 registry supplies exact
+manual evidence where required.
 
 ```powershell
 dynwinrt-codegen generate `
@@ -112,11 +113,13 @@ dynwinrt-codegen generate `
 ```
 
 `--namespace Windows.Win32.System.Registry` is equivalent to selecting its
-`Apis` container. Other exports are explicitly omitted; this is not complete
-namespace support. Generated modules live under
+`Apis` container. Unsupported shapes are explicitly diagnosed. Generated modules live under
 `win32/windows/win32/system/registry/` and
 `win32/windows/win32/system/system-information/`, outside the WinRT root.
-The runtime package must include the matching `win32` entrypoint.
+The runtime package must include the matching `win32` entrypoint. The
+`win32-census --winmd <PATH> --json` command preserves the original census
+format; the exact baseline parity gate additionally checks individual exports,
+aliases, ABI contracts, builders, enums and subsystem requirements.
 See the [contract architecture and migration scope](../../docs/architecture/flat-win32-contracts.md).
 
 ### Other commands

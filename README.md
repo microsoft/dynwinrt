@@ -207,15 +207,16 @@ contracts or provide a universal overload parser. See the
 - [Classic COM JavaScript usage guide](docs/guides/windows/classic-com-usage.md)
 - [Supported ABI, coverage, limitations, and ownership model](docs/architecture/classic-com-support.md)
 
-## Flat Win32 (initial preview)
+## Flat Win32 migration
 
-The initial contract-driven **flat Win32 preview** adds five DLL exports:
-`GetTickCount`, `GetTickCount64`, `RegOpenKeyExW`, `RegQueryValueExW`, and
-`RegCloseKey`. It uses a separate `contracts/win32` registry and runtime
+The contract-driven flat Win32 migration must preserve the complete
+capability set of PR #102, not replace it with a small export allowlist.
+It uses a separate `contracts/win32` registry and runtime
 `@microsoft/dynwinrt/win32` entrypoint, not the COM or WinRT semantic models.
-Unregistered exports remain unsupported. See the
+Full parity is a blocking acceptance condition while the replacement is draft.
+See the
 [contract boundary and migration scope](docs/architecture/flat-win32-contracts.md)
-and [generation command](tools/dynwinrt-codegen/README.md#flat-win32-contract-slice).
+and [generation command](tools/dynwinrt-codegen/README.md#contract-driven-flat-win32).
 
 ## Repository layout
 

@@ -625,7 +625,10 @@ fn get_error_info() -> napi::Result<Option<DynWinRTValue>> {
     .transpose()
 }
 
-fn try_cast(value: &DynWinRTValue, iid: &WinGUID) -> napi::Result<Option<DynWinRTValue>> {
+pub(super) fn try_cast(
+  value: &DynWinRTValue,
+  iid: &WinGUID,
+) -> napi::Result<Option<DynWinRTValue>> {
   const E_NOINTERFACE: windows::core::HRESULT = windows::core::HRESULT(0x80004002u32 as i32);
 
   value.ensure_existing_com_apartment()?;
@@ -961,7 +964,7 @@ fn uint8_array_info(
   }))
 }
 
-fn pointer(value: Unknown) -> napi::Result<DynWinRTValue> {
+pub(super) fn pointer(value: Unknown) -> napi::Result<DynWinRTValue> {
   use napi::sys;
 
   let env = value.value().env;
@@ -1058,7 +1061,7 @@ fn exact_null_pointer(value: Unknown) -> napi::Result<DynWinRTValue> {
   ))
 }
 
-fn safe_data_pointer(value: Unknown, nullable: bool) -> napi::Result<DynWinRTValue> {
+pub(super) fn safe_data_pointer(value: Unknown, nullable: bool) -> napi::Result<DynWinRTValue> {
   use napi::sys;
 
   let env = value.value().env;
@@ -1442,7 +1445,7 @@ fn copy_callback_bstr(value: &DynWinRTValue) -> napi::Result<Option<String>> {
   Ok(value.as_deref().map(str::to_owned))
 }
 
-fn validate_pointer_owner(value: &DynWinRTValue) -> napi::Result<()> {
+pub(super) fn validate_pointer_owner(value: &DynWinRTValue) -> napi::Result<()> {
   if let Some(owner) = &value.1 {
     owner.validate()?;
   }
@@ -1534,6 +1537,16 @@ fn admit_com_inputs(args: &[&DynWinRTValue]) -> napi::Result<ComInputGuard> {
   }
   guard.check()?;
   Ok(guard)
+}
+
+pub(super) fn with_win32_input_leases<T>(
+  args: &[&DynWinRTValue],
+  invoke: impl FnOnce(&dyn Fn() -> napi::Result<()>) -> napi::Result<T>,
+) -> napi::Result<T> {
+  let guard = admit_com_inputs(args)?;
+  let _leases = collect_native_invocation_leases(args)?;
+  guard.check()?;
+  invoke(&|| guard.check())
 }
 
 fn with_com_invocation_args_guarded<T>(
