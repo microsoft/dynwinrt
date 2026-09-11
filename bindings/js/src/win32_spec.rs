@@ -186,7 +186,26 @@ fn closed_object(env: sys::napi_env, object: sys::napi_value, keys: &[&str]) -> 
     ));
   }
   let mut properties = ptr::null_mut();
+  napi::check_status!(unsafe {
+    sys::napi_get_all_property_names(
+      env,
+      object,
+      sys::KeyCollectionMode::own_only,
+      sys::KeyFilter::all_properties,
+      sys::KeyConversion::numbers_to_strings,
+      &mut properties,
+    )
+  })?;
+  validate_property_names(env, properties, keys)?;
   napi::check_status!(unsafe { sys::napi_get_property_names(env, object, &mut properties) })?;
+  validate_property_names(env, properties, keys)
+}
+
+fn validate_property_names(
+  env: sys::napi_env,
+  properties: sys::napi_value,
+  keys: &[&str],
+) -> napi::Result<()> {
   let mut count = 0;
   napi::check_status!(unsafe { sys::napi_get_array_length(env, properties, &mut count) })?;
   if count as usize > keys.len() {
@@ -197,6 +216,13 @@ fn closed_object(env: sys::napi_env, object: sys::napi_value, keys: &[&str]) -> 
   for index in 0..count {
     let mut key = ptr::null_mut();
     napi::check_status!(unsafe { sys::napi_get_element(env, properties, index, &mut key) })?;
+    let mut kind = sys::ValueType::napi_undefined;
+    napi::check_status!(unsafe { sys::napi_typeof(env, key, &mut kind) })?;
+    if kind != sys::ValueType::napi_string {
+      return Err(napi::Error::from_reason(
+        "Unknown Win32 native specification symbol field",
+      ));
+    }
     let key = string(env, key, 128, "Win32 specification field")?;
     if !keys.contains(&key.as_str()) {
       return Err(napi::Error::from_reason(format!(

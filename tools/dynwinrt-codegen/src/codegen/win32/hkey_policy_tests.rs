@@ -4,12 +4,67 @@
 use super::*;
 
 #[test]
-fn hkey_count_validity_and_conditional_cleanup_execute_without_capability_loss() {
-    use std::{
-        io::Write,
-        process::{Command, Stdio},
+fn consuming_module_wrapper_preserves_result_order_and_validates_resource_inputs() {
+    let Some(path) = test_support::metadata() else {
+        return;
     };
-    let Ok(metadata) = std::env::var("DYNWINRT_WIN32_WINMD") else {
+    let raw = test_support::metadata_function(&path, "Windows.Win32.Foundation", "FreeLibrary");
+    let (generated, omitted) =
+        generate_apis_files(&test_support::apis(vec![raw]), "@test/runtime/win32");
+    assert!(omitted.is_empty());
+    test_support::run_js(
+        &generated,
+        r#"
+const assert=require('node:assert/strict')
+const moduleResource={}
+const calls=[]
+let succeeded=true
+const runtime={DynWin32:{
+  resource(value,cleanup) {
+    assert.equal(cleanup,'freeLibrary')
+    if(value!==moduleResource) throw new TypeError('managed module resource required')
+    return value
+  },
+  toBoolean:value=>value!==0
+},DynWin32Function:{bind(spec) {
+  assert.equal(spec.dll,'KERNEL32.dll')
+  assert.equal(spec.entryPoint,'FreeLibrary')
+  assert.equal(spec.returnType,'bool32')
+  assert.equal(spec.returnCleanup,'none')
+  assert.equal(spec.successRule,'nonzero')
+  assert.equal(spec.captureLastError,true)
+  assert.equal(spec.parameters[0].type,'handle')
+  assert.equal(spec.parameters[0].direction,'in')
+  assert.equal(spec.parameters[0].consumesResource,true)
+  assert.equal(spec.parameters[0].resourceCleanup,'freeLibrary')
+  return {invoke(args) {
+    calls.push(args)
+    let reads=0
+    return {returnValue:succeeded?1:0,lastError:succeeded?0:5,
+      get outputs(){assert.equal(++reads,1);return []}}
+  }}
+}}}
+"#,
+        r#"
+for(const state of [true,false]) {
+  succeeded=state
+  const result=projected.freeLibrary(moduleResource)
+  assert.deepEqual(Object.keys(result),['result','lastError'])
+  assert.equal(result.result,state)
+  assert.equal(result.lastError,state?0:5)
+  assert.equal(calls.at(-1)[0],moduleResource)
+}
+const before=calls.length
+assert.throws(()=>projected.freeLibrary(123n),/managed module/)
+assert.throws(()=>projected.freeLibrary({value:123n}),/managed module/)
+assert.equal(calls.length,before)
+"#,
+    );
+}
+
+#[test]
+fn hkey_count_validity_and_conditional_cleanup_execute_without_capability_loss() {
+    let Some(metadata) = test_support::metadata() else {
         return;
     };
     let mut raw =
@@ -91,12 +146,7 @@ const runtime = {
     }
   }
 }
-const projected = {}
 "#;
-    let execute = format!(
-        "\nvm.runInNewContext({}, {{ exports: projected, require: () => runtime, Buffer, BigInt }})\n",
-        serde_json::to_string(&generated.js).unwrap(),
-    );
     let checks = r#"
 for (const name of ['regQueryValueExA', 'regQueryValueExW']) {
   const resource = {}
@@ -161,23 +211,5 @@ for (const [name, empty] of [
   status = 0
 }
 "#;
-    let mut child = Command::new("node")
-        .arg("-")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(format!("{setup}{execute}{checks}").as_bytes())
-        .unwrap();
-    let output = child.wait_with_output().unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    test_support::run_js(&generated, setup, checks);
 }

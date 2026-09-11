@@ -234,7 +234,7 @@ impl Cleanup {
         if value == 0 || self == Self::None {
             return Ok(());
         }
-        match self {
+        let result = match self {
             Self::None => Ok(()),
             Self::CloseHandle => unsafe { CloseHandle(HANDLE(value as *mut c_void)) },
             Self::RegCloseKey => {
@@ -281,7 +281,10 @@ impl Cleanup {
                 unsafe { CredFree(value as *const c_void) };
                 Ok(())
             }
-        }
+        };
+        #[cfg(test)]
+        outcome_tests::record_cleanup(self, value, result.is_ok());
+        result
     }
 }
 
@@ -810,6 +813,8 @@ impl CallPlan {
                 parameter.input_index == Some(arg_index) && parameter.spec.consumes_resource
             });
             let guard = resource.lock_for_call(consumes_resource)?;
+            #[cfg(test)]
+            outcome_tests::record_call_lock(Arc::as_ptr(resource) as usize);
             let guard_index = resource_guards.len();
             resource_guard_by_arg[arg_index] = Some(guard_index);
             resource_guards.push(guard);
@@ -949,6 +954,8 @@ impl CallPlan {
             let source =
                 unsafe { std::slice::from_raw_parts(words.as_ptr().cast::<u8>(), layout.size()) };
             let mut bytes = Vec::new();
+            #[cfg(test)]
+            outcome_tests::check_aggregate_return_allocation()?;
             bytes
                 .try_reserve_exact(source.len())
                 .map_err(|_| out_of_memory("native aggregate return"))?;
@@ -1142,7 +1149,7 @@ fn value_to_abi(
         (Type::Pointer, Value::Pointer(value)) if nullable || !value.is_null() => {
             AbiValue::Pointer(*value)
         }
-        (Type::FunctionPointer, Value::FunctionPointer(value)) => {
+        (Type::FunctionPointer, Value::FunctionPointer(value)) if nullable || *value != 0 => {
             AbiValue::Pointer(*value as *mut c_void)
         }
         (Type::Handle, Value::Handle(value)) => AbiValue::Pointer(*value as *mut c_void),
@@ -1369,11 +1376,15 @@ fn not_implemented(message: &str) -> Error {
 }
 
 #[cfg(test)]
+#[path = "win32_outcome_tests.rs"]
+mod outcome_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
     #[cfg(target_pointer_width = "64")]
-    fn fake_plan(
+    pub(super) fn fake_plan(
         function: usize,
         parameters: Vec<Parameter>,
         return_type: Option<Type>,

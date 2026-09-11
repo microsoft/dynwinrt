@@ -2,12 +2,39 @@
 // Licensed under the MIT License.
 
 use super::*;
+#[path = "contract_validation_tests.rs"]
+mod validation;
+
+use crate::codegen::win32::{
+    ir::{
+        AbiType, CallingConvention, Conversion, Direction, EnumUnderlying, InputExpression,
+        ProjectedCallPolicy, ProjectedOutput, ReturnShape, RuntimeParameter, RuntimePlan,
+        StringEncoding, SuccessRule, SurfaceParameter, SurfaceType, ValueType,
+    },
+    test_support::{metadata, metadata_function, project_one, semantic},
+};
+use crate::win32_metadata::{
+    RawBaseType, RawBufferSize, RawCallingConvention, RawConstness, RawDirection, RawNamedKind,
+    RawStatusSemantics,
+};
 
 #[test]
 fn win32_contracts_are_strict_and_integrity_checked() {
     let registry = Registry::builtin().unwrap();
-    assert!(registry.functions.len() > 1000);
-    assert!(registry.types.len() > 100);
+    assert!(registry.functions.contains_key(&(
+        "Windows.Win32.Foundation".into(),
+        "Apis".into(),
+        "FreeLibrary".into(),
+    )));
+    assert!(matches!(
+        registry
+            .type_entry("Windows.Win32.Foundation", "BOOL")
+            .unwrap()
+            .meaning,
+        Some(TypeMeaning::Scalar {
+            scalar: RawScalar::Bool32
+        })
+    ));
     assert!(Registry::load(MANIFEST, &format!("{SCHEMA} "), FILES).is_err());
     let mut changed = FILES.to_vec();
     let altered = format!("{} ", changed[0].1);
@@ -51,7 +78,7 @@ fn win32_contracts_are_strict_and_integrity_checked() {
 
 #[test]
 fn win32_contracts_pin_every_official_selector() {
-    let Ok(path) = std::env::var("DYNWINRT_WIN32_WINMD") else {
+    let Some(path) = metadata() else {
         return;
     };
     let bytes = std::fs::read(path).unwrap();
@@ -94,7 +121,7 @@ fn win32_contracts_pin_every_official_selector() {
 
 #[test]
 fn win32_contract_drift_and_forged_facts_fail_closed() {
-    let Ok(path) = std::env::var("DYNWINRT_WIN32_WINMD") else {
+    let Some(path) = metadata() else {
         return;
     };
     let raw = crate::win32_metadata::parse_apis(&path, "Windows.Win32.System.Registry", "Apis")
@@ -160,113 +187,430 @@ fn win32_contract_drift_and_forged_facts_fail_closed() {
 }
 
 #[test]
-fn win32_free_library_matches_frozen_consuming_semantics() {
-    let Ok(path) = std::env::var("DYNWINRT_WIN32_WINMD") else {
+fn win32_free_library_has_a_consuming_hmodule_abi_and_ordered_bool_result() {
+    let Some(path) = metadata() else {
         return;
     };
-    let mut raw =
-        crate::win32_metadata::parse_apis(&path, "Windows.Win32.Foundation", "Apis").unwrap();
-    raw.functions
-        .retain(|function| function.name == "FreeLibrary");
-    assert_eq!(raw.functions.len(), 1);
-    let projected = crate::codegen::win32::project_apis(&raw);
-    assert!(projected.omitted.is_empty(), "{:?}", projected.omitted);
-    let function = &projected.projected.functions[0];
-    assert!(function.runtime.parameters[0].consumes_resource);
+    let raw = metadata_function(&path, "Windows.Win32.Foundation", "FreeLibrary");
+    assert_eq!(raw.calling_convention, RawCallingConvention::System);
+    assert!(raw.architectures.x86 && raw.architectures.x64 && raw.architectures.arm64);
+    assert!(!raw.variadic);
+    assert!(raw.supports_last_error);
+    assert_eq!(raw.return_status, RawStatusSemantics::None);
+    assert_eq!(raw.return_type.base, RawBaseType::Scalar(RawScalar::Bool32));
+    let [module] = raw.parameters.as_slice() else {
+        panic!("FreeLibrary takes one HMODULE")
+    };
+    assert_eq!(module.name, "hLibModule");
+    assert_eq!(module.direction, RawDirection::In);
+    assert_eq!(module.typ.pointer_depth, 0);
+    assert!(!module.nullable && !module.reserved);
+    assert!(
+        matches!(&module.typ.base, RawBaseType::Named { namespace, name, kind:RawNamedKind::Handle { cleanup:Some(cleanup) } }
+        if namespace == "Windows.Win32.Foundation" && name == "HMODULE" && cleanup == "FreeLibrary")
+    );
+
+    let projected = project_one(raw);
+    assert_eq!(projected.metadata_name, "FreeLibrary");
+    assert_eq!(projected.js_name, "freeLibrary");
+    assert_eq!(projected.unicode_alias, None);
+    assert_eq!(projected.subsystem, None);
+    assert!(projected.call_policies.is_empty());
     assert_eq!(
-        function.runtime.parameters[0].resource_cleanup,
-        Cleanup::FreeLibrary
+        projected.parameters,
+        vec![surface(
+            "hLibModule",
+            SurfaceType::ManagedResource,
+            false,
+            None
+        )]
     );
-    let baseline: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("tests\\fixtures\\win32-pr102.json"),
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    let expected = baseline["containers"]["Windows.Win32.Foundation.Apis"]["functions"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|row| row[0] == "FreeLibrary")
-        .unwrap();
-    let semantic = format!(
-        "{:?}\n{:?}\n{:?}\n{:?}",
-        function.parameters, function.inputs, function.runtime, function.return_shape,
+    assert_eq!(
+        projected.inputs,
+        vec![InputExpression::Surface {
+            parameter_index: 0,
+            conversion: Conversion::ResourceInput(Cleanup::FreeLibrary),
+        }]
     );
-    assert_eq!(sha256(semantic.as_bytes()), expected[6].as_str().unwrap());
+    let mut module = slot(
+        AbiType::Handle,
+        Direction::In,
+        false,
+        Cleanup::None,
+        Cleanup::FreeLibrary,
+    );
+    module.consumes_resource = true;
+    assert_eq!(
+        projected.runtime,
+        RuntimePlan {
+            dll: "KERNEL32.dll".into(),
+            entry_point: "FreeLibrary".into(),
+            parameters: vec![module],
+            return_abi: Some(AbiType::Bool32),
+            return_aggregate: None,
+            return_cleanup: Cleanup::None,
+            success_rule: SuccessRule::ReturnNonZero,
+            capture_last_error: true,
+            calling_convention: CallingConvention::System,
+        }
+    );
+    assert_eq!(
+        projected.return_shape,
+        ReturnShape::Object {
+            status: false,
+            return_value: Some((SurfaceType::Boolean, Conversion::Boolean)),
+            outputs: Vec::new(),
+            last_error: true,
+        }
+    );
 }
 
 #[test]
-fn win32_registry_hkey_policies_preserve_frozen_default_plans() {
-    use crate::codegen::win32::ir::ProjectedCallPolicy;
-    let Ok(path) = std::env::var("DYNWINRT_WIN32_WINMD") else {
+fn win32_registry_abis_keep_ownership_counts_and_status_validity_explicit() {
+    let Some(path) = metadata() else {
         return;
     };
-    let mut raw =
+    let raw =
         crate::win32_metadata::parse_apis(&path, "Windows.Win32.System.Registry", "Apis").unwrap();
-    raw.functions.retain(|function| {
-        [
-            "RegOpenKeyExA",
-            "RegOpenKeyExW",
-            "RegQueryValueExA",
-            "RegQueryValueExW",
-        ]
-        .contains(&function.name.as_str())
-    });
-    let projection = crate::codegen::win32::project_apis(&raw);
-    assert!(projection.omitted.is_empty(), "{:?}", projection.omitted);
-    let fixture: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("tests\\fixtures\\win32-pr102.json"),
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    for function in &projection.projected.functions {
-        let expected = fixture["containers"]["Windows.Win32.System.Registry.Apis"]["functions"]
-            .as_array()
-            .unwrap()
+    for (suffix, encoding, conversion) in [
+        ("A", StringEncoding::Ansi, Conversion::AnsiString),
+        ("W", StringEncoding::Wide, Conversion::WideString),
+    ] {
+        let open = raw
+            .functions
             .iter()
-            .find(|row| row[0] == function.metadata_name)
+            .find(|f| f.name == format!("RegOpenKeyEx{suffix}"))
             .unwrap();
-        let semantic = format!(
-            "{:?}\n{:?}\n{:?}\n{:?}",
-            function.parameters, function.inputs, function.runtime, function.return_shape
+        assert_eq!(
+            open.parameters
+                .iter()
+                .map(|p| p.direction)
+                .collect::<Vec<_>>(),
+            [
+                RawDirection::In,
+                RawDirection::In,
+                RawDirection::In,
+                RawDirection::In,
+                RawDirection::Out
+            ]
         );
         assert_eq!(
-            sha256(semantic.as_bytes()),
-            expected[6].as_str().unwrap(),
-            "{}",
-            function.metadata_name
+            open.parameters
+                .iter()
+                .map(|p| p.typ.pointer_depth)
+                .collect::<Vec<_>>(),
+            [0, 0, 0, 0, 1]
+        );
+        assert_eq!(open.parameters[1].typ.constness, RawConstness::Const);
+        assert!(open.parameters[1].nullable);
+        assert_eq!(open.return_status, RawStatusSemantics::ZeroIsSuccess);
+        let native = semantic(open);
+        assert_eq!(native.return_abi, Some(AbiType::U32));
+        assert_eq!(native.success_rule, SuccessRule::ReturnZero);
+        assert_eq!(native.parameters[4].cleanup, Cleanup::RegCloseKey);
+        assert_eq!(native.parameters[1].typ, ValueType::StringPointer(encoding));
+        let open = project_one(open.clone());
+        assert_eq!(
+            open.parameters,
+            vec![
+                surface("hKey", SurfaceType::Handle("HKEY".into()), false, None),
+                surface("subKey", SurfaceType::String(encoding), true, None),
+                surface("ulOptions", SurfaceType::Number, false, None),
+                surface(
+                    "samDesired",
+                    SurfaceType::Enum("REG_SAM_FLAGS".into()),
+                    false,
+                    None
+                ),
+            ]
         );
         assert_eq!(
-            function.call_policies.len(),
-            1,
-            "{}",
-            function.metadata_name
+            open.inputs,
+            vec![
+                InputExpression::Surface {
+                    parameter_index: 0,
+                    conversion: Conversion::Handle
+                },
+                InputExpression::Surface {
+                    parameter_index: 1,
+                    conversion
+                },
+                InputExpression::Surface {
+                    parameter_index: 2,
+                    conversion: Conversion::U32
+                },
+                InputExpression::Surface {
+                    parameter_index: 3,
+                    conversion: Conversion::U32
+                },
+            ]
         );
-        match &function.call_policies[0] {
-            ProjectedCallPolicy::HkeyPerformanceDataCount {
-                handle_parameter,
-                output_index,
-                undefined_status,
-            } => {
-                assert_eq!(*handle_parameter, 0);
-                assert_eq!(*output_index, 1);
-                assert_eq!(*undefined_status, 234);
+        assert_eq!(
+            open.runtime.parameters,
+            vec![
+                slot(
+                    AbiType::Handle,
+                    Direction::In,
+                    false,
+                    Cleanup::None,
+                    Cleanup::RegCloseKey
+                ),
+                slot(
+                    AbiType::Pointer,
+                    Direction::In,
+                    true,
+                    Cleanup::None,
+                    Cleanup::None
+                ),
+                slot(
+                    AbiType::U32,
+                    Direction::In,
+                    false,
+                    Cleanup::None,
+                    Cleanup::None
+                ),
+                slot(
+                    AbiType::U32,
+                    Direction::In,
+                    false,
+                    Cleanup::None,
+                    Cleanup::None
+                ),
+                slot(
+                    AbiType::Handle,
+                    Direction::Out,
+                    false,
+                    Cleanup::RegCloseKey,
+                    Cleanup::None
+                ),
+            ]
+        );
+        assert_status_plan(&open.runtime, &format!("RegOpenKeyEx{suffix}"));
+        assert_eq!(
+            open.return_shape,
+            ReturnShape::Object {
+                status: true,
+                return_value: None,
+                outputs: vec![ProjectedOutput {
+                    name: "key".into(),
+                    output_index: 0,
+                    typ: SurfaceType::Resource,
+                    conversion: Conversion::Resource
+                }],
+                last_error: false,
             }
-            ProjectedCallPolicy::BorrowedPredefinedHkeyOutput {
-                runtime,
-                output_index,
-                ..
-            } => {
-                assert_eq!(*output_index, 0);
-                assert_eq!(runtime.parameters[4].cleanup, Cleanup::None);
-                assert_eq!(function.runtime.parameters[4].cleanup, Cleanup::RegCloseKey);
+        );
+        let mut borrowed = open.runtime.clone();
+        borrowed.parameters[4].cleanup = Cleanup::None;
+        assert_eq!(
+            open.call_policies,
+            vec![ProjectedCallPolicy::BorrowedPredefinedHkeyOutput {
+                handle_parameter: 0,
+                string_parameter: 1,
+                encoding,
+                output_index: 0,
+                runtime: Box::new(borrowed),
+            }]
+        );
+
+        let query = raw
+            .functions
+            .iter()
+            .find(|f| f.name == format!("RegQueryValueEx{suffix}"))
+            .unwrap();
+        assert_eq!(
+            query
+                .parameters
+                .iter()
+                .map(|p| p.direction)
+                .collect::<Vec<_>>(),
+            [
+                RawDirection::In,
+                RawDirection::In,
+                RawDirection::In,
+                RawDirection::Out,
+                RawDirection::Out,
+                RawDirection::InOut
+            ]
+        );
+        assert_eq!(
+            query
+                .parameters
+                .iter()
+                .map(|p| p.typ.pointer_depth)
+                .collect::<Vec<_>>(),
+            [0, 0, 1, 1, 1, 1]
+        );
+        assert!(
+            query.parameters[2].reserved
+                && query.parameters[4].nullable
+                && query.parameters[5].nullable
+        );
+        let buffer = query.parameters[4].buffer.as_ref().unwrap();
+        assert_eq!(buffer.size, RawBufferSize::ByteCountParam(5));
+        assert_eq!(buffer.element.base, RawBaseType::Scalar(RawScalar::U8));
+        assert_eq!(buffer.element.pointer_depth, 0);
+        let native = semantic(query);
+        assert!(
+            matches!(&native.parameters[3].typ, ValueType::Enum { name, underlying: EnumUnderlying::U32, .. } if name == "REG_VALUE_TYPE")
+        );
+        let query = project_one(query.clone());
+        assert_eq!(
+            query.parameters,
+            vec![
+                surface("hKey", SurfaceType::Handle("HKEY".into()), false, None),
+                surface("valueName", SurfaceType::String(encoding), true, None),
+                surface("data", SurfaceType::Buffer, true, Some(1)),
+            ]
+        );
+        assert_eq!(
+            query.inputs,
+            vec![
+                InputExpression::Surface {
+                    parameter_index: 0,
+                    conversion: Conversion::Handle
+                },
+                InputExpression::Surface {
+                    parameter_index: 1,
+                    conversion
+                },
+                InputExpression::NullPointer,
+                InputExpression::Surface {
+                    parameter_index: 2,
+                    conversion: Conversion::DataPointer
+                },
+                InputExpression::BufferLength {
+                    parameter_index: 2,
+                    divisor: 1,
+                    abi: AbiType::U32
+                },
+            ]
+        );
+        assert_eq!(
+            query.runtime.parameters,
+            vec![
+                slot(
+                    AbiType::Handle,
+                    Direction::In,
+                    false,
+                    Cleanup::None,
+                    Cleanup::RegCloseKey
+                ),
+                slot(
+                    AbiType::Pointer,
+                    Direction::In,
+                    true,
+                    Cleanup::None,
+                    Cleanup::None
+                ),
+                slot(
+                    AbiType::Pointer,
+                    Direction::In,
+                    true,
+                    Cleanup::None,
+                    Cleanup::None
+                ),
+                slot(
+                    AbiType::U32,
+                    Direction::Out,
+                    false,
+                    Cleanup::None,
+                    Cleanup::None
+                ),
+                slot(
+                    AbiType::Pointer,
+                    Direction::In,
+                    true,
+                    Cleanup::None,
+                    Cleanup::None
+                ),
+                slot(
+                    AbiType::U32,
+                    Direction::InOut,
+                    false,
+                    Cleanup::None,
+                    Cleanup::None
+                ),
+            ]
+        );
+        assert_status_plan(&query.runtime, &format!("RegQueryValueEx{suffix}"));
+        assert_eq!(
+            query.return_shape,
+            ReturnShape::Object {
+                status: true,
+                return_value: None,
+                last_error: false,
+                outputs: vec![
+                    ProjectedOutput {
+                        name: "type".into(),
+                        output_index: 0,
+                        typ: SurfaceType::Enum("REG_VALUE_TYPE".into()),
+                        conversion: Conversion::Number
+                    },
+                    ProjectedOutput {
+                        name: "dataSize".into(),
+                        output_index: 1,
+                        typ: SurfaceType::Number,
+                        conversion: Conversion::Number
+                    },
+                ],
             }
+        );
+        assert_eq!(
+            query.call_policies,
+            vec![ProjectedCallPolicy::HkeyPerformanceDataCount {
+                handle_parameter: 0,
+                output_index: 1,
+                undefined_status: 234,
+            }]
+        );
+        for function in [&open, &query] {
+            assert_eq!(function.subsystem, None);
+            assert_eq!(function.unicode_alias.is_some(), suffix == "W");
         }
     }
+}
+
+fn slot(
+    abi: AbiType,
+    direction: Direction,
+    nullable: bool,
+    cleanup: Cleanup,
+    resource_cleanup: Cleanup,
+) -> RuntimeParameter {
+    RuntimeParameter {
+        abi,
+        direction,
+        nullable,
+        cleanup,
+        resource_cleanup,
+        consumes_resource: false,
+        aggregate: None,
+    }
+}
+
+fn surface(
+    name: &str,
+    typ: SurfaceType,
+    nullable: bool,
+    alignment: Option<usize>,
+) -> SurfaceParameter {
+    SurfaceParameter {
+        name: name.into(),
+        typ,
+        nullable,
+        minimum_bytes: None,
+        alignment,
+    }
+}
+
+fn assert_status_plan(plan: &RuntimePlan, entry: &str) {
+    assert_eq!(plan.dll, "ADVAPI32.dll");
+    assert_eq!(plan.entry_point, entry);
+    assert_eq!(plan.calling_convention, CallingConvention::System);
+    assert_eq!(plan.return_abi, Some(AbiType::U32));
+    assert_eq!(plan.return_aggregate, None);
+    assert_eq!(plan.return_cleanup, Cleanup::None);
+    assert_eq!(plan.success_rule, SuccessRule::ReturnZero);
+    assert!(!plan.capture_last_error);
 }

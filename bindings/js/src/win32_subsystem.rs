@@ -388,8 +388,22 @@ fn release_mapi_utilities() -> napi::Result<()> {
 mod tests {
   use super::*;
 
+  static TEST_SERIAL: Mutex<()> = Mutex::new(());
+
+  fn lease_count(kind: SubsystemKind) -> usize {
+    match kind {
+      SubsystemKind::Winsock => WINSOCK_STATE.lock().unwrap().leases,
+      SubsystemKind::GdiPlus => GDIPLUS_STATE.lock().unwrap().leases,
+      SubsystemKind::MediaFoundation => MEDIA_FOUNDATION_STATE.lock().unwrap().leases,
+      SubsystemKind::MapiUtilities => MAPI_UTILITIES_STATE.lock().unwrap().leases,
+    }
+  }
+
   #[test]
   fn winsock_context_is_counted_and_rejects_use_after_close() {
+    let _serial = TEST_SERIAL
+      .lock()
+      .unwrap_or_else(|error| error.into_inner());
     let first = initialize("winsock").unwrap();
     let second = initialize("winsock").unwrap();
     require(&first, "winsock").unwrap();
@@ -401,6 +415,9 @@ mod tests {
 
   #[test]
   fn context_kind_mismatch_is_rejected() {
+    let _serial = TEST_SERIAL
+      .lock()
+      .unwrap_or_else(|error| error.into_inner());
     let winsock = initialize("winsock").unwrap();
     let error = require(&winsock, "gdiplus").unwrap_err();
     assert!(error.reason.contains("received winsock"));
@@ -409,6 +426,9 @@ mod tests {
 
   #[test]
   fn call_guard_blocks_concurrent_close() {
+    let _serial = TEST_SERIAL
+      .lock()
+      .unwrap_or_else(|error| error.into_inner());
     let winsock = std::sync::Arc::new(initialize("winsock").unwrap());
     let guard = call_guard(&winsock, "winsock").unwrap();
     let closing = std::sync::Arc::clone(&winsock);
@@ -420,23 +440,116 @@ mod tests {
       finished_sender.send(result).unwrap();
     });
 
-    started_receiver.recv().unwrap();
-    assert!(finished_receiver
-      .recv_timeout(std::time::Duration::from_millis(50))
-      .is_err());
+    started_receiver
+      .recv_timeout(std::time::Duration::from_secs(5))
+      .unwrap();
+    assert!(matches!(
+      winsock.closed.try_lock(),
+      Err(std::sync::TryLockError::WouldBlock)
+    ));
+    assert!(matches!(
+      finished_receiver.try_recv(),
+      Err(std::sync::mpsc::TryRecvError::Empty)
+    ));
     drop(guard);
-    finished_receiver.recv().unwrap().unwrap();
+    finished_receiver
+      .recv_timeout(std::time::Duration::from_secs(5))
+      .unwrap()
+      .unwrap();
     thread.join().unwrap();
   }
 
   #[test]
-  fn gdiplus_and_media_foundation_contexts_are_counted() {
-    for subsystem in ["gdiplus", "mediaFoundation"] {
+  fn gdiplus_media_foundation_and_mapi_utility_contexts_are_counted() {
+    let _serial = TEST_SERIAL
+      .lock()
+      .unwrap_or_else(|error| error.into_inner());
+    for subsystem in ["gdiplus", "mediaFoundation", "mapiUtilities"] {
       let first = initialize(subsystem).unwrap();
       let second = initialize(subsystem).unwrap();
       first.close().unwrap();
       require(&second, subsystem).unwrap();
       second.close().unwrap();
+    }
+  }
+
+  #[test]
+  fn subsystem_counts_remain_independent_across_kind_and_alias_closure() {
+    let _serial = TEST_SERIAL
+      .lock()
+      .unwrap_or_else(|error| error.into_inner());
+    let winsock = initialize("winsock").unwrap();
+    let winsock_alias = initialize("winsock").unwrap();
+    let gdi = initialize("gdi+").unwrap();
+    let media = initialize("media_foundation").unwrap();
+    let mapi = initialize("mapi_utilities").unwrap();
+    winsock.close().unwrap();
+    require(&winsock_alias, "winsock").unwrap();
+    require(&gdi, "gdiplus").unwrap();
+    require(&media, "mediaFoundation").unwrap();
+    require(&mapi, "mapiUtilities").unwrap();
+    gdi.close().unwrap();
+    require(&winsock_alias, "winsock").unwrap();
+    require(&media, "mediaFoundation").unwrap();
+    winsock_alias.close().unwrap();
+    require(&media, "mediaFoundation").unwrap();
+    media.close().unwrap();
+    require(&mapi, "mapiUtilities").unwrap();
+    mapi.close().unwrap();
+    for context in [&winsock, &winsock_alias, &gdi, &media, &mapi] {
+      assert!(context.closed());
+      context.close().unwrap();
+    }
+  }
+
+  #[test]
+  fn every_closed_context_rejects_dispatch_and_unknown_kinds_fail_closed() {
+    let _serial = TEST_SERIAL
+      .lock()
+      .unwrap_or_else(|error| error.into_inner());
+    for kind in [
+      SubsystemKind::Winsock,
+      SubsystemKind::GdiPlus,
+      SubsystemKind::MediaFoundation,
+      SubsystemKind::MapiUtilities,
+    ] {
+      let context = DynWin32SubsystemContext {
+        kind,
+        closed: Mutex::new(true),
+      };
+      assert!(call_guard(&context, kind.name())
+        .err()
+        .unwrap()
+        .reason
+        .contains("closed"));
+      context.close().unwrap();
+      assert!(context.closed());
+    }
+    for name in ["", "winsock2", "mapi", "gdiplusSuffix"] {
+      assert!(SubsystemKind::parse(name).is_err());
+    }
+  }
+
+  #[test]
+  fn dropping_live_contexts_returns_each_subsystems_exact_lease_count() {
+    let _serial = TEST_SERIAL
+      .lock()
+      .unwrap_or_else(|error| error.into_inner());
+    for kind in [
+      SubsystemKind::Winsock,
+      SubsystemKind::GdiPlus,
+      SubsystemKind::MediaFoundation,
+      SubsystemKind::MapiUtilities,
+    ] {
+      let before = lease_count(kind);
+      let first = initialize(kind.name()).unwrap();
+      let last = initialize(kind.name()).unwrap();
+      assert_eq!(lease_count(kind), before + 2);
+      drop(first);
+      assert_eq!(lease_count(kind), before + 1);
+      require(&last, kind.name()).unwrap();
+      drop(last);
+      assert_eq!(lease_count(kind), before);
     }
   }
 }

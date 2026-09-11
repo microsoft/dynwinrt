@@ -208,11 +208,14 @@ pub(super) fn namespace_paths(output: &Path) -> Result<BTreeSet<String>, String>
 fn runtime_import(import_name: &str, directory: &str) -> String {
     if import_name == "@microsoft/dynwinrt" {
         "@microsoft/dynwinrt/win32".into()
-    } else if import_name.starts_with("./") || import_name.starts_with("../") {
+    } else if ["./", "../", r".\", r"..\"]
+        .iter()
+        .any(|prefix| import_name.starts_with(prefix))
+    {
         format!(
             "{}{}",
             "../".repeat(directory.split('/').count() + 1),
-            import_name
+            import_name.replace('\\', "/")
         )
     } else {
         import_name.to_string()
@@ -445,6 +448,20 @@ mod tests {
             runtime_import("./runtime.js", "windows/win32/system/registry"),
             "../../../../.././runtime.js"
         );
+        assert_eq!(
+            runtime_import(
+                r".\runtime helpers\win32.js",
+                "windows/win32/system/registry"
+            ),
+            "../../../../.././runtime helpers/win32.js"
+        );
+        assert_eq!(
+            runtime_import(
+                r"..\runtime helpers\win32.js",
+                "windows/win32/system/registry"
+            ),
+            "../../../../../../runtime helpers/win32.js"
+        );
     }
 
     #[test]
@@ -465,5 +482,130 @@ mod tests {
             serde_json::from_str::<Manifest>(r#"{"version":1,"namespaces":{},"unexpected":true}"#)
                 .is_err()
         );
+    }
+
+    fn manifest_with_enum() -> Manifest {
+        let mut record = record();
+        record.extra_files.insert(
+            "FLAGS.js".into(),
+            ExtraFile {
+                sha256: digest(b"enum"),
+                exports: BTreeSet::from(["FLAGS".into()]),
+            },
+        );
+        record.extra_files.insert(
+            "FLAGS.d.ts".into(),
+            ExtraFile {
+                sha256: digest(b"declaration"),
+                exports: BTreeSet::new(),
+            },
+        );
+        Manifest {
+            version: VERSION,
+            namespaces: BTreeMap::from([("Windows.Win32.System.Registry".into(), record)]),
+        }
+    }
+
+    #[test]
+    fn win32_manifest_rejects_incomplete_ambiguous_and_unsafe_module_records() {
+        type Mutation = fn(&mut serde_json::Value);
+        let mutations: &[(&str, Mutation)] = &[
+            ("unknown version", |value| value["version"] = 99.into()),
+            ("root property", |value| value["unexpected"] = true.into()),
+            ("namespace property", |value| {
+                value["namespaces"]["Windows.Win32.System.Registry"]["unexpected"] = true.into();
+            }),
+            ("empty exports", |value| {
+                value["namespaces"]["Windows.Win32.System.Registry"]["exports"] =
+                    serde_json::json!([]);
+            }),
+            ("malformed checksum", |value| {
+                value["namespaces"]["Windows.Win32.System.Registry"]["javascript_sha256"] =
+                    "bad".into();
+            }),
+            ("missing declaration", |value| {
+                value["namespaces"]["Windows.Win32.System.Registry"]["extra_files"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("FLAGS.d.ts");
+            }),
+            ("declaration runtime export", |value| {
+                value["namespaces"]["Windows.Win32.System.Registry"]["extra_files"]["FLAGS.d.ts"]
+                    ["exports"] = serde_json::json!(["FLAGS"]);
+            }),
+            ("duplicate namespace export", |value| {
+                value["namespaces"]["Windows.Win32.System.Registry"]["extra_files"]["FLAGS.js"]["exports"] =
+                    serde_json::json!(["regCloseKey"]);
+            }),
+            ("extra file property", |value| {
+                value["namespaces"]["Windows.Win32.System.Registry"]["extra_files"]["FLAGS.js"]["unexpected"] =
+                    true.into();
+            }),
+            ("injected name", |value| {
+                value["namespaces"]["Windows.Win32.System.Registry"]["extra_files"]["FLAGS.js"]["exports"] =
+                    serde_json::json!(["bad');"]);
+            }),
+        ];
+        for (name, mutate) in mutations {
+            let mut value = serde_json::to_value(manifest_with_enum()).unwrap();
+            mutate(&mut value);
+            let result = serde_json::from_value::<Manifest>(value)
+                .map_err(|error| error.to_string())
+                .and_then(|manifest| validate(&manifest));
+            assert!(result.is_err(), "{name}");
+        }
+        for invalid in [
+            "../escape.js",
+            r"..\escape.js",
+            "nested/file.js",
+            r"nested\file.js",
+            "C:escape.js",
+            "Apis.js",
+            "index.d.ts",
+            "FLAGS.js:stream",
+            "FLAGS.txt",
+            "CON.js",
+        ] {
+            let mut manifest = manifest_with_enum();
+            let files = &mut manifest.namespaces.values_mut().next().unwrap().extra_files;
+            let entry = files.remove("FLAGS.js").unwrap();
+            files.insert(invalid.into(), entry);
+            assert!(validate(&manifest).is_err(), "{invalid}");
+        }
+        let mut manifest = manifest_with_enum();
+        let files = &mut manifest.namespaces.values_mut().next().unwrap().extra_files;
+        files.insert(
+            "flags.js".into(),
+            ExtraFile {
+                sha256: digest(b"other"),
+                exports: BTreeSet::from(["Other".into()]),
+            },
+        );
+        files.insert(
+            "flags.d.ts".into(),
+            ExtraFile {
+                sha256: digest(b"other types"),
+                exports: BTreeSet::new(),
+            },
+        );
+        assert!(
+            validate(&manifest).is_err(),
+            "Windows filename collisions must fail"
+        );
+    }
+
+    #[test]
+    fn win32_manifest_accepts_known_versions_without_weakening_module_pairing() {
+        let mut old = Manifest {
+            version: 1,
+            namespaces: BTreeMap::from([("Windows.Win32.System.Registry".into(), record())]),
+        };
+        validate(&old).unwrap();
+        old.version = VERSION;
+        validate(&old).unwrap();
+        let mut with_enum = manifest_with_enum();
+        validate(&with_enum).unwrap();
+        with_enum.version = 1;
+        assert!(validate(&with_enum).is_err());
     }
 }

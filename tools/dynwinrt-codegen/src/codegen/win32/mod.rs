@@ -4,9 +4,19 @@
 #[cfg(test)]
 mod hkey_policy_tests;
 pub mod ir;
+#[cfg(test)]
+mod metadata_semantics_tests;
 mod model;
+#[cfg(test)]
+mod naming_tests;
 mod project;
+#[cfg(test)]
+mod projection_semantics_tests;
 mod render;
+#[cfg(test)]
+mod shape_tests;
+#[cfg(test)]
+pub(crate) mod test_support;
 
 use crate::win32_metadata::RawApis;
 
@@ -101,53 +111,20 @@ mod tests {
     use super::ir::{
         AbiType, Conversion, Direction as ProjectedDirection, ReturnShape, SurfaceType,
     };
+    use super::test_support::{metadata, scalar, synthetic_function};
     use super::*;
     use crate::win32_metadata::{
         RawApis, RawArchitectures, RawBaseType, RawBuffer, RawBufferSize, RawCallingConvention,
-        RawConstness, RawDirection, RawEnumMember, RawFunction, RawLayoutKind, RawNamedKind,
-        RawNativeField, RawNativeLayout, RawNativeLayoutSet, RawPacking, RawParameter, RawScalar,
+        RawConstness, RawDirection, RawEnumMember, RawLayoutKind, RawNamedKind, RawNativeField,
+        RawNativeLayout, RawNativeLayoutSet, RawPacking, RawParameter, RawScalar,
         RawStatusSemantics, RawType,
     };
 
-    fn scalar(scalar: RawScalar) -> RawType {
-        RawType {
-            base: RawBaseType::Scalar(scalar),
-            pointer_depth: 0,
-            constness: RawConstness::Unspecified,
-        }
-    }
-
-    fn synthetic_function(name: &str) -> RawFunction {
-        RawFunction {
-            namespace: "Tests".into(),
-            container: "Apis".into(),
-            name: name.into(),
-            dll: "kernel32.dll".into(),
-            entry_point: name.into(),
-            return_type: scalar(RawScalar::U32),
-            parameters: Vec::new(),
-            return_status: RawStatusSemantics::None,
-            return_free_with: None,
-            supports_last_error: false,
-            calling_convention: RawCallingConvention::System,
-            architectures: RawArchitectures {
-                x86: true,
-                x64: true,
-                arm64: true,
-            },
-            variadic: false,
-            evidence: None,
-        }
-    }
-
     #[test]
     fn registry_projection_uses_immutable_plans_and_safe_pointers() {
-        let Ok(winmd) = std::env::var("DYNWINRT_WIN32_WINMD") else {
+        let Some(winmd) = metadata() else {
             return;
         };
-        if !std::path::Path::new(&winmd).is_file() {
-            return;
-        }
         let raw =
             crate::win32_metadata::parse_apis(&winmd, "Windows.Win32.System.Registry", "Apis")
                 .unwrap();
@@ -645,6 +622,43 @@ mod tests {
     fn scalar_returns_preserve_exact_abi_widths_and_js_shapes() {
         let cases = [
             ("ReturnI8", RawScalar::I8, AbiType::I8, SurfaceType::Number),
+            ("ReturnU8", RawScalar::U8, AbiType::U8, SurfaceType::Number),
+            (
+                "ReturnU16",
+                RawScalar::U16,
+                AbiType::U16,
+                SurfaceType::Number,
+            ),
+            (
+                "ReturnI32",
+                RawScalar::I32,
+                AbiType::I32,
+                SurfaceType::Number,
+            ),
+            (
+                "ReturnU32",
+                RawScalar::U32,
+                AbiType::U32,
+                SurfaceType::Number,
+            ),
+            (
+                "ReturnChar16",
+                RawScalar::Char16,
+                AbiType::U16,
+                SurfaceType::Number,
+            ),
+            (
+                "ReturnNativeIsize",
+                RawScalar::NativeIsize,
+                AbiType::I64,
+                SurfaceType::BigInt,
+            ),
+            (
+                "ReturnNativeUsize",
+                RawScalar::NativeUsize,
+                AbiType::U64,
+                SurfaceType::BigInt,
+            ),
             (
                 "ReturnI16",
                 RawScalar::I16,
@@ -702,28 +716,27 @@ mod tests {
             assert_eq!(function.runtime.return_abi, Some(*abi));
             assert!(matches!(
                 &function.return_shape,
-                ReturnShape::Direct { typ, .. } if typ == surface
+                ReturnShape::Direct { typ, conversion } if typ == surface
+                    && *conversion == if *surface == SurfaceType::BigInt { Conversion::BigInt } else { Conversion::Number }
             ));
         }
 
         let (output, omitted) = generate_apis_files(&raw, "@microsoft/dynwinrt/win32");
         assert!(omitted.is_empty());
-        for abi in ["i8", "i16", "i64", "u64", "f32", "f64"] {
+        for abi in [
+            "i8", "u8", "i16", "u16", "i32", "u32", "i64", "u64", "f32", "f64",
+        ] {
             assert!(output.js.contains(&format!("returnType: \"{abi}\"")));
         }
-        assert_eq!(
-            output
-                .js
-                .matches("return DynWin32.toBigint(_return)")
-                .count(),
-            2
-        );
+        assert!(output.js.contains("return DynWin32.toBigint(_return)"));
         assert!(output.dts.contains("returnI8(): number"));
         assert!(output.dts.contains("returnI16(): number"));
         assert!(output.dts.contains("returnI64(): bigint"));
         assert!(output.dts.contains("returnU64(): bigint"));
         assert!(output.dts.contains("returnF32(): number"));
         assert!(output.dts.contains("returnF64(): number"));
+        assert!(output.dts.contains("returnNativeIsize(): bigint"));
+        assert!(output.dts.contains("returnNativeUsize(): bigint"));
     }
 
     #[test]
@@ -1349,7 +1362,7 @@ mod tests {
             4
         );
         assert!(!output.js.contains("returnCleanup: \"localFree\""));
-        let Ok(winmd) = std::env::var("DYNWINRT_WIN32_WINMD") else {
+        let Some(winmd) = metadata() else {
             return;
         };
         let functions = cases

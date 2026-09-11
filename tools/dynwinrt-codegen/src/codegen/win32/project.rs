@@ -259,6 +259,12 @@ fn project_native_builder(layout: &NativeLayout) -> Option<ProjectedNativeBuilde
 
 fn project_function(contract: &FunctionContract) -> Result<ProjectedFunction, String> {
     let count_buffers = count_buffer_relations(contract)?;
+    let mut input_names = reserved_input_bindings(contract);
+    let mut output_names = BTreeSet::from([
+        "status".to_string(),
+        "result".to_string(),
+        "lastError".to_string(),
+    ]);
     let mut parameters = Vec::<SurfaceParameter>::new();
     let mut native_surface = vec![None; contract.parameters.len()];
     let mut inputs = Vec::<InputExpression>::new();
@@ -284,7 +290,7 @@ fn project_function(contract: &FunctionContract) -> Result<ProjectedFunction, St
                 .transpose()?
                 .or(matches!(parameter.typ, ValueType::GuidPointer).then_some(16));
             parameters.push(SurfaceParameter {
-                name: input_name(&parameter.name, surface_index),
+                name: unique_name(input_name(&parameter.name, surface_index), &mut input_names),
                 typ: if parameter.consumes_resource {
                     SurfaceType::ManagedResource
                 } else if parameter.null_null_terminated
@@ -533,7 +539,7 @@ fn project_function(contract: &FunctionContract) -> Result<ProjectedFunction, St
         if matches!(runtime.direction, Direction::Out | Direction::InOut) {
             native_output[index] = Some(output_index);
             outputs.push(ProjectedOutput {
-                name: output_name(parameter),
+                name: unique_name(output_name(parameter), &mut output_names),
                 output_index,
                 typ: output_surface_type(parameter),
                 conversion: output_conversion(parameter),
@@ -883,6 +889,58 @@ fn input_name(raw: &str, index: usize) -> String {
     })
 }
 
+fn reserved_input_bindings(contract: &FunctionContract) -> BTreeSet<String> {
+    // Parameters must not shadow wrapper locals or the helpers they close over.
+    let mut names = [
+        "_call",
+        "_return",
+        "_outputs",
+        "_subsystem",
+        "_borrowedHkeyOutput",
+        "_nativeAggregate",
+        "_bufferCount",
+        "_scalarPointer",
+        "_hkeyBits",
+        "_isPredefinedHkey",
+        "_emptyNativeString",
+        "DynWin32",
+        "DynWin32Function",
+        "BigInt",
+        "Number",
+        "RangeError",
+        "TypeError",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<BTreeSet<_>>();
+    names.insert(format!("_bind{}Plan", contract.name));
+    names.insert(format!("_bind{}PlanBorrowed", contract.name));
+    for index in 0..contract.parameters.len() {
+        names.insert(format!("_performanceDataCount{index}"));
+    }
+    for parameter in &contract.parameters {
+        match &parameter.typ {
+            ValueType::NativeStruct { layout }
+            | ValueType::NativeStructPointer { layout }
+            | ValueType::NativeUnionPointer { layout } => {
+                names.insert(format!("_nativeLayout_{}", layout.name));
+            }
+            _ => {}
+        }
+    }
+    if let Some(layout) = &contract.return_aggregate {
+        names.insert(format!("_nativeLayout_{}", layout.name));
+    }
+    names
+}
+
+fn unique_name(mut name: String, used: &mut BTreeSet<String>) -> String {
+    while !used.insert(name.clone()) {
+        name.push('_');
+    }
+    name
+}
+
 fn output_name(parameter: &super::ir::ParameterContract) -> String {
     if let ValueType::Handle { name, .. } = &parameter.typ
         && parameter.name.to_ascii_lowercase().ends_with("result")
@@ -934,58 +992,8 @@ fn lower_first(value: &str) -> String {
 }
 
 fn safe_identifier(value: String) -> String {
-    if matches!(
-        value.as_str(),
-        "await"
-            | "break"
-            | "case"
-            | "catch"
-            | "class"
-            | "const"
-            | "continue"
-            | "debugger"
-            | "default"
-            | "delete"
-            | "do"
-            | "else"
-            | "enum"
-            | "export"
-            | "extends"
-            | "false"
-            | "finally"
-            | "for"
-            | "function"
-            | "if"
-            | "implements"
-            | "import"
-            | "in"
-            | "instanceof"
-            | "interface"
-            | "let"
-            | "new"
-            | "null"
-            | "package"
-            | "private"
-            | "protected"
-            | "public"
-            | "return"
-            | "static"
-            | "super"
-            | "switch"
-            | "this"
-            | "throw"
-            | "true"
-            | "try"
-            | "typeof"
-            | "var"
-            | "void"
-            | "while"
-            | "with"
-            | "yield"
-            | "status"
-            | "result"
-            | "lastError"
-    ) {
+    let value = crate::codegen::winrt::javascript::naming::to_camel_case(&value);
+    if matches!(value.as_str(), "await" | "status" | "result" | "lastError") {
         format!("{value}_")
     } else {
         value
@@ -1062,5 +1070,9 @@ mod tests {
     fn javascript_reserved_parameter_names_are_escaped() {
         assert_eq!(input_name("lpIn", 0), "in_");
         assert_eq!(input_name("class", 0), "class_");
+        assert_eq!(input_name("eval", 0), "eval_");
+        assert_eq!(input_name("arguments", 0), "arguments_");
+        assert_eq!(input_name("lpArguments", 0), "arguments_");
+        assert_eq!(input_name("await", 0), "await_");
     }
 }

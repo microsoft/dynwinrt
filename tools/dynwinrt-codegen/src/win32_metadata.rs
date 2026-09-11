@@ -1439,9 +1439,78 @@ mod tests {
     }
 
     fn configured_winmd() -> Option<String> {
-        std::env::var("DYNWINRT_WIN32_WINMD")
-            .ok()
-            .filter(|path| std::path::Path::new(path).is_file())
+        crate::codegen::win32::test_support::metadata()
+    }
+
+    #[test]
+    fn named_type_evidence_preserves_scalar_handle_string_and_opaque_categories() {
+        let Some(path) = configured_winmd() else {
+            return;
+        };
+        let index = MetadataContext::load(&path).unwrap();
+        let scalar = map_named(&index, "Windows.Win32.Foundation", "BOOL", &mut Vec::new());
+        assert_eq!(scalar.base, RawBaseType::Scalar(RawScalar::Bool32));
+        assert_eq!(scalar.pointer_depth, 0);
+        for (namespace, name, expected) in [
+            (
+                "Windows.Win32.Foundation",
+                "HANDLE",
+                RawNamedKind::Handle {
+                    cleanup: Some("CloseHandle".into()),
+                },
+            ),
+            (
+                "Windows.Win32.System.Registry",
+                "HKEY",
+                RawNamedKind::Handle {
+                    cleanup: Some("RegCloseKey".into()),
+                },
+            ),
+            ("Windows.Win32.Security", "PSID", RawNamedKind::DataPointer),
+            (
+                "Windows.Win32.Foundation",
+                "FARPROC",
+                RawNamedKind::FunctionPointer,
+            ),
+            ("Windows.Win32.Foundation", "BSTR", RawNamedKind::Unknown),
+        ] {
+            let actual = map_named(&index, namespace, name, &mut Vec::new());
+            assert_eq!(actual.pointer_depth, 0);
+            assert_eq!(
+                actual.base,
+                RawBaseType::Named {
+                    namespace: namespace.into(),
+                    name: name.into(),
+                    kind: expected,
+                }
+            );
+        }
+        for (name, encoding, expected_element) in [
+            ("PWSTR", RawStringEncoding::Utf16, RawScalar::Char16),
+            ("PSTR", RawStringEncoding::Ansi, RawScalar::U8),
+        ] {
+            let actual = map_named(&index, "Windows.Win32.Foundation", name, &mut Vec::new());
+            assert!(
+                matches!(actual.base, RawBaseType::Named { kind:RawNamedKind::StringPointer { encoding:found }, .. } if found == encoding)
+            );
+            assert_eq!(actual.constness, RawConstness::Mutable);
+            let element = buffer_element(&actual);
+            assert_eq!(element.base, RawBaseType::Scalar(expected_element));
+            assert_eq!(element.pointer_depth, 0);
+        }
+        let unknown = map_named(
+            &index,
+            "Windows.Win32.Foundation",
+            "NoSuchNativeTypeForTesting",
+            &mut Vec::new(),
+        );
+        assert!(matches!(
+            unknown.base,
+            RawBaseType::Named {
+                kind: RawNamedKind::Unknown,
+                ..
+            }
+        ));
     }
 
     #[test]

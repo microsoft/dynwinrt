@@ -2764,6 +2764,10 @@ fn handle_value(value: Unknown, nullable: bool) -> napi::Result<DynWin32Value> {
 }
 
 #[cfg(test)]
+#[path = "win32_outcome_tests.rs"]
+mod outcome_tests;
+
+#[cfg(test)]
 mod tests {
   use super::*;
 
