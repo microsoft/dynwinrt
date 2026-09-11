@@ -1,0 +1,1215 @@
+{
+  "contracts": [
+    {
+      "contract": {
+        "cleanup": "none",
+        "handle": "Windows.Win32.Foundation.HWND",
+        "ownership": "borrowed",
+        "parameterIndex": 0,
+        "receivingCell": "required"
+      },
+      "entryId": "windows.borrowed-hwnd-output.entry.windows-win32-devices-imageacquisition.iwiaapperrorhandler.6c16186cd0a6400c80f4d26986a0e734.getwindow.slot-3.param-0-phwnd.v1",
+      "evidence": [
+        {
+          "file": null,
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/previous-versions/windows/desktop/wia/-wia-iwiaapperrorhandler-getwindow"
+        }
+      ],
+      "familyId": "windows.borrowed-hwnd-output.v1",
+      "kind": "borrowed-handle",
+      "reason": "Microsoft documents this as the existing WIA error-handler dialog HWND, which may be NULL and must remain valid for the transfer; the caller does not acquire window ownership",
+      "selector": {
+        "absoluteSlot": 3,
+        "declaringIid": "6c16186c-d0a6-400c-80f4-d26986a0e734",
+        "interface": {
+          "iid": "6c16186c-d0a6-400c-80f4-d26986a0e734",
+          "name": "IWiaAppErrorHandler",
+          "namespace": "Windows.Win32.Devices.ImageAcquisition"
+        },
+        "method": "GetWindow",
+        "parameterCount": 1,
+        "parameters": [
+          {
+            "constAttribute": false,
+            "constness": "mutable",
+            "direction": "out",
+            "index": 0,
+            "name": "phwnd",
+            "nativeType": "Windows.Win32.Foundation.HWND",
+            "optional": false,
+            "pointerDepth": 1
+          }
+        ],
+        "sourceFingerprint": "6B4A2DDEA4F9A75E5F7B41EB45E954E95091249C53589F4DBCB5863870B3624A",
+        "sourceShape": {
+          "format": "raw-method-shape-v1",
+          "value": "GetWindow@3(phwnd:out:required:noconstattr:Windows.Win32.Foundation.HWND[Struct]/ptr1/Mutable/underlying=void/ptr1/Mutable)->Windows.Win32.Foundation.HRESULT[Struct]/ptr0/Unspecified/underlying=i32/ptr0/Unspecified:plain_hresult:not_enumerator_next"
+        }
+      },
+      "validatedMetadata": [
+        {
+          "package": "Microsoft.Windows.SDK.Win32Metadata",
+          "sha256": "B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D",
+          "version": "71.0.14-preview"
+        }
+      ]
+    },
+    {
+      "contract": {
+        "cleanup": "none",
+        "handle": "Windows.Win32.Foundation.HWND",
+        "ownership": "borrowed",
+        "parameterIndex": 0,
+        "receivingCell": "required"
+      },
+      "entryId": "windows.borrowed-hwnd-output.entry.windows-win32-media-pictureacquisition.iphotoprogressdialog.00f246f907504f0893812cd8e906a4ae.getwindow.slot-4.param-0-phwndprogressdialog.v1",
+      "evidence": [
+        {
+          "file": null,
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/photoacquire/nf-photoacquire-iphotoprogressdialog-getwindow"
+        }
+      ],
+      "familyId": "windows.borrowed-hwnd-output.v1",
+      "kind": "borrowed-handle",
+      "reason": "Microsoft documents this getter as retrieving the progress dialog box handle; it does not create or transfer ownership of the dialog",
+      "selector": {
+        "absoluteSlot": 4,
+        "declaringIid": "00f246f9-0750-4f08-9381-2cd8e906a4ae",
+        "interface": {
+          "iid": "00f246f9-0750-4f08-9381-2cd8e906a4ae",
+          "name": "IPhotoProgressDialog",
+          "namespace": "Windows.Win32.Media.PictureAcquisition"
+        },
+        "method": "GetWindow",
+        "parameterCount": 1,
+        "parameters": [
+          {
+            "constAttribute": false,
+            "constness": "mutable",
+            "direction": "out",
+            "index": 0,
+            "name": "phwndProgressDialog",
+            "nativeType": "Windows.Win32.Foundation.HWND",
+            "optional": false,
+            "pointerDepth": 1
+          }
+        ],
+        "sourceFingerprint": "92EC43598B47500A26D59BE70D79C63F926C5685B1DCBC08E3459E7263069CCC",
+        "sourceShape": {
+          "format": "raw-method-shape-v1",
+          "value": "GetWindow@4(phwndProgressDialog:out:required:noconstattr:Windows.Win32.Foundation.HWND[Struct]/ptr1/Mutable/underlying=void/ptr1/Mutable)->Windows.Win32.Foundation.HRESULT[Struct]/ptr0/Unspecified/underlying=i32/ptr0/Unspecified:plain_hresult:not_enumerator_next"
+        }
+      },
+      "validatedMetadata": [
+        {
+          "package": "Microsoft.Windows.SDK.Win32Metadata",
+          "sha256": "B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D",
+          "version": "71.0.14-preview"
+        }
+      ]
+    },
+    {
+      "contract": {
+        "cleanup": "none",
+        "handle": "Windows.Win32.Foundation.HWND",
+        "ownership": "borrowed",
+        "parameterIndex": 0,
+        "receivingCell": "required"
+      },
+      "entryId": "windows.borrowed-hwnd-output.entry.windows-win32-media-directshow.ioverlay.56a868a10ad411ceb03a0020af0ba770.getwindowhandle.slot-8.param-0-phwnd.v1",
+      "evidence": [
+        {
+          "file": null,
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/strmif/nf-strmif-ioverlay-getwindowhandle"
+        }
+      ],
+      "familyId": "windows.borrowed-hwnd-output.v1",
+      "kind": "borrowed-handle",
+      "reason": "Microsoft documents this as retrieving the clipping window handle already associated with the overlay; it does not create or transfer ownership of the window",
+      "selector": {
+        "absoluteSlot": 8,
+        "declaringIid": "56a868a1-0ad4-11ce-b03a-0020af0ba770",
+        "interface": {
+          "iid": "56a868a1-0ad4-11ce-b03a-0020af0ba770",
+          "name": "IOverlay",
+          "namespace": "Windows.Win32.Media.DirectShow"
+        },
+        "method": "GetWindowHandle",
+        "parameterCount": 1,
+        "parameters": [
+          {
+            "constAttribute": false,
+            "constness": "mutable",
+            "direction": "out",
+            "index": 0,
+            "name": "pHwnd",
+            "nativeType": "Windows.Win32.Foundation.HWND",
+            "optional": false,
+            "pointerDepth": 1
+          }
+        ],
+        "sourceFingerprint": "946DEC86AEE73651090A53C54FF7F7CED78AC97E665D2327EB036A4AFCC2B737",
+        "sourceShape": {
+          "format": "raw-method-shape-v1",
+          "value": "GetWindowHandle@8(pHwnd:out:required:noconstattr:Windows.Win32.Foundation.HWND[Struct]/ptr1/Mutable/underlying=void/ptr1/Mutable)->Windows.Win32.Foundation.HRESULT[Struct]/ptr0/Unspecified/underlying=i32/ptr0/Unspecified:plain_hresult:not_enumerator_next"
+        }
+      },
+      "validatedMetadata": [
+        {
+          "package": "Microsoft.Windows.SDK.Win32Metadata",
+          "sha256": "B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D",
+          "version": "71.0.14-preview"
+        }
+      ]
+    },
+    {
+      "contract": {
+        "cleanup": "none",
+        "handle": "Windows.Win32.Foundation.HWND",
+        "ownership": "borrowed",
+        "parameterIndex": 0,
+        "receivingCell": "required"
+      },
+      "entryId": "windows.borrowed-hwnd-output.entry.windows-win32-media-directshow-tv.imsvidctl.b0edf162910a11d2b63200c04f79498e.get-window.slot-15.param-0-phwnd.v1",
+      "evidence": [
+        {
+          "file": null,
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/msvidctl/nf-msvidctl-imsvidctl-get_window"
+        }
+      ],
+      "familyId": "windows.borrowed-hwnd-output.v1",
+      "kind": "borrowed-handle",
+      "reason": "Microsoft documents this property as retrieving the existing video control window handle; the caller does not acquire ownership of that window",
+      "selector": {
+        "absoluteSlot": 15,
+        "declaringIid": "b0edf162-910a-11d2-b632-00c04f79498e",
+        "interface": {
+          "iid": "b0edf162-910a-11d2-b632-00c04f79498e",
+          "name": "IMSVidCtl",
+          "namespace": "Windows.Win32.Media.DirectShow.Tv"
+        },
+        "method": "get_Window",
+        "parameterCount": 1,
+        "parameters": [
+          {
+            "constAttribute": false,
+            "constness": "mutable",
+            "direction": "out",
+            "index": 0,
+            "name": "phwnd",
+            "nativeType": "Windows.Win32.Foundation.HWND",
+            "optional": false,
+            "pointerDepth": 1
+          }
+        ],
+        "sourceFingerprint": "2174058F5F5D2854B883007C60889D07A71571920EB42BAFE5BA34F1E307FF1B",
+        "sourceShape": {
+          "format": "raw-method-shape-v1",
+          "value": "get_Window@15(phwnd:out:required:noconstattr:Windows.Win32.Foundation.HWND[Struct]/ptr1/Mutable/underlying=void/ptr1/Mutable)->Windows.Win32.Foundation.HRESULT[Struct]/ptr0/Unspecified/underlying=i32/ptr0/Unspecified:plain_hresult:not_enumerator_next"
+        }
+      },
+      "validatedMetadata": [
+        {
+          "package": "Microsoft.Windows.SDK.Win32Metadata",
+          "sha256": "B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D",
+          "version": "71.0.14-preview"
+        }
+      ]
+    },
+    {
+      "contract": {
+        "cleanup": "none",
+        "handle": "Windows.Win32.Foundation.HWND",
+        "ownership": "borrowed",
+        "parameterIndex": 0,
+        "receivingCell": "required"
+      },
+      "entryId": "windows.borrowed-hwnd-output.entry.windows-win32-media-directshow-tv.imsvidrect.7f5000a6a44047ca8accc0e75531a2c2.get-hwnd.slot-15.param-0-hwndval.v1",
+      "evidence": [
+        {
+          "file": null,
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/segment/nf-segment-imsvidrect-get_hwnd"
+        }
+      ],
+      "familyId": "windows.borrowed-hwnd-output.v1",
+      "kind": "borrowed-handle",
+      "reason": "Microsoft documents this property as retrieving the window handle represented by the existing video rectangle; it does not create or transfer the window",
+      "selector": {
+        "absoluteSlot": 15,
+        "declaringIid": "7f5000a6-a440-47ca-8acc-c0e75531a2c2",
+        "interface": {
+          "iid": "7f5000a6-a440-47ca-8acc-c0e75531a2c2",
+          "name": "IMSVidRect",
+          "namespace": "Windows.Win32.Media.DirectShow.Tv"
+        },
+        "method": "get_HWnd",
+        "parameterCount": 1,
+        "parameters": [
+          {
+            "constAttribute": false,
+            "constness": "mutable",
+            "direction": "out",
+            "index": 0,
+            "name": "HWndVal",
+            "nativeType": "Windows.Win32.Foundation.HWND",
+            "optional": false,
+            "pointerDepth": 1
+          }
+        ],
+        "sourceFingerprint": "97DD60A195B4AEE9D432AB08DF0870AC3FA0F91F5FC9931651161A14D0B97A3B",
+        "sourceShape": {
+          "format": "raw-method-shape-v1",
+          "value": "get_HWnd@15(HWndVal:out:required:noconstattr:Windows.Win32.Foundation.HWND[Struct]/ptr1/Mutable/underlying=void/ptr1/Mutable)->Windows.Win32.Foundation.HRESULT[Struct]/ptr0/Unspecified/underlying=i32/ptr0/Unspecified:plain_hresult:not_enumerator_next"
+        }
+      },
+      "validatedMetadata": [
+        {
+          "package": "Microsoft.Windows.SDK.Win32Metadata",
+          "sha256": "B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D",
+          "version": "71.0.14-preview"
+        }
+      ]
+    },
+    {
+      "contract": {
+        "cleanup": "none",
+        "handle": "Windows.Win32.Foundation.HWND",
+        "ownership": "borrowed",
+        "parameterIndex": 0,
+        "receivingCell": "required"
+      },
+      "entryId": "windows.borrowed-hwnd-output.entry.windows-win32-media-mediafoundation.imfpmediaplayer.a714590a58af430a85bf44f5ec838d85.getvideowindow.slot-31.param-0-phwndvideo.v1",
+      "evidence": [
+        {
+          "file": null,
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/mfplay/nf-mfplay-imfpmediaplayer-getvideowindow"
+        }
+      ],
+      "familyId": "windows.borrowed-hwnd-output.v1",
+      "kind": "borrowed-handle",
+      "reason": "Microsoft documents this as retrieving the media player's current video window; it is an existing caller-configured window and ownership is not transferred",
+      "selector": {
+        "absoluteSlot": 31,
+        "declaringIid": "a714590a-58af-430a-85bf-44f5ec838d85",
+        "interface": {
+          "iid": "a714590a-58af-430a-85bf-44f5ec838d85",
+          "name": "IMFPMediaPlayer",
+          "namespace": "Windows.Win32.Media.MediaFoundation"
+        },
+        "method": "GetVideoWindow",
+        "parameterCount": 1,
+        "parameters": [
+          {
+            "constAttribute": false,
+            "constness": "mutable",
+            "direction": "out",
+            "index": 0,
+            "name": "phwndVideo",
+            "nativeType": "Windows.Win32.Foundation.HWND",
+            "optional": false,
+            "pointerDepth": 1
+          }
+        ],
+        "sourceFingerprint": "F5A20E1B0514A7E693D8DCEDE5BE547CE7FFAC8BE63D447E010BE79A2EB106C9",
+        "sourceShape": {
+          "format": "raw-method-shape-v1",
+          "value": "GetVideoWindow@31(phwndVideo:out:required:noconstattr:Windows.Win32.Foundation.HWND[Struct]/ptr1/Mutable/underlying=void/ptr1/Mutable)->Windows.Win32.Foundation.HRESULT[Struct]/ptr0/Unspecified/underlying=i32/ptr0/Unspecified:plain_hresult:not_enumerator_next"
+        }
+      },
+      "validatedMetadata": [
+        {
+          "package": "Microsoft.Windows.SDK.Win32Metadata",
+          "sha256": "B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D",
+          "version": "71.0.14-preview"
+        }
+      ]
+    },
+    {
+      "contract": {
+        "cleanup": "none",
+        "handle": "Windows.Win32.Foundation.HWND",
+        "ownership": "borrowed",
+        "parameterIndex": 0,
+        "receivingCell": "required"
+      },
+      "entryId": "windows.borrowed-hwnd-output.entry.windows-win32-media-mediafoundation.imfvideodisplaycontrol.a490b1e4ab844d31a1b2181e03b1077a.getvideowindow.slot-10.param-0-phwndvideo.v1",
+      "evidence": [
+        {
+          "file": null,
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/evr/nf-evr-imfvideodisplaycontrol-getvideowindow"
+        }
+      ],
+      "familyId": "windows.borrowed-hwnd-output.v1",
+      "kind": "borrowed-handle",
+      "reason": "Microsoft documents this as retrieving the video window already set on the display control; it does not create or transfer ownership of the window",
+      "selector": {
+        "absoluteSlot": 10,
+        "declaringIid": "a490b1e4-ab84-4d31-a1b2-181e03b1077a",
+        "interface": {
+          "iid": "a490b1e4-ab84-4d31-a1b2-181e03b1077a",
+          "name": "IMFVideoDisplayControl",
+          "namespace": "Windows.Win32.Media.MediaFoundation"
+        },
+        "method": "GetVideoWindow",
+        "parameterCount": 1,
+        "parameters": [
+          {
+            "constAttribute": false,
+            "constness": "mutable",
+            "direction": "out",
+            "index": 0,
+            "name": "phwndVideo",
+            "nativeType": "Windows.Win32.Foundation.HWND",
+            "optional": false,
+            "pointerDepth": 1
+          }
+        ],
+        "sourceFingerprint": "0C0D6FC6B4F7D50F5895E1F642A3EFDA5FC8DFAFF68D7A426DCF9E91D3F71665",
+        "sourceShape": {
+          "format": "raw-method-shape-v1",
+          "value": "GetVideoWindow@10(phwndVideo:out:required:noconstattr:Windows.Win32.Foundation.HWND[Struct]/ptr1/Mutable/underlying=void/ptr1/Mutable)->Windows.Win32.Foundation.HRESULT[Struct]/ptr0/Unspecified/underlying=i32/ptr0/Unspecified:plain_hresult:not_enumerator_next"
+        }
+      },
+      "validatedMetadata": [
+        {
+          "package": "Microsoft.Windows.SDK.Win32Metadata",
+          "sha256": "B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D",
+          "version": "71.0.14-preview"
+        }
+      ]
+    },
+    {
+      "contract": {
+        "cleanup": "none",
+        "handle": "Windows.Win32.Foundation.HWND",
+        "ownership": "borrowed",
+        "parameterIndex": 0,
+        "receivingCell": "required"
+      },
+      "entryId": "windows.borrowed-hwnd-output.entry.windows-win32-system-mmc.iconsole.43136eb1d36c11cfadbc00aa00a80033.getmainwindow.slot-12.param-0-phwnd.v1",
+      "evidence": [
+        {
+          "file": null,
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/mmc/nf-mmc-iconsole-getmainwindow"
+        }
+      ],
+      "familyId": "windows.borrowed-hwnd-output.v1",
+      "kind": "borrowed-handle",
+      "reason": "Microsoft documents this as retrieving MMC's existing main frame window handle, not creating a caller-owned window",
+      "selector": {
+        "absoluteSlot": 12,
+        "declaringIid": "43136eb1-d36c-11cf-adbc-00aa00a80033",
+        "interface": {
+          "iid": "43136eb1-d36c-11cf-adbc-00aa00a80033",
+          "name": "IConsole",
+          "namespace": "Windows.Win32.System.Mmc"
+        },
+        "method": "GetMainWindow",
+        "parameterCount": 1,
+        "parameters": [
+          {
+            "constAttribute": false,
+            "constness": "mutable",
+            "direction": "out",
+            "index": 0,
+            "name": "phwnd",
+            "nativeType": "Windows.Win32.Foundation.HWND",
+            "optional": false,
+            "pointerDepth": 1
+          }
+        ],
+        "sourceFingerprint": "F3119F4DDF3853771CA37E06E23B95D9E6AE279795800511EACCAFAFB4AEF034",
+        "sourceShape": {
+          "format": "raw-method-shape-v1",
+          "value": "GetMainWindow@12(phwnd:out:required:noconstattr:Windows.Win32.Foundation.HWND[Struct]/ptr1/Mutable/underlying=void/ptr1/Mutable)->Windows.Win32.Foundation.HRESULT[Struct]/ptr0/Unspecified/underlying=i32/ptr0/Unspecified:plain_hresult:not_enumerator_next"
+        }
+      },
+      "validatedMetadata": [
+        {
+          "package": "Microsoft.Windows.SDK.Win32Metadata",
+          "sha256": "B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D",
+          "version": "71.0.14-preview"
+        }
+      ]
+    },
+    {
+      "contract": {
+        "cleanup": "none",
+        "handle": "Windows.Win32.Foundation.HWND",
+        "ownership": "borrowed",
+        "parameterIndex": 0,
+        "receivingCell": "required"
+      },
+      "entryId": "windows.borrowed-hwnd-output.entry.windows-win32-system-ole.iolewindow.0000011400000000c000000000000046.getwindow.slot-3.param-0-phwnd.v1",
+      "evidence": [
+        {
+          "file": null,
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/oleidl/nf-oleidl-iolewindow-getwindow"
+        }
+      ],
+      "familyId": "windows.borrowed-hwnd-output.v1",
+      "kind": "borrowed-handle",
+      "reason": "Microsoft documents this as retrieving an existing frame, document, parent, or in-place activation window; ownership remains with the participant that created that window",
+      "selector": {
+        "absoluteSlot": 3,
+        "declaringIid": "00000114-0000-0000-c000-000000000046",
+        "interface": {
+          "iid": "00000114-0000-0000-c000-000000000046",
+          "name": "IOleWindow",
+          "namespace": "Windows.Win32.System.Ole"
+        },
+        "method": "GetWindow",
+        "parameterCount": 1,
+        "parameters": [
+          {
+            "constAttribute": false,
+            "constness": "mutable",
+            "direction": "out",
+            "index": 0,
+            "name": "phwnd",
+            "nativeType": "Windows.Win32.Foundation.HWND",
+            "optional": false,
+            "pointerDepth": 1
+          }
+        ],
+        "sourceFingerprint": "6B4A2DDEA4F9A75E5F7B41EB45E954E95091249C53589F4DBCB5863870B3624A",
+        "sourceShape": {
+          "format": "raw-method-shape-v1",
+          "value": "GetWindow@3(phwnd:out:required:noconstattr:Windows.Win32.Foundation.HWND[Struct]/ptr1/Mutable/underlying=void/ptr1/Mutable)->Windows.Win32.Foundation.HRESULT[Struct]/ptr0/Unspecified/underlying=i32/ptr0/Unspecified:plain_hresult:not_enumerator_next"
+        }
+      },
+      "validatedMetadata": [
+        {
+          "package": "Microsoft.Windows.SDK.Win32Metadata",
+          "sha256": "B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D",
+          "version": "71.0.14-preview"
+        }
+      ]
+    },
+    {
+      "contract": {
+        "cleanup": "none",
+        "handle": "Windows.Win32.Foundation.HWND",
+        "ownership": "borrowed",
+        "parameterIndex": 0,
+        "receivingCell": "required"
+      },
+      "entryId": "windows.borrowed-hwnd-output.entry.windows-win32-system-winrt.icorewindowinterop.45d64a29a63e4cb6b4985781d298cb4f.get-windowhandle.slot-3.param-0-hwnd.v1",
+      "evidence": [
+        {
+          "file": null,
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/corewindow/nf-corewindow-icorewindowinterop-get_windowhandle"
+        }
+      ],
+      "familyId": "windows.borrowed-hwnd-output.v1",
+      "kind": "borrowed-handle",
+      "reason": "Microsoft documents this read-only property as obtaining the HWND of the existing CoreWindow; it does not transfer window lifetime",
+      "selector": {
+        "absoluteSlot": 3,
+        "declaringIid": "45d64a29-a63e-4cb6-b498-5781d298cb4f",
+        "interface": {
+          "iid": "45d64a29-a63e-4cb6-b498-5781d298cb4f",
+          "name": "ICoreWindowInterop",
+          "namespace": "Windows.Win32.System.WinRT"
+        },
+        "method": "get_WindowHandle",
+        "parameterCount": 1,
+        "parameters": [
+          {
+            "constAttribute": false,
+            "constness": "mutable",
+            "direction": "out",
+            "index": 0,
+            "name": "hwnd",
+            "nativeType": "Windows.Win32.Foundation.HWND",
+            "optional": false,
+            "pointerDepth": 1
+          }
+        ],
+        "sourceFingerprint": "ACB19C87346876CE26B3EB4D0D3E1EC71FD034D8B2A4C30722863C3C076093F0",
+        "sourceShape": {
+          "format": "raw-method-shape-v1",
+          "value": "get_WindowHandle@3(hwnd:out:required:noconstattr:Windows.Win32.Foundation.HWND[Struct]/ptr1/Mutable/underlying=void/ptr1/Mutable)->Windows.Win32.Foundation.HRESULT[Struct]/ptr0/Unspecified/underlying=i32/ptr0/Unspecified:plain_hresult:not_enumerator_next"
+        }
+      },
+      "validatedMetadata": [
+        {
+          "package": "Microsoft.Windows.SDK.Win32Metadata",
+          "sha256": "B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D",
+          "version": "71.0.14-preview"
+        }
+      ]
+    },
+    {
+      "contract": {
+        "cleanup": "none",
+        "handle": "Windows.Win32.Foundation.HWND",
+        "ownership": "borrowed",
+        "parameterIndex": 0,
+        "receivingCell": "required"
+      },
+      "entryId": "windows.borrowed-hwnd-output.entry.windows-win32-system-winrt.isharewindowcommandeventargsinterop.6571a721643d43d4aca46b6f5f30f1ad.getwindow.slot-3.param-0-value.v1",
+      "evidence": [
+        {
+          "file": null,
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/sharewindowcommandsourceinterop/nf-sharewindowcommandsourceinterop-isharewindowcommandeventargsinterop-getwindow"
+        }
+      ],
+      "familyId": "windows.borrowed-hwnd-output.v1",
+      "kind": "borrowed-handle",
+      "reason": "Microsoft documents this as receiving the window identifier carried by the event arguments, with no creation or ownership transfer",
+      "selector": {
+        "absoluteSlot": 3,
+        "declaringIid": "6571a721-643d-43d4-aca4-6b6f5f30f1ad",
+        "interface": {
+          "iid": "6571a721-643d-43d4-aca4-6b6f5f30f1ad",
+          "name": "IShareWindowCommandEventArgsInterop",
+          "namespace": "Windows.Win32.System.WinRT"
+        },
+        "method": "GetWindow",
+        "parameterCount": 1,
+        "parameters": [
+          {
+            "constAttribute": false,
+            "constness": "mutable",
+            "direction": "out",
+            "index": 0,
+            "name": "value",
+            "nativeType": "Windows.Win32.Foundation.HWND",
+            "optional": false,
+            "pointerDepth": 1
+          }
+        ],
+        "sourceFingerprint": "DD0C1C08D140AF595B36CA02942DF5963B95D7B244859F0469F2C26C9120B06C",
+        "sourceShape": {
+          "format": "raw-method-shape-v1",
+          "value": "GetWindow@3(value:out:required:noconstattr:Windows.Win32.Foundation.HWND[Struct]/ptr1/Mutable/underlying=void/ptr1/Mutable)->Windows.Win32.Foundation.HRESULT[Struct]/ptr0/Unspecified/underlying=i32/ptr0/Unspecified:plain_hresult:not_enumerator_next"
+        }
+      },
+      "validatedMetadata": [
+        {
+          "package": "Microsoft.Windows.SDK.Win32Metadata",
+          "sha256": "B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D",
+          "version": "71.0.14-preview"
+        }
+      ]
+    },
+    {
+      "contract": {
+        "cleanup": "none",
+        "handle": "Windows.Win32.Foundation.HWND",
+        "ownership": "borrowed",
+        "parameterIndex": 0,
+        "receivingCell": "required"
+      },
+      "entryId": "windows.borrowed-hwnd-output.entry.windows-win32-system-winrt-xaml.idesktopwindowxamlsourcenative.3cbcf1bf2f764e9c96abe84b37972554.get-windowhandle.slot-4.param-0-hwnd.v1",
+      "evidence": [
+        {
+          "file": null,
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/windows.ui.xaml.hosting.desktopwindowxamlsource/nf-windows-ui-xaml-hosting-desktopwindowxamlsource-idesktopwindowxamlsourcenative-get_windowhandle"
+        }
+      ],
+      "familyId": "windows.borrowed-hwnd-output.v1",
+      "kind": "borrowed-handle",
+      "reason": "Microsoft documents this as the parent UI element HWND associated with the current XAML source instance; the associated UI element retains ownership",
+      "selector": {
+        "absoluteSlot": 4,
+        "declaringIid": "3cbcf1bf-2f76-4e9c-96ab-e84b37972554",
+        "interface": {
+          "iid": "3cbcf1bf-2f76-4e9c-96ab-e84b37972554",
+          "name": "IDesktopWindowXamlSourceNative",
+          "namespace": "Windows.Win32.System.WinRT.Xaml"
+        },
+        "method": "get_WindowHandle",
+        "parameterCount": 1,
+        "parameters": [
+          {
+            "constAttribute": false,
+            "constness": "mutable",
+            "direction": "out",
+            "index": 0,
+            "name": "hWnd",
+            "nativeType": "Windows.Win32.Foundation.HWND",
+            "optional": false,
+            "pointerDepth": 1
+          }
+        ],
+        "sourceFingerprint": "388B3D6F6EBFE9F924F682E81AD7F0AD5F56D3EA5CAC1730CA87FA895BBCD8FB",
+        "sourceShape": {
+          "format": "raw-method-shape-v1",
+          "value": "get_WindowHandle@4(hWnd:out:required:noconstattr:Windows.Win32.Foundation.HWND[Struct]/ptr1/Mutable/underlying=void/ptr1/Mutable)->Windows.Win32.Foundation.HRESULT[Struct]/ptr0/Unspecified/underlying=i32/ptr0/Unspecified:plain_hresult:not_enumerator_next"
+        }
+      },
+      "validatedMetadata": [
+        {
+          "package": "Microsoft.Windows.SDK.Win32Metadata",
+          "sha256": "B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D",
+          "version": "71.0.14-preview"
+        }
+      ]
+    },
+    {
+      "contract": {
+        "cleanup": "none",
+        "handle": "Windows.Win32.Foundation.HWND",
+        "ownership": "borrowed",
+        "parameterIndex": 0,
+        "receivingCell": "required"
+      },
+      "entryId": "windows.borrowed-hwnd-output.entry.windows-win32-system-updateagent.iupdateinstaller.7b929c68ccdc422696b18724600b54c2.get-parenthwnd.slot-11.param-0-retval.v1",
+      "evidence": [
+        {
+          "file": null,
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/wuapi/nf-wuapi-iupdateinstaller-get_parenthwnd"
+        }
+      ],
+      "familyId": "windows.borrowed-hwnd-output.v1",
+      "kind": "borrowed-handle",
+      "reason": "Microsoft documents this property as retrieving the existing parent window configured for the update installer; no window ownership is transferred",
+      "selector": {
+        "absoluteSlot": 11,
+        "declaringIid": "7b929c68-ccdc-4226-96b1-8724600b54c2",
+        "interface": {
+          "iid": "7b929c68-ccdc-4226-96b1-8724600b54c2",
+          "name": "IUpdateInstaller",
+          "namespace": "Windows.Win32.System.UpdateAgent"
+        },
+        "method": "get_ParentHwnd",
+        "parameterCount": 1,
+        "parameters": [
+          {
+            "constAttribute": false,
+            "constness": "mutable",
+            "direction": "out",
+            "index": 0,
+            "name": "retval",
+            "nativeType": "Windows.Win32.Foundation.HWND",
+            "optional": false,
+            "pointerDepth": 1
+          }
+        ],
+        "sourceFingerprint": "FB1C6F07F9CEAC5285C60627BB8C8BBBEF5C0E4A9364AED24DFC10F2805AF55E",
+        "sourceShape": {
+          "format": "raw-method-shape-v1",
+          "value": "get_ParentHwnd@11(retval:out:required:noconstattr:Windows.Win32.Foundation.HWND[Struct]/ptr1/Mutable/underlying=void/ptr1/Mutable)->Windows.Win32.Foundation.HRESULT[Struct]/ptr0/Unspecified/underlying=i32/ptr0/Unspecified:plain_hresult:not_enumerator_next"
+        }
+      },
+      "validatedMetadata": [
+        {
+          "package": "Microsoft.Windows.SDK.Win32Metadata",
+          "sha256": "B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D",
+          "version": "71.0.14-preview"
+        }
+      ]
+    },
+    {
+      "contract": {
+        "cleanup": "none",
+        "handle": "Windows.Win32.Foundation.HWND",
+        "ownership": "borrowed",
+        "parameterIndex": 0,
+        "receivingCell": "required"
+      },
+      "entryId": "windows.borrowed-hwnd-output.entry.windows-win32-ui-accessibility.iuiautomationelement.d22108aa8ac549a5837b37bbb3d7591e.get-cachednativewindowhandle.slot-68.param-0-retval.v1",
+      "evidence": [
+        {
+          "file": null,
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/uiautomationclient/nf-uiautomationclient-iuiautomationelement-get_cachednativewindowhandle"
+        }
+      ],
+      "familyId": "windows.borrowed-hwnd-output.v1",
+      "kind": "borrowed-handle",
+      "reason": "Microsoft documents this property as retrieving the cached native window handle of the existing UI Automation element; the element's window remains externally owned",
+      "selector": {
+        "absoluteSlot": 68,
+        "declaringIid": "d22108aa-8ac5-49a5-837b-37bbb3d7591e",
+        "interface": {
+          "iid": "d22108aa-8ac5-49a5-837b-37bbb3d7591e",
+          "name": "IUIAutomationElement",
+          "namespace": "Windows.Win32.UI.Accessibility"
+        },
+        "method": "get_CachedNativeWindowHandle",
+        "parameterCount": 1,
+        "parameters": [
+          {
+            "constAttribute": false,
+            "constness": "mutable",
+            "direction": "out",
+            "index": 0,
+            "name": "retVal",
+            "nativeType": "Windows.Win32.Foundation.HWND",
+            "optional": false,
+            "pointerDepth": 1
+          }
+        ],
+        "sourceFingerprint": "5479B7D7AC5604C8D5EBCDAAFB6DD4359E67CBF8D68878781BA96321D0223FCE",
+        "sourceShape": {
+          "format": "raw-method-shape-v1",
+          "value": "get_CachedNativeWindowHandle@68(retVal:out:required:noconstattr:Windows.Win32.Foundation.HWND[Struct]/ptr1/Mutable/underlying=void/ptr1/Mutable)->Windows.Win32.Foundation.HRESULT[Struct]/ptr0/Unspecified/underlying=i32/ptr0/Unspecified:plain_hresult:not_enumerator_next"
+        }
+      },
+      "validatedMetadata": [
+        {
+          "package": "Microsoft.Windows.SDK.Win32Metadata",
+          "sha256": "B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D",
+          "version": "71.0.14-preview"
+        }
+      ]
+    },
+    {
+      "contract": {
+        "cleanup": "none",
+        "handle": "Windows.Win32.Foundation.HWND",
+        "ownership": "borrowed",
+        "parameterIndex": 0,
+        "receivingCell": "required"
+      },
+      "entryId": "windows.borrowed-hwnd-output.entry.windows-win32-ui-accessibility.iuiautomationelement.d22108aa8ac549a5837b37bbb3d7591e.get-currentnativewindowhandle.slot-36.param-0-retval.v1",
+      "evidence": [
+        {
+          "file": null,
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/uiautomationclient/nf-uiautomationclient-iuiautomationelement-get_currentnativewindowhandle"
+        }
+      ],
+      "familyId": "windows.borrowed-hwnd-output.v1",
+      "kind": "borrowed-handle",
+      "reason": "Microsoft documents this property as retrieving the current native window handle of the existing UI Automation element; the element's window remains externally owned",
+      "selector": {
+        "absoluteSlot": 36,
+        "declaringIid": "d22108aa-8ac5-49a5-837b-37bbb3d7591e",
+        "interface": {
+          "iid": "d22108aa-8ac5-49a5-837b-37bbb3d7591e",
+          "name": "IUIAutomationElement",
+          "namespace": "Windows.Win32.UI.Accessibility"
+        },
+        "method": "get_CurrentNativeWindowHandle",
+        "parameterCount": 1,
+        "parameters": [
+          {
+            "constAttribute": false,
+            "constness": "mutable",
+            "direction": "out",
+            "index": 0,
+            "name": "retVal",
+            "nativeType": "Windows.Win32.Foundation.HWND",
+            "optional": false,
+            "pointerDepth": 1
+          }
+        ],
+        "sourceFingerprint": "472319FE6903BB2260BE13A873F72E602D5F2251D1B6B6215AF95EBD9C4AEDD3",
+        "sourceShape": {
+          "format": "raw-method-shape-v1",
+          "value": "get_CurrentNativeWindowHandle@36(retVal:out:required:noconstattr:Windows.Win32.Foundation.HWND[Struct]/ptr1/Mutable/underlying=void/ptr1/Mutable)->Windows.Win32.Foundation.HRESULT[Struct]/ptr0/Unspecified/underlying=i32/ptr0/Unspecified:plain_hresult:not_enumerator_next"
+        }
+      },
+      "validatedMetadata": [
+        {
+          "package": "Microsoft.Windows.SDK.Win32Metadata",
+          "sha256": "B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D",
+          "version": "71.0.14-preview"
+        }
+      ]
+    },
+    {
+      "contract": {
+        "cleanup": "none",
+        "handle": "Windows.Win32.Foundation.HWND",
+        "ownership": "borrowed",
+        "parameterIndex": 0,
+        "receivingCell": "required"
+      },
+      "entryId": "windows.borrowed-hwnd-output.entry.windows-win32-ui-shell.icredentialprovidercredentialevents.fa6fa76b66b74b1195f186171118e816.oncreatingwindow.slot-12.param-0-phwndowner.v1",
+      "evidence": [
+        {
+          "file": null,
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/credentialprovider/nf-credentialprovider-icredentialprovidercredentialevents-oncreatingwindow"
+        }
+      ],
+      "familyId": "windows.borrowed-hwnd-output.v1",
+      "kind": "borrowed-handle",
+      "reason": "Microsoft documents this as the Credential UI or Logon UI parent HWND that providers must borrow when parenting dialogs",
+      "selector": {
+        "absoluteSlot": 12,
+        "declaringIid": "fa6fa76b-66b7-4b11-95f1-86171118e816",
+        "interface": {
+          "iid": "fa6fa76b-66b7-4b11-95f1-86171118e816",
+          "name": "ICredentialProviderCredentialEvents",
+          "namespace": "Windows.Win32.UI.Shell"
+        },
+        "method": "OnCreatingWindow",
+        "parameterCount": 1,
+        "parameters": [
+          {
+            "constAttribute": false,
+            "constness": "mutable",
+            "direction": "out",
+            "index": 0,
+            "name": "phwndOwner",
+            "nativeType": "Windows.Win32.Foundation.HWND",
+            "optional": false,
+            "pointerDepth": 1
+          }
+        ],
+        "sourceFingerprint": "5A56814E0744C6F625E276A17CD418587FF5A4288A48ACF1C20D391282D96DF2",
+        "sourceShape": {
+          "format": "raw-method-shape-v1",
+          "value": "OnCreatingWindow@12(phwndOwner:out:required:noconstattr:Windows.Win32.Foundation.HWND[Struct]/ptr1/Mutable/underlying=void/ptr1/Mutable)->Windows.Win32.Foundation.HRESULT[Struct]/ptr0/Unspecified/underlying=i32/ptr0/Unspecified:plain_hresult:not_enumerator_next"
+        }
+      },
+      "validatedMetadata": [
+        {
+          "package": "Microsoft.Windows.SDK.Win32Metadata",
+          "sha256": "B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D",
+          "version": "71.0.14-preview"
+        }
+      ]
+    },
+    {
+      "contract": {
+        "cleanup": "none",
+        "handle": "Windows.Win32.Foundation.HWND",
+        "ownership": "borrowed",
+        "parameterIndex": 0,
+        "receivingCell": "required"
+      },
+      "entryId": "windows.borrowed-hwnd-output.entry.windows-win32-ui-shell.ilaunchsourceviewsizepreference.e5aa01f71fb8483087204e6734cbd5f3.getsourceviewtoposition.slot-3.param-0-hwnd.v1",
+      "evidence": [
+        {
+          "file": null,
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/shobjidl_core/nf-shobjidl_core-ilaunchsourceviewsizepreference-getsourceviewtoposition"
+        }
+      ],
+      "familyId": "windows.borrowed-hwnd-output.v1",
+      "kind": "borrowed-handle",
+      "reason": "Microsoft documents this as retrieving the existing source application window used for positioning, without creating or transferring it",
+      "selector": {
+        "absoluteSlot": 3,
+        "declaringIid": "e5aa01f7-1fb8-4830-8720-4e6734cbd5f3",
+        "interface": {
+          "iid": "e5aa01f7-1fb8-4830-8720-4e6734cbd5f3",
+          "name": "ILaunchSourceViewSizePreference",
+          "namespace": "Windows.Win32.UI.Shell"
+        },
+        "method": "GetSourceViewToPosition",
+        "parameterCount": 1,
+        "parameters": [
+          {
+            "constAttribute": false,
+            "constness": "mutable",
+            "direction": "out",
+            "index": 0,
+            "name": "hwnd",
+            "nativeType": "Windows.Win32.Foundation.HWND",
+            "optional": false,
+            "pointerDepth": 1
+          }
+        ],
+        "sourceFingerprint": "30C0767645B86C5327C0E4F655A413D1272EDADAF9510738781EEDE20ACC3361",
+        "sourceShape": {
+          "format": "raw-method-shape-v1",
+          "value": "GetSourceViewToPosition@3(hwnd:out:required:noconstattr:Windows.Win32.Foundation.HWND[Struct]/ptr1/Mutable/underlying=void/ptr1/Mutable)->Windows.Win32.Foundation.HRESULT[Struct]/ptr0/Unspecified/underlying=i32/ptr0/Unspecified:plain_hresult:not_enumerator_next"
+        }
+      },
+      "validatedMetadata": [
+        {
+          "package": "Microsoft.Windows.SDK.Win32Metadata",
+          "sha256": "B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D",
+          "version": "71.0.14-preview"
+        }
+      ]
+    },
+    {
+      "contract": {
+        "cleanup": "none",
+        "handle": "Windows.Win32.Foundation.HWND",
+        "ownership": "borrowed",
+        "parameterIndex": 0,
+        "receivingCell": "required"
+      },
+      "entryId": "windows.borrowed-hwnd-output.entry.windows-win32-ui-shell.ifileisinuse.64a1cbf03a1a44619158376969693950.getswitchtohwnd.slot-6.param-0-phwnd.v1",
+      "evidence": [
+        {
+          "file": null,
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/shobjidl_core/nf-shobjidl_core-ifileisinuse-getswitchtohwnd"
+        }
+      ],
+      "familyId": "windows.borrowed-hwnd-output.v1",
+      "kind": "borrowed-handle",
+      "reason": "Microsoft documents this as retrieving the existing application window to switch to; the caller observes the handle without acquiring the window",
+      "selector": {
+        "absoluteSlot": 6,
+        "declaringIid": "64a1cbf0-3a1a-4461-9158-376969693950",
+        "interface": {
+          "iid": "64a1cbf0-3a1a-4461-9158-376969693950",
+          "name": "IFileIsInUse",
+          "namespace": "Windows.Win32.UI.Shell"
+        },
+        "method": "GetSwitchToHWND",
+        "parameterCount": 1,
+        "parameters": [
+          {
+            "constAttribute": false,
+            "constness": "mutable",
+            "direction": "out",
+            "index": 0,
+            "name": "phwnd",
+            "nativeType": "Windows.Win32.Foundation.HWND",
+            "optional": false,
+            "pointerDepth": 1
+          }
+        ],
+        "sourceFingerprint": "1A1014B2E640159C61654F4229C2023F81B405C1A7D0C8CDE9EBA8ACB18B9B71",
+        "sourceShape": {
+          "format": "raw-method-shape-v1",
+          "value": "GetSwitchToHWND@6(phwnd:out:required:noconstattr:Windows.Win32.Foundation.HWND[Struct]/ptr1/Mutable/underlying=void/ptr1/Mutable)->Windows.Win32.Foundation.HRESULT[Struct]/ptr0/Unspecified/underlying=i32/ptr0/Unspecified:plain_hresult:not_enumerator_next"
+        }
+      },
+      "validatedMetadata": [
+        {
+          "package": "Microsoft.Windows.SDK.Win32Metadata",
+          "sha256": "B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D",
+          "version": "71.0.14-preview"
+        }
+      ]
+    },
+    {
+      "contract": {
+        "cleanup": "none",
+        "handle": "Windows.Win32.Foundation.HWND",
+        "ownership": "borrowed",
+        "parameterIndex": 0,
+        "receivingCell": "required"
+      },
+      "entryId": "windows.borrowed-hwnd-output.entry.windows-win32-ui-shell.ipreviewhandler.8895b1c6b41f4c1ca5620d564250836f.queryfocus.slot-8.param-0-phwnd.v1",
+      "evidence": [
+        {
+          "file": null,
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/shobjidl_core/nf-shobjidl_core-ipreviewhandler-queryfocus"
+        }
+      ],
+      "familyId": "windows.borrowed-hwnd-output.v1",
+      "kind": "borrowed-handle",
+      "reason": "Microsoft documents this as the HWND returned by GetFocus on the preview handler's foreground thread, which is an observed borrowed window identity",
+      "selector": {
+        "absoluteSlot": 8,
+        "declaringIid": "8895b1c6-b41f-4c1c-a562-0d564250836f",
+        "interface": {
+          "iid": "8895b1c6-b41f-4c1c-a562-0d564250836f",
+          "name": "IPreviewHandler",
+          "namespace": "Windows.Win32.UI.Shell"
+        },
+        "method": "QueryFocus",
+        "parameterCount": 1,
+        "parameters": [
+          {
+            "constAttribute": false,
+            "constness": "mutable",
+            "direction": "out",
+            "index": 0,
+            "name": "phwnd",
+            "nativeType": "Windows.Win32.Foundation.HWND",
+            "optional": false,
+            "pointerDepth": 1
+          }
+        ],
+        "sourceFingerprint": "22E0B6F671B7AAED222B1AAAC7E0BE70B96F7023794443AA94D79BF701EB42F9",
+        "sourceShape": {
+          "format": "raw-method-shape-v1",
+          "value": "QueryFocus@8(phwnd:out:required:noconstattr:Windows.Win32.Foundation.HWND[Struct]/ptr1/Mutable/underlying=void/ptr1/Mutable)->Windows.Win32.Foundation.HRESULT[Struct]/ptr0/Unspecified/underlying=i32/ptr0/Unspecified:plain_hresult:not_enumerator_next"
+        }
+      },
+      "validatedMetadata": [
+        {
+          "package": "Microsoft.Windows.SDK.Win32Metadata",
+          "sha256": "B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D",
+          "version": "71.0.14-preview"
+        }
+      ]
+    },
+    {
+      "contract": {
+        "cleanup": "none",
+        "handle": "Windows.Win32.Foundation.HWND",
+        "ownership": "borrowed",
+        "parameterIndex": 0,
+        "receivingCell": "required"
+      },
+      "entryId": "windows.borrowed-hwnd-output.entry.windows-win32-ui-tabletpc.itextinputpanel.6b6a65a56af346c2b6ea56cd1f80df71.get-attachededitwindow.slot-3.param-0-attachededitwindow.v1",
+      "evidence": [
+        {
+          "file": null,
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/peninputpanel/nf-peninputpanel-itextinputpanel-get_attachededitwindow"
+        }
+      ],
+      "familyId": "windows.borrowed-hwnd-output.v1",
+      "kind": "borrowed-handle",
+      "reason": "Microsoft documents this property as retrieving the edit window already attached to the text input panel; attachment does not transfer window ownership",
+      "selector": {
+        "absoluteSlot": 3,
+        "declaringIid": "6b6a65a5-6af3-46c2-b6ea-56cd1f80df71",
+        "interface": {
+          "iid": "6b6a65a5-6af3-46c2-b6ea-56cd1f80df71",
+          "name": "ITextInputPanel",
+          "namespace": "Windows.Win32.UI.TabletPC"
+        },
+        "method": "get_AttachedEditWindow",
+        "parameterCount": 1,
+        "parameters": [
+          {
+            "constAttribute": false,
+            "constness": "mutable",
+            "direction": "out",
+            "index": 0,
+            "name": "AttachedEditWindow",
+            "nativeType": "Windows.Win32.Foundation.HWND",
+            "optional": false,
+            "pointerDepth": 1
+          }
+        ],
+        "sourceFingerprint": "5CFFC0F8277CF4CFEBD0DF52CE01CAEC77547C214502F5A8FDDCDB5B1F205C8F",
+        "sourceShape": {
+          "format": "raw-method-shape-v1",
+          "value": "get_AttachedEditWindow@3(AttachedEditWindow:out:required:noconstattr:Windows.Win32.Foundation.HWND[Struct]/ptr1/Mutable/underlying=void/ptr1/Mutable)->Windows.Win32.Foundation.HRESULT[Struct]/ptr0/Unspecified/underlying=i32/ptr0/Unspecified:plain_hresult:not_enumerator_next"
+        }
+      },
+      "validatedMetadata": [
+        {
+          "package": "Microsoft.Windows.SDK.Win32Metadata",
+          "sha256": "B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D",
+          "version": "71.0.14-preview"
+        }
+      ]
+    },
+    {
+      "contract": {
+        "cleanup": "none",
+        "handle": "Windows.Win32.Foundation.HWND",
+        "ownership": "borrowed",
+        "parameterIndex": 0,
+        "receivingCell": "required"
+      },
+      "entryId": "windows.borrowed-hwnd-output.entry.windows-win32-ui-textservices.itfcontextowner.aa80e80c202111d293e00060b067b86e.getwnd.slot-7.param-0-phwnd.v1",
+      "evidence": [
+        {
+          "file": null,
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/msctf/nf-msctf-itfcontextowner-getwnd"
+        }
+      ],
+      "familyId": "windows.borrowed-hwnd-output.v1",
+      "kind": "borrowed-handle",
+      "reason": "Microsoft documents this as retrieving the existing owner window associated with the text context; ownership remains with the context owner",
+      "selector": {
+        "absoluteSlot": 7,
+        "declaringIid": "aa80e80c-2021-11d2-93e0-0060b067b86e",
+        "interface": {
+          "iid": "aa80e80c-2021-11d2-93e0-0060b067b86e",
+          "name": "ITfContextOwner",
+          "namespace": "Windows.Win32.UI.TextServices"
+        },
+        "method": "GetWnd",
+        "parameterCount": 1,
+        "parameters": [
+          {
+            "constAttribute": false,
+            "constness": "mutable",
+            "direction": "out",
+            "index": 0,
+            "name": "phwnd",
+            "nativeType": "Windows.Win32.Foundation.HWND",
+            "optional": false,
+            "pointerDepth": 1
+          }
+        ],
+        "sourceFingerprint": "02FCA45184CEBA85A04F9EBC7345C23D1801D73787FFEE14ACBCFC8629676406",
+        "sourceShape": {
+          "format": "raw-method-shape-v1",
+          "value": "GetWnd@7(phwnd:out:required:noconstattr:Windows.Win32.Foundation.HWND[Struct]/ptr1/Mutable/underlying=void/ptr1/Mutable)->Windows.Win32.Foundation.HRESULT[Struct]/ptr0/Unspecified/underlying=i32/ptr0/Unspecified:plain_hresult:not_enumerator_next"
+        }
+      },
+      "validatedMetadata": [
+        {
+          "package": "Microsoft.Windows.SDK.Win32Metadata",
+          "sha256": "B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D",
+          "version": "71.0.14-preview"
+        }
+      ]
+    },
+    {
+      "contract": {
+        "cleanup": "none",
+        "handle": "Windows.Win32.Foundation.HWND",
+        "ownership": "borrowed",
+        "parameterIndex": 0,
+        "receivingCell": "required"
+      },
+      "entryId": "windows.borrowed-hwnd-output.entry.windows-win32-ui-textservices.itfcontextview.2433bf8e0f9b435cba2c180611978c30.getwnd.slot-6.param-0-phwnd.v1",
+      "evidence": [
+        {
+          "file": null,
+          "kind": "microsoft-learn",
+          "url": "https://learn.microsoft.com/windows/win32/api/msctf/nf-msctf-itfcontextview-getwnd"
+        }
+      ],
+      "familyId": "windows.borrowed-hwnd-output.v1",
+      "kind": "borrowed-handle",
+      "reason": "Microsoft documents this as retrieving the existing window represented by the text context view; the view retains window ownership",
+      "selector": {
+        "absoluteSlot": 6,
+        "declaringIid": "2433bf8e-0f9b-435c-ba2c-180611978c30",
+        "interface": {
+          "iid": "2433bf8e-0f9b-435c-ba2c-180611978c30",
+          "name": "ITfContextView",
+          "namespace": "Windows.Win32.UI.TextServices"
+        },
+        "method": "GetWnd",
+        "parameterCount": 1,
+        "parameters": [
+          {
+            "constAttribute": false,
+            "constness": "mutable",
+            "direction": "out",
+            "index": 0,
+            "name": "phwnd",
+            "nativeType": "Windows.Win32.Foundation.HWND",
+            "optional": false,
+            "pointerDepth": 1
+          }
+        ],
+        "sourceFingerprint": "A554F9967C5FED3D969A219CB8894C6F9EEA650E73DA83C5BA9A26A164EA40C0",
+        "sourceShape": {
+          "format": "raw-method-shape-v1",
+          "value": "GetWnd@6(phwnd:out:required:noconstattr:Windows.Win32.Foundation.HWND[Struct]/ptr1/Mutable/underlying=void/ptr1/Mutable)->Windows.Win32.Foundation.HRESULT[Struct]/ptr0/Unspecified/underlying=i32/ptr0/Unspecified:plain_hresult:not_enumerator_next"
+        }
+      },
+      "validatedMetadata": [
+        {
+          "package": "Microsoft.Windows.SDK.Win32Metadata",
+          "sha256": "B64EE4818A7ED9F9D135038D58C51BD08369184D4D5ED428F20E9DE55DF8121D",
+          "version": "71.0.14-preview"
+        }
+      ]
+    }
+  ],
+  "schemaVersion": 2
+}

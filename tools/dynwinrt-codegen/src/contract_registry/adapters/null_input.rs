@@ -1,8 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use std::sync::OnceLock;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ExactNullInputEvidence {
+    pub selector: &'static crate::contract_registry::ContractSelector,
     pub declaring_namespace: &'static str,
     pub declaring_interface: &'static str,
     pub declaring_iid: &'static str,
@@ -39,37 +42,31 @@ impl ExactNullInputEvidence {
     }
 }
 
-const EXACT_NULL_INPUTS: &[ExactNullInputEvidence] = &[
-    ExactNullInputEvidence {
-        declaring_namespace: "Windows.Win32.System.Com.StructuredStorage",
-        declaring_interface: "IStorage",
-        declaring_iid: "0000000b-0000-0000-c000-000000000046",
-        method_name: "OpenStream",
-        vtable_index: 4,
-        parameter_count: 5,
-        parameter_index: 1,
-        parameter_name: "reserved1",
-        source_fingerprint: "A72D743B32CCE55D17F522F6695095CF08BBCDCF4FA54E29E3275B24B30716F0",
-        reason: "IStorage::OpenStream requires reserved1 to be native null",
-        citation: "https://learn.microsoft.com/windows/win32/api/objidl/nf-objidl-istorage-openstream",
-    },
-    ExactNullInputEvidence {
-        declaring_namespace: "Windows.Win32.System.Com.StructuredStorage",
-        declaring_interface: "IStorage",
-        declaring_iid: "0000000b-0000-0000-c000-000000000046",
-        method_name: "EnumElements",
-        vtable_index: 11,
-        parameter_count: 4,
-        parameter_index: 1,
-        parameter_name: "reserved2",
-        source_fingerprint: "77D49C81B42D6B6961239D06E42A8728EC4CDDDFFF0A0174DD3FC248D17071C6",
-        reason: "IStorage::EnumElements requires reserved2 to be native null",
-        citation: "https://learn.microsoft.com/windows/win32/api/objidl/nf-objidl-istorage-enumelements",
-    },
-];
-
-pub(crate) const fn entries() -> &'static [ExactNullInputEvidence] {
-    EXACT_NULL_INPUTS
+pub(crate) fn entries() -> &'static [ExactNullInputEvidence] {
+    static EVIDENCE: OnceLock<Vec<ExactNullInputEvidence>> = OnceLock::new();
+    EVIDENCE.get_or_init(|| {
+        crate::contract_registry::null_input_contracts()
+            .expect("embedded null-input contract registry must validate")
+            .iter()
+            .map(|entry| {
+                let selector = &entry.selector;
+                ExactNullInputEvidence {
+                    selector,
+                    declaring_namespace: &selector.interface.namespace,
+                    declaring_interface: &selector.interface.name,
+                    declaring_iid: &selector.declaring_iid,
+                    method_name: &selector.method,
+                    vtable_index: selector.absolute_slot,
+                    parameter_count: selector.parameter_count,
+                    parameter_index: entry.contract.parameter_index,
+                    parameter_name: &selector.parameters[entry.contract.parameter_index].name,
+                    source_fingerprint: &selector.source_fingerprint,
+                    reason: &entry.reason,
+                    citation: entry.microsoft_citation(),
+                }
+            })
+            .collect()
+    })
 }
 
 #[cfg(test)]

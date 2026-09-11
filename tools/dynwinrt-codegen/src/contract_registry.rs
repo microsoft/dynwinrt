@@ -9,12 +9,24 @@ use std::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+pub(crate) mod adapters;
+mod families;
+pub(crate) use families::*;
+#[cfg(test)]
+mod migration_tests;
+
 const MANIFEST_JSON: &str = include_str!("../contracts/classic-com/manifest.json");
 const SCHEMA_JSON: &str = include_str!("../contracts/classic-com/schema.json");
 const CONDITIONAL_OUTPUTS_JSON: &str =
     include_str!("../contracts/classic-com/conditional-outputs.json");
 const OWNERSHIP_OUTPUTS_JSON: &str =
     include_str!("../contracts/classic-com/ownership-outputs.json");
+const SAFEARRAYS_JSON: &str = include_str!("../contracts/classic-com/safearrays.json");
+const NULL_INPUTS_JSON: &str = include_str!("../contracts/classic-com/null-inputs.json");
+const PARAMETER_DIRECTIONS_JSON: &str =
+    include_str!("../contracts/classic-com/parameter-directions.json");
+const BORROWED_HANDLES_JSON: &str = include_str!("../contracts/classic-com/borrowed-handles.json");
+const ENUMERATORS_JSON: &str = include_str!("../contracts/classic-com/enumerators.json");
 const PINNED_METADATA_PACKAGE: &str = "Microsoft.Windows.SDK.Win32Metadata";
 const PINNED_METADATA_VERSION: &str = "71.0.14-preview";
 const PINNED_METADATA_SHA256: &str =
@@ -439,53 +451,11 @@ pub(crate) fn validate_exact_entry_catalog(
 }
 
 pub(crate) fn statically_declared_exact_entry_ids() -> Result<BTreeSet<String>, String> {
-    let mut ids = BTreeSet::new();
+    let mut ids = registry()?.exact_entry_ids();
     ids.extend(
         crate::com_metadata::borrowed::all_evidence()
             .iter()
             .map(|entry| crate::com_metadata::borrowed::catalog_entry(entry).entry_id),
-    );
-    ids.extend(
-        crate::com_safe_array_registry::all_safe_array_evidence()
-            .iter()
-            .map(crate::com_metadata::RawSafeArrayEvidence::entry_id),
-    );
-    ids.extend(
-        crate::com_borrowed_handle_registry::BorrowedHwndOutputEvidence::entries()
-            .iter()
-            .map(crate::com_borrowed_handle_registry::BorrowedHwndOutputEvidence::entry_id),
-    );
-    ids.extend(
-        crate::com_enumerator_registry::contracts()
-            .iter()
-            .filter(|contract| !contract.uses_generic_standard())
-            .map(crate::com_enumerator_registry::EnumeratorContract::entry_id),
-    );
-    ids.extend(
-        crate::com_null_input_registry::entries()
-            .iter()
-            .map(crate::com_null_input_registry::ExactNullInputEvidence::entry_id),
-    );
-    ids.extend(
-        crate::com_parameter_direction_registry::entries()
-            .iter()
-            .map(crate::com_parameter_direction_registry::ExactOutParameterEvidence::entry_id),
-    );
-    let registry = REGISTRY
-        .get_or_init(load_registry)
-        .as_ref()
-        .map_err(Clone::clone)?;
-    ids.extend(
-        registry
-            .conditional_outputs
-            .iter()
-            .map(|entry| entry.entry_id.clone()),
-    );
-    ids.extend(
-        registry
-            .ownership_outputs
-            .iter()
-            .map(|entry| entry.entry_id.clone()),
     );
     ids.extend(
         ADDITIONAL_EXACT_ENTRY_IDS
@@ -566,45 +536,40 @@ struct RegistryManifestFile {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-struct ConditionalOutputFile {
+struct ContractFile<T> {
     schema_version: u32,
-    contracts: Vec<ConditionalOutputContract>,
+    contracts: Vec<T>,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-struct OwnershipOutputFile {
-    schema_version: u32,
-    contracts: Vec<OwnershipOutputContract>,
-}
+type ConditionalOutputFile = ContractFile<ConditionalOutputContract>;
+type OwnershipOutputFile = ContractFile<OwnershipOutputContract>;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub(crate) struct ConditionalOutputContract {
+pub(crate) struct EvidenceContract<T> {
     pub entry_id: String,
     pub family_id: ExactFamilyId,
     pub kind: ContractKind,
     pub reason: String,
     pub selector: ContractSelector,
-    pub contract: ConditionalOutputSemantics,
+    pub contract: T,
     pub evidence: Vec<EvidenceCitation>,
     pub validated_metadata: Vec<ValidatedMetadata>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub(crate) struct OwnershipOutputContract {
-    pub entry_id: String,
-    pub family_id: ExactFamilyId,
-    pub kind: ContractKind,
-    pub reason: String,
-    pub selector: ContractSelector,
-    pub contract: OutputOwnershipSemantics,
-    pub evidence: Vec<EvidenceCitation>,
-    pub validated_metadata: Vec<ValidatedMetadata>,
+pub(crate) type ConditionalOutputContract = EvidenceContract<ConditionalOutputSemantics>;
+pub(crate) type OwnershipOutputContract = EvidenceContract<OutputOwnershipSemantics>;
+
+impl<T> EvidenceContract<T> {
+    pub(crate) fn microsoft_citation(&self) -> &str {
+        self.evidence[0]
+            .url
+            .as_deref()
+            .expect("validated migrated evidence must retain its Microsoft citation")
+    }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub(crate) struct ContractSelector {
     pub interface: InterfaceSelector,
@@ -614,9 +579,46 @@ pub(crate) struct ContractSelector {
     pub parameter_count: usize,
     pub parameters: Vec<ParameterSelector>,
     pub source_fingerprint: String,
+    #[serde(default, deserialize_with = "present_source_shape")]
+    pub source_shape: Option<SourceShape>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+fn present_source_shape<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<SourceShape>, D::Error> {
+    SourceShape::deserialize(deserializer).map(Some)
+}
+
+fn required_nullable<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
+    deserializer: D,
+) -> Result<Option<T>, D::Error> {
+    Option::<T>::deserialize(deserializer)
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub(crate) struct SourceShape {
+    pub format: SourceShapeFormat,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq)]
+pub(crate) enum SourceShapeFormat {
+    #[serde(rename = "raw-method-shape-v1")]
+    RawMethodShapeV1,
+}
+
+impl ContractSelector {
+    pub(crate) fn raw_method_shape(&self) -> &str {
+        &self
+            .source_shape
+            .as_ref()
+            .expect("validated shape-based contract must have a source shape")
+            .value
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub(crate) struct InterfaceSelector {
     pub namespace: String,
@@ -624,7 +626,7 @@ pub(crate) struct InterfaceSelector {
     pub iid: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub(crate) struct ParameterSelector {
     pub index: usize,
@@ -654,7 +656,9 @@ pub(crate) struct ConditionalOutputSemantics {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub(crate) struct OutputMode {
     pub flags: i32,
+    #[serde(deserialize_with = "required_nullable")]
     pub output_parameter_index: Option<usize>,
+    #[serde(deserialize_with = "required_nullable")]
     pub option_name: Option<String>,
 }
 
@@ -696,11 +700,13 @@ pub(crate) enum OutputOwnership {
     OwnedComPlusOne,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub(crate) struct EvidenceCitation {
     pub kind: EvidenceSourceKind,
+    #[serde(deserialize_with = "required_nullable")]
     pub url: Option<String>,
+    #[serde(deserialize_with = "required_nullable")]
     pub file: Option<String>,
 }
 
@@ -716,9 +722,44 @@ pub(crate) struct ValidatedMetadata {
 struct Registry {
     conditional_outputs: Vec<ConditionalOutputContract>,
     ownership_outputs: Vec<OwnershipOutputContract>,
+    safe_arrays: Vec<SafeArrayContract>,
+    null_inputs: Vec<NullInputContract>,
+    parameter_directions: Vec<ParameterDirectionContract>,
+    borrowed_handles: Vec<BorrowedHandleContract>,
+    enumerators: Vec<EnumeratorContract>,
 }
 
 static REGISTRY: OnceLock<Result<Registry, String>> = OnceLock::new();
+
+fn registry() -> Result<&'static Registry, String> {
+    REGISTRY
+        .get_or_init(load_registry)
+        .as_ref()
+        .map_err(Clone::clone)
+}
+
+impl Registry {
+    fn exact_entry_ids(&self) -> BTreeSet<String> {
+        fn ids<T>(entries: &[EvidenceContract<T>]) -> impl Iterator<Item = String> + '_ {
+            entries.iter().map(|entry| entry.entry_id.clone())
+        }
+        ids(&self.conditional_outputs)
+            .chain(ids(&self.ownership_outputs))
+            .chain(ids(&self.safe_arrays))
+            .chain(ids(&self.null_inputs))
+            .chain(ids(&self.parameter_directions))
+            .chain(ids(&self.borrowed_handles))
+            .chain(
+                self.enumerators
+                    .iter()
+                    .filter(|entry| {
+                        entry.contract.evidence_source == EnumeratorEvidenceSource::ExactRegistry
+                    })
+                    .map(|entry| entry.entry_id.clone()),
+            )
+            .collect()
+    }
+}
 
 #[cfg(test)]
 pub(crate) fn conditional_output_contract(
@@ -752,24 +793,32 @@ pub(crate) fn ownership_output_contracts() -> Result<&'static [OwnershipOutputCo
     Ok(&registry.ownership_outputs)
 }
 
+pub(crate) fn safe_array_contracts() -> Result<&'static [SafeArrayContract], String> {
+    Ok(&registry()?.safe_arrays)
+}
+
+pub(crate) fn null_input_contracts() -> Result<&'static [NullInputContract], String> {
+    Ok(&registry()?.null_inputs)
+}
+
+pub(crate) fn parameter_direction_contracts()
+-> Result<&'static [ParameterDirectionContract], String> {
+    Ok(&registry()?.parameter_directions)
+}
+
+pub(crate) fn borrowed_handle_contracts() -> Result<&'static [BorrowedHandleContract], String> {
+    Ok(&registry()?.borrowed_handles)
+}
+
+pub(crate) fn enumerator_contracts() -> Result<&'static [EnumeratorContract], String> {
+    Ok(&registry()?.enumerators)
+}
+
 pub(crate) fn validate_registry_usage(consumed_ids: &BTreeSet<String>) -> Result<(), String> {
-    let registry = REGISTRY
-        .get_or_init(load_registry)
-        .as_ref()
-        .map_err(Clone::clone)?;
-    for entry in &registry.conditional_outputs {
-        if !consumed_ids.contains(&entry.entry_id) {
+    for entry_id in registry()?.exact_entry_ids() {
+        if !consumed_ids.contains(&entry_id) {
             return Err(format!(
-                "Classic COM contract registry entry '{}' is unused by the loaded metadata",
-                entry.entry_id
-            ));
-        }
-    }
-    for entry in &registry.ownership_outputs {
-        if !consumed_ids.contains(&entry.entry_id) {
-            return Err(format!(
-                "Classic COM contract registry entry '{}' is unused by the loaded metadata",
-                entry.entry_id
+                "Classic COM contract registry entry '{entry_id}' is unused by the loaded metadata"
             ));
         }
     }
@@ -779,7 +828,77 @@ pub(crate) fn validate_registry_usage(consumed_ids: &BTreeSet<String>) -> Result
 fn load_registry() -> Result<Registry, String> {
     serde_json::from_str::<serde_json::Value>(SCHEMA_JSON)
         .map_err(|error| format!("Invalid Classic COM contract JSON schema: {error}"))?;
-    let manifest: RegistryManifest = serde_json::from_str(MANIFEST_JSON)
+    validate_manifest(MANIFEST_JSON, &COMPILED_FILES)?;
+    let file: ConditionalOutputFile =
+        parse_contract_file(CONDITIONAL_OUTPUTS_JSON, "conditional-output")?;
+    validate_conditional_outputs(&file.contracts)?;
+    let ownership_file: OwnershipOutputFile =
+        parse_contract_file(OWNERSHIP_OUTPUTS_JSON, "ownership-output")?;
+    validate_ownership_outputs(&ownership_file.contracts)?;
+    Ok(Registry {
+        conditional_outputs: file.contracts,
+        ownership_outputs: ownership_file.contracts,
+        safe_arrays: families::load_family(SAFEARRAYS_JSON, "safearrays.json")?,
+        null_inputs: families::load_family(NULL_INPUTS_JSON, "null-inputs.json")?,
+        parameter_directions: families::load_family(
+            PARAMETER_DIRECTIONS_JSON,
+            "parameter-directions.json",
+        )?,
+        borrowed_handles: families::load_family(BORROWED_HANDLES_JSON, "borrowed-handles.json")?,
+        enumerators: families::load_family(ENUMERATORS_JSON, "enumerators.json")?,
+    })
+}
+
+const COMPILED_FILES: [&str; 7] = [
+    CONDITIONAL_OUTPUTS_JSON,
+    OWNERSHIP_OUTPUTS_JSON,
+    SAFEARRAYS_JSON,
+    NULL_INPUTS_JSON,
+    PARAMETER_DIRECTIONS_JSON,
+    BORROWED_HANDLES_JSON,
+    ENUMERATORS_JSON,
+];
+
+const COMPILED_FILE_IDENTITIES: [(&str, ContractKind, ExactFamilyId); 7] = [
+    (
+        "conditional-outputs.json",
+        ContractKind::ConditionalOutput,
+        ExactFamilyId::ConditionalOutput,
+    ),
+    (
+        "ownership-outputs.json",
+        ContractKind::Ownership,
+        ExactFamilyId::Ownership,
+    ),
+    (
+        "safearrays.json",
+        ContractKind::Safearray,
+        ExactFamilyId::SafeArray,
+    ),
+    (
+        "null-inputs.json",
+        ContractKind::NullInput,
+        ExactFamilyId::ReservedNullInput,
+    ),
+    (
+        "parameter-directions.json",
+        ContractKind::ParameterDirection,
+        ExactFamilyId::ParameterDirection,
+    ),
+    (
+        "borrowed-handles.json",
+        ContractKind::BorrowedHandle,
+        ExactFamilyId::BorrowedHwndOutput,
+    ),
+    (
+        "enumerators.json",
+        ContractKind::EnumeratorNext,
+        ExactFamilyId::EnumeratorException,
+    ),
+];
+
+fn validate_manifest(manifest_json: &str, sources: &[&str; 7]) -> Result<(), String> {
+    let manifest: RegistryManifest = serde_json::from_str(manifest_json)
         .map_err(|error| format!("Invalid Classic COM contract manifest: {error}"))?;
     if manifest.schema_version != 2 {
         return Err(format!(
@@ -787,60 +906,41 @@ fn load_registry() -> Result<Registry, String> {
             manifest.schema_version
         ));
     }
-    if manifest.files.len() != 2
-        || manifest.files[0].path != "conditional-outputs.json"
-        || manifest.files[0].kind != ContractKind::ConditionalOutput
-        || manifest.files[0].family_ids != [ExactFamilyId::ConditionalOutput]
-        || manifest.files[1].path != "ownership-outputs.json"
-        || manifest.files[1].kind != ContractKind::Ownership
-        || manifest.files[1].family_ids != [ExactFamilyId::Ownership]
+    if manifest.files.len() != COMPILED_FILE_IDENTITIES.len()
+        || manifest.files.iter().zip(COMPILED_FILE_IDENTITIES).any(
+            |(file, (path, kind, family))| {
+                file.path != path || file.kind != kind || file.family_ids != [family]
+            },
+        )
     {
         return Err("Classic COM contract manifest does not list the compiled data files".into());
     }
-    validate_sha256(
-        &manifest.files[0].sha256,
-        "conditional-outputs.json manifest file hash",
-    )?;
-    validate_sha256(
-        &manifest.files[1].sha256,
-        "ownership-outputs.json manifest file hash",
-    )?;
-    let conditional_hash = format!("{:X}", Sha256::digest(CONDITIONAL_OUTPUTS_JSON.as_bytes()));
-    if conditional_hash != manifest.files[0].sha256 {
-        return Err(format!(
-            "Classic COM contract file hash mismatch for conditional-outputs.json: expected {}, found {conditional_hash}",
-            manifest.files[0].sha256
-        ));
+    for (file, source) in manifest.files.iter().zip(sources) {
+        validate_sha256(&file.sha256, &format!("{} manifest file hash", file.path))?;
+        let hash = format!("{:X}", Sha256::digest(source.as_bytes()));
+        if hash != file.sha256 {
+            return Err(format!(
+                "Classic COM contract file hash mismatch for {}: expected {}, found {hash}",
+                file.path, file.sha256
+            ));
+        }
     }
-    let ownership_hash = format!("{:X}", Sha256::digest(OWNERSHIP_OUTPUTS_JSON.as_bytes()));
-    if ownership_hash != manifest.files[1].sha256 {
-        return Err(format!(
-            "Classic COM contract file hash mismatch for ownership-outputs.json: expected {}, found {ownership_hash}",
-            manifest.files[1].sha256
-        ));
-    }
-    let file: ConditionalOutputFile = serde_json::from_str(CONDITIONAL_OUTPUTS_JSON)
-        .map_err(|error| format!("Invalid conditional-output contracts: {error}"))?;
+    Ok(())
+}
+
+fn parse_contract_file<T: serde::de::DeserializeOwned>(
+    json: &str,
+    name: &str,
+) -> Result<ContractFile<T>, String> {
+    let file: ContractFile<T> =
+        serde_json::from_str(json).map_err(|error| format!("Invalid {name} contracts: {error}"))?;
     if file.schema_version != 2 {
         return Err(format!(
-            "Unsupported conditional-output contract schema {}",
+            "Unsupported {name} contract schema {}",
             file.schema_version
         ));
     }
-    validate_conditional_outputs(&file.contracts)?;
-    let ownership_file: OwnershipOutputFile = serde_json::from_str(OWNERSHIP_OUTPUTS_JSON)
-        .map_err(|error| format!("Invalid ownership-output contracts: {error}"))?;
-    if ownership_file.schema_version != 2 {
-        return Err(format!(
-            "Unsupported ownership-output contract schema {}",
-            ownership_file.schema_version
-        ));
-    }
-    validate_ownership_outputs(&ownership_file.contracts)?;
-    Ok(Registry {
-        conditional_outputs: file.contracts,
-        ownership_outputs: ownership_file.contracts,
-    })
+    Ok(file)
 }
 
 fn validate_ownership_outputs(entries: &[OwnershipOutputContract]) -> Result<(), String> {
@@ -894,6 +994,12 @@ fn validate_ownership_outputs(entries: &[OwnershipOutputContract]) -> Result<(),
             &entry.evidence,
             &entry.validated_metadata,
         )?;
+        if entry.selector.source_shape.is_some() {
+            return Err(format!(
+                "Contract '{}' uses an unsupported source fingerprint format",
+                entry.entry_id
+            ));
+        }
         let valid_ownership = matches!(
             (entry.contract.ownership, entry.contract.cleanup),
             (
@@ -945,30 +1051,50 @@ fn validate_contract_selector(
         &selector.source_fingerprint,
         &format!("source fingerprint for '{entry_id}'"),
     )?;
-    if selector.interface.iid != selector.declaring_iid
+    validate_guid(&selector.interface.iid, entry_id)?;
+    validate_guid(&selector.declaring_iid, entry_id)?;
+    if selector.interface.namespace.is_empty()
+        || selector.interface.name.is_empty()
+        || selector.method.is_empty()
+        || selector.absolute_slot < 3
+        || selector.interface.iid != selector.declaring_iid
         || selector.parameters.len() != selector.parameter_count
         || selector
             .parameters
             .iter()
             .enumerate()
-            .any(|(index, parameter)| parameter.index != index)
+            .any(|(index, parameter)| {
+                parameter.index != index
+                    || parameter.name.is_empty()
+                    || parameter.native_type.is_empty()
+                    || !matches!(parameter.direction.as_str(), "in" | "out" | "inout")
+                    || !matches!(
+                        parameter.constness.as_str(),
+                        "const" | "mutable" | "mixed" | "unspecified"
+                    )
+            })
     {
         return Err(format!(
             "Contract '{entry_id}' parameter selector is incomplete, unordered, or has mismatched IIDs"
         ));
     }
-    if evidence.is_empty()
-        || evidence.iter().any(|citation| match citation.kind {
-            EvidenceSourceKind::MicrosoftLearn => {
-                citation.url.as_deref().is_none_or(str::is_empty) || citation.file.is_some()
+    if let Some(shape) = &selector.source_shape {
+        let hash = match shape.format {
+            SourceShapeFormat::RawMethodShapeV1 => {
+                format!("{:X}", Sha256::digest(shape.value.as_bytes()))
             }
-            EvidenceSourceKind::SdkHeader => {
-                citation.file.as_deref().is_none_or(str::is_empty) || citation.url.is_some()
-            }
-        })
-    {
-        return Err(format!("Contract '{entry_id}' has no usable citation"));
+        };
+        if hash != selector.source_fingerprint
+            || !shape
+                .value
+                .starts_with(&format!("{}@{}(", selector.method, selector.absolute_slot))
+        {
+            return Err(format!(
+                "Contract '{entry_id}' source shape does not match its selector/fingerprint"
+            ));
+        }
     }
+    validate_citations(entry_id, evidence)?;
     if validated_metadata.is_empty() {
         return Err(format!(
             "Contract '{entry_id}' has no validated metadata identity"
@@ -997,11 +1123,53 @@ fn validate_contract_selector(
     Ok(())
 }
 
+fn validate_guid(value: &str, entry_id: &str) -> Result<(), String> {
+    if value.len() != 36
+        || value.bytes().enumerate().any(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                byte != b'-'
+            } else {
+                !byte.is_ascii_hexdigit()
+            }
+        })
+    {
+        return Err(format!(
+            "Contract '{entry_id}' has an invalid GUID '{value}'"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_citations(entry_id: &str, evidence: &[EvidenceCitation]) -> Result<(), String> {
+    if evidence.is_empty()
+        || evidence.iter().any(|citation| match citation.kind {
+            EvidenceSourceKind::MicrosoftLearn => {
+                !citation
+                    .url
+                    .as_deref()
+                    .is_some_and(|url| url.starts_with("https://learn.microsoft.com/"))
+                    || citation.file.is_some()
+            }
+            EvidenceSourceKind::SdkHeader => {
+                citation.file.as_deref().is_none_or(str::is_empty) || citation.url.is_some()
+            }
+        })
+    {
+        return Err(format!(
+            "Contract '{entry_id}' has no usable authoritative citation"
+        ));
+    }
+    Ok(())
+}
+
 fn validate_conditional_outputs(entries: &[ConditionalOutputContract]) -> Result<(), String> {
     let mut ids = BTreeSet::new();
     let mut selectors = BTreeMap::new();
     for entry in entries {
-        if entry.kind != ContractKind::ConditionalOutput {
+        if entry.kind != ContractKind::ConditionalOutput
+            || entry.family_id != ExactFamilyId::ConditionalOutput
+            || entry.reason.is_empty()
+        {
             return Err(format!(
                 "Contract '{}' has kind '{}', expected conditional-output",
                 entry.entry_id,
@@ -1034,20 +1202,15 @@ fn validate_conditional_outputs(entries: &[ConditionalOutputContract]) -> Result
                 entry.entry_id
             ));
         }
-        validate_sha256(
-            &entry.selector.source_fingerprint,
-            &format!("source fingerprint for '{}'", entry.entry_id),
+        validate_contract_selector(
+            &entry.entry_id,
+            &entry.selector,
+            &entry.evidence,
+            &entry.validated_metadata,
         )?;
-        if entry.selector.parameters.len() != entry.selector.parameter_count
-            || entry
-                .selector
-                .parameters
-                .iter()
-                .enumerate()
-                .any(|(index, parameter)| parameter.index != index)
-        {
+        if entry.selector.source_shape.is_some() {
             return Err(format!(
-                "Contract '{}' parameter selector is incomplete or unordered",
+                "Contract '{}' uses an unsupported source fingerprint format",
                 entry.entry_id
             ));
         }
@@ -1062,49 +1225,6 @@ fn validate_conditional_outputs(entries: &[ConditionalOutputContract]) -> Result
         if let Some(existing) = selectors.insert(selector_key.clone(), entry.entry_id.clone()) {
             return Err(format!(
                 "Conflicting contract selectors '{existing}' and '{}' for {selector_key}",
-                entry.entry_id
-            ));
-        }
-        if entry.evidence.is_empty()
-            || entry.evidence.iter().any(|citation| match citation.kind {
-                EvidenceSourceKind::MicrosoftLearn => {
-                    citation.url.as_deref().is_none_or(str::is_empty) || citation.file.is_some()
-                }
-                EvidenceSourceKind::SdkHeader => {
-                    citation.file.as_deref().is_none_or(str::is_empty) || citation.url.is_some()
-                }
-            })
-        {
-            return Err(format!(
-                "Contract '{}' has no usable citation",
-                entry.entry_id
-            ));
-        }
-        if entry.validated_metadata.is_empty() {
-            return Err(format!(
-                "Contract '{}' has no validated metadata identity",
-                entry.entry_id
-            ));
-        }
-        for metadata in &entry.validated_metadata {
-            if metadata.package.is_empty() || metadata.version.is_empty() {
-                return Err(format!(
-                    "Contract '{}' has an incomplete metadata identity",
-                    entry.entry_id
-                ));
-            }
-            validate_sha256(
-                &metadata.sha256,
-                &format!("validated metadata hash for '{}'", entry.entry_id),
-            )?;
-        }
-        if !entry.validated_metadata.iter().any(|metadata| {
-            metadata.package == PINNED_METADATA_PACKAGE
-                && metadata.version == PINNED_METADATA_VERSION
-                && metadata.sha256 == PINNED_METADATA_SHA256
-        }) {
-            return Err(format!(
-                "Contract '{}' is not validated against the pinned metadata package/version/hash",
                 entry.entry_id
             ));
         }
@@ -1345,17 +1465,7 @@ mod tests {
                 .contains("unused")
         );
         let registry = load_registry().unwrap();
-        let mut used = registry
-            .conditional_outputs
-            .iter()
-            .map(|entry| entry.entry_id.clone())
-            .chain(
-                registry
-                    .ownership_outputs
-                    .iter()
-                    .map(|entry| entry.entry_id.clone()),
-            )
-            .collect::<BTreeSet<_>>();
+        let mut used = registry.exact_entry_ids();
         assert!(validate_registry_usage(&used).is_ok());
         used.remove(&registry.ownership_outputs[0].entry_id);
         assert!(
