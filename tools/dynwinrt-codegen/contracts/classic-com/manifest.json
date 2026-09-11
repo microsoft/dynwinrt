@@ -4,14 +4,58 @@
     {
       "path": "conditional-outputs.json",
       "kind": "conditional-output",
-      "familyIds": ["wmi.conditional-output.v1"],
+      "familyIds": [
+        "wmi.conditional-output.v1"
+      ],
       "sha256": "01E05134218C12F6E3BC0D0F6DBB6D19E40A553B3EA94266262CC0AC6D720B4C"
     },
     {
       "path": "ownership-outputs.json",
       "kind": "ownership",
-      "familyIds": ["com.ownership.v1"],
+      "familyIds": [
+        "com.ownership.v1"
+      ],
       "sha256": "0D3A9B890BD89710B47487DAF12A1860C02DEE25279D2A82C1D228FB3AE727E6"
+    },
+    {
+      "path": "safearrays.json",
+      "kind": "safearray",
+      "familyIds": [
+        "automation.safearray.v1"
+      ],
+      "sha256": "839CE7E1ECAA4EE1B340A1E1A237698C191E8FD83FEDAC578AEB2CA4FA98114C"
+    },
+    {
+      "path": "null-inputs.json",
+      "kind": "null-input",
+      "familyIds": [
+        "com.reserved-null-input.v1"
+      ],
+      "sha256": "9E8CFA9C2120F6B0B42E92F4562563E96FD0D005083D44DF9FA6478BA27B61EB"
+    },
+    {
+      "path": "parameter-directions.json",
+      "kind": "parameter-direction",
+      "familyIds": [
+        "com.parameter-direction.v1"
+      ],
+      "sha256": "4358A8441AC9FE8EE62E2CFCAD9B949ED3BA384BFDD4081A68CE1D31E2F508B3"
+    },
+    {
+      "path": "borrowed-handles.json",
+      "kind": "borrowed-handle",
+      "familyIds": [
+        "windows.borrowed-hwnd-output.v1"
+      ],
+      "sha256": "1639BC60E73897925D192453E3A1518F6E95A106AE3E242CD682395971EDC449"
+    },
+    {
+      "path": "enumerators.json",
+      "kind": "enumerator-next",
+      "familyIds": [
+        "com.enumerator-next-exception.v1"
+      ],
+      "sha256": "BAABAE6B25A575D54D774429B92BD9D2A970FCE1149234BB386160F62B1AB080"
     }
   ]
 }

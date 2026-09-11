@@ -640,7 +640,7 @@ fn build_report(
         metadata_matched_entry_ids.extend(raw_dependencies.exact_entry_ids);
         registered_entry_records.extend(crate::com_metadata::collect_exact_registry_entries(
             interface,
-        ));
+        )?);
         let safe_result = super::generate_complete_com_interface_files(interface, winmd);
         let safe_complete = safe_result.is_ok();
         let safe_error = safe_result
@@ -1246,6 +1246,7 @@ pub fn classify_interface_methods(
                     interface.interface.namespace, method.metadata_name, method.vtable_index
                 ));
             }
+            crate::com_metadata::validate_migrated_source_shape(method)?;
             let canonical = canonical_method(method);
             Ok(MethodCapability {
                 name: method.metadata_name.clone(),

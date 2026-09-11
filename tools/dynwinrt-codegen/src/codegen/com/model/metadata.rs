@@ -10,6 +10,7 @@ use crate::com_metadata::{
     RawNativeLayoutSet, RawNativeType, RawPacking, RawParamDirection, RawSafeArrayOwnership,
     RawSafeArrayVartype, RawStringEncoding,
 };
+use crate::contract_registry::adapters;
 
 use super::ComModel;
 use super::abi::{
@@ -181,6 +182,11 @@ pub(super) fn map_interface(meta: &ComInterfaceMeta) -> Result<SemanticComInterf
         ));
     }
     interface.validate()?;
+    // Preserve existing semantic diagnostics before checking the newly pinned source shapes.
+    for raw in raw_methods {
+        crate::com_metadata::validate_migrated_source_shape(raw)
+            .map_err(ModelError::InvalidContract)?;
+    }
     Ok(interface)
 }
 
@@ -807,7 +813,7 @@ fn map_param(
             || raw
                 .safe_array_evidence
                 .as_ref()
-                .is_some_and(crate::com_safe_array_registry::safe_array_output_allows_null))
+                .is_some_and(adapters::safearray::safe_array_output_allows_null))
         && is_nullable_type(model, abi_type)?
     {
         Nullability::Nullable
