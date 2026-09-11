@@ -9,6 +9,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+pub(crate) mod adapters;
 mod families;
 pub(crate) use families::*;
 #[cfg(test)]

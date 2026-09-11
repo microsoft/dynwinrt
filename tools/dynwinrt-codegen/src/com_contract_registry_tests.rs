@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 use super::*;
-use crate::contract_registry::{self, ContractSelector};
+use crate::contract_registry::{self, ContractSelector, adapters};
 
 fn configured_index() -> Option<reader::Index> {
     let Ok(winmd) = std::env::var("DYNWINRT_WIN32_WINMD") else {
@@ -343,11 +343,9 @@ fn nullable_safearray_pointees_preserve_required_cells_and_declaring_evidence() 
         assert!(!parameter.optional);
         assert_eq!(parameter.typ.pointer_depth, 2);
         assert_eq!(parameter.direction, RawParamDirection::Out);
-        assert!(
-            crate::com_safe_array_registry::safe_array_output_allows_null(
-                parameter.safe_array_evidence.as_ref().unwrap()
-            )
-        );
+        assert!(adapters::safearray::safe_array_output_allows_null(
+            parameter.safe_array_evidence.as_ref().unwrap()
+        ));
         raw.params[entry.contract.parameter_index].optional = true;
         assert!(validate_attached_safe_array_evidence(&raw).is_err());
     }
@@ -363,7 +361,7 @@ fn nullable_safearray_pointees_preserve_required_cells_and_declaring_evidence() 
         .unwrap();
     assert_eq!(selection.declaring_interface, "ITextProvider");
     let evidence = selection.params[0].safe_array_evidence.as_ref().unwrap();
-    assert!(crate::com_safe_array_registry::safe_array_output_allows_null(evidence));
+    assert!(adapters::safearray::safe_array_output_allows_null(evidence));
     assert!(
         collect_evidence_dependencies(&inherited)
             .exact_entry_ids

@@ -120,6 +120,40 @@ directory at runtime. The manifest allowlists the compiled files, kinds, and
 families and pins each file's SHA-256. Other exact families remain in their
 existing registries; this migration does not externalize every COM contract.
 
+The Rust implementation separates the shared registry from its compatibility
+adapters:
+
+```text
+tools/dynwinrt-codegen/src/
+├── contract_registry.rs
+├── contract_registry/
+│   ├── families.rs
+│   ├── migration_tests.rs
+│   └── adapters/
+│       ├── mod.rs
+│       ├── safearray.rs
+│       ├── null_input.rs
+│       ├── parameter_direction.rs
+│       ├── borrowed_handle.rs
+│       └── enumerator.rs
+└── com_metadata.rs
+```
+
+The JSON files are the only source of facts for these five families.
+`contract_registry.rs` and `families.rs` own the compiled file allowlist,
+schema/typed payload validation, hashes, selectors, and provenance.
+`contract_registry/adapters` provides crate-private, family-specific views for
+the existing Raw metadata model. Its `OnceLock` caches contain only derived
+values; they are not independently maintained registries. There are no old
+top-level module aliases or alternate loading paths.
+
+Raw parsing, attachment, and semantic validation remain in their existing
+layers and order. The metadata-side tests in `com_contract_registry_tests.rs`
+remain a child module of `com_metadata`, where they can exercise private
+parsing/attachment helpers without widening production visibility.
+Unmigrated evidence such as `com_activation_registry.rs` remains separate,
+not disguised as a JSON adapter.
+
 ## Entry format
 
 Each file has a `schemaVersion` and a `contracts` array. For example, this is
@@ -315,9 +349,9 @@ mutable, Out, and pointer-depth two. Other outputs use a `required` pointee;
 inputs use `required-input`. The consumer reads this validated field only
 after exact evidence matching; it does not recognize UIA names or citations.
 
-The five old registry modules now contain derived typed adapters, exact
-lookups, and tests, not fixed evidence arrays. Matching, HRESULT handling,
-ownership lowering, native layout validation, and runtime cleanup remain
+The five modules under `contract_registry/adapters` contain derived typed
+adapters, exact lookups, and tests, not fixed evidence arrays. Matching,
+HRESULT handling, ownership lowering, native layout validation, and runtime cleanup remain
 Rust logic. Newly pinned borrowed/enumerator source shapes are checked after
 existing semantic validation, preserving the more specific allocator and
 ownership diagnostics for already-unsupported inputs. The raw/unsafe
@@ -331,7 +365,10 @@ it does not expand raw classifier support.
 The required flow is:
 
 ```text
-exact evidence entry
+contracts/classic-com JSON evidence
+  -> contract_registry typed loader and validation
+  -> contract_registry/adapters Raw compatibility views
+  -> metadata and semantic contract validation
   -> validated ComMethodContract
   -> projected semantic IR
   -> generic JavaScript renderer

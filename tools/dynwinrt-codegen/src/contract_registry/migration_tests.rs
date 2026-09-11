@@ -461,19 +461,23 @@ fn safearray_nullability_never_weakens_the_receiving_cell() {
         .remove("interfaceIid");
     assert!(validate(ContractKind::Safearray, missing_iid).is_err());
 
-    let entries = crate::com_safe_array_registry::all_safe_array_evidence();
+    let entries = adapters::safearray::all_safe_array_evidence();
     let nullable = entries
         .iter()
-        .filter(|evidence| crate::com_safe_array_registry::safe_array_output_allows_null(evidence))
+        .filter(|evidence| adapters::safearray::safe_array_output_allows_null(evidence))
         .collect::<Vec<_>>();
     assert_eq!(nullable.len(), 4);
     for evidence in nullable {
         let mut changed = evidence.clone();
         changed.citation = "https://learn.microsoft.com/drift";
-        assert!(!crate::com_safe_array_registry::safe_array_output_allows_null(&changed));
+        assert!(!adapters::safearray::safe_array_output_allows_null(
+            &changed
+        ));
         let mut changed = evidence.clone();
         changed.raw_method_shape = "drift";
-        assert!(!crate::com_safe_array_registry::safe_array_output_allows_null(&changed));
+        assert!(!adapters::safearray::safe_array_output_allows_null(
+            &changed
+        ));
     }
 }
 
