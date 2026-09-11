@@ -15,7 +15,7 @@ use super::capability::{
     classify_interface_methods, metadata_set_identity_for_paths, parameter_manual_reasons,
     parameter_pointee_layouts, raw_aggregate_descriptor,
 };
-use super::javascript::naming::camel_case;
+use super::javascript::naming::{camel_case, escape_js_binding_name};
 
 pub const UNSAFE_SUPPORT_SCHEMA_VERSION: u32 = 12;
 
@@ -865,7 +865,7 @@ fn render_method(
     if status == RawClassification::RawManualContract {
         return render_manual_method(method, capability, layouts, registration);
     }
-    let name = safe_identifier(&camel_case(&capability.projected_name));
+    let name = safe_method_identifier(&camel_case(&capability.projected_name));
     let args = method
         .params
         .iter()
@@ -881,6 +881,33 @@ fn render_method(
             registration,
         );
     }
+    let reserved = if exact_interface_outputs.is_empty() {
+        vec!["_out".to_string()]
+    } else {
+        [
+            "_nativeArgs",
+            "_owners",
+            "_error",
+            "_cleanupErrors",
+            "_cleanup",
+            "_index",
+            "_prepareOwnedInterfaceOutput",
+            "_takeOwnedInterfaceOutput",
+            "_cleanupOwnedInterfaceOutput",
+            "WinGuid",
+            "Object",
+            "AggregateError",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .chain(
+            exact_interface_outputs
+                .iter()
+                .map(|(index, _, _)| format!("_ownedOutput{index}")),
+        )
+        .collect()
+    };
+    validate_parameter_identifiers(method, 0..method.params.len(), reserved)?;
     if !exact_interface_outputs.is_empty() {
         let mut js = format!(
             "    /** @unsafe Exact owned COM output slots; each requested slot must start null. */\n    {name}({args}) {{\n        const _nativeArgs = [{}];\n        const _owners = [];\n        try {{\n            _interface.method({}).invokeAll(this._obj, _nativeArgs);\n",
@@ -1054,10 +1081,48 @@ fn render_exact_interface_output_call_method(
         return Err("Exact interface output flags and context must be input parameters".into());
     }
 
-    let name = safe_identifier(&camel_case(&capability.projected_name));
+    let name = safe_method_identifier(&camel_case(&capability.projected_name));
     let flags_name = safe_identifier(&contract.flags_option_name);
     let synchronous_name = safe_identifier(synchronous_output_option_name);
     let semisynchronous_name = safe_identifier(semisynchronous_output_option_name);
+    validate_parameter_identifiers(
+        method,
+        contract.public_input_param_indices.iter().copied(),
+        [
+            "options",
+            "Object",
+            "TypeError",
+            "undefined",
+            "Number",
+            "RangeError",
+            "AggregateError",
+            "WinGuid",
+            "_isSynchronous",
+            "_isSemisynchronous",
+            "_synchronousOutputRecord",
+            "_semisynchronousOutputRecord",
+            "_prepared",
+            "_nativeArgs",
+            "_owners",
+            "_owner",
+            "_error",
+            "_cleanupErrors",
+            "_cleanup",
+            "_index",
+            "__prepareExactWritableSpan",
+            "__validateStrategySpans",
+            "__strategyArgument",
+            "_takeOwnedInterfaceOutput",
+            "_cleanupOwnedInterfaceOutput",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .chain([
+            flags_name.clone(),
+            synchronous_name.clone(),
+            semisynchronous_name.clone(),
+        ]),
+    )?;
     let method_args = if public_args.is_empty() {
         "options".into()
     } else {
@@ -1246,7 +1311,51 @@ fn render_manual_method(
     } else {
         format!("        let {record_declarations};\n")
     };
-    let name = safe_identifier(&camel_case(&capability.projected_name));
+    validate_parameter_identifiers(
+        method,
+        0..method.params.len(),
+        [
+            "DynComRaw",
+            "Object",
+            "AggregateError",
+            "_prepared",
+            "_dispatch",
+            "_out",
+            "_method",
+            "_nativeArgs",
+            "_error",
+            "_cleanupErrors",
+            "_unsafeOutputs",
+            "_index",
+            "_unsafeOutput",
+            "_cleanup",
+            "_primary",
+            "_extracted",
+            "_directResult",
+            "_finishError",
+            "__prepareStrategy",
+            "__prepareWritableStorage",
+            "__strategyArgument",
+            "__assertRawContract",
+            "__validateStrategySpans",
+            "__activateStrategies",
+            "__markDispatchEntered",
+            "__finishStrategy",
+            "__failStrategy",
+            "__releaseExtracted",
+            "__attachUnsafeOutputs",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .chain(
+            prepared_indexes
+                .iter()
+                .map(|index| format!("_manualRecord{index}")),
+        )
+        .chain((0..result_strategies.len()).map(|index| format!("_manualResult{index}")))
+        .chain(method_contract.map(|_| "unsafeContract".to_string())),
+    )?;
+    let name = safe_method_identifier(&camel_case(&capability.projected_name));
     let mut js = format!(
         "    /** @unsafe Manual outbound ABI. Missing facts: {reason_text}. Required strategies: {requirement_text}. */\n    {name}({}) {{\n        const _prepared = [];\n        const _dispatch = DynComRaw.__createDispatchState();\n{record_declarations}        let _out;\n        try {{\n",
         public_args.join(", ")
@@ -1605,6 +1714,22 @@ fn render_return_conversion(
 }
 
 fn safe_identifier(name: &str) -> String {
+    escape_js_binding_name(sanitize_identifier(name))
+}
+
+fn safe_method_identifier(name: &str) -> String {
+    // Class member names are not bindings; retain the existing public spelling.
+    let mut value = sanitize_identifier(name);
+    if matches!(
+        value.as_str(),
+        "class" | "function" | "return" | "default" | "new" | "delete" | "this"
+    ) {
+        value.push('_');
+    }
+    value
+}
+
+fn sanitize_identifier(name: &str) -> String {
     let mut value = name
         .chars()
         .map(|character| {
@@ -1618,13 +1743,46 @@ fn safe_identifier(name: &str) -> String {
     if value.is_empty() || value.as_bytes()[0].is_ascii_digit() {
         value.insert(0, '_');
     }
-    if matches!(
-        value.as_str(),
-        "class" | "function" | "return" | "default" | "new" | "delete" | "this"
-    ) {
-        value.push('_');
-    }
     value
+}
+
+fn validate_parameter_identifiers(
+    method: &RawComMethod,
+    parameter_indices: impl IntoIterator<Item = usize>,
+    generated_bindings: impl IntoIterator<Item = String>,
+) -> Result<(), String> {
+    let mut bindings = BTreeMap::new();
+    let identity = format!(
+        "{}.{}::{}",
+        method.declaring_namespace, method.declaring_interface, method.metadata_name
+    );
+    for name in ["DynCom", "DynComRawPointer", "_interface", "_rawPointer"]
+        .into_iter()
+        .map(str::to_string)
+        .chain(generated_bindings)
+    {
+        if bindings
+            .insert(name.clone(), "generated binding".to_string())
+            .is_some()
+        {
+            return Err(format!(
+                "{identity} has colliding generated binding `{name}`"
+            ));
+        }
+    }
+    for index in parameter_indices {
+        let param = method.params.get(index).ok_or_else(|| {
+            format!("{identity} has an out-of-range public parameter index {index}")
+        })?;
+        let name = safe_identifier(&param.name);
+        let source = format!("parameter {index} (`{}`)", param.name);
+        if let Some(existing) = bindings.insert(name.clone(), source.clone()) {
+            return Err(format!(
+                "{identity} {source} collides with {existing} as JavaScript binding `{name}`"
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1727,6 +1885,161 @@ mod tests {
             }],
             definition_files: BTreeMap::new(),
         }
+    }
+
+    fn parameter_fixture(names: &[&str], manual: bool) -> Result<UnsafeGeneratedOutput, String> {
+        let mut params = names
+            .iter()
+            .map(|name| param(name, raw(RawNativeType::U32, 0), RawParamDirection::In))
+            .collect::<Vec<_>>();
+        if manual {
+            params.push(param(
+                "output",
+                raw(RawNativeType::Void, 2),
+                RawParamDirection::Out,
+            ));
+        }
+        generate_unsafe_interface_files_with_identity(
+            &interface(vec![method("Var", 3, params, raw(RawNativeType::Void, 0))]),
+            identity(),
+        )
+    }
+
+    #[test]
+    fn unsafe_parameters_escape_reserved_and_restricted_bindings() {
+        let names = [
+            "var",
+            "const",
+            "let",
+            "for",
+            "catch",
+            "with",
+            "enum",
+            "implements",
+            "interface",
+            "package",
+            "private",
+            "yield",
+            "await",
+            "arguments",
+            "eval",
+            "debugger",
+        ];
+        for manual in [false, true] {
+            let output = parameter_fixture(&names, manual).unwrap();
+            let js = output.js.unwrap();
+            let dts = output.dts.unwrap();
+            for name in names {
+                assert!(js.contains(&format!("DynCom.u32({name}_)")), "{js}");
+                assert!(dts.contains(&format!("{name}_: number")), "{dts}");
+            }
+            assert!(js.contains("var(var_, const_, let_, for_"));
+            assert!(!js.contains("var_(var_"));
+        }
+    }
+
+    #[test]
+    fn unsafe_parameters_preserve_spelling_and_sanitize_invalid_identifiers() {
+        let names = [
+            "hwndMDI",
+            "dwReserved",
+            "URLValue",
+            "async",
+            "of",
+            "undefined",
+            "_unrelated",
+            "1value",
+            "value-with-hyphen",
+            "",
+            "$value",
+        ];
+        let expected = [
+            "hwndMDI",
+            "dwReserved",
+            "URLValue",
+            "async",
+            "of",
+            "undefined",
+            "_unrelated",
+            "_1value",
+            "value_with_hyphen",
+            "_",
+            "_value",
+        ];
+        for manual in [false, true] {
+            let output = parameter_fixture(&names, manual).unwrap();
+            let js = output.js.unwrap();
+            let dts = output.dts.unwrap();
+            for name in expected {
+                assert!(js.contains(&format!("DynCom.u32({name})")), "{js}");
+                assert!(dts.contains(&format!("{name}: number")), "{dts}");
+            }
+        }
+    }
+
+    #[test]
+    fn unsafe_parameter_collisions_fail_closed_after_escaping_or_sanitizing() {
+        for names in [
+            ["var", "var_"],
+            ["eval", "eval_"],
+            ["value", "value"],
+            ["", "_"],
+            ["1value", "_1value"],
+            ["value-with-hyphen", "value_with_hyphen"],
+            ["$value", "_value"],
+        ] {
+            for manual in [false, true] {
+                let error = parameter_fixture(&names, manual).unwrap_err();
+                assert!(error.contains("Tests.ITest::Var"), "{error}");
+                assert!(error.contains("parameter 1"), "{error}");
+                assert!(error.contains("collides with parameter 0"), "{error}");
+            }
+        }
+    }
+
+    #[test]
+    fn unsafe_parameters_cannot_shadow_generated_bindings() {
+        for name in [
+            "_out",
+            "_interface",
+            "_rawPointer",
+            "DynCom",
+            "DynComRawPointer",
+        ] {
+            let error = parameter_fixture(&[name], false).unwrap_err();
+            assert!(error.contains("collides with generated binding"), "{error}");
+        }
+        for name in [
+            "_prepared",
+            "_dispatch",
+            "_out",
+            "_nativeArgs",
+            "_manualRecord1",
+            "DynComRaw",
+            "__prepareStrategy",
+            "_unsafeOutputs",
+        ] {
+            let error = parameter_fixture(&[name], true).unwrap_err();
+            assert!(error.contains("collides with generated binding"), "{error}");
+        }
+        let output = generate_unsafe_interface_files_with_identity(
+            &interface(vec![method(
+                "GetPointer",
+                3,
+                vec![param(
+                    "unsafeContract",
+                    raw(RawNativeType::U32, 0),
+                    RawParamDirection::In,
+                )],
+                raw(RawNativeType::Void, 1),
+            )]),
+            identity(),
+        );
+        let error = output.unwrap_err();
+        assert!(
+            error.contains("JavaScript binding `unsafeContract`"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -1985,6 +2298,10 @@ mod tests {
         assert!(js.contains("DynComRawStructLayout.fromDescriptor"));
         assert!(js.contains("\\\"kind\\\":\\\"u32\\\""));
         assert!(js.contains("\\\"offset\\\":0"));
+        assert!(js.contains("\\\"x86\\\":"));
+        assert!(js.contains("\\\"x64\\\":"));
+        assert!(js.contains("\\\"arm64\\\":"));
+        assert!(!js.contains("\\\"i686\\\":"));
         assert!(js.contains("_layout0.byValueType()"));
         assert!(
             output

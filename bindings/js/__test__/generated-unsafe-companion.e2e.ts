@@ -3,8 +3,125 @@
 
 import test from 'ava'
 import { spawnSync } from 'node:child_process'
-import { lstatSync, readFileSync, readlinkSync, rmSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs'
+import { lstatSync, readFileSync, readlinkSync, rmSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
+
+test.serial('generated IUIAutomation unsafe companion parses and registers without native calls', (t) => {
+  const winmd = process.env.DYNWINRT_WIN32_WINMD
+  t.truthy(winmd, 'DYNWINRT_WIN32_WINMD is required')
+  const packageRoot = resolve(process.cwd())
+  const output = mkdtempSync(join(packageRoot, 'target-generated-unsafe-uia-'))
+  const locks = ['dynwinrt-generation.lock', 'dynwinrt-lock'].map((suffix) =>
+    join(dirname(output), `.${basename(output)}.${suffix}`),
+  )
+
+  try {
+    const generation = spawnSync(
+      'cargo',
+      [
+        'run',
+        '--quiet',
+        '-p',
+        'dynwinrt-codegen',
+        '--',
+        'generate',
+        '--winmd',
+        winmd!,
+        '--class-name',
+        'Windows.Win32.UI.Accessibility.IUIAutomation',
+        '--output',
+        output,
+      ],
+      { cwd: resolve(packageRoot, '..', '..'), encoding: 'utf8', windowsHide: true },
+    )
+    t.is(generation.status, 0, generation.stderr)
+
+    const modulePath = join(output, 'com', 'unsafe', 'windows', 'win32', 'ui', 'accessibility', 'IUIAutomationUnsafe.js')
+    const syntax = spawnSync(process.execPath, ['--check', modulePath], { encoding: 'utf8', windowsHide: true })
+    t.is(syntax.status, 0, syntax.stderr)
+
+    const packageScope = join(output, 'node_modules', '@microsoft')
+    mkdirSync(packageScope, { recursive: true })
+    symlinkSync(packageRoot, join(packageScope, 'dynwinrt'), 'junction')
+    const assertions = [
+      "const assert = require('node:assert/strict')",
+      "const { readFileSync } = require('node:fs')",
+      "const { DynComRawStructLayout } = require('@microsoft/dynwinrt/com/unsafe/raw')",
+      "assert.equal(typeof IUIAutomationUnsafe, 'function')",
+      'assert.equal(IUIAutomationUnsafe.prototype.rectToVariant.length, 2)',
+      'assert.equal(IUIAutomationUnsafe.prototype.variantToRect.length, 2)',
+      "assert.equal(typeof IUIAutomationUnsafe.prototype.elementFromPoint, 'function')",
+      "assert.deepEqual(Object.keys(IUIAutomationUnsafe.support.methods[0].targets).sort(), ['arm64', 'i686', 'x64'])",
+      `const source = readFileSync(${JSON.stringify(modulePath)}, 'utf8')`,
+      'const descriptors = [...source.matchAll(/^const _layout\\d+ = DynComRawStructLayout.fromDescriptor\\((.+)\\);$/gm)].map(match => JSON.parse(JSON.parse(match[1])))',
+      'assert.ok(descriptors.length > 0)',
+      'for (const descriptor of descriptors) {',
+      "  assert.deepEqual(Object.keys(descriptor).sort(), ['arm64', 'name', 'x64', 'x86'])",
+      '  assert.ok(DynComRawStructLayout.fromDescriptor(JSON.stringify(descriptor)).byValueType())',
+      '}',
+      "const point = descriptors.find(descriptor => descriptor.name === 'Windows.Win32.Foundation.POINT')",
+      'assert.ok(point)',
+      'assert.equal(point.x86.size, 8)',
+      'assert.equal(point.x86.alignment, 4)',
+      'assert.deepEqual(point.x86, point.x64)',
+      'assert.deepEqual(point.x86, point.arm64)',
+      'assert.throws(() => DynComRawStructLayout.fromDescriptor(JSON.stringify({ ...point, i686: point.x86 })).byValueType(), /unknown key `i686`/)',
+      "console.log('uia-import-ok')",
+    ].join('\n')
+    for (const [mode, load] of [
+      ['commonjs', `const { IUIAutomationUnsafe } = require(${JSON.stringify(modulePath)})`],
+      [
+        'module',
+        "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);\n" +
+          `import { IUIAutomationUnsafe } from ${JSON.stringify(pathToFileURL(join(output, 'com', 'unsafe', 'index.mjs')).href)}`,
+      ],
+    ]) {
+      const execution = spawnSync(process.execPath, [`--input-type=${mode}`, '--eval', `${load}\n${assertions}`], {
+        cwd: output,
+        encoding: 'utf8',
+        windowsHide: true,
+      })
+      t.is(execution.status, 0, `${mode}: ${execution.stderr}\n${execution.stdout}`)
+      t.regex(execution.stdout, /uia-import-ok/)
+    }
+
+    const consumer = join(output, 'consumer.ts')
+    writeFileSync(
+      consumer,
+      [
+        `import type { IUIAutomationUnsafe } from './com/unsafe/windows/win32/ui/accessibility/IUIAutomationUnsafe.js'`,
+        `import type { DynWinRtValue, DynComRawMemory } from '@microsoft/dynwinrt/com/unsafe/raw'`,
+        'declare const automation: IUIAutomationUnsafe',
+        'declare const value: DynWinRtValue',
+        'declare const storage: DynComRawMemory',
+        'automation.rectToVariant(value, storage)',
+        'automation.variantToRect(value, storage)',
+        'automation.elementFromPoint(value, storage)',
+      ].join('\n'),
+    )
+    const tsc = spawnSync(
+      process.execPath,
+      [
+        join(packageRoot, 'node_modules', 'typescript', 'bin', 'tsc'),
+        '--noEmit',
+        '--strict',
+        '--module',
+        'Node16',
+        '--moduleResolution',
+        'Node16',
+        '--target',
+        'ES2022',
+        consumer,
+      ],
+      { cwd: packageRoot, encoding: 'utf8', windowsHide: true },
+    )
+    t.is(tsc.status, 0, `${tsc.stdout}\n${tsc.stderr}`)
+  } finally {
+    rmSync(output, { recursive: true, force: true })
+    for (const lock of locks) rmSync(lock, { force: true })
+  }
+})
 
 test.serial('generated safe COM and unsafe WinML companions preserve exact contracts', (t) => {
   const winmd = process.env.DYNWINRT_WIN32_WINMD
