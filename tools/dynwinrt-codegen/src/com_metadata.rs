@@ -1819,12 +1819,8 @@ fn raw_parameters_match_selector(
 ) -> bool {
     raw.params.len() == selector.parameter_count
         && selector.parameters.len() == raw.params.len()
-        && selector
-            .parameters
-            .iter()
-            .zip(&raw.params)
-            .enumerate()
-            .all(|(index, (expected, actual))| {
+        && selector.parameters.iter().zip(&raw.params).enumerate().all(
+            |(index, (expected, actual))| {
                 expected.index == index
                     && expected.name == actual.name
                     && expected.native_type == raw_type_registry_name(&actual.typ)
@@ -1833,7 +1829,8 @@ fn raw_parameters_match_selector(
                     && expected.optional == actual.optional
                     && expected.constness == raw_constness_key(actual.typ.constness)
                     && expected.const_attribute == actual.const_attribute
-            })
+            },
+        )
 }
 
 const fn raw_direction_key(direction: RawParamDirection) -> &'static str {
