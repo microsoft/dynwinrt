@@ -78,9 +78,14 @@ impl Drop for MapiModule {
   }
 }
 
-struct MapiUtilities {
+#[derive(Clone, Copy)]
+struct MapiUtilityFunctions {
   initialize: unsafe extern "system" fn(u32) -> i32,
   deinitialize: unsafe extern "system" fn(),
+}
+
+struct MapiUtilities {
+  functions: MapiUtilityFunctions,
   _module: MapiModule,
 }
 
@@ -93,7 +98,7 @@ const MAPI_INIT_EXPORT: &std::ffi::CStr = c"ScInitMapiUtil";
 #[cfg(not(target_arch = "x86"))]
 const MAPI_DEINIT_EXPORT: &std::ffi::CStr = c"DeinitMapiUtil";
 
-fn mapi_utilities() -> napi::Result<&'static MapiUtilities> {
+fn system_mapi_utilities() -> napi::Result<&'static MapiUtilities> {
   static API: LazyLock<Result<MapiUtilities, String>> = LazyLock::new(|| {
     let module = unsafe { LoadLibraryExW(w!("mapi32.dll"), None, LOAD_LIBRARY_SEARCH_SYSTEM32) }
       .map_err(|error| format!("MAPI utilities are unavailable: {error}"))?;
@@ -115,16 +120,18 @@ fn mapi_utilities() -> napi::Result<&'static MapiUtilities> {
     // The exact exported signatures are SCODE(ULONG) and void(), both WINAPI.
     // Retaining the module keeps these immutable function pointers valid.
     Ok(MapiUtilities {
-      initialize: unsafe {
-        std::mem::transmute::<
-          unsafe extern "system" fn() -> isize,
-          unsafe extern "system" fn(u32) -> i32,
-        >(initialize)
-      },
-      deinitialize: unsafe {
-        std::mem::transmute::<unsafe extern "system" fn() -> isize, unsafe extern "system" fn()>(
-          deinitialize,
-        )
+      functions: MapiUtilityFunctions {
+        initialize: unsafe {
+          std::mem::transmute::<
+            unsafe extern "system" fn() -> isize,
+            unsafe extern "system" fn(u32) -> i32,
+          >(initialize)
+        },
+        deinitialize: unsafe {
+          std::mem::transmute::<unsafe extern "system" fn() -> isize, unsafe extern "system" fn()>(
+            deinitialize,
+          )
+        },
       },
       _module: owner,
     })
@@ -132,6 +139,14 @@ fn mapi_utilities() -> napi::Result<&'static MapiUtilities> {
   API
     .as_ref()
     .map_err(|message| napi::Error::from_reason(message.clone()))
+}
+
+fn mapi_utilities() -> napi::Result<MapiUtilityFunctions> {
+  #[cfg(test)]
+  if let Some(functions) = tests::mapi_utility_fixture() {
+    return functions;
+  }
+  Ok(system_mapi_utilities()?.functions)
 }
 
 pub struct DynWin32SubsystemContext {
@@ -459,10 +474,81 @@ mod tests {
   use super::*;
   use std::{
     process::{Command, Stdio},
+    sync::atomic::{AtomicBool, AtomicI32, Ordering},
     time::{Duration, Instant},
   };
 
   static TEST_SERIAL: Mutex<()> = Mutex::new(());
+  static MAPI_FIXTURE_ENABLED: AtomicBool = AtomicBool::new(false);
+  static MAPI_FIXTURE_LOAD_FAILURE: AtomicBool = AtomicBool::new(false);
+  static MAPI_FIXTURE_STATUS: AtomicI32 = AtomicI32::new(0);
+  static MAPI_FIXTURE_EVENTS: Mutex<Vec<MapiEvent>> = Mutex::new(Vec::new());
+
+  #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+  enum MapiEvent {
+    Initialize(u32),
+    Deinitialize,
+  }
+
+  struct MapiFixture;
+
+  impl MapiFixture {
+    fn new(status: i32) -> Self {
+      assert_eq!(lease_count(SubsystemKind::MapiUtilities), 0);
+      assert!(!MAPI_FIXTURE_ENABLED.swap(true, Ordering::SeqCst));
+      MAPI_FIXTURE_LOAD_FAILURE.store(false, Ordering::SeqCst);
+      MAPI_FIXTURE_STATUS.store(status, Ordering::SeqCst);
+      MAPI_FIXTURE_EVENTS
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clear();
+      Self
+    }
+
+    fn events(&self) -> Vec<MapiEvent> {
+      MAPI_FIXTURE_EVENTS
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone()
+    }
+  }
+
+  impl Drop for MapiFixture {
+    fn drop(&mut self) {
+      assert_eq!(lease_count(SubsystemKind::MapiUtilities), 0);
+      MAPI_FIXTURE_ENABLED.store(false, Ordering::SeqCst);
+    }
+  }
+
+  unsafe extern "system" fn fixture_mapi_initialize(flags: u32) -> i32 {
+    MAPI_FIXTURE_EVENTS
+      .lock()
+      .unwrap_or_else(|error| error.into_inner())
+      .push(MapiEvent::Initialize(flags));
+    MAPI_FIXTURE_STATUS.load(Ordering::SeqCst)
+  }
+
+  unsafe extern "system" fn fixture_mapi_deinitialize() {
+    MAPI_FIXTURE_EVENTS
+      .lock()
+      .unwrap_or_else(|error| error.into_inner())
+      .push(MapiEvent::Deinitialize);
+  }
+
+  pub(super) fn mapi_utility_fixture() -> Option<napi::Result<MapiUtilityFunctions>> {
+    if !MAPI_FIXTURE_ENABLED.load(Ordering::SeqCst) {
+      return None;
+    }
+    if MAPI_FIXTURE_LOAD_FAILURE.load(Ordering::SeqCst) {
+      return Some(Err(napi::Error::from_reason(
+        "MAPI utility fixture exports are unavailable",
+      )));
+    }
+    Some(Ok(MapiUtilityFunctions {
+      initialize: fixture_mapi_initialize,
+      deinitialize: fixture_mapi_deinitialize,
+    }))
+  }
 
   fn isolated_native_test<F: Fn()>(test: F) -> bool {
     const CHILD: &str = "DYNWINRT_SUBSYSTEM_TEST_CHILD";
@@ -475,7 +561,12 @@ mod tests {
     }
     let mut child = Command::new(std::env::current_exe().unwrap())
       .arg(name)
-      .args(["--exact", "--nocapture", "--test-threads=1"])
+      .args([
+        "--exact",
+        "--nocapture",
+        "--test-threads=1",
+        "--include-ignored",
+      ])
       .env(CHILD, name)
       .stdout(Stdio::inherit())
       .stderr(Stdio::inherit())
@@ -550,14 +641,10 @@ mod tests {
     winsock.close().unwrap();
   }
 
-  #[test]
-  fn call_guard_blocks_concurrent_close() {
-    let _serial = TEST_SERIAL
-      .lock()
-      .unwrap_or_else(|error| error.into_inner());
-    let winsock = std::sync::Arc::new(initialize("winsock").unwrap());
-    let guard = call_guard(&winsock, "winsock").unwrap();
-    let closing = std::sync::Arc::clone(&winsock);
+  fn assert_call_guard_blocks_close(subsystem: &str) {
+    let context = std::sync::Arc::new(initialize(subsystem).unwrap());
+    let guard = call_guard(&context, subsystem).unwrap();
+    let closing = std::sync::Arc::clone(&context);
     let (started_sender, started_receiver) = std::sync::mpsc::channel();
     let (finished_sender, finished_receiver) = std::sync::mpsc::channel();
     let thread = std::thread::spawn(move || {
@@ -570,7 +657,7 @@ mod tests {
       .recv_timeout(std::time::Duration::from_secs(5))
       .unwrap();
     assert!(matches!(
-      winsock.closed.try_lock(),
+      context.closed.try_lock(),
       Err(std::sync::TryLockError::WouldBlock)
     ));
     assert!(matches!(
@@ -586,6 +673,14 @@ mod tests {
   }
 
   #[test]
+  fn call_guard_blocks_concurrent_close() {
+    let _serial = TEST_SERIAL
+      .lock()
+      .unwrap_or_else(|error| error.into_inner());
+    assert_call_guard_blocks_close("winsock");
+  }
+
+  #[test]
   fn gdiplus_media_foundation_and_mapi_utility_contexts_are_counted() {
     if isolated_native_test(gdiplus_media_foundation_and_mapi_utility_contexts_are_counted) {
       return;
@@ -593,6 +688,7 @@ mod tests {
     let _serial = TEST_SERIAL
       .lock()
       .unwrap_or_else(|error| error.into_inner());
+    let mapi = MapiFixture::new(0);
     for subsystem in ["gdiplus", "mediaFoundation", "mapiUtilities"] {
       let first = live_context(subsystem);
       let second = live_context(subsystem);
@@ -600,6 +696,10 @@ mod tests {
       require(&second, subsystem).unwrap();
       close_context(&second);
     }
+    assert_eq!(
+      mapi.events(),
+      [MapiEvent::Initialize(0), MapiEvent::Deinitialize]
+    );
   }
 
   #[test]
@@ -610,6 +710,7 @@ mod tests {
     let _serial = TEST_SERIAL
       .lock()
       .unwrap_or_else(|error| error.into_inner());
+    let mapi_fixture = MapiFixture::new(0);
     let winsock = live_context("winsock");
     let winsock_alias = live_context("winsock");
     let gdi = live_context("gdi+");
@@ -632,6 +733,10 @@ mod tests {
       assert!(context.closed());
       context.close().unwrap();
     }
+    assert_eq!(
+      mapi_fixture.events(),
+      [MapiEvent::Initialize(0), MapiEvent::Deinitialize]
+    );
   }
 
   #[test]
@@ -670,6 +775,7 @@ mod tests {
     let _serial = TEST_SERIAL
       .lock()
       .unwrap_or_else(|error| error.into_inner());
+    let mapi = MapiFixture::new(0);
     for kind in [
       SubsystemKind::Winsock,
       SubsystemKind::GdiPlus,
@@ -686,12 +792,122 @@ mod tests {
       drop_context(last);
       assert_eq!(lease_count(kind), before);
     }
+    assert_eq!(
+      mapi.events(),
+      [MapiEvent::Initialize(0), MapiEvent::Deinitialize]
+    );
+  }
+
+  #[test]
+  fn mapi_initialization_failure_does_not_publish_a_lease_and_can_be_retried() {
+    let _serial = TEST_SERIAL
+      .lock()
+      .unwrap_or_else(|error| error.into_inner());
+    let mapi = MapiFixture::new(0x8000_4005_u32 as i32);
+    let error = initialize("mapiUtilities").err().unwrap();
+    assert!(error.reason.contains("SCODE 0x80004005"));
+    assert_eq!(lease_count(SubsystemKind::MapiUtilities), 0);
+    assert_eq!(mapi.events(), [MapiEvent::Initialize(0)]);
+
+    MAPI_FIXTURE_STATUS.store(0, Ordering::SeqCst);
+    let context = initialize("mapi_utilities").unwrap();
+    require(&context, "mapiUtilities").unwrap();
+    assert_eq!(lease_count(SubsystemKind::MapiUtilities), 1);
+    drop(context);
+    assert_eq!(
+      mapi.events(),
+      [
+        MapiEvent::Initialize(0),
+        MapiEvent::Initialize(0),
+        MapiEvent::Deinitialize
+      ]
+    );
+  }
+
+  #[test]
+  fn missing_mapi_exports_do_not_publish_or_cleanup_a_lease() {
+    let _serial = TEST_SERIAL
+      .lock()
+      .unwrap_or_else(|error| error.into_inner());
+    let mapi = MapiFixture::new(0);
+    MAPI_FIXTURE_LOAD_FAILURE.store(true, Ordering::SeqCst);
+    let error = initialize("mapiUtilities").err().unwrap();
+    assert!(error.reason.contains("exports are unavailable"));
+    assert_eq!(lease_count(SubsystemKind::MapiUtilities), 0);
+    assert!(mapi.events().is_empty());
+  }
+
+  #[test]
+  fn mapi_final_close_is_idempotent_and_allows_reinitialization() {
+    let _serial = TEST_SERIAL
+      .lock()
+      .unwrap_or_else(|error| error.into_inner());
+    let mapi = MapiFixture::new(0);
+    let first = initialize("mapiUtilities").unwrap();
+    let second = initialize("mapi_utilities").unwrap();
+    assert_eq!(lease_count(SubsystemKind::MapiUtilities), 2);
+    first.close().unwrap();
+    first.close().unwrap();
+    assert_eq!(lease_count(SubsystemKind::MapiUtilities), 1);
+    assert_eq!(mapi.events(), [MapiEvent::Initialize(0)]);
+    require(&second, "mapiUtilities").unwrap();
+    drop(second);
+    assert_eq!(lease_count(SubsystemKind::MapiUtilities), 0);
+    assert!(release_mapi_utilities().is_err());
+    let reopened = initialize("mapiUtilities").unwrap();
+    reopened.close().unwrap();
+    drop(reopened);
+    assert_eq!(
+      mapi.events(),
+      [
+        MapiEvent::Initialize(0),
+        MapiEvent::Deinitialize,
+        MapiEvent::Initialize(0),
+        MapiEvent::Deinitialize
+      ]
+    );
+  }
+
+  #[test]
+  fn mapi_call_guard_blocks_final_cleanup_on_another_thread() {
+    let _serial = TEST_SERIAL
+      .lock()
+      .unwrap_or_else(|error| error.into_inner());
+    let mapi = MapiFixture::new(0);
+    assert_call_guard_blocks_close("mapiUtilities");
+    assert_eq!(
+      mapi.events(),
+      [MapiEvent::Initialize(0), MapiEvent::Deinitialize]
+    );
+  }
+
+  #[test]
+  #[ignore = "requires a configured Extended MAPI provider of the process architecture"]
+  fn mapi_utility_contexts_use_installed_provider() {
+    if isolated_native_test(mapi_utility_contexts_use_installed_provider) {
+      return;
+    }
+    let _serial = TEST_SERIAL
+      .lock()
+      .unwrap_or_else(|error| error.into_inner());
+    let first = live_context("mapiUtilities");
+    let last = live_context("mapi_utilities");
+    assert_eq!(lease_count(SubsystemKind::MapiUtilities), 2);
+    close_context(&first);
+    assert_eq!(lease_count(SubsystemKind::MapiUtilities), 1);
+    require(&last, "mapiUtilities").unwrap();
+    drop_context(last);
+    assert_eq!(lease_count(SubsystemKind::MapiUtilities), 0);
+    let reopened = live_context("mapiUtilities");
+    close_context(&reopened);
+    close_context(&reopened);
+    assert_eq!(lease_count(SubsystemKind::MapiUtilities), 0);
   }
 
   #[test]
   fn mapi_utility_exports_resolve_for_the_process_architecture() {
     assert!(!MAPI_INIT_EXPORT.to_bytes().is_empty());
     assert!(!MAPI_DEINIT_EXPORT.to_bytes().is_empty());
-    mapi_utilities().expect("resolve the exact system utility exports");
+    system_mapi_utilities().expect("resolve the exact system utility exports");
   }
 }

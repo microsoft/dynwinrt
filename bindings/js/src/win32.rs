@@ -1180,6 +1180,8 @@ impl DynWin32 {
     win32_subsystem::initialize("mediaFoundation")
   }
 
+  /// Requires an installed, configured MAPI provider of the process architecture.
+  /// The Windows system stub alone is insufficient and may display native UI.
   #[napi]
   pub fn initialize_mapi_utilities() -> napi::Result<DynWin32SubsystemContext> {
     win32_subsystem::initialize("mapiUtilities")

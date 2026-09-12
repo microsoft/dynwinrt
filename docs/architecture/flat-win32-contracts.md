@@ -91,7 +91,13 @@ MAPI utility symbols are resolved lazily from the system DLL. Their x86
 exports carry stdcall suffixes (`ScInitMapiUtil@4`, `DeinitMapiUtil@0`);
 binding them as unconditional undecorated imports would prevent unrelated
 WinRT/COM consumers from loading the addon. Missing utility exports produce
-an explicit error when that subsystem is requested.
+an explicit error when that subsystem is requested. The system DLL is a
+dispatch stub, not a MAPI provider: utility initialization requires an installed,
+configured provider matching the process architecture. Without one, the stub
+can display a native initialization message before returning `E_FAIL`, as
+documented in [MAPI stub registry settings](https://learn.microsoft.com/en-us/previous-versions/windows/desktop/windowsmapi/mapi32-dll-stub-registry-settings).
+The unsafe entrypoint preserves that native behavior; it does not install a
+provider, change mail-client registration, or substitute a successful no-op.
 
 The IOCP engine retains native state through terminal completion, including
 cancellation. The limits are 1,024 pending operations, 64 MiB per
@@ -140,3 +146,21 @@ ARM64 execution coverage must be reported separately from compilation.
 Native subsystem lifecycle tests run in isolated, time-bounded processes with
 initialization/cleanup stage output, so a platform startup failure cannot
 silently block unrelated tests behind a process-global lock.
+
+Winsock, GDI+ and Media Foundation lifecycle tests call the native OS APIs.
+MAPI lifecycle tests use a test-only function table because stock CI images
+do not supply an Extended MAPI provider. These mandatory tests exercise the
+same context, counting and call-guard implementation, asserting reserved flags,
+first-lease initialization, last-lease cleanup, retries after initialization
+failure, missing exports, aliases, idempotent close, `Drop` and concurrent close.
+Architecture-specific system export resolution is also mandatory and does
+not invoke the provider.
+
+The real MAPI lifecycle test remains available separately on a machine with a
+configured provider (for example, matching-bitness Outlook). It is ignored by
+default, fails on initialization errors/timeouts, and never treats an unavailable
+provider as success:
+
+```powershell
+cargo test -p jswinrt_rs --lib win32_subsystem::tests::mapi_utility_contexts_use_installed_provider -- --exact --ignored --nocapture
+```
