@@ -87,6 +87,12 @@ internally. The full `DynWin32*` capability set is retained across the Win32
 entrypoints. x86 plan invocation remains explicitly unsupported;
 x64 is exercised live and ARM64 is compile-validated.
 
+MAPI utility symbols are resolved lazily from the system DLL. Their x86
+exports carry stdcall suffixes (`ScInitMapiUtil@4`, `DeinitMapiUtil@0`);
+binding them as unconditional undecorated imports would prevent unrelated
+WinRT/COM consumers from loading the addon. Missing utility exports produce
+an explicit error when that subsystem is requested.
+
 The IOCP engine retains native state through terminal completion, including
 cancellation. The limits are 1,024 pending operations, 64 MiB per
 operation and 256 MiB of pending private buffers. A shared worker set is used,
@@ -131,3 +137,6 @@ Real-metadata tests read `DYNWINRT_WIN32_WINMD`. CI also sets
 `DYNWINRT_REQUIRE_WIN32_METADATA=1` so missing metadata is a failure, not an
 unnoticed skip. Live scenarios require stock Windows; optional-device and
 ARM64 execution coverage must be reported separately from compilation.
+Native subsystem lifecycle tests run in isolated, time-bounded processes with
+initialization/cleanup stage output, so a platform startup failure cannot
+silently block unrelated tests behind a process-global lock.

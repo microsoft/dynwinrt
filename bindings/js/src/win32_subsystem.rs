@@ -4,12 +4,16 @@
 use std::mem::MaybeUninit;
 use std::sync::{LazyLock, Mutex, MutexGuard};
 
+use windows::core::{w, PCSTR};
 use windows::Win32::Graphics::GdiPlus::{
   GdiplusShutdown, GdiplusStartup, GdiplusStartupInput, Ok as GDIPLUS_OK,
 };
 use windows::Win32::Media::MediaFoundation::{MFShutdown, MFStartup, MFSTARTUP_FULL, MF_VERSION};
 use windows::Win32::Networking::WinSock::{WSACleanup, WSAGetLastError, WSAStartup, WSADATA};
-use windows::Win32::System::AddressBook::{DeinitMapiUtil, ScInitMapiUtil};
+use windows::Win32::{
+  Foundation::{FreeLibrary, HMODULE},
+  System::LibraryLoader::{GetProcAddress, LoadLibraryExW, LOAD_LIBRARY_SEARCH_SYSTEM32},
+};
 
 const WINSOCK_VERSION_2_2: u16 = 0x0202;
 
@@ -63,6 +67,72 @@ static MEDIA_FOUNDATION_STATE: LazyLock<Mutex<CountedState>> =
   LazyLock::new(|| Mutex::new(CountedState::default()));
 static MAPI_UTILITIES_STATE: LazyLock<Mutex<CountedState>> =
   LazyLock::new(|| Mutex::new(CountedState::default()));
+
+struct MapiModule(usize);
+
+impl Drop for MapiModule {
+  fn drop(&mut self) {
+    if let Err(error) = unsafe { FreeLibrary(HMODULE(self.0 as *mut std::ffi::c_void)) } {
+      eprintln!("[dynwinrt] MAPI utility module cleanup failed: {error}");
+    }
+  }
+}
+
+struct MapiUtilities {
+  initialize: unsafe extern "system" fn(u32) -> i32,
+  deinitialize: unsafe extern "system" fn(),
+  _module: MapiModule,
+}
+
+#[cfg(target_arch = "x86")]
+const MAPI_INIT_EXPORT: &std::ffi::CStr = c"ScInitMapiUtil@4";
+#[cfg(target_arch = "x86")]
+const MAPI_DEINIT_EXPORT: &std::ffi::CStr = c"DeinitMapiUtil@0";
+#[cfg(not(target_arch = "x86"))]
+const MAPI_INIT_EXPORT: &std::ffi::CStr = c"ScInitMapiUtil";
+#[cfg(not(target_arch = "x86"))]
+const MAPI_DEINIT_EXPORT: &std::ffi::CStr = c"DeinitMapiUtil";
+
+fn mapi_utilities() -> napi::Result<&'static MapiUtilities> {
+  static API: LazyLock<Result<MapiUtilities, String>> = LazyLock::new(|| {
+    let module = unsafe { LoadLibraryExW(w!("mapi32.dll"), None, LOAD_LIBRARY_SEARCH_SYSTEM32) }
+      .map_err(|error| format!("MAPI utilities are unavailable: {error}"))?;
+    let owner = MapiModule(module.0 as usize);
+    let initialize = unsafe { GetProcAddress(module, PCSTR(MAPI_INIT_EXPORT.as_ptr().cast())) }
+      .ok_or_else(|| {
+        format!(
+          "System MAPI32.dll has no {}",
+          MAPI_INIT_EXPORT.to_string_lossy()
+        )
+      })?;
+    let deinitialize = unsafe { GetProcAddress(module, PCSTR(MAPI_DEINIT_EXPORT.as_ptr().cast())) }
+      .ok_or_else(|| {
+        format!(
+          "System MAPI32.dll has no {}",
+          MAPI_DEINIT_EXPORT.to_string_lossy()
+        )
+      })?;
+    // The exact exported signatures are SCODE(ULONG) and void(), both WINAPI.
+    // Retaining the module keeps these immutable function pointers valid.
+    Ok(MapiUtilities {
+      initialize: unsafe {
+        std::mem::transmute::<
+          unsafe extern "system" fn() -> isize,
+          unsafe extern "system" fn(u32) -> i32,
+        >(initialize)
+      },
+      deinitialize: unsafe {
+        std::mem::transmute::<unsafe extern "system" fn() -> isize, unsafe extern "system" fn()>(
+          deinitialize,
+        )
+      },
+      _module: owner,
+    })
+  });
+  API
+    .as_ref()
+    .map_err(|message| napi::Error::from_reason(message.clone()))
+}
 
 pub struct DynWin32SubsystemContext {
   kind: SubsystemKind,
@@ -353,7 +423,7 @@ fn acquire_mapi_utilities() -> napi::Result<()> {
     .lock()
     .unwrap_or_else(|error| error.into_inner());
   if state.leases == 0 {
-    let status = unsafe { ScInitMapiUtil(0) };
+    let status = unsafe { (mapi_utilities()?.initialize)(0) };
     if status != 0 {
       return Err(napi::Error::from_reason(format!(
         "ScInitMapiUtil(0) failed with SCODE 0x{:08x}",
@@ -379,7 +449,7 @@ fn release_mapi_utilities() -> napi::Result<()> {
   }
   state.leases -= 1;
   if state.leases == 0 {
-    unsafe { DeinitMapiUtil() };
+    unsafe { (mapi_utilities()?.deinitialize)() };
   }
   Ok(())
 }
@@ -387,8 +457,64 @@ fn release_mapi_utilities() -> napi::Result<()> {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use std::{
+    process::{Command, Stdio},
+    time::{Duration, Instant},
+  };
 
   static TEST_SERIAL: Mutex<()> = Mutex::new(());
+
+  fn isolated_native_test<F: Fn()>(test: F) -> bool {
+    const CHILD: &str = "DYNWINRT_SUBSYSTEM_TEST_CHILD";
+    let qualified = std::any::type_name_of_val(&test);
+    let (_, name) = qualified
+      .split_once("::")
+      .expect("native subsystem test has a qualified Rust name");
+    if std::env::var(CHILD).as_deref() == Ok(name) {
+      return false;
+    }
+    let mut child = Command::new(std::env::current_exe().unwrap())
+      .arg(name)
+      .args(["--exact", "--nocapture", "--test-threads=1"])
+      .env(CHILD, name)
+      .stdout(Stdio::inherit())
+      .stderr(Stdio::inherit())
+      .spawn()
+      .expect("start isolated native subsystem test");
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+      if let Some(status) = child.try_wait().expect("check subsystem test process") {
+        assert!(status.success(), "{name}: child failed with {status}");
+        return true;
+      }
+      if Instant::now() >= deadline {
+        child.kill().expect("terminate this subsystem test process");
+        child.wait().expect("reap subsystem test process");
+        panic!("{name}: native subsystem lifecycle exceeded 60 seconds; see the last stage above");
+      }
+      std::thread::sleep(Duration::from_millis(20));
+    }
+  }
+
+  fn live_context(name: &str) -> DynWin32SubsystemContext {
+    eprintln!("[subsystem-test] initialize {name}");
+    let context = initialize(name).unwrap();
+    eprintln!("[subsystem-test] initialized {name}");
+    context
+  }
+
+  fn close_context(context: &DynWin32SubsystemContext) {
+    eprintln!("[subsystem-test] close {}", context.subsystem());
+    context.close().unwrap();
+    eprintln!("[subsystem-test] closed {}", context.subsystem());
+  }
+
+  fn drop_context(context: DynWin32SubsystemContext) {
+    let name = context.subsystem();
+    eprintln!("[subsystem-test] drop {name}");
+    drop(context);
+    eprintln!("[subsystem-test] dropped {name}");
+  }
 
   fn lease_count(kind: SubsystemKind) -> usize {
     match kind {
@@ -461,41 +587,47 @@ mod tests {
 
   #[test]
   fn gdiplus_media_foundation_and_mapi_utility_contexts_are_counted() {
+    if isolated_native_test(gdiplus_media_foundation_and_mapi_utility_contexts_are_counted) {
+      return;
+    }
     let _serial = TEST_SERIAL
       .lock()
       .unwrap_or_else(|error| error.into_inner());
     for subsystem in ["gdiplus", "mediaFoundation", "mapiUtilities"] {
-      let first = initialize(subsystem).unwrap();
-      let second = initialize(subsystem).unwrap();
-      first.close().unwrap();
+      let first = live_context(subsystem);
+      let second = live_context(subsystem);
+      close_context(&first);
       require(&second, subsystem).unwrap();
-      second.close().unwrap();
+      close_context(&second);
     }
   }
 
   #[test]
   fn subsystem_counts_remain_independent_across_kind_and_alias_closure() {
+    if isolated_native_test(subsystem_counts_remain_independent_across_kind_and_alias_closure) {
+      return;
+    }
     let _serial = TEST_SERIAL
       .lock()
       .unwrap_or_else(|error| error.into_inner());
-    let winsock = initialize("winsock").unwrap();
-    let winsock_alias = initialize("winsock").unwrap();
-    let gdi = initialize("gdi+").unwrap();
-    let media = initialize("media_foundation").unwrap();
-    let mapi = initialize("mapi_utilities").unwrap();
-    winsock.close().unwrap();
+    let winsock = live_context("winsock");
+    let winsock_alias = live_context("winsock");
+    let gdi = live_context("gdi+");
+    let media = live_context("media_foundation");
+    let mapi = live_context("mapi_utilities");
+    close_context(&winsock);
     require(&winsock_alias, "winsock").unwrap();
     require(&gdi, "gdiplus").unwrap();
     require(&media, "mediaFoundation").unwrap();
     require(&mapi, "mapiUtilities").unwrap();
-    gdi.close().unwrap();
+    close_context(&gdi);
     require(&winsock_alias, "winsock").unwrap();
     require(&media, "mediaFoundation").unwrap();
-    winsock_alias.close().unwrap();
+    close_context(&winsock_alias);
     require(&media, "mediaFoundation").unwrap();
-    media.close().unwrap();
+    close_context(&media);
     require(&mapi, "mapiUtilities").unwrap();
-    mapi.close().unwrap();
+    close_context(&mapi);
     for context in [&winsock, &winsock_alias, &gdi, &media, &mapi] {
       assert!(context.closed());
       context.close().unwrap();
@@ -532,6 +664,9 @@ mod tests {
 
   #[test]
   fn dropping_live_contexts_returns_each_subsystems_exact_lease_count() {
+    if isolated_native_test(dropping_live_contexts_returns_each_subsystems_exact_lease_count) {
+      return;
+    }
     let _serial = TEST_SERIAL
       .lock()
       .unwrap_or_else(|error| error.into_inner());
@@ -542,14 +677,21 @@ mod tests {
       SubsystemKind::MapiUtilities,
     ] {
       let before = lease_count(kind);
-      let first = initialize(kind.name()).unwrap();
-      let last = initialize(kind.name()).unwrap();
+      let first = live_context(kind.name());
+      let last = live_context(kind.name());
       assert_eq!(lease_count(kind), before + 2);
-      drop(first);
+      drop_context(first);
       assert_eq!(lease_count(kind), before + 1);
       require(&last, kind.name()).unwrap();
-      drop(last);
+      drop_context(last);
       assert_eq!(lease_count(kind), before);
     }
+  }
+
+  #[test]
+  fn mapi_utility_exports_resolve_for_the_process_architecture() {
+    assert!(!MAPI_INIT_EXPORT.to_bytes().is_empty());
+    assert!(!MAPI_DEINIT_EXPORT.to_bytes().is_empty());
+    mapi_utilities().expect("resolve the exact system utility exports");
   }
 }
